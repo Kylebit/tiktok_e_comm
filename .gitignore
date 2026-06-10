@@ -1,0 +1,29 @@
+# 本地数据与凭据（勿提交）
+data/
+config/settings.json
+tiktok_tokens.json
+tiktok_ads_tokens.json
+tiktok_orders.json
+exports/
+*.db
+
+# 调试 / 导出 / 结算原始数据
+debug_*.json
+settlement_raw_*.json
+*.csv
+*.xlsx
+*.docx
+CURSOR/Income_Data/
+CURSOR/venv/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# macOS / IDE
+.DS_Store
+.idea/
+.vscode/
+*.swp

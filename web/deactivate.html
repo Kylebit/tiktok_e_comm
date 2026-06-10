@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>零销下架</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">TikTok Shop 控制台</a>
+    <nav class="nav">
+      <a href="/">首页</a>
+      <a href="/costs">成本维护</a>
+      <a href="/titles">Listing 优化</a>
+      <a href="/analytics">Analytics</a>
+      <a href="/deactivate" class="active">零销下架</a>
+      <a href="/promotions">促销调价</a>
+    </nav>
+  </header>
+  <main class="container">
+    <h1>零销批量下架</h1>
+    <p class="hint warn-box">规则：近 <strong>90 天 0 单</strong> + <strong>28 天 CTR 低于店铺中位</strong> + 库存 ≥ 5 + 不在进行中促销。下架可恢复，请仔细勾选确认。</p>
+
+    <details class="scan-panel" open>
+      <summary>扫描下架候选</summary>
+      <div class="scan-form">
+        <label>最多 <input id="limit" type="number" value="50" min="1" max="100" style="width:56px"> 个</label>
+        <select id="region">
+          <option value="">全部站点</option>
+          <option value="MY">MY</option>
+          <option value="VN">VN</option>
+          <option value="TH">TH</option>
+          <option value="PH">PH</option>
+        </select>
+        <button class="btn-primary" id="scanBtn" onclick="startScan()">开始扫描</button>
+        <span id="scanStatus"></span>
+      </div>
+    </details>
+
+    <div class="toolbar">
+      <button class="btn-secondary" onclick="selectAll(true)">全选</button>
+      <button class="btn-secondary" onclick="selectAll(false)">全不选</button>
+      <button class="btn-danger" id="pushBtn" onclick="pushSelected()">确认下架</button>
+      <span id="status"></span>
+    </div>
+    <div id="list"><p class="hint">加载中...</p></div>
+  </main>
+  <script>
+    var items = [];
+
+    function esc(s) {
+      return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+    }
+
+    function loadItems() {
+      return fetch('/api/deactivate').then(function(r) { return r.json(); }).then(function(res) {
+        items = res.items || [];
+        render();
+      });
+    }
+
+    function render() {
+      var el = document.getElementById('list');
+      if (!items.length) {
+        el.innerHTML = '<div class="empty">暂无待下架项<br><br>点击「开始扫描」</div>';
+        return;
+      }
+      el.innerHTML = items.map(function(it, i) {
+        var ctr = (it.click_through_rate * 100).toFixed(2);
+        var med = it.ctr_median ? (it.ctr_median * 100).toFixed(2) : '—';
+        return '<div class="card item-card">' +
+          '<div class="row">' +
+            (it.image_url ? '<img class="thumb" src="' + esc(it.image_url) + '">' : '<div class="thumb"></div>') +
+            '<div style="flex:1">' +
+              '<div class="meta">' + esc(it.region) + ' · 90天 0 单 · CTR ' + ctr + '% (中位 ' + med + '%) · 库存 ' + it.stock +
+                (it.seller_sku ? ' · SKU ' + esc(it.seller_sku) : '') + '</div>' +
+              '<div class="old">' + esc(it.product_name) + '</div>' +
+              '<label class="chk"><input type="checkbox" id="chk-' + i + '"> 确认下架此链接</label>' +
+            '</div>' +
+          '</div></div>';
+      }).join('');
+    }
+
+    function selectAll(v) {
+      items.forEach(function(_, i) {
+        var c = document.getElementById('chk-' + i);
+        if (c) c.checked = v;
+      });
+    }
+
+    function startScan() {
+      var btn = document.getElementById('scanBtn');
+      btn.disabled = true;
+      document.getElementById('scanStatus').textContent = '提交中...';
+      fetch('/api/deactivate/scan', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          limit: parseInt(document.getElementById('limit').value, 10) || 50,
+          region: document.getElementById('region').value || null
+        })
+      }).then(function(r) { return r.json(); }).then(function(res) {
+        if (!res.ok) { alert(res.message); btn.disabled = false; return; }
+        pollScan();
+      });
+    }
+
+    function pollScan() {
+      var btn = document.getElementById('scanBtn');
+      fetch('/api/deactivate/scan/status').then(function(r) { return r.json(); }).then(function(s) {
+        if (s.running) {
+          document.getElementById('scanStatus').textContent = s.message || '扫描中...';
+          setTimeout(pollScan, 2000);
+          return;
+        }
+        btn.disabled = false;
+        document.getElementById('scanStatus').textContent = s.error ? ('失败: ' + s.error) : (s.message || '完成');
+        loadItems();
+      });
+    }
+
+    function pushSelected() {
+      var payload = [];
+      items.forEach(function(it, i) {
+        var c = document.getElementById('chk-' + i);
+        if (!c || !c.checked) return;
+        payload.push({ id: it.id, product_id: it.product_id, shop_cipher: it.shop_cipher });
+      });
+      if (!payload.length) { alert('请至少勾选一条'); return; }
+      if (!confirm('确定下架 ' + payload.length + ' 个链接？可在 Seller Center 恢复。')) return;
+      document.getElementById('pushBtn').disabled = true;
+      fetch('/api/deactivate/push', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ items: payload })
+      }).then(function(r) { return r.json(); }).then(function(res) {
+        if (!res.ok) { alert(res.message); document.getElementById('pushBtn').disabled = false; return; }
+        pollPush();
+      });
+    }
+
+    function pollPush() {
+      fetch('/api/deactivate/push/status').then(function(r) { return r.json(); }).then(function(s) {
+        if (s.running) {
+          document.getElementById('status').textContent = s.message || '下架中...';
+          setTimeout(pollPush, 1500);
+          return;
+        }
+        document.getElementById('pushBtn').disabled = false;
+        document.getElementById('status').textContent = s.message || '完成';
+        if (s.errors && s.errors.length) alert(s.errors.slice(0, 5).join('\n'));
+        loadItems();
+      });
+    }
+
+    loadItems();
+  </script>
+</body>
+</html>

@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Listing 优化</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">TikTok Shop 控制台</a>
+    <nav class="nav">
+      <a href="/">首页</a>
+      <a href="/costs">成本维护</a>
+      <a href="/titles" class="active">Listing 优化</a>
+      <a href="/analytics">Analytics</a>
+      <a href="/deactivate">零销下架</a>
+      <a href="/promotions">促销调价</a>
+    </nav>
+  </header>
+  <main class="container">
+    <h1>Listing 优化（标题 + 详情）</h1>
+    <p class="hint">推荐：<strong>Analytics 高兴趣低转化</strong> — 近 28 天 CTR ≥ 店铺中位×1.5 且 0 单。建议配合 <a href="/promotions">促销工具</a> 一起做（加入折扣 / 加深折扣）。</p>
+
+    <details class="scan-panel" open>
+      <summary>扫描商品</summary>
+      <div class="scan-form">
+        <label>模式
+          <select id="scanMode">
+            <option value="analytics" selected>Analytics · 高 CTR 0 单（推荐）</option>
+            <option value="velocity">低动销 · 按订单量</option>
+          </select>
+        </label>
+        <span id="velocityOpts">
+          <label>近 <input id="days" type="number" value="30" min="7" max="90" style="width:56px"> 天</label>
+          <label>销量 ≤ <input id="maxUnits" type="number" value="1" min="0" max="99" style="width:56px"></label>
+        </span>
+        <label>最多 <input id="limit" type="number" value="20" min="1" max="50" style="width:56px"> 个</label>
+        <select id="region">
+          <option value="">全部站点</option>
+          <option value="MY">MY</option>
+          <option value="VN">VN</option>
+          <option value="TH">TH</option>
+          <option value="PH">PH</option>
+        </select>
+        <button class="btn-primary" id="scanBtn" onclick="startScan()">开始扫描</button>
+        <span id="scanStatus"></span>
+      </div>
+    </details>
+
+    <div class="toolbar">
+      <button class="btn-secondary" onclick="selectAll(true)">全选</button>
+      <button class="btn-secondary" onclick="selectAll(false)">全不选</button>
+      <button class="btn-primary" id="pushBtn" onclick="pushSelected()">推送到 TikTok</button>
+      <span id="status"></span>
+    </div>
+    <div id="list"><p class="hint">加载中...</p></div>
+  </main>
+  <script>
+    var items = [];
+    var scanTimer = null;
+
+    function esc(s) {
+      return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+    }
+
+    function stripHtml(s) {
+      return String(s || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    }
+
+    document.getElementById('scanMode').addEventListener('change', function() {
+      document.getElementById('velocityOpts').style.display =
+        this.value === 'velocity' ? 'inline' : 'none';
+    });
+    document.getElementById('velocityOpts').style.display = 'none';
+
+    function loadItems() {
+      return fetch('/api/titles').then(function(r) { return r.json(); }).then(function(res) {
+        if (!res.ok) throw new Error(res.error || '加载失败');
+        items = res.items || [];
+        render();
+      });
+    }
+
+    function renderIntel(it) {
+      var intel = it.keyword_intel || {};
+      var kws = intel.hot_keywords || [];
+      if (!kws.length) return '';
+      return '<div class="intel-box"><div class="intel-line"><span class="intel-label">热搜词</span> ' +
+        kws.map(function(k) { return '<span class="tag">' + esc(k) + '</span>'; }).join(' ') + '</div></div>';
+    }
+
+    function renderMeta(it) {
+      var parts = [esc(it.region)];
+      if (it.scan_mode === 'analytics' && it.click_through_rate) {
+        parts.push('CTR ' + (it.click_through_rate * 100).toFixed(2) + '%');
+        if (it.ctr_median) parts.push('中位 ' + (it.ctr_median * 100).toFixed(2) + '%');
+        parts.push('28天 ' + (it.order_count || 0) + ' 单');
+      } else {
+        parts.push('近30天销量 ' + (it.units_sold || 0));
+      }
+      parts.push('库存 ' + (it.stock || 0));
+      if (it.seller_sku) parts.push('SKU ' + esc(it.seller_sku));
+      if (it.category_leaf) parts.push(esc(it.category_leaf));
+      if (it.segment) parts.push('分段 ' + esc(it.segment));
+      return parts.join(' · ');
+    }
+
+    function render() {
+      var el = document.getElementById('list');
+      if (!items.length) {
+        el.innerHTML = '<div class="empty">暂无待处理项<br><br>选择扫描模式后点击「开始扫描」</div>';
+        return;
+      }
+      el.innerHTML = items.map(function(it, i) {
+        var hasDesc = !!(it.new_description || it.suggested_description);
+        return '<div class="card item-card" data-idx="' + i + '">' +
+          '<div class="row">' +
+            (it.image_url ? '<img class="thumb" src="' + esc(it.image_url) + '">' : '<div class="thumb"></div>') +
+            '<div style="flex:1">' +
+              '<div class="meta">' + renderMeta(it) + '</div>' +
+              renderIntel(it) +
+              '<label>原标题</label><div class="old">' + esc(it.old_title) + '</div>' +
+              '<label>新标题（≤255 字）</label>' +
+              '<textarea id="title-' + i + '" maxlength="255" class="title-input">' + esc(it.new_title || it.suggested_title) + '</textarea>' +
+              (hasDesc || it.scan_mode === 'analytics' ?
+                '<label>原详情（纯文本预览）</label><div class="old desc-preview">' + esc(stripHtml(it.old_description)) + '</div>' +
+                '<label>新详情 HTML（可编辑）</label>' +
+                '<textarea id="desc-' + i + '" class="desc-input">' + esc(it.new_description || it.suggested_description || '') + '</textarea>'
+                : '') +
+              '<label class="chk"><input type="checkbox" id="chk-' + i + '" checked> 确认推送</label>' +
+            '</div>' +
+          '</div></div>';
+      }).join('');
+    }
+
+    function selectAll(v) {
+      items.forEach(function(_, i) {
+        var c = document.getElementById('chk-' + i);
+        if (c) c.checked = v;
+      });
+    }
+
+    function startScan() {
+      var btn = document.getElementById('scanBtn');
+      var st = document.getElementById('scanStatus');
+      var mode = document.getElementById('scanMode').value;
+      btn.disabled = true;
+      st.textContent = '提交中...';
+      fetch('/api/titles/scan', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          mode: mode,
+          days: parseInt(document.getElementById('days').value, 10) || 30,
+          max_units: parseInt(document.getElementById('maxUnits').value, 10),
+          limit: parseInt(document.getElementById('limit').value, 10) || 20,
+          region: document.getElementById('region').value || null
+        })
+      }).then(function(r) { return r.json(); }).then(function(res) {
+        if (!res.ok) {
+          alert(res.error || res.message || '无法启动扫描');
+          btn.disabled = false;
+          st.textContent = '';
+          return;
+        }
+        pollScan();
+      }).catch(function(e) {
+        alert(e);
+        btn.disabled = false;
+        st.textContent = '';
+      });
+    }
+
+    function pollScan() {
+      var btn = document.getElementById('scanBtn');
+      var st = document.getElementById('scanStatus');
+      fetch('/api/titles/scan/status').then(function(r) { return r.json(); }).then(function(s) {
+        if (s.running) {
+          st.textContent = s.message || '扫描中...';
+          scanTimer = setTimeout(pollScan, 1500);
+          return;
+        }
+        btn.disabled = false;
+        if (s.error) {
+          st.textContent = '失败: ' + s.error;
+          return;
+        }
+        st.textContent = s.message || '完成';
+        loadItems();
+        setTimeout(function() { st.textContent = ''; }, 4000);
+      });
+    }
+
+    function pushSelected() {
+      var payload = [];
+      items.forEach(function(it, i) {
+        var c = document.getElementById('chk-' + i);
+        if (!c || !c.checked) return;
+        var t = document.getElementById('title-' + i);
+        var d = document.getElementById('desc-' + i);
+        var row = {
+          id: it.id,
+          product_id: it.product_id,
+          shop_cipher: it.shop_cipher,
+          new_title: t ? t.value.trim() : (it.new_title || '')
+        };
+        if (d) row.new_description = d.value.trim();
+        payload.push(row);
+      });
+      if (!payload.length) { alert('请至少勾选一条'); return; }
+      var pushBtn = document.getElementById('pushBtn');
+      pushBtn.disabled = true;
+      document.getElementById('status').textContent = '提交推送...';
+      fetch('/api/titles/push', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({items: payload})
+      }).then(function(r) { return r.json(); }).then(function(res) {
+        if (!res.ok) {
+          pushBtn.disabled = false;
+          alert(res.error || res.message || '推送失败');
+          document.getElementById('status').textContent = '';
+          return;
+        }
+        pollPush();
+      }).catch(function(e) {
+        pushBtn.disabled = false;
+        alert('推送失败: ' + e);
+      });
+    }
+
+    function pollPush() {
+      var pushBtn = document.getElementById('pushBtn');
+      var st = document.getElementById('status');
+      fetch('/api/titles/push/status').then(function(r) { return r.json(); }).then(function(s) {
+        if (s.running) {
+          st.textContent = s.message || '推送中...';
+          setTimeout(pollPush, 1500);
+          return;
+        }
+        pushBtn.disabled = false;
+        if (s.error) {
+          st.textContent = '失败: ' + s.error;
+          alert('推送失败: ' + s.error);
+          return;
+        }
+        st.textContent = s.message || '完成';
+        if (s.errors && s.errors.length) alert(s.errors.slice(0, 5).join('\n'));
+        loadItems();
+      });
+    }
+
+    loadItems();
+  </script>
+</body>
+</html>

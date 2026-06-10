@@ -1,0 +1,90 @@
+{
+  "app_key": "YOUR_APP_KEY",
+  "app_secret": "YOUR_APP_SECRET",
+  "token_file": "tiktok_tokens.json",
+  "database": "data/shop.db",
+  "exports_dir": "exports",
+
+  "api": {
+    "rate_limit_retries": 5,
+    "rate_limit_backoff_sec": [2, 4, 8, 16, 30],
+    "note": "遇到 TikTok 429 限流时自动退避重试"
+  },
+
+  "exchange_rates": {
+    "MYR": 1.75,
+    "THB": 0.2218,
+    "PHP": 0.118,
+    "VND": 0.000266
+  },
+
+  "profit": {
+    "ad_cost_source": "ads_api",
+    "local_shipping_fee_cny": 0,
+    "local_shipping_rule": "seller_shipping_fee_zero_and_sst_zero"
+  },
+
+  "ads": {
+    "marketing_api_base": "https://business-api.tiktok.com",
+    "advertiser_id": "",
+    "access_token_file": "tiktok_ads_tokens.json",
+    "note": "Shop Open API 与 TikTok Marketing API 是两套授权，需在 ads.tiktok.com 单独申请"
+  },
+
+  "affiliate": {
+    "default_commission_rate_pct": 15,
+    "creator_list_dir": "data/creator_lists",
+    "note": "定向建联：在 creator_lists/ 放置 CSV，列 creator_id 或 username"
+  },
+
+  "ai": {
+    "api_key": "",
+    "base_url": "https://api.openai.com/v1",
+    "model": "gpt-4o-mini",
+    "temperature": 0.4,
+    "max_tokens": 320,
+    "listing_max_tokens": 1200,
+    "timeout": 60,
+    "request_delay_sec": 0.35,
+    "fallback_to_rules": true,
+    "note": "OpenAI 兼容接口均可；DeepSeek 示例: base_url=https://api.deepseek.com/v1, model=deepseek-chat。也可用环境变量 OPENAI_API_KEY"
+  },
+
+  "keywords": {
+    "provider": "csv",
+    "dir": "data/keywords",
+    "note": "每站点一个 CSV：MY.csv VN.csv TH.csv PH.csv。列 category_leaf, hot_keywords(|分隔), competitor_titles(||分隔)。* 为站点默认。provider=api 预留第三方"
+  },
+
+  "promotion": {
+    "bump_pct": 5,
+    "max_discount": 40,
+    "min_discount": 5,
+    "min_margin_pct": 15,
+    "add_initial_discount": 15,
+    "flash_discount_pct": 20,
+    "flash_duration_hours": 48,
+    "flash_start_delay_hours": 1,
+    "coupon_min_spend_multiplier": 2.5,
+    "coupon_amount_ratio": 0.08,
+    "push_delay_sec": 1.2,
+    "cooldown_days": 15,
+    "note": "低动销加深 bump_pct；新加入用 add_initial_discount；秒杀用 flash_*；push_delay_sec 为每条推送间隔(秒)；cooldown_days 内已推送过促销调价的 SKU 不再出现在扫描建议中"
+  },
+
+  "analytics": {
+    "window_days": 28,
+    "high_ctr_multiplier": 1.5,
+    "low_ctr_multiplier": 0.5,
+    "note": "A类: CTR≥中位×high_ctr_multiplier 且0单 → Listing；D类: CTR<中位且0单 → 下架候选"
+  },
+
+  "deactivate": {
+    "sales_days": 90,
+    "min_stock": 5,
+    "require_low_ctr": true,
+    "batch_size": 20,
+    "push_delay_sec": 1.2,
+    "note": "90天0单 + 28天CTR低于店铺中位 + 不在促销中"
+  }
+}

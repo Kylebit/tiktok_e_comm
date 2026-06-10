@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TikTok Shop 控制台</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">TikTok Shop 控制台</a>
+    <nav class="nav">
+      <a href="/" class="active">首页</a>
+      <a href="/costs">成本维护</a>
+      <a href="/titles">Listing 优化</a>
+      <a href="/analytics">Analytics</a>
+      <a href="/deactivate">零销下架</a>
+      <a href="/promotions">促销调价</a>
+    </nav>
+  </header>
+  <main class="container">
+    <h1>工作台</h1>
+    <p class="hint">本地运行，数据保存在本机。后续新功能会陆续加入此控制台。</p>
+    <div id="statusBar" class="status-bar">加载状态...</div>
+    <div class="grid">
+      <a class="card link-card" href="/titles">
+        <h2>Listing 优化</h2>
+        <p>Analytics 高 CTR 0 单 → AI 标题+详情 → 确认推送</p>
+        <span class="badge" id="titleBadge">—</span>
+      </a>
+      <a class="card link-card" href="/analytics">
+        <h2>Analytics 分段</h2>
+        <p>28 天商品 CTR 表现 · A/B/C/D 分段一览</p>
+      </a>
+      <a class="card link-card" href="/deactivate">
+        <h2>零销下架</h2>
+        <p>90 天 0 单 + CTR 低于中位 → 确认后批量 deactivate</p>
+        <span class="badge" id="deactBadge">—</span>
+      </a>
+      <a class="card link-card" href="/promotions">
+        <h2>促销工具</h2>
+        <p>折扣调整 · 加入促销 · 限时秒杀 · 优惠券</p>
+        <span class="badge" id="promoBadge">—</span>
+      </a>
+      <a class="card link-card" href="/costs">
+        <h2>商品采购成本</h2>
+        <p>维护 SKU 成本，用于利润计算</p>
+      </a>
+      <div class="card muted-card">
+        <h2>结算与利润</h2>
+        <p>即将接入：每日结算同步、利润报表</p>
+        <span class="badge soon">开发中</span>
+      </div>
+      <div class="card muted-card">
+        <h2>广告消耗</h2>
+        <p>即将接入：Marketing API 广告数据</p>
+        <span class="badge soon">开发中</span>
+      </div>
+    </div>
+  </main>
+  <script>
+    fetch('/api/status').then(function(r) { return r.json(); }).then(function(s) {
+      var el = document.getElementById('statusBar');
+      if (!s.ok) {
+        el.innerHTML = '⚠️ ' + (s.error || '未授权') + ' · <a href="#" onclick="alert(\'终端运行: python3 main.py auth\');return false">去授权</a>';
+        el.className = 'status-bar warn';
+        return;
+      }
+      var parts = ['卖家 <b>' + (s.seller_name || '?') + '</b>'];
+      if (s.access_expires) parts.push('Access Token 至 ' + s.access_expires.slice(0, 16).replace('T', ' '));
+      el.innerHTML = parts.join(' · ');
+      el.className = 'status-bar ok';
+      var b = document.getElementById('titleBadge');
+      if (b) b.textContent = (s.pending_titles || 0) + ' 条待确认';
+      var pb = document.getElementById('promoBadge');
+      if (pb) pb.textContent = (s.pending_promos || 0) + ' 条待确认';
+      var db = document.getElementById('deactBadge');
+      if (db) db.textContent = (s.pending_deactivate || 0) + ' 条待下架';
+    }).catch(function() {
+      document.getElementById('statusBar').textContent = '无法连接本地服务';
+    });
+  </script>
+</body>
+</html>

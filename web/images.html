@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>主图优化</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <style>
+    .product-picker { max-height: 220px; overflow-y: auto; border: 1px solid #e8e8e8; border-radius: 8px; padding: 8px; margin-top: 8px; background: #fafafa; }
+    .product-row { display: flex; gap: 10px; align-items: flex-start; padding: 6px 4px; border-bottom: 1px solid #eee; font-size: 13px; }
+    .product-row:last-child { border-bottom: none; }
+    .product-row img { width: 40px; height: 40px; object-fit: cover; border-radius: 4px; flex-shrink: 0; }
+    .product-row .name { flex: 1; line-height: 1.35; }
+    .recipe-chks { display: flex; flex-wrap: wrap; gap: 10px 14px; margin-top: 8px; font-size: 12px; }
+    .recipe-chks label { display: inline-flex; align-items: flex-start; gap: 4px; margin: 0; color: #333; max-width: 220px; line-height: 1.35; }
+    .recipe-grp { margin-bottom: 10px; }
+    .recipe-grp-title { font-size: 12px; font-weight: 500; color: #64748b; margin-bottom: 4px; }
+    .scene-textarea { min-height: 100px; margin-top: 8px; font-family: ui-monospace, monospace; font-size: 12px; }
+    .gen-panel { display: none; }
+    .gen-panel.active { display: block; }
+    .slot-badge { display: inline-block; background: #fef3c7; color: #92400e; font-size: 10px; padding: 1px 5px; border-radius: 4px; margin-bottom: 4px; }
+    .slot-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+    .slot-table td, .slot-table th { border: 1px solid #e8e8e8; padding: 6px 8px; text-align: left; }
+    .slot-table th { background: #f8fafc; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">TikTok Shop 控制台</a>
+    <nav class="nav">
+      <a href="/">首页</a>
+      <a href="/costs">成本维护</a>
+      <a href="/titles">Listing 优化</a>
+      <a href="/images" class="active">主图优化</a>
+      <a href="/analytics">Analytics</a>
+      <a href="/deactivate">零销下架</a>
+      <a href="/promotions">促销调价</a>
+    </nav>
+  </header>
+  <main class="container">
+    <h1>主图 & 场景图 · 探索模式</h1>
+    <p class="hint">基于 Listing 原图，用 Photoroom 批量试方案：白底主图、AI 场景、Edit With AI（人手/角度/细节）、去水印、放大。每张图标注 <strong>TikTok 建议槽位</strong>，可打包 ZIP 按序上传。</p>
+
+    <details class="scan-panel" style="margin-bottom:12px">
+      <summary>TikTok 9 槽位对照（成功案例常用结构）</summary>
+      <table class="slot-table" id="slotTable"><tr><td>加载中…</td></tr></table>
+      <p class="hint" style="margin:8px 0 0">槽位 6–9（开箱 flat lay / 卖点信息图 / 变体 / 评价）目前需人工或后续接 Canva。服装类可试 Photoroom flatLay / virtualModel（未接入）。</p>
+    </details>
+
+    <div class="tabs">
+      <button type="button" class="tab active" id="tabB" onclick="switchTab('b')">B 类批量</button>
+      <button type="button" class="tab" id="tabManual" onclick="switchTab('manual')">指定商品</button>
+      <button type="button" class="tab" id="tabExplore" onclick="switchTab('explore')">探索 · 全方案</button>
+    </div>
+
+    <div id="panelB" class="gen-panel active">
+      <details class="scan-panel" open>
+        <summary>Analytics B 类 · 评估模式</summary>
+        <div class="scan-form">
+          <label>每商品 <input id="variants" type="number" value="6" min="1" max="16" style="width:48px"> 张</label>
+          <label>最多 <input id="limit" type="number" value="3" min="1" max="10" style="width:56px"> 个</label>
+          <select id="region">
+            <option value="">全部站点</option>
+            <option value="MY">MY</option>
+            <option value="VN">VN</option>
+            <option value="TH">TH</option>
+            <option value="PH">PH</option>
+          </select>
+          <button class="btn-primary" id="scanBtn" onclick="startBScan()">开始扫描</button>
+          <span id="scanStatus"></span>
+        </div>
+        <p class="hint" style="margin:8px 0 0">在 settings.json 设 <code>images.mode=explore</code> 时 B 类扫描也会跑探索 recipe。</p>
+      </details>
+    </div>
+
+    <div id="panelManual" class="gen-panel">
+      <details class="scan-panel" open>
+        <summary>选择商品 · 主图 + 自定义场景</summary>
+        <div class="scan-form">
+          <select id="pickRegion" onchange="searchProducts('manual')">
+            <option value="">全部站点</option>
+            <option value="MY">MY</option>
+            <option value="VN">VN</option>
+            <option value="TH">TH</option>
+            <option value="PH">PH</option>
+          </select>
+          <input id="pickQuery" type="search" placeholder="搜索标题 / SKU / product_id" style="min-width:220px;padding:6px 8px;border:1px solid #ddd;border-radius:6px">
+          <button class="btn-secondary" type="button" onclick="searchProducts('manual')">搜索</button>
+        </div>
+        <div class="toolbar" style="margin-top:8px">
+          <button class="btn-secondary btn-sm" type="button" onclick="pickAll('manual', true)">全选</button>
+          <button class="btn-secondary btn-sm" type="button" onclick="pickAll('manual', false)">全不选</button>
+          <span class="meta" id="pickCount">已选 0 个</span>
+        </div>
+        <div id="productList" class="product-picker"><p class="hint">输入关键词后点搜索</p></div>
+        <div class="section-title">主图类型</div>
+        <div class="recipe-chks">
+          <label><input type="checkbox" id="mainWhite" checked> 白底</label>
+          <label><input type="checkbox" id="mainShadow" checked> 阴影</label>
+          <label><input type="checkbox" id="mainRelight"> 补光</label>
+          <label><input type="checkbox" id="includeDefaultScenes"> 预设场景</label>
+        </div>
+        <div class="section-title">自定义场景（英文，一行一个）</div>
+        <textarea id="customScenes" class="scene-textarea" placeholder="scale | product on desk next to phone and mug for size reference"></textarea>
+        <div class="scan-form" style="margin-top:12px">
+          <button class="btn-primary" id="manualGenBtn" onclick="startManualGen()">生成</button>
+          <span id="manualStatus"></span>
+        </div>
+      </details>
+    </div>
+
+    <div id="panelExplore" class="gen-panel">
+      <details class="scan-panel" open>
+        <summary>探索模式 · 一次跑多种 Photoroom 方案（建议先选 1 个商品试）</summary>
+        <div class="scan-form">
+          <select id="exploreRegion" onchange="searchProducts('explore')">
+            <option value="">全部站点</option>
+            <option value="MY">MY</option>
+            <option value="VN">VN</option>
+            <option value="TH">TH</option>
+            <option value="PH">PH</option>
+          </select>
+          <input id="exploreQuery" type="search" placeholder="搜索商品" style="min-width:200px;padding:6px 8px;border:1px solid #ddd;border-radius:6px">
+          <button class="btn-secondary" type="button" onclick="searchProducts('explore')">搜索</button>
+        </div>
+        <div class="toolbar" style="margin-top:8px">
+          <button class="btn-secondary btn-sm" type="button" onclick="pickAll('explore', true)">全选</button>
+          <button class="btn-secondary btn-sm" type="button" onclick="pickAll('explore', false)">全不选</button>
+          <span class="meta" id="explorePickCount">已选 0 个</span>
+        </div>
+        <div id="exploreProductList" class="product-picker"><p class="hint">搜索后选择商品</p></div>
+        <div class="section-title">探索 Recipe（可多选对比）</div>
+        <div id="exploreRecipes"><p class="hint">加载 recipe…</p></div>
+        <div class="scan-form" style="margin-top:12px">
+          <button class="btn-primary" id="exploreGenBtn" onclick="startExploreGen()">运行探索方案</button>
+          <span id="exploreStatus"></span>
+        </div>
+        <p class="note-warn" style="margin-top:8px">沙盒 Key 下 Edit With AI / 去水印 / 放大 可能部分失败；失败项仍会显示在队列。生产 Key 按张计费。</p>
+      </details>
+    </div>
+
+    <div class="toolbar">
+      <label>队列 · 站点
+        <select id="filterRegion" onchange="loadItems()">
+          <option value="">全部</option>
+          <option value="MY">MY</option>
+          <option value="VN">VN</option>
+          <option value="TH">TH</option>
+          <option value="PH">PH</option>
+        </select>
+      </label>
+    </div>
+    <div id="list"><p class="hint">加载中...</p></div>
+  </main>
+  <script>
+    var items = [];
+    var pickItems = [];
+    var explorePickItems = [];
+    var selectedProducts = {};
+    var selectedExplore = {};
+    var allRecipes = [];
+    var KIND_LABELS = {
+      main: '主图', scene: 'AI场景', staging: 'Edit·人手', scale: '尺寸场景',
+      angle: 'Edit·角度', detail: 'Edit·细节', prep: '预处理'
+    };
+
+    function esc(s) {
+      return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+    }
+
+    function switchTab(which) {
+      ['b','manual','explore'].forEach(function(w) {
+        document.getElementById('tab' + (w === 'b' ? 'B' : w.charAt(0).toUpperCase() + w.slice(1))).classList.toggle('active', which === w);
+        document.getElementById('panel' + (w === 'b' ? 'B' : w.charAt(0).toUpperCase() + w.slice(1))).classList.toggle('active', which === w);
+      });
+    }
+
+    function sourceLabel(src) {
+      if (src === 'manual') return '手动';
+      if (src === 'explore') return '探索';
+      if (src === 'new_product') return '新品';
+      return 'B类';
+    }
+
+    function loadRecipes() {
+      return fetch('/api/images/recipes').then(function(r) { return r.json(); }).then(function(res) {
+        if (!res.ok) return;
+        allRecipes = res.recipes || [];
+        var slots = res.slots || [];
+        document.getElementById('slotTable').innerHTML =
+          '<tr><th>槽位</th><th>用途</th><th>说明</th></tr>' +
+          slots.map(function(s) {
+            return '<tr><td>' + s.slot + '</td><td>' + esc(s.title) + '</td><td>' + esc(s.note) + '</td></tr>';
+          }).join('');
+        renderExploreRecipes();
+      });
+    }
+
+    function renderExploreRecipes() {
+      var el = document.getElementById('exploreRecipes');
+      if (!allRecipes.length) { el.innerHTML = '<p class="hint">无 recipe</p>'; return; }
+      var groups = { main: [], prep: [], scene: [], staging: [], scale: [], angle: [], detail: [] };
+      allRecipes.forEach(function(r) {
+        var k = r.kind || 'main';
+        if (!groups[k]) groups[k] = [];
+        groups[k].push(r);
+      });
+      var order = ['main', 'prep', 'staging', 'scene', 'scale', 'angle', 'detail'];
+      el.innerHTML = order.filter(function(k) { return groups[k] && groups[k].length; }).map(function(k) {
+        return '<div class="recipe-grp"><div class="recipe-grp-title">' + (KIND_LABELS[k] || k) + '</div><div class="recipe-chks">' +
+          groups[k].map(function(r) {
+            var checked = r.explore_default ? ' checked' : '';
+            var slot = r.tiktok_slot ? (' ·槽' + r.tiktok_slot) : '';
+            return '<label><input type="checkbox" class="explore-recipe" value="' + esc(r.id) + '"' + checked + '> ' +
+              esc(r.label) + '<span class="meta">' + slot + '</span></label>';
+          }).join('') + '</div></div>';
+      }).join('');
+    }
+
+    function loadItems() {
+      var reg = document.getElementById('filterRegion').value;
+      var url = '/api/images' + (reg ? ('?region=' + encodeURIComponent(reg)) : '');
+      return fetch(url).then(function(r) { return r.json(); }).then(function(res) {
+        if (!res.ok) throw new Error(res.error || '加载失败');
+        items = res.items || [];
+        render();
+      });
+    }
+
+    function imgUrl(id, index) {
+      return '/api/images/download?id=' + id + '&index=' + index;
+    }
+
+    function renderVariantBox(it, m, paths) {
+      if (!m || m.partial_errors) return '';
+      if (m.error) {
+        return '<div class="variant-box"><div class="note-warn">' + esc(m.label) + '<br>' + esc(m.error) + '</div></div>';
+      }
+      if (m.path_index == null || m.path_index >= paths.length) return '';
+      var slotTag = m.tiktok_slot ? ('<span class="slot-badge">槽位 ' + m.tiktok_slot + '</span><br>') : '';
+      var kindTag = m.kind ? ('<span class="meta">' + esc(KIND_LABELS[m.kind] || m.kind) + '</span><br>') : '';
+      return '<div class="variant-box">' + slotTag + kindTag +
+        '<img class="variant-img" src="' + imgUrl(it.id, m.path_index) + '">' +
+        '<div class="meta">' + esc(m.label) + '</div>' +
+        '<a class="btn-secondary btn-sm" download href="' + imgUrl(it.id, m.path_index) + '">下载</a></div>';
+    }
+
+    function renderSortedVariants(it, meta, paths) {
+      var list = meta.filter(function(m) { return m && !m.partial_errors && !m.error && m.path_index != null; });
+      list.sort(function(a, b) {
+        return (a.tiktok_slot || 99) - (b.tiktok_slot || 99) || (a.path_index || 0) - (b.path_index || 0);
+      });
+      var errs = meta.filter(function(m) { return m && m.error; });
+      var parts = list.map(function(m) { return renderVariantBox(it, m, paths); }).join('');
+      var errParts = errs.map(function(m) {
+        return '<div class="variant-box"><div class="note-warn">' + esc(m.label) + '<br>' + esc(m.error) + '</div></div>';
+      }).join('');
+      if (!parts && !errParts) return '';
+      return '<div class="meta" style="margin-top:12px;font-weight:500">生成结果（按 TikTok 槽位排序）</div>' +
+        '<div class="variant-row">' + parts + errParts + '</div>';
+    }
+
+    function render() {
+      var el = document.getElementById('list');
+      if (!items.length) {
+        el.innerHTML = '<div class="empty">暂无待处理项</div>';
+        return;
+      }
+      el.innerHTML = items.map(function(it) {
+        var paths = it.generated_paths || [];
+        var sources = it.source_image_urls || (it.image_url ? [it.image_url] : []);
+        var meta = [];
+        try { if (it.image_prompt) meta = JSON.parse(it.image_prompt); } catch (e) {}
+        var sourceHtml = sources.map(function(u, idx) {
+          return '<div class="variant-box"><img class="variant-img source-img" src="' + esc(u) + '"><span class="meta">原图 #' + (idx+1) + '</span></div>';
+        }).join('');
+        var block = renderSortedVariants(it, meta, paths);
+        var statusTag = it.status === 'failed' ? ' <span class="badge soon">失败</span>' : '';
+        var errBlock = (!paths.length && it.error) ? '<div class="note-warn">生成失败：' + esc(it.error) + '</div>' : '';
+        return '<div class="card item-card"><div style="flex:1">' +
+          '<div class="meta">' + esc(it.region) + ' <span class="tag">' + esc(sourceLabel(it.scan_source)) + '</span>' + statusTag +
+          ' · SKU ' + esc(it.seller_sku || '') + '</div>' +
+          '<div class="old">' + esc(it.product_name) + '</div>' +
+          '<div class="meta">Listing 原图（' + sources.length + ' 张）</div>' +
+          '<div class="variant-row">' + (sourceHtml || '<span class="meta">无</span>') + '</div>' +
+          block + errBlock +
+          '<div class="toolbar" style="margin-top:10px">' +
+          (paths.length ? '<a class="btn-secondary btn-sm" href="/api/images/download-zip?id=' + it.id + '">ZIP 按槽位下载</a>' : '') +
+          (paths.length ? '<button class="btn-primary btn-sm" onclick="markDone(' + it.id + ')">已上传 Seller Center</button>' : '') +
+          '<button class="btn-secondary btn-sm" onclick="markSkip(' + it.id + ')">跳过</button></div></div></div>';
+      }).join('');
+    }
+
+    function startBScan() {
+      var btn = document.getElementById('scanBtn');
+      btn.disabled = true;
+      document.getElementById('scanStatus').textContent = '提交中...';
+      fetch('/api/images/scan', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          mode: 'b_class',
+          limit: parseInt(document.getElementById('limit').value, 10) || 3,
+          variants: parseInt(document.getElementById('variants').value, 10) || 6,
+          region: document.getElementById('region').value || null
+        })
+      }).then(function(r) { return r.json(); }).then(function(res) {
+        if (!res.ok) { alert(res.message || res.error); btn.disabled = false; document.getElementById('scanStatus').textContent = ''; return; }
+        pollScan('scanBtn', 'scanStatus');
+      });
+    }
+
+    function parseCustomScenes(text) {
+      var out = [];
+      String(text || '').split('\n').forEach(function(line) {
+        line = line.trim();
+        if (!line) return;
+        var label = '', prompt = line;
+        if (line.indexOf('|') >= 0) {
+          var parts = line.split('|');
+          label = parts[0].trim();
+          prompt = parts.slice(1).join('|').trim();
+        }
+        if (prompt) out.push({ label: label || ('场景 #' + (out.length + 1)), prompt: prompt });
+      });
+      return out;
+    }
+
+    function productKey(p) { return p.product_id + '::' + p.shop_cipher; }
+
+    function searchProducts(panel) {
+      var qEl = panel === 'explore' ? document.getElementById('exploreQuery') : document.getElementById('pickQuery');
+      var rEl = panel === 'explore' ? document.getElementById('exploreRegion') : document.getElementById('pickRegion');
+      var listEl = panel === 'explore' ? document.getElementById('exploreProductList') : document.getElementById('productList');
+      var q = qEl.value.trim();
+      var reg = rEl.value;
+      var url = '/api/images/products?limit=50';
+      if (q) url += '&q=' + encodeURIComponent(q);
+      if (reg) url += '&region=' + encodeURIComponent(reg);
+      listEl.innerHTML = '<p class="hint">搜索中...</p>';
+      fetch(url).then(function(r) { return r.json(); }).then(function(res) {
+        var rows = (res.ok && res.items) ? res.items : [];
+        if (panel === 'explore') { explorePickItems = rows; renderProductPicker('explore'); }
+        else { pickItems = rows; renderProductPicker('manual'); }
+      });
+    }
+
+    function renderProductPicker(panel) {
+      var rows = panel === 'explore' ? explorePickItems : pickItems;
+      var sel = panel === 'explore' ? selectedExplore : selectedProducts;
+      var el = panel === 'explore' ? document.getElementById('exploreProductList') : document.getElementById('productList');
+      if (!rows.length) { el.innerHTML = '<p class="hint">无匹配商品</p>'; return; }
+      el.innerHTML = rows.map(function(p) {
+        var key = productKey(p);
+        var checked = sel[key] ? ' checked' : '';
+        var img = p.image_url ? '<img src="' + esc(p.image_url) + '">' : '<span style="width:40px;height:40px;background:#eee;border-radius:4px"></span>';
+        return '<label class="product-row"><input type="checkbox" data-panel="' + panel + '" data-key="' + esc(key) + '" onchange="togglePick(this)"' + checked + '>' +
+          img + '<span class="name"><strong>' + esc(p.region) + '</strong> · ' + esc((p.product_name || '').slice(0, 80)) +
+          '<br><span class="meta">SKU ' + esc(p.seller_sku || '') + '</span></span></label>';
+      }).join('');
+      updatePickCount(panel);
+    }
+
+    function togglePick(el) {
+      var panel = el.getAttribute('data-panel');
+      var key = el.getAttribute('data-key');
+      var rows = panel === 'explore' ? explorePickItems : pickItems;
+      var sel = panel === 'explore' ? selectedExplore : selectedProducts;
+      var p = rows.find(function(x) { return productKey(x) === key; });
+      if (!p) return;
+      if (el.checked) sel[key] = { product_id: p.product_id, shop_cipher: p.shop_cipher, scan_source: panel === 'explore' ? 'explore' : 'manual' };
+      else delete sel[key];
+      updatePickCount(panel);
+    }
+
+    function pickAll(panel, on) {
+      var rows = panel === 'explore' ? explorePickItems : pickItems;
+      var sel = panel === 'explore' ? selectedExplore : selectedProducts;
+      rows.forEach(function(p) {
+        var key = productKey(p);
+        if (on) sel[key] = { product_id: p.product_id, shop_cipher: p.shop_cipher, scan_source: panel === 'explore' ? 'explore' : 'manual' };
+        else delete sel[key];
+      });
+      renderProductPicker(panel);
+    }
+
+    function updatePickCount(panel) {
+      var n = panel === 'explore' ? Object.keys(selectedExplore).length : Object.keys(selectedProducts).length;
+      var el = panel === 'explore' ? document.getElementById('explorePickCount') : document.getElementById('pickCount');
+      el.textContent = '已选 ' + n + ' 个';
+    }
+
+    function collectMainRecipes() {
+      var ids = [];
+      if (document.getElementById('mainWhite').checked) ids.push('main_white');
+      if (document.getElementById('mainShadow').checked) ids.push('main_shadow');
+      if (document.getElementById('mainRelight').checked) ids.push('main_relight');
+      return ids;
+    }
+
+    function collectExploreRecipes() {
+      var ids = [];
+      document.querySelectorAll('.explore-recipe:checked').forEach(function(el) { ids.push(el.value); });
+      return ids;
+    }
+
+    function startManualGen() {
+      var products = Object.values(selectedProducts);
+      if (!products.length) { alert('请选择商品'); return; }
+      var mainRecipes = collectMainRecipes();
+      var customScenes = parseCustomScenes(document.getElementById('customScenes').value);
+      var includeDefault = document.getElementById('includeDefaultScenes').checked;
+      if (!mainRecipes.length && !customScenes.length && !includeDefault) { alert('请至少选一种生成方式'); return; }
+      postScan('manual', products, { main_recipes: mainRecipes, custom_scenes: customScenes, include_default_scenes: includeDefault }, 'manualGenBtn', 'manualStatus');
+    }
+
+    function startExploreGen() {
+      var products = Object.values(selectedExplore);
+      if (!products.length) { alert('请选择至少 1 个商品（建议先 1 个试效果）'); return; }
+      var recipes = collectExploreRecipes();
+      if (!recipes.length) { alert('请勾选探索 recipe'); return; }
+      postScan('explore', products, { explore_recipes: recipes }, 'exploreGenBtn', 'exploreStatus');
+    }
+
+    function postScan(mode, products, extra, btnId, statusId) {
+      var btn = document.getElementById(btnId);
+      btn.disabled = true;
+      document.getElementById(statusId).textContent = '提交中...';
+      var body = Object.assign({ mode: mode, products: products }, extra || {});
+      fetch('/api/images/scan', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+      }).then(function(r) { return r.json(); }).then(function(res) {
+        if (!res.ok) { alert(res.message || res.error); btn.disabled = false; document.getElementById(statusId).textContent = ''; return; }
+        pollScan(btnId, statusId);
+      });
+    }
+
+    function pollScan(btnId, statusId) {
+      var btn = document.getElementById(btnId);
+      fetch('/api/images/scan/status').then(function(r) { return r.json(); }).then(function(s) {
+        if (s.running) {
+          document.getElementById(statusId).textContent = s.message || '生成中（探索方案较慢，请耐心等待）...';
+          setTimeout(function() { pollScan(btnId, statusId); }, 4000);
+          return;
+        }
+        btn.disabled = false;
+        document.getElementById(statusId).textContent = s.error ? ('失败: ' + s.error) : (s.message || '完成');
+        loadItems();
+      });
+    }
+
+    function markDone(id) {
+      fetch('/api/images/mark', { method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ id: id, action: 'done' }) }).then(function() { loadItems(); });
+    }
+
+    function markSkip(id) {
+      fetch('/api/images/mark', { method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ id: id, action: 'skip' }) }).then(function() { loadItems(); });
+    }
+
+    document.getElementById('pickQuery').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') { e.preventDefault(); searchProducts('manual'); }
+    });
+    document.getElementById('exploreQuery').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') { e.preventDefault(); searchProducts('explore'); }
+    });
+
+    loadRecipes();
+    loadItems();
+  </script>
+</body>
+</html>

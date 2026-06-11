@@ -37,9 +37,10 @@ def cmd_init(_):
     p = init_db()
     print(f"✅ 数据库: {p}")
     (ROOT / "data" / "creator_lists").mkdir(parents=True, exist_ok=True)
+    (ROOT / "data" / "digest").mkdir(parents=True, exist_ok=True)
     (ROOT / "exports").mkdir(exist_ok=True)
     print("\n下一步:")
-    print("  1. 编辑 config/settings.json（app_key、汇率、ads.advertiser_id）")
+    print("  1. 编辑 config/settings.json（app_key、汇率、feishu.webhook_url）")
     print("  2. python3 main.py auth   或继续用 tiktok_auth.py")
     print("  3. python3 main.py status")
 
@@ -139,7 +140,7 @@ def build_parser():
     psv = sub.add_parser("serve", help="启动 Web 控制台（浏览器操作）")
     psv.add_argument("--port", type=int, default=8765)
     psv.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
-    psv.add_argument("--page", choices=["index", "costs", "titles", "promotions", "analytics", "deactivate"], default="index")
+    psv.add_argument("--page", choices=["index", "costs", "titles", "images", "promotions", "analytics", "deactivate"], default="index")
     psv.set_defaults(
         func=lambda a: __import__("modules.products.server", fromlist=["serve"]).serve(
             port=a.port, open_browser=not a.no_browser, page=a.page
@@ -223,6 +224,15 @@ def build_parser():
     pds.set_defaults(
         func=lambda a: __import__("modules.products.service", fromlist=["scan_deactivate"]).scan_deactivate(
             limit=a.limit, region=a.region
+        )
+    )
+    pis = prod_sub.add_parser("image-scan", help="Analytics B类：低CTR 0单 → AI 主图候选")
+    pis.add_argument("--limit", type=int, default=10)
+    pis.add_argument("--variants", type=int, help="每商品候选张数，默认读 settings images.variants_per_product")
+    pis.add_argument("--region", help="仅 MY/VN/TH/PH")
+    pis.set_defaults(
+        func=lambda a: __import__("modules.products.service", fromlist=["scan_images"]).scan_images(
+            limit=a.limit, region=a.region, variants=a.variants
         )
     )
     pdp = prod_sub.add_parser("deactivate-push", help="CLI 推送已确认的下架")
@@ -323,6 +333,28 @@ def build_parser():
         func=lambda a: __import__("modules.affiliate.service", fromlist=["invite_creators"]).invite_creators(
             a.products.split(","), a.creators, a.commission, a.shop
         )
+    )
+
+    dig = sub.add_parser("digest", help="运营日报（飞书）")
+    dig_sub = dig.add_subparsers(dest="digest_cmd")
+    dig_sub.add_parser("preview", help="终端预览日报").set_defaults(
+        func=lambda a: __import__("modules.hub.service", fromlist=["preview_digest"]).preview_digest()
+    )
+    ds = dig_sub.add_parser("send", help="发送日报到飞书")
+    ds.add_argument("--dry-run", action="store_true", help="只预览不发送")
+    ds.set_defaults(
+        func=lambda a: __import__("modules.hub.service", fromlist=["send_digest"]).send_digest(
+            dry_run=a.dry_run
+        )
+    )
+
+    fs = sub.add_parser("feishu", help="飞书双向机器人")
+    fs_sub = fs.add_subparsers(dest="feishu_cmd")
+    fs_sub.add_parser("setup", help="打印自建应用配置说明").set_defaults(
+        func=lambda a: __import__("modules.hub.feishu_bot", fromlist=["print_setup_guide"]).print_setup_guide()
+    )
+    fs_sub.add_parser("bot", help="启动长连接（接收 @ 指令）").set_defaults(
+        func=lambda a: __import__("modules.hub.feishu_bot", fromlist=["run_websocket_bot"]).run_websocket_bot()
     )
 
     return p

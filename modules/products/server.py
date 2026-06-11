@@ -80,6 +80,14 @@ _analytics_sync_job: dict = {
     "error": None,
 }
 
+_image_scan_lock = threading.Lock()
+_image_scan_job: dict = {
+    "running": False,
+    "message": "",
+    "count": 0,
+    "error": None,
+}
+
 
 def _run_scan(
     days: int,
@@ -441,11 +449,86 @@ def _deact_push_status() -> dict:
         return dict(_deact_push_job)
 
 
+def _run_image_scan(
+    limit: int,
+    region: str | None,
+    variants: int,
+    mode: str = "b_class",
+    product_items: list[dict] | None = None,
+    main_recipe_ids: list[str] | None = None,
+    custom_scenes: list[dict] | None = None,
+    include_default_scenes: bool = False,
+    explore_recipe_ids: list[str] | None = None,
+) -> None:
+    global _image_scan_job
+    try:
+        from modules.products import images as image_mod
+
+        if mode in ("manual", "explore") and product_items:
+            label = "探索方案" if mode == "explore" else "选定商品"
+            _image_scan_job["message"] = f"为 {len(product_items)} 个{label}生成图片..."
+            n = image_mod.generate_for_products(
+                product_items,
+                main_recipe_ids=[] if mode == "explore" else main_recipe_ids,
+                custom_scenes=custom_scenes,
+                include_default_scenes=include_default_scenes,
+                explore_recipe_ids=explore_recipe_ids,
+                use_explore_recipes=(mode == "explore" and not explore_recipe_ids),
+                quiet=True,
+            )
+        else:
+            _image_scan_job["message"] = "同步 Analytics B 类，随后生成主图+场景..."
+            n = image_mod.scan_b_class(
+                limit=limit, region=region, variants=variants, quiet=True
+            )
+        _image_scan_job.update(
+            running=False,
+            message=f"完成，共 {n} 个商品已生成候选",
+            count=n,
+            error=None,
+        )
+    except Exception as e:
+        _image_scan_job.update(running=False, message="", error=str(e))
+
+
+def _start_image_scan(
+    limit: int,
+    region: str | None,
+    variants: int,
+    mode: str = "b_class",
+    product_items: list[dict] | None = None,
+    main_recipe_ids: list[str] | None = None,
+    custom_scenes: list[dict] | None = None,
+    include_default_scenes: bool = False,
+    explore_recipe_ids: list[str] | None = None,
+) -> tuple[bool, str]:
+    with _image_scan_lock:
+        if _image_scan_job["running"]:
+            return False, "已有主图生成任务在进行中"
+        _image_scan_job.update(running=True, message="启动中...", count=0, error=None)
+    t = threading.Thread(
+        target=_run_image_scan,
+        args=(
+            limit, region, variants, mode, product_items,
+            main_recipe_ids, custom_scenes, include_default_scenes, explore_recipe_ids,
+        ),
+        daemon=True,
+    )
+    t.start()
+    return True, "已开始生成"
+
+
+def _image_scan_status() -> dict:
+    with _image_scan_lock:
+        return dict(_image_scan_job)
+
+
 def _api_status() -> dict:
     from core import auth
     from modules.products import titles as title_mod
     from modules.products import promotions as promo_mod
     from modules.products import deactivate as deact_mod
+    from modules.products import images as image_mod
 
     try:
         tok = auth.load_token()
@@ -454,6 +537,7 @@ def _api_status() -> dict:
         pending = len(title_mod.load_queue("pending"))
         pending_promos = len(promo_mod.load_queue("pending"))
         pending_deact = len(deact_mod.load_queue("pending"))
+        pending_images = len(image_mod.load_active_queue())
         return {
             "ok": True,
             "seller_name": tok.get("seller_name"),
@@ -462,6 +546,7 @@ def _api_status() -> dict:
             "pending_titles": pending,
             "pending_promos": pending_promos,
             "pending_deactivate": pending_deact,
+            "pending_images": pending_images,
         }
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -516,9 +601,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._file(WEB_DIR / "analytics.html")
         if path in ("/deactivate", "/deactivate.html"):
             return self._file(WEB_DIR / "deactivate.html")
+        if path in ("/images", "/images.html"):
+            return self._file(WEB_DIR / "images.html")
 
         if path == "/api/status":
             return self._json(200, _api_status())
+        if path == "/api/digest/preview":
+            from modules.hub import digest as digest_mod
+            snap = digest_mod.collect_snapshot()
+            return self._json(
+                200,
+                {"ok": True, "text": digest_mod.preview_text(), "snapshot": snap},
+            )
         if path == "/api/titles":
             from modules.products import titles as title_mod
             items = title_mod.load_queue("pending")
@@ -549,6 +643,65 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True, **_deact_scan_status()})
         if path == "/api/deactivate/push/status":
             return self._json(200, {"ok": True, **_deact_push_status()})
+        if path == "/api/images/products":
+            from modules.products import images as image_mod
+            q = parse_qs(urlparse(self.path).query)
+            query = (q.get("q") or [None])[0]
+            region = (q.get("region") or [None])[0]
+            try:
+                lim = int((q.get("limit") or ["40"])[0])
+            except ValueError:
+                lim = 40
+            items = image_mod.search_products(query=query, region=region, limit=lim)
+            return self._json(200, {"ok": True, "items": items, "count": len(items)})
+        if path == "/api/images/recipes":
+            from modules.products import image_ai
+            return self._json(
+                200,
+                {
+                    "ok": True,
+                    "recipes": image_ai.list_recipes(),
+                    "slots": image_ai.TIKTOK_SLOT_GUIDE,
+                },
+            )
+        if path == "/api/images":
+            from modules.products import images as image_mod
+            q = parse_qs(urlparse(self.path).query)
+            region = (q.get("region") or [None])[0]
+            items = image_mod.load_active_queue(region=region)
+            return self._json(200, {"ok": True, "items": items, "count": len(items)})
+        if path == "/api/images/scan/status":
+            return self._json(200, {"ok": True, **_image_scan_status()})
+        if path == "/api/images/download":
+            from modules.products import images as image_mod
+            q = parse_qs(urlparse(self.path).query)
+            try:
+                row_id = int((q.get("id") or ["0"])[0])
+                index = int((q.get("index") or ["0"])[0])
+            except ValueError:
+                return self._json(400, {"ok": False, "error": "invalid id"})
+            rows = image_mod.load_queue(status=None)
+            row = next((r for r in rows if r["id"] == row_id), None)
+            if not row:
+                return self.send_error(404)
+            paths = row.get("generated_paths") or []
+            if index < 0 or index >= len(paths):
+                return self.send_error(404)
+            fp = image_mod.resolve_image_path(paths[index])
+            if not fp:
+                return self.send_error(404)
+            return self._file(fp)
+        if path == "/api/images/download-zip":
+            from modules.products import images as image_mod
+            q = parse_qs(urlparse(self.path).query)
+            try:
+                row_id = int((q.get("id") or ["0"])[0])
+            except ValueError:
+                return self._json(400, {"ok": False, "error": "invalid id"})
+            zp = image_mod.export_slot_zip(row_id)
+            if not zp or not zp.is_file():
+                return self.send_error(404)
+            return self._file(zp)
         if path == "/api/promotions":
             from modules.products import promotions as promo_mod
             q = parse_qs(urlparse(self.path).query)
@@ -591,8 +744,21 @@ class Handler(BaseHTTPRequestHandler):
 
         self.send_error(404)
 
+    def _handle_feishu_event(self) -> None:
+        length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            body = json.loads(raw.decode("utf-8"))
+        except json.JSONDecodeError:
+            return self._json(400, {"error": "invalid json"})
+        from modules.hub import feishu_events as feishu_evt
+        code, resp = feishu_evt.handle_http_body(body)
+        self._json(code, resp)
+
     def do_POST(self):
         path = urlparse(self.path).path
+        if path == "/api/feishu/event":
+            return self._handle_feishu_event()
         try:
             data = self._read_json()
         except json.JSONDecodeError:
@@ -604,6 +770,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, {"ok": True, "saved": saved})
             except Exception as e:
                 self._json(400, {"ok": False, "error": str(e)})
+            return
+
+        if path == "/api/digest/send":
+            from modules.hub.service import send_digest
+            try:
+                send_digest(dry_run=bool(data.get("dry_run")))
+                self._json(200, {"ok": True, "message": "已发送飞书日报"})
+            except Exception as e:
+                self._json(500, {"ok": False, "error": str(e)})
             return
 
         if path == "/api/titles/scan":
@@ -638,6 +813,61 @@ class Handler(BaseHTTPRequestHandler):
             ok, msg = _start_deact_push(items)
             code = 200 if ok else 409
             self._json(code, {"ok": ok, "message": msg})
+            return
+
+        if path == "/api/images/scan":
+            mode = data.get("mode") or "b_class"
+            products = data.get("products") or []
+            main_recipes = data.get("main_recipes") if "main_recipes" in data else None
+            explore_recipes = data.get("explore_recipes") or None
+            custom_scenes = data.get("custom_scenes") or None
+            include_default = bool(data.get("include_default_scenes"))
+            ok, msg = _start_image_scan(
+                limit=int(data.get("limit") or 10),
+                region=data.get("region") or None,
+                variants=int(data.get("variants") or 3),
+                mode=mode,
+                product_items=products if mode in ("manual", "explore") else None,
+                main_recipe_ids=main_recipes,
+                custom_scenes=custom_scenes,
+                include_default_scenes=include_default,
+                explore_recipe_ids=explore_recipes,
+            )
+            code = 200 if ok else 409
+            self._json(code, {"ok": ok, "message": msg})
+            return
+
+        if path == "/api/images/generate":
+            from modules.products import images as image_mod
+            pid = data.get("product_id") or ""
+            cipher = data.get("shop_cipher") or ""
+            if not pid or not cipher:
+                return self._json(400, {"ok": False, "error": "missing product_id or shop_cipher"})
+            try:
+                ok = image_mod.generate_for_product(
+                    pid,
+                    cipher,
+                    main_recipe_ids=data.get("main_recipes"),
+                    custom_scenes=data.get("custom_scenes"),
+                    include_default_scenes=bool(data.get("include_default_scenes")),
+                    scan_source="manual",
+                )
+                self._json(200, {"ok": ok, "message": "已生成" if ok else "生成失败，见队列"})
+            except Exception as e:
+                self._json(500, {"ok": False, "error": str(e)})
+            return
+
+        if path == "/api/images/mark":
+            from modules.products import images as image_mod
+            row_id = int(data.get("id") or 0)
+            action = data.get("action") or "done"
+            if not row_id:
+                return self._json(400, {"ok": False, "error": "missing id"})
+            if action == "skip":
+                ok = image_mod.mark_skipped(row_id)
+            else:
+                ok = image_mod.mark_done(row_id, data.get("selected_path"))
+            self._json(200, {"ok": ok})
             return
 
         if path == "/api/titles/push":
@@ -698,7 +928,14 @@ def serve(port: int = DEFAULT_PORT, open_browser: bool = True, page: str = "inde
         from modules.products.build_page import build_html
         build_html()
 
-    server = HTTPServer(("127.0.0.1", port), Handler)
+    try:
+        server = HTTPServer(("127.0.0.1", port), Handler)
+    except OSError as e:
+        if getattr(e, "errno", None) == 48:
+            print(f"  ⚠️ 端口 {port} 已被占用。请先停止旧进程（旧版可能没有 /images 路由会 404）：")
+            print(f"     lsof -i :{port}   # 查看 PID 后 kill <PID>")
+            print(f"     然后重新运行: python3 main.py serve --page images")
+        raise
     routes = {
         "index": "/",
         "costs": "/costs",
@@ -706,10 +943,12 @@ def serve(port: int = DEFAULT_PORT, open_browser: bool = True, page: str = "inde
         "promotions": "/promotions",
         "analytics": "/analytics",
         "deactivate": "/deactivate",
+        "images": "/images",
     }
     url = f"http://127.0.0.1:{port}{routes.get(page, '/')}"
     print(f"  ✅ 控制台: http://127.0.0.1:{port}/")
     print(f"  Listing 优化: http://127.0.0.1:{port}/titles")
+    print(f"  主图优化: http://127.0.0.1:{port}/images")
     print(f"  Analytics: http://127.0.0.1:{port}/analytics")
     print(f"  零销下架: http://127.0.0.1:{port}/deactivate")
     print(f"  促销调价: http://127.0.0.1:{port}/promotions")

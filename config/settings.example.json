@@ -41,13 +41,52 @@
     "api_key": "",
     "base_url": "https://api.openai.com/v1",
     "model": "gpt-4o-mini",
+    "image_api_key": "",
+    "image_base_url": "https://api.openai.com/v1",
+    "image_model": "gpt-image-1-mini",
+    "image_size": "1024x1024",
     "temperature": 0.4,
     "max_tokens": 320,
     "listing_max_tokens": 1200,
     "timeout": 60,
     "request_delay_sec": 0.35,
     "fallback_to_rules": true,
-    "note": "OpenAI 兼容接口均可；DeepSeek 示例: base_url=https://api.deepseek.com/v1, model=deepseek-chat。也可用环境变量 OPENAI_API_KEY"
+    "note": "文本 AI 用于标题/详情；主图优化见 images.photoroom_api_key（图生图抠白底，非文生图）"
+  },
+
+    "images": {
+    "provider": "photoroom",
+    "mode": "eval",
+    "sandbox": true,
+    "photoroom_api_key": "",
+    "photoroom_api_key_production": "",
+    "variants_per_product": 6,
+    "eval_recipes": [
+      "main_white",
+      "main_shadow",
+      "main_relight",
+      "scene_living",
+      "scene_bedroom",
+      "scene_minimal",
+      "scene_bathroom"
+    ],
+    "explore_recipes": [
+      "main_white",
+      "prep_dewatermark",
+      "main_upscale",
+      "edit_staging",
+      "scene_scale",
+      "edit_angle",
+      "scene_living",
+      "main_shadow"
+    ],
+    "ai_background_model": "background-studio-beta-2025-03-17",
+    "output_dir": "exports/main_images",
+    "output_size": "1024x1024",
+    "background_color": "FFFFFF",
+    "export_format": "jpeg",
+    "request_delay_sec": 0.5,
+    "note": "mode=eval：主图+场景。mode=explore：全探索 recipe（EditWithAI/去水印/放大等）。沙盒部分 Plus 功能可能失败"
   },
 
   "keywords": {
@@ -86,5 +125,35 @@
     "batch_size": 20,
     "push_delay_sec": 1.2,
     "note": "90天0单 + 28天CTR低于店铺中位 + 不在促销中"
+  },
+
+  "feishu": {
+    "enabled": false,
+    "webhook_url": "",
+    "console_base_url": "http://127.0.0.1:8765",
+    "ozon_data_dir": "/Users/wangyin/Desktop/e-commercial/ozon/webapp/data",
+    "digest_hour": 8,
+    "note": "自定义机器人 Webhook = 单向日报；feishu_app = 双向 @ 交互"
+  },
+
+  "feishu_app": {
+    "enabled": false,
+    "app_id": "",
+    "app_secret": "",
+    "verification_token": "",
+    "encrypt_key": "",
+    "note": "企业自建应用 = 双向 @ 交互。配置后运行 python3 main.py feishu bot 或 HTTP /api/feishu/event"
+  },
+
+  "sourcing": {
+    "provider": "none",
+    "alibaba_1688": {
+      "app_key": "",
+      "app_secret": "",
+      "access_token": "",
+      "note": "1688 开放平台 open.1688.com — 商品搜索/详情/图片。需企业资质注册应用"
+    },
+    "import_dir": "data/sourcing",
+    "note": "新品选品：provider=1688_api 走官方 API；provider=csv 从 import_dir 读 CSV（title, supplier_url, image_urls, cost_cny）。Temu 无公开选品 API，可手动导出 CSV 或接 ERP 中间件"
   }
 }

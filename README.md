@@ -19,6 +19,7 @@ python3 main.py serve
 | 页面 / 命令 | 说明 |
 |-------------|------|
 | `/titles` | Analytics A 类 → AI 标题+详情 → 确认推送 |
+| `/images` | Analytics B 类 → 基于 listing 原图抠白底 → 下载后手动上传 |
 | `/promotions` | 加深折扣 / 加入促销 / 秒杀 / 优惠券建议 |
 | `/analytics` | 28 天 CTR 分段（A/B/C/D） |
 | `/deactivate` | 90 天 0 单 + 低 CTR → 批量下架 |
@@ -27,8 +28,11 @@ python3 main.py serve
 ```bash
 python3 main.py products analytics-sync
 python3 main.py products listing-scan --limit 20
+python3 main.py products image-scan --limit 10 --region MY
 python3 main.py products promo-scan --mode analytics --scope add
 python3 main.py products deactivate-scan
+python3 main.py digest preview          # 预览飞书日报
+python3 main.py digest send             # 发送到飞书（需配置 webhook）
 ```
 
 ## 配置

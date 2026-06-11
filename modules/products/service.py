@@ -155,6 +155,14 @@ def push_promos() -> None:
         print(f"    {e}")
 
 
+def scan_images(limit: int = 10, region: str | None = None, variants: int | None = None) -> None:
+    from modules.products import images
+    print(f"\nAnalytics B 类主图扫描（基于 listing 原图，最多 {limit} 个）...")
+    n = images.scan_b_class(limit=limit, region=region, variants=variants)
+    print(f"  ✅ 已生成 {n} 个商品的主图候选")
+    print("  预览: python3 main.py serve --page images")
+
+
 def rebuild_page() -> None:
     path = build_page.build_html()
     print(f"  ✅ {path}")

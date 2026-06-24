@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>结算汇总 2026-05-30</title>
+  <title>结算汇总 2026-05-15 ~ 2026-06-15</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 16px; background: #f5f5f5; }
     h1 { font-size: 22px; }
@@ -16,7 +16,7 @@
   </style>
 </head>
 <body>
-  <h1>TikTok Shop 结算汇总 · 2026-05-30</h1>
+  <h1>TikTok Shop 结算汇总 · 2026-05-15 ~ 2026-06-15</h1>
   <p class="hint">数据来源：Finance API（statements + statement_transactions）。CSV 已写入 CURSOR/Income_Data/，可对接原有利润脚本。</p>
   <table>
     <thead>
@@ -28,10 +28,10 @@
     <tbody id="tbody"></tbody>
   </table>
   <h2 style="font-size:16px;margin-top:24px;">导出文件</h2>
-  <ul><li><code>CURSOR/Income_Data/income_PH_260530_260530.csv</code></li><li><code>CURSOR/Income_Data/income_MY_260530_260530.csv</code></li><li><code>CURSOR/Income_Data/income_VN_260530_260530.csv</code></li><li><code>CURSOR/Income_Data/income_TH_260530_260530.csv</code></li></ul>
-  <p class="hint">刷新命令：<code>python3 tiktok_settlement.py 2026-05-30</code></p>
+  <ul><li><code>CURSOR/Income_Data/income_VN_260515_260615.csv</code></li><li><code>CURSOR/Income_Data/income_TH_260515_260615.csv</code></li><li><code>CURSOR/Income_Data/income_PH_260515_260615.csv</code></li><li><code>CURSOR/Income_Data/income_MY_260515_260615.csv</code></li></ul>
+  <p class="hint">刷新命令：<code>python3 tiktok_settlement.py 2026-05-15 ~ 2026-06-15</code></p>
   <script>
-    var data = [{"rows": 15, "total_settlement": 1963.81, "order_settlement": 1963.81, "gmv_ads": 0, "logistics": 0, "subtotal": 4789.36, "region": "PH", "currency": "PHP"}, {"rows": 20, "total_settlement": 228.24, "order_settlement": 228.24, "gmv_ads": 0, "logistics": 0, "subtotal": 439.22, "region": "MY", "currency": "MYR"}, {"rows": 14, "total_settlement": 1180816.0, "order_settlement": 1180816.0, "gmv_ads": 0, "logistics": 0, "subtotal": 2471186.0, "region": "VN", "currency": "VND"}, {"rows": 49, "total_settlement": 5080.81, "order_settlement": 5080.81, "gmv_ads": 0, "logistics": 0, "subtotal": 8249.9, "region": "TH", "currency": "THB"}];
+    var data = [{"rows": 573, "total_settlement": 12480688.99, "order_settlement": 50941138.99, "gmv_ads": -38460450.0, "logistics": 0, "subtotal": 113810252.02, "region": "VN", "currency": "VND"}, {"rows": 1573, "total_settlement": 131805.17, "order_settlement": 143239.07, "gmv_ads": -11433.9, "logistics": 0, "subtotal": 240214.37, "region": "TH", "currency": "THB"}, {"rows": 452, "total_settlement": 93241.45, "order_settlement": 93241.45, "gmv_ads": 0, "logistics": 0, "subtotal": 187253.36, "region": "PH", "currency": "PHP"}, {"rows": 976, "total_settlement": 1439.62, "order_settlement": 11806.23, "gmv_ads": -10413.47, "logistics": 46.86, "subtotal": 20467.5, "region": "MY", "currency": "MYR"}];
     document.getElementById("tbody").innerHTML = data.map(function (r) {
       return "<tr><td>" + r.region + "</td><td>" + r.currency + "</td><td class='num'>" + r.rows +
         "</td><td class='num'>" + r.total_settlement + "</td><td class='num'>" + r.order_settlement +

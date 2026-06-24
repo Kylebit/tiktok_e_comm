@@ -66,9 +66,79 @@ def _maybe_fill_from_legacy():
 def cmd_auth(_):
     script = ROOT / "tiktok_auth.py"
     if script.is_file():
-        subprocess.run([sys.executable, str(script)], cwd=str(ROOT))
+        subprocess.run([sys.executable, str(script), *sys.argv[2:]], cwd=str(ROOT))
     else:
         print("请运行 OAuth 授权流程（tiktok_auth.py 待接入 core/auth）")
+
+
+def _shopee_publish(args) -> None:
+    import json
+    from modules.shopee.publish import publish_match_key
+
+    result = publish_match_key(
+        args.match_key,
+        args.region,
+        dry_run=args.dry_run,
+        global_only=not args.publish_shops,
+        publish_shops=args.publish_shops,
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+
+
+def _shopee_sync_group(args) -> None:
+    import json
+    from modules.shopee.publish_group import sync_tk_group
+
+    keys = [k.strip() for k in args.keys.replace(";", ",").split(",") if k.strip()]
+    result = sync_tk_group(keys, region=args.region)
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+
+
+def _shopee_publish_group(args) -> None:
+    import json
+    from modules.shopee.publish_group import publish_tk_group, register_tk_group
+
+    keys = [k.strip() for k in args.keys.replace(";", ",").split(",") if k.strip()]
+    if args.register:
+        result = register_tk_group(keys, args.global_item_id, region=args.region)
+    else:
+        result = publish_tk_group(keys, region=args.region, dry_run=args.dry_run, tier_name=args.tier)
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+
+
+def _shopee_update_global(args) -> None:
+    import json
+    from modules.shopee.publish import update_global_match_key
+
+    result = update_global_match_key(args.match_key, args.region)
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+
+
+def _shopee_sync() -> None:
+    from modules.shopee.sync import sync_all
+
+    print("\n══ Shopee 商品同步（MY/VN/TH/PH 主店）══")
+    stats = sync_all()
+    print(f"\n✅ 完成: {stats['shops']} 店 · {stats['items']} 商品 · {stats['skus']} SKU/变体")
+    print("对比: python3 main.py shopee compare")
+
+
+def _shopee_auth_guide() -> None:
+    from modules.shopee.auth import auth_partner_url
+    print(auth_partner_url())
+    print(
+        """
+下一步：
+1. 复制上面链接 → 浏览器地址栏粘贴打开（不要当搜索词）
+2. 中国大陆若 partner.shopeemobile.com 打不开，在 config/settings.json 的 shopee 里加：
+   "auth_region": "cn"
+   然后重新 python3 main.py shopee auth-url（会用 openplatform.shopee.cn）
+3. 登录 Shopee 卖家主账号 → 勾选 Auth Merchant + 四国店铺 → 授权
+4. 浏览器会跳到 open.shopee.com?code=xxx&main_account_id=yyy
+5. 从地址栏复制 code，执行：
+   python3 main.py shopee token --code <code> --main-account-id <id>
+6. python3 main.py shopee status 确认"""
+    )
 
 
 def cmd_status(_):
@@ -137,10 +207,23 @@ def build_parser():
     sub.add_parser("auth", help="OAuth 授权").set_defaults(func=cmd_auth)
     sub.add_parser("status", help="查看授权与店铺").set_defaults(func=cmd_status)
 
+    tok = sub.add_parser("tokens", help="各平台 Token 自动刷新")
+    tok_sub = tok.add_subparsers(dest="tokens_cmd")
+    tok_sub.add_parser("refresh", help="刷新 TikTok + Shopee access_token").set_defaults(
+        func=lambda a: _tokens_refresh(a),
+    )
+    tok_sub.add_parser("status", help="查看 token 过期时间").set_defaults(
+        func=lambda a: _tokens_status(a),
+    )
+
     psv = sub.add_parser("serve", help="启动 Web 控制台（浏览器操作）")
     psv.add_argument("--port", type=int, default=8765)
     psv.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
-    psv.add_argument("--page", choices=["index", "costs", "titles", "images", "promotions", "analytics", "deactivate"], default="index")
+    psv.add_argument(
+        "--page",
+        choices=["index", "catalog", "settlement", "costs", "titles", "images", "sourcing", "ozon", "promotions", "analytics", "deactivate"],
+        default="index",
+    )
     psv.set_defaults(
         func=lambda a: __import__("modules.products.server", fromlist=["serve"]).serve(
             port=a.port, open_browser=not a.no_browser, page=a.page
@@ -357,7 +440,229 @@ def build_parser():
         func=lambda a: __import__("modules.hub.feishu_bot", fromlist=["run_websocket_bot"]).run_websocket_bot()
     )
 
+    sp = sub.add_parser("shopee", help="Shopee Open API")
+    sp_sub = sp.add_subparsers(dest="shopee_cmd")
+    sp_sub.add_parser("status", help="授权与 token 状态").set_defaults(
+        func=lambda a: print(__import__("modules.shopee.auth", fromlist=["status_text"]).status_text())
+    )
+    sp_sub.add_parser("shops", help="识别 MY/VN/TH/PH 主店（跳过附属）").set_defaults(
+        func=lambda a: __import__("modules.shopee.shops", fromlist=["refresh_shop_regions"]).refresh_shop_regions()
+    )
+    sp_sub.add_parser("sync", help="同步四国主店商品").set_defaults(
+        func=lambda a: _shopee_sync()
+    )
+    sp_sub.add_parser("compare", help="对比 TK vs Shopee SKU").set_defaults(
+        func=lambda a: print(__import__("modules.shopee.compare", fromlist=["compare_report"]).compare_report())
+    )
+    spp = sp_sub.add_parser("publish", help="TK → Shopee 铺货（单 SKU 试跑）")
+    spp.add_argument("--match-key", required=True, help="对齐码，如 0026")
+    spp.add_argument("--region", required=True, choices=["MY", "VN", "TH", "PH"])
+    spp.add_argument("--dry-run", action="store_true")
+    spp.add_argument(
+        "--publish-shops",
+        action="store_true",
+        help="同时发布到指定国家店（默认仅创建全球商品）",
+    )
+    spp.set_defaults(func=_shopee_publish)
+    spg = sp_sub.add_parser("publish-group", help="TK 多 SKU → Shopee 全球商品（单链接多规格）")
+    spg.add_argument("--keys", required=True, help="对齐码列表，如 0402,0403,0404,0405")
+    spg.add_argument("--region", default="PH", choices=["MY", "VN", "TH", "PH"])
+    spg.add_argument("--tier", default="Color", help="规格维度名，默认 Color")
+    spg.add_argument("--dry-run", action="store_true")
+    spg.add_argument(
+        "--register",
+        action="store_true",
+        help="仅写入映射（全球商品已在 CNSC 创建时用）",
+    )
+    spg.add_argument("--global-item-id", type=int, help="配合 --register 使用")
+    spg.set_defaults(func=_shopee_publish_group)
+    sgs = sp_sub.add_parser("sync-group", help="整组同步 TK→Shopee（Color 图 + ¥价 + 库存）")
+    sgs.add_argument("--keys", required=True, help="对齐码列表，如 0402,0403,0404,0405")
+    sgs.add_argument("--region", default="PH", choices=["MY", "VN", "TH", "PH"])
+    sgs.set_defaults(func=_shopee_sync_group)
+    spu = sp_sub.add_parser("update-global", help="更新 CNSC 全球商品英文标题/描述")
+    spu.add_argument("--match-key", required=True, help="对齐码，如 0014")
+    spu.add_argument("--region", default="PH", choices=["MY", "VN", "TH", "PH"])
+    spu.set_defaults(func=lambda a: _shopee_update_global(a))
+    sp_sub.add_parser("auth-url", help="打印店铺 OAuth 授权链接").set_defaults(
+        func=lambda a: _shopee_auth_guide()
+    )
+    spt = sp_sub.add_parser("token", help="用回调 code 换 access_token")
+    spt.add_argument("--code", required=True)
+    spt.add_argument("--shop-id", type=int)
+    spt.add_argument("--main-account-id", type=int)
+    spt.set_defaults(
+        func=lambda a: print(
+            "✅",
+            __import__("modules.shopee.auth", fromlist=["exchange_code_main"]).exchange_code_main(
+                a.code, a.main_account_id
+            )
+            if a.main_account_id
+            else __import__("modules.shopee.auth", fromlist=["exchange_code"]).exchange_code(
+                a.code, a.shop_id
+            ),
+        )
+        if a.main_account_id or a.shop_id
+        else print("请提供 --shop-id 或 --main-account-id")
+    )
+
+    oz = sub.add_parser("ozon", help="Ozon Seller API")
+    oz_sub = oz.add_subparsers(dest="ozon_cmd")
+    oz_sub.add_parser("sync", help="从 API 拉取商品快照到 ozon_data_dir").set_defaults(
+        func=lambda a: print(__import__("modules.ozon.sync", fromlist=["sync_catalog"]).sync_catalog())
+    )
+    oz_norm = oz_sub.add_parser(
+        "normalize-offer-ids",
+        help="6 位 Ozon offer_id 改为后四位（API + 本地 JSON）",
+    )
+    oz_norm.add_argument("--dry-run", action="store_true", help="仅预览映射，不写")
+    oz_norm.add_argument("--local-only", action="store_true", help="只改本地 JSON，不调 Ozon API")
+    oz_norm.add_argument("--restore-tk-map", action="store_true", help="从商品目录恢复 tk_sku_map 的 TikTok seller_sku")
+    oz_norm.set_defaults(func=lambda a: _ozon_normalize_offer_ids(a))
+    ozm = oz_sub.add_parser("migrate-batch", help="批量上品：草稿→3:4图→Ozon import")
+    ozm.add_argument("--count", type=int, default=5, help="本次搬运数量（默认 5）")
+    ozm.set_defaults(
+        func=lambda a: _ozon_migrate_batch(a),
+    )
+
+    src = sub.add_parser("sourcing", help="1688 选品采集")
+    src_sub = src.add_subparsers(dest="sourcing_cmd")
+    sf = src_sub.add_parser("fetch", help="网页采集 1688 商品（无需万邦 API）")
+    sf.add_argument("--url", required=True, help="1688 详情页链接或 offer id")
+    sf.add_argument("--html", help="本地 HTML 文件（浏览器另存，用于绕过反爬）")
+    sf.add_argument("--no-save", action="store_true", help="不写入 data/sourcing/")
+    sf.set_defaults(
+        func=lambda a: _sourcing_fetch(a),
+    )
+    sb = src_sub.add_parser("build", help="构建素材包：下载原图 + AI 文案 + 9 槽位")
+    sb.add_argument("--url", required=True, help="1688 offer id 或链接")
+    sb.add_argument("--skip-slots", action="store_true", help="跳过 Photoroom 槽位")
+    sb.add_argument("--plan", choices=["v1", "v2"], default="v2", help="槽位方案（默认 v2 supplier 优先）")
+    sb.set_defaults(func=lambda a: _sourcing_build(a))
+    sp = src_sub.add_parser("photoroom-showcase", help="Photoroom 全 recipe 试跑（主图+详情样例）")
+    sp.add_argument("--url", required=True, help="1688 offer id 或链接")
+    sp.add_argument("--no-detail", action="store_true", help="跳过详情页试跑")
+    sp.set_defaults(func=lambda a: _sourcing_photoroom_showcase(a))
+    st = src_sub.add_parser("detail-text", help="生成文字详情卡（模板合成 EN/RU）")
+    st.add_argument("--url", required=True, help="1688 offer id 或链接")
+    st.set_defaults(func=lambda a: _sourcing_detail_text(a))
+
     return p
+
+
+def _sourcing_build(args) -> None:
+    import json
+    from modules.sourcing.onebound import parse_offer_id
+    from modules.sourcing.pipeline import build_draft
+
+    offer_id = parse_offer_id(args.url)
+    draft = build_draft(
+        offer_id,
+        skip_slots=args.skip_slots,
+        plan_version=args.plan,
+        progress=lambda m: print(f"  … {m}"),
+    )
+    print(json.dumps({
+        "offer_id": offer_id,
+        "title": (draft.get("source") or {}).get("title"),
+        "copy_platforms": list((draft.get("copy") or {}).get("tiktok", {}).keys()),
+        "slots": len((draft.get("assets") or {}).get("slots") or []),
+        "errors": draft.get("errors") or [],
+    }, ensure_ascii=False, indent=2))
+    print(f"\n✅ 草稿: data/sourcing/{offer_id}_draft.json")
+
+
+def _tokens_refresh(_args) -> None:
+    from modules.hub.tokens import refresh_all
+
+    print("\n🔄 自动刷新 Token…")
+    r = refresh_all(on_progress=print)
+    if r.get("errors"):
+        print("\n⚠️ 部分失败（refresh_token 过期则需重新浏览器授权一次）：")
+        for e in r["errors"]:
+            print(f"  · {e}")
+    else:
+        print("\n✅ 全部 token 有效")
+
+
+def _tokens_status(_args) -> None:
+    import json
+    from modules.hub.tokens import status_summary
+
+    print(json.dumps(status_summary(), ensure_ascii=False, indent=2))
+
+
+def _ozon_normalize_offer_ids(args) -> None:
+    import json
+    from modules.ozon import offer_id_normalize as norm_mod
+
+    if args.restore_tk_map:
+        print(json.dumps({"fixed": norm_mod.restore_tk_map_seller_skus()}, ensure_ascii=False, indent=2))
+        return
+    print(json.dumps(
+        norm_mod.run_normalize(dry_run=args.dry_run, local_only=args.local_only),
+        ensure_ascii=False,
+        indent=2,
+    ))
+
+
+def _ozon_migrate_batch(args) -> None:
+    from modules.ozon.migrate_batch import migrate_batch
+    print(f"\n🚀 Ozon 批量上品（{args.count} 个）…")
+    result = migrate_batch(args.count)
+    migrated = result.get("migrated") or []
+    failed = result.get("failed") or []
+    print(f"\n✅ 成功 {len(migrated)}: {', '.join(migrated) or '—'}")
+    if failed:
+        print(f"❌ 失败 {len(failed)}:")
+        for f in failed:
+            print(f"   {f.get('offer_id')}: {f.get('error') or f.get('status')}")
+    print(f"   队列剩余约 {result.get('remaining', '?')} 个")
+
+
+def _sourcing_fetch(args) -> None:
+    import json
+    from pathlib import Path
+
+    from modules.sourcing.scrape_1688 import item_summary, scrape_offer
+
+    html = None
+    if args.html:
+        html = Path(args.html).read_text(encoding="utf-8", errors="replace")
+    data = scrape_offer(args.url, save=not args.no_save, html=html)
+    print(json.dumps(item_summary(data), ensure_ascii=False, indent=2))
+    if data.get("saved_to"):
+        print(f"\n✅ 已保存: {data['saved_to']}")
+
+
+def _sourcing_photoroom_showcase(args) -> None:
+    import json
+
+    from modules.sourcing.onebound import parse_offer_id
+    from modules.sourcing.photoroom_showcase import build_showcase
+
+    offer_id = parse_offer_id(args.url)
+
+    def progress(msg: str) -> None:
+        print(f"  … {msg}")
+
+    manifest = build_showcase(offer_id, progress=progress, include_detail=not args.no_detail)
+    print(json.dumps(manifest.get("summary") or {}, ensure_ascii=False, indent=2))
+    print(f"\n✅ 试跑结果: data/sourcing/{offer_id}/photoroom_showcase.json")
+    print(f"   预览: http://127.0.0.1:8765/sourcing/photoroom?offer_id={offer_id}")
+
+
+def _sourcing_detail_text(args) -> None:
+    import json
+
+    from modules.sourcing.detail_text_cards import build_detail_text_cards
+    from modules.sourcing.onebound import parse_offer_id
+
+    offer_id = parse_offer_id(args.url)
+    manifest = build_detail_text_cards(offer_id)
+    print(json.dumps(manifest.get("summary") or {}, ensure_ascii=False, indent=2))
+    print(f"\n✅ 文字详情卡: data/sourcing/{offer_id}/detail_text_cards/")
+    print(f"   在选品页查看: http://127.0.0.1:8765/sourcing?offer_id={offer_id}")
 
 
 MENU = """

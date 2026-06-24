@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>1688 选品 · 选图工作台</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <style>
+    .layout { display: grid; grid-template-columns: 260px 1fr; gap: 16px; align-items: start; }
+    @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+    .offer-list { border: 1px solid #e8e8e8; border-radius: 10px; background: #fff; max-height: 75vh; overflow-y: auto; }
+    .offer-item { padding: 10px 12px; border-bottom: 1px solid #f0f0f0; cursor: pointer; }
+    .offer-item:hover { background: #f8fafc; }
+    .offer-item.active { background: #eff6ff; border-left: 3px solid #2563eb; }
+    .offer-item .oid { font-size: 11px; color: #64748b; }
+    .offer-item .title { font-size: 13px; line-height: 1.4; margin-top: 2px; }
+    .panel { border: 1px solid #e8e8e8; border-radius: 10px; background: #fff; padding: 16px; }
+    .panel h2 { font-size: 16px; margin: 0 0 6px; }
+    .panel h3 { font-size: 14px; margin: 20px 0 8px; color: #334155; }
+    .panel h3:first-of-type { margin-top: 0; }
+    .toolbar-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+    .guide-warn { background: #fef3c7; border: 1px solid #fcd34d; border-radius: 8px; padding: 10px 12px; font-size: 12px; color: #92400e; line-height: 1.55; margin-bottom: 14px; }
+    .guide { background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px; padding: 10px 12px; font-size: 12px; color: #0c4a6e; line-height: 1.55; margin-bottom: 14px; }
+    .guide strong { color: #0369a1; }
+    .img-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; }
+    .img-tile { border: 2px solid #e5e7eb; border-radius: 8px; overflow: hidden; cursor: pointer; background: #fafafa; }
+    .img-tile.selected { border-color: #2563eb; box-shadow: 0 0 0 2px #bfdbfe; }
+    .img-tile img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; }
+    .img-tile .cap { font-size: 9px; padding: 4px 6px; color: #64748b; background: #fff; border-top: 1px solid #eee; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .gen-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 10px; background: #f8fafc; border-radius: 8px; margin-bottom: 12px; }
+    .gen-bar select { min-width: 200px; font-size: 12px; }
+    .final-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+    .final-slot { width: 100px; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; position: relative; background: #fff; }
+    .final-slot img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; }
+    .final-slot .idx { position: absolute; top: 4px; left: 4px; background: rgba(0,0,0,.65); color: #fff; font-size: 10px; padding: 1px 5px; border-radius: 4px; }
+    .final-slot .acts { display: flex; gap: 2px; padding: 4px; }
+    .final-slot .acts button { flex: 1; font-size: 9px; padding: 2px; }
+    .desc-preview { border: 1px solid #e8e8e8; border-radius: 8px; padding: 12px; max-height: 320px; overflow-y: auto; font-size: 12px; background: #fafafa; }
+    .desc-preview img { max-width: 100%; display: block; margin: 8px 0; border-radius: 4px; }
+    .badge-main { background: #dbeafe; color: #1d4ed8; font-size: 10px; padding: 2px 6px; border-radius: 4px; }
+    .badge-desc { background: #fce7f3; color: #be185d; font-size: 10px; padding: 2px 6px; border-radius: 4px; }
+    .badge-gen { background: #dcfce7; color: #166534; font-size: 10px; padding: 2px 6px; border-radius: 4px; }
+    .empty { color: #94a3b8; font-size: 13px; padding: 16px; text-align: center; }
+    .meta { font-size: 12px; color: #64748b; }
+    .tile-actions { display: flex; gap: 2px; padding: 4px; flex-wrap: wrap; }
+    .tile-actions button { font-size: 9px; flex: 1; min-width: 44px; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">TikTok Shop 控制台</a>
+    <nav class="nav">
+      <a href="/">首页</a>
+      <a href="/catalog">商品目录</a>
+      <a href="/sourcing" class="active">1688 选品</a>
+      <a href="/images">主图优化</a>
+    </nav>
+  </header>
+  <main class="container">
+    <h1>1688 选图工作台</h1>
+    <p class="hint">导出全部原图 → 选原图 + Photoroom 能力生成 → 分别选定 TK 主图 / 详情页</p>
+
+    <div class="layout">
+      <div class="offer-list" id="offerList"><div class="empty">加载中…</div></div>
+      <div id="detailPanel" class="panel"><div class="empty">请选择左侧货源</div></div>
+    </div>
+  </main>
+  <script>
+    var currentOfferId = '';
+    var wb = null;
+    var shopList = [];
+    var shopsReady = null;
+    var selectedSource = null;
+
+    function assetUrl(offerId, relPath) {
+      if (!relPath) return '';
+      var p = relPath.replace(/\\/g, '/');
+      if (p.indexOf('data/sourcing/') === 0) p = p.split('/').slice(3).join('/');
+      return '/api/sourcing/asset?offer_id=' + encodeURIComponent(offerId) + '&file=' + encodeURIComponent(p);
+    }
+
+    function esc(s) {
+      return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function loadOffers() {
+      fetch('/api/sourcing/list').then(function(r) { return r.json(); }).then(function(d) {
+        var el = document.getElementById('offerList');
+        if (!d.ok || !d.items || !d.items.length) {
+          el.innerHTML = '<div class="empty">暂无采集数据</div>';
+          return;
+        }
+        el.innerHTML = d.items.map(function(it) {
+          return '<div class="offer-item" data-id="' + it.offer_id + '" onclick="selectOffer(\'' + it.offer_id + '\')">' +
+            '<div class="oid">' + it.offer_id + '</div>' +
+            '<div class="title">' + esc(it.title || '—') + '</div>' +
+            '<div class="meta">¥' + esc(it.price || '?') + '</div></div>';
+        }).join('');
+        if (!currentOfferId) currentOfferId = new URLSearchParams(location.search).get('offer_id') || d.items[0].offer_id;
+        selectOffer(currentOfferId);
+      });
+    }
+
+    function selectOffer(id) {
+      currentOfferId = id;
+      history.replaceState(null, '', '?offer_id=' + id);
+      document.querySelectorAll('.offer-item').forEach(function(el) {
+        el.classList.toggle('active', el.getAttribute('data-id') === id);
+      });
+      loadWorkbench();
+    }
+
+    function loadWorkbench() {
+      var wbReq = fetch('/api/sourcing/workbench?offer_id=' + encodeURIComponent(currentOfferId))
+        .then(function(r) { return r.json(); });
+      Promise.all([wbReq, ensureShops()])
+        .then(function(results) {
+          var d = results[0];
+          if (!d.ok) {
+            document.getElementById('detailPanel').innerHTML = '<div class="empty">' + esc(d.error || '加载失败') + '</div>';
+            return;
+          }
+          wb = d;
+          renderWorkbench();
+        });
+    }
+
+    function ensureShops() {
+      if (!shopsReady) {
+        shopsReady = fetch('/api/sourcing/workbench/shops')
+          .then(function(r) { return r.json(); })
+          .then(function(d) {
+            if (d.ok) shopList = d.shops || [];
+            else shopList = [];
+            return shopList;
+          })
+          .catch(function() { shopList = []; return shopList; });
+      }
+      return shopsReady;
+    }
+
+    function renderWorkbench() {
+      var g = wb.tk_guide || {};
+      var html = '';
+      html += '<div class="toolbar-row">';
+      html += '<button class="btn-primary" onclick="downloadRaw()">下载全部 1688 原图</button>';
+      html += '<button class="btn-secondary" onclick="resetDefaults()">恢复默认原图选用</button>';
+      html += '<button class="btn-secondary" onclick="batchDewatermark()">一键去水印（Photoroom）</button>';
+      html += '<button class="btn-secondary" onclick="startBuildCopy()">生成 AI 文案</button>';
+      html += '<span class="meta" id="statusLine">' + (wb.raw.total ? ('已下载 ' + wb.raw.total + ' 张') : '尚未下载原图') + '</span>';
+      html += '</div>';
+
+      if (wb.photoroom_sandbox) {
+        html += '<div class="guide-warn"><strong>Photoroom 沙盒模式</strong><br>';
+        html += esc(wb.photoroom_note || '沙盒输出带 Photoroom 水印，无法用于上架。请换正式 Key。');
+        html += '</div>';
+      }
+
+      html += '<div class="guide">';
+      html += '<strong>TK 主图 vs 详情页（不是拼在一起）</strong><br>';
+      html += esc(g.main_images || '') + '<br>';
+      html += esc(g.description || '') + '<br>';
+      html += esc(g.workflow || '');
+      html += '</div>';
+
+      html += '<h2>' + esc(wb.title || wb.offer_id) + '</h2>';
+      if (wb.source_url) html += '<p class="meta"><a href="' + esc(wb.source_url) + '" target="_blank" rel="noopener">1688 原链接 ↗</a></p>';
+
+      // 原图
+      html += '<h3>1688 原图 <span class="badge-main">主 ' + (wb.raw.main || []).length + '</span> <span class="badge-desc">详情 ' + (wb.raw.detail || []).length + '</span></h3>';
+      if (!(wb.raw.main || []).length && !(wb.raw.detail || []).length) {
+        html += '<p class="empty">点击「下载全部 1688 原图」</p>';
+      } else {
+        html += '<div class="img-grid">';
+        (wb.raw.main || []).concat(wb.raw.detail || []).forEach(function(it) {
+          var sel = selectedSource && selectedSource.path === it.path ? ' selected' : '';
+          html += '<div class="img-tile' + sel + '" onclick="pickSource(\'' + esc(it.path) + '\',\'' + esc(it.file) + '\',\'' + esc(it.label) + '\')">';
+          html += '<img src="' + assetUrl(currentOfferId, it.path) + '" alt="">';
+          html += '<div class="cap">' + esc(it.label) + '</div>';
+          html += '<div class="tile-actions">';
+          html += '<button type="button" onclick="event.stopPropagation();addFinal(\'' + esc(it.path) + '\',\'tiktok_main\')">→主图</button>';
+          html += '<button type="button" onclick="event.stopPropagation();addFinal(\'' + esc(it.path) + '\',\'tiktok_description\')">→详情</button>';
+          html += '</div></div>';
+        });
+        html += '</div>';
+      }
+
+      // Photoroom 生成
+      html += '<h3>Photoroom 生成 <span class="badge-gen">手动</span></h3>';
+      html += '<div class="gen-bar">';
+      html += '<span class="meta" id="pickedSrc">' + (selectedSource ? ('已选: ' + esc(selectedSource.label)) : '← 先点选一张原图') + '</span>';
+      html += '<select id="recipeSel"><option value="">— Photoroom 能力 —</option>';
+      (wb.recipes || []).forEach(function(r) {
+        var sel = (r.id === (wb.default_recipe || 'prep_dewatermark')) ? ' selected' : '';
+        html += '<option value="' + esc(r.id) + '"' + sel + '>' + esc(r.label) + ' (' + esc(r.kind) + ')</option>';
+      });
+      html += '</select>';
+      html += '<button class="btn-primary" onclick="runGenerate()" ' + (wb.photoroom_enabled ? '' : 'disabled') + '>生成</button>';
+      if (!wb.photoroom_enabled) html += '<span class="meta">未配置 Photoroom</span>';
+      html += '</div>';
+
+      if ((wb.generated || []).length) {
+        html += '<div class="img-grid">';
+        wb.generated.forEach(function(g) {
+          html += '<div class="img-tile">';
+          html += '<img src="' + esc(g.url) + '" alt="">';
+          html += '<div class="cap">' + esc(g.recipe_label) + '</div>';
+          html += '<div class="tile-actions">';
+          html += '<button onclick="addFinal(\'' + esc(g.path) + '\',\'tiktok_main\')">→主图</button>';
+          html += '<button onclick="addFinal(\'' + esc(g.path) + '\',\'tiktok_description\')">→详情</button>';
+          html += '</div></div>';
+        });
+        html += '</div>';
+      } else {
+        html += '<p class="meta">尚无生成图</p>';
+      }
+
+      // TK 主图
+      html += '<h3>TK 主图轮播 <span class="badge-main">最多 9 张 · 第 1 张=搜索缩略图</span></h3>';
+      html += renderFinalRow(wb.final.tiktok_main || [], 'tiktok_main');
+
+      // TK 详情
+      html += '<h3>TK 详情页长图 <span class="badge-desc">写入 description HTML · 独立上传</span></h3>';
+      html += renderFinalRow(wb.final.tiktok_description || [], 'tiktok_description', true);
+
+      html += '<h3>详情页预览（文案 + 长图顺序）</h3>';
+      html += '<div class="desc-preview">' + (wb.description_preview_html || '<p class="meta">先选详情图；可点「生成 AI 文案」</p>') + '</div>';
+
+      var tkTitle = (wb.copy && wb.copy.MY && wb.copy.MY.title) || '';
+      html += '<h3>导入 TikTok Shop</h3>';
+      html += '<p class="meta">更新<strong>已有</strong>商品：上传主图/详情图 URI + 标题/描述。新建商品需先建草稿再填 product_id。</p>';
+      if (tkTitle) html += '<p class="meta"><strong>AI 标题：</strong>' + esc(tkTitle) + '</p>';
+      html += '<div class="gen-bar">';
+      html += '<select id="tkRegion" onchange="fillShopSelect()"><option value="MY">MY</option><option value="PH">PH</option><option value="TH">TH</option></select>';
+      html += '<select id="tkShop"><option value="">— 选择店铺 —</option></select>';
+      html += '<input type="text" id="tkProductId" placeholder="TK product_id" style="width:160px;font-size:12px">';
+      html += '<button class="btn-primary" onclick="publishTk()">推送到 TK</button>';
+      html += '<button class="btn-secondary" onclick="exportTk()">导出 ZIP</button>';
+      html += '</div>';
+
+      document.getElementById('detailPanel').innerHTML = html;
+      fillShopSelect();
+    }
+
+    function fillShopSelect() {
+      var sel = document.getElementById('tkShop');
+      if (!sel) return;
+      var region = (document.getElementById('tkRegion') || {}).value || '';
+      var list = shopList.slice();
+      if (region) {
+        list = list.filter(function(s) { return (s.region || '').toUpperCase() === region; });
+      }
+      if (!list.length && shopList.length) list = shopList.slice();
+      sel.innerHTML = '<option value="">— 选择店铺 (' + list.length + ') —</option>';
+      list.forEach(function(s) {
+        var label = (s.region || '?') + ' · ' + (s.name || s.cipher);
+        sel.innerHTML += '<option value="' + esc(s.cipher) + '">' + esc(label) + '</option>';
+      });
+      if (list.length === 1) sel.value = list[0].cipher;
+    }
+
+    function loadShops() {
+      return ensureShops();
+    }
+
+    function renderFinalRow(items, target, tall) {
+      if (!items.length) return '<p class="meta">从原图或生成图点「→主图」「→详情」添加</p>';
+      var html = '<div class="final-row">';
+      items.forEach(function(it, i) {
+        html += '<div class="final-slot">';
+        html += '<span class="idx">#' + (i + 1) + '</span>';
+        html += '<img src="' + esc(it.url || assetUrl(currentOfferId, it.path)) + '" style="' + (tall ? 'aspect-ratio:3/4' : '') + '">';
+        html += '<div class="acts">';
+        if (i > 0) html += '<button onclick="moveFinal(\'' + target + '\',' + i + ',-1)">←</button>';
+        if (i < items.length - 1) html += '<button onclick="moveFinal(\'' + target + '\',' + i + ',1)">→</button>';
+        html += '<button onclick="removeFinal(\'' + esc(it.path) + '\',\'' + target + '\')">×</button>';
+        html += '</div></div>';
+      });
+      html += '</div>';
+      return html;
+    }
+
+    function pickSource(path, file, label) {
+      selectedSource = { path: path, file: file, label: label };
+      renderWorkbench();
+    }
+
+    function downloadRaw() {
+      document.getElementById('statusLine').textContent = '下载中…';
+      fetch('/api/sourcing/workbench/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ offer_id: currentOfferId })
+      }).then(function(r) { return r.json(); }).then(function(d) {
+        if (!d.ok) { alert(d.error || '下载失败'); return; }
+        wb = d.workbench;
+        document.getElementById('statusLine').textContent = '✅ 已下载 ' + (d.raw.total || 0) + ' 张';
+        renderWorkbench();
+      });
+    }
+
+    function runGenerate() {
+      if (!selectedSource) { alert('请先点选一张原图'); return; }
+      var recipe = document.getElementById('recipeSel').value;
+      if (!recipe) { alert('请选择 Photoroom 能力'); return; }
+      document.getElementById('statusLine').textContent = 'Photoroom 生成中…';
+      fetch('/api/sourcing/workbench/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          offer_id: currentOfferId,
+          source_file: selectedSource.file,
+          recipe_id: recipe
+        })
+      }).then(function(r) { return r.json(); }).then(function(d) {
+        if (!d.ok) { alert(d.error || '生成失败'); document.getElementById('statusLine').textContent = '❌ 失败'; return; }
+        wb = d.workbench;
+        document.getElementById('statusLine').textContent = '✅ 已生成';
+        renderWorkbench();
+      });
+    }
+
+    function addFinal(path, target) {
+      fetch('/api/sourcing/workbench/final', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ offer_id: currentOfferId, action: 'add', path: path, target: target })
+      }).then(function(r) { return r.json(); }).then(function(d) {
+        if (!d.ok) { alert(d.error || '添加失败'); return; }
+        wb = d.workbench;
+        renderWorkbench();
+      });
+    }
+
+    function removeFinal(path, target) {
+      fetch('/api/sourcing/workbench/final', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ offer_id: currentOfferId, action: 'remove', path: path, target: target })
+      }).then(function(r) { return r.json(); }).then(function(d) {
+        wb = d.workbench;
+        renderWorkbench();
+      });
+    }
+
+    function moveFinal(target, idx, delta) {
+      var list = target === 'tiktok_main' ? (wb.final.tiktok_main || []) : (wb.final.tiktok_description || []);
+      var paths = list.map(function(x) { return x.path; });
+      var j = idx + delta;
+      if (j < 0 || j >= paths.length) return;
+      var t = paths[idx]; paths[idx] = paths[j]; paths[j] = t;
+      fetch('/api/sourcing/workbench/final', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ offer_id: currentOfferId, action: 'reorder', target: target, paths: paths })
+      }).then(function(r) { return r.json(); }).then(function(d) {
+        wb = d.workbench;
+        renderWorkbench();
+      });
+    }
+
+    function startBuildCopy() {
+      fetch('/api/sourcing/build', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          offer_id: currentOfferId,
+          plan_version: 'manual',
+          skip_slots: true,
+          skip_images: true
+        })
+      }).then(function(r) { return r.json(); }).then(function(d) {
+        if (!d.ok) { alert(d.message || '失败'); return; }
+        pollBuildCopy();
+      });
+    }
+
+    function pollBuildCopy() {
+      var t = setInterval(function() {
+        fetch('/api/sourcing/build/status').then(function(r) { return r.json(); }).then(function(d) {
+          if (d.running) document.getElementById('statusLine').textContent = '⏳ ' + (d.message || '文案生成中…');
+          else {
+            clearInterval(t);
+            document.getElementById('statusLine').textContent = d.error ? ('❌ ' + d.error) : '✅ 文案完成';
+            loadWorkbench();
+          }
+        });
+      }, 1500);
+    }
+
+    function resetDefaults() {
+      fetch('/api/sourcing/workbench/final', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ offer_id: currentOfferId, action: 'reset_defaults' })
+      }).then(function(r) { return r.json(); }).then(function(d) {
+        if (!d.ok) { alert(d.error || '失败'); return; }
+        wb = d.workbench;
+        renderWorkbench();
+      });
+    }
+
+    function batchDewatermark() {
+      if (wb.photoroom_sandbox) {
+        alert('当前 Photoroom 为沙盒 Key，生成图会带 Photoroom 水印。\n请先在 settings.json 设置 sandbox=false 并填写正式 Key。\n\n仍要继续试跑去 1688 水印吗？');
+      }
+      if (!confirm('将对全部原图跑 Photoroom 去水印，并替换当前选用（约 ' + (wb.raw.total || 0) + ' 次 API）。继续？')) return;
+      document.getElementById('statusLine').textContent = '去水印任务启动…';
+      fetch('/api/sourcing/workbench/dewatermark', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ offer_id: currentOfferId })
+      }).then(function(r) { return r.json(); }).then(function(d) {
+        if (!d.ok) { alert(d.message || d.error || '失败'); return; }
+        pollDewatermark();
+      });
+    }
+
+    function pollDewatermark() {
+      var t = setInterval(function() {
+        fetch('/api/sourcing/workbench/dewatermark/status').then(function(r) { return r.json(); }).then(function(d) {
+          var el = document.getElementById('statusLine');
+          if (!el) { clearInterval(t); return; }
+          if (d.running) el.textContent = '⏳ ' + (d.message || '去水印中…');
+          else {
+            clearInterval(t);
+            el.textContent = d.error ? ('❌ ' + d.error) : '✅ 去水印完成，已替换选用';
+            loadWorkbench();
+          }
+        });
+      }, 2000);
+    }
+
+    function publishTk() {
+      var shop = document.getElementById('tkShop').value;
+      var pid = document.getElementById('tkProductId').value.trim();
+      var region = document.getElementById('tkRegion').value;
+      if (!shop || !pid) { alert('请选择店铺并填写 product_id'); return; }
+      if (!confirm('将上传图片并更新 TK 商品 ' + pid + '，确认？')) return;
+      document.getElementById('statusLine').textContent = '推送 TK 中…';
+      fetch('/api/sourcing/workbench/publish-tk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          offer_id: currentOfferId,
+          shop_cipher: shop,
+          product_id: pid,
+          region: region
+        })
+      }).then(function(r) { return r.json(); }).then(function(d) {
+        if (!d.ok) { alert(d.error || '推送失败'); document.getElementById('statusLine').textContent = '❌ 失败'; return; }
+        document.getElementById('statusLine').textContent = '✅ 已推送 TK（主图 ' + (d.result.main_images || 0) + ' 张）';
+      });
+    }
+
+    function exportTk() {
+      var region = (document.getElementById('tkRegion') || {}).value || 'MY';
+      fetch('/api/sourcing/workbench/export-tk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ offer_id: currentOfferId, region: region })
+      }).then(function(r) { return r.json(); }).then(function(d) {
+        if (!d.ok) { alert(d.error || '导出失败'); return; }
+        if (d.url) window.open(d.url);
+      });
+    }
+
+    ensureShops().then(function() { loadOffers(); });
+  </script>
+</body>
+</html>

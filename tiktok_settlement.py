@@ -5,12 +5,14 @@
 用法:
   python3 tiktok_settlement.py              # 拉取昨天
   python3 tiktok_settlement.py 2026-06-01   # 拉取指定日期
+  python3 tiktok_settlement.py --start 2026-05-15 --end 2026-06-15  # 区间，每国 1 份 CSV
   python3 tiktok_settlement.py --days 7     # 拉取近 7 天（按天拆分文件）
 """
 
 import argparse
 import csv
 import json
+import re
 import subprocess
 import sys
 import time
@@ -44,7 +46,9 @@ CSV_COLUMNS = [
 def parse_args():
     p = argparse.ArgumentParser(description="拉取 TikTok Shop 结算并导出 CSV")
     p.add_argument("date", nargs="?", help="目标日期 YYYY-MM-DD，默认昨天")
-    p.add_argument("--days", type=int, help="拉取近 N 天（忽略 date）")
+    p.add_argument("--start", help="区间开始 YYYY-MM-DD（与 --end 合用，每国一份 CSV）")
+    p.add_argument("--end", help="区间结束 YYYY-MM-DD（含当天）")
+    p.add_argument("--days", type=int, help="拉取近 N 天（按天拆分，忽略 date）")
     p.add_argument("--no-profit", action="store_true", help="不自动生成 CURSOR 利润页")
     return p.parse_args()
 
@@ -53,6 +57,13 @@ def day_range_utc(day: datetime.date):
     start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
     end = start + timedelta(days=1)
     return int(start.timestamp()), int(end.timestamp())
+
+
+def period_range_utc(start: datetime.date, end: datetime.date):
+    """含首尾日：start 00:00 UTC ~ end 24:00 UTC。"""
+    ge = datetime(start.year, start.month, start.day, tzinfo=timezone.utc)
+    lt = datetime(end.year, end.month, end.day, tzinfo=timezone.utc) + timedelta(days=1)
+    return int(ge.timestamp()), int(lt.timestamp())
 
 
 def fmt_date(ts) -> str:
@@ -235,6 +246,29 @@ def expand_non_order_row(row):
     return [row]
 
 
+def _non_order_settlement_in_batch(batch: list[dict]) -> float:
+    """结算单 adjustment 常对应 GMV 扣款、物流赔款等非 ORDER 明细。"""
+    total = 0.0
+    for tx in batch:
+        if tx.get("type") != "ORDER":
+            total += fnum(tx.get("settlement_amount"))
+    return round(total, 2)
+
+
+def synthetic_gmv_tx_from_statement(st: dict, amount: float) -> dict:
+    """API 有时只在 statement 层记广告扣款、无 transaction 明细，补一行 GMV。"""
+    sid = str(st.get("id") or "")
+    return {
+        "type": "GMV_PAYMENT_FOR_TIKTOK_ADS",
+        "id": f"stmt_adj_{sid}",
+        "adjustment_id": f"stmt_adj_{sid}",
+        "settlement_amount": str(round(amount, 2)),
+        "revenue_amount": "0",
+        "adjustment_amount": str(round(amount, 2)),
+        "currency": st.get("currency", ""),
+    }
+
+
 def collect_shop_rows(access_token, shop, ge, lt):
     cipher = shop.get("cipher") or shop.get("shop_cipher", "")
     region = shop.get("region", "?")
@@ -247,10 +281,31 @@ def collect_shop_rows(access_token, shop, ge, lt):
         sid = st.get("id")
         st_time = st.get("statement_time")
         currency = st.get("currency", "")
-        txs.extend(
-            (sid, st_time, currency, tx)
-            for tx in fetch_statement_transactions(access_token, cipher, sid)
-        )
+        batch = fetch_statement_transactions(access_token, cipher, sid)
+        stmt_adj = round(fnum(st.get("adjustment_amount")), 2)
+
+        if batch:
+            txs.extend((sid, st_time, currency, tx) for tx in batch)
+            covered = _non_order_settlement_in_batch(batch)
+            remainder = round(stmt_adj - covered, 2)
+            if remainder != 0:
+                txs.append(
+                    (sid, st_time, currency, synthetic_gmv_tx_from_statement(st, remainder))
+                )
+        elif stmt_adj != 0:
+            txs.append(
+                (sid, st_time, currency, synthetic_gmv_tx_from_statement(st, stmt_adj))
+            )
+        elif fnum(st.get("settlement_amount")) != 0:
+            # 极少数仅 settlement、无明细的调账单
+            txs.append(
+                (
+                    sid,
+                    st_time,
+                    currency,
+                    synthetic_gmv_tx_from_statement(st, fnum(st.get("settlement_amount"))),
+                )
+            )
 
     order_ids = [tx[3].get("order_id") for tx in txs if tx[3].get("type") == "ORDER"]
     orders = fetch_orders_batch(access_token, cipher, order_ids)
@@ -278,6 +333,33 @@ def write_csv(path: Path, rows: list):
             w.writerow(row)
 
 
+def parse_income_file_period(path: Path) -> tuple[str, datetime.date, datetime.date] | None:
+    m = re.match(r"income_([A-Z]{2})_(\d{6})_(\d{6})\.csv$", path.name, re.I)
+    if not m:
+        return None
+    region = m.group(1).upper()
+    try:
+        start = datetime.strptime(m.group(2), "%y%m%d").date()
+        end = datetime.strptime(m.group(3), "%y%m%d").date()
+    except ValueError:
+        return None
+    return region, start, end
+
+
+def cleanup_income_for_period(region: str, start: datetime.date, end: datetime.date) -> list[str]:
+    """删除该国在区间内重叠的旧 CSV（含按日文件），避免重复统计。"""
+    removed: list[str] = []
+    for p in list(INCOME_DIR.glob(f"income_{region}_*.csv")):
+        parsed = parse_income_file_period(p)
+        if not parsed:
+            continue
+        _, fs, fe = parsed
+        if fs <= end and fe >= start:
+            p.unlink(missing_ok=True)
+            removed.append(p.name)
+    return removed
+
+
 def summarize(rows: list) -> dict:
     total_settlement = sum(r["Total settlement amount"] for r in rows)
     order_settlement = sum(
@@ -302,8 +384,8 @@ def summarize(rows: list) -> dict:
     }
 
 
-def build_summary_html(day: datetime.date, all_stats: list, csv_files: list):
-    date_label = day.strftime("%Y-%m-%d")
+def build_summary_html(day: datetime.date, all_stats: list, csv_files: list, date_label: str | None = None):
+    date_label = date_label or day.strftime("%Y-%m-%d")
     ymd = yymmdd(day)
     rows_json = json.dumps(all_stats, ensure_ascii=False)
     files_html = "".join(f"<li><code>{p}</code></li>" for p in csv_files)
@@ -358,6 +440,77 @@ def run_profit_pages():
         return
     print("\n[3] 生成 CURSOR 订单利润页...")
     subprocess.run([sys.executable, script.name], cwd=str(script.parent), check=False)
+
+
+def pull_period(
+    access_token,
+    shops,
+    start: datetime.date,
+    end: datetime.date,
+    run_profit: bool,
+    on_progress=None,
+):
+    """按日期区间拉取，每个国家一份 CSV：income_{REGION}_{start}_{end}.csv"""
+    if end < start:
+        raise ValueError("结束日期不能早于开始日期")
+    ge, lt = period_range_utc(start, end)
+    ymd_start = yymmdd(start)
+    ymd_end = yymmdd(end)
+    print(f"\n── {start.isoformat()} ~ {end.isoformat()} (UTC) ge={ge} lt={lt} ──")
+
+    all_stats = []
+    csv_files = []
+    raw_dump = {}
+    shop_list = list(shops)
+    total_shops = len(shop_list)
+
+    for i, shop in enumerate(shop_list):
+        name = shop.get("name", shop.get("shop_name", "?"))
+        region = shop.get("region", "?")
+        if on_progress:
+            on_progress(i, total_shops, region)
+        print(f"  {name} [{region}]...", end=" ", flush=True)
+        try:
+            region, rows, statements = collect_shop_rows(access_token, shop, ge, lt)
+        except Exception as e:
+            print(f"❌ {e}")
+            continue
+
+        raw_dump[region] = {"statements": statements, "row_count": len(rows)}
+        if not rows:
+            print("无结算明细")
+            continue
+
+        stats = summarize(rows)
+        stats["region"] = region
+        stats["currency"] = rows[0]["Currency"] if rows else ""
+        all_stats.append(stats)
+
+        removed = cleanup_income_for_period(region, start, end)
+        out = INCOME_DIR / f"income_{region}_{ymd_start}_{ymd_end}.csv"
+        write_csv(out, rows)
+        csv_files.append(str(out))
+        extra = f"（清理 {len(removed)} 个旧文件）" if removed else ""
+        print(
+            f"✅ {len(rows)} 行 → {out.name}  结算 {stats['total_settlement']} "
+            f"{stats['currency']}{extra}"
+        )
+
+    raw_path = Path(f"settlement_raw_{ymd_start}_{ymd_end}.json")
+    raw_path.write_text(json.dumps(raw_dump, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    if all_stats:
+        label = f"{start.isoformat()} ~ {end.isoformat()}"
+        OUTPUT_HTML.write_text(
+            build_summary_html(start, all_stats, csv_files, date_label=label),
+            encoding="utf-8",
+        )
+        print(f"\n✅ 汇总页: {OUTPUT_HTML.resolve()}")
+
+    if run_profit and csv_files:
+        run_profit_pages()
+
+    return all_stats
 
 
 def pull_day(access_token, shops, day: datetime.date, run_profit: bool):
@@ -420,18 +573,30 @@ def main():
         return 1
 
     today = datetime.now(timezone.utc).date()
-    if args.days:
+    if (args.start and not args.end) or (args.end and not args.start):
+        print("❌ --start 与 --end 需同时指定")
+        return 1
+    if args.start and args.end:
+        start = datetime.strptime(args.start, "%Y-%m-%d").date()
+        end = datetime.strptime(args.end, "%Y-%m-%d").date()
+        print(f"卖家: {tokens.get('seller_name', '?')} · 店铺 {len(shops)} 个 · 区间 {start} ~ {end}")
+        pull_period(access_token, shops, start, end, run_profit=not args.no_profit)
+    elif args.days:
         days = [today - timedelta(days=i) for i in range(1, args.days + 1)]
         days.reverse()
+        print(f"卖家: {tokens.get('seller_name', '?')} · 店铺 {len(shops)} 个 · 目标 {len(days)} 天")
+        for day in days:
+            pull_day(access_token, shops, day, run_profit=not args.no_profit and len(days) == 1)
     elif args.date:
         days = [datetime.strptime(args.date, "%Y-%m-%d").date()]
+        print(f"卖家: {tokens.get('seller_name', '?')} · 店铺 {len(shops)} 个 · 目标 {len(days)} 天")
+        for day in days:
+            pull_day(access_token, shops, day, run_profit=not args.no_profit and len(days) == 1)
     else:
         days = [today - timedelta(days=1)]
-
-    print(f"卖家: {tokens.get('seller_name', '?')} · 店铺 {len(shops)} 个 · 目标 {len(days)} 天")
-
-    for day in days:
-        pull_day(access_token, shops, day, run_profit=not args.no_profit and len(days) == 1)
+        print(f"卖家: {tokens.get('seller_name', '?')} · 店铺 {len(shops)} 个 · 目标 {len(days)} 天")
+        for day in days:
+            pull_day(access_token, shops, day, run_profit=not args.no_profit)
 
     print("\n完成。可将 CURSOR/Income_Data/income_* 对接到 build_order_profit_page.py / build_total_profit_page.py")
     return 0

@@ -118,7 +118,7 @@ RECIPE_CATALOG: dict[str, dict] = {
         "kind": "prep",
         "label": "预处理·去水印+白底",
         "params": {
-            "textRemoval.mode": "ai.artificial",
+            "textRemoval.mode": "ai.all",
             "padding": 0.10,
             "scaling": "fit",
         },
@@ -492,22 +492,14 @@ def plan_custom_jobs(
     return jobs
 
 
-def _photoroom_edit(
-    source_url: str,
-    extra: dict | None = None,
-    headers: dict | None = None,
+def _build_photoroom_params(
+    extra: dict | None,
     *,
-    remove_background: bool = True,
-    use_white_bg: bool = True,
-) -> bytes:
+    remove_background: bool,
+    use_white_bg: bool,
+) -> dict:
     cfg = image_config()
-    api_key = cfg["photoroom_api_key_resolved"]
-    if not api_key:
-        raise RuntimeError(
-            "未配置 Photoroom API Key。请在 settings.json 的 images.photoroom_api_key 填写"
-        )
     params: dict = {
-        "imageUrl": source_url,
         "removeBackground": "true" if remove_background else "false",
         "outputSize": cfg["output_size"],
         "export.format": cfg["export_format"],
@@ -521,12 +513,52 @@ def _photoroom_edit(
             if v is None:
                 continue
             params[k] = str(v).lower() if isinstance(v, bool) else str(v)
+    return params
 
-    qs = urllib.parse.urlencode(params)
-    url = f"https://image-api.photoroom.com/v2/edit?{qs}"
-    req = urllib.request.Request(url, method="GET")
-    req.add_header("x-api-key", api_key)
+
+def _photoroom_request(
+    params: dict,
+    *,
+    headers: dict | None = None,
+    file_path: Path | None = None,
+) -> bytes:
+    cfg = image_config()
+    api_key = cfg["photoroom_api_key_resolved"]
+    if not api_key:
+        raise RuntimeError(
+            "未配置 Photoroom API Key。请在 settings.json 的 images.photoroom_api_key 填写"
+        )
+    url = "https://image-api.photoroom.com/v2/edit"
+    hdrs = {"x-api-key": api_key}
     for k, v in (headers or {}).items():
+        hdrs[k] = v
+
+    if file_path is not None:
+        boundary = f"----Photoroom{int(time.time() * 1000)}"
+        body_parts: list[bytes] = []
+        file_bytes = file_path.read_bytes()
+        mime = "image/jpeg"
+        if file_path.suffix.lower() == ".png":
+            mime = "image/png"
+        body_parts.append(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="imageFile"; '
+            f'filename="{file_path.name}"\r\nContent-Type: {mime}\r\n\r\n'.encode()
+        )
+        body_parts.append(file_bytes)
+        body_parts.append(b"\r\n")
+        for k, v in params.items():
+            body_parts.append(
+                f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode()
+            )
+        body_parts.append(f"--{boundary}--\r\n".encode())
+        body = b"".join(body_parts)
+        req = urllib.request.Request(url, data=body, method="POST")
+        req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+    else:
+        qs = urllib.parse.urlencode(params)
+        req = urllib.request.Request(f"{url}?{qs}", method="GET")
+
+    for k, v in hdrs.items():
         req.add_header(k, v)
     try:
         with urlopen_retry(req, timeout=180, context=SSL_CTX) as resp:
@@ -534,6 +566,35 @@ def _photoroom_edit(
     except urllib.error.HTTPError as e:
         err = e.read().decode("utf-8", errors="ignore")
         raise RuntimeError(f"Photoroom HTTP {e.code}: {err[:400]}") from e
+
+
+def _photoroom_edit(
+    source_url: str,
+    extra: dict | None = None,
+    headers: dict | None = None,
+    *,
+    remove_background: bool = True,
+    use_white_bg: bool = True,
+) -> bytes:
+    params = _build_photoroom_params(
+        extra, remove_background=remove_background, use_white_bg=use_white_bg
+    )
+    params["imageUrl"] = source_url
+    return _photoroom_request(params, headers=headers)
+
+
+def _photoroom_edit_file(
+    source_path: Path,
+    extra: dict | None = None,
+    headers: dict | None = None,
+    *,
+    remove_background: bool = True,
+    use_white_bg: bool = True,
+) -> bytes:
+    params = _build_photoroom_params(
+        extra, remove_background=remove_background, use_white_bg=use_white_bg
+    )
+    return _photoroom_request(params, headers=headers, file_path=source_path)
 
 
 def _legacy_plan_variant_jobs(source_urls: list[str], count: int) -> list[dict]:

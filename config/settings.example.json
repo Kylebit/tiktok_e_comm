@@ -1,6 +1,8 @@
 {
   "app_key": "YOUR_APP_KEY",
   "app_secret": "YOUR_APP_SECRET",
+  "service_id": "",
+  "redirect_url": "http://localhost:8080/callback",
   "token_file": "tiktok_tokens.json",
   "database": "data/shop.db",
   "exports_dir": "exports",
@@ -39,8 +41,8 @@
 
   "ai": {
     "api_key": "",
-    "base_url": "https://api.openai.com/v1",
-    "model": "gpt-4o-mini",
+    "base_url": "https://api.deepseek.com/v1",
+    "model": "deepseek-chat",
     "image_api_key": "",
     "image_base_url": "https://api.openai.com/v1",
     "image_model": "gpt-image-1-mini",
@@ -57,9 +59,10 @@
     "images": {
     "provider": "photoroom",
     "mode": "eval",
-    "sandbox": true,
+    "sandbox": false,
     "photoroom_api_key": "",
     "photoroom_api_key_production": "",
+    "note_sandbox": "sandbox=true 时输出图带 Photoroom 水印，仅适合试跑；正式上架请 sandbox=false + production key",
     "variants_per_product": 6,
     "eval_recipes": [
       "main_white",
@@ -131,7 +134,7 @@
     "enabled": false,
     "webhook_url": "",
     "console_base_url": "http://127.0.0.1:8765",
-    "ozon_data_dir": "/Users/wangyin/Desktop/e-commercial/ozon/webapp/data",
+    "ozon_data_dir": "../ozon/webapp/data",
     "digest_hour": 8,
     "note": "自定义机器人 Webhook = 单向日报；feishu_app = 双向 @ 交互"
   },
@@ -145,15 +148,45 @@
     "note": "企业自建应用 = 双向 @ 交互。配置后运行 python3 main.py feishu bot 或 HTTP /api/feishu/event"
   },
 
+  "shopee": {
+    "enabled": false,
+    "environment": "test",
+    "partner_id": 0,
+    "partner_key": "",
+    "redirect_url": "https://open.shopee.com",
+    "token_file": "shopee_tokens.json",
+    "regions": ["MY", "VN", "TH", "PH"],
+    "note": "Test: partner.test-stable.shopeemobile.com · Live: partner.shopeemobile.com。每 shop_id 单独 OAuth"
+  },
+
+  "ozon": {
+    "client_id": "",
+    "api_key": "",
+    "data_dir": "../ozon/webapp/data",
+    "note": "留空 client_id/api_key 时自动读 ozon/webapp/app.py；data_dir 默认可用 feishu.ozon_data_dir"
+  },
+
+  "catalog_sync": {
+    "cache_ttl_hours": 6,
+    "ozon_cache_ttl_hours": 6,
+    "note": "快速同步：TTL 内复用 data/cache 与 Ozon 快照"
+  },
+
   "sourcing": {
     "provider": "none",
+    "onebound": {
+      "api_key": "",
+      "api_secret": "",
+      "base_url": "https://api-gw.onebound.cn",
+      "note": "万邦 Onebound：控制台 key + secret；详情接口 1688/item_get 或 item_get_pro"
+    },
     "alibaba_1688": {
       "app_key": "",
       "app_secret": "",
       "access_token": "",
-      "note": "1688 开放平台 open.1688.com — 商品搜索/详情/图片。需企业资质注册应用"
+      "note": "1688 开放平台 open.1688.com — 需企业资质（与万邦二选一即可）"
     },
     "import_dir": "data/sourcing",
-    "note": "新品选品：provider=1688_api 走官方 API；provider=csv 从 import_dir 读 CSV（title, supplier_url, image_urls, cost_cny）。Temu 无公开选品 API，可手动导出 CSV 或接 ERP 中间件"
+    "note": "provider: none | onebound | csv。万邦填 onebound 后改 provider 为 onebound"
   }
 }

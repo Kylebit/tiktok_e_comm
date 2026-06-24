@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ozon 运营 · TikTok Shop 控制台</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <style>
+    .oz-subnav { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0; }
+    .oz-subnav button { padding: 8px 16px; border: 1px solid #ccc; border-radius: 6px; background: #fff; cursor: pointer; font-size: 14px; }
+    .oz-subnav button.active { background: #0ea5e9; color: #fff; border-color: #0ea5e9; }
+    .oz-tab { display: none; }
+    .oz-tab.active { display: block; }
+    .oz-flow { background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; font-size: 13px; line-height: 1.6; }
+    .oz-flow ol { margin: 8px 0 0 18px; padding: 0; }
+    .oz-flow code { background: #fff; padding: 1px 5px; border-radius: 4px; }
+    .oz-rules { font-size: 12px; color: #555; margin-top: 8px; }
+    table.oz { border-collapse: collapse; width: 100%; background: #fff; font-size: 13px; }
+    table.oz th, table.oz td { border-bottom: 1px solid #eee; padding: 8px; vertical-align: middle; }
+    table.oz th { background: #fafafa; text-align: left; font-weight: 600; }
+    table.oz tr.row-warn { background: #fff7ed; }
+    img.thumb { width: 48px; height: 64px; object-fit: cover; border-radius: 4px; }
+    .imgs img { width: 72px; height: 96px; object-fit: cover; margin: 2px; border-radius: 4px; border: 1px solid #ddd; }
+    .draft-grid { display: grid; grid-template-columns: 120px 1fr; gap: 8px 12px; margin-top: 12px; }
+    .draft-grid label { font-weight: 600; font-size: 12px; color: #555; padding-top: 6px; }
+    .draft-grid input, .draft-grid textarea { width: 100%; padding: 6px 8px; border: 1px solid #ccc; border-radius: 6px; font-size: 13px; box-sizing: border-box; }
+    .draft-grid textarea { min-height: 80px; }
+    .row2, .row3 { display: flex; gap: 6px; }
+    .row2 input { flex: 1; }
+    .row3 input { flex: 1; }
+    .id-with-name { display: flex; flex: 1; align-items: center; gap: 8px; min-width: 0; }
+    .id-with-name input { flex: 0 0 88px; width: 88px; }
+    .id-name { flex: 1; font-size: 12px; color: #555; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 12px 0; }
+    .pill { background: #eee; border-radius: 10px; padding: 2px 10px; font-size: 12px; }
+    #banner { display: none; background: #fff7e0; border: 1px solid #ffd966; border-radius: 8px; padding: 12px 16px; margin: 12px 0; font-size: 13px; }
+    tr.new-row td { background: #fef2f2; }
+    .oz-log { max-height: 240px; overflow: auto; background: #1e1e1e; color: #d4d4d4; font-family: ui-monospace, monospace; font-size: 12px; padding: 10px; border-radius: 6px; margin-top: 10px; }
+    .oz-log-line.ok { color: #86efac; }
+    .oz-log-line.err { color: #fca5a5; }
+    .oz-log-line.warn { color: #fcd34d; }
+    .err { color: #b91c1c; }
+    .tk-id { font-size: 11px; color: #666; max-width: 100px; overflow: hidden; text-overflow: ellipsis; }
+    #oz-task-banner { display: none; position: sticky; top: 0; z-index: 20; margin-bottom: 12px; padding: 12px 16px; border-radius: 8px; font-size: 13px; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+    #oz-task-banner.running { display: block; background: #eff6ff; border: 1px solid #93c5fd; }
+    #oz-task-banner.ok { display: block; background: #ecfdf5; border: 1px solid #86efac; }
+    #oz-task-banner.err { display: block; background: #fef2f2; border: 1px solid #fca5a5; }
+    .oz-task-title { font-weight: 600; margin-bottom: 6px; }
+    .oz-task-steps { margin: 0; padding-left: 18px; line-height: 1.7; }
+    .oz-task-steps li.pending { color: #888; }
+    .oz-task-steps li.active { color: #0369a1; font-weight: 600; }
+    .oz-task-steps li.done { color: #15803d; }
+    .oz-task-steps li.fail { color: #b91c1c; }
+    .oz-spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #93c5fd; border-top-color: #0369a1; border-radius: 50%; animation: oz-spin .8s linear infinite; vertical-align: -2px; margin-right: 6px; }
+    @keyframes oz-spin { to { transform: rotate(360deg); } }
+    .draft-loading { padding: 16px; }
+    tr.row-busy { opacity: 0.6; }
+    tr.row-busy button { pointer-events: none; }
+    tr.group-hdr td { background: #f0f9ff; font-size: 12px; font-weight: 600; color: #0369a1; padding: 10px 8px; }
+    tr.group-member td:first-child + td + td { padding-left: 4px; }
+    tr.row-warn { background: #fff7ed; }
+    .variant-tag { font-size: 11px; color: #555; background: #f3f4f6; padding: 1px 6px; border-radius: 4px; white-space: nowrap; }
+    .cat-editor { display: flex; flex-direction: column; gap: 8px; }
+    .cat-match-box { font-size: 12px; color: #444; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px 10px; line-height: 1.5; }
+    .cat-match-box .warn { color: #b45309; }
+    .cat-filter { width: 100%; padding: 6px 8px; border: 1px solid #ccc; border-radius: 6px; font-size: 13px; box-sizing: border-box; }
+    .cat-select { width: 100%; padding: 6px 8px; border: 1px solid #ccc; border-radius: 6px; font-size: 13px; box-sizing: border-box; }
+    .cat-ids-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; font-size: 12px; color: #555; }
+    .cat-ids-row input { width: 88px; padding: 4px 6px; border: 1px solid #ccc; border-radius: 4px; }
+    .cat-ids-row .id-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">TikTok Shop 控制台</a>
+    <nav class="nav">
+      <a href="/">首页</a>
+      <a href="/catalog">商品目录</a>
+      <a href="/settlement">结算利润</a>
+      <a href="/costs">成本维护</a>
+      <a href="/titles">Listing 优化</a>
+      <a href="/images">主图优化</a>
+      <a href="/sourcing">1688 选品</a>
+      <a href="/ozon" class="active">Ozon</a>
+      <a href="/analytics">Analytics</a>
+      <a href="/deactivate">零销下架</a>
+      <a href="/promotions">促销调价</a>
+    </nav>
+  </header>
+
+  <main class="container">
+    <h1>TikTok MY → Ozon 链接同步</h1>
+    <p class="hint">流程与 <code>ozon/CLAUDE.md</code> 一致，经本控制台代理 <code>/api/ozon/*</code> 调用 Ozon webapp。</p>
+
+    <div id="banner"></div>
+
+    <div class="oz-subnav">
+      <button type="button" class="active" data-tab="upload">上品搬运</button>
+      <button type="button" data-tab="price">改价预警</button>
+      <button type="button" data-tab="analytics">数据分析</button>
+      <button type="button" data-tab="promo">促销活动</button>
+      <button type="button" data-tab="history">历史</button>
+      <button type="button" data-tab="daily">日常任务</button>
+    </div>
+
+    <!-- 上品 -->
+    <section id="upload" class="oz-tab active">
+      <div class="oz-flow">
+        <strong>搬运四步（单条或批量相同）</strong>
+        <ol>
+          <li><code>GET /api/unmigrated</code> — 待搬运列表</li>
+          <li><code>GET /api/draft/{seller_sku}</code> — 用 <strong>6位 seller_sku</strong>（如 660827），不用 4位 offer_id</li>
+          <li><code>POST /api/process_images/{seller_sku}</code> — 3:4 裁剪上传（约30s/张）</li>
+          <li><code>POST /api/migrate</code> — 用 draft 返回的 <strong>4位 offer_id</strong> 提交</li>
+        </ol>
+        <div class="oz-rules">
+          待搬运 = 商品目录中<strong>全部 TikTok 商品</strong>（未在 Ozon 正式上架）。<strong>同链接多规格</strong>（如 0010–0013）各占一行，可逐规格或「整组搬运」。售价/主图按 SKU 规格取值。
+          点「生成草稿」后可在提交前<strong>修改 Ozon 类目、profile、标题与价格</strong>；批量/整组搬运仍用自动匹配结果。
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <button type="button" class="btn secondary" id="btn-refresh-unmig">刷新待搬运</button>
+        <span id="unmig-count" class="pill"></span>
+        <label>批量数量</label>
+        <input type="number" id="batch-count" value="5" min="1" max="20" style="width:56px;padding:6px">
+        <button type="button" class="btn" id="btn-batch-migrate">批量搬运（需确认）</button>
+      </div>
+      <div id="batch-log" class="oz-log" style="display:none"></div>
+
+      <div id="oz-task-banner" role="status" aria-live="polite">
+        <div class="oz-task-title" id="oz-task-title"></div>
+        <ol class="oz-task-steps" id="oz-task-steps"></ol>
+        <p class="meta" id="oz-task-hint" style="margin:8px 0 0"></p>
+      </div>
+
+      <div class="tbl-wrap">
+        <table class="oz" id="unmig-table">
+          <thead>
+            <tr>
+              <th><input type="checkbox" id="check-all-unmig"></th>
+              <th>图</th><th>offer_id</th><th>seller_sku</th><th>规格</th><th>tk_id</th><th>标题(MS)</th><th>图数</th><th>操作</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div id="draft-area" style="margin-top:20px"></div>
+    </section>
+
+    <!-- 改价 -->
+    <section id="price" class="oz-tab">
+      <div class="toolbar">
+        <button type="button" class="btn secondary" onclick="loadRedPrices()">扫描价格预警</button>
+        <button type="button" class="btn" onclick="applySelected()">应用选中建议价</button>
+        <button type="button" class="btn secondary" onclick="suppressSelected()">14天不再提醒</button>
+        <span id="price-status" class="meta"></span>
+      </div>
+      <div class="tbl-wrap">
+        <table class="oz" id="price-table">
+          <thead><tr>
+            <th><input type="checkbox" id="check-all" onchange="toggleAll(this)"></th>
+            <th>图</th><th>offer_id</th><th>商品名</th><th>现价</th><th>划线价</th>
+            <th>价格指数</th><th>建议价</th><th>建议划线</th><th>状态</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 分析 -->
+    <section id="analytics" class="oz-tab">
+      <div class="toolbar">
+        <button type="button" class="btn secondary" onclick="loadAnalytics(1)">近1天</button>
+        <button type="button" class="btn secondary" onclick="loadAnalytics(3)">近3天</button>
+        <button type="button" class="btn secondary" onclick="loadAnalytics(7)">近7天</button>
+        <span id="analytics-status" class="meta"></span>
+      </div>
+      <div class="tbl-wrap">
+        <table class="oz" id="analytics-table">
+          <thead><tr>
+            <th>图</th><th>offer_id</th><th>商品名</th><th>曝光</th><th>访客</th><th>浏览</th>
+            <th>CTR%</th><th>加购</th><th>加购率%</th><th>订单</th><th>销售额</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 促销 -->
+    <section id="promo" class="oz-tab">
+      <div class="toolbar">
+        <button type="button" class="btn secondary" onclick="loadPromotions()">扫描弹性提升活动</button>
+        <button type="button" class="btn" onclick="applyPromotions()">参加选中商品</button>
+        <span id="promo-status" class="meta"></span>
+      </div>
+      <div id="promo-info" class="card" style="display:none;margin-bottom:12px"></div>
+      <div class="tbl-wrap">
+        <table class="oz" id="promo-table">
+          <thead><tr>
+            <th><input type="checkbox" id="promo-check-all" onchange="togglePromoAll(this)"></th>
+            <th>图</th><th>offer_id</th><th>商品名</th><th>现价</th><th>弹性区间</th><th>提升%</th><th>建议活动价</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 历史 -->
+    <section id="history" class="oz-tab">
+      <div class="toolbar">
+        <button type="button" class="btn secondary" onclick="loadHistory()">刷新</button>
+      </div>
+      <div class="card">
+        <h3>已搬运 (<span id="hist-migrated-count">0</span>)</h3>
+        <p id="hist-migrated" class="meta"></p>
+      </div>
+      <div class="card">
+        <h3>搬运记录</h3>
+        <table class="oz"><thead><tr><th>日期</th><th>offer_id</th><th>标题</th></tr></thead>
+        <tbody id="hist-migrate-log"></tbody></table>
+      </div>
+      <div class="card">
+        <h3>改价记录</h3>
+        <table class="oz"><thead><tr><th>日期</th><th>offer_id</th><th>新价</th><th>划线价</th></tr></thead>
+        <tbody id="hist-price-log"></tbody></table>
+      </div>
+    </section>
+
+    <!-- 日常 -->
+    <section id="daily" class="oz-tab">
+      <div class="card">
+        <h3>每日例行（CLAUDE.md）</h3>
+        <p class="hint">无自动调度，需手动触发。</p>
+        <div class="toolbar">
+          <button type="button" class="btn secondary" onclick="runDailyRedPrices()">① 扫描价格预警</button>
+          <button type="button" class="btn" onclick="runAutoPromo()">② 自动激活弹性提升</button>
+        </div>
+        <pre id="daily-log" class="oz-log" style="display:block;min-height:80px"></pre>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/ozon-migrate.js"></script>
+  <script>
+    function showTab(name) {
+      document.querySelectorAll('.oz-tab').forEach(function (t) { t.classList.remove('active'); });
+      document.querySelectorAll('.oz-subnav button').forEach(function (b) { b.classList.remove('active'); });
+      document.getElementById(name).classList.add('active');
+      document.querySelector('.oz-subnav button[data-tab="' + name + '"]').classList.add('active');
+      if (name === 'history') loadHistory();
+    }
+    document.querySelectorAll('.oz-subnav button').forEach(function (b) {
+      b.onclick = function () { showTab(b.dataset.tab); };
+    });
+
+    OzonMigrate.bindUploadTab();
+    OzonMigrate.loadUnmigrated();
+
+    // ---- 改价 ----
+    var redData = [];
+    function renderRedTable(rows, prefix) {
+      redData = rows;
+      document.getElementById('price-status').textContent =
+        (prefix || '') + '共 ' + rows.length + ' 个 RED，新出现 ' + rows.filter(function (x) { return x.is_new; }).length;
+      var tbody = document.querySelector('#price-table tbody');
+      tbody.innerHTML = '';
+      rows.forEach(function (it, idx) {
+        var tr = document.createElement('tr');
+        if (it.is_new) tr.className = 'new-row';
+        tr.innerHTML =
+          '<td><input type="checkbox" class="row-check" data-idx="' + idx + '"' + (it.is_new ? ' checked' : '') + '></td>' +
+          '<td><img class="thumb" src="' + it.image + '"></td><td>' + it.offer_id + '</td>' +
+          '<td>' + (it.name || '').slice(0, 40) + '</td><td>' + it.cur_price + '</td><td>' + it.cur_old_price + '</td>' +
+          '<td>' + it.price_index + '</td>' +
+          '<td><input style="width:70px" value="' + it.suggested_price + '" data-field="price" data-idx="' + idx + '"></td>' +
+          '<td><input style="width:70px" value="' + it.suggested_old_price + '" data-field="old_price" data-idx="' + idx + '"></td>' +
+          '<td>' + (it.is_new ? '新' : '持续') + '</td>';
+        tbody.appendChild(tr);
+      });
+    }
+    function toggleAll(cb) {
+      document.querySelectorAll('.row-check').forEach(function (c) { c.checked = cb.checked; });
+    }
+    function loadRedPrices() {
+      document.getElementById('price-status').textContent = '扫描中(30-60s)…';
+      OzonMigrate.api('red_prices').then(function (rows) { renderRedTable(rows, ''); });
+    }
+    function loadCachedRedPrices() {
+      OzonMigrate.api('pending_price_review').then(function (cached) {
+        if (cached && cached.rows) renderRedTable(cached.rows, '(缓存 ' + cached.generated_at + ') ');
+      });
+    }
+    function applySelected() {
+      var items = [];
+      document.querySelectorAll('.row-check:checked').forEach(function (c) {
+        var idx = c.dataset.idx;
+        items.push({
+          offer_id: redData[idx].offer_id,
+          price: document.querySelector('input[data-field="price"][data-idx="' + idx + '"]').value,
+          old_price: document.querySelector('input[data-field="old_price"][data-idx="' + idx + '"]').value
+        });
+      });
+      if (!items.length) { alert('请勾选'); return; }
+      if (!confirm('确认改价 ' + items.length + ' 个？')) return;
+      OzonMigrate.api('apply_prices', { method: 'POST', body: { items: items } }).then(function (d) {
+        var ok = (d.result || []).filter(function (x) { return x.updated; }).length;
+        document.getElementById('price-status').textContent = '完成 ' + ok + '/' + items.length;
+      });
+    }
+    function suppressSelected() {
+      var ids = [];
+      document.querySelectorAll('.row-check:checked').forEach(function (c) {
+        ids.push(redData[c.dataset.idx].offer_id);
+      });
+      if (!ids.length || !confirm('14天内不再提醒 ' + ids.length + ' 个？')) return;
+      OzonMigrate.api('price_suppress', { method: 'POST', body: { offer_ids: ids } }).then(function (d) {
+        var sup = new Set(ids);
+        renderRedTable(redData.filter(function (x) { return !sup.has(x.offer_id); }), '');
+        document.getElementById('price-status').textContent = '已抑制至 ' + d.suppressed_until;
+      });
+    }
+
+    function loadBanner() {
+      OzonMigrate.api('daily_summary').then(function (d) {
+        var banner = document.getElementById('banner');
+        if (!d) { banner.style.display = 'none'; return; }
+        banner.style.display = 'block';
+        banner.innerHTML =
+          '<b>每日报告 (' + d.date + ')</b> 搬运 ' + (d.migrated || []).length + ' 个 · RED ' + (d.red_count || '?') +
+          ' 个 <button class="btn btn-sm" onclick="showTab(\'price\');loadCachedRedPrices()">改价</button>' +
+          '<button class="btn btn-sm btn-secondary" onclick="this.parentElement.style.display=\'none\'">关闭</button>';
+      }).catch(function () {});
+    }
+
+    // ---- 分析 ----
+    function loadAnalytics(days) {
+      document.getElementById('analytics-status').textContent = '加载中…';
+      OzonMigrate.api('analytics?days=' + days).then(function (d) {
+        document.getElementById('analytics-status').textContent = d.date_from + ' ~ ' + d.date_to + ' · ' + d.rows.length + ' 个';
+        var tbody = document.querySelector('#analytics-table tbody');
+        tbody.innerHTML = d.rows.map(function (it) {
+          return '<tr><td><img class="thumb" src="' + it.image + '"></td><td>' + it.offer_id + '</td><td>' +
+            (it.name || '').slice(0, 36) + '</td><td>' + it.impressions + '</td><td>' + it.visitors + '</td><td>' +
+            it.pdp_views + '</td><td>' + it.ctr + '</td><td>' + it.add_to_cart + '</td><td>' + it.conv_to_cart +
+            '</td><td>' + it.orders + '</td><td>' + it.revenue + '</td></tr>';
+        }).join('');
+      });
+    }
+
+    // ---- 促销 ----
+    var promoData = [];
+    function renderPromoTable(d) {
+      promoData = d.rows;
+      var info = document.getElementById('promo-info');
+      info.style.display = 'block';
+      info.innerHTML = '<b>' + d.action.title + '</b> 已参加 ' + d.action.participating_products_count + ' · 可加入 ' + d.rows.length;
+      document.querySelector('#promo-table tbody').innerHTML = d.rows.map(function (it, idx) {
+        return '<tr><td><input type="checkbox" class="promo-check" data-idx="' + idx + '"></td>' +
+          '<td><img class="thumb" src="' + it.image + '"></td><td>' + it.offer_id + '</td><td>' + (it.name || '').slice(0, 36) +
+          '</td><td>' + it.price + '</td><td>' + it.price_min_elastic + '~' + it.price_max_elastic + '</td><td>' +
+          it.min_boost + '~' + it.max_boost + '%</td><td><input class="promo-price" data-idx="' + idx + '" value="' + it.suggested_action_price + '" style="width:70px"></td></tr>';
+      }).join('');
+    }
+    function togglePromoAll(cb) {
+      document.querySelectorAll('.promo-check').forEach(function (c) { c.checked = cb.checked; });
+    }
+    function loadPromotions() {
+      document.getElementById('promo-status').textContent = '扫描中…';
+      OzonMigrate.api('promotions').then(function (d) {
+        renderPromoTable(d);
+        document.getElementById('promo-status').textContent = '';
+      });
+    }
+    function applyPromotions() {
+      var items = [];
+      document.querySelectorAll('.promo-check:checked').forEach(function (c) {
+        var idx = c.dataset.idx;
+        items.push({
+          product_id: promoData[idx].product_id,
+          offer_id: promoData[idx].offer_id,
+          action_price: Number(document.querySelector('.promo-price[data-idx="' + idx + '"]').value)
+        });
+      });
+      if (!items.length || !confirm('确认 ' + items.length + ' 个参加弹性提升？')) return;
+      OzonMigrate.api('promotions/activate', { method: 'POST', body: { items: items } }).then(function (d) {
+        document.getElementById('promo-status').textContent = JSON.stringify(d).slice(0, 120);
+        loadPromotions();
+      });
+    }
+
+    // ---- 历史 ----
+    function loadHistory() {
+      OzonMigrate.api('history').then(function (d) {
+        document.getElementById('hist-migrated-count').textContent = d.migrated.length;
+        document.getElementById('hist-migrated').textContent = d.migrated.join(', ');
+        document.getElementById('hist-migrate-log').innerHTML = d.migrate_log.slice().reverse().map(function (it) {
+          return '<tr><td>' + it.date + '</td><td>' + it.offer_id + '</td><td>' + (it.title || '').slice(0, 50) + '</td></tr>';
+        }).join('');
+        document.getElementById('hist-price-log').innerHTML = d.price_log.slice().reverse().map(function (it) {
+          return '<tr><td>' + it.date + '</td><td>' + it.offer_id + '</td><td>' + it.price + '</td><td>' + it.old_price + '</td></tr>';
+        }).join('');
+      });
+    }
+
+    // ---- 日常 ----
+    function dailyLog(msg) {
+      var el = document.getElementById('daily-log');
+      el.textContent += msg + '\n';
+    }
+    function runDailyRedPrices() {
+      dailyLog('扫描价格预警…');
+      OzonMigrate.api('red_prices').then(function (rows) {
+        dailyLog('RED 商品 ' + rows.length + ' 个，新 ' + rows.filter(function (x) { return x.is_new; }).length + ' 个');
+        showTab('price');
+        renderRedTable(rows, '');
+      }).catch(function (e) { dailyLog('失败: ' + e.message); });
+    }
+    function runAutoPromo() {
+      if (!confirm('自动激活所有符合条件的弹性提升？')) return;
+      dailyLog('自动激活促销…');
+      OzonMigrate.api('promotions/auto_activate', { method: 'POST', body: {} }).then(function (d) {
+        dailyLog(JSON.stringify(d));
+      }).catch(function (e) { dailyLog('失败: ' + e.message); });
+    }
+
+    loadCachedRedPrices();
+    loadBanner();
+  </script>
+</body>
+</html>

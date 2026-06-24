@@ -162,7 +162,33 @@ def _clear_shop_products(conn, cipher: str) -> None:
     conn.execute("DELETE FROM products WHERE shop_cipher = ?", (cipher,))
 
 
-def sync_shop(access_token: str, shop: dict, fetch_images: bool = True) -> int:
+def _delete_stale_products(conn, cipher: str, keep_product_ids: set[str]) -> None:
+    if not keep_product_ids:
+        _clear_shop_products(conn, cipher)
+        return
+    rows = conn.execute(
+        "SELECT DISTINCT product_id FROM products WHERE shop_cipher = ?",
+        (cipher,),
+    ).fetchall()
+    stale = [r[0] for r in rows if r[0] and r[0] not in keep_product_ids]
+    for pid in stale:
+        conn.execute(
+            "DELETE FROM products WHERE shop_cipher = ? AND product_id = ?",
+            (cipher, pid),
+        )
+
+
+def sync_shop(
+    access_token: str,
+    shop: dict,
+    fetch_images: bool = True,
+    on_progress=None,
+    *,
+    use_cache: bool = True,
+    force_refresh: bool = False,
+) -> dict:
+    from modules.catalog.sync_cache import load_tk_detail, save_tk_detail
+
     cipher = shop.get("cipher") or shop.get("shop_cipher", "")
     region = shop.get("region", "?")
     name = shop.get("name", "")
@@ -183,35 +209,80 @@ def sync_shop(access_token: str, shop: dict, fetch_images: bool = True) -> int:
         page_token = data.get("next_page_token") or ""
         if not page_token:
             break
-        time.sleep(0.12)
+        time.sleep(0.08)
 
     conn = connect()
     _upsert_shop(conn, shop)
-    _clear_shop_products(conn, cipher)
+    if force_refresh:
+        _clear_shop_products(conn, cipher)
+    else:
+        _delete_stale_products(conn, cipher, set(product_ids))
+
     total_skus = 0
+    total = len(product_ids)
+    cache_hits = 0
+    api_fetches = 0
     for i, pid in enumerate(product_ids, 1):
-        if fetch_images:
+        detail = None
+        if fetch_images and use_cache and not force_refresh:
+            detail = load_tk_detail(cipher, pid)
+            if detail:
+                cache_hits += 1
+        if fetch_images and detail is None:
             detail = _fetch_product_detail(access_token, cipher, pid)
-        else:
+            api_fetches += 1
+            if use_cache:
+                save_tk_detail(cipher, pid, detail)
+            time.sleep(0.06)
+        elif not fetch_images:
             detail = {"id": pid, "skus": []}
         rows = _rows_from_product(shop, detail)
         if rows:
             total_skus += _upsert_products(conn, rows)
-        if i % 20 == 0 or i == len(product_ids):
-            print(f"{i}/{len(product_ids)}", end=" ", flush=True)
-        time.sleep(0.1)
+        if on_progress and (i % 5 == 0 or i == total):
+            tag = f"（缓存 {cache_hits}）" if cache_hits else ""
+            on_progress(
+                i,
+                total,
+                f"TikTok {name} [{region}] {i}/{total} 商品{tag}",
+            )
+        elif i % 20 == 0 or i == total:
+            print(f"{i}/{total}", end=" ", flush=True)
 
     conn.commit()
     conn.close()
-    print(f"→ {len(product_ids)} 商品, {total_skus} SKU")
-    return total_skus
+    print(f"→ {len(product_ids)} 商品, {total_skus} SKU (API {api_fetches}, 缓存 {cache_hits})")
+    return {"skus": total_skus, "products": len(product_ids), "cache_hits": cache_hits, "api_fetches": api_fetches}
 
 
-def sync_all(access_token: str | None = None, fetch_images: bool = True) -> dict:
+def sync_all(
+    access_token: str | None = None,
+    fetch_images: bool = True,
+    on_progress=None,
+    *,
+    use_cache: bool = True,
+    force_refresh: bool = False,
+) -> dict:
     init_db()
     token = access_token or auth.access_token()
     shop_list = shops.list_shops(token)
-    stats = {"shops": len(shop_list), "skus": 0}
-    for shop in shop_list:
-        stats["skus"] += sync_shop(token, shop, fetch_images=fetch_images)
+    stats = {"shops": len(shop_list), "skus": 0, "cache_hits": 0, "api_fetches": 0}
+    n = len(shop_list) or 1
+    for idx, shop in enumerate(shop_list):
+
+        def shop_prog(cur: int, tot: int, msg: str, _i=idx) -> None:
+            if on_progress:
+                on_progress(_i * tot + cur, n * max(tot, 1), msg)
+
+        r = sync_shop(
+            token,
+            shop,
+            fetch_images=fetch_images,
+            on_progress=shop_prog if on_progress else None,
+            use_cache=use_cache,
+            force_refresh=force_refresh,
+        )
+        stats["skus"] += int(r.get("skus") or 0)
+        stats["cache_hits"] += int(r.get("cache_hits") or 0)
+        stats["api_fetches"] += int(r.get("api_fetches") or 0)
     return stats

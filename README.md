@@ -1,50 +1,60 @@
 # TikTok Shop 控制台
 
-LivelyHive 东南亚跨境店本地运营工具：商品同步、Listing 优化、促销、Analytics 分段、零销下架。
+LivelyHive 东南亚跨境店本地运营工具：商品目录、TikTok/Ozon/Shopee 联动、Listing 优化、结算利润、Ozon 上品搬运。
 
 ## 快速开始
 
 ```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-catalog.txt
+
 python3 main.py init
-# 编辑 config/settings.json（可从 settings.example.json 复制字段）
+# 编辑 config/settings.json（可从 settings.example.json 复制）
 python3 main.py auth
-python3 main.py products sync
-python3 main.py serve
+python3 main.py serve --port 8765
 ```
 
-浏览器打开 `http://127.0.0.1:8765/`。
+浏览器：`http://127.0.0.1:8765/`
+
+## 另一台电脑部署
+
+1. **代码**：`git clone git@github.com:Kylebit/tiktok_e_comm.git`
+2. **Ozon 子应用**：同级目录放置 `ozon/webapp/`（见 [docs/DEPLOY.md](docs/DEPLOY.md)）
+3. **凭据/数据库**：用 U 盘或 `scripts/bundle_secrets.sh` 从旧机器拷贝，**勿提交 GitHub**
+4. **Cursor 记忆**：仓库内 `AGENTS.md` + `.cursor/rules/` 会在新机器自动生效
+
+完整步骤：[docs/DEPLOY.md](docs/DEPLOY.md)
 
 ## 主要功能
 
 | 页面 / 命令 | 说明 |
 |-------------|------|
-| `/titles` | Analytics A 类 → AI 标题+详情 → 确认推送 |
-| `/images` | Analytics B 类 → 基于 listing 原图抠白底 → 下载后手动上传 |
-| `/promotions` | 加深折扣 / 加入促销 / 秒杀 / 优惠券建议 |
-| `/analytics` | 28 天 CTR 分段（A/B/C/D） |
-| `/deactivate` | 90 天 0 单 + 低 CTR → 批量下架 |
-| `/costs` | SKU 采购成本维护 |
+| `/catalog` | 商品目录（TikTok + Ozon 快照、物流实测重量） |
+| `/ozon` | TikTok → Ozon 上品（草稿可改类目/文案后再提交） |
+| `/settlement` | 结算与利润 |
+| `/titles` | Analytics A 类 → AI 标题 → 推送 |
+| `/images` | 主图抠白底（Photoroom） |
+| `/promotions` | 促销调价 |
+| `/analytics` | 28 天 CTR 分段 |
+| `/deactivate` | 零销下架 |
+| `/sourcing` | 1688 选品 |
 
 ```bash
-python3 main.py products analytics-sync
-python3 main.py products listing-scan --limit 20
-python3 main.py products image-scan --limit 10 --region MY
-python3 main.py products promo-scan --mode analytics --scope add
-python3 main.py products deactivate-scan
-python3 main.py digest preview          # 预览飞书日报
-python3 main.py digest send             # 发送到飞书（需配置 webhook）
+python3 main.py products sync
+python3 main.py serve
 ```
 
 ## 配置
 
-- `config/settings.json` — API Key、AI、促销参数（**勿提交 git**）
-- `tiktok_tokens.json` — Shop OAuth Token（**勿提交 git**）
-- 模板见 `config/settings.example.json`
+- `config/settings.json` — API Key、DeepSeek、Ozon、飞书（**勿提交 git**）
+- `tiktok_tokens.json` — Shop OAuth（**勿提交 git**）
+- 模板：`config/settings.example.json`
 
 ## 架构
 
-详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- [AGENTS.md](AGENTS.md) — AI / Cursor 项目说明
 
-## 安全提示
+## 安全
 
-仓库已忽略 Token、数据库、导出文件。克隆到新机器后需重新 `init` + `auth`，并复制本地配置。
+仓库已忽略 Token、数据库、settings。克隆后需 `init` + `auth`，并从旧机器安全拷贝 `data/shop.db` 与 token 文件。

@@ -2,7 +2,7 @@
 
 > 更新：2026-06-02 · 供多个 Cursor Agent 并行拆解任务  
 > 基准商品线：**TikTok 东南亚跨境四国 merge**（VN/PH/MY/TH）· LivelyHive  
-> **已有 API：** TikTok Shop Open API、Ozon Seller API · Shopee/Temu 暂无
+> **已有 API：** TikTok Shop Open API、Ozon Seller API、**Shopee Open API（Developing，Test 凭据已收）** · Temu 暂无
 
 ---
 
@@ -16,7 +16,7 @@
 | **TikTok 跨境 第一组** | + UK, JP, MX | ❌ 未接 | 从 A 母版复制 + 本地化 |
 | **TikTok 本土** | MY, TH | ❌ 未接（可能另一 OAuth） | 母版 + 本土价/库存规则 |
 | **TikTok 跨境 第二组** | — | — | **不属于 A 线** |
-| **Shopee 跨境** | VN, PH, MY, TH | ❌ 无 API | 阶段 3：CSV/ERP 过渡 → API |
+| **Shopee 跨境** | VN, PH, MY, TH | 🟡 `modules/shopee/` auth 骨架 | API 联调 → Master merge |
 | **Temu** | MY | ❌ 无 API | 阶段 3：CSV 过渡 → API |
 | **Ozon 跨境** | RU | ⚠️ 独立工程 | 见 `ozon/webapp` |
 

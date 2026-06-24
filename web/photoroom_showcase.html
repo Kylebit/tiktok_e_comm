@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Photoroom 能力试跑</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <style>
+    .hero-bar { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; margin-bottom: 16px; }
+    .hero-bar img { width: 96px; height: 96px; object-fit: cover; border-radius: 8px; border: 1px solid #eee; }
+    .hero-bar .meta h1 { font-size: 18px; margin: 0 0 6px; line-height: 1.35; }
+    .hero-bar .meta p { margin: 0; font-size: 12px; color: #64748b; }
+    .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; }
+    .toolbar .status { font-size: 12px; color: #475569; flex: 1; min-width: 200px; }
+    .summary-pills { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+    .pill { font-size: 11px; padding: 4px 10px; border-radius: 999px; background: #f1f5f9; color: #334155; }
+    .pill.ok { background: #dcfce7; color: #166534; }
+    .pill.err { background: #fee2e2; color: #991b1b; }
+    .catalog-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 20px; }
+    .catalog-table th, .catalog-table td { border: 1px solid #e8e8e8; padding: 6px 8px; text-align: left; }
+    .catalog-table th { background: #f8fafc; }
+    .section { border: 1px solid #e8e8e8; border-radius: 10px; background: #fff; padding: 16px; margin-bottom: 16px; }
+    .section h2 { font-size: 15px; margin: 0 0 4px; }
+    .section .desc { font-size: 12px; color: #64748b; margin-bottom: 12px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+    .card { border: 1px solid #e8e8e8; border-radius: 8px; overflow: hidden; background: #fafafa; }
+    .card img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; background: #fff; cursor: zoom-in; }
+    .card .head { padding: 8px 10px; font-size: 12px; font-weight: 600; background: #fff; border-bottom: 1px solid #eee; line-height: 1.35; }
+    .card .foot { padding: 6px 10px; font-size: 10px; color: #64748b; }
+    .card.error { border-color: #fecaca; }
+    .card.error .head { color: #b91c1c; }
+    .kind-main { border-top: 3px solid #2563eb; }
+    .kind-scene { border-top: 3px solid #059669; }
+    .kind-prep { border-top: 3px solid #d97706; }
+    .kind-explore { border-top: 3px solid #7c3aed; }
+    .kind-detail_page { border-top: 3px solid #db2777; }
+    .compare-row { display: grid; grid-template-columns: 120px 1fr; gap: 8px; align-items: center; font-size: 11px; color: #64748b; margin-bottom: 10px; }
+    .compare-row img { width: 120px; height: 120px; object-fit: cover; border-radius: 6px; border: 1px solid #eee; }
+    .empty { color: #94a3b8; font-size: 13px; padding: 32px; text-align: center; }
+    .lightbox { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.85); z-index: 999; align-items: center; justify-content: center; padding: 24px; }
+    .lightbox.open { display: flex; }
+    .lightbox img { max-width: min(92vw, 900px); max-height: 90vh; border-radius: 8px; }
+    .lightbox .cap { color: #fff; text-align: center; margin-top: 10px; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">TikTok Shop 控制台</a>
+    <nav class="nav">
+      <a href="/">首页</a>
+      <a href="/catalog">商品目录</a>
+      <a href="/sourcing">1688 选品</a>
+      <a href="/sourcing/photoroom" class="active">Photoroom 试跑</a>
+      <a href="/images">主图优化</a>
+    </nav>
+  </header>
+  <main class="container">
+    <div class="hero-bar" id="heroBar" style="display:none">
+      <img id="heroImg" alt="">
+      <div class="meta">
+        <h1 id="heroTitle"></h1>
+        <p id="heroSub"></p>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <input type="text" id="offerInput" placeholder="1688 offer id" style="width:160px">
+      <button class="btn primary" id="btnLoad">加载</button>
+      <button class="btn" id="btnBuild">全量试跑（约 33 次 API）</button>
+      <span class="status" id="jobStatus"></span>
+    </div>
+
+    <div class="summary-pills" id="summaryPills"></div>
+
+    <div class="section" id="catalogSection">
+      <h2>Photoroom Recipe 目录（共 15 种）</h2>
+      <p class="desc">主图组对 main_01 跑全部 recipe；详情组对 3 张代表性详情图跑 6 种适用 recipe。</p>
+      <table class="catalog-table" id="catalogTable">
+        <thead><tr><th>ID</th><th>名称</th><th>类型</th><th>TikTok 槽位建议</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="groups"></div>
+
+    <div class="empty" id="emptyState">输入 offer id（如 602663165550）并加载，或点击「全量试跑」生成样例图。</div>
+  </main>
+
+  <div class="lightbox" id="lightbox">
+    <div>
+      <img id="lbImg" alt="">
+      <div class="cap" id="lbCap"></div>
+    </div>
+  </div>
+
+  <script>
+    const params = new URLSearchParams(location.search);
+    let offerId = params.get('offer_id') || '602663165550';
+    let pollTimer = null;
+
+    const GROUP_META = {
+      main: { title: '主图能力', desc: '白底、阴影、补光、放大 — 基于 main_01 原图', cls: 'kind-main' },
+      scene: { title: '场景 lifestyle', desc: '客厅 / 卧室 / 极简 / 浴室 — AI 生成背景', cls: 'kind-scene' },
+      prep: { title: '预处理', desc: '去水印、AI 放大', cls: 'kind-prep' },
+      explore: { title: 'AI 探索', desc: '人手场景、3/4 角度、尺寸对比、细节特写', cls: 'kind-explore' },
+      detail_page: { title: '详情页试跑', desc: '对 supplier 详情图应用去水印 / 场景 / 特写等', cls: 'kind-detail_page' },
+    };
+
+    document.getElementById('offerInput').value = offerId;
+
+    function assetUrl(relPath) {
+      const file = relPath.replace(/^data\/sourcing\/[^/]+\//, '');
+      return `/api/sourcing/asset?offer_id=${encodeURIComponent(offerId)}&file=${encodeURIComponent(file)}`;
+    }
+
+    function renderCatalog(recipes) {
+      const tb = document.querySelector('#catalogTable tbody');
+      tb.innerHTML = (recipes || []).map(r => `
+        <tr>
+          <td><code>${r.id}</code></td>
+          <td>${r.label}</td>
+          <td>${r.kind}</td>
+          <td>${r.tiktok_hint || ('槽位' + (r.tiktok_slot || '-'))}</td>
+        </tr>
+      `).join('');
+    }
+
+    function renderCard(item) {
+      const ok = item.status === 'ok';
+      const src = ok ? (item.url || assetUrl(item.path)) : '';
+      const extra = item.detail_label ? `<div class="foot">${item.detail_label} · ${item.source_file || ''}</div>` : `<div class="foot">${item.source_file || 'main_01'} · ${item.tiktok_hint || ''}</div>`;
+      return `
+        <div class="card ${ok ? '' : 'error'}">
+          <div class="head">${item.label || item.recipe_id}</div>
+          ${ok ? `<img src="${src}" alt="" data-cap="${item.label}" loading="lazy">` : `<div class="foot" style="padding:24px;color:#b91c1c">${item.error || '失败'}</div>`}
+          ${ok ? extra : ''}
+        </div>`;
+    }
+
+    function renderManifest(m) {
+      if (!m) {
+        document.getElementById('emptyState').style.display = 'block';
+        document.getElementById('groups').innerHTML = '';
+        document.getElementById('heroBar').style.display = 'none';
+        document.getElementById('summaryPills').innerHTML = '';
+        return;
+      }
+      document.getElementById('emptyState').style.display = 'none';
+      document.getElementById('heroBar').style.display = 'flex';
+      document.getElementById('heroTitle').textContent = m.title || offerId;
+      document.getElementById('heroSub').textContent = `offer ${m.offer_id} · 源主图 ${m.source_main || ''} · ${m.built_at || ''}${m.sandbox ? ' · sandbox' : ''}`;
+      if (m.source_main) {
+        document.getElementById('heroImg').src = assetUrl(m.source_main.replace(/^data\/sourcing\/[^/]+\//, ''));
+      }
+      const s = m.summary || {};
+      document.getElementById('summaryPills').innerHTML = `
+        <span class="pill">共 ${s.total || 0} 张</span>
+        <span class="pill ok">成功 ${s.ok || 0}</span>
+        <span class="pill err">失败 ${s.error || 0}</span>`;
+
+      const host = document.getElementById('groups');
+      host.innerHTML = Object.entries(GROUP_META).map(([key, meta]) => {
+        const items = (m.groups && m.groups[key]) || [];
+        if (!items.length) return '';
+        return `
+          <div class="section ${meta.cls}">
+            <h2>${meta.title}</h2>
+            <p class="desc">${meta.desc}（${items.length} 张）</p>
+            <div class="grid">${items.map(renderCard).join('')}</div>
+          </div>`;
+      }).join('');
+
+      host.querySelectorAll('img[data-cap]').forEach(img => {
+        img.addEventListener('click', () => openLightbox(img.src, img.dataset.cap));
+      });
+    }
+
+    function openLightbox(src, cap) {
+      document.getElementById('lbImg').src = src;
+      document.getElementById('lbCap').textContent = cap || '';
+      document.getElementById('lightbox').classList.add('open');
+    }
+    document.getElementById('lightbox').addEventListener('click', () => {
+      document.getElementById('lightbox').classList.remove('open');
+    });
+
+    async function loadData() {
+      offerId = document.getElementById('offerInput').value.trim();
+      if (!offerId) return;
+      history.replaceState(null, '', `?offer_id=${offerId}`);
+      const r = await fetch(`/api/sourcing/photoroom-showcase?offer_id=${encodeURIComponent(offerId)}`);
+      const j = await r.json();
+      if (!j.ok) return alert(j.error || '加载失败');
+      renderCatalog(j.recipes);
+      renderManifest(j.manifest);
+      if (!j.enabled) {
+        document.getElementById('jobStatus').textContent = '⚠️ 未配置 Photoroom API Key';
+      }
+    }
+
+    async function pollJob() {
+      const r = await fetch('/api/sourcing/photoroom-showcase/status');
+      const j = await r.json();
+      const st = j.message || '';
+      const el = document.getElementById('jobStatus');
+      if (j.running) {
+        el.textContent = '⏳ ' + (j.message || '试跑中…');
+        pollTimer = setTimeout(pollJob, 2000);
+      } else {
+        el.textContent = j.error ? ('❌ ' + j.error) : (st || '就绪');
+        if (j.result && !j.error) await loadData();
+      }
+    }
+
+    async function startBuild() {
+      offerId = document.getElementById('offerInput').value.trim();
+      if (!offerId) return alert('请输入 offer id');
+      if (!confirm('将对当前商品跑全部 Photoroom recipe（约 33 次 API 调用，需数分钟）。继续？')) return;
+      const r = await fetch('/api/sourcing/photoroom-showcase/build', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ offer_id: offerId }),
+      });
+      const j = await r.json();
+      if (!j.ok) return alert(j.message || j.error || '启动失败');
+      document.getElementById('jobStatus').textContent = '⏳ ' + j.message;
+      if (pollTimer) clearTimeout(pollTimer);
+      pollTimer = setTimeout(pollJob, 1500);
+    }
+
+    document.getElementById('btnLoad').addEventListener('click', loadData);
+    document.getElementById('btnBuild').addEventListener('click', startBuild);
+    loadData();
+    fetch('/api/sourcing/photoroom-showcase/status').then(r => r.json()).then(j => {
+      if (j.running) pollJob();
+    });
+  </script>
+</body>
+</html>

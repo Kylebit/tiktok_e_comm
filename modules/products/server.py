@@ -6,7 +6,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from core.config import ROOT
 from modules.products import costs as cost_mod
@@ -86,6 +86,44 @@ _image_scan_job: dict = {
     "message": "",
     "count": 0,
     "error": None,
+}
+
+_catalog_sync_lock = threading.Lock()
+_catalog_sync_job: dict = {
+    "running": False,
+    "message": "",
+    "percent": 0,
+    "phase": "",
+    "mode": "fast",
+    "result": None,
+    "error": None,
+}
+
+_sourcing_build_lock = threading.Lock()
+_sourcing_build_job: dict = {
+    "running": False,
+    "message": "",
+    "offer_id": "",
+    "error": None,
+    "result": None,
+}
+
+_photoroom_showcase_lock = threading.Lock()
+_photoroom_showcase_job: dict = {
+    "running": False,
+    "message": "",
+    "offer_id": "",
+    "error": None,
+    "result": None,
+}
+
+_dewatermark_lock = threading.Lock()
+_dewatermark_job: dict = {
+    "running": False,
+    "message": "",
+    "offer_id": "",
+    "error": None,
+    "result": None,
 }
 
 
@@ -518,6 +556,251 @@ def _start_image_scan(
     return True, "已开始生成"
 
 
+def _run_sourcing_build(
+    offer_id: str,
+    *,
+    plan_version: str = "v2",
+    skip_slots: bool = False,
+    skip_images: bool = False,
+) -> None:
+    global _sourcing_build_job
+    try:
+        from modules.sourcing import pipeline as sourcing_mod
+
+        def progress(msg: str) -> None:
+            _sourcing_build_job["message"] = msg
+
+        draft = sourcing_mod.build_draft(
+            offer_id,
+            progress=progress,
+            plan_version=plan_version,
+            skip_slots=skip_slots,
+            skip_images=skip_images,
+        )
+        _sourcing_build_job.update(
+            running=False,
+            message="构建完成",
+            offer_id=offer_id,
+            error=None,
+            result={
+                "offer_id": offer_id,
+                "plan_version": plan_version,
+                "errors": draft.get("errors") or [],
+            },
+        )
+    except Exception as e:
+        _sourcing_build_job.update(
+            running=False, message="", error=str(e), result=None
+        )
+
+
+def _start_sourcing_build(
+    offer_id: str,
+    *,
+    plan_version: str = "v2",
+    skip_slots: bool = False,
+    skip_images: bool = False,
+) -> tuple[bool, str]:
+    oid = (offer_id or "").strip()
+    if not oid:
+        return False, "缺少 offer_id"
+    with _sourcing_build_lock:
+        if _sourcing_build_job["running"]:
+            return False, "已有选品构建任务在进行中"
+        _sourcing_build_job.update(
+            running=True,
+            message="启动中…",
+            offer_id=oid,
+            error=None,
+            result=None,
+        )
+    t = threading.Thread(
+        target=_run_sourcing_build,
+        args=(oid,),
+        kwargs={
+            "plan_version": plan_version,
+            "skip_slots": skip_slots,
+            "skip_images": skip_images,
+        },
+        daemon=True,
+    )
+    t.start()
+    return True, "已开始构建"
+
+
+def _sourcing_build_status() -> dict:
+    with _sourcing_build_lock:
+        return dict(_sourcing_build_job)
+
+
+def _run_photoroom_showcase(offer_id: str) -> None:
+    global _photoroom_showcase_job
+    try:
+        from modules.sourcing import photoroom_showcase as showcase_mod
+
+        def progress(msg: str) -> None:
+            _photoroom_showcase_job["message"] = msg
+
+        manifest = showcase_mod.build_showcase(offer_id, progress=progress)
+        _photoroom_showcase_job.update(
+            running=False,
+            message="试跑完成",
+            offer_id=offer_id,
+            error=None,
+            result=manifest.get("summary"),
+        )
+    except Exception as e:
+        _photoroom_showcase_job.update(
+            running=False, message="", error=str(e), result=None
+        )
+
+
+def _start_photoroom_showcase(offer_id: str) -> tuple[bool, str]:
+    oid = (offer_id or "").strip()
+    if not oid:
+        return False, "缺少 offer_id"
+    with _photoroom_showcase_lock:
+        if _photoroom_showcase_job["running"]:
+            return False, "Photoroom 试跑进行中，请稍候"
+        _photoroom_showcase_job.update(
+            running=True,
+            message="准备中…",
+            offer_id=oid,
+            error=None,
+            result=None,
+        )
+    t = threading.Thread(target=_run_photoroom_showcase, args=(oid,), daemon=True)
+    t.start()
+    return True, "已开始 Photoroom 全能力试跑"
+
+
+def _photoroom_showcase_status() -> dict:
+    with _photoroom_showcase_lock:
+        return dict(_photoroom_showcase_job)
+
+
+def _run_dewatermark_batch(offer_id: str) -> None:
+    global _dewatermark_job
+    try:
+        from modules.sourcing import image_workbench as wb_mod
+
+        def progress(msg: str) -> None:
+            _dewatermark_job["message"] = msg
+
+        wb = wb_mod.batch_dewatermark(offer_id, progress=progress, replace_final=True)
+        _dewatermark_job.update(
+            running=False,
+            message="去水印完成",
+            offer_id=offer_id,
+            error=None,
+            result={"main": len(wb.get("final", {}).get("tiktok_main") or [])},
+        )
+    except Exception as e:
+        _dewatermark_job.update(running=False, message="", error=str(e), result=None)
+
+
+def _start_dewatermark_batch(offer_id: str) -> tuple[bool, str]:
+    oid = (offer_id or "").strip()
+    if not oid:
+        return False, "缺少 offer_id"
+    with _dewatermark_lock:
+        if _dewatermark_job["running"]:
+            return False, "去水印任务进行中"
+        _dewatermark_job.update(
+            running=True, message="准备中…", offer_id=oid, error=None, result=None
+        )
+    t = threading.Thread(target=_run_dewatermark_batch, args=(oid,), daemon=True)
+    t.start()
+    return True, "已开始批量去水印"
+
+
+def _dewatermark_status() -> dict:
+    with _dewatermark_lock:
+        return dict(_dewatermark_job)
+
+
+def _run_catalog_sync() -> None:
+    global _catalog_sync_job
+    try:
+        from modules.catalog.sync import run_catalog_sync
+        from modules.catalog.sync_progress import CatalogSyncProgress
+
+        def on_state(state: dict) -> None:
+            with _catalog_sync_lock:
+                _catalog_sync_job["message"] = state.get("message") or ""
+                _catalog_sync_job["percent"] = int(state.get("percent") or 0)
+                _catalog_sync_job["phase"] = state.get("phase") or ""
+
+        def on_progress(msg: str) -> None:
+            with _catalog_sync_lock:
+                _catalog_sync_job["message"] = msg
+
+        result = run_catalog_sync(
+            on_progress=on_progress,
+            on_state=on_state,
+            mode=_catalog_sync_job.get("mode") or "fast",
+        )
+        errs = result.get("errors") or []
+        msg_parts = []
+        tk = result.get("tiktok") or {}
+        if tk.get("skus"):
+            msg_parts.append(f"TK {tk.get('skus')} SKU")
+        sp = result.get("shopee") or {}
+        if sp.get("skus"):
+            msg_parts.append(f"Shopee {sp.get('skus')} SKU")
+        elif sp.get("skipped"):
+            msg_parts.append("Shopee 跳过")
+        oz = result.get("ozon") or {}
+        if oz.get("offers"):
+            msg_parts.append(f"Ozon {oz.get('offers')} 商品")
+        lw = result.get("logistics_weights") or {}
+        if lw.get("skus"):
+            msg_parts.append(f"重量 {lw.get('skus')}")
+        summary = " · ".join(msg_parts) or "完成"
+        if errs:
+            summary += f"（部分失败: {'; '.join(errs)}）"
+        _catalog_sync_job.update(
+            running=False,
+            message=summary,
+            percent=100,
+            phase="done",
+            result=result,
+            error="; ".join(errs) if errs and not msg_parts else None,
+        )
+    except Exception as e:
+        _catalog_sync_job.update(
+            running=False,
+            message="",
+            percent=0,
+            phase="",
+            result=None,
+            error=str(e),
+        )
+
+
+def _start_catalog_sync(mode: str = "fast") -> tuple[bool, str]:
+    with _catalog_sync_lock:
+        if _catalog_sync_job["running"]:
+            return False, "已有同步任务在进行中，请稍候"
+        _catalog_sync_job.update(
+            running=True,
+            message="启动中…",
+            percent=0,
+            phase="tokens",
+            mode="full" if mode == "full" else "fast",
+            result=None,
+            error=None,
+        )
+    t = threading.Thread(target=_run_catalog_sync, daemon=True)
+    t.start()
+    return True, "已开始同步"
+
+
+def _catalog_sync_status() -> dict:
+    with _catalog_sync_lock:
+        return dict(_catalog_sync_job)
+
+
 def _image_scan_status() -> dict:
     with _image_scan_lock:
         return dict(_image_scan_job)
@@ -564,12 +847,33 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _bytes(
+        self,
+        code: int,
+        data: bytes,
+        content_type: str,
+        *,
+        filename: str | None = None,
+    ):
+        self.send_response(code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        if filename:
+            self.send_header(
+                "Content-Disposition",
+                f'attachment; filename="{quote(filename)}"',
+            )
+        self.end_headers()
+        self.wfile.write(data)
+
     def _file(self, path: Path):
         if not path.is_file():
             self.send_error(404)
             return
         data = path.read_bytes()
         ctype = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+        if ctype.startswith("text/") and "charset=" not in ctype:
+            ctype += "; charset=utf-8"
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
@@ -583,8 +887,63 @@ class Handler(BaseHTTPRequestHandler):
             return {}
         return json.loads(raw.decode("utf-8"))
 
+    def _handle_ozon_proxy(self, method: str) -> bool:
+        path = urlparse(self.path).path
+        if not path.startswith("/api/ozon/"):
+            return False
+        subpath = path[len("/api/ozon/") :].split("?")[0]
+        query = urlparse(self.path).query
+        body = None
+        if method == "POST":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length) if length else b""
+
+        # 商品目录驱动的待搬运 / 草稿（覆盖 ozon webapp 旧 tk_sku_map 逻辑）
+        try:
+            if method == "GET" and subpath == "unmigrated":
+                from modules.ozon.catalog_source import list_unmigrated_from_catalog
+
+                return self._json(200, list_unmigrated_from_catalog())
+            if method == "GET" and subpath.startswith("draft/"):
+                from urllib.parse import unquote
+
+                from modules.ozon.catalog_draft import build_draft
+
+                seller_sku = unquote(subpath[len("draft/") :])
+                draft = build_draft(seller_sku)
+                if draft.get("error") and not draft.get("draft_title"):
+                    return self._json(404, draft)
+                return self._json(200, draft)
+            if method == "GET" and subpath == "category_options":
+                from modules.ozon.category_match import load_category_options
+                from modules.ozon.migrate_attrs import BUILTIN_TYPE_PROFILES
+                from modules.ozon.tk_category_map import load_map
+
+                tp = {str(k): v for k, v in BUILTIN_TYPE_PROFILES.items()}
+                tp.update(load_map().get("type_profiles") or {})
+                return self._json(200, {"options": load_category_options(), "type_profiles": tp})
+        except Exception as e:
+            self._json(500, {"ok": False, "error": str(e)})
+            return True
+
+        from modules.ozon.webapp_bridge import proxy_request
+
+        try:
+            status, data, ctype = proxy_request(method, subpath, query=query or None, body=body)
+        except Exception as e:
+            self._json(500, {"ok": False, "error": str(e)})
+            return True
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+        return True
+
     def do_GET(self):
         path = urlparse(self.path).path
+        if self._handle_ozon_proxy("GET"):
+            return
 
         if path in ("/", "/index.html"):
             return self._file(WEB_DIR / "index.html")
@@ -603,6 +962,89 @@ class Handler(BaseHTTPRequestHandler):
             return self._file(WEB_DIR / "deactivate.html")
         if path in ("/images", "/images.html"):
             return self._file(WEB_DIR / "images.html")
+        if path in ("/catalog", "/catalog.html"):
+            return self._file(WEB_DIR / "catalog.html")
+        if path in ("/settlement", "/settlement.html"):
+            return self._file(WEB_DIR / "settlement.html")
+        if path in ("/sourcing", "/sourcing.html"):
+            return self._file(WEB_DIR / "sourcing.html")
+        if path in ("/sourcing/photoroom", "/sourcing/photoroom.html"):
+            return self._file(WEB_DIR / "photoroom_showcase.html")
+        if path in ("/ozon", "/ozon.html"):
+            return self._file(WEB_DIR / "ozon.html")
+
+        if path == "/api/sourcing/list":
+            from modules.sourcing import pipeline as sourcing_mod
+            return self._json(200, {"ok": True, "items": sourcing_mod.list_offers()})
+        if path == "/api/sourcing/item":
+            from modules.sourcing import pipeline as sourcing_mod
+            q = parse_qs(urlparse(self.path).query)
+            offer_id = (q.get("offer_id") or q.get("id") or [""])[0]
+            draft = sourcing_mod.load_draft(offer_id)
+            if draft:
+                return self._json(200, {"ok": True, "draft": draft})
+            try:
+                scrape = sourcing_mod.load_scrape(offer_id)
+            except FileNotFoundError as e:
+                return self._json(404, {"ok": False, "error": str(e)})
+            return self._json(200, {"ok": True, "scrape": scrape, "draft": None})
+        if path == "/api/sourcing/build/status":
+            return self._json(200, {"ok": True, **_sourcing_build_status()})
+        if path == "/api/sourcing/photoroom-showcase":
+            from modules.sourcing import photoroom_showcase as showcase_mod
+            from modules.products import image_ai
+
+            q = parse_qs(urlparse(self.path).query)
+            offer_id = (q.get("offer_id") or q.get("id") or [""])[0]
+            manifest = showcase_mod.load_showcase(offer_id) if offer_id else None
+            return self._json(
+                200,
+                {
+                    "ok": True,
+                    "offer_id": offer_id,
+                    "manifest": manifest,
+                    "recipes": image_ai.list_recipes(),
+                    "enabled": image_ai.image_enabled(),
+                },
+            )
+        if path == "/api/sourcing/photoroom-showcase/status":
+            return self._json(200, {"ok": True, **_photoroom_showcase_status()})
+        if path == "/api/sourcing/detail-text":
+            from modules.sourcing import detail_text_cards as dtc_mod
+
+            q = parse_qs(urlparse(self.path).query)
+            offer_id = (q.get("offer_id") or q.get("id") or [""])[0]
+            manifest = dtc_mod.load_detail_text_cards(offer_id) if offer_id else None
+            return self._json(200, {"ok": True, "offer_id": offer_id, "manifest": manifest})
+        if path == "/api/sourcing/workbench":
+            from modules.sourcing import image_workbench as wb_mod
+
+            q = parse_qs(urlparse(self.path).query)
+            offer_id = (q.get("offer_id") or q.get("id") or [""])[0]
+            if not offer_id:
+                return self._json(400, {"ok": False, "error": "缺少 offer_id"})
+            try:
+                return self._json(200, {"ok": True, **wb_mod.get_workbench(offer_id)})
+            except FileNotFoundError as e:
+                return self._json(404, {"ok": False, "error": str(e)})
+        if path == "/api/sourcing/workbench/shops":
+            from modules.sourcing import tk_publish as tk_pub
+
+            try:
+                return self._json(200, {"ok": True, "shops": tk_pub.list_shop_options()})
+            except Exception as e:
+                return self._json(400, {"ok": False, "error": str(e)})
+        if path == "/api/sourcing/workbench/dewatermark/status":
+            return self._json(200, {"ok": True, **_dewatermark_status()})
+        if path == "/api/sourcing/asset":
+            from modules.sourcing import pipeline as sourcing_mod
+            q = parse_qs(urlparse(self.path).query)
+            offer_id = (q.get("offer_id") or [""])[0]
+            file_path = (q.get("file") or [""])[0]
+            fp = sourcing_mod.resolve_asset(offer_id, file_path)
+            if not fp:
+                return self.send_error(404)
+            return self._file(fp)
 
         if path == "/api/status":
             return self._json(200, _api_status())
@@ -737,6 +1179,193 @@ class Handler(BaseHTTPRequestHandler):
             from modules.products import promotions as promo_mod
             drafts = promo_mod.load_coupon_drafts()
             return self._json(200, {"ok": True, "drafts": drafts})
+        if path == "/api/catalog/stores":
+            from modules.catalog import listings as cat_mod
+            return self._json(200, {"ok": True, "stores": cat_mod.store_summary(), "summary": cat_mod.global_summary()})
+        if path == "/api/catalog/products":
+            from modules.catalog import listings as cat_mod
+            q = parse_qs(urlparse(self.path).query)
+            region = (q.get("region") or [None])[0]
+            sku = (q.get("sku") or [None])[0]
+            match_only = (q.get("match_only") or ["0"])[0] in ("1", "true", "yes")
+            platform = (q.get("platform") or [None])[0]
+            limit = min(int((q.get("limit") or ["300"])[0] or 300), 500)
+            offset = int((q.get("offset") or ["0"])[0] or 0)
+            data = cat_mod.list_products(
+                region, sku=sku, match_only=match_only, platform=platform,
+                limit=limit, offset=offset,
+            )
+            return self._json(200, {"ok": True, **data})
+
+        if path == "/api/catalog/export-pdf":
+            from modules.catalog import pdf_export as pdf_mod
+
+            q = parse_qs(urlparse(self.path).query)
+            region = (q.get("region") or [None])[0]
+            sku = (q.get("sku") or [None])[0]
+            match_only = (q.get("match_only") or ["0"])[0] in ("1", "true", "yes")
+            platform = (q.get("platform") or [None])[0]
+            limit = min(int((q.get("limit") or ["300"])[0] or 300), 500)
+            translate = (q.get("translate") or ["1"])[0] not in ("0", "false", "no")
+            try:
+                pdf_bytes, fname = pdf_mod.export_catalog_pdf(
+                    region,
+                    sku=sku,
+                    match_only=match_only,
+                    platform=platform,
+                    limit=limit,
+                    translate=translate,
+                )
+            except Exception as e:
+                return self._json(500, {"ok": False, "error": str(e)})
+            return self._bytes(200, pdf_bytes, "application/pdf", filename=fname)
+
+        if path == "/api/catalog/lookup":
+            from modules.catalog import listings as cat_mod
+            q = parse_qs(urlparse(self.path).query)
+            sku = (q.get("sku") or q.get("q") or [""])[0]
+            region = (q.get("region") or [None])[0]
+            if not (sku or "").strip():
+                return self._json(400, {"ok": False, "error": "请提供 sku 参数"})
+            data = cat_mod.lookup_sku(sku, region)
+            return self._json(200, data)
+
+        if path == "/api/catalog/sku-edit":
+            from modules.catalog import sku_edit as sku_edit_mod
+            q = parse_qs(urlparse(self.path).query)
+            mk = (q.get("match_key") or q.get("sku") or [""])[0]
+            sku_id = (q.get("sku_id") or [""])[0]
+            if not (mk or "").strip() and not (sku_id or "").strip():
+                return self._json(400, {"ok": False, "error": "请提供 match_key 或 sku_id"})
+            return self._json(200, sku_edit_mod.get_edit_rows(mk, sku_id=sku_id))
+
+        if path == "/api/catalog/shopee-find":
+            from modules.catalog import sku_edit as sku_edit_mod
+            q = parse_qs(urlparse(self.path).query)
+            query = (q.get("q") or q.get("sku") or [""])[0]
+            if not (query or "").strip():
+                return self._json(400, {"ok": False, "error": "请提供 q 参数"})
+            live = (q.get("live") or ["1"])[0] not in ("0", "false", "no")
+            return self._json(200, sku_edit_mod.find_shopee_rows(query, live=live))
+
+        if path == "/api/catalog/sync/status":
+            return self._json(200, {"ok": True, **_catalog_sync_status()})
+
+        if path == "/api/settlement/config":
+            from modules.finance import settlement_pull as spull
+            from modules.finance.settlement_report import (
+                data_range,
+                default_ad_rates,
+                default_rates,
+                fee_column_defs,
+            )
+
+            ds, de = spull.default_period()
+            return self._json(
+                200,
+                {
+                    "ok": True,
+                    "default_start": ds.isoformat(),
+                    "default_end": de.isoformat(),
+                    "rates": default_rates(),
+                    "ad_rates": default_ad_rates(),
+                    "fee_columns": fee_column_defs(),
+                    "data_range": data_range(),
+                },
+            )
+
+        if path == "/api/settlement/summary":
+            from modules.finance.settlement_report import (
+                default_ad_rates,
+                default_rates,
+                parse_iso_date,
+                summarize_period,
+            )
+
+            q = parse_qs(urlparse(self.path).query)
+            start_s = (q.get("start") or [""])[0]
+            end_s = (q.get("end") or [""])[0]
+            rates_raw = (q.get("rates") or [""])[0]
+            ad_rates_raw = (q.get("ad_rates") or [""])[0]
+            if not start_s or not end_s:
+                return self._json(400, {"ok": False, "error": "需要 start 与 end"})
+            try:
+                rates = default_rates()
+                ad_rates = default_ad_rates()
+                if rates_raw:
+                    rates.update(json.loads(rates_raw))
+                if ad_rates_raw:
+                    ad_rates.update(json.loads(ad_rates_raw))
+                data = summarize_period(
+                    parse_iso_date(start_s), parse_iso_date(end_s), rates, ad_rates
+                )
+                self._json(200, {"ok": True, **data})
+            except Exception as e:
+                self._json(500, {"ok": False, "error": str(e)})
+            return
+
+        if path == "/api/settlement/orders-list":
+            from modules.finance.settlement_report import (
+                default_ad_rates,
+                default_rates,
+                orders_for_period,
+                parse_iso_date,
+            )
+
+            q = parse_qs(urlparse(self.path).query)
+            start_s = (q.get("start") or [""])[0]
+            end_s = (q.get("end") or [""])[0]
+            rates_raw = (q.get("rates") or [""])[0]
+            ad_rates_raw = (q.get("ad_rates") or [""])[0]
+            if not start_s or not end_s:
+                return self._json(400, {"ok": False, "error": "需要 start 与 end"})
+            try:
+                rates = default_rates()
+                ad_rates = default_ad_rates()
+                if rates_raw:
+                    rates.update(json.loads(rates_raw))
+                if ad_rates_raw:
+                    ad_rates.update(json.loads(ad_rates_raw))
+                data = orders_for_period(
+                    parse_iso_date(start_s), parse_iso_date(end_s), rates, ad_rates
+                )
+                self._json(200, {"ok": True, **data})
+            except Exception as e:
+                self._json(500, {"ok": False, "error": str(e)})
+            return
+
+        if path == "/api/settlement/orders":
+            from modules.finance.settlement_report import order_rows_for_file
+
+            q = parse_qs(urlparse(self.path).query)
+            fname = (q.get("file") or [""])[0]
+            if not fname:
+                return self._json(400, {"ok": False, "error": "需要 file 参数"})
+            try:
+                rate = float((q.get("rate") or ["0"])[0] or 0) or None
+                ad_rate = (q.get("ad_rate") or [""])[0]
+                ad_rate_pct = float(ad_rate) if ad_rate not in ("", None) else None
+                statement_id = (q.get("statement_id") or [""])[0] or None
+                order_id = (q.get("order_id") or [""])[0] or None
+                data = order_rows_for_file(
+                    fname,
+                    rate=rate,
+                    ad_rate_pct=ad_rate_pct,
+                    statement_id=statement_id,
+                    order_id=order_id,
+                )
+                self._json(200, {"ok": True, **data})
+            except FileNotFoundError as e:
+                self._json(404, {"ok": False, "error": str(e)})
+            except Exception as e:
+                self._json(500, {"ok": False, "error": str(e)})
+            return
+
+        if path == "/api/settlement/pull/status":
+            from modules.finance import settlement_pull as spull
+
+            return self._json(200, {"ok": True, **spull.pull_status()})
+
         if path == "/api/costs/export.csv":
             out = ROOT / "exports" / "sku_costs.csv"
             cost_mod.export_csv(out)
@@ -759,10 +1388,103 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/api/feishu/event":
             return self._handle_feishu_event()
+        if self._handle_ozon_proxy("POST"):
+            return
         try:
             data = self._read_json()
         except json.JSONDecodeError:
             return self._json(400, {"ok": False, "error": "invalid json"})
+
+        if path == "/api/catalog/cost":
+            from modules.catalog import listings as cat_mod
+            try:
+                mk = str(data.get("match_key") or "").strip()
+                cost = float(data.get("cost_cny", 0))
+                if not mk or cost <= 0:
+                    return self._json(400, {"ok": False, "error": "match_key 与 cost_cny 必填且 > 0"})
+                saved = cat_mod.save_cost_by_match_key(mk, cost, data.get("note") or "")
+                self._json(200, {"ok": True, "saved": saved, "match_key": mk, "cost_cny": cost})
+            except (TypeError, ValueError) as e:
+                self._json(400, {"ok": False, "error": str(e)})
+            return
+
+        if path == "/api/catalog/seller-sku":
+            from modules.catalog import sku_edit as sku_edit_mod
+            try:
+                plat = str(data.get("platform") or "").strip()
+                sku = str(data.get("seller_sku") or "").strip()
+                push = bool(data.get("push"))
+                result = sku_edit_mod.save_seller_sku(
+                    plat,
+                    sku,
+                    push=push,
+                    sku_id=data.get("sku_id"),
+                    shop_cipher=data.get("shop_cipher"),
+                    global_product_id=data.get("global_product_id"),
+                    global_sku_id=data.get("global_sku_id"),
+                    model_id=data.get("model_id"),
+                    shop_id=data.get("shop_id"),
+                    product_id=data.get("product_id"),
+                    item_id=data.get("item_id"),
+                    match_key=data.get("match_key"),
+                )
+                self._json(200, {"ok": True, **result})
+            except (TypeError, ValueError) as e:
+                self._json(400, {"ok": False, "error": str(e)})
+            except Exception as e:
+                self._json(500, {"ok": False, "error": str(e)})
+            return
+
+        if path == "/api/catalog/sync":
+            mode = str(data.get("mode") or "fast").strip().lower()
+            ok, msg = _start_catalog_sync(mode=mode)
+            if not ok:
+                return self._json(409, {"ok": False, "message": msg})
+            return self._json(200, {"ok": True, "message": msg})
+
+        if path == "/api/catalog/shopee-sync-tk":
+            from modules.catalog import shopee_push as sp_push
+
+            match_key = str(data.get("match_key") or "").strip()
+            region = str(data.get("region") or "PH").upper()
+            if not match_key:
+                return self._json(400, {"ok": False, "error": "需要 match_key"})
+            try:
+                result = sp_push.sync_tk_to_shopee_global(match_key, region=region)
+                self._json(200, {"ok": True, **result})
+            except Exception as e:
+                self._json(500, {"ok": False, "error": str(e)})
+            return
+
+        if path == "/api/catalog/shopee-sync-tk-group":
+            from modules.catalog import shopee_push as sp_push
+
+            raw_keys = data.get("match_keys") or data.get("keys") or ""
+            region = str(data.get("region") or "PH").upper()
+            if not raw_keys:
+                return self._json(400, {"ok": False, "error": "需要 match_keys"})
+            try:
+                result = sp_push.sync_tk_group_to_shopee(raw_keys, region=region)
+                self._json(200, {"ok": True, **result})
+            except Exception as e:
+                self._json(500, {"ok": False, "error": str(e)})
+            return
+
+        if path == "/api/settlement/pull":
+            from modules.finance import settlement_pull as spull
+            from modules.finance.settlement_report import parse_iso_date
+
+            start_s = str(data.get("start") or "").strip()
+            end_s = str(data.get("end") or "").strip()
+            if not start_s or not end_s:
+                return self._json(400, {"ok": False, "error": "需要 start 与 end (YYYY-MM-DD)"})
+            try:
+                ok, msg = spull.start_pull(parse_iso_date(start_s), parse_iso_date(end_s))
+                code = 200 if ok else 409
+                self._json(code, {"ok": ok, "message": msg})
+            except Exception as e:
+                self._json(400, {"ok": False, "error": str(e)})
+            return
 
         if path == "/api/costs":
             try:
@@ -917,12 +1639,195 @@ class Handler(BaseHTTPRequestHandler):
             self._json(code, {"ok": ok, "message": msg})
             return
 
+        if path == "/api/sourcing/build":
+            offer_id = data.get("offer_id") or data.get("id") or ""
+            plan_version = (data.get("plan_version") or data.get("plan") or "v2").strip()
+            skip_slots = bool(data.get("skip_slots"))
+            skip_images = bool(data.get("skip_images"))
+            ok, msg = _start_sourcing_build(
+                str(offer_id),
+                plan_version=plan_version,
+                skip_slots=skip_slots,
+                skip_images=skip_images,
+            )
+            code = 200 if ok else 409
+            self._json(code, {"ok": ok, "message": msg})
+            return
+
+        if path == "/api/sourcing/selection":
+            from modules.sourcing import pipeline as sourcing_mod
+
+            offer_id = str(data.get("offer_id") or data.get("id") or "").strip()
+            if not offer_id:
+                self._json(400, {"ok": False, "error": "缺少 offer_id"})
+                return
+            try:
+                draft = sourcing_mod.save_selections(offer_id, data.get("selections") or data)
+                self._json(200, {"ok": True, "draft": draft})
+            except Exception as e:
+                self._json(400, {"ok": False, "error": str(e)})
+            return
+
+        if path == "/api/sourcing/photoroom-showcase/build":
+            offer_id = data.get("offer_id") or data.get("id") or ""
+            ok, msg = _start_photoroom_showcase(str(offer_id))
+            code = 200 if ok else 409
+            self._json(code, {"ok": ok, "message": msg})
+            return
+
+        if path == "/api/sourcing/detail-text/build":
+            from modules.sourcing import detail_text_cards as dtc_mod
+
+            offer_id = str(data.get("offer_id") or data.get("id") or "").strip()
+            if not offer_id:
+                self._json(400, {"ok": False, "error": "缺少 offer_id"})
+                return
+            try:
+                manifest = dtc_mod.build_detail_text_cards(offer_id)
+                self._json(200, {"ok": True, "manifest": manifest})
+            except Exception as e:
+                self._json(400, {"ok": False, "error": str(e)})
+            return
+
+        if path == "/api/sourcing/workbench/download":
+            from modules.sourcing import image_workbench as wb_mod
+
+            offer_id = str(data.get("offer_id") or data.get("id") or "").strip()
+            if not offer_id:
+                self._json(400, {"ok": False, "error": "缺少 offer_id"})
+                return
+            try:
+                raw = wb_mod.ensure_downloaded(offer_id)
+                wb = wb_mod.get_workbench(offer_id)
+                self._json(200, {"ok": True, "raw": raw, "workbench": wb})
+            except Exception as e:
+                self._json(400, {"ok": False, "error": str(e)})
+            return
+
+        if path == "/api/sourcing/workbench/generate":
+            from modules.sourcing import image_workbench as wb_mod
+
+            offer_id = str(data.get("offer_id") or data.get("id") or "").strip()
+            source_file = str(data.get("source_file") or data.get("file") or "").strip()
+            recipe_id = str(data.get("recipe_id") or data.get("recipe") or "").strip()
+            if not offer_id or not source_file or not recipe_id:
+                self._json(400, {"ok": False, "error": "缺少 offer_id / source_file / recipe_id"})
+                return
+            try:
+                entry = wb_mod.generate_image(offer_id, source_file=source_file, recipe_id=recipe_id)
+                wb = wb_mod.get_workbench(offer_id)
+                self._json(200, {"ok": True, "generated": entry, "workbench": wb})
+            except Exception as e:
+                self._json(400, {"ok": False, "error": str(e)})
+            return
+
+        if path == "/api/sourcing/workbench/final":
+            from modules.sourcing import image_workbench as wb_mod
+
+            offer_id = str(data.get("offer_id") or data.get("id") or "").strip()
+            action = str(data.get("action") or "save").strip()
+            if not offer_id:
+                self._json(400, {"ok": False, "error": "缺少 offer_id"})
+                return
+            try:
+                if action == "add":
+                    wb = wb_mod.add_to_final(
+                        offer_id,
+                        str(data.get("path") or ""),
+                        str(data.get("target") or "tiktok_main"),
+                    )
+                elif action == "remove":
+                    wb = wb_mod.remove_from_final(
+                        offer_id,
+                        str(data.get("path") or ""),
+                        str(data.get("target") or "tiktok_main"),
+                    )
+                elif action == "reorder":
+                    wb = wb_mod.reorder_final(
+                        offer_id,
+                        str(data.get("target") or "tiktok_main"),
+                        list(data.get("paths") or []),
+                    )
+                elif action == "reset_defaults":
+                    wb_mod.apply_raw_defaults(offer_id)
+                    wb = wb_mod.get_workbench(offer_id)
+                else:
+                    wb = wb_mod.save_final(
+                        offer_id,
+                        tiktok_main=data.get("tiktok_main"),
+                        tiktok_description=data.get("tiktok_description"),
+                    )
+                self._json(200, {"ok": True, "workbench": wb})
+            except Exception as e:
+                self._json(400, {"ok": False, "error": str(e)})
+            return
+
+        if path == "/api/sourcing/workbench/dewatermark":
+            offer_id = str(data.get("offer_id") or data.get("id") or "").strip()
+            ok, msg = _start_dewatermark_batch(offer_id)
+            code = 200 if ok else 409
+            self._json(code, {"ok": ok, "message": msg})
+            return
+
+        if path == "/api/sourcing/workbench/publish-tk":
+            from modules.sourcing import tk_publish as tk_pub
+
+            offer_id = str(data.get("offer_id") or data.get("id") or "").strip()
+            product_id = str(data.get("product_id") or "").strip()
+            shop_cipher = str(data.get("shop_cipher") or "").strip()
+            region = str(data.get("region") or "MY").strip()
+            if not offer_id or not product_id or not shop_cipher:
+                self._json(400, {"ok": False, "error": "缺少 offer_id / product_id / shop_cipher"})
+                return
+            try:
+                result = tk_pub.publish_to_product(
+                    offer_id,
+                    product_id=product_id,
+                    shop_cipher=shop_cipher,
+                    region=region,
+                )
+                self._json(200, {"ok": True, "result": result})
+            except Exception as e:
+                self._json(400, {"ok": False, "error": str(e)})
+            return
+
+        if path == "/api/sourcing/workbench/export-tk":
+            from modules.sourcing import tk_publish as tk_pub
+
+            offer_id = str(data.get("offer_id") or data.get("id") or "").strip()
+            region = str(data.get("region") or "MY").strip()
+            if not offer_id:
+                self._json(400, {"ok": False, "error": "缺少 offer_id"})
+                return
+            try:
+                zp = tk_pub.export_publish_bundle(offer_id, region=region)
+                rel = str(zp.relative_to(ROOT))
+                parts = rel.replace("\\", "/").split("/")
+                sub = "/".join(parts[3:]) if len(parts) > 3 else zp.name
+                url = f"/api/sourcing/asset?offer_id={offer_id}&file={quote(sub)}"
+                self._json(200, {"ok": True, "path": rel, "url": url})
+            except Exception as e:
+                self._json(400, {"ok": False, "error": str(e)})
+            return
+
         self.send_error(404)
 
 
 def serve(port: int = DEFAULT_PORT, open_browser: bool = True, page: str = "index"):
     WEB_DIR.mkdir(parents=True, exist_ok=True)
     (WEB_DIR / "static").mkdir(parents=True, exist_ok=True)
+
+    def _startup_refresh_tokens() -> None:
+        try:
+            from modules.hub.tokens import refresh_all
+
+            r = refresh_all()
+            if r.get("errors"):
+                print("  ⚠️ Token 刷新:", "; ".join(r["errors"][:2]))
+            else:
+                print("  ✅ Token 已自动刷新（TikTok + Shopee）")
+        except Exception as e:
+            print(f"  ⚠️ Token 刷新跳过: {e}")
 
     if not (WEB_DIR / "costs.html").is_file():
         from modules.products.build_page import build_html
@@ -938,15 +1843,23 @@ def serve(port: int = DEFAULT_PORT, open_browser: bool = True, page: str = "inde
         raise
     routes = {
         "index": "/",
+        "catalog": "/catalog",
+        "settlement": "/settlement",
         "costs": "/costs",
         "titles": "/titles",
         "promotions": "/promotions",
         "analytics": "/analytics",
         "deactivate": "/deactivate",
         "images": "/images",
+        "sourcing": "/sourcing",
+        "ozon": "/ozon",
     }
     url = f"http://127.0.0.1:{port}{routes.get(page, '/')}"
     print(f"  ✅ 控制台: http://127.0.0.1:{port}/")
+    print(f"  商品目录: http://127.0.0.1:{port}/catalog")
+    print(f"  结算利润: http://127.0.0.1:{port}/settlement")
+    print(f"  Ozon 运营: http://127.0.0.1:{port}/ozon")
+    print(f"  1688 选品: http://127.0.0.1:{port}/sourcing")
     print(f"  Listing 优化: http://127.0.0.1:{port}/titles")
     print(f"  主图优化: http://127.0.0.1:{port}/images")
     print(f"  Analytics: http://127.0.0.1:{port}/analytics")
@@ -954,6 +1867,7 @@ def serve(port: int = DEFAULT_PORT, open_browser: bool = True, page: str = "inde
     print(f"  促销调价: http://127.0.0.1:{port}/promotions")
     print(f"  成本维护: http://127.0.0.1:{port}/costs")
     print("  Ctrl+C 停止")
+    threading.Timer(0.5, _startup_refresh_tokens).start()
 
     if open_browser:
         import webbrowser

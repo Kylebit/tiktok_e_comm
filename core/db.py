@@ -109,6 +109,45 @@ def _migrate(conn: sqlite3.Connection) -> None:
         if name not in cols:
             conn.execute(ddl)
 
+    conn.executescript("""
+CREATE TABLE IF NOT EXISTS shopee_shops (
+    shop_id INTEGER PRIMARY KEY,
+    region TEXT,
+    shop_name TEXT,
+    updated_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS shopee_products (
+    model_id TEXT NOT NULL,
+    shop_id INTEGER NOT NULL,
+    region TEXT,
+    item_id TEXT,
+    seller_sku TEXT,
+    product_name TEXT,
+    model_name TEXT,
+    image_url TEXT,
+    price REAL,
+    currency TEXT,
+    stock INTEGER,
+    status TEXT,
+    updated_at INTEGER,
+    PRIMARY KEY (model_id, shop_id)
+);
+CREATE INDEX IF NOT EXISTS idx_shopee_products_sku ON shopee_products(seller_sku);
+CREATE INDEX IF NOT EXISTS idx_shopee_products_region ON shopee_products(region);
+
+CREATE TABLE IF NOT EXISTS sku_logistics_weights (
+    seller_sku TEXT PRIMARY KEY,
+    weight_g INTEGER NOT NULL,
+    package_count INTEGER NOT NULL DEFAULT 0,
+    depth_mm INTEGER,
+    width_mm INTEGER,
+    height_mm INTEGER,
+    updated_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_sku_logistics_weights_updated ON sku_logistics_weights(updated_at);
+""")
+
 
 def init_db() -> Path:
     conn = connect()

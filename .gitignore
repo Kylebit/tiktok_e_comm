@@ -3,12 +3,15 @@ data/
 config/settings.json
 tiktok_tokens.json
 tiktok_ads_tokens.json
+shopee_tokens.json
 tiktok_orders.json
 exports/
 *.db
 
 # 调试 / 导出 / 结算原始数据
 debug_*.json
+debug_api.py
+tiktok_data.py
 settlement_raw_*.json
 *.csv
 *.xlsx

@@ -1,0 +1,1165 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>商品目录 · TK + Shopee + Ozon</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">TikTok Shop 控制台</a>
+    <nav class="nav">
+      <a href="/">首页</a>
+      <a href="/catalog" class="active">商品目录</a>
+      <a href="/settlement">结算利润</a>
+      <a href="/costs">成本维护</a>
+      <a href="/titles">Listing 优化</a>
+      <a href="/images">主图优化</a>
+      <a href="/analytics">Analytics</a>
+      <a href="/deactivate">零销下架</a>
+      <a href="/promotions">促销调价</a>
+    </nav>
+  </header>
+  <main class="container catalog-page">
+    <h1>商品目录</h1>
+    <p class="hint">四国 TK + Shopee 按<strong>后四位对齐码</strong>合并展示；<strong>未填/非标准规格货号</strong>的 TK、Shopee 商品默认置顶，可填写并推送到后台；Ozon 来自 <code>tk_sku_map</code>。</p>
+
+    <div id="storeCards" class="store-grid"></div>
+    <div id="globalStats" class="global-stats meta"></div>
+
+    <div class="scan-panel sku-lookup-panel">
+      <h2 class="panel-title">SKU 查询</h2>
+      <p class="hint">支持 <strong>商家 SKU</strong>（660002、990026）、<strong>对齐码</strong>（0026、0002）、<strong>TK platform sku_id</strong>（19 位）</p>
+      <div class="toolbar sku-lookup-bar">
+        <input id="skuLookup" type="search" class="sku-lookup-input" placeholder="输入 SKU，回车查询" autofocus>
+        <button class="btn btn-primary" id="btnLookup">查询</button>
+        <span id="lookupMeta" class="meta lookup-meta"></span>
+      </div>
+      <div id="lookupCard" class="lookup-card hidden"></div>
+      <div id="skuEditPanel" class="sku-edit-panel hidden">
+        <h3 class="panel-subtitle">商家 SKU 维护 · <code id="skuEditKey"></code></h3>
+        <p class="hint">展示各平台当前商家 SKU / Shopee 规格货号，可编辑保存到本地库并<strong>推送到 TikTok 后台</strong>（勾选「推送 TK」）。无商家 SKU 的行会高亮显示。<strong>TK → Shopee 全球</strong>：从 TikTok 创建/更新 CNSC 全球商品，国家店请在后台手动发布。</p>
+        <div class="toolbar sku-tk-shopee-bar">
+          <button type="button" class="btn btn-primary" id="btnTkShopeeSync">TK → Shopee 全球</button>
+          <label class="meta">参考站点
+            <select id="tkShopeeRegion">
+              <option value="PH" selected>PH</option>
+              <option value="MY">MY</option>
+              <option value="TH">TH</option>
+              <option value="VN">VN</option>
+            </select>
+          </label>
+          <span id="tkShopeeSyncMeta" class="meta"></span>
+        </div>
+        <div class="toolbar sku-find-bar">
+          <label>查找 Shopee 规格货号
+            <input id="shopeeSkuFind" type="text" placeholder="601099665349360 或 item_id" style="width:280px">
+          </label>
+          <button type="button" class="btn btn-secondary" id="btnShopeeFind">查找并加入</button>
+          <span id="shopeeFindMeta" class="meta"></span>
+        </div>
+        <div id="skuEditTable"></div>
+      </div>
+    </div>
+
+    <div class="scan-panel">
+      <div class="toolbar">
+        <label>站点筛选
+          <select id="region">
+            <option value="">全部（四国合并）</option>
+            <option value="MY">MY</option>
+            <option value="VN">VN</option>
+            <option value="TH">TH</option>
+            <option value="PH">PH</option>
+          </select>
+        </label>
+        <label>列表筛选
+          <input id="skuQ" type="text" placeholder="留空=全部" style="width:140px">
+        </label>
+        <label class="chk-inline"><input type="checkbox" id="matchOnly"> TK+Shopee 已对齐</label>
+        <label class="chk-inline"><input type="checkbox" id="noOzon"> 缺 Ozon</label>
+        <label class="chk-inline" title="仅显示 TikTok 已同步但商家 SKU 为空的商品"><input type="checkbox" id="missingTkSku"> 仅看缺 TK 商家 SKU <span id="missingTkSkuCount" class="meta"></span></label>
+        <label class="chk-inline" title="Shopee 规格货号为空或非 4 位/66xxxx 标准码"><input type="checkbox" id="missingSpSku"> 仅看缺 Shopee 规范货号 <span id="missingSpSkuCount" class="meta"></span></label>
+        <button class="btn btn-primary" id="btnSearch">搜索</button>
+        <button class="btn btn-secondary" id="btnExportPdf" title="导出当前筛选结果：对齐码、商品名、SKU 名（译中文）、主图">导出 PDF</button>
+        <button class="btn btn-secondary" id="btnSync">快速同步</button>
+        <button class="btn btn-secondary" id="btnSyncFull" title="忽略缓存，重新拉取全部 API">全量同步</button>
+        <label class="chk-inline" title="6 小时内复用 TikTok/Shopee/Ozon 本地缓存，显著加快速度"><input type="checkbox" id="syncUseCache" checked> 用缓存</label>
+        <button class="btn btn-secondary" id="btnReset">重置</button>
+        <div id="syncProgressWrap" class="sync-progress-wrap" hidden>
+          <div class="sync-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div id="syncProgressFill" class="sync-progress-fill"></div>
+          </div>
+          <span id="syncProgressPct" class="sync-progress-pct">0%</span>
+        </div>
+        <span id="syncStatus" class="meta sync-status"></span>
+        <span id="listMeta" class="meta"></span>
+      </div>
+    </div>
+
+    <div class="catalog-table-wrap">
+      <table class="catalog-table catalog-unified">
+        <thead>
+          <tr>
+            <th rowspan="2">对齐码</th>
+            <th rowspan="2">成本 ¥</th>
+            <th rowspan="2" title="TikTok 近一年已完成包裹物流实测，多包裹取中位数">重量 g</th>
+            <th colspan="4">TikTok</th>
+            <th colspan="4">Shopee</th>
+            <th colspan="3">Ozon</th>
+          </tr>
+          <tr class="subhead">
+            <th>主图</th><th>站点</th><th>商品</th><th>价/库存</th>
+            <th>主图</th><th>站点</th><th>商品</th><th>价/库存</th>
+            <th>主图</th><th>商品</th><th>状态</th>
+          </tr>
+        </thead>
+        <tbody id="tbody">
+          <tr><td colspan="14" class="empty">加载中…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </main>
+  <script>
+    function esc(s) {
+      if (!s) return '';
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+    }
+    function fmtPrice(p, c) {
+      if (p == null || p === '') return '—';
+      return (c ? c + ' ' : '') + Number(p).toFixed(2);
+    }
+    function imgCell(url, label) {
+      if (!url) return '<td class="thumb"><span class="no-img">—</span></td>';
+      return '<td class="thumb"><img src="' + esc(url) + '" alt="" loading="lazy" title="' + esc(label || '') + '"></td>';
+    }
+    function regionBadges(rows) {
+      if (!rows || !rows.length) return '<span class="miss-inline">—</span>';
+      return rows.map(function(r) {
+        var ok = !r.status || r.status === 'ACTIVATE' || r.status === 'NORMAL' || r.status === 'GLOBAL_MAP';
+        var st = ok ? '' : ' dim';
+        var sku = r.seller_sku ? (' · ' + r.seller_sku) : (' · id:' + (r.sku_id || '').slice(-8));
+        return '<span class="reg-badge' + st + '" title="' + esc(r.region + sku) + '">' +
+          esc(r.region) + (r.seller_sku ? '<small>' + esc(r.seller_sku) + '</small>' : '') + '</span>';
+      }).join('');
+    }
+    function priceStockBlock(rows) {
+      if (!rows || !rows.length) return '—';
+      return rows.map(function(r) {
+        return '<div class="ps-line"><span class="reg-badge tiny">' + esc(r.region) + '</span> ' +
+          esc(fmtPrice(r.price, r.currency)) + ' · ' + esc(r.stock != null ? r.stock : '—') + '</div>';
+      }).join('');
+    }
+    function weightCell(row) {
+      var w = row.logistics_weight_g;
+      if (w == null || w === '') {
+        return '<td class="weight-cell miss-inline" title="同步后从近一年 TK 已完成包裹拉取">—</td>';
+      }
+      var n = Number(w);
+      var cnt = row.logistics_package_count != null ? Number(row.logistics_package_count) : 0;
+      var tip = '物流实测' + (cnt ? ' · ' + cnt + ' 包裹中位数' : '');
+      return '<td class="weight-cell" title="' + esc(tip) + '"><strong>' + esc(String(n)) + '</strong>' +
+        (cnt ? '<br><span class="meta">' + esc(String(cnt)) + '单</span>' : '') + '</td>';
+    }
+    function costCell(row) {
+      var v = row.cost_cny != null && row.cost_cny !== '' ? Number(row.cost_cny) : '';
+      return '<td class="cost-cell"><input type="number" step="0.01" min="0" class="cost-input" ' +
+        'data-key="' + esc(row.match_key) + '" value="' + (v !== '' ? v : '') + '" placeholder="—">' +
+        '<button type="button" class="btn-save-cost" data-key="' + esc(row.match_key) + '" title="保存">✓</button></td>';
+    }
+    function cellPlatformMerged(block, opts) {
+      opts = opts || {};
+      var syncBtn = '';
+      var groupBtn = '';
+      if (opts.platform === 'shopee' && opts.matchKey && opts.hasTk) {
+        syncBtn = '<button type="button" class="btn btn-secondary btn-xs btn-row-tk-shopee" ' +
+          'data-key="' + esc(opts.matchKey) + '" title="从 TK 同步到 Shopee 全球">' +
+          (block ? '↻ 全球' : 'TK→Shopee') + '</button> ';
+      }
+      if (opts.platform === 'shopee' && opts.tkGroup && opts.tkGroup.match_keys && opts.tkGroup.match_keys.length >= 2) {
+        groupBtn = '<button type="button" class="btn btn-primary btn-xs btn-row-tk-shopee-group" ' +
+          'data-keys="' + esc(opts.tkGroup.match_keys.join(',')) + '" ' +
+          'title="整组同步：Color 规格图 + 人民币价 + 库存 + 英文文案">' +
+          '整组同步 (' + opts.tkGroup.match_keys.length + ')</button> ';
+      }
+      if (!block) {
+        if (syncBtn || groupBtn) {
+          return '<td class="miss" colspan="4">' + groupBtn + syncBtn +
+            '<span class="meta">未铺 Shopee</span></td>';
+        }
+        return '<td class="miss" colspan="4">—</td>';
+      }
+      var name = groupBtn + syncBtn + esc((block.product_name || '').slice(0, 56));
+      var skus = [];
+      (block.regions || []).forEach(function(r) {
+        if (r.seller_sku && skus.indexOf(r.seller_sku) < 0) skus.push(r.seller_sku);
+      });
+      if (skus.length) name += '<br><code class="tiny">' + esc(skus.join(' / ')) + '</code>';
+      return imgCell(block.image_url, block.product_name) +
+        '<td class="regs">' + regionBadges(block.regions) + '</td>' +
+        '<td class="name">' + name + '</td>' +
+        '<td class="ps">' + priceStockBlock(block.regions) + '</td>';
+    }
+    function cellTkMissingSku(row) {
+      var block = row.tiktok;
+      if (!block) return '<td class="miss" colspan="4">—</td>';
+      var reg = (block.regions && block.regions[0] && block.regions[0].region) || '';
+      var name = esc((block.product_name || '').slice(0, 56));
+      if (block.regions && block.regions[0] && block.regions[0].model_name) {
+        name += '<br><span class="meta">' + esc(block.regions[0].model_name.slice(0, 40)) + '</span>';
+      }
+      name += '<div class="inline-sku-fill">' +
+        '<span class="inline-sku-label">商家 SKU</span>' +
+        '<input type="text" class="tk-sku-fill-input" data-sku-id="' + esc(row.tk_sku_id) + '" ' +
+        'data-shop-cipher="' + esc(row.shop_cipher) + '" ' +
+        'data-product-id="' + esc(row.product_id || (block.regions[0] && block.regions[0].product_id) || '') + '" ' +
+        'placeholder="如 660002" autocomplete="off">' +
+        '<label class="chk-inline chk-xs" title="保存后调用 TikTok API 写入后台"><input type="checkbox" class="tk-sku-push-chk" checked> 推送 TK</label>' +
+        '<button type="button" class="btn btn-primary btn-xs btn-save-tk-sku">保存</button>' +
+        '<button type="button" class="btn btn-secondary btn-xs btn-open-tk-sku" data-sku-id="' + esc(row.tk_sku_id) + '">维护面板</button></div>';
+      name += '<div class="meta inline-sku-hint">platform sku_id · 回车保存 · ' + esc(reg) + '</div>';
+      return imgCell(block.image_url, block.product_name) +
+        '<td class="regs">' + regionBadges(block.regions) + '</td>' +
+        '<td class="name">' + name + '</td>' +
+        '<td class="ps">' + priceStockBlock(block.regions) + '</td>';
+    }
+    function cellShopeeMissingSku(row) {
+      var block = row.shopee;
+      if (!block) return '<td class="miss" colspan="4">—</td>';
+      var reg = (block.regions && block.regions[0] && block.regions[0].region) || '';
+      var cur = row.current_seller_sku || '';
+      var name = esc((block.product_name || '').slice(0, 56));
+      if (block.regions && block.regions[0] && block.regions[0].model_name) {
+        name += '<br><span class="meta">' + esc(block.regions[0].model_name.slice(0, 40)) + '</span>';
+      }
+      if (cur) name += '<br><code class="tiny meta">当前 ' + esc(cur.slice(0, 48)) + '</code>';
+      name += '<div class="inline-sku-fill inline-sku-fill-sp">' +
+        '<span class="inline-sku-label">规格货号</span>' +
+        '<input type="text" class="sp-sku-fill-input" data-model-id="' + esc(row.sp_model_id) + '" ' +
+        'data-shop-id="' + esc(String(row.shop_id)) + '" ' +
+        'data-item-id="' + esc(row.item_id || (block.regions[0] && block.regions[0].product_id) || '') + '" ' +
+        'placeholder="如 0002 或 660002" autocomplete="off">' +
+        '<label class="chk-inline chk-xs" title="CNSC 跨境店将更新全球商品 Global SKU"><input type="checkbox" class="sp-sku-push-chk" checked> 推送全球</label>' +
+        '<button type="button" class="btn btn-primary btn-xs btn-save-sp-sku">保存</button>' +
+        '<button type="button" class="btn btn-secondary btn-xs btn-open-sp-sku" data-model-id="' + esc(row.sp_model_id) + '" ' +
+        'data-shop-id="' + esc(String(row.shop_id)) + '">维护面板</button></div>';
+      name += '<div class="meta inline-sku-hint">model_id · 回车保存 · ' + esc(reg) + '</div>';
+      return imgCell(block.image_url, block.product_name) +
+        '<td class="regs">' + regionBadges(block.regions) + '</td>' +
+        '<td class="name">' + name + '</td>' +
+        '<td class="ps">' + priceStockBlock(block.regions) + '</td>';
+    }
+    function renderCatalogRow(row) {
+      if (row.missing_tk_sku) {
+        return '<tr class="row-missing-tk" data-sku-id="' + esc(row.tk_sku_id) + '">' +
+          '<td><span class="badge soon">未填 SKU</span><br><code class="key tk-sku-id" title="点击打开维护面板">' + esc(row.tk_sku_id) + '</code></td>' +
+          '<td class="miss">—</td><td class="miss">—</td>' +
+          cellTkMissingSku(row) +
+          '<td class="miss" colspan="4">—</td>' +
+          '<td class="miss" colspan="3">—</td></tr>';
+      }
+      if (row.missing_sp_sku) {
+        return '<tr class="row-missing-sp" data-model-id="' + esc(row.sp_model_id) + '">' +
+          '<td><span class="badge soon">非规范货号</span><br><code class="key sp-model-id" title="点击打开维护面板">' + esc(row.sp_model_id) + '</code></td>' +
+          '<td class="miss">—</td><td class="miss">—</td>' +
+          '<td class="miss" colspan="4">—</td>' +
+          cellShopeeMissingSku(row) +
+          '<td class="miss" colspan="3">—</td></tr>';
+      }
+      var n = row.matched_count || 0;
+      var cls = n >= 3 ? 'row-match-all' : (n >= 2 ? 'row-match' : 'row-partial');
+      return '<tr class="' + cls + '" data-key="' + esc(row.match_key) + '"><td><code class="key">' + esc(row.match_key) + '</code></td>' +
+        costCell(row) + weightCell(row) + cellPlatformMerged(row.tiktok) +
+        cellPlatformMerged(row.shopee, {
+          platform: 'shopee',
+          matchKey: row.match_key,
+          hasTk: row.matched && row.matched.tiktok,
+          tkGroup: row.tk_group
+        }) +
+        cellOzon(row.ozon) + '</tr>';
+    }
+    function cellOzon(oz) {
+      if (!oz) return '<td class="miss" colspan="3">—</td>';
+      var name = esc((oz.product_name || '').slice(0, 48));
+      var st = oz.migrated
+        ? '<span class="badge ok">已上架</span>'
+        : '<span class="badge soon">待迁移</span>';
+      if (oz.seller_sku) name += '<br><code class="tiny">' + esc(oz.seller_sku) + '</code>';
+      return imgCell(oz.image_url, oz.product_name) +
+        '<td class="name">' + name + '</td>' +
+        '<td>' + st + '</td>';
+    }
+    function renderLookupCard(d) {
+      var card = document.getElementById('lookupCard');
+      var meta = document.getElementById('lookupMeta');
+      if (d.edit_only) {
+        card.className = 'lookup-card';
+        card.innerHTML = '<div class="lookup-body"><div class="meta">' +
+          esc((d.hints || []).join(' · ')) + '</div></div>';
+        meta.className = 'meta lookup-meta';
+        meta.textContent = (d.hints || []).join(' · ');
+        loadSkuEdit('', d.platform_sku_id);
+        _editMatchKey = '';
+        _editSkuId = d.platform_sku_id || '';
+        return;
+      }
+      if (!d.found || !d.item) {
+        card.className = 'lookup-card hidden';
+        meta.textContent = d.hints && d.hints.length ? d.hints.join(' · ') : '未找到';
+        meta.className = 'meta lookup-meta warn';
+        return;
+      }
+      meta.className = 'meta lookup-meta';
+      var row = d.item;
+      var hint = (d.hints || []).join(' · ');
+      var tk = row.tiktok;
+      var sp = row.shopee;
+      var imgs = [];
+      if (tk && tk.image_url) imgs.push({ src: tk.image_url, label: 'TK' });
+      if (sp && sp.image_url) imgs.push({ src: sp.image_url, label: 'SP' });
+      if (row.ozon && row.ozon.image_url) imgs.push({ src: row.ozon.image_url, label: 'OZ' });
+      var imgHtml = imgs.length
+        ? imgs.map(function(x) {
+            return '<img class="lookup-thumb" src="' + esc(x.src) + '" alt="' + esc(x.label) + '">';
+          }).join('')
+        : '<span class="meta">无图</span>';
+      var plat = [];
+      if (row.matched.tiktok) plat.push('TK ✓');
+      else plat.push('TK —');
+      if (row.matched.shopee) plat.push('Shopee ✓');
+      else plat.push('Shopee —');
+      if (row.matched.ozon) plat.push('Ozon ✓');
+      else plat.push('Ozon —');
+      card.className = 'lookup-card';
+      card.innerHTML =
+        '<div class="lookup-imgs">' + imgHtml + '</div>' +
+        '<div class="lookup-body">' +
+        '<div><code class="key">' + esc(row.match_key) + '</code> · ' + esc(plat.join(' · ')) + '</div>' +
+        '<div class="lookup-title">' + esc((tk && tk.product_name) || (sp && sp.product_name) || (row.ozon && row.ozon.product_name) || '') + '</div>' +
+        '<div class="meta">' + esc(hint) +
+        (row.cost_cny != null ? ' · 成本 ¥' + row.cost_cny : '') + '</div></div>';
+      openSkuEdit(row.match_key);
+    }
+    var _editMatchKey = '';
+    var _editSkuId = '';
+    var _editExtraRows = [];
+    function skuFieldLabel(row) {
+      if (row.platform === 'shopee') return '规格货号';
+      if (row.platform === 'ozon') return 'offer_id';
+      return '商家 SKU';
+    }
+    function highlightMatchKey(matchKey) {
+      document.querySelectorAll('code.key').forEach(function(el) {
+        var tr = el.closest('tr');
+        if (!tr) return;
+        tr.classList.toggle('row-highlight', !!matchKey && el.textContent.trim() === matchKey);
+      });
+      if (!matchKey) return;
+      var row = Array.prototype.find.call(document.querySelectorAll('code.key'), function(el) {
+        return el.textContent.trim() === matchKey;
+      });
+      if (row) row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    function openSkuEdit(matchKey, skuId) {
+      _editMatchKey = matchKey || '';
+      _editSkuId = skuId || '';
+      _editExtraRows = [];
+      document.getElementById('skuLookup').value = _editMatchKey || document.getElementById('skuLookup').value;
+      document.getElementById('skuEditPanel').className = 'sku-edit-panel';
+      document.getElementById('shopeeFindMeta').textContent = '';
+      loadSkuEdit(_editMatchKey, _editSkuId);
+      highlightMatchKey(_editMatchKey);
+    }
+    function renderSkuEditRows(rows, matchKey) {
+      var table = document.getElementById('skuEditTable');
+      if (!rows || !rows.length) {
+        table.innerHTML = '<p class="meta warn">暂无平台 SKU 行。可用下方「查找 Shopee 规格货号」加入未对齐商品。</p>';
+        return;
+      }
+      table.innerHTML =
+        '<table class="sku-edit-table"><thead><tr>' +
+        '<th>平台</th><th>站点</th><th>商品</th><th>SKU 字段</th><th>当前值 → 新值</th><th>推送</th><th></th>' +
+        '</tr></thead><tbody>' +
+        rows.map(function(row, i) {
+          var name = esc((row.product_name || '').slice(0, 40));
+          if (row.model_name) name += '<br><span class="meta">' + esc(row.model_name.slice(0, 32)) + '</span>';
+          if (row.platform === 'tiktok' && row.sku_id) {
+            name += '<br><code class="tiny meta tk-sku-id" title="TikTok platform sku_id">' + esc(row.sku_id) + '</code>';
+          }
+          if (row.platform === 'shopee' && row.model_id) {
+            name += '<br><code class="tiny meta sp-model-id" title="Shopee model_id">' + esc(row.model_id) + '</code>';
+          }
+          if (row.product_id && row.platform === 'shopee') {
+            name += '<br><span class="meta">item ' + esc(row.product_id) + ' · model ' + esc(row.model_id) + '</span>';
+          }
+          var ids = 'data-i="' + i + '" data-platform="' + esc(row.platform) + '"';
+          if (row.platform === 'tiktok') {
+            ids += ' data-sku-id="' + esc(row.sku_id) + '" data-shop-cipher="' + esc(row.shop_cipher) + '"';
+            ids += ' data-product-id="' + esc(row.product_id || '') + '"';
+            ids += ' data-gpid="' + esc(row.global_product_id || '') + '" data-gsid="' + esc(row.global_sku_id || '') + '"';
+          } else if (row.platform === 'shopee') {
+            ids += ' data-model-id="' + esc(row.model_id) + '" data-shop-id="' + row.shop_id + '"';
+            ids += ' data-item-id="' + esc(row.product_id || '') + '"';
+          } else {
+            ids += ' data-match-key="' + esc(matchKey || row.match_key || '') + '"';
+          }
+          var needSku = row.platform === 'tiktok' && !(row.seller_sku || '').trim();
+          var needSpSku = row.platform === 'shopee' && (function(sk) {
+            if (!sk) return true;
+            var base = sk.split('_')[0].replace(/\D/g, '');
+            if (!base) return true;
+            if (base.length === 4) return false;
+            if (base.length === 6 && base.indexOf('66') === 0) return false;
+            return true;
+          })(row.seller_sku || '');
+          var pushChk = row.can_push
+            ? '<label class="chk-inline"><input type="checkbox" class="sku-push-chk" data-i="' + i + '"' +
+              ((row.platform === 'tiktok' || row.platform === 'shopee') ? ' checked' : '') + '> 推送' +
+              (row.platform === 'shopee' ? ' 全球' : ' TK') + '</label>'
+            : '<span class="meta">本地</span>';
+          var cur = row.seller_sku ? ('<code class="tiny">' + esc(row.seller_sku) + '</code> → ') : '';
+          var ph = needSku ? '必填，如 660002' : (needSpSku ? '规范货号，如 0002' : esc(skuFieldLabel(row)));
+          var saveLabel = ((row.platform === 'tiktok' && needSku) || (row.platform === 'shopee' && needSpSku)) ? '保存并推送' : '保存';
+          var rowCls = needSku ? 'row-needs-sku' : (needSpSku ? 'row-needs-sp-sku' : '');
+          return '<tr ' + ids + (rowCls ? ' class="' + rowCls + '"' : '') + '>' +
+            '<td>' + esc(platLabel(row.platform)) + '</td>' +
+            '<td>' + esc(row.region) + '</td>' +
+            '<td class="name">' + name + '</td>' +
+            '<td>' + esc(skuFieldLabel(row)) + ((needSku || needSpSku) ? ' <span class="badge soon">待填</span>' : '') + '</td>' +
+            '<td><div class="sku-edit-cell">' + cur +
+            '<input type="text" class="sku-edit-input' + (needSku || needSpSku ? ' needs-sku' : '') + '" data-i="' + i + '" value="' + esc(row.seller_sku || '') + '" placeholder="' + ph + '"></div></td>' +
+            '<td>' + pushChk + '</td>' +
+            '<td><button type="button" class="btn btn-' + ((needSku || needSpSku) ? 'primary' : 'secondary') + ' btn-save-sku" data-i="' + i + '">' + saveLabel + '</button></td>' +
+            '</tr>';
+        }).join('') +
+        '</tbody></table>';
+      table.querySelectorAll('.btn-save-sku').forEach(function(btn) {
+        btn.onclick = function() { saveSkuRow(parseInt(btn.getAttribute('data-i'), 10)); };
+      });
+      var firstNeed = table.querySelector('.row-needs-sku .sku-edit-input, .row-needs-sp-sku .sku-edit-input');
+      if (firstNeed) firstNeed.focus();
+    }
+    function mergeEditRows(baseRows, extraRows) {
+      var out = (baseRows || []).slice();
+      var seen = {};
+      out.forEach(function(r) {
+        var k = r.platform + ':' + (r.sku_id || r.model_id) + ':' + (r.shop_id || r.shop_cipher || '');
+        seen[k] = true;
+      });
+      (extraRows || []).forEach(function(r) {
+        var k = r.platform + ':' + (r.sku_id || r.model_id) + ':' + (r.shop_id || r.shop_cipher || '');
+        if (!seen[k]) { seen[k] = true; out.push(r); }
+      });
+      return out;
+    }
+    function platLabel(p) {
+      if (p === 'tiktok') return 'TikTok';
+      if (p === 'shopee') return 'Shopee';
+      if (p === 'ozon') return 'Ozon';
+      return p;
+    }
+    function loadSkuEdit(matchKey, skuId) {
+      var panel = document.getElementById('skuEditPanel');
+      var table = document.getElementById('skuEditTable');
+      document.getElementById('skuEditKey').textContent = matchKey || (skuId ? ('TK ' + skuId) : '—');
+      panel.className = 'sku-edit-panel';
+      table.innerHTML = '<p class="meta">加载 SKU 列表…</p>';
+      var url = '/api/catalog/sku-edit?';
+      if (matchKey) url += 'match_key=' + encodeURIComponent(matchKey);
+      if (skuId) url += (matchKey ? '&' : '') + 'sku_id=' + encodeURIComponent(skuId);
+      if (!matchKey && !skuId) return;
+      fetch(url)
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+          var rows = mergeEditRows(d.rows || [], _editExtraRows);
+          renderSkuEditRows(rows, matchKey || d.match_key || '');
+        })
+        .catch(function() {
+          table.innerHTML = '<p class="meta warn">加载失败</p>';
+        });
+    }
+    function findShopeeSku() {
+      var q = document.getElementById('shopeeSkuFind').value.trim();
+      if (!q) return;
+      var meta = document.getElementById('shopeeFindMeta');
+      meta.textContent = '查找中…';
+      fetch('/api/catalog/shopee-find?q=' + encodeURIComponent(q))
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+          if (!d.ok || !d.rows || !d.rows.length) {
+            meta.textContent = '未找到，可先同步 Shopee 或换 item_id / 规格货号片段';
+            return;
+          }
+          _editExtraRows = mergeEditRows(_editExtraRows, d.rows);
+          meta.textContent = '找到 ' + d.rows.length + ' 条，已加入下方列表';
+          fetch('/api/catalog/sku-edit?match_key=' + encodeURIComponent(_editMatchKey || '') +
+            (_editSkuId ? '&sku_id=' + encodeURIComponent(_editSkuId) : ''))
+            .then(function(r) { return r.json(); })
+            .then(function(base) {
+              renderSkuEditRows(mergeEditRows(base.rows || [], _editExtraRows), _editMatchKey || base.match_key || '');
+            });
+        })
+        .catch(function() { meta.textContent = '查找失败'; });
+    }
+    function saveSkuRow(idx) {
+      var tr = document.querySelector('.sku-edit-table tbody tr[data-i="' + idx + '"]');
+      if (!tr) return;
+      var inp = document.querySelector('.sku-edit-input[data-i="' + idx + '"]');
+      var pushEl = document.querySelector('.sku-push-chk[data-i="' + idx + '"]');
+      var sellerSku = inp && inp.value.trim();
+      if (!sellerSku) { alert('请输入商家 SKU'); return; }
+      var body = {
+        platform: tr.getAttribute('data-platform'),
+        seller_sku: sellerSku,
+        push: !!(pushEl && pushEl.checked)
+      };
+      if (body.platform === 'tiktok') {
+        body.sku_id = tr.getAttribute('data-sku-id');
+        body.shop_cipher = tr.getAttribute('data-shop-cipher');
+        body.product_id = tr.getAttribute('data-product-id') || '';
+        body.global_product_id = tr.getAttribute('data-gpid') || '';
+        body.global_sku_id = tr.getAttribute('data-gsid') || '';
+      } else if (body.platform === 'shopee') {
+        body.model_id = tr.getAttribute('data-model-id');
+        body.shop_id = parseInt(tr.getAttribute('data-shop-id'), 10);
+        body.product_id = tr.getAttribute('data-item-id') || '';
+      } else {
+        body.match_key = tr.getAttribute('data-match-key');
+      }
+      var btn = document.querySelector('.btn-save-sku[data-i="' + idx + '"]');
+      if (btn) { btn.disabled = true; btn.textContent = '…'; }
+      fetch('/api/catalog/seller-sku', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+      }).then(function(r) { return r.json(); }).then(function(res) {
+        if (btn) { btn.disabled = false; btn.textContent = '保存'; }
+        if (!res.ok) { alert(res.error || '保存失败'); return; }
+        if (res.push_error) {
+          alert('本地已保存；推送: ' + res.push_error);
+        } else if (res.pushed) {
+          if (body.platform === 'shopee' && res.push_via === 'cnsc_global') {
+            alert('已保存并推送到 CNSC 全球商品（Global SKU）');
+          } else if (res.pushed) {
+            alert('已保存并推送到平台');
+          }
+        } else {
+          btn.textContent = '✓';
+          setTimeout(function() { if (btn) btn.textContent = '保存'; }, 1200);
+        }
+        loadSkuEdit(_editMatchKey, _editSkuId);
+      }).catch(function() {
+        if (btn) { btn.disabled = false; btn.textContent = '保存'; }
+        alert('网络错误');
+      });
+    }
+    function lookupSku() {
+      var sku = document.getElementById('skuLookup').value.trim();
+      if (!sku) return;
+      document.getElementById('skuQ').value = sku;
+      var region = document.getElementById('region').value;
+      var url = '/api/catalog/lookup?sku=' + encodeURIComponent(sku) +
+        (region ? '&region=' + encodeURIComponent(region) : '');
+      document.getElementById('lookupMeta').textContent = '查询中…';
+      fetch(url).then(function(r) { return r.json(); }).then(function(d) {
+        renderLookupCard(d);
+        if (d.match_key) {
+          openSkuEdit(d.match_key);
+        }
+        loadList();
+      }).catch(function() {
+        document.getElementById('lookupMeta').textContent = '查询失败';
+      });
+    }
+    function loadStores() {
+      fetch('/api/catalog/stores').then(function(r) { return r.json(); }).then(function(d) {
+        var el = document.getElementById('storeCards');
+        if (!d.ok || !d.stores) { el.innerHTML = ''; return; }
+        el.innerHTML = d.stores.map(function(s) {
+          var oz = s.ozon_keys != null ? (' · Ozon ' + s.ozon_keys) : '';
+          var cost = s.with_cost != null ? (' · 有成本 ' + s.with_cost) : '';
+          return '<div class="card store-card' + (s.region === 'ALL' ? ' store-all' : '') + '" data-region="' + s.region + '">' +
+            '<h2>' + s.region + '</h2>' +
+            '<p class="meta">' + esc(s.shopee_shop || '') + '</p>' +
+            '<p>TK ' + s.tiktok_keys + ' · SP ' + s.shopee_keys + oz + cost + '</p>' +
+            (s.matched_keys != null ? '<p><strong>TK↔SP ' + s.matched_keys + '</strong></p>' : '') +
+            '</div>';
+        }).join('');
+        el.querySelectorAll('.store-card').forEach(function(c) {
+          c.onclick = function() {
+            document.getElementById('region').value = c.dataset.region === 'ALL' ? '' : c.dataset.region;
+            loadList();
+          };
+        });
+        if (d.summary) {
+          var g = d.summary;
+          document.getElementById('globalStats').textContent =
+            '全局 ' + g.total_keys + ' 个对齐码 · 三平台齐 ' + g.matched_all_three +
+            ' · Ozon 已上架 ' + g.ozon_live + ' / 待迁移 ' + g.ozon_pending +
+            ' · 已填成本 ' + g.with_cost +
+            (g.tiktok_missing_sku ? (' · 缺 TK 商家 SKU ' + g.tiktok_missing_sku) : '') +
+            (g.shopee_needs_sku ? (' · 缺 Shopee 规范货号 ' + g.shopee_needs_sku) : '');
+          var mc = document.getElementById('missingTkSkuCount');
+          if (mc) mc.textContent = g.tiktok_missing_sku ? ('(' + g.tiktok_missing_sku + ')') : '';
+          var msc = document.getElementById('missingSpSkuCount');
+          if (msc) msc.textContent = g.shopee_needs_sku ? ('(' + g.shopee_needs_sku + ')') : '';
+        }
+      });
+    }
+    function loadList() {
+      var region = document.getElementById('region').value;
+      var sku = document.getElementById('skuQ').value.trim();
+      var matchOnly = document.getElementById('matchOnly').checked;
+      var noOzon = document.getElementById('noOzon').checked;
+      var missingTkSku = document.getElementById('missingTkSku').checked;
+      var missingSpSku = document.getElementById('missingSpSku').checked;
+      var platform = missingTkSku ? 'missing_tk_sku' : (missingSpSku ? 'missing_sp_sku' : (noOzon ? 'missing_ozon' : ''));
+      var q = '/api/catalog/products?limit=300' +
+        (region ? '&region=' + encodeURIComponent(region) : '') +
+        (sku ? '&sku=' + encodeURIComponent(sku) : '') +
+        (matchOnly ? '&match_only=1' : '') +
+        (platform ? '&platform=' + encodeURIComponent(platform) : '');
+      var tbody = document.getElementById('tbody');
+      tbody.innerHTML = '<tr><td colspan="14" class="empty">加载中…</td></tr>';
+      fetch(q).then(function(r) { return r.json(); }).then(function(d) {
+        if (!d.ok) {
+          tbody.innerHTML = '<tr><td colspan="14" class="empty">错误</td></tr>';
+          return;
+        }
+        if (missingTkSku && d.platform_filter !== 'missing_tk_sku') {
+          document.getElementById('listMeta').textContent =
+            '服务未更新，请重启: python3 main.py serve --page catalog';
+          tbody.innerHTML = '<tr><td colspan="14" class="empty warn">后端未支持缺 SKU 筛选，请重启本地服务后刷新页面</td></tr>';
+          return;
+        }
+        if (missingSpSku && d.platform_filter !== 'missing_sp_sku') {
+          document.getElementById('listMeta').textContent =
+            '需要重启服务才能使用 Shopee 筛选';
+          tbody.innerHTML = '<tr><td colspan="14" class="empty warn" style="padding:20px;line-height:1.6">' +
+            '<strong>后端未更新</strong>：当前服务不认识「缺 Shopee 规范货号」筛选。<br>' +
+            '请在终端执行：<code>cd /Users/wangyin/Desktop/e-commercial/tiktok_e_comm && python3 main.py serve --page catalog</code><br>' +
+            '启动后刷新本页再勾选。</td></tr>';
+          return;
+        }
+        var regLabel = d.region === 'ALL' ? '四国合并' : d.region;
+        var modeLabel = d.platform_filter === 'missing_tk_sku' ? ' · 仅缺 TK 商家 SKU'
+          : (d.platform_filter === 'missing_sp_sku' ? ' · 仅缺 Shopee 规范货号' : '');
+        var missLabel = '';
+        if (d.missing_tk_included && d.platform_filter !== 'missing_tk_sku') {
+          missLabel += ' · 含 ' + d.missing_tk_included + ' 条缺 TK SKU';
+        }
+        if (d.missing_sp_included && d.platform_filter !== 'missing_sp_sku') {
+          missLabel += ' · 含 ' + d.missing_sp_included + ' 条缺 Shopee 规范货号';
+        }
+        if (missLabel) missLabel += '（置顶）';
+        document.getElementById('listMeta').textContent =
+          regLabel + modeLabel + missLabel + ' · 共 ' + d.total + ' 条' + (d.search_key ? ' · 对齐码 ' + d.search_key : '');
+        if (!d.items.length) {
+          tbody.innerHTML = '<tr><td colspan="14" class="empty">无结果</td></tr>';
+          return;
+        }
+        tbody.innerHTML = d.items.map(renderCatalogRow).join('');
+        bindCostSave();
+        bindTkShopeeSync();
+        bindMissingTkSkuSave();
+        bindMissingSpSkuSave();
+        tbody.querySelectorAll('code.key:not(.tk-sku-id):not(.sp-model-id)').forEach(function(el) {
+          el.style.cursor = 'pointer';
+          el.title = '点击维护各平台商家 SKU（不筛选列表）';
+          el.onclick = function(e) {
+            e.preventDefault();
+            openSkuEdit(el.textContent.trim());
+          };
+        });
+        tbody.querySelectorAll('code.tk-sku-id').forEach(function(el) {
+          el.style.cursor = 'pointer';
+          el.title = '点击打开 SKU 维护';
+          el.onclick = function(e) {
+            e.preventDefault();
+            openSkuEdit('', el.textContent.trim());
+          };
+        });
+        tbody.querySelectorAll('code.sp-model-id').forEach(function(el) {
+          el.style.cursor = 'pointer';
+          el.title = '点击打开 Shopee 维护';
+          el.onclick = function(e) {
+            e.preventDefault();
+            var tr = el.closest('tr');
+            openSkuEditByShopeeModel(el.textContent.trim(), tr);
+          };
+        });
+      }).catch(function() {
+        tbody.innerHTML = '<tr><td colspan="14" class="empty">请求失败</td></tr>';
+      });
+    }
+    function bindMissingTkSkuSave() {
+      function saveInlineTkSku(btn) {
+        var wrap = btn.closest('.inline-sku-fill');
+        var inp = wrap && wrap.querySelector('.tk-sku-fill-input');
+        var sellerSku = inp && inp.value.trim();
+        if (!sellerSku) { alert('请输入商家 SKU'); if (inp) inp.focus(); return; }
+        var pushEl = wrap && wrap.querySelector('.tk-sku-push-chk');
+        btn.disabled = true;
+        fetch('/api/catalog/seller-sku', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            platform: 'tiktok',
+            seller_sku: sellerSku,
+            sku_id: inp.getAttribute('data-sku-id'),
+            shop_cipher: inp.getAttribute('data-shop-cipher'),
+            product_id: inp.getAttribute('data-product-id') || '',
+            push: !!(pushEl && pushEl.checked)
+          })
+        }).then(function(r) { return r.json(); }).then(function(res) {
+          btn.disabled = false;
+          if (!res.ok) { alert(res.error || '保存失败'); return; }
+          if (res.push_error) {
+            alert('本地已保存；TK 推送失败: ' + res.push_error);
+          } else if (res.pushed) {
+            btn.textContent = '✓ 已推送';
+          } else {
+            btn.textContent = '✓ 已保存';
+          }
+          loadStores();
+          loadList();
+        }).catch(function() {
+          btn.disabled = false;
+          alert('网络错误');
+        });
+      }
+      document.querySelectorAll('.btn-save-tk-sku').forEach(function(btn) {
+        btn.onclick = function(e) {
+          e.stopPropagation();
+          saveInlineTkSku(btn);
+        };
+      });
+      document.querySelectorAll('.tk-sku-fill-input').forEach(function(inp) {
+        inp.onkeydown = function(e) {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            var btn = inp.closest('.inline-sku-fill') && inp.closest('.inline-sku-fill').querySelector('.btn-save-tk-sku');
+            if (btn) saveInlineTkSku(btn);
+          }
+        };
+      });
+      document.querySelectorAll('.btn-open-tk-sku').forEach(function(btn) {
+        btn.onclick = function(e) {
+          e.stopPropagation();
+          openSkuEdit('', btn.getAttribute('data-sku-id'));
+        };
+      });
+    }
+    function openSkuEditByShopeeModel(modelId, tr) {
+      document.getElementById('skuLookup').value = modelId;
+      _editMatchKey = '';
+      _editSkuId = '';
+      _editExtraRows = [];
+      document.getElementById('skuEditPanel').className = 'sku-edit-panel';
+      document.getElementById('skuEditKey').textContent = 'Shopee ' + modelId;
+      document.getElementById('skuEditTable').innerHTML = '<p class="meta">加载中…</p>';
+      fetch('/api/catalog/shopee-find?q=' + encodeURIComponent(modelId))
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+          if (!d.ok || !d.rows || !d.rows.length) {
+            document.getElementById('skuEditTable').innerHTML = '<p class="meta warn">未找到 model ' + esc(modelId) + '</p>';
+            return;
+          }
+          _editExtraRows = d.rows;
+          renderSkuEditRows(d.rows, '');
+        })
+        .catch(function() {
+          document.getElementById('skuEditTable').innerHTML = '<p class="meta warn">加载失败</p>';
+        });
+      if (tr) tr.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    function bindMissingSpSkuSave() {
+      function saveInlineSpSku(btn) {
+        var wrap = btn.closest('.inline-sku-fill');
+        var inp = wrap && wrap.querySelector('.sp-sku-fill-input');
+        var sellerSku = inp && inp.value.trim();
+        if (!sellerSku) { alert('请输入规格货号（4 位码或 660002）'); if (inp) inp.focus(); return; }
+        var pushEl = wrap && wrap.querySelector('.sp-sku-push-chk');
+        btn.disabled = true;
+        fetch('/api/catalog/seller-sku', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            platform: 'shopee',
+            seller_sku: sellerSku,
+            model_id: inp.getAttribute('data-model-id'),
+            shop_id: parseInt(inp.getAttribute('data-shop-id'), 10),
+            product_id: inp.getAttribute('data-item-id') || '',
+            push: !!(pushEl && pushEl.checked)
+          })
+        }).then(function(r) { return r.json(); }).then(function(res) {
+          btn.disabled = false;
+          if (!res.ok) { alert(res.error || '保存失败'); return; }
+          if (res.push_error) {
+            alert('本地已保存；Shopee 推送失败: ' + res.push_error);
+          } else if (res.pushed) {
+            btn.textContent = res.push_via === 'cnsc_global' ? '✓ 全球已推送' : '✓ 已推送';
+          } else {
+            btn.textContent = '✓ 已保存';
+          }
+          loadStores();
+          loadList();
+        }).catch(function() {
+          btn.disabled = false;
+          alert('网络错误');
+        });
+      }
+      document.querySelectorAll('.btn-save-sp-sku').forEach(function(btn) {
+        btn.onclick = function(e) {
+          e.stopPropagation();
+          saveInlineSpSku(btn);
+        };
+      });
+      document.querySelectorAll('.sp-sku-fill-input').forEach(function(inp) {
+        inp.onkeydown = function(e) {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            var btn = inp.closest('.inline-sku-fill') && inp.closest('.inline-sku-fill').querySelector('.btn-save-sp-sku');
+            if (btn) saveInlineSpSku(btn);
+          }
+        };
+      });
+      document.querySelectorAll('.btn-open-sp-sku').forEach(function(btn) {
+        btn.onclick = function(e) {
+          e.stopPropagation();
+          openSkuEditByShopeeModel(btn.getAttribute('data-model-id'), btn.closest('tr'));
+        };
+      });
+    }
+    function bindCostSave() {
+      document.querySelectorAll('.btn-save-cost').forEach(function(btn) {
+        btn.onclick = function() {
+          var key = btn.getAttribute('data-key');
+          var inp = document.querySelector('.cost-input[data-key="' + key + '"]');
+          var cost = parseFloat(inp && inp.value);
+          if (!key || !cost || cost <= 0) { alert('请输入有效成本'); return; }
+          btn.disabled = true;
+          fetch('/api/catalog/cost', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ match_key: key, cost_cny: cost })
+          }).then(function(r) { return r.json(); }).then(function(res) {
+            btn.disabled = false;
+            if (!res.ok) { alert(res.error || '保存失败'); return; }
+            btn.textContent = '✓';
+            setTimeout(function() { btn.textContent = '✓'; }, 800);
+          }).catch(function() { btn.disabled = false; alert('网络错误'); });
+        };
+      });
+    }
+    function syncTkToShopee(matchKey, metaEl, btn) {
+      if (!matchKey) return;
+      var region = (document.getElementById('tkShopeeRegion') || {}).value || 'PH';
+      if (metaEl) metaEl.textContent = 'TK→Shopee 同步中（上传图片+AI 文案，约 30–60s，请勿关闭）…';
+      if (btn) btn.disabled = true;
+      fetch('/api/catalog/shopee-sync-tk', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ match_key: matchKey, region: region })
+      })
+        .then(function(r) {
+          return r.text().then(function(text) {
+            var data;
+            try { data = JSON.parse(text); } catch (e) {
+              if (r.status === 404) {
+                throw new Error('接口未就绪，请重启服务: python3 main.py serve --page catalog');
+              }
+              throw new Error('服务器异常 HTTP ' + r.status);
+            }
+            return { status: r.status, data: data };
+          });
+        })
+        .then(function(res) {
+          if (btn) btn.disabled = false;
+          if (!res.data.ok) {
+            var err = res.data.error || res.data.message || '失败';
+            if (metaEl) metaEl.textContent = err;
+            else alert(err);
+            return;
+          }
+          var msg = res.data.message || ('全球商品 ' + (res.data.global_item_id || ''));
+          if (metaEl) metaEl.textContent = msg;
+          else alert(msg);
+          loadList();
+          if (_editMatchKey === matchKey) loadSkuEdit(matchKey, _editSkuId);
+        })
+        .catch(function(err) {
+          if (btn) btn.disabled = false;
+          var msg = (err && err.message) ? err.message : '网络错误';
+          if (metaEl) metaEl.textContent = msg;
+          else alert(msg);
+        });
+    }
+    function bindTkShopeeSync() {
+      document.querySelectorAll('.btn-row-tk-shopee').forEach(function(btn) {
+        btn.onclick = function(e) {
+          e.stopPropagation();
+          syncTkToShopee(btn.getAttribute('data-key'), null, btn);
+        };
+      });
+      document.querySelectorAll('.btn-row-tk-shopee-group').forEach(function(btn) {
+        btn.onclick = function(e) {
+          e.stopPropagation();
+          syncTkGroupToShopee(btn.getAttribute('data-keys'), null, btn);
+        };
+      });
+    }
+    function syncTkGroupToShopee(keysCsv, metaEl, btn) {
+      if (!keysCsv) return;
+      var region = (document.getElementById('tkShopeeRegion') || {}).value || 'PH';
+      if (metaEl) metaEl.textContent = '整组同步中（规格图+汇率价+库存，约 60–120s）…';
+      if (btn) btn.disabled = true;
+      fetch('/api/catalog/shopee-sync-tk-group', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ match_keys: keysCsv, region: region })
+      })
+        .then(function(r) {
+          return r.text().then(function(text) {
+            var data;
+            try { data = JSON.parse(text); } catch (e) {
+              if (r.status === 404) {
+                throw new Error('接口未就绪，请重启服务: python3 main.py serve --page catalog');
+              }
+              throw new Error('服务器异常 HTTP ' + r.status);
+            }
+            return { status: r.status, data: data };
+          });
+        })
+        .then(function(res) {
+          if (btn) btn.disabled = false;
+          if (!res.data.ok) {
+            var err = res.data.error || res.data.message || '失败';
+            if (metaEl) metaEl.textContent = err;
+            else alert(err);
+            return;
+          }
+          var msg = res.data.message || ('全球商品 ' + (res.data.global_item_id || ''));
+          if (metaEl) metaEl.textContent = msg;
+          else alert(msg);
+          loadList();
+        })
+        .catch(function(err) {
+          if (btn) btn.disabled = false;
+          var msg = (err && err.message) ? err.message : '网络错误';
+          if (metaEl) metaEl.textContent = msg;
+          else alert(msg);
+        });
+    }
+    function setSyncProgress(pct, message) {
+      var wrap = document.getElementById('syncProgressWrap');
+      var fill = document.getElementById('syncProgressFill');
+      var pctEl = document.getElementById('syncProgressPct');
+      var track = wrap && wrap.querySelector('.sync-progress-track');
+      if (!wrap || !fill || !pctEl) return;
+      wrap.hidden = false;
+      var n = Math.max(0, Math.min(100, parseInt(pct, 10) || 0));
+      fill.style.width = n + '%';
+      pctEl.textContent = n + '%';
+      if (track) track.setAttribute('aria-valuenow', String(n));
+      if (message) {
+        var st = document.getElementById('syncStatus');
+        if (st) st.textContent = message;
+      }
+    }
+    function hideSyncProgress() {
+      var wrap = document.getElementById('syncProgressWrap');
+      if (wrap) wrap.hidden = true;
+    }
+    function startSync(mode) {
+      var btn = document.getElementById('btnSync');
+      var btnFull = document.getElementById('btnSyncFull');
+      var st = document.getElementById('syncStatus');
+      var useCache = document.getElementById('syncUseCache');
+      var effectiveMode = (mode === 'full' || !(useCache && useCache.checked)) ? 'full' : 'fast';
+      btn.disabled = true;
+      if (btnFull) btnFull.disabled = true;
+      setSyncProgress(0, (effectiveMode === 'fast' ? '快速' : '全量') + '同步提交中…');
+      fetch('/api/catalog/sync', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ mode: effectiveMode })
+      })
+        .then(function(r) { return r.json(); })
+        .then(function(res) {
+          if (!res.ok) {
+            btn.disabled = false;
+            if (btnFull) btnFull.disabled = false;
+            hideSyncProgress();
+            st.textContent = res.message || res.error || '失败';
+            return;
+          }
+          pollSync(btn, st, btnFull);
+        })
+        .catch(function() {
+          btn.disabled = false;
+          if (btnFull) btnFull.disabled = false;
+          hideSyncProgress();
+          st.textContent = '网络错误';
+        });
+    }
+    function pollSync(btn, st, btnFull) {
+      fetch('/api/catalog/sync/status').then(function(r) { return r.json(); }).then(function(s) {
+        if (s.running) {
+          setSyncProgress(s.percent || 0, s.message || '同步中…');
+          setTimeout(function() { pollSync(btn, st, btnFull); }, 1500);
+          return;
+        }
+        btn.disabled = false;
+        if (btnFull) btnFull.disabled = false;
+        setSyncProgress(s.percent || 100, s.message || '同步完成');
+        if (s.error && !s.message) {
+          st.textContent = '失败: ' + s.error;
+          return;
+        }
+        st.textContent = s.message || '同步完成';
+        loadStores();
+        loadList();
+        setTimeout(hideSyncProgress, 4000);
+      });
+    }
+    function buildCatalogQuery(basePath) {
+      var region = document.getElementById('region').value;
+      var sku = document.getElementById('skuQ').value.trim();
+      var matchOnly = document.getElementById('matchOnly').checked;
+      var noOzon = document.getElementById('noOzon').checked;
+      var missingTkSku = document.getElementById('missingTkSku').checked;
+      var missingSpSku = document.getElementById('missingSpSku').checked;
+      var platform = missingTkSku ? 'missing_tk_sku' : (missingSpSku ? 'missing_sp_sku' : (noOzon ? 'missing_ozon' : ''));
+      var q = basePath + '?limit=300' +
+        (region ? '&region=' + encodeURIComponent(region) : '') +
+        (sku ? '&sku=' + encodeURIComponent(sku) : '') +
+        (matchOnly ? '&match_only=1' : '') +
+        (platform ? '&platform=' + encodeURIComponent(platform) : '');
+      return q;
+    }
+    function exportCatalogPdf() {
+      var btn = document.getElementById('btnExportPdf');
+      var meta = document.getElementById('listMeta');
+      var oldText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '导出中…';
+      var prevMeta = meta.textContent;
+      meta.textContent = '正在生成 PDF（含 AI 翻译与主图下载，请稍候）…';
+      fetch(buildCatalogQuery('/api/catalog/export-pdf'))
+        .then(function(r) {
+          var ct = (r.headers.get('Content-Type') || '').toLowerCase();
+          if (!r.ok || ct.indexOf('application/pdf') < 0) {
+            return r.json().catch(function() { return {}; }).then(function(d) {
+              if (r.status === 404) {
+                throw new Error('接口未就绪，请重启服务: python3 main.py serve --page catalog');
+              }
+              throw new Error((d && d.error) || ('HTTP ' + r.status));
+            });
+          }
+          var disp = r.headers.get('Content-Disposition') || '';
+          var m = /filename="([^"]+)"/.exec(disp);
+          var fname = (m && m[1]) || ('catalog_' + Date.now() + '.pdf');
+          return r.blob().then(function(blob) {
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = fname;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+          });
+        })
+        .then(function() {
+          meta.textContent = prevMeta + ' · PDF 已下载';
+        })
+        .catch(function(e) {
+          meta.textContent = prevMeta;
+          alert('导出失败：' + (e.message || e));
+        })
+        .finally(function() {
+          btn.disabled = false;
+          btn.textContent = oldText;
+        });
+    }
+    document.getElementById('btnSearch').onclick = loadList;
+    document.getElementById('btnExportPdf').onclick = exportCatalogPdf;
+    document.getElementById('missingTkSku').onchange = function() {
+      if (this.checked) {
+        document.getElementById('matchOnly').checked = false;
+        document.getElementById('noOzon').checked = false;
+        document.getElementById('missingSpSku').checked = false;
+        document.getElementById('skuQ').value = '';
+      }
+      loadList();
+    };
+    document.getElementById('missingSpSku').onchange = function() {
+      if (this.checked) {
+        document.getElementById('matchOnly').checked = false;
+        document.getElementById('noOzon').checked = false;
+        document.getElementById('missingTkSku').checked = false;
+        document.getElementById('skuQ').value = '';
+      }
+      loadList();
+    };
+    document.getElementById('btnLookup').onclick = lookupSku;
+    document.getElementById('btnShopeeFind').onclick = findShopeeSku;
+    document.getElementById('shopeeSkuFind').onkeydown = function(e) {
+      if (e.key === 'Enter') findShopeeSku();
+    };
+    document.getElementById('btnTkShopeeSync').onclick = function() {
+      if (!_editMatchKey) {
+        document.getElementById('tkShopeeSyncMeta').textContent = '请先点击对齐码打开 SKU 维护';
+        return;
+      }
+      syncTkToShopee(_editMatchKey, document.getElementById('tkShopeeSyncMeta'), this);
+    };
+    document.getElementById('btnSync').onclick = function() { startSync('fast'); };
+    document.getElementById('btnSyncFull').onclick = function() { startSync('full'); };
+    document.getElementById('btnReset').onclick = function() {
+      document.getElementById('skuQ').value = '';
+      document.getElementById('skuLookup').value = '';
+      document.getElementById('lookupCard').className = 'lookup-card hidden';
+      document.getElementById('skuEditPanel').className = 'sku-edit-panel hidden';
+      document.getElementById('lookupMeta').textContent = '';
+      document.getElementById('matchOnly').checked = false;
+      document.getElementById('noOzon').checked = false;
+      document.getElementById('missingTkSku').checked = false;
+      document.getElementById('missingSpSku').checked = false;
+      document.getElementById('region').value = '';
+      loadList();
+    };
+    document.getElementById('region').onchange = loadList;
+    document.getElementById('skuQ').onkeydown = function(e) {
+      if (e.key === 'Enter') loadList();
+    };
+    document.getElementById('skuLookup').onkeydown = function(e) {
+      if (e.key === 'Enter') lookupSku();
+    };
+    (function initFromUrl() {
+      loadStores();
+      fetch('/api/catalog/sync/status').then(function(r) { return r.json(); }).then(function(s) {
+        if (s.running) {
+          var btn = document.getElementById('btnSync');
+          var st = document.getElementById('syncStatus');
+          if (btn) btn.disabled = true;
+          var btnFull = document.getElementById('btnSyncFull');
+          if (btnFull) btnFull.disabled = true;
+          setSyncProgress(s.percent || 0, s.message || '同步中…');
+          pollSync(btn, st, btnFull);
+        }
+      }).catch(function() {});
+      var p = new URLSearchParams(window.location.search);
+      var sku = p.get('sku') || p.get('q');
+      if (sku) {
+        document.getElementById('skuLookup').value = sku;
+        lookupSku();
+      } else {
+        loadList();
+      }
+    })();
+  </script>
+</body>
+</html>

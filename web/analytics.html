@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Analytics 分段</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">TikTok Shop 控制台</a>
+    <nav class="nav">
+      <a href="/">首页</a>
+      <a href="/catalog">商品目录</a>
+      <a href="/costs">成本维护</a>
+      <a href="/titles">Listing 优化</a>
+      <a href="/images">主图优化</a>
+      <a href="/analytics" class="active">Analytics</a>
+      <a href="/deactivate">零销下架</a>
+      <a href="/promotions">促销调价</a>
+    </nav>
+  </header>
+  <main class="container">
+    <h1>Analytics 商品分段</h1>
+    <p class="hint">近 28 天 TikTok 商品表现 · 按店铺内 CTR 中位数划分。A 类 → <a href="/titles">Listing 优化</a>；B 类 → <a href="/images">主图优化</a>；D 类 → <a href="/deactivate">零销下架</a>。</p>
+
+    <div class="scan-panel">
+      <div class="scan-form">
+        <select id="region">
+          <option value="">全部站点</option>
+          <option value="MY">MY</option>
+          <option value="VN">VN</option>
+          <option value="TH">TH</option>
+          <option value="PH">PH</option>
+        </select>
+        <button class="btn-primary" id="syncBtn" onclick="startSync()">同步 Analytics</button>
+        <span id="syncStatus"></span>
+      </div>
+    </div>
+
+    <div id="summary" class="segment-grid"></div>
+
+    <div class="toolbar">
+      <label>查看分段
+        <select id="segment" onchange="loadProducts()">
+          <option value="">全部</option>
+          <option value="A">A · 高兴趣低转化</option>
+          <option value="B">B · 低曝光</option>
+          <option value="C">C · 有单偏弱</option>
+          <option value="D">D · 下架候选</option>
+        </select>
+      </label>
+    </div>
+    <div id="list"><p class="hint">请先同步 Analytics</p></div>
+  </main>
+  <script>
+    var SEG_LABELS = {
+      A: '高 CTR · 0 单 → Listing',
+      B: '低 CTR · 0 单 → 标题/主图',
+      C: '有单但偏弱',
+      D: '低 CTR · 0 单 → 下架'
+    };
+
+    function esc(s) {
+      return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+    }
+
+    function loadSummary() {
+      var region = document.getElementById('region').value || '';
+      var url = '/api/analytics/summary' + (region ? '?region=' + encodeURIComponent(region) : '');
+      fetch(url).then(function(r) { return r.json(); }).then(function(res) {
+        if (!res.ok) return;
+        var el = document.getElementById('summary');
+        var segs = res.segments || {};
+        var days = res.window_days || 28;
+        var mult = res.high_ctr_multiplier || 1.5;
+        var cards = Object.keys(SEG_LABELS).map(function(k) {
+          return '<div class="card segment-card seg-' + k + '">' +
+            '<div class="seg-key">' + k + '</div>' +
+            '<div class="seg-count">' + (segs[k] || 0) + '</div>' +
+            '<div class="seg-desc">' + SEG_LABELS[k] + '</div></div>';
+        }).join('');
+        el.innerHTML = '<p class="hint">窗口 ' + days + ' 天 · 高 CTR 阈值 = 中位×' + mult + '</p>' + cards;
+      });
+    }
+
+    function loadProducts() {
+      var region = document.getElementById('region').value || '';
+      var segment = document.getElementById('segment').value || '';
+      var qs = [];
+      if (region) qs.push('region=' + encodeURIComponent(region));
+      if (segment) qs.push('segment=' + encodeURIComponent(segment));
+      fetch('/api/analytics/products' + (qs.length ? '?' + qs.join('&') : ''))
+        .then(function(r) { return r.json(); })
+        .then(function(res) {
+          var el = document.getElementById('list');
+          var items = res.items || [];
+          if (!items.length) {
+            el.innerHTML = '<div class="empty">暂无数据</div>';
+            return;
+          }
+          el.innerHTML = items.slice(0, 100).map(function(it) {
+            var ctr = (it.click_through_rate * 100).toFixed(2);
+            var med = it.ctr_median ? (it.ctr_median * 100).toFixed(2) : '—';
+            return '<div class="card item-card"><div class="row">' +
+              (it.image_url ? '<img class="thumb" src="' + esc(it.image_url) + '">' : '<div class="thumb"></div>') +
+              '<div><div class="meta">' + esc(it.region) + ' · ' + esc(it.segment) +
+              ' · CTR ' + ctr + '% · 中位 ' + med + '% · 28天 ' + (it.orders || 0) + ' 单 · 库存 ' + (it.stock_total || 0) +
+              '</div><div class="old">' + esc(it.product_name) + '</div></div></div></div>';
+          }).join('');
+        });
+    }
+
+    function startSync() {
+      var btn = document.getElementById('syncBtn');
+      btn.disabled = true;
+      document.getElementById('syncStatus').textContent = '提交中...';
+      fetch('/api/analytics/sync', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ region: document.getElementById('region').value || null })
+      }).then(function(r) { return r.json(); }).then(function(res) {
+        if (!res.ok) { alert(res.message); btn.disabled = false; return; }
+        pollSync();
+      });
+    }
+
+    function pollSync() {
+      var btn = document.getElementById('syncBtn');
+      fetch('/api/analytics/sync/status').then(function(r) { return r.json(); }).then(function(s) {
+        if (s.running) {
+          document.getElementById('syncStatus').textContent = s.message || '同步中...';
+          setTimeout(pollSync, 1500);
+          return;
+        }
+        btn.disabled = false;
+        document.getElementById('syncStatus').textContent = s.error ? ('失败: ' + s.error) : (s.message || '完成');
+        loadSummary();
+        loadProducts();
+      });
+    }
+
+    document.getElementById('region').addEventListener('change', function() {
+      loadSummary();
+      loadProducts();
+    });
+
+    loadSummary();
+    loadProducts();
+  </script>
+</body>
+</html>

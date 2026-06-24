@@ -1,0 +1,29 @@
+---
+description: TikTok+Ozon 电商控制台：目录结构、Ozon 流程、部署约定
+alwaysApply: true
+---
+
+# E-commercial 系统约定
+
+## 目录布局
+
+- 主项目：`tiktok_e_comm`（本仓库）
+- Ozon Flask：`../ozon/webapp/`（兄弟目录，`modules/ozon/webapp_bridge.py` 内嵌加载）
+- 凭据：`config/settings.json`（gitignore），勿硬编码 API key
+
+## Ozon
+
+- Draft 用 **seller_sku（6位）**；migrate 用 **offer_id（4位）**
+- 草稿表单支持手动改类目（`category_options` + profile）；批量搬运不走编辑 UI
+- 重量取物流实测中位数，不用 package_weight
+- DeepSeek 文案以 TikTok 原标题为主
+
+## 服务
+
+- `python3 main.py serve --port 8765`
+- 改 Python 后端后需重启 serve 才生效
+
+## 新机器
+
+- 克隆本仓库 + 同步 `ozon/webapp` + 拷贝 settings/tokens/shop.db
+- 详见 `docs/DEPLOY.md` 与 `AGENTS.md`

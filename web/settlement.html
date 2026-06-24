@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>结算利润 · TikTok Shop</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <style>
+    .input-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px 16px; margin: 12px 0; }
+    .input-grid label { font-size: 12px; color: #666; display: block; margin-bottom: 2px; }
+    .input-grid input { width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; }
+    .input-section { margin: 16px 0; }
+    .input-section h3 { font-size: 14px; margin: 0 0 8px; color: #444; }
+    .profit-positive { color: #0d6b0d; font-weight: 600; }
+    .profit-negative { color: #b91c1c; font-weight: 600; }
+    .summary-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; margin: 16px 0; }
+    .summary-card { background: #fff; border-radius: 8px; padding: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+    .summary-card h3 { margin: 0 0 8px; font-size: 15px; }
+    .summary-card .big { font-size: 22px; font-variant-numeric: tabular-nums; }
+    .summary-card .line { font-size: 12px; color: #555; margin: 4px 0; display: flex; justify-content: space-between; gap: 8px; }
+    .tbl-wrap { overflow: auto; background: #fff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+    table.settle { width: 100%; border-collapse: collapse; font-size: 12px; }
+    table.settle th, table.settle td { padding: 7px 9px; border-bottom: 1px solid #eee; text-align: left; white-space: nowrap; }
+    table.settle th { background: #fafafa; position: sticky; top: 0; z-index: 2; font-weight: 600; color: #555; }
+    table.settle td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    table.settle tr.clickable { cursor: pointer; }
+    table.settle tr.clickable:hover { background: #f8fafc; }
+    table.settle tr.subtotal td { background: #f9fafb; font-weight: 600; border-top: 2px solid #ddd; }
+    table.settle .neg { color: #b91c1c; }
+    table.settle .pos { color: #0d6b0d; }
+    .fee-panel { margin: 20px 0; }
+    .fee-panel h2 { font-size: 16px; margin-bottom: 8px; }
+    .region-fee-block { margin-bottom: 20px; }
+    .region-fee-block h3 { font-size: 14px; margin: 0 0 8px; }
+    .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 100; display: flex; align-items: flex-start; justify-content: center; padding: 16px; overflow: auto; }
+    .modal-backdrop[hidden] { display: none; }
+    .modal { background: #fff; border-radius: 10px; max-width: 98vw; width: 100%; max-height: 94vh; overflow: hidden; display: flex; flex-direction: column; }
+    .modal-head { padding: 14px 16px 8px; border-bottom: 1px solid #eee; flex-shrink: 0; }
+    .modal-body { overflow: auto; padding: 0 16px 16px; flex: 1; }
+    .modal h2 { margin: 0 0 6px; font-size: 17px; }
+    .thumb-xs { width: 36px; height: 36px; object-fit: cover; border-radius: 4px; vertical-align: middle; }
+    .sync-progress-wrap { margin: 8px 0; }
+    .sync-progress-track { height: 8px; background: #eee; border-radius: 4px; overflow: hidden; }
+    .sync-progress-fill { height: 100%; background: #0ea5e9; width: 0; transition: width .3s; }
+    .modal-table-wrap { max-height: calc(94vh - 120px); overflow: auto; }
+    table.settle-wide { min-width: max(100%, calc(var(--col-count, 26) * 96px + 320px)); }
+    table.settle-wide tr.row-gmv_ads { background: #fff8f0; }
+    table.settle-wide tr.row-other { background: #fafafa; }
+    table.settle-wide th:nth-child(1), table.settle-wide td:nth-child(1),
+    table.settle-wide th:nth-child(2), table.settle-wide td:nth-child(2),
+    table.settle-wide th:nth-child(3), table.settle-wide td:nth-child(3) {
+      position: sticky; background: #fff; z-index: 1;
+    }
+    table.settle-wide th:nth-child(1), table.settle-wide td:nth-child(1) { left: 0; min-width: 44px; }
+    table.settle-wide th:nth-child(2), table.settle-wide td:nth-child(2) { left: 44px; min-width: 88px; }
+    table.settle-wide th:nth-child(3), table.settle-wide td:nth-child(3) { left: 132px; min-width: 120px; }
+    table.settle-wide thead th { z-index: 3; background: #fafafa; }
+    .order-panel-wrap { max-height: 65vh; overflow: auto; }
+    .total-profit-section { margin: 20px 0; }
+    .total-profit-section h2 { font-size: 18px; margin: 0 0 8px; }
+    table.total-profit { border-collapse: collapse; width: 100%; max-width: 100%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.08); border-radius: 8px; overflow: hidden; }
+    table.total-profit th, table.total-profit td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #eee; font-size: 13px; white-space: nowrap; }
+    table.total-profit th { background: #fafafa; font-weight: 600; color: #555; position: sticky; top: 0; z-index: 1; }
+    table.total-profit td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    table.total-profit td input.rate-input { width: 96px; padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px; }
+    table.total-profit tr.total-row { font-weight: 700; background: #f0f9ff; }
+    table.total-profit tr.total-row td { border-top: 2px solid #0ea5e9; padding-top: 12px; }
+    .total-profit-wrap { max-height: 70vh; overflow: auto; border-radius: 8px; }
+    /* CURSOR Outprofit 订单利润表 */
+    .outprofit-panel { margin-bottom: 32px; padding-bottom: 8px; border-bottom: 1px solid #e5e5e5; }
+    .outprofit-panel h2 { font-size: 18px; margin: 0 0 8px; }
+    .op-subtitle { font-size: 15px; margin: 16px 0 8px; }
+    .op-meta-line { font-weight: 600; margin-top: 0; }
+    .op-toolbar { margin: 8px 0 12px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 13px; }
+    .op-toolbar input[type="number"] { width: 72px; padding: 6px 8px; border: 1px solid #ccc; border-radius: 6px; }
+    .op-table-wrap { overflow: auto; max-height: 70vh; max-width: 100%; margin-bottom: 8px; background: #fff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+    .op-order-table { border-collapse: collapse; table-layout: auto; width: max-content; min-width: 100%; font-size: 12px; }
+    .op-order-table th, .op-order-table td { padding: 8px 10px; border-bottom: 1px solid #eee; white-space: nowrap; vertical-align: middle; }
+    .op-order-table thead th { background: #fafafa; font-weight: 600; color: #555; position: sticky; top: 0; z-index: 2; }
+    .op-order-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .op-order-table tfoot tr { font-weight: 700; background: #f0f9ff; }
+    .op-order-table tfoot td { border-top: 2px solid #0ea5e9; position: sticky; bottom: 0; }
+    .op-order-table tr.row-no-cost-match td { background: #fef2f2 !important; }
+    .op-order-table tr.row-local-shipping td { background: #f0fdf4 !important; }
+    .op-order-table .product-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+    .op-order-table .th-fee { font-size: 11px; max-width: 72px; overflow: hidden; text-overflow: ellipsis; }
+    .op-tabs { display: flex; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
+    .op-tab { padding: 8px 18px; border: 1px solid #ccc; border-radius: 6px; background: #fff; cursor: pointer; font-size: 14px; }
+    .op-tab:hover { border-color: #0ea5e9; }
+    .op-tab.active { background: #0ea5e9; color: #fff; border-color: #0ea5e9; }
+    .op-product-img { width: 40px; height: 40px; object-fit: cover; border-radius: 6px; background: #eee; }
+    .op-product-img-none { width: 40px; height: 40px; background: #eee; border-radius: 6px; color: #999; font-size: 10px; display: inline-flex; align-items: center; justify-content: center; }
+    .op-summary-box { background: #fff; padding: 16px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.08); margin-bottom: 12px; }
+    .op-summary-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+    .op-summary-item { padding: 8px; background: #f9f9f9; border-radius: 6px; }
+    .op-summary-item .label { font-size: 12px; color: #666; display: block; }
+    .op-summary-item .value { font-size: 16px; font-weight: 600; margin-top: 4px; }
+    .op-product-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .op-product-table th, .op-product-table td { padding: 6px 10px; border-bottom: 1px solid #eee; }
+    .op-product-img-sm { width: 36px; height: 36px; object-fit: cover; border-radius: 4px; }
+    .op-product-img-none-sm { width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center; background: #eee; border-radius: 4px; color: #999; font-size: 10px; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">TikTok Shop 控制台</a>
+    <nav class="nav">
+      <a href="/">首页</a>
+      <a href="/catalog">商品目录</a>
+      <a href="/settlement" class="active">结算利润</a>
+      <a href="/costs">成本维护</a>
+      <a href="/titles">Listing 优化</a>
+      <a href="/images">主图优化</a>
+      <a href="/analytics">Analytics</a>
+      <a href="/deactivate">零销下架</a>
+      <a href="/promotions">促销调价</a>
+    </nav>
+  </header>
+  <main class="container">
+    <h1>结算与利润</h1>
+    <p class="hint">从 TikTok Finance API 拉取结算 CSV（选定日期区间内<strong>每国 1 份</strong>，如 income_MY_260515_260615.csv），<strong>商品成本</strong>来自<a href="/catalog">商品目录</a>的 SKU 成本。下方可手动填写各国<strong>汇率</strong>与<strong>广告成本比例</strong>（占卖家折扣后小计的 %）；修改后<strong>订单明细</strong>会即时重算，总利润表按 CURSOR 公式（不含广告比例）计算。</p>
+
+    <div class="scan-panel">
+      <div class="toolbar" style="flex-wrap:wrap;gap:12px;align-items:flex-end;">
+        <label>开始 <input type="date" id="startDate"></label>
+        <label>结束 <input type="date" id="endDate"></label>
+        <button type="button" class="btn btn-primary" id="btnLoad">查询利润</button>
+        <button type="button" class="btn btn-secondary" id="btnPull">拉取结算</button>
+        <span id="metaLine" class="meta"></span>
+      </div>
+      <div id="syncProgressWrap" class="sync-progress-wrap" hidden>
+        <div class="sync-progress-track"><div class="sync-progress-fill" id="syncProgressFill"></div></div>
+        <span id="syncStatus" class="meta"></span>
+      </div>
+      <div class="input-section">
+        <h3>汇率（1 当地货币 = ? 人民币）</h3>
+        <div class="input-grid" id="rateGrid"></div>
+      </div>
+      <div class="input-section">
+        <h3>广告成本比例（占卖家折扣后小计 %）</h3>
+        <div class="input-grid" id="adRateGrid"></div>
+      </div>
+    </div>
+
+    <div id="totalProfitSection" class="total-profit-section" style="display:none;">
+      <h2>所有店铺总利润</h2>
+      <p class="hint">单国利润 = (总结算额(当地) + 物流赔款(当地)) × 汇率 + 商品成本(人民币)（商品成本为负数）。与 CURSOR TotalProfit 计算一致；广告比例仅用于下方订单明细。</p>
+      <div class="total-profit-wrap tbl-wrap">
+        <table class="total-profit" id="totalProfitTable">
+          <thead>
+            <tr>
+              <th>国家</th>
+              <th>结算期</th>
+              <th>币种</th>
+              <th class="num">总结算额(当地)</th>
+              <th class="num">GMV Payment for TikTok Ads(当地)</th>
+              <th class="num">有效结算额(当地)</th>
+              <th class="num">物流赔款(当地)</th>
+              <th class="num">卖家折扣后小计合计(人民币)</th>
+              <th class="num">商品成本(人民币)</th>
+              <th>汇率 (1 当地= ? 人民币)</th>
+              <th class="num">利润(人民币)</th>
+            </tr>
+          </thead>
+          <tbody id="totalProfitBody"></tbody>
+          <tfoot>
+            <tr class="total-row">
+              <td colspan="10">总利润(人民币)</td>
+              <td class="num" id="totalProfitFoot">—</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      <p class="meta" id="totalProfitMeta"></p>
+    </div>
+
+    <div id="feePanels" class="fee-panel" style="display:none;">
+      <h2>费用构成分析（按国家）</h2>
+      <p class="hint">各项费用占<strong>买家支付金额</strong>的比例。仅显示中文费用项；占比为 |金额| ÷ 买家支付合计。</p>
+      <div id="feeBlocks"></div>
+    </div>
+
+    <div id="orderPanels" style="margin-top:24px;">
+      <h2 class="panel-title">订单利润表与统计</h2>
+      <p class="hint">与 CURSOR Outprofit 相同逻辑。每次只显示一个国家（点击下方切换），表格在区域内横向滚动。</p>
+      <div id="orderCountryTabs" class="op-tabs"></div>
+      <div id="orderBlocks"></div>
+    </div>
+  </main>
+
+  <div id="orderModal" class="modal-backdrop" hidden>
+    <div class="modal">
+      <div class="modal-head">
+        <button type="button" class="btn btn-secondary btn-xs" id="btnCloseModal" style="float:right;">关闭</button>
+        <h2 id="modalTitle">订单明细</h2>
+        <p class="meta" id="modalMeta"></p>
+      </div>
+      <div class="modal-body">
+        <div class="modal-table-wrap tbl-wrap">
+          <table class="settle settle-wide" id="orderTable">
+            <thead id="orderHead"></thead>
+            <tbody id="orderBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/outprofit.js"></script>
+  <script>
+    var REGIONS = ['PH', 'MY', 'TH', 'VN'];
+    var rates = {};
+    var adRates = {};
+    var feeColumns = [];
+    var totalProfitRows = [];
+    var cachedOrdersRaw = {};
+    var lastSummaryData = null;
+    var localShippingFees = {};
+    var outprofitPanels = {};
+    var activeOrderRegion = '';
+
+    function esc(s) {
+      if (s == null) return '';
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+    }
+    function fmt(n, d) {
+      if (n == null || isNaN(n)) return '—';
+      return Number(n).toLocaleString('zh-CN', { minimumFractionDigits: d || 0, maximumFractionDigits: d || 2 });
+    }
+    function profitCls(v) {
+      return v >= 0 ? 'profit-positive' : 'profit-negative';
+    }
+    function amtCls(v) {
+      if (v > 0) return 'pos';
+      if (v < 0) return 'neg';
+      return '';
+    }
+    function dual(local, cny, cur) {
+      return '<div class="dual">' + fmt(local, 2) + ' ' + esc(cur || '') +
+        '<div class="sub">¥ ' + fmt(cny, 2) + '</div></div>';
+    }
+
+    function buildRegionInputs(gridId, store, defaultVals, labelFn, step, onChange) {
+      Object.assign(store, defaultVals || {});
+      document.getElementById(gridId).innerHTML = REGIONS.map(function(r) {
+        return '<div><label>' + labelFn(r) + '</label>' +
+          '<input type="number" step="' + (step || 'any') + '" min="0" data-reg="' + r + '" value="' +
+          (store[r] != null ? store[r] : '') + '"></div>';
+      }).join('');
+      document.querySelectorAll('#' + gridId + ' input').forEach(function(inp) {
+        function syncStore() {
+          store[inp.getAttribute('data-reg')] = parseFloat(inp.value) || 0;
+        }
+        inp.oninput = syncStore;
+        inp.onchange = function() {
+          syncStore();
+          if (onChange) onChange();
+        };
+      });
+    }
+
+    function readRegionInputs(gridId, store) {
+      document.querySelectorAll('#' + gridId + ' input').forEach(function(inp) {
+        store[inp.getAttribute('data-reg')] = parseFloat(inp.value) || 0;
+      });
+      return store;
+    }
+
+    function rateDisplay(v) {
+      if (v == null || v === '') return '';
+      var n = Number(v);
+      if (isNaN(n)) return String(v);
+      return n < 0.001 ? n.toFixed(6).replace(/\.?0+$/, '') : String(n);
+    }
+
+    function cursorProfit(row) {
+      var rate = parseFloat(row.rate);
+      if (isNaN(rate)) rate = 0;
+      var logistics = Number(row.logistics_reimbursement) || 0;
+      var costCny = Number(row.product_cost_cny) || 0;
+      return (Number(row.total_settlement) + logistics) * rate + costCny;
+    }
+
+    function renderTotalProfitTable(rows) {
+      totalProfitRows = (rows || []).map(function(r) {
+        var copy = Object.assign({}, r);
+        var reg = (copy.country || '').toUpperCase();
+        if (rates[reg] != null) copy.rate = rates[reg];
+        return copy;
+      });
+      var section = document.getElementById('totalProfitSection');
+      if (!totalProfitRows.length) {
+        section.style.display = 'none';
+        return;
+      }
+      section.style.display = 'block';
+      var totalProfitCny = 0;
+      document.getElementById('totalProfitBody').innerHTML = totalProfitRows.map(function(row, i) {
+        var profitCny = cursorProfit(row);
+        if (!isNaN(profitCny)) totalProfitCny += profitCny;
+        return '<tr>' +
+          '<td>' + esc(row.country) + '</td>' +
+          '<td>' + esc(row.period) + '</td>' +
+          '<td>' + esc(row.currency) + '</td>' +
+          '<td class="num">' + fmt(row.total_settlement, 2) + '</td>' +
+          '<td class="num">' + fmt(row.gmv_ads_settlement, 2) + '</td>' +
+          '<td class="num">' + fmt(row.effective_settlement, 2) + '</td>' +
+          '<td class="num">' + fmt(row.logistics_reimbursement, 2) + '</td>' +
+          '<td class="num">' + fmt((row.subtotal_local || 0) * (parseFloat(row.rate) || 0), 2) + '</td>' +
+          '<td class="num">' + fmt(row.product_cost_cny, 2) + '</td>' +
+          '<td><input type="text" inputmode="decimal" class="rate-input" data-i="' + i + '" value="' + esc(rateDisplay(row.rate)) + '"></td>' +
+          '<td class="num ' + profitCls(profitCny) + '">' + fmt(isNaN(profitCny) ? null : profitCny, 2) + '</td>' +
+          '</tr>';
+      }).join('');
+      var foot = document.getElementById('totalProfitFoot');
+      foot.textContent = fmt(totalProfitCny, 2);
+      foot.className = 'num ' + profitCls(totalProfitCny);
+    }
+
+    function bindTotalProfitRateInputs() {
+      var table = document.getElementById('totalProfitTable');
+      function onRateInput(e) {
+        var input = e.target;
+        if (input.dataset.i == null || !input.classList.contains('rate-input')) return;
+        var i = parseInt(input.dataset.i, 10);
+        var v = input.value.trim().replace(',', '.');
+        var num = v === '' ? null : parseFloat(v);
+        totalProfitRows[i].rate = num;
+        var reg = (totalProfitRows[i].country || '').toUpperCase();
+        if (reg && num != null && !isNaN(num)) rates[reg] = num;
+        renderTotalProfitTable(totalProfitRows);
+        bindTotalProfitRateInputs();
+      }
+      table.oninput = onRateInput;
+      table.onchange = onRateInput;
+    }
+
+    function renderFeeBlocks(regions) {
+      var panel = document.getElementById('feePanels');
+      if (!regions || !regions.length) {
+        panel.style.display = 'none';
+        return;
+      }
+      panel.style.display = 'block';
+      document.getElementById('feeBlocks').innerHTML = regions.map(function(r) {
+        var baseLocal = r.customer_payment_total || 0;
+        var baseCny = r.customer_payment_cny || round2(baseLocal * r.rate);
+        var baseRow = '<tr class="subtotal"><td>买家支付金额（基准）</td>' +
+          '<td class="num">' + fmt(baseLocal, 2) + '</td>' +
+          '<td class="num">' + fmt(baseCny, 2) + '</td>' +
+          '<td class="num">100%</td></tr>';
+        var rows = (r.fee_breakdown || []).map(function(f) {
+          return '<tr><td>' + esc(f.cn) + '</td>' +
+            '<td class="num ' + amtCls(f.local) + '">' + fmt(f.local, 2) + '</td>' +
+            '<td class="num ' + amtCls(f.cny) + '">' + fmt(f.cny, 2) + '</td>' +
+            '<td class="num">' + (f.pct != null ? f.pct + '%' : '—') + '</td></tr>';
+        }).join('');
+        var tail = '<tr class="subtotal"><td>利润（人民币）</td><td class="meta">—</td>' +
+          '<td class="num ' + profitCls(r.profit_cny) + '">' + fmt(r.profit_cny, 2) + '</td>' +
+          '<td class="meta">—</td></tr>';
+        return '<div class="region-fee-block"><h3>' + esc(r.region) + ' · ' + esc(r.currency) +
+          ' · 买家付款 ' + fmt(baseLocal, 2) + ' · 广告估算 ' + r.ad_rate_pct + '%</h3>' +
+          '<div class="tbl-wrap"><table class="settle"><thead><tr>' +
+          '<th>费用项</th><th class="num">金额(当地)</th><th class="num">金额(¥)</th><th class="num">占比</th>' +
+          '</tr></thead><tbody>' + baseRow + rows + tail + '</tbody></table></div></div>';
+      }).join('');
+    }
+
+    function periodLabelForRegion(reg) {
+      if (!lastSummaryData) return '';
+      var row = (lastSummaryData.total_profit_rows || []).find(function(r) {
+        return (r.country || '').toUpperCase() === reg;
+      });
+      if (row && row.period) return row.period;
+      return (lastSummaryData.start || '') + ' — ' + (lastSummaryData.end || '');
+    }
+
+    function bindOrderRowClick(panel, reg) {
+      var tbody = panel.querySelector('.op-tbody');
+      if (!tbody) return;
+      tbody.addEventListener('click', function (e) {
+        var tr = e.target.closest('tr');
+        if (!tr) return;
+        var cells = tr.querySelectorAll('td');
+        if (cells.length < 2) return;
+        var orderId = (cells[1].textContent || '').trim();
+        if (!orderId) return;
+        var raw = (cachedOrdersRaw[reg] || []).find(function (o) {
+          return String(o.order_id) === orderId;
+        });
+        if (raw && raw.file) openOrders(raw.file, reg, orderId);
+      });
+    }
+
+    function renderOrderTabs(regs) {
+      var tabsEl = document.getElementById('orderCountryTabs');
+      if (!regs.length) { tabsEl.innerHTML = ''; return; }
+      if (!activeOrderRegion || regs.indexOf(activeOrderRegion) < 0) activeOrderRegion = regs[0];
+      tabsEl.innerHTML = regs.map(function (reg) {
+        var n = (cachedOrdersRaw[reg] || []).length;
+        var cls = reg === activeOrderRegion ? 'op-tab active' : 'op-tab';
+        return '<button type="button" class="' + cls + '" data-reg="' + esc(reg) + '">' + esc(reg) + '（' + n + '）</button>';
+      }).join('');
+      tabsEl.querySelectorAll('.op-tab').forEach(function (btn) {
+        btn.onclick = function () {
+          activeOrderRegion = btn.getAttribute('data-reg');
+          renderOrderBlocks();
+        };
+      });
+    }
+
+    function renderOrderBlocks() {
+      var el = document.getElementById('orderBlocks');
+      if (!window.Outprofit) {
+        el.innerHTML = '<p class="meta">加载组件失败，请强制刷新页面</p>';
+        return;
+      }
+      if (!cachedOrdersRaw || !Object.keys(cachedOrdersRaw).length) {
+        document.getElementById('orderCountryTabs').innerHTML = '';
+        el.innerHTML = '<p class="meta">该区间无订单数据，可点「拉取结算」后「查询利润」</p>';
+        return;
+      }
+      readRegionInputs('rateGrid', rates);
+      readRegionInputs('adRateGrid', adRates);
+      var regs = REGIONS.filter(function (reg) { return cachedOrdersRaw[reg] && cachedOrdersRaw[reg].length; })
+        .concat(Object.keys(cachedOrdersRaw).filter(function (r) { return REGIONS.indexOf(r) < 0; }))
+        .filter(function (v, i, a) { return a.indexOf(v) === i; });
+      renderOrderTabs(regs);
+      var reg = activeOrderRegion;
+      var rawRows = cachedOrdersRaw[reg];
+      if (!rawRows || !rawRows.length) {
+        el.innerHTML = '<p class="meta">无数据</p>';
+        return;
+      }
+      el.innerHTML = '';
+      var panel = document.createElement('div');
+      panel.className = 'outprofit-panel';
+      el.appendChild(panel);
+      var adFrac = (parseFloat(adRates[reg]) || 20) / 100;
+      var rows = Outprofit.applyAdCost(rawRows, adFrac);
+      Outprofit.renderRegion(panel, {
+        region: reg,
+        rows: rows,
+        feeColumns: feeColumns,
+        rate: parseFloat(rates[reg]) || 1,
+        localShippingFee: localShippingFees[reg] || 0,
+        meta: { country: reg, period: periodLabelForRegion(reg) },
+        onLocalShippingChange: function (v) {
+          localShippingFees[reg] = v;
+          renderOrderBlocks();
+        }
+      });
+      bindOrderRowClick(panel, reg);
+    }
+
+    function round2(n) { return Math.round(n * 100) / 100; }
+
+    function renderOrdersFromCache() {
+      renderOrderBlocks();
+    }
+
+    function onRateGridChanged() {
+      readRegionInputs('rateGrid', rates);
+      if (totalProfitRows.length) {
+        renderTotalProfitTable(totalProfitRows);
+        bindTotalProfitRateInputs();
+      }
+      renderOrdersFromCache();
+    }
+
+    function onAdRateGridChanged() {
+      readRegionInputs('adRateGrid', adRates);
+      renderOrdersFromCache();
+      if (lastSummaryData && lastSummaryData.regions) {
+        var regions = lastSummaryData.regions.map(function(r) {
+          var copy = Object.assign({}, r);
+          copy.ad_rate_pct = adRates[r.region] != null ? adRates[r.region] : r.ad_rate_pct;
+          return copy;
+        });
+        renderFeeBlocks(regions);
+      }
+    }
+
+    function renderSummary(data, ordersByRegion) {
+      lastSummaryData = data;
+      cachedOrdersRaw = ordersByRegion || data.orders_by_region || {};
+      renderTotalProfitTable(data.total_profit_rows || []);
+      bindTotalProfitRateInputs();
+      document.getElementById('totalProfitMeta').textContent =
+        (data.start || '') + ' ~ ' + (data.end || '') + ' · ' +
+        (data.file_count || 0) + ' 个结算文件 · ' + (data.order_count || 0) + ' 笔订单 · 成本库 ' +
+        ((data.cost_stats && data.cost_stats.sku_with_cost) || '—') + ' SKU';
+
+      renderFeeBlocks(data.regions);
+      renderOrdersFromCache();
+    }
+
+    function fetchOrdersList(qs) {
+      return fetch('/api/settlement/orders-list' + qs)
+        .then(function(r) { return r.json(); })
+        .then(function(d) { return d.ok ? (d.orders_by_region || {}) : {}; })
+        .catch(function() { return {}; });
+    }
+
+    function loadSummary() {
+      var start = document.getElementById('startDate').value;
+      var end = document.getElementById('endDate').value;
+      if (!start || !end) { alert('请选择日期'); return; }
+      document.getElementById('metaLine').textContent = '计算中…';
+      document.getElementById('orderBlocks').innerHTML = '<p class="meta">加载订单明细…</p>';
+      var qs = '?start=' + encodeURIComponent(start) + '&end=' + encodeURIComponent(end) +
+        '&rates=' + encodeURIComponent(JSON.stringify(readRegionInputs('rateGrid', rates))) +
+        '&ad_rates=' + encodeURIComponent(JSON.stringify(readRegionInputs('adRateGrid', adRates)));
+      Promise.all([
+        fetch('/api/settlement/summary' + qs).then(function(r) { return r.json(); }),
+        fetchOrdersList(qs)
+      ]).then(function(results) {
+        var d = results[0];
+        var orders = results[1];
+        if (!d.ok) {
+          document.getElementById('metaLine').textContent = d.error || '失败';
+          return;
+        }
+        if (!orders || !Object.keys(orders).length) {
+          orders = d.orders_by_region || {};
+        }
+        document.getElementById('metaLine').textContent = '已更新';
+        renderSummary(d, orders);
+      }).catch(function() { document.getElementById('metaLine').textContent = '网络错误'; });
+    }
+
+    function buildOrderHead(headers) {
+      headers = headers || [];
+      var cols = ['图'].concat(headers.map(function(h) { return h.name; }))
+        .concat(['成本¥', '估算广告', '利润¥', '利润率']);
+      document.getElementById('orderTable').style.setProperty('--col-count', headers.length);
+      document.getElementById('orderHead').innerHTML = '<tr>' +
+        cols.map(function(c, i) {
+          var cls = (i > 0 && i <= headers.length) ? '' : (i === 0 ? '' : ' class="num"');
+          if (i > headers.length || (i > 0 && i <= headers.length)) {
+            // numeric-ish CSV amount columns often right-aligned from col 10+
+            if (i >= 10 && i <= headers.length) cls = ' class="num"';
+          }
+          return '<th' + cls + ' title="' + esc(c) + '">' + esc(c.length > 18 ? c.slice(0, 16) + '…' : c) + '</th>';
+        }).join('') + '</tr>';
+    }
+
+    function isOrderRow(r) {
+      if (!r) return false;
+      if (r.row_kind === 'order') return true;
+      if (r.cells && r.cells.length && r.product_cost != null) return true;
+      return r.order_id != null && r.settlement != null && !r.cells;
+    }
+
+    function renderLegacyOrderBody(rows) {
+      var cols = ['', '日期', '订单', 'SKU', '商品', '结算', '小计', '成本¥', '广告', '利润¥'];
+      document.getElementById('orderHead').innerHTML = '<tr>' +
+        cols.map(function(c, i) {
+          return '<th' + (i >= 6 ? ' class="num"' : '') + '>' + esc(c) + '</th>';
+        }).join('') + '</tr>';
+      return rows.map(function(o) {
+        var img = o.image_url
+          ? '<img class="thumb-xs" src="' + esc(o.image_url) + '" alt="">'
+          : '<span class="meta">—</span>';
+        var profit = o.profit_cny != null ? o.profit_cny : 0;
+        return '<tr class="row-order">' +
+          '<td>' + img + '</td>' +
+          '<td>' + esc(o.date) + '</td>' +
+          '<td><code class="tiny">' + esc(o.order_id) + '</code></td>' +
+          '<td><code class="tiny">' + esc(o.sku_id) + '</code></td>' +
+          '<td title="' + esc(o.product_name) + '">' + esc((o.product_name || '').slice(0, 32)) + '</td>' +
+          '<td class="num">' + fmt(o.settlement, 2) + '</td>' +
+          '<td class="num">' + fmt(o.subtotal, 2) + '</td>' +
+          '<td class="num">' + (o.cost_matched ? fmt(o.product_cost, 2) : '<span class="meta">缺</span>') + '</td>' +
+          '<td class="num">' + fmt(o.ad_cost, 2) + '</td>' +
+          '<td class="num ' + profitCls(profit) + '">' + fmt(profit, 2) + '</td></tr>';
+      }).join('');
+    }
+
+    function renderOrderBody(rows, headers) {
+      headers = headers || [];
+      if (rows && rows.length && rows[0].order_id && !rows[0].cells && !headers.length) {
+        return renderLegacyOrderBody(rows);
+      }
+      var nCols = 1 + headers.length + 4;
+      if (!rows || !rows.length) {
+        return '<tr><td colspan="' + nCols + '" class="meta">无数据行</td></tr>';
+      }
+      return rows.map(function(r) {
+        var orderRow = isOrderRow(r);
+        var kind = r.row_kind || (orderRow ? 'order' : 'other');
+        var img = (orderRow && r.image_url)
+          ? '<img class="thumb-xs" src="' + esc(r.image_url) + '" alt="">'
+          : '<span class="meta">—</span>';
+        var cells = (r.cells || []).map(function(c) {
+          var t = (c == null ? '' : String(c)).trim();
+          if (t === '') return '<td class="meta">—</td>';
+          if (/^-?[\d,]+(\.\d+)?$/.test(t.replace(/,/g, ''))) {
+            return '<td class="num">' + esc(t) + '</td>';
+          }
+          return '<td title="' + esc(t) + '">' + esc(t.length > 24 ? t.slice(0, 22) + '…' : t) + '</td>';
+        }).join('');
+        var computed;
+        if (orderRow) {
+          computed =
+            '<td class="num">' + (r.cost_matched ? fmt(r.product_cost, 2) : '<span class="meta">缺</span>') + '</td>' +
+            '<td class="num">' + fmt(r.ad_cost, 2) + '</td>' +
+            '<td class="num ' + profitCls(r.profit_cny) + '">' + fmt(r.profit_cny, 2) + '</td>' +
+            '<td class="num">' + (r.margin_pct != null ? r.margin_pct + '%' : '—') + '</td>';
+        } else {
+          computed =
+            '<td class="meta" colspan="4">' + (kind === 'gmv_ads' ? 'GMV 广告扣款行' : '—') + '</td>';
+        }
+        return '<tr class="row-' + esc(kind) + '">' + '<td>' + img + '</td>' + cells + computed + '</tr>';
+      }).join('');
+    }
+
+    function openOrders(file, region, orderId) {
+      if (!file) return;
+      readRegionInputs('rateGrid', rates);
+      readRegionInputs('adRateGrid', adRates);
+      var rate = rates[region] || 0;
+      var adRate = adRates[region] || 20;
+      document.getElementById('orderModal').hidden = false;
+      document.getElementById('modalTitle').textContent = file + (orderId ? ' · 订单 ' + orderId : '');
+      document.getElementById('modalMeta').textContent = '加载中…';
+      document.getElementById('orderBody').innerHTML = '';
+      buildOrderHead([]);
+      var url = '/api/settlement/orders?file=' + encodeURIComponent(file) +
+        '&rate=' + encodeURIComponent(rate) +
+        '&ad_rate=' + encodeURIComponent(adRate);
+      if (orderId) url += '&order_id=' + encodeURIComponent(orderId);
+      fetch(url)
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+          if (!d.ok) { document.getElementById('modalMeta').textContent = d.error || '失败'; return; }
+          var headers = d.headers || [];
+          var rows = d.rows || d.orders || [];
+          if (headers.length) buildOrderHead(headers);
+          else if (!(rows.length && rows[0].order_id && !rows[0].cells)) buildOrderHead([]);
+          var s = d.summary || {};
+          document.getElementById('modalMeta').textContent =
+            d.region + ' · 汇率 ' + d.rate + ' · 广告 ' + (d.ad_rate_pct != null ? d.ad_rate_pct : adRate) + '% · ' +
+            (headers.length ? headers.length + ' 列 · ' : '') +
+            rows.length + ' 行 · 利润 ¥' + fmt(s.profit_cny, 2) +
+            (headers.length ? ' · 横向滚动查看全部原表列' : ' · 请重启服务以加载完整原表列');
+          document.getElementById('orderBody').innerHTML = renderOrderBody(rows, headers);
+        });
+    }
+
+    function setPullProgress(pct, msg) {
+      var wrap = document.getElementById('syncProgressWrap');
+      wrap.hidden = false;
+      document.getElementById('syncProgressFill').style.width = Math.max(0, Math.min(100, pct)) + '%';
+      document.getElementById('syncStatus').textContent = msg || '';
+    }
+
+    function pollPull() {
+      fetch('/api/settlement/pull/status').then(function(r) { return r.json(); }).then(function(s) {
+        if (!s.ok) return;
+        setPullProgress(s.percent || 0, s.message || s.error || '');
+        if (s.running) {
+          setTimeout(pollPull, 2000);
+        } else {
+          if (s.error) alert(s.error);
+          else loadSummary();
+        }
+      });
+    }
+
+    function startPull() {
+      var start = document.getElementById('startDate').value;
+      var end = document.getElementById('endDate').value;
+      if (!start || !end) { alert('请选择日期'); return; }
+      if (!confirm('从 TikTok 拉取 ' + start + ' ~ ' + end + ' 结算？\n每国生成 1 份 CSV，区间内旧文件会被覆盖。')) return;
+      fetch('/api/settlement/pull', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ start: start, end: end })
+      }).then(function(r) { return r.json(); }).then(function(d) {
+        if (!d.ok) { alert(d.message || d.error || '失败'); return; }
+        setPullProgress(0, d.message);
+        pollPull();
+      });
+    }
+
+    document.getElementById('btnLoad').onclick = loadSummary;
+    document.getElementById('btnPull').onclick = startPull;
+    document.getElementById('btnCloseModal').onclick = function() {
+      document.getElementById('orderModal').hidden = true;
+    };
+    document.getElementById('orderModal').onclick = function(e) {
+      if (e.target === document.getElementById('orderModal')) {
+        document.getElementById('orderModal').hidden = true;
+      }
+    };
+
+    fetch('/api/settlement/config')
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (!d.ok) return;
+        document.getElementById('startDate').value = d.default_start;
+        document.getElementById('endDate').value = d.default_end;
+        feeColumns = d.fee_columns || [];
+        buildRegionInputs('rateGrid', rates, d.rates, function(r) { return r + ' 汇率'; }, 'any', onRateGridChanged);
+        buildRegionInputs('adRateGrid', adRates, d.ad_rates, function(r) { return r + ' 广告 %'; }, '0.1', onAdRateGridChanged);
+        if (d.data_range && d.data_range.max) {
+          document.getElementById('metaLine').textContent =
+            '已有数据 ' + d.data_range.min + ' ~ ' + d.data_range.max + '（' + d.data_range.file_count + ' 文件）';
+        }
+        loadSummary();
+      });
+  </script>
+</body>
+</html>

@@ -1,8 +1,8 @@
-"""Ozon 配置：settings.json 或 ozon/webapp/app.py 凭据。"""
+"""Ozon 配置：settings.json 或 webapp 本地凭据文件。"""
 
 from __future__ import annotations
 
-import re
+import json
 from pathlib import Path
 
 from core.config import ROOT, get
@@ -10,27 +10,34 @@ from core.config import ROOT, get
 
 def ozon_data_dir() -> Path | None:
     raw = (get("ozon.data_dir") or get("feishu.ozon_data_dir") or "").strip()
-    if not raw:
-        return None
-    p = Path(raw).expanduser()
-    return p if p.is_dir() else None
+    if raw:
+        p = Path(raw).expanduser()
+        if p.is_dir():
+            return p
+    fallback = ROOT.parent / "ozon" / "webapp" / "data"
+    return fallback if fallback.is_dir() else None
 
 
-def _from_webapp_app() -> tuple[str, str]:
+def _webapp_data_dir() -> Path | None:
     data = ozon_data_dir()
-    candidates = []
     if data:
-        candidates.append(data.parent / "app.py")
-    candidates.append(ROOT.parent / "ozon" / "webapp" / "app.py")
-    for app_py in candidates:
-        if not app_py.is_file():
-            continue
-        text = app_py.read_text(encoding="utf-8")
-        m1 = re.search(r'CLIENT_ID\s*=\s*"([^"]+)"', text)
-        m2 = re.search(r'API_KEY\s*=\s*"([^"]+)"', text)
-        if m1 and m2:
-            return m1.group(1), m2.group(1)
-    return "", ""
+        return data
+    fallback = ROOT.parent / "ozon" / "webapp" / "data"
+    return fallback if fallback.is_dir() else None
+
+
+def _from_local_credentials_file() -> tuple[str, str]:
+    data = _webapp_data_dir()
+    if not data:
+        return "", ""
+    path = data / "credentials.local.json"
+    if not path.is_file():
+        return "", ""
+    try:
+        d = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return "", ""
+    return str(d.get("client_id") or "").strip(), str(d.get("api_key") or "").strip()
 
 
 def ozon_credentials() -> tuple[str, str]:
@@ -39,7 +46,7 @@ def ozon_credentials() -> tuple[str, str]:
     key = str(cfg.get("api_key") or "").strip()
     if cid and key:
         return cid, key
-    return _from_webapp_app()
+    return _from_local_credentials_file()
 
 
 def ready() -> bool:

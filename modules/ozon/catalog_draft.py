@@ -93,7 +93,7 @@ def _effective_profile(type_id: int, explicit: str | None = None) -> str:
 def _product_type_hint(migrate_profile: str, type_id: int) -> str:
     if migrate_profile == "tablecloth":
         return "tablecloth"
-    if migrate_profile == "sticker" or int(type_id) == 91971:
+    if migrate_profile == "sticker":
         return "sticker"
     return ""
 

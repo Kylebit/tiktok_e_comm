@@ -19,33 +19,54 @@ def _progress(cb: Callable[[str], None] | None, msg: str) -> None:
         cb(msg)
 
 
-def fetch_all_product_ids(
-    on_progress: Callable[[str], None] | None = None,
-    on_fraction: Callable[[float, str], None] | None = None,
+def _fetch_product_ids_for_visibility(
+    visibility: str,
+    on_progress: Callable[[str], None] | None,
+    on_fraction: Callable[[float, str], None] | None,
+    fraction_base: float,
+    fraction_span: float,
 ) -> list[int]:
-    all_ids: list[int] = []
+    ids: list[int] = []
     last_id = ""
     page = 0
     while True:
         page += 1
-        msg = f"Ozon 商品列表 第 {page} 页…"
+        msg = f"Ozon 商品列表（{visibility}）第 {page} 页…"
         _progress(on_progress, msg)
         if on_fraction:
-            on_fraction(min(0.35, 0.1 + page * 0.08), msg)
+            on_fraction(min(fraction_base + fraction_span, fraction_base + page * 0.04), msg)
         resp = ozon_post(
             "/v3/product/list",
-            {"filter": {"visibility": "ALL"}, "last_id": last_id, "limit": PAGE_LIMIT},
+            {"filter": {"visibility": visibility}, "last_id": last_id, "limit": PAGE_LIMIT},
         )
         result = resp.get("result") or {}
         items = result.get("items") or []
         for it in items:
             pid = it.get("product_id")
             if pid is not None:
-                all_ids.append(int(pid))
+                ids.append(int(pid))
         last_id = result.get("last_id") or ""
         if not last_id or not items:
             break
         time.sleep(0.3)
+    return ids
+
+
+def fetch_all_product_ids(
+    on_progress: Callable[[str], None] | None = None,
+    on_fraction: Callable[[float, str], None] | None = None,
+) -> list[int]:
+    """拉取全部商品 ID。Ozon `visibility: ALL` 不包含已归档（ARCHIVED）商品，
+    必须单独拉取并合并，否则已归档商品的 offer_id 会被误判为"未搬运/可复用"，
+    导致重复搬运或覆盖已归档商品。"""
+    active_ids = _fetch_product_ids_for_visibility("ALL", on_progress, on_fraction, 0.05, 0.20)
+    archived_ids = _fetch_product_ids_for_visibility("ARCHIVED", on_progress, on_fraction, 0.25, 0.10)
+    seen: set[int] = set()
+    all_ids: list[int] = []
+    for pid in active_ids + archived_ids:
+        if pid not in seen:
+            seen.add(pid)
+            all_ids.append(pid)
     return all_ids
 
 

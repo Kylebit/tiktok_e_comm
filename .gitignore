@@ -39,3 +39,4 @@ venv/
 .idea/
 .vscode/
 *.swp
+.claude/

@@ -89,11 +89,13 @@ def _map_entry_from_item(
     product_id = (row.get("product_id") or "").strip()
     shop_cipher = (row.get("shop_cipher") or "").strip()
     image_urls: list[str] = []
+    package_dimensions_cm: dict | None = None
     if fetch_detail and product_id and shop_cipher:
         detail = _fetch_tk_detail(product_id, shop_cipher)
         image_urls = extract_listing_image_urls(detail)
         if not title and detail.get("title"):
             title = detail["title"]
+        package_dimensions_cm = _extract_package_dimensions_cm(detail, seller_sku)
     if not image_urls and row.get("image_url"):
         image_urls = [row["image_url"]]
     tk = item.get("tiktok")
@@ -108,7 +110,30 @@ def _map_entry_from_item(
         "tk_id": product_id or "",
         "match_key": item.get("match_key") or mk or tk_match_key(seller_sku),
         "source_row": row,
+        "package_dimensions_cm": package_dimensions_cm,
     }
+
+
+def _extract_package_dimensions_cm(detail: dict, seller_sku: str) -> dict | None:
+    """从 TikTok 商品详情（原链接）取该 SKU 的包裹长宽高（cm）。
+    优先 SKU 级 sku_dimensions，否则用商品级 package_dimensions。"""
+    sku_dim: dict = {}
+    for s in detail.get("skus") or []:
+        if (s.get("seller_sku") or "").strip() == seller_sku:
+            sku_dim = s.get("sku_dimensions") or {}
+            break
+    dim = sku_dim or detail.get("package_dimensions") or {}
+    length, width, height = dim.get("length"), dim.get("width"), dim.get("height")
+    if not (length and width and height):
+        return None
+    try:
+        return {
+            "length": float(length),
+            "width": float(width),
+            "height": float(height),
+        }
+    except (TypeError, ValueError):
+        return None
 
 
 def _load_tk_map() -> dict:

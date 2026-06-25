@@ -436,8 +436,8 @@
         '<label>长×宽 cm</label><div class="row2"><input id="f-len-cm" value="' + esc(d.len_cm) + '"><input id="f-wid-cm" value="' + esc(d.wid_cm) + '"></div>' +
         '</div>' +
         '<div class="toolbar" style="margin-top:12px">' +
-        '<button type="button" class="btn secondary" id="btn-process-images">① 转换图片 3:4（约30s/张）</button>' +
-        '<button type="button" class="btn" id="btn-submit" disabled>② 提交 Ozon</button>' +
+        '<button type="button" class="btn secondary" id="btn-process-images">↻ 重新转换图片 3:4（约30s/张）</button>' +
+        '<button type="button" class="btn" id="btn-submit" disabled>② 提交 Ozon（请先核对后再点）</button>' +
         '<span class="status" id="draft-status"></span></div>' +
         '<div class="imgs" id="processed-imgs"></div></div>';
 
@@ -457,6 +457,11 @@
       document.getElementById('btn-submit').onclick = function () {
         submitMigrate(offerId);
       };
+
+      // 草稿生成后直接自动转换图片，无需手动点击；提交 Ozon 仍需人工核对后点击。
+      if (d.images && d.images.length) {
+        processImages(sellerSku);
+      }
       area.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }).catch(function (e) {
       stopTaskTimer();

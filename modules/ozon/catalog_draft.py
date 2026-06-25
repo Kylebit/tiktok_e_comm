@@ -351,9 +351,6 @@ def build_draft(seller_sku: str) -> dict:
     group = tk_group_info(cat_item)
 
     weight = d.get("weight_g", tpl["weight"])
-    depth = d.get("depth_mm", tpl["depth"])
-    width = d.get("width_mm", tpl["width"])
-    height = d.get("height_mm", tpl["height"])
     weight_source = "template"
     logistics_meta: dict = {}
 
@@ -365,12 +362,16 @@ def build_draft(seller_sku: str) -> dict:
             "logistics_package_count": lw.get("package_count", 0),
             "logistics_sample_package_id": lw.get("sample_package_id", ""),
         }
-        if lw.get("depth"):
-            depth = lw["depth"]
-        if lw.get("width"):
-            width = lw["width"]
-        if lw.get("height"):
-            height = lw["height"]
+
+    # 长宽高（包裹尺寸）只用原链接（TikTok 商品详情 package_dimensions）数据，
+    # 不用物流实测、不用 AI 估算；原链接缺失时留空，不臆造数值。
+    pkg_dim_cm = entry.get("package_dimensions_cm")
+    if pkg_dim_cm:
+        depth = str(round(pkg_dim_cm["length"] * 10))
+        width = str(round(pkg_dim_cm["width"] * 10))
+        height = str(round(pkg_dim_cm["height"] * 10))
+    else:
+        depth = width = height = ""
 
     material_dict_id, material_canonical = _lookup_material(material_name, category_id, type_id)
     color_dict_id, color_canonical = _lookup_color(color_name, category_id, type_id)
@@ -419,6 +420,8 @@ def build_draft(seller_sku: str) -> dict:
         "tk_group_id": group["group_id"] if group else "",
         "tk_group_keys": group["match_keys"] if group else [],
         "weight_source": weight_source,
+        "dimensions_source": "tk_listing" if pkg_dim_cm else "",
+        "dimensions_missing": not bool(pkg_dim_cm),
         **logistics_meta,
         "error": d.get("error"),
     }

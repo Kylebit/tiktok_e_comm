@@ -280,10 +280,6 @@
 
     applyTypeSelection(draft.category_id, draft.type_id, false);
   }
-    return unmigratedCache.filter(function (it) {
-      return it.tk_group_id === groupId && !it.tk_dup;
-    });
-  }
 
   function loadUnmigrated() {
     var tbody = document.querySelector('#unmig-table tbody');

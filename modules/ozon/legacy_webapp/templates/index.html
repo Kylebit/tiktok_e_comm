@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>Ozon 运营助手</title>
+<style>
+  :root { --accent:#0a66ff; --red:#ffe5e5; --green:#e8ffe8; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "PingFang SC", sans-serif; margin:0; background:#f5f6f8; color:#222; }
+  header { background:#fff; padding:14px 24px; border-bottom:1px solid #e0e0e0; display:flex; align-items:center; gap:24px; position:sticky; top:0; z-index:10; }
+  header h1 { font-size:18px; margin:0; }
+  nav button { background:none; border:none; font-size:15px; padding:8px 14px; cursor:pointer; border-radius:6px; }
+  nav button.active { background:var(--accent); color:#fff; }
+  main { padding:20px; max-width:1200px; margin:0 auto; }
+  .tab { display:none; }
+  .tab.active { display:block; }
+  table { border-collapse:collapse; width:100%; background:#fff; }
+  th, td { border:1px solid #e0e0e0; padding:8px; font-size:13px; vertical-align:middle; }
+  th { background:#fafafa; text-align:left; }
+  img.thumb { width:60px; height:80px; object-fit:cover; border-radius:4px; }
+  tr.new-row { background:var(--red); }
+  .btn { background:var(--accent); color:#fff; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-size:13px; }
+  .btn:disabled { background:#aaa; cursor:not-allowed; }
+  .btn.secondary { background:#666; }
+  .card { background:#fff; border-radius:8px; padding:16px; margin-bottom:14px; box-shadow:0 1px 3px rgba(0,0,0,.06); }
+  .grid { display:grid; grid-template-columns:160px 1fr; gap:8px 12px; align-items:start; }
+  .grid label { font-weight:600; font-size:12px; color:#555; padding-top:6px; }
+  .grid input, .grid textarea, .grid select { width:100%; padding:6px; border:1px solid #ccc; border-radius:4px; font-size:13px; font-family:inherit; }
+  .grid textarea { min-height:120px; }
+  .imgs img { width:80px; height:107px; object-fit:cover; margin:2px; border-radius:4px; border:1px solid #ddd; }
+  .status { font-size:12px; color:#888; margin-left:8px; }
+  .toolbar { margin:10px 0; display:flex; gap:10px; align-items:center; }
+  .pill { display:inline-block; background:#eee; border-radius:10px; padding:2px 8px; font-size:11px; margin-left:6px; }
+  #banner { display:none; background:#fff7e0; border:1px solid #ffd966; border-radius:6px; padding:10px 16px; margin:14px auto; max-width:1200px; font-size:13px; }
+  #banner button { margin-left:10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Ozon 运营助手</h1>
+  <nav>
+    <button class="active" data-tab="upload">上品</button>
+    <button data-tab="price">改价</button>
+    <button data-tab="analytics">数据分析</button>
+    <button data-tab="promo">促销活动</button>
+    <button data-tab="category">类目核对</button>
+    <button data-tab="history">历史记录</button>
+  </nav>
+</header>
+<div id="banner"></div>
+<main>
+
+  <!-- 上品 -->
+  <section id="upload" class="tab active">
+    <div class="toolbar">
+      <button class="btn secondary" onclick="loadUnmigrated()">刷新待搬运列表</button>
+      <span id="unmig-count" class="pill"></span>
+    </div>
+    <table id="unmig-table">
+      <thead><tr><th>图片</th><th>offer_id</th><th>原标题(MS)</th><th>图片数</th><th>操作</th></tr></thead>
+      <tbody></tbody>
+    </table>
+
+    <div id="draft-area"></div>
+  </section>
+
+  <!-- 改价 -->
+  <section id="price" class="tab">
+    <div class="toolbar">
+      <button class="btn secondary" onclick="loadRedPrices()">扫描价格预警</button>
+      <button class="btn" onclick="applySelected()">应用选中的建议价</button>
+      <button class="btn secondary" onclick="suppressSelected()">选中项14天内不变</button>
+      <span id="price-status" class="status"></span>
+    </div>
+    <table id="price-table">
+      <thead><tr>
+        <th><input type="checkbox" id="check-all" onclick="toggleAll(this)"></th>
+        <th>图片</th><th>offer_id</th><th>商品名</th><th>当前价</th><th>当前划线价</th>
+        <th>价格指数</th><th>建议新价</th><th>建议划线价</th><th>状态</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <!-- 数据分析 -->
+  <section id="analytics" class="tab">
+    <div class="toolbar">
+      <span>统计周期：</span>
+      <button class="btn secondary" onclick="loadAnalytics(1)">近1天</button>
+      <button class="btn secondary" onclick="loadAnalytics(3)">近3天</button>
+      <button class="btn secondary" onclick="loadAnalytics(7)">近7天</button>
+      <span id="analytics-status" class="status"></span>
+    </div>
+    <table id="analytics-table">
+      <thead><tr>
+        <th>图片</th><th>offer_id</th><th>商品名</th><th>曝光(搜索展现)</th><th>商品页访客数</th>
+        <th>商品页浏览量</th><th>点击率%</th><th>加购数</th><th>加购转化率%</th><th>订单数</th><th>销售额</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <!-- 促销活动 -->
+  <section id="promo" class="tab">
+    <div class="toolbar">
+      <button class="btn secondary" onclick="loadPromotions()">扫描可参加的促销活动</button>
+      <button class="btn" onclick="applyPromotions()">参加选中商品的弹性提升</button>
+      <span id="promo-status" class="status"></span>
+    </div>
+    <div id="promo-info" class="card" style="display:none"></div>
+    <table id="promo-table">
+      <thead><tr>
+        <th><input type="checkbox" id="promo-check-all" onclick="togglePromoAll(this)"></th>
+        <th>图片</th><th>offer_id</th><th>商品名</th><th>当前价</th>
+        <th>弹性区间(低折扣~高折扣)</th><th>提升区间%</th><th>建议活动价</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <!-- 类目核对 -->
+  <section id="category" class="tab">
+    <div class="toolbar">
+      <button class="btn secondary" onclick="loadCategoryReview()">刷新</button>
+      <button class="btn" onclick="applyCategory('price')">提交价格</button>
+      <button class="btn" onclick="applyCategory('category')" style="background:#e67e00">提交类目</button>
+      <span id="category-status" class="status"></span>
+    </div>
+    <table id="category-table">
+      <thead><tr>
+        <th><input type="checkbox" id="cat-check-all" onclick="toggleCatAll(this)"></th>
+        <th>图片</th><th>offer_id</th><th>商品名</th>
+        <th>售价</th><th>划线价</th>
+        <th>当前类目</th><th>建议类目（可修改）</th>
+        <th>置信度</th><th>AI理由</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <!-- 历史 -->
+  <section id="history" class="tab">
+    <div class="toolbar">
+      <button class="btn secondary" onclick="loadHistory()">刷新</button>
+    </div>
+    <div class="card">
+      <h3>已搬运商品 (<span id="hist-migrated-count"></span>)</h3>
+      <div id="hist-migrated"></div>
+    </div>
+    <div class="card">
+      <h3>搬运记录</h3>
+      <table><thead><tr><th>日期</th><th>offer_id</th><th>标题</th></tr></thead><tbody id="hist-migrate-log"></tbody></table>
+    </div>
+    <div class="card">
+      <h3>改价记录</h3>
+      <table><thead><tr><th>日期</th><th>offer_id</th><th>新价</th><th>划线价</th></tr></thead><tbody id="hist-price-log"></tbody></table>
+    </div>
+  </section>
+
+</main>
+
+<script>
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+  document.getElementById(name).classList.add('active');
+  document.querySelector(`nav button[data-tab="${name}"]`).classList.add('active');
+}
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => showTab(b.dataset.tab));
+
+// ---------------- 上品 ----------------
+async function loadUnmigrated() {
+  const r = await fetch('/api/unmigrated');
+  const items = await r.json();
+  document.getElementById('unmig-count').textContent = `共 ${items.length} 个待搬运`;
+  const tbody = document.querySelector('#unmig-table tbody');
+  tbody.innerHTML = '';
+  for (const it of items.slice(0, 30)) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><img class="thumb" src="${it.image}"></td>
+      <td>${it.offer_id}</td>
+      <td>${it.title.slice(0, 60)}</td>
+      <td>${it.image_count}</td>
+      <td><button class="btn" onclick="openDraft('${it.offer_id}')">生成草稿</button></td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+async function openDraft(offerId) {
+  const area = document.getElementById('draft-area');
+  area.innerHTML = '<div class="card">加载草稿中...</div>';
+  const r = await fetch(`/api/draft/${offerId}`);
+  const d = await r.json();
+
+  area.innerHTML = `
+    <div class="card">
+      <h3>草稿: ${offerId}</h3>
+      <p style="font-size:12px;color:#999">原标题(MS): ${d.title_ms}</p>
+      <div class="imgs" id="orig-imgs">${d.images.map(u => `<img src="${u}">`).join('')}</div>
+      <div class="grid" style="margin-top:10px">
+        <label>俄语标题</label><textarea id="f-title" rows="2">${d.draft_title}</textarea>
+        <label>俄语描述</label><textarea id="f-desc">${d.draft_description}</textarea>
+        <label>价格 (CNY)</label><input id="f-price" value="${d.price}">
+        <label>划线价 (CNY)</label><input id="f-old-price" value="${d.old_price}">
+        <label>颜色</label><input id="f-color-name" value="${d.color_name}">
+        <label>颜色字典ID</label><input id="f-color-dict" value="${d.color_dict_id}">
+        <label>材质</label>
+        <div style="display:flex;gap:6px">
+          <input id="f-material" value="${d.material}" style="flex:2"><input id="f-material-dict" value="${d.material_dict_id}" style="flex:1">
+        </div>
+        <label>Hashtags</label><input id="f-hashtags" value="${d.hashtags || ''}">
+        <label>套装(kit)</label><input id="f-kit" value="${d.kit}">
+        <label>重量(g)</label><input id="f-weight" value="${d.weight}">
+        <label>长x宽x高(mm)</label>
+        <div style="display:flex;gap:6px">
+          <input id="f-depth" value="${d.depth}"><input id="f-width" value="${d.width}"><input id="f-height" value="${d.height}">
+        </div>
+        <label>长x宽(cm) 标注用</label>
+        <div style="display:flex;gap:6px">
+          <input id="f-len-cm" value="${d.len_cm}"><input id="f-wid-cm" value="${d.wid_cm}">
+        </div>
+        <label>分类ID / type_id</label>
+        <div style="display:flex;gap:6px">
+          <input id="f-cat" value="${d.category_id}"><input id="f-type" value="${d.type_id}">
+        </div>
+      </div>
+      <div style="margin-top:12px">
+        <button class="btn secondary" id="btn-process-images" onclick="processImages('${offerId}')">1. 转换并上传图片(3:4)</button>
+        <button class="btn" id="btn-submit" onclick="submitMigrate('${offerId}')" disabled>2. 提交到Ozon</button>
+        <span class="status" id="draft-status"></span>
+      </div>
+      <div class="imgs" id="processed-imgs"></div>
+    </div>
+  `;
+  area.dataset.images = JSON.stringify(d.images);
+  area.dataset.processed = '';
+}
+
+async function processImages(offerId) {
+  const area = document.getElementById('draft-area');
+  const btn = document.getElementById('btn-process-images');
+  const status = document.getElementById('draft-status');
+  btn.disabled = true;
+  status.textContent = '处理中(可能需要1-2分钟)...';
+  const images = JSON.parse(area.dataset.images);
+  const r = await fetch(`/api/process_images/${offerId}`, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({images})
+  });
+  const d = await r.json();
+  area.dataset.processed = JSON.stringify(d.images);
+  document.getElementById('processed-imgs').innerHTML = d.images.map(u => `<img src="${u}">`).join('');
+  status.textContent = `完成，共${d.images.length}张图`;
+  document.getElementById('btn-submit').disabled = d.images.length === 0;
+  btn.disabled = false;
+}
+
+async function submitMigrate(offerId) {
+  const area = document.getElementById('draft-area');
+  const status = document.getElementById('draft-status');
+  const images = JSON.parse(area.dataset.processed || '[]');
+  if (!images.length) { alert('请先处理图片'); return; }
+  const payload = {
+    offer_id: offerId,
+    images,
+    title: document.getElementById('f-title').value,
+    description: document.getElementById('f-desc').value,
+    price: document.getElementById('f-price').value,
+    old_price: document.getElementById('f-old-price').value,
+    color_name: document.getElementById('f-color-name').value,
+    color_dict_id: document.getElementById('f-color-dict').value,
+    material: document.getElementById('f-material').value,
+    material_dict_id: document.getElementById('f-material-dict').value,
+    hashtags: document.getElementById('f-hashtags').value,
+    kit: document.getElementById('f-kit').value,
+    weight: document.getElementById('f-weight').value,
+    depth: document.getElementById('f-depth').value,
+    width: document.getElementById('f-width').value,
+    height: document.getElementById('f-height').value,
+    len_cm: document.getElementById('f-len-cm').value,
+    wid_cm: document.getElementById('f-wid-cm').value,
+    category_id: document.getElementById('f-cat').value,
+    type_id: document.getElementById('f-type').value,
+  };
+  status.textContent = '提交中...';
+  const r = await fetch('/api/migrate', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(payload)
+  });
+  const d = await r.json();
+  status.textContent = `状态: ${d.status} ${d.errors && d.errors.length ? JSON.stringify(d.errors) : ''}`;
+  if (d.status === 'imported') {
+    loadUnmigrated();
+  }
+}
+
+// ---------------- 改价 ----------------
+let redData = [];
+
+function renderRedTable(rows, statusPrefix) {
+  redData = rows;
+  document.getElementById('price-status').textContent =
+    `${statusPrefix}共 ${redData.length} 个RED商品，新出现 ${redData.filter(x=>x.is_new).length} 个`;
+  const tbody = document.querySelector('#price-table tbody');
+  tbody.innerHTML = '';
+  redData.forEach((it, idx) => {
+    const tr = document.createElement('tr');
+    if (it.is_new) tr.classList.add('new-row');
+    tr.innerHTML = `
+      <td><input type="checkbox" class="row-check" data-idx="${idx}" ${it.is_new ? 'checked' : ''}></td>
+      <td><img class="thumb" src="${it.image}"></td>
+      <td>${it.offer_id}</td>
+      <td>${(it.name||'').slice(0,50)}</td>
+      <td>${it.cur_price}</td>
+      <td>${it.cur_old_price}</td>
+      <td>${it.price_index}</td>
+      <td><input style="width:70px" value="${it.suggested_price}" data-field="price" data-idx="${idx}"></td>
+      <td><input style="width:70px" value="${it.suggested_old_price}" data-field="old_price" data-idx="${idx}"></td>
+      <td>${it.is_new ? '新出现' : '持续'}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function toggleAll(cb) {
+  document.querySelectorAll('.row-check').forEach(c => c.checked = cb.checked);
+}
+
+async function loadRedPrices() {
+  document.getElementById('price-status').textContent = '扫描中(约30-60秒)...';
+  const r = await fetch('/api/red_prices');
+  const rows = await r.json();
+  renderRedTable(rows, '');
+}
+
+async function loadCachedRedPrices() {
+  const r = await fetch('/api/pending_price_review');
+  const cached = await r.json();
+  if (cached && cached.rows) {
+    renderRedTable(cached.rows, `(缓存于 ${cached.generated_at}) `);
+  }
+}
+
+async function loadBanner() {
+  const r = await fetch('/api/daily_summary');
+  const d = await r.json();
+  const banner = document.getElementById('banner');
+  if (!d) { banner.style.display = 'none'; return; }
+  banner.style.display = 'block';
+  const migratedStr = (d.migrated || []).join(', ') || '无';
+  banner.innerHTML = `
+    <b>每日任务报告 (${d.date})</b>：搬运了 ${ (d.migrated||[]).length } 个新品 (${migratedStr})；
+    价格巡检共 ${d.red_count ?? '?'} 个RED商品，新出现 ${d.new_red_count ?? '?'} 个。
+    <button class="btn" onclick="showTab('price'); loadCachedRedPrices();">去查看改价建议</button>
+    <button class="btn secondary" onclick="document.getElementById('banner').style.display='none'">关闭</button>
+  `;
+}
+
+async function applySelected() {
+  const items = [];
+  document.querySelectorAll('.row-check:checked').forEach(c => {
+    const idx = c.dataset.idx;
+    const price = document.querySelector(`input[data-field="price"][data-idx="${idx}"]`).value;
+    const old_price = document.querySelector(`input[data-field="old_price"][data-idx="${idx}"]`).value;
+    items.push({offer_id: redData[idx].offer_id, price, old_price});
+  });
+  if (!items.length) { alert('请勾选至少一项'); return; }
+  if (!confirm(`确认更新 ${items.length} 个商品的价格？`)) return;
+  document.getElementById('price-status').textContent = '更新中...';
+  const r = await fetch('/api/apply_prices', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({items})
+  });
+  const d = await r.json();
+  const ok = (d.result || []).filter(x => x.updated).length;
+  document.getElementById('price-status').textContent = `完成: ${ok}/${items.length} 成功`;
+}
+
+async function suppressSelected() {
+  const offer_ids = [];
+  document.querySelectorAll('.row-check:checked').forEach(c => {
+    offer_ids.push(redData[c.dataset.idx].offer_id);
+  });
+  if (!offer_ids.length) { alert('请勾选至少一项'); return; }
+  if (!confirm(`确认把这 ${offer_ids.length} 个商品标记为14天内不再推送改价预警？`)) return;
+  document.getElementById('price-status').textContent = '处理中...';
+  const r = await fetch('/api/price_suppress', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({offer_ids})
+  });
+  const d = await r.json();
+  // 从当前表格里移除被抑制的行
+  const sup = new Set(offer_ids);
+  renderRedTable(redData.filter(x => !sup.has(x.offer_id)), '');
+  document.getElementById('price-status').textContent =
+    `已标记 ${d.count} 个商品，至 ${d.suppressed_until} 前不再推送`;
+}
+
+// ---------------- 数据分析 ----------------
+async function loadAnalytics(days) {
+  const status = document.getElementById('analytics-status');
+  status.textContent = '加载中(可能需要几十秒)...';
+  const r = await fetch(`/api/analytics?days=${days}`);
+  const d = await r.json();
+  status.textContent = `统计区间: ${d.date_from} ~ ${d.date_to}，共 ${d.rows.length} 个商品`;
+  const tbody = document.querySelector('#analytics-table tbody');
+  tbody.innerHTML = '';
+  d.rows.forEach(it => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><img class="thumb" src="${it.image}"></td>
+      <td>${it.offer_id}</td>
+      <td>${(it.name||'').slice(0,40)}</td>
+      <td>${it.impressions}</td>
+      <td>${it.visitors}</td>
+      <td>${it.pdp_views}</td>
+      <td>${it.ctr}</td>
+      <td>${it.add_to_cart}</td>
+      <td>${it.conv_to_cart}</td>
+      <td>${it.orders}</td>
+      <td>${it.revenue}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+// ---------------- 促销活动 ----------------
+let promoData = [];
+
+function renderPromoTable(d) {
+  promoData = d.rows;
+  const info = document.getElementById('promo-info');
+  info.style.display = 'block';
+  info.innerHTML = `<b>${d.action.title}</b>：当前已参加 ${d.action.participating_products_count} 个商品，发现 ${d.rows.length} 个未参加的可加入商品 (缓存于 ${d.generated_at})`;
+  const tbody = document.querySelector('#promo-table tbody');
+  tbody.innerHTML = '';
+  d.rows.forEach((it, idx) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><input type="checkbox" class="promo-check" data-idx="${idx}"></td>
+      <td><img class="thumb" src="${it.image}"></td>
+      <td>${it.offer_id}</td>
+      <td>${(it.name||'').slice(0,40)}</td>
+      <td>${it.price}</td>
+      <td>${it.price_min_elastic} ~ ${it.price_max_elastic}</td>
+      <td>${it.min_boost}% ~ ${it.max_boost}%</td>
+      <td><input style="width:70px" value="${it.suggested_action_price}" data-idx="${idx}" class="promo-price"></td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function togglePromoAll(cb) {
+  document.querySelectorAll('.promo-check').forEach(c => c.checked = cb.checked);
+}
+
+async function loadPromotions() {
+  document.getElementById('promo-status').textContent = '扫描中...';
+  const r = await fetch('/api/promotions');
+  const d = await r.json();
+  renderPromoTable(d);
+  document.getElementById('promo-status').textContent = '';
+}
+
+async function applyPromotions() {
+  const items = [];
+  document.querySelectorAll('.promo-check:checked').forEach(c => {
+    const idx = c.dataset.idx;
+    const action_price = document.querySelector(`.promo-price[data-idx="${idx}"]`).value;
+    items.push({product_id: promoData[idx].product_id, offer_id: promoData[idx].offer_id, action_price: Number(action_price)});
+  });
+  if (!items.length) { alert('请勾选至少一项'); return; }
+  if (!confirm(`确认让 ${items.length} 个商品参加"弹性提升"活动？这会设置活动价并影响利润，请确认价格无误。`)) return;
+  document.getElementById('promo-status').textContent = '提交中...';
+  const r = await fetch('/api/promotions/activate', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({items})
+  });
+  const d = await r.json();
+  document.getElementById('promo-status').textContent = JSON.stringify(d).slice(0, 200);
+  loadPromotions();
+}
+
+// ---------------- 类目核对 ----------------
+let catData = [];
+let catOptions = [];  // [{cat_id, cat_name_zh, type_id, type_name_zh}]
+
+async function loadCategoryReview() {
+  document.getElementById('category-status').textContent = '加载中...';
+  const [reviewResp, optResp] = await Promise.all([
+    fetch('/api/category_review'),
+    fetch('/api/category_options'),
+  ]);
+  catData = await reviewResp.json();
+  catOptions = await optResp.json();
+  renderCategoryTable();
+}
+
+function buildSelectHTML(idx, selectedTypeId) {
+  let html = `<select class="cat-select" data-idx="${idx}" style="width:100%;font-size:12px;max-width:200px">`;
+  // group by cat_name_zh
+  const groups = {};
+  catOptions.forEach(o => {
+    const g = o.cat_name_zh || o.cat_name;
+    if (!groups[g]) groups[g] = [];
+    groups[g].push(o);
+  });
+  for (const [grp, opts] of Object.entries(groups)) {
+    html += `<optgroup label="${grp}">`;
+    for (const o of opts) {
+      const sel = o.type_id == selectedTypeId ? ' selected' : '';
+      html += `<option value="${o.cat_id}|${o.type_id}"${sel}>${o.type_name_zh||o.type_name}</option>`;
+    }
+    html += `</optgroup>`;
+  }
+  html += `</select>`;
+  return html;
+}
+
+function renderCategoryTable() {
+  const tbody = document.querySelector('#category-table tbody');
+  tbody.innerHTML = '';
+  catData.forEach((it, idx) => {
+    const tr = document.createElement('tr');
+    if (it.changed) tr.classList.add('new-row');
+    const suggestedTypeId = it.suggested_type_id || it.current_type_id;
+    tr.innerHTML = `
+      <td><input type="checkbox" class="cat-check" data-idx="${idx}"></td>
+      <td><img class="thumb" src="${it.image}"></td>
+      <td style="font-size:12px">${it.offer_id}</td>
+      <td style="max-width:150px;font-size:12px">${(it.name||'').slice(0,45)}</td>
+      <td><input class="cat-price" data-idx="${idx}" style="width:58px" value="${it.price}"></td>
+      <td><input class="cat-oldprice" data-idx="${idx}" style="width:58px" value="${it.old_price}"></td>
+      <td style="font-size:12px">${it.current_type_name_zh||it.current_type_id}<br><span style="color:#888;font-size:11px">${it.current_cat_name_zh||''}</span></td>
+      <td>${buildSelectHTML(idx, suggestedTypeId)}</td>
+      <td style="font-size:12px">${it.confidence||''}</td>
+      <td style="max-width:170px;font-size:11px;color:#555">${it.reason_zh||it.reason||''}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+  document.getElementById('category-status').textContent = `共 ${catData.length} 项，建议变更 ${catData.filter(r=>r.changed).length} 项`;
+}
+
+function toggleCatAll(cb) {
+  document.querySelectorAll('.cat-check').forEach(c => c.checked = cb.checked);
+}
+
+async function applyCategory(mode) {
+  const items = [];
+  document.querySelectorAll('.cat-check:checked').forEach(c => {
+    const idx = parseInt(c.dataset.idx);
+    const it = catData[idx];
+    const newPrice = document.querySelector(`.cat-price[data-idx="${idx}"]`).value;
+    const newOld = document.querySelector(`.cat-oldprice[data-idx="${idx}"]`).value;
+    const selVal = document.querySelector(`.cat-select[data-idx="${idx}"]`).value;
+    const [newCatId, newTypeId] = selVal.split('|');
+    const changeCategory = parseInt(newTypeId) !== it.current_type_id || parseInt(newCatId) !== it.current_category_id;
+    const changePrice = newPrice !== String(it.price) || newOld !== String(it.old_price);
+    items.push({
+      offer_id: it.offer_id,
+      category_id: newCatId,
+      type_id: newTypeId,
+      price: newPrice,
+      old_price: newOld,
+      change_category: mode === 'category' && changeCategory,
+      change_price: mode === 'price' && changePrice,
+    });
+  });
+  const active = items.filter(i => i.change_category || i.change_price);
+  if (!active.length) { alert('请先勾选行，且所选行有对应改动'); return; }
+  const label = mode === 'price' ? `${active.length} 个价格更新` : `${active.length} 个类目变更（会重新导入，有审核风险）`;
+  if (!confirm(`确认提交：${label}？`)) return;
+  document.getElementById('category-status').textContent = '提交中...';
+  const r = await fetch('/api/category_review/apply', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({items: active})
+  });
+  const d = await r.json();
+  document.getElementById('category-status').textContent = '完成 ✓  ' + (d.error || JSON.stringify(d).slice(0,100));
+  loadCategoryReview();
+}
+
+// ---------------- 历史 ----------------
+async function loadHistory() {
+  const r = await fetch('/api/history');
+  const d = await r.json();
+  document.getElementById('hist-migrated-count').textContent = d.migrated.length;
+  document.getElementById('hist-migrated').textContent = d.migrated.join(', ');
+
+  const mtbody = document.getElementById('hist-migrate-log');
+  mtbody.innerHTML = '';
+  d.migrate_log.slice().reverse().forEach(it => {
+    mtbody.innerHTML += `<tr><td>${it.date}</td><td>${it.offer_id}</td><td>${(it.title||'').slice(0,60)}</td></tr>`;
+  });
+
+  const ptbody = document.getElementById('hist-price-log');
+  ptbody.innerHTML = '';
+  d.price_log.slice().reverse().forEach(it => {
+    ptbody.innerHTML += `<tr><td>${it.date}</td><td>${it.offer_id}</td><td>${it.price}</td><td>${it.old_price}</td></tr>`;
+  });
+}
+
+loadUnmigrated();
+loadCachedRedPrices();
+loadBanner();
+</script>
+</body>
+</html>

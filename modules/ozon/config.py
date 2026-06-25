@@ -14,16 +14,15 @@ def ozon_data_dir() -> Path | None:
         p = Path(raw).expanduser()
         if p.is_dir():
             return p
-    fallback = ROOT.parent / "ozon" / "webapp" / "data"
-    return fallback if fallback.is_dir() else None
+    fallback = ROOT / "modules" / "ozon" / "legacy_webapp" / "data"
+    if fallback.is_dir():
+        return fallback
+    legacy_sibling = ROOT.parent / "ozon" / "webapp" / "data"
+    return legacy_sibling if legacy_sibling.is_dir() else None
 
 
 def _webapp_data_dir() -> Path | None:
-    data = ozon_data_dir()
-    if data:
-        return data
-    fallback = ROOT.parent / "ozon" / "webapp" / "data"
-    return fallback if fallback.is_dir() else None
+    return ozon_data_dir()
 
 
 def _from_local_credentials_file() -> tuple[str, str]:

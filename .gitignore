@@ -8,6 +8,15 @@ tiktok_orders.json
 exports/
 *.db
 
+# legacy_webapp 内嵌数据：默认不跟踪运行时状态，但跟踪静态字典/示例文件
+!modules/ozon/legacy_webapp/data/
+modules/ozon/legacy_webapp/data/*
+!modules/ozon/legacy_webapp/data/all_products_attrs.json
+!modules/ozon/legacy_webapp/data/category_options.json
+!modules/ozon/legacy_webapp/data/config.example.json
+!modules/ozon/legacy_webapp/data/credentials.example.json
+!modules/ozon/legacy_webapp/data/tk_category_ozon_map.json
+
 # 调试 / 导出 / 结算原始数据
 debug_*.json
 debug_api.py

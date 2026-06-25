@@ -1,0 +1,45 @@
+{
+  "mappings": {
+    "853384": {
+      "tk_category_name": "Bathroom Sets",
+      "type_id": 92008,
+      "category_id": 17027905,
+      "profile": "generic",
+      "source": "migrate",
+      "updated_at": "2026-06-19T22:25:24"
+    },
+    "700654": {
+      "tk_category_name": "Decorative Flowers, Plants & Fruit",
+      "type_id": 91936,
+      "category_id": 17027906,
+      "profile": "generic",
+      "source": "migrate",
+      "updated_at": "2026-06-20T15:45:38"
+    },
+    "600009": {
+      "tk_category_name": "Festive Decorations",
+      "type_id": 92692,
+      "category_id": 17028730,
+      "profile": "tablecloth",
+      "source": "migrate",
+      "updated_at": "2026-06-20T22:16:43"
+    },
+    "600338": {
+      "tk_category_name": "Decorative Stickers",
+      "type_id": 91971,
+      "category_id": 17027906,
+      "profile": "generic",
+      "source": "migrate",
+      "updated_at": "2026-06-21T19:20:27"
+    }
+  },
+  "type_profiles": {
+    "91971": "generic",
+    "115946973": "frame",
+    "92008": "generic",
+    "91936": "generic",
+    "91939": "generic",
+    "92692": "tablecloth"
+  },
+  "_note": "mappings 键为 TikTok category_id（叶子类目）。搬运成功后会自动写入；也可手工维护。"
+}

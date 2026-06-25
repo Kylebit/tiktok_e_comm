@@ -168,7 +168,7 @@
       if (!groups[g]) groups[g] = [];
       groups[g].push(o);
     });
-    var html = '<select id="f-cat-select" class="cat-select" size="6">';
+    var html = '<select class="f-cat-select cat-select" size="6">';
     html += '<option value="">— 选择 Ozon 类目 —</option>';
     Object.keys(groups).sort().forEach(function (grp) {
       html += '<optgroup label="' + esc(grp) + '">';
@@ -188,18 +188,17 @@
     return MATCH_METHOD_LABELS[method] || method || '—';
   }
 
-  function bindCategoryEditor(draft) {
-    var area = document.getElementById('draft-area');
-    var select = document.getElementById('f-cat-select');
-    var filter = document.getElementById('f-cat-filter');
-    var profileSel = document.getElementById('f-profile');
-    var catInput = document.getElementById('f-cat');
-    var typeInput = document.getElementById('f-type');
+  function bindCategoryEditor(card, draft) {
+    var select = card.querySelector('.f-cat-select');
+    var filter = card.querySelector('.f-cat-filter');
+    var profileSel = card.querySelector('.f-profile');
+    var catInput = card.querySelector('.f-cat');
+    var typeInput = card.querySelector('.f-type');
 
     function updateNameLabels(catId, typeId) {
       var opt = findCategoryOption(typeId);
-      var catNameEl = document.getElementById('f-cat-name');
-      var typeNameEl = document.getElementById('f-type-name');
+      var catNameEl = card.querySelector('.f-cat-name');
+      var typeNameEl = card.querySelector('.f-type-name');
       if (opt) {
         catNameEl.textContent = opt.cat_name_zh || opt.cat_name || '—';
         typeNameEl.textContent = opt.type_name_zh || opt.type_name || '—';
@@ -232,7 +231,7 @@
       if (syncProfile && profileSel) {
         var prof = resolveProfileForType(typeId, profileSel.value);
         profileSel.value = prof;
-        area.dataset.migrateProfile = prof;
+        card.dataset.migrateProfile = prof;
       }
     }
 
@@ -268,7 +267,7 @@
 
     if (profileSel) {
       profileSel.onchange = function () {
-        area.dataset.migrateProfile = profileSel.value;
+        card.dataset.migrateProfile = profileSel.value;
       };
     }
 
@@ -346,6 +345,18 @@
     if (!it) return;
     var sellerSku = it.seller_sku || it.offer_id;
     var area = document.getElementById('draft-area');
+
+    // 多 SKU 审核：同一 seller_sku 已有卡片则聚焦，不重复生成
+    var existing = area.querySelector('.draft-card[data-seller-sku="' + sellerSku + '"]');
+    if (existing) {
+      existing.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return Promise.resolve();
+    }
+
+    var card = document.createElement('div');
+    card.className = 'draft-card';
+    card.dataset.sellerSku = sellerSku;
+    area.appendChild(card);
     setRowBusy(idx, true);
 
     showTaskBanner('running', '正在生成草稿 ' + sellerSku, [
@@ -356,14 +367,14 @@
 
     startTaskTimer('正在生成草稿 ' + sellerSku);
 
-    area.innerHTML =
+    card.innerHTML =
       '<div class="card draft-loading">' +
       '<p><span class="oz-spinner"></span><strong>生成草稿中</strong> · <code>' + esc(sellerSku) + '</code></p>' +
       '<p class="meta">正在拉 TikTok 价格/类目并调用 AI 写俄语标题，通常 30–90 秒…</p>' +
       '<ol class="oz-task-steps">' +
       '<li class="active">读取商品目录</li><li class="pending">AI 生成文案</li><li class="pending">完成</li>' +
       '</ol></div>';
-    area.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    card.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
     return Promise.all([
       api('draft/' + encodeURIComponent(sellerSku)),
@@ -387,8 +398,8 @@
       ], '类目、标题、价格等可在下方修改后再提交');
       hideTaskBannerLater(12000);
 
-      area.innerHTML =
-        '<div class="card" id="draft-card">' +
+      card.innerHTML =
+        '<div class="card draft-card-body">' +
         '<h3>草稿 · offer_id <code>' + esc(offerId) + '</code> · seller_sku <code>' + esc(sellerSku) + '</code></h3>' +
         '<p class="meta">售价 ¥' + esc(d.price) + ' / 划线 ¥' + esc(d.old_price) +
         ' · 草稿来源: ' + esc(d.source || '') + '</p>' +
@@ -401,84 +412,84 @@
         (d.variant_label ? '<p class="meta">规格: <span class="variant-tag">' + esc(d.variant_label) + '</span>' +
           (d.tk_group_keys && d.tk_group_keys.length ? ' · 组 ' + esc(d.tk_group_keys.join('–')) : '') + '</p>' : '') +
         '<p class="meta">原标题(MS): ' + esc(d.title_ms) + '</p>' +
-        '<div class="imgs" id="orig-imgs">' + (d.images || []).map(function (u) {
+        '<div class="imgs orig-imgs">' + (d.images || []).map(function (u) {
           return '<img src="' + esc(u) + '" alt="">';
         }).join('') + '</div>' +
         '<div class="grid draft-grid">' +
-        '<label>俄语标题</label><textarea id="f-title" rows="2">' + esc(d.draft_title) + '</textarea>' +
-        '<label>俄语描述</label><textarea id="f-desc">' + esc(d.draft_description) + '</textarea>' +
-        '<label>价格 CNY</label><input id="f-price" value="' + esc(d.price) + '">' +
-        '<label>划线价 CNY</label><input id="f-old-price" value="' + esc(d.old_price) + '">' +
+        '<label>俄语标题</label><textarea class="f-title" rows="2">' + esc(d.draft_title) + '</textarea>' +
+        '<label>俄语描述</label><textarea class="f-desc">' + esc(d.draft_description) + '</textarea>' +
+        '<label>价格 CNY</label><input class="f-price" value="' + esc(d.price) + '">' +
+        '<label>划线价 CNY</label><input class="f-old-price" value="' + esc(d.old_price) + '">' +
         '<label>Ozon 类目</label>' +
         '<div class="cat-editor">' +
         '<div class="cat-match-box">' + matchHint +
         '<br><span class="warn">提交前请核对类目；匹配不准时可搜索或改选下方列表</span></div>' +
-        '<input type="search" id="f-cat-filter" class="cat-filter" placeholder="搜索类目中文名…">' +
+        '<input type="search" class="f-cat-filter cat-filter" placeholder="搜索类目中文名…">' +
         buildCategorySelectHtml(d.type_id) +
         '<label style="font-weight:600;font-size:12px;color:#555;padding-top:0">属性模板 profile</label>' +
-        '<select id="f-profile" class="cat-select" style="height:auto">' +
+        '<select class="f-profile cat-select" style="height:auto">' +
         ['sticker', 'tablecloth', 'frame', 'generic'].map(function (p) {
           return '<option value="' + p + '"' + (p === profile ? ' selected' : '') + '>' + p + '</option>';
         }).join('') +
         '</select>' +
         '<div class="cat-ids-row">' +
-        '<span>category_id</span><input id="f-cat" value="' + esc(d.category_id) + '">' +
-        '<span class="id-name" id="f-cat-name">' + esc(d.category_name_zh || '—') + '</span>' +
-        '<span>type_id</span><input id="f-type" value="' + esc(d.type_id) + '">' +
-        '<span class="id-name" id="f-type-name">' + esc(d.type_name_zh || '—') + '</span>' +
+        '<span>category_id</span><input class="f-cat" value="' + esc(d.category_id) + '">' +
+        '<span class="id-name f-cat-name">' + esc(d.category_name_zh || '—') + '</span>' +
+        '<span>type_id</span><input class="f-type" value="' + esc(d.type_id) + '">' +
+        '<span class="id-name f-type-name">' + esc(d.type_name_zh || '—') + '</span>' +
         '</div></div>' +
-        '<label>颜色 / 字典ID</label><div class="row2"><input id="f-color-name" value="' + esc(d.color_name) + '"><input id="f-color-dict" value="' + esc(d.color_dict_id) + '"></div>' +
-        '<label>材质 / 字典ID</label><div class="row2"><input id="f-material" value="' + esc(d.material) + '"><input id="f-material-dict" value="' + esc(d.material_dict_id) + '"></div>' +
-        '<label>Hashtags</label><input id="f-hashtags" value="' + esc(d.hashtags || '') + '">' +
-        '<label>套装 kit</label><input id="f-kit" value="' + esc(d.kit) + '">' +
-        '<label>重量(g)</label><input id="f-weight" value="' + esc(d.weight) + '">' +
-        '<label>长×宽×高 mm</label><div class="row3"><input id="f-depth" value="' + esc(d.depth) + '"><input id="f-width" value="' + esc(d.width) + '"><input id="f-height" value="' + esc(d.height) + '"></div>' +
-        '<label>长×宽 cm</label><div class="row2"><input id="f-len-cm" value="' + esc(d.len_cm) + '"><input id="f-wid-cm" value="' + esc(d.wid_cm) + '"></div>' +
+        '<label>颜色 / 字典ID</label><div class="row2"><input class="f-color-name" value="' + esc(d.color_name) + '"><input class="f-color-dict" value="' + esc(d.color_dict_id) + '"></div>' +
+        '<label>材质 / 字典ID</label><div class="row2"><input class="f-material" value="' + esc(d.material) + '"><input class="f-material-dict" value="' + esc(d.material_dict_id) + '"></div>' +
+        '<label>Hashtags</label><input class="f-hashtags" value="' + esc(d.hashtags || '') + '">' +
+        '<label>套装 kit</label><input class="f-kit" value="' + esc(d.kit) + '">' +
+        '<label>重量(g)</label><input class="f-weight" value="' + esc(d.weight) + '">' +
+        '<label>长×宽×高 mm</label><div class="row3"><input class="f-depth" value="' + esc(d.depth) + '"><input class="f-width" value="' + esc(d.width) + '"><input class="f-height" value="' + esc(d.height) + '"></div>' +
+        '<label>长×宽 cm</label><div class="row2"><input class="f-len-cm" value="' + esc(d.len_cm) + '"><input class="f-wid-cm" value="' + esc(d.wid_cm) + '"></div>' +
         '</div>' +
         '<div class="toolbar" style="margin-top:12px">' +
-        '<button type="button" class="btn secondary" id="btn-process-images">↻ 重新转换图片 3:4（约30s/张）</button>' +
-        '<button type="button" class="btn" id="btn-submit" disabled>② 提交 Ozon（请先核对后再点）</button>' +
-        '<span class="status" id="draft-status"></span></div>' +
-        '<div class="imgs" id="processed-imgs"></div></div>';
+        '<button type="button" class="btn secondary btn-process-images">↻ 重新转换图片 3:4（约30s/张）</button>' +
+        '<button type="button" class="btn btn-submit" disabled>② 提交 Ozon（请先核对后再点）</button>' +
+        '<span class="status draft-status"></span></div>' +
+        '<div class="imgs processed-imgs"></div></div>';
 
-      area.dataset.sellerSku = sellerSku;
-      area.dataset.offerId = offerId;
-      area.dataset.images = JSON.stringify(d.images || []);
-      area.dataset.processed = '';
-      area.dataset.migrateProfile = profile;
-      area.dataset.tkCategoryId = d.tk_category_id || '';
-      area.dataset.tkCategoryLeaf = d.tk_category_leaf || '';
+      card.dataset.sellerSku = sellerSku;
+      card.dataset.offerId = offerId;
+      card.dataset.images = JSON.stringify(d.images || []);
+      card.dataset.processed = '';
+      card.dataset.migrateProfile = profile;
+      card.dataset.tkCategoryId = d.tk_category_id || '';
+      card.dataset.tkCategoryLeaf = d.tk_category_leaf || '';
 
-      bindCategoryEditor(d);
+      bindCategoryEditor(card, d);
 
-      document.getElementById('btn-process-images').onclick = function () {
-        processImages(sellerSku);
+      card.querySelector('.btn-process-images').onclick = function () {
+        processImages(card);
       };
-      document.getElementById('btn-submit').onclick = function () {
-        submitMigrate(offerId);
+      card.querySelector('.btn-submit').onclick = function () {
+        submitMigrate(card);
       };
 
       // 草稿生成后直接自动转换图片，无需手动点击；提交 Ozon 仍需人工核对后点击。
       if (d.images && d.images.length) {
-        processImages(sellerSku);
+        processImages(card);
       }
-      area.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      card.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }).catch(function (e) {
       stopTaskTimer();
       showTaskBanner('err', '❌ 草稿失败 · ' + sellerSku, [
         { cls: 'fail', text: e.message || '未知错误' }
       ], '可检查网络、DeepSeek 配置，或稍后重试');
-      area.innerHTML = '<div class="card err"><strong>草稿失败</strong><p>' + esc(e.message) + '</p></div>';
+      card.innerHTML = '<div class="card err"><strong>草稿失败 · ' + esc(sellerSku) + '</strong><p>' + esc(e.message) + '</p></div>';
     }).finally(function () {
       setRowBusy(idx, false);
     });
   }
 
-  function processImages(sellerSku) {
-    var area = document.getElementById('draft-area');
-    var btn = document.getElementById('btn-process-images');
-    var status = document.getElementById('draft-status');
-    var images = JSON.parse(area.dataset.images || '[]');
+  function processImages(card) {
+    var sellerSku = card.dataset.sellerSku;
+    var btn = card.querySelector('.btn-process-images');
+    var status = card.querySelector('.draft-status');
+    var images = JSON.parse(card.dataset.images || '[]');
     btn.disabled = true;
     showTaskBanner('running', '图片处理中 · ' + sellerSku, [
       { cls: 'done', text: '① 草稿已完成' },
@@ -491,8 +502,8 @@
       method: 'POST',
       body: { images: images }
     }).then(function (d) {
-      area.dataset.processed = JSON.stringify(d.images || []);
-      document.getElementById('processed-imgs').innerHTML = (d.images || []).map(function (u) {
+      card.dataset.processed = JSON.stringify(d.images || []);
+      card.querySelector('.processed-imgs').innerHTML = (d.images || []).map(function (u) {
         return '<img src="' + esc(u) + '" alt="">';
       }).join('');
       status.textContent = '✅ 图片完成，共 ' + (d.images || []).length + ' 张（' + elapsedSec() + ' 秒）';
@@ -502,49 +513,53 @@
         { cls: 'active', text: '③ 可点「提交 Ozon」' }
       ], '');
       hideTaskBannerLater(8000);
-      document.getElementById('btn-submit').disabled = !(d.images && d.images.length);
+      if (!card.classList.contains('done')) {
+        card.querySelector('.btn-submit').disabled = !(d.images && d.images.length);
+      }
     }).catch(function (e) {
       stopTaskTimer();
-      showTaskBanner('err', '❌ 图片失败', [{ cls: 'fail', text: e.message }], '');
+      showTaskBanner('err', '❌ 图片失败 · ' + sellerSku, [{ cls: 'fail', text: e.message }], '');
       status.textContent = '图片失败: ' + e.message;
     }).finally(function () {
-      btn.disabled = false;
+      if (!card.classList.contains('done')) btn.disabled = false;
     });
   }
 
-  function submitMigrate(offerId) {
-    var area = document.getElementById('draft-area');
-    var status = document.getElementById('draft-status');
-    var images = JSON.parse(area.dataset.processed || '[]');
+  function submitMigrate(card) {
+    var offerId = card.dataset.offerId;
+    var status = card.querySelector('.draft-status');
+    var images = JSON.parse(card.dataset.processed || '[]');
     if (!images.length) {
       alert('请先完成图片转换');
       return Promise.resolve();
     }
+    var val = function (sel) { var el = card.querySelector(sel); return el ? el.value : ''; };
     var payload = {
       offer_id: offerId,
       images: images,
-      title: document.getElementById('f-title').value,
-      description: document.getElementById('f-desc').value,
-      price: document.getElementById('f-price').value,
-      old_price: document.getElementById('f-old-price').value,
-      color_name: document.getElementById('f-color-name').value,
-      color_dict_id: document.getElementById('f-color-dict').value,
-      material: document.getElementById('f-material').value,
-      material_dict_id: document.getElementById('f-material-dict').value,
-      hashtags: document.getElementById('f-hashtags').value,
-      kit: document.getElementById('f-kit').value,
-      weight: document.getElementById('f-weight').value,
-      depth: document.getElementById('f-depth').value,
-      width: document.getElementById('f-width').value,
-      height: document.getElementById('f-height').value,
-      len_cm: document.getElementById('f-len-cm').value,
-      wid_cm: document.getElementById('f-wid-cm').value,
-      category_id: document.getElementById('f-cat').value,
-      type_id: document.getElementById('f-type').value,
-      migrate_profile: (document.getElementById('f-profile') || {}).value || area.dataset.migrateProfile || 'generic',
-      tk_category_id: area.dataset.tkCategoryId || '',
-      tk_category_leaf: area.dataset.tkCategoryLeaf || ''
+      title: val('.f-title'),
+      description: val('.f-desc'),
+      price: val('.f-price'),
+      old_price: val('.f-old-price'),
+      color_name: val('.f-color-name'),
+      color_dict_id: val('.f-color-dict'),
+      material: val('.f-material'),
+      material_dict_id: val('.f-material-dict'),
+      hashtags: val('.f-hashtags'),
+      kit: val('.f-kit'),
+      weight: val('.f-weight'),
+      depth: val('.f-depth'),
+      width: val('.f-width'),
+      height: val('.f-height'),
+      len_cm: val('.f-len-cm'),
+      wid_cm: val('.f-wid-cm'),
+      category_id: val('.f-cat'),
+      type_id: val('.f-type'),
+      migrate_profile: val('.f-profile') || card.dataset.migrateProfile || 'generic',
+      tk_category_id: card.dataset.tkCategoryId || '',
+      tk_category_leaf: card.dataset.tkCategoryLeaf || ''
     };
+    var submitBtn = card.querySelector('.btn-submit');
     status.textContent = '提交中…';
     showTaskBanner('running', '提交 Ozon · offer ' + offerId, [
       { cls: 'done', text: '① 草稿' },
@@ -552,7 +567,7 @@
       { cls: 'active', text: '③ Ozon import + 富内容（约 1–3 分钟）' }
     ], '请勿关闭页面');
     startTaskTimer('提交 Ozon · ' + offerId);
-    document.getElementById('btn-submit').disabled = true;
+    submitBtn.disabled = true;
     return api('migrate', { method: 'POST', body: payload }).then(function (d) {
       var ok = d.import_ok || (d.status === 'imported' && (!d.errors || !d.errors.length));
       status.textContent = (ok ? '✅ ' : '⚠ ') + 'status=' + d.status +
@@ -562,14 +577,22 @@
       showTaskBanner(ok ? 'ok' : 'err', (ok ? '✅ Ozon 上品成功 · ' : '⚠ 提交异常 · ') + offerId, [
         { cls: 'done', text: 'status=' + d.status + (d.rich_status ? ' rich=' + d.rich_status : '') }
       ], ok ? '已从待搬运列表移除' : '见下方详情或历史 Tab');
-      if (ok) hideTaskBannerLater(10000);
-      if (ok) loadUnmigrated();
+      if (ok) {
+        hideTaskBannerLater(10000);
+        card.classList.add('done');
+        var pbtn = card.querySelector('.btn-process-images');
+        if (pbtn) pbtn.disabled = true;
+        submitBtn.disabled = true;
+        submitBtn.textContent = '✅ 已上品 offer_id=' + offerId;
+        loadUnmigrated();  // 刷新左侧待搬运表移除该行；不影响其它卡片
+      } else {
+        submitBtn.disabled = false;
+      }
     }).catch(function (e) {
       stopTaskTimer();
       showTaskBanner('err', '❌ 提交失败 · ' + offerId, [{ cls: 'fail', text: e.message }], '');
       status.textContent = '提交失败: ' + e.message;
-    }).finally(function () {
-      document.getElementById('btn-submit').disabled = false;
+      submitBtn.disabled = false;
     });
   }
 
@@ -713,6 +736,25 @@
     });
   }
 
+  /** 勾选多个 → 串行生成多张草稿卡片（各自自动裁图），全部停在等待人工「提交 Ozon」，不自动提交。*/
+  function draftSelected() {
+    var idxs = [];
+    document.querySelectorAll('.unmig-check:checked').forEach(function (c) {
+      var it = unmigratedCache[parseInt(c.dataset.idx, 10)];
+      if (it && !it.tk_dup) idxs.push(parseInt(c.dataset.idx, 10));
+    });
+    if (!idxs.length) {
+      alert('请先勾选要生成草稿的 SKU');
+      return Promise.resolve();
+    }
+    // 串行：避免 N×6 张图并发裁剪把机器打满
+    var chain = Promise.resolve();
+    idxs.forEach(function (idx) {
+      chain = chain.then(function () { return openDraft(idx); });
+    });
+    return chain;
+  }
+
   function bindUploadTab() {
     loadCategoryOptions().catch(function () { /* 草稿页会再试 */ });
     document.getElementById('btn-refresh-unmig').onclick = function () { loadUnmigrated(); };
@@ -723,6 +765,8 @@
       var n = parseInt(document.getElementById('batch-count').value, 10) || 5;
       batchMigrate(n);
     };
+    var draftSelBtn = document.getElementById('btn-draft-selected');
+    if (draftSelBtn) draftSelBtn.onclick = function () { draftSelected(); };
     document.querySelector('#unmig-table tbody').addEventListener('click', function (e) {
       var gbtn = e.target.closest('[data-action="batch-group"]');
       if (gbtn) {
@@ -737,6 +781,7 @@
   global.OzonMigrate = {
     loadUnmigrated: loadUnmigrated,
     openDraft: openDraft,
+    draftSelected: draftSelected,
     batchMigrate: batchMigrate,
     bindUploadTab: bindUploadTab,
     api: api

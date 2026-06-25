@@ -54,6 +54,9 @@
     .oz-spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #93c5fd; border-top-color: #0369a1; border-radius: 50%; animation: oz-spin .8s linear infinite; vertical-align: -2px; margin-right: 6px; }
     @keyframes oz-spin { to { transform: rotate(360deg); } }
     .draft-loading { padding: 16px; }
+    .draft-card { margin-bottom: 18px; }
+    .draft-card.done .card { border: 2px solid #16a34a; }
+    .draft-card.done h3::after { content: " ✅ 已上品"; color: #16a34a; font-size: 13px; }
     tr.row-busy { opacity: 0.6; }
     tr.row-busy button { pointer-events: none; }
     tr.group-hdr td { background: #f0f9ff; font-size: 12px; font-weight: 600; color: #0369a1; padding: 10px 8px; }
@@ -124,6 +127,7 @@
         <span id="unmig-count" class="pill"></span>
         <label>批量数量</label>
         <input type="number" id="batch-count" value="5" min="1" max="20" style="width:56px;padding:6px">
+        <button type="button" class="btn secondary" id="btn-draft-selected">生成所选草稿（逐个审核）</button>
         <button type="button" class="btn" id="btn-batch-migrate">批量搬运（需确认）</button>
       </div>
       <div id="batch-log" class="oz-log" style="display:none"></div>
@@ -145,7 +149,8 @@
           <tbody></tbody>
         </table>
       </div>
-      <div id="draft-area" style="margin-top:20px"></div>
+      <h3 style="margin:24px 0 4px">草稿审核区 <span class="meta" style="font-weight:400">（可多个 SKU 并存，各自核对后单独「提交 Ozon」）</span></h3>
+      <div id="draft-area" style="margin-top:8px"></div>
     </section>
 
     <!-- 改价 -->

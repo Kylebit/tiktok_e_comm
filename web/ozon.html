@@ -102,6 +102,7 @@
       <button type="button" data-tab="price">改价预警</button>
       <button type="button" data-tab="analytics">数据分析</button>
       <button type="button" data-tab="promo">促销活动</button>
+      <button type="button" data-tab="profit">利润分析</button>
       <button type="button" data-tab="history">历史</button>
       <button type="button" data-tab="daily">日常任务</button>
     </div>
@@ -186,6 +187,36 @@
           <thead><tr>
             <th>图</th><th>offer_id</th><th>商品名</th><th>曝光</th><th>访客</th><th>浏览</th>
             <th>CTR%</th><th>加购</th><th>加购率%</th><th>订单</th><th>销售额</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 利润分析 -->
+    <section id="profit" class="oz-tab">
+      <h3 style="margin:4px 0">结算汇总 <span class="meta" style="font-weight:400">（真实佣金/物流费/广告费拆解）</span></h3>
+      <div class="toolbar">
+        <label>近几个月</label>
+        <input type="number" id="settle-months" value="3" min="1" max="12" style="width:56px;padding:6px">
+        <button type="button" class="btn secondary" onclick="OzonMigrate.loadSettlementSummary()">查询结算汇总</button>
+      </div>
+      <div id="settlement-area" style="margin-top:8px"></div>
+
+      <h3 style="margin:32px 0 4px">利润表 <span class="meta" style="font-weight:400">（按真实生效价含弹性提升折扣 + 目标最低利润率算 min_price 草稿，不会自动上传）</span></h3>
+      <div class="toolbar">
+        <label>目标最低利润率%</label>
+        <input type="number" id="profit-target-margin" value="5" min="0" max="50" step="0.5" style="width:64px;padding:6px">
+        <button type="button" class="btn secondary" onclick="OzonMigrate.loadProfitTable()">查询利润表</button>
+        <span id="profit-status" class="meta"></span>
+      </div>
+      <div id="profit-summary" style="margin:8px 0"></div>
+      <div class="tbl-wrap">
+        <table class="oz" id="profit-table">
+          <thead><tr>
+            <th>图</th><th>offer_id</th><th>商品名</th><th>原价</th><th>真实生效价</th><th>弹性提升</th>
+            <th>成本</th><th>重量(g)</th><th>佣金</th><th>物流</th><th>收单</th><th>广告22%</th>
+            <th>利润</th><th>利润率%</th><th>min_price草稿</th><th>需提价</th>
           </tr></thead>
           <tbody></tbody>
         </table>

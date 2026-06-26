@@ -804,6 +804,89 @@
     return chain;
   }
 
+  function escapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function loadSettlementSummary() {
+    var area = document.getElementById('settlement-area');
+    var months = parseInt(document.getElementById('settle-months').value, 10) || 3;
+    if (!area) return;
+    area.innerHTML = '<p class="meta">查询中…</p>';
+    return api('settlement_summary?months=' + months).then(function (d) {
+      var html = '';
+      html += '<p class="meta">数据区间：' + escapeHtml(d.date_from) + ' ~ ' + escapeHtml(d.date_to) +
+        '　已完整结算 ' + d.settled_count + ' 单　未完结(仅扣收单费) ' + d.pending_count + ' 单' +
+        '　已结算订单净额合计 <strong>' + d.settled_net_total + ' RUB</strong>' +
+        '　全部流水净额合计 <strong>' + d.grand_total + ' RUB</strong></p>';
+
+      html += '<table class="oz"><thead><tr><th>费用类型</th><th>笔数</th><th>合计(RUB)</th></tr></thead><tbody>';
+      (d.fee_breakdown || []).forEach(function (f) {
+        html += '<tr><td>' + escapeHtml(f.type_name) + '</td><td>' + f.count + '</td><td>' + f.total + '</td></tr>';
+      });
+      html += '</tbody></table>';
+
+      html += '<h4 style="margin:16px 0 4px">按订单明细</h4>';
+      html += '<table class="oz"><thead><tr><th>posting</th><th>商品</th><th>状态</th><th>净额(RUB)</th></tr></thead><tbody>';
+      (d.orders || []).forEach(function (o) {
+        html += '<tr><td>' + escapeHtml(o.posting_number) + '</td><td>' + escapeHtml((o.products || []).join('; ')) +
+          '</td><td>' + (o.settled ? '已结算' : '未完结') + '</td><td>' + o.net_amount + '</td></tr>';
+      });
+      html += '</tbody></table>';
+      area.innerHTML = html;
+    }).catch(function (e) {
+      area.innerHTML = '<p class="meta" style="color:#c33">查询失败：' + escapeHtml(e.message || e) + '</p>';
+    });
+  }
+
+  function loadProfitTable() {
+    var statusEl = document.getElementById('profit-status');
+    var summaryEl = document.getElementById('profit-summary');
+    var tbody = document.querySelector('#profit-table tbody');
+    var marginPct = parseFloat(document.getElementById('profit-target-margin').value) || 5;
+    if (!tbody) return;
+    statusEl.textContent = '查询中(几秒到十几秒)…';
+    tbody.innerHTML = '';
+    return api('profit_table?target_margin=' + (marginPct / 100)).then(function (d) {
+      var s = d.summary || {};
+      var rates = d.rates || {};
+      statusEl.textContent = '';
+      summaryEl.innerHTML =
+        '<p class="meta">费率：佣金' + rates.commission_pct + '% · 收单' + rates.acquiring_pct +
+        '% · 广告(CPO)' + rates.ad_pct + '% · 汇率1CNY=' + rates.rub_per_cny + 'RUB　|　' +
+        '共' + s.total + '个商品 · <strong style="color:#c33">亏损' + s.losing_count + '个</strong> · 平均利润率' +
+        s.avg_margin_pct + '% · 参与弹性提升' + s.in_boost_count + '个 · 需要提价才能设min_price的' +
+        s.need_price_raise_count + '个 · 缺成本数据' + s.missing_cost_count + '个</p>';
+
+      (d.rows || []).forEach(function (r) {
+        var tr = document.createElement('tr');
+        if (r.profit_cny != null && r.profit_cny <= 0) tr.style.background = '#fdecea';
+        tr.innerHTML =
+          '<td><img class="thumb" src="' + escapeHtml(r.image || '') + '" alt=""></td>' +
+          '<td>' + escapeHtml(r.offer_id) + '</td>' +
+          '<td title="' + escapeHtml(r.name) + '">' + escapeHtml((r.name || '').slice(0, 36)) + '</td>' +
+          '<td>' + r.list_price_cny + '</td>' +
+          '<td>' + r.real_price_cny + '</td>' +
+          '<td>' + (r.in_elastic_boost ? ('是(boost' + r.boost_pct + ')') : '否') + '</td>' +
+          '<td>' + (r.cost_cny != null ? r.cost_cny : '—') + '</td>' +
+          '<td>' + (r.weight_g != null ? r.weight_g : '—') + '</td>' +
+          '<td>' + r.commission_cny + '</td>' +
+          '<td>' + r.logistics_cny + '</td>' +
+          '<td>' + r.acquiring_cny + '</td>' +
+          '<td>' + r.ad_cny + '</td>' +
+          '<td>' + (r.profit_cny != null ? r.profit_cny : '—') + '</td>' +
+          '<td>' + (r.margin_pct != null ? r.margin_pct : '—') + '</td>' +
+          '<td>' + (r.min_price_draft != null ? r.min_price_draft : '—') + '</td>' +
+          '<td>' + (r.needs_increase ? ('是(+' + r.price_gap + ')') : (r.needs_increase === false ? '否' : '—')) + '</td>';
+        tbody.appendChild(tr);
+      });
+    }).catch(function (e) {
+      statusEl.textContent = '查询失败：' + (e.message || e);
+    });
+  }
+
   function bindUploadTab() {
     loadCategoryOptions().catch(function () { /* 草稿页会再试 */ });
     loadPendingDrafts();  // 加载 agent 预生成的待审草稿
@@ -835,6 +918,8 @@
     loadPendingDrafts: loadPendingDrafts,
     batchMigrate: batchMigrate,
     bindUploadTab: bindUploadTab,
+    loadSettlementSummary: loadSettlementSummary,
+    loadProfitTable: loadProfitTable,
     api: api
   };
 })(window);

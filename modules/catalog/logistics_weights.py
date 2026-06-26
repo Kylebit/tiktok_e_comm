@@ -191,6 +191,12 @@ def weight_index_by_match_key() -> dict[str, dict]:
             "height_mm": latest.get("height_mm"),
             "weight_source": "logistics",
         }
+
+    from modules.catalog.weight_overrides import load_overrides
+
+    for key, ov in load_overrides().items():
+        out[key] = {**out.get(key, {}), "weight_g": ov["weight_g"], "weight_source": "manual_override"}
+
     return out
 
 

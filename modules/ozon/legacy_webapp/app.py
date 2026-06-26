@@ -626,7 +626,7 @@ def api_apply_prices():
             "offer_id": it["offer_id"],
             "price": str(it["price"]),
             "old_price": str(it["old_price"]),
-            "min_price": "0",
+            "min_price": str(it.get("min_price") or "0"),
             "currency_code": "CNY",
         })
     result = ozon_post("/v1/product/import/prices", {"prices": payload})
@@ -743,10 +743,13 @@ def api_analytics():
 
 def clamp_action_price(c):
     """活动价不低于当前在售价(最终售价)，并夹在弹性区间[min,max]内。
-    当前价通常>=区间上限，此时取区间上限(price_max_elastic=最小折扣，最贴近当前价)。"""
+    注意 Ozon 接口的 price_min_elastic/price_max_elastic 字段名和数值大小是反的：
+    price_min_elastic 数值更大(折扣最浅，最贴近原价)，price_max_elastic 数值更小(折扣最深)。
+    已用真实数据验证(82个样本全部如此)，原代码 lo/hi 取反导致经常被夹到最深折扣端，现已修正。
+    当前价通常>=区间上限，此时取区间上限(price_min_elastic=最小折扣，最贴近当前价)。"""
     price = float(c["price"])
-    lo = float(c["price_min_elastic"])
-    hi = float(c["price_max_elastic"])
+    lo = float(c["price_max_elastic"])
+    hi = float(c["price_min_elastic"])
     val = min(max(price, lo), hi)
     return round(val, 2)
 

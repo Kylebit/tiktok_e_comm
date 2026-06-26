@@ -953,6 +953,22 @@ class Handler(BaseHTTPRequestHandler):
                 from modules.ozon.pending_drafts import list_dismissed
 
                 return self._json(200, {"dismissed": list_dismissed()})
+            # Ozon 真实结算汇总（佣金/物流费/广告费拆解），供定价参考
+            if method == "GET" and subpath == "settlement_summary":
+                from modules.ozon.settlement import build_settlement_summary
+
+                q = parse_qs(query or "")
+                months_back = int((q.get("months") or ["3"])[0])
+                return self._json(200, build_settlement_summary(months_back))
+            # Ozon 利润分析：真实生效价(含弹性提升折扣) + 保最低利润率的min_price草稿
+            if method == "GET" and subpath == "profit_table":
+                from modules.ozon.profit_analysis import build_profit_table
+                from modules.ozon.pending_drafts import dismissed_offer_ids
+
+                q = parse_qs(query or "")
+                target_margin = float((q.get("target_margin") or ["0.05"])[0])
+                excluded = dismissed_offer_ids()
+                return self._json(200, build_profit_table(target_margin, excluded_offer_ids=excluded))
         except Exception as e:
             self._json(500, {"ok": False, "error": str(e)})
             return True

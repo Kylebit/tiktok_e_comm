@@ -9,12 +9,12 @@
       "updated_at": "2026-06-19T22:25:24"
     },
     "700654": {
-      "tk_category_name": "Decorative Flowers, Plants & Fruit",
-      "type_id": 91936,
-      "category_id": 17027906,
+      "tk_category_name": "Hoa, cây & trái cây trang trí",
+      "type_id": 91958,
+      "category_id": 17028733,
       "profile": "generic",
       "source": "migrate",
-      "updated_at": "2026-06-20T15:45:38"
+      "updated_at": "2026-06-26T09:04:55"
     },
     "600009": {
       "tk_category_name": "Festive Decorations",
@@ -28,18 +28,27 @@
       "tk_category_name": "Decorative Stickers",
       "type_id": 91971,
       "category_id": 17027906,
+      "profile": "sticker",
+      "source": "migrate",
+      "updated_at": "2026-06-26T09:10:24"
+    },
+    "853256": {
+      "tk_category_name": "อุปกรณ์ในห้องน้ำ",
+      "type_id": 92008,
+      "category_id": 17027905,
       "profile": "generic",
       "source": "migrate",
-      "updated_at": "2026-06-21T19:20:27"
+      "updated_at": "2026-06-26T16:47:42"
     }
   },
   "type_profiles": {
-    "91971": "generic",
+    "91971": "sticker",
     "115946973": "frame",
     "92008": "generic",
     "91936": "generic",
     "91939": "generic",
-    "92692": "tablecloth"
+    "92692": "tablecloth",
+    "91958": "generic"
   },
   "_note": "mappings 键为 TikTok category_id（叶子类目）。搬运成功后会自动写入；也可手工维护。"
 }

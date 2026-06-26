@@ -90,6 +90,12 @@ def _read_dismissed() -> dict:
         return {}
 
 
+def _offer_id_of(seller_sku: str) -> str:
+    """4 位 offer_id：取 seller_sku 后 4 位（同一产品跨国 SKU 共享后 4 位）。"""
+    s = str(seller_sku or "").strip()
+    return s[-4:] if len(s) >= 4 else s
+
+
 def list_dismissed() -> dict:
     return _read_dismissed()
 
@@ -98,12 +104,28 @@ def dismissed_seller_skus() -> set:
     return set(_read_dismissed().keys())
 
 
+def dismissed_offer_ids() -> set:
+    """已忽略产品的 4 位 offer_id 集合，用于跨国 SKU（如 880019/990019 同为 0019）一并排除。"""
+    out = set()
+    for k, rec in _read_dismissed().items():
+        oid = (rec or {}).get("offer_id") or _offer_id_of(k)
+        if oid:
+            out.add(oid)
+    return out
+
+
 def add_dismissed(seller_sku: str, tk_id: str = "", reason: str = "") -> dict:
     seller_sku = str(seller_sku or "").strip()
     if not seller_sku:
         raise ValueError("add_dismissed 需要 seller_sku")
     data = _read_dismissed()
-    record = {"seller_sku": seller_sku, "tk_id": str(tk_id or ""), "reason": reason, "at": int(time.time())}
+    record = {
+        "seller_sku": seller_sku,
+        "offer_id": _offer_id_of(seller_sku),
+        "tk_id": str(tk_id or ""),
+        "reason": reason,
+        "at": int(time.time()),
+    }
     data[seller_sku] = record
     path = _dismissed_path()
     path.parent.mkdir(parents=True, exist_ok=True)

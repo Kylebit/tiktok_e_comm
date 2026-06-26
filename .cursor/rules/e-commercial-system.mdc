@@ -16,6 +16,7 @@ alwaysApply: true
 - Draft 用 **seller_sku（6位）**；migrate 用 **offer_id（4位）**
 - 草稿表单支持手动改类目（`category_options` + profile）；批量搬运不走编辑 UI
 - 重量取物流实测中位数，不用 package_weight
+- **包裹尺寸用 TikTok 原链接 package_dimensions**，不用物流 Fulfillment 外箱尺寸
 - DeepSeek 文案以 TikTok 原标题为主
 
 ## 服务
@@ -27,3 +28,8 @@ alwaysApply: true
 
 - 克隆本仓库 + 同步 `ozon/webapp` + 拷贝 settings/tokens/shop.db
 - 详见 `docs/DEPLOY.md` 与 `AGENTS.md`
+
+## TikTok MX 搬运
+
+- **每次最终上架前**在对话框展示确认卡片（对齐码、主图、成本、重量、POP 售价）；用户回复「确认 XXXX」后再 publish
+- 妙手只写 **ceil(折前原价)**；POP 折后价仅对话框测算参考；折扣在 TikTok 后台自设

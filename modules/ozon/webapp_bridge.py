@@ -28,6 +28,14 @@ def webapp_dir() -> Path:
 @lru_cache(maxsize=1)
 def get_flask_app():
     wd = webapp_dir()
+    app_py = wd / "app.py"
+    if not app_py.is_file():
+        raise RuntimeError(
+            f"Ozon webapp 缺少 app.py（{app_py}）。"
+            "改价预警已内置于 modules/ozon/price_review.py；"
+            "其他 Ozon 页签仍依赖兄弟目录 ozon/webapp/app.py，"
+            "或在 config/settings.json 配置 ozon.client_id / api_key。"
+        )
     wd_str = str(wd)
     if wd_str not in sys.path:
         sys.path.insert(0, wd_str)

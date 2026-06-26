@@ -284,12 +284,18 @@
     }
     function loadRedPrices() {
       document.getElementById('price-status').textContent = '扫描中(30-60s)…';
-      OzonMigrate.api('red_prices').then(function (rows) { renderRedTable(rows, ''); });
+      OzonMigrate.api('red_prices').then(function (rows) {
+        renderRedTable(rows, '');
+      }).catch(function (e) {
+        document.getElementById('price-status').textContent = '扫描失败: ' + e.message;
+      });
     }
     function loadCachedRedPrices() {
       OzonMigrate.api('pending_price_review').then(function (cached) {
-        if (cached && cached.rows) renderRedTable(cached.rows, '(缓存 ' + cached.generated_at + ') ');
-      });
+        if (cached && cached.rows && cached.rows.length) {
+          renderRedTable(cached.rows, '(缓存 ' + cached.generated_at + ') ');
+        }
+      }).catch(function () {});
     }
     function applySelected() {
       var items = [];

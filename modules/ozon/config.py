@@ -1,11 +1,15 @@
-"""Ozon 配置：settings.json 或 ozon/webapp/app.py 凭据。"""
+"""Ozon 配置：settings.json、ozon.local.json 或 ozon/webapp/app.py 凭据。"""
 
 from __future__ import annotations
 
+import json
+import os
 import re
 from pathlib import Path
 
 from core.config import ROOT, get
+
+LOCAL_CFG = ROOT / "config" / "ozon.local.json"
 
 
 def ozon_data_dir() -> Path | None:
@@ -33,10 +37,29 @@ def _from_webapp_app() -> tuple[str, str]:
     return "", ""
 
 
+def _from_local_json() -> tuple[str, str]:
+    if not LOCAL_CFG.is_file():
+        return "", ""
+    try:
+        raw = json.loads(LOCAL_CFG.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return "", ""
+    cid = str(raw.get("client_id") or "").strip()
+    key = str(raw.get("api_key") or "").strip()
+    return cid, key
+
+
 def ozon_credentials() -> tuple[str, str]:
     cfg = get("ozon") or {}
     cid = str(cfg.get("client_id") or "").strip()
     key = str(cfg.get("api_key") or "").strip()
+    if cid and key:
+        return cid, key
+    cid, key = _from_local_json()
+    if cid and key:
+        return cid, key
+    cid = os.environ.get("OZON_CLIENT_ID", "").strip()
+    key = os.environ.get("OZON_API_KEY", "").strip()
     if cid and key:
         return cid, key
     return _from_webapp_app()

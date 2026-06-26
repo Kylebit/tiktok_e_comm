@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MX 上架审批 · TikTok Shop 控制台</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <style>
+    .mx-layout { display: grid; grid-template-columns: 320px 1fr; gap: 16px; align-items: start; }
+    @media (max-width: 900px) { .mx-layout { grid-template-columns: 1fr; } }
+    .mx-list { background: #fff; border: 1px solid #e8e8e8; border-radius: 10px; overflow: hidden; }
+    .mx-list-hdr { padding: 12px 14px; border-bottom: 1px solid #eee; font-weight: 600; font-size: 14px; display: flex; justify-content: space-between; align-items: center; }
+    .mx-item { display: flex; gap: 10px; padding: 10px 12px; border-bottom: 1px solid #f0f0f0; cursor: pointer; }
+    .mx-item:hover { background: #fafafa; }
+    .mx-item.active { background: #eef2ff; }
+    .mx-item img { width: 48px; height: 48px; object-fit: cover; border-radius: 6px; border: 1px solid #e5e7eb; }
+    .mx-item-meta { flex: 1; min-width: 0; }
+    .mx-item-meta .mk { font-weight: 600; font-size: 14px; }
+    .mx-item-meta .sub { font-size: 12px; color: #666; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mx-detail { background: #fff; border: 1px solid #e8e8e8; border-radius: 10px; padding: 16px 18px; }
+    .mx-detail.empty { color: #888; text-align: center; padding: 48px 20px; }
+    .mx-hero { display: flex; gap: 16px; margin-bottom: 16px; }
+    .mx-hero img { width: 120px; height: 120px; object-fit: cover; border-radius: 8px; border: 1px solid #e5e7eb; }
+    .mx-hero h2 { margin: 0 0 8px; font-size: 1.1rem; }
+    .mx-hero .tags { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+    .mx-tag { font-size: 12px; background: #f3f4f6; padding: 2px 8px; border-radius: 4px; }
+    .mx-tag.warn { background: #fff7ed; color: #b45309; }
+    .mx-tag.ok { background: #ecfdf5; color: #15803d; }
+    .mx-section { margin: 16px 0; }
+    .mx-section h3 { margin: 0 0 8px; font-size: 13px; color: #555; }
+    .mx-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .mx-table th, .mx-table td { border-bottom: 1px solid #eee; padding: 6px 8px; text-align: left; }
+    .mx-table th { color: #666; font-weight: 500; width: 140px; }
+    .mx-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 20px; padding-top: 16px; border-top: 1px solid #eee; }
+    .mx-override { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+    .mx-override input { width: 56px; padding: 6px 8px; border: 1px solid #ccc; border-radius: 6px; }
+    #publishBanner { display: none; margin-bottom: 12px; padding: 10px 14px; border-radius: 8px; font-size: 13px; }
+    #publishBanner.running { display: block; background: #eff6ff; border: 1px solid #93c5fd; }
+    #publishBanner.ok { display: block; background: #ecfdf5; border: 1px solid #86efac; }
+    #publishBanner.err { display: block; background: #fef2f2; border: 1px solid #fca5a5; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">TikTok Shop 控制台</a>
+    <nav class="nav">
+      <a href="/">首页</a>
+      <a href="/catalog">商品目录</a>
+      <a href="/ozon">Ozon</a>
+      <a href="/mx" class="active">MX 审批</a>
+      <a href="/titles">Listing 优化</a>
+      <a href="/promotions">促销调价</a>
+    </nav>
+  </header>
+  <main class="container">
+    <h1>MX 墨西哥上架审批</h1>
+    <p class="hint">飞书派单会自动把候选 SKU 放进此收件箱。<strong>批准 + 发布</strong> 才会真实上架；POP 折后价仅测算，折扣你在 TikTok 后台自设。</p>
+
+    <div id="publishBanner"></div>
+
+    <div class="mx-layout">
+      <div class="mx-list">
+        <div class="mx-list-hdr">
+          <span>待审 <span id="pendingCount">—</span></span>
+          <span>
+            <button class="btn-secondary" style="font-size:12px;padding:4px 10px;margin-right:6px" onclick="loadList()">刷新</button>
+            <button class="btn-secondary" style="font-size:12px;padding:4px 10px" onclick="clearInbox()">清空待审</button>
+          </span>
+        </div>
+        <div id="itemList"><p class="hint" style="padding:12px">加载中…</p></div>
+      </div>
+      <div class="mx-detail empty" id="detailPanel">← 选择左侧 SKU 查看详情</div>
+    </div>
+  </main>
+  <script>
+    var items = [];
+    var selectedToken = null;
+    var currentCard = null;
+
+    function esc(s) {
+      return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+    }
+
+    function fmtMxn(v) {
+      if (v == null || v === '') return '—';
+      return Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 0 }) + ' MXN';
+    }
+
+    function queryToken() {
+      var m = location.search.match(/[?&]token=([^&]+)/);
+      return m ? decodeURIComponent(m[1]) : null;
+    }
+
+    function clearInbox() {
+      if (!confirm('确定清空全部待审项？（不会撤销已上架商品）')) return;
+      fetch('/api/mx/approvals/clear', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: 'manual_clear' })
+      }).then(function(r) { return r.json(); }).then(function(res) {
+        if (!res.ok) { alert(res.error || '清空失败'); return; }
+        selectedToken = null;
+        currentCard = null;
+        document.getElementById('detailPanel').className = 'mx-detail empty';
+        document.getElementById('detailPanel').textContent = '待审已清空';
+        loadList();
+      });
+    }
+
+    function loadList() {
+      return fetch('/api/mx/approvals?status=pending').then(function(r) { return r.json(); }).then(function(res) {
+        items = res.items || [];
+        document.getElementById('pendingCount').textContent = items.length;
+        renderList();
+        var q = queryToken();
+        if (q) selectToken(q);
+        else if (items.length && !selectedToken) selectToken(items[0].token);
+      });
+    }
+
+    function renderList() {
+      var el = document.getElementById('itemList');
+      if (!items.length) {
+        el.innerHTML = '<p class="hint" style="padding:16px">暂无待审 SKU<br><br>飞书 @OrbitHive-Cursor 派单后会出现在这里</p>';
+        return;
+      }
+      el.innerHTML = items.map(function(it) {
+        return '<div class="mx-item' + (it.token === selectedToken ? ' active' : '') + '" onclick="selectToken(\'' + esc(it.token) + '\')">' +
+          (it.main_image_url ? '<img src="' + esc(it.main_image_url) + '">' : '<div style="width:48px;height:48px;background:#f3f4f6;border-radius:6px"></div>') +
+          '<div class="mx-item-meta">' +
+            '<div class="mk">' + esc(it.label || it.match_key) + ' · ' + fmtMxn(it.list_price_ceil_mxn) + '</div>' +
+            '<div class="sub">' + esc(it.product_name) + '</div>' +
+          '</div></div>';
+      }).join('');
+    }
+
+    function selectToken(token) {
+      selectedToken = token;
+      renderList();
+      history.replaceState(null, '', '/mx?token=' + encodeURIComponent(token));
+      fetch('/api/mx/approvals/' + encodeURIComponent(token)).then(function(r) { return r.json(); }).then(function(res) {
+        if (!res.ok || !res.card) {
+          document.getElementById('detailPanel').className = 'mx-detail empty';
+          document.getElementById('detailPanel').textContent = res.error || '加载失败';
+          return;
+        }
+        currentCard = res.card;
+        renderDetail(res.card);
+      });
+    }
+
+    function renderDetail(c) {
+      var panel = document.getElementById('detailPanel');
+      panel.className = 'mx-detail';
+      var stClass = c.status === 'approved' ? 'ok' : (c.status === 'rejected' ? 'warn' : '');
+      var html = '<div class="mx-hero">' +
+        (c.main_image_url ? '<img src="' + esc(c.main_image_url) + '">' : '') +
+        '<div style="flex:1">' +
+          '<h2>' + esc(c.match_key) + ' · ' + esc(c.seller_sku || '') + '</h2>' +
+          '<div>' + esc(c.product_name) + '</div>' +
+          '<div class="tags">' +
+            '<span class="mx-tag ' + stClass + '">' + esc(c.status) + '</span>' +
+            (c.volumetric_dominates ? '<span class="mx-tag warn">体积重 &gt; 实重</span>' : '') +
+            '<span class="mx-tag">TK 采集 ' + esc(String(c.collect_box_detail_id || '—')) + '</span>' +
+          '</div>' +
+        '</div></div>';
+
+      html += '<div class="mx-section"><h3>价格</h3><table class="mx-table">' +
+        '<tr><th>上传原价 ceil</th><td><strong>' + fmtMxn(c.list_price_ceil_mxn) + '</strong>（写入 price）</td></tr>' +
+        '<tr><th>POP 折后测算</th><td>' + fmtMxn(c.sale_price_mxn) + '（不上传）</td></tr>' +
+        '<tr><th>预估净利</th><td><strong>' + fmtMxn(c.net_profit_mxn) + '</strong>（' + Number(c.profit_margin_on_sale_pct || 0).toFixed(1) + '%）</td></tr>' +
+        '</table></div>';
+
+      html += '<div class="mx-section"><h3>物流</h3><table class="mx-table">' +
+        '<tr><th>实重</th><td>' + Number(c.weight_kg || 0).toFixed(3) + ' kg · ' + esc(c.weight_source) + '</td></tr>' +
+        '<tr><th>尺寸 / 计费</th><td>' + esc(c.package_cm) + ' · 计费 ' + Number(c.billable_kg || 0).toFixed(3) + ' kg</td></tr>' +
+        '<tr><th>藏价物流</th><td>' + fmtMxn(c.logistics_hidden_mxn) + '（档 ≤' + c.shipping_tier_kg + ' kg）</td></tr>' +
+        '</table></div>';
+
+      html += '<div class="mx-section"><h3>POP 支出明细</h3><table class="mx-table">' +
+        '<tr><th>采购成本</th><td>' + fmtMxn(c.cost_mxn) + '（¥' + Number(c.cost_cny || 0).toFixed(2) + '）</td></tr>' +
+        '<tr><th>进口税</th><td>' + fmtMxn(c.import_tax_mxn) + '</td></tr>' +
+        '<tr><th>平台佣金 6%</th><td>' + fmtMxn(c.platform_commission_mxn) + '</td></tr>' +
+        '<tr><th>SFP / 达人 / 广告</th><td>' + fmtMxn(c.sfp_fee_mxn) + ' / ' + fmtMxn(c.affiliate_mxn) + ' / ' + fmtMxn(c.ad_mxn) + '</td></tr>' +
+        '<tr><th>每件费</th><td>' + fmtMxn(c.per_item_fee_mxn) + '</td></tr>' +
+        '<tr><th>合计支出</th><td><strong>' + fmtMxn(c.total_expense_mxn) + '</strong></td></tr>' +
+        '</table></div>';
+
+      if (c.status === 'pending') {
+        html += '<div class="mx-section"><h3>修改尺寸（重算 POP）</h3>' +
+          '<div class="mx-override">' +
+            '<label>长 <input id="dimL" type="number" min="1" placeholder="cm"></label>' +
+            '<label>宽 <input id="dimW" type="number" min="1" placeholder="cm"></label>' +
+            '<label>高 <input id="dimH" type="number" min="1" placeholder="cm"></label>' +
+            '<button class="btn-secondary" onclick="applyOverride()">应用并重算</button>' +
+          '</div></div>';
+      }
+
+      html += '<div class="mx-actions">';
+      if (c.status === 'pending') {
+        html += '<button class="btn-primary" onclick="doApprove()">批准</button>' +
+          '<button class="btn-danger" onclick="doReject()">拒绝</button>';
+      }
+      if (c.status === 'approved') {
+        html += '<button class="btn-primary" onclick="doPublish()">确认发布到 MX</button>';
+      }
+      html += '</div>';
+
+      panel.innerHTML = html;
+    }
+
+    function postAction(action, body) {
+      return fetch('/api/mx/approvals/' + encodeURIComponent(selectedToken) + '/' + action, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body || {})
+      }).then(function(r) { return r.json(); });
+    }
+
+    function doApprove() {
+      postAction('approve').then(function(res) {
+        if (!res.ok) { alert(res.error || '失败'); return; }
+        selectToken(selectedToken);
+        loadList();
+      });
+    }
+
+    function doReject() {
+      if (!confirm('确定拒绝 ' + (currentCard && currentCard.match_key) + '？')) return;
+      postAction('reject').then(function(res) {
+        if (!res.ok) { alert(res.error || '失败'); return; }
+        loadList();
+        document.getElementById('detailPanel').className = 'mx-detail empty';
+        document.getElementById('detailPanel').textContent = '已拒绝';
+        selectedToken = null;
+      });
+    }
+
+    function applyOverride() {
+      var l = parseInt(document.getElementById('dimL').value, 10);
+      var w = parseInt(document.getElementById('dimW').value, 10);
+      var h = parseInt(document.getElementById('dimH').value, 10);
+      if (!l || !w || !h) { alert('请填写长宽高（cm）'); return; }
+      postAction('override', { length_cm: l, width_cm: w, height_cm: h }).then(function(res) {
+        if (!res.ok) { alert(res.error || '失败'); return; }
+        if (res.card) renderDetail(res.card);
+      });
+    }
+
+    function pollPublish() {
+      fetch('/api/mx/publish/status').then(function(r) { return r.json(); }).then(function(res) {
+        var b = document.getElementById('publishBanner');
+        var job = res;
+        if (job.running) {
+          b.className = 'running';
+          b.textContent = job.message || '上架进行中…';
+          setTimeout(pollPublish, 1500);
+        } else if (job.error) {
+          b.className = 'err';
+          b.textContent = '❌ ' + job.error;
+        } else if (job.message) {
+          b.className = 'ok';
+          b.textContent = job.message;
+          loadList();
+        }
+      });
+    }
+
+    function doPublish() {
+      if (!confirm('确认发布 ' + (currentCard && currentCard.match_key) + ' 到 TikTok 墨西哥？')) return;
+      postAction('publish').then(function(res) {
+        if (!res.ok) { alert(res.error || '失败'); return; }
+        pollPublish();
+      });
+    }
+
+    loadList();
+  </script>
+</body>
+</html>

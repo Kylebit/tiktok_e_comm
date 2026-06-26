@@ -1,4 +1,5 @@
 """从 TikTok Product API 同步商品到 SQLite。"""
+from __future__ import annotations
 
 import json
 import time

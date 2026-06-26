@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Callable
 
 from modules.ozon.config import ozon_data_dir
-from modules.ozon.webapp_bridge import proxy_json
+from modules.ozon.price_review import scan_red_prices
 
 
 def _progress(cb: Callable[[str], None] | None, msg: str) -> None:
@@ -126,8 +126,8 @@ def _update_daily_summary(migrated_ids: list[str], errors: list[dict]) -> None:
         "migrate_errors": errors,
     }
     try:
-        status, red = proxy_json("GET", "red_prices")
-        if status == 200 and isinstance(red, list):
+        red = scan_red_prices()
+        if isinstance(red, list):
             new_red = sum(1 for r in red if r.get("is_new"))
             data["red_count"] = len(red)
             data["new_red_count"] = new_red

@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>商家 SKU 对照填写</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --card: #1a2332;
+      --border: #2d3a4f;
+      --text: #e7ecf3;
+      --muted: #8b9bb4;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --ok: #22c55e;
+      --warn: #f59e0b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    header {
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      align-items: center;
+      justify-content: space-between;
+    }
+    h1 { margin: 0; font-size: 1.15rem; font-weight: 600; }
+    .stats { color: var(--muted); font-size: 0.9rem; }
+    .stats strong { color: var(--text); }
+    .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    label.toggle {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 0.85rem; color: var(--muted); cursor: pointer;
+    }
+    main {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      min-height: 480px;
+    }
+    @media (max-width: 800px) {
+      .card { grid-template-columns: 1fr; }
+    }
+    .image-pane {
+      background: #0a0e14;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      border-right: 1px solid var(--border);
+    }
+    .image-pane img {
+      max-width: 100%;
+      max-height: 440px;
+      object-fit: contain;
+      border-radius: 8px;
+      background: #fff;
+    }
+    .info-pane { padding: 24px; display: flex; flex-direction: column; gap: 16px; }
+    .meta { font-size: 0.8rem; color: var(--muted); }
+    .meta span { margin-right: 12px; }
+    .product-name {
+      font-size: 1.05rem;
+      line-height: 1.5;
+      font-weight: 500;
+      max-height: 8em;
+      overflow-y: auto;
+    }
+    .field label {
+      display: block;
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+    .field input {
+      width: 100%;
+      padding: 12px 14px;
+      font-size: 1.1rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+      color: var(--text);
+      letter-spacing: 0.05em;
+    }
+    .field input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
+    }
+    .actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: auto;
+      padding-top: 8px;
+    }
+    button {
+      padding: 10px 18px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      font-size: 0.95rem;
+      cursor: pointer;
+    }
+    button:hover { border-color: var(--muted); }
+    button.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    button.primary:hover { background: var(--accent-hover); }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .progress-wrap { margin-top: 20px; }
+    .progress-bar {
+      height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .progress-bar div {
+      height: 100%;
+      background: var(--ok);
+      transition: width 0.3s;
+    }
+    .jump-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-top: 12px;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+    .jump-row input {
+      width: 80px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+    }
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      padding: 12px 18px;
+      background: var(--ok);
+      color: #fff;
+      border-radius: 8px;
+      opacity: 0;
+      transition: opacity 0.3s;
+      pointer-events: none;
+    }
+    .toast.show { opacity: 1; }
+    .empty {
+      text-align: center;
+      padding: 80px 24px;
+      color: var(--muted);
+    }
+    .status-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      background: rgba(245, 158, 11, 0.2);
+      color: var(--warn);
+    }
+    .status-badge.done {
+      background: rgba(34, 197, 94, 0.2);
+      color: var(--ok);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>商家 SKU 对照填写</h1>
+      <div class="stats" id="stats">加载中…</div>
+    </div>
+    <div class="toolbar">
+      <label class="toggle">
+        <input type="checkbox" id="pendingOnly" checked />
+        只浏览未填写
+      </label>
+      <button type="button" id="btnRestart">从头开始</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="content" class="card" hidden>
+      <div class="image-pane">
+        <img id="img" alt="商品主图" referrerpolicy="no-referrer" />
+      </div>
+      <div class="info-pane">
+        <div class="meta">
+          <span>Excel 行 <strong id="rowNum">-</strong></span>
+          <span id="statusBadge" class="status-badge">未填写</span>
+          <span id="progressText">-</span>
+        </div>
+        <div class="product-name" id="productName"></div>
+        <div class="meta" id="extraMeta"></div>
+        <div class="field">
+          <label for="skuInput">商家 SKU（seller_sku）</label>
+          <input id="skuInput" type="text" placeholder="输入后 Enter 保存并下一个" autocomplete="off" />
+        </div>
+        <div class="actions">
+          <button type="button" id="btnPrev">← 上一个</button>
+          <button type="button" id="btnSave" class="primary">保存 (Enter)</button>
+          <button type="button" id="btnSaveNext" class="primary">保存并下一个</button>
+          <button type="button" id="btnNext">下一个 →</button>
+          <button type="button" id="btnSkip">跳过</button>
+        </div>
+      </div>
+    </div>
+    <div id="empty" class="empty" hidden>
+      <p>🎉 当前筛选下没有更多商品了</p>
+      <button type="button" id="btnShowAll">显示全部商品</button>
+    </div>
+  </main>
+
+  <div class="progress-wrap" style="max-width:1100px;margin:0 auto;padding:0 24px 24px">
+    <div class="progress-bar"><div id="progressBar" style="width:0%"></div></div>
+    <div class="jump-row">
+      跳转到序号
+      <input type="number" id="jumpIndex" min="1" value="1" />
+      <button type="button" id="btnJump">跳转</button>
+      <span id="listHint"></span>
+    </div>
+  </div>
+
+  <div class="toast" id="toast">已保存</div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let items = [];
+    let currentIdx = 0;
+    let currentDetail = null;
+
+    async function api(path, opts) {
+      const res = await fetch(path, opts);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      return data;
+    }
+
+    function toast(msg) {
+      const el = $("toast");
+      el.textContent = msg;
+      el.classList.add("show");
+      setTimeout(() => el.classList.remove("show"), 1500);
+    }
+
+    function pendingOnly() {
+      return $("pendingOnly").checked;
+    }
+
+    async function refreshStats() {
+      const s = await api("/api/stats");
+      $("stats").innerHTML =
+        `共 <strong>${s.total}</strong> 个商品 · 已填 <strong>${s.filled}</strong> · 待填 <strong>${s.pending}</strong>`;
+      const pct = s.total ? Math.round((s.filled / s.total) * 100) : 0;
+      $("progressBar").style.width = pct + "%";
+      return s;
+    }
+
+    async function loadList(startIdx = 0) {
+      const pending = pendingOnly() ? "1" : "0";
+      const data = await api("/api/products?pending=" + pending);
+      items = data.items;
+      currentIdx = Math.min(startIdx, Math.max(0, items.length - 1));
+      $("listHint").textContent = items.length ? `共 ${items.length} 条` : "";
+      $("jumpIndex").max = items.length;
+      if (!items.length) {
+        $("content").hidden = true;
+        $("empty").hidden = false;
+        return;
+      }
+      $("empty").hidden = true;
+      $("content").hidden = false;
+      await showItem(currentIdx);
+    }
+
+    async function showItem(idx) {
+      if (idx < 0 || idx >= items.length) return;
+      currentIdx = idx;
+      const brief = items[idx];
+      const detail = await api("/api/product/" + brief.row);
+      currentDetail = detail;
+
+      $("rowNum").textContent = detail.row;
+      $("productName").textContent = detail.product_name;
+      $("img").src = detail.main_image;
+      $("skuInput").value = detail.seller_sku || "";
+
+      const badge = $("statusBadge");
+      if (detail.seller_sku) {
+        badge.textContent = "已填写";
+        badge.className = "status-badge done";
+      } else {
+        badge.textContent = "未填写";
+        badge.className = "status-badge";
+      }
+
+      const extras = [];
+      if (detail.category) extras.push("类目: " + detail.category);
+      if (detail.variation_value) extras.push("规格: " + detail.variation_value);
+      if (detail.sku_id) extras.push("sku_id: " + detail.sku_id);
+      $("extraMeta").textContent = extras.join(" · ");
+
+      $("progressText").textContent = `${idx + 1} / ${items.length}`;
+      $("jumpIndex").value = idx + 1;
+      $("btnPrev").disabled = idx <= 0;
+
+      $("skuInput").focus();
+      $("skuInput").select();
+    }
+
+    async function saveSku(goNext) {
+      if (!currentDetail) return;
+      const sku = $("skuInput").value.trim();
+      const res = await api("/api/product/" + currentDetail.row, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ seller_sku: sku, pending_only: pendingOnly() }),
+      });
+      toast("已保存到 Excel");
+      await refreshStats();
+
+      if (goNext && pendingOnly()) {
+        await loadList(currentIdx);
+        return;
+      }
+      if (goNext) {
+        if (currentIdx < items.length - 1) {
+          await showItem(currentIdx + 1);
+        } else {
+          toast("已是最后一个");
+        }
+        return;
+      }
+      currentDetail.seller_sku = sku;
+      const badge = $("statusBadge");
+      if (sku) {
+        badge.textContent = "已填写";
+        badge.className = "status-badge done";
+      }
+    }
+
+    $("btnSave").onclick = () => saveSku(false);
+    $("btnSaveNext").onclick = () => saveSku(true);
+    $("btnNext").onclick = () => showItem(currentIdx + 1);
+    $("btnPrev").onclick = () => showItem(currentIdx - 1);
+    $("btnSkip").onclick = () => showItem(currentIdx + 1);
+    $("btnRestart").onclick = () => loadList(0);
+    $("btnShowAll").onclick = () => {
+      $("pendingOnly").checked = false;
+      loadList(0);
+    };
+    $("pendingOnly").onchange = () => loadList(0);
+    $("btnJump").onclick = () => {
+      const n = parseInt($("jumpIndex").value, 10);
+      if (n >= 1 && n <= items.length) showItem(n - 1);
+    };
+
+    $("skuInput").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        saveSku(true);
+      }
+    });
+
+    document.addEventListener("keydown", (e) => {
+      if (e.target === $("skuInput")) return;
+      if (e.key === "ArrowRight") showItem(currentIdx + 1);
+      if (e.key === "ArrowLeft") showItem(currentIdx - 1);
+    });
+
+    (async () => {
+      await refreshStats();
+      await loadList(0);
+    })();
+  </script>
+</body>
+</html>

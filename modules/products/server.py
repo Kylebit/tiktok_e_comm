@@ -938,6 +938,21 @@ class Handler(BaseHTTPRequestHandler):
                 payload = json.loads((body or b"{}").decode("utf-8") or "{}")
                 ok = delete_pending(payload.get("seller_sku") or "")
                 return self._json(200, {"deleted": ok})
+            # 忽略某产品：记入已忽略并从待搬运列表永久排除
+            if method == "POST" and subpath == "dismiss":
+                from modules.ozon.pending_drafts import add_dismissed
+
+                payload = json.loads((body or b"{}").decode("utf-8") or "{}")
+                rec = add_dismissed(
+                    payload.get("seller_sku") or "",
+                    payload.get("tk_id") or "",
+                    payload.get("reason") or "",
+                )
+                return self._json(200, {"dismissed": rec})
+            if method == "GET" and subpath == "dismissed":
+                from modules.ozon.pending_drafts import list_dismissed
+
+                return self._json(200, {"dismissed": list_dismissed()})
         except Exception as e:
             self._json(500, {"ok": False, "error": str(e)})
             return True

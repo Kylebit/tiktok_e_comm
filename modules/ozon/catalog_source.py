@@ -240,6 +240,10 @@ def list_unmigrated_from_catalog(*, sync_map: bool = True) -> list[dict]:
     if sync_map:
         sync_catalog_to_tk_map()
 
+    from modules.ozon.pending_drafts import dismissed_seller_skus
+
+    dismissed = dismissed_seller_skus()
+
     items: list[dict] = []
     seen_offer: set[str] = set()
     seen_spu_lone: set[str] = set()
@@ -249,6 +253,9 @@ def list_unmigrated_from_catalog(*, sync_map: bool = True) -> list[dict]:
         match_key = cat_item.get("match_key") or ""
         entry = _map_entry_from_item(cat_item, fetch_detail=False, match_key=match_key)
         if not entry:
+            continue
+        # 用户已忽略的产品，永久排除，不再出现在待搬运列表
+        if entry["seller_sku"] in dismissed:
             continue
 
         group = tk_group_info(cat_item)

@@ -409,6 +409,7 @@
 
     card.dataset.sellerSku = sellerSku;
     card.dataset.offerId = offerId;
+    card.dataset.tkId = d.tk_id || '';
     card.dataset.images = JSON.stringify(d.images || []);
     card.dataset.processed = '';
     card.dataset.migrateProfile = profile;
@@ -437,9 +438,12 @@
   }
 
   function dismissDraft(card) {
-    if (!confirm('忽略并移除该草稿卡片？（不会上品；若来自待审队列也会从队列删除）')) return;
+    if (!confirm('忽略该产品？将从待搬运列表永久排除，之后不会再生成草稿/上品（可在后端 dismissed_offers.json 撤销）。')) return;
     var sellerSku = card.dataset.sellerSku;
-    api('pending_drafts/delete', { method: 'POST', body: { seller_sku: sellerSku } }).catch(function () {});
+    var tkId = card.dataset.tkId || '';
+    api('dismiss', { method: 'POST', body: { seller_sku: sellerSku, tk_id: tkId, reason: 'manual dismiss' } })
+      .then(function () { loadUnmigrated(); })
+      .catch(function () {});
     card.parentNode.removeChild(card);
   }
 

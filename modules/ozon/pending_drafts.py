@@ -67,3 +67,58 @@ def delete_pending(seller_sku: str) -> bool:
         _write(data)
         return True
     return False
+
+
+# ----------------------------------------------------------- 已忽略产品 -----
+# 用户在前端点「忽略」的产品：记下来，从待搬运列表里永久排除，不再生成草稿/上品。
+
+def _dismissed_path() -> Path:
+    data = ozon_data_dir()
+    if not data:
+        raise RuntimeError("找不到 Ozon data 目录，无法读写已忽略列表")
+    return data / "dismissed_offers.json"
+
+
+def _read_dismissed() -> dict:
+    path = _dismissed_path()
+    if not path.is_file():
+        return {}
+    try:
+        d = json.loads(path.read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def list_dismissed() -> dict:
+    return _read_dismissed()
+
+
+def dismissed_seller_skus() -> set:
+    return set(_read_dismissed().keys())
+
+
+def add_dismissed(seller_sku: str, tk_id: str = "", reason: str = "") -> dict:
+    seller_sku = str(seller_sku or "").strip()
+    if not seller_sku:
+        raise ValueError("add_dismissed 需要 seller_sku")
+    data = _read_dismissed()
+    record = {"seller_sku": seller_sku, "tk_id": str(tk_id or ""), "reason": reason, "at": int(time.time())}
+    data[seller_sku] = record
+    path = _dismissed_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 忽略后同时移出待审队列
+    delete_pending(seller_sku)
+    return record
+
+
+def remove_dismissed(seller_sku: str) -> bool:
+    """撤销忽略（恢复到待搬运列表）。"""
+    seller_sku = str(seller_sku or "").strip()
+    data = _read_dismissed()
+    if seller_sku in data:
+        del data[seller_sku]
+        _dismissed_path().write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        return True
+    return False

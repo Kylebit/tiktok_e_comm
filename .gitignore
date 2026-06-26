@@ -1,5 +1,7 @@
 # 本地数据与凭据（勿提交）
 data/
+!data/
+data/*
 !data/weight_overrides.json
 config/settings.json
 tiktok_tokens.json

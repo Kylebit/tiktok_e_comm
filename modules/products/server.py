@@ -922,6 +922,22 @@ class Handler(BaseHTTPRequestHandler):
                 tp = {str(k): v for k, v in BUILTIN_TYPE_PROFILES.items()}
                 tp.update(load_map().get("type_profiles") or {})
                 return self._json(200, {"options": load_category_options(), "type_profiles": tp})
+            # 待审草稿队列：agent 生成好存这里，前端打开 /ozon 加载成待审卡片
+            if method == "GET" and subpath == "pending_drafts":
+                from modules.ozon.pending_drafts import list_pending
+
+                return self._json(200, {"drafts": list_pending()})
+            if method == "POST" and subpath == "pending_drafts":
+                from modules.ozon.pending_drafts import save_pending
+
+                payload = json.loads((body or b"{}").decode("utf-8") or "{}")
+                return self._json(200, {"saved": save_pending(payload)})
+            if method == "POST" and subpath == "pending_drafts/delete":
+                from modules.ozon.pending_drafts import delete_pending
+
+                payload = json.loads((body or b"{}").decode("utf-8") or "{}")
+                ok = delete_pending(payload.get("seller_sku") or "")
+                return self._json(200, {"deleted": ok})
         except Exception as e:
             self._json(500, {"ok": False, "error": str(e)})
             return True

@@ -1,0 +1,69 @@
+"""待审草稿持久化：agent 生成草稿+裁图后存到这里，前端 /ozon 打开时加载成待审卡片。
+
+存储文件：<ozon_data_dir>/pending_drafts.json
+结构：{ "<seller_sku>": { ...draft 字段..., "processed_images": [...], "saved_at": <ts> } }
+
+提交上品成功 / 人工忽略后，从队列删除对应 seller_sku。
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+
+from modules.ozon.config import ozon_data_dir
+
+
+def _store_path() -> Path:
+    data = ozon_data_dir()
+    if not data:
+        raise RuntimeError("找不到 Ozon data 目录，无法读写待审草稿")
+    return data / "pending_drafts.json"
+
+
+def _read() -> dict:
+    path = _store_path()
+    if not path.is_file():
+        return {}
+    try:
+        d = json.loads(path.read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _write(data: dict) -> None:
+    path = _store_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def list_pending() -> list[dict]:
+    """按保存时间升序返回所有待审草稿。"""
+    items = list(_read().values())
+    items.sort(key=lambda x: x.get("saved_at", 0))
+    return items
+
+
+def save_pending(payload: dict) -> dict:
+    """保存/覆盖一个待审草稿。payload 需含 seller_sku；processed_images 可选。"""
+    seller_sku = str(payload.get("seller_sku") or "").strip()
+    if not seller_sku:
+        raise ValueError("save_pending 需要 seller_sku")
+    data = _read()
+    record = dict(payload)
+    record["saved_at"] = int(time.time())
+    data[seller_sku] = record
+    _write(data)
+    return record
+
+
+def delete_pending(seller_sku: str) -> bool:
+    seller_sku = str(seller_sku or "").strip()
+    data = _read()
+    if seller_sku in data:
+        del data[seller_sku]
+        _write(data)
+        return True
+    return False

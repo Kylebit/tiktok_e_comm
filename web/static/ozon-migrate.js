@@ -340,6 +340,129 @@
     });
   }
 
+  /** 把一个草稿数据 d 渲染进 card 并绑定按钮。
+   *  opts.preProcessed: 已裁好的图片数组（来自待审队列）；有则直接展示+启用提交，不自动裁图。
+   *  无 preProcessed 时（新生成草稿）自动触发裁图。 */
+  function buildDraftCard(card, d, sellerSku, offerId, opts) {
+    opts = opts || {};
+    var matchHint = d.tk_category_path
+      ? ('TK: ' + esc(d.tk_category_path) + ' · 匹配: ' + esc(matchMethodLabel(d.category_match_method)) +
+        (d.category_match_score != null ? '（得分 ' + esc(String(d.category_match_score)) + '）' : '') +
+        ' · 建议 <strong>' + esc(d.type_name_zh || d.type_id) + '</strong>')
+      : '未识别 TikTok 类目，请手动选择 Ozon 类目';
+    var profile = d.migrate_profile || 'generic';
+
+    card.innerHTML =
+      '<div class="card draft-card-body">' +
+      '<h3>草稿 · offer_id <code>' + esc(offerId) + '</code> · seller_sku <code>' + esc(sellerSku) + '</code></h3>' +
+      '<p class="meta">售价 ¥' + esc(d.price) + ' / 划线 ¥' + esc(d.old_price) +
+      ' · 草稿来源: ' + esc(d.source || '') + '</p>' +
+      '<p class="meta">AI: ' + (d.deepseek_used ? '✅ DeepSeek 已调用' : '⚠️ 未调用 API（规则兜底）') +
+      ' · 标题 ' + esc(d.title_source || '—') + ' · 描述 ' + esc(d.desc_source || '—') +
+      (d.weight_source === 'logistics'
+        ? ' · 重量 物流实测 ' + esc(d.weight) + 'g（' + esc(String(d.logistics_package_count || 0)) + ' 单）'
+        : ' · 重量 ' + esc(d.weight_source || '模板')) + '</p>' +
+      (d.price_label ? '<p class="meta">售价来源: ' + esc(d.price_label) + ' → ¥' + esc(d.price) + '</p>' : '') +
+      (d.variant_label ? '<p class="meta">规格: <span class="variant-tag">' + esc(d.variant_label) + '</span>' +
+        (d.tk_group_keys && d.tk_group_keys.length ? ' · 组 ' + esc(d.tk_group_keys.join('–')) : '') + '</p>' : '') +
+      '<p class="meta">原标题(MS): ' + esc(d.title_ms) + '</p>' +
+      '<div class="imgs orig-imgs">' + (d.images || []).map(function (u) {
+        return '<img src="' + esc(u) + '" alt="">';
+      }).join('') + '</div>' +
+      '<div class="grid draft-grid">' +
+      '<label>俄语标题</label><textarea class="f-title" rows="2">' + esc(d.draft_title) + '</textarea>' +
+      '<label>俄语描述</label><textarea class="f-desc">' + esc(d.draft_description) + '</textarea>' +
+      '<label>价格 CNY</label><input class="f-price" value="' + esc(d.price) + '">' +
+      '<label>划线价 CNY</label><input class="f-old-price" value="' + esc(d.old_price) + '">' +
+      '<label>Ozon 类目</label>' +
+      '<div class="cat-editor">' +
+      '<div class="cat-match-box">' + matchHint +
+      '<br><span class="warn">提交前请核对类目；匹配不准时可搜索或改选下方列表</span></div>' +
+      '<input type="search" class="f-cat-filter cat-filter" placeholder="搜索类目中文名…">' +
+      buildCategorySelectHtml(d.type_id) +
+      '<label style="font-weight:600;font-size:12px;color:#555;padding-top:0">属性模板 profile</label>' +
+      '<select class="f-profile cat-select" style="height:auto">' +
+      ['sticker', 'tablecloth', 'frame', 'generic'].map(function (p) {
+        return '<option value="' + p + '"' + (p === profile ? ' selected' : '') + '>' + p + '</option>';
+      }).join('') +
+      '</select>' +
+      '<div class="cat-ids-row">' +
+      '<span>category_id</span><input class="f-cat" value="' + esc(d.category_id) + '">' +
+      '<span class="id-name f-cat-name">' + esc(d.category_name_zh || '—') + '</span>' +
+      '<span>type_id</span><input class="f-type" value="' + esc(d.type_id) + '">' +
+      '<span class="id-name f-type-name">' + esc(d.type_name_zh || '—') + '</span>' +
+      '</div></div>' +
+      '<label>颜色 / 字典ID</label><div class="row2"><input class="f-color-name" value="' + esc(d.color_name) + '"><input class="f-color-dict" value="' + esc(d.color_dict_id) + '"></div>' +
+      '<label>材质 / 字典ID</label><div class="row2"><input class="f-material" value="' + esc(d.material) + '"><input class="f-material-dict" value="' + esc(d.material_dict_id) + '"></div>' +
+      '<label>Hashtags</label><input class="f-hashtags" value="' + esc(d.hashtags || '') + '">' +
+      '<label>套装 kit</label><input class="f-kit" value="' + esc(d.kit) + '">' +
+      '<label>重量(g)</label><input class="f-weight" value="' + esc(d.weight) + '">' +
+      '<label>长×宽×高 mm</label><div class="row3"><input class="f-depth" value="' + esc(d.depth) + '"><input class="f-width" value="' + esc(d.width) + '"><input class="f-height" value="' + esc(d.height) + '"></div>' +
+      '<label>长×宽 cm</label><div class="row2"><input class="f-len-cm" value="' + esc(d.len_cm) + '"><input class="f-wid-cm" value="' + esc(d.wid_cm) + '"></div>' +
+      '</div>' +
+      '<div class="toolbar" style="margin-top:12px">' +
+      '<button type="button" class="btn secondary btn-process-images">↻ 重新转换图片 3:4（约30s/张）</button>' +
+      '<button type="button" class="btn btn-submit" disabled>② 提交 Ozon（请先核对后再点）</button>' +
+      '<button type="button" class="btn secondary btn-dismiss">忽略</button>' +
+      '<span class="status draft-status"></span></div>' +
+      '<div class="imgs processed-imgs"></div></div>';
+
+    card.dataset.sellerSku = sellerSku;
+    card.dataset.offerId = offerId;
+    card.dataset.images = JSON.stringify(d.images || []);
+    card.dataset.processed = '';
+    card.dataset.migrateProfile = profile;
+    card.dataset.tkCategoryId = d.tk_category_id || '';
+    card.dataset.tkCategoryLeaf = d.tk_category_leaf || '';
+
+    bindCategoryEditor(card, d);
+
+    card.querySelector('.btn-process-images').onclick = function () { processImages(card); };
+    card.querySelector('.btn-submit').onclick = function () { submitMigrate(card); };
+    card.querySelector('.btn-dismiss').onclick = function () { dismissDraft(card); };
+
+    var pre = opts.preProcessed;
+    if (pre && pre.length) {
+      // 来自待审队列：图片已裁好，直接展示并启用提交，不重复裁图
+      card.dataset.processed = JSON.stringify(pre);
+      card.querySelector('.processed-imgs').innerHTML = pre.map(function (u) {
+        return '<img src="' + esc(u) + '" alt="">';
+      }).join('');
+      card.querySelector('.draft-status').textContent = '✅ 已就绪，共 ' + pre.length + ' 张图（待审）';
+      card.querySelector('.btn-submit').disabled = false;
+    } else if (d.images && d.images.length) {
+      // 新生成草稿：自动裁图
+      processImages(card);
+    }
+  }
+
+  function dismissDraft(card) {
+    if (!confirm('忽略并移除该草稿卡片？（不会上品；若来自待审队列也会从队列删除）')) return;
+    var sellerSku = card.dataset.sellerSku;
+    api('pending_drafts/delete', { method: 'POST', body: { seller_sku: sellerSku } }).catch(function () {});
+    card.parentNode.removeChild(card);
+  }
+
+  /** 打开 /ozon 时加载 agent 预生成的待审草稿，渲染成卡片供逐个审核。 */
+  function loadPendingDrafts() {
+    var area = document.getElementById('draft-area');
+    if (!area) return Promise.resolve();
+    return Promise.all([api('pending_drafts'), loadCategoryOptions()]).then(function (res) {
+      var drafts = (res[0] && res[0].drafts) || [];
+      drafts.forEach(function (d) {
+        var sellerSku = d.seller_sku || '';
+        if (!sellerSku) return;
+        if (area.querySelector('.draft-card[data-seller-sku="' + sellerSku + '"]')) return;
+        var card = document.createElement('div');
+        card.className = 'draft-card';
+        card.dataset.sellerSku = sellerSku;
+        area.appendChild(card);
+        buildDraftCard(card, d, sellerSku, d.offer_id || '', { preProcessed: d.processed_images || [] });
+      });
+      return drafts;
+    }).catch(function () { /* 无待审或接口缺失时忽略 */ });
+  }
+
   function openDraft(idx) {
     var it = unmigratedCache[idx];
     if (!it) return;
@@ -383,12 +506,6 @@
       var d = results[0];
       if (d.error && !d.draft_title) throw new Error(d.error);
       var offerId = d.offer_id || it.offer_id;
-      var matchHint = d.tk_category_path
-        ? ('TK: ' + esc(d.tk_category_path) + ' · 匹配: ' + esc(matchMethodLabel(d.category_match_method)) +
-          (d.category_match_score != null ? '（得分 ' + esc(String(d.category_match_score)) + '）' : '') +
-          ' · 建议 <strong>' + esc(d.type_name_zh || d.type_id) + '</strong>')
-        : '未识别 TikTok 类目，请手动选择 Ozon 类目';
-      var profile = d.migrate_profile || 'generic';
 
       showTaskBanner('ok', '✅ 草稿已生成 · ' + sellerSku + '（耗时 ' + elapsedSec() + ' 秒）', [
         { cls: 'done', text: '① 目录 + TK 数据' },
@@ -398,81 +515,7 @@
       ], '类目、标题、价格等可在下方修改后再提交');
       hideTaskBannerLater(12000);
 
-      card.innerHTML =
-        '<div class="card draft-card-body">' +
-        '<h3>草稿 · offer_id <code>' + esc(offerId) + '</code> · seller_sku <code>' + esc(sellerSku) + '</code></h3>' +
-        '<p class="meta">售价 ¥' + esc(d.price) + ' / 划线 ¥' + esc(d.old_price) +
-        ' · 草稿来源: ' + esc(d.source || '') + '</p>' +
-        '<p class="meta">AI: ' + (d.deepseek_used ? '✅ DeepSeek 已调用' : '⚠️ 未调用 API（规则兜底）') +
-        ' · 标题 ' + esc(d.title_source || '—') + ' · 描述 ' + esc(d.desc_source || '—') +
-        (d.weight_source === 'logistics'
-          ? ' · 重量 物流实测 ' + esc(d.weight) + 'g（' + esc(String(d.logistics_package_count || 0)) + ' 单）'
-          : ' · 重量 ' + esc(d.weight_source || '模板')) + '</p>' +
-        (d.price_label ? '<p class="meta">售价来源: ' + esc(d.price_label) + ' → ¥' + esc(d.price) + '</p>' : '') +
-        (d.variant_label ? '<p class="meta">规格: <span class="variant-tag">' + esc(d.variant_label) + '</span>' +
-          (d.tk_group_keys && d.tk_group_keys.length ? ' · 组 ' + esc(d.tk_group_keys.join('–')) : '') + '</p>' : '') +
-        '<p class="meta">原标题(MS): ' + esc(d.title_ms) + '</p>' +
-        '<div class="imgs orig-imgs">' + (d.images || []).map(function (u) {
-          return '<img src="' + esc(u) + '" alt="">';
-        }).join('') + '</div>' +
-        '<div class="grid draft-grid">' +
-        '<label>俄语标题</label><textarea class="f-title" rows="2">' + esc(d.draft_title) + '</textarea>' +
-        '<label>俄语描述</label><textarea class="f-desc">' + esc(d.draft_description) + '</textarea>' +
-        '<label>价格 CNY</label><input class="f-price" value="' + esc(d.price) + '">' +
-        '<label>划线价 CNY</label><input class="f-old-price" value="' + esc(d.old_price) + '">' +
-        '<label>Ozon 类目</label>' +
-        '<div class="cat-editor">' +
-        '<div class="cat-match-box">' + matchHint +
-        '<br><span class="warn">提交前请核对类目；匹配不准时可搜索或改选下方列表</span></div>' +
-        '<input type="search" class="f-cat-filter cat-filter" placeholder="搜索类目中文名…">' +
-        buildCategorySelectHtml(d.type_id) +
-        '<label style="font-weight:600;font-size:12px;color:#555;padding-top:0">属性模板 profile</label>' +
-        '<select class="f-profile cat-select" style="height:auto">' +
-        ['sticker', 'tablecloth', 'frame', 'generic'].map(function (p) {
-          return '<option value="' + p + '"' + (p === profile ? ' selected' : '') + '>' + p + '</option>';
-        }).join('') +
-        '</select>' +
-        '<div class="cat-ids-row">' +
-        '<span>category_id</span><input class="f-cat" value="' + esc(d.category_id) + '">' +
-        '<span class="id-name f-cat-name">' + esc(d.category_name_zh || '—') + '</span>' +
-        '<span>type_id</span><input class="f-type" value="' + esc(d.type_id) + '">' +
-        '<span class="id-name f-type-name">' + esc(d.type_name_zh || '—') + '</span>' +
-        '</div></div>' +
-        '<label>颜色 / 字典ID</label><div class="row2"><input class="f-color-name" value="' + esc(d.color_name) + '"><input class="f-color-dict" value="' + esc(d.color_dict_id) + '"></div>' +
-        '<label>材质 / 字典ID</label><div class="row2"><input class="f-material" value="' + esc(d.material) + '"><input class="f-material-dict" value="' + esc(d.material_dict_id) + '"></div>' +
-        '<label>Hashtags</label><input class="f-hashtags" value="' + esc(d.hashtags || '') + '">' +
-        '<label>套装 kit</label><input class="f-kit" value="' + esc(d.kit) + '">' +
-        '<label>重量(g)</label><input class="f-weight" value="' + esc(d.weight) + '">' +
-        '<label>长×宽×高 mm</label><div class="row3"><input class="f-depth" value="' + esc(d.depth) + '"><input class="f-width" value="' + esc(d.width) + '"><input class="f-height" value="' + esc(d.height) + '"></div>' +
-        '<label>长×宽 cm</label><div class="row2"><input class="f-len-cm" value="' + esc(d.len_cm) + '"><input class="f-wid-cm" value="' + esc(d.wid_cm) + '"></div>' +
-        '</div>' +
-        '<div class="toolbar" style="margin-top:12px">' +
-        '<button type="button" class="btn secondary btn-process-images">↻ 重新转换图片 3:4（约30s/张）</button>' +
-        '<button type="button" class="btn btn-submit" disabled>② 提交 Ozon（请先核对后再点）</button>' +
-        '<span class="status draft-status"></span></div>' +
-        '<div class="imgs processed-imgs"></div></div>';
-
-      card.dataset.sellerSku = sellerSku;
-      card.dataset.offerId = offerId;
-      card.dataset.images = JSON.stringify(d.images || []);
-      card.dataset.processed = '';
-      card.dataset.migrateProfile = profile;
-      card.dataset.tkCategoryId = d.tk_category_id || '';
-      card.dataset.tkCategoryLeaf = d.tk_category_leaf || '';
-
-      bindCategoryEditor(card, d);
-
-      card.querySelector('.btn-process-images').onclick = function () {
-        processImages(card);
-      };
-      card.querySelector('.btn-submit').onclick = function () {
-        submitMigrate(card);
-      };
-
-      // 草稿生成后直接自动转换图片，无需手动点击；提交 Ozon 仍需人工核对后点击。
-      if (d.images && d.images.length) {
-        processImages(card);
-      }
+      buildDraftCard(card, d, sellerSku, offerId, {});
       card.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }).catch(function (e) {
       stopTaskTimer();
@@ -584,6 +627,8 @@
         if (pbtn) pbtn.disabled = true;
         submitBtn.disabled = true;
         submitBtn.textContent = '✅ 已上品 offer_id=' + offerId;
+        // 上品成功 → 从待审队列删除该草稿（若存在）
+        api('pending_drafts/delete', { method: 'POST', body: { seller_sku: card.dataset.sellerSku } }).catch(function () {});
         loadUnmigrated();  // 刷新左侧待搬运表移除该行；不影响其它卡片
       } else {
         submitBtn.disabled = false;
@@ -757,6 +802,7 @@
 
   function bindUploadTab() {
     loadCategoryOptions().catch(function () { /* 草稿页会再试 */ });
+    loadPendingDrafts();  // 加载 agent 预生成的待审草稿
     document.getElementById('btn-refresh-unmig').onclick = function () { loadUnmigrated(); };
     document.getElementById('check-all-unmig').onchange = function (e) {
       document.querySelectorAll('.unmig-check').forEach(function (c) { c.checked = e.target.checked; });
@@ -782,6 +828,7 @@
     loadUnmigrated: loadUnmigrated,
     openDraft: openDraft,
     draftSelected: draftSelected,
+    loadPendingDrafts: loadPendingDrafts,
     batchMigrate: batchMigrate,
     bindUploadTab: bindUploadTab,
     api: api

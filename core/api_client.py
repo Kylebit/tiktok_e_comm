@@ -1,5 +1,4 @@
 """TikTok Shop Open API 客户端（签名、GET/POST、分页）。"""
-from __future__ import annotations
 
 import hashlib
 import hmac
@@ -15,16 +14,6 @@ from core.http_retry import urlopen as urlopen_retry
 
 BASE_URL = "https://open-api.tiktokglobalshop.com"
 RATE_LIMIT_API_CODES = {36009037}
-INVALID_TIMESTAMP_CODE = 36009004
-_clock_skew_sec = int((config_get("api", {}) or {}).get("timestamp_skew_sec", 0) or 0)
-
-
-def _api_timestamp(extra_skew: int = 0) -> str:
-    return str(int(time.time()) - _clock_skew_sec - extra_skew)
-
-
-def _is_invalid_timestamp_error(err: str) -> bool:
-    return f'"code":{INVALID_TIMESTAMP_CODE}' in err.replace(" ", "")
 
 
 def _rate_limit_retries() -> int:
@@ -71,11 +60,9 @@ def _do_request_once(
     body: dict | None,
     debug: bool,
     _retry_on_401: bool,
-    *,
-    extra_skew: int = 0,
 ) -> dict:
     app_key, app_secret = _credentials()
-    params = {"app_key": app_key, "timestamp": _api_timestamp(extra_skew)}
+    params = {"app_key": app_key, "timestamp": str(int(time.time()))}
     if query:
         params.update(query)
     body_str = json.dumps(body, separators=(",", ":")) if body is not None else ""
@@ -107,8 +94,6 @@ def _do_request_once(
             )
         if _is_rate_limited_http(e.code):
             raise
-        if e.code == 400 and _is_invalid_timestamp_error(err):
-            raise RuntimeError(f"HTTP {e.code}: {err[:400]}") from e
         raise RuntimeError(f"HTTP {e.code}: {err[:400]}") from e
     except urllib.error.URLError as e:
         raise RuntimeError(f"网络错误: {e.reason or e}") from e
@@ -138,56 +123,30 @@ def request(
     debug: bool = False,
     _retry_on_401: bool = True,
 ) -> dict:
-    global _clock_skew_sec
     max_retries = _rate_limit_retries()
-    ts_skew_steps = (0, 30, 45, 60)
     last_err: Exception | None = None
-
-    for ts_skew in ts_skew_steps:
-        for attempt in range(max_retries + 1):
-            try:
-                result = _do_request_once(
-                    method,
-                    path,
-                    access_token,
-                    query,
-                    body,
-                    debug,
-                    _retry_on_401,
-                    extra_skew=ts_skew,
-                )
-            except RuntimeError as e:
-                err = str(e)
-                if _is_invalid_timestamp_error(err) and ts_skew != ts_skew_steps[-1]:
-                    last_err = e
-                    break
-                raise
-            except urllib.error.HTTPError as e:
-                if _is_rate_limited_http(e.code) and attempt < max_retries:
-                    _sleep_rate_limit(attempt)
-                    last_err = RuntimeError(f"HTTP {e.code}: rate limited")
-                    continue
-                err = e.read().decode("utf-8", errors="ignore") if e.fp else ""
-                if _is_invalid_timestamp_error(err) and ts_skew != ts_skew_steps[-1]:
-                    last_err = RuntimeError(f"HTTP {e.code}: {err[:400]}")
-                    break
-                raise RuntimeError(f"HTTP {e.code}: {err[:400]}") from e
-            else:
-                if _is_rate_limited_response(result):
-                    if attempt < max_retries:
-                        _sleep_rate_limit(attempt)
-                        last_err = RuntimeError(result.get("message", "rate limited"))
-                        continue
-                    return result
-                if ts_skew and _clock_skew_sec < ts_skew:
-                    _clock_skew_sec = ts_skew
-                return result
-        else:
-            continue
-    else:
-        if last_err:
-            raise last_err
-        raise RuntimeError("请求失败：时间戳无效且重试已用尽")
+    for attempt in range(max_retries + 1):
+        try:
+            result = _do_request_once(
+                method, path, access_token, query, body, debug, _retry_on_401
+            )
+        except urllib.error.HTTPError as e:
+            if _is_rate_limited_http(e.code) and attempt < max_retries:
+                _sleep_rate_limit(attempt)
+                last_err = RuntimeError(f"HTTP {e.code}: rate limited")
+                continue
+            err = e.read().decode("utf-8", errors="ignore") if e.fp else ""
+            raise RuntimeError(f"HTTP {e.code}: {err[:400]}") from e
+        if _is_rate_limited_response(result):
+            if attempt < max_retries:
+                _sleep_rate_limit(attempt)
+                last_err = RuntimeError(result.get("message", "rate limited"))
+                continue
+            return result
+        return result
+    if last_err:
+        raise last_err
+    raise RuntimeError("请求失败：触发限流且重试已用尽")
 
 
 def get(path, access_token, query=None, debug=False):

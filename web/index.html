@@ -18,7 +18,6 @@
       <a href="/images">主图优化</a>
       <a href="/sourcing">1688 选品</a>
       <a href="/ozon">Ozon</a>
-      <a href="/mx">MX 审批</a>
       <a href="/analytics">Analytics</a>
       <a href="/deactivate">零销下架</a>
       <a href="/promotions">促销调价</a>
@@ -62,11 +61,6 @@
         <h2>Ozon 链接同步</h2>
         <p>TK MY → 俄语草稿 → 3:4 图 → Ozon 上品；支持批量搬运 / 改价 / 促销</p>
       </a>
-      <a class="card link-card" href="/mx">
-        <h2>MX 墨西哥上架审批</h2>
-        <p>飞书派单候选 → POP 定价 → 本地 Web 批准发布（不在群内审批）</p>
-        <span class="badge" id="mxBadge">—</span>
-      </a>
       <a class="card link-card" href="/catalog">
         <h2>商品目录</h2>
         <p>TikTok + Shopee 四国商品 · SKU 后四位对齐 · 可搜索</p>
@@ -106,8 +100,6 @@
       if (db) db.textContent = (s.pending_deactivate || 0) + ' 条待下架';
       var ib = document.getElementById('imageBadge');
       if (ib) ib.textContent = (s.pending_images || 0) + ' 条待处理';
-      var mx = document.getElementById('mxBadge');
-      if (mx) mx.textContent = (s.pending_mx || 0) + ' 条待审';
     }).catch(function() {
       document.getElementById('statusBar').textContent = '无法连接本地服务';
     });

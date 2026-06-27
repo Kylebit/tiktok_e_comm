@@ -54,6 +54,9 @@
     .oz-spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #93c5fd; border-top-color: #0369a1; border-radius: 50%; animation: oz-spin .8s linear infinite; vertical-align: -2px; margin-right: 6px; }
     @keyframes oz-spin { to { transform: rotate(360deg); } }
     .draft-loading { padding: 16px; }
+    .draft-card { margin-bottom: 18px; }
+    .draft-card.done .card { border: 2px solid #16a34a; }
+    .draft-card.done h3::after { content: " ✅ 已上品"; color: #16a34a; font-size: 13px; }
     tr.row-busy { opacity: 0.6; }
     tr.row-busy button { pointer-events: none; }
     tr.group-hdr td { background: #f0f9ff; font-size: 12px; font-weight: 600; color: #0369a1; padding: 10px 8px; }
@@ -99,6 +102,7 @@
       <button type="button" data-tab="price">改价预警</button>
       <button type="button" data-tab="analytics">数据分析</button>
       <button type="button" data-tab="promo">促销活动</button>
+      <button type="button" data-tab="profit">利润分析</button>
       <button type="button" data-tab="history">历史</button>
       <button type="button" data-tab="daily">日常任务</button>
     </div>
@@ -124,6 +128,7 @@
         <span id="unmig-count" class="pill"></span>
         <label>批量数量</label>
         <input type="number" id="batch-count" value="5" min="1" max="20" style="width:56px;padding:6px">
+        <button type="button" class="btn secondary" id="btn-draft-selected">生成所选草稿（逐个审核）</button>
         <button type="button" class="btn" id="btn-batch-migrate">批量搬运（需确认）</button>
       </div>
       <div id="batch-log" class="oz-log" style="display:none"></div>
@@ -145,7 +150,8 @@
           <tbody></tbody>
         </table>
       </div>
-      <div id="draft-area" style="margin-top:20px"></div>
+      <h3 style="margin:24px 0 4px">草稿审核区 <span class="meta" style="font-weight:400">（可多个 SKU 并存，各自核对后单独「提交 Ozon」）</span></h3>
+      <div id="draft-area" style="margin-top:8px"></div>
     </section>
 
     <!-- 改价 -->
@@ -181,6 +187,36 @@
           <thead><tr>
             <th>图</th><th>offer_id</th><th>商品名</th><th>曝光</th><th>访客</th><th>浏览</th>
             <th>CTR%</th><th>加购</th><th>加购率%</th><th>订单</th><th>销售额</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 利润分析 -->
+    <section id="profit" class="oz-tab">
+      <h3 style="margin:4px 0">结算汇总 <span class="meta" style="font-weight:400">（真实佣金/物流费/广告费拆解）</span></h3>
+      <div class="toolbar">
+        <label>近几个月</label>
+        <input type="number" id="settle-months" value="3" min="1" max="12" style="width:56px;padding:6px">
+        <button type="button" class="btn secondary" onclick="OzonMigrate.loadSettlementSummary()">查询结算汇总</button>
+      </div>
+      <div id="settlement-area" style="margin-top:8px"></div>
+
+      <h3 style="margin:32px 0 4px">利润表 <span class="meta" style="font-weight:400">（按真实生效价含弹性提升折扣 + 目标最低利润率算 min_price 草稿，不会自动上传）</span></h3>
+      <div class="toolbar">
+        <label>目标最低利润率%</label>
+        <input type="number" id="profit-target-margin" value="5" min="0" max="50" step="0.5" style="width:64px;padding:6px">
+        <button type="button" class="btn secondary" onclick="OzonMigrate.loadProfitTable()">查询利润表</button>
+        <span id="profit-status" class="meta"></span>
+      </div>
+      <div id="profit-summary" style="margin:8px 0"></div>
+      <div class="tbl-wrap">
+        <table class="oz" id="profit-table">
+          <thead><tr>
+            <th>图</th><th>offer_id</th><th>商品名</th><th>原价</th><th>真实生效价</th><th>弹性提升</th>
+            <th>成本</th><th>重量(g)</th><th>佣金</th><th>物流</th><th>收单</th><th>广告22%</th>
+            <th>利润</th><th>利润率%</th><th>min_price草稿</th><th>需提价</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -284,18 +320,12 @@
     }
     function loadRedPrices() {
       document.getElementById('price-status').textContent = '扫描中(30-60s)…';
-      OzonMigrate.api('red_prices').then(function (rows) {
-        renderRedTable(rows, '');
-      }).catch(function (e) {
-        document.getElementById('price-status').textContent = '扫描失败: ' + e.message;
-      });
+      OzonMigrate.api('red_prices').then(function (rows) { renderRedTable(rows, ''); });
     }
     function loadCachedRedPrices() {
       OzonMigrate.api('pending_price_review').then(function (cached) {
-        if (cached && cached.rows && cached.rows.length) {
-          renderRedTable(cached.rows, '(缓存 ' + cached.generated_at + ') ');
-        }
-      }).catch(function () {});
+        if (cached && cached.rows) renderRedTable(cached.rows, '(缓存 ' + cached.generated_at + ') ');
+      });
     }
     function applySelected() {
       var items = [];

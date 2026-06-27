@@ -1,11 +1,10 @@
 """本地 Web 控制台：页面 + REST API。"""
-from __future__ import annotations
 
 import json
 import mimetypes
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
@@ -70,16 +69,6 @@ _deact_push_job: dict = {
     "skip_count": 0,
     "errors": [],
     "error": None,
-}
-
-_mx_publish_lock = threading.Lock()
-_mx_publish_job: dict = {
-    "running": False,
-    "message": "",
-    "token": "",
-    "match_key": "",
-    "error": None,
-    "result": None,
 }
 
 _analytics_sync_lock = threading.Lock()
@@ -498,48 +487,6 @@ def _deact_push_status() -> dict:
         return dict(_deact_push_job)
 
 
-def _run_mx_publish(token: str) -> None:
-    global _mx_publish_job
-    from modules.miaoshou import mx_web_approval as mx_web
-
-    try:
-        _mx_publish_job["message"] = "正在 claim + publish…"
-        result = mx_web.publish_token(token)
-        _mx_publish_job.update(
-            running=False,
-            message=f"✅ {result['match_key']} 上架完成 · {result['list_price_ceil_mxn']} MXN",
-            match_key=result.get("match_key") or "",
-            result=result,
-            error=None,
-        )
-    except Exception as e:
-        _mx_publish_job.update(running=False, message="", error=str(e), result=None)
-
-
-def _start_mx_publish(token: str) -> tuple[bool, str]:
-    token = (token or "").strip()
-    if not token:
-        return False, "缺少 token"
-    with _mx_publish_lock:
-        if _mx_publish_job.get("running"):
-            return False, "已有上架任务进行中"
-        _mx_publish_job.update(
-            running=True,
-            message="排队中…",
-            token=token,
-            match_key="",
-            error=None,
-            result=None,
-        )
-    threading.Thread(target=_run_mx_publish, args=(token,), daemon=True).start()
-    return True, "started"
-
-
-def _mx_publish_status() -> dict:
-    with _mx_publish_lock:
-        return dict(_mx_publish_job)
-
-
 def _run_image_scan(
     limit: int,
     region: str | None,
@@ -874,9 +821,6 @@ def _api_status() -> dict:
         pending_promos = len(promo_mod.load_queue("pending"))
         pending_deact = len(deact_mod.load_queue("pending"))
         pending_images = len(image_mod.load_active_queue())
-        from modules.miaoshou import mx_web_approval as mx_web
-
-        pending_mx = len(mx_web.list_cards(status="pending"))
         return {
             "ok": True,
             "seller_name": tok.get("seller_name"),
@@ -886,7 +830,6 @@ def _api_status() -> dict:
             "pending_promos": pending_promos,
             "pending_deactivate": pending_deact,
             "pending_images": pending_images,
-            "pending_mx": pending_mx,
         }
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -979,32 +922,53 @@ class Handler(BaseHTTPRequestHandler):
                 tp = {str(k): v for k, v in BUILTIN_TYPE_PROFILES.items()}
                 tp.update(load_map().get("type_profiles") or {})
                 return self._json(200, {"options": load_category_options(), "type_profiles": tp})
-            if method == "GET" and subpath == "red_prices":
-                from modules.ozon.price_review import scan_red_prices
+            # 待审草稿队列：agent 生成好存这里，前端打开 /ozon 加载成待审卡片
+            if method == "GET" and subpath == "pending_drafts":
+                from modules.ozon.pending_drafts import list_pending
 
-                return self._json(200, scan_red_prices())
-            if method == "GET" and subpath == "pending_price_review":
-                from modules.ozon.price_review import get_pending_price_review
+                return self._json(200, {"drafts": list_pending()})
+            if method == "POST" and subpath == "pending_drafts":
+                from modules.ozon.pending_drafts import save_pending
 
-                cached = get_pending_price_review()
-                return self._json(200, cached if cached is not None else {"rows": [], "generated_at": ""})
-            if method == "GET" and subpath == "daily_summary":
-                from modules.ozon.price_review import get_daily_summary
+                payload = json.loads((body or b"{}").decode("utf-8") or "{}")
+                return self._json(200, {"saved": save_pending(payload)})
+            if method == "POST" and subpath == "pending_drafts/delete":
+                from modules.ozon.pending_drafts import delete_pending
 
-                summary = get_daily_summary()
-                return self._json(200, summary if summary is not None else {})
-            if method == "POST" and subpath == "apply_prices":
-                from modules.ozon.price_review import apply_prices
+                payload = json.loads((body or b"{}").decode("utf-8") or "{}")
+                ok = delete_pending(payload.get("seller_sku") or "")
+                return self._json(200, {"deleted": ok})
+            # 忽略某产品：记入已忽略并从待搬运列表永久排除
+            if method == "POST" and subpath == "dismiss":
+                from modules.ozon.pending_drafts import add_dismissed
 
-                payload = self._read_json()
-                items = payload.get("items") or []
-                return self._json(200, apply_prices(items))
-            if method == "POST" and subpath == "price_suppress":
-                from modules.ozon.price_review import suppress_prices
+                payload = json.loads((body or b"{}").decode("utf-8") or "{}")
+                rec = add_dismissed(
+                    payload.get("seller_sku") or "",
+                    payload.get("tk_id") or "",
+                    payload.get("reason") or "",
+                )
+                return self._json(200, {"dismissed": rec})
+            if method == "GET" and subpath == "dismissed":
+                from modules.ozon.pending_drafts import list_dismissed
 
-                payload = self._read_json()
-                offer_ids = payload.get("offer_ids") or []
-                return self._json(200, suppress_prices(offer_ids))
+                return self._json(200, {"dismissed": list_dismissed()})
+            # Ozon 真实结算汇总（佣金/物流费/广告费拆解），供定价参考
+            if method == "GET" and subpath == "settlement_summary":
+                from modules.ozon.settlement import build_settlement_summary
+
+                q = parse_qs(query or "")
+                months_back = int((q.get("months") or ["3"])[0])
+                return self._json(200, build_settlement_summary(months_back))
+            # Ozon 利润分析：真实生效价(含弹性提升折扣) + 保最低利润率的min_price草稿
+            if method == "GET" and subpath == "profit_table":
+                from modules.ozon.profit_analysis import build_profit_table
+                from modules.ozon.pending_drafts import dismissed_offer_ids
+
+                q = parse_qs(query or "")
+                target_margin = float((q.get("target_margin") or ["0.05"])[0])
+                excluded = dismissed_offer_ids()
+                return self._json(200, build_profit_table(target_margin, excluded_offer_ids=excluded))
         except Exception as e:
             self._json(500, {"ok": False, "error": str(e)})
             return True
@@ -1055,28 +1019,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._file(WEB_DIR / "photoroom_showcase.html")
         if path in ("/ozon", "/ozon.html"):
             return self._file(WEB_DIR / "ozon.html")
-        if path in ("/mx", "/mx.html"):
-            return self._file(WEB_DIR / "mx.html")
-
-        if path == "/api/mx/approvals":
-            from modules.miaoshou import mx_web_approval as mx_web
-
-            q = parse_qs(urlparse(self.path).query)
-            status = (q.get("status") or ["pending"])[0]
-            items = mx_web.list_cards(status=status or None)
-            return self._json(200, {"ok": True, "items": items, "count": len(items)})
-        if path.startswith("/api/mx/approvals/"):
-            from modules.miaoshou import mx_web_approval as mx_web
-
-            sub = path[len("/api/mx/approvals/") :].split("/")[0]
-            if sub == "publish" or not sub:
-                return self.send_error(404)
-            detail = mx_web.get_card_detail(sub)
-            if not detail:
-                return self._json(404, {"ok": False, "error": "not found"})
-            return self._json(200, {"ok": True, "card": detail})
-        if path == "/api/mx/publish/status":
-            return self._json(200, {"ok": True, **_mx_publish_status()})
 
         if path == "/api/sourcing/list":
             from modules.sourcing import pipeline as sourcing_mod
@@ -1499,51 +1441,6 @@ class Handler(BaseHTTPRequestHandler):
             data = self._read_json()
         except json.JSONDecodeError:
             return self._json(400, {"ok": False, "error": "invalid json"})
-
-        if path == "/api/mx/approvals/clear":
-            from modules.miaoshou import mx_web_approval as mx_web
-
-            result = mx_web.clear_pending_inbox(reason=str(data.get("reason") or "manual_clear"))
-            return self._json(200, {"ok": True, **result})
-
-        if path.startswith("/api/mx/approvals/"):
-            from modules.miaoshou import mx_web_approval as mx_web
-
-            parts = path[len("/api/mx/approvals/") :].strip("/").split("/")
-            token = parts[0] if parts else ""
-            action = parts[1] if len(parts) > 1 else ""
-            if not token:
-                return self._json(400, {"ok": False, "error": "missing token"})
-            try:
-                if action == "approve":
-                    result = mx_web.approve_token(token)
-                    return self._json(200, result)
-                if action == "reject":
-                    result = mx_web.reject_token(token)
-                    return self._json(200, result)
-                if action == "publish":
-                    ok, msg = _start_mx_publish(token)
-                    if not ok:
-                        return self._json(409, {"ok": False, "error": msg})
-                    return self._json(200, {"ok": True, "message": msg})
-                if action == "override":
-                    l = int(data.get("length_cm") or data.get("l") or 0)
-                    w = int(data.get("width_cm") or data.get("w") or 0)
-                    h = int(data.get("height_cm") or data.get("h") or 0)
-                    if min(l, w, h) <= 0:
-                        return self._json(400, {"ok": False, "error": "尺寸须为正整数 cm"})
-                    result = mx_web.apply_override(
-                        token, length_cm=l, width_cm=w, height_cm=h, note=str(data.get("note") or "")
-                    )
-                    card = mx_web.get_card_detail(token)
-                    return self._json(200, {**result, "card": card})
-            except KeyError as e:
-                return self._json(404, {"ok": False, "error": str(e)})
-            except RuntimeError as e:
-                return self._json(400, {"ok": False, "error": str(e)})
-            except Exception as e:
-                return self._json(500, {"ok": False, "error": str(e)})
-            return self._json(404, {"ok": False, "error": "unknown action"})
 
         if path == "/api/catalog/cost":
             from modules.catalog import listings as cat_mod
@@ -1984,7 +1881,7 @@ def serve(port: int = DEFAULT_PORT, open_browser: bool = True, page: str = "inde
         build_html()
 
     try:
-        server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        server = HTTPServer(("127.0.0.1", port), Handler)
     except OSError as e:
         if getattr(e, "errno", None) == 48:
             print(f"  ⚠️ 端口 {port} 已被占用。请先停止旧进程（旧版可能没有 /images 路由会 404）：")
@@ -2003,14 +1900,12 @@ def serve(port: int = DEFAULT_PORT, open_browser: bool = True, page: str = "inde
         "images": "/images",
         "sourcing": "/sourcing",
         "ozon": "/ozon",
-        "mx": "/mx",
     }
     url = f"http://127.0.0.1:{port}{routes.get(page, '/')}"
     print(f"  ✅ 控制台: http://127.0.0.1:{port}/")
     print(f"  商品目录: http://127.0.0.1:{port}/catalog")
     print(f"  结算利润: http://127.0.0.1:{port}/settlement")
     print(f"  Ozon 运营: http://127.0.0.1:{port}/ozon")
-    print(f"  MX 上架审批: http://127.0.0.1:{port}/mx")
     print(f"  1688 选品: http://127.0.0.1:{port}/sourcing")
     print(f"  Listing 优化: http://127.0.0.1:{port}/titles")
     print(f"  主图优化: http://127.0.0.1:{port}/images")

@@ -33,9 +33,7 @@ e-commercial/                    ← 建议统一父目录名
 mkdir -p ~/e-commercial && cd ~/e-commercial
 
 git clone git@github.com:Kylebit/tiktok_e_comm.git
-# Ozon webapp 若已建独立仓库：
-# git clone git@github.com:Kylebit/ozon-webapp.git ozon/webapp
-# 或从旧机器 rsync（见第 4 节）
+git clone git@github.com:Kylebit/ozon-webapp.git ozon/webapp
 ```
 
 ---

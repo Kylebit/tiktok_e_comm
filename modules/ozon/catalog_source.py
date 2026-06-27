@@ -89,11 +89,13 @@ def _map_entry_from_item(
     product_id = (row.get("product_id") or "").strip()
     shop_cipher = (row.get("shop_cipher") or "").strip()
     image_urls: list[str] = []
+    package_dimensions_cm: dict | None = None
     if fetch_detail and product_id and shop_cipher:
         detail = _fetch_tk_detail(product_id, shop_cipher)
         image_urls = extract_listing_image_urls(detail)
         if not title and detail.get("title"):
             title = detail["title"]
+        package_dimensions_cm = _extract_package_dimensions_cm(detail, seller_sku)
     if not image_urls and row.get("image_url"):
         image_urls = [row["image_url"]]
     tk = item.get("tiktok")
@@ -108,7 +110,30 @@ def _map_entry_from_item(
         "tk_id": product_id or "",
         "match_key": item.get("match_key") or mk or tk_match_key(seller_sku),
         "source_row": row,
+        "package_dimensions_cm": package_dimensions_cm,
     }
+
+
+def _extract_package_dimensions_cm(detail: dict, seller_sku: str) -> dict | None:
+    """从 TikTok 商品详情（原链接）取该 SKU 的包裹长宽高（cm）。
+    优先 SKU 级 sku_dimensions，否则用商品级 package_dimensions。"""
+    sku_dim: dict = {}
+    for s in detail.get("skus") or []:
+        if (s.get("seller_sku") or "").strip() == seller_sku:
+            sku_dim = s.get("sku_dimensions") or {}
+            break
+    dim = sku_dim or detail.get("package_dimensions") or {}
+    length, width, height = dim.get("length"), dim.get("width"), dim.get("height")
+    if not (length and width and height):
+        return None
+    try:
+        return {
+            "length": float(length),
+            "width": float(width),
+            "height": float(height),
+        }
+    except (TypeError, ValueError):
+        return None
 
 
 def _load_tk_map() -> dict:
@@ -215,6 +240,11 @@ def list_unmigrated_from_catalog(*, sync_map: bool = True) -> list[dict]:
     if sync_map:
         sync_catalog_to_tk_map()
 
+    from modules.ozon.pending_drafts import dismissed_offer_ids, dismissed_seller_skus
+
+    dismissed = dismissed_seller_skus()
+    dismissed_oids = dismissed_offer_ids()
+
     items: list[dict] = []
     seen_offer: set[str] = set()
     seen_spu_lone: set[str] = set()
@@ -224,6 +254,9 @@ def list_unmigrated_from_catalog(*, sync_map: bool = True) -> list[dict]:
         match_key = cat_item.get("match_key") or ""
         entry = _map_entry_from_item(cat_item, fetch_detail=False, match_key=match_key)
         if not entry:
+            continue
+        # 用户已忽略的产品，永久排除（按 seller_sku 或 4 位 offer_id，覆盖跨国 SKU）
+        if entry["seller_sku"] in dismissed or to_4digit_offer_id(entry["seller_sku"]) in dismissed_oids:
             continue
 
         group = tk_group_info(cat_item)

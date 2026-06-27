@@ -1,0 +1,2098 @@
+[
+  {
+    "cat_id": 17028731,
+    "cat_name": "Постельное белье",
+    "type_id": 92610,
+    "type_name": "Пододеяльник",
+    "type_name_zh": "被套",
+    "cat_name_zh": "床品"
+  },
+  {
+    "cat_id": 17028731,
+    "cat_name": "Постельное белье",
+    "type_id": 92607,
+    "type_name": "Наволочка декоративная",
+    "type_name_zh": "装饰枕套",
+    "cat_name_zh": "床品"
+  },
+  {
+    "cat_id": 17028731,
+    "cat_name": "Постельное белье",
+    "type_id": 92612,
+    "type_name": "Простыня",
+    "type_name_zh": "床单",
+    "cat_name_zh": "床品"
+  },
+  {
+    "cat_id": 17028731,
+    "cat_name": "Постельное белье",
+    "type_id": 92606,
+    "type_name": "Наволочка",
+    "type_name_zh": "枕套",
+    "cat_name_zh": "床品"
+  },
+  {
+    "cat_id": 17028731,
+    "cat_name": "Постельное белье",
+    "type_id": 92609,
+    "type_name": "Наматрасник",
+    "type_name_zh": "床垫保护罩",
+    "cat_name_zh": "床品"
+  },
+  {
+    "cat_id": 17028731,
+    "cat_name": "Постельное белье",
+    "type_id": 970665432,
+    "type_name": "Наперник",
+    "type_name_zh": "羽绒枕芯",
+    "cat_name_zh": "床品"
+  },
+  {
+    "cat_id": 17028731,
+    "cat_name": "Постельное белье",
+    "type_id": 970862445,
+    "type_name": "Держатель для матраса",
+    "type_name_zh": "床垫固定器",
+    "cat_name_zh": "床品"
+  },
+  {
+    "cat_id": 17028731,
+    "cat_name": "Постельное белье",
+    "type_id": 92603,
+    "type_name": "Комплект постельного белья",
+    "type_name_zh": "床品套件",
+    "cat_name_zh": "床品"
+  },
+  {
+    "cat_id": 17028731,
+    "cat_name": "Постельное белье",
+    "type_id": 970623351,
+    "type_name": "Держатель простыни, одеяла",
+    "type_name_zh": "床单/毯子固定器",
+    "cat_name_zh": "床品"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 970593920,
+    "type_name": "Паштетница",
+    "type_name_zh": "肉酱罐",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 92506,
+    "type_name": "Миска",
+    "type_name_zh": "碗",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 970875771,
+    "type_name": "Подставка сервировочная",
+    "type_name_zh": "餐垫",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 92516,
+    "type_name": "Пиала",
+    "type_name_zh": "碗",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 92492,
+    "type_name": "Блюдо сервировочное",
+    "type_name_zh": "餐盘",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 970865623,
+    "type_name": "Корзина для сервировки",
+    "type_name_zh": "餐篮",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 92517,
+    "type_name": "Подстаканник",
+    "type_name_zh": "杯垫",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 92535,
+    "type_name": "Фруктовница",
+    "type_name_zh": "水果盘",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 92495,
+    "type_name": "Конфетница",
+    "type_name_zh": "糖果碗",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 92503,
+    "type_name": "Мармит",
+    "type_name_zh": "保温锅",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 92515,
+    "type_name": "Сервиз чайный, кофейный",
+    "type_name_zh": "茶具/咖啡具套装",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 92519,
+    "type_name": "Салатник",
+    "type_name_zh": "沙拉碗",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 92533,
+    "type_name": "Тортница",
+    "type_name_zh": "蛋糕盒",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 92514,
+    "type_name": "Набор столовой посуды",
+    "type_name_zh": "餐具套装",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 971061859,
+    "type_name": "Калабас для мате",
+    "type_name_zh": "马黛茶杯",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 92537,
+    "type_name": "Чайная, кофейная пара",
+    "type_name_zh": "茶咖对杯",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 92528,
+    "type_name": "Тарелка",
+    "type_name_zh": "盘子",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 971158724,
+    "type_name": "Питчер, молочник",
+    "type_name_zh": "水壶/奶壶",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 92526,
+    "type_name": "Супница, бульонница",
+    "type_name_zh": "汤碗/清汤碗",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 92538,
+    "type_name": "Чайник заварочный",
+    "type_name_zh": "茶壶",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 92505,
+    "type_name": "Менажница",
+    "type_name_zh": "分隔盘",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 971047669,
+    "type_name": "Межъярус для торта",
+    "type_name_zh": "蛋糕分层架",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 971069589,
+    "type_name": "Посуда для чайных церемоний",
+    "type_name_zh": "茶道用具",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 92520,
+    "type_name": "Сахарница",
+    "type_name_zh": "糖罐",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 970856654,
+    "type_name": "Подложка для торта, пирожного",
+    "type_name_zh": "蛋糕/糕点垫",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 92524,
+    "type_name": "Соусник",
+    "type_name_zh": "酱汁壶",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 97596,
+    "type_name": "Подставка для яиц",
+    "type_name_zh": "蛋架",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 92498,
+    "type_name": "Креманка, розетка",
+    "type_name_zh": "小碗/碟",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 92540,
+    "type_name": "Чашка",
+    "type_name_zh": "杯子",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 93715,
+    "type_name": "Органайзер для чайных пакетиков",
+    "type_name_zh": "茶包收纳盒",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 970667010,
+    "type_name": "Икорница",
+    "type_name_zh": "鱼子酱碗",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 92493,
+    "type_name": "Блюдце",
+    "type_name_zh": "碟子",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 92499,
+    "type_name": "Кружка",
+    "type_name_zh": "杯子",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17028741,
+    "cat_name": "Столовая посуда",
+    "type_id": 970825777,
+    "type_name": "Набор для чайной церемонии",
+    "type_name_zh": "茶道套装",
+    "cat_name_zh": "餐具"
+  },
+  {
+    "cat_id": 17027905,
+    "cat_name": "Аксессуары для бани и ванной",
+    "type_id": 92035,
+    "type_name": "Подушка для ванны",
+    "type_name_zh": "浴枕",
+    "cat_name_zh": "浴室配件"
+  },
+  {
+    "cat_id": 17027905,
+    "cat_name": "Аксессуары для бани и ванной",
+    "type_id": 92044,
+    "type_name": "Стакан для зубных щеток",
+    "type_name_zh": "牙刷杯",
+    "cat_name_zh": "浴室配件"
+  },
+  {
+    "cat_id": 17027905,
+    "cat_name": "Аксессуары для бани и ванной",
+    "type_id": 504866276,
+    "type_name": "Дозатор для зубной пасты",
+    "type_name_zh": "牙膏挤压器",
+    "cat_name_zh": "浴室配件"
+  },
+  {
+    "cat_id": 17027905,
+    "cat_name": "Аксессуары для бани и ванной",
+    "type_id": 92022,
+    "type_name": "Кольца для шторки в ванной",
+    "type_name_zh": "浴帘环",
+    "cat_name_zh": "浴室配件"
+  },
+  {
+    "cat_id": 17027905,
+    "cat_name": "Аксессуары для бани и ванной",
+    "type_id": 971117757,
+    "type_name": "Матрас для бани",
+    "type_name_zh": "浴室垫",
+    "cat_name_zh": "浴室配件"
+  },
+  {
+    "cat_id": 17027905,
+    "cat_name": "Аксессуары для бани и ванной",
+    "type_id": 92008,
+    "type_name": "Держатель для ванной комнаты",
+    "type_name_zh": "浴室架",
+    "cat_name_zh": "浴室配件"
+  },
+  {
+    "cat_id": 17027905,
+    "cat_name": "Аксессуары для бани и ванной",
+    "type_id": 92025,
+    "type_name": "Бондарное изделие для бани",
+    "type_name_zh": "浴桶",
+    "cat_name_zh": "浴室配件"
+  },
+  {
+    "cat_id": 17027905,
+    "cat_name": "Аксессуары для бани и ванной",
+    "type_id": 92000,
+    "type_name": "Набор банных принадлежностей",
+    "type_name_zh": "浴室套装",
+    "cat_name_zh": "浴室配件"
+  },
+  {
+    "cat_id": 17027905,
+    "cat_name": "Аксессуары для бани и ванной",
+    "type_id": 92033,
+    "type_name": "Подголовник для бани",
+    "type_name_zh": "浴用头枕",
+    "cat_name_zh": "浴室配件"
+  },
+  {
+    "cat_id": 17027905,
+    "cat_name": "Аксессуары для бани и ванной",
+    "type_id": 92030,
+    "type_name": "Набор для ванной комнаты",
+    "type_name_zh": "浴室用品套装",
+    "cat_name_zh": "浴室配件"
+  },
+  {
+    "cat_id": 17027905,
+    "cat_name": "Аксессуары для бани и ванной",
+    "type_id": 972879685,
+    "type_name": "Подспинник для бани",
+    "type_name_zh": "浴用背垫",
+    "cat_name_zh": "浴室配件"
+  },
+  {
+    "cat_id": 17027905,
+    "cat_name": "Аксессуары для бани и ванной",
+    "type_id": 92011,
+    "type_name": "Держатель для туалетной бумаги",
+    "type_name_zh": "厕纸架",
+    "cat_name_zh": "浴室配件"
+  },
+  {
+    "cat_id": 17027905,
+    "cat_name": "Аксессуары для бани и ванной",
+    "type_id": 92010,
+    "type_name": "Держатель для полотенец",
+    "type_name_zh": "毛巾架",
+    "cat_name_zh": "浴室配件"
+  },
+  {
+    "cat_id": 17027905,
+    "cat_name": "Аксессуары для бани и ванной",
+    "type_id": 92017,
+    "type_name": "Ершик для унитаза",
+    "type_name_zh": "马桶刷",
+    "cat_name_zh": "浴室配件"
+  },
+  {
+    "cat_id": 17027905,
+    "cat_name": "Аксессуары для бани и ванной",
+    "type_id": 92014,
+    "type_name": "Дозатор для жидкого мыла",
+    "type_name_zh": "皂液器",
+    "cat_name_zh": "浴室配件"
+  },
+  {
+    "cat_id": 17027905,
+    "cat_name": "Аксессуары для бани и ванной",
+    "type_id": 970707076,
+    "type_name": "Камни для бани",
+    "type_name_zh": "桑拿石",
+    "cat_name_zh": "浴室配件"
+  },
+  {
+    "cat_id": 17027905,
+    "cat_name": "Аксессуары для бани и ванной",
+    "type_id": 92006,
+    "type_name": "Диспенсер для гигиенических пакетов",
+    "type_name_zh": "卫生袋分配器",
+    "cat_name_zh": "浴室配件"
+  },
+  {
+    "cat_id": 17027905,
+    "cat_name": "Аксессуары для бани и ванной",
+    "type_id": 92040,
+    "type_name": "Рукавица для бани",
+    "type_name_zh": "浴用手套",
+    "cat_name_zh": "浴室配件"
+  },
+  {
+    "cat_id": 17027905,
+    "cat_name": "Аксессуары для бани и ванной",
+    "type_id": 971104653,
+    "type_name": "Опахало для бани",
+    "type_name_zh": "浴扇",
+    "cat_name_zh": "浴室配件"
+  },
+  {
+    "cat_id": 17027905,
+    "cat_name": "Аксессуары для бани и ванной",
+    "type_id": 970675230,
+    "type_name": "Аксессуар для дозатора",
+    "type_name_zh": "分配器配件",
+    "cat_name_zh": "浴室配件"
+  },
+  {
+    "cat_id": 17027905,
+    "cat_name": "Аксессуары для бани и ванной",
+    "type_id": 92009,
+    "type_name": "Диспенсер для покрытий на унитаз",
+    "type_name_zh": "马桶座垫分配器",
+    "cat_name_zh": "浴室配件"
+  },
+  {
+    "cat_id": 17027905,
+    "cat_name": "Аксессуары для бани и ванной",
+    "type_id": 92048,
+    "type_name": "Футляр для зубной щетки",
+    "type_name_zh": "牙刷盒",
+    "cat_name_zh": "浴室配件"
+  },
+  {
+    "cat_id": 17027905,
+    "cat_name": "Аксессуары для бани и ванной",
+    "type_id": 92002,
+    "type_name": "Веник для бани",
+    "type_name_zh": "浴帚",
+    "cat_name_zh": "浴室配件"
+  },
+  {
+    "cat_id": 17027905,
+    "cat_name": "Аксессуары для бани и ванной",
+    "type_id": 92013,
+    "type_name": "Диспенсер для бумажных полотенец",
+    "type_name_zh": "纸巾架",
+    "cat_name_zh": "浴室配件"
+  },
+  {
+    "cat_id": 17027905,
+    "cat_name": "Аксессуары для бани и ванной",
+    "type_id": 92029,
+    "type_name": "Мыльница",
+    "type_name_zh": "肥皂盒",
+    "cat_name_zh": "浴室配件"
+  },
+  {
+    "cat_id": 17027905,
+    "cat_name": "Аксессуары для бани и ванной",
+    "type_id": 93656,
+    "type_name": "Коврик для бани",
+    "type_name_zh": "浴室地垫",
+    "cat_name_zh": "浴室配件"
+  },
+  {
+    "cat_id": 17027905,
+    "cat_name": "Аксессуары для бани и ванной",
+    "type_id": 970957180,
+    "type_name": "Испаритель для бани",
+    "type_name_zh": "桑拿蒸发器",
+    "cat_name_zh": "浴室配件"
+  },
+  {
+    "cat_id": 17027905,
+    "cat_name": "Аксессуары для бани и ванной",
+    "type_id": 92051,
+    "type_name": "Шапка для бани",
+    "type_name_zh": "浴帽",
+    "cat_name_zh": "浴室配件"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 95482,
+    "type_name": "Коробка для хранения",
+    "type_name_zh": "储物盒",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 97369,
+    "type_name": "Ящик для хранения",
+    "type_name_zh": "储物箱",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 971279068,
+    "type_name": "Картонные втулки",
+    "type_name_zh": "纸管",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 970992524,
+    "type_name": "Биг-бэг",
+    "type_name_zh": "集装袋",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 970716865,
+    "type_name": "Крышка для ящика",
+    "type_name_zh": "箱盖",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 91372,
+    "type_name": "Чехол для одежды",
+    "type_name_zh": "衣物防尘罩",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 970825205,
+    "type_name": "Гофролист",
+    "type_name_zh": "瓦楞纸板",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 95485,
+    "type_name": "Мини бар",
+    "type_name_zh": "迷你吧",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 504866185,
+    "type_name": "Подставка для обуви",
+    "type_name_zh": "鞋架",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 95481,
+    "type_name": "Корзина для хранения",
+    "type_name_zh": "储物篮",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 115947006,
+    "type_name": "Шкатулка",
+    "type_name_zh": "首饰盒",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 971013614,
+    "type_name": "Инкассаторский мешок",
+    "type_name_zh": "押运袋",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 971311826,
+    "type_name": "Соединитель для рейлинга",
+    "type_name_zh": "挂杆连接器",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 94621,
+    "type_name": "Чехол для обуви",
+    "type_name_zh": "鞋套",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 95474,
+    "type_name": "Ключница настенная",
+    "type_name_zh": "壁挂钥匙架",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 97503,
+    "type_name": "Упаковочная пленка",
+    "type_name_zh": "包装膜",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 971015900,
+    "type_name": "Насос для вакуумных пакетов",
+    "type_name_zh": "真空袋泵",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 95483,
+    "type_name": "Кофр для хранения вещей",
+    "type_name_zh": "衣物收纳箱",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 970588173,
+    "type_name": "Рейлинг для кухни, ванной",
+    "type_name_zh": "厨房/浴室挂杆",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 971096037,
+    "type_name": "Упаковочный пакет",
+    "type_name_zh": "包装袋",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 971078631,
+    "type_name": "Мешок для хранения",
+    "type_name_zh": "储物袋",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 971027088,
+    "type_name": "Защитный уголок для перевозки",
+    "type_name_zh": "运输护角",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 971039893,
+    "type_name": "Диспенсер упаковочной ленты",
+    "type_name_zh": "胶带分配器",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 970744607,
+    "type_name": "Рамка для складывания одежды",
+    "type_name_zh": "叠衣板",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 971071691,
+    "type_name": "Защитный уголок для стекла, зеркала",
+    "type_name_zh": "玻璃/镜子护角",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 95493,
+    "type_name": "Подставка для украшений",
+    "type_name_zh": "首饰架",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 970860462,
+    "type_name": "Диспенсер для стрейч пленки",
+    "type_name_zh": "保鲜膜分配器",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 970896147,
+    "type_name": "Органайзер для хранения вещей",
+    "type_name_zh": "储物收纳盒",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 91315,
+    "type_name": "Вакуумный пакет",
+    "type_name_zh": "真空袋",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17027937,
+    "cat_name": "Хранение вещей",
+    "type_id": 970952431,
+    "type_name": "Упаковочный наполнитель",
+    "type_name_zh": "填充物",
+    "cat_name_zh": "储物用品"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 92759,
+    "type_name": "Лопата",
+    "type_name_zh": "铲子",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 971309522,
+    "type_name": "Корыто для садовой тачки",
+    "type_name_zh": "手推车斗",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 568746175,
+    "type_name": "Дровокол ручной",
+    "type_name_zh": "手动劈柴器",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 971299499,
+    "type_name": "Калибратор для овощей, фруктов, ягод",
+    "type_name_zh": "蔬果分选器",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 92761,
+    "type_name": "Мотыга",
+    "type_name_zh": "锄头",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 92780,
+    "type_name": "Тяпка",
+    "type_name_zh": "锄头",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 97170,
+    "type_name": "Скребок-ледоруб",
+    "type_name_zh": "冰铲",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 92769,
+    "type_name": "Рыхлитель",
+    "type_name_zh": "松土器",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 970877666,
+    "type_name": "Садовые нарукавники",
+    "type_name_zh": "园艺袖套",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 92752,
+    "type_name": "Конус посадочный",
+    "type_name_zh": "种植锥",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 970874522,
+    "type_name": "Скрепер для уборки снега",
+    "type_name_zh": "雪铲",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 971412034,
+    "type_name": "Ремкомплект для тачки, тележки садовой",
+    "type_name_zh": "手推车/园艺车维修套件",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 92742,
+    "type_name": "Вилы",
+    "type_name_zh": "叉子",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 92766,
+    "type_name": "Плодосборник",
+    "type_name_zh": "水果收集器",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 971292984,
+    "type_name": "Аэратор для газона ручной",
+    "type_name_zh": "手动草坪曝气器",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 92757,
+    "type_name": "Ручной кусторез",
+    "type_name_zh": "手动修枝剪",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 92775,
+    "type_name": "Совок садовый",
+    "type_name_zh": "园艺铲",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 98094,
+    "type_name": "Разбрасыватель, сеялка",
+    "type_name_zh": "撒播器/播种器",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 971101618,
+    "type_name": "Щепокол",
+    "type_name_zh": "劈柴器",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 971300851,
+    "type_name": "Запчасть для садовой косы",
+    "type_name_zh": "割草机配件",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 94760,
+    "type_name": "Умывальник для дачи",
+    "type_name_zh": "户外洗手盆",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 970877664,
+    "type_name": "Пояс для садовых инструментов",
+    "type_name_zh": "园艺工具腰带",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 92777,
+    "type_name": "Сучкорез",
+    "type_name_zh": "修枝剪",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 970956873,
+    "type_name": "Аксессуары для тапенера",
+    "type_name_zh": "窗帘配件",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 92778,
+    "type_name": "Тачка садовая",
+    "type_name_zh": "园艺手推车",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 92772,
+    "type_name": "Секатор",
+    "type_name_zh": "修枝剪",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 92749,
+    "type_name": "Кирка",
+    "type_name_zh": "镐",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 92765,
+    "type_name": "Садовый нож",
+    "type_name_zh": "园艺刀",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 971013555,
+    "type_name": "Сито садовое",
+    "type_name_zh": "园艺筛",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 970942368,
+    "type_name": "Ручной каток для газона",
+    "type_name_zh": "手动草坪滚轮",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 970904890,
+    "type_name": "Кустодер",
+    "type_name_zh": "灌木剪",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 970798596,
+    "type_name": "Дождемер",
+    "type_name_zh": "雨量计",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 92773,
+    "type_name": "Серп",
+    "type_name_zh": "镰刀",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 970956871,
+    "type_name": "Тапенер",
+    "type_name_zh": "胶带器",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 970697099,
+    "type_name": "Косоотбойник",
+    "type_name_zh": "斜角挡板",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 92760,
+    "type_name": "Мешки садовые",
+    "type_name_zh": "园艺袋",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 970581805,
+    "type_name": "Садовые ножницы",
+    "type_name_zh": "花园剪",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 92756,
+    "type_name": "Культиватор ручной",
+    "type_name_zh": "手动耕耘器",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 92748,
+    "type_name": "Канистра универсальная",
+    "type_name_zh": "通用油桶",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 970970693,
+    "type_name": "Инструмент для заточки садового инструмента",
+    "type_name_zh": "园艺工具磨刀器",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 92762,
+    "type_name": "Набор садовых инструментов",
+    "type_name_zh": "园艺工具套装",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 970693798,
+    "type_name": "Запчасть для секатора, сучкореза",
+    "type_name_zh": "修枝剪配件",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 92783,
+    "type_name": "Черенок",
+    "type_name_zh": "手柄",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 92754,
+    "type_name": "Корнеудалитель",
+    "type_name_zh": "拔根器",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 92746,
+    "type_name": "Колесо для садовой тачки",
+    "type_name_zh": "手推车轮子",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 790944802,
+    "type_name": "Плоскорез",
+    "type_name_zh": "平铲",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 92738,
+    "type_name": "Бур садовый ручной",
+    "type_name_zh": "手动园艺钻",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 92755,
+    "type_name": "Коса",
+    "type_name_zh": "镰刀",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 970995956,
+    "type_name": "Газонокосилка механическая",
+    "type_name_zh": "手动割草机",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 971288073,
+    "type_name": "Ручка для черенка",
+    "type_name_zh": "手柄",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 971299476,
+    "type_name": "Держатель садового инструмента",
+    "type_name_zh": "园艺工具架",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 92750,
+    "type_name": "Коврик, подколенник для садовых работ",
+    "type_name_zh": "园艺跪垫",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 971439099,
+    "type_name": "Снегорез для крыши",
+    "type_name_zh": "屋顶雪铲",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 92745,
+    "type_name": "Душ садовый",
+    "type_name_zh": "花园淋浴",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028746,
+    "cat_name": "Садовый инвентарь",
+    "type_id": 92743,
+    "type_name": "Грабли",
+    "type_name_zh": "耙子",
+    "cat_name_zh": "园艺工具"
+  },
+  {
+    "cat_id": 17028714,
+    "cat_name": "Инвентарь для дома",
+    "type_id": 92046,
+    "type_name": "Трос для прочистки труб",
+    "type_name_zh": "管道疏通器",
+    "cat_name_zh": "家居用品"
+  },
+  {
+    "cat_id": 17028714,
+    "cat_name": "Инвентарь для дома",
+    "type_id": 93697,
+    "type_name": "Мусорное ведро",
+    "type_name_zh": "垃圾桶",
+    "cat_name_zh": "家居用品"
+  },
+  {
+    "cat_id": 17028714,
+    "cat_name": "Инвентарь для дома",
+    "type_id": 970631771,
+    "type_name": "Контейнер для стирального порошка",
+    "type_name_zh": "洗衣粉盒",
+    "cat_name_zh": "家居用品"
+  },
+  {
+    "cat_id": 17028714,
+    "cat_name": "Инвентарь для дома",
+    "type_id": 95478,
+    "type_name": "Корзина для белья",
+    "type_name_zh": "洗衣篮",
+    "cat_name_zh": "家居用品"
+  },
+  {
+    "cat_id": 17028714,
+    "cat_name": "Инвентарь для дома",
+    "type_id": 92694,
+    "type_name": "Шарик для стирки",
+    "type_name_zh": "洗衣球",
+    "cat_name_zh": "家居用品"
+  },
+  {
+    "cat_id": 17028714,
+    "cat_name": "Инвентарь для дома",
+    "type_id": 594158428,
+    "type_name": "Органайзер для столовых приборов",
+    "type_name_zh": "餐具收纳盒",
+    "cat_name_zh": "家居用品"
+  },
+  {
+    "cat_id": 17028714,
+    "cat_name": "Инвентарь для дома",
+    "type_id": 93690,
+    "type_name": "Ведро",
+    "type_name_zh": "桶",
+    "cat_name_zh": "家居用品"
+  },
+  {
+    "cat_id": 17028714,
+    "cat_name": "Инвентарь для дома",
+    "type_id": 93696,
+    "type_name": "Мешок для стирки",
+    "type_name_zh": "洗衣袋",
+    "cat_name_zh": "家居用品"
+  },
+  {
+    "cat_id": 17028714,
+    "cat_name": "Инвентарь для дома",
+    "type_id": 93695,
+    "type_name": "Мешки для мусора",
+    "type_name_zh": "垃圾袋",
+    "cat_name_zh": "家居用品"
+  },
+  {
+    "cat_id": 17028714,
+    "cat_name": "Инвентарь для дома",
+    "type_id": 93689,
+    "type_name": "Вантуз",
+    "type_name_zh": "皮搋子",
+    "cat_name_zh": "家居用品"
+  },
+  {
+    "cat_id": 17028714,
+    "cat_name": "Инвентарь для дома",
+    "type_id": 970787019,
+    "type_name": "Вкладыш для хранения посуды",
+    "type_name_zh": "餐具收纳盒",
+    "cat_name_zh": "家居用品"
+  },
+  {
+    "cat_id": 17028714,
+    "cat_name": "Инвентарь для дома",
+    "type_id": 93691,
+    "type_name": "Веревка бельевая",
+    "type_name_zh": "晾衣绳",
+    "cat_name_zh": "家居用品"
+  },
+  {
+    "cat_id": 17028714,
+    "cat_name": "Инвентарь для дома",
+    "type_id": 93701,
+    "type_name": "Сетка для раковины",
+    "type_name_zh": "水槽滤网",
+    "cat_name_zh": "家居用品"
+  },
+  {
+    "cat_id": 17028714,
+    "cat_name": "Инвентарь для дома",
+    "type_id": 95700,
+    "type_name": "Ковш хозяйственный",
+    "type_name_zh": "家用勺",
+    "cat_name_zh": "家居用品"
+  },
+  {
+    "cat_id": 17028714,
+    "cat_name": "Инвентарь для дома",
+    "type_id": 970731396,
+    "type_name": "Коландер для мойки",
+    "type_name_zh": "水槽滤网",
+    "cat_name_zh": "家居用品"
+  },
+  {
+    "cat_id": 17028714,
+    "cat_name": "Инвентарь для дома",
+    "type_id": 93693,
+    "type_name": "Коврик для раковины",
+    "type_name_zh": "水槽垫",
+    "cat_name_zh": "家居用品"
+  },
+  {
+    "cat_id": 17028714,
+    "cat_name": "Инвентарь для дома",
+    "type_id": 92045,
+    "type_name": "Таз",
+    "type_name_zh": "盆",
+    "cat_name_zh": "家居用品"
+  },
+  {
+    "cat_id": 17028714,
+    "cat_name": "Инвентарь для дома",
+    "type_id": 970867617,
+    "type_name": "Аксессуары для ведра",
+    "type_name_zh": "桶配件",
+    "cat_name_zh": "家居用品"
+  },
+  {
+    "cat_id": 17028714,
+    "cat_name": "Инвентарь для дома",
+    "type_id": 92414,
+    "type_name": "Сушилка для посуды",
+    "type_name_zh": "碗碟架",
+    "cat_name_zh": "家居用品"
+  },
+  {
+    "cat_id": 17028714,
+    "cat_name": "Инвентарь для дома",
+    "type_id": 93699,
+    "type_name": "Прищепки для белья",
+    "type_name_zh": "衣夹",
+    "cat_name_zh": "家居用品"
+  },
+  {
+    "cat_id": 17028714,
+    "cat_name": "Инвентарь для дома",
+    "type_id": 970855518,
+    "type_name": "Урна уличная",
+    "type_name_zh": "户外垃圾桶",
+    "cat_name_zh": "家居用品"
+  },
+  {
+    "cat_id": 17028714,
+    "cat_name": "Инвентарь для дома",
+    "type_id": 311150108,
+    "type_name": "Стиральная доска",
+    "type_name_zh": "洗衣板",
+    "cat_name_zh": "家居用品"
+  },
+  {
+    "cat_id": 17027906,
+    "cat_name": "Декор и интерьер",
+    "type_id": 257687166,
+    "type_name": "Номер на дверь",
+    "type_name_zh": "门牌号",
+    "cat_name_zh": "家居装饰"
+  },
+  {
+    "cat_id": 17027906,
+    "cat_name": "Декор и интерьер",
+    "type_id": 257687128,
+    "type_name": "Информационная табличка",
+    "type_name_zh": "信息牌",
+    "cat_name_zh": "家居装饰"
+  },
+  {
+    "cat_id": 17027906,
+    "cat_name": "Декор и интерьер",
+    "type_id": 91976,
+    "type_name": "Плакат",
+    "type_name_zh": "海报",
+    "cat_name_zh": "家居装饰"
+  },
+  {
+    "cat_id": 17027906,
+    "cat_name": "Декор и интерьер",
+    "type_id": 257687111,
+    "type_name": "Декоративная табличка",
+    "type_name_zh": "装饰标牌",
+    "cat_name_zh": "家居装饰"
+  },
+  {
+    "cat_id": 17027906,
+    "cat_name": "Декор и интерьер",
+    "type_id": 91996,
+    "type_name": "Фигурка декоративная",
+    "type_name_zh": "装饰小雕像",
+    "cat_name_zh": "家居装饰"
+  },
+  {
+    "cat_id": 17027906,
+    "cat_name": "Декор и интерьер",
+    "type_id": 257687106,
+    "type_name": "Адресная табличка",
+    "type_name_zh": "门牌",
+    "cat_name_zh": "家居装饰"
+  },
+  {
+    "cat_id": 17027906,
+    "cat_name": "Декор и интерьер",
+    "type_id": 91971,
+    "type_name": "Наклейка интерьерная",
+    "type_name_zh": "室内贴纸",
+    "cat_name_zh": "家居装饰"
+  },
+  {
+    "cat_id": 17027906,
+    "cat_name": "Декор и интерьер",
+    "type_id": 971084476,
+    "type_name": "Баннер для праздника",
+    "type_name_zh": "节日横幅",
+    "cat_name_zh": "家居装饰"
+  },
+  {
+    "cat_id": 17027906,
+    "cat_name": "Декор и интерьер",
+    "type_id": 970959847,
+    "type_name": "Интерьерное украшение",
+    "type_name_zh": "室内装饰",
+    "cat_name_zh": "家居装饰"
+  },
+  {
+    "cat_id": 17027906,
+    "cat_name": "Декор и интерьер",
+    "type_id": 970725250,
+    "type_name": "Крепление для картин",
+    "type_name_zh": "画框挂钩",
+    "cat_name_zh": "家居装饰"
+  },
+  {
+    "cat_id": 17027906,
+    "cat_name": "Декор и интерьер",
+    "type_id": 93652,
+    "type_name": "Фонтан для дома",
+    "type_name_zh": "家用喷泉",
+    "cat_name_zh": "家居装饰"
+  },
+  {
+    "cat_id": 17027906,
+    "cat_name": "Декор и интерьер",
+    "type_id": 95471,
+    "type_name": "Газетница",
+    "type_name_zh": "报架",
+    "cat_name_zh": "家居装饰"
+  },
+  {
+    "cat_id": 17027906,
+    "cat_name": "Декор и интерьер",
+    "type_id": 970713862,
+    "type_name": "Рама для зеркала",
+    "type_name_zh": "镜框",
+    "cat_name_zh": "家居装饰"
+  },
+  {
+    "cat_id": 17027906,
+    "cat_name": "Декор и интерьер",
+    "type_id": 91992,
+    "type_name": "Статуэтка",
+    "type_name_zh": "小雕像",
+    "cat_name_zh": "家居装饰"
+  },
+  {
+    "cat_id": 17027906,
+    "cat_name": "Декор и интерьер",
+    "type_id": 99229,
+    "type_name": "Держатель для книг",
+    "type_name_zh": "书立",
+    "cat_name_zh": "家居装饰"
+  },
+  {
+    "cat_id": 17027906,
+    "cat_name": "Декор и интерьер",
+    "type_id": 91947,
+    "type_name": "Держатель для бутылок интерьерный",
+    "type_name_zh": "酒瓶架",
+    "cat_name_zh": "家居装饰"
+  },
+  {
+    "cat_id": 17027906,
+    "cat_name": "Декор и интерьер",
+    "type_id": 91955,
+    "type_name": "Картина",
+    "type_name_zh": "画",
+    "cat_name_zh": "家居装饰"
+  },
+  {
+    "cat_id": 17027906,
+    "cat_name": "Декор и интерьер",
+    "type_id": 91973,
+    "type_name": "Панно",
+    "type_name_zh": "装饰板",
+    "cat_name_zh": "家居装饰"
+  },
+  {
+    "cat_id": 17027906,
+    "cat_name": "Декор и интерьер",
+    "type_id": 971102365,
+    "type_name": "Фальш-окно",
+    "type_name_zh": "假窗",
+    "cat_name_zh": "家居装饰"
+  },
+  {
+    "cat_id": 17027906,
+    "cat_name": "Декор и интерьер",
+    "type_id": 970752275,
+    "type_name": "Подставка декоративная",
+    "type_name_zh": "装饰架",
+    "cat_name_zh": "家居装饰"
+  },
+  {
+    "cat_id": 17027906,
+    "cat_name": "Декор и интерьер",
+    "type_id": 971738440,
+    "type_name": "Постамент",
+    "type_name_zh": "底座",
+    "cat_name_zh": "家居装饰"
+  },
+  {
+    "cat_id": 17027906,
+    "cat_name": "Декор и интерьер",
+    "type_id": 91939,
+    "type_name": "Гобелен",
+    "type_name_zh": "挂毯",
+    "cat_name_zh": "家居装饰"
+  },
+  {
+    "cat_id": 17027906,
+    "cat_name": "Декор и интерьер",
+    "type_id": 91993,
+    "type_name": "Стоппер для двери",
+    "type_name_zh": "门挡",
+    "cat_name_zh": "家居装饰"
+  },
+  {
+    "cat_id": 17027906,
+    "cat_name": "Декор и интерьер",
+    "type_id": 970664084,
+    "type_name": "Накладка на подлокотник дивана",
+    "type_name_zh": "沙发扶手垫",
+    "cat_name_zh": "家居装饰"
+  },
+  {
+    "cat_id": 17027906,
+    "cat_name": "Декор и интерьер",
+    "type_id": 91987,
+    "type_name": "Постер",
+    "type_name_zh": "海报",
+    "cat_name_zh": "家居装饰"
+  },
+  {
+    "cat_id": 17027906,
+    "cat_name": "Декор и интерьер",
+    "type_id": 268217790,
+    "type_name": "Трафарет для декора стен, окон",
+    "type_name_zh": "墙窗装饰模板",
+    "cat_name_zh": "家居装饰"
+  },
+  {
+    "cat_id": 17027906,
+    "cat_name": "Декор и интерьер",
+    "type_id": 91936,
+    "type_name": "Ваза",
+    "type_name_zh": "花瓶",
+    "cat_name_zh": "家居装饰"
+  },
+  {
+    "cat_id": 17027906,
+    "cat_name": "Декор и интерьер",
+    "type_id": 91945,
+    "type_name": "Камни для декора",
+    "type_name_zh": "装饰石",
+    "cat_name_zh": "家居装饰"
+  },
+  {
+    "cat_id": 17027906,
+    "cat_name": "Декор и интерьер",
+    "type_id": 15869053,
+    "type_name": "Термометр",
+    "type_name_zh": "温度计",
+    "cat_name_zh": "家居装饰"
+  },
+  {
+    "cat_id": 17027909,
+    "cat_name": "Гладильные доски и сушилки",
+    "type_id": 93681,
+    "type_name": "Аксессуар для утюга",
+    "type_name_zh": "熨斗配件",
+    "cat_name_zh": "熨衣板与晾衣架"
+  },
+  {
+    "cat_id": 17027909,
+    "cat_name": "Гладильные доски и сушилки",
+    "type_id": 93680,
+    "type_name": "Гладильная доска",
+    "type_name_zh": "熨衣板",
+    "cat_name_zh": "熨衣板与晾衣架"
+  },
+  {
+    "cat_id": 17027909,
+    "cat_name": "Гладильные доски и сушилки",
+    "type_id": 971035115,
+    "type_name": "Аксессуары для сушилки белья",
+    "type_name_zh": "晾衣架配件",
+    "cat_name_zh": "熨衣板与晾衣架"
+  },
+  {
+    "cat_id": 17027909,
+    "cat_name": "Гладильные доски и сушилки",
+    "type_id": 970843250,
+    "type_name": "Аксессуар для гладильной доски",
+    "type_name_zh": "熨衣板配件",
+    "cat_name_zh": "熨衣板与晾衣架"
+  },
+  {
+    "cat_id": 17027909,
+    "cat_name": "Гладильные доски и сушилки",
+    "type_id": 93687,
+    "type_name": "Чехол для гладильной доски",
+    "type_name_zh": "熨衣板套",
+    "cat_name_zh": "熨衣板与晾衣架"
+  },
+  {
+    "cat_id": 17027909,
+    "cat_name": "Гладильные доски и сушилки",
+    "type_id": 93682,
+    "type_name": "Сушилка для белья",
+    "type_name_zh": "晾衣架",
+    "cat_name_zh": "熨衣板与晾衣架"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 971298346,
+    "type_name": "Пасхальный декор",
+    "type_name_zh": "复活节装饰",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 95440,
+    "type_name": "Пиньята",
+    "type_name_zh": "皮纳塔",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 95446,
+    "type_name": "Гирлянда растяжка",
+    "type_name_zh": "拉花",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 970671313,
+    "type_name": "Ленточка для упаковки подарков",
+    "type_name_zh": "礼品丝带",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 971116272,
+    "type_name": "Композиция из живой хвои",
+    "type_name_zh": "鲜松枝装饰",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 970623276,
+    "type_name": "Каркасная светодиодная фигура",
+    "type_name_zh": "LED灯饰造型",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 970891491,
+    "type_name": "Крючок декоративный для украшений",
+    "type_name_zh": "装饰挂钩",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 95417,
+    "type_name": "Гирлянда хвойная",
+    "type_name_zh": "松枝灯串",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 95429,
+    "type_name": "Мешок для подарков",
+    "type_name_zh": "礼品袋",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 95457,
+    "type_name": "Язычки, горны",
+    "type_name_zh": "哨子喇叭",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 95422,
+    "type_name": "Реквизит, бутафория карнавальная",
+    "type_name_zh": "狂欢道具",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 970729343,
+    "type_name": "Бумажный шар",
+    "type_name_zh": "纸球",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 96997,
+    "type_name": "Парик, борода карнавальные",
+    "type_name_zh": "狂欢假发胡须",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 970671315,
+    "type_name": "Упаковочная бумага для подарков",
+    "type_name_zh": "礼品包装纸",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 971888272,
+    "type_name": "Аксессуар для аквагрима",
+    "type_name_zh": "人体彩绘配件",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 95421,
+    "type_name": "Елочные украшения",
+    "type_name_zh": "圣诞树装饰",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 99518,
+    "type_name": "Грим",
+    "type_name_zh": "油彩",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 95425,
+    "type_name": "Конфетти",
+    "type_name_zh": "五彩纸屑",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 95513,
+    "type_name": "Китайский фонарик",
+    "type_name_zh": "孔明灯",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 970625098,
+    "type_name": "Искусственный снег",
+    "type_name_zh": "人造雪",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 110485576,
+    "type_name": "Снежный шар",
+    "type_name_zh": "雪球",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 95428,
+    "type_name": "Маска карнавальная",
+    "type_name_zh": "狂欢节面具",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 970623277,
+    "type_name": "Фигурка светящаяся",
+    "type_name_zh": "发光小雕像",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 95451,
+    "type_name": "Украшение на праздник новогоднее",
+    "type_name_zh": "新年装饰",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 971168370,
+    "type_name": "Жидкость для пенной машины",
+    "type_name_zh": "泡沫机液",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 970623278,
+    "type_name": "Украшения из фольги",
+    "type_name_zh": "箔片装饰",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 95414,
+    "type_name": "Шарик воздушный",
+    "type_name_zh": "气球",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 369952583,
+    "type_name": "Краски Холи",
+    "type_name_zh": "胡里粉",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 95454,
+    "type_name": "Хлопушка на праздник",
+    "type_name_zh": "派对礼炮",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 970943858,
+    "type_name": "Бумага для шоу с бумагой",
+    "type_name_zh": "彩纸",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 970887478,
+    "type_name": "Аксессуар для электрогирлянд",
+    "type_name_zh": "灯串配件",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 91672,
+    "type_name": "Электрогирлянда",
+    "type_name_zh": "电子灯串",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 970889583,
+    "type_name": "Фигура надувная",
+    "type_name_zh": "充气模型",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 95450,
+    "type_name": "Серпантин",
+    "type_name_zh": "彩带卷",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 970671314,
+    "type_name": "Коробка подарочная",
+    "type_name_zh": "礼品盒",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 91958,
+    "type_name": "Декоративная корзинка",
+    "type_name_zh": "装饰篮",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 971054434,
+    "type_name": "Бант подарочный",
+    "type_name_zh": "礼品蝴蝶结",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 95413,
+    "type_name": "Венок",
+    "type_name_zh": "花环",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 971284427,
+    "type_name": "Аксессуар для воздушного шара",
+    "type_name_zh": "气球配件",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 95439,
+    "type_name": "Очки карнавальные",
+    "type_name_zh": "狂欢眼镜",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 95420,
+    "type_name": "Дождик",
+    "type_name_zh": "彩带",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 95453,
+    "type_name": "Аксессуар для фотосессий",
+    "type_name_zh": "摄影配件",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 95430,
+    "type_name": "Мишура",
+    "type_name_zh": "亮片",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 95438,
+    "type_name": "Украшение на окна",
+    "type_name_zh": "窗户装饰",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 970671325,
+    "type_name": "Пакет подарочный",
+    "type_name_zh": "礼品袋",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 970630185,
+    "type_name": "Носок для подарков",
+    "type_name_zh": "礼物袜",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 96727,
+    "type_name": "Головной убор карнавальный",
+    "type_name_zh": "狂欢节头饰",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028733,
+    "cat_name": "Товары для праздников",
+    "type_id": 95437,
+    "type_name": "Насос для воздушных шаров",
+    "type_name_zh": "气球泵",
+    "cat_name_zh": "节日用品"
+  },
+  {
+    "cat_id": 17028730,
+    "cat_name": "Полотенца и скатерти",
+    "type_id": 92692,
+    "type_name": "Скатерть",
+    "type_name_zh": "桌布",
+    "cat_name_zh": "毛巾和桌布"
+  }
+]

@@ -1,5 +1,4 @@
 """SKU 采购成本：从 CURSOR 导入、读写 SQLite。"""
-from __future__ import annotations
 
 import csv
 import re

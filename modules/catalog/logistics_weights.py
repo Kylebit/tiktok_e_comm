@@ -18,33 +18,7 @@ from modules.ozon.logistics_weight import (
 from core import auth
 
 REGION_SKU_PREFIX = {"MY": "66", "PH": "77", "VN": "88", "TH": "99"}
-SEA_REGIONS = ("MY", "PH", "TH", "VN")
 CACHE_TTL_SEC = 24 * 3600
-
-
-def regional_seller_sku(match_key: str, region: str) -> str:
-    """对齐码 → 该国 seller_sku（0002 → 770002 / 660002 …）。"""
-    key = tk_match_key(match_key) if match_key else ""
-    if not key:
-        return ""
-    pref = REGION_SKU_PREFIX.get((region or "").upper(), "")
-    return f"{pref}{key}" if pref else key
-
-
-def _shops_by_region() -> dict[str, str]:
-    """region → shop_cipher（MY/PH/TH/VN）。"""
-    token = auth.access_token()
-    from core import shops
-
-    out: dict[str, str] = {}
-    for shop in shops.list_shops(token):
-        region = (shop.get("region") or "").upper()
-        if region not in SEA_REGIONS:
-            continue
-        cipher = shop.get("cipher") or shop.get("shop_cipher")
-        if cipher:
-            out[region] = cipher
-    return out
 
 
 def _region_prefix(region: str) -> str:
@@ -189,7 +163,7 @@ def load_by_seller_sku() -> dict[str, dict]:
 
 
 def weight_index_by_match_key() -> dict[str, dict]:
-    """match_key → 物流实测重量（四国 seller_sku 各行合并取中位数）。"""
+    """match_key → 物流实测重量（四国 seller_sku 合并取中位数）。"""
     by_sku = load_by_seller_sku()
     if not by_sku:
         return {}
@@ -217,6 +191,12 @@ def weight_index_by_match_key() -> dict[str, dict]:
             "height_mm": latest.get("height_mm"),
             "weight_source": "logistics",
         }
+
+    from modules.catalog.weight_overrides import load_overrides
+
+    for key, ov in load_overrides().items():
+        out[key] = {**out.get(key, {}), "weight_g": ov["weight_g"], "weight_source": "manual_override"}
+
     return out
 
 
@@ -408,87 +388,3 @@ def sync_logistics_weights(
         "scanned_regions": scanned_regions,
         "per_region": per_region,
     }
-
-
-def sync_match_key_weights(
-    match_keys: list[str],
-    on_progress: Callable[[str], None] | None = None,
-    *,
-    force_refresh: bool = False,
-) -> dict:
-    """按对齐码同步：MY/PH/TH/VN 各查对应 seller_sku，四国合并中位数写入目录。"""
-    from modules.ozon.logistics_weight import lookup_logistics_weight
-
-    def prog(msg: str) -> None:
-        if on_progress:
-            on_progress(msg)
-
-    keys = sorted({tk_match_key(k) for k in match_keys if tk_match_key(k)})
-    if not keys:
-        return {"match_keys": 0, "written": 0}
-
-    shops_map = _shops_by_region()
-    if not shops_map:
-        return {"match_keys": len(keys), "written": 0, "error": "no_shops"}
-
-    written = 0
-    per_key: dict[str, dict] = {}
-    for i, mk in enumerate(keys, 1):
-        weights: list[int] = []
-        dims: list[dict] = []
-        total_pkgs = 0
-        by_region: dict[str, int] = {}
-        for region in SEA_REGIONS:
-            cipher = shops_map.get(region)
-            if not cipher:
-                continue
-            sk = regional_seller_sku(mk, region)
-            try:
-                entry = lookup_logistics_weight(sk, cipher, force_refresh=force_refresh)
-            except Exception as e:
-                prog(f"  {mk} {region}({sk}) 失败: {e}")
-                continue
-            if not entry or not entry.get("weight_g"):
-                continue
-            wg = int(entry["weight_g"])
-            weights.append(wg)
-            by_region[region] = wg
-            total_pkgs += int(entry.get("package_count") or 0)
-            dims.append(entry)
-        if not weights:
-            prog(f"[{i}/{len(keys)}] {mk} 四国均无实测")
-            continue
-        mid = int(round(statistics.median(weights)))
-        latest = dims[-1]
-        for region in SEA_REGIONS:
-            sk = regional_seller_sku(mk, region)
-            save_weight(
-                sk,
-                weight_g=mid,
-                package_count=total_pkgs,
-                depth_mm=int(latest["depth"]) if latest.get("depth") else None,
-                width_mm=int(latest["width"]) if latest.get("width") else None,
-                height_mm=int(latest["height"]) if latest.get("height") else None,
-            )
-        written += 1
-        reg_txt = " ".join(f"{r}{w}g" for r, w in sorted(by_region.items()))
-        prog(f"[{i}/{len(keys)}] {mk} → {mid}g（{len(weights)} 国: {reg_txt}）")
-        per_key[mk] = {"weight_g": mid, "regions": by_region, "package_count": total_pkgs}
-
-    prog(f"物流重量：{written}/{len(keys)} 个对齐码已写入（四国合并中位数）")
-    return {"match_keys": len(keys), "written": written, "per_key": per_key}
-
-
-def sync_catalog_match_keys(
-    on_progress: Callable[[str], None] | None = None,
-    *,
-    force_refresh: bool = False,
-) -> dict:
-    """商品目录内全部 TikTok seller_sku 的对齐码，逐码四国合并同步。"""
-    init_db()
-    rows = connect().execute(
-        """SELECT DISTINCT seller_sku FROM products
-           WHERE seller_sku IS NOT NULL AND seller_sku != ''"""
-    ).fetchall()
-    keys = [r["seller_sku"] for r in rows]
-    return sync_match_key_weights(keys, on_progress, force_refresh=force_refresh)

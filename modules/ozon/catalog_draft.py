@@ -50,22 +50,24 @@ def _ozon_deepseek():
     return deepseek_draft
 
 
-def _lookup_material_dict_id(material: str, category_id: int, type_id: int) -> int:
+def _lookup_material(material: str, category_id: int, type_id: int) -> tuple[int, str]:
+    """返回 (dict_id, canonical_value)"""
     wd = webapp_dir()
     if str(wd) not in sys.path:
         sys.path.insert(0, str(wd))
-    from app import lookup_material_dict_id  # noqa: WPS433
+    from app import lookup_material  # noqa: WPS433
 
-    return lookup_material_dict_id(material, category_id, type_id)
+    return lookup_material(material, category_id, type_id)
 
 
-def _lookup_color_dict_id(color_name: str, category_id: int, type_id: int) -> int:
+def _lookup_color(color_name: str, category_id: int, type_id: int) -> tuple[int, str]:
+    """返回 (dict_id, canonical_value)"""
     wd = webapp_dir()
     if str(wd) not in sys.path:
         sys.path.insert(0, str(wd))
-    from app import lookup_color_dict_id  # noqa: WPS433
+    from app import lookup_color  # noqa: WPS433
 
-    return lookup_color_dict_id(color_name, category_id, type_id)
+    return lookup_color(color_name, category_id, type_id)
 
 
 def _sanitize_dim(val: str, default: str, max_cm: int = 300) -> str:
@@ -91,7 +93,7 @@ def _effective_profile(type_id: int, explicit: str | None = None) -> str:
 def _product_type_hint(migrate_profile: str, type_id: int) -> str:
     if migrate_profile == "tablecloth":
         return "tablecloth"
-    if migrate_profile == "sticker" or int(type_id) == 91971:
+    if migrate_profile == "sticker":
         return "sticker"
     return ""
 
@@ -349,9 +351,6 @@ def build_draft(seller_sku: str) -> dict:
     group = tk_group_info(cat_item)
 
     weight = d.get("weight_g", tpl["weight"])
-    depth = d.get("depth_mm", tpl["depth"])
-    width = d.get("width_mm", tpl["width"])
-    height = d.get("height_mm", tpl["height"])
     weight_source = "template"
     logistics_meta: dict = {}
 
@@ -363,12 +362,19 @@ def build_draft(seller_sku: str) -> dict:
             "logistics_package_count": lw.get("package_count", 0),
             "logistics_sample_package_id": lw.get("sample_package_id", ""),
         }
-        if lw.get("depth"):
-            depth = lw["depth"]
-        if lw.get("width"):
-            width = lw["width"]
-        if lw.get("height"):
-            height = lw["height"]
+
+    # 长宽高（包裹尺寸）只用原链接（TikTok 商品详情 package_dimensions）数据，
+    # 不用物流实测、不用 AI 估算；原链接缺失时留空，不臆造数值。
+    pkg_dim_cm = entry.get("package_dimensions_cm")
+    if pkg_dim_cm:
+        depth = str(round(pkg_dim_cm["length"] * 10))
+        width = str(round(pkg_dim_cm["width"] * 10))
+        height = str(round(pkg_dim_cm["height"] * 10))
+    else:
+        depth = width = height = ""
+
+    material_dict_id, material_canonical = _lookup_material(material_name, category_id, type_id)
+    color_dict_id, color_canonical = _lookup_color(color_name, category_id, type_id)
 
     return {
         "offer_id": offer_id,
@@ -378,15 +384,15 @@ def build_draft(seller_sku: str) -> dict:
         "draft_title": draft_title,
         "draft_description": draft_description,
         "hashtags": hashtags,
-        "material": material_name,
-        "material_dict_id": _lookup_material_dict_id(material_name, category_id, type_id),
+        "material": material_canonical,
+        "material_dict_id": material_dict_id,
         "category_id": category_id,
         "type_id": type_id,
         "category_name_zh": cat_names["category_name_zh"],
         "type_name_zh": cat_names["type_name_zh"],
         "migrate_profile": migrate_profile,
-        "color_name": color_name,
-        "color_dict_id": _lookup_color_dict_id(color_name, category_id, type_id),
+        "color_name": color_canonical,
+        "color_dict_id": color_dict_id,
         "kit": d.get("kit", tpl["kit"]),
         "weight": weight,
         "depth": depth,
@@ -414,6 +420,8 @@ def build_draft(seller_sku: str) -> dict:
         "tk_group_id": group["group_id"] if group else "",
         "tk_group_keys": group["match_keys"] if group else [],
         "weight_source": weight_source,
+        "dimensions_source": "tk_listing" if pkg_dim_cm else "",
+        "dimensions_missing": not bool(pkg_dim_cm),
         **logistics_meta,
         "error": d.get("error"),
     }

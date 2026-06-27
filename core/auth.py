@@ -1,5 +1,4 @@
 """Shop Open API 授权：读取/保存 token，过期前自动 refresh。"""
-from __future__ import annotations
 
 import json
 import time

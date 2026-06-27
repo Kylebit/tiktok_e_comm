@@ -1,17 +1,24 @@
 # 本地数据与凭据（勿提交）
 data/
+!data/
+data/*
+!data/weight_overrides.json
 config/settings.json
-config/miaoshou.local.json
-config/ozon.local.json
 tiktok_tokens.json
-tiktok_tokens_*.json
 tiktok_ads_tokens.json
 shopee_tokens.json
 tiktok_orders.json
 exports/
 *.db
-backups/
-.wheels/
+
+# legacy_webapp 内嵌数据：默认不跟踪运行时状态，但跟踪静态字典/示例文件
+!modules/ozon/legacy_webapp/data/
+modules/ozon/legacy_webapp/data/*
+!modules/ozon/legacy_webapp/data/all_products_attrs.json
+!modules/ozon/legacy_webapp/data/category_options.json
+!modules/ozon/legacy_webapp/data/config.example.json
+!modules/ozon/legacy_webapp/data/credentials.example.json
+!modules/ozon/legacy_webapp/data/tk_category_ozon_map.json
 
 # 调试 / 导出 / 结算原始数据
 debug_*.json
@@ -35,3 +42,4 @@ venv/
 .idea/
 .vscode/
 *.swp
+.claude/

@@ -1,4 +1,4 @@
-"""桥接 ozon/webapp Flask 应用（同一台机器上的兄弟目录）。"""
+"""桥接 Ozon legacy webapp Flask 应用（已内嵌于 modules/ozon/legacy_webapp）。"""
 
 from __future__ import annotations
 
@@ -16,11 +16,14 @@ def webapp_dir() -> Path:
     data = ozon_data_dir()
     if data and (data.parent / "app.py").is_file():
         return data.parent
-    fallback = ROOT.parent / "ozon" / "webapp"
+    fallback = ROOT / "modules" / "ozon" / "legacy_webapp"
     if fallback.is_dir():
         return fallback
+    legacy_sibling = ROOT.parent / "ozon" / "webapp"
+    if legacy_sibling.is_dir():
+        return legacy_sibling
     raise RuntimeError(
-        "找不到 Ozon webapp。请配置 ozon.data_dir 或 feishu.ozon_data_dir，"
+        "找不到 Ozon legacy webapp。请配置 ozon.data_dir 或 feishu.ozon_data_dir，"
         f"或确保存在 {fallback}"
     )
 
@@ -28,18 +31,10 @@ def webapp_dir() -> Path:
 @lru_cache(maxsize=1)
 def get_flask_app():
     wd = webapp_dir()
-    app_py = wd / "app.py"
-    if not app_py.is_file():
-        raise RuntimeError(
-            f"Ozon webapp 缺少 app.py（{app_py}）。"
-            "改价预警已内置于 modules/ozon/price_review.py；"
-            "其他 Ozon 页签仍依赖兄弟目录 ozon/webapp/app.py，"
-            "或在 config/settings.json 配置 ozon.client_id / api_key。"
-        )
     wd_str = str(wd)
     if wd_str not in sys.path:
         sys.path.insert(0, wd_str)
-    import app as ozon_app  # noqa: WPS433 — ozon/webapp/app.py
+    import app as ozon_app  # noqa: WPS433 — modules/ozon/legacy_webapp/app.py
 
     return ozon_app.app
 

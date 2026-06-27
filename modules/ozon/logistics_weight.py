@@ -290,8 +290,8 @@ def lookup_logistics_weight(
                 shop_cipher,
                 tok,
                 seller_sku=sk,
-                min_samples=10**9,
-                max_pages=30,
+                min_samples=1,
+                max_pages=8,
             )
             if sk in samples:
                 index = _update_cache_index(shop_cipher, samples)

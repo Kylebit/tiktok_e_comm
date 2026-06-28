@@ -110,11 +110,13 @@ def _publish_from_confirm_token(token: str, *, user_approved: bool) -> int:
         print(f"确认单未通过（status={card.status if card else '?'}）", file=sys.stderr)
         return MX_EXIT_NEEDS_USER_CONFIRM
 
-    # 单规格确认 token：若 match_key 属于多规格组，按整组 POP 上架
-    group_keys = ["0010", "0011", "0012", "0013"]
-    if card.match_key in group_keys:
+    # 单规格确认 token：若 match_key 属于同链接多规格组，按整组 POP 上架
+    from modules.catalog.tk_sku_groups import group_info_for_match_key
+
+    info = group_info_for_match_key(card.match_key)
+    if info and info.get("size", 0) >= 2:
         return _publish_group_keys(
-            match_keys=group_keys,
+            match_keys=list(info["match_keys"]),
             tk_detail_id=card.collect_box_detail_id,
             master_product_id=card.master_product_id,
             master_region=card.master_region,

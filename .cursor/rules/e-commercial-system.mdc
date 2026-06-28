@@ -27,3 +27,13 @@ alwaysApply: true
 
 - 克隆本仓库 + 同步 `ozon/webapp` + 拷贝 settings/tokens/shop.db
 - 详见 `docs/DEPLOY.md` 与 `AGENTS.md`
+
+## TikTok MX 搬运
+
+- **每次最终上架前**在对话框展示确认卡片（对齐码、主图、成本、重量、POP 售价）；用户回复「确认 XXXX」后再 publish
+- 妙手只写 **ceil(折前原价)**；POP 折后价仅对话框测算参考；折扣在 TikTok 后台自设
+
+## TikTok UK 定价
+
+- 4PL 直邮价卡见 **`config/uk_4pl_pricing.json`** + **`modules/pricing/uk_4pl.py`**（详见 `uk-4pl-pricing` 规则）
+- 默认卖家包邮；满 **£10** 包邮线以下自动抬价；店铺 **25%** 折扣

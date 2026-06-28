@@ -1,4 +1,4 @@
-"""飞书派单 → 发现 MX 候选 SKU → POP → 发审批卡（不自动发布）。"""
+"""飞书派单 → 发现 UK 候选 SKU → POP → Web 审批收件箱（不自动发布）。"""
 from __future__ import annotations
 
 import argparse
@@ -12,16 +12,16 @@ sys.path.insert(0, str(ROOT))
 
 from modules.hub.feishu_app import app_ready, send_message
 from modules.miaoshou.mx_feishu_approval import default_chat_id
-from modules.miaoshou.mx_web_approval import mx_approval_url
-from scripts.mx_pop_pricing import fetch_cny_mxn, quote_match_key
-from scripts.orbit_mx_migrate_prep import catalog_row, prep_one
-from scripts.orbit_send_mx_approval import DEFAULT_TASK, build_card_for_mk
+from modules.miaoshou.uk_web_approval import uk_approval_url
 from modules.miaoshou.mx_collect_match import discover_collect_ready, load_collect_index
 from modules.catalog.tk_sku_groups import collapse_match_keys_to_units, expand_match_keys, expand_skip_keys
-from modules.miaoshou.migrate_dispatch import queue_mx_unit, scan_ready_units
+from modules.miaoshou.migrate_dispatch import queue_uk_unit, scan_ready_units
+from scripts.orbit_send_uk_approval import DEFAULT_TASK, build_card_for_mk
+from scripts.orbit_uk_migrate_prep import catalog_row, prep_one
+from scripts.uk_pop_pricing import fetch_cny_gbp
 
-LOG = ROOT / "data" / "mx_confirm" / "feishu_dispatch.log"
-OUT = ROOT / "data" / "mx_confirm" / "feishu_dispatch_last.json"
+LOG = ROOT / "data" / "uk_confirm" / "feishu_dispatch.log"
+OUT = ROOT / "data" / "uk_confirm" / "feishu_dispatch_last.json"
 
 
 def _log(msg: str) -> None:
@@ -33,15 +33,14 @@ def _log(msg: str) -> None:
 
 
 def _published_match_keys() -> set[str]:
-    from modules.miaoshou.mx_web_approval import published_match_keys
+    from modules.miaoshou.uk_web_approval import published_match_keys
 
     return published_match_keys()
 
 
 def discover_candidates(*, prefix: str, limit: int) -> tuple[list[list[str]], list[dict]]:
-    """从采集箱扫描 ready 搬运单元（同链接多 SKU 算 1 单元）。"""
     skip = expand_skip_keys(_published_match_keys())
-    rate = fetch_cny_mxn()
+    rate = fetch_cny_gbp()
 
     try:
         index = load_collect_index()
@@ -71,13 +70,12 @@ def discover_candidates(*, prefix: str, limit: int) -> tuple[list[list[str]], li
 def resolve_keys(
     *, prefix: str, count: int, match_keys: list[str] | None = None
 ) -> tuple[list[list[str]], list[dict], list[str]]:
-    """显式 SKU 先 expand+collapse；自动发现按搬运单元计数。"""
     if match_keys:
         expanded = expand_match_keys(match_keys)
         units = collapse_match_keys_to_units(expanded)
         out_units: list[list[str]] = []
         skipped: list[dict] = []
-        rate = fetch_cny_mxn()
+        rate = fetch_cny_gbp()
         for unit in units:
             unit_ok = True
             for mk in unit:
@@ -112,7 +110,7 @@ def run_dispatch(
     task_id: str,
     match_keys: list[str] | None = None,
 ) -> dict:
-    rate = fetch_cny_mxn()
+    rate = fetch_cny_gbp()
     units, pre_skipped, keys = resolve_keys(prefix=prefix, count=count, match_keys=match_keys)
     result: dict = {
         "mode": "explicit" if match_keys else "discover",
@@ -121,7 +119,6 @@ def run_dispatch(
         "found": len(units),
         "units": units,
         "keys": keys,
-        "cards_sent": [],
         "queued_web": [],
         "need_collect": list(pre_skipped),
         "errors": [],
@@ -135,9 +132,7 @@ def run_dispatch(
         if match_keys:
             result["summary"] = f"指定 SKU 均无目录/成本：{', '.join(match_keys)}"
         else:
-            result["summary"] = (
-                f"未找到 {prefix}xx 可迁移候选（目标 {count} 个 ready，待采集已跳过不计数）"
-            )
+            result["summary"] = f"未找到 {prefix}xx 可迁移候选（目标 {count} 个 ready）"
         return result
 
     for unit in units:
@@ -149,11 +144,9 @@ def run_dispatch(
                         {"mk": mk, "reason": prep.get("status"), "pid": prep.get("product_id"), "group": unit}
                     )
                     raise RuntimeError(f"{mk} 非 ready")
-            row = queue_mx_unit(unit, rate=rate, build_single=build_card_for_mk)
+            row = queue_uk_unit(unit, rate=rate, build_single=build_card_for_mk)
             result["queued_web"].append(row)
-            _log(
-                f"web queued {row['kind']} {row['mk']} token={row['token']} keys={row.get('match_keys')}"
-            )
+            _log(f"web queued {row['kind']} {row['mk']} token={row['token']}")
         except Exception as exc:
             label = unit[0] if len(unit) == 1 else f"{unit[0]}–{unit[-1]}"
             result["errors"].append({"mk": label, "error": str(exc), "match_keys": unit})
@@ -163,10 +156,8 @@ def run_dispatch(
     need = len(result["need_collect"])
     mode = "指定 SKU" if match_keys else "自动发现"
     result["summary"] = (
-        f"派单完成（{mode}）· 目标 **{count}** 个搬运单元 · 已入 Web **{sent}** 个"
-        f"{'（同链接多 SKU 已合并为整组卡）' if any(len(u) > 1 for u in units) else ''}"
-        f"{'（未满，采集箱可用不足）' if not match_keys and sent < count else ''}"
-        f" · 跳过待采集 **{need}** 个（不计入目标）"
+        f"UK 派单（{mode}）· 目标 **{count}** 个搬运单元 · 已入 Web **{sent}** 个"
+        f" · 跳过待采集 **{need}** 个"
     )
     return result
 
@@ -174,35 +165,28 @@ def run_dispatch(
 def notify(chat_id: str, result: dict) -> None:
     if not app_ready():
         return
-    inbox = mx_approval_url()
-    lines = [f"📋 OrbitHive-Cursor · {result.get('summary', 'done')}"]
-    lines.append(f"\n👉 **请在 Web 控制台审批（不在群内点卡）：** {inbox}")
+    inbox = uk_approval_url()
+    lines = [f"🇬🇧 UK · {result.get('summary', 'done')}"]
+    lines.append(f"\n👉 **Web 审批：** {inbox}")
     if result.get("queued_web"):
         lines.append("\n**已入 Web 待审：**")
         for row in result["queued_web"][:12]:
             kind = row.get("kind", "single")
             keys = row.get("match_keys") or [row.get("mk")]
             label = ",".join(keys) if kind == "group" else row["mk"]
-            price = row.get("list_mxn")
-            lines.append(f"• `{label}` · {price} MXN · **{kind}**")
+            lines.append(f"• `{label}` · £{row.get('list_gbp')} · **{kind}**")
     if result.get("need_collect"):
-        lines.append(f"\n**已跳过（待采集，不计入目标 {result.get('requested', '?')} 个）：**")
+        lines.append("\n**已跳过（待采集）：**")
         for row in result["need_collect"][:8]:
             lines.append(f"• `{row['mk']}` · pid={row.get('pid')}")
-    if result.get("missing_catalog"):
-        lines.append("\n**无目录/成本：**")
-        for mk in result["missing_catalog"][:8]:
-            lines.append(f"• `{mk}`")
-    if result.get("errors"):
-        lines.append(f"\n⚠️ 错误 {len(result['errors'])} 个，见 feishu_dispatch.log")
     send_message(chat_id, "text", {"text": "\n".join(lines)[:4000]})
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--prefix", default="09")
+    ap.add_argument("--prefix", default="00")
     ap.add_argument("--count", type=int, default=10)
-    ap.add_argument("--keys", default="", help="逗号分隔对齐码，如 0810,0811,0814")
+    ap.add_argument("--keys", default="", help="逗号分隔对齐码")
     ap.add_argument("--chat-id", default="")
     ap.add_argument("--task-id", default=DEFAULT_TASK)
     ap.add_argument("--notify", action="store_true")

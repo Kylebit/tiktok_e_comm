@@ -7,6 +7,7 @@ import re
 SEA_REGIONS = ("MY", "VN", "TH", "PH")
 
 _CIPHER_PREFIX_REGION = (
+    ("UK_IMPORT", "GB"),
     ("ROW_ssuS0w", "MY"),
     ("ROW_QTYxtw", "VN"),
     ("ROW_Ps2udQ", "TH"),

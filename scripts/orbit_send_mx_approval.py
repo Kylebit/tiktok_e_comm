@@ -10,6 +10,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from modules.catalog.tk_sku_groups import collapse_match_keys_to_units, expand_match_keys
+from modules.miaoshou.migrate_dispatch import queue_mx_unit
 from modules.miaoshou.mx_collect_match import find_common_id as find_collect_common_id
 from modules.miaoshou.mx_confirm import create_confirm_card
 from modules.miaoshou.mx_feishu_approval import (
@@ -92,18 +94,25 @@ def main() -> int:
     args = ap.parse_args()
 
     rate = fetch_cny_mxn()
-    keys = [k.zfill(4)[-4:] for k in args.keys]
+    units = collapse_match_keys_to_units(expand_match_keys(args.keys))
     cards = []
-    from modules.miaoshou.mx_confirm import _write  # noqa: PLC2701
     from modules.miaoshou.mx_web_approval import mx_approval_url
 
-    for mk in keys:
-        card, common_id = build_card_for_mk(mk, rate=rate)
-        if common_id:
-            card.collect_box_detail_id = common_id  # type: ignore[misc]
-            _write(card)
-        cards.append(card)
-        print(f"  web queued {mk} list={card.list_price_ceil_mxn} → {mx_approval_url(card.token)}")
+    for unit in units:
+        row = queue_mx_unit(unit, rate=rate, build_single=build_card_for_mk)
+        print(f"  web queued {row['kind']} {row['mk']} → {row['web_url']}")
+        if row.get("kind") == "group":
+            from modules.miaoshou.mx_confirm import get_group_confirm
+
+            g = get_group_confirm(row["token"])
+            if g:
+                cards.append(g)
+        else:
+            from modules.miaoshou.mx_confirm import get_confirm
+
+            c = get_confirm(row["token"])
+            if c:
+                cards.append(c)
 
     if not args.feishu:
         print(f">>> Web 审批: {mx_approval_url()}")
@@ -119,7 +128,7 @@ def main() -> int:
             build_single_mx_approval_card(
                 c,
                 task_id=args.task_id,
-                title=f"MX 上架审批 · {c.match_key}",
+                title=f"MX 上架审批 · {getattr(c, 'match_key', c.match_keys[0])}",
                 risk_note=args.risk,
             )
             for c in cards
@@ -128,7 +137,9 @@ def main() -> int:
     out_dir = ROOT / "data" / "mx_confirm"
     out_dir.mkdir(parents=True, exist_ok=True)
     for i, payload in enumerate(payloads):
-        mk = cards[i].match_key if not args.batch and i < len(cards) else str(i)
+        mk = getattr(cards[i], "match_key", None) or (
+            cards[i].match_keys[0] if getattr(cards[i], "match_keys", None) else str(i)
+        )
         path = out_dir / f"orbit_approval_{mk}.json"
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f">>> card json: {path}")

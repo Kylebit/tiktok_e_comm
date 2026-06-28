@@ -83,56 +83,9 @@ def _row_sp_global(row: dict) -> dict:
 
 
 def _build_tk_group_index(conn) -> dict[str, dict]:
-    """同一 TK product_id 下多 SKU → 整组对齐码（≥2）。"""
-    by_product: dict[tuple[str, str], set[str]] = {}
-    for r in conn.execute(
-        """SELECT product_id, shop_cipher, seller_sku FROM products
-           WHERE status = 'ACTIVATE' AND seller_sku != ''"""
-    ):
-        pid = (r["product_id"] or "").strip()
-        cipher = (r["shop_cipher"] or "").strip()
-        if not pid or not cipher:
-            continue
-        mk = tk_match_key(r["seller_sku"] or "")
-        if not mk:
-            continue
-        by_product.setdefault((pid, cipher), set()).add(mk)
+    from modules.catalog.tk_sku_groups import build_tk_group_index
 
-    from modules.shopee.global_sku_map import global_item_id_for_match_key, load_map
-
-    out: dict[str, dict] = {}
-    for keys in by_product.values():
-        if len(keys) < 2:
-            continue
-        sorted_keys = sorted(keys)
-        gid = global_item_id_for_match_key(sorted_keys[0]) or ""
-        info = {
-            "match_keys": sorted_keys,
-            "size": len(sorted_keys),
-            "global_item_id": gid,
-            "primary_key": sorted_keys[0],
-        }
-        for k in sorted_keys:
-            out[k] = info
-
-    # 已写入全球映射的多规格组（兜底）
-    for _gid, entry in load_map().items():
-        if not isinstance(entry, dict):
-            continue
-        extra = entry.get("match_keys") or []
-        parsed = sorted({parse_search_key(str(mk)) for mk in extra if parse_search_key(str(mk))})
-        if len(parsed) < 2:
-            continue
-        info = {
-            "match_keys": parsed,
-            "size": len(parsed),
-            "global_item_id": str(_gid),
-            "primary_key": parsed[0],
-        }
-        for k in parsed:
-            out.setdefault(k, info)
-
-    return out
+    return build_tk_group_index(conn)
 
 
 def _merge_platform_rows(rows: list[dict]) -> dict | None:

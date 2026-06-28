@@ -1,0 +1,62 @@
+---
+description: UK 4PL 直邮价卡与新品 POP 定价（GBP）
+alwaysApply: true
+---
+
+# UK 4PL 定价（GB 跨境直邮）
+
+新品/改价测算 **必须** 引用 `config/uk_4pl_pricing.json` 与 `modules/pricing/uk_4pl.py`，勿硬编码运费。
+
+## 买家运费
+
+- **标准配送**：自 2025-12-10 (UTC+0) 起 **£3.99 含 VAT**（原 £2）
+- 结算列：`Customer shipping fee`；包邮单为 £0（卖家全额承担 `Actual shipping fee`）
+
+## 商家跨境物流（2026-01-01 起）
+
+- 公式：**挂号费(per_parcel) + 单价(per_kg) × 计费重量(kg)**
+- 计费重量：**max(实重, 体积重, 50g)**；体积重 = L×W×H cm³ **/ 8000**
+- 单包裹 ≤ **30kg**；尺寸 ≤ **60×40×40 cm**；计费节点：**妥投**
+- 货物类型：**普货 / 特货 / 敏货**（敏货费率同特货）— 费率见 JSON
+- 结算回测（2026 Q2）：**71/75 单** 与普货价卡误差 ≤ £0.01；多 SKU 需按 **Order ID 汇总** 再算
+
+## 结算分摊
+
+- 包邮：`Seller shipping fee = Actual shipping fee`
+- 买家付运费：`Seller shipping fee = Actual shipping fee + Customer shipping fee`
+
+## POP 默认费率
+
+- **VAT 20%**（前台售价为含税价：`vat = sale × 20/120`）
+- **佣金固定 9%**（POP 测算不按类目表浮动）
+- **店铺卖家折扣 25%**：上传 **折前原价 ceil**，后台设 25% 折扣 → 买家实付 ≈ POP 折后价
+- **包邮假设**：满 £10 包邮；POP **默认卖家承担全额 4PL**（`buyer_pays_shipping: false`）
+- **包邮线抬价**：折后实付或 `ceil 原价 × (1−25%)` 低于 **£10** 时，自动抬至满足包邮（如 0003 → ceil **£14**，折后 **£10.50**）
+- Smart Promotion ~**1.75%**；广告 **20%**；目标利润 **17%**（可调 **15–20%**）
+- CLI：`--profit 15` · `--discount 25` · `--buyer-pays-shipping`（小单买家付邮场景）
+
+## 用法
+
+```python
+from modules.pricing.uk_4pl import merchant_shipping_gbp, sale_price_gbp_from_cost, pop_defaults
+
+ship = merchant_shipping_gbp(0.35, cargo="puhuo")  # kg
+sale, bd = sale_price_gbp_from_cost(cost_gbp=2.5, merchant_logistics_gbp=ship.merchant_cost_gbp)
+```
+
+参考脚本：`scripts/mx_pop_pricing.py`（MX 对标）；UK 专用 CLI 待建时可仿此结构。
+
+## UK 新品发布流程（同 MX）
+
+1. **POP 测算**：`python scripts/uk_pop_pricing.py 0003`
+2. **入 Web 收件箱**：`python scripts/orbit_send_uk_approval.py 0003` 或 `python scripts/feishu_uk_dispatch.py --keys 0003`
+3. **Web 审批**：http://127.0.0.1:8765/uk → 批准 → 发布
+4. **妙手写入**：ceil(折前原价) GBP；POP 折后价不上传
+5. **GB 店**：shopId=**10204699**；4PL 价卡见 `config/uk_4pl_pricing.json`
+
+## 同链接多 SKU（MX / UK 搬运铁律）
+
+- PH 母版 **同一 TikTok product_id** 下 ≥2 个对齐码 = **一个链接、多规格**
+- **禁止**拆成多张审批卡或多个 publish 任务
+- 派单脚本（`feishu_mx_dispatch` / `feishu_uk_dispatch` / `random_region_dispatch`）按 **搬运单元** 计数并自动合并
+- 手动指定对齐码时只需给组内任一码，系统自动 `expand` 补全 siblings

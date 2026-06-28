@@ -5,8 +5,12 @@ data/*
 !data/weight_overrides.json
 config/settings.json
 tiktok_tokens.json
+tiktok_tokens_*.json
 tiktok_ads_tokens.json
 shopee_tokens.json
+config/*.local.json
+backups/
+.wheels/
 tiktok_orders.json
 exports/
 *.db

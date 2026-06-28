@@ -21,6 +21,13 @@ REGION_SKU_PREFIX = {"MY": "66", "PH": "77", "VN": "88", "TH": "99"}
 CACHE_TTL_SEC = 24 * 3600
 
 
+def regional_seller_sku(match_key: str, region: str) -> str:
+    """对齐码 + 区域前缀 → seller_sku（如 0003 + PH → 770003）。"""
+    mk = str(match_key).zfill(4)[-4:]
+    pref = _region_prefix(region)
+    return f"{pref}{mk}" if pref else mk
+
+
 def _region_prefix(region: str) -> str:
     return REGION_SKU_PREFIX.get((region or "").upper(), "")
 

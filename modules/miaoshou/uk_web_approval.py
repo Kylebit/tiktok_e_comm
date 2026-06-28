@@ -1,4 +1,4 @@
-"""MX 上架审批 — Web 收件箱（替代飞书群审批卡）。"""
+"""UK 上架审批 — Web 收件箱（同 MX 流程）。"""
 from __future__ import annotations
 
 import json
@@ -8,10 +8,9 @@ from pathlib import Path
 from typing import Any
 
 from core.config import ROOT
-from modules.miaoshou.mx_confirm import (
+from modules.miaoshou.uk_confirm import (
     CONFIRM_DIR,
-    MxConfirmCard,
-    MxGroupConfirmCard,
+    UkConfirmCard,
     approve_confirm,
     approve_group_confirm,
     get_confirm,
@@ -33,11 +32,12 @@ SKIP_NAMES = {
     "feishu_dispatch_last.json",
     "feishu_manual_overrides.json",
     "orbit_dry_run.json",
+    "uk_published_skip.json",
 }
 
 
-def mx_approval_url(token: str | None = None, *, port: int = 8765) -> str:
-    base = f"http://127.0.0.1:{port}/mx"
+def uk_approval_url(token: str | None = None, *, port: int = 8765) -> str:
+    base = f"http://127.0.0.1:{port}/uk"
     return f"{base}?token={token}" if token else base
 
 
@@ -68,11 +68,11 @@ def card_summary(data: dict[str, Any], *, kind: str, token: str) -> dict[str, An
         mk = keys[0] if keys else "????"
         label = f"{mk}–{keys[-1]}" if len(keys) > 1 else mk
         variants = data.get("variants") or []
-        list_mxn = variants[0].get("list_price_ceil_mxn") if variants else None
+        list_gbp = variants[0].get("list_price_ceil_gbp") if variants else None
     else:
         mk = str(data.get("match_key") or "????")
         label = mk
-        list_mxn = data.get("list_price_ceil_mxn")
+        list_gbp = data.get("list_price_ceil_gbp")
     return {
         "token": token,
         "kind": kind,
@@ -81,35 +81,21 @@ def card_summary(data: dict[str, Any], *, kind: str, token: str) -> dict[str, An
         "label": label,
         "product_name": str(data.get("product_name") or "")[:120],
         "main_image_url": data.get("main_image_url") or "",
-        "list_price_ceil_mxn": list_mxn,
-        "sale_price_mxn": data.get("sale_price_mxn"),
-        "net_profit_mxn": data.get("net_profit_mxn"),
+        "list_price_ceil_gbp": list_gbp,
+        "sale_price_gbp": data.get("sale_price_gbp"),
+        "net_profit_gbp": data.get("net_profit_gbp"),
         "volumetric_dominates": bool(data.get("volumetric_dominates")),
         "created_at": data.get("created_at"),
         "approved_at": data.get("approved_at"),
         "rejected_at": data.get("rejected_at"),
-        "web_url": mx_approval_url(token),
+        "web_url": uk_approval_url(token),
     }
 
 
 def published_match_keys() -> set[str]:
-    """已从 batch 日志 / web 发布记录确认上架的对齐码。"""
     skip: set[str] = set()
     if not CONFIRM_DIR.is_dir():
         return skip
-    for path in CONFIRM_DIR.glob("batch_*publish*.json"):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        if not isinstance(data, list):
-            continue
-        for row in data:
-            if row.get("status") == "ok":
-                if row.get("mk"):
-                    skip.add(str(row["mk"]).zfill(4)[-4:])
-                for k in row.get("keys") or []:
-                    skip.add(str(k).zfill(4)[-4:])
     web_log = CONFIRM_DIR / "web_publish.log"
     if web_log.is_file():
         for line in web_log.read_text(encoding="utf-8", errors="ignore").splitlines():
@@ -133,7 +119,7 @@ def published_match_keys() -> set[str]:
             mk = str(data.get("match_key") or "").strip()
             if mk:
                 skip.add(mk.zfill(4)[-4:])
-    skip_file = CONFIRM_DIR / "mx_published_skip.json"
+    skip_file = CONFIRM_DIR / "uk_published_skip.json"
     if skip_file.is_file():
         try:
             extra = json.loads(skip_file.read_text(encoding="utf-8"))
@@ -144,15 +130,7 @@ def published_match_keys() -> set[str]:
     return skip
 
 
-def _reject_any(*, kind: str, token: str) -> None:
-    if kind == "group":
-        reject_group_confirm(token)
-    else:
-        reject_confirm(token)
-
-
 def archive_stale_pending(*, dry_run: bool = False) -> dict[str, Any]:
-    """归档重复 pending、以及已上架 SKU 的旧确认单。"""
     published = published_match_keys()
     grouped: dict[str, list[tuple[float, str, str]]] = {}
     archived: list[dict[str, str]] = []
@@ -167,7 +145,7 @@ def archive_stale_pending(*, dry_run: bool = False) -> dict[str, Any]:
             continue
         if kind == "group":
             keys = data.get("match_keys") or []
-            mk = str(keys[0]).zfill(4)[-4:] if keys else "????"
+            mk = str(keys[0] if keys else "????").zfill(4)[-4:]
         else:
             mk = str(data.get("match_key") or "????").zfill(4)[-4:]
         created = float(data.get("created_at") or 0)
@@ -180,7 +158,10 @@ def archive_stale_pending(*, dry_run: bool = False) -> dict[str, Any]:
                 archived.append({"match_key": mk, "token": token, "reason": "already_published"})
                 if not dry_run:
                     try:
-                        _reject_any(kind=kind, token=token)
+                        if kind == "group":
+                            reject_group_confirm(token)
+                        else:
+                            reject_confirm(token)
                     except Exception:
                         pass
             continue
@@ -188,15 +169,24 @@ def archive_stale_pending(*, dry_run: bool = False) -> dict[str, Any]:
             archived.append({"match_key": mk, "token": token, "reason": "duplicate"})
             if not dry_run:
                 try:
-                    _reject_any(kind=kind, token=token)
+                    if kind == "group":
+                        reject_group_confirm(token)
+                    else:
+                        reject_confirm(token)
                 except Exception:
                     pass
 
     return {"archived": archived, "count": len(archived), "published_skip": sorted(published)}
 
 
+def _reject_any(*, kind: str, token: str) -> None:
+    if kind == "group":
+        reject_group_confirm(token)
+    else:
+        reject_confirm(token)
+
+
 def clear_pending_inbox(*, reason: str = "cleared") -> dict[str, Any]:
-    """清空全部 pending 确认单（标为 rejected）。"""
     cleared: list[dict[str, str]] = []
     for path in CONFIRM_DIR.glob("*.json"):
         parsed = _card_path(path)
@@ -256,16 +246,14 @@ def get_card_detail(token: str) -> dict[str, Any] | None:
     if card:
         data = asdict(card)
         data["kind"] = "single"
-        data["web_url"] = mx_approval_url(token)
-        data["total_expense_mxn"] = round(
-            card.cost_mxn
-            + card.logistics_hidden_mxn
-            + card.import_tax_mxn
-            + card.platform_commission_mxn
-            + card.sfp_fee_mxn
-            + card.affiliate_mxn
-            + card.ad_mxn
-            + card.per_item_fee_mxn,
+        data["web_url"] = uk_approval_url(token)
+        data["total_expense_gbp"] = round(
+            card.cost_gbp
+            + card.seller_ship_net_gbp
+            + card.vat_gbp
+            + card.platform_commission_gbp
+            + card.smart_promotion_gbp
+            + card.ad_gbp,
             2,
         )
         return data
@@ -274,7 +262,7 @@ def get_card_detail(token: str) -> dict[str, Any] | None:
         data = asdict(group)
         data["variants"] = [asdict(v) for v in group.variants]
         data["kind"] = "group"
-        data["web_url"] = mx_approval_url(token)
+        data["web_url"] = uk_approval_url(token)
         return data
     return None
 
@@ -295,16 +283,16 @@ def approve_token(token: str) -> dict[str, Any]:
 
 
 def reject_token(token: str) -> dict[str, Any]:
-    card = get_confirm(token)
-    if not card:
-        raise KeyError(f"确认单不存在: {token}")
+    if get_group_confirm(token):
+        updated = reject_group_confirm(token)
+        return {"ok": True, "kind": "group", "status": updated.status, "match_keys": updated.match_keys}
     updated = reject_confirm(token)
     return {"ok": True, "status": updated.status, "match_key": updated.match_key}
 
 
 def apply_override(token: str, *, length_cm: int, width_cm: int, height_cm: int, note: str = "") -> dict[str, Any]:
-    from modules.miaoshou.feishu_manual_overrides import save_override
-    from scripts.mx_pop_pricing import fetch_cny_mxn, quote_match_key
+    from modules.miaoshou.uk_manual_overrides import save_override
+    from scripts.uk_pop_pricing import fetch_cny_gbp, quote_match_key
 
     card = get_confirm(token)
     if not card:
@@ -312,46 +300,47 @@ def apply_override(token: str, *, length_cm: int, width_cm: int, height_cm: int,
     if card.status != "pending":
         raise RuntimeError(f"确认单状态为 {card.status}，无法修改")
     mk = card.match_key
-    patch = {"l": length_cm, "w": width_cm, "h": height_cm}
-    save_override(mk, patch, note=note or f"Web 修改 {length_cm}×{width_cm}×{height_cm} cm")
-    q = quote_match_key(mk, cny_mxn=fetch_cny_mxn())
-    # 更新落盘卡片上的报价字段
+    save_override(mk, {"l": length_cm, "w": width_cm, "h": height_cm}, note=note or f"Web 修改 {length_cm}×{width_cm}×{height_cm} cm")
+    q = quote_match_key(mk, cny_gbp=fetch_cny_gbp(), cargo=card.cargo)  # type: ignore[arg-type]
     card.package_cm = str(q.package_cm)
     card.weight_kg = float(q.weight_kg)
     card.weight_source = str(q.weight_source)
     card.volumetric_kg = float(q.volumetric_kg)
     card.billable_kg = float(q.billable_kg)
-    card.logistics_hidden_mxn = float(q.logistics_hidden_mxn)
-    card.sale_price_mxn = float(q.sale_price_mxn)
-    card.list_price_ceil_mxn = int(q.list_price_ceil_mxn)
-    card.list_price_mxn = float(q.list_price_mxn)
-    card.net_profit_mxn = float(q.net_profit_mxn)
-    card.cost_mxn = float(q.cost_mxn)
-    card.pop_sale_mxn = float(q.pop_sale_mxn)
-    card.import_tax_mxn = float(q.import_tax_mxn)
-    card.platform_commission_mxn = float(q.platform_commission_mxn)
-    card.sfp_fee_mxn = float(q.sfp_fee_mxn)
-    card.per_item_fee_mxn = float(q.per_item_fee_mxn)
-    card.affiliate_mxn = float(q.affiliate_mxn)
-    card.ad_mxn = float(q.ad_mxn)
-    card.net_income_mxn = float(q.net_income_mxn)
+    card.merchant_logistics_gbp = float(q.merchant_logistics_gbp)
+    card.seller_ship_net_gbp = float(q.seller_ship_net_gbp)
+    card.sale_price_gbp = float(q.sale_price_gbp)
+    card.list_price_ceil_gbp = int(q.list_price_ceil_gbp)
+    card.list_price_gbp = float(q.list_price_gbp)
+    card.net_profit_gbp = float(q.net_profit_gbp)
+    card.cost_gbp = float(q.cost_gbp)
+    card.platform_commission_gbp = float(q.platform_commission_gbp)
+    card.vat_gbp = float(q.vat_gbp)
+    card.smart_promotion_gbp = float(q.smart_promotion_gbp)
+    card.affiliate_gbp = float(q.affiliate_gbp)
+    card.ad_gbp = float(q.ad_gbp)
+    card.net_income_gbp = float(q.net_income_gbp)
     card.profit_margin_on_sale_pct = float(q.profit_margin_on_sale_pct)
-    card.shipping_tier_kg = float(q.shipping_tier_kg)
-    card.shipping_card_mxn = float(q.shipping_card_mxn)
+    card.shipping_band_max_kg = float(q.shipping_band_max_kg)
     card.volumetric_dominates = float(q.volumetric_kg) > float(q.weight_kg)
-    from modules.miaoshou.mx_confirm import _write  # noqa: PLC2701
+    card.uk_category = str(q.uk_category)
+    card.uk_sub_category = str(q.uk_sub_category)
+    card.commission_pct = float(q.commission_pct)
+    card.commission_label = str(q.commission_label)
+    card.vat_rate_pct = float(q.vat_rate_pct)
+    from modules.miaoshou.uk_confirm import _write  # noqa: PLC2701
 
     _write(card)
-    return {"ok": True, "match_key": mk, "list_price_ceil_mxn": card.list_price_ceil_mxn, "package_cm": card.package_cm}
+    return {"ok": True, "match_key": mk, "list_price_ceil_gbp": card.list_price_ceil_gbp, "package_cm": card.package_cm}
 
 
 def publish_token(token: str) -> dict[str, Any]:
-    """批准后的真实 MX 上架（单 SKU 或同链接多规格整组）。"""
-    from modules.miaoshou.feishu_manual_overrides import load_overrides
     from modules.miaoshou.mx_migrate import MxSkuVariantWrite, claim_common_to_tiktok
-    from modules.miaoshou.mx_publish import publish_mx_listing, publish_mx_multi_listing
-    from scripts.mx_pop_pricing import KNOWN_BY_MATCH_KEY, fetch_cny_mxn, quote_match_key
-    from scripts.orbit_mx_migrate_prep import catalog_row, find_common_id
+    from modules.miaoshou.uk_manual_overrides import load_overrides
+    from modules.miaoshou.uk_publish import publish_uk_listing, publish_uk_multi_listing
+    from scripts.mx_pop_pricing import KNOWN_BY_MATCH_KEY
+    from scripts.orbit_uk_migrate_prep import catalog_row, find_common_id
+    from scripts.uk_pop_pricing import fetch_cny_gbp, quote_match_key
 
     group = get_group_confirm(token)
     if group:
@@ -364,52 +353,41 @@ def publish_token(token: str) -> dict[str, Any]:
             raise RuntimeError(f"整组 {group.match_keys} 妙手采集箱尚无链接")
         tk_map = claim_common_to_tiktok([int(common_id)])
         tk = tk_map[int(common_id)]
-
-        def _group_package_cm() -> tuple[int, int, int] | None:
-            mk0 = group.match_keys[0]
-            known = {**KNOWN_BY_MATCH_KEY.get(mk0, {}), **load_overrides().get(mk0, {})}
-            if known.get("l"):
-                return int(known["l"]), int(known["w"]), int(known["h"])
-            return None
-
+        mk0 = group.match_keys[0]
+        known = {**KNOWN_BY_MATCH_KEY.get(mk0, {}), **load_overrides().get(mk0, {})}
+        pkg = None
+        if known.get("l"):
+            pkg = (int(known["l"]), int(known["w"]), int(known["h"]))
         writes = [
             MxSkuVariantWrite(
                 match_key=v.match_key,
                 seller_sku=v.seller_sku,
-                mxn_list_price=v.list_price_ceil_mxn,
+                mxn_list_price=v.list_price_ceil_gbp,
                 weight_kg=v.weight_kg,
                 variant_label=v.variant_label,
             )
             for v in group.variants
         ]
-        rc = publish_mx_multi_listing(
+        rc = publish_uk_multi_listing(
             collect_box_detail_id=tk,
             ph_product_id=group.master_product_id,
             variant_writes=writes,
             publish=True,
             stock=group.stock,
             master_region=group.master_region,
-            package_cm=_group_package_cm(),
+            package_cm=pkg,
             confirm_token=token,
             skip_user_confirm=True,
         )
-        log_path = ROOT / "data" / "mx_confirm" / "web_publish.log"
+        log_path = ROOT / "data" / "uk_confirm" / "web_publish.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         label = ",".join(group.match_keys)
-        line = (
-            f"{time.strftime('%Y-%m-%d %H:%M:%S')} {label} token={token} rc={rc} tk={tk} "
-            f"group_keys={label}\n"
-        )
+        line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {label} token={token} rc={rc} tk={tk} group_keys={label}\n"
         log_path.open("a", encoding="utf-8").write(line)
         if rc != 0:
             raise RuntimeError(f"整组上架失败 exit={rc}，见 web_publish.log")
         mark_group_published(token)
-        return {
-            "ok": True,
-            "kind": "group",
-            "match_keys": group.match_keys,
-            "tk_collect_id": tk,
-        }
+        return {"ok": True, "kind": "group", "match_keys": group.match_keys, "tk_collect_id": tk}
 
     card = get_confirm(token)
     if not card:
@@ -434,27 +412,26 @@ def publish_token(token: str) -> dict[str, Any]:
 
     tk_map = claim_common_to_tiktok([int(common_id)])
     tk = tk_map[int(common_id)]
-    q = quote_match_key(mk, cny_mxn=fetch_cny_mxn())
-    rc = publish_mx_listing(
+    q = quote_match_key(mk, cny_gbp=fetch_cny_gbp(), cargo=card.cargo)  # type: ignore[arg-type]
+    rc = publish_uk_listing(
         collect_box_detail_id=tk,
         seller_sku=row["seller_sku"],
         ph_product_id=str(row["product_id"]),
         master_region=row["region"] or "PH",
         publish=True,
-        mxn_sale=q.sale_price_mxn,
-        mxn_list=q.list_price_ceil_mxn,
+        gbp_sale=q.sale_price_gbp,
+        gbp_list=q.list_price_ceil_gbp,
         stock=200,
         weight_kg=q.weight_kg,
         package_cm=_package_cm(),
         pop_quote=q,
         volumetric_confirmed=True,
         skip_user_confirm=True,
-        spanish_copy=True,
         confirm_token=token,
     )
-    log_path = ROOT / "data" / "mx_confirm" / "web_publish.log"
+    log_path = ROOT / "data" / "uk_confirm" / "web_publish.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {mk} token={token} rc={rc} tk={tk} list={q.list_price_ceil_mxn}\n"
+    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {mk} token={token} rc={rc} tk={tk} list={q.list_price_ceil_gbp}\n"
     log_path.open("a", encoding="utf-8").write(line)
     if rc != 0:
         raise RuntimeError(f"上架失败 exit={rc}，见 web_publish.log")
@@ -463,5 +440,5 @@ def publish_token(token: str) -> dict[str, Any]:
         "ok": True,
         "match_key": mk,
         "tk_collect_id": tk,
-        "list_price_ceil_mxn": q.list_price_ceil_mxn,
+        "list_price_ceil_gbp": q.list_price_ceil_gbp,
     }

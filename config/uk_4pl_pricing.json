@@ -1,0 +1,69 @@
+{
+  "region": "GB",
+  "channel": "4PL_direct",
+  "currency": "GBP",
+  "validated_against": "income_20260627083452(UTC+1).xlsx",
+  "validated_at": "2026-06-27",
+  "notes": [
+    "商家跨境物流成本公式：挂号费(per_parcel) + 单价(per_kg) × 计费重量(kg)",
+    "计费重量：max(实重, 体积重, 50g)；体积重 = L×W×H cm³ / 8000；以平台测量为准",
+    "结算按订单汇总计费重量；多 SKU 同行运费可能只落在一行",
+    "计费节点：妥投（未妥投时买家可能已付运费但 Actual shipping fee 仍为 0）"
+  ],
+  "buyer_shipping": {
+    "standard_gbp_inc_vat": 3.99,
+    "effective_from_utc": "2025-12-10T00:00:00Z",
+    "previous_standard_gbp_inc_vat": 2.0
+  },
+  "free_shipping": {
+    "min_subtotal_gbp": 10.0,
+    "comment": "满 £10 包邮（Subtotal after seller discounts）；POP 折后实付或 ceil 打折后低于此线则抬价"
+  },
+  "merchant_billing": {
+    "effective_from_utc8": "2026-01-01T00:00:00+08:00",
+    "min_chargeable_g": 50,
+    "max_parcel_kg": 30,
+    "max_dimensions_cm": [60, 40, 40],
+    "volumetric_divisor": 8000,
+    "formula": "per_parcel + per_kg * chargeable_kg"
+  },
+  "cargo_rates": {
+    "puhuo": {
+      "label": "普货",
+      "bands": [
+        {"max_kg": 0.45, "per_parcel": 1.86, "per_kg": 5.1},
+        {"max_kg": 1.0, "per_parcel": 1.7, "per_kg": 5.35},
+        {"max_kg": 2.0, "per_parcel": 1.7, "per_kg": 5.35},
+        {"max_kg": 30.0, "per_parcel": 1.7, "per_kg": 5.99}
+      ]
+    },
+    "tehuo": {
+      "label": "特货",
+      "bands": [
+        {"max_kg": 0.45, "per_parcel": 1.86, "per_kg": 5.91},
+        {"max_kg": 1.0, "per_parcel": 1.94, "per_kg": 5.83},
+        {"max_kg": 2.0, "per_parcel": 1.3, "per_kg": 6.56},
+        {"max_kg": 30.0, "per_parcel": 1.3, "per_kg": 6.56}
+      ]
+    },
+    "minhuo": {
+      "label": "敏货",
+      "same_as": "tehuo"
+    }
+  },
+  "pop_defaults": {
+    "comment": "满 £10 包邮：POP 默认卖家承担全额 4PL；店铺后台设 25% 卖家折扣；佣金固定 9%；VAT 20%",
+    "default_commission_pct": 9,
+    "vat_rate_pct": 20,
+    "smart_promotion_pct": 1.75,
+    "affiliate_pct": 0.0,
+    "ad_pct": 20.0,
+    "profit_pct": 17.0,
+    "profit_pct_min": 15.0,
+    "profit_pct_max": 20.0,
+    "seller_discount_pct": 25.0,
+    "buyer_pays_shipping": false,
+    "buyer_shipping_gbp": 3.99,
+    "cny_gbp_fallback": 9.15
+  }
+}

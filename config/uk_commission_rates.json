@@ -1,0 +1,1743 @@
+{
+  "source": "TikTok Shop UK - Commission Rates by Product Category.pdf",
+  "vat_rate_pct": 20,
+  "default_commission_pct": 9,
+  "category_all_rates": {
+    "Household Appliances": 5.0,
+    "Automotive & Motorcycle": 9.0,
+    "Baby & Maternity": 9.0,
+    "Books, Magazines & Audio": 9.0,
+    "Collectibles": 9.0,
+    "Fashion Accessories": 9.0,
+    "Food & Beverages": 9.0,
+    "Furniture": 9.0,
+    "Health": 9.0,
+    "Home Improvement": 9.0,
+    "Home Supplies": 9.0,
+    "Jewelry Accessories & Derivatives": 9.0,
+    "Kids' Fashion": 9.0,
+    "Kitchenware": 9.0,
+    "Luggage & Bags": 9.0,
+    "Menswear & Underwear": 9.0,
+    "Muslim Fashion": 9.0,
+    "Pet Supplies": 9.0,
+    "Shoes": 9.0,
+    "Sports & Outdoor": 9.0,
+    "Textiles & Soft Furnishings": 9.0,
+    "Tools & Hardware": 9.0,
+    "Toys & Hobbies": 9.0,
+    "Womenswear & Underwear": 9.0
+  },
+  "entries": [
+    {
+      "category": "Household Appliances",
+      "sub_category": "All",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Automotive & Motorcycle",
+      "sub_category": "All",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Baby & Maternity",
+      "sub_category": "All",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Books, Magazines & Audio",
+      "sub_category": "All",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Collectibles",
+      "sub_category": "All",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Fashion Accessories",
+      "sub_category": "All",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Food & Beverages",
+      "sub_category": "All",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Furniture",
+      "sub_category": "All",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Health",
+      "sub_category": "All",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Home Improvement",
+      "sub_category": "All",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Home Supplies",
+      "sub_category": "All",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Jewelry Accessories & Derivatives",
+      "sub_category": "All",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Kids' Fashion",
+      "sub_category": "All",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Kitchenware",
+      "sub_category": "All",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Luggage & Bags",
+      "sub_category": "All",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Menswear & Underwear",
+      "sub_category": "All",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Muslim Fashion",
+      "sub_category": "All",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pet Supplies",
+      "sub_category": "All",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Shoes",
+      "sub_category": "All",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Sports & Outdoor",
+      "sub_category": "All",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Textiles & Soft Furnishings",
+      "sub_category": "All",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Tools & Hardware",
+      "sub_category": "All",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Toys & Hobbies",
+      "sub_category": "All",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Womenswear & Underwear",
+      "sub_category": "All",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Accessories",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Body Beauty Devices",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Curlers & Straighteners",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Electric Eyebrow Shapers",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Electric Shavers",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Electric Toothbrushes",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Facial Beauty Devices",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Hair Dryers",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Hair Removal Device",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Hair Trimmers & Clippers",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Massage Devices",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Oral Irrigators",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Acne Treatments",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Adult Diapers",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Bath & Body Care",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Bathing Accessories",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Blemish Balm and Color Control",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Blush",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Body & Massage Oil",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Body Care Kits",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Body Creams & Lotions",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Body Makeup",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Body Masks",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Body Scrubs & Peels",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Body Wash & Soap",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Breast Care",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Bronzer & Highlighter",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Concealer & Foundation",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Dental Floss & Picks",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Denture Care",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Deodorants & Antiperspirants",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Ear Plugs",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Earwax Removal Products",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Eye Treatments",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Eyebrow Pencils/Powder/Paste",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Eyeliner & Lipliner",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Eyeshadow",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Face Masks",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Face Scrubs & Peels",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Facial Cleansers",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Facial Massage Cream",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Facial Sunscreen & Sun Care",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "False Eyelashes & Adhesives",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Feminine Hygiene",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Foot Odor Control",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Hair Care",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Hair Dye",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Hair Loss Products",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Hair Removal Cream, Wax & Shave",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Hair Styling Powders",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Hair Treatments/Scalp Treatments",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Hand & Foot Masks",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Hand Lotions, Creams & Scrubs",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Hand Sanitizers",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Hand Wash",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Heat Patches",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Heatless Styling Tools",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Ice Packs",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Incontinence Bed Pads",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Insect Repellents",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Intimate Deodorants",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Lip Treatments",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Lipstick & Lip Gloss",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Makeup",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Makeup Base and Primers",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Makeup Fixing Spray",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Makeup Remover",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Makeup Sets",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Makeup Tools",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Manicure & Pedicure Tools",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Manual Massage Tools",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Manual Shaving Accessories",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Mascara",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Men's Perfume",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Menopause Products",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Menstrual Cups",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Moisturizers & Mists",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Mousse & Gel",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Mouthwash",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Nail Art & Nail Polish",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Nail Art Kits",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Nail Polish Removers",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Nail Treatments",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Nasal Cleaning",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Nasal Treatment",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Neck Care",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Oral Care Kits",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Oral Spray",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Orthodontic Accessories",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Perfume",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Perfume Sets",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Powder",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Razors",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Sanitary Towels",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Serums & Essences",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Shampoo & Conditioner",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Shaving Foam & Aftershave",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Shaving Tool Sets",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Skin Care Kits",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Skincare",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Skincare Tools",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Sleep Masks",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Sunscreen & Sun Care",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Talcum Powder",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Tampons",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Tanning Oils & Self Tanners",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Tattoo Machines & Kits",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Teeth Whitening",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Temporary Tattoos",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Toners",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Tongue Cleaners",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Toothbrushes",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Toothpastes",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Unisex Perfume",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Beauty & Personal Care",
+      "sub_category": "Women's Perfume",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Access Control & Attendance Devices",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Advertisement Printing Equipment",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Barcode Scanners",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Compact Discs",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Conference Video & Audio Devices",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Desktop Computers",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Fans & Heatsinks",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Fax Machines",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Flash Drives & OTG Cables",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Graphics Cards",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Hard Disk Enclosures & Docking Stations",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Hard Drives",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Keyboards & Mouse",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "KVM Switches",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Label Printers",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Laminators",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Laptop Batteries",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Laptop Chargers & Adapters",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Laptops",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Modems & Wireless Routers",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Money Counters",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Monitors",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Motherboards",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Network Attached Storage (NAS)",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Network Cables & Connectors",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Network Switches & PoE",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Office Equipment Parts",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Optical Drives",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Paper Shredders",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Power Supply Units",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Powerline Adapters",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Print Servers",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Printers & Scanners",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Processors",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "RAM",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Repeaters",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Servers",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Smart Retail Equipment",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Software",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Sound Cards",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "SSD",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Typewriters",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "UPS & Stabilizers",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "USB Hubs & Card Readers",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Webcams",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Wireless Adapters & Network Cards",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "3D Printing Supplies",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Accounting Supplies",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Art Supplies",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Calendars & Accessories",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Cards",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Cooling Pads",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Desk Organizers & Accessories",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Envelopes & Postal Supplies",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Gifts & Wrapping",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Identification Badges & Supplies",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Ink & Toner Cartridges",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Keyboard & Trackpad Covers",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Labels, Index Dividers & Stamps",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Laptop Covers & Cases",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Laptop Stands & Trays",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Mouse Pads",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Notebooks & Paper",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Office Binding Supplies",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Office Cutting Supplies",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Office Filing Products",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Office Measuring Supplies",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Office Presentation Supplies",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "PC Cases",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Safes",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "School & Educational Supplies",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Tape, Adhesives & Fasteners",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Computers & Office Equipment",
+      "sub_category": "Writing & Correction Tools",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Action Cameras",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Amplifiers & Mixers",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Audio & Video Accessories",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "AV Receivers",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Button Batteries",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Cables, Chargers & Adapters",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Camera Accessories",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Camera Care",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Camera Lenses",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Casting Devices",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "CD & DVD Players",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Console Accessories",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Digital & Smart Pens",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Drones & Accessories",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Dry Cell Batteries",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "DSLRs",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "E-dictionaries",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Earphones & Headphones",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Education Device Parts & Accessories",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Electronic Learning Devices",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Electronic Notebooks",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "eReader Device",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Film Cameras",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Fitness Trackers",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "GPS Trackers",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Handheld Games Consoles",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Home Cinema Systems",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Home Games Consoles",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Instant Cameras",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Microphones",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Mirrorless Cameras",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Mobile Lenses & Flashes",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Mobile Phone Parts",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Mobile Phones",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "MP3 & MP4 Players",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Phone Batteries",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Pocket Wi-Fi",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Point & Shoot Cameras",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Power Banks",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Projectors",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Radio & Cassette Players",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Reading Pens & Devices",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Security Cameras & Systems",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Selfie Accessories",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "SIM Cards & Accessories",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Smart Glasses",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Smart Watches",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Speakers",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Styluses",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Tablet Chargers & Adapters",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Tablet Keyboards",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Tablet Parts",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Tablets",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Universal Battery Chargers",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "USB & Mobile Fans",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "USB & Mobile Lights",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "USB Vacuums",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Video Camcorders",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Video Games",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Voice Recorders",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "VR Devices",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Walkie Talkies",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Wearable Accessories",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Writing Tablets",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Cases, Screen Protectors & Stickers",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Phone Holders & Mounts",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Phone Straps & Charms",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Tablet Bags & Sleeves",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Tablet Covers & Cases",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Tablet Screen Protectors",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Phones & Electronics",
+      "sub_category": "Tablet Stands & Bases",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Mobile Phones",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Smart Watches",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Tablets",
+      "commission_pct": 5.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Automatic Watches",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Backpacks",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Bag Accessories",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Belt Bags",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Belts",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Boots",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Clutches & Wristlets",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Costume Jewellery & Accessories",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Crossbody Bags",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Footwear Accessories",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Frames & Glasses",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Gloves",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Golf Balls",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Hair Accessories",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Hats",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "High Heels",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Luggage",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Luggage Accessories",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Luxury Watches",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Manual Watches",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Men's Bottoms",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Men's Dress Shoes",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Men's Jackets & Coats",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Men's Jumpers, Cardigans & Hoodies",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Men's Sportswear",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Men's Suits & Overalls",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Men's Swimwear & Beachwear",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Men's Tops",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Messenger Bags",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Mini Bags",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Non-Sports Trading Card Packs & Boxes",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Non-Sports Trading Cards Graded Singles",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Professional & Technology Bags",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Quartz Watches",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Sandals",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Shoulder Bags",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Small Leather Goods",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Sneakers",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Sports Trading Cards Graded Singles",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Sports Trading Cards Packs & Boxes",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Sunglasses",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Toiletry Bags",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Tote Bags",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Trading Cards Accessories",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Travel Bags",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Watch Accessories",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Women's Bottoms",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Women's Dresses",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Women's Flats",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Women's Jackets & Coats",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Women's Jumpers, Cardigans & Hoodies",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Women's Lingerie, Nightwear & Loungewear",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Women's Sportswear",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Women's Suits & Overalls",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Women's Swimwear & Beachwear",
+      "commission_pct": 9.0
+    },
+    {
+      "category": "Pre-Owned",
+      "sub_category": "Women's Tops",
+      "commission_pct": 9.0
+    }
+  ]
+}

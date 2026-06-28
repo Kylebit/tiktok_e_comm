@@ -3,37 +3,37 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MX 上架审批 · TikTok Shop 控制台</title>
+  <title>UK 上架审批 · TikTok Shop 控制台</title>
   <link rel="stylesheet" href="/static/app.css">
   <style>
-    .mx-layout { display: grid; grid-template-columns: 320px 1fr; gap: 16px; align-items: start; }
-    @media (max-width: 900px) { .mx-layout { grid-template-columns: 1fr; } }
-    .mx-list { background: #fff; border: 1px solid #e8e8e8; border-radius: 10px; overflow: hidden; }
-    .mx-list-hdr { padding: 12px 14px; border-bottom: 1px solid #eee; font-weight: 600; font-size: 14px; display: flex; justify-content: space-between; align-items: center; }
-    .mx-item { display: flex; gap: 10px; padding: 10px 12px; border-bottom: 1px solid #f0f0f0; cursor: pointer; }
-    .mx-item:hover { background: #fafafa; }
-    .mx-item.active { background: #eef2ff; }
-    .mx-item img { width: 48px; height: 48px; object-fit: cover; border-radius: 6px; border: 1px solid #e5e7eb; }
-    .mx-item-meta { flex: 1; min-width: 0; }
-    .mx-item-meta .mk { font-weight: 600; font-size: 14px; }
-    .mx-item-meta .sub { font-size: 12px; color: #666; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .mx-detail { background: #fff; border: 1px solid #e8e8e8; border-radius: 10px; padding: 16px 18px; }
-    .mx-detail.empty { color: #888; text-align: center; padding: 48px 20px; }
-    .mx-hero { display: flex; gap: 16px; margin-bottom: 16px; }
-    .mx-hero img { width: 120px; height: 120px; object-fit: cover; border-radius: 8px; border: 1px solid #e5e7eb; }
-    .mx-hero h2 { margin: 0 0 8px; font-size: 1.1rem; }
-    .mx-hero .tags { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
-    .mx-tag { font-size: 12px; background: #f3f4f6; padding: 2px 8px; border-radius: 4px; }
-    .mx-tag.warn { background: #fff7ed; color: #b45309; }
-    .mx-tag.ok { background: #ecfdf5; color: #15803d; }
-    .mx-section { margin: 16px 0; }
-    .mx-section h3 { margin: 0 0 8px; font-size: 13px; color: #555; }
-    .mx-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    .mx-table th, .mx-table td { border-bottom: 1px solid #eee; padding: 6px 8px; text-align: left; }
-    .mx-table th { color: #666; font-weight: 500; width: 140px; }
-    .mx-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 20px; padding-top: 16px; border-top: 1px solid #eee; }
-    .mx-override { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
-    .mx-override input { width: 56px; padding: 6px 8px; border: 1px solid #ccc; border-radius: 6px; }
+    .uk-layout { display: grid; grid-template-columns: 320px 1fr; gap: 16px; align-items: start; }
+    @media (max-width: 900px) { .uk-layout { grid-template-columns: 1fr; } }
+    .uk-list { background: #fff; border: 1px solid #e8e8e8; border-radius: 10px; overflow: hidden; }
+    .uk-list-hdr { padding: 12px 14px; border-bottom: 1px solid #eee; font-weight: 600; font-size: 14px; display: flex; justify-content: space-between; align-items: center; }
+    .uk-item { display: flex; gap: 10px; padding: 10px 12px; border-bottom: 1px solid #f0f0f0; cursor: pointer; }
+    .uk-item:hover { background: #fafafa; }
+    .uk-item.active { background: #eef2ff; }
+    .uk-item img { width: 48px; height: 48px; object-fit: cover; border-radius: 6px; border: 1px solid #e5e7eb; }
+    .uk-item-meta { flex: 1; min-width: 0; }
+    .uk-item-meta .mk { font-weight: 600; font-size: 14px; }
+    .uk-item-meta .sub { font-size: 12px; color: #666; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .uk-detail { background: #fff; border: 1px solid #e8e8e8; border-radius: 10px; padding: 16px 18px; }
+    .uk-detail.empty { color: #888; text-align: center; padding: 48px 20px; }
+    .uk-hero { display: flex; gap: 16px; margin-bottom: 16px; }
+    .uk-hero img { width: 120px; height: 120px; object-fit: cover; border-radius: 8px; border: 1px solid #e5e7eb; }
+    .uk-hero h2 { margin: 0 0 8px; font-size: 1.1rem; }
+    .uk-hero .tags { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+    .uk-tag { font-size: 12px; background: #f3f4f6; padding: 2px 8px; border-radius: 4px; }
+    .uk-tag.warn { background: #fff7ed; color: #b45309; }
+    .uk-tag.ok { background: #ecfdf5; color: #15803d; }
+    .uk-section { margin: 16px 0; }
+    .uk-section h3 { margin: 0 0 8px; font-size: 13px; color: #555; }
+    .uk-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .uk-table th, .uk-table td { border-bottom: 1px solid #eee; padding: 6px 8px; text-align: left; }
+    .uk-table th { color: #666; font-weight: 500; width: 140px; }
+    .uk-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 20px; padding-top: 16px; border-top: 1px solid #eee; }
+    .uk-override { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+    .uk-override input { width: 56px; padding: 6px 8px; border: 1px solid #ccc; border-radius: 6px; }
     #publishBanner { display: none; margin-bottom: 12px; padding: 10px 14px; border-radius: 8px; font-size: 13px; }
     #publishBanner.running { display: block; background: #eff6ff; border: 1px solid #93c5fd; }
     #publishBanner.ok { display: block; background: #ecfdf5; border: 1px solid #86efac; }
@@ -48,20 +48,20 @@
       <a href="/catalog">商品目录</a>
       <a href="/ozon">Ozon</a>
       <a href="/mx">MX 审批</a>
-      <a href="/uk">UK 审批</a>
+      <a href="/uk" class="active">UK 审批</a>
       <a href="/titles">Listing 优化</a>
       <a href="/promotions">促销调价</a>
     </nav>
   </header>
   <main class="container">
-    <h1>MX 墨西哥上架审批</h1>
-    <p class="hint">飞书派单会自动把候选 SKU 放进此收件箱。<strong>批准 + 发布</strong> 才会真实上架；POP 折后价仅测算，折扣你在 TikTok 后台自设。</p>
+    <h1>UK 英国上架审批</h1>
+    <p class="hint">派单后 SKU 进入此收件箱。<strong>批准 + 发布</strong> 才会真实上架到 GB 店（shopId 10204699）；买家标准运费 £3.99，4PL 价卡见 POP 明细。</p>
 
     <div id="publishBanner"></div>
 
-    <div class="mx-layout">
-      <div class="mx-list">
-        <div class="mx-list-hdr">
+    <div class="uk-layout">
+      <div class="uk-list">
+        <div class="uk-list-hdr">
           <span>待审 <span id="pendingCount">—</span></span>
           <span>
             <button class="btn-secondary" style="font-size:12px;padding:4px 10px;margin-right:6px" onclick="loadList()">刷新</button>
@@ -70,7 +70,7 @@
         </div>
         <div id="itemList"><p class="hint" style="padding:12px">加载中…</p></div>
       </div>
-      <div class="mx-detail empty" id="detailPanel">← 选择左侧 SKU 查看详情</div>
+      <div class="uk-detail empty" id="detailPanel">← 选择左侧 SKU 查看详情</div>
     </div>
   </main>
   <script>
@@ -82,9 +82,9 @@
       return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
     }
 
-    function fmtMxn(v) {
+    function fmtGbp(v) {
       if (v == null || v === '') return '—';
-      return Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 0 }) + ' MXN';
+      return '£' + Number(v).toLocaleString('en-GB', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
     }
 
     function queryToken() {
@@ -93,8 +93,8 @@
     }
 
     function clearInbox() {
-      if (!confirm('确定清空全部待审项？（不会撤销已上架商品）')) return;
-      fetch('/api/mx/approvals/clear', {
+      if (!confirm('确定清空全部待审项？')) return;
+      fetch('/api/uk/approvals/clear', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reason: 'manual_clear' })
@@ -102,14 +102,14 @@
         if (!res.ok) { alert(res.error || '清空失败'); return; }
         selectedToken = null;
         currentCard = null;
-        document.getElementById('detailPanel').className = 'mx-detail empty';
+        document.getElementById('detailPanel').className = 'uk-detail empty';
         document.getElementById('detailPanel').textContent = '待审已清空';
         loadList();
       });
     }
 
     function loadList() {
-      return fetch('/api/mx/approvals?status=pending').then(function(r) { return r.json(); }).then(function(res) {
+      return fetch('/api/uk/approvals?status=pending').then(function(r) { return r.json(); }).then(function(res) {
         items = res.items || [];
         document.getElementById('pendingCount').textContent = items.length;
         renderList();
@@ -122,14 +122,14 @@
     function renderList() {
       var el = document.getElementById('itemList');
       if (!items.length) {
-        el.innerHTML = '<p class="hint" style="padding:16px">暂无待审 SKU<br><br>飞书 @OrbitHive-Cursor 派单后会出现在这里</p>';
+        el.innerHTML = '<p class="hint" style="padding:16px">暂无待审 SKU<br><br>运行 feishu_uk_dispatch 或 orbit_send_uk_approval 后会出现在这里</p>';
         return;
       }
       el.innerHTML = items.map(function(it) {
-        return '<div class="mx-item' + (it.token === selectedToken ? ' active' : '') + '" onclick="selectToken(\'' + esc(it.token) + '\')">' +
+        return '<div class="uk-item' + (it.token === selectedToken ? ' active' : '') + '" onclick="selectToken(\'' + esc(it.token) + '\')">' +
           (it.main_image_url ? '<img src="' + esc(it.main_image_url) + '">' : '<div style="width:48px;height:48px;background:#f3f4f6;border-radius:6px"></div>') +
-          '<div class="mx-item-meta">' +
-            '<div class="mk">' + esc(it.label || it.match_key) + ' · ' + fmtMxn(it.list_price_ceil_mxn) + '</div>' +
+          '<div class="uk-item-meta">' +
+            '<div class="mk">' + esc(it.label || it.match_key) + ' · ' + fmtGbp(it.list_price_ceil_gbp) + '</div>' +
             '<div class="sub">' + esc(it.product_name) + '</div>' +
           '</div></div>';
       }).join('');
@@ -138,10 +138,10 @@
     function selectToken(token) {
       selectedToken = token;
       renderList();
-      history.replaceState(null, '', '/mx?token=' + encodeURIComponent(token));
-      fetch('/api/mx/approvals/' + encodeURIComponent(token)).then(function(r) { return r.json(); }).then(function(res) {
+      history.replaceState(null, '', '/uk?token=' + encodeURIComponent(token));
+      fetch('/api/uk/approvals/' + encodeURIComponent(token)).then(function(r) { return r.json(); }).then(function(res) {
         if (!res.ok || !res.card) {
-          document.getElementById('detailPanel').className = 'mx-detail empty';
+          document.getElementById('detailPanel').className = 'uk-detail empty';
           document.getElementById('detailPanel').textContent = res.error || '加载失败';
           return;
         }
@@ -152,48 +152,48 @@
 
     function renderDetail(c) {
       var panel = document.getElementById('detailPanel');
-      panel.className = 'mx-detail';
+      panel.className = 'uk-detail';
       if (c.kind === 'group') {
         renderGroupDetail(c);
         return;
       }
       var stClass = c.status === 'approved' ? 'ok' : (c.status === 'rejected' ? 'warn' : '');
-      var html = '<div class="mx-hero">' +
+      var html = '<div class="uk-hero">' +
         (c.main_image_url ? '<img src="' + esc(c.main_image_url) + '">' : '') +
         '<div style="flex:1">' +
           '<h2>' + esc(c.match_key) + ' · ' + esc(c.seller_sku || '') + '</h2>' +
           '<div>' + esc(c.product_name) + '</div>' +
           '<div class="tags">' +
-            '<span class="mx-tag ' + stClass + '">' + esc(c.status) + '</span>' +
-            (c.volumetric_dominates ? '<span class="mx-tag warn">体积重 &gt; 实重</span>' : '') +
-            '<span class="mx-tag">TK 采集 ' + esc(String(c.collect_box_detail_id || '—')) + '</span>' +
+            '<span class="uk-tag ' + stClass + '">' + esc(c.status) + '</span>' +
+            '<span class="uk-tag">' + esc(c.cargo || 'puhuo') + '</span>' +
+            (c.volumetric_dominates ? '<span class="uk-tag warn">体积重 &gt; 实重</span>' : '') +
+            '<span class="uk-tag">TK 采集 ' + esc(String(c.collect_box_detail_id || '—')) + '</span>' +
           '</div>' +
         '</div></div>';
 
-      html += '<div class="mx-section"><h3>价格</h3><table class="mx-table">' +
-        '<tr><th>上传原价 ceil</th><td><strong>' + fmtMxn(c.list_price_ceil_mxn) + '</strong>（写入 price）</td></tr>' +
-        '<tr><th>POP 折后测算</th><td>' + fmtMxn(c.sale_price_mxn) + '（不上传）</td></tr>' +
-        '<tr><th>预估净利</th><td><strong>' + fmtMxn(c.net_profit_mxn) + '</strong>（' + Number(c.profit_margin_on_sale_pct || 0).toFixed(1) + '%）</td></tr>' +
+      html += '<div class="uk-section"><h3>价格</h3><table class="uk-table">' +
+        '<tr><th>上传原价 ceil</th><td><strong>' + fmtGbp(c.list_price_ceil_gbp) + '</strong>（写入 price）</td></tr>' +
+        '<tr><th>POP 折后测算</th><td>' + fmtGbp(c.sale_price_gbp) + '（不上传）</td></tr>' +
+        '<tr><th>预估净利</th><td><strong>' + fmtGbp(c.net_profit_gbp) + '</strong>（' + Number(c.profit_margin_on_sale_pct || 0).toFixed(1) + '%）</td></tr>' +
         '</table></div>';
 
-      html += '<div class="mx-section"><h3>物流</h3><table class="mx-table">' +
+      html += '<div class="uk-section"><h3>物流（4PL）</h3><table class="uk-table">' +
         '<tr><th>实重</th><td>' + Number(c.weight_kg || 0).toFixed(3) + ' kg · ' + esc(c.weight_source) + '</td></tr>' +
         '<tr><th>尺寸 / 计费</th><td>' + esc(c.package_cm) + ' · 计费 ' + Number(c.billable_kg || 0).toFixed(3) + ' kg</td></tr>' +
-        '<tr><th>藏价物流</th><td>' + fmtMxn(c.logistics_hidden_mxn) + '（档 ≤' + c.shipping_tier_kg + ' kg）</td></tr>' +
+        '<tr><th>商家 4PL</th><td>' + fmtGbp(c.merchant_logistics_gbp) + ' · 卖家净 ' + fmtGbp(c.seller_ship_net_gbp) + '（买家 ' + fmtGbp(c.buyer_shipping_gbp) + '）</td></tr>' +
         '</table></div>';
 
-      html += '<div class="mx-section"><h3>POP 支出明细</h3><table class="mx-table">' +
-        '<tr><th>采购成本</th><td>' + fmtMxn(c.cost_mxn) + '（¥' + Number(c.cost_cny || 0).toFixed(2) + '）</td></tr>' +
-        '<tr><th>进口税</th><td>' + fmtMxn(c.import_tax_mxn) + '</td></tr>' +
-        '<tr><th>平台佣金 6%</th><td>' + fmtMxn(c.platform_commission_mxn) + '</td></tr>' +
-        '<tr><th>SFP / 达人 / 广告</th><td>' + fmtMxn(c.sfp_fee_mxn) + ' / ' + fmtMxn(c.affiliate_mxn) + ' / ' + fmtMxn(c.ad_mxn) + '</td></tr>' +
-        '<tr><th>每件费</th><td>' + fmtMxn(c.per_item_fee_mxn) + '</td></tr>' +
-        '<tr><th>合计支出</th><td><strong>' + fmtMxn(c.total_expense_mxn) + '</strong></td></tr>' +
+      html += '<div class="uk-section"><h3>POP 支出明细</h3><table class="uk-table">' +
+        '<tr><th>采购成本</th><td>' + fmtGbp(c.cost_gbp) + '（¥' + Number(c.cost_cny || 0).toFixed(2) + '）</td></tr>' +
+        '<tr><th>类目佣金</th><td>' + esc(c.commission_label || (c.commission_pct + '%')) + '</td></tr>' +
+        '<tr><th>VAT</th><td>' + fmtGbp(c.vat_gbp) + ' (' + Number(c.vat_rate_pct || 20).toFixed(0) + '% 含税价)</td></tr>' +
+        '<tr><th>Smart Promo / 广告</th><td>' + fmtGbp(c.smart_promotion_gbp) + ' / ' + fmtGbp(c.ad_gbp) + '</td></tr>' +
+        '<tr><th>合计支出</th><td><strong>' + fmtGbp(c.total_expense_gbp) + '</strong></td></tr>' +
         '</table></div>';
 
       if (c.status === 'pending') {
-        html += '<div class="mx-section"><h3>修改尺寸（重算 POP）</h3>' +
-          '<div class="mx-override">' +
+        html += '<div class="uk-section"><h3>修改尺寸（重算 POP）</h3>' +
+          '<div class="uk-override">' +
             '<label>长 <input id="dimL" type="number" min="1" placeholder="cm"></label>' +
             '<label>宽 <input id="dimW" type="number" min="1" placeholder="cm"></label>' +
             '<label>高 <input id="dimH" type="number" min="1" placeholder="cm"></label>' +
@@ -201,13 +201,13 @@
           '</div></div>';
       }
 
-      html += '<div class="mx-actions">';
+      html += '<div class="uk-actions">';
       if (c.status === 'pending') {
         html += '<button class="btn-primary" onclick="doApprove()">批准</button>' +
           '<button class="btn-danger" onclick="doReject()">拒绝</button>';
       }
       if (c.status === 'approved') {
-        html += '<button class="btn-primary" onclick="doPublish()">确认发布到 MX</button>';
+        html += '<button class="btn-primary" onclick="doPublish()">确认发布到 UK</button>';
       }
       html += '</div>';
 
@@ -218,40 +218,40 @@
       var panel = document.getElementById('detailPanel');
       var keys = (c.match_keys || []).join(', ');
       var stClass = c.status === 'approved' ? 'ok' : (c.status === 'rejected' ? 'warn' : '');
-      var html = '<div class="mx-hero">' +
+      var html = '<div class="uk-hero">' +
         (c.main_image_url ? '<img src="' + esc(c.main_image_url) + '">' : '') +
         '<div style="flex:1">' +
           '<h2>多规格 · ' + esc(keys) + '</h2>' +
           '<div>' + esc(c.product_name) + '</div>' +
           '<div class="tags">' +
-            '<span class="mx-tag ' + stClass + '">' + esc(c.status) + '</span>' +
-            '<span class="mx-tag">整组 · ' + (c.variants || []).length + ' 规格</span>' +
-            '<span class="mx-tag">TK 采集 ' + esc(String(c.collect_box_detail_id || '—')) + '</span>' +
+            '<span class="uk-tag ' + stClass + '">' + esc(c.status) + '</span>' +
+            '<span class="uk-tag">整组 · ' + (c.variants || []).length + ' 规格</span>' +
+            '<span class="uk-tag">TK 采集 ' + esc(String(c.collect_box_detail_id || '—')) + '</span>' +
           '</div>' +
         '</div></div>';
-      html += '<div class="mx-section"><h3>各规格价格</h3><table class="mx-table">' +
+      html += '<div class="uk-section"><h3>各规格价格</h3><table class="uk-table">' +
         '<tr><th>对齐码</th><th>规格</th><th>上传原价 ceil</th><th>POP 折后</th><th>净利</th></tr>';
       (c.variants || []).forEach(function(v) {
         html += '<tr><td>' + esc(v.match_key) + '</td><td>' + esc(v.variant_label || '—') + '</td>' +
-          '<td><strong>' + fmtMxn(v.list_price_ceil_mxn) + '</strong></td>' +
-          '<td>' + fmtMxn(v.sale_price_mxn) + '</td>' +
-          '<td>' + fmtMxn(v.net_profit_mxn) + '</td></tr>';
+          '<td><strong>' + fmtGbp(v.list_price_ceil_gbp) + '</strong></td>' +
+          '<td>' + fmtGbp(v.sale_price_gbp) + '</td>' +
+          '<td>' + fmtGbp(v.net_profit_gbp) + '</td></tr>';
       });
       html += '</table><p class="hint">同链接多规格必须整组批准、整组 publish，不可拆链。</p></div>';
-      html += '<div class="mx-actions">';
+      html += '<div class="uk-actions">';
       if (c.status === 'pending') {
         html += '<button class="btn-primary" onclick="doApprove()">批准整组</button>' +
           '<button class="btn-danger" onclick="doReject()">拒绝</button>';
       }
       if (c.status === 'approved') {
-        html += '<button class="btn-primary" onclick="doPublish()">确认整组发布到 MX</button>';
+        html += '<button class="btn-primary" onclick="doPublish()">确认整组发布到 UK</button>';
       }
       html += '</div>';
       panel.innerHTML = html;
     }
 
     function postAction(action, body) {
-      return fetch('/api/mx/approvals/' + encodeURIComponent(selectedToken) + '/' + action, {
+      return fetch('/api/uk/approvals/' + encodeURIComponent(selectedToken) + '/' + action, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body || {})
@@ -271,7 +271,7 @@
       postAction('reject').then(function(res) {
         if (!res.ok) { alert(res.error || '失败'); return; }
         loadList();
-        document.getElementById('detailPanel').className = 'mx-detail empty';
+        document.getElementById('detailPanel').className = 'uk-detail empty';
         document.getElementById('detailPanel').textContent = '已拒绝';
         selectedToken = null;
       });
@@ -289,26 +289,25 @@
     }
 
     function pollPublish() {
-      fetch('/api/mx/publish/status').then(function(r) { return r.json(); }).then(function(res) {
+      fetch('/api/uk/publish/status').then(function(r) { return r.json(); }).then(function(res) {
         var b = document.getElementById('publishBanner');
-        var job = res;
-        if (job.running) {
+        if (res.running) {
           b.className = 'running';
-          b.textContent = job.message || '上架进行中…';
+          b.textContent = res.message || '上架进行中…';
           setTimeout(pollPublish, 1500);
-        } else if (job.error) {
+        } else if (res.error) {
           b.className = 'err';
-          b.textContent = '❌ ' + job.error;
-        } else if (job.message) {
+          b.textContent = '❌ ' + res.error;
+        } else if (res.message) {
           b.className = 'ok';
-          b.textContent = job.message;
+          b.textContent = res.message;
           loadList();
         }
       });
     }
 
     function doPublish() {
-      if (!confirm('确认发布 ' + (currentCard && currentCard.match_key) + ' 到 TikTok 墨西哥？')) return;
+      if (!confirm('确认发布 ' + (currentCard && currentCard.match_key) + ' 到 TikTok 英国？')) return;
       postAction('publish').then(function(res) {
         if (!res.ok) { alert(res.error || '失败'); return; }
         pollPublish();

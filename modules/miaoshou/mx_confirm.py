@@ -389,6 +389,17 @@ def mark_published(token: str) -> MxConfirmCard:
         return card
 
 
+def mark_group_published(token: str) -> MxGroupConfirmCard:
+    with _lock:
+        card = _read_group(token)
+        if not card:
+            raise KeyError(f"多规格确认单不存在: {token}")
+        card.status = "published"
+        card.approved_at = card.approved_at or time.time()
+        _write_group(card)
+        return card
+
+
 def assert_user_approved(token: str | None) -> None:
     if not token:
         raise UserConfirmRequired("缺少用户确认 token")

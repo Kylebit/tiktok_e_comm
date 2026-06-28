@@ -1,5 +1,7 @@
 """TikTok Shop Open API 客户端（签名、GET/POST、分页）。"""
 
+from __future__ import annotations
+
 import hashlib
 import hmac
 import json

@@ -304,6 +304,9 @@
       rows.forEach(function (it, idx) {
         var tr = document.createElement('tr');
         if (it.is_new) tr.className = 'new-row';
+        var priceTitle = it.clamped_by_min_price
+          ? ('已按 min_price 地板(' + it.min_price + ')保底，原计算建议价更低，不会让你亏本卖')
+          : '';
         tr.innerHTML =
           '<td><input type="checkbox" class="row-check" data-idx="' + idx + '"' + (it.is_new ? ' checked' : '') + '></td>' +
           '<td><img class="thumb" src="' + it.image + '"></td><td>' + it.offer_id + '</td>' +
@@ -311,7 +314,7 @@
           '<td>' + it.price_index + '</td>' +
           '<td><input style="width:70px" value="' + it.suggested_price + '" data-field="price" data-idx="' + idx + '"></td>' +
           '<td><input style="width:70px" value="' + it.suggested_old_price + '" data-field="old_price" data-idx="' + idx + '"></td>' +
-          '<td>' + (it.is_new ? '新' : '持续') + '</td>';
+          '<td>' + (it.is_new ? '新' : '持续') + (it.clamped_by_min_price ? ' <span class="meta" title="' + priceTitle + '" style="color:#c80;cursor:help">⚠️保底价</span>' : '') + '</td>';
         tbody.appendChild(tr);
       });
     }

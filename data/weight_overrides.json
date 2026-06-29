@@ -13,5 +13,15 @@
     "weight_g": 300,
     "reason": "用户确认目录物流实测数据有误，按Ozon登记重量修正(2026-06-26)",
     "weight_source": "manual_override"
+  },
+  "0839": {
+    "weight_g": 400,
+    "reason": "用户提供实测重量，模板默认150g明显偏低(2026-06-26)",
+    "weight_source": "manual_override"
+  },
+  "0906": {
+    "weight_g": 300,
+    "reason": "用户提供实测重量，模板默认150g明显偏低(2026-06-26)",
+    "weight_source": "manual_override"
   }
 }

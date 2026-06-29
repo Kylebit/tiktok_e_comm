@@ -575,10 +575,14 @@ def api_red_prices():
         pid = it["product_id"]
         cur_price = it["price"]["price"]
         cur_old_price = it["price"]["old_price"]
+        min_price = float(it["price"].get("min_price") or 0)
         idx = it["price_indexes"]["ozon_index_data"]["price_index_value"]
         is_new = offer_id not in prev_red
 
         new_price = round(cur_price / idx * 0.95, 2) if idx else cur_price
+        clamped_by_min_price = bool(min_price) and new_price < min_price
+        if clamped_by_min_price:
+            new_price = min_price
         sugg_old_price = round(new_price / 0.72, 2)
 
         info = info_by_id.get(pid, {"name": "?", "image": ""})
@@ -588,10 +592,12 @@ def api_red_prices():
             "image": info["image"],
             "cur_price": cur_price,
             "cur_old_price": cur_old_price,
+            "min_price": min_price,
             "price_index": idx,
             "suggested_price": new_price,
             "suggested_old_price": sugg_old_price,
             "is_new": is_new,
+            "clamped_by_min_price": clamped_by_min_price,
         })
 
     rows.sort(key=lambda r: (not r["is_new"], -r["price_index"]))

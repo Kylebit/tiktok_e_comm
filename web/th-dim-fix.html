@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>泰国孤儿商品尺寸核实</title>
+<style>
+  body { font-family: -apple-system, sans-serif; margin: 24px; background: #f7f7f8; }
+  h1 { font-size: 20px; }
+  .hint { color: #666; font-size: 13px; margin-bottom: 16px; }
+  .card { display: flex; gap: 16px; background: #fff; border: 1px solid #e0e0e0; border-radius: 8px;
+          padding: 14px; margin-bottom: 12px; align-items: center; }
+  .card.done { background: #eefcef; border-color: #8fd99c; }
+  .card img { width: 90px; height: 90px; object-fit: cover; border-radius: 6px; background: #eee; flex-shrink: 0; }
+  .info { flex: 1; min-width: 0; }
+  .name { font-size: 14px; margin-bottom: 4px; }
+  .meta { font-size: 12px; color: #888; }
+  .dims { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+  .dims input { width: 64px; padding: 6px; border: 1px solid #ccc; border-radius: 4px; }
+  .dims label { font-size: 12px; color: #555; }
+  .dims button { padding: 7px 14px; border-radius: 4px; border: none; background: #0a7; color: #fff; cursor: pointer; }
+  .dims button:hover { background: #096; }
+  .status { font-size: 12px; margin-left: 8px; }
+  .status.ok { color: #0a7; }
+  .status.err { color: #c33; }
+</style>
+</head>
+<body>
+  <h1>泰国"孤儿商品"尺寸核实</h1>
+  <p class="hint">这12个商品在Shopee上没有seller_sku，目录里没有真实物流数据，包裹尺寸目前是50×50×50cm占位默认值，导致Express Delivery渠道开不了。请对照实物量一下，填真实长宽高(cm)，提交后会自动写回Shopee并重新尝试打开渠道。</p>
+  <div id="list">加载中…</div>
+
+<script>
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+
+function render(items) {
+  var list = document.getElementById('list');
+  list.innerHTML = '';
+  items.forEach(function (it) {
+    var card = document.createElement('div');
+    card.className = 'card' + (it.express_enabled ? ' done' : '');
+    card.dataset.itemId = it.item_id;
+    card.innerHTML =
+      '<img src="' + esc(it.image) + '" alt="">' +
+      '<div class="info">' +
+        '<div class="name">' + esc(it.name) + '</div>' +
+        '<div class="meta">item_id: ' + it.item_id + ' · 重量 ' + it.weight_kg + 'kg · 当前尺寸 ' +
+          it.length_cm + '×' + it.width_cm + '×' + it.height_cm + 'cm' +
+          (it.express_enabled ? ' · <strong style="color:#0a7">Express已开通</strong>' : '') +
+        '</div>' +
+        '<div class="dims">' +
+          '<label>长</label><input class="f-len" type="number" step="0.5" value="' + it.length_cm + '">' +
+          '<label>宽</label><input class="f-wid" type="number" step="0.5" value="' + it.width_cm + '">' +
+          '<label>高</label><input class="f-hei" type="number" step="0.5" value="' + it.height_cm + '">' +
+          '<button type="button" class="btn-save">保存并重新开通</button>' +
+          '<span class="status"></span>' +
+        '</div>' +
+      '</div>';
+    list.appendChild(card);
+  });
+}
+
+function bindSave() {
+  document.getElementById('list').addEventListener('click', function (e) {
+    var btn = e.target.closest('.btn-save');
+    if (!btn) return;
+    var card = btn.closest('.card');
+    var itemId = parseInt(card.dataset.itemId, 10);
+    var len = parseFloat(card.querySelector('.f-len').value);
+    var wid = parseFloat(card.querySelector('.f-wid').value);
+    var hei = parseFloat(card.querySelector('.f-hei').value);
+    var status = card.querySelector('.status');
+    status.textContent = '保存中…';
+    status.className = 'status';
+    fetch('/api/shopee/th_dim_fix/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ item_id: itemId, length_cm: len, width_cm: wid, height_cm: hei })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      if (d.ok) {
+        status.textContent = d.express_enabled ? '✓ 已保存，Express已开通' : ('✓ 尺寸已保存，但Express仍未开通: ' + (d.express_error || ''));
+        status.className = 'status ok';
+        if (d.express_enabled) card.className = 'card done';
+      } else {
+        status.textContent = '失败: ' + (d.error || '未知错误');
+        status.className = 'status err';
+      }
+    }).catch(function (e) {
+      status.textContent = '请求失败: ' + e.message;
+      status.className = 'status err';
+    });
+  });
+}
+
+fetch('/api/shopee/th_dim_fix/items').then(function (r) { return r.json(); }).then(function (d) {
+  render(d.items || []);
+  bindSave();
+}).catch(function (e) {
+  document.getElementById('list').textContent = '加载失败: ' + e.message;
+});
+</script>
+</body>
+</html>

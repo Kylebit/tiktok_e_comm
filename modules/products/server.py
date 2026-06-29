@@ -992,11 +992,21 @@ class Handler(BaseHTTPRequestHandler):
         if self._handle_ozon_proxy("GET"):
             return
 
+        if path == "/api/shopee/th_dim_fix/items":
+            from modules.shopee.dim_fix import list_items
+
+            try:
+                return self._json(200, {"items": list_items()})
+            except Exception as e:
+                return self._json(500, {"ok": False, "error": str(e)})
+
         if path in ("/", "/index.html"):
             return self._file(WEB_DIR / "index.html")
         if path.startswith("/static/"):
             rel = path[len("/static/") :]
             return self._file(WEB_DIR / "static" / rel)
+        if path in ("/th-dim-fix", "/th-dim-fix.html"):
+            return self._file(WEB_DIR / "th-dim-fix.html")
         if path in ("/costs", "/costs.html"):
             return self._file(WEB_DIR / "costs.html")
         if path in ("/titles", "/titles.html"):
@@ -1441,6 +1451,17 @@ class Handler(BaseHTTPRequestHandler):
             data = self._read_json()
         except json.JSONDecodeError:
             return self._json(400, {"ok": False, "error": "invalid json"})
+
+        if path == "/api/shopee/th_dim_fix/save":
+            from modules.shopee.dim_fix import save_dimension
+
+            try:
+                result = save_dimension(
+                    int(data["item_id"]), float(data["length_cm"]), float(data["width_cm"]), float(data["height_cm"])
+                )
+                return self._json(200, result)
+            except Exception as e:
+                return self._json(500, {"ok": False, "error": str(e)})
 
         if path == "/api/catalog/cost":
             from modules.catalog import listings as cat_mod

@@ -1,15 +1,19 @@
-"""目录：TikTok → Shopee CNSC 全球商品（单 SKU 或同链接多规格）。"""
+"""Catalog helpers for TikTok -> Shopee global sync and direct shop publish."""
 
 from __future__ import annotations
 
 from modules.catalog.sku_key import parse_search_key
 from modules.shopee.global_sku_map import global_item_id_for_match_key, load_map
 from modules.shopee.publish import publish_match_key, update_global_match_key
-from modules.shopee.publish_group import load_tk_group, publish_tk_group, sync_tk_group
+from modules.shopee.publish_group import (
+    load_tk_group,
+    publish_group_to_shop,
+    publish_tk_group,
+    sync_tk_group,
+)
 
 
 def _sibling_keys_for_match_key(match_key: str, region: str) -> list[str] | None:
-    """若 TK 同 product 有多个对齐码且均未映射，返回整组 keys。"""
     key = parse_search_key(match_key)
     if not key:
         return None
@@ -25,8 +29,7 @@ def _sibling_keys_for_match_key(match_key: str, region: str) -> list[str] | None
     return keys
 
 
-def _group_keys_for_match_key(match_key: str) -> list[str] | None:
-    """从全球映射或 TK 加载整组对齐码。"""
+def _group_keys_for_match_key(match_key: str, region: str) -> list[str] | None:
     key = parse_search_key(match_key)
     if not key:
         return None
@@ -38,7 +41,7 @@ def _group_keys_for_match_key(match_key: str) -> list[str] | None:
         if len(parsed) >= 2:
             return sorted(set(parsed))
     try:
-        group = load_tk_group([key], "PH")
+        group = load_tk_group([key], region)
         keys = group.get("match_keys") or []
         return keys if len(keys) >= 2 else None
     except (RuntimeError, ValueError):
@@ -46,7 +49,6 @@ def _group_keys_for_match_key(match_key: str) -> list[str] | None:
 
 
 def sync_tk_group_to_shopee(match_keys: str | list[str], *, region: str = "PH") -> dict:
-    """整组 TK→Shopee：Color 规格图 + 人民币价 + 库存 + 英文文案。"""
     if isinstance(match_keys, str):
         keys = [parse_search_key(k) for k in match_keys.replace(";", ",").split(",") if parse_search_key(k)]
     else:
@@ -54,51 +56,70 @@ def sync_tk_group_to_shopee(match_keys: str | list[str], *, region: str = "PH") 
     if len(keys) < 2:
         raise ValueError("整组同步至少需要 2 个对齐码")
     result = sync_tk_group(keys, region=region)
+    publish_result = publish_group_to_shop(keys, region=region)
+    result["shop_publish"] = publish_result
+    result["message"] = (
+        f"{result.get('message') or '全球商品同步完成'}；"
+        f"已发布到 Shopee {str(region).upper()} 店铺 item {publish_result.get('item_id') or ''}"
+    )
     return result
 
 
 def sync_tk_to_shopee_global(match_key: str, *, region: str = "PH") -> dict:
-    """
-    有全球映射 → update_global（PH 英文 + DeepSeek 刷新标题/描述）
-    同 TK 多 SKU 且无映射 → publish_group（单全球链接多规格）
-    否则 → publish global_only（新建单规格全球 SKU）
-    """
     key = parse_search_key(match_key)
     if not key:
         raise ValueError("无效对齐码")
 
-    group_keys = _group_keys_for_match_key(key)
+    group_keys = _group_keys_for_match_key(key, region)
     if group_keys and len(group_keys) >= 2:
         gid = global_item_id_for_match_key(key)
         if gid:
             result = sync_tk_group(group_keys, region=region)
-            return result
+        else:
+            result = publish_tk_group(group_keys, region=region)
+            result["action"] = "create_global_group"
+        publish_result = publish_group_to_shop(group_keys, region=region)
+        result["shop_publish"] = publish_result
+        gid = result.get("global_item_id") or global_item_id_for_match_key(key) or ""
+        result["message"] = (
+            f"已同步全球多规格商品 {gid}；"
+            f"已发布到 Shopee {str(region).upper()} 店铺 item {publish_result.get('item_id') or ''}"
+        )
+        return result
 
     gid = global_item_id_for_match_key(key)
     if gid:
         result = update_global_match_key(key, region)
+        publish_result = publish_match_key(key, region, global_only=False, publish_shops=True)
         result["action"] = "update_global"
-        result["message"] = f"已更新全球商品 {gid}（英文标题/描述）"
+        result["shop_publish"] = publish_result
+        result["message"] = (
+            f"已更新全球商品 {gid} 英文信息；"
+            f"已发布到 Shopee {str(region).upper()} 店铺 item {publish_result.get('item_id') or ''}"
+        )
         return result
 
     sibling_keys = _sibling_keys_for_match_key(key, region)
     if sibling_keys:
         result = publish_tk_group(sibling_keys, region=region)
+        publish_result = publish_group_to_shop(sibling_keys, region=region)
         result["action"] = "create_global_group"
+        result["shop_publish"] = publish_result
         gid = result.get("global_item_id")
         result["message"] = (
-            f"已创建全球多规格商品 {gid}（{len(sibling_keys)} 个对齐码），请在 CNSC 后台发布"
+            f"已创建全球多规格商品 {gid}（{len(sibling_keys)} 个对齐码），"
+            f"并发布到 Shopee {str(region).upper()} 店铺 item {publish_result.get('item_id') or ''}"
             if gid
-            else "全球多规格商品创建完成"
+            else "全球多规格商品创建并发布完成"
         )
         return result
 
-    result = publish_match_key(key, region, global_only=True)
+    result = publish_match_key(key, region, global_only=False, publish_shops=True)
     result["action"] = "create_global"
     gid = result.get("global_item_id")
     result["message"] = (
-        f"已创建全球商品 {gid}，请在 CNSC 后台发布到各国店铺"
+        f"已创建全球商品 {gid} 并发布到 Shopee {str(region).upper()} 店铺 item {result.get('item_id') or ''}"
         if gid
-        else "全球商品创建完成"
+        else "全球商品创建并发布完成"
     )
     return result

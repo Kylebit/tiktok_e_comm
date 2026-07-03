@@ -3,6 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script>
+    if (window.location.protocol === 'file:') {
+      window.location.replace('http://127.0.0.1:8765/catalog' + window.location.search + window.location.hash);
+    }
+  </script>
   <title>商品目录 · TK + Shopee + Ozon</title>
   <link rel="stylesheet" href="/static/app.css">
 </head>
@@ -895,6 +900,7 @@
     }
     function syncTkToShopee(matchKey, metaEl, btn) {
       if (!matchKey) return;
+      metaEl = metaEl || document.getElementById('syncStatus') || document.getElementById('lookupMeta');
       var region = (document.getElementById('tkShopeeRegion') || {}).value || 'PH';
       if (metaEl) metaEl.textContent = 'TK→Shopee 同步中（上传图片+AI 文案，约 30–60s，请勿关闭）…';
       if (btn) btn.disabled = true;
@@ -952,6 +958,7 @@
     }
     function syncTkGroupToShopee(keysCsv, metaEl, btn) {
       if (!keysCsv) return;
+      metaEl = metaEl || document.getElementById('syncStatus') || document.getElementById('lookupMeta');
       var region = (document.getElementById('tkShopeeRegion') || {}).value || 'PH';
       if (metaEl) metaEl.textContent = '整组同步中（规格图+汇率价+库存，约 60–120s）…';
       if (btn) btn.disabled = true;
@@ -991,6 +998,75 @@
           if (metaEl) metaEl.textContent = msg;
           else alert(msg);
         });
+    }
+    function pollShopeeSync(metaEl, btn, onDone) {
+      fetch('/api/catalog/shopee-sync/status')
+        .then(function(r) { return r.json(); })
+        .then(function(res) {
+          if (!res.ok) throw new Error(res.error || '状态读取失败');
+          var msg = res.error || res.message || (res.running ? '正在处理...' : '任务已结束');
+          if (metaEl) metaEl.textContent = msg;
+          if (btn) btn.disabled = !!res.running;
+          if (res.running) {
+            setTimeout(function() { pollShopeeSync(metaEl, btn, onDone); }, 2500);
+            return;
+          }
+          if (btn) btn.disabled = false;
+          if (typeof onDone === 'function') onDone(res);
+        })
+        .catch(function(err) {
+          if (btn) btn.disabled = false;
+          if (metaEl) metaEl.textContent = (err && err.message) ? err.message : '网络错误';
+        });
+    }
+    function startShopeeSync(endpoint, payload, metaEl, btn, doneCallback) {
+      metaEl = metaEl || document.getElementById('syncStatus') || document.getElementById('lookupMeta');
+      if (metaEl) metaEl.textContent = '任务已发起，正在排队...';
+      if (btn) btn.disabled = true;
+      fetch(endpoint, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+      })
+        .then(function(r) { return r.json(); })
+        .then(function(res) {
+          if (!res.ok) throw new Error(res.error || res.message || '启动失败');
+          if (metaEl) metaEl.textContent = res.message || '任务已启动';
+          pollShopeeSync(metaEl, btn, doneCallback);
+        })
+        .catch(function(err) {
+          if (btn) btn.disabled = false;
+          if (metaEl) metaEl.textContent = (err && err.message) ? err.message : '网络错误';
+        });
+    }
+    function syncTkToShopee(matchKey, metaEl, btn) {
+      if (!matchKey) return;
+      var region = (document.getElementById('tkShopeeRegion') || {}).value || 'PH';
+      startShopeeSync(
+        '/api/catalog/shopee-sync-tk',
+        { match_key: matchKey, region: region },
+        metaEl,
+        btn,
+        function(res) {
+          if (res.error) return;
+          loadList();
+          if (_editMatchKey === matchKey) loadSkuEdit(matchKey, _editSkuId);
+        }
+      );
+    }
+    function syncTkGroupToShopee(keysCsv, metaEl, btn) {
+      if (!keysCsv) return;
+      var region = (document.getElementById('tkShopeeRegion') || {}).value || 'PH';
+      startShopeeSync(
+        '/api/catalog/shopee-sync-tk-group',
+        { match_keys: keysCsv, region: region },
+        metaEl,
+        btn,
+        function(res) {
+          if (res.error) return;
+          loadList();
+        }
+      );
     }
     function setSyncProgress(pct, message) {
       var wrap = document.getElementById('syncProgressWrap');

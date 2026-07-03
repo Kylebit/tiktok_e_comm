@@ -127,6 +127,18 @@ _catalog_sync_job: dict = {
     "error": None,
 }
 
+_shopee_sync_lock = threading.Lock()
+_shopee_sync_job: dict = {
+    "running": False,
+    "message": "",
+    "mode": "",
+    "region": "",
+    "match_key": "",
+    "match_keys": [],
+    "result": None,
+    "error": None,
+}
+
 _sourcing_build_lock = threading.Lock()
 _sourcing_build_job: dict = {
     "running": False,
@@ -597,6 +609,84 @@ def _start_uk_publish(token: str) -> tuple[bool, str]:
 def _uk_publish_status() -> dict:
     with _uk_publish_lock:
         return dict(_uk_publish_job)
+
+
+def _run_shopee_sync(mode: str, payload: dict) -> None:
+    global _shopee_sync_job
+    from modules.catalog import shopee_push as sp_push
+
+    try:
+        with _shopee_sync_lock:
+            _shopee_sync_job["message"] = (
+                "正在同步整组到 Shopee..."
+                if mode == "group"
+                else "正在同步 TikTok 到 Shopee..."
+            )
+        if mode == "group":
+            result = sp_push.sync_tk_group_to_shopee(
+                payload.get("match_keys") or [],
+                region=str(payload.get("region") or "PH").upper(),
+            )
+        else:
+            result = sp_push.sync_tk_to_shopee_global(
+                str(payload.get("match_key") or "").strip(),
+                region=str(payload.get("region") or "PH").upper(),
+            )
+        with _shopee_sync_lock:
+            _shopee_sync_job.update(
+                running=False,
+                message=result.get("message") or "Shopee 同步完成",
+                result=result,
+                error=None,
+            )
+    except Exception as e:
+        with _shopee_sync_lock:
+            _shopee_sync_job.update(
+                running=False,
+                message="",
+                result=None,
+                error=str(e),
+            )
+
+
+def _start_shopee_sync(mode: str, payload: dict) -> tuple[bool, str]:
+    region = str(payload.get("region") or "PH").upper()
+    match_key = str(payload.get("match_key") or "").strip()
+    raw_keys = payload.get("match_keys") or []
+    if isinstance(raw_keys, str):
+        match_keys = [x.strip() for x in raw_keys.replace(";", ",").split(",") if x.strip()]
+    else:
+        match_keys = [str(x).strip() for x in raw_keys if str(x).strip()]
+    if mode == "group":
+        if len(match_keys) < 2:
+            return False, "整组同步至少需要 2 个对齐码"
+    else:
+        if not match_key:
+            return False, "缺少 match_key"
+    with _shopee_sync_lock:
+        if _shopee_sync_job.get("running"):
+            return False, "已有 Shopee 同步任务正在进行中"
+        _shopee_sync_job.update(
+            running=True,
+            message="排队中...",
+            mode=mode,
+            region=region,
+            match_key=match_key,
+            match_keys=match_keys,
+            result=None,
+            error=None,
+        )
+    threading.Thread(
+        target=_run_shopee_sync,
+        args=(mode, {"region": region, "match_key": match_key, "match_keys": match_keys}),
+        daemon=True,
+    ).start()
+    return True, "started"
+
+
+def _shopee_sync_status() -> dict:
+    with _shopee_sync_lock:
+        return dict(_shopee_sync_job)
 
 
 def _run_image_scan(
@@ -1664,6 +1754,35 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/catalog/sync/status":
             return self._json(200, {"ok": True, **_catalog_sync_status()})
 
+        if path == "/api/catalog/shopee-sync/status":
+            return self._json(200, {"ok": True, **_shopee_sync_status()})
+
+        if path == "/api/catalog/shopee-sync-tk":
+            return self._json(405, {"ok": False, "error": "use POST"})
+
+        if path == "/api/catalog/shopee-sync-tk-group":
+            return self._json(405, {"ok": False, "error": "use POST"})
+
+        if path == "/api/catalog/shopee-sync-tk":
+            match_key = str(data.get("match_key") or "").strip()
+            region = str(data.get("region") or "PH").upper()
+            if not match_key:
+                return self._json(400, {"ok": False, "error": "需要 match_key"})
+            ok, msg = _start_shopee_sync("single", {"match_key": match_key, "region": region})
+            if not ok:
+                return self._json(400, {"ok": False, "error": msg})
+            return self._json(200, {"ok": True, "started": True, "message": msg})
+
+        if path == "/api/catalog/shopee-sync-tk-group":
+            raw_keys = data.get("match_keys") or data.get("keys") or ""
+            region = str(data.get("region") or "PH").upper()
+            if not raw_keys:
+                return self._json(400, {"ok": False, "error": "需要 match_keys"})
+            ok, msg = _start_shopee_sync("group", {"match_keys": raw_keys, "region": region})
+            if not ok:
+                return self._json(400, {"ok": False, "error": msg})
+            return self._json(200, {"ok": True, "started": True, "message": msg})
+
         if path == "/api/settlement/config":
             from modules.finance import settlement_pull as spull
             from modules.finance.settlement_report import (
@@ -2088,13 +2207,33 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(400, {"ok": False, "error": str(e)})
 
         if path == "/api/catalog/shopee-sync-tk":
-            from modules.catalog import shopee_push as sp_push
+            match_key = str(data.get("match_key") or "").strip()
+            region = str(data.get("region") or "PH").upper()
+            if not match_key:
+                return self._json(400, {"ok": False, "error": "需要 match_key"})
+            ok, msg = _start_shopee_sync("single", {"match_key": match_key, "region": region})
+            if not ok:
+                return self._json(400, {"ok": False, "error": msg})
+            return self._json(200, {"ok": True, "started": True, "message": msg})
 
+        if path == "/api/catalog/shopee-sync-tk-group":
+            raw_keys = data.get("match_keys") or data.get("keys") or ""
+            region = str(data.get("region") or "PH").upper()
+            if not raw_keys:
+                return self._json(400, {"ok": False, "error": "需要 match_keys"})
+            ok, msg = _start_shopee_sync("group", {"match_keys": raw_keys, "region": region})
+            if not ok:
+                return self._json(400, {"ok": False, "error": msg})
+            return self._json(200, {"ok": True, "started": True, "message": msg})
+
+        if path == "/api/catalog/shopee-sync-tk":
             match_key = str(data.get("match_key") or "").strip()
             region = str(data.get("region") or "PH").upper()
             if not match_key:
                 return self._json(400, {"ok": False, "error": "需要 match_key"})
             try:
+                from modules.catalog import shopee_push as sp_push
+
                 result = sp_push.sync_tk_to_shopee_global(match_key, region=region)
                 self._json(200, {"ok": True, **result})
             except Exception as e:
@@ -2102,13 +2241,13 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/catalog/shopee-sync-tk-group":
-            from modules.catalog import shopee_push as sp_push
-
             raw_keys = data.get("match_keys") or data.get("keys") or ""
             region = str(data.get("region") or "PH").upper()
             if not raw_keys:
                 return self._json(400, {"ok": False, "error": "需要 match_keys"})
             try:
+                from modules.catalog import shopee_push as sp_push
+
                 result = sp_push.sync_tk_group_to_shopee(raw_keys, region=region)
                 self._json(200, {"ok": True, **result})
             except Exception as e:

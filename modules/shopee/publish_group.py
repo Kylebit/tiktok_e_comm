@@ -10,7 +10,9 @@ from modules.shopee.global_sku_map import global_item_id_for_match_key, load_map
 from modules.shopee.pricing import REGION_CURRENCY, tk_local_to_cny
 from modules.shopee.publish import (
     DEFAULT_CATEGORY,
+    _english_safe_sku,
     _fetch_tk_detail,
+    _run_publish_task,
     _find_tk_row,
     _first_url,
     _global_attribute_list,
@@ -19,6 +21,7 @@ from modules.shopee.publish import (
     _shop_meta,
     _upload_images,
 )
+from modules.shopee.global_sku_map import record_shop_item
 from modules.shopee.shops import sync_shop_ids
 
 
@@ -76,6 +79,10 @@ def load_tk_group(match_keys: list[str], source_region: str = "PH") -> dict:
         raise ValueError("至少需要 2 个对齐码，如 0402,0403,0404,0405")
 
     reg_order = list(TK_SOURCE_ORDER)
+    src = (source_region or "").upper()
+    if src in reg_order:
+        reg_order.remove(src)
+        reg_order.insert(0, src)
     row = None
     detail = None
     used_region = ""
@@ -133,6 +140,24 @@ def load_tk_group(match_keys: list[str], source_region: str = "PH") -> dict:
         "detail": detail,
         "variants": variants,
     }
+
+
+def _detail_with_primary_sku(detail: dict, primary_key: str) -> dict:
+    skus = list(detail.get("skus") or [])
+    if not skus:
+        return detail
+    primary = None
+    others = []
+    for sku in skus:
+        if primary is None and tk_match_key(sku.get("seller_sku") or "") == primary_key:
+            primary = sku
+        else:
+            others.append(sku)
+    if not primary:
+        return detail
+    out = dict(detail)
+    out["skus"] = [primary, *others]
+    return out
 
 
 def _tier_options_with_images(variants: list[dict]) -> list[dict]:
@@ -230,7 +255,7 @@ def publish_tk_group(
         "category_id": category_id,
         "global_item_name": copy["title"][:180],
         "description": copy["description"],
-        "global_item_sku": primary,
+        "global_item_sku": _english_safe_sku(primary),
         "original_price": float(v0["price_cny"] or 99),
         "weight": float(v0["weight"] or 0.2),
         "dimension": {
@@ -256,7 +281,7 @@ def publish_tk_group(
     models = [
         {
             "tier_index": [i],
-            "global_model_sku": v["match_key"],
+            "global_model_sku": _english_safe_sku(v["match_key"]),
             "original_price": float(v["price_cny"] or v0["price_cny"]),
             "seller_stock": [{"location_id": "CNZ", "stock": int(v["stock"] or 50)}],
         }
@@ -539,4 +564,38 @@ def sync_tk_group(
         "message": f"已整组同步全球商品 {gid}（{len(keys)} 规格 · Color 图 · ¥价 · 库存）",
         "raw_tier": tier_resp,
         "raw_models": model_resp,
+    }
+
+
+def publish_group_to_shop(
+    match_keys: str | list[str],
+    *,
+    region: str = "PH",
+) -> dict:
+    group = load_tk_group(_parse_keys(match_keys) if isinstance(match_keys, str) else match_keys, region)
+    keys = group["match_keys"]
+    gid = global_item_id_for_match_key(keys[0])
+    if not gid:
+        raise RuntimeError(f"未找到 {keys[0]} 的全球商品映射，请先同步全球商品")
+
+    shop_id, _merchant_id, token, _mtoken = _merchant_ctx(region)
+    ref = _reference_item(region.upper(), shop_id, token)
+    detail = _detail_with_primary_sku(group["detail"], keys[0])
+    result = _run_publish_task(
+        global_item_id=int(gid),
+        detail=detail,
+        region=region.upper(),
+        shop_id=shop_id,
+        token=token,
+        model_sku=keys[0],
+        ref=ref,
+    )
+    if result.get("item_id"):
+        record_shop_item(str(gid), region.upper(), shop_id=shop_id, item_id=result["item_id"])
+    return {
+        **result,
+        "flow": "publish_group_to_shop",
+        "match_keys": keys,
+        "region": region.upper(),
+        "shop_id": shop_id,
     }

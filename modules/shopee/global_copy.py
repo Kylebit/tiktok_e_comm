@@ -147,6 +147,53 @@ def _ai_chat(system: str, user: str, *, max_tokens: int = 120) -> str:
     ) or "").strip()
 
 
+def _guess_material(title_src: str, detail: dict) -> str:
+    hay = f"{title_src} {strip_html(detail.get('description') or '')}".lower()
+    for token, label in (
+        ("acrylic", "Acrylic"),
+        ("akrilik", "Acrylic"),
+        ("ceramic", "Ceramic"),
+        ("wood", "Wooden"),
+        ("bamboo", "Bamboo"),
+        ("metal", "Metal"),
+        ("iron", "Iron"),
+        ("pvc", "PVC"),
+        ("plastic", "Plastic"),
+        ("glass", "Glass"),
+        ("fabric", "Fabric"),
+        ("cotton", "Cotton"),
+        ("resin", "Resin"),
+    ):
+        if token in hay:
+            return label
+    return ""
+
+
+def _generic_english_title(detail: dict, model_sku: str, title_src: str) -> str:
+    material = _guess_material(title_src, detail)
+    parts = [material, "Home Decor Ornament"] if material else ["Home Decor Ornament"]
+    sku = (detail.get("skus") or [{}])[0]
+    dim = sku.get("sku_dimensions") or detail.get("package_dimensions") or {}
+    size_note = ""
+    if dim.get("length") and dim.get("width"):
+        size_note = f", {dim.get('length')}x{dim.get('width')} cm"
+    title = " ".join(parts) + f" for Bedroom, Living Room and Desk Display{size_note}"
+    return _clamp_title(title, model_sku)
+
+
+def _generic_english_description(detail: dict, model_sku: str, title: str) -> str:
+    specs = _extra_specs(detail)
+    body = (
+        f"{title}. Suitable for home decoration, shelf styling and desktop display. "
+        f"Designed for bedroom, living room, office and gift scenes. "
+        f"Please review product photos and size information before publishing."
+    )
+    if specs:
+        body += f" {specs}."
+    body += f" Seller SKU: {model_sku}."
+    return _clamp_description(body, model_sku)
+
+
 def english_variant_label(raw: str, fallback: str = "") -> str:
     """Color/规格选项名 → 英文（全球商品 tier option）。"""
     name = (raw or "").strip().split("/")[0].strip()[:80]
@@ -219,20 +266,15 @@ def build_global_copy(
         description = ""
 
     if not title:
-        title = (
-            title_src
-            if is_english_listing_text(title_src)
-            else f"Home Decor Product SKU {model_sku}"
-        )
+        if ph_english and is_english_listing_text(title_src):
+            title = title_src
+        else:
+            title = _generic_english_title(detail, model_sku, title_src)
     if not description or len(description) < 150:
-        description = (
-            desc_src
-            if is_english_listing_text(desc_src)
-            else (
-                f"{title}. Premium quality for home decoration. Easy to apply and suitable for "
-                f"bedroom, living room and office. Seller SKU: {model_sku}."
-            )
-        )
+        if ph_english and is_english_listing_text(desc_src):
+            description = desc_src
+        else:
+            description = _generic_english_description(detail, model_sku, title)
 
     title = _clamp_title(title, model_sku)
     description = _clamp_description(description, model_sku)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 import tempfile
 import time
 import urllib.request
@@ -50,7 +51,50 @@ def _first_url(images) -> str:
     return ""
 
 
+def _collect_image_urls(detail: dict) -> list[str]:
+    urls: list[str] = []
+    for img in detail.get("main_images") or []:
+        u = _first_url([img])
+        if u and u not in urls:
+            urls.append(u)
+    if urls:
+        return urls
+    for sku in detail.get("skus") or []:
+        for attr in sku.get("sales_attributes") or []:
+            img = attr.get("sku_img")
+            if not img:
+                continue
+            u = _first_url([img])
+            if u and u not in urls:
+                urls.append(u)
+    return urls
+
+
 def _download_image(url: str, dest: Path) -> Path:
+    try:
+        proc = subprocess.run(
+            [
+                "curl.exe",
+                "-L",
+                "-sS",
+                "--noproxy",
+                "*",
+                "-m",
+                "90",
+                "-A",
+                "Mozilla/5.0",
+                "-o",
+                str(dest),
+                url,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode == 0 and dest.is_file() and dest.stat().st_size > 0:
+            return dest
+    except Exception:
+        pass
+
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urlopen(req, timeout=60, context=DEFAULT_SSL_CTX, attempts=4) as resp:
         dest.write_bytes(resp.read())
@@ -418,6 +462,14 @@ def _shopee_title(raw: str, model_sku: str, *, max_len: int = 120) -> str:
     return title
 
 
+def _english_safe_sku(raw: str) -> str:
+    digits = "".join(ch for ch in str(raw or "") if ch.isdigit())
+    if digits:
+        return f"SKU{digits[-8:]}"
+    token = "".join(ch for ch in str(raw or "").upper() if ch.isalnum())
+    return f"SKU{token[:8] or '0000'}"
+
+
 def _local_item_fields(
     detail: dict,
     *,
@@ -466,7 +518,7 @@ def _run_publish_task(
             "description": local_desc,
             "item_status": "UNLIST",
             "original_price": price,
-            "item_sku": model_sku,
+            "item_sku": _english_safe_sku(model_sku),
             "logistic": _logistic_info(shop_id, token, ref),
         },
     }
@@ -578,7 +630,7 @@ def _create_global_item(
         "category_id": int(category_id),
         "global_item_name": global_title,
         "description": global_desc,
-        "global_item_sku": model_sku,
+        "global_item_sku": _english_safe_sku(model_sku),
         "original_price": price,
         "weight": max(weight, 0.01),
         "dimension": {
@@ -667,11 +719,7 @@ def publish_match_key(
     tk_row, tk_detail, tk_source = _find_tk_for_global(key, reg)
     detail = tk_detail
 
-    urls = [_first_url(detail.get("main_images"))]
-    for img in detail.get("main_images") or []:
-        u = _first_url([img])
-        if u and u not in urls:
-            urls.append(u)
+    urls = _collect_image_urls(detail)
 
     model_sku = key  # Shopee 4 位码
     token = ensure_shop_token(shop_id)

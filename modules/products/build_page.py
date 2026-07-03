@@ -1,5 +1,7 @@
 """生成商品成本维护页面。"""
 
+from __future__ import annotations
+
 import json
 from pathlib import Path
 

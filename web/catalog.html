@@ -128,13 +128,24 @@
       if (!s) return '';
       return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
     }
+    function imgSrc(url) {
+      if (!url) return '';
+      if (/^(data:|blob:|\/)/.test(url)) return url;
+      return '/api/proxy-image?url=' + encodeURIComponent(url);
+    }
+    function markThumbError(img) {
+      var box = img && img.parentNode;
+      if (!box) return;
+      box.className += ' img-error';
+      box.innerHTML = '<span class="no-img" title="' + esc(img.getAttribute('data-original') || '') + '">加载失败</span>';
+    }
     function fmtPrice(p, c) {
       if (p == null || p === '') return '—';
       return (c ? c + ' ' : '') + Number(p).toFixed(2);
     }
     function imgCell(url, label) {
       if (!url) return '<td class="thumb"><span class="no-img">—</span></td>';
-      return '<td class="thumb"><img src="' + esc(url) + '" alt="" loading="lazy" title="' + esc(label || '') + '"></td>';
+      return '<td class="thumb"><img src="' + esc(imgSrc(url)) + '" data-original="' + esc(url) + '" alt="" loading="lazy" title="' + esc(label || '') + '" onerror="markThumbError(this)"></td>';
     }
     function regionBadges(rows) {
       if (!rows || !rows.length) return '<span class="miss-inline">—</span>';
@@ -323,7 +334,7 @@
       if (row.ozon && row.ozon.image_url) imgs.push({ src: row.ozon.image_url, label: 'OZ' });
       var imgHtml = imgs.length
         ? imgs.map(function(x) {
-            return '<img class="lookup-thumb" src="' + esc(x.src) + '" alt="' + esc(x.label) + '">';
+            return '<img class="lookup-thumb" src="' + esc(imgSrc(x.src)) + '" data-original="' + esc(x.src) + '" alt="' + esc(x.label) + '" onerror="markThumbError(this)">';
           }).join('')
         : '<span class="meta">无图</span>';
       var plat = [];
@@ -575,9 +586,20 @@
       });
     }
     function loadStores() {
-      fetch('/api/catalog/stores').then(function(r) { return r.json(); }).then(function(d) {
+      fetch('/api/catalog/stores').then(function(r) {
+        return r.text().then(function(text) {
+          var d = {};
+          try { d = JSON.parse(text); } catch (e) { d = {ok:false, error:'catalog stores API returned HTTP ' + r.status}; }
+          d._http_status = r.status;
+          return d;
+        });
+      }).then(function(d) {
         var el = document.getElementById('storeCards');
-        if (!d.ok || !d.stores) { el.innerHTML = ''; return; }
+        if (!d.ok || !d.stores) {
+          el.innerHTML = '<div class="card store-card"><h2>目录状态</h2><p class="meta warn">' +
+            esc(d.error || '目录统计加载失败') + '</p><p class="hint">如果是 404，通常是 8765 上运行着旧服务，请重启新品后台。</p></div>';
+          return;
+        }
         el.innerHTML = d.stores.map(function(s) {
           var oz = s.ozon_keys != null ? (' · Ozon ' + s.ozon_keys) : '';
           var cost = s.with_cost != null ? (' · 有成本 ' + s.with_cost) : '';
@@ -607,6 +629,9 @@
           var msc = document.getElementById('missingSpSkuCount');
           if (msc) msc.textContent = g.shopee_needs_sku ? ('(' + g.shopee_needs_sku + ')') : '';
         }
+      }).catch(function(e) {
+        document.getElementById('storeCards').innerHTML =
+          '<div class="card store-card"><h2>目录状态</h2><p class="meta warn">' + esc(e.message || e) + '</p></div>';
       });
     }
     function loadList() {
@@ -617,15 +642,28 @@
       var missingTkSku = document.getElementById('missingTkSku').checked;
       var missingSpSku = document.getElementById('missingSpSku').checked;
       var platform = missingTkSku ? 'missing_tk_sku' : (missingSpSku ? 'missing_sp_sku' : (noOzon ? 'missing_ozon' : ''));
-      var q = '/api/catalog/products?limit=300' +
+      var q = '/api/catalog/products?limit=1000' +
         (region ? '&region=' + encodeURIComponent(region) : '') +
         (sku ? '&sku=' + encodeURIComponent(sku) : '') +
         (matchOnly ? '&match_only=1' : '') +
         (platform ? '&platform=' + encodeURIComponent(platform) : '');
       var tbody = document.getElementById('tbody');
       tbody.innerHTML = '<tr><td colspan="14" class="empty">加载中…</td></tr>';
-      fetch(q).then(function(r) { return r.json(); }).then(function(d) {
+      fetch(q).then(function(r) {
+        return r.text().then(function(text) {
+          var d = {};
+          try { d = JSON.parse(text); } catch (e) { d = {ok:false, error:'catalog products API returned HTTP ' + r.status}; }
+          d._http_status = r.status;
+          return d;
+        });
+      }).then(function(d) {
         if (!d.ok) {
+          var hint = d._http_status === 404
+            ? '当前 8765 端口像是旧服务；请用 OrbitHiveNewProductLauncher 重新启动。'
+            : (d.error || '目录接口返回失败');
+          tbody.innerHTML = '<tr><td colspan="14" class="empty warn" style="padding:20px;line-height:1.6"><strong>商品目录加载失败</strong><br>' + esc(hint) + '</td></tr>';
+          document.getElementById('listMeta').textContent = hint;
+          return;
           tbody.innerHTML = '<tr><td colspan="14" class="empty">错误</td></tr>';
           return;
         }
@@ -1034,7 +1072,7 @@
       var missingTkSku = document.getElementById('missingTkSku').checked;
       var missingSpSku = document.getElementById('missingSpSku').checked;
       var platform = missingTkSku ? 'missing_tk_sku' : (missingSpSku ? 'missing_sp_sku' : (noOzon ? 'missing_ozon' : ''));
-      var q = basePath + '?limit=300' +
+      var q = basePath + '?limit=1000' +
         (region ? '&region=' + encodeURIComponent(region) : '') +
         (sku ? '&sku=' + encodeURIComponent(sku) : '') +
         (matchOnly ? '&match_only=1' : '') +

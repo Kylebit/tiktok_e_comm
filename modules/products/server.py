@@ -6,15 +6,21 @@ import json
 import mimetypes
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import hashlib
+import os
+from concurrent.futures import ThreadPoolExecutor, wait
+import urllib.error
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from core.config import ROOT
 from modules.products import costs as cost_mod
 
 WEB_DIR = ROOT / "web"
 DEFAULT_PORT = 8765
+IMAGE_CACHE_DIR = ROOT / "data" / "web_image_cache"
 
 _scan_lock = threading.Lock()
 _scan_job: dict = {
@@ -919,19 +925,26 @@ def _api_status() -> dict:
     from modules.products import deactivate as deact_mod
     from modules.products import images as image_mod
 
+    def safe_count(label: str, fn) -> tuple[int, str | None]:
+        try:
+            return len(fn()), None
+        except Exception as e:
+            return 0, f"{label}: {e}"
+
     try:
         tok = auth.load_token()
         access_exp = auth.access_expires_at(tok)
         refresh_exp = auth.refresh_expires_at(tok)
-        pending = len(title_mod.load_queue("pending"))
-        pending_promos = len(promo_mod.load_queue("pending"))
-        pending_deact = len(deact_mod.load_queue("pending"))
-        pending_images = len(image_mod.load_active_queue())
+        pending, w_titles = safe_count("titles", lambda: title_mod.load_queue("pending"))
+        pending_promos, w_promos = safe_count("promotions", lambda: promo_mod.load_queue("pending"))
+        pending_deact, w_deact = safe_count("deactivate", lambda: deact_mod.load_queue("pending"))
+        pending_images, w_images = safe_count("images", image_mod.load_active_queue)
         from modules.miaoshou import mx_web_approval as mx_web
         from modules.miaoshou import uk_web_approval as uk_web
 
         pending_mx = len(mx_web.list_cards(status="pending"))
         pending_uk = len(uk_web.list_cards(status="pending"))
+        warnings = [x for x in (w_titles, w_promos, w_deact, w_images) if x]
         return {
             "ok": True,
             "seller_name": tok.get("seller_name"),
@@ -943,9 +956,119 @@ def _api_status() -> dict:
             "pending_images": pending_images,
             "pending_mx": pending_mx,
             "pending_uk": pending_uk,
+            "warnings": warnings,
         }
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+def _cache_ext(content_type: str, url_path: str) -> str:
+    ctype = (content_type or "").split(";", 1)[0].strip().lower()
+    ext = mimetypes.guess_extension(ctype) or Path(url_path).suffix
+    if not ext or len(ext) > 8:
+        ext = ".jpg"
+    return ext
+
+
+def _image_cache_path(url: str, content_type: str = "") -> Path:
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()
+    ext = _cache_ext(content_type, urlparse(url).path)
+    return IMAGE_CACHE_DIR / f"{digest}{ext}"
+
+
+def _download_remote_image(url: str) -> tuple[Path, str]:
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("only http/https image URLs are supported")
+
+    cached = _image_cache_path(url)
+    for existing in IMAGE_CACHE_DIR.glob(cached.stem + ".*"):
+        if existing.is_file() and existing.stat().st_size > 0:
+            ctype = mimetypes.guess_type(str(existing))[0] or "image/jpeg"
+            return existing, ctype
+
+    IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
+            ),
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            "Referer": f"{parsed.scheme}://{parsed.netloc}/",
+        },
+    )
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                content_type = resp.headers.get("Content-Type") or "image/jpeg"
+                if not content_type.lower().startswith("image/"):
+                    raise ValueError(f"remote URL is not an image: {content_type}")
+                data = resp.read(12 * 1024 * 1024)
+            break
+        except (urllib.error.URLError, TimeoutError, OSError):
+            if attempt:
+                raise
+            time.sleep(0.2)
+    fp = _image_cache_path(url, content_type)
+    fp.write_bytes(data)
+    return fp, content_type
+
+
+def _preview_image_urls(payload: dict, limit: int = 18) -> list[str]:
+    urls: list[str] = []
+
+    def add(value):
+        if not value:
+            return
+        text = str(value).strip()
+        if text and text not in urls:
+            urls.append(text)
+
+    review = payload.get("review") if isinstance(payload, dict) else {}
+    for img in (review or {}).get("overseas_image_candidates") or []:
+        if len(urls) >= limit:
+            break
+        if isinstance(img, dict):
+            add(img.get("url"))
+    for img in (review or {}).get("image_actions") or []:
+        if len(urls) >= limit:
+            break
+        if isinstance(img, dict):
+            add(img.get("url"))
+    return urls[:limit]
+
+
+def _warm_preview_image_cache(payload: dict) -> None:
+    urls = _preview_image_urls(payload)
+    if not urls:
+        return
+    pool = ThreadPoolExecutor(max_workers=min(8, len(urls)))
+    try:
+        futures = [pool.submit(_download_remote_image, url) for url in urls]
+        wait(futures, timeout=18)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
+def _placeholder_image_bytes(message: str = "image unavailable") -> bytes:
+    safe = (
+        message.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="480" height="480" viewBox="0 0 480 480">'
+        '<rect width="480" height="480" fill="#f1f5f9"/>'
+        '<rect x="72" y="96" width="336" height="240" rx="12" fill="#e2e8f0"/>'
+        '<circle cx="168" cy="176" r="36" fill="#cbd5e1"/>'
+        '<path d="M112 304l84-84 62 62 44-44 66 66z" fill="#cbd5e1"/>'
+        f'<text x="240" y="382" text-anchor="middle" font-family="Arial, sans-serif" '
+        f'font-size="22" fill="#64748b">{safe}</text>'
+        '</svg>'
+    ).encode("utf-8")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -959,6 +1082,33 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _module_moved(self, name: str, url: str):
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{name} moved</title>
+  <style>
+    body {{ font-family: Arial, sans-serif; background:#f8fafc; color:#0f172a; margin:0; }}
+    main {{ max-width: 760px; margin: 64px auto; background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:28px; }}
+    h1 {{ margin:0 0 12px; font-size:28px; }}
+    p {{ line-height:1.6; color:#475569; }}
+    a {{ color:#2563eb; text-decoration:none; }}
+    code {{ background:#f1f5f9; padding:2px 6px; border-radius:6px; }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>{name} has moved</h1>
+    <p>This module is no longer hosted inside <strong>Orbit OS</strong>.</p>
+    <p>Please open it from its standalone service: <a href="{url}">{url}</a></p>
+    <p>Old compatibility entry is now retired so the modules can run independently.</p>
+  </main>
+</body>
+</html>""".encode("utf-8")
+        return self._bytes(410, html, "text/html; charset=utf-8")
 
     def _bytes(
         self,
@@ -979,7 +1129,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _file(self, path: Path):
+    def _file(self, path: Path, *, cache_seconds: int | None = None):
         if not path.is_file():
             self.send_error(404)
             return
@@ -990,6 +1140,17 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        if cache_seconds is not None:
+            self.send_header("Cache-Control", f"public, max-age={cache_seconds}")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _image_placeholder(self, message: str = "image unavailable"):
+        data = _placeholder_image_bytes(message)
+        self.send_response(200)
+        self.send_header("Content-Type", "image/svg+xml; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "public, max-age=300")
         self.end_headers()
         self.wfile.write(data)
 
@@ -1102,6 +1263,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path
+        if path in ("/new-product", "/new-product.html"):
+            return self._module_moved("Orbit Treasury", "http://127.0.0.1:8766/")
+        if path in ("/ozon", "/ozon.html", "/rus", "/rus.html"):
+            return self._module_moved("Orbit Rus", "http://127.0.0.1:8767/")
+        if path.startswith("/api/new-product/"):
+            return self._json(410, {"ok": False, "error": "Orbit Treasury moved to http://127.0.0.1:8766/"})
+        if path.startswith("/api/ozon/") or path.startswith("/api/rus/"):
+            return self._json(410, {"ok": False, "error": "Orbit Rus moved to http://127.0.0.1:8767/"})
         if self._handle_ozon_proxy("GET"):
             return
 
@@ -1110,6 +1279,16 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/static/"):
             rel = path[len("/static/") :]
             return self._file(WEB_DIR / "static" / rel)
+        if path == "/api/proxy-image":
+            q = parse_qs(urlparse(self.path).query)
+            url = unquote((q.get("url") or [""])[0]).strip()
+            if not url:
+                return self._json(400, {"ok": False, "error": "missing url"})
+            try:
+                fp, ctype = _download_remote_image(url)
+                return self._file(fp, cache_seconds=86400)
+            except (ValueError, urllib.error.URLError, TimeoutError, OSError) as e:
+                return self._image_placeholder("image unavailable")
         if path in ("/costs", "/costs.html"):
             return self._file(WEB_DIR / "costs.html")
         if path in ("/titles", "/titles.html"):
@@ -1128,6 +1307,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._file(WEB_DIR / "settlement.html")
         if path in ("/sourcing", "/sourcing.html"):
             return self._file(WEB_DIR / "sourcing.html")
+        if path in ("/th-dim-fix", "/th-dim-fix.html"):
+            return self._file(WEB_DIR / "th-dim-fix.html")
         if path in ("/sourcing/photoroom", "/sourcing/photoroom.html"):
             return self._file(WEB_DIR / "photoroom_showcase.html")
         if path in ("/ozon", "/ozon.html"):
@@ -1249,9 +1430,31 @@ class Handler(BaseHTTPRequestHandler):
             if not fp:
                 return self.send_error(404)
             return self._file(fp)
+        if path == "/api/new-product/preview":
+            from modules.sourcing import new_product_workbench as np_mod
+            q = parse_qs(urlparse(self.path).query)
+            raw = (q.get("offer_id") or q.get("url") or [""])[0]
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id or url"})
+            try:
+                return self._json(200, np_mod.build_preview(raw))
+            except Exception as e:
+                return self._json(400, {"ok": False, "error": str(e)})
 
         if path == "/api/status":
             return self._json(200, _api_status())
+        if path == "/api/health":
+            return self._json(
+                200,
+                {
+                    "ok": True,
+                    "service": "orbit-hive-local-console",
+                    "root": str(ROOT),
+                    "new_product": (WEB_DIR / "new_product.html").is_file(),
+                    "catalog": (WEB_DIR / "catalog.html").is_file(),
+                    "threaded": True,
+                },
+            )
         if path == "/api/digest/preview":
             from modules.hub import digest as digest_mod
             snap = digest_mod.collect_snapshot()
@@ -1385,7 +1588,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True, "drafts": drafts})
         if path == "/api/catalog/stores":
             from modules.catalog import listings as cat_mod
-            return self._json(200, {"ok": True, "stores": cat_mod.store_summary(), "summary": cat_mod.global_summary()})
+            try:
+                return self._json(200, {"ok": True, "stores": cat_mod.store_summary(), "summary": cat_mod.global_summary()})
+            except Exception as e:
+                return self._json(500, {"ok": False, "error": str(e)})
         if path == "/api/catalog/products":
             from modules.catalog import listings as cat_mod
             q = parse_qs(urlparse(self.path).query)
@@ -1393,13 +1599,16 @@ class Handler(BaseHTTPRequestHandler):
             sku = (q.get("sku") or [None])[0]
             match_only = (q.get("match_only") or ["0"])[0] in ("1", "true", "yes")
             platform = (q.get("platform") or [None])[0]
-            limit = min(int((q.get("limit") or ["300"])[0] or 300), 500)
-            offset = int((q.get("offset") or ["0"])[0] or 0)
-            data = cat_mod.list_products(
-                region, sku=sku, match_only=match_only, platform=platform,
-                limit=limit, offset=offset,
-            )
-            return self._json(200, {"ok": True, **data})
+            try:
+                limit = min(int((q.get("limit") or ["300"])[0] or 300), 500)
+                offset = int((q.get("offset") or ["0"])[0] or 0)
+                data = cat_mod.list_products(
+                    region, sku=sku, match_only=match_only, platform=platform,
+                    limit=limit, offset=offset,
+                )
+                return self._json(200, {"ok": True, **data})
+            except Exception as e:
+                return self._json(500, {"ok": False, "error": str(e)})
 
         if path == "/api/catalog/export-pdf":
             from modules.catalog import pdf_export as pdf_mod
@@ -1592,6 +1801,10 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/api/feishu/event":
             return self._handle_feishu_event()
+        if path.startswith("/api/new-product/"):
+            return self._json(410, {"ok": False, "error": "Orbit Treasury moved to http://127.0.0.1:8766/"})
+        if path.startswith("/api/ozon/") or path.startswith("/api/rus/"):
+            return self._json(410, {"ok": False, "error": "Orbit Rus moved to http://127.0.0.1:8767/"})
         if self._handle_ozon_proxy("POST"):
             return
         try:
@@ -1735,6 +1948,144 @@ class Handler(BaseHTTPRequestHandler):
             if not ok:
                 return self._json(409, {"ok": False, "message": msg})
             return self._json(200, {"ok": True, "message": msg})
+
+        if path == "/api/shopee/th_dim_fix/save":
+            from modules.shopee.dim_fix import save_dimension
+
+            try:
+                result = save_dimension(
+                    int(data["item_id"]),
+                    float(data["length_cm"]),
+                    float(data["width_cm"]),
+                    float(data["height_cm"]),
+                )
+                return self._json(200, result)
+            except Exception as e:
+                return self._json(500, {"ok": False, "error": str(e)})
+
+        if path == "/api/new-product/preview":
+            from modules.sourcing import new_product_workbench as np_mod
+            raw = str(data.get("url") or data.get("offer_id") or "").strip()
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing url or offer_id"})
+            try:
+                if data.get("precollect"):
+                    urls = data.get("overseas_urls") or []
+                    if isinstance(urls, str):
+                        urls = [x.strip() for x in urls.replace("\r", "\n").split("\n") if x.strip()]
+                    result = np_mod.precollect_preview(
+                        raw,
+                        overseas_urls=list(urls),
+                        source_code=str(data.get("source_code") or ""),
+                        force=bool(data.get("force")),
+                    )
+                else:
+                    result = np_mod.build_preview(raw, source_code=str(data.get("source_code") or ""))
+                _warm_preview_image_cache(result)
+                return self._json(200, result)
+            except Exception as e:
+                try:
+                    fallback = np_mod.build_preview(raw, source_code=str(data.get("source_code") or ""))
+                    fallback["precollect_error"] = str(e)
+                    _warm_preview_image_cache(fallback)
+                    return self._json(200, fallback)
+                except Exception:
+                    return self._json(400, {"ok": False, "error": str(e)})
+
+        if path == "/api/new-product/review":
+            from modules.sourcing import new_product_workbench as np_mod
+            raw = str(data.get("offer_id") or data.get("url") or "").strip()
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            try:
+                return self._json(200, np_mod.save_review(raw, data.get("review") or {}))
+            except Exception as e:
+                return self._json(400, {"ok": False, "error": str(e)})
+
+        if path == "/api/new-product/image-request":
+            from modules.sourcing import new_product_workbench as np_mod
+            raw = str(data.get("offer_id") or data.get("url") or "").strip()
+            prompt = str(data.get("prompt") or "").strip()
+            if not raw or not prompt:
+                return self._json(400, {"ok": False, "error": "missing offer_id or prompt"})
+            try:
+                return self._json(200, np_mod.add_image_request(raw, prompt, kind=str(data.get("kind") or "supplement")))
+            except Exception as e:
+                return self._json(400, {"ok": False, "error": str(e)})
+
+        if path == "/api/new-product/miaoshou-draft":
+            from modules.sourcing import new_product_workbench as np_mod
+            raw = str(data.get("offer_id") or data.get("url") or "").strip()
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            try:
+                return self._json(200, np_mod.prepare_miaoshou_draft(raw))
+            except Exception as e:
+                return self._json(400, {"ok": False, "error": str(e)})
+
+        if path == "/api/new-product/miaoshou-draft/commit":
+            from modules.sourcing import new_product_workbench as np_mod
+            raw = str(data.get("offer_id") or data.get("url") or "").strip()
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            try:
+                return self._json(200, np_mod.write_miaoshou_draft(raw))
+            except Exception as e:
+                return self._json(400, {"ok": False, "error": str(e)})
+
+        if path == "/api/new-product/miaoshou-second-review/continue":
+            from modules.sourcing import new_product_workbench as np_mod
+            raw = str(data.get("offer_id") or data.get("url") or "").strip()
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            try:
+                return self._json(200, np_mod.start_claim_miaoshou_to_tiktok(raw))
+            except Exception as e:
+                return self._json(400, {"ok": False, "error": str(e)})
+
+        if path == "/api/new-product/site-drafts/prepare":
+            from modules.sourcing import new_product_workbench as np_mod
+            raw = str(data.get("offer_id") or data.get("url") or "").strip()
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            try:
+                return self._json(200, np_mod.prepare_miaoshou_site_drafts(raw))
+            except Exception as e:
+                return self._json(400, {"ok": False, "error": str(e)})
+
+        if path == "/api/new-product/sku-numbering/fix":
+            from modules.sourcing import new_product_workbench as np_mod
+            raw = str(data.get("offer_id") or data.get("url") or "").strip()
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            try:
+                return self._json(200, np_mod.ensure_common_sequential_skus(raw))
+            except Exception as e:
+                return self._json(400, {"ok": False, "error": str(e)})
+
+        if path == "/api/new-product/overseas-source":
+            from modules.sourcing import new_product_workbench as np_mod
+            raw = str(data.get("offer_id") or data.get("url") or "").strip()
+            overseas_url = str(data.get("overseas_url") or "").strip()
+            if not raw or not overseas_url:
+                return self._json(400, {"ok": False, "error": "missing offer_id or overseas_url"})
+            try:
+                return self._json(200, np_mod.add_overseas_source(raw, overseas_url, fetch=bool(data.get("fetch"))))
+            except Exception as e:
+                return self._json(400, {"ok": False, "error": str(e)})
+
+        if path == "/api/new-product/overseas-sources":
+            from modules.sourcing import new_product_workbench as np_mod
+            raw = str(data.get("offer_id") or data.get("url") or "").strip()
+            urls = data.get("overseas_urls") or []
+            if isinstance(urls, str):
+                urls = [x.strip() for x in urls.replace("\r", "\n").split("\n") if x.strip()]
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            try:
+                return self._json(200, np_mod.save_overseas_sources(raw, list(urls), fetch=bool(data.get("fetch"))))
+            except Exception as e:
+                return self._json(400, {"ok": False, "error": str(e)})
 
         if path == "/api/catalog/shopee-sync-tk":
             from modules.catalog import shopee_push as sp_push
@@ -2107,7 +2458,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
 
-def serve(port: int = DEFAULT_PORT, open_browser: bool = True, page: str = "index"):
+def serve(
+    port: int = DEFAULT_PORT,
+    open_browser: bool = True,
+    page: str = "index",
+    startup_refresh: bool | None = None,
+):
     WEB_DIR.mkdir(parents=True, exist_ok=True)
     (WEB_DIR / "static").mkdir(parents=True, exist_ok=True)
 
@@ -2117,21 +2473,22 @@ def serve(port: int = DEFAULT_PORT, open_browser: bool = True, page: str = "inde
 
             r = refresh_all()
             if r.get("errors"):
-                print("  ⚠️ Token 刷新:", "; ".join(r["errors"][:2]))
+                print("  [WARN] Token 刷新:", "; ".join(r["errors"][:2]))
             else:
-                print("  ✅ Token 已自动刷新（TikTok + Shopee）")
+                print("  [OK] Token 已自动刷新（TikTok + Shopee）")
         except Exception as e:
-            print(f"  ⚠️ Token 刷新跳过: {e}")
+            print(f"  [WARN] Token 刷新跳过: {e}")
 
     if not (WEB_DIR / "costs.html").is_file():
         from modules.products.build_page import build_html
         build_html()
 
     try:
-        server = HTTPServer(("127.0.0.1", port), Handler)
+        server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        server.daemon_threads = True
     except OSError as e:
         if getattr(e, "errno", None) == 48:
-            print(f"  ⚠️ 端口 {port} 已被占用。请先停止旧进程（旧版可能没有 /images 路由会 404）：")
+            print(f"  [WARN] 端口 {port} 已被占用。请先停止旧进程（旧版可能没有 /images 路由会 404）：")
             print(f"     lsof -i :{port}   # 查看 PID 后 kill <PID>")
             print(f"     然后重新运行: python3 main.py serve --page images")
         raise
@@ -2151,13 +2508,15 @@ def serve(port: int = DEFAULT_PORT, open_browser: bool = True, page: str = "inde
         "uk": "/uk",
     }
     url = f"http://127.0.0.1:{port}{routes.get(page, '/')}"
-    print(f"  ✅ 控制台: http://127.0.0.1:{port}/")
+    print(f"  [OK] 控制台: http://127.0.0.1:{port}/")
     print(f"  商品目录: http://127.0.0.1:{port}/catalog")
     print(f"  结算利润: http://127.0.0.1:{port}/settlement")
     print(f"  Ozon 运营: http://127.0.0.1:{port}/ozon")
     print(f"  MX 上架审批: http://127.0.0.1:{port}/mx")
     print(f"  UK 上架审批: http://127.0.0.1:{port}/uk")
+    print("  Orbit Rus: http://127.0.0.1:8767/")
     print(f"  1688 选品: http://127.0.0.1:{port}/sourcing")
+    print("  Orbit Treasury: http://127.0.0.1:8766/")
     print(f"  Listing 优化: http://127.0.0.1:{port}/titles")
     print(f"  主图优化: http://127.0.0.1:{port}/images")
     print(f"  Analytics: http://127.0.0.1:{port}/analytics")
@@ -2165,7 +2524,12 @@ def serve(port: int = DEFAULT_PORT, open_browser: bool = True, page: str = "inde
     print(f"  促销调价: http://127.0.0.1:{port}/promotions")
     print(f"  成本维护: http://127.0.0.1:{port}/costs")
     print("  Ctrl+C 停止")
-    threading.Timer(0.5, _startup_refresh_tokens).start()
+    if startup_refresh is None:
+        startup_refresh = os.environ.get("ORBIT_STARTUP_REFRESH", "").lower() in ("1", "true", "yes")
+    if startup_refresh:
+        threading.Timer(0.5, _startup_refresh_tokens).start()
+    else:
+        print("  [OK] Startup token refresh skipped; run `python main.py tokens refresh` when needed.")
 
     if open_browser:
         import webbrowser

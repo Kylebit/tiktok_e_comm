@@ -1,5 +1,7 @@
 """订单利润计算（继承 CURSOR 规则，广告费来自 Ads API）。"""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 
 from core.config import get

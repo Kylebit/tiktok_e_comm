@@ -219,15 +219,28 @@ def build_parser():
     psv = sub.add_parser("serve", help="启动 Web 控制台（浏览器操作）")
     psv.add_argument("--port", type=int, default=8765)
     psv.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
+    psv.add_argument("--startup-refresh", action="store_true", help="启动后刷新 token；默认关闭以保证本地 UI 先可用")
     psv.add_argument(
         "--page",
-        choices=["index", "catalog", "settlement", "costs", "titles", "images", "sourcing", "ozon", "promotions", "analytics", "deactivate"],
+        choices=["index", "catalog", "settlement", "costs", "titles", "images", "sourcing", "promotions", "analytics", "deactivate"],
         default="index",
     )
     psv.set_defaults(
         func=lambda a: __import__("modules.products.server", fromlist=["serve"]).serve(
-            port=a.port, open_browser=not a.no_browser, page=a.page
+            port=a.port, open_browser=not a.no_browser, page=a.page, startup_refresh=a.startup_refresh
         )
+    )
+
+    treasury = sub.add_parser("treasury", help="启动 Orbit Treasury（独立新品发布台）")
+    treasury.add_argument("--port", type=int, default=8766)
+    treasury.set_defaults(
+        func=lambda a: __import__("modules.sourcing.new_product_server", fromlist=["serve"]).serve(port=a.port)
+    )
+
+    rus = sub.add_parser("rus", help="启动 Orbit Rus（独立俄罗斯业务台）")
+    rus.add_argument("--port", type=int, default=8767)
+    rus.set_defaults(
+        func=lambda a: __import__("modules.ozon.rus_server", fromlist=["serve"]).serve(port=a.port)
     )
 
     sync = sub.add_parser("sync", help="批量同步")
@@ -547,6 +560,23 @@ def build_parser():
     st.add_argument("--url", required=True, help="1688 offer id 或链接")
     st.set_defaults(func=lambda a: _sourcing_detail_text(a))
 
+    si = src_sub.add_parser("intel", help="预览受控 EchoTik + 1688 情报请求")
+    si.add_argument("--keyword-cn", required=True, help="中文类目或货源关键词")
+    si.add_argument("--keyword-ph", default="", help="菲律宾市场关键词（可选）")
+    si.add_argument("--keyword-my", default="", help="马来西亚市场关键词（可选）")
+    si.add_argument("--keyword-th", default="", help="泰国市场关键词（可选）")
+    si.add_argument("--keyword-vn", default="", help="越南市场关键词（可选）")
+    si.add_argument("--image-url", help="1688 以图搜图使用的公开 HTTPS 图片 URL（可选）")
+    si.add_argument("--new-rank-date", help="EchoTik 新品榜日期 YYYY-MM-DD（可选，增加四次调用）")
+    si.add_argument("--page-size", type=int, default=20, help="每次返回数量，上限 20")
+    si.add_argument("--output", help="JSON 输出路径（可选）")
+    si.add_argument(
+        "--execute-paid",
+        action="store_true",
+        help="执行付费只读 API；同时要求 LINKFOXAGENT_API_KEY",
+    )
+    si.set_defaults(func=_sourcing_external_intel)
+
     return p
 
 
@@ -663,6 +693,41 @@ def _sourcing_detail_text(args) -> None:
     print(json.dumps(manifest.get("summary") or {}, ensure_ascii=False, indent=2))
     print(f"\n✅ 文字详情卡: data/sourcing/{offer_id}/detail_text_cards/")
     print(f"   在选品页查看: http://127.0.0.1:8765/sourcing?offer_id={offer_id}")
+
+
+def _sourcing_external_intel(args) -> None:
+    import json
+    from pathlib import Path
+
+    from modules.sourcing.external_intel import build_intel_plan, run_intel_plan
+
+    region_keywords = {
+        region: value
+        for region, value in {
+            "PH": args.keyword_ph,
+            "MY": args.keyword_my,
+            "TH": args.keyword_th,
+            "VN": args.keyword_vn,
+        }.items()
+        if value
+    }
+    plan = build_intel_plan(
+        keyword_cn=args.keyword_cn,
+        region_keywords=region_keywords,
+        page_size=args.page_size,
+        image_url=args.image_url,
+        new_rank_date=args.new_rank_date,
+    )
+    result = run_intel_plan(plan, allow_paid=args.execute_paid)
+    rendered = json.dumps(result, ensure_ascii=False, indent=2)
+    if args.output:
+        output = Path(args.output).expanduser().resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(rendered + "\n", encoding="utf-8")
+        mode = "result" if args.execute_paid else "preview"
+        print(f"Saved external-intel {mode}: {output}")
+    else:
+        print(rendered)
 
 
 MENU = """

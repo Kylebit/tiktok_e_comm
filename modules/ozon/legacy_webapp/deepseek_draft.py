@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import hashlib
 import json
 import os
 import subprocess
@@ -43,6 +46,11 @@ SYSTEM_PROMPT = (
     "Черновики title/description можно перефразировать естественнее, не теряя фактов из оригинала.\n\n"
     "Отвечай СТРОГО валидным JSON без markdown, со всеми перечисленными ключами."
 )
+
+
+def _title_fingerprint(title_ms: str) -> str:
+    normalized = (title_ms or "").strip()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
 
 
 def deepseek_api_key() -> str:
@@ -132,6 +140,7 @@ def generate_draft(
         except Exception:
             pass
 
+    translate_request_id = _title_fingerprint(title_ms)
     user_prompt = (
         f"Исходное название TikTok Shop (главная основа для перевода):\n{title_ms}\n"
         f"offer_id (для справки, не включай в текст): {offer_id}"
@@ -140,6 +149,9 @@ def generate_draft(
         + price_info
         + cand_str
         + rule_str
+        + f"\n\n[translate_request_id={translate_request_id}] "
+        "Переводи только указанное выше исходное название TikTok; "
+        "не используй переводы от других товаров или прошлых запросов."
     )
 
     key = deepseek_api_key()
@@ -168,5 +180,11 @@ def generate_draft(
     if "error" in resp:
         raise RuntimeError("DeepSeek API error: " + json.dumps(resp["error"], ensure_ascii=False))
 
-    content = resp["choices"][0]["message"]["content"]
+    choices = resp.get("choices") or []
+    if not choices:
+        raise RuntimeError("DeepSeek API returned empty choices")
+    message = choices[0].get("message") or {}
+    content = message.get("content") or ""
+    if not content.strip():
+        raise RuntimeError("DeepSeek API returned empty content")
     return json.loads(content)

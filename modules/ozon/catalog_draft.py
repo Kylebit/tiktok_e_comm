@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 
 from modules.catalog.sku_key import tk_match_key
+from modules.ozon.pending_drafts import invalidate_stale_pending, title_fingerprint
 from modules.ozon.catalog_source import (
     catalog_item_by_seller_sku,
     sync_catalog_to_tk_map,
@@ -142,6 +143,25 @@ def _invoke_deepseek(
 
 
 def build_draft(seller_sku: str) -> dict:
+    try:
+        return _build_draft_inner(seller_sku)
+    except IndexError as exc:
+        return {
+            "error": f"build_draft IndexError: {exc}",
+            "error_code": "index_error",
+            "seller_sku": seller_sku,
+            "context": "build_draft",
+        }
+    except Exception as exc:
+        return {
+            "error": str(exc),
+            "error_code": type(exc).__name__,
+            "seller_sku": seller_sku,
+            "context": "build_draft",
+        }
+
+
+def _build_draft_inner(seller_sku: str) -> dict:
     sync_catalog_to_tk_map(max_items=50)
 
     cat_item = catalog_item_by_seller_sku(seller_sku)
@@ -167,6 +187,9 @@ def build_draft(seller_sku: str) -> dict:
 
     price_cny = price_info["cny"] if price_info else None
     price_label = price_info["label"] if price_info else ""
+
+    # Never reuse pending_drafts for translation — drop stale queue rows when title changed.
+    invalidate_stale_pending(seller_sku.strip(), title_ms)
 
     product_id = (row or {}).get("product_id") or entry.get("tk_id") or ""
     shop_cipher = (row or {}).get("shop_cipher") or ""
@@ -290,7 +313,12 @@ def build_draft(seller_sku: str) -> dict:
     else:
         price_cny_str, old_price_str = "45", "62"
 
-    color_name = d.get("color_name", tpl["color"][0])
+    color_default = (
+        tpl["color"][0]
+        if isinstance(tpl.get("color"), (list, tuple)) and tpl["color"]
+        else "разноцветный"
+    )
+    color_name = d.get("color_name") or color_default
     material_name = d.get("material", "Полиэстер" if migrate_profile == "tablecloth" else "ПВХ (поливинилхлорид)")
     cat_names = lookup_category_names(category_id, type_id)
 
@@ -376,10 +404,11 @@ def build_draft(seller_sku: str) -> dict:
     material_dict_id, material_canonical = _lookup_material(material_name, category_id, type_id)
     color_dict_id, color_canonical = _lookup_color(color_name, category_id, type_id)
 
-    return {
+    result = {
         "offer_id": offer_id,
         "seller_sku": entry["seller_sku"],
         "title_ms": title_ms,
+        "title_fingerprint": title_fingerprint(title_ms),
         "images": entry.get("image_urls") or [],
         "draft_title": draft_title,
         "draft_description": draft_description,
@@ -423,5 +452,12 @@ def build_draft(seller_sku: str) -> dict:
         "dimensions_source": "tk_listing" if pkg_dim_cm else "",
         "dimensions_missing": not bool(pkg_dim_cm),
         **logistics_meta,
-        "error": d.get("error"),
     }
+    deepseek_err = d.get("error")
+    if deepseek_err and not draft_title:
+        result["error"] = deepseek_err
+        result["error_code"] = "deepseek_failed"
+    elif deepseek_err:
+        result["deepseek_warning"] = deepseek_err
+        result["error_code"] = "deepseek_fallback"
+    return result

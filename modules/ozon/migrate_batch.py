@@ -1,4 +1,4 @@
-"""批量 Ozon 上品：草稿 → 3:4 图 → import（与 ozon/webapp UI 相同流程）。"""
+"""批量 Ozon 草稿入队：build_draft → save_pending（禁止跳过审核区直接上架）。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,9 @@ from datetime import date
 from pathlib import Path
 from typing import Callable
 
+from modules.catalog.sku_key import tk_match_key
 from modules.ozon.config import ozon_data_dir
+from modules.ozon.ozon_dispatch import prep_one_ozon_draft
 from modules.ozon.webapp_bridge import proxy_json
 
 
@@ -25,81 +27,61 @@ def list_unmigrated() -> list[dict]:
     return list_unmigrated_from_catalog()
 
 
-def migrate_one(seller_sku: str, on_progress: Callable[[str], None] | None = None) -> dict:
-    """seller_sku: 6位 TK 货号；migrate  payload 用 draft 返回的 4位 offer_id。"""
-    _progress(on_progress, f"  {seller_sku}: 生成俄语草稿…")
-    from modules.ozon.catalog_draft import build_draft
+def queue_one_to_pending(seller_sku: str, on_progress: Callable[[str], None] | None = None) -> dict:
+    """单个 SKU：生成草稿并写入 pending_drafts 审核区。"""
+    _progress(on_progress, f"  {seller_sku}: 入队草稿审核…")
+    try:
+        record = prep_one_ozon_draft(seller_sku, on_progress=on_progress)
+        return {"seller_sku": seller_sku, "ok": True, "record": record}
+    except Exception as exc:
+        return {"seller_sku": seller_sku, "ok": False, "error": str(exc)}
 
-    draft = build_draft(seller_sku)
-    if not isinstance(draft, dict) or (draft.get("error") and not draft.get("draft_title")):
-        return {"seller_sku": seller_sku, "ok": False, "step": "draft", "error": draft}
 
-    offer_id = str(draft.get("offer_id") or seller_sku)
-    images_src = draft.get("images") or []
-    if not images_src:
-        return {"seller_sku": seller_sku, "offer_id": offer_id, "ok": False, "step": "draft", "error": "无源图"}
+def queue_group_to_pending(
+    group_id: str,
+    *,
+    items: list[dict] | None = None,
+    on_progress: Callable[[str], None] | None = None,
+) -> dict:
+    """多规格组：每个变体分别 build_draft → save_pending，禁止直接 migrate。"""
+    pool = items if items is not None else list_unmigrated()
+    queue = [
+        it
+        for it in pool
+        if str(it.get("tk_group_id") or "") == str(group_id) and not it.get("tk_dup")
+    ]
+    if not queue:
+        return {"ok": False, "group_id": group_id, "queued": [], "errors": [{"error": "组内无可搬运规格"}]}
 
-    _progress(on_progress, f"  {seller_sku}: 转换并上传图片 ({len(images_src)} 张)…")
-    status, proc = proxy_json(
-        "POST",
-        f"process_images/{seller_sku}",
-        payload={"images": images_src},
-    )
-    if status != 200 or not isinstance(proc, dict):
-        return {"seller_sku": seller_sku, "offer_id": offer_id, "ok": False, "step": "images", "error": proc}
-    images = proc.get("images") or []
-    if not images:
-        return {"seller_sku": seller_sku, "offer_id": offer_id, "ok": False, "step": "images", "error": "图片处理失败"}
-
-    payload = {
-        "offer_id": offer_id,
-        "images": images,
-        "title": draft.get("draft_title") or "",
-        "description": draft.get("draft_description") or "",
-        "price": str(draft.get("price") or "45"),
-        "old_price": str(draft.get("old_price") or "62"),
-        "color_name": draft.get("color_name") or "",
-        "color_dict_id": draft.get("color_dict_id") or "",
-        "material": draft.get("material") or "ПВХ (поливинилхлорид)",
-        "material_dict_id": draft.get("material_dict_id") or 61996,
-        "hashtags": draft.get("hashtags") or "",
-        "kit": draft.get("kit") or "",
-        "weight": draft.get("weight") or "",
-        "depth": draft.get("depth") or "",
-        "width": draft.get("width") or "",
-        "height": draft.get("height") or "",
-        "len_cm": draft.get("len_cm") or "",
-        "wid_cm": draft.get("wid_cm") or "",
-        "category_id": draft.get("category_id") or "",
-        "type_id": draft.get("type_id") or "",
-        "migrate_profile": draft.get("migrate_profile") or "generic",
-        "tk_category_id": draft.get("tk_category_id") or "",
-        "tk_category_leaf": draft.get("tk_category_leaf") or "",
-    }
-
-    _progress(on_progress, f"  {offer_id}: 提交 Ozon import（含 Rich 内容，可能需数分钟）…")
-    status, result = proxy_json("POST", "migrate", payload=payload)
-    if status != 200 or not isinstance(result, dict):
-        return {"seller_sku": seller_sku, "offer_id": offer_id, "ok": False, "step": "migrate", "error": result}
-
-    import_status = result.get("status")
-    if import_status == "pending":
-        import_status = _poll_imported(offer_id, on_progress=on_progress)
-
-    ok = import_status == "imported"
+    _progress(on_progress, f"整组 {group_id}：{len(queue)} 个规格入队审核…")
+    queued: list[dict] = []
+    errors: list[dict] = []
+    for i, it in enumerate(queue, 1):
+        seller_sku = str(it.get("seller_sku") or it.get("offer_id") or "").strip()
+        if not seller_sku:
+            continue
+        _progress(on_progress, f"  [{i}/{len(queue)}] {seller_sku}")
+        res = queue_one_to_pending(seller_sku, on_progress=on_progress)
+        if res.get("ok"):
+            queued.append(res)
+        else:
+            errors.append(res)
     return {
-        "seller_sku": seller_sku,
-        "offer_id": offer_id,
-        "ok": ok,
-        "status": import_status,
-        "rich_status": result.get("rich_status"),
-        "errors": result.get("errors") or [],
-        "title": payload["title"],
+        "ok": len(errors) == 0,
+        "group_id": group_id,
+        "queued": queued,
+        "errors": errors,
+        "count": len(queued),
     }
+
+
+def migrate_one(seller_sku: str, on_progress: Callable[[str], None] | None = None) -> dict:
+    """兼容旧调用：改为入队审核，不直接 import Ozon。"""
+    return queue_one_to_pending(seller_sku, on_progress=on_progress)
 
 
 def _poll_imported(offer_id: str, *, on_progress: Callable[[str], None] | None = None) -> str:
-    """Ozon import 异步时多等一会儿再查 offer 是否已上线。"""
+    """保留供 legacy_webapp 或其他模块 import；批量搬运不再调用。"""
     from modules.ozon.client import ozon_post
 
     for i in range(12):
@@ -122,8 +104,8 @@ def _update_daily_summary(migrated_ids: list[str], errors: list[dict]) -> None:
     today = str(date.today())
     data = {
         "date": today,
-        "migrated": migrated_ids,
-        "migrate_errors": errors,
+        "queued_for_review": migrated_ids,
+        "queue_errors": errors,
     }
     try:
         status, red = proxy_json("GET", "red_prices")
@@ -141,36 +123,49 @@ def migrate_batch(
     *,
     on_progress: Callable[[str], None] | None = None,
 ) -> dict:
-    """搬运队列前 count 个待上品 SKU。"""
+    """待搬运前 count 个 SKU/组 → 草稿审核区（不直接上品）。"""
     pending = list_unmigrated()
     if not pending:
-        return {"ok": True, "migrated": [], "failed": [], "message": "无待搬运商品"}
+        return {"ok": True, "queued": [], "failed": [], "message": "无待搬运商品"}
 
     targets = pending[: max(1, count)]
-    _progress(on_progress, f"待搬运 {len(pending)} 个，本次处理 {len(targets)} 个")
+    _progress(on_progress, f"待搬运 {len(pending)} 个，本次入队审核 {len(targets)} 个")
 
-    migrated: list[str] = []
+    queued: list[str] = []
     failed: list[dict] = []
+    seen_groups: set[str] = set()
+
     for i, it in enumerate(targets, 1):
-        seller_sku = it.get("seller_sku") or it["offer_id"]
-        oid = it["offer_id"]
-        _progress(on_progress, f"[{i}/{len(targets)}] {seller_sku} (offer {oid}) — {it.get('title', '')[:50]}")
-        try:
-            res = migrate_one(seller_sku, on_progress=on_progress)
-            res["offer_id"] = oid
-        except Exception as e:
-            res = {"offer_id": oid, "ok": False, "error": str(e)}
+        seller_sku = str(it.get("seller_sku") or it.get("offer_id") or "").strip()
+        oid = str(it.get("offer_id") or tk_match_key(seller_sku)).zfill(4)[-4:]
+        group_id = str(it.get("tk_group_id") or "")
+
+        if group_id:
+            if group_id in seen_groups:
+                continue
+            seen_groups.add(group_id)
+            _progress(on_progress, f"[{i}/{len(targets)}] 整组 {group_id}")
+            res = queue_group_to_pending(group_id, items=pending, on_progress=on_progress)
+            if res.get("ok"):
+                queued.extend(str(r.get("seller_sku") or "") for r in res.get("queued") or [])
+            else:
+                failed.extend(res.get("errors") or [])
+            continue
+
+        _progress(on_progress, f"[{i}/{len(targets)}] {seller_sku} (offer {oid}) — {str(it.get('title') or '')[:50]}")
+        res = queue_one_to_pending(seller_sku, on_progress=on_progress)
         if res.get("ok"):
-            migrated.append(oid)
-            _progress(on_progress, f"  ✅ {oid} imported (rich: {res.get('rich_status')})")
+            queued.append(seller_sku)
+            _progress(on_progress, f"  ✅ {seller_sku} 已入队审核")
         else:
             failed.append(res)
-            _progress(on_progress, f"  ❌ {oid} {res.get('step') or ''} {res.get('error') or res.get('status')}")
+            _progress(on_progress, f"  ❌ {seller_sku} {res.get('error')}")
 
-    _update_daily_summary(migrated, failed)
+    _update_daily_summary(queued, failed)
     return {
         "ok": len(failed) == 0,
-        "migrated": migrated,
+        "queued": queued,
         "failed": failed,
         "remaining": max(0, len(pending) - len(targets)),
+        "message": "草稿已入队审核区，请在 /ozon 审核后再提交 Ozon",
     }

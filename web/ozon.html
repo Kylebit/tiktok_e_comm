@@ -3,6 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script>
+    if (window.location.protocol === 'file:') {
+      window.location.replace('http://127.0.0.1:8767/' + window.location.search + window.location.hash);
+    }
+  </script>
   <title>Orbit Rus 俄罗斯台</title>
   <link rel="stylesheet" href="/static/app.css">
   <style>
@@ -70,6 +75,12 @@
     .cat-ids-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; font-size: 12px; color: #555; }
     .cat-ids-row input { width: 88px; padding: 4px 6px; border: 1px solid #ccc; border-radius: 4px; }
     .cat-ids-row .id-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pricing-test-table { margin: 12px 0; overflow-x: auto; }
+    .pricing-test-table h4 { margin: 0 0 8px; font-size: 13px; color: #0369a1; }
+    table.pricing-chain { border-collapse: collapse; width: 100%; font-size: 12px; background: #fff; }
+    table.pricing-chain th, table.pricing-chain td { border: 1px solid #e2e8f0; padding: 6px 8px; text-align: right; }
+    table.pricing-chain th:first-child, table.pricing-chain td:first-child { text-align: left; }
+    table.pricing-chain tr.total td { font-weight: 700; background: #f0f9ff; }
   </style>
 </head>
 <body>
@@ -259,6 +270,91 @@
 
   <script src="/static/ozon-migrate.js"></script>
   <script>
+    function fmtNum(v, digits) {
+      if (v === null || v === undefined || v === '') return '—';
+      var n = Number(v);
+      if (isNaN(n)) return String(v);
+      return n.toFixed(digits == null ? 2 : digits);
+    }
+
+    function buildPricingTableHtml(pt) {
+      if (!pt) return '';
+      var rows = [
+        ['货值 CNY', fmtNum(pt.cost_cny)],
+        ['物流费 CNY', fmtNum(pt.logistics_cny)],
+        ['佣金 12%', fmtNum(pt.commission_cny)],
+        ['收单手续费 2.5%', fmtNum(pt.acquiring_cny)],
+        ['广告费 CPO 22%', fmtNum(pt.ad_cny)],
+        ['目标利润 ' + fmtNum(pt.margin_pct, 1) + '%', fmtNum(pt.target_profit_cny || pt.profit_cny)],
+        ['最低售价 CNY', fmtNum(pt.min_price_cny || pt.price_cny)],
+        ['最终售价 CNY', fmtNum(pt.price_cny)],
+        ['最终售价 RUB', fmtNum(pt.price_rub, 0)],
+      ];
+      var body = rows.map(function (r, i) {
+        var cls = i >= rows.length - 2 ? ' class="total"' : '';
+        return '<tr' + cls + '><td>' + r[0] + '</td><td>' + r[1] + '</td></tr>';
+      }).join('');
+      return '<div class="pricing-test-table"><h4>SEA 定价测试表 · Ozon 20% 利润</h4>' +
+        '<table class="pricing-chain"><thead><tr><th>项目</th><th>金额</th></tr></thead><tbody>' +
+        body + '</tbody></table></div>';
+    }
+
+    function attachPricingTable(card, pt) {
+      if (!card || !pt || !pt.price_cny) return;
+      var host = card.querySelector('.draft-card-body');
+      if (!host) return;
+      var old = host.querySelector('.pricing-test-table');
+      if (old) old.remove();
+      var wrap = document.createElement('div');
+      wrap.innerHTML = buildPricingTableHtml(pt);
+      var grid = host.querySelector('.draft-grid');
+      if (grid) host.insertBefore(wrap.firstChild, grid);
+      else host.appendChild(wrap.firstChild);
+    }
+
+    (function patchOzonApi() {
+      var origApi = OzonMigrate.api;
+      OzonMigrate.api = function (subpath, opts) {
+        return origApi(subpath, opts).then(function (data) {
+          if (typeof subpath === 'string' && subpath.indexOf('draft/') === 0 && data && data.pricing_table) {
+            setTimeout(function () {
+              var sku = data.seller_sku || '';
+              var card = document.querySelector('.draft-card[data-seller-sku="' + sku + '"]');
+              attachPricingTable(card, data.pricing_table);
+            }, 80);
+          }
+          if (subpath === 'pending_drafts' && data && data.drafts) {
+            setTimeout(function () {
+              data.drafts.forEach(function (d) {
+                if (!d.pricing_table) return;
+                var card = document.querySelector('.draft-card[data-seller-sku="' + d.seller_sku + '"]');
+                attachPricingTable(card, d.pricing_table);
+              });
+            }, 120);
+          }
+          return data;
+        });
+      };
+    })();
+
+    function queueGroupDrafts(groupId) {
+      if (!groupId) return Promise.resolve();
+      if (!confirm('整组 ' + groupId + ' 将每个规格生成草稿并入审核区（不直接上品），继续？')) return Promise.resolve();
+      return OzonMigrate.api('queue_group', { method: 'POST', body: { group_id: groupId } }).then(function (res) {
+        alert('已入队 ' + (res.count || 0) + ' 个规格到草稿审核区');
+        OzonMigrate.loadPendingDrafts();
+        return OzonMigrate.loadUnmigrated();
+      }).catch(function (e) { alert('入队失败: ' + e.message); });
+    }
+
+    document.getElementById('unmig-table').querySelector('tbody').addEventListener('click', function (e) {
+      var gbtn = e.target.closest('[data-action="batch-group"]');
+      if (!gbtn) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      queueGroupDrafts(gbtn.dataset.group);
+    }, true);
+
     function showTab(name) {
       document.querySelectorAll('.oz-tab').forEach(function (t) { t.classList.remove('active'); });
       document.querySelectorAll('.oz-subnav button').forEach(function (b) { b.classList.remove('active'); });

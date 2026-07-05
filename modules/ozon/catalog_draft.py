@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 
+from modules.catalog import listings as cat_mod
 from modules.catalog.sku_key import tk_match_key
 from modules.ozon.pending_drafts import invalidate_stale_pending, title_fingerprint
 from modules.ozon.catalog_source import (
@@ -20,7 +21,7 @@ from modules.ozon.category_match import (
     match_category,
 )
 from modules.ozon.migrate_attrs import resolve_profile
-from modules.ozon.price_convert import old_price_cny, pick_tk_price
+from modules.ozon.price_convert import old_price_cny, ozon_price_formula, pick_tk_price
 from modules.ozon.listing_text import (
     polish_ozon_description,
     polish_ozon_title,
@@ -404,6 +405,27 @@ def _build_draft_inner(seller_sku: str) -> dict:
     material_dict_id, material_canonical = _lookup_material(material_name, category_id, type_id)
     color_dict_id, color_canonical = _lookup_color(color_name, category_id, type_id)
 
+    cost_cny = None
+    try:
+        lookup = cat_mod.lookup_sku(match_key)
+        if lookup and lookup.get("found"):
+            cost_cny = lookup["item"].get("cost_cny")
+    except Exception:
+        pass
+
+    pricing = ozon_price_formula(
+        cost_cny=cost_cny,
+        weight_g=weight,
+        tk_price_cny=price_cny,
+    )
+    if pricing.get("price_cny"):
+        price_cny_str = str(int(round(float(pricing["price_cny"]))))
+        old_price_str = str(int(pricing.get("old_price_cny") or old_price_cny(float(pricing["price_cny"]))))
+        price_label = (
+            f"Ozon公式 ¥{pricing['cost_cny']}+物流¥{pricing['logistics_cny']} "
+            f"→ ¥{pricing['price_cny']} ({pricing['price_rub']}₽)"
+        )
+
     result = {
         "offer_id": offer_id,
         "seller_sku": entry["seller_sku"],
@@ -435,7 +457,7 @@ def _build_draft_inner(seller_sku: str) -> dict:
         "title_source": title_source,
         "desc_source": desc_source,
         "deepseek_used": deepseek_ok,
-        "price_source": price_info["source"] if price_info else "",
+        "price_source": pricing.get("source") if pricing.get("price_cny") else (price_info["source"] if price_info else ""),
         "price_label": price_label,
         "price_local": price_info["amount"] if price_info else None,
         "price_currency": price_info["currency"] if price_info else "",
@@ -451,6 +473,9 @@ def _build_draft_inner(seller_sku: str) -> dict:
         "weight_source": weight_source,
         "dimensions_source": "tk_listing" if pkg_dim_cm else "",
         "dimensions_missing": not bool(pkg_dim_cm),
+        "pricing_table": pricing,
+        "price_rub": pricing.get("price_rub"),
+        "price_formula_source": pricing.get("source"),
         **logistics_meta,
     }
     deepseek_err = d.get("error")

@@ -13,6 +13,20 @@ STATIC_DIR = WEB_DIR / "static"
 DEFAULT_PORT = 8767
 
 
+def _normalize_draft_response(draft: dict) -> dict:
+    """有 draft_title 时，DeepSeek 等非致命 error 降级为 warning，避免前端 migrateOne 误中断。"""
+    if not isinstance(draft, dict):
+        return draft
+    err = draft.get("error")
+    if err and draft.get("draft_title"):
+        out = dict(draft)
+        out.pop("error", None)
+        out.setdefault("deepseek_warning", err)
+        out.setdefault("error_code", "deepseek_fallback")
+        return out
+    return draft
+
+
 def _guess_type(path: Path) -> str:
     ctype = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
     if ctype.startswith("text/") and "charset=" not in ctype:
@@ -68,6 +82,22 @@ class OrbitRusHandler(BaseHTTPRequestHandler):
                 from modules.ozon.catalog_source import list_unmigrated_from_catalog
 
                 return self._json(200, list_unmigrated_from_catalog())
+            if method == "GET" and subpath == "ozon_listed":
+                from modules.ozon.catalog_source import fetch_ozon_listed_offer_ids
+
+                q = parse_qs(query or "")
+                force = (q.get("refresh") or ["0"])[0] in ("1", "true", "yes")
+                ids = sorted(fetch_ozon_listed_offer_ids(force_refresh=force))
+                return self._json(200, {"offer_ids": ids, "count": len(ids)})
+            if method == "POST" and subpath == "queue_group":
+                from modules.ozon.migrate_batch import queue_group_to_pending
+
+                payload = json.loads((body or b"{}").decode("utf-8") or "{}")
+                group_id = str(payload.get("group_id") or "").strip()
+                if not group_id:
+                    return self._json(400, {"ok": False, "error": "missing group_id"})
+                result = queue_group_to_pending(group_id)
+                return self._json(200, result)
             if method == "GET" and subpath.startswith("draft/"):
                 from urllib.parse import unquote
 
@@ -75,6 +105,7 @@ class OrbitRusHandler(BaseHTTPRequestHandler):
 
                 seller_sku = unquote(subpath[len("draft/") :])
                 draft = build_draft(seller_sku)
+                draft = _normalize_draft_response(draft)
                 if draft.get("error") and not draft.get("draft_title"):
                     return self._json(404, draft)
                 return self._json(200, draft)

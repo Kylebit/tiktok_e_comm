@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 from modules.catalog import listings as cat_mod
@@ -10,6 +11,9 @@ from modules.catalog.sku_key import tk_match_key
 from modules.ozon.config import ozon_data_dir
 from modules.ozon.tk_variant import group_variant_index, tk_group_info
 from modules.products.image_ai import extract_listing_image_urls
+
+_LISTED_CACHE: dict = {"offer_ids": set(), "fetched_at": 0.0}
+_LISTED_CACHE_TTL_SEC = 300
 
 
 def to_4digit_offer_id(seller_sku: str) -> str:
@@ -43,14 +47,94 @@ def _pick_tk_row(
     return rows[0] if rows else None
 
 
-def _needs_migrate(item: dict) -> bool:
-    """仅 TikTok 商品；已在 Ozon 正式上架的排除。"""
+def _normalize_listed_offer_id(offer_id: str) -> str:
+    s = str(offer_id or "").strip()
+    if not s:
+        return ""
+    digits = "".join(ch for ch in s if ch.isdigit())
+    if not digits:
+        return s
+    return digits.zfill(4)[-4:]
+
+
+def _is_formally_listed_on_ozon(info: dict) -> bool:
+    """Ozon /v3/product/info/list 返回项：已创建且未归档视为正式上架。"""
+    if not info or info.get("is_archived"):
+        return False
+    statuses = info.get("statuses") or {}
+    if statuses.get("is_created"):
+        return True
+    state = (statuses.get("status") or info.get("status") or "").lower()
+    return state in ("price_sent", "processed", "moderating", "active", "visible")
+
+
+def fetch_ozon_listed_offer_ids(*, force_refresh: bool = False) -> set[str]:
+    """通过 Ozon API 拉取已正式上架的 offer_id（4 位）集合，带短期缓存。"""
+    now = time.time()
+    cached = _LISTED_CACHE.get("offer_ids") or set()
+    if cached and not force_refresh and (now - float(_LISTED_CACHE.get("fetched_at") or 0)) < _LISTED_CACHE_TTL_SEC:
+        return set(cached)
+
+    try:
+        from modules.ozon.client import ozon_post
+    except Exception:
+        return set(cached)
+
+    offer_ids: set[str] = set()
+    last_id = ""
+    product_ids: list[int] = []
+    while True:
+        resp = ozon_post(
+            "/v3/product/list",
+            {"filter": {"visibility": "ALL"}, "last_id": last_id, "limit": 1000},
+        )
+        result = resp.get("result") or {}
+        items = result.get("items") or []
+        for it in items:
+            oid = _normalize_listed_offer_id(it.get("offer_id") or "")
+            if oid:
+                offer_ids.add(oid)
+            pid = it.get("product_id")
+            if pid is not None:
+                product_ids.append(int(pid))
+        last_id = result.get("last_id") or ""
+        if not last_id or not items:
+            break
+
+    for i in range(0, len(product_ids), 50):
+        batch = product_ids[i : i + 50]
+        try:
+            resp = ozon_post("/v3/product/info/list", {"product_id": batch, "offer_id": [], "sku": []})
+        except Exception:
+            continue
+        for info in resp.get("items") or resp.get("result", {}).get("items") or []:
+            if not _is_formally_listed_on_ozon(info):
+                continue
+            oid = _normalize_listed_offer_id(info.get("offer_id") or "")
+            if oid:
+                offer_ids.add(oid)
+
+    _LISTED_CACHE["offer_ids"] = offer_ids
+    _LISTED_CACHE["fetched_at"] = now
+    return set(offer_ids)
+
+
+def _needs_migrate(item: dict, *, listed_offer_ids: set[str] | None = None) -> bool:
+    """仅 TikTok 商品；已在 Ozon 正式上架的排除（catalog 标记 + Ozon API）。"""
     if not item.get("tiktok"):
         return False
     oz = item.get("ozon")
     if oz and oz.get("migrated"):
         return False
-    return _pick_tk_row(item) is not None
+    row = _pick_tk_row(item)
+    if not row:
+        return False
+    if listed_offer_ids is not None:
+        seller_sku = (row.get("seller_sku") or "").strip()
+        oid = _normalize_listed_offer_id(to_4digit_offer_id(seller_sku))
+        if oid and oid in listed_offer_ids:
+            return False
+    return True
 
 
 def _fetch_tk_detail(product_id: str, shop_cipher: str) -> dict:
@@ -207,13 +291,15 @@ def sync_catalog_to_tk_map(*, max_items: int | None = None) -> int:
     return updated
 
 
-def iter_migrate_candidates():
+def iter_migrate_candidates(*, listed_offer_ids: set[str] | None = None):
+    if listed_offer_ids is None:
+        listed_offer_ids = fetch_ozon_listed_offer_ids()
     offset = 0
     limit = 500
     while True:
         page = cat_mod.list_products(limit=limit, offset=offset)
         for item in page.get("items") or []:
-            if _needs_migrate(item):
+            if _needs_migrate(item, listed_offer_ids=listed_offer_ids):
                 yield item
         offset += limit
         if offset >= page.get("total", 0):
@@ -244,19 +330,23 @@ def list_unmigrated_from_catalog(*, sync_map: bool = True) -> list[dict]:
 
     dismissed = dismissed_seller_skus()
     dismissed_oids = dismissed_offer_ids()
+    listed_offer_ids = fetch_ozon_listed_offer_ids()
 
     items: list[dict] = []
     seen_offer: set[str] = set()
     seen_spu_lone: set[str] = set()
     variant_cache: dict[str, dict[str, dict]] = {}
 
-    for cat_item in iter_migrate_candidates():
+    for cat_item in iter_migrate_candidates(listed_offer_ids=listed_offer_ids):
         match_key = cat_item.get("match_key") or ""
         entry = _map_entry_from_item(cat_item, fetch_detail=False, match_key=match_key)
         if not entry:
             continue
+        offer_id = to_4digit_offer_id(entry["seller_sku"])
+        if offer_id in listed_offer_ids:
+            continue
         # 用户已忽略的产品，永久排除（按 seller_sku 或 4 位 offer_id，覆盖跨国 SKU）
-        if entry["seller_sku"] in dismissed or to_4digit_offer_id(entry["seller_sku"]) in dismissed_oids:
+        if entry["seller_sku"] in dismissed or offer_id in dismissed_oids:
             continue
 
         group = tk_group_info(cat_item)
@@ -266,7 +356,6 @@ def list_unmigrated_from_catalog(*, sync_map: bool = True) -> list[dict]:
 
         seller_sku = entry["seller_sku"]
         tk_id = entry.get("tk_id") or ""
-        offer_id = to_4digit_offer_id(seller_sku)
         is_group = bool(group)
 
         dup = False

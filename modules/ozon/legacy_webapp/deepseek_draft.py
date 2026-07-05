@@ -174,7 +174,17 @@ def generate_draft(
         "-H", "Authorization: Bearer " + key,
         "-d", json.dumps(body),
     ]
-    out = subprocess.run(cmd, capture_output=True, text=True).stdout
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    out = proc.stdout or ""
+    if proc.returncode != 0 and not out.strip():
+        err = (proc.stderr or "").strip()
+        raise RuntimeError(f"DeepSeek curl failed (rc={proc.returncode}): {err or 'empty response'}")
     resp = json.loads(out)
 
     if "error" in resp:

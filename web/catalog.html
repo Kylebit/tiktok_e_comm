@@ -122,17 +122,68 @@
     </div>
   </main>
   <script>
+    var IMAGE_PROXY_REV = '20260704a';
     function esc(s) {
       if (!s) return '';
       return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+    }
+    function imgSrc(url) {
+      if (!url) return '';
+      if (/^(data:|blob:|\/)/.test(url)) return url;
+      return '/api/proxy-image?rev=' + encodeURIComponent(IMAGE_PROXY_REV) + '&url=' + encodeURIComponent(url);
+    }
+    function markThumbError(img) {
+      var box = img && img.parentNode;
+      if (!box) return;
+      box.className += ' img-error';
+      box.innerHTML = '<span class="no-img" title="' + esc(img.getAttribute('data-original') || '') + '">加载失败</span>';
+    }
+    function fallbackUrls(primary, extras) {
+      var seen = {};
+      var out = [];
+      if (primary) seen[String(primary)] = true;
+      (extras || []).forEach(function(u) {
+        var text = (u == null ? '' : String(u)).trim();
+        if (!text || seen[text]) return;
+        seen[text] = true;
+        out.push(text);
+      });
+      return out;
+    }
+    function thumbFallbackError(img) {
+      if (img) {
+        var raw = img.getAttribute('data-fallbacks') || '[]';
+        var fallbacks = [];
+        try { fallbacks = JSON.parse(raw); } catch (e) { fallbacks = []; }
+        if (fallbacks.length) {
+          var next = fallbacks.shift();
+          img.setAttribute('data-fallbacks', JSON.stringify(fallbacks));
+          img.setAttribute('data-original', next);
+          img.src = imgSrc(next);
+          return;
+        }
+      }
+      markThumbError(img);
     }
     function fmtPrice(p, c) {
       if (p == null || p === '') return '—';
       return (c ? c + ' ' : '') + Number(p).toFixed(2);
     }
-    function imgCell(url, label) {
+    function imgCell(url, label, fallbacks) {
       if (!url) return '<td class="thumb"><span class="no-img">—</span></td>';
-      return '<td class="thumb"><img src="' + esc(url) + '" alt="" loading="lazy" title="' + esc(label || '') + '"></td>';
+      var backup = JSON.stringify(fallbackUrls(url, fallbacks || []));
+      return '<td class="thumb"><img src="' + esc(imgSrc(url)) + '" data-original="' + esc(url) + '" data-fallbacks=\'' + esc(backup) + '\' alt="" loading="lazy" title="' + esc(label || '') + '" onerror="thumbFallbackError(this)"></td>';
+    }
+    function rowFallbackImages(row, primaryPlatform) {
+      var out = [];
+      function add(platformKey) {
+        var block = row && row[platformKey];
+        if (block && block.image_url) out.push(block.image_url);
+      }
+      if (primaryPlatform !== 'tiktok') add('tiktok');
+      if (primaryPlatform !== 'shopee') add('shopee');
+      if (primaryPlatform !== 'ozon') add('ozon');
+      return out;
     }
     function regionBadges(rows) {
       if (!rows || !rows.length) return '<span class="miss-inline">—</span>';
@@ -196,7 +247,7 @@
         if (r.seller_sku && skus.indexOf(r.seller_sku) < 0) skus.push(r.seller_sku);
       });
       if (skus.length) name += '<br><code class="tiny">' + esc(skus.join(' / ')) + '</code>';
-      return imgCell(block.image_url, block.product_name) +
+      return imgCell(block.image_url, block.product_name, opts.fallbackUrls) +
         '<td class="regs">' + regionBadges(block.regions) + '</td>' +
         '<td class="name">' + name + '</td>' +
         '<td class="ps">' + priceStockBlock(block.regions) + '</td>';
@@ -219,7 +270,7 @@
         '<button type="button" class="btn btn-primary btn-xs btn-save-tk-sku">保存</button>' +
         '<button type="button" class="btn btn-secondary btn-xs btn-open-tk-sku" data-sku-id="' + esc(row.tk_sku_id) + '">维护面板</button></div>';
       name += '<div class="meta inline-sku-hint">platform sku_id · 回车保存 · ' + esc(reg) + '</div>';
-      return imgCell(block.image_url, block.product_name) +
+      return imgCell(block.image_url, block.product_name, rowFallbackImages(row, 'tiktok')) +
         '<td class="regs">' + regionBadges(block.regions) + '</td>' +
         '<td class="name">' + name + '</td>' +
         '<td class="ps">' + priceStockBlock(block.regions) + '</td>';
@@ -245,7 +296,7 @@
         '<button type="button" class="btn btn-secondary btn-xs btn-open-sp-sku" data-model-id="' + esc(row.sp_model_id) + '" ' +
         'data-shop-id="' + esc(String(row.shop_id)) + '">维护面板</button></div>';
       name += '<div class="meta inline-sku-hint">model_id · 回车保存 · ' + esc(reg) + '</div>';
-      return imgCell(block.image_url, block.product_name) +
+      return imgCell(block.image_url, block.product_name, rowFallbackImages(row, 'shopee')) +
         '<td class="regs">' + regionBadges(block.regions) + '</td>' +
         '<td class="name">' + name + '</td>' +
         '<td class="ps">' + priceStockBlock(block.regions) + '</td>';
@@ -270,23 +321,26 @@
       var n = row.matched_count || 0;
       var cls = n >= 3 ? 'row-match-all' : (n >= 2 ? 'row-match' : 'row-partial');
       return '<tr class="' + cls + '" data-key="' + esc(row.match_key) + '"><td><code class="key">' + esc(row.match_key) + '</code></td>' +
-        costCell(row) + weightCell(row) + cellPlatformMerged(row.tiktok) +
+        costCell(row) + weightCell(row) + cellPlatformMerged(row.tiktok, {
+          fallbackUrls: rowFallbackImages(row, 'tiktok')
+        }) +
         cellPlatformMerged(row.shopee, {
           platform: 'shopee',
           matchKey: row.match_key,
           hasTk: row.matched && row.matched.tiktok,
-          tkGroup: row.tk_group
+          tkGroup: row.tk_group,
+          fallbackUrls: rowFallbackImages(row, 'shopee')
         }) +
-        cellOzon(row.ozon) + '</tr>';
+        cellOzon(row.ozon, row) + '</tr>';
     }
-    function cellOzon(oz) {
+    function cellOzon(oz, row) {
       if (!oz) return '<td class="miss" colspan="3">—</td>';
       var name = esc((oz.product_name || '').slice(0, 48));
       var st = oz.migrated
         ? '<span class="badge ok">已上架</span>'
         : '<span class="badge soon">待迁移</span>';
       if (oz.seller_sku) name += '<br><code class="tiny">' + esc(oz.seller_sku) + '</code>';
-      return imgCell(oz.image_url, oz.product_name) +
+      return imgCell(oz.image_url, oz.product_name, rowFallbackImages(row, 'ozon')) +
         '<td class="name">' + name + '</td>' +
         '<td>' + st + '</td>';
     }
@@ -321,7 +375,7 @@
       if (row.ozon && row.ozon.image_url) imgs.push({ src: row.ozon.image_url, label: 'OZ' });
       var imgHtml = imgs.length
         ? imgs.map(function(x) {
-            return '<img class="lookup-thumb" src="' + esc(x.src) + '" alt="' + esc(x.label) + '">';
+            return '<img class="lookup-thumb" src="' + esc(imgSrc(x.src)) + '" data-original="' + esc(x.src) + '" alt="' + esc(x.label) + '" onerror="thumbFallbackError(this)">';
           }).join('')
         : '<span class="meta">无图</span>';
       var plat = [];

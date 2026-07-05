@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from urllib.parse import urlparse
 
 from core.db import connect, init_db
 from modules.catalog.ozon_data import load_ozon_by_key
@@ -16,6 +17,16 @@ from modules.catalog.sku_key import (
 )
 from modules.products import costs as cost_mod
 from modules.catalog.logistics_weights import weight_index_by_match_key
+
+
+def _match_key_sort_value(key: str) -> tuple[int, str]:
+    parsed = parse_search_key(key or "")
+    if parsed and parsed.isdigit():
+        return (int(parsed), parsed)
+    digits = "".join(ch for ch in str(key or "") if ch.isdigit())
+    if digits:
+        return (int(digits), str(key or ""))
+    return (-1, str(key or ""))
 
 
 def _row_tk(r, region: str) -> dict:
@@ -138,8 +149,20 @@ def _build_tk_group_index(conn) -> dict[str, dict]:
 def _merge_platform_rows(rows: list[dict]) -> dict | None:
     if not rows:
         return None
-    first = rows[0]
-    image_url = next((r["image_url"] for r in rows if r.get("image_url")), "")
+    def image_rank(url: str) -> tuple[int, str]:
+        host = (urlparse(url).netloc or "").lower()
+        if "ibyteimg.com" in host:
+            return (0, host)
+        if "tiktokcdn-eu.com" in host:
+            return (1, host)
+        if "tiktokcdn.com" in host:
+            return (2, host)
+        return (9, host)
+
+    image_candidates = [r["image_url"] for r in rows if r.get("image_url")]
+    image_url = ""
+    if image_candidates:
+        image_url = sorted(image_candidates, key=image_rank)[0]
     name = next((r["product_name"] for r in rows if r.get("product_name")), "")
     return {
         "image_url": image_url,
@@ -710,7 +733,11 @@ def list_products(
         # Ozon 无 SEA region；选单国站点时不展示 Ozon-only 行除非 TK/SP 有该国
         pass
 
-    keys = sorted(set(tk_by_key) | set(sp_by_key) | set(ozon_by_key) | global_keys)
+    keys = sorted(
+        set(tk_by_key) | set(sp_by_key) | set(ozon_by_key) | global_keys,
+        key=_match_key_sort_value,
+        reverse=True,
+    )
     if search_key:
         keys = [k for k in keys if k == search_key]
 

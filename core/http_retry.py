@@ -36,6 +36,8 @@ class _CurlResponse:
 
 
 def _retryable(exc: BaseException) -> bool:
+    if isinstance(exc, ConnectionResetError):
+        return True
     if isinstance(exc, TimeoutError):
         return True
     if isinstance(exc, urllib.error.URLError):
@@ -63,8 +65,12 @@ def _retryable(exc: BaseException) -> bool:
 
 
 def _curl_fallback_error(exc: BaseException) -> bool:
+    if isinstance(exc, ConnectionResetError):
+        return True
     if isinstance(exc, urllib.error.URLError):
         reason = exc.reason
+        if isinstance(reason, ConnectionResetError):
+            return True
         if isinstance(reason, ssl.SSLError):
             return True
         msg = str(reason or exc).lower()

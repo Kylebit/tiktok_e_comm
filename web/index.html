@@ -1,82 +1,87 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
+﻿<!DOCTYPE html>
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>TikTok Shop 控制台</title>
+  <title>Orbit OS 总控台</title>
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="/">TikTok Shop 控制台</a>
+    <a class="brand" href="/">Orbit OS 总控台</a>
     <nav class="nav">
       <a href="/" class="active">首页</a>
       <a href="/catalog">商品目录</a>
-      <a href="/settlement">结算利润</a>
-      <a href="/costs">成本维护</a>
-      <a href="/titles">Listing 优化</a>
+      <a href="/settlement">结算中心</a>
+      <a href="/costs">成本中心</a>
+      <a href="/titles">标题优化</a>
       <a href="/images">主图优化</a>
-      <a href="/sourcing">1688 选品</a>
-      <a href="/ozon">Ozon</a>
-      <a href="/analytics">Analytics</a>
-      <a href="/deactivate">零销下架</a>
-      <a href="/promotions">促销调价</a>
+      <a href="/sourcing">选品中心</a>
+      <a href="http://127.0.0.1:8767/">Orbit Rus 俄罗斯台</a>
+      <a href="/analytics">数据分析</a>
+      <a href="/deactivate">下架巡检</a>
+      <a href="/promotions">促销活动</a>
     </nav>
   </header>
   <main class="container">
-    <h1>工作台</h1>
-    <p class="hint">本地运行，数据保存在本机。后续新功能会陆续加入此控制台。</p>
-    <div id="statusBar" class="status-bar">加载状态...</div>
+    <h1>Orbit OS 总控台</h1>
+    <p class="hint">本地总控台，集中处理商品目录、结算、选品、优化和日常运营。</p>
+    <div id="statusBar" class="status-bar">正在加载状态...</div>
     <div class="grid">
       <a class="card link-card" href="/titles">
-        <h2>Listing 优化</h2>
-        <p>Analytics 高 CTR 0 单 → AI 标题+详情 → 确认推送</p>
-        <span class="badge" id="titleBadge">—</span>
+        <h2>标题优化</h2>
+        <p>查看分析信号并批量推进标题优化。</p>
+        <span class="badge" id="titleBadge">--</span>
       </a>
       <a class="card link-card" href="/images">
         <h2>主图优化</h2>
-        <p>Analytics B 类低 CTR → 基于 listing 原图白底优化 → 下载上传</p>
-        <span class="badge" id="imageBadge">—</span>
+        <p>查看图片优化候选与主图提升任务。</p>
+        <span class="badge" id="imageBadge">--</span>
       </a>
       <a class="card link-card" href="/analytics">
-        <h2>Analytics 分段</h2>
-        <p>28 天商品 CTR 表现 · A/B/C/D 分段一览</p>
+        <h2>数据分析</h2>
+        <p>查看商品分层与表现分桶。</p>
       </a>
       <a class="card link-card" href="/deactivate">
-        <h2>零销下架</h2>
-        <p>90 天 0 单 + CTR 低于中位 → 确认后批量 deactivate</p>
-        <span class="badge" id="deactBadge">—</span>
+        <h2>下架巡检</h2>
+        <p>把低表现商品加入下架复核队列。</p>
+        <span class="badge" id="deactBadge">--</span>
       </a>
       <a class="card link-card" href="/promotions">
-        <h2>促销工具</h2>
-        <p>折扣调整 · 加入促销 · 限时秒杀 · 优惠券</p>
-        <span class="badge" id="promoBadge">—</span>
+        <h2>促销活动</h2>
+        <p>管理折扣、活动扫描与优惠券流程。</p>
+        <span class="badge" id="promoBadge">--</span>
       </a>
       <a class="card link-card" href="/sourcing">
-        <h2>1688 选品</h2>
-        <p>采集货源 → AI 文案 → Photoroom 9 槽位 → 预览 TK/Shopee/Ozon 素材</p>
-        <span class="badge">NEW</span>
+        <h2>选品中心</h2>
+        <p>处理 1688 选品、素材准备和下游流转。</p>
+        <span class="badge">运行中</span>
       </a>
-      <a class="card link-card" href="/ozon">
-        <h2>Ozon 链接同步</h2>
-        <p>TK MY → 俄语草稿 → 3:4 图 → Ozon 上品；支持批量搬运 / 改价 / 促销</p>
+      <a class="card link-card" href="http://127.0.0.1:8766/">
+        <h2>Orbit Treasury 新品发布台</h2>
+        <p>独立新品上架与审核工作台。</p>
+        <span class="badge">运行中</span>
+      </a>
+      <a class="card link-card" href="http://127.0.0.1:8767/">
+        <h2>Orbit Rus 俄罗斯台</h2>
+        <p>独立俄罗斯与 Ozon 运营台。</p>
       </a>
       <a class="card link-card" href="/catalog">
         <h2>商品目录</h2>
-        <p>TikTok + Shopee 四国商品 · SKU 后四位对齐 · 可搜索</p>
+        <p>浏览并同步共享商品目录。</p>
       </a>
       <a class="card link-card" href="/costs">
-        <h2>商品采购成本</h2>
-        <p>维护 SKU 成本，用于利润计算</p>
+        <h2>成本中心</h2>
+        <p>维护定价与利润计算使用的 SKU 成本。</p>
       </a>
       <a class="card link-card" href="/settlement">
-        <h2>结算与利润</h2>
-        <p>TikTok 结算拉取 · 四国汇总 · 订单利润（成本来自商品目录）</p>
+        <h2>结算中心</h2>
+        <p>查看 TikTok 财务导入与利润汇总。</p>
       </a>
       <div class="card muted-card">
-        <h2>广告消耗</h2>
-        <p>即将接入：Marketing API 广告数据</p>
-        <span class="badge soon">开发中</span>
+        <h2>Ads</h2>
+        <p>Reserved for future marketing and ads integrations.</p>
+        <span class="badge soon">Soon</span>
       </div>
     </div>
   </main>
@@ -84,24 +89,24 @@
     fetch('/api/status').then(function(r) { return r.json(); }).then(function(s) {
       var el = document.getElementById('statusBar');
       if (!s.ok) {
-        el.innerHTML = '⚠️ ' + (s.error || '未授权') + ' · <a href="#" onclick="alert(\'终端运行: python3 main.py auth\');return false">去授权</a>';
+        el.innerHTML = 'Auth required or local service unavailable';
         el.className = 'status-bar warn';
         return;
       }
-      var parts = ['卖家 <b>' + (s.seller_name || '?') + '</b>'];
-      if (s.access_expires) parts.push('Access Token 至 ' + s.access_expires.slice(0, 16).replace('T', ' '));
-      el.innerHTML = parts.join(' · ');
+      var parts = ['Seller <b>' + (s.seller_name || '?') + '</b>'];
+      if (s.access_expires) parts.push('Access token until ' + s.access_expires.slice(0, 16).replace('T', ' '));
+      el.innerHTML = parts.join(' | ');
       el.className = 'status-bar ok';
       var b = document.getElementById('titleBadge');
-      if (b) b.textContent = (s.pending_titles || 0) + ' 条待确认';
+      if (b) b.textContent = (s.pending_titles || 0) + ' pending';
       var pb = document.getElementById('promoBadge');
-      if (pb) pb.textContent = (s.pending_promos || 0) + ' 条待确认';
+      if (pb) pb.textContent = (s.pending_promos || 0) + ' pending';
       var db = document.getElementById('deactBadge');
-      if (db) db.textContent = (s.pending_deactivate || 0) + ' 条待下架';
+      if (db) db.textContent = (s.pending_deactivate || 0) + ' pending';
       var ib = document.getElementById('imageBadge');
-      if (ib) ib.textContent = (s.pending_images || 0) + ' 条待处理';
+      if (ib) ib.textContent = (s.pending_images || 0) + ' pending';
     }).catch(function() {
-      document.getElementById('statusBar').textContent = '无法连接本地服务';
+      document.getElementById('statusBar').textContent = 'Unable to reach local service';
     });
   </script>
 </body>

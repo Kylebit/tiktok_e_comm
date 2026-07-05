@@ -1,5 +1,7 @@
 """结算拉取 + 利润报表。"""
 
+from __future__ import annotations
+
 from datetime import date, datetime, timedelta, timezone
 
 from core import auth, shops

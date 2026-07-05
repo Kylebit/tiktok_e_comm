@@ -1,5 +1,7 @@
 """商品模块入口。"""
 
+from __future__ import annotations
+
 from pathlib import Path
 
 from modules.products import build_page, costs, seller_sku, server, sync

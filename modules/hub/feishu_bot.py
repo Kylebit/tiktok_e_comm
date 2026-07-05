@@ -1,8 +1,8 @@
-"""飞书机器人长连接（免公网 URL）或 HTTP 回调说明。"""
+"""Feishu websocket bot entrypoint."""
 
 from __future__ import annotations
 
-import json
+import os
 
 from modules.hub import feishu_commands as cmd_mod
 from modules.hub import feishu_events as evt_mod
@@ -10,7 +10,6 @@ from modules.hub.feishu_app import app_config, app_ready, reply_text
 
 
 def _patch_websocket_ssl() -> None:
-    """lark ws 默认校验证书；本地/代理环境可能与 http_retry 一样需要放宽。"""
     import functools
     import ssl
 
@@ -30,72 +29,102 @@ def _patch_websocket_ssl() -> None:
     websockets.connect = connect
 
 
+def _disable_proxy_in_runtime() -> None:
+    """Disable env and Windows proxy discovery for the bot process."""
+    import urllib.request
+
+    proxy_keys = [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ]
+    for key in proxy_keys:
+        os.environ.pop(key, None)
+    os.environ["NO_PROXY"] = "*"
+    os.environ["no_proxy"] = "*"
+
+    urllib.request.getproxies = lambda: {}
+    urllib.request.proxy_bypass = lambda host: True
+    urllib.request.proxy_bypass_environment = lambda host, proxies=None: True
+
+    try:
+        import requests
+        import requests.sessions
+        import requests.utils
+
+        orig_merge = requests.sessions.Session.merge_environment_settings
+
+        def merge_environment_settings(self, url, proxies, stream, verify, cert):
+            merged = orig_merge(self, url, {}, stream, verify, cert)
+            merged["proxies"] = {}
+            return merged
+
+        requests.sessions.Session.merge_environment_settings = merge_environment_settings
+        requests.utils.get_environ_proxies = lambda url, no_proxy=None: {}
+        requests.sessions.get_environ_proxies = lambda url, no_proxy=None: {}
+    except Exception as exc:
+        print(f"[feishu] disable proxy patch skipped: {exc}")
+
+
 def print_setup_guide() -> None:
     print(
-        """
-╔══════════════════════════════════════════════════════════╗
-║  飞书双向交互 · 自建应用配置（一次性）                    ║
-╠══════════════════════════════════════════════════════════╣
-║ 1. 打开 https://open.feishu.cn/app → 创建企业自建应用    ║
-║ 2. 应用能力 → 开启「机器人」                              ║
-║ 3. 权限管理 → 开通：                                      ║
-║    · 获取群组中用户 @ 机器人消息 (im:message.group_at_msg)║
-║    · 以应用身份发消息 (im:message:send_as_bot)            ║
-║ 4. 事件与回调 → 添加事件「接收消息 im.message.receive_v1」║
-║ 5. 订阅方式（二选一）：                                     ║
-║    A) 长连接（推荐本地）：python3 main.py feishu bot       ║
-║    B) HTTP：配置请求 URL 为                                ║
-║       https://你的域名/api/feishu/event                    ║
-║       （本地可用 ngrok http 8765）                          ║
-║ 6. 发布应用 → 把机器人拉进日报群                            ║
-║ 7. config/settings.json 填写 feishu_app：                  ║
-║    enabled, app_id, app_secret                            ║
-║ 8. 群里 @机器人 帮助                                       ║
-╚══════════════════════════════════════════════════════════╝
-
-说明：
-· 自定义 Webhook 机器人（已有）= 单向推送日报
-· 自建应用机器人 = 双向 @ 指令交互
-· 两者可同时使用
-"""
+        "\n".join(
+            [
+                "============================================",
+                "Feishu bot setup",
+                "1. Open https://open.feishu.cn/app and create a self-built app",
+                "2. Enable bot capability",
+                "3. Grant message receive and send permissions",
+                "4. Subscribe to im.message.receive_v1",
+                "5. Configure config/settings.json -> feishu_app",
+                "6. Run: python main.py feishu bot",
+                "============================================",
+            ]
+        )
     )
 
 
 def run_websocket_bot() -> None:
-    """长连接模式（需 pip install lark-oapi）。"""
+    """Start the Feishu websocket bot."""
     if not app_ready():
         print_setup_guide()
-        raise RuntimeError("请先配置 feishu_app（app_id / app_secret / enabled）")
+        raise RuntimeError("Please configure feishu_app.app_id / app_secret / enabled first")
 
     try:
         import lark_oapi as lark
         from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
-    except ImportError as e:
-        print(f"缺少或版本不兼容 lark-oapi: {e}")
-        print("请运行：pip3 install 'lark-oapi>=1.4.0'")
-        print("或使用 HTTP 模式：python3 main.py serve + ngrok")
-        raise SystemExit(1) from e
+    except ImportError as exc:
+        print(f"Missing or incompatible lark-oapi: {exc}")
+        print("Run: pip install 'lark-oapi>=1.4.0'")
+        raise SystemExit(1) from exc
 
     c = app_config()
+    _disable_proxy_in_runtime()
     _patch_websocket_ssl()
 
     def on_message(data: P2ImMessageReceiveV1) -> None:
         parsed = evt_mod.extract_message_from_p2_event(data)
         if not parsed:
-            print("[feishu] 收到非文本或空消息，已忽略")
+            print("[feishu] ignored non-text or empty message")
             return
         message_id, text = parsed
-        print(f"[feishu] 收到: {text[:80]!r}")
+        print(f"[feishu] received: {text[:80]!r}")
         try:
-            reply = cmd_mod.handle_command(text)
-            reply_text(message_id, reply)
-            print(f"[feishu] 已回复 {len(reply)} 字")
-        except Exception as ex:
-            print(f"[feishu] 处理失败: {ex}")
+            reply = cmd_mod.handle_command(text, message_id=message_id)
+            if reply:
+                reply_text(message_id, reply)
+                print(f"[feishu] replied {len(reply)} chars")
+            else:
+                print("[feishu] command handled without text reply")
+        except Exception as exc:
+            print(f"[feishu] handler failed: {exc}")
             try:
-                reply_text(message_id, f"处理出错：{str(ex)[:200]}")
-            except Exception as reply_ex:
-                print(f"[feishu] 回复失败: {reply_ex}")
+                reply_text(message_id, f"处理出错：{str(exc)[:200]}")
+            except Exception as reply_exc:
+                print(f"[feishu] fallback reply failed: {reply_exc}")
 
     encrypt = c["encrypt_key"] or ""
     verify = c["verification_token"] or ""
@@ -104,10 +133,15 @@ def run_websocket_bot() -> None:
         .register_p2_im_message_receive_v1(on_message)
         .build()
     )
-    cli = lark.ws.Client(c["app_id"], c["app_secret"], event_handler=handler, log_level=lark.LogLevel.INFO)
-    print("飞书长连接已启动，等待 @ 机器人消息…（Ctrl+C 退出）")
+    cli = lark.ws.Client(
+        c["app_id"],
+        c["app_secret"],
+        event_handler=handler,
+        log_level=lark.LogLevel.INFO,
+    )
+    print("Feishu websocket bot connected, waiting for @ messages...")
     cli.start()
 
 
 def test_reply(message_id: str) -> None:
-    reply_text(message_id, "测试回复 OK · 双向交互已连通")
+    reply_text(message_id, "测试回复 OK，双向交互已连通")

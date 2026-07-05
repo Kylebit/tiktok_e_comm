@@ -3,7 +3,7 @@
 import sqlite3
 from pathlib import Path
 
-from core.config import ROOT, get
+from core.config import ROOT, get, settings_base_dir
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS shops (
@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS affiliate_invites (
 def db_path() -> Path:
     rel = get("database", "data/shop.db")
     p = Path(rel)
-    return p if p.is_absolute() else ROOT / p
+    return p if p.is_absolute() else settings_base_dir() / p
 
 
 def connect() -> sqlite3.Connection:

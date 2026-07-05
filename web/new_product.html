@@ -1,0 +1,1188 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Orbit Treasury 新品发布台</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <style>
+    .topbar { display: none; }
+    .np-page { max-width: 1380px; }
+    .np-grid { display: grid; grid-template-columns: 360px 1fr; gap: 16px; align-items: start; }
+    .np-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 14px; }
+    .np-card h2 { font-size: 15px; margin: 0 0 10px; }
+    .np-card h3 { font-size: 13px; margin: 16px 0 8px; color: #475569; }
+    .np-form { display: grid; gap: 10px; }
+    .np-form input, .np-form textarea, .np-form select {
+      width: 100%; border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px 10px; font-size: 13px;
+    }
+    .np-form textarea { min-height: 74px; }
+    .np-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .np-status { margin: 10px 0 0; font-size: 12px; color: #64748b; }
+    .site-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; }
+    .site-tile { border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 10px; background: #f8fafc; }
+    .site-tile label { display: flex; gap: 7px; align-items: center; margin: 0; font-size: 13px; color: #1f2937; }
+    .price-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .price-table th, .price-table td { border-bottom: 1px solid #e5e7eb; padding: 7px 8px; text-align: left; }
+    .price-table th { background: #f8fafc; color: #475569; font-weight: 600; }
+    .ok-pill, .warn-pill { display: inline-block; padding: 2px 6px; border-radius: 999px; font-size: 11px; }
+    .ok-pill { background: #dcfce7; color: #166534; }
+    .warn-pill { background: #fef3c7; color: #92400e; }
+    .image-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+    .image-card { border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; background: #fff; }
+    .image-card img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; background: #f1f5f9; }
+    .image-card .img-fallback { display: none; min-height: 120px; padding: 14px; background: #f8fafc; color: #64748b; font-size: 12px; line-height: 1.45; word-break: break-all; }
+    .image-card.img-error img { display: none; }
+    .image-card.img-error .img-fallback { display: block; }
+    .image-card .body { padding: 8px; }
+    .image-card select { width: 100%; padding: 6px; font-size: 12px; }
+    .split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .muted { color: #64748b; }
+    .locked { background: #f8fafc; border-color: #bbf7d0; }
+    .source-alert { margin-bottom: 14px; padding: 11px 12px; border: 1px solid #f59e0b; background: #fffbeb; color: #78350f; border-radius: 6px; }
+    .source-alert strong { display: block; margin-bottom: 3px; }
+    .quality-strip { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; }
+    .quality-item { padding: 4px 7px; border: 1px solid #fed7aa; background: #fff; border-radius: 5px; font-size: 11px; }
+    .progress-card { margin-top: 12px; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc; padding: 10px; }
+    .progress-track { height: 8px; border-radius: 999px; background: #e2e8f0; overflow: hidden; }
+    .progress-fill { height: 100%; width: 0; background: #ff2b5f; transition: width .2s ease; }
+    .step-list { display: grid; gap: 6px; margin-top: 10px; }
+    .step-item { display: flex; align-items: center; gap: 7px; font-size: 12px; color: #475569; }
+    .step-dot { width: 9px; height: 9px; border-radius: 999px; background: #cbd5e1; flex: 0 0 auto; }
+    .step-item.running .step-dot { background: #2563eb; }
+    .step-item.done .step-dot { background: #16a34a; }
+    .step-item.failed .step-dot { background: #dc2626; }
+    .step-item.failed { color: #991b1b; }
+    .fail-list { margin-top: 8px; padding: 8px; border: 1px solid #fecaca; border-radius: 6px; background: #fef2f2; color: #991b1b; font-size: 12px; }
+    .table-wrap { overflow-x: auto; }
+    .card-lite { margin-top: 12px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; }
+    .section-head { padding: 12px 14px 0; }
+    .ok-cell { color: #166534; font-weight: 600; }
+    .warn-cell { color: #92400e; font-weight: 600; }
+    .image-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin: 8px 0 10px; }
+    .image-toolbar .btn-secondary { width: auto; padding: 7px 10px; }
+    .sub-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+    .sub-actions .btn-secondary { width: auto; padding: 7px 10px; }
+    .sub-actions .muted { font-size: 12px; }
+    .image-statusbar { margin: 10px 0 12px; padding: 10px; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc; }
+    .image-progress { height: 8px; border-radius: 999px; background: #e2e8f0; overflow: hidden; }
+    .image-progress-fill { height: 100%; width: 0; background: #2563eb; transition: width .2s ease; }
+    .image-progress-meta { display: flex; justify-content: space-between; gap: 8px; margin-top: 8px; font-size: 12px; color: #475569; flex-wrap: wrap; }
+    .image-progress-meta strong { color: #0f172a; }
+    .img-fallback button { margin-top: 8px; width: auto; padding: 6px 10px; }
+    .stage-card { margin-top: 16px; border: 1px solid #dbe4ee; border-radius: 8px; padding: 12px; background: #f8fafc; }
+    .stage-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+    .stage-head h3 { margin: 0; color: #1f2937; }
+    .stage-badge { padding: 3px 7px; border-radius: 5px; background: #e2e8f0; color: #475569; font-size: 11px; }
+    .stage-card.ready { border-color: #86efac; background: #f0fdf4; }
+    .stage-card.ready .stage-badge { background: #dcfce7; color: #166534; }
+    .stage-hint { min-height: 34px; margin: 0 0 10px; color: #64748b; font-size: 12px; line-height: 1.45; }
+    .stage-flow { display: grid; gap: 6px; margin: 8px 0 10px; }
+    .stage-step { display: flex; gap: 8px; align-items: flex-start; padding: 7px 8px; border-radius: 6px; background: #fff; border: 1px solid #e5e7eb; font-size: 12px; }
+    .stage-step.current { border-color: #86efac; background: #f0fdf4; }
+    .stage-step.done { border-color: #d1fae5; background: #f8fffb; }
+    .stage-step .dot { width: 8px; height: 8px; border-radius: 999px; background: #cbd5e1; margin-top: 4px; flex: 0 0 auto; }
+    .stage-step.current .dot { background: #16a34a; }
+    .stage-step.done .dot { background: #22c55e; }
+    .stage-step .meta { color: #64748b; margin-top: 2px; }
+    .blocked-sites { margin-top: 8px; padding: 8px 10px; border: 1px solid #fde68a; border-radius: 6px; background: #fffbeb; color: #92400e; font-size: 12px; }
+    @media (max-width: 980px) { .np-grid, .split { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">TikTok Shop 控制台</a>
+    <nav class="nav">
+      <a href="/catalog">商品目录</a>
+      <a href="/new-product" class="active">新品工作台</a>
+      <a href="/sourcing">1688 选图</a>
+      <a href="/images">主图优化</a>
+      <a href="/promotions">促销</a>
+    </nav>
+  </header>
+
+  <main class="container np-page">
+    <div class="source-alert"><strong>Orbit Treasury 新品发布台</strong>独立新品上架与审核工作台。</div>
+    <h1>新品发布工作台</h1>
+    <p class="hint">第一波审核在这里完成；通过的字段会锁定。此页面默认不调用本地模型，不通知 Hive。</p>
+
+    <div class="np-grid">
+      <aside class="np-card">
+        <h2>输入</h2>
+        <div class="np-form">
+          <label>1688 链接 / offer_id / 妙手采集箱详情 ID</label>
+          <input id="urlInput" placeholder="https://detail.1688.com/offer/... 或 3746058816 或 ms:3746058816" value="867328673540">
+          <label>海外同款链接 / 妙手采集箱详情 ID（可选，每行一个：Temu / Shopee / Lazada / Amazon / TikTok / ms:ID）</label>
+          <textarea id="overseasInput" placeholder="https://www.temu.com/...&#10;ms:3746058817"></textarea>
+          <button id="previewButton" class="btn-primary" onclick="loadPreview()">生成第一波预览</button>
+          <div id="pipelineProgress" class="progress-card" style="display:none"></div>
+          <div id="status" class="np-status"></div>
+        </div>
+
+        <div id="reviewStage" class="stage-card">
+          <div class="stage-head"><h3>当前阶段</h3><span id="stageBadge" class="stage-badge">等待预览</span></div>
+          <p id="stageHint" class="stage-hint">生成预览并完成页面中的审核项。</p>
+          <div id="stageFlow" class="stage-flow"></div>
+          <button id="stageButton" class="btn-primary" onclick="runStageAction()" disabled>先生成第一波预览</button>
+        </div>
+      </aside>
+
+      <section id="preview" class="np-card">
+        <div class="empty">输入 1688 链接后生成第一波预览。</div>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    var preview = null;
+    var showAllImages = false;
+    var pipelineState = [];
+    var pipelineFailures = [];
+    var miaoshouDraftPrepared = false;
+    var packageDirty = false;
+    var imageLoadState = {};
+    var lockedReviewAutosaveTimer = null;
+    var pendingStageAction = null;
+    var siteDraftPollTimer = null;
+    var siteDraftPollAttempt = 0;
+    var claimPollTimer = null;
+    var claimPollAttempt = 0;
+
+    function esc(s) {
+      return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function imgSrc(url) {
+      if (!url) return '';
+      if (/^(data:|blob:|\/)/.test(url)) return url;
+      if (/^https?:\/\//i.test(url)) return url;
+      return '/api/proxy-image?url=' + encodeURIComponent(url);
+    }
+
+    function markImageError(img) {
+      var card = img && img.closest ? img.closest('.image-card') : null;
+      if (card) card.classList.add('img-error');
+      if (img && img.dataset) {
+        imageLoadState[img.dataset.imgKey] = 'failed';
+        updateImageProgressUi(img.dataset.imgScope);
+      }
+    }
+
+    function markImageLoaded(img) {
+      var card = img && img.closest ? img.closest('.image-card') : null;
+      if (card) card.classList.remove('img-error');
+      if (img && img.dataset) {
+        imageLoadState[img.dataset.imgKey] = 'loaded';
+        updateImageProgressUi(img.dataset.imgScope);
+      }
+    }
+
+    function imageKey(scope, idx) {
+      return scope + '-' + idx;
+    }
+
+    function imageStats(scope) {
+      var nodes = Array.prototype.slice.call(document.querySelectorAll('img[data-img-scope="' + scope + '"]'));
+      var stats = {total: nodes.length, loaded: 0, failed: 0, pending: 0};
+      nodes.forEach(function(node) {
+        var status = imageLoadState[node.dataset.imgKey] || 'pending';
+        if (status === 'loaded') stats.loaded += 1;
+        else if (status === 'failed') stats.failed += 1;
+        else stats.pending += 1;
+      });
+      return stats;
+    }
+
+    function updateImageProgressUi(scope) {
+      var host = document.querySelector('[data-image-progress="' + scope + '"]');
+      if (!host) return;
+      var stats = imageStats(scope);
+      if (!stats.total) {
+        host.innerHTML = '';
+        return;
+      }
+      var done = stats.loaded + stats.failed;
+      var pct = stats.total ? Math.round((done / stats.total) * 100) : 0;
+      host.innerHTML =
+        '<div class="image-progress"><div class="image-progress-fill" style="width:' + pct + '%"></div></div>' +
+        '<div class="image-progress-meta">' +
+        '<span><strong>已完成 ' + done + ' / ' + stats.total + '</strong></span>' +
+        '<span>成功 ' + stats.loaded + ' 张</span>' +
+        '<span>失败 ' + stats.failed + ' 张</span>' +
+        '<span>加载中 ' + stats.pending + ' 张</span>' +
+        (stats.failed ? '<button class="btn-secondary" onclick="retryFailedImages(\'' + scope + '\')">重试失败图片</button>' : '') +
+        '</div>';
+    }
+
+    function updateAllImageProgressUi() {
+      updateImageProgressUi('review');
+      updateImageProgressUi('overseas');
+    }
+
+    function retryImage(scope, idx) {
+      var img = document.querySelector('img[data-img-scope="' + scope + '"][data-img-idx="' + idx + '"]');
+      if (!img) return;
+      var card = img.closest('.image-card');
+      if (card) card.classList.remove('img-error');
+      imageLoadState[img.dataset.imgKey] = 'pending';
+      var base = img.getAttribute('data-base-src') || '';
+      if (base) img.src = base + (base.indexOf('?') >= 0 ? '&' : '?') + '_retry=' + Date.now();
+      updateImageProgressUi(scope);
+    }
+
+    function retryFailedImages(scope) {
+      Array.prototype.slice.call(document.querySelectorAll('img[data-img-scope="' + scope + '"]')).forEach(function(img) {
+        if ((imageLoadState[img.dataset.imgKey] || 'pending') === 'failed') {
+          retryImage(scope, img.dataset.imgIdx);
+        }
+      });
+    }
+
+    function queueLockedReviewAutosave(reason) {
+      if (!preview || !preview.review || !preview.review.fields_locked) return;
+      if (lockedReviewAutosaveTimer) clearTimeout(lockedReviewAutosaveTimer);
+      lockedReviewAutosaveTimer = setTimeout(function() {
+        saveReview(false, true, reason || 'locked-autosave');
+      }, 350);
+    }
+
+    function applyLongVideoFallback() {
+      if (!preview) return;
+      var button = document.getElementById('stageButton');
+      var video = document.getElementById('videoAction');
+      if (video) video.value = 'remove';
+      pendingStageAction = null;
+      if (button) {
+        button.disabled = true;
+        button.textContent = '正在移除超长视频...';
+      }
+      setStatus('正在移除超长视频并重新准备妙手草稿...');
+      api('/api/new-product/review', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({offer_id: preview.offer_id, review: collectReview(false)})
+      }).then(function(d) {
+        if (!d.ok) throw new Error(d.error || '保存视频动作失败');
+        preview = d;
+        render();
+        setStatus('已自动移除超长视频，重新准备妙手草稿...');
+        prepareMiaoshouDraft();
+      }).catch(function(e) {
+        setStatus(String(e));
+        if (button) {
+          button.disabled = false;
+          button.textContent = '自动移除超长视频后重试';
+        }
+        pendingStageAction = 'drop-long-video';
+      });
+    }
+
+    function markPackageDirty() {
+      packageDirty = true;
+      syncPackageSaveUi();
+    }
+
+    function syncPackageSaveUi(message) {
+      var button = document.getElementById('packageSaveButton');
+      var note = document.getElementById('packageSaveState');
+      if (button) {
+        button.disabled = !packageDirty;
+        button.textContent = packageDirty ? '保存尺寸重量并重算价格' : '尺寸重量已保存';
+      }
+      if (note) {
+        note.textContent = message || (packageDirty ? '尺寸重量已修改，等待保存' : '当前尺寸重量已保存');
+      }
+    }
+
+    function savePackageReview() {
+      if (!packageDirty) {
+        syncPackageSaveUi('当前尺寸重量已保存');
+        return;
+      }
+      api('/api/new-product/review', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({offer_id: preview.offer_id, review: collectReview(false)})
+      }).then(function(d) {
+        if (!d.ok) { alert(d.error || '保存失败'); return; }
+        preview = d;
+        packageDirty = false;
+        render();
+        syncPackageSaveUi('尺寸重量已保存并已重算价格');
+        setStatus('尺寸重量已保存并已重算价格');
+      });
+    }
+
+    function api(path, opts) {
+      return fetch(path, opts || {}).then(function(r) { return r.json(); });
+    }
+
+    function setStatus(msg) {
+      document.getElementById('status').textContent = msg || '';
+    }
+
+    function resetProgress(labels) {
+      pipelineState = labels.map(function(label) { return {label: label, status: 'pending', message: ''}; });
+      pipelineFailures = [];
+      renderProgress();
+    }
+
+    function updateProgress(idx, status, message) {
+      if (pipelineState[idx]) {
+        pipelineState[idx].status = status;
+        pipelineState[idx].message = message || '';
+      }
+      renderProgress();
+    }
+
+    function failProgress(idx, message) {
+      var msg = message || 'Unknown error';
+      if (pipelineState[idx]) pipelineState[idx].status = 'failed';
+      pipelineFailures.push((pipelineState[idx] ? pipelineState[idx].label + ': ' : '') + msg);
+      renderProgress();
+    }
+
+    function renderProgress() {
+      var box = document.getElementById('pipelineProgress');
+      if (!box) return;
+      if (!pipelineState.length) {
+        box.style.display = 'none';
+        box.innerHTML = '';
+        return;
+      }
+      box.style.display = 'block';
+      var done = pipelineState.filter(function(s) { return s.status === 'done'; }).length;
+      var pct = Math.round((done / pipelineState.length) * 100);
+      var html = '<div class="progress-track"><div class="progress-fill" style="width:' + pct + '%"></div></div>';
+      html += '<div class="step-list">';
+      pipelineState.forEach(function(step) {
+        var cls = step.status === 'pending' ? '' : step.status;
+        html += '<div class="step-item ' + cls + '"><span class="step-dot"></span><span>' + esc(step.label);
+        if (step.message) html += ' - ' + esc(step.message);
+        html += '</span></div>';
+      });
+      html += '</div>';
+      if (pipelineFailures.length) {
+        html += '<div class="fail-list"><strong>失败项目</strong><br>' + pipelineFailures.map(esc).join('<br>') + '</div>';
+      }
+      box.innerHTML = html;
+    }
+
+    function loadPreview() {
+      var url = document.getElementById('urlInput').value.trim();
+      if (!url) { alert('请先输入 1688 链接、offer_id 或妙手采集箱详情 ID'); return; }
+      var button = document.getElementById('previewButton');
+      button.disabled = true;
+      showAllImages = false;
+      resetProgress(['解析输入来源', '读取妙手/1688 商品数据', '抓取海外素材', '生成页面预览和价格审查']);
+      updateProgress(0, 'running', '准备中');
+      setStatus('正在生成第一波预览...');
+      api('/api/new-product/preview', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({url: url, overseas_urls: overseasLines(), precollect: true})
+      }).then(function(d) {
+        updateProgress(0, 'done', 'Offer ' + (d.offer_id || ''));
+        if (!d.ok) { failProgress(1, d.error || '预采集失败'); setStatus(d.error || '失败'); return; }
+        updateProgress(1, d.precollect_error ? 'failed' : 'done', d.precollect_error || d.mode || '');
+        if (d.precollect_error) pipelineFailures.push('妙手预采集: ' + d.precollect_error);
+        preview = d;
+        document.getElementById('urlInput').value = d.offer_id;
+        if (overseasLines().length) {
+          updateProgress(2, 'running', '正在拉取公开素材');
+          return saveOverseasLinks(true, true).then(function(ok) {
+            updateProgress(2, ok ? 'done' : 'failed', ok ? '完成' : '部分失败');
+            updateProgress(3, 'done', '已渲染');
+            setStatus('已生成第一波预览：' + (preview.mode || 'preview'));
+            render();
+          });
+        }
+        updateProgress(2, 'done', '无海外链接');
+        updateProgress(3, 'done', '已渲染');
+        setStatus('已生成第一波预览：' + d.mode);
+        render();
+      }).catch(function(e) { failProgress(1, String(e)); setStatus(String(e)); }).finally(function() { button.disabled = false; });
+    }
+
+    function render() {
+      if (!preview) return;
+      var s = preview.source || {};
+      var r = preview.review || {};
+      var p = preview.pricing || {};
+      var html = '';
+
+      if (preview.precollect_error) {
+        html += '<div class="source-alert"><strong>妙手预采集失败，当前显示本地缓存</strong>' + esc(preview.precollect_error) + '</div>';
+      }
+
+      if (s.data_status === 'incomplete') {
+        var miaoshouReady = (((s.precollect || {}).records) || []).some(function(x) { return x.status === 'success'; });
+        html += '<div class="source-alert"><strong>来源数据尚未完整</strong>';
+        html += miaoshouReady
+          ? '妙手预采集已成功，以下字段仍需确认；缺失字段不会进入通过状态。'
+          : '1688 自动采集被验证页拦截，已优先展示本地缓存或海外同款可复用素材。缺失字段不会进入通过状态。';
+        html += '<div class="quality-strip">' + (s.missing_fields || []).map(function(x) {
+          return '<span class="quality-item">待补：' + esc(x) + '</span>';
+        }).join('') + '</div></div>';
+      }
+
+      html += '<div class="split">';
+      html += '<div>';
+      html += '<h2>商品基础信息</h2>';
+      html += '<table class="price-table">';
+      html += row('Offer ID', preview.offer_id);
+      html += row('1688', '<a href="' + esc(s.source_url) + '" target="_blank">打开原链</a>');
+      html += row('来源价', '<input id="costCny" type="number" step="0.01" value="' + esc((p.input || {}).cost_cny || s.cost_cny || 0) + '" oninput="recalc()"> CNY');
+      html += row('库存', esc(s.stock || ''));
+      html += row('Seller SKU', '<input id="sellerSku" value="' + esc(r.seller_sku || '') + '" maxlength="4">');
+      html += row('货到付款', '<span class="ok-pill">已开启</span><input type="hidden" id="supportCod" value="true">');
+      html += '</table>';
+      html += '</div>';
+
+      html += '<div>';
+      html += '<h2>标题 / 类目</h2>';
+      html += '<label>英文标题</label><textarea id="titleInput">' + esc(r.title || '') + '</textarea>';
+      html += '<label>类目</label><input id="categoryInput" value="' + esc((r.category || {}).name || '') + '">';
+      html += '<p class="muted">源标题：' + esc(s.title_source || '') + (s.title_source_kind ? ' · ' + esc(s.title_source_kind) : '') + '</p>';
+      html += '</div>';
+      html += '</div>';
+
+      html += renderPrecollect(s.precollect || {});
+      html += renderSourceDetails(s.skus || [], s.attributes || {});
+
+      html += '<h2>目标站点</h2><div class="site-grid">';
+      (preview.target_sites || []).forEach(function(site) {
+        var checked = (r.selected_sites || []).indexOf(site.id) >= 0 ? ' checked' : '';
+        html += '<div class="site-tile"><label><input type="checkbox" class="siteCheck" value="' + esc(site.id) + '"' + checked + '> ' +
+          esc(site.shop + ' ' + site.region + ' / ' + site.currency) + '</label></div>';
+      });
+      html += '</div>';
+
+      html += '<div class="split">';
+      html += '<div><h2>尺寸重量</h2>';
+      html += '<div class="np-row">';
+      var weightG = Math.round(((p.input || {}).weight_kg || r.weight_kg || 0) * 1000);
+      html += '<div><label>重量 g</label><input id="weightG" type="number" step="1" value="' + esc(weightG) + '" oninput="markPackageDirty()"></div>';
+      var dims = (p.input || {}).package_cm || r.package_cm || [0,0,0];
+      html += '<div><label>长 cm</label><input id="dimL" type="number" step="0.1" value="' + esc(dims[0] || 0) + '" oninput="markPackageDirty()"></div>';
+      html += '<div><label>宽 cm</label><input id="dimW" type="number" step="0.1" value="' + esc(dims[1] || 0) + '" oninput="markPackageDirty()"></div>';
+      html += '</div><div class="np-row" style="margin-top:8px">';
+      html += '<div><label>高 cm</label><input id="dimH" type="number" step="0.1" value="' + esc(dims[2] || 0) + '" oninput="markPackageDirty()"></div>';
+      html += '</div><div class="sub-actions">';
+      html += '<button id="packageSaveButton" class="btn-secondary" onclick="savePackageReview()" disabled>保存尺寸重量并重算价格</button>';
+      html += '<span id="packageSaveState" class="muted">当前尺寸重量已保存</span>';
+      html += '</div></div>';
+
+      html += '<div><h2>视频</h2>';
+      if ((s.video || {}).url) {
+        html += '<p><a href="' + esc(s.video.url) + '" target="_blank">打开 1688 视频</a></p>';
+        html += '<select id="videoAction"><option value="keep">保留</option><option value="remove">不使用</option></select>';
+      } else {
+        html += '<p class="muted">未发现视频</p><input type="hidden" id="videoAction" value="none">';
+      }
+      html += '</div></div>';
+
+      html += renderPricing(p);
+      html += renderOverseas(preview.overseas_sources || [], r.overseas_image_candidates || []);
+      html += renderImages(r.image_actions || []);
+      html += renderImageRequests(r.image_generation_requests || []);
+      html += renderRisks(s.risks || []);
+
+      document.getElementById('preview').innerHTML = html;
+      var v = document.getElementById('videoAction');
+      if (v) v.value = r.video_action || ((s.video || {}).url ? 'keep' : 'none');
+      syncPackageSaveUi();
+      updateAllImageProgressUi();
+      updateReviewStage();
+    }
+
+    function row(k, v) {
+      return '<tr><th>' + esc(k) + '</th><td>' + v + '</td></tr>';
+    }
+
+    function renderPricing(p) {
+      var html = '<h2>价格审查</h2>';
+      html += '<div class="table-wrap"><table class="price-table"><thead><tr><th>站点</th><th>成本 CNY</th><th>计费重</th><th>挂牌价</th><th>35% 后</th><th>预估物流</th><th>预估利润</th><th>利润/状态</th><th>备注</th></tr></thead><tbody>';
+      (p.sea || []).forEach(function(x) {
+        var missing = x.status === 'missing_cost';
+        var rowOk = x.status === 'ok';
+        var listLabel = missing ? '待补来源价' : esc(x.currency + ' ' + x.list_price);
+        var saleLabel = missing ? '—' : esc(x.currency + ' ' + x.discount_price);
+        html += '<tr><td>' + esc(x.shop + ' ' + x.region) + '</td><td>' + esc(x.cost_cny == null ? '-' : x.cost_cny) + '</td><td>' +
+          esc(x.billable_kg == null ? '-' : x.billable_kg + ' kg') + '</td><td>' + listLabel + '</td><td>' +
+          saleLabel + '</td><td>' + esc(x.estimated_shipping_cny == null ? '-' : 'CNY ' + x.estimated_shipping_cny) + '</td><td>' +
+          esc(x.estimated_profit_cny == null ? '-' : 'CNY ' + x.estimated_profit_cny) + '</td><td><span class="' + (rowOk ? 'ok-pill' : 'warn-pill') + '">' +
+          (missing ? '待补数据' : esc((x.profit_margin_on_sale_pct == null ? x.target_margin_pct : x.profit_margin_on_sale_pct) + '%')) + '</span></td><td>' +
+          esc(x.notes || '35% discount reserve; target 20% margin') + '</td></tr>';
+      });
+      ['mx', 'uk'].forEach(function(k) {
+        var x = p[k] || {};
+        var cls = x.status === 'ok' ? 'ok-pill' : 'warn-pill';
+        var missing = x.status === 'missing_cost';
+        html += '<tr><td>' + esc(x.region || k.toUpperCase()) + '</td><td>' + esc(x.cost_cny == null ? '-' : x.cost_cny) + '</td><td>' +
+          esc(x.billable_kg == null ? '-' : x.billable_kg + ' kg') + '</td><td>' + (missing ? '待补来源价' : esc((x.currency || '') + ' ' + (x.list_price || ''))) +
+          '</td><td>' + (missing ? '—' : esc((x.currency || '') + ' ' + (x.discount_price || ''))) + '</td><td>' +
+          esc(x.estimated_shipping == null ? '-' : (x.currency || '') + ' ' + x.estimated_shipping) + '</td><td>' +
+          esc(x.estimated_profit == null ? '-' : (x.currency || '') + ' ' + x.estimated_profit) + '</td><td><span class="' + cls + '">' +
+          (missing ? '待补数据' : esc((x.profit_margin_on_sale_pct || 0) + '%')) + '</span> ' + (x.volumetric_dominates ? '体积重主导' : '') + '</td><td>' +
+          esc(x.notes || '') + '</td></tr>';
+      });
+      html += '</tbody></table></div>';
+      return html;
+    }
+
+    function renderPricing(p) {
+      var audit = (p || {}).audit || {};
+      var sections = audit.sections || [];
+      if (!sections.length) return '<h2>价格审查</h2><p class="muted">还没有可展示的定价审计结果。</p>';
+      var html = '<h2>价格审查</h2>';
+      html += '<p class="hint">这一组表格就是审核页当前记住并实际采用的价格计算规则，后面可以继续按结算单修正。</p>';
+      sections.forEach(function(section) {
+        html += '<div class="card-lite">';
+        html += '<div class="section-head"><strong>' + esc(section.title || section.section || 'Pricing Audit') + '</strong>';
+        if ((section.notes || []).length) {
+          html += '<div class="muted" style="margin-top:6px">' + section.notes.filter(Boolean).map(esc).join(' · ') + '</div>';
+        }
+        html += '</div>';
+        html += '<div class="table-wrap"><table class="price-table"><thead><tr>';
+        (section.header_labels || []).forEach(function(label) {
+          html += '<th>' + esc(label) + '</th>';
+        });
+        html += '</tr></thead><tbody>';
+        (section.rows || []).forEach(function(row) {
+          html += '<tr>';
+          row.forEach(function(cell, idx) {
+            var cls = '';
+            if (idx === row.length - 1 && typeof cell === 'string' && cell.indexOf('%') >= 0) {
+              var pct = parseFloat(cell);
+              if (!isNaN(pct)) cls = pct >= 0 ? ' class="ok-cell"' : ' class="warn-cell"';
+            }
+            html += '<td' + cls + '>' + esc(String(cell == null ? '-' : cell)).replace(/\n/g, '<br>') + '</td>';
+          });
+          html += '</tr>';
+        });
+        html += '</tbody></table></div></div>';
+      });
+      return html;
+    }
+
+    function renderImages(images) {
+      var html = '<h2>图片审核</h2>';
+      html += '<p class="hint">保留、删除、翻译、重绘、补充图生成都在第一波审核里决定。生成补图只记录需求，不自动调用付费 API。</p>';
+      var visible = showAllImages ? images : images.slice(0, 6);
+      html += '<div class="image-toolbar"><span class="muted">显示 ' + visible.length + ' / ' + images.length + ' 张；首屏限量加载以提高速度。</span>';
+      if (images.length > 6) html += '<button class="btn-secondary" onclick="toggleImages()">' + (showAllImages ? '收起图片' : '显示全部图片') + '</button>';
+      html += '</div>';
+      html += '<div class="image-statusbar" data-image-progress="review"></div>';
+      html += '<div class="image-grid">';
+      visible.forEach(function(img, idx) {
+        var scope = 'review';
+        var key = imageKey(scope, idx);
+        var src = imgSrc(img.url || '');
+        if (!imageLoadState[key]) imageLoadState[key] = 'pending';
+        html += '<div class="image-card">';
+        html += '<img src="' + esc(src) + '" alt="" loading="' + (idx < 4 ? 'eager' : 'lazy') + '" decoding="async" fetchpriority="' + (idx < 4 ? 'high' : 'low') + '" data-img-scope="' + scope + '" data-img-idx="' + idx + '" data-img-key="' + key + '" data-base-src="' + esc(src) + '" onload="markImageLoaded(this)" onerror="markImageError(this)">';
+        html += '<div class="img-fallback">图片加载失败<br>' + esc(img.url || '') + '<br><button class="btn-secondary" onclick="retryImage(\'' + scope + '\',' + idx + ')">重新拉取</button></div>';
+        html += '<div class="body">';
+        html += '<select class="imageAction" data-idx="' + idx + '">';
+        ['review','keep','translate','redraw','remove'].forEach(function(a) {
+          html += '<option value="' + a + '"' + (img.action === a ? ' selected' : '') + '>' + labelAction(a) + '</option>';
+        });
+        html += '</select>';
+        html += '<input class="imageNote" data-idx="' + idx + '" placeholder="备注" value="' + esc(img.note || '') + '" style="margin-top:6px">';
+        html += '</div></div>';
+      });
+      html += '</div>';
+      html += '<h3>新增图片需求</h3><div class="np-form"><textarea id="imagePrompt" placeholder="例如：生成一张英文尺寸说明图，白底，突出高度和宽度"></textarea>';
+      html += '<button class="btn-secondary" onclick="addImageRequest()">记录新增图片需求</button></div>';
+      return html;
+    }
+
+    function renderOverseas(sources, imageCandidates) {
+      var html = '<h2>海外同款素材</h2>';
+      html += '<p class="hint">这些素材用于参考和候选，不直接替代 1688。优先检查是否同款、是否带平台水印、是否有版权/品牌风险。</p>';
+      if (!sources.length) {
+        html += '<p class="muted">未添加海外同款链接。</p>';
+        return html;
+      }
+      html += '<table class="price-table"><thead><tr><th>来源</th><th>标题/描述</th><th>素材</th><th>状态</th></tr></thead><tbody>';
+      sources.forEach(function(src, idx) {
+        html += '<tr><td><a href="' + esc(src.url) + '" target="_blank">' + esc(src.source_type || 'overseas') + '</a></td>';
+        html += '<td><strong>' + esc(src.title || '未提取标题') + '</strong><br><span class="muted">' + esc((src.description || '').slice(0, 180)) + '</span><br>';
+        if (src.title) html += '<button class="btn-xs" onclick="useOverseasTitle(' + idx + ')">采用标题</button>';
+        html += '</td><td>' + esc((src.images || []).length + ' 图 / ' + (src.videos || []).length + ' 视频') + '</td>';
+        html += '<td>' + esc(src.status || '') + '<br><span class="muted">' + esc((src.notes || []).join('; ')) + '</span></td></tr>';
+      });
+      html += '</tbody></table>';
+      if (imageCandidates.length) {
+        html += '<h3>海外图片候选</h3><div class="image-statusbar" data-image-progress="overseas"></div><div class="image-grid">';
+        imageCandidates.forEach(function(img, idx) {
+          var scope = 'overseas';
+          var key = imageKey(scope, idx);
+          var src = imgSrc(img.url || '');
+          if (!imageLoadState[key]) imageLoadState[key] = 'pending';
+        html += '<div class="image-card"><img src="' + esc(src) + '" alt="" loading="lazy" decoding="async" fetchpriority="low" data-img-scope="' + scope + '" data-img-idx="' + idx + '" data-img-key="' + key + '" data-base-src="' + esc(src) + '" onload="markImageLoaded(this)" onerror="markImageError(this)"><div class="img-fallback">图片加载失败<br>' + esc(img.url || '') + '<br><button class="btn-secondary" onclick="retryImage(\'' + scope + '\',' + idx + ')">重新拉取</button></div><div class="body">';
+          html += '<div class="muted">' + esc(img.note || 'overseas candidate') + '</div>';
+          html += '<button class="btn-secondary" onclick="promoteOverseasImage(' + idx + ')">加入图片审核</button>';
+          html += '</div></div>';
+        });
+        html += '</div>';
+      }
+      return html;
+    }
+
+    function renderPrecollect(info) {
+      var records = info.records || [];
+      if (!records.length) return '';
+      var html = '<h2>妙手预采集状态</h2>';
+      html += '<p class="hint">数据仅位于公共采集箱；当前未认领到店铺，也未发布。</p>';
+      html += '<table class="price-table"><thead><tr><th>来源</th><th>货源 ID</th><th>详情 ID</th><th>状态</th></tr></thead><tbody>';
+      records.forEach(function(row) {
+        var cls = row.status === 'success' ? 'ok-pill' : 'warn-pill';
+        html += '<tr><td>' + esc(row.source || 'source') + '</td><td>' + esc(row.source_id || '') + '</td><td>' +
+          esc(row.common_collect_id || '') + '</td><td><span class="' + cls + '">' + esc(row.status || 'unknown') + '</span><br><span class="muted">' +
+          esc((row.notes || []).join('; ')) + '</span></td></tr>';
+      });
+      html += '</tbody></table>';
+      return html;
+    }
+
+    function renderSourceDetails(skus, attributes) {
+      var keys = Object.keys(attributes || {});
+      if (!skus.length && !keys.length) return '';
+      var html = '<div class="split">';
+      html += '<div><h2>1688 规格</h2>';
+      if (skus.length) {
+        html += '<table class="price-table"><thead><tr><th>规格</th><th>来源价</th><th>库存</th><th>重量</th></tr></thead><tbody>';
+        skus.forEach(function(row) {
+          html += '<tr><td>' + esc(row.name || '') + '</td><td>CNY ' + esc(row.price || '') + '</td><td>' + esc(row.stock || '') +
+            '</td><td>' + esc(row.weight == null ? '' : row.weight + ' kg') + '</td></tr>';
+        });
+        html += '</tbody></table>';
+      } else html += '<p class="muted">未发现多规格</p>';
+      html += '</div><div><h2>来源属性</h2><table class="price-table"><tbody>';
+      keys.slice(0, 18).forEach(function(key) { html += row(key, esc(attributes[key])); });
+      html += '</tbody></table></div></div>';
+      return html;
+    }
+
+    function labelAction(a) {
+      return {review:'待审核', keep:'保留', translate:'翻译成英文', redraw:'重绘/修复', remove:'删除'}[a] || a;
+    }
+
+    function renderImageRequests(reqs) {
+      if (!reqs.length) return '';
+      var html = '<h2>待生成图片需求</h2><table class="price-table"><thead><tr><th>ID</th><th>需求</th><th>状态</th></tr></thead><tbody>';
+      reqs.forEach(function(r) {
+        html += '<tr><td>' + esc(r.id) + '</td><td>' + esc(r.prompt) + '</td><td>' + esc(r.status) + '</td></tr>';
+      });
+      html += '</tbody></table>';
+      return html;
+    }
+
+    function renderRisks(risks) {
+      if (!risks.length) return '';
+      return '<h2>风险提示</h2><ul>' + risks.map(function(x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul>';
+    }
+
+    function collectReview(lockFields) {
+      var keepLocked = !!lockFields || !!(preview && preview.review && preview.review.fields_locked);
+      var sites = Array.prototype.slice.call(document.querySelectorAll('.siteCheck:checked')).map(function(x) { return x.value; });
+      var imgs = (preview.review.image_actions || []).map(function(img, idx) {
+        var a = document.querySelector('.imageAction[data-idx="' + idx + '"]');
+        var n = document.querySelector('.imageNote[data-idx="' + idx + '"]');
+        var out = Object.assign({}, img);
+        out.action = a ? a.value : out.action;
+        out.note = n ? n.value : out.note;
+        return out;
+      });
+      return {
+        selected_sites: sites,
+        title: document.getElementById('titleInput').value,
+        seller_sku: document.getElementById('sellerSku').value.replace(/\D/g, '').slice(-4),
+        category: {name: document.getElementById('categoryInput').value},
+        cost_cny: parseFloat(document.getElementById('costCny').value || '0'),
+        weight_kg: parseFloat(document.getElementById('weightG').value || '0') / 1000,
+        package_cm: [
+          parseFloat(document.getElementById('dimL').value || '0'),
+          parseFloat(document.getElementById('dimW').value || '0'),
+          parseFloat(document.getElementById('dimH').value || '0')
+        ],
+        video_action: (document.getElementById('videoAction') || {}).value || 'none',
+        support_cod: true,
+        image_actions: imgs,
+        fields_locked: keepLocked
+      };
+    }
+
+    function saveReview(lockFields, quiet, reason) {
+      if (!preview) return;
+      api('/api/new-product/review', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({offer_id: preview.offer_id, review: collectReview(lockFields)})
+      }).then(function(d) {
+        if (!d.ok) { if (!quiet) alert(d.error || '保存失败'); return; }
+        preview = d;
+        render();
+        if (!quiet) setStatus(lockFields ? '已锁定通过字段' : '已保存并复算价格');
+        else if (preview.review && preview.review.fields_locked && reason) setStatus('已自动保存锁定后的审核修改');
+      });
+    }
+
+    function recalc() {
+      saveReview(false, true, 'general');
+    }
+
+    function stageSnapshot() {
+      if (!preview) return {index: 0, blockedSites: []};
+      var locked = !!((preview.review || {}).fields_locked);
+      var written = !!((preview.miaoshou_draft || {}).written_to_miaoshou && (preview.miaoshou_draft || {}).verified);
+      var claimed = !!((preview.tiktok_claim || {}).claimed);
+      var claimInProgress = !!((preview.tiktok_claim || {}).in_progress);
+      var siteReady = !!((preview.site_drafts || {}).ready);
+      var blocked = Object.keys((preview.tiktok_claim || {}).blocked_sites || {});
+      var index = 0;
+      if (siteReady) index = 4;
+      else if (claimed || claimInProgress) index = 3;
+      else if (written) index = 2;
+      else if (locked) index = 1;
+      return {
+        index: index,
+        locked: locked,
+        written: written,
+        claimed: claimed,
+        claimInProgress: claimInProgress,
+        siteReady: siteReady,
+        blockedSites: blocked
+      };
+    }
+
+    function renderStageFlow(snapshot) {
+      var steps = [
+        {label: '第一轮审核中', meta: '修改标题、图片、尺寸重量、站点选择和价格审查'},
+        {label: '第一轮已通过', meta: '字段锁定，准备妙手二审草稿'},
+        {label: '妙手二审待确认', meta: '已写入妙手公共采集箱，等待继续同步到 TikTok'},
+        {label: '站点配置中', meta: '已认领 TikTok 采集箱，正在生成各站点草稿'},
+        {label: '站点草稿待发布', meta: '草稿已就绪，等待人工发布审批'}
+      ];
+      var html = '';
+      steps.forEach(function(step, idx) {
+        var cls = idx < snapshot.index ? 'stage-step done' : (idx === snapshot.index ? 'stage-step current' : 'stage-step');
+        html += '<div class="' + cls + '"><span class="dot"></span><div><div>' + esc(step.label) + '</div><div class="meta">' + esc(step.meta) + '</div></div></div>';
+      });
+      if ((snapshot.blockedSites || []).length) {
+        html += '<div class="blocked-sites"><strong>待授权站点</strong><br>' + esc(snapshot.blockedSites.join('、')) + '</div>';
+      }
+      return html;
+    }
+
+    function refreshPreviewState(quiet) {
+      if (!preview || !preview.offer_id) return Promise.resolve(preview);
+      return api('/api/new-product/preview', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({url: preview.offer_id, overseas_urls: overseasLines(), precollect: true})
+      }).then(function(d) {
+        if (!d.ok) throw new Error(d.error || '刷新状态失败');
+        preview = d;
+        render();
+        if (!quiet) setStatus('已刷新当前阶段状态');
+        return d;
+      });
+    }
+
+    function updateReviewStage() {
+      var card = document.getElementById('reviewStage');
+      var badge = document.getElementById('stageBadge');
+      var hint = document.getElementById('stageHint');
+      var button = document.getElementById('stageButton');
+      var flow = document.getElementById('stageFlow');
+      if (!preview) return;
+      miaoshouDraftPrepared = !!((preview.miaoshou_draft || {}).ready) && !((preview.miaoshou_draft || {}).written_to_miaoshou);
+      var locked = !!((preview.review || {}).fields_locked);
+      var written = !!((preview.miaoshou_draft || {}).written_to_miaoshou && (preview.miaoshou_draft || {}).verified);
+      var claimState = preview.tiktok_claim || {};
+      var claimed = !!claimState.claimed;
+      var claimInProgress = !!claimState.in_progress;
+      var siteReady = !!((preview.site_drafts || {}).ready);
+      var siteDrafts = preview.site_drafts || {};
+      var failedChecks = siteDrafts.failed_checks || {};
+      var failedSummary = Object.keys(failedChecks).filter(function(region) {
+        return (failedChecks[region] || []).length;
+      }).map(function(region) {
+        return region + ': ' + failedChecks[region].join(', ');
+      }).join(' | ');
+      var blockedCount = Object.keys((preview.tiktok_claim || {}).blocked_sites || {}).length;
+      var snapshot = stageSnapshot();
+      card.classList.toggle('ready', locked);
+      if (flow) flow.innerHTML = renderStageFlow(snapshot);
+      badge.textContent = siteReady ? '站点草稿待发布' : ((claimed || claimInProgress) ? '站点配置中' : (written ? '妙手二审待确认' : (locked ? '第一轮已通过' : '第一轮审核中')));
+      hint.textContent = siteReady
+        ? ('已生成并校验 ' + (preview.site_drafts.site_count || 0) + ' 个国家/地区的站点草稿；尚未发布。')
+        : (claimed || claimInProgress)
+        ? ((claimInProgress ? 'TikTok 认领进行中；' : '') +
+          (siteDrafts.in_progress ? '站点草稿生成中；' : '') +
+          '已认领 TikTok 采集箱 ' + (preview.tiktok_claim.claimed_shop_count || 0) + ' 个授权店铺，' + blockedCount + ' 个站点待授权' +
+          (claimState.last_error ? '；错误：' + claimState.last_error : '') +
+          (siteDrafts.last_error ? '；草稿错误：' + siteDrafts.last_error : '') +
+          (failedSummary ? '；校验失败：' + failedSummary : '') +
+          '。')
+        : written
+        ? '已写入妙手公共采集箱，等待继续同步到 TikTok'
+        : locked
+        ? '字段锁定，准备妙手二审草稿。若继续修改图片动作，将自动重新保存。'
+        : '修改标题、图片、尺寸重量、站点选择和价格审查';
+      button.disabled = false;
+      button.textContent = siteReady
+        ? '站点草稿已就绪，等待发布审批'
+        : (claimed || claimInProgress)
+        ? '继续：生成站点草稿'
+        : written
+        ? '继续同步到 TikTok'
+        : locked
+        ? (miaoshouDraftPrepared ? '写入妙手公共采集箱' : '继续：准备妙手二审')
+        : '提交并进入下一步';
+    }
+
+    function runStageAction() {
+      if (!preview) return;
+      if (pendingStageAction === 'drop-long-video') {
+        applyLongVideoFallback();
+        return;
+      }
+      if ((preview.site_drafts || {}).ready) {
+        setStatus('站点草稿已生成，正在刷新状态...');
+        refreshPreviewState(false).catch(function(e) {
+          setStatus(String(e));
+        });
+        return;
+      }
+      if ((preview.tiktok_claim || {}).in_progress) {
+        startClaimPolling('正在认领 TikTok 采集箱');
+        return;
+      }
+      if ((preview.tiktok_claim || {}).claimed) {
+        prepareSiteDrafts();
+        return;
+      }
+      if ((preview.miaoshou_draft || {}).written_to_miaoshou) {
+        continueAfterSecondReview();
+        return;
+      }
+      if (!((preview.review || {}).fields_locked)) {
+        saveReview(true);
+        return;
+      }
+      if (miaoshouDraftPrepared) {
+        commitMiaoshouDraft();
+        return;
+      }
+      prepareMiaoshouDraft();
+    }
+
+    function startSiteDraftPolling(reason) {
+      if (siteDraftPollTimer) {
+        clearTimeout(siteDraftPollTimer);
+        siteDraftPollTimer = null;
+      }
+      siteDraftPollAttempt = 0;
+      var button = document.getElementById('stageButton');
+      function tick() {
+        siteDraftPollAttempt += 1;
+        refreshPreviewState(true).then(function(d) {
+          if ((d.site_drafts || {}).ready) {
+            if (siteDraftPollTimer) {
+              clearTimeout(siteDraftPollTimer);
+              siteDraftPollTimer = null;
+            }
+            siteDraftPollAttempt = 0;
+            setStatus('站点草稿已生成并校验；当前阶段已刷新。');
+            render();
+            return;
+          }
+          if (siteDraftPollAttempt >= 30) {
+            if (siteDraftPollTimer) {
+              clearTimeout(siteDraftPollTimer);
+              siteDraftPollTimer = null;
+            }
+            if (button) button.disabled = false;
+            setStatus('站点草稿生成轮询超时，请稍后手动刷新。');
+            render();
+            return;
+          }
+          setStatus((reason || '正在生成站点草稿') + '，第 ' + siteDraftPollAttempt + ' 次轮询...');
+          siteDraftPollTimer = setTimeout(tick, 2500);
+        }).catch(function(e) {
+          if (siteDraftPollAttempt >= 30) {
+            if (siteDraftPollTimer) {
+              clearTimeout(siteDraftPollTimer);
+              siteDraftPollTimer = null;
+            }
+            if (button) button.disabled = false;
+            setStatus('站点草稿轮询失败：' + String(e));
+            render();
+            return;
+          }
+          siteDraftPollTimer = setTimeout(tick, 2500);
+        });
+      }
+      tick();
+    }
+
+    function prepareSiteDrafts() {
+      var button = document.getElementById('stageButton');
+      button.disabled = true;
+      button.textContent = '正在生成站点草稿...';
+      setStatus('正在写入站点价格、英文规格、库存和 COD 配置；不会发布。');
+      refreshPreviewState(true).then(function(d) {
+        if ((d.site_drafts || {}).ready) {
+          setStatus('站点草稿已生成。');
+          render();
+          return null;
+        }
+        return api('/api/new-product/site-drafts/prepare', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({offer_id: preview.offer_id})
+        });
+      }).then(function(d) {
+        if (d && !d.ok) throw new Error(d.error || '站点草稿准备失败');
+        startSiteDraftPolling('正在校验站点草稿');
+      }).catch(function(e) {
+        setStatus(String(e));
+        button.disabled = false;
+        button.textContent = '重试生成站点草稿';
+      });
+    }
+
+    function startClaimPolling(reason) {
+      if (claimPollTimer) {
+        clearTimeout(claimPollTimer);
+        claimPollTimer = null;
+      }
+      claimPollAttempt = 0;
+      var button = document.getElementById('stageButton');
+      function tick() {
+        claimPollAttempt += 1;
+        refreshPreviewState(true).then(function(d) {
+          var claim = d.tiktok_claim || {};
+          if (claim.claimed && !claim.in_progress) {
+            if (claimPollTimer) {
+              clearTimeout(claimPollTimer);
+              claimPollTimer = null;
+            }
+            claimPollAttempt = 0;
+            var blocked = Object.keys((claim.blocked_sites || {})).length;
+            setStatus('已认领 TikTok 采集箱 ' + (claim.claimed_shop_count || 0) + ' 个店铺，' + blocked + ' 个站点待授权。');
+            render();
+            return;
+          }
+          if (!claim.in_progress && claim.last_error) {
+            if (claimPollTimer) {
+              clearTimeout(claimPollTimer);
+              claimPollTimer = null;
+            }
+            if (button) button.disabled = false;
+            setStatus('认领失败：' + claim.last_error);
+            render();
+            return;
+          }
+          if (claimPollAttempt >= 180) {
+            if (claimPollTimer) {
+              clearTimeout(claimPollTimer);
+              claimPollTimer = null;
+            }
+            if (button) button.disabled = false;
+            setStatus('认领 TikTok 采集箱轮询超时，请稍后刷新状态。');
+            render();
+            return;
+          }
+          setStatus((reason || '正在认领 TikTok 采集箱') + '，第 ' + claimPollAttempt + ' 次轮询...');
+          claimPollTimer = setTimeout(tick, 2500);
+        }).catch(function(e) {
+          if (claimPollAttempt >= 180) {
+            if (claimPollTimer) {
+              clearTimeout(claimPollTimer);
+              claimPollTimer = null;
+            }
+            if (button) button.disabled = false;
+            setStatus('认领轮询失败：' + String(e));
+            render();
+            return;
+          }
+          claimPollTimer = setTimeout(tick, 2500);
+        });
+      }
+      tick();
+    }
+
+    function continueAfterSecondReview() {
+      var button = document.getElementById('stageButton');
+      button.disabled = true;
+      button.textContent = '正在认领中...';
+      setStatus('正在从妙手二审继续同步到 TikTok 采集箱；可能需要一点时间。');
+      api('/api/new-product/miaoshou-second-review/continue', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({offer_id: preview.offer_id})
+      }).then(function(d) {
+        if (!d.ok) throw new Error(d.error || '继续同步到 TikTok 失败');
+        startClaimPolling('正在认领 TikTok 采集箱');
+      }).catch(function(e) {
+        setStatus(String(e));
+        button.disabled = false;
+        button.textContent = '重试继续同步到 TikTok';
+      });
+    }
+
+    function prepareMiaoshouDraft() {
+      var button = document.getElementById('stageButton');
+      button.disabled = true;
+      button.textContent = '正在整理妙手草稿...';
+      setStatus('正在去重图片、分配 SKU 并检查妙手草稿...');
+      api('/api/new-product/miaoshou-draft', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({offer_id: preview.offer_id})
+      }).then(function(d) {
+        if (!d.ok) throw new Error(d.error || '妙手草稿准备失败');
+        var count = ((d.draft || {}).imgUrls || []).length;
+        var sku = (d.draft || {}).itemNum || '';
+        if (!d.ready) {
+          if (d.auto_fix && d.auto_fix.type === 'remove_video') {
+            pendingStageAction = 'drop-long-video';
+            button.textContent = '自动移除超长视频后重试';
+          } else {
+            pendingStageAction = null;
+          }
+          setStatus('妙手草稿仍有待处理项：' + (d.blockers || []).join('；'));
+          return;
+        }
+        pendingStageAction = null;
+        miaoshouDraftPrepared = true;
+        setStatus('妙手二审草稿已准备：SKU ' + sku + '，' + count + ' 张图片；尚未写入妙手。');
+        button.textContent = '写入妙手公共采集箱';
+      }).catch(function(e) {
+        setStatus(String(e));
+      }).finally(function() {
+        button.disabled = false;
+        if (button.textContent === '正在整理妙手草稿...') button.textContent = '继续：准备妙手二审';
+      });
+    }
+
+    function commitMiaoshouDraft() {
+      var button = document.getElementById('stageButton');
+      button.disabled = true;
+      button.textContent = '正在写入并验证...';
+      setStatus('正在写入妙手公共采集箱；不会认领店铺或发布。');
+      api('/api/new-product/miaoshou-draft/commit', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({offer_id: preview.offer_id})
+      }).then(function(d) {
+        if (!d.ok) throw new Error(d.error || '妙手写入失败');
+        if (!d.verified) throw new Error('妙手已响应，但回读校验未全部通过');
+        return refreshPreviewState(true);
+      }).then(function() {
+        button.textContent = '已进入妙手二审';
+        setStatus('已写入妙手公共采集箱并验证；已自动刷新当前阶段。');
+      }).catch(function(e) {
+        setStatus(String(e));
+        button.textContent = '重试写入妙手公共采集箱';
+      }).finally(function() {
+        button.disabled = false;
+      });
+    }
+
+    function overseasLines() {
+      return document.getElementById('overseasInput').value.split(/\r?\n/).map(function(x) { return x.trim(); }).filter(Boolean);
+    }
+
+    function saveOverseasLinks(fetchNow, quiet) {
+      if (!preview) return Promise.resolve(true);
+      var urls = overseasLines();
+      if (!urls.length) return Promise.resolve(true);
+      if (!quiet) setStatus(fetchNow ? 'ץȡ�����ز���...' : '���溣��������...');
+      return api('/api/new-product/overseas-sources', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({offer_id: preview.offer_id, overseas_urls: urls, fetch: !!fetchNow})
+      }).then(function(d) {
+        if (!d.ok) {
+          if (!quiet) alert(d.error || '�����زĴ���ʧ��');
+          pipelineFailures.push('�����ز�: ' + (d.error || '����ʧ��'));
+          return false;
+        }
+        preview = d;
+        render();
+        setStatus(fetchNow ? '�����ز�ץȡ���' : '���������ѱ���');
+        return true;
+      }).catch(function(e) {
+        pipelineFailures.push('�����ز�: ' + String(e));
+        if (!quiet) alert(String(e));
+        renderProgress();
+        return false;
+      });
+    }
+
+    function toggleImages() {
+      showAllImages = !showAllImages;
+      render();
+    }
+
+    function useOverseasTitle(idx) {
+      var src = (preview.overseas_sources || [])[idx];
+      if (!src || !src.title) return;
+      document.getElementById('titleInput').value = src.title;
+      saveReview(false);
+    }
+
+    function promoteOverseasImage(idx) {
+      var img = (preview.review.overseas_image_candidates || [])[idx];
+      if (!img) return;
+      preview.review.image_actions = (preview.review.image_actions || []).concat([img]);
+      saveReview(false);
+    }
+
+    function addImageRequest() {
+      if (!preview) return;
+      var prompt = document.getElementById('imagePrompt').value.trim();
+      if (!prompt) { alert('������ͼƬ����'); return; }
+      api('/api/new-product/image-request', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({offer_id: preview.offer_id, prompt: prompt})
+      }).then(function(d) {
+        if (!d.ok) { alert(d.error || '��¼ʧ��'); return; }
+        preview = d;
+        render();
+        setStatus('�Ѽ�¼����ͼƬ������δ���ø��� API');
+      });
+    }
+
+    window.addEventListener('DOMContentLoaded', function() {
+      var q = new URLSearchParams(location.search);
+      if (q.get('offer_id')) {
+        document.getElementById('urlInput').value = q.get('offer_id');
+        loadPreview();
+      }
+      window.addEventListener('focus', function() {
+        if (preview && preview.offer_id) refreshPreviewState(true).catch(function() {});
+      });
+      document.addEventListener('visibilitychange', function() {
+        if (!document.hidden && preview && preview.offer_id) refreshPreviewState(true).catch(function() {});
+      });
+      document.addEventListener('change', function(evt) {
+        var target = evt.target;
+        if (!target) return;
+        if (target.classList && (target.classList.contains('imageAction') || target.classList.contains('imageNote'))) {
+          queueLockedReviewAutosave('image-review-change');
+          return;
+        }
+        if (target.id === 'videoAction') queueLockedReviewAutosave('video-action-change');
+      });
+    });
+  </script>
+</body>
+</html>

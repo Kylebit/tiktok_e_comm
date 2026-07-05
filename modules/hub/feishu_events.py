@@ -1,4 +1,4 @@
-"""飞书事件回调：接收 @ 机器人消息并回复。"""
+"""Feishu HTTP event callback helpers."""
 
 from __future__ import annotations
 
@@ -7,15 +7,14 @@ import threading
 from typing import Any
 
 from modules.hub import feishu_commands as cmd_mod
-from modules.hub.feishu_app import app_config, reply_text
+from modules.hub.feishu_app import reply_text
 
 
 def handle_http_body(body: dict) -> tuple[int, dict]:
-    """处理飞书 POST 事件，返回 (http_status, response_json)。"""
+    """Handle Feishu HTTP callback payload."""
     if body.get("type") == "url_verification":
         return 200, {"challenge": body.get("challenge")}
 
-    # schema 2.0
     header = body.get("header") or {}
     event_type = header.get("event_type") or body.get("event", {}).get("type")
     if event_type == "im.message.receive_v1":
@@ -37,23 +36,24 @@ def handle_http_body(body: dict) -> tuple[int, dict]:
                 ).start()
         return 200, {}
 
-    # 加密事件 / 未识别 — 仍返回 200 避免飞书重试风暴
     return 200, {}
 
 
 def _process_and_reply(message_id: str, text: str) -> None:
     try:
-        reply = cmd_mod.handle_command(text)
-    except Exception as e:
-        reply = f"处理出错：{str(e)[:300]}"
+        reply = cmd_mod.handle_command(text, message_id=message_id)
+    except Exception as exc:
+        reply = f"处理出错：{str(exc)[:300]}"
+    if not reply:
+        return
     try:
         reply_text(message_id, reply)
-    except Exception as e:
-        print(f"[feishu] 回复失败: {e}")
+    except Exception as exc:
+        print(f"[feishu] reply failed: {exc}")
 
 
 def extract_message_from_p2_event(data: Any) -> tuple[str, str] | None:
-    """lark-oapi P2ImMessageReceiveV1 → (message_id, text)。"""
+    """Convert lark-oapi P2 event to (message_id, text)."""
     try:
         event = data.event
         msg = event.message

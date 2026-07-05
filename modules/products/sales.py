@@ -1,5 +1,7 @@
 """从订单 API 统计商品动销。"""
 
+from __future__ import annotations
+
 import time
 from collections import defaultdict
 

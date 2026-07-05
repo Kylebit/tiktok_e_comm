@@ -1,5 +1,7 @@
 """Shop Open API 授权：读取/保存 token，过期前自动 refresh。"""
 
+from __future__ import annotations
+
 import json
 import time
 import urllib.parse
@@ -7,7 +9,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-from core.config import ROOT, get, load_settings
+from core.config import ROOT, get, load_settings, settings_base_dir
 from core.http_retry import DEFAULT_SSL_CTX as SSL_CTX
 from core.http_retry import urlopen as urlopen_retry
 
@@ -18,7 +20,7 @@ REFRESH_BUFFER_SEC = 300  # 过期前 5 分钟主动刷新
 def token_path() -> Path:
     rel = get("token_file", "tiktok_tokens.json")
     p = Path(rel)
-    return p if p.is_absolute() else ROOT / p
+    return p if p.is_absolute() else settings_base_dir() / p
 
 
 def load_token() -> dict:

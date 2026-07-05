@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Orbit 桌面台</title>
+<style>
+:root{color-scheme:light;--bg:#0f172a;--line:#e5e7eb;--text:#0f172a;--accent:#2563eb;--ok:#16a34a;--warn:#d97706;--bad:#dc2626}
+*{box-sizing:border-box}
+body{margin:0;font-family:"Segoe UI","Microsoft YaHei",Arial,sans-serif;background:#e5e7eb;color:var(--text);height:100vh;overflow:hidden}
+.app{display:grid;grid-template-columns:280px 1fr;height:100vh}
+.sidebar{background:linear-gradient(180deg,#0f172a,#1e293b);color:#f8fafc;display:flex;flex-direction:column;border-right:1px solid rgba(255,255,255,.06)}
+.brand{padding:20px 18px 14px;border-bottom:1px solid rgba(255,255,255,.06)}
+.brand h1{margin:0;font-size:20px}
+.brand p{margin:5px 0 0;color:#94a3b8;font-size:12px}
+.global-actions{display:flex;gap:6px;padding:12px 14px 8px;flex-wrap:wrap}
+.btn{border:1px solid transparent;border-radius:7px;padding:7px 13px;font-size:12px;cursor:pointer;background:#fff;color:#111827;transition:all .15s;font-weight:500}
+.btn:hover{filter:brightness(.96)}
+.btn.primary{background:var(--accent);color:#fff}.btn.primary:hover{background:#1d4ed8}
+.btn.secondary{background:rgba(255,255,255,.07);color:#e2e8f0;border-color:rgba(255,255,255,.08)}.btn.secondary:hover{background:rgba(255,255,255,.13)}
+.btn.ghost{background:transparent;color:#334155;border-color:var(--line)}
+.btn.success{background:var(--ok);color:#fff}.btn.success:hover{background:#15803d}
+.btn.danger{background:var(--bad);color:#fff}.btn.danger:hover{background:#b91c1c}
+.btn.sm{padding:4px 10px;font-size:11px}.btn.lg{padding:11px 24px;font-size:15px;border-radius:10px}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.modules{padding:6px 10px 16px;overflow:auto;display:grid;gap:8px}
+.module{border:1px solid rgba(255,255,255,.05);border-radius:11px;padding:12px;background:rgba(255,255,255,.02);cursor:pointer;transition:all .15s}
+.module:hover{background:rgba(255,255,255,.06)}
+.module.active{background:rgba(37,99,235,.15);border-color:rgba(59,130,246,.4)}
+.module h2{margin:0;font-size:14.5px}
+.module p{margin:4px 0 8px;color:#94a3b8;font-size:11.5px;line-height:1.4}
+.status-pill{display:inline-flex;align-items:center;gap:5px;border-radius:999px;font-size:10.5px;padding:3px 8px;background:rgba(255,255,255,.07);color:#cbd5e1}
+.status-pill.ok{background:rgba(22,163,74,.15);color:#86efac}.status-pill.bad{background:rgba(220,38,38,.12);color:#fca5a5}
+.main{display:grid;grid-template-rows:auto auto 1fr 200px;background:#f8fafc;min-width:0;transition:grid-template-rows .25s}
+.main.bot-mode{grid-template-rows:auto 1fr 260px}
+.toolbar{background:#fff;border-bottom:1px solid var(--line);padding:16px 20px 14px}
+.toolbar h2{margin:0;font-size:21px;display:flex;align-items:center;gap:9px}
+.dot-icon{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.dot-icon.on{background:var(--ok);box-shadow:0 0 8px rgba(22,163,74,.5);animation:pulse-dot 2s infinite}
+.dot-icon.off{background:var(--bad)}
+@keyframes pulse-dot{0%,100%{opacity:1;box-shadow:0 0 8px rgba(22,163,74,.5)}50%{opacity:.5;box-shadow:0 0 3px rgba(22,163,74,.3)}}
+.toolbar p{margin:6px 0 0;color:#64748b;font-size:12.5px}
+.toolbar-actions{margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.quick-links{background:#fff;border-bottom:1px solid var(--line);padding:10px 18px;display:flex;gap:7px;flex-wrap:wrap}
+.viewer{min-height:0;background:#dbe4ee;overflow:hidden}
+.viewer.hidden{display:none}
+iframe{width:100%;height:100%;border:0;background:#fff}
+.bot-panel{display:none;padding:20px 22px;background:#fff;border-bottom:1px solid var(--line);overflow-y:auto}
+.bot-panel.show{display:block}
+.bot-card{max-width:600px;border-radius:14px;padding:22px 26px;border:1px solid var(--line);transition:all .3s}
+.bot-card.running{border-left:4px solid var(--ok);background:linear-gradient(135deg,#f0fdf4,#ecfdf5)}
+.bot-card.stopped{border-left:4px solid var(--bad);background:linear-gradient(135deg,#fef2f2,#fff1f2)}
+.bot-card h3{margin:0 0 8px;font-size:18px;display:flex;align-items:center;gap:10px}
+.big-dot{width:14px;height:14px;border-radius:50%}
+.bot-card.running .big-dot{background:var(--ok);box-shadow:0 0 12px rgba(22,163,74,.5);animation:pulse-dot 2s infinite}
+.bot-card.stopped .big-dot{background:var(--bad)}
+.bot-card p{margin:0 0 6px;color:#475569;font-size:14px;line-height:1.65}
+.meta-row{display:flex;gap:20px;margin-top:12px;flex-wrap:wrap}
+.meta-item{font-size:12px;color:#64748b}.meta-item b{color:#334155}
+.usage-tips{margin-top:16px;padding:14px 18px;background:#f8fafc;border-radius:10px;border:1px dashed #cbd5e1;font-size:13px;color:#475569;line-height:1.85}
+.usage-tips kbd{display:inline-block;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:5px;padding:1px 7px;font-family:inherit;font-size:12px;color:#1e293b;margin:0 2px}
+.bot-live-log{margin-top:14px;padding:12px 14px;background:#0f172a;border-radius:10px;color:#cbd5e1;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;line-height:1.55;white-space:pre-wrap;word-break:break-all;max-height:160px;overflow:auto}
+.logs{border-top:1px solid var(--line);background:#0c1222;color:#93c5fd;padding:0;display:grid;grid-template-rows:auto 1fr;min-height:0}
+.logs-head{display:flex;justify-content:space-between;align-items:center;padding:9px 14px;border-bottom:1px solid rgba(255,255,255,.05)}
+.logs-head strong{font-size:12.5px}
+.logs-body{padding:10px 14px;overflow:auto;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11.5px;line-height:1.58;white-space:pre-wrap;word-break:break-all}
+.log-err{color:#fca5a5}.log-warn{color:#fde68a}.log-info{color:#93c5fd}.log-ok{color:#86efac}.log-dim{color:#64748b}
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:5px}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand"><h1>&#x1F6F8; Orbit 桌面台</h1><p>Orbit OS | Treasury | Rus | Bot</p></div>
+    <div class="global-actions">
+      <button class="btn secondary" onclick="act('start_all')">全部启动</button>
+      <button class="btn secondary" onclick="act('stop_all')">全部停止</button>
+      <button class="btn secondary" onclick="act('refresh')">刷新</button>
+    </div>
+    <div id="modules" class="modules"><div style="color:#64748b;font-size:12px;padding:14px;text-align:center">等待数据...</div></div>
+  </aside>
+  <section class="main" id="mainArea">
+    <div class="toolbar">
+      <h2><span class="dot-icon off" id="titleDot"></span><span id="titleText">Orbit OS</span></h2>
+      <p id="moduleSubtitle"></p>
+      <div class="toolbar-actions" id="toolbarActions"></div>
+    </div>
+    <div id="quickLinks" class="quick-links" style="display:none"></div>
+    <div class="viewer" id="viewerPane"><iframe id="frame" src="about:blank"></iframe></div>
+    <div class="bot-panel" id="botPanel"></div>
+    <div class="logs">
+      <div class="logs-head"><strong>实时日志</strong><button class="btn secondary sm" onclick="act('refresh')">刷新</button></div>
+      <div id="logsBody" class="logs-body"><span class="log-dim">暂无日志</span></div>
+    </div>
+  </section>
+</div>
+
+<script>
+var modules = [], current = 'os', __pendingAction = null;
+
+function E(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function isBot(m) { return m && m.port === 0; }
+function isActive(m) { return isBot(m) ? (m.running === true) : (m.healthy === true); }
+
+// === called by Python evaluate_js ===
+window.__update = function(payload) {
+  if (!payload || !payload.modules) return;
+  modules = payload.modules;
+  renderModules();
+  renderCurrent();
+};
+
+window.__getAction = function() {
+  var a = __pendingAction;
+  __pendingAction = null;
+  return a ? JSON.stringify(a) : '';
+};
+
+// === user actions ===
+function act(action, key) {
+  __pendingAction = { action: action, key: key || current, ts: Date.now() };
+}
+function selectModule(k) { current = k; renderModules(); renderCurrent(); }
+function loadUrl(u) { document.getElementById('frame').src = u; }
+
+// === render ===
+function renderModules() {
+  var el = document.getElementById('modules'), h = '';
+  if (!modules.length) {
+    el.innerHTML = '<div style="color:#64748b;font-size:12px;padding:14px;text-align:center">无模块</div>';
+    return;
+  }
+  modules.forEach(function(m) {
+    var active = (m.key === current ? ' module active' : '');
+    var alive = isActive(m);
+    var cls = alive ? ' status-pill ok' : ' status-pill bad';
+    var label = alive ? '● 运行中' : '○ 已停止';
+    var info = isBot(m) ? (alive ? '已启动' : '未启动') : E(m.url || '');
+    h += '<div class="module' + active + '" onclick="selectModule(\'' + m.key + '\')"><h2>' + E(m.title) + '</h2><p>' + E(m.subtitle) + '</p><span class="status-pill' + cls + '">' + label + ' ' + info + '</span></div>';
+  });
+  el.innerHTML = h;
+}
+
+function renderCurrent() {
+  var m = modules.find(function(x) { return x.key === current; }) || modules[0];
+  if (!m) return;
+  current = m.key;
+  var bot = isBot(m), alive = isActive(m);
+
+  document.getElementById('titleText').textContent = m.title;
+  document.getElementById('titleDot').className = 'dot-icon ' + (alive ? 'on' : 'off');
+  document.getElementById('moduleSubtitle').textContent = m.subtitle + (bot ? '' : ' Port ' + m.port);
+
+  var acts = document.getElementById('toolbarActions');
+  if (bot) {
+    acts.innerHTML = alive
+      ? '<button class="btn danger lg" onclick="act(\'stop_module\')">停止 Bot</button> <button class="btn ghost" onclick="act(\'restart_module\')">重启 Bot</button>'
+      : '<button class="btn success lg" onclick="act(\'start_module\')">启动飞书 Bot</button>';
+  } else {
+    acts.innerHTML = '<button class="btn primary" onclick="loadUrl(\'' + m.url + '\')">内嵌窗口</button>'
+      + '<button class="btn ghost" onclick="act(\'open_external\')">浏览器打开</button>'
+      + '<button class="btn ghost" onclick="act(\'start_module\')">启动</button>'
+      + '<button class="btn ghost" onclick="act(\'restart_module\')">重启</button>'
+      + '<button class="btn ghost" onclick="act(\'stop_module\')">停止</button>';
+  }
+
+  var ql = document.getElementById('quickLinks');
+  ql.style.display = bot ? 'none' : '';
+  if (!bot) {
+    ql.innerHTML = '';
+    (m.quick_links || []).forEach(function(l) {
+      var btn = document.createElement('button');
+      btn.className = 'btn ghost sm';
+      btn.textContent = l.label;
+      btn.onclick = function() { loadUrl(l.url); };
+      ql.appendChild(btn);
+    });
+  }
+
+  document.getElementById('viewerPane').className = bot ? ' viewer hidden' : 'viewer';
+  document.getElementById('mainArea').className = bot ? ' main bot-mode' : ' main';
+
+  var bp = document.getElementById('botPanel');
+  if (bot) {
+    var logs = m.logs || [], last = logs[logs.length - 1] || '';
+    var hasConn = /connected|websocket/i.test(last);
+    var recentLogs = logs.slice(-6).join('\n');
+    var ci = '';
+    if (alive && hasConn) ci = '<br><span style="color:var(--ok)">已连接飞书</span>';
+    else if (alive) ci = '<br><span style="color:#64748b">初始化中...</span>';
+    bp.className = 'bot-panel show';
+    bp.innerHTML = '<div class="bot-card ' + (alive ? 'running' : 'stopped') + '">'
+      + '<h3><span class="big-dot"></span>飞书 Bot - ' + (alive ? '运行中' : '已停止') + '</h3>'
+      + '<p>' + (alive ? '进程运行中，监听飞书消息。' : 'Bot 未运行，点击启动。') + ci + '</p>'
+      + '<div class="meta-row"><span class="meta-item">日志: <b>' + logs.length + '</b> 行</span><span class="meta-item">App ID: <code>cli_aaa0747da1b8dbeb</code></span></div>'
+      + '<div class="usage-tips">'
+        + '使用方法：飞书群 @OrbitHive 发送指令<br>'
+        + '<kbd>0927</kbd> SKU主图+采购链接; <kbd>0927 + 1688链接</kbd> 保存采购链接; <kbd>0001 0002</kbd> 批量'
+      + '</div>'
+      + '<div class="bot-live-log">' + E(recentLogs || '鏆傛棤 Bot 鏃ュ織') + '</div>'
+      + '</div>';
+  } else {
+    bp.className = 'bot-panel';
+    bp.innerHTML = '';
+  }
+
+  var lb = document.getElementById('logsBody'), raw = m.logs || [];
+  if (!raw.length) {
+    lb.innerHTML = '<span class="log-dim">暂无日志</span>';
+  } else {
+    lb.innerHTML = raw.map(function(l) {
+      if (/ERROR|error|Exception|Traceback/i.test(l)) return '<div class="log-err">' + E(l) + '</div>';
+      if (/WARN|warning|retry/i.test(l)) return '<div class="log-warn">' + E(l) + '</div>';
+      if (/INFO|connected|success|ready|started|OK/i.test(l)) return '<div class="log-ok">' + E(l) + '</div>';
+      return '<div>' + E(l) + '</div>';
+    }).join('');
+    lb.scrollTop = lb.scrollHeight;
+  }
+}
+</script>
+</body>
+</html>

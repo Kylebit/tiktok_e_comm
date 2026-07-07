@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import subprocess
+import tempfile
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -57,8 +58,21 @@ def _ozon_credentials() -> tuple[str, str]:
 
 CLIENT_ID, API_KEY = _ozon_credentials()
 
+
+def _ozon_creds() -> tuple[str, str]:
+    """每次请求前读取凭据（支持 config/ozon.local.json）。"""
+    try:
+        from modules.ozon.config import ozon_credentials as _load
+
+        cid, key = _load()
+        if cid and key:
+            return cid, key
+    except Exception:
+        pass
+    return _ozon_credentials()
+
 from modules.ozon.catalog_source import to_4digit_offer_id  # noqa: E402
-TMP_DIR = "/tmp/ozon_webapp"
+TMP_DIR = os.path.join(tempfile.gettempdir(), "ozon_webapp")
 os.makedirs(TMP_DIR, exist_ok=True)
 
 MIGRATED_PATH = os.path.join(DATA_DIR, "migrated_offers.json")
@@ -91,39 +105,51 @@ app = Flask(__name__)
 
 
 def ozon_post(path, body):
+    cid, key = _ozon_creds()
+    if not cid or not key:
+        return {"code": 16, "message": "Ozon Client-Id / Api-Key 未配置（请检查 config/ozon.local.json 或 settings.json ozon 段）"}
     url = "https://api-seller.ozon.ru" + path
     cmd = [
         "curl", "-s", "--noproxy", "*", "-X", "POST", url,
-        "-H", "Client-Id: " + CLIENT_ID,
-        "-H", "Api-Key: " + API_KEY,
+        "-H", "Client-Id: " + cid,
+        "-H", "Api-Key: " + key,
         "-H", "Content-Type: application/json",
         "-d", json.dumps(body),
     ]
-    out = subprocess.run(cmd, capture_output=True, text=True).stdout
+    proc = subprocess.run(cmd, capture_output=True)
+    out = (proc.stdout or proc.stderr or b"").decode("utf-8", errors="replace")
+    if not out.strip():
+        return {"code": -1, "message": "Ozon API empty response"}
     return json.loads(out)
 
 
 def ozon_get(path):
+    cid, key = _ozon_creds()
+    if not cid or not key:
+        return {"code": 16, "message": "Ozon Client-Id / Api-Key 未配置（请检查 config/ozon.local.json 或 settings.json ozon 段）"}
     url = "https://api-seller.ozon.ru" + path
     cmd = [
         "curl", "-s", "--noproxy", "*", "-X", "GET", url,
-        "-H", "Client-Id: " + CLIENT_ID,
-        "-H", "Api-Key: " + API_KEY,
+        "-H", "Client-Id: " + cid,
+        "-H", "Api-Key: " + key,
         "-H", "Content-Type: application/json",
     ]
-    out = subprocess.run(cmd, capture_output=True, text=True).stdout
+    proc = subprocess.run(cmd, capture_output=True)
+    out = (proc.stdout or proc.stderr or b"").decode("utf-8", errors="replace")
+    if not out.strip():
+        return {"code": -1, "message": "Ozon API empty response"}
     return json.loads(out)
 
 
 def load_json(path, default):
     if not os.path.exists(path):
         return default
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
 def save_json(path, data):
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
@@ -344,157 +370,213 @@ def api_draft(offer_id):
             return jsonify({"error": draft["error"]}), 404
         return jsonify(draft)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e), "error_code": type(e).__name__}), 500
 
 
 @app.route("/api/process_images/<offer_id>", methods=["POST"])
 def api_process_images(offer_id):
-    body = request.get_json()
-    src_urls = body.get("images", [])[:6]
+    try:
+        body = request.get_json(silent=True) or {}
+        src_urls = (body.get("images") or [])[:6]
 
-    seen_out = []
-    for i, url in enumerate(src_urls):
-        src = os.path.join(TMP_DIR, f"src_{offer_id}_{i}.jpg")
-        out = os.path.join(TMP_DIR, f"out_{offer_id}_{i}.jpg")
-        ok = False
-        for attempt in range(5):
-            try:
-                download(url, src)
-                to_3x4(src, out)
-                new_url = upload_image(out)
-                if new_url not in seen_out:
-                    seen_out.append(new_url)
-                ok = True
-                break
-            except Exception:
-                time.sleep(2 * (attempt + 1))
-        if not ok:
-            pass
-        time.sleep(1.0)
+        seen_out: list[str] = []
+        errors: list[dict] = []
+        for i, url in enumerate(src_urls):
+            src = os.path.join(TMP_DIR, f"src_{offer_id}_{i}.jpg")
+            out = os.path.join(TMP_DIR, f"out_{offer_id}_{i}.jpg")
+            ok = False
+            last_err = ""
+            for attempt in range(5):
+                try:
+                    download(url, src)
+                    to_3x4(src, out)
+                    new_url = upload_image(out)
+                    if new_url not in seen_out:
+                        seen_out.append(new_url)
+                    ok = True
+                    break
+                except Exception as exc:
+                    last_err = str(exc)
+                    time.sleep(2 * (attempt + 1))
+            if not ok:
+                errors.append({"index": i, "url": (url or "")[:200], "error": last_err or "process_failed"})
+            time.sleep(1.0)
 
-    return jsonify({"images": seen_out})
+        payload = {"images": seen_out, "errors": errors or None}
+        if not seen_out and errors:
+            payload["error"] = "all_images_failed"
+            payload["error_code"] = "all_images_failed"
+            return jsonify(payload), 422
+        return jsonify(payload)
+    except Exception as exc:
+        return jsonify({
+            "error": str(exc),
+            "error_code": type(exc).__name__,
+            "images": [],
+        }), 500
 
 
 @app.route("/api/migrate", methods=["POST"])
 def api_migrate():
-    p = request.get_json()
-    offer_id = p["offer_id"]
-    images = p["images"]
-    if not images:
-        return jsonify({"error": "no images"}), 400
+    try:
+        p = request.get_json(silent=True) or {}
+        offer_id = p.get("offer_id")
+        images = p.get("images") or []
+        if not offer_id:
+            return jsonify({"status": "error", "error": "missing offer_id", "error_code": "bad_request"}), 400
+        if not images:
+            return jsonify({"status": "error", "error": "no images", "error_code": "bad_request"}), 400
 
-    # 防重复：仅当 Ozon 店铺已存在该 offer_id 时跳过（attrs 同步）
-    # migrated_offers 只作记录；若未在店铺中（卡片失败/已删），允许重传
-    migrated_list = load_json(MIGRATED_PATH, [])
-    migrated_set = set(migrated_list)
-    existing = load_json(EXISTING_ATTRS_PATH, {"result": []})
-    existing_offers = {str(it["offer_id"]) for it in existing.get("result", []) if it.get("offer_id")}
+        # 防重复：仅当 Ozon 店铺已存在该 offer_id 时跳过（attrs 同步）
+        # migrated_offers 只作记录；若未在店铺中（卡片失败/已删），允许重传
+        migrated_list = load_json(MIGRATED_PATH, [])
+        migrated_set = set(migrated_list)
+        existing = load_json(EXISTING_ATTRS_PATH, {"result": []})
+        existing_offers = {str(it["offer_id"]) for it in existing.get("result", []) if it.get("offer_id")}
 
-    from modules.ozon.product_lifecycle import ensure_offer_reset
+        from modules.ozon.product_lifecycle import ensure_offer_reset
 
-    want_cat = int(p["category_id"])
-    want_type = int(p["type_id"])
-    reset = ensure_offer_reset(ozon_post, offer_id, category_id=want_cat, type_id=want_type)
-    if reset.get("action") == "delete_failed":
+        want_cat = int(p["category_id"])
+        want_type = int(p["type_id"])
+        reset = ensure_offer_reset(ozon_post, offer_id, category_id=want_cat, type_id=want_type)
+        if reset.get("action") == "delete_failed":
+            return jsonify({
+                "status": "error",
+                "offer_id": offer_id,
+                "error": f"无法删除 Ozon 旧卡片以便改类目：{reset.get('detail')}",
+                "error_code": "delete_failed",
+                "reset": reset,
+            }), 400
+
+        if reset.get("action") == "keep" and offer_id in existing_offers:
+            return jsonify({
+                "status": "skipped_duplicate",
+                "offer_id": offer_id,
+                "error": f"offer_id {offer_id} 已在 Ozon 店铺（正式商品），请用改价或后台编辑",
+            }), 200
+
+        if offer_id in migrated_set and offer_id not in existing_offers:
+            migrated_list = [o for o in migrated_list if o != offer_id]
+            save_json(MIGRATED_PATH, migrated_list)
+
+        from modules.ozon.migrate_attrs import build_import_attributes, resolve_profile
+        from modules.ozon.tk_category_map import record_mapping
+        from modules.ozon.listing_text import polish_ozon_description, polish_ozon_title
+
+        p = dict(p)
+        p["title"] = polish_ozon_title(
+            p.get("title") or "",
+            len_cm=str(p.get("len_cm") or ""),
+            wid_cm=str(p.get("wid_cm") or ""),
+            migrate_profile=str(p.get("migrate_profile") or ""),
+        )
+        p["description"] = polish_ozon_description(p.get("description") or "")
+
+        migrate_profile = p.get("migrate_profile")
+        attributes = build_import_attributes({**p, "migrate_profile": migrate_profile})
+
+        def _dim_mm(key: str, default: int = 10) -> int:
+            raw = str(p.get(key) or "").strip()
+            if not raw:
+                return default
+            try:
+                return max(1, int(float(raw.replace(",", "."))))
+            except (TypeError, ValueError):
+                return default
+
+        item = {
+            "attributes": attributes,
+            "description_category_id": int(p["category_id"]),
+            "type_id": int(p["type_id"]),
+            "color_image": images[0],
+            "currency_code": "CNY",
+            "depth": _dim_mm("depth"),
+            "width": _dim_mm("width"),
+            "height": _dim_mm("height"),
+            "dimension_unit": "mm",
+            "weight": int(p.get("weight") or 140),
+            "weight_unit": "g",
+            "images": images,
+            "name": p["title"],
+            "offer_id": offer_id,
+            "old_price": str(p["old_price"]),
+            "price": str(p["price"]),
+            "vat": "0",
+            # 同步即关闭"快速收集评价"付费推广(新品默认会被自动开启)
+            "promotions": [{"operation": "DISABLE", "type": "REVIEWS_PROMO"}],
+        }
+
+        result = ozon_post("/v3/product/import", {"items": [item]})
+        task_id = result.get("result", {}).get("task_id")
+        ozon_code = result.get("code")
+        if not task_id and ozon_code not in (None, 0):
+            return jsonify({
+                "status": "error",
+                "offer_id": offer_id,
+                "error": result.get("message") or str(result),
+                "error_code": f"ozon_api_{ozon_code}",
+                "ozon_response": result,
+                "import_ok": False,
+            }), 502
+        if not task_id:
+            return jsonify({
+                "status": "error",
+                "offer_id": offer_id,
+                "error": result.get("message") or "Ozon import 未返回 task_id",
+                "error_code": "ozon_no_task_id",
+                "ozon_response": result,
+                "import_ok": False,
+            }), 502
+
+        status = "pending"
+        errors = []
+        if task_id:
+            for _ in range(10):
+                time.sleep(3)
+                r = ozon_post("/v1/product/import/info", {"task_id": task_id})
+                items_status = r.get("result", {}).get("items", [])
+                if items_status:
+                    status = items_status[0].get("status", status)
+                    errors = items_status[0].get("errors", [])
+                    if status != "pending":
+                        break
+
+        rich_status = "skipped"
+        import_ok = status == "imported" and not errors
+        if import_ok:
+            migrated = load_json(MIGRATED_PATH, [])
+            if offer_id not in migrated:
+                migrated.append(offer_id)
+                save_json(MIGRATED_PATH, migrated)
+            log = load_json(MIGRATE_LOG_PATH, [])
+            log.append({"date": str(date.today()), "offer_id": offer_id, "title": p["title"]})
+            save_json(MIGRATE_LOG_PATH, log)
+            # 同步链接即直接填入富内容
+            rich_status = add_rich_content(offer_id, p["title"], p["description"])
+            if p.get("tk_category_id"):
+                record_mapping(
+                    tk_category_id=str(p["tk_category_id"]),
+                    tk_category_name=str(p.get("tk_category_leaf") or ""),
+                    type_id=int(p["type_id"]),
+                    category_id=int(p["category_id"]),
+                    profile=resolve_profile(int(p["type_id"]), p.get("migrate_profile")),
+                    source="migrate",
+                )
+
+        return jsonify({
+            "task_id": task_id,
+            "status": status,
+            "errors": errors,
+            "rich_status": rich_status,
+            "reset": reset,
+            "import_ok": import_ok,
+        })
+    except Exception as exc:
         return jsonify({
             "status": "error",
-            "offer_id": offer_id,
-            "error": f"无法删除 Ozon 旧卡片以便改类目：{reset.get('detail')}",
-            "reset": reset,
-        }), 400
-
-    if reset.get("action") == "keep" and offer_id in existing_offers:
-        return jsonify({
-            "status": "skipped_duplicate",
-            "offer_id": offer_id,
-            "error": f"offer_id {offer_id} 已在 Ozon 店铺（正式商品），请用改价或后台编辑",
-        }), 200
-
-    if offer_id in migrated_set and offer_id not in existing_offers:
-        migrated_list = [o for o in migrated_list if o != offer_id]
-        save_json(MIGRATED_PATH, migrated_list)
-
-    from modules.ozon.migrate_attrs import build_import_attributes, resolve_profile
-    from modules.ozon.tk_category_map import record_mapping
-    from modules.ozon.listing_text import polish_ozon_description, polish_ozon_title
-
-    p = dict(p)
-    p["title"] = polish_ozon_title(
-        p.get("title") or "",
-        len_cm=str(p.get("len_cm") or ""),
-        wid_cm=str(p.get("wid_cm") or ""),
-        migrate_profile=str(p.get("migrate_profile") or ""),
-    )
-    p["description"] = polish_ozon_description(p.get("description") or "")
-
-    migrate_profile = p.get("migrate_profile")
-    attributes = build_import_attributes({**p, "migrate_profile": migrate_profile})
-
-    item = {
-        "attributes": attributes,
-        "description_category_id": int(p["category_id"]),
-        "type_id": int(p["type_id"]),
-        "color_image": images[0],
-        "currency_code": "CNY",
-        "depth": int(p["depth"]), "width": int(p["width"]), "height": int(p["height"]),
-        "dimension_unit": "mm",
-        "weight": int(p["weight"]), "weight_unit": "g",
-        "images": images,
-        "name": p["title"],
-        "offer_id": offer_id,
-        "old_price": str(p["old_price"]),
-        "price": str(p["price"]),
-        "vat": "0",
-        # 同步即关闭"快速收集评价"付费推广(新品默认会被自动开启)
-        "promotions": [{"operation": "DISABLE", "type": "REVIEWS_PROMO"}],
-    }
-
-    result = ozon_post("/v3/product/import", {"items": [item]})
-    task_id = result.get("result", {}).get("task_id")
-
-    status = "unknown"
-    errors = []
-    if task_id:
-        for _ in range(10):
-            time.sleep(3)
-            r = ozon_post("/v1/product/import/info", {"task_id": task_id})
-            items_status = r.get("result", {}).get("items", [])
-            if items_status:
-                status = items_status[0]["status"]
-                errors = items_status[0].get("errors", [])
-                if status != "pending":
-                    break
-
-    rich_status = "skipped"
-    import_ok = status == "imported" and not errors
-    if import_ok:
-        migrated = load_json(MIGRATED_PATH, [])
-        if offer_id not in migrated:
-            migrated.append(offer_id)
-            save_json(MIGRATED_PATH, migrated)
-        log = load_json(MIGRATE_LOG_PATH, [])
-        log.append({"date": str(date.today()), "offer_id": offer_id, "title": p["title"]})
-        save_json(MIGRATE_LOG_PATH, log)
-        # 同步链接即直接填入富内容
-        rich_status = add_rich_content(offer_id, p["title"], p["description"])
-        if p.get("tk_category_id"):
-            record_mapping(
-                tk_category_id=str(p["tk_category_id"]),
-                tk_category_name=str(p.get("tk_category_leaf") or ""),
-                type_id=int(p["type_id"]),
-                category_id=int(p["category_id"]),
-                profile=resolve_profile(int(p["type_id"]), p.get("migrate_profile")),
-                source="migrate",
-            )
-
-    return jsonify({
-        "task_id": task_id,
-        "status": status,
-        "errors": errors,
-        "rich_status": rich_status,
-        "reset": reset,
-        "import_ok": import_ok,
-    })
+            "error": str(exc),
+            "error_code": type(exc).__name__,
+        }), 500
 
 
 # ---------------------------------------------------------------- 改价 ----

@@ -115,7 +115,7 @@
   function setGroupBusy(groupId, busy) {
     document.querySelectorAll('#unmig-table tbody tr.group-hdr[data-group="' + groupId + '"] button').forEach(function (b) {
       b.disabled = !!busy;
-      if (busy) b.textContent = '搬运中…';
+      if (busy) b.textContent = '入队中…';
       else b.textContent = '整组搬运';
     });
   }
@@ -343,6 +343,274 @@
   /** 把一个草稿数据 d 渲染进 card 并绑定按钮。
    *  opts.preProcessed: 已裁好的图片数组（来自待审队列）；有则直接展示+启用提交，不自动裁图。
    *  无 preProcessed 时（新生成草稿）自动触发裁图。 */
+  function fmtPricingNum(v, digits) {
+    if (v === null || v === undefined || v === '') return '—';
+    var n = Number(v);
+    if (isNaN(n)) return String(v);
+    return n.toFixed(digits == null ? 2 : digits);
+  }
+
+  /** Ozon 定价/物流常量（与 price_convert.py 一致） */
+  var OZON_RUB_PER_CNY = 191 / 18;
+  var OZON_AGENT_FEE_RUB = 15;
+  var OZON_DELIVERY_BASE = 3;
+  var OZON_DELIVERY_RATE = 0.045;
+  var OZON_VOLUMETRIC_DIV = 6000;
+  var OZON_COMMISSION = 0.12;
+  var OZON_ACQUIRING = 0.025;
+  var OZON_AD = 0.22;
+  var OZON_MARGIN = 0.20;
+  var OZON_DENOM = 1 - OZON_COMMISSION - OZON_ACQUIRING - OZON_AD - OZON_MARGIN;
+
+  function parseNum(v) {
+    if (v === null || v === undefined || v === '') return null;
+    var n = Number(v);
+    return isNaN(n) ? null : n;
+  }
+
+  function roundN(v, d) {
+    var p = Math.pow(10, d == null ? 2 : d);
+    return Math.round(v * p) / p;
+  }
+
+  function ozonVolumetricWeightG(depthMm, widthMm, heightMm) {
+    var d = parseNum(depthMm);
+    var w = parseNum(widthMm);
+    var h = parseNum(heightMm);
+    if (!d || !w || !h || d <= 0 || w <= 0 || h <= 0) return null;
+    return roundN(d * w * h / OZON_VOLUMETRIC_DIV, 1);
+  }
+
+  function ozonBillableWeightG(weightG, depthMm, widthMm, heightMm) {
+    var actual = parseNum(weightG);
+    var actualG = actual && actual > 0 ? roundN(actual, 1) : null;
+    var volG = ozonVolumetricWeightG(depthMm, widthMm, heightMm);
+    var billable = actualG;
+    if (volG && (billable === null || volG > billable)) billable = volG;
+    return {
+      actual_weight_g: actualG,
+      volumetric_weight_g: volG,
+      billable_weight_g: billable,
+      volumetric_dominates: !!(volG && actualG && volG > actualG + 1e-6)
+    };
+  }
+
+  function ozonLogisticsDetail(weightG, depthMm, widthMm, heightMm) {
+    var weights = ozonBillableWeightG(weightG, depthMm, widthMm, heightMm);
+    var billable = weights.billable_weight_g;
+    var agentCny = roundN(OZON_AGENT_FEE_RUB / OZON_RUB_PER_CNY, 4);
+    var weightFee = billable && billable > 0 ? roundN(OZON_DELIVERY_RATE * billable, 2) : 0;
+    var delivery = roundN(OZON_DELIVERY_BASE + weightFee, 2);
+    var logistics = roundN(delivery + agentCny, 2);
+    return Object.assign({}, weights, {
+      delivery_base_cny: OZON_DELIVERY_BASE,
+      delivery_rate_per_g: OZON_DELIVERY_RATE,
+      weight_fee_cny: weightFee,
+      delivery_cny: delivery,
+      agent_fee_rub: OZON_AGENT_FEE_RUB,
+      agent_fee_cny: roundN(agentCny, 2),
+      logistics_cny: logistics
+    });
+  }
+
+  function ozonPriceFormula(costCny, weightG, depthMm, widthMm, heightMm, tkPriceCny) {
+    var cost = parseNum(costCny);
+    if (!cost || cost <= 0) cost = parseNum(tkPriceCny);
+    var lb = ozonLogisticsDetail(weightG, depthMm, widthMm, heightMm);
+    var logistics = lb.logistics_cny;
+    if (!cost || cost <= 0 || OZON_DENOM <= 0) {
+      return {
+        cost_cny: cost,
+        logistics_cny: logistics,
+        logistics_breakdown: lb,
+        price_cny: null,
+        price_rub: null,
+        source: 'missing_cost'
+      };
+    }
+    var priceCny = roundN((cost + logistics) / OZON_DENOM, 2);
+    var priceRub = Math.round(priceCny / OZON_RUB_PER_CNY);
+    var minPrice = priceCny;
+    var tk = parseNum(tkPriceCny);
+    if (tk && tk > priceCny) {
+      priceCny = roundN(tk, 2);
+      priceRub = Math.round(priceCny / OZON_RUB_PER_CNY);
+    }
+    var commission = roundN(priceCny * OZON_COMMISSION, 2);
+    var acquiring = roundN(priceCny * OZON_ACQUIRING, 2);
+    var ad = roundN(priceCny * OZON_AD, 2);
+    var targetProfit = roundN(priceCny * OZON_MARGIN, 2);
+    var profit = roundN(priceCny - cost - logistics - commission - acquiring - ad, 2);
+    return {
+      cost_cny: roundN(cost, 2),
+      logistics_cny: logistics,
+      logistics_breakdown: lb,
+      commission_cny: commission,
+      acquiring_cny: acquiring,
+      ad_cny: ad,
+      target_profit_cny: targetProfit,
+      profit_cny: profit,
+      price_cny: priceCny,
+      price_rub: priceRub,
+      min_price_cny: minPrice,
+      margin_pct: priceCny ? roundN(profit / priceCny * 100, 1) : null,
+      old_price_cny: Math.round(priceCny * 1.3),
+      tk_price_cny: tk,
+      source: 'ozon_formula'
+    };
+  }
+
+  function weightSourceLabel(d) {
+    var wm = d.weight_meta || {};
+    var src = d.weight_source || wm.source || '—';
+    if (src === 'logistics') {
+      return '重量来源：物流实测（' + (wm.logistics_package_count || d.logistics_package_count || 0) + ' 单）';
+    }
+    if (src === 'template') {
+      return '重量来源：profile 模板默认 ' + (wm.template_weight_g || '—') + 'g';
+    }
+    return '重量来源：' + src;
+  }
+
+  function buildLogisticsStepsHtml(lb) {
+    if (!lb) return '';
+    var rows = [
+      ['① 实重', lb.actual_weight_g != null ? fmtPricingNum(lb.actual_weight_g, 0) + ' g' : '—'],
+      ['② 体积重 L×W×H(mm)/6000', lb.volumetric_weight_g != null ? fmtPricingNum(lb.volumetric_weight_g, 0) + ' g' : '—'],
+      ['③ 计费重 max(实重,体积重)', (lb.billable_weight_g != null ? fmtPricingNum(lb.billable_weight_g, 0) + ' g' : '—') +
+        (lb.volumetric_dominates ? ' <span class="warn">体积重主导</span>' : '')],
+      ['④ 基础费', '¥' + fmtPricingNum(lb.delivery_base_cny)],
+      ['⑤ 重量费 0.045×计费重', '¥' + fmtPricingNum(lb.weight_fee_cny)],
+      ['⑥ 代理费 15₽→¥', '¥' + fmtPricingNum(lb.agent_fee_cny)],
+      ['物流合计 → 定价表', '¥' + fmtPricingNum(lb.logistics_cny)]
+    ];
+    var body = rows.map(function (r, i) {
+      var cls = i === rows.length - 1 ? ' class="total"' : '';
+      return '<tr' + cls + '><td>' + r[0] + '</td><td>' + r[1] + '</td></tr>';
+    }).join('');
+    return '<table class="pricing-chain weight-chain"><thead><tr><th>物流计算步骤</th><th>数值</th></tr></thead><tbody>' +
+      body + '</tbody></table>';
+  }
+
+  function buildPricingTableBodyHtml(pt) {
+    if (!pt || !pt.price_cny) return '';
+    var rows = [
+      ['货值 CNY', fmtPricingNum(pt.cost_cny)],
+      ['物流费 CNY', fmtPricingNum(pt.logistics_cny)],
+      ['佣金 12%', fmtPricingNum(pt.commission_cny)],
+      ['收单手续费 2.5%', fmtPricingNum(pt.acquiring_cny)],
+      ['广告费 CPO 22%', fmtPricingNum(pt.ad_cny)],
+      ['目标利润 ' + fmtPricingNum(pt.margin_pct, 1) + '%', fmtPricingNum(pt.target_profit_cny || pt.profit_cny)],
+      ['最低售价 CNY', fmtPricingNum(pt.min_price_cny || pt.price_cny)],
+      ['最终售价 CNY', fmtPricingNum(pt.price_cny)],
+      ['最终售价 RUB', fmtPricingNum(pt.price_rub, 0)]
+    ];
+    return rows.map(function (r, i) {
+      var cls = i >= rows.length - 2 ? ' class="total"' : '';
+      var logisticsHint = (i === 1 && pt.logistics_breakdown && pt.logistics_breakdown.billable_weight_g)
+        ? ' <span class="meta">(计费' + fmtPricingNum(pt.logistics_breakdown.billable_weight_g, 0) + 'g)</span>' : '';
+      return '<tr' + cls + '><td>' + r[0] + logisticsHint + '</td><td>' + r[1] + '</td></tr>';
+    }).join('');
+  }
+
+  function buildPricingPanelHtml(d) {
+    var pt = d.pricing_table || {};
+    var lb = pt.logistics_breakdown || ozonLogisticsDetail(d.weight, d.depth, d.width, d.height);
+    return '<div class="pricing-weight-panel">' +
+      '<h4>重量 · 尺寸 · 物流 <span class="meta" style="font-weight:400">（改实重或包裹尺寸实时重算运费与售价）</span></h4>' +
+      '<p class="meta weight-source-line">' + esc(weightSourceLabel(d)) + '</p>' +
+      '<div class="grid weight-dim-grid">' +
+      '<label>实重 (g)</label><input class="f-weight" type="number" min="0" step="1" value="' + esc(d.weight) + '">' +
+      '<label>包裹 长×宽×高 (mm)</label><div class="row3">' +
+      '<input class="f-depth" type="number" min="0" step="1" value="' + esc(d.depth) + '" placeholder="长">' +
+      '<input class="f-width" type="number" min="0" step="1" value="' + esc(d.width) + '" placeholder="宽">' +
+      '<input class="f-height" type="number" min="0" step="1" value="' + esc(d.height) + '" placeholder="高">' +
+      '</div>' +
+      '<label>商品 长×宽 (cm)</label><div class="row2">' +
+      '<input class="f-len-cm" value="' + esc(d.len_cm) + '"><input class="f-wid-cm" value="' + esc(d.wid_cm) + '">' +
+      '</div></div>' +
+      buildLogisticsStepsHtml(lb) +
+      '<div class="pricing-test-table">' +
+      '<h4>SEA 定价测试表 · Ozon 20% 利润</h4>' +
+      '<table class="pricing-chain pricing-chain-table"><thead><tr><th>项目</th><th>金额</th></tr></thead><tbody>' +
+      buildPricingTableBodyHtml(pt) + '</tbody></table></div>' +
+      '<p class="meta pricing-recalc-hint" style="display:none;color:#0369a1">售价已按公式同步更新</p></div>';
+  }
+
+  function refreshPricingPanel(card) {
+    var cost = parseNum(card.dataset.pricingCostCny);
+    var tk = parseNum(card.dataset.pricingTkCny);
+    var weight = card.querySelector('.f-weight') && card.querySelector('.f-weight').value;
+    var depth = card.querySelector('.f-depth') && card.querySelector('.f-depth').value;
+    var width = card.querySelector('.f-width') && card.querySelector('.f-width').value;
+    var height = card.querySelector('.f-height') && card.querySelector('.f-height').value;
+    var pt = ozonPriceFormula(cost, weight, depth, width, height, tk);
+    var panel = card.querySelector('.pricing-weight-panel');
+    if (!panel) return pt;
+
+    var stepsHost = panel.querySelector('.weight-chain');
+    if (stepsHost) {
+      var tmp = document.createElement('div');
+      tmp.innerHTML = buildLogisticsStepsHtml(pt.logistics_breakdown);
+      var newSteps = tmp.querySelector('.weight-chain');
+      if (newSteps) stepsHost.replaceWith(newSteps);
+    }
+
+    var tbody = panel.querySelector('.pricing-chain-table tbody');
+    if (tbody) tbody.innerHTML = buildPricingTableBodyHtml(pt);
+
+    var priceEl = card.querySelector('.f-price');
+    var oldEl = card.querySelector('.f-old-price');
+    var hint = panel.querySelector('.pricing-recalc-hint');
+    if (pt.price_cny && priceEl) {
+      var cur = parseNum(priceEl.value);
+      if (!cur || cur < pt.min_price_cny) {
+        priceEl.value = String(Math.round(pt.price_cny));
+        if (hint) hint.style.display = 'block';
+      }
+      if (oldEl && pt.old_price_cny) oldEl.value = String(Math.round(pt.old_price_cny));
+    }
+    return pt;
+  }
+
+  function bindPricingRecalc(card, d) {
+    var pt = d.pricing_table || {};
+    card.dataset.pricingCostCny = pt.cost_cny != null ? String(pt.cost_cny) : '';
+    card.dataset.pricingTkCny = pt.tk_price_cny != null ? String(pt.tk_price_cny) :
+      (d.price_cny_computed != null ? String(d.price_cny_computed) : '');
+
+    var timer = null;
+    function schedule() {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(function () { refreshPricingPanel(card); }, 150);
+    }
+
+    ['.f-weight', '.f-depth', '.f-width', '.f-height'].forEach(function (sel) {
+      var el = card.querySelector(sel);
+      if (!el) return;
+      el.addEventListener('input', schedule);
+      el.addEventListener('change', schedule);
+    });
+  }
+
+  /** @deprecated use buildPricingPanelHtml */
+  function buildPricingTableHtml(pt) {
+    if (!pt || !pt.price_cny) return '';
+    return '<div class="pricing-test-table"><h4>SEA 定价测试表 · Ozon 20% 利润</h4>' +
+      '<table class="pricing-chain"><thead><tr><th>项目</th><th>金额</th></tr></thead><tbody>' +
+      buildPricingTableBodyHtml(pt) + '</tbody></table></div>';
+  }
+
+  function attachPricingPanelToCard(card, d) {
+    if (!d || !d.pricing_table || !d.pricing_table.price_cny) return;
+    var host = card.querySelector('.draft-card-body');
+    if (!host || host.querySelector('.pricing-weight-panel')) return;
+    var grid = host.querySelector('.draft-grid');
+    if (!grid) return;
+    grid.insertAdjacentHTML('beforebegin', buildPricingPanelHtml(d));
+    bindPricingRecalc(card, d);
+  }
+
   function buildDraftCard(card, d, sellerSku, offerId, opts) {
     opts = opts || {};
     var matchHint = d.tk_category_path
@@ -368,7 +636,8 @@
       '<p class="meta">原标题(MS): ' + esc(d.title_ms) + '</p>' +
       '<div class="imgs orig-imgs">' + (d.images || []).map(function (u) {
         return '<img src="' + esc(u) + '" alt="">';
-      }).join('') + '</div>' +
+      }).join('') +       '</div>' +
+      buildPricingPanelHtml(d) +
       '<div class="grid draft-grid">' +
       '<label>俄语标题</label><textarea class="f-title" rows="2">' + esc(d.draft_title) + '</textarea>' +
       '<label>俄语描述</label><textarea class="f-desc">' + esc(d.draft_description) + '</textarea>' +
@@ -396,9 +665,6 @@
       '<label>材质 / 字典ID</label><div class="row2"><input class="f-material" value="' + esc(d.material) + '"><input class="f-material-dict" value="' + esc(d.material_dict_id) + '"></div>' +
       '<label>Hashtags</label><input class="f-hashtags" value="' + esc(d.hashtags || '') + '">' +
       '<label>套装 kit</label><input class="f-kit" value="' + esc(d.kit) + '">' +
-      '<label>重量(g)</label><input class="f-weight" value="' + esc(d.weight) + '">' +
-      '<label>长×宽×高 mm</label><div class="row3"><input class="f-depth" value="' + esc(d.depth) + '"><input class="f-width" value="' + esc(d.width) + '"><input class="f-height" value="' + esc(d.height) + '"></div>' +
-      '<label>长×宽 cm</label><div class="row2"><input class="f-len-cm" value="' + esc(d.len_cm) + '"><input class="f-wid-cm" value="' + esc(d.wid_cm) + '"></div>' +
       '</div>' +
       '<div class="toolbar" style="margin-top:12px">' +
       '<button type="button" class="btn secondary btn-process-images">↻ 重新转换图片 3:4（约30s/张）</button>' +
@@ -417,6 +683,7 @@
     card.dataset.tkCategoryLeaf = d.tk_category_leaf || '';
 
     bindCategoryEditor(card, d);
+    bindPricingRecalc(card, d);
 
     card.querySelector('.btn-process-images').onclick = function () { processImages(card); };
     card.querySelector('.btn-submit').onclick = function () { submitMigrate(card); };
@@ -435,6 +702,25 @@
       // 新生成草稿：自动裁图
       processImages(card);
     }
+    refreshPricingPanelIfMissing(card, d);
+  }
+
+  /** 旧 pending 草稿可能缺少 pricing_table，按需从 draft API 补拉。 */
+  function refreshPricingPanelIfMissing(card, d) {
+    if (d && d.pricing_table && d.pricing_table.price_cny) return;
+    var sku = (d && d.seller_sku) || card.dataset.sellerSku;
+    if (!sku) return;
+    api('draft/' + encodeURIComponent(sku)).then(function (fresh) {
+      if (!fresh || !fresh.pricing_table || !fresh.pricing_table.price_cny) return;
+      var host = card.querySelector('.draft-card-body');
+      var old = host && host.querySelector('.pricing-weight-panel');
+      if (old) old.remove();
+      var grid = host && host.querySelector('.draft-grid');
+      if (grid) {
+        grid.insertAdjacentHTML('beforebegin', buildPricingPanelHtml(fresh));
+        bindPricingRecalc(card, fresh);
+      }
+    }).catch(function () {});
   }
 
   function dismissDraft(card) {
@@ -655,7 +941,7 @@
     var label = it.variant_label ? ' [' + it.variant_label + ']' : '';
     log(logEl, '▶ ' + sellerSku + label + ' 生成草稿…');
     return api('draft/' + encodeURIComponent(sellerSku)).then(function (draft) {
-      if (draft.error) throw new Error(draft.error);
+      if (draft.error && !draft.draft_title) throw new Error(draft.error);
       var offerId = draft.offer_id || it.offer_id;
       log(logEl, '  图片处理 ' + (draft.images || []).length + ' 张…');
       return api('process_images/' + encodeURIComponent(sellerSku), {
@@ -697,7 +983,8 @@
             return { ok: false, offer_id: offerId, result: res, skipped: true };
           }
           var ok = res.import_ok || (res.status === 'imported' && (!res.errors || !res.errors.length));
-          var msg = offerId + ' ' + res.status;
+          var msg = offerId + ' ' + (res.error || res.status || 'unknown');
+          if (res.error_code) msg += ' [' + res.error_code + ']';
           if (res.reset && res.reset.action === 'deleted') {
             msg += ' (已删旧卡:' + (res.reset.detail || '') + ')';
           }
@@ -720,32 +1007,49 @@
       return Promise.resolve();
     }
     var logEl = document.getElementById('batch-log');
-    logEl.style.display = 'block';
     var plan = queue.map(function (it) {
       return (it.offer_id || '') + (it.variant_label ? ' ' + it.variant_label : '');
     }).join('\n');
-    if (!confirm('确认整组搬运 ' + queue.length + ' 个规格？\n\n' + plan)) return Promise.resolve();
+    if (!confirm(
+      '整组 ' + groupId + ' 将每个规格生成草稿并入审核区（不直接上品），共 ' + queue.length + ' 个：\n\n' +
+      plan + '\n\n预计约 ' + (queue.length * 60) + ' 秒，继续？'
+    )) {
+      return Promise.resolve();
+    }
 
+    logEl.style.display = 'block';
     setGroupBusy(groupId, true);
-    log(logEl, '—— 整组 ' + groupId + '（' + queue.length + ' 个）——', 'ok');
-    var chain = Promise.resolve();
-    queue.forEach(function (it, i) {
-      chain = chain.then(function () {
-        log(logEl, '[' + (i + 1) + '/' + queue.length + ']');
-        return migrateOne(it, logEl).then(function (r) {
-          return new Promise(function (resolve) {
-            setTimeout(function () { resolve(r); }, 2000);
-          });
+    log(logEl, '—— 整组 ' + groupId + ' 入队审核（' + queue.length + ' 个）——', 'ok');
+    showTaskBanner('running', '整组入队 · ' + groupId, [
+      { cls: 'active', text: '生成草稿 + 裁图 → 审核区（约 ' + (queue.length * 60) + ' 秒）' }
+    ], '请勿关闭页面');
+    startTaskTimer('整组入队 · ' + groupId);
+
+    return api('queue_group', { method: 'POST', body: { group_id: groupId } })
+      .then(function (res) {
+        stopTaskTimer();
+        var n = res.count || (res.queued && res.queued.length) || 0;
+        var errs = res.errors || [];
+        log(logEl, '整组完成：已入队 ' + n + ' 个' + (errs.length ? '，失败 ' + errs.length + ' 个' : ''), errs.length ? 'warn' : 'ok');
+        errs.forEach(function (e) {
+          log(logEl, '  ❌ ' + (e.seller_sku || '?') + ' ' + (e.error || ''), 'err');
         });
+        showTaskBanner(errs.length ? 'err' : 'ok', '整组入队 · ' + groupId, [
+          { cls: errs.length ? 'fail' : 'done', text: '已入队 ' + n + ' 个规格到草稿审核区' }
+        ], '请在下方草稿审核区核对');
+        if (!errs.length) hideTaskBannerLater(8000);
+        alert('已入队 ' + n + ' 个规格到草稿审核区' + (errs.length ? '（' + errs.length + ' 个失败，见日志）' : ''));
+        return loadPendingDrafts().then(function () { return loadUnmigrated(); });
+      })
+      .catch(function (e) {
+        stopTaskTimer();
+        log(logEl, '❌ 整组入队失败: ' + e.message, 'err');
+        showTaskBanner('err', '整组入队失败 · ' + groupId, [{ cls: 'fail', text: e.message }], '');
+        alert('入队失败: ' + e.message);
+      })
+      .then(function () {
+        setGroupBusy(groupId, false);
       });
-    });
-    return chain.then(function () {
-      log(logEl, '整组完成', 'ok');
-      setGroupBusy(groupId, false);
-      return loadUnmigrated();
-    }).catch(function () {
-      setGroupBusy(groupId, false);
-    });
   }
 
   function batchMigrate(count) {

@@ -109,6 +109,53 @@ def invalidate_stale_pending(seller_sku: str, title_ms: str) -> bool:
     return True
 
 
+def _enrich_pricing_table(rec: dict) -> dict:
+    """旧 pending 可能缺少 pricing_table，按 catalog 成本 + 重量补算。"""
+    pt = rec.get("pricing_table")
+    if isinstance(pt, dict) and pt.get("price_cny"):
+        return rec
+    try:
+        from modules.ozon.price_convert import ozon_price_formula
+
+        weight = rec.get("weight")
+        tk_cny = None
+        raw_tk = rec.get("price_cny_computed")
+        if raw_tk is not None:
+            try:
+                tk_cny = float(raw_tk)
+            except (TypeError, ValueError):
+                tk_cny = None
+
+        cost_cny = None
+        seller_sku = str(rec.get("seller_sku") or "").strip()
+        if seller_sku:
+            try:
+                import modules.catalog as cat_mod
+                from modules.catalog.sku_key import tk_match_key
+
+                lookup = cat_mod.lookup_sku(tk_match_key(seller_sku))
+                if lookup and lookup.get("found"):
+                    cost_cny = lookup["item"].get("cost_cny")
+            except Exception:
+                pass
+
+        pricing = ozon_price_formula(
+            cost_cny=cost_cny,
+            weight_g=weight,
+            depth_mm=rec.get("depth"),
+            width_mm=rec.get("width"),
+            height_mm=rec.get("height"),
+            tk_price_cny=tk_cny,
+        )
+        if not pricing.get("price_cny"):
+            return rec
+        out = dict(rec)
+        out["pricing_table"] = pricing
+        return out
+    except Exception:
+        return rec
+
+
 def list_pending(*, purge_stale: bool = True) -> list[dict]:
     """按保存时间升序返回所有待审草稿；默认剔除 TikTok 标题已变的过期记录。"""
     data = _read()
@@ -119,7 +166,7 @@ def list_pending(*, purge_stale: bool = True) -> list[dict]:
             data = fresh_data
     items = [x for x in data.values() if isinstance(x, dict)]
     items.sort(key=lambda x: x.get("saved_at", 0))
-    return items
+    return [_enrich_pricing_table(x) for x in items]
 
 
 def save_pending(payload: dict) -> dict:

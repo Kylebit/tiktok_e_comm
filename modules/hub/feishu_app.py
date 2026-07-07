@@ -101,7 +101,9 @@ def upload_image(image_bytes: bytes, filename: str = "image.jpg") -> str:
         "image_type": (None, "message"),
         "image": (filename, image_bytes, mime_type),
     }
-    resp = req_lib.post(url, headers=headers, files=files, timeout=60)
+    session = req_lib.Session()
+    session.trust_env = False
+    resp = session.post(url, headers=headers, files=files, timeout=60, proxies={"http": None, "https": None})
     body = resp.json()
     if body.get("code") != 0:
         raise RuntimeError(f"飞书图片上传失败 [{body.get('code')}]: {body.get('msg')}")
@@ -168,7 +170,9 @@ def download_image(url: str, timeout: int = 10) -> bytes:
 
 
 def _db_path() -> str:
-    return os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "data", "shop.db"))
+    from core.db import db_path
+
+    return str(db_path())
 
 
 def _find_sku(sku: str) -> list:
@@ -239,7 +243,8 @@ def reply_product_image(message_id: str, sku: str) -> str:
         raise RuntimeError(f"SKU【{seller_sku}】未存储主图地址")
     try:
         img_bytes = download_image(image_url)
-    except Exception:
+    except Exception as exc:
+        print(f"[feishu] image download failed sku={seller_sku}: {exc}", flush=True)
         return _image_unavailable_text(product_name, seller_sku)
     if len(img_bytes) > 10 * 1024 * 1024:
         raise RuntimeError("图片过大（>10MB），无法发送")
@@ -248,7 +253,8 @@ def reply_product_image(message_id: str, sku: str) -> str:
     try:
         image_key = upload_image(img_bytes, filename)
         reply_image(message_id, image_key)
-    except Exception:
+    except Exception as exc:
+        print(f"[feishu] image upload/reply failed sku={seller_sku}: {exc}", flush=True)
         return _image_unavailable_text(product_name, seller_sku)
     return f"✅ 已发送 SKU {seller_sku} 主图（{str(product_name)[:30]}）"
 

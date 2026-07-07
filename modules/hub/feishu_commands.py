@@ -331,7 +331,10 @@ def _handle_send_both(sku: str, message_id: str | None) -> str:
     image_status = _handle_send_main_image(sku, message_id)
     if image_status.startswith("需要 message_id"):
         return image_status
-    return _handle_get_purchase_link(sku)
+    link = _handle_get_purchase_link(sku)
+    if image_status and link:
+        return f"{image_status}\n\n{link}"
+    return link or image_status or "未找到采购链接"
 
 
 def _handle_batch_send_both(sku_csv: str, message_id: str | None) -> str:

@@ -76,21 +76,111 @@ OZON_AD_RATE = 0.22
 OZON_TARGET_MARGIN = 0.20
 OZON_RUB_PER_CNY = 191.0 / 18.0
 OZON_AGENT_FEE_RUB = 15.0
+OZON_DELIVERY_BASE_CNY = 3.0
+OZON_DELIVERY_RATE_PER_G = 0.045
+OZON_VOLUMETRIC_DIVISOR = 6000  # cm³/kg，体积重 = L×W×H(cm) / 6000
 
 
-def ozon_logistics_cny(weight_g: int | float | None) -> float:
-    agent_fee_cny = OZON_AGENT_FEE_RUB / OZON_RUB_PER_CNY
-    if weight_g:
-        delivery_cny = 3 + 0.045 * float(weight_g)
+def _num(v: int | float | str | None) -> float | None:
+    if v is None or v == "":
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def ozon_volumetric_weight_g(
+    depth_mm: int | float | str | None = None,
+    width_mm: int | float | str | None = None,
+    height_mm: int | float | str | None = None,
+) -> float | None:
+    """体积重(g) = 长×宽×高(mm) / 6000。"""
+    d, w, h = _num(depth_mm), _num(width_mm), _num(height_mm)
+    if not d or not w or not h or d <= 0 or w <= 0 or h <= 0:
+        return None
+    return round(d * w * h / OZON_VOLUMETRIC_DIVISOR, 1)
+
+
+def ozon_billable_weight_g(
+    weight_g: int | float | str | None = None,
+    *,
+    depth_mm: int | float | str | None = None,
+    width_mm: int | float | str | None = None,
+    height_mm: int | float | str | None = None,
+) -> dict:
+    """计费重 = max(实重, 体积重)。"""
+    actual = _num(weight_g)
+    actual_g = round(actual, 1) if actual and actual > 0 else None
+    volumetric_g = ozon_volumetric_weight_g(depth_mm, width_mm, height_mm)
+    billable = actual_g
+    if volumetric_g and (billable is None or volumetric_g > billable):
+        billable = volumetric_g
+    return {
+        "actual_weight_g": actual_g,
+        "volumetric_weight_g": volumetric_g,
+        "billable_weight_g": billable,
+        "volumetric_dominates": bool(
+            volumetric_g and actual_g and volumetric_g > actual_g + 1e-6
+        ),
+    }
+
+
+def ozon_logistics_detail(
+    weight_g: int | float | str | None = None,
+    *,
+    depth_mm: int | float | str | None = None,
+    width_mm: int | float | str | None = None,
+    height_mm: int | float | str | None = None,
+) -> dict:
+    """国际物流费拆解：3 + 0.045×计费重(g) + 15₽ 代理费。"""
+    weights = ozon_billable_weight_g(
+        weight_g, depth_mm=depth_mm, width_mm=width_mm, height_mm=height_mm
+    )
+    billable = weights.get("billable_weight_g")
+    agent_fee_cny = round(OZON_AGENT_FEE_RUB / OZON_RUB_PER_CNY, 4)
+    if billable and billable > 0:
+        weight_fee_cny = round(OZON_DELIVERY_RATE_PER_G * float(billable), 2)
+        delivery_cny = round(OZON_DELIVERY_BASE_CNY + weight_fee_cny, 2)
     else:
-        delivery_cny = 3.0
-    return round(delivery_cny + agent_fee_cny, 2)
+        weight_fee_cny = 0.0
+        delivery_cny = OZON_DELIVERY_BASE_CNY
+    logistics_cny = round(delivery_cny + agent_fee_cny, 2)
+    return {
+        **weights,
+        "delivery_base_cny": OZON_DELIVERY_BASE_CNY,
+        "delivery_rate_per_g": OZON_DELIVERY_RATE_PER_G,
+        "weight_fee_cny": weight_fee_cny,
+        "delivery_cny": delivery_cny,
+        "agent_fee_rub": OZON_AGENT_FEE_RUB,
+        "agent_fee_cny": round(agent_fee_cny, 2),
+        "logistics_cny": logistics_cny,
+        "volumetric_divisor": OZON_VOLUMETRIC_DIVISOR,
+        "formula_label": (
+            f"3 + 0.045×{billable or 0}g + 15₽/{OZON_RUB_PER_CNY:.2f}"
+        ),
+    }
+
+
+def ozon_logistics_cny(
+    weight_g: int | float | str | None = None,
+    *,
+    depth_mm: int | float | str | None = None,
+    width_mm: int | float | str | None = None,
+    height_mm: int | float | str | None = None,
+) -> float:
+    return ozon_logistics_detail(
+        weight_g, depth_mm=depth_mm, width_mm=width_mm, height_mm=height_mm
+    )["logistics_cny"]
 
 
 def ozon_price_formula(
     *,
     cost_cny: float | None,
-    weight_g: int | float | None = None,
+    weight_g: int | float | str | None = None,
+    depth_mm: int | float | str | None = None,
+    width_mm: int | float | str | None = None,
+    height_mm: int | float | str | None = None,
     tk_price_cny: float | None = None,
     target_margin: float = OZON_TARGET_MARGIN,
 ) -> dict:
@@ -98,7 +188,11 @@ def ozon_price_formula(
     cost = float(cost_cny) if cost_cny is not None else None
     if cost is None or cost <= 0:
         cost = float(tk_price_cny) if tk_price_cny else None
-    logistics = ozon_logistics_cny(weight_g)
+    logistics_detail = ozon_logistics_detail(
+        weight_g, depth_mm=depth_mm, width_mm=width_mm, height_mm=height_mm
+    )
+    logistics = logistics_detail["logistics_cny"]
+    billable = logistics_detail.get("billable_weight_g")
     denom = 1 - OZON_COMMISSION_RATE - OZON_ACQUIRING_RATE - OZON_AD_RATE - target_margin
     if not cost or cost <= 0 or denom <= 0:
         return {
@@ -115,7 +209,8 @@ def ozon_price_formula(
             "formula_denom": round(denom, 4),
             "rub_per_cny": round(OZON_RUB_PER_CNY, 4),
             "tk_price_cny": tk_price_cny,
-            "weight_g": weight_g,
+            "weight_g": billable or weight_g,
+            "logistics_breakdown": logistics_detail,
             "source": "missing_cost",
         }
 
@@ -152,6 +247,7 @@ def ozon_price_formula(
         "formula_denom": round(denom, 4),
         "rub_per_cny": round(OZON_RUB_PER_CNY, 4),
         "tk_price_cny": tk_price_cny,
-        "weight_g": weight_g,
+        "weight_g": billable or weight_g,
+        "logistics_breakdown": logistics_detail,
         "source": "ozon_formula",
     }

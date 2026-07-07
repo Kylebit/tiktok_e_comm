@@ -31,10 +31,18 @@ def queue_one_to_pending(seller_sku: str, on_progress: Callable[[str], None] | N
     """单个 SKU：生成草稿并写入 pending_drafts 审核区。"""
     _progress(on_progress, f"  {seller_sku}: 入队草稿审核…")
     try:
-        record = prep_one_ozon_draft(seller_sku, on_progress=on_progress)
+        record = prep_one_ozon_draft(seller_sku, on_progress=on_progress, process_images=False)
         return {"seller_sku": seller_sku, "ok": True, "record": record}
     except Exception as exc:
-        return {"seller_sku": seller_sku, "ok": False, "error": str(exc)}
+        import traceback
+
+        return {
+            "seller_sku": seller_sku,
+            "ok": False,
+            "error": str(exc),
+            "error_type": type(exc).__name__,
+            "traceback": traceback.format_exc()[-1200:],
+        }
 
 
 def queue_group_to_pending(

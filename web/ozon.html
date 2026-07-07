@@ -76,6 +76,12 @@
     .cat-ids-row input { width: 88px; padding: 4px 6px; border: 1px solid #ccc; border-radius: 4px; }
     .cat-ids-row .id-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .pricing-test-table { margin: 12px 0; overflow-x: auto; }
+    .pricing-weight-panel { margin: 12px 0; padding: 12px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; }
+    .pricing-weight-panel h4 { margin: 0 0 8px; font-size: 13px; color: #0369a1; }
+    .weight-dim-grid { margin-bottom: 10px; }
+    .weight-dim-grid label { font-weight: 600; font-size: 12px; color: #444; }
+    table.weight-chain { margin-bottom: 10px; }
+    table.weight-chain .warn { color: #b45309; font-weight: 600; }
     .pricing-test-table h4 { margin: 0 0 8px; font-size: 13px; color: #0369a1; }
     table.pricing-chain { border-collapse: collapse; width: 100%; font-size: 12px; background: #fff; }
     table.pricing-chain th, table.pricing-chain td { border: 1px solid #e2e8f0; padding: 6px 8px; text-align: right; }
@@ -268,7 +274,7 @@
     </section>
   </main>
 
-  <script src="/static/ozon-migrate.js"></script>
+  <script src="/static/ozon-migrate.js?v=20260706"></script>
   <script>
     function fmtNum(v, digits) {
       if (v === null || v === undefined || v === '') return '—';
@@ -302,14 +308,12 @@
     function attachPricingTable(card, pt) {
       if (!card || !pt || !pt.price_cny) return;
       var host = card.querySelector('.draft-card-body');
-      if (!host) return;
-      var old = host.querySelector('.pricing-test-table');
-      if (old) old.remove();
+      if (!host || host.querySelector('.pricing-weight-panel')) return;
+      var grid = host.querySelector('.draft-grid');
+      if (!grid) return;
       var wrap = document.createElement('div');
       wrap.innerHTML = buildPricingTableHtml(pt);
-      var grid = host.querySelector('.draft-grid');
-      if (grid) host.insertBefore(wrap.firstChild, grid);
-      else host.appendChild(wrap.firstChild);
+      if (grid) grid.parentNode.insertBefore(wrap.firstChild, grid);
     }
 
     (function patchOzonApi() {
@@ -336,24 +340,6 @@
         });
       };
     })();
-
-    function queueGroupDrafts(groupId) {
-      if (!groupId) return Promise.resolve();
-      if (!confirm('整组 ' + groupId + ' 将每个规格生成草稿并入审核区（不直接上品），继续？')) return Promise.resolve();
-      return OzonMigrate.api('queue_group', { method: 'POST', body: { group_id: groupId } }).then(function (res) {
-        alert('已入队 ' + (res.count || 0) + ' 个规格到草稿审核区');
-        OzonMigrate.loadPendingDrafts();
-        return OzonMigrate.loadUnmigrated();
-      }).catch(function (e) { alert('入队失败: ' + e.message); });
-    }
-
-    document.getElementById('unmig-table').querySelector('tbody').addEventListener('click', function (e) {
-      var gbtn = e.target.closest('[data-action="batch-group"]');
-      if (!gbtn) return;
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      queueGroupDrafts(gbtn.dataset.group);
-    }, true);
 
     function showTab(name) {
       document.querySelectorAll('.oz-tab').forEach(function (t) { t.classList.remove('active'); });

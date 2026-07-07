@@ -17,6 +17,17 @@ class OzonPricingTest(unittest.TestCase):
         agent = 15 / OZON_RUB_PER_CNY
         self.assertAlmostEqual(logistics, round(3 + 0.045 * 200 + agent, 2))
 
+    def test_volumetric_billable_weight(self) -> None:
+        from modules.ozon.price_convert import ozon_billable_weight_g, ozon_logistics_detail
+
+        w = ozon_billable_weight_g(100, depth_mm=300, width_mm=300, height_mm=300)
+        self.assertEqual(w["volumetric_weight_g"], 4500.0)
+        self.assertTrue(w["volumetric_dominates"])
+        self.assertEqual(w["billable_weight_g"], 4500.0)
+
+        detail = ozon_logistics_detail(100, depth_mm=300, width_mm=300, height_mm=300)
+        self.assertEqual(detail["logistics_cny"], ozon_logistics_cny(100, depth_mm=300, width_mm=300, height_mm=300))
+
     def test_price_formula_core(self) -> None:
         cost = 30.0
         weight = 140

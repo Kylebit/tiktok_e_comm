@@ -2,7 +2,12 @@ import subprocess
 from PIL import Image, ImageStat
 
 def download(url, path):
-    subprocess.run(["curl", "-s", "--noproxy", "*", "-o", path, url], check=True)
+    subprocess.run(
+        ["curl", "-s", "--noproxy", "*", "-o", path, url],
+        check=True,
+        encoding="utf-8",
+        errors="replace",
+    )
 
 def _pad_piece(strip, pad_h, target_w, mean, std_threshold=18):
     std = ImageStat.Stat(strip).stddev
@@ -45,7 +50,7 @@ def to_3x4(src_path, dst_path, target_w=1200, target_h=1600):
 def upload(path):
     cmd = ["curl", "-s", "--noproxy", "*", "-F", "source=@" + path,
            "https://freeimage.host/api/1/upload?key=6d207e02198a847aa98d0a2a901485a5&format=json"]
-    out = subprocess.run(cmd, capture_output=True, text=True).stdout
+    out = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
     import json
     d = json.loads(out)
     return d["image"]["url"]

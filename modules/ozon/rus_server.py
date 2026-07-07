@@ -98,6 +98,29 @@ class OrbitRusHandler(BaseHTTPRequestHandler):
                     return self._json(400, {"ok": False, "error": "missing group_id"})
                 result = queue_group_to_pending(group_id)
                 return self._json(200, result)
+            if method == "POST" and subpath == "recalc_pricing":
+                from modules.ozon.price_convert import ozon_price_formula
+
+                payload = json.loads((body or b"{}").decode("utf-8") or "{}")
+                try:
+                    cost = payload.get("cost_cny")
+                    cost_cny = float(cost) if cost not in (None, "") else None
+                except (TypeError, ValueError):
+                    cost_cny = None
+                try:
+                    tk = payload.get("tk_price_cny")
+                    tk_price_cny = float(tk) if tk not in (None, "") else None
+                except (TypeError, ValueError):
+                    tk_price_cny = None
+                pricing = ozon_price_formula(
+                    cost_cny=cost_cny,
+                    weight_g=payload.get("weight_g"),
+                    depth_mm=payload.get("depth_mm"),
+                    width_mm=payload.get("width_mm"),
+                    height_mm=payload.get("height_mm"),
+                    tk_price_cny=tk_price_cny,
+                )
+                return self._json(200, {"pricing_table": pricing})
             if method == "GET" and subpath.startswith("draft/"):
                 from urllib.parse import unquote
 

@@ -3,10 +3,40 @@
 from __future__ import annotations
 
 import os
+import sys
+import threading
+from pathlib import Path
 
 from modules.hub import feishu_commands as cmd_mod
 from modules.hub import feishu_events as evt_mod
 from modules.hub.feishu_app import app_config, app_ready, reply_text
+
+_CODE_ROOT = Path(__file__).resolve().parents[2]
+_SLOW_CMDS = frozenset({"send_both", "send_main_image", "batch_send_both"})
+
+
+def _safe_log(msg: str) -> None:
+    try:
+        print(msg, flush=True)
+    except UnicodeEncodeError:
+        sys.stdout.buffer.write((msg + "\n").encode("utf-8", "replace"))
+        sys.stdout.flush()
+
+
+def _process_message(message_id: str, text: str) -> None:
+    try:
+        reply = cmd_mod.handle_command(text, message_id=message_id)
+        if reply:
+            reply_text(message_id, reply)
+            _safe_log(f"[feishu] replied {len(reply)} chars")
+        else:
+            _safe_log("[feishu] command handled without text reply")
+    except Exception as exc:
+        _safe_log(f"[feishu] handler failed: {exc}")
+        try:
+            reply_text(message_id, f"处理出错：{str(exc)[:200]}")
+        except Exception as reply_exc:
+            _safe_log(f"[feishu] fallback reply failed: {reply_exc}")
 
 
 def _patch_websocket_ssl() -> None:
@@ -108,23 +138,22 @@ def run_websocket_bot() -> None:
     def on_message(data: P2ImMessageReceiveV1) -> None:
         parsed = evt_mod.extract_message_from_p2_event(data)
         if not parsed:
-            print("[feishu] ignored non-text or empty message")
+            _safe_log("[feishu] ignored non-text or empty message")
             return
         message_id, text = parsed
-        print(f"[feishu] received: {text[:80]!r}")
-        try:
-            reply = cmd_mod.handle_command(text, message_id=message_id)
-            if reply:
-                reply_text(message_id, reply)
-                print(f"[feishu] replied {len(reply)} chars")
-            else:
-                print("[feishu] command handled without text reply")
-        except Exception as exc:
-            print(f"[feishu] handler failed: {exc}")
+        _safe_log(f"[feishu] received: {text[:80]!r}")
+        cmd, args = cmd_mod.parse_command(text)
+        if cmd in _SLOW_CMDS:
+            hint = args or text.strip()
             try:
-                reply_text(message_id, f"处理出错：{str(exc)[:200]}")
-            except Exception as reply_exc:
-                print(f"[feishu] fallback reply failed: {reply_exc}")
+                reply_text(message_id, f"⏳ 正在查询 SKU {hint}…")
+            except Exception as ack_exc:
+                _safe_log(f"[feishu] ack failed: {ack_exc}")
+        threading.Thread(
+            target=_process_message,
+            args=(message_id, text),
+            daemon=True,
+        ).start()
 
     encrypt = c["encrypt_key"] or ""
     verify = c["verification_token"] or ""
@@ -139,6 +168,7 @@ def run_websocket_bot() -> None:
         event_handler=handler,
         log_level=lark.LogLevel.INFO,
     )
+    print(f"[feishu] code root: {_CODE_ROOT}")
     print("Feishu websocket bot connected, waiting for @ messages...")
     cli.start()
 

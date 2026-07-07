@@ -416,6 +416,9 @@ def _build_draft_inner(seller_sku: str) -> dict:
     pricing = ozon_price_formula(
         cost_cny=cost_cny,
         weight_g=weight,
+        depth_mm=depth or None,
+        width_mm=width or None,
+        height_mm=height or None,
         tk_price_cny=price_cny,
     )
     if pricing.get("price_cny"):
@@ -471,6 +474,13 @@ def _build_draft_inner(seller_sku: str) -> dict:
         "tk_group_id": group["group_id"] if group else "",
         "tk_group_keys": group["match_keys"] if group else [],
         "weight_source": weight_source,
+        "weight_meta": {
+            "source": weight_source,
+            "template_weight_g": tpl.get("weight"),
+            **logistics_meta,
+            "dimensions_source": "tk_listing" if pkg_dim_cm else "",
+            "dimensions_missing": not bool(pkg_dim_cm),
+        },
         "dimensions_source": "tk_listing" if pkg_dim_cm else "",
         "dimensions_missing": not bool(pkg_dim_cm),
         "pricing_table": pricing,

@@ -35,6 +35,7 @@ def python_units() -> int:
         "tests/test_catalog_listings.py",
         "tests/test_miaoshou_client.py",
         "tests/test_new_product_workbench.py",
+        "tests/test_shopee_orders.py",
     ]
     worst = 0
     for rel in tests:

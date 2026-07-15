@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Shopee 月度利润</title>
+  <link rel="stylesheet" href="/static/app.css" />
+  <style>
+    .wrap { max-width: 960px; margin: 40px auto; padding: 0 20px; }
+    code { background: #f3f3f3; padding: 2px 6px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Shopee 月度订单利润</h1>
+    <p>本期为离线月度报表（非实时看板）。请在仓库根目录执行：</p>
+    <pre><code>python main.py shopee profit --month 2026-06</code></pre>
+    <p>生成文件：</p>
+    <ul>
+      <li><code>outputs/shopee_profit_YYYY-MM.html</code> — 每笔订单明细</li>
+      <li><code>outputs/shopee_profit_YYYY-MM.json</code> — 同结构 JSON</li>
+    </ul>
+    <p>覆盖四国主店：MY / VN / TH / PH。广告费取 escrow <code>campaign_fee</code>（无则 0）。</p>
+    <p><a href="/">返回控制台</a></p>
+  </div>
+</body>
+</html>

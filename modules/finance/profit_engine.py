@@ -1,4 +1,7 @@
-"""订单利润计算（继承 CURSOR 规则，广告费来自 Ads API）。"""
+"""订单利润计算（TikTok CURSOR 规则；Shopee 订单复用同一公式）。
+
+Shopee：settlement_local = escrow_amount，ad_cost_local = campaign_fee（无广告 API 时为 0）。
+"""
 
 from __future__ import annotations
 

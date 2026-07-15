@@ -108,6 +108,26 @@ def get_shop_info(shop_id: int, access_token: str) -> dict:
     return shop_get("/api/v2/shop/get_shop_info", shop_id, access_token)
 
 
+def get_order_list(shop_id: int, access_token: str, params: dict) -> dict:
+    """v2.order.get_order_list"""
+    return shop_get("/api/v2/order/get_order_list", shop_id, access_token, params)
+
+
+def get_order_detail(shop_id: int, access_token: str, params: dict) -> dict:
+    """v2.order.get_order_detail（order_sn_list 最多 50 个）"""
+    return shop_get("/api/v2/order/get_order_detail", shop_id, access_token, params)
+
+
+def get_escrow_detail(shop_id: int, access_token: str, order_sn: str) -> dict:
+    """v2.payment.get_escrow_detail"""
+    return shop_get(
+        "/api/v2/payment/get_escrow_detail",
+        shop_id,
+        access_token,
+        {"order_sn": order_sn},
+    )
+
+
 def resolve_global_item_id(
     shop_id: int,
     merchant_id: int,

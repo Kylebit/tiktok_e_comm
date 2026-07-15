@@ -123,6 +123,15 @@ def _shopee_sync() -> None:
     print("对比: python3 main.py shopee compare")
 
 
+
+
+def _shopee_profit(args) -> None:
+    from modules.shopee.orders import run_month_profit
+
+    print(f"\n══ Shopee 月度利润 {args.month}（MY/VN/TH/PH 主店）══")
+    run_month_profit(args.month)
+
+
 def _shopee_auth_guide() -> None:
     from modules.shopee.auth import auth_partner_url
     print(auth_partner_url())
@@ -467,6 +476,9 @@ def build_parser():
     sp_sub.add_parser("compare", help="对比 TK vs Shopee SKU").set_defaults(
         func=lambda a: print(__import__("modules.shopee.compare", fromlist=["compare_report"]).compare_report())
     )
+    sppft = sp_sub.add_parser("profit", help="四国主店月度订单利润报表")
+    sppft.add_argument("--month", required=True, help="自然月 YYYY-MM，如 2026-06")
+    sppft.set_defaults(func=_shopee_profit)
     spp = sp_sub.add_parser("publish", help="TK → Shopee 铺货（单 SKU 试跑）")
     spp.add_argument("--match-key", required=True, help="对齐码，如 0026")
     spp.add_argument("--region", required=True, choices=["MY", "VN", "TH", "PH"])

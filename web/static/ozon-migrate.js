@@ -1114,6 +1114,13 @@
     });
   }
 
+  function fmtMoney(v, digits) {
+    if (v === null || v === undefined || v === '') return '—';
+    var n = Number(v);
+    if (isNaN(n)) return escapeHtml(v);
+    return n.toFixed(digits == null ? 2 : digits);
+  }
+
   function loadSettlementSummary() {
     var area = document.getElementById('settlement-area');
     var months = parseInt(document.getElementById('settle-months').value, 10) || 3;
@@ -1133,10 +1140,33 @@
       html += '</tbody></table>';
 
       html += '<h4 style="margin:16px 0 4px">按订单明细</h4>';
-      html += '<table class="oz"><thead><tr><th>posting</th><th>商品</th><th>状态</th><th>净额(RUB)</th></tr></thead><tbody>';
+      html += '<table class="oz"><thead><tr>' +
+        '<th>图片</th><th>订单号</th><th>商品名</th><th>销售价(RUB)</th><th>成本(CNY)</th>' +
+        '<th>佣金</th><th>物流</th><th>收单</th><th>广告22%</th><th>代理费</th>' +
+        '<th>利润(CNY)</th><th>利润率</th><th>状态</th>' +
+        '</tr></thead><tbody>';
       (d.orders || []).forEach(function (o) {
-        html += '<tr><td>' + escapeHtml(o.posting_number) + '</td><td>' + escapeHtml((o.products || []).join('; ')) +
-          '</td><td>' + (o.settled ? '已结算' : '未完结') + '</td><td>' + o.net_amount + '</td></tr>';
+        var profit = o.profit_cny;
+        var rowStyle = profit != null && Number(profit) < 0 ? ' style="background:#fdecea"' : '';
+        var img = o.product_image
+          ? '<img class="thumb" style="width:48px;height:64px;object-fit:cover" src="' + escapeHtml(o.product_image) + '" alt="">'
+          : '<span class="meta">—</span>';
+        var name = o.product_name || (o.products || []).join('; ');
+        html += '<tr' + rowStyle + '>' +
+          '<td>' + img + '</td>' +
+          '<td>' + escapeHtml(o.posting_number) + '</td>' +
+          '<td title="' + escapeHtml(name) + '">' + escapeHtml(String(name || '').slice(0, 48)) + '</td>' +
+          '<td>' + fmtMoney(o.sale_price_rub) + '<br><span class="meta">¥' + fmtMoney(o.sale_price_cny) + '</span></td>' +
+          '<td>' + fmtMoney(o.cost_cny) + '</td>' +
+          '<td>' + fmtMoney(o.commission) + '<br><span class="meta">¥' + fmtMoney(o.commission_cny) + '</span></td>' +
+          '<td>' + fmtMoney(o.logistics) + '<br><span class="meta">¥' + fmtMoney(o.logistics_cny) + '</span></td>' +
+          '<td>' + fmtMoney(o.acquiring) + '<br><span class="meta">¥' + fmtMoney(o.acquiring_cny) + '</span></td>' +
+          '<td>' + fmtMoney(o.ad) + '<br><span class="meta">¥' + fmtMoney(o.ad_cny) + '</span></td>' +
+          '<td>' + fmtMoney(o.agent_fee) + '<br><span class="meta">¥' + fmtMoney(o.agent_fee_cny) + '</span></td>' +
+          '<td><strong>' + fmtMoney(o.profit_cny) + '</strong></td>' +
+          '<td>' + (o.margin_pct != null ? fmtMoney(o.margin_pct, 1) + '%' : '—') + '</td>' +
+          '<td>' + (o.settled ? '已结算' : '未完结') + '</td>' +
+          '</tr>';
       });
       html += '</tbody></table>';
       area.innerHTML = html;

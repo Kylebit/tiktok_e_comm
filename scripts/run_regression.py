@@ -36,10 +36,16 @@ def python_units() -> int:
         "tests/test_miaoshou_client.py",
         "tests/test_new_product_workbench.py",
         "tests/test_shopee_orders.py",
+        "tests/test_livelyhive_ctr_gpm.py",
     ]
     worst = 0
     for rel in tests:
-        code = run([sys.executable, "-X", "utf8", str(ROOT / rel)], check=False)
+        path = ROOT / rel
+        if not path.is_file():
+            print(f"! skip missing {rel}")
+            continue
+        mod = rel.replace("\\", "/").removesuffix(".py").replace("/", ".")
+        code = run([sys.executable, "-X", "utf8", "-m", "unittest", mod, "-v"], check=False)
         worst = max(worst, code)
     return worst
 

@@ -104,6 +104,16 @@ def sync_analytics(region: str | None = None) -> None:
     print(f"  ✅ {result['total']} 条 · 分段 {result.get('by_segment')}")
 
 
+def run_ctr_gpm_boost(region: str = "MY", days: int = 30) -> None:
+    """MY LivelyHive CTR/GPM 双优 → 达人建联候选清单。"""
+    from modules.products import analytics
+
+    if (region or "MY").upper() != "MY":
+        raise SystemExit("本期仅支持 --region MY")
+    print(f"\n══ LivelyHive MY CTR/GPM 选品（近 {days} 天）══")
+    analytics.run_my_ctr_gpm_boost(days=days, quiet=False)
+
+
 def scan_deactivate(limit: int = 50, region: str | None = None) -> None:
     from modules.products import deactivate
     print(f"\n扫描下架候选（90天0单 + CTR低于中位，最多 {limit} 个）...")

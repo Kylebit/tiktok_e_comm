@@ -21,7 +21,7 @@
   },
 
   "profit": {
-    "ad_cost_source": "ads_api",
+    "ad_cost_source": "estimate",
     "local_shipping_fee_cny": 0,
     "local_shipping_rule": "seller_shipping_fee_zero_and_sst_zero"
   },
@@ -118,7 +118,8 @@
     "window_days": 28,
     "high_ctr_multiplier": 1.5,
     "low_ctr_multiplier": 0.5,
-    "note": "A类: CTR≥中位×high_ctr_multiplier 且0单 → Listing；D类: CTR<中位且0单 → 下架候选"
+    "good_gpm_threshold": 20,
+    "note": "A类: CTR≥中位×high_ctr_multiplier 且0单 → Listing；D类: CTR<中位且0单 → 下架候选；good_gpm_threshold=MY GPM门槛(RM)"
   },
 
   "deactivate": {

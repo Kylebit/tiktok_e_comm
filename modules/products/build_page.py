@@ -1,14 +1,17 @@
-"""生成商品成本维护页面。"""
+"""生成商品成本维护页面与选品报告。"""
 
 from __future__ import annotations
 
+import csv
 import json
+from datetime import datetime
 from pathlib import Path
 
 from core.config import ROOT
 from core.db import connect, init_db
 
 OUTPUT = ROOT / "web" / "costs.html"
+OUTPUTS_DIR = ROOT / "outputs"
 
 
 def load_page_data() -> list[dict]:
@@ -230,3 +233,207 @@ def build_html(output: Path | None = None) -> Path:
 </html>"""
     out.write_text(html, encoding="utf-8")
     return out
+
+
+def build_livelyhive_my_boost_report(payload: dict, *, date_tag: str | None = None) -> dict:
+    """仿 no_promo_*：输出 MY CTR/GPM 达人建联候选 HTML + JSON + CSV。"""
+    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+    tag = date_tag or datetime.now().strftime("%Y-%m-%d")
+    stem = f"livelyhive_my_boost_candidates_{tag}"
+    html_path = OUTPUTS_DIR / f"{stem}.html"
+    json_path = OUTPUTS_DIR / f"{stem}.json"
+    csv_path = OUTPUTS_DIR / f"{stem}.csv"
+
+    json_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    # 对齐 affiliate_invites(product_id/sku_id) + creator_lists 下游
+    with csv_path.open("w", encoding="utf-8-sig", newline="") as f:
+        w = csv.DictWriter(
+            f,
+            fieldnames=[
+                "product_id",
+                "sku_id",
+                "seller_sku",
+                "product_name",
+                "click_through_rate",
+                "gpm",
+                "gmv",
+                "orders",
+                "units_sold",
+                "views",
+                "suggested_commission_pct",
+                "shop_cipher",
+                "region",
+                "creator_list_dir",
+            ],
+        )
+        w.writeheader()
+        for c in payload.get("candidates") or []:
+            w.writerow(
+                {
+                    "product_id": c.get("product_id") or "",
+                    "sku_id": c.get("sku_id") or "",
+                    "seller_sku": c.get("seller_sku") or "",
+                    "product_name": c.get("product_name") or "",
+                    "click_through_rate": c.get("click_through_rate"),
+                    "gpm": c.get("gpm"),
+                    "gmv": c.get("gmv"),
+                    "orders": c.get("orders"),
+                    "units_sold": c.get("units_sold"),
+                    "views": c.get("views"),
+                    "suggested_commission_pct": c.get("suggested_commission_pct"),
+                    "shop_cipher": c.get("shop_cipher") or "",
+                    "region": c.get("region") or "MY",
+                    "creator_list_dir": c.get("creator_list_dir") or "",
+                }
+            )
+
+    html_path.write_text(_render_my_boost_html(payload), encoding="utf-8")
+    return {
+        "html": str(html_path),
+        "json": str(json_path),
+        "csv": str(csv_path),
+    }
+
+
+def _esc(s: object) -> str:
+    return (
+        str(s if s is not None else "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def _render_my_boost_html(payload: dict) -> str:
+    scan_ts = int(payload.get("scan_time") or 0)
+    scan_label = (
+        datetime.fromtimestamp(scan_ts).strftime("%Y-%m-%d %H:%M")
+        if scan_ts
+        else datetime.now().strftime("%Y-%m-%d %H:%M")
+    )
+    candidates = payload.get("candidates") or []
+    rows_html = []
+    for c in candidates:
+        img = c.get("image_url") or ""
+        thumb = (
+            f'<img class="thumb" src="{_esc(img)}" alt="" loading="lazy"/>'
+            if img
+            else '<div class="thumb"></div>'
+        )
+        sku_tags = "".join(
+            f'<span class="sku-tag">{_esc(s)}</span>' for s in (c.get("sku_ids") or [])[:6]
+        )
+        if not sku_tags and c.get("sku_id"):
+            sku_tags = f'<span class="sku-tag">{_esc(c.get("sku_id"))}</span>'
+        rows_html.append(
+            "<tr>"
+            f"<td>{thumb}</td>"
+            f'<td class="title-cell">{_esc(c.get("product_name") or "—")}'
+            f'<div class="muted">seller_sku: {_esc(c.get("seller_sku") or "—")}</div></td>'
+            f'<td><span class="region-pill region-MY">MY</span></td>'
+            f'<td class="pid">{_esc(c.get("product_id"))}</td>'
+            f'<td class="sku-list">{sku_tags or "—"}</td>'
+            f"<td>{_esc(c.get('click_through_rate'))}</td>"
+            f"<td>{_esc(c.get('gpm'))}</td>"
+            f"<td>{_esc(c.get('gmv'))}</td>"
+            f"<td>{_esc(c.get('orders'))}</td>"
+            f"<td>{_esc(c.get('units_sold'))}</td>"
+            f"<td>{_esc(c.get('views'))}</td>"
+            f"<td>{_esc(c.get('suggested_commission_pct'))}%</td>"
+            "</tr>"
+        )
+    if not rows_html:
+        rows_html.append(
+            '<tr><td colspan="12" class="muted">暂无同时满足 CTR 与 GPM 门槛的商品</td></tr>'
+        )
+
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>LivelyHive MY · CTR/GPM 达人建联候选</title>
+<style>
+:root {{
+    --bg: #f7f7f9; --card: #ffffff; --border: #e5e7eb; --text: #111827;
+    --muted: #6b7280; --accent: #fe2c55; --ok: #10b981; --warn: #f59e0b;
+}}
+* {{ box-sizing: border-box; }}
+body {{
+    margin: 0; padding: 24px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.5;
+}}
+h1 {{ font-size: 22px; margin: 0 0 8px; }}
+.subtitle {{ color: var(--muted); margin-bottom: 24px; font-size: 13px; }}
+.summary {{
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 12px; margin-bottom: 24px;
+}}
+.card {{
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px;
+}}
+.card .num {{ font-size: 26px; font-weight: 700; line-height: 1.1; }}
+.card .num.ok {{ color: var(--ok); }}
+.card .lbl {{ color: var(--muted); font-size: 12px; margin-top: 4px; }}
+table {{
+    width: 100%; border-collapse: collapse; background: var(--card);
+    border-radius: 10px; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+}}
+th, td {{ padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: middle; }}
+th {{ background: #f9fafb; font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; }}
+.thumb {{ width: 60px; height: 60px; object-fit: cover; border-radius: 6px; background: #f3f4f6; }}
+.pid {{ font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: #374151; }}
+.sku-list {{ font-family: ui-monospace, monospace; font-size: 11px; color: #4b5563; max-width: 280px; word-break: break-all; }}
+.sku-tag {{
+    display: inline-block; background: #f3f4f6; color: #374151; padding: 1px 6px;
+    border-radius: 4px; font-family: monospace; font-size: 10px; margin: 1px;
+}}
+.title-cell {{ max-width: 320px; }}
+.region-pill {{ display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }}
+.region-MY {{ background: #fef3c7; color: #92400e; }}
+.muted {{ color: var(--muted); font-size: 12px; }}
+.note {{ margin-top: 16px; color: var(--muted); font-size: 12px; }}
+</style>
+</head>
+<body>
+<h1>LivelyHive MY · CTR / GPM 达人建联候选</h1>
+<div class="subtitle">
+  扫描时间：{ _esc(scan_label) } · 店铺：{ _esc(payload.get("shop") or "LivelyHive") } ·
+  窗口 { _esc(payload.get("window_days")) } 天 ·
+  筛选：{ _esc(payload.get("filter_note") or "") }
+  · tier={ _esc(payload.get("filter_tier") or "strict") }
+  （GPM = GMV / views × 1000，views=曝光 impressions）
+</div>
+<div class="summary">
+  <div class="card"><div class="num">{_esc(payload.get("total_products"))}</div><div class="lbl">MY 商品数</div></div>
+  <div class="card"><div class="num ok">{_esc(payload.get("candidate_count"))}</div><div class="lbl">双优候选</div></div>
+  <div class="card"><div class="num">{_esc(payload.get("ctr_median"))}</div><div class="lbl">CTR 中位</div></div>
+  <div class="card"><div class="num">{_esc(payload.get("ctr_threshold"))}</div><div class="lbl">CTR 门槛</div></div>
+  <div class="card"><div class="num">{_esc(payload.get("good_gpm_threshold"))}</div><div class="lbl">GPM 门槛 (RM)</div></div>
+  <div class="card"><div class="num">{_esc(payload.get("gpm_median_shop"))}</div><div class="lbl">店铺 GPM 中位</div></div>
+  <div class="card"><div class="num">{_esc(payload.get("suggested_commission_pct"))}%</div><div class="lbl">建议佣金</div></div>
+</div>
+<table>
+<thead>
+<tr>
+  <th>主图</th><th>商品</th><th>站点</th><th>Product ID</th><th>SKU ID</th>
+  <th>CTR</th><th>GPM</th><th>GMV</th><th>Orders</th><th>Units</th><th>Views</th><th>建议佣金</th>
+</tr>
+</thead>
+<tbody>
+{''.join(rows_html)}
+</tbody>
+</table>
+<p class="note">
+  下游对齐：affiliate_invites(product_id, sku_id)；达人列表目录
+  <code>{_esc(payload.get("creator_list_dir"))}</code>。
+  本报告仅产出候选，不发起建联。
+</p>
+</body>
+</html>
+"""

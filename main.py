@@ -23,6 +23,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
+
+def _force_utf8_stdio() -> None:
+    """Keep Unicode log messages from crashing Windows background services."""
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is not None and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (AttributeError, OSError, ValueError):
+                pass
+
+
+_force_utf8_stdio()
+
 from core.config import CONFIG_PATH, EXAMPLE_PATH, load_settings
 from core.db import init_db
 
@@ -121,8 +135,6 @@ def _shopee_sync() -> None:
     stats = sync_all()
     print(f"\n✅ 完成: {stats['shops']} 店 · {stats['items']} 商品 · {stats['skus']} SKU/变体")
     print("对比: python3 main.py shopee compare")
-
-
 
 
 def _shopee_profit(args) -> None:
@@ -269,11 +281,8 @@ def build_parser():
             fill_seller_sku=a.fill_seller_sku,
         )
     )
-    prod_sub.add_parser("page", help="重新生成成本页").set_defaults(
-        func=lambda a: __import__("modules.products.service", fromlist=["rebuild_page"]).rebuild_page()
-    )
     prod_sub.add_parser("serve", help="启动 Web 控制台（同 main.py serve）").set_defaults(
-        func=lambda a: __import__("modules.products.server", fromlist=["serve"]).serve(page="costs")
+        func=lambda a: __import__("modules.products.server", fromlist=["serve"]).serve(page="index")
     )
     pss = prod_sub.add_parser("fill-seller-sku", help="为缺失商家 SKU 的商品自动分配编码")
     pss.add_argument("--dry-run", action="store_true", help="仅预览，不写入")
@@ -323,6 +332,17 @@ def build_parser():
             region=a.region
         )
     )
+    pcg = prod_sub.add_parser(
+        "ctr-gpm",
+        help="MY LivelyHive CTR/GPM 双优选品 → 达人建联候选清单",
+    )
+    pcg.add_argument("--region", default="MY", help="本期仅 MY")
+    pcg.add_argument("--days", type=int, default=30, help="窗口天数，默认 30")
+    pcg.set_defaults(
+        func=lambda a: __import__(
+            "modules.products.service", fromlist=["run_ctr_gpm_boost"]
+        ).run_ctr_gpm_boost(region=a.region, days=a.days)
+    )
     pds = prod_sub.add_parser("deactivate-scan", help="扫描零销下架候选（90天0单+低CTR）")
     pds.add_argument("--limit", type=int, default=50)
     pds.add_argument("--region", help="仅 MY/VN/TH/PH")
@@ -343,13 +363,6 @@ def build_parser():
     pdp = prod_sub.add_parser("deactivate-push", help="CLI 推送已确认的下架")
     pdp.set_defaults(
         func=lambda a: __import__("modules.products.service", fromlist=["push_deactivate_cli"]).push_deactivate_cli()
-    )
-    ptr = prod_sub.add_parser("title-serve", help="打开标题页（同 main.py serve --page titles）")
-    ptr.add_argument("--port", type=int, default=8765)
-    ptr.set_defaults(
-        func=lambda a: __import__("modules.products.server", fromlist=["serve"]).serve(
-            port=a.port, page="titles"
-        )
     )
     ptp = prod_sub.add_parser("title-push", help="CLI 推送已确认的标题（无需浏览器）")
     ptp.set_defaults(

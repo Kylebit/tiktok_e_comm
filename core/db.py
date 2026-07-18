@@ -109,6 +109,33 @@ def _migrate(conn: sqlite3.Connection) -> None:
         if name not in cols:
             conn.execute(ddl)
 
+    # product_analytics：views / gpm（ORB-TASK-0029）
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS product_analytics (
+            product_id TEXT NOT NULL,
+            shop_cipher TEXT NOT NULL,
+            region TEXT,
+            orders INTEGER DEFAULT 0,
+            units_sold INTEGER DEFAULT 0,
+            gmv REAL DEFAULT 0,
+            views REAL DEFAULT 0,
+            gpm REAL DEFAULT 0,
+            click_through_rate REAL DEFAULT 0,
+            ctr_median REAL DEFAULT 0,
+            segment TEXT,
+            window_days INTEGER DEFAULT 28,
+            synced_at INTEGER,
+            PRIMARY KEY (product_id, shop_cipher)
+        )"""
+    )
+    pa_cols = {row[1] for row in conn.execute("PRAGMA table_info(product_analytics)")}
+    for name, ddl in (
+        ("views", "ALTER TABLE product_analytics ADD COLUMN views REAL DEFAULT 0"),
+        ("gpm", "ALTER TABLE product_analytics ADD COLUMN gpm REAL DEFAULT 0"),
+    ):
+        if name not in pa_cols:
+            conn.execute(ddl)
+
     conn.executescript("""
 CREATE TABLE IF NOT EXISTS shopee_shops (
     shop_id INTEGER PRIMARY KEY,

@@ -540,7 +540,7 @@ def build_parser():
 
     src = sub.add_parser("sourcing", help="1688 选品采集")
     src_sub = src.add_subparsers(dest="sourcing_cmd")
-    sf = src_sub.add_parser("fetch", help="网页采集 1688 商品（无需万邦 API）")
+    sf = src_sub.add_parser("fetch", help="网页采集 1688 商品")
     sf.add_argument("--url", required=True, help="1688 详情页链接或 offer id")
     sf.add_argument("--html", help="本地 HTML 文件（浏览器另存，用于绕过反爬）")
     sf.add_argument("--no-save", action="store_true", help="不写入 data/sourcing/")
@@ -582,7 +582,7 @@ def build_parser():
 
 def _sourcing_build(args) -> None:
     import json
-    from modules.sourcing.onebound import parse_offer_id
+    from modules.sourcing.utils import parse_offer_id
     from modules.sourcing.pipeline import build_draft
 
     offer_id = parse_offer_id(args.url)
@@ -668,7 +668,7 @@ def _sourcing_fetch(args) -> None:
 def _sourcing_photoroom_showcase(args) -> None:
     import json
 
-    from modules.sourcing.onebound import parse_offer_id
+    from modules.sourcing.utils import parse_offer_id
     from modules.sourcing.photoroom_showcase import build_showcase
 
     offer_id = parse_offer_id(args.url)
@@ -686,7 +686,7 @@ def _sourcing_detail_text(args) -> None:
     import json
 
     from modules.sourcing.detail_text_cards import build_detail_text_cards
-    from modules.sourcing.onebound import parse_offer_id
+    from modules.sourcing.utils import parse_offer_id
 
     offer_id = parse_offer_id(args.url)
     manifest = build_detail_text_cards(offer_id)

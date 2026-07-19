@@ -174,19 +174,13 @@
 
   "sourcing": {
     "provider": "none",
-    "onebound": {
-      "api_key": "",
-      "api_secret": "",
-      "base_url": "https://api-gw.onebound.cn",
-      "note": "万邦 Onebound：控制台 key + secret；详情接口 1688/item_get 或 item_get_pro"
-    },
     "alibaba_1688": {
       "app_key": "",
       "app_secret": "",
       "access_token": "",
-      "note": "1688 开放平台 open.1688.com — 需企业资质（与万邦二选一即可）"
+      "note": "1688 开放平台 open.1688.com — 需企业资质（暂不可用）"
     },
     "import_dir": "data/sourcing",
-    "note": "provider: none | onebound | csv。万邦填 onebound 后改 provider 为 onebound"
+    "note": "provider: none | csv。当前使用 DrissionPage 真实浏览器方案进行 1688 网页采集"
   }
 }

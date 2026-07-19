@@ -1,4 +1,4 @@
-"""1688 商品页 HTML 采集（无需万邦 API）。"""
+"""1688 商品页 HTML 采集（DrissionPage 真实浏览器方案）。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from pathlib import Path
 from core.http_retry import DEFAULT_SSL_CTX as SSL_CTX
 from core.http_retry import urlopen as urlopen_retry
 
-from modules.sourcing.onebound import parse_offer_id
+from modules.sourcing.utils import parse_offer_id
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCING_DIR = ROOT / "data" / "sourcing"

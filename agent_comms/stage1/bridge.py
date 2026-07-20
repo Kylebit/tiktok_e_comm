@@ -18,10 +18,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "a2a_poc"))
 from orchestrator import apply_a2a_event, get_task
 from eigenflux_client import send_message, get_history, parse_history
 
-# 子 agent 花名册（来自既有协作配置；Claude 为占位，待补 conv_id）
+# 总控(CEO肉肉)在 EigenFlux 上的身份 = "Orbit Codex" (agent_id 336693310271782912)。
+# 故 Codex 不是独立子 agent，下面仅列真正的下级 agent + Claude 占位。
+# （2026-07-20 真机探测确认：Cursor 真实 DM conv = 336750845745954816，
+#   此前记忆里记的 336761709374996480 是错的，以本次真实发送结果为准。）
 AGENT_ROSTER = {
-    "Codex": {"agent_id": "336693310271782912", "conv_id": "336761705713369088"},
-    "Cursor": {"agent_id": "336745353602662400", "conv_id": "336761709374996480"},
+    "Cursor": {"agent_id": "336745353602662400", "conv_id": "336750845745954816"},
     "Claude": {"agent_id": "CLAUDE_AGENT_ID", "conv_id": "CLAUDE_CONV_ID"},
 }
 

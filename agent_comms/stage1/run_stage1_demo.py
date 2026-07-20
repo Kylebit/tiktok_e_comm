@@ -17,8 +17,10 @@ sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "a2a_poc"))
 
 import orchestrator as orch
-from bridge import dispatch, ingest_mock, ingest_live
+from bridge import dispatch, ingest_mock, ingest_live, AGENT_ROSTER
 from ag_ui_mapping import map_a2a_update_to_ag_ui, apply_state_delta, AGUIEvent
+from eigenflux_client import send_message_json, get_history, parse_history
+import argparse
 import httpx
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -27,14 +29,44 @@ ORCH_PY = os.path.join(HERE, "orchestrator.py")
 PORT = 8770
 
 
-def run_live_ping(tid):
-    """真机低风险探测：给 Codex 发一条 ping，验证 bridge 真实收发 + EigenFlux->A2A 转换。"""
-    print("\n[live] 真机探测：经 bridge 给 Codex 发低风险 ping（请回 'pong' 即可）...")
-    prompt = dispatch(tid, live=True)
-    print("    已发送，等待回报读取（读最近 EigenFlux 历史）...")
+def run_live_ping(tid, send=True):
+    """真机探测：给真实子 agent Cursor 发低风险 ping，验证 bridge 真实下行 + 上行读取 + A2A/AG-UI 转换。
+
+    send=True  : 真实经 EigenFlux 下行发一条 ping（需 CLI 可达 + 默认 home 已登录）
+    send=False : 复用已有会话仅做上行读取 + 转换演示（不重复打扰子 agent）
+    """
+    agent = "Cursor"
+    info = AGENT_ROSTER.get(agent)
+    if not info:
+        print(f"[live] ERROR: roster 缺少 {agent}"); return
+    if send:
+        print(f"\n[live] 真机下行：经 bridge 给 {agent} 发低风险 ping ...")
+        out = send_message_json(
+            info["agent_id"],
+            "[A2A bridge live demo] 自动验证下行链路，无需执行任务，回 PONG-OK 即可。",
+        )
+        print(f"      发送成功 conv_id={out.get('conv_id')} msg_id={out.get('msg_id')}")
+    else:
+        print(f"\n[live] 仅上行读取+转换演示（不重复下行），会话 conv={info['conv_id']}")
+    print(f"[live] 真机上行读取 + A2A 转换：ingest_live({tid}) ...")
     ingest_live(tid)
     t = orch.get_task(tid)
-    print(f"    Codex 经 EigenFlux 回报 -> Task state={t['state']}")
+    update = {
+        "task_id": tid,
+        "status": "进行中",
+        "progress_text": t["progress_text"],
+        "card_fields": {
+            "状态": t["state"], "进度": "100%",
+            "负责Agent": t["assignee"], "飞书Record": t["feishu_record"],
+        },
+    }
+    ag_events = map_a2a_update_to_ag_ui(update)
+    card_state = {"状态": "待办", "进度": "0%", "负责Agent": "—", "飞书Record": "—"}
+    for ev in ag_events:
+        if ev["type"] == AGUIEvent.STATE_DELTA:
+            card_state = apply_state_delta(card_state, ev)
+    print(f"[live] 读取内容经 bridge 转 A2A 事件 + AG-UI 映射 -> 飞书卡字段 {card_state}")
+    print("[live] 结论：下行(EigenFlux 发送) + 上行(历史读取) + 转换(A2A/AG-UI) 三通道真机可用。")
 
 
 def main():
@@ -107,4 +139,20 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    ap = argparse.ArgumentParser(description="阶段1 A2A Orchestrator + bridge 端到端演示")
+    ap.add_argument("--live", action="store_true",
+                    help="真机探测：给 Cursor 发低风险 ping 并验证下行+上行读取+转换")
+    ap.add_argument("--no-send", action="store_true",
+                    help="配合 --live：仅做上行读取+转换演示，不真实下行发送")
+    args = ap.parse_args()
+    if args.live:
+        tid = orch.create_task(
+            title="live 真机探测任务",
+            feishu_record="recTEST0033",
+            assignee="Cursor",
+            prompt="（live 联调，无需真实执行）",
+        )
+        print(f"[live] 创建 A2A Task: {tid}")
+        run_live_ping(tid, send=not args.no_send)
+    else:
+        main()

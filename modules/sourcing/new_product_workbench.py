@@ -181,9 +181,17 @@ def parse_offer_id(value: str) -> str:
         try:
             with urllib.request.urlopen(request, timeout=12) as response:
                 expanded = response.geturl()
-            m = re.search(r"offer(?:%2[fF]|/)(\d+)(?:\.html|%2[eE]html)", expanded)
-            if m:
-                return m.group(1)
+                body = response.read(8000).decode("utf-8", errors="replace")
+            for candidate in (expanded, body):
+                m = re.search(
+                    r"(?:offer(?:%2[fF]|/)|offer\?id=)(\d+)(?:\.html|%2[eE]html)?",
+                    candidate,
+                )
+                if m:
+                    return m.group(1)
+                m = re.search(r"wireless1688://[^\s\"']+?[?&]id=(\d+)", candidate)
+                if m:
+                    return m.group(1)
         except (urllib.error.URLError, TimeoutError, OSError):
             pass
     m = re.search(r"(\d{9,})", value or "")

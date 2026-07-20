@@ -90,6 +90,11 @@ def ack_task(dispatch: dict[str, Any]) -> Path:
     task_id = str(dispatch.get("task_id") or "")
     title = dispatch.get("title") or ""
     prompt = dispatch.get("prompt") or ""
+    # 去重：本地 inbox 已有该任务文件则只补一次 ACK，避免重复持久化/回报
+    if task_id and (INBOX_DIR / f"{task_id}.json").is_file():
+        report(task_id, "ACK(去重): Orbit Codex 已接收（本地 inbox 已有）",
+               tool="stage3_a2a_ack_dedup", title=title or "Orbit Codex ACK")
+        return INBOX_DIR / f"{task_id}.json"
     inbox_file = persist_task(dispatch)
     text = (
         "ACK: Orbit Codex 已接收 Stage3 A2A 任务，已写入本地 inbox；"

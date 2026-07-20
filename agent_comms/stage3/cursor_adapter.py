@@ -108,6 +108,11 @@ def execute(dispatch: dict) -> None:
         print("[cursor] 忽略无 task_id 的派发:", dispatch, flush=True)
         return
 
+    path = _task_path(task_id)
+    if path.is_file():
+        # 已存在（重复投递 / 重启恢复）：避免重复唤醒 Cursor 执行端
+        print(f"[cursor] 跳过已存在的任务（去重）: {task_id}", flush=True)
+        return
     path = save_dispatch(dispatch)
     print(f"\n[cursor] 收到任务 {task_id}", flush=True)
     print(f"        prompt: {prompt[:200]}", flush=True)

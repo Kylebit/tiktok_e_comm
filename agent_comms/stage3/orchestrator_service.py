@@ -17,6 +17,8 @@ import asyncio
 import json
 import os
 import sys
+import threading
+import time
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, Request
@@ -93,34 +95,82 @@ BUS = AgUiBus()
 # 这是 A2A「agent↔agent」通道的最小实现（最终形态：各 agent 自主沟通）。
 # --------------------------------------------------------------------------
 class AgentChannel:
-    def __init__(self):
+    """per-agent 收件箱：SSE 实时队列 + **落盘持久化** outbox（关键修复）。
+
+    此前 _pending 仅存内存：orchestrator 一重启、或 adapter 离线期间派发，
+    任务就会丢失。现改为文件持久化（<name>_outbox.json：task_id->dispatch），
+    只有 adapter 经 /ingest 回报 ACK 后才从 outbox 移除，保证：
+      - orchestrator 重启不丢待派发任务；
+      - adapter 离线期间的派发，其下次轮询/重连必能取到。
+    """
+
+    def __init__(self, name):
+        self.name = name
+        self._path = os.path.join(HERE, "%s_outbox.json" % _safe_name(name))
         self._queues = []
-        self._pending = []
-        self._lock = asyncio.Lock()
+        self._lock = threading.Lock()
+        self._store = {}
+        self._load()
+
+    def _load(self):
+        try:
+            with open(self._path, encoding="utf-8") as f:
+                self._store = json.load(f) or {}
+        except Exception:
+            self._store = {}
+
+    def _save(self):
+        try:
+            with open(self._path, "w", encoding="utf-8") as f:
+                json.dump(self._store, f, ensure_ascii=False)
+        except Exception:
+            pass
 
     async def subscribe(self):
         q = asyncio.Queue()
-        async with self._lock:
+        with self._lock:
             self._queues.append(q)
         return q
 
     async def publish(self, dispatch):
-        async with self._lock:
-            self._pending.append(dispatch)
-            for q in list(self._queues):
+        tid = str(dispatch.get("task_id") or "").strip()
+        with self._lock:
+            if tid:
+                self._store[tid] = dispatch
+            else:
+                self._store["_noid_%d" % int(time.time() * 1000)] = dispatch
+            self._save()
+            queues = list(self._queues)
+        for q in queues:
+            try:
                 await q.put(dispatch)
+            except Exception:
+                pass
 
-    def take_pending(self):
-        items = self._pending
-        self._pending = []
-        return items
+    def pending(self):
+        """返回当前未 ACK 的全部派发（不在此清空；ACK 时移除）。"""
+        with self._lock:
+            return list(self._store.values())
+
+    def ack(self, task_id):
+        """adapter 经 /ingest 回报已接收后调用，从持久化 outbox 移除。"""
+        tid = str(task_id or "").strip()
+        if not tid:
+            return
+        with self._lock:
+            if self._store.pop(tid, None) is not None:
+                self._save()
+
+
+def _safe_name(name):
+    return "".join(ch if (ch.isalnum() or ch in "-_") else "_" for ch in (name or "agent"))
 
 
 channels = {}  # agent_name -> AgentChannel
 
 
 def channel_of(name):
-    return channels.setdefault(name, AgentChannel())
+    return channels.setdefault(name, AgentChannel(name))
 
 
 app = FastAPI(title="Orbit Hive A2A Orchestrator (Stage3)")
@@ -203,6 +253,11 @@ async def ingest(request: Request):
         pct = "50%"
 
     orch.apply_a2a_event({"task_id": task_id, "status": a2a_state, "progress_text": text})
+    # 收到 agent 回报即视为已接收 -> 从持久化 outbox 移除（避免重复派发）
+    try:
+        channel_of(agent).ack(task_id)
+    except Exception:
+        pass
 
     ag_update = {
         "task_id": task_id,
@@ -234,6 +289,13 @@ async def dispatch_task(request: Request):
     """
     body = await request.json()
     assignee = body.get("assignee") or body.get("agent") or "Cursor"
+    # 归一化 agent 名：避免 "Cursor"/"Codex" 与 adapter 实际订阅的
+    # "Orbit Cursor"/"Orbit Codex" 不一致导致投递落空（2026-07-20 修复）
+    AGENT_ALIASES = {
+        "cursor": "Orbit Cursor", "codex": "Orbit Codex",
+        "orbit cursor": "Orbit Cursor", "orbit codex": "Orbit Codex",
+    }
+    assignee = AGENT_ALIASES.get(str(assignee).strip().lower(), assignee)
     prompt = body.get("prompt") or body.get("text") or ""
     task_id = body.get("task_id")
     title = body.get("title") or ("派发 %s：%s" % (assignee, prompt[:24]))
@@ -292,9 +354,13 @@ async def dispatch_task(request: Request):
 # --------------------------------------------------------------------------
 @app.get("/agent/{agent_name}/tasks")
 async def agent_pending_tasks(agent_name: str, consume: int = 0):
-    """worker 轮询自己的收件箱。consume=1 取走后清空（一次性拉取）。"""
+    """worker 轮询自己的收件箱。
+
+    注意：outbox 已持久化，返回当前全部未 ACK 任务，不在此清空；
+    清空由 adapter 的 /ingest ACK 触发（见 ingest -> channel_of(agent).ack）。
+    """
     chan = channel_of(agent_name)
-    items = chan.take_pending() if consume else list(chan._pending)
+    items = chan.pending()
     return JSONResponse({"ok": True, "agent": agent_name, "count": len(items), "tasks": items})
 
 

@@ -64,3 +64,6 @@ agent_comms/stage3/*_inbox.json
 agent_comms/stage3/logs/
 # 任务状态持久化（含历史测试任务，不入库）
 agent_comms/stage1/orchestrator_tasks.json
+
+# Stage3 持久化 outbox（运行时产物，非源码）
+agent_comms/stage3/*_outbox.json

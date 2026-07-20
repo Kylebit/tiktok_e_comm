@@ -28,7 +28,15 @@ import task_card  # noqa: E402
 from ag_ui_feishu_adapter import AgUiFeishuAdapter, AGUIEvent  # noqa: E402
 
 ORCH_URL = os.environ.get("ORCH_URL", "http://127.0.0.1:8773/agui/events")
+ORCH_API = os.environ.get("ORCH_API", "http://127.0.0.1:8773")
 LIVE = os.environ.get("STAGE3_LIVE", "1") == "1"
+
+A2A_TO_CN = {
+    "submitted": "待办", "working": "进行中", "input-required": "待审核",
+    "completed": "已完成", "failed": "失败", "canceled": "已取消", "blocked": "阻塞",
+}
+# 重连补推只针对「需要 Boss 关注」的里程碑，避免把几小时前的已完成卡重新刷出来
+CATCHUP_STATES = {"待审核", "阻塞", "待转发"}
 
 
 def main():
@@ -43,6 +51,50 @@ def main():
                 live=LIVE, feishu_record=record, title=thread_id, thread_id=thread_id
             )
         return adapters[thread_id]
+
+    def catchup_on_connect():
+        """SSE 重连/启动后，补齐因连接间隙漏推的里程碑卡。
+
+        只补推「需要 Boss 关注」的状态（待审核/阻塞/待转发），避免把旧的已完成卡重新刷出。
+        这是对新 frame「实时推卡」的兜底：即便某次 STATE_DELTA 因 SSE 间隙丢失，
+        重连后也会从 Orchestrator 当前任务状态重建并补推，不会再出现「agent 回复了但没卡」。
+        """
+        try:
+            data = json.loads(urllib.request.urlopen(ORCH_API + "/tasks", timeout=5).read())
+        except Exception as e:
+            print("   [catchup] 拉取 /tasks 失败:", e)
+            return
+        tasks = data.get("tasks", []) if isinstance(data, dict) else data
+        pushed = 0
+        for t in tasks:
+            tid = t.get("task_id") or t.get("context_id")
+            if not tid:
+                continue
+            cn = A2A_TO_CN.get(t.get("state"), "待审核")
+            if cn not in CATCHUP_STATES:
+                continue
+            if last_pushed_status.get(tid) == cn:
+                continue
+            try:
+                ad = get_ad(tid, t.get("feishu_record"))
+                ad.card_state["状态"] = cn
+                ad.card_state["进度"] = "100%" if cn in ("待审核", "已完成") else (t.get("progress_pct") or "0%")
+                ad.card_state["负责Agent"] = t.get("assignee") or "Orbit Codex"
+                ad.card_state["指令"] = (t.get("prompt") or "")[:4000]
+                ad.card_state["飞书Record"] = t.get("feishu_record") or "—"
+                ad.card_state["标题"] = t.get("title", tid)
+                for h in t.get("history", []):
+                    if h.get("text"):
+                        ad._append_progress(h["text"])
+                if LIVE:
+                    task_card.push_card(ad.render_card())
+                last_pushed_status[tid] = cn
+                pushed += 1
+                print("   [catchup] 补推卡 (task=%s, 状态=%s)" % (tid, cn))
+            except Exception as e:
+                print("   [catchup] 补推失败 %s: %s" % (tid, e))
+        if pushed:
+            print("   [catchup] 共补推 %d 张里程碑卡" % pushed)
 
     print(">>> [stage3] 适配 runner 启动，订阅 %s (live=%s)" % (ORCH_URL, LIVE))
     while True:
@@ -60,6 +112,9 @@ def main():
                         continue
                     etype = ev.get("type")
                     if etype in (None, "connected"):
+                        if etype == "connected":
+                            # SSE（重）连接成功：补齐漏推的里程碑卡
+                            catchup_on_connect()
                         continue
                     tid = ev.get("threadId") or ev.get("taskId") or "default"
                     ad = get_ad(tid, None)

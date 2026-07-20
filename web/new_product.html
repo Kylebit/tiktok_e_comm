@@ -98,6 +98,15 @@
     .fx-grid label { display: grid; gap: 4px; font-size: 12px; color: #475569; }
     .fx-grid input { width: 100%; border: 1px solid #cbd5e1; border-radius: 6px; padding: 7px 8px; font-size: 13px; }
     .fx-hint { margin-top: 8px; font-size: 11px; color: #64748b; line-height: 1.4; }
+    .session-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 14px; padding: 10px; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc; }
+    .session-bar .session-label { font-size: 12px; color: #64748b; margin-right: 4px; }
+    .session-tab { display: inline-flex; align-items: center; gap: 6px; border: 1px solid #cbd5e1; background: #fff; border-radius: 999px; padding: 5px 10px; font-size: 12px; cursor: pointer; color: #334155; }
+    .session-tab.active { border-color: #2563eb; background: #eff6ff; color: #1d4ed8; font-weight: 600; }
+    .session-tab.done { border-color: #86efac; background: #f0fdf4; color: #166534; }
+    .session-tab .x { border: 0; background: transparent; color: #94a3b8; cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; }
+    .session-tab .x:hover { color: #dc2626; }
+    .session-actions { display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+    .session-actions .btn-secondary { width: auto; padding: 6px 10px; }
     @media (max-width: 980px) { .np-grid, .split { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -116,7 +125,8 @@
   <main class="container np-page">
     <div class="source-alert"><strong>Orbit Treasury 新品发布台</strong>独立新品上架与审核工作台。</div>
     <h1>新品发布工作台</h1>
-    <p class="hint">第一波审核在这里完成；通过的字段会锁定。此页面默认不调用本地模型，不通知 Hive。</p>
+    <p class="hint">第一波审核在这里完成；通过的字段会锁定。支持多商品并行上品：切换标签不会丢进度，刷新后也会从本地缓存恢复；仅在流程完成或你主动关闭时清除。</p>
+    <div id="sessionBar" class="session-bar"></div>
 
     <div class="np-grid">
       <aside class="np-card">
@@ -185,6 +195,253 @@
     };
     var claimPollTimer = null;
     var claimPollAttempt = 0;
+    var SESSION_STORE_KEY = 'orbit_treasury_np_sessions_v2';
+    var sessionsById = {};
+    var sessionOrder = [];
+    var activeSessionId = null;
+    var sessionSeq = 1;
+
+    function newSessionId() {
+      return 'sess_' + Date.now().toString(36) + '_' + (sessionSeq++);
+    }
+
+    function blankSession(id) {
+      return {
+        id: id || newSessionId(),
+        offerId: '',
+        label: '新流程',
+        urlInput: '',
+        overseasInput: '',
+        preview: null,
+        showAllImages: false,
+        pipelineState: [],
+        pipelineFailures: [],
+        miaoshouDraftPrepared: false,
+        packageDirty: false,
+        imageLoadState: {},
+        statusText: '',
+        completed: false,
+        updatedAt: Date.now()
+      };
+    }
+
+    function loadSessionStore() {
+      try {
+        var raw = localStorage.getItem(SESSION_STORE_KEY);
+        if (!raw) return;
+        var data = JSON.parse(raw);
+        sessionsById = data.sessions || {};
+        sessionOrder = data.order || Object.keys(sessionsById);
+        activeSessionId = data.activeId || (sessionOrder[0] || null);
+        sessionSeq = data.seq || sessionOrder.length + 1;
+      } catch (e) {
+        sessionsById = {};
+        sessionOrder = [];
+        activeSessionId = null;
+      }
+    }
+
+    function persistSessionStore() {
+      try {
+        localStorage.setItem(SESSION_STORE_KEY, JSON.stringify({
+          sessions: sessionsById,
+          order: sessionOrder,
+          activeId: activeSessionId,
+          seq: sessionSeq,
+          savedAt: Date.now()
+        }));
+      } catch (e) {}
+    }
+
+    function stopBackgroundTimers() {
+      if (siteDraftPollTimer) { clearTimeout(siteDraftPollTimer); siteDraftPollTimer = null; }
+      if (claimPollTimer) { clearTimeout(claimPollTimer); claimPollTimer = null; }
+      siteDraftPollAttempt = 0;
+      claimPollAttempt = 0;
+    }
+
+    function captureActiveSession() {
+      if (!activeSessionId || !sessionsById[activeSessionId]) return null;
+      var sess = sessionsById[activeSessionId];
+      var urlEl = document.getElementById('urlInput');
+      var overseasEl = document.getElementById('overseasInput');
+      var statusEl = document.getElementById('status');
+      if (urlEl) sess.urlInput = urlEl.value;
+      if (overseasEl) sess.overseasInput = overseasEl.value;
+      if (statusEl) sess.statusText = statusEl.textContent || '';
+      sess.preview = preview;
+      sess.showAllImages = showAllImages;
+      sess.pipelineState = pipelineState;
+      sess.pipelineFailures = pipelineFailures;
+      sess.miaoshouDraftPrepared = miaoshouDraftPrepared;
+      sess.packageDirty = packageDirty;
+      sess.imageLoadState = imageLoadState;
+      if (preview && preview.offer_id) {
+        sess.offerId = String(preview.offer_id);
+        sess.label = String(preview.offer_id);
+      } else if (sess.urlInput) {
+        sess.label = (sess.urlInput.length > 28 ? sess.urlInput.slice(0, 28) + '…' : sess.urlInput);
+      }
+      if (preview && preview.site_drafts && preview.site_drafts.ready) {
+        sess.completed = true;
+      }
+      sess.updatedAt = Date.now();
+      persistSessionStore();
+      return sess;
+    }
+
+    function applySession(sess) {
+      stopBackgroundTimers();
+      preview = sess.preview || null;
+      showAllImages = !!sess.showAllImages;
+      pipelineState = sess.pipelineState || [];
+      pipelineFailures = sess.pipelineFailures || [];
+      miaoshouDraftPrepared = !!sess.miaoshouDraftPrepared;
+      packageDirty = !!sess.packageDirty;
+      imageLoadState = sess.imageLoadState || {};
+      document.getElementById('urlInput').value = sess.urlInput || '';
+      document.getElementById('overseasInput').value = sess.overseasInput || '';
+      setStatus(sess.statusText || '');
+      renderProgress();
+      if (preview) {
+        render();
+      } else {
+        document.getElementById('preview').innerHTML = '<div class="empty">输入 1688 链接后生成第一波预览。</div>';
+        var badge = document.getElementById('stageBadge');
+        var hint = document.getElementById('stageHint');
+        var button = document.getElementById('stageButton');
+        var flow = document.getElementById('stageFlow');
+        if (badge) badge.textContent = '等待预览';
+        if (hint) hint.textContent = '生成预览并完成页面中的审核项。';
+        if (flow) flow.innerHTML = '';
+        if (button) {
+          button.disabled = true;
+          button.textContent = '先生成第一波预览';
+        }
+        var card = document.getElementById('reviewStage');
+        if (card) card.classList.remove('ready');
+      }
+      renderSessionBar();
+    }
+
+    function renderSessionBar() {
+      var bar = document.getElementById('sessionBar');
+      if (!bar) return;
+      var html = '<span class="session-label">并行上品</span>';
+      sessionOrder.forEach(function(id) {
+        var sess = sessionsById[id];
+        if (!sess) return;
+        var cls = 'session-tab' + (id === activeSessionId ? ' active' : '') + (sess.completed ? ' done' : '');
+        var title = sess.label || sess.offerId || '新流程';
+        html += '<button type="button" class="' + cls + '" onclick="switchSession(\'' + id + '\')">';
+        html += '<span>' + esc(title) + (sess.completed ? ' · 已完成' : '') + '</span>';
+        html += '<span class="x" title="关闭并清除缓存" onclick="event.stopPropagation(); closeSession(\'' + id + '\')">×</span>';
+        html += '</button>';
+      });
+      html += '<div class="session-actions">';
+      html += '<button type="button" class="btn-secondary" onclick="createSession()">+ 新建上品</button>';
+      if (activeSessionId && sessionsById[activeSessionId] && sessionsById[activeSessionId].completed) {
+        html += '<button type="button" class="btn-secondary" onclick="closeSession(activeSessionId)">关闭已完成流程</button>';
+      }
+      html += '</div>';
+      bar.innerHTML = html;
+    }
+
+    function ensureAtLeastOneSession() {
+      if (!sessionOrder.length) {
+        var sess = blankSession();
+        sessionsById[sess.id] = sess;
+        sessionOrder = [sess.id];
+        activeSessionId = sess.id;
+        persistSessionStore();
+      }
+      if (!activeSessionId || !sessionsById[activeSessionId]) {
+        activeSessionId = sessionOrder[0];
+      }
+    }
+
+    function createSession() {
+      captureActiveSession();
+      var sess = blankSession();
+      sessionsById[sess.id] = sess;
+      sessionOrder.push(sess.id);
+      activeSessionId = sess.id;
+      persistSessionStore();
+      applySession(sess);
+      setStatus('已新建并行上品流程，可输入另一个商品。');
+    }
+
+    function switchSession(id) {
+      if (!id || id === activeSessionId || !sessionsById[id]) return;
+      captureActiveSession();
+      activeSessionId = id;
+      persistSessionStore();
+      applySession(sessionsById[id]);
+    }
+
+    function closeSession(id) {
+      id = id || activeSessionId;
+      if (!id || !sessionsById[id]) return;
+      var sess = sessionsById[id];
+      var hasWork = !!(sess.preview || (sess.urlInput || '').trim());
+      if (hasWork && !sess.completed) {
+        if (!confirm('关闭并清除该商品流程缓存？未完成进度将丢失。')) return;
+      }
+      if (id === activeSessionId) stopBackgroundTimers();
+      delete sessionsById[id];
+      sessionOrder = sessionOrder.filter(function(x) { return x !== id; });
+      if (!sessionOrder.length) {
+        var fresh = blankSession();
+        sessionsById[fresh.id] = fresh;
+        sessionOrder = [fresh.id];
+        activeSessionId = fresh.id;
+        persistSessionStore();
+        applySession(fresh);
+        setStatus('已关闭流程。');
+        return;
+      }
+      if (activeSessionId === id) {
+        activeSessionId = sessionOrder[0];
+      }
+      persistSessionStore();
+      applySession(sessionsById[activeSessionId]);
+      setStatus('已关闭并清除该商品缓存。');
+    }
+
+    function bindSessionToOffer(offerId) {
+      if (!offerId || !activeSessionId) return;
+      offerId = String(offerId);
+      var existingId = null;
+      sessionOrder.forEach(function(id) {
+        if (id === activeSessionId) return;
+        var s = sessionsById[id];
+        if (s && String(s.offerId || '') === offerId) existingId = id;
+      });
+      if (existingId) {
+        // Merge into existing offer session: drop empty duplicate active
+        var keep = sessionsById[existingId];
+        keep.preview = preview;
+        keep.urlInput = offerId;
+        keep.offerId = offerId;
+        keep.label = offerId;
+        keep.updatedAt = Date.now();
+        delete sessionsById[activeSessionId];
+        sessionOrder = sessionOrder.filter(function(x) { return x !== activeSessionId; });
+        activeSessionId = existingId;
+        persistSessionStore();
+        applySession(keep);
+        setStatus('已切换到已有商品流程：' + offerId);
+        return;
+      }
+      var sess = sessionsById[activeSessionId];
+      sess.offerId = offerId;
+      sess.label = offerId;
+      sess.urlInput = offerId;
+      sess.preview = preview;
+      sess.updatedAt = Date.now();
+      persistSessionStore();
+      renderSessionBar();
+    }
 
     function esc(s) {
       return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -390,6 +647,7 @@
         if (d.precollect_error) pipelineFailures.push('妙手预采集: ' + d.precollect_error);
         preview = d;
         document.getElementById('urlInput').value = d.offer_id;
+        bindSessionToOffer(d.offer_id);
         if (overseasLines().length) {
           updateProgress(2, 'running', '正在拉取公开素材');
           return saveOverseasLinks(true, true).then(function(ok) {
@@ -398,6 +656,7 @@
             setStatus('已生成第一波预览：' + (preview.mode || 'preview'));
             render();
             applyLiveFxRates(false);
+            captureActiveSession();
           });
         }
         updateProgress(2, 'done', '无海外链接');
@@ -405,6 +664,7 @@
         setStatus('已生成第一波预览：' + d.mode);
         render();
         applyLiveFxRates(false);
+        captureActiveSession();
       }).catch(function(e) { failProgress(1, String(e)); setStatus(String(e)); }).finally(function() { button.disabled = false; });
     }
 
@@ -499,6 +759,8 @@
       syncPackageSaveUi();
       updateAllImageProgressUi();
       updateReviewStage();
+      captureActiveSession();
+      renderSessionBar();
     }
 
     function row(k, v) {
@@ -893,6 +1155,7 @@
         preview = d;
         render();
         setStatus(lockFields ? '已锁定通过字段' : '已保存并复算价格');
+        captureActiveSession();
       });
     }
 
@@ -1009,6 +1272,11 @@
         : locked
         ? (miaoshouDraftPrepared ? '写入妙手公共采集箱' : '继续：准备妙手二审')
         : '提交并进入下一步';
+      if (siteReady && activeSessionId && sessionsById[activeSessionId]) {
+        sessionsById[activeSessionId].completed = true;
+        persistSessionStore();
+        renderSessionBar();
+      }
     }
 
     function runStageAction() {
@@ -1322,17 +1590,34 @@
 
     window.addEventListener('DOMContentLoaded', function() {
       var q = new URLSearchParams(location.search);
+      loadSessionStore();
+      ensureAtLeastOneSession();
+      applySession(sessionsById[activeSessionId]);
       refreshLiveFxRates(false).finally(function() {
         if (q.get('offer_id')) {
-          document.getElementById('urlInput').value = q.get('offer_id');
-          loadPreview();
+          var oid = q.get('offer_id');
+          var hit = null;
+          sessionOrder.forEach(function(id) {
+            if (sessionsById[id] && String(sessionsById[id].offerId || '') === String(oid)) hit = id;
+          });
+          if (hit) {
+            switchSession(hit);
+          } else {
+            document.getElementById('urlInput').value = oid;
+            loadPreview();
+          }
         }
+        captureActiveSession();
+        renderSessionBar();
       });
       window.addEventListener('focus', function() {
         if (preview && preview.offer_id) refreshPreviewState(true).catch(function() {});
       });
       document.addEventListener('visibilitychange', function() {
         if (!document.hidden && preview && preview.offer_id) refreshPreviewState(true).catch(function() {});
+      });
+      window.addEventListener('beforeunload', function() {
+        captureActiveSession();
       });
     });
   </script>

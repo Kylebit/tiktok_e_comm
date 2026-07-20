@@ -157,6 +157,7 @@
     var siteDraftPollAttempt = 0;
     var fxRateTimer = null;
     var FX_STORAGE_KEY = 'orbit_treasury_fx_rates_v1';
+    var FX_MANUAL_KEY = 'orbit_treasury_fx_manual_v1';
     var DEFAULT_FX_RATES = {
       PHP: +(1 / 7.9).toFixed(6),
       MYR: 1.55,
@@ -170,6 +171,17 @@
       THB: '泰国 THB',
       VND: '越南 VND',
       USD: '美元 USD'
+    };
+    var liveFxState = {
+      rates: null,
+      provider: '',
+      as_of: '',
+      live: false,
+      stale: false,
+      degraded: false,
+      error: '',
+      loading: false,
+      fetched_at: ''
     };
     var claimPollTimer = null;
     var claimPollAttempt = 0;
@@ -385,12 +397,14 @@
             updateProgress(3, 'done', '已渲染');
             setStatus('已生成第一波预览：' + (preview.mode || 'preview'));
             render();
+            applyLiveFxRates(false);
           });
         }
         updateProgress(2, 'done', '无海外链接');
         updateProgress(3, 'done', '已渲染');
         setStatus('已生成第一波预览：' + d.mode);
         render();
+        applyLiveFxRates(false);
       }).catch(function(e) { failProgress(1, String(e)); setStatus(String(e)); }).finally(function() { button.disabled = false; });
     }
 
@@ -508,15 +522,51 @@
       } catch (e) {}
     }
 
+    function readManualFxCodes() {
+      try {
+        var raw = localStorage.getItem(FX_MANUAL_KEY);
+        if (!raw) return {};
+        var parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : {};
+      } catch (e) {
+        return {};
+      }
+    }
+
+    function writeManualFxCodes(map) {
+      try {
+        localStorage.setItem(FX_MANUAL_KEY, JSON.stringify(map || {}));
+      } catch (e) {}
+    }
+
+    function markFxManual(code) {
+      var map = readManualFxCodes();
+      map[code] = true;
+      writeManualFxCodes(map);
+    }
+
+    function clearFxManual(code) {
+      var map = readManualFxCodes();
+      delete map[code];
+      writeManualFxCodes(map);
+    }
+
     function currentFxRates() {
       var rates = Object.assign({}, DEFAULT_FX_RATES);
+      var live = liveFxState.rates || {};
+      Object.keys(live || {}).forEach(function(k) {
+        var n = parseFloat(live[k]);
+        if (n > 0) rates[k] = n;
+      });
       var backend = ((preview || {}).pricing || {}).rates || ((preview || {}).review || {}).fx_rates || {};
       Object.keys(backend || {}).forEach(function(k) {
         var n = parseFloat(backend[k]);
         if (n > 0) rates[k] = n;
       });
       var stored = readStoredFxRates();
+      var manual = readManualFxCodes();
       Object.keys(stored || {}).forEach(function(k) {
+        if (!manual[k]) return;
         var n = parseFloat(stored[k]);
         if (n > 0) rates[k] = n;
       });
@@ -534,44 +584,118 @@
       return rates;
     }
 
+    function fxStatusText() {
+      if (liveFxState.loading) return '正在拉取实时汇率…';
+      if (liveFxState.degraded || (!liveFxState.live && liveFxState.error)) {
+        return '实时汇率获取失败，已使用默认汇率，可手动修改' + (liveFxState.error ? '（' + liveFxState.error + '）' : '');
+      }
+      if (liveFxState.stale) {
+        return '实时源暂时不可用，已使用缓存汇率' + (liveFxState.as_of ? ' · 更新于 ' + liveFxState.as_of : '');
+      }
+      if (liveFxState.live) {
+        return '已接入实时汇率' + (liveFxState.provider ? ' · ' + liveFxState.provider : '') +
+          (liveFxState.as_of ? ' · ' + liveFxState.as_of : '');
+      }
+      return '使用可编辑默认汇率';
+    }
+
     function renderFxRates(p) {
       var rates = currentFxRates();
-      if ((p || {}).rates) {
-        Object.keys(p.rates).forEach(function(k) {
-          if (DEFAULT_FX_RATES[k] == null) return;
-          var n = parseFloat(p.rates[k]);
-          if (n > 0 && readStoredFxRates()[k] == null) rates[k] = n;
-        });
-      }
+      var live = liveFxState.rates || {};
+      var manual = readManualFxCodes();
       var html = '<details class="fx-panel" open>';
-      html += '<summary>汇率设置（CNY / 外币，可修改）</summary>';
+      html += '<summary>汇率设置（CNY / 外币）</summary>';
+      html += '<div class="fx-hint" id="fxStatusLine">' + esc(fxStatusText()) + '</div>';
+      html += '<div class="sub-actions" style="margin-top:8px">';
+      html += '<button type="button" class="btn-secondary" onclick="refreshLiveFxRates(true)">刷新实时汇率</button>';
+      html += '<button type="button" class="btn-secondary" onclick="applyLiveFxRates(true)">用实时汇率覆盖全部</button>';
+      html += '</div>';
       html += '<div class="fx-grid">';
       Object.keys(DEFAULT_FX_RATES).forEach(function(code) {
         var inv = rates[code] > 0 ? (1 / rates[code]) : 0;
-        html += '<label>' + esc(FX_LABELS[code] || code) +
-          '<input id="fxRate_' + code + '" type="number" step="any" min="0" value="' + esc(rates[code]) +
-          '" oninput="onFxRateInput()" title="1 ' + code + ' = ? CNY">';
-        html += '<span class="muted">1 ' + code + ' = ' + (rates[code] || 0) + ' CNY';
-        if (code !== 'USD' && code !== 'MYR' && inv) {
-          html += ' · 1 CNY ≈ ' + inv.toFixed(code === 'VND' ? 0 : 2) + ' ' + code;
+        var liveVal = live[code];
+        html += '<label>' + esc(FX_LABELS[code] || code);
+        if (manual[code]) html += ' <span class="warn-pill">手动</span>';
+        else if (liveVal) html += ' <span class="ok-pill">实时</span>';
+        html += '<input id="fxRate_' + code + '" type="number" step="any" min="0" value="' + esc(rates[code]) +
+          '" oninput="onFxRateInput(\'' + code + '\')" title="1 ' + code + ' = ? CNY">';
+        html += '<span class="muted">当前使用：1 ' + code + ' = ' + (rates[code] || 0) + ' CNY';
+        if (liveVal) html += '<br>实时：1 ' + code + ' = ' + liveVal + ' CNY';
+        if (code !== 'USD' && inv) {
+          html += '<br>1 CNY ≈ ' + inv.toFixed(code === 'VND' ? 0 : 2) + ' ' + code;
         }
         html += '</span></label>';
       });
       html += '</div>';
-      html += '<div class="fx-hint">默认按常见跨境报价写入；修改后立即按新汇率重算下方挂牌价 / 35% 后 / 物流 / 利润，并保存到本机 localStorage。</div>';
+      html += '<div class="fx-hint">优先：手动覆盖 &gt; 实时汇率 &gt; 默认值。修改输入框会标记为手动并重算价格；刷新实时汇率不会覆盖已手动的币种。</div>';
       html += '</details>';
       return html;
     }
 
-    function onFxRateInput() {
+    function onFxRateInput(code) {
+      if (code) markFxManual(code);
       var rates = collectFxRatesFromDom();
       writeStoredFxRates(rates);
       if (!preview) return;
       if (fxRateTimer) clearTimeout(fxRateTimer);
       fxRateTimer = setTimeout(function() {
-        // 本地 Treasury 复算价格（不重新抓取 1688）
         saveReview(false, true, 'fx');
       }, 180);
+    }
+
+    function applyLiveFxRates(forceAll) {
+      if (!liveFxState.rates) return;
+      var manual = forceAll ? {} : readManualFxCodes();
+      if (forceAll) writeManualFxCodes({});
+      var next = currentFxRates();
+      Object.keys(liveFxState.rates).forEach(function(code) {
+        if (!forceAll && manual[code]) return;
+        var n = parseFloat(liveFxState.rates[code]);
+        if (n > 0) next[code] = n;
+      });
+      writeStoredFxRates(next);
+      if (preview) saveReview(false, true, 'fx');
+      else if (document.getElementById('preview')) render();
+    }
+
+    function refreshLiveFxRates(force) {
+      liveFxState.loading = true;
+      var status = document.getElementById('fxStatusLine');
+      if (status) status.textContent = fxStatusText();
+      return api('/api/exchange-rates' + (force ? '?refresh=1' : ''), { method: 'GET' }).then(function(d) {
+        liveFxState.loading = false;
+        if (!d || d.ok === false) {
+          liveFxState.degraded = true;
+          liveFxState.live = false;
+          liveFxState.error = (d && d.error) || 'exchange-rates failed';
+          if (status) status.textContent = fxStatusText();
+          return d;
+        }
+        liveFxState.rates = d.rates || null;
+        liveFxState.provider = d.provider || '';
+        liveFxState.as_of = d.as_of || d.fetched_at || '';
+        liveFxState.live = !!d.live;
+        liveFxState.stale = !!d.stale;
+        liveFxState.degraded = !!d.degraded || (!d.live && !!d.error);
+        liveFxState.error = d.error || '';
+        liveFxState.fetched_at = d.fetched_at || '';
+        applyLiveFxRates(false);
+        if (document.getElementById('fxStatusLine') || preview) {
+          if (preview) render();
+          else {
+            var line = document.getElementById('fxStatusLine');
+            if (line) line.textContent = fxStatusText();
+          }
+        }
+        return d;
+      }).catch(function(e) {
+        liveFxState.loading = false;
+        liveFxState.degraded = true;
+        liveFxState.live = false;
+        liveFxState.error = String(e);
+        var line = document.getElementById('fxStatusLine');
+        if (line) line.textContent = fxStatusText();
+      });
     }
 
     function renderPricing(p) {
@@ -1198,10 +1322,12 @@
 
     window.addEventListener('DOMContentLoaded', function() {
       var q = new URLSearchParams(location.search);
-      if (q.get('offer_id')) {
-        document.getElementById('urlInput').value = q.get('offer_id');
-        loadPreview();
-      }
+      refreshLiveFxRates(false).finally(function() {
+        if (q.get('offer_id')) {
+          document.getElementById('urlInput').value = q.get('offer_id');
+          loadPreview();
+        }
+      });
       window.addEventListener('focus', function() {
         if (preview && preview.offer_id) refreshPreviewState(true).catch(function() {});
       });

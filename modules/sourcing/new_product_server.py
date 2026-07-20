@@ -222,6 +222,19 @@ class NewProductHandler(BaseHTTPRequestHandler):
             return self._file(STATIC_DIR / rel)
         if path == "/health":
             return self._json(200, {"ok": True, "service": "new_product", "port_default": DEFAULT_PORT})
+        if path == "/api/exchange-rates":
+            q = parse_qs(parsed.query)
+            force = (q.get("refresh") or q.get("force") or ["0"])[0].strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            try:
+                from modules.sourcing.fx_rates import get_exchange_rates
+
+                return self._json(200, get_exchange_rates(force_refresh=force))
+            except Exception as exc:
+                return self._json(500, {"ok": False, "error": str(exc)})
         if path == "/api/proxy-image":
             q = parse_qs(parsed.query)
             return self._proxy_image((q.get("url") or [""])[0])

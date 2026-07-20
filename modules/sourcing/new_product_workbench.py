@@ -1320,7 +1320,16 @@ def build_preview(offer_id_or_url: str, *, source_code: str = "") -> dict[str, A
     weight = _float(review.get("weight_kg"), source["weight_kg"])
     dims = _dims(review.get("package_cm") or source["package_cm"])
     cost = _float(review.get("cost_cny"), source["cost_cny"])
-    fx_rates = merge_fx_rates(review.get("fx_rates"))
+    if review.get("fx_rates"):
+        fx_rates = merge_fx_rates(review.get("fx_rates"))
+    else:
+        try:
+            from modules.sourcing.fx_rates import get_exchange_rates
+
+            live = get_exchange_rates(force_refresh=False)
+            fx_rates = merge_fx_rates(live.get("rates") if live.get("live") or live.get("cached") else None)
+        except Exception:
+            fx_rates = merge_fx_rates(None)
     miaoshou_draft = _load_json(STATE_DIR / f"{offer_id}_miaoshou_draft.json") or {}
     tiktok_claim = _load_json(STATE_DIR / f"{offer_id}_tiktok_claim.json") or {}
     site_drafts = _load_json(STATE_DIR / f"{offer_id}_site_drafts.json") or {}

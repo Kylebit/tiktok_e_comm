@@ -117,28 +117,31 @@ def apply_a2a_event(event):
             return None
         context_id = event.get("contextId") or t["context_id"]
 
-        # status 事件
+        # status 事件（兼容两种线格式）
         if "status" in event:
             st = event["status"]
-            state = st.get("state")
-            msg = st.get("message", {}) or {}
-            text = ""
-            for p in msg.get("parts", []) or []:
-                if p.get("type") == "text":
-                    text += p.get("text", "")
-            if state:
-                t["state"] = state
-            if text:
-                t["progress_text"] = text
-                t["history"].append({"ts": _now(), "role": "agent", "text": text})
+            if isinstance(st, dict):
+                # A2A 线格式：{"state", "message": {"parts":[...]}}
+                state = st.get("state")
+                msg = st.get("message", {}) or {}
+                text = ""
+                for p in msg.get("parts", []) or []:
+                    if p.get("type") == "text":
+                        text += p.get("text", "")
+                if state:
+                    t["state"] = state
+                if text:
+                    t["progress_text"] = text
+                    t["history"].append({"ts": _now(), "role": "agent", "text": text})
+            elif isinstance(st, str):
+                # 高层 update：status 为 A2A 状态字符串
+                t["state"] = st
 
         # 高层 update 兼容
         if "progress_text" in event and event["progress_text"]:
             t["progress_text"] = event["progress_text"]
             if not any(h.get("text") == event["progress_text"] for h in t["history"]):
                 t["history"].append({"ts": _now(), "role": "agent", "text": event["progress_text"]})
-        if event.get("status") and isinstance(event.get("status"), str):
-            t["state"] = event["status"]
 
         # artifact 事件 -> 终态判定
         if "artifact" in event:

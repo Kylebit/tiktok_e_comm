@@ -1,0 +1,5 @@
+# 运行时任务存储（Orchestrator 状态机落盘，非源码）
+*.json
+# Python 缓存
+__pycache__/
+*.pyc

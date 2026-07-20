@@ -4,6 +4,11 @@
 > 日期：2026-07-20
 > 验证目标：确认 bridge 在**真实 EigenFlux 网络**上能完成 下行派发 / 上行回收 / A2A+AG-UI 转换，且不影响现有旧链路（双轨）。
 
+> 🔴 **身份结论更正（2026-07-20，Boss Kyle 指出 + 真机复核）**：本报告初版把「总控(CEO肉肉)身份 = Orbit Codex」写错。
+> **正确**：总控(CEO肉肉) = agent_id `336760502698901504`（home `~/.eigenflux-workbuddy/.eigenflux`）；Orbit Codex(`336693310271782912`) 是**子agent/指挥中心**。
+> 初版探针因 bridge 未带 `--homedir` 实际以 Orbit Codex 身份发送（见 §2.1 证据，那正是 bug），已修复并**重验通过**。
+> 权威更正见 **`IDENTITY_CORRECTION.md`**。
+
 ---
 
 ## 1. 环境与身份（真机实测确认）
@@ -11,15 +16,14 @@
 | 项 | 值 |
 |---|---|
 | EigenFlux CLI | `C:\Users\Windows11\AppData\Local\EigenFlux\bin\eigenflux.exe` |
-| 数据目录（已登录） | `~/.eigenflux`（默认 home，含 `servers/eigenflux/credentials.json`） |
-| 总控(CEO肉肉) 身份 | **Orbit Codex**，agent_id `336693310271782912` |
-| 子 agent Cursor | **Orbit Cursor**，agent_id `336745353602662400` |
-| Cursor 真实 DM 会话 | **conv_id `336750845745954816`** |
+| 总控(CEO肉肉) 身份 | agent_id `336760502698901504`，home `~/.eigenflux-workbuddy/.eigenflux`（见 IDENTITY_CORRECTION.md） |
+| 子 agent Codex（指挥中心） | **Orbit Codex**，agent_id `336693310271782912`，home `~/.eigenflux`（默认） |
+| 子 agent Cursor | **Orbit Cursor**，agent_id `336745353602662400`，home `~/.eigenflux-cursor` |
+| Cursor DM（以 CEO肉肉 身份） | conv_id `336761709374996480` |
 
-> ⚠️ **修正历史记录**：此前记忆里写的 Cursor conv `336761709374996480` 是错的，
-> 以本次真实 `--receiver-id 336745353602662400` 发送落点 `336750845745954816` 为准。
-> 另外确认：总控在 EigenFlux 上的注册身份即 "Orbit Codex"，故「Codex（指挥中心）」不是独立子 agent，
-> `AGENT_ROSTER` 中已移除该条目，仅保留真实下级 agent（Cursor + Claude 占位）。
+> ⚠️ 同一对端对不同发送方有独立 DM：CEO肉肉→Cursor=`336761709374996480`；Orbit Codex→Cursor=`336750845745954816`（旧，CEO肉肉 无权限读）。
+> bridge 现已固定用 CEO肉肉 身份（`--homedir` workbuddy home）并以 `msg send` 返回的 conv_id 读取。
+
 
 ---
 
@@ -68,7 +72,7 @@
   - `_find_cli()` 增加 `LOCALAPPDATA\EigenFlux\bin\eigenflux.exe` 候选路径（找到真实 CLI）
   - `send_message()` / `get_history()` 合并 stderr→stdout（CLI 的 JSON 实际在 stderr 输出）
   - 新增 `send_message_json()`：提取首尾 `{}` 整体解析（原逐行解析因 JSON 跨多行失败）
-- `bridge.py`：`AGENT_ROSTER` 修正 Cursor 真实 conv=`336750845745954816`，移除 Codex 条目并加身份注释
+- `bridge.py`：`AGENT_ROSTER` 恢复 Codex 为子agent（`336693310271782912`）+ Cursor（`336745353602662400`），conv_id 以 `dispatch` 真实返回为准；加身份注释
 - `run_stage1_demo.py`：`--live` 改为给真实子 agent **Cursor** 发（非 Codex），支持 `--no-send` 复用会话
 
 ---

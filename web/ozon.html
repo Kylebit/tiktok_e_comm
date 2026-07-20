@@ -184,6 +184,7 @@
       <div class="toolbar">
         <label>最近月数</label>
         <input type="number" id="settle-months" value="3" min="1" max="12" style="width:56px;padding:6px">
+        <label style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="settle-only-settled" checked> 只看已结算</label>
         <button type="button" class="btn secondary" onclick="OzonMigrate.loadSettlementSummary()">查询结算汇总</button>
       </div>
       <div id="settlement-area" style="margin-top:8px"></div>

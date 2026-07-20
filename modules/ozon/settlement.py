@@ -66,29 +66,40 @@ def summarize_transactions(ops: list[dict[str, Any]]) -> dict[str, Any]:
         fee_type_totals[type_name] += amount
         fee_type_count[type_name] += 1
 
+    def _date_only(s):
+        s = s or ""
+        return s[:10] if "T" in s else s
+
     orders = []
     for posting, data in by_posting.items():
-        total = sum(float(o.get("amount") or 0) for o in data["ops"])
-        delivered = any(
-            (o.get("operation_type_name") or "").startswith("Доставка") for o in data["ops"]
-        )
+        ops = data["ops"]
+        total = sum(float(o.get("amount") or 0) for o in ops)
+        # 结算 = 该 posting 存在「Доставка…」(妥投/结算) 操作
+        delivery_ops = [o for o in ops if (o.get("operation_type_name") or "").startswith("Доставка")]
+        delivered = bool(delivery_ops)
+        # 下单日期 = 该 posting 最早一笔资金操作的日期；结算日期 = 妥投/结算操作的日期
+        op_dates = [o.get("operation_date") for o in ops if o.get("operation_date")]
+        order_date = _date_only(min(op_dates)) if op_dates else ""
+        settlement_date = _date_only(delivery_ops[0].get("operation_date")) if delivery_ops else ""
         orders.append(
             {
                 "posting_number": posting,
                 "products": sorted(data["items"]),
                 "settled": delivered,
                 "net_amount": round(total, 2),
+                "order_date": order_date,
+                "settlement_date": settlement_date,
                 "operations": [
                     {
                         "date": o.get("operation_date"),
                         "type_name": o.get("operation_type_name"),
                         "amount": o.get("amount"),
                     }
-                    for o in data["ops"]
+                    for o in ops
                 ],
             }
         )
-    orders.sort(key=lambda o: o["operations"][0]["date"] if o["operations"] else "")
+    orders.sort(key=lambda o: (o["order_date"], o["posting_number"]))
 
     fee_breakdown = [
         {"type_name": name, "count": fee_type_count[name], "total": round(total, 2)}
@@ -108,13 +119,17 @@ def summarize_transactions(ops: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def build_settlement_summary(months_back: int = 3) -> dict[str, Any]:
+def build_settlement_summary(months_back: int = 3, only_settled: bool = False) -> dict[str, Any]:
     now = datetime.utcnow()
     date_from = (now.replace(day=1) - timedelta(days=1)).replace(day=1)
     for _ in range(months_back - 1):
         date_from = (date_from - timedelta(days=1)).replace(day=1)
     ops = fetch_transactions(date_from, now)
     summary = summarize_transactions(ops)
+    if only_settled:
+        # 只看已结算：聚焦窗口内真正结算的订单，不被未完结单淹没
+        summary["orders"] = [o for o in summary["orders"] if o["settled"]]
     summary["date_from"] = date_from.strftime("%Y-%m-%d")
     summary["date_to"] = now.strftime("%Y-%m-%d")
+    summary["only_settled"] = only_settled
     return summary

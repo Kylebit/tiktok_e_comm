@@ -813,11 +813,15 @@
   function loadSettlementSummary() {
     var area = document.getElementById('settlement-area');
     var months = parseInt(document.getElementById('settle-months').value, 10) || 3;
+    var onlySettled = document.getElementById('settle-only-settled')
+      ? document.getElementById('settle-only-settled').checked : false;
     if (!area) return;
     area.innerHTML = '<p class="meta">查询中…</p>';
-    return api('settlement_summary?months=' + months).then(function (d) {
+    var qs = 'settlement_summary?months=' + months + '&only_settled=' + (onlySettled ? '1' : '0');
+    return api(qs).then(function (d) {
       var html = '';
       html += '<p class="meta">数据区间：' + escapeHtml(d.date_from) + ' ~ ' + escapeHtml(d.date_to) +
+        (d.only_settled ? '　（已筛选：仅显示已结算）' : '') +
         '　已完整结算 ' + d.settled_count + ' 单　未完结(仅扣收单费) ' + d.pending_count + ' 单' +
         '　已结算订单净额合计 <strong>' + d.settled_net_total + ' RUB</strong>' +
         '　全部流水净额合计 <strong>' + d.grand_total + ' RUB</strong></p>';
@@ -828,11 +832,18 @@
       });
       html += '</tbody></table>';
 
-      html += '<h4 style="margin:16px 0 4px">按订单明细</h4>';
-      html += '<table class="oz"><thead><tr><th>posting</th><th>商品</th><th>状态</th><th>净额(RUB)</th></tr></thead><tbody>';
+      html += '<h4 style="margin:16px 0 4px">按订单明细' +
+        (d.only_settled ? '（已结算）' : '') + '</h4>';
+      html += '<table class="oz"><thead><tr>' +
+        '<th>posting</th><th>商品</th><th>状态</th>' +
+        '<th>下单日期</th><th>结算日期</th><th>净额(RUB)</th>' +
+        '</tr></thead><tbody>';
       (d.orders || []).forEach(function (o) {
         html += '<tr><td>' + escapeHtml(o.posting_number) + '</td><td>' + escapeHtml((o.products || []).join('; ')) +
-          '</td><td>' + (o.settled ? '已结算' : '未完结') + '</td><td>' + o.net_amount + '</td></tr>';
+          '</td><td>' + (o.settled ? '已结算' : '未完结') + '</td>' +
+          '<td>' + escapeHtml(o.order_date || '—') + '</td>' +
+          '<td>' + escapeHtml(o.settlement_date || '—') + '</td>' +
+          '<td>' + o.net_amount + '</td></tr>';
       });
       html += '</tbody></table>';
       area.innerHTML = html;

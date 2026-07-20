@@ -120,7 +120,8 @@ class OrbitRusHandler(BaseHTTPRequestHandler):
 
                 q = parse_qs(query or "")
                 months_back = int((q.get("months") or ["3"])[0])
-                return self._json(200, build_settlement_summary(months_back))
+                only_settled = (q.get("only_settled") or ["0"])[0] in ("1", "true", "True")
+                return self._json(200, build_settlement_summary(months_back, only_settled))
             if method == "GET" and subpath == "profit_table":
                 from modules.ozon.profit_analysis import build_profit_table
                 from modules.ozon.pending_drafts import dismissed_offer_ids

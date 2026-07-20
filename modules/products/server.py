@@ -1323,7 +1323,8 @@ class Handler(BaseHTTPRequestHandler):
 
                 q = parse_qs(query or "")
                 months_back = int((q.get("months") or ["3"])[0])
-                return self._json(200, build_settlement_summary(months_back))
+                only_settled = (q.get("only_settled") or ["0"])[0] in ("1", "true", "True")
+                return self._json(200, build_settlement_summary(months_back, only_settled))
             # Ozon 利润分析：真实生效价(含弹性提升折扣) + 保最低利润率的min_price草稿
             if method == "GET" and subpath == "profit_table":
                 from modules.ozon.profit_analysis import build_profit_table
@@ -1407,6 +1408,28 @@ class Handler(BaseHTTPRequestHandler):
             return self._file(WEB_DIR / "mx.html")
         if path in ("/uk", "/uk.html"):
             return self._file(WEB_DIR / "uk.html")
+        if path in ("/billing", "/billing.html"):
+            return self._file(WEB_DIR / "billing.html")
+        if path in ("/shopee-profit", "/shopee-profit.html"):
+            return self._file(WEB_DIR / "shopee_profit.html")
+        if path == "/billing/shopee_report":
+            q = parse_qs(urlparse(self.path).query)
+            name = (q.get("f") or [""])[0]
+            # 仅允许周报快照文件，防目录穿越
+            if not name or not name.startswith("weekly_shopee_profit_") or "/" in name or ".." in name:
+                return self.send_error(404)
+            fp = ROOT / "outputs" / name
+            if not fp.is_file():
+                return self.send_error(404)
+            return self._file(fp)
+
+        if path == "/api/billing/shopee_reports":
+            out_dir = ROOT / "outputs"
+            files = []
+            if out_dir.is_dir():
+                for p in sorted(out_dir.glob("weekly_shopee_profit_*.html"), reverse=True)[:12]:
+                    files.append({"name": p.name, "mtime": int(p.stat().st_mtime)})
+            return self._json(200, {"ok": True, "reports": files})
 
         if path == "/api/mx/approvals":
             from modules.miaoshou import mx_web_approval as mx_web

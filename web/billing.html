@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>结算账单 · 三平台周期结算</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <style>
+    .billing-tabs { display: flex; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
+    .billing-tab { padding: 8px 20px; border: 1px solid #ccc; border-radius: 6px; background: #fff; cursor: pointer; font-size: 14px; }
+    .billing-tab:hover { border-color: #0ea5e9; }
+    .billing-tab.active { background: #0ea5e9; color: #fff; border-color: #0ea5e9; }
+    .billing-frame-wrap { width: 100%; height: 78vh; border: 1px solid #e5e5e5; border-radius: 8px; overflow: hidden; background: #fff; }
+    .billing-frame-wrap iframe { width: 100%; height: 100%; border: 0; }
+    .billing-note { font-size: 12px; color: #888; margin: 6px 0; }
+    .report-list { margin: 8px 0 0; padding: 0; list-style: none; }
+    .report-list li { padding: 6px 0; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
+    .report-list a { color: #0ea5e9; text-decoration: none; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">Orbit OS 总控台</a>
+    <nav class="nav">
+      <a href="/">首页</a>
+      <a href="/catalog">商品目录</a>
+      <a href="/settlement">结算中心</a>
+      <a href="/billing" class="active">结算账单</a>
+      <a href="/shopee-profit">Shopee利润</a>
+      <a href="/sourcing">选品中心</a>
+      <a href="http://127.0.0.1:8767/">俄罗斯台(Ozon)</a>
+    </nav>
+  </header>
+  <main class="container">
+    <h1>结算账单 · 三平台周期结算</h1>
+    <p class="hint">在一个入口查看 TikTok / Shopee / Ozon 三家的周期结算（账单）页面。下方为内嵌视图，切换标签即可查看对应平台的结算台。</p>
+
+    <div class="billing-tabs">
+      <button type="button" class="billing-tab active" data-platform="tk">TikTok 结算</button>
+      <button type="button" class="billing-tab" data-platform="shopee">Shopee 利润</button>
+      <button type="button" class="billing-tab" data-platform="ozon">Ozon 结算</button>
+    </div>
+
+    <!-- TikTok -->
+    <div class="billing-panel" data-panel="tk">
+      <p class="billing-note">TikTok Shop 结算与利润（四国 PH/MY/TH/VN），数据源为 TikTok Finance 结算 CSV。</p>
+      <div class="billing-frame-wrap"><iframe src="/settlement" title="TikTok 结算"></iframe></div>
+    </div>
+
+    <!-- Shopee -->
+    <div class="billing-panel hidden" data-panel="shopee">
+      <p class="billing-note">Shopee 已拨款利润。若实时页数据为空，可点击下方「已生成周报」直接查看账单 HTML。</p>
+      <div class="billing-frame-wrap"><iframe src="/shopee-profit" title="Shopee 利润"></iframe></div>
+      <h3 style="margin:12px 0 4px">已生成周报（账单快照）</h3>
+      <ul class="report-list" id="shopeeReports"><li class="meta">加载中…</li></ul>
+    </div>
+
+    <!-- Ozon -->
+    <div class="billing-panel hidden" data-panel="ozon">
+      <p class="billing-note">Ozon 俄罗斯台结算（独立服务 8767）。需确保 <code>python main.py rus</code> 已启动。</p>
+      <div class="billing-frame-wrap"><iframe src="http://127.0.0.1:8767/" title="Ozon 结算"></iframe></div>
+    </div>
+  </main>
+
+  <script>
+    document.querySelectorAll('.billing-tab').forEach(function (btn) {
+      btn.onclick = function () {
+        var p = btn.getAttribute('data-platform');
+        document.querySelectorAll('.billing-tab').forEach(function (b) {
+          b.classList.toggle('active', b === btn);
+        });
+        document.querySelectorAll('.billing-panel').forEach(function (panel) {
+          panel.classList.toggle('hidden', panel.getAttribute('data-panel') !== p);
+        });
+      };
+    });
+
+    fetch('/api/billing/shopee_reports').then(function (r) { return r.json(); }).then(function (d) {
+      var ul = document.getElementById('shopeeReports');
+      if (!d.ok || !d.reports || !d.reports.length) {
+        ul.innerHTML = '<li class="meta">暂无已生成周报</li>';
+        return;
+      }
+      ul.innerHTML = d.reports.map(function (r) {
+        return '<li><a href="/billing/shopee_report?f=' + encodeURIComponent(r.name) +
+          '" target="_blank">' + r.name + '</a></li>';
+      }).join('');
+    }).catch(function () {
+      document.getElementById('shopeeReports').innerHTML = '<li class="meta">周报列表加载失败</li>';
+    });
+  </script>
+</body>
+</html>

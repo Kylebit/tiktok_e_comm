@@ -2,3 +2,10 @@ __pycache__/
 *.pyc
 feeder_task_map.json
 *.log
+cursor_inbox/*.json
+cursor_inbox/done/
+codex_inbox/
+codex_adapter_state.json
+test_task_ids.json
+.stage3_pids.json
+logs/

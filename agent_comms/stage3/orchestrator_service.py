@@ -287,8 +287,43 @@ async def agent_stream(agent_name: str):
     return EventSourceResponse(gen())
 
 
+@app.post("/approve")
+async def approve_task(request: Request):
+    """Boss 审核通过 -> 把卡片翻成「已完成」(即关闭/已解决)。
+
+    由 CEO肉肉(总控)在收到 Boss 的「通过」指令后调用：
+    body: {"task_id","agent"?}
+    发布 STATE_DELTA(已完成) + 一条 TEXT 时间线，adapter_runner 据其把飞书卡翻绿。
+    """
+    body = await request.json()
+    task_id = body.get("task_id")
+    if not task_id:
+        return JSONResponse({"ok": False, "error": "task_id required"}, status_code=400)
+
+    orch.apply_a2a_event({"task_id": task_id, "status": "completed",
+                          "progress_text": "Boss 审核通过"})
+
+    ag_update = {
+        "task_id": task_id,
+        "status": "已完成",
+        "progress_text": "Boss 审核通过，卡片关闭",
+        "tool": None,
+        "tool_input": None,
+        "card_fields": {"状态": "已完成", "进度": "100%",
+                        "负责Agent": body.get("agent") or "—"},
+    }
+    for ev in map_a2a_update_to_ag_ui(ag_update, thread_id=task_id):
+        await BUS.publish(ev)
+    # 时间线追加一条「审核通过」
+    await BUS.publish({"type": "TEXT_MESSAGE_CONTENT", "threadId": task_id,
+                       "delta": "✅ Boss 审核通过，任务关闭"})
+
+    return JSONResponse({"ok": True, "task_id": task_id, "status": "已完成"})
+
+
 if __name__ == "__main__":
     import uvicorn
 
     print(f"[stage3] Orchestrator 常驻服务 on {AGENT_URL}  (AG-UI 事件流: /agui/events)")
-    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
+    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning",
+                reload=False, workers=1)

@@ -145,22 +145,36 @@ def ack_task(dispatch: dict[str, Any]) -> Path:
     return inbox_file
 
 
-def emit_wake_for_pending_files() -> None:
-    """本地 pending 落盘任务也打一次唤醒（重启恢复 / 漏 notify 时）。"""
+DONE_LOCAL_STATES = {"DONE", "COMPLETED", "CANCELED", "FAILED"}
+
+
+def local_pending_files() -> list[Path]:
+    """Return local inbox tasks that were ACKed but not completed yet."""
     if not INBOX_DIR.is_dir():
-        return
+        return []
+    pending: list[Path] = []
     for path in sorted(INBOX_DIR.glob("*.json")):
         try:
             payload = _read_json(path, {})
         except Exception as exc:  # noqa: BLE001
             print(f"[codex-stage3] 读取 pending 失败: {path} {exc}", file=sys.stderr)
             continue
+        if str(payload.get("status") or "").upper() in DONE_LOCAL_STATES:
+            continue
+        pending.append(path)
+    return pending
+
+
+def emit_wake_for_pending_files() -> list[Path]:
+    """本地 pending 落盘任务也打一次唤醒（重启恢复 / 漏 notify 时）。"""
+    pending = local_pending_files()
+    for path in pending:
+        payload = _read_json(path, {})
         dispatch = payload.get("dispatch", payload)
         task_id = str(dispatch.get("task_id") or path.stem)
-        if payload.get("status") in ("DONE", "COMPLETED", "CANCELED", "FAILED"):
-            continue
         print(f"[codex-stage3] 本地 pending 待执行: {task_id}", flush=True)
         _emit_wake(dispatch, path)
+    return pending
 
 
 def poll_once(consume: bool = True, ack: bool = True) -> list[dict[str, Any]]:
@@ -174,6 +188,7 @@ def poll_once(consume: bool = True, ack: bool = True) -> list[dict[str, Any]]:
     if ack:
         for task in tasks:
             ack_task(task)
+        emit_wake_for_pending_files()
     return tasks
 
 
@@ -245,6 +260,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Orbit Codex Stage3 A2A client")
     parser.add_argument("--health", action="store_true", help="Check orchestrator health and exit")
     parser.add_argument("--poll-once", action="store_true", help="Fetch pending tasks once, ACK them, and exit")
+    parser.add_argument("--scan-local-inbox", action="store_true", help="Emit wake signals for unfinished local inbox tasks and exit")
     parser.add_argument("--peek", action="store_true", help="Fetch pending tasks without consuming or ACKing")
     parser.add_argument("--stream", action="store_true", help="Subscribe to task stream forever")
     parser.add_argument("--report", action="store_true", help="POST /ingest 回报总控（配合 --task-id/--text）")
@@ -260,6 +276,10 @@ def main() -> int:
         return 0
     if args.peek:
         print(json.dumps(fetch_tasks(consume=False), ensure_ascii=False, indent=2))
+        return 0
+    if args.scan_local_inbox:
+        pending = emit_wake_for_pending_files()
+        print(json.dumps({"pending_local_inbox": [str(p) for p in pending]}, ensure_ascii=False, indent=2))
         return 0
     if args.report:
         return cmd_report(args.task_id, args.text, args.tool, args.tool_input)

@@ -132,3 +132,14 @@ python codex_adapter.py --peek
 - 飞书卡只是给 Boss 看的进度视图，**不是**你和总控的通话通道。
 - 如果你收不到任务：先 `GET /health` 确认 Orchestrator 在跑；再确认你的 agent 名是 `Orbit Codex`（拼写、空格要一致）。
 - 有任何协议疑问，直接问 CEO肉肉（总控）。
+
+## 7. Codex heartbeat 防漏规则（必须执行）
+
+每次 Orbit Codex 被唤醒或跑 heartbeat 时，不允许只看 HTTP 队列。正确顺序是：
+
+1. `GET /health` 确认 Orchestrator 正常。
+2. `GET /agent/Orbit%20Codex/tasks?consume=1` 拉取并 ACK 新任务。
+3. 立刻运行 `python agent_comms/stage3/codex_adapter.py --scan-local-inbox`。
+4. 如果输出任何 `pending_local_inbox` 或 `AGENT_A2A_TICK_codex`，必须读取对应 `codex_inbox/<task_id>.json`，执行 `dispatch.prompt`，并通过 `--report` 回报总控。
+
+原因：adapter 会先消费 HTTP 队列并把任务落盘到 `codex_inbox`。此时 HTTP 队列会变空；如果 Codex 只查 HTTP 队列，就会漏掉已经 ACK 但尚未执行的本地任务。

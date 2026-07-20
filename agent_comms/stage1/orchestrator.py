@@ -68,14 +68,17 @@ load()
 # 任务状态机
 # --------------------------------------------------------------------------
 def create_task(title, feishu_record=None, assignee=None, agent_id=None,
-                agent_conv_id=None, prompt=None):
-    """创建一个 A2A Task，返回 task_id。taskId 与飞书主任务表 record 通过 feishu_record 关联。"""
+                agent_conv_id=None, prompt=None, seq=None):
+    """创建一个 A2A Task，返回 task_id。taskId 与飞书主任务表 record 通过 feishu_record 关联。
+    seq: 短编号（如 "0032"），便于人工引用；由 orchestrator_service.next_seq() 分配并传入。
+    """
     task_id = "task-" + uuid.uuid4().hex[:10]
     context_id = task_id
     with _lock:
         _tasks[task_id] = {
             "task_id": task_id,
             "context_id": context_id,
+            "seq": seq,
             "title": title,
             "feishu_record": feishu_record,
             "assignee": assignee,

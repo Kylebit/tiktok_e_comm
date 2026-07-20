@@ -40,7 +40,10 @@ PROCS = [
 ]
 
 # Windows：DETACHED_PROCESS，使子进程脱离控制台/会话存活
+# 同时加 CREATE_NO_WINDOW，避免在任务栏弹出黑窗口
 DETACHED = 0x00000008
+NO_WINDOW = 0x08000000
+CREATE_FLAGS = DETACHED | NO_WINDOW
 
 
 def _alive(pid):
@@ -148,7 +151,7 @@ def start(force=False):
         p = subprocess.Popen(
             [VENV, "-u", os.path.join(HERE, script)],
             cwd=ROOT, stdout=logf, stderr=subprocess.STDOUT,
-            creationflags=DETACHED,
+            creationflags=CREATE_FLAGS,
         )
         pids[name] = p.pid
         print("  started %-16s pid=%d -> logs/%s.log" % (name, p.pid, name))

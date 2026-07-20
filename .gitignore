@@ -56,3 +56,11 @@ tmp_*.json
 feishu_bot_live*.log
 feishu_bot_live*.err.log
 __pycache__/
+# Stage3 A2A 运行态产物（pid、汇总卡 message_id、本地 inbox、日志、短编号计数器）
+agent_comms/stage3/.stage3_pids.json
+agent_comms/stage3/.summary_card.json
+agent_comms/stage3/.task_seq.json
+agent_comms/stage3/*_inbox.json
+agent_comms/stage3/logs/
+# 任务状态持久化（含历史测试任务，不入库）
+agent_comms/stage1/orchestrator_tasks.json

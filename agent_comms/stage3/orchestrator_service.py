@@ -40,6 +40,29 @@ from ag_ui_mapping import map_a2a_update_to_ag_ui  # noqa: E402
 PORT = 8773
 AGENT_URL = f"http://127.0.0.1:{PORT}"
 
+# 短编号（如 0032）持久化计数器：防重启后编号重复
+SEQ_FILE = os.path.join(HERE, ".task_seq.json")
+
+
+def next_seq():
+    """分配下一个短编号（如 '0032'），持久化到 .task_seq.json 防重启重复。
+
+    编号风格沿用业务任务约定（0031 = 结算周报），故从 31 之后递增。
+    返回零填充 4 位字符串，便于人工引用（Boss 直接说「0032」即可指代任务）。
+    """
+    try:
+        with open(SEQ_FILE, encoding="utf-8") as f:
+            n = int(json.load(f).get("seq", 31))
+    except Exception:
+        n = 31
+    n += 1
+    try:
+        with open(SEQ_FILE, "w", encoding="utf-8") as f:
+            json.dump({"seq": n}, f)
+    except Exception:
+        pass
+    return "%04d" % n
+
 
 # --------------------------------------------------------------------------
 # asyncio EventBus：AG-UI 事件流广播（支持多 SSE 订阅者）
@@ -162,7 +185,8 @@ async def ingest(request: Request):
     final = body.get("final", False)
 
     if not task_id:
-        task_id = orch.create_task(title, feishu_record=feishu_record, assignee=agent)
+        seq = next_seq()
+        task_id = orch.create_task(title, feishu_record=feishu_record, assignee=agent, seq=seq)
 
     # 终态判定
     if "待审核" in text or "DONE" in text.upper() or final:
@@ -217,7 +241,8 @@ async def dispatch_task(request: Request):
     mode = body.get("mode") or "boss-relay"
 
     if not task_id:
-        task_id = orch.create_task(title, feishu_record=feishu_record, assignee=assignee)
+        seq = next_seq()
+        task_id = orch.create_task(title, feishu_record=feishu_record, assignee=assignee, seq=seq)
 
     # 进目标 agent 收件箱（两种模式都进，方便 agent 自主拉）
     dispatch_obj = {
@@ -256,8 +281,9 @@ async def dispatch_task(request: Request):
     for ev in map_a2a_update_to_ag_ui(ag_update, thread_id=task_id):
         await BUS.publish(ev)
 
-    return JSONResponse({"ok": True, "task_id": task_id, "status": cn_status,
-                         "assignee": assignee, "mode": mode,
+    _t = orch.get_task(task_id) or {}
+    return JSONResponse({"ok": True, "task_id": task_id, "seq": _t.get("seq"),
+                         "status": cn_status, "assignee": assignee, "mode": mode,
                          "agent_inbox": "/agent/%s/tasks" % assignee})
 
 

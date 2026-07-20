@@ -394,6 +394,7 @@
     var tkAdRates = {};
     var tkSummary = null;
     var tkOrdersByRegion = {};
+    var RUS_API_BASE = 'http://127.0.0.1:8767';
 
     function esc(s) {
       return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
@@ -594,7 +595,7 @@
       var months = parseInt(document.getElementById('ozonMonths').value, 10) || 3;
       var only = document.getElementById('ozonOnlySettled').checked ? 1 : 0;
       document.getElementById('ozonMeta').textContent = '加载中...';
-      jsonFetch('/api/ozon/settlement_summary?months=' + months + '&only_settled=' + only).then(function(d) {
+      jsonFetch(RUS_API_BASE + '/api/ozon/settlement_summary?months=' + months + '&only_settled=' + only).then(function(d) {
         document.getElementById('ozonCards').innerHTML =
           card('已结算订单', fmt(d.settled_count || 0, 0)) +
           card('未完结订单', fmt(d.pending_count || 0, 0)) +

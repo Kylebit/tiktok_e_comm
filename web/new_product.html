@@ -91,6 +91,13 @@
     .stage-step.done .dot { background: #22c55e; }
     .stage-step .meta { color: #64748b; margin-top: 2px; }
     .blocked-sites { margin-top: 8px; padding: 8px 10px; border: 1px solid #fde68a; border-radius: 6px; background: #fffbeb; color: #92400e; font-size: 12px; }
+    .fx-panel { margin: 12px 0; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc; padding: 10px 12px; }
+    .fx-panel summary { cursor: pointer; font-weight: 600; color: #1f2937; list-style: none; }
+    .fx-panel summary::-webkit-details-marker { display: none; }
+    .fx-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin-top: 10px; }
+    .fx-grid label { display: grid; gap: 4px; font-size: 12px; color: #475569; }
+    .fx-grid input { width: 100%; border: 1px solid #cbd5e1; border-radius: 6px; padding: 7px 8px; font-size: 13px; }
+    .fx-hint { margin-top: 8px; font-size: 11px; color: #64748b; line-height: 1.4; }
     @media (max-width: 980px) { .np-grid, .split { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -148,6 +155,22 @@
     var imageLoadState = {};
     var siteDraftPollTimer = null;
     var siteDraftPollAttempt = 0;
+    var fxRateTimer = null;
+    var FX_STORAGE_KEY = 'orbit_treasury_fx_rates_v1';
+    var DEFAULT_FX_RATES = {
+      PHP: +(1 / 7.9).toFixed(6),
+      MYR: 1.55,
+      THB: +(1 / 4.9).toFixed(6),
+      VND: +(1 / 3500).toFixed(8),
+      USD: 7.2
+    };
+    var FX_LABELS = {
+      PHP: '菲律宾 PHP',
+      MYR: '马来西亚 MYR',
+      THB: '泰国 THB',
+      VND: '越南 VND',
+      USD: '美元 USD'
+    };
     var claimPollTimer = null;
     var claimPollAttempt = 0;
 
@@ -449,6 +472,7 @@
       }
       html += '</div></div>';
 
+      html += renderFxRates(p);
       html += renderPricing(p);
       html += renderOverseas(preview.overseas_sources || [], r.overseas_image_candidates || []);
       html += renderImages(r.image_actions || []);
@@ -467,35 +491,87 @@
       return '<tr><th>' + esc(k) + '</th><td>' + v + '</td></tr>';
     }
 
-    function renderPricing(p) {
-      var html = '<h2>价格审查</h2>';
-      html += '<div class="table-wrap"><table class="price-table"><thead><tr><th>站点</th><th>成本 CNY</th><th>计费重</th><th>挂牌价</th><th>35% 后</th><th>预估物流</th><th>预估利润</th><th>利润/状态</th><th>备注</th></tr></thead><tbody>';
-      (p.sea || []).forEach(function(x) {
-        var missing = x.status === 'missing_cost';
-        var rowOk = x.status === 'ok';
-        var listLabel = missing ? '待补来源价' : esc(x.currency + ' ' + x.list_price);
-        var saleLabel = missing ? '—' : esc(x.currency + ' ' + x.discount_price);
-        html += '<tr><td>' + esc(x.shop + ' ' + x.region) + '</td><td>' + esc(x.cost_cny == null ? '-' : x.cost_cny) + '</td><td>' +
-          esc(x.billable_kg == null ? '-' : x.billable_kg + ' kg') + '</td><td>' + listLabel + '</td><td>' +
-          saleLabel + '</td><td>' + esc(x.estimated_shipping_cny == null ? '-' : 'CNY ' + x.estimated_shipping_cny) + '</td><td>' +
-          esc(x.estimated_profit_cny == null ? '-' : 'CNY ' + x.estimated_profit_cny) + '</td><td><span class="' + (rowOk ? 'ok-pill' : 'warn-pill') + '">' +
-          (missing ? '待补数据' : esc((x.profit_margin_on_sale_pct == null ? x.target_margin_pct : x.profit_margin_on_sale_pct) + '%')) + '</span></td><td>' +
-          esc(x.notes || '35% discount reserve; target 20% margin') + '</td></tr>';
+    function readStoredFxRates() {
+      try {
+        var raw = localStorage.getItem(FX_STORAGE_KEY);
+        if (!raw) return {};
+        var parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : {};
+      } catch (e) {
+        return {};
+      }
+    }
+
+    function writeStoredFxRates(rates) {
+      try {
+        localStorage.setItem(FX_STORAGE_KEY, JSON.stringify(rates || {}));
+      } catch (e) {}
+    }
+
+    function currentFxRates() {
+      var rates = Object.assign({}, DEFAULT_FX_RATES);
+      var backend = ((preview || {}).pricing || {}).rates || ((preview || {}).review || {}).fx_rates || {};
+      Object.keys(backend || {}).forEach(function(k) {
+        var n = parseFloat(backend[k]);
+        if (n > 0) rates[k] = n;
       });
-      ['mx', 'uk'].forEach(function(k) {
-        var x = p[k] || {};
-        var cls = x.status === 'ok' ? 'ok-pill' : 'warn-pill';
-        var missing = x.status === 'missing_cost';
-        html += '<tr><td>' + esc(x.region || k.toUpperCase()) + '</td><td>' + esc(x.cost_cny == null ? '-' : x.cost_cny) + '</td><td>' +
-          esc(x.billable_kg == null ? '-' : x.billable_kg + ' kg') + '</td><td>' + (missing ? '待补来源价' : esc((x.currency || '') + ' ' + (x.list_price || ''))) +
-          '</td><td>' + (missing ? '—' : esc((x.currency || '') + ' ' + (x.discount_price || ''))) + '</td><td>' +
-          esc(x.estimated_shipping == null ? '-' : (x.currency || '') + ' ' + x.estimated_shipping) + '</td><td>' +
-          esc(x.estimated_profit == null ? '-' : (x.currency || '') + ' ' + x.estimated_profit) + '</td><td><span class="' + cls + '">' +
-          (missing ? '待补数据' : esc((x.profit_margin_on_sale_pct || 0) + '%')) + '</span> ' + (x.volumetric_dominates ? '体积重主导' : '') + '</td><td>' +
-          esc(x.notes || '') + '</td></tr>';
+      var stored = readStoredFxRates();
+      Object.keys(stored || {}).forEach(function(k) {
+        var n = parseFloat(stored[k]);
+        if (n > 0) rates[k] = n;
       });
-      html += '</tbody></table></div>';
+      return rates;
+    }
+
+    function collectFxRatesFromDom() {
+      var rates = currentFxRates();
+      Object.keys(DEFAULT_FX_RATES).forEach(function(code) {
+        var el = document.getElementById('fxRate_' + code);
+        if (!el) return;
+        var n = parseFloat(el.value || '');
+        if (n > 0) rates[code] = n;
+      });
+      return rates;
+    }
+
+    function renderFxRates(p) {
+      var rates = currentFxRates();
+      if ((p || {}).rates) {
+        Object.keys(p.rates).forEach(function(k) {
+          if (DEFAULT_FX_RATES[k] == null) return;
+          var n = parseFloat(p.rates[k]);
+          if (n > 0 && readStoredFxRates()[k] == null) rates[k] = n;
+        });
+      }
+      var html = '<details class="fx-panel" open>';
+      html += '<summary>汇率设置（CNY / 外币，可修改）</summary>';
+      html += '<div class="fx-grid">';
+      Object.keys(DEFAULT_FX_RATES).forEach(function(code) {
+        var inv = rates[code] > 0 ? (1 / rates[code]) : 0;
+        html += '<label>' + esc(FX_LABELS[code] || code) +
+          '<input id="fxRate_' + code + '" type="number" step="any" min="0" value="' + esc(rates[code]) +
+          '" oninput="onFxRateInput()" title="1 ' + code + ' = ? CNY">';
+        html += '<span class="muted">1 ' + code + ' = ' + (rates[code] || 0) + ' CNY';
+        if (code !== 'USD' && code !== 'MYR' && inv) {
+          html += ' · 1 CNY ≈ ' + inv.toFixed(code === 'VND' ? 0 : 2) + ' ' + code;
+        }
+        html += '</span></label>';
+      });
+      html += '</div>';
+      html += '<div class="fx-hint">默认按常见跨境报价写入；修改后立即按新汇率重算下方挂牌价 / 35% 后 / 物流 / 利润，并保存到本机 localStorage。</div>';
+      html += '</details>';
       return html;
+    }
+
+    function onFxRateInput() {
+      var rates = collectFxRatesFromDom();
+      writeStoredFxRates(rates);
+      if (!preview) return;
+      if (fxRateTimer) clearTimeout(fxRateTimer);
+      fxRateTimer = setTimeout(function() {
+        // 本地 Treasury 复算价格（不重新抓取 1688）
+        saveReview(false, true, 'fx');
+      }, 180);
     }
 
     function renderPricing(p) {
@@ -503,7 +579,7 @@
       var sections = audit.sections || [];
       if (!sections.length) return '<h2>价格审查</h2><p class="muted">还没有可展示的定价审计结果。</p>';
       var html = '<h2>价格审查</h2>';
-      html += '<p class="hint">这一组表格就是审核页当前记住并实际采用的价格计算规则，后面可以继续按结算单修正。</p>';
+      html += '<p class="hint">这一组表格就是审核页当前记住并实际采用的价格计算规则，后面可以继续按结算单修正。SEA 行标题含当前汇率。</p>';
       sections.forEach(function(section) {
         html += '<div class="card-lite">';
         html += '<div class="section-head"><strong>' + esc(section.title || section.section || 'Pricing Audit') + '</strong>';
@@ -677,6 +753,7 @@
         video_action: (document.getElementById('videoAction') || {}).value || 'none',
         support_cod: true,
         image_actions: imgs,
+        fx_rates: collectFxRatesFromDom(),
         fields_locked: !!lockFields
       };
     }
@@ -782,45 +859,49 @@
       var snapshot = stageSnapshot();
       card.classList.toggle('ready', locked);
       if (flow) flow.innerHTML = renderStageFlow(snapshot);
-      badge.textContent = siteReady ? '???????' : ((claimed || claimInProgress) ? '?????' : (written ? '???????' : (locked ? '??????' : '??????')));
+      badge.textContent = siteReady ? '站点草稿待发布' : ((claimed || claimInProgress) ? '站点配置中' : (written ? '妙手二审待确认' : (locked ? '第一轮已通过' : '第一轮审核中')));
       hint.textContent = siteReady
-        ? ('?????? ' + (preview.site_drafts.site_count || 0) + ' ???/?????????????')
+        ? ('已生成并校验 ' + (preview.site_drafts.site_count || 0) + ' 个国家/地区的站点草稿；尚未发布。')
         : (claimed || claimInProgress)
-        ? ((claimInProgress ? 'TikTok ???????????????' : '') +
-          (siteDrafts.in_progress ? '?????????' : '') +
-          '??? TikTok ???? ' + (preview.tiktok_claim.claimed_shop_count || 0) + ' ???????' + blockedCount + ' ???????' +
-          (claimState.last_error ? ' ???' + claimState.last_error : '') +
-          (siteDrafts.last_error ? ' ???' + siteDrafts.last_error : '') +
-          (failedSummary ? ' ?????' + failedSummary : '') +
-          ' ?????')
+        ? ((claimInProgress ? 'TikTok 认领进行中；' : '') +
+          (siteDrafts.in_progress ? '站点草稿生成中；' : '') +
+          '已认领 TikTok 采集箱 ' + (preview.tiktok_claim.claimed_shop_count || 0) + ' 个授权店铺，' + blockedCount + ' 个站点待授权' +
+          (claimState.last_error ? '；错误：' + claimState.last_error : '') +
+          (siteDrafts.last_error ? '；草稿错误：' + siteDrafts.last_error : '') +
+          (failedSummary ? '；校验失败：' + failedSummary : '') +
+          '。')
         : written
-        ? '???????????????????? TikTok ?????????'
+        ? '已写入妙手公共采集箱，等待继续同步到 TikTok'
         : locked
-        ? '?????????????????? SKU?????????????????'
-        : '???????????????????????????????';
+        ? '字段锁定，准备妙手二审草稿。若继续修改图片动作，将自动重新保存。'
+        : '修改标题、图片、尺寸重量、站点选择和价格审查';
       button.disabled = false;
       button.textContent = siteReady
-        ? '??????????????'
+        ? '站点草稿已就绪，等待发布审批'
         : (claimed || claimInProgress)
-        ? '???????????'
+        ? '继续：生成站点草稿'
         : written
-        ? '????????? TikTok'
+        ? '继续同步到 TikTok'
         : locked
-        ? (miaoshouDraftPrepared ? '?????????' : '?????????')
-        : '???????';
+        ? (miaoshouDraftPrepared ? '写入妙手公共采集箱' : '继续：准备妙手二审')
+        : '提交并进入下一步';
     }
 
     function runStageAction() {
       if (!preview) return;
+      if (pendingStageAction === 'drop-long-video') {
+        applyLongVideoFallback();
+        return;
+      }
       if ((preview.site_drafts || {}).ready) {
-        setStatus('????????????????...');
+        setStatus('站点草稿已生成，正在刷新状态...');
         refreshPreviewState(false).catch(function(e) {
           setStatus(String(e));
         });
         return;
       }
       if ((preview.tiktok_claim || {}).in_progress) {
-        startClaimPolling('?????? TikTok ??????');
+        startClaimPolling('正在认领 TikTok 采集箱');
         return;
       }
       if ((preview.tiktok_claim || {}).claimed) {
@@ -858,7 +939,7 @@
               siteDraftPollTimer = null;
             }
             siteDraftPollAttempt = 0;
-            setStatus('???????????????????????????????');
+            setStatus('站点草稿已生成并校验；当前阶段已刷新。');
             render();
             return;
           }
@@ -868,11 +949,11 @@
               siteDraftPollTimer = null;
             }
             if (button) button.disabled = false;
-            setStatus('??????????????????????');
+            setStatus('站点草稿生成轮询超时，请稍后手动刷新。');
             render();
             return;
           }
-          setStatus((reason || '????????') + '?? ' + siteDraftPollAttempt + ' ?????...');
+          setStatus((reason || '正在生成站点草稿') + '，第 ' + siteDraftPollAttempt + ' 次轮询...');
           siteDraftPollTimer = setTimeout(tick, 2500);
         }).catch(function(e) {
           if (siteDraftPollAttempt >= 30) {
@@ -881,7 +962,7 @@
               siteDraftPollTimer = null;
             }
             if (button) button.disabled = false;
-            setStatus('?????????' + String(e));
+            setStatus('站点草稿轮询失败：' + String(e));
             render();
             return;
           }
@@ -894,11 +975,11 @@
     function prepareSiteDrafts() {
       var button = document.getElementById('stageButton');
       button.disabled = true;
-      button.textContent = '????????...';
-      setStatus('??????????????????? COD ????????');
+      button.textContent = '正在生成站点草稿...';
+      setStatus('正在写入站点价格、英文规格、库存和 COD 配置；不会发布。');
       refreshPreviewState(true).then(function(d) {
         if ((d.site_drafts || {}).ready) {
-          setStatus('????????????????');
+          setStatus('站点草稿已生成。');
           render();
           return null;
         }
@@ -908,12 +989,12 @@
           body: JSON.stringify({offer_id: preview.offer_id})
         });
       }).then(function(d) {
-        if (d && !d.ok) throw new Error(d.error || '????????');
-        startSiteDraftPolling('??????????');
+        if (d && !d.ok) throw new Error(d.error || '站点草稿准备失败');
+        startSiteDraftPolling('正在校验站点草稿');
       }).catch(function(e) {
         setStatus(String(e));
         button.disabled = false;
-        button.textContent = '??????????';
+        button.textContent = '重试生成站点草稿';
       });
     }
 
@@ -935,7 +1016,7 @@
             }
             claimPollAttempt = 0;
             var blocked = Object.keys((claim.blocked_sites || {})).length;
-            setStatus('??? TikTok ???? ' + (claim.claimed_shop_count || 0) + ' ????' + blocked + ' ????????????');
+            setStatus('已认领 TikTok 采集箱 ' + (claim.claimed_shop_count || 0) + ' 个店铺，' + blocked + ' 个站点待授权。');
             render();
             return;
           }
@@ -945,7 +1026,7 @@
               claimPollTimer = null;
             }
             if (button) button.disabled = false;
-            setStatus('?????' + claim.last_error);
+            setStatus('认领失败：' + claim.last_error);
             render();
             return;
           }
@@ -955,11 +1036,11 @@
               claimPollTimer = null;
             }
             if (button) button.disabled = false;
-            setStatus('?????? TikTok ???????????????');
+            setStatus('认领 TikTok 采集箱轮询超时，请稍后刷新状态。');
             render();
             return;
           }
-          setStatus((reason || '?????? TikTok ??????') + '?? ' + claimPollAttempt + ' ?????...');
+          setStatus((reason || '正在认领 TikTok 采集箱') + '，第 ' + claimPollAttempt + ' 次轮询...');
           claimPollTimer = setTimeout(tick, 2500);
         }).catch(function(e) {
           if (claimPollAttempt >= 180) {
@@ -968,7 +1049,7 @@
               claimPollTimer = null;
             }
             if (button) button.disabled = false;
-            setStatus('?????????' + String(e));
+            setStatus('认领轮询失败：' + String(e));
             render();
             return;
           }
@@ -981,19 +1062,19 @@
     function continueAfterSecondReview() {
       var button = document.getElementById('stageButton');
       button.disabled = true;
-      button.textContent = '???????...';
-      setStatus('?????????????? TikTok ???????????????');
+      button.textContent = '正在认领中...';
+      setStatus('正在从妙手二审继续同步到 TikTok 采集箱；可能需要一点时间。');
       api('/api/new-product/miaoshou-second-review/continue', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({offer_id: preview.offer_id})
       }).then(function(d) {
-        if (!d.ok) throw new Error(d.error || '????????');
-        startClaimPolling('?????? TikTok ??????');
+        if (!d.ok) throw new Error(d.error || '继续同步到 TikTok 失败');
+        startClaimPolling('正在认领 TikTok 采集箱');
       }).catch(function(e) {
         setStatus(String(e));
         button.disabled = false;
-        button.textContent = '?????????';
+        button.textContent = '重试继续同步到 TikTok';
       });
     }
 
@@ -1057,23 +1138,23 @@
       if (!preview) return Promise.resolve(true);
       var urls = overseasLines();
       if (!urls.length) return Promise.resolve(true);
-      if (!quiet) setStatus(fetchNow ? 'ץȡ�����ز���...' : '���溣��������...');
+      if (!quiet) setStatus(fetchNow ? '抓取海外素材中...' : '保存海外链接中...');
       return api('/api/new-product/overseas-sources', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({offer_id: preview.offer_id, overseas_urls: urls, fetch: !!fetchNow})
       }).then(function(d) {
         if (!d.ok) {
-          if (!quiet) alert(d.error || '�����زĴ���ʧ��');
-          pipelineFailures.push('�����ز�: ' + (d.error || '����ʧ��'));
+          if (!quiet) alert(d.error || '海外素材处理失败');
+          pipelineFailures.push('海外素材: ' + (d.error || '处理失败'));
           return false;
         }
         preview = d;
         render();
-        setStatus(fetchNow ? '�����ز�ץȡ���' : '���������ѱ���');
+        setStatus(fetchNow ? '海外素材抓取完成' : '海外链接已保存');
         return true;
       }).catch(function(e) {
-        pipelineFailures.push('�����ز�: ' + String(e));
+        pipelineFailures.push('海外素材: ' + String(e));
         if (!quiet) alert(String(e));
         renderProgress();
         return false;
@@ -1102,16 +1183,16 @@
     function addImageRequest() {
       if (!preview) return;
       var prompt = document.getElementById('imagePrompt').value.trim();
-      if (!prompt) { alert('������ͼƬ����'); return; }
+      if (!prompt) { alert('请输入图片需求'); return; }
       api('/api/new-product/image-request', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({offer_id: preview.offer_id, prompt: prompt})
       }).then(function(d) {
-        if (!d.ok) { alert(d.error || '��¼ʧ��'); return; }
+        if (!d.ok) { alert(d.error || '记录失败'); return; }
         preview = d;
         render();
-        setStatus('�Ѽ�¼����ͼƬ������δ���ø��� API');
+        setStatus('已记录补充图片需求（未调用付费 API）');
       });
     }
 

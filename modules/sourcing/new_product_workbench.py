@@ -15,7 +15,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -165,6 +165,48 @@ GB_RULE = {
     "target_margin": 0.1695,
     "discount_reserve_rate": 0.25,
 }
+
+# Editable FX panel defaults: CNY per 1 unit of local currency.
+# PHP/THB/VND use approximate inverses of common "local per CNY" quotes (7.9 / 4.9 / 3500).
+DEFAULT_FX_RATES: dict[str, float] = {
+    "PHP": round(1 / 7.9, 6),
+    "MYR": 1.55,
+    "THB": round(1 / 4.9, 6),
+    "VND": round(1 / 3500, 8),
+    "USD": 7.2,
+}
+
+
+def default_fx_rates() -> dict[str, float]:
+    rates = dict(DEFAULT_FX_RATES)
+    for rule in SEA_REGION_RULES.values():
+        rates.setdefault(rule.currency, float(rule.cny_per_local))
+    return rates
+
+
+def merge_fx_rates(overrides: dict[str, Any] | None = None) -> dict[str, float]:
+    rates = default_fx_rates()
+    if not isinstance(overrides, dict):
+        return rates
+    for key, raw in overrides.items():
+        cur = str(key or "").strip().upper()
+        if not cur:
+            continue
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            rates[cur] = value
+    return rates
+
+
+def _sea_rule_with_rates(region: str, fx_rates: dict[str, float]) -> SeaRegionRule:
+    rule = SEA_REGION_RULES[region]
+    rate = fx_rates.get(rule.currency)
+    if rate is None or rate <= 0:
+        return rule
+    return replace(rule, cny_per_local=float(rate))
 
 
 def _now() -> str:
@@ -639,9 +681,17 @@ def _solve_sea_sale_price(rule: SeaRegionRule, goods_local: float, logistics_loc
     }
 
 
-def _sea_market_row(market: dict[str, Any], cost_cny: float, weight_kg: float, package_cm: list[float]) -> dict[str, Any]:
+def _sea_market_row(
+    market: dict[str, Any],
+    cost_cny: float,
+    weight_kg: float,
+    package_cm: list[float],
+    *,
+    fx_rates: dict[str, float] | None = None,
+) -> dict[str, Any]:
     region = str(market["region"])
-    rule = SEA_REGION_RULES[region]
+    rates = fx_rates or default_fx_rates()
+    rule = _sea_rule_with_rates(region, rates)
     target_margin = SEA_TARGET_MARGIN.get(str(market["shop"]), 0.15)
     actual_weight_g = weight_kg * 1000
     rounded_weight_g = _round_weight_g(actual_weight_g)
@@ -908,7 +958,14 @@ def _uk_pricing_row(cost_cny: float, weight_kg: float, package_cm: list[float]) 
     }
 
 
-def price_review(cost_cny: float, weight_kg: float, package_cm: list[float]) -> dict[str, Any]:
+def price_review(
+    cost_cny: float,
+    weight_kg: float,
+    package_cm: list[float],
+    *,
+    fx_rates: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    rates = merge_fx_rates(fx_rates)
     volumetric = _volumetric_kg(package_cm)
     billable = max(weight_kg, volumetric)
     if cost_cny <= 0:
@@ -916,7 +973,7 @@ def price_review(cost_cny: float, weight_kg: float, package_cm: list[float]) -> 
         for market in SEA_MARKETS:
             if market["region"] not in SEA_REGION_RULES:
                 continue
-            rule = SEA_REGION_RULES[market["region"]]
+            rule = _sea_rule_with_rates(market["region"], rates)
             sea_missing.append({
                 **market,
                 "currency": rule.currency,
@@ -954,19 +1011,24 @@ def price_review(cost_cny: float, weight_kg: float, package_cm: list[float]) -> 
             "sea": sea_missing,
             "mx": {"region": "MX", "currency": "MXN", **pending},
             "uk": {"region": "GB", "currency": "GBP", **pending},
+            "rates": rates,
             "audit": {"sections": []},
         }
 
-    sea = [_sea_market_row(market, cost_cny, weight_kg, package_cm) for market in SEA_MARKETS if market["region"] in SEA_REGION_RULES]
+    sea = [
+        _sea_market_row(market, cost_cny, weight_kg, package_cm, fx_rates=rates)
+        for market in SEA_MARKETS
+        if market["region"] in SEA_REGION_RULES
+    ]
     mx = _mx_pricing_row(cost_cny, weight_kg, package_cm)
     uk = _uk_pricing_row(cost_cny, weight_kg, package_cm)
     sea_audit_rows: list[dict[str, Any]] = []
     for row in sea:
         header = row.get("header_meta") or {}
-        rule = SEA_REGION_RULES[str(row["region"])]
+        rule = _sea_rule_with_rates(str(row["region"]), rates)
         sea_audit_rows.append({
             "section": f"SEA_{row['shop']}_{row['region']}",
-            "title": f"{row['shop']} {row['region']}",
+            "title": f"{row['shop']} {row['region']} · 1 {row['currency']} = {rule.cny_per_local:g} CNY",
             "currency": row["currency"],
             "header_labels": [
                 "品牌",
@@ -986,6 +1048,7 @@ def price_review(cost_cny: float, weight_kg: float, package_cm: list[float]) -> 
             ],
             "notes": [
                 f"目标利润 {header.get('target_margin_pct', 0):.2f}%",
+                f"汇率 1 {rule.currency} = {rule.cny_per_local:g} CNY",
                 f"固定费用 {_money(header.get('fixed_fee_local', 0), rule.currency)}",
                 (
                     f"费率封顶 {_money(header.get('extra_cap_local', 0), rule.currency)}"
@@ -1033,6 +1096,7 @@ def price_review(cost_cny: float, weight_kg: float, package_cm: list[float]) -> 
             "estimated_shipping": uk.get("shipping_local"),
             "estimated_profit": uk.get("estimated_profit"),
         },
+        "rates": rates,
         "audit": {
             "sections": sea_audit_rows + [
                 {
@@ -1256,6 +1320,7 @@ def build_preview(offer_id_or_url: str, *, source_code: str = "") -> dict[str, A
     weight = _float(review.get("weight_kg"), source["weight_kg"])
     dims = _dims(review.get("package_cm") or source["package_cm"])
     cost = _float(review.get("cost_cny"), source["cost_cny"])
+    fx_rates = merge_fx_rates(review.get("fx_rates"))
     miaoshou_draft = _load_json(STATE_DIR / f"{offer_id}_miaoshou_draft.json") or {}
     tiktok_claim = _load_json(STATE_DIR / f"{offer_id}_tiktok_claim.json") or {}
     site_drafts = _load_json(STATE_DIR / f"{offer_id}_site_drafts.json") or {}
@@ -1278,10 +1343,11 @@ def build_preview(offer_id_or_url: str, *, source_code: str = "") -> dict[str, A
             "overseas_image_candidates": overseas_images,
             "image_generation_requests": review.get("image_generation_requests") or [],
             "fields_locked": bool(review.get("fields_locked")),
+            "fx_rates": fx_rates,
         },
         "overseas_sources": overseas_sources,
         "target_sites": SEA_MARKETS,
-        "pricing": price_review(cost, weight, dims),
+        "pricing": price_review(cost, weight, dims, fx_rates=fx_rates),
         "miaoshou_draft": {
             "ready": bool(miaoshou_draft.get("ready")),
             "written_to_miaoshou": bool(miaoshou_draft.get("written_to_miaoshou")),

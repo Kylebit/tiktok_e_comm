@@ -143,6 +143,9 @@ class NewProductHandler(BaseHTTPRequestHandler):
         cache_seconds: int | None = None,
     ) -> None:
         self.send_response(code)
+        if content_type.startswith("text/") or content_type.startswith("application/json") or "html" in content_type:
+            if "charset=" not in content_type.lower():
+                content_type = f"{content_type}; charset=utf-8"
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(raw)))
         if cache_seconds is not None:
@@ -154,7 +157,11 @@ class NewProductHandler(BaseHTTPRequestHandler):
         if not path.is_file():
             self.send_error(404)
             return
-        self._bytes(200, path.read_bytes(), _guess_type(path))
+        ctype = _guess_type(path)
+        if path.suffix.lower() in (".html", ".htm", ".js", ".css", ".json", ".svg"):
+            if "charset=" not in ctype.lower():
+                ctype = f"{ctype}; charset=utf-8"
+        self._bytes(200, path.read_bytes(), ctype)
 
     def _proxy_image(self, raw_url: str) -> None:
         url = unquote((raw_url or "").strip())

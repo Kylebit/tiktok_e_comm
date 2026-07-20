@@ -227,8 +227,12 @@
       var card = img.closest('.image-card');
       if (card) card.classList.remove('img-error');
       imageLoadState[img.dataset.imgKey] = 'pending';
-      var base = img.getAttribute('data-base-src') || '';
-      if (base) img.src = base + (base.indexOf('?') >= 0 ? '&' : '?') + '_retry=' + Date.now();
+      var orig = img.getAttribute('data-orig-url') || '';
+      var next = orig ? imgSrc(orig) : (img.getAttribute('data-base-src') || '');
+      if (next) {
+        img.setAttribute('data-base-src', next);
+        img.src = next + (next.indexOf('?') >= 0 ? '&' : '?') + '_retry=' + Date.now();
+      }
       updateImageProgressUi(scope);
     }
 
@@ -544,7 +548,7 @@
         var src = imgSrc(img.url || '');
         if (!imageLoadState[key]) imageLoadState[key] = 'pending';
         html += '<div class="image-card">';
-        html += '<img src="' + esc(src) + '" alt="" loading="' + (idx < 4 ? 'eager' : 'lazy') + '" decoding="async" fetchpriority="' + (idx < 4 ? 'high' : 'low') + '" data-img-scope="' + scope + '" data-img-idx="' + idx + '" data-img-key="' + key + '" data-base-src="' + esc(src) + '" onload="markImageLoaded(this)" onerror="markImageError(this)">';
+        html += '<img src="' + esc(src) + '" alt="" loading="' + (idx < 4 ? 'eager' : 'lazy') + '" decoding="async" fetchpriority="' + (idx < 4 ? 'high' : 'low') + '" data-img-scope="' + scope + '" data-img-idx="' + idx + '" data-img-key="' + key + '" data-orig-url="' + esc(img.url || '') + '" data-base-src="' + esc(src) + '" onload="markImageLoaded(this)" onerror="markImageError(this)">';
         html += '<div class="img-fallback">图片加载失败<br>' + esc(img.url || '') + '<br><button class="btn-secondary" onclick="retryImage(\'' + scope + '\',' + idx + ')">重新拉取</button></div>';
         html += '<div class="body">';
         html += '<select class="imageAction" data-idx="' + idx + '">';
@@ -584,7 +588,7 @@
           var key = imageKey(scope, idx);
           var src = imgSrc(img.url || '');
           if (!imageLoadState[key]) imageLoadState[key] = 'pending';
-        html += '<div class="image-card"><img src="' + esc(src) + '" alt="" loading="lazy" decoding="async" fetchpriority="low" data-img-scope="' + scope + '" data-img-idx="' + idx + '" data-img-key="' + key + '" data-base-src="' + esc(src) + '" onload="markImageLoaded(this)" onerror="markImageError(this)"><div class="img-fallback">图片加载失败<br>' + esc(img.url || '') + '<br><button class="btn-secondary" onclick="retryImage(\'' + scope + '\',' + idx + ')">重新拉取</button></div><div class="body">';
+        html += '<div class="image-card"><img src="' + esc(src) + '" alt="" loading="lazy" decoding="async" fetchpriority="low" data-img-scope="' + scope + '" data-img-idx="' + idx + '" data-img-key="' + key + '" data-orig-url="' + esc(img.url || '') + '" data-base-src="' + esc(src) + '" onload="markImageLoaded(this)" onerror="markImageError(this)"><div class="img-fallback">图片加载失败<br>' + esc(img.url || '') + '<br><button class="btn-secondary" onclick="retryImage(\'' + scope + '\',' + idx + ')">重新拉取</button></div><div class="body">';
           html += '<div class="muted">' + esc(img.note || 'overseas candidate') + '</div>';
           html += '<button class="btn-secondary" onclick="promoteOverseasImage(' + idx + ')">加入图片审核</button>';
           html += '</div></div>';

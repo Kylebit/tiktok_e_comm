@@ -47,3 +47,12 @@ venv/
 .vscode/
 *.swp
 .claude/
+
+# 本地产物 / 临时 / 日志（不入库，2026-07-20 清理）
+outputs/
+web/shopee_profit.html
+tmp/
+tmp_*.json
+feishu_bot_live*.log
+feishu_bot_live*.err.log
+__pycache__/

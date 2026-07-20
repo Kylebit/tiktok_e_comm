@@ -1360,10 +1360,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._module_moved("Orbit Rus", "http://127.0.0.1:8767/")
         if path.startswith("/api/new-product/"):
             return self._json(410, {"ok": False, "error": "Orbit Treasury moved to http://127.0.0.1:8766/"})
-        if path.startswith("/api/ozon/") or path.startswith("/api/rus/"):
-            return self._json(410, {"ok": False, "error": "Orbit Rus moved to http://127.0.0.1:8767/"})
         if self._handle_ozon_proxy("GET"):
             return
+        if path.startswith("/api/ozon/") or path.startswith("/api/rus/"):
+            return self._json(410, {"ok": False, "error": "Orbit Rus moved to http://127.0.0.1:8767/"})
 
         if path in ("/", "/index.html"):
             return self._file(WEB_DIR / "index.html")
@@ -1428,7 +1428,8 @@ class Handler(BaseHTTPRequestHandler):
             files = []
             if out_dir.is_dir():
                 for p in sorted(out_dir.glob("weekly_shopee_profit_*.html"), reverse=True)[:12]:
-                    files.append({"name": p.name, "mtime": int(p.stat().st_mtime)})
+                    stat = p.stat()
+                    files.append({"name": p.name, "mtime": int(stat.st_mtime), "size": stat.st_size})
             return self._json(200, {"ok": True, "reports": files})
 
         if path == "/api/mx/approvals":
@@ -1945,10 +1946,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_feishu_event()
         if path.startswith("/api/new-product/"):
             return self._json(410, {"ok": False, "error": "Orbit Treasury moved to http://127.0.0.1:8766/"})
-        if path.startswith("/api/ozon/") or path.startswith("/api/rus/"):
-            return self._json(410, {"ok": False, "error": "Orbit Rus moved to http://127.0.0.1:8767/"})
         if self._handle_ozon_proxy("POST"):
             return
+        if path.startswith("/api/ozon/") or path.startswith("/api/rus/"):
+            return self._json(410, {"ok": False, "error": "Orbit Rus moved to http://127.0.0.1:8767/"})
         try:
             data = self._read_json()
         except json.JSONDecodeError:

@@ -1,22 +1,244 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>结算账单 · 三平台周期结算</title>
   <link rel="stylesheet" href="/static/app.css">
   <style>
-    .billing-tabs { display: flex; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
-    .billing-tab { padding: 8px 20px; border: 1px solid #ccc; border-radius: 6px; background: #fff; cursor: pointer; font-size: 14px; }
-    .billing-tab:hover { border-color: #0ea5e9; }
-    .billing-tab.active { background: #0ea5e9; color: #fff; border-color: #0ea5e9; }
-    .billing-frame-wrap { width: 100%; height: 78vh; border: 1px solid #e5e5e5; border-radius: 8px; overflow: hidden; background: #fff; }
-    .billing-frame-wrap iframe { width: 100%; height: 100%; border: 0; }
-    .billing-note { font-size: 12px; color: #888; margin: 6px 0; }
-    .report-list { margin: 8px 0 0; padding: 0; list-style: none; }
-    .report-list li { padding: 6px 0; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
-    .report-list a { color: #0ea5e9; text-decoration: none; }
-    .hidden { display: none; }
+    :root {
+      --panel: #fff;
+      --text: #18212f;
+      --muted: #64748b;
+      --line: #dbe2ea;
+      --soft: #f8fafc;
+      --good: #047857;
+      --bad: #dc2626;
+      --accent: #2563eb;
+      --warn: #b45309;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #f5f7fb;
+      color: var(--text);
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    main.billing-shell {
+      width: calc(100vw - 32px);
+      max-width: none;
+      margin: 22px auto 48px;
+    }
+    .page-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: flex-start;
+      margin-bottom: 14px;
+    }
+    h1 { margin: 0 0 8px; font-size: 30px; letter-spacing: 0; }
+    h2 { margin: 0 0 12px; font-size: 19px; }
+    h3 { margin: 0 0 10px; font-size: 15px; }
+    .sub, .note, .meta { color: var(--muted); }
+    .note { line-height: 1.55; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 14px 0 18px;
+    }
+    .tab {
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 999px;
+      padding: 9px 16px;
+      color: var(--text);
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .tab:hover { border-color: var(--accent); }
+    .tab.active {
+      color: #fff;
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+    .panel, .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      box-shadow: 0 10px 30px rgba(15, 23, 42, .04);
+    }
+    .panel {
+      padding: 14px 16px;
+      margin-bottom: 16px;
+    }
+    .panel.hidden { display: none; }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(150px, 1fr));
+      gap: 12px;
+      margin: 14px 0 16px;
+    }
+    .card { padding: 14px 16px; }
+    .label {
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 6px;
+    }
+    .value {
+      font-size: 22px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+    .good { color: var(--good); }
+    .bad { color: var(--bad); }
+    .warn { color: var(--warn); }
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 10px;
+      align-items: end;
+      margin-top: 12px;
+    }
+    .controls label {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    input, select, button {
+      font: inherit;
+    }
+    input, select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 10px;
+      background: #fff;
+      color: var(--text);
+    }
+    .btn {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 12px;
+      background: #fff;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .btn:hover { border-color: var(--accent); }
+    .btn-primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    .btn[disabled] {
+      opacity: .55;
+      cursor: not-allowed;
+    }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: end;
+      margin: 10px 0 4px;
+    }
+    .toolbar label {
+      color: var(--muted);
+      font-size: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .table-wrap {
+      overflow: auto;
+      max-height: 72vh;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+    }
+    table {
+      width: max-content;
+      min-width: 100%;
+      border-collapse: collapse;
+    }
+    th, td {
+      border-bottom: 1px solid #edf2f7;
+      padding: 9px 10px;
+      text-align: left;
+      vertical-align: middle;
+      font-size: 12px;
+    }
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      background: var(--soft);
+      color: #334155;
+      white-space: nowrap;
+    }
+    td.num, th.num {
+      text-align: right;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+    td.clip {
+      max-width: 260px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    tr.loss td { background: #fff1f2; }
+    tr.pending td { background: #f8fafc; color: #64748b; }
+    img.thumb {
+      width: 52px;
+      height: 52px;
+      object-fit: cover;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: #f1f5f9;
+      display: block;
+    }
+    .empty {
+      padding: 28px;
+      text-align: center;
+      color: var(--muted);
+    }
+    .grid-2 {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 14px;
+    }
+    .progress-track {
+      height: 8px;
+      border-radius: 999px;
+      background: #e2e8f0;
+      overflow: hidden;
+      margin-top: 10px;
+    }
+    .progress-fill {
+      height: 100%;
+      width: 0;
+      background: var(--accent);
+      transition: width .25s;
+    }
+    @media (max-width: 900px) {
+      main.billing-shell { width: calc(100vw - 18px); }
+      .page-head, .grid-2 { display: block; }
+      .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
   </style>
 </head>
 <body>
@@ -27,67 +249,392 @@
       <a href="/catalog">商品目录</a>
       <a href="/settlement">结算中心</a>
       <a href="/billing" class="active">结算账单</a>
-      <a href="/shopee-profit">Shopee利润</a>
+      <a href="/shopee-profit">Shopee 利润</a>
       <a href="/sourcing">选品中心</a>
-      <a href="http://127.0.0.1:8767/">俄罗斯台(Ozon)</a>
+      <a href="http://127.0.0.1:8767/">Ozon</a>
     </nav>
   </header>
-  <main class="container">
-    <h1>结算账单 · 三平台周期结算</h1>
-    <p class="hint">在一个入口查看 TikTok / Shopee / Ozon 三家的周期结算（账单）页面。下方为内嵌视图，切换标签即可查看对应平台的结算台。</p>
 
-    <div class="billing-tabs">
-      <button type="button" class="billing-tab active" data-platform="tk">TikTok 结算</button>
-      <button type="button" class="billing-tab" data-platform="shopee">Shopee 利润</button>
-      <button type="button" class="billing-tab" data-platform="ozon">Ozon 结算</button>
-    </div>
+  <main class="billing-shell">
+    <section class="page-head">
+      <div>
+        <h1>结算账单 · 三平台周期结算</h1>
+        <div class="sub">统一查看 TikTok、Shopee、Ozon 的周期结算数据。当前页直接渲染 API 数据，不再使用 iframe。</div>
+      </div>
+      <span class="pill" id="healthPill">非 iframe 统一页</span>
+    </section>
 
-    <!-- TikTok -->
-    <div class="billing-panel" data-panel="tk">
-      <p class="billing-note">TikTok Shop 结算与利润（四国 PH/MY/TH/VN），数据源为 TikTok Finance 结算 CSV。</p>
-      <div class="billing-frame-wrap"><iframe src="/settlement" title="TikTok 结算"></iframe></div>
-    </div>
+    <nav class="tabs" aria-label="平台切换">
+      <button class="tab active" type="button" data-tab="tk">TikTok 结算</button>
+      <button class="tab" type="button" data-tab="shopee">Shopee 利润</button>
+      <button class="tab" type="button" data-tab="ozon">Ozon 结算</button>
+    </nav>
 
-    <!-- Shopee -->
-    <div class="billing-panel hidden" data-panel="shopee">
-      <p class="billing-note">Shopee 已拨款利润。若实时页数据为空，可点击下方「已生成周报」直接查看账单 HTML。</p>
-      <div class="billing-frame-wrap"><iframe src="/shopee-profit" title="Shopee 利润"></iframe></div>
-      <h3 style="margin:12px 0 4px">已生成周报（账单快照）</h3>
-      <ul class="report-list" id="shopeeReports"><li class="meta">加载中…</li></ul>
-    </div>
+    <section class="panel" data-panel="tk">
+      <h2>TikTok Shop 结算与利润</h2>
+      <p class="note">从现有 TikTok Finance 结算 CSV/API 汇总，支持日期范围、汇率、广告成本比例、拉取结算、店铺总利润表和订单明细。</p>
+      <div class="toolbar">
+        <label>开始日期 <input type="date" id="tkStart"></label>
+        <label>结束日期 <input type="date" id="tkEnd"></label>
+        <button class="btn btn-primary" type="button" id="tkLoad">查询利润</button>
+        <button class="btn" type="button" id="tkPull">拉取结算</button>
+        <span class="meta" id="tkMeta">等待加载</span>
+      </div>
+      <div id="tkProgress" hidden>
+        <div class="progress-track"><div class="progress-fill" id="tkProgressFill"></div></div>
+        <p class="meta" id="tkProgressText"></p>
+      </div>
+      <div class="controls" id="tkRateGrid"></div>
+      <div class="controls" id="tkAdGrid"></div>
+      <div class="cards" id="tkCards"></div>
+      <div class="panel">
+        <h3>所有店铺总利润</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>国家</th><th>周期</th><th>币种</th>
+                <th class="num">总结算额</th><th class="num">GMV Ads</th><th class="num">有效结算</th>
+                <th class="num">物流补贴</th><th class="num">商品成本 CNY</th><th class="num">汇率</th><th class="num">利润 CNY</th>
+              </tr>
+            </thead>
+            <tbody id="tkProfitBody"><tr><td colspan="10" class="empty">等待查询</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="panel">
+        <h3>订单明细</h3>
+        <div class="toolbar">
+          <label>国家筛选
+            <select id="tkRegionFilter">
+              <option value="">全部</option>
+              <option value="PH">PH</option>
+              <option value="MY">MY</option>
+              <option value="TH">TH</option>
+              <option value="VN">VN</option>
+            </select>
+          </label>
+          <span class="meta" id="tkOrderMeta"></span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>日期</th><th>国家</th><th>图片</th><th>订单 ID</th><th>SKU ID</th>
+                <th>商品名称</th><th>规格</th><th class="num">结算</th><th class="num">成本 CNY</th>
+                <th class="num">广告</th><th class="num">利润 CNY</th><th class="num">利润率</th><th>状态</th>
+              </tr>
+            </thead>
+            <tbody id="tkOrderBody"><tr><td colspan="13" class="empty">等待查询</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
 
-    <!-- Ozon -->
-    <div class="billing-panel hidden" data-panel="ozon">
-      <p class="billing-note">Ozon 俄罗斯台结算（独立服务 8767）。需确保 <code>python main.py rus</code> 已启动。</p>
-      <div class="billing-frame-wrap"><iframe src="http://127.0.0.1:8767/" title="Ozon 结算"></iframe></div>
-    </div>
+    <section class="panel hidden" data-panel="shopee">
+      <h2>Shopee 已拨款利润</h2>
+      <p class="note">当前主服务提供的是已生成周报快照列表；此处直接列出快照并显示可读摘要，点击即可打开原始 HTML 报告。</p>
+      <div class="toolbar">
+        <button class="btn btn-primary" type="button" id="shopeeRefresh">刷新周报快照</button>
+        <span class="meta" id="shopeeMeta">等待加载</span>
+      </div>
+      <div class="cards" id="shopeeCards"></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>报告文件</th><th>更新时间</th><th class="num">文件大小</th><th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="shopeeReportBody"><tr><td colspan="4" class="empty">加载中</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel hidden" data-panel="ozon">
+      <h2>Ozon 结算</h2>
+      <p class="note">通过主服务代理调用 Ozon 结算接口，支持月份窗口和“只看已结算”筛选。若接口失败，请确认 Ozon 凭证与服务配置可用。</p>
+      <div class="toolbar">
+        <label>回看月份 <input type="number" id="ozonMonths" min="1" max="12" value="3"></label>
+        <label style="display:flex; flex-direction:row; align-items:center; gap:8px; margin-bottom:8px;">
+          <input type="checkbox" id="ozonOnlySettled" style="width:auto;"> 只看已结算
+        </label>
+        <button class="btn btn-primary" type="button" id="ozonLoad">查询 Ozon 结算</button>
+        <span class="meta" id="ozonMeta">等待加载</span>
+      </div>
+      <div class="cards" id="ozonCards"></div>
+      <div class="grid-2">
+        <div class="panel">
+          <h3>费用类型汇总</h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>费用类型</th><th class="num">笔数</th><th class="num">合计 RUB</th></tr></thead>
+              <tbody id="ozonFeeBody"><tr><td colspan="3" class="empty">等待查询</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="panel">
+          <h3>订单明细</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Posting</th><th>商品</th><th>状态</th><th>下单日期</th><th>结算日期</th><th class="num">净额 RUB</th></tr>
+              </thead>
+              <tbody id="ozonOrderBody"><tr><td colspan="6" class="empty">等待查询</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
   </main>
 
   <script>
-    document.querySelectorAll('.billing-tab').forEach(function (btn) {
-      btn.onclick = function () {
-        var p = btn.getAttribute('data-platform');
-        document.querySelectorAll('.billing-tab').forEach(function (b) {
-          b.classList.toggle('active', b === btn);
+    var TK_REGIONS = ['PH', 'MY', 'TH', 'VN'];
+    var tkRates = {};
+    var tkAdRates = {};
+    var tkSummary = null;
+    var tkOrdersByRegion = {};
+
+    function esc(s) {
+      return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+        return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'": '&#39;'}[c];
+      });
+    }
+    function fmt(v, d) {
+      var n = Number(v);
+      if (!isFinite(n)) return '-';
+      return n.toLocaleString('zh-CN', {minimumFractionDigits: d == null ? 2 : d, maximumFractionDigits: d == null ? 2 : d});
+    }
+    function cls(v) { return Number(v) >= 0 ? 'good' : 'bad'; }
+    function dateDefault(daysAgo) {
+      var d = new Date();
+      d.setDate(d.getDate() - daysAgo);
+      return d.toISOString().slice(0, 10);
+    }
+    function card(label, value, klass) {
+      return '<div class="card"><div class="label">' + esc(label) + '</div><div class="value ' + (klass || '') + '">' + value + '</div></div>';
+    }
+    function jsonFetch(url, opts) {
+      return fetch(url, opts).then(function(r) {
+        return r.json().then(function(j) {
+          if (!r.ok || j.ok === false) throw new Error(j.error || j.message || r.statusText);
+          return j;
         });
-        document.querySelectorAll('.billing-panel').forEach(function (panel) {
-          panel.classList.toggle('hidden', panel.getAttribute('data-panel') !== p);
-        });
+      });
+    }
+
+    document.querySelectorAll('.tab').forEach(function(btn) {
+      btn.onclick = function() {
+        var tab = btn.dataset.tab;
+        document.querySelectorAll('.tab').forEach(function(b) { b.classList.toggle('active', b === btn); });
+        document.querySelectorAll('[data-panel]').forEach(function(p) { p.classList.toggle('hidden', p.dataset.panel !== tab); });
+        if (tab === 'shopee') loadShopeeReports();
+        if (tab === 'ozon') loadOzon();
       };
     });
 
-    fetch('/api/billing/shopee_reports').then(function (r) { return r.json(); }).then(function (d) {
-      var ul = document.getElementById('shopeeReports');
-      if (!d.ok || !d.reports || !d.reports.length) {
-        ul.innerHTML = '<li class="meta">暂无已生成周报</li>';
+    function buildRegionInputs(target, store, defaults, suffix, onChange) {
+      Object.assign(store, defaults || {});
+      document.getElementById(target).innerHTML = TK_REGIONS.map(function(r) {
+        return '<label>' + r + ' ' + suffix + '<input type="number" step="any" data-region="' + r + '" value="' + esc(store[r] || 0) + '"></label>';
+      }).join('');
+      document.querySelectorAll('#' + target + ' input').forEach(function(input) {
+        input.oninput = function() {
+          store[input.dataset.region] = parseFloat(input.value) || 0;
+        };
+        input.onchange = function() {
+          store[input.dataset.region] = parseFloat(input.value) || 0;
+          if (onChange) onChange();
+        };
+      });
+    }
+    function tkQueryString() {
+      return '?start=' + encodeURIComponent(document.getElementById('tkStart').value) +
+        '&end=' + encodeURIComponent(document.getElementById('tkEnd').value) +
+        '&rates=' + encodeURIComponent(JSON.stringify(tkRates)) +
+        '&ad_rates=' + encodeURIComponent(JSON.stringify(tkAdRates));
+    }
+    function cursorProfit(row) {
+      var rate = Number(tkRates[(row.country || '').toUpperCase()] || row.rate || 0);
+      return (Number(row.total_settlement || 0) + Number(row.logistics_reimbursement || 0)) * rate + Number(row.product_cost_cny || 0);
+    }
+    function renderTkSummary(data, orders) {
+      tkSummary = data;
+      tkOrdersByRegion = orders || {};
+      var profitRows = data.total_profit_rows || [];
+      var totalProfit = 0;
+      var totalSettlementCny = 0;
+      var totalCost = 0;
+      var totalOrders = 0;
+      var body = profitRows.map(function(row) {
+        var reg = (row.country || '').toUpperCase();
+        var rate = Number(tkRates[reg] || row.rate || 0);
+        var profit = cursorProfit(row);
+        totalProfit += profit;
+        totalSettlementCny += Number(row.total_settlement || 0) * rate;
+        totalCost += Number(row.product_cost_cny || 0);
+        return '<tr>' +
+          '<td>' + esc(row.country) + '</td><td>' + esc(row.period) + '</td><td>' + esc(row.currency) + '</td>' +
+          '<td class="num">' + fmt(row.total_settlement, 2) + '</td><td class="num">' + fmt(row.gmv_ads_settlement, 2) + '</td>' +
+          '<td class="num">' + fmt(row.effective_settlement, 2) + '</td><td class="num">' + fmt(row.logistics_reimbursement, 2) + '</td>' +
+          '<td class="num">' + fmt(row.product_cost_cny, 2) + '</td><td class="num">' + fmt(rate, 6) + '</td>' +
+          '<td class="num ' + cls(profit) + '">' + fmt(profit, 2) + '</td></tr>';
+      }).join('');
+      Object.keys(tkOrdersByRegion || {}).forEach(function(r) { totalOrders += (tkOrdersByRegion[r] || []).length; });
+      document.getElementById('tkProfitBody').innerHTML = body || '<tr><td colspan="10" class="empty">暂无汇总数据</td></tr>';
+      document.getElementById('tkCards').innerHTML =
+        card('总结算额 CNY', fmt(totalSettlementCny, 2)) +
+        card('商品成本 CNY', fmt(totalCost, 2)) +
+        card('总利润 CNY', fmt(totalProfit, 2), cls(totalProfit)) +
+        card('订单明细行', fmt(totalOrders, 0)) +
+        card('结算文件', fmt(data.file_count || 0, 0)) +
+        card('成本 SKU', esc((data.cost_stats && data.cost_stats.sku_with_cost) || '-'));
+      renderTkOrders();
+    }
+    function renderTkOrders() {
+      var filter = document.getElementById('tkRegionFilter').value;
+      var rows = [];
+      Object.keys(tkOrdersByRegion || {}).forEach(function(reg) {
+        if (filter && reg !== filter) return;
+        (tkOrdersByRegion[reg] || []).forEach(function(o) {
+          rows.push(Object.assign({region: reg}, o));
+        });
+      });
+      rows.sort(function(a, b) { return String(b.date || '').localeCompare(String(a.date || '')); });
+      var html = rows.slice(0, 1200).map(function(o) {
+        var img = o.image_url ? '<img class="thumb" src="' + esc(o.image_url) + '" loading="lazy" alt="">' : '-';
+        var profit = Number(o.profit_cny || 0);
+        var loss = profit < 0 ? ' class="loss"' : '';
+        var zero = Number(o.settlement || 0) === 0 ? '未发货/0结算' : (o.cost_matched ? '已匹配成本' : '缺成本');
+        return '<tr' + loss + '><td>' + esc(o.date || '') + '</td><td>' + esc(o.region) + '</td><td>' + img + '</td>' +
+          '<td>' + esc(o.order_id || '') + '</td><td>' + esc(o.sku_id || '') + '</td>' +
+          '<td class="clip" title="' + esc(o.product_name || '') + '">' + esc(o.product_name || '') + '</td>' +
+          '<td class="clip" title="' + esc(o.sku_name || '') + '">' + esc(o.sku_name || '') + '</td>' +
+          '<td class="num">' + fmt(o.settlement, 2) + '</td><td class="num">' + fmt(o.product_cost, 2) + '</td>' +
+          '<td class="num">' + fmt(o.ad_cost, 2) + '</td><td class="num ' + cls(profit) + '">' + fmt(profit, 2) + '</td>' +
+          '<td class="num">' + (o.margin_pct == null ? '-' : fmt(o.margin_pct, 1) + '%') + '</td><td>' + esc(zero) + '</td></tr>';
+      }).join('');
+      document.getElementById('tkOrderBody').innerHTML = html || '<tr><td colspan="13" class="empty">暂无订单明细</td></tr>';
+      document.getElementById('tkOrderMeta').textContent = '显示 ' + Math.min(rows.length, 1200) + ' / ' + rows.length + ' 行';
+    }
+    function loadTk() {
+      var start = document.getElementById('tkStart').value;
+      var end = document.getElementById('tkEnd').value;
+      if (!start || !end) {
+        document.getElementById('tkMeta').textContent = '请选择日期';
         return;
       }
-      ul.innerHTML = d.reports.map(function (r) {
-        return '<li><a href="/billing/shopee_report?f=' + encodeURIComponent(r.name) +
-          '" target="_blank">' + r.name + '</a></li>';
-      }).join('');
-    }).catch(function () {
-      document.getElementById('shopeeReports').innerHTML = '<li class="meta">周报列表加载失败</li>';
+      document.getElementById('tkMeta').textContent = '加载中...';
+      var qs = tkQueryString();
+      Promise.all([
+        jsonFetch('/api/settlement/summary' + qs),
+        jsonFetch('/api/settlement/orders-list' + qs).catch(function() { return {orders_by_region: {}}; })
+      ]).then(function(res) {
+        document.getElementById('tkMeta').textContent = '已更新';
+        renderTkSummary(res[0], res[1].orders_by_region || res[0].orders_by_region || {});
+      }).catch(function(e) {
+        document.getElementById('tkMeta').textContent = '加载失败：' + (e.message || e);
+      });
+    }
+    function setTkPullProgress(pct, text) {
+      document.getElementById('tkProgress').hidden = false;
+      document.getElementById('tkProgressFill').style.width = Math.max(0, Math.min(100, pct || 0)) + '%';
+      document.getElementById('tkProgressText').textContent = text || '';
+    }
+    function pollTkPull() {
+      jsonFetch('/api/settlement/pull/status').then(function(s) {
+        setTkPullProgress(s.percent || 0, s.message || s.error || '');
+        if (s.running) setTimeout(pollTkPull, 2000);
+        else if (s.error) document.getElementById('tkMeta').textContent = s.error;
+        else loadTk();
+      }).catch(function(e) {
+        document.getElementById('tkMeta').textContent = '拉取状态失败：' + (e.message || e);
+      });
+    }
+    function startTkPull() {
+      var start = document.getElementById('tkStart').value;
+      var end = document.getElementById('tkEnd').value;
+      if (!start || !end) {
+        document.getElementById('tkMeta').textContent = '请选择日期';
+        return;
+      }
+      jsonFetch('/api/settlement/pull', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({start: start, end: end})
+      }).then(function(d) {
+        setTkPullProgress(0, d.message || '已开始拉取');
+        pollTkPull();
+      }).catch(function(e) {
+        document.getElementById('tkMeta').textContent = '拉取失败：' + (e.message || e);
+      });
+    }
+
+    function loadShopeeReports() {
+      document.getElementById('shopeeMeta').textContent = '加载中...';
+      jsonFetch('/api/billing/shopee_reports').then(function(d) {
+        var reports = d.reports || [];
+        document.getElementById('shopeeCards').innerHTML =
+          card('快照数量', fmt(reports.length, 0)) +
+          card('最近报告', reports[0] ? esc(reports[0].name.replace('weekly_shopee_profit_', '').replace('.html', '')) : '-') +
+          card('数据来源', 'outputs') +
+          card('渲染方式', '原生列表');
+        document.getElementById('shopeeReportBody').innerHTML = reports.map(function(r) {
+          var dt = r.mtime ? new Date(r.mtime * 1000).toLocaleString('zh-CN') : '-';
+          return '<tr><td>' + esc(r.name) + '</td><td>' + esc(dt) + '</td><td class="num">' + fmt((r.size || 0) / 1024, 1) + ' KB</td>' +
+            '<td><a class="btn" href="/billing/shopee_report?f=' + encodeURIComponent(r.name) + '" target="_blank" rel="noopener">打开 HTML</a></td></tr>';
+        }).join('') || '<tr><td colspan="4" class="empty">暂无 Shopee 周报快照</td></tr>';
+        document.getElementById('shopeeMeta').textContent = '已更新';
+      }).catch(function(e) {
+        document.getElementById('shopeeMeta').textContent = '加载失败：' + (e.message || e);
+      });
+    }
+
+    function loadOzon() {
+      var months = parseInt(document.getElementById('ozonMonths').value, 10) || 3;
+      var only = document.getElementById('ozonOnlySettled').checked ? 1 : 0;
+      document.getElementById('ozonMeta').textContent = '加载中...';
+      jsonFetch('/api/ozon/settlement_summary?months=' + months + '&only_settled=' + only).then(function(d) {
+        document.getElementById('ozonCards').innerHTML =
+          card('已结算订单', fmt(d.settled_count || 0, 0)) +
+          card('未完结订单', fmt(d.pending_count || 0, 0)) +
+          card('已结算净额 RUB', fmt(d.settled_net_total || 0, 2), cls(d.settled_net_total || 0)) +
+          card('流水净额 RUB', fmt(d.grand_total || 0, 2), cls(d.grand_total || 0)) +
+          card('起始日期', esc(d.date_from || '-')) +
+          card('结束日期', esc(d.date_to || '-'));
+        document.getElementById('ozonFeeBody').innerHTML = (d.fee_breakdown || []).map(function(f) {
+          return '<tr><td class="clip" title="' + esc(f.type_name) + '">' + esc(f.type_name) + '</td><td class="num">' + fmt(f.count, 0) + '</td><td class="num ' + cls(f.total) + '">' + fmt(f.total, 2) + '</td></tr>';
+        }).join('') || '<tr><td colspan="3" class="empty">暂无费用汇总</td></tr>';
+        document.getElementById('ozonOrderBody').innerHTML = (d.orders || []).map(function(o) {
+          var pending = o.settled ? '' : ' class="pending"';
+          return '<tr' + pending + '><td>' + esc(o.posting_number) + '</td>' +
+            '<td class="clip" title="' + esc((o.products || []).join('; ')) + '">' + esc((o.products || []).join('; ')) + '</td>' +
+            '<td>' + (o.settled ? '已结算' : '未完结') + '</td><td>' + esc(o.order_date || '-') + '</td>' +
+            '<td>' + esc(o.settlement_date || '-') + '</td><td class="num ' + cls(o.net_amount) + '">' + fmt(o.net_amount, 2) + '</td></tr>';
+        }).join('') || '<tr><td colspan="6" class="empty">暂无订单明细</td></tr>';
+        document.getElementById('ozonMeta').textContent = '已更新';
+      }).catch(function(e) {
+        document.getElementById('ozonMeta').textContent = '加载失败：' + (e.message || e);
+      });
+    }
+
+    document.getElementById('tkLoad').onclick = loadTk;
+    document.getElementById('tkPull').onclick = startTkPull;
+    document.getElementById('tkRegionFilter').onchange = renderTkOrders;
+    document.getElementById('shopeeRefresh').onclick = loadShopeeReports;
+    document.getElementById('ozonLoad').onclick = loadOzon;
+    document.getElementById('ozonOnlySettled').onchange = loadOzon;
+
+    jsonFetch('/api/settlement/config').then(function(d) {
+      document.getElementById('tkStart').value = d.default_start || dateDefault(35);
+      document.getElementById('tkEnd').value = d.default_end || dateDefault(1);
+      buildRegionInputs('tkRateGrid', tkRates, d.rates, '汇率', loadTk);
+      buildRegionInputs('tkAdGrid', tkAdRates, d.ad_rates, '广告 %', loadTk);
+      loadTk();
+    }).catch(function(e) {
+      document.getElementById('tkMeta').textContent = '配置加载失败：' + (e.message || e);
+      document.getElementById('tkStart').value = dateDefault(35);
+      document.getElementById('tkEnd').value = dateDefault(1);
     });
   </script>
 </body>

@@ -1323,8 +1323,19 @@ class Handler(BaseHTTPRequestHandler):
 
                 q = parse_qs(query or "")
                 months_back = int((q.get("months") or ["3"])[0])
-                only_settled = (q.get("only_settled") or ["0"])[0] in ("1", "true", "True")
-                return self._json(200, build_settlement_summary(months_back, only_settled))
+                weeks = q.get("weeks") or q.get("weeks_back")
+                weeks_back = int(weeks[0]) if weeks else None
+                only_settled = (q.get("only_settled") or ["1"])[0] in ("1", "true", "True")
+                force_fx = (q.get("refresh_fx") or ["0"])[0] in ("1", "true", "True")
+                return self._json(
+                    200,
+                    build_settlement_summary(
+                        months_back,
+                        only_settled,
+                        weeks_back=weeks_back,
+                        force_fx_refresh=force_fx,
+                    ),
+                )
             # Ozon 利润分析：真实生效价(含弹性提升折扣) + 保最低利润率的min_price草稿
             if method == "GET" and subpath == "profit_table":
                 from modules.ozon.profit_analysis import build_profit_table

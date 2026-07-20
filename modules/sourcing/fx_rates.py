@@ -18,7 +18,8 @@ from modules.sourcing.new_product_workbench import DEFAULT_FX_RATES, default_fx_
 CACHE_PATH = ROOT / "data" / "fx_rates_cache.json"
 CACHE_TTL_SEC = int(os.environ.get("ORBIT_FX_CACHE_TTL_SEC") or 600)  # 10 minutes
 UA = "OrbitTreasury/1.0 (+local; exchange-rates)"
-TARGET_CURRENCIES = ("PHP", "MYR", "THB", "VND", "USD")
+TARGET_CURRENCIES = ("PHP", "MYR", "THB", "VND", "USD", "RUB")
+DEFAULT_RUB_CNY = 18.0 / 191.0
 
 _lock = threading.Lock()
 _memory_cache: dict[str, Any] | None = None
@@ -170,6 +171,7 @@ def _fetch_live() -> dict[str, Any]:
             if not payload:
                 continue
             merged = default_fx_rates()
+            merged.setdefault("RUB", DEFAULT_RUB_CNY)
             merged.update(payload["rates"])
             payload["rates"] = {k: float(merged[k]) for k in TARGET_CURRENCIES if k in merged}
             payload["fetched_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -228,6 +230,7 @@ def get_exchange_rates(*, force_refresh: bool = False) -> dict[str, Any]:
                 out["defaults"] = dict(DEFAULT_FX_RATES)
                 return out
             rates = default_fx_rates()
+            rates.setdefault("RUB", DEFAULT_RUB_CNY)
             return {
                 "ok": True,
                 "live": False,

@@ -40,6 +40,7 @@
     h2 { margin: 0 0 12px; font-size: 19px; }
     h3 { margin: 0 0 10px; font-size: 15px; }
     .sub, .note, .meta { color: var(--muted); }
+    .muted { color: var(--muted); font-size: 11px; }
     .note { line-height: 1.55; }
     .pill {
       display: inline-flex;
@@ -200,6 +201,7 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    #ozonOrderBody td.clip:last-child { max-width: 420px; }
     tr.loss td { background: #fff1f2; }
     tr.pending td { background: #f8fafc; color: #64748b; }
     img.thumb {
@@ -353,19 +355,30 @@
 
     <section class="panel hidden" data-panel="ozon">
       <h2>Ozon 结算</h2>
-      <p class="note">通过主服务代理调用 Ozon 结算接口，支持月份窗口和“只看已结算”筛选。若接口失败，请确认 Ozon 凭证与服务配置可用。</p>
+      <p class="note">从 Orbit Rus 实时读取 Ozon 结算成功订单，按周回看，展示商品图、扣费细则、成本、利润和实时 RUB/CNY 汇率。</p>
       <div class="toolbar">
-        <label>回看月份 <input type="number" id="ozonMonths" min="1" max="12" value="3"></label>
+        <label>回看周数 <input type="number" id="ozonWeeks" min="1" max="26" value="1"></label>
         <label style="display:flex; flex-direction:row; align-items:center; gap:8px; margin-bottom:8px;">
-          <input type="checkbox" id="ozonOnlySettled" style="width:auto;"> 只看已结算
+          <input type="checkbox" id="ozonOnlySettled" style="width:auto;" checked> 只看结算成功订单
         </label>
+        <button class="btn" type="button" id="ozonRefreshFx">刷新实时汇率</button>
         <button class="btn btn-primary" type="button" id="ozonLoad">查询 Ozon 结算</button>
         <span class="meta" id="ozonMeta">等待加载</span>
       </div>
+      <div class="note" id="ozonFxMeta">汇率等待加载</div>
       <div class="cards" id="ozonCards"></div>
       <div class="grid-2">
         <div class="panel">
-          <h3>费用类型汇总</h3>
+          <h3>扣费分类汇总</h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>分类</th><th class="num">合计 RUB</th><th class="num">折合 CNY</th></tr></thead>
+              <tbody id="ozonCategoryBody"><tr><td colspan="3" class="empty">等待查询</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="panel">
+          <h3>原始费用类型</h3>
           <div class="table-wrap">
             <table>
               <thead><tr><th>费用类型</th><th class="num">笔数</th><th class="num">合计 RUB</th></tr></thead>
@@ -373,16 +386,21 @@
             </table>
           </div>
         </div>
-        <div class="panel">
-          <h3>订单明细</h3>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr><th>Posting</th><th>商品</th><th>状态</th><th>下单日期</th><th>结算日期</th><th class="num">净额 RUB</th></tr>
-              </thead>
-              <tbody id="ozonOrderBody"><tr><td colspan="6" class="empty">等待查询</td></tr></tbody>
-            </table>
-          </div>
+      </div>
+      <div class="panel">
+        <h3>订单明细</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>图片</th><th>Posting</th><th>商品</th><th>SKU</th><th>下单/结算</th>
+                <th class="num">销售价 RUB</th><th class="num">佣金</th><th class="num">物流</th><th class="num">仓储</th>
+                <th class="num">广告</th><th class="num">收单</th><th class="num">代理费</th><th class="num">其他</th>
+                <th class="num">净额 RUB</th><th class="num">成本 CNY</th><th class="num">利润 CNY</th><th class="num">利润率</th><th>扣费明细</th>
+              </tr>
+            </thead>
+            <tbody id="ozonOrderBody"><tr><td colspan="18" class="empty">等待查询</td></tr></tbody>
+          </table>
         </div>
       </div>
     </section>
@@ -591,29 +609,62 @@
       });
     }
 
-    function loadOzon() {
-      var months = parseInt(document.getElementById('ozonMonths').value, 10) || 3;
+    function loadOzon(refreshFx) {
+      var weeks = parseInt(document.getElementById('ozonWeeks').value, 10) || 1;
       var only = document.getElementById('ozonOnlySettled').checked ? 1 : 0;
       document.getElementById('ozonMeta').textContent = '加载中...';
-      jsonFetch(RUS_API_BASE + '/api/ozon/settlement_summary?months=' + months + '&only_settled=' + only).then(function(d) {
+      jsonFetch(RUS_API_BASE + '/api/ozon/settlement_summary?weeks=' + weeks + '&only_settled=' + only + '&refresh_fx=' + (refreshFx ? 1 : 0)).then(function(d) {
+        var fx = d.fx || {};
+        var cnyPerRub = fx.cny_per_rub || (fx.rates && fx.rates.RUB) || 0;
+        var fxMode = fx.live ? '实时' : (fx.cached ? '缓存' : '默认');
+        if (fx.stale) fxMode += '·过期缓存';
+        if (fx.degraded) fxMode += '·降级';
+        document.getElementById('ozonFxMeta').textContent =
+          'RUB/CNY ' + fmt(cnyPerRub, 6) + '，CNY/RUB ' + fmt(fx.rub_per_cny || 0, 4) +
+          '，来源：' + esc(fx.provider || fxMode) + (fx.error ? '；提示：' + fx.error : '');
         document.getElementById('ozonCards').innerHTML =
-          card('已结算订单', fmt(d.settled_count || 0, 0)) +
-          card('未完结订单', fmt(d.pending_count || 0, 0)) +
-          card('已结算净额 RUB', fmt(d.settled_net_total || 0, 2), cls(d.settled_net_total || 0)) +
-          card('流水净额 RUB', fmt(d.grand_total || 0, 2), cls(d.grand_total || 0)) +
+          card('结算成功订单', fmt(d.settled_count || 0, 0)) +
+          card('过滤未结算/失败', fmt(d.pending_count || 0, 0)) +
+          card('销售额 RUB', fmt(d.sale_total_rub || 0, 2)) +
+          card('净额 RUB', fmt(d.settled_net_total || 0, 2), cls(d.settled_net_total || 0)) +
+          card('商品成本 CNY', fmt(d.cost_total_cny || 0, 2)) +
+          card('最终利润 CNY', fmt(d.profit_total_cny || 0, 2), cls(d.profit_total_cny || 0)) +
+          card('利润率', d.avg_margin_pct == null ? '-' : fmt(d.avg_margin_pct, 1) + '%', cls(d.avg_margin_pct || 0)) +
+          card('缺成本订单', fmt(d.missing_cost_count || 0, 0)) +
           card('起始日期', esc(d.date_from || '-')) +
           card('结束日期', esc(d.date_to || '-'));
+        document.getElementById('ozonCategoryBody').innerHTML = (d.category_breakdown || []).map(function(c) {
+          return '<tr><td>' + esc(c.label || c.category) + '</td><td class="num ' + cls(c.total_rub) + '">' + fmt(c.total_rub, 2) + '</td><td class="num ' + cls(c.total_cny) + '">' + fmt(c.total_cny, 2) + '</td></tr>';
+        }).join('') || '<tr><td colspan="3" class="empty">暂无扣费分类</td></tr>';
         document.getElementById('ozonFeeBody').innerHTML = (d.fee_breakdown || []).map(function(f) {
           return '<tr><td class="clip" title="' + esc(f.type_name) + '">' + esc(f.type_name) + '</td><td class="num">' + fmt(f.count, 0) + '</td><td class="num ' + cls(f.total) + '">' + fmt(f.total, 2) + '</td></tr>';
         }).join('') || '<tr><td colspan="3" class="empty">暂无费用汇总</td></tr>';
         document.getElementById('ozonOrderBody').innerHTML = (d.orders || []).map(function(o) {
           var pending = o.settled ? '' : ' class="pending"';
-          return '<tr' + pending + '><td>' + esc(o.posting_number) + '</td>' +
+          var loss = Number(o.profit_cny || 0) < 0 ? ' class="loss"' : pending;
+          var img = o.image_url ? '<img class="thumb" src="' + esc(o.image_url) + '" loading="lazy" alt="">' : '-';
+          var feeText = (o.fee_rows || []).map(function(f) {
+            return (f.label || f.category || f.type_name || '费用') + ' ' + fmt(f.amount_rub, 2) + ' RUB';
+          }).join('；');
+          return '<tr' + loss + '><td>' + img + '</td><td>' + esc(o.posting_number) + '</td>' +
             '<td class="clip" title="' + esc((o.products || []).join('; ')) + '">' + esc((o.products || []).join('; ')) + '</td>' +
-            '<td>' + (o.settled ? '已结算' : '未完结') + '</td><td>' + esc(o.order_date || '-') + '</td>' +
-            '<td>' + esc(o.settlement_date || '-') + '</td><td class="num ' + cls(o.net_amount) + '">' + fmt(o.net_amount, 2) + '</td></tr>';
-        }).join('') || '<tr><td colspan="6" class="empty">暂无订单明细</td></tr>';
-        document.getElementById('ozonMeta').textContent = '已更新';
+            '<td>' + esc((o.seller_skus || o.offer_ids || o.skus || []).join(', ')) + '</td>' +
+            '<td>' + esc(o.order_date || '-') + '<br><span class="muted">' + esc(o.settlement_date || '-') + '</span></td>' +
+            '<td class="num">' + fmt(o.sale_price_rub, 2) + '</td>' +
+            '<td class="num ' + cls(o.commission_rub) + '">' + fmt(o.commission_rub, 2) + '</td>' +
+            '<td class="num ' + cls(o.logistics_rub) + '">' + fmt(o.logistics_rub, 2) + '</td>' +
+            '<td class="num ' + cls(o.storage_rub) + '">' + fmt(o.storage_rub, 2) + '</td>' +
+            '<td class="num ' + cls(o.advertising_rub) + '">' + fmt(o.advertising_rub, 2) + '</td>' +
+            '<td class="num ' + cls(o.acquiring_rub) + '">' + fmt(o.acquiring_rub, 2) + '</td>' +
+            '<td class="num ' + cls(o.agent_fee_rub) + '">' + fmt(o.agent_fee_rub, 2) + '</td>' +
+            '<td class="num ' + cls(o.other_fee_rub) + '">' + fmt(o.other_fee_rub, 2) + '</td>' +
+            '<td class="num ' + cls(o.net_before_cost_rub) + '">' + fmt(o.net_before_cost_rub, 2) + '</td>' +
+            '<td class="num">' + fmt(o.cost_cny, 2) + (o.cost_matched ? '' : '<br><span class="bad">缺成本</span>') + '</td>' +
+            '<td class="num ' + cls(o.profit_cny) + '">' + fmt(o.profit_cny, 2) + '</td>' +
+            '<td class="num ' + cls(o.margin_pct) + '">' + (o.margin_pct == null ? '-' : fmt(o.margin_pct, 1) + '%') + '</td>' +
+            '<td class="clip" title="' + esc(feeText) + '">' + esc(feeText || '-') + '</td></tr>';
+        }).join('') || '<tr><td colspan="18" class="empty">暂无结算成功订单明细</td></tr>';
+        document.getElementById('ozonMeta').textContent = '已更新：近 ' + (d.period_value || weeks) + ' 周，原始流水 ' + fmt(d.raw_operation_count || 0, 0) + ' 条';
       }).catch(function(e) {
         document.getElementById('ozonMeta').textContent = '加载失败：' + (e.message || e);
       });
@@ -624,6 +675,7 @@
     document.getElementById('tkRegionFilter').onchange = renderTkOrders;
     document.getElementById('shopeeRefresh').onclick = loadShopeeReports;
     document.getElementById('ozonLoad').onclick = loadOzon;
+    document.getElementById('ozonRefreshFx').onclick = function() { loadOzon(true); };
     document.getElementById('ozonOnlySettled').onchange = loadOzon;
 
     jsonFetch('/api/settlement/config').then(function(d) {

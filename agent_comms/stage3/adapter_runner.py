@@ -156,8 +156,8 @@ def render_summary_card(tasks):
             emoji = STATUS_EMOJI.get(t["status_cn"], "🟡")
             tl_lines = []
             for hm, txt in t["timeline"][-3:]:
-                c = txt[:60] + "…" if len(txt) > 60 else txt
-                tl_lines.append("`%s` %s" % (hm, c))
+                # 进度文本原样展示，避免截断导致 blocked/错误原因看不全
+                tl_lines.append("`%s` %s" % (hm, txt))
             tl_md = "\n".join(tl_lines) if tl_lines else "_暂无进展_"
             block = (
                 "**%s [#%s] %s**　`%s`\n"

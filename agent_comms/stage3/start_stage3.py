@@ -24,6 +24,15 @@ import time
 import json
 import socket
 import subprocess
+import io
+
+# pythonw（无控制台）安全：stdout/stderr 为 None 时重定向到日志，否则首行 print 会崩
+if sys.stdout is None:
+    _logdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+    os.makedirs(_logdir, exist_ok=True)
+    _lf = open(os.path.join(_logdir, "launcher.log"), "ab", buffering=0)
+    sys.stdout = _lf
+    sys.stderr = _lf
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))          # tiktok_e_comm

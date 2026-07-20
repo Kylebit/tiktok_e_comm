@@ -157,6 +157,43 @@ async def ingest(request: Request):
     return JSONResponse({"ok": True, "task_id": task_id, "status": cn_status})
 
 
+@app.post("/dispatch")
+async def dispatch_task(request: Request):
+    """总部派发任务（出站）。
+
+    新契约（2026-07-20）：已放弃 EigenFlux，不再经它触达 Cursor/Codex。
+    出站只做「建 task + 推飞书指令卡」，由 Boss(人类) 看到卡后人工转发给目标 agent；
+    目标 agent 的回报也由 Boss 转回，经 /ingest 灌入本 Orchestrator。
+    body: {"assignee","prompt","task_id"?,"title"?,"feishu_record"?}
+    """
+    body = await request.json()
+    assignee = body.get("assignee") or body.get("agent") or "Cursor"
+    prompt = body.get("prompt") or body.get("text") or ""
+    task_id = body.get("task_id")
+    title = body.get("title") or ("派发 %s：%s" % (assignee, prompt[:24]))
+    feishu_record = body.get("feishu_record")
+
+    if not task_id:
+        task_id = orch.create_task(title, feishu_record=feishu_record, assignee=assignee)
+
+    orch.apply_a2a_event({"task_id": task_id, "status": "submitted",
+                          "progress_text": "待 Boss 转发给 " + assignee})
+
+    ag_update = {
+        "task_id": task_id,
+        "status": "待转发",
+        "progress_text": "已生成指令卡，请 Boss 转发给 %s" % assignee,
+        "tool": None,
+        "tool_input": None,
+        "card_fields": {"状态": "待转发", "进度": "0%", "负责Agent": assignee,
+                        "飞书Record": feishu_record or "—", "指令": prompt},
+    }
+    for ev in map_a2a_update_to_ag_ui(ag_update, thread_id=task_id):
+        await BUS.publish(ev)
+
+    return JSONResponse({"ok": True, "task_id": task_id, "status": "待转发", "assignee": assignee})
+
+
 if __name__ == "__main__":
     import uvicorn
 

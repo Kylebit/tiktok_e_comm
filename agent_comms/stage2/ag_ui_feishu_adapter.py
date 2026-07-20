@@ -44,10 +44,12 @@ STATUS_THEME = {
     "开发中": ("yellow", "yellow"), "进行中": ("yellow", "yellow"),
     "待验收": ("violet", "violet"), "待审核": ("violet", "violet"), "已完成": ("green", "green"),
     "阻塞": ("red", "red"), "待办": ("grey", "neutral"), "已取消": ("grey", "neutral"),
+    "待转发": ("blue", "blue"),
 }
 STATUS_EMOJI = {
     "开发中": "🟡", "进行中": "🟡", "待验收": "🟣", "待审核": "🟣", "已完成": "🟢",
     "阻塞": "🔴", "待办": "⚪", "已取消": "⚫",
+    "待转发": "🔵",
 }
 # A2A 内部 state -> 中文显示（给 Boss 看）
 A2A_TO_CN = {
@@ -220,6 +222,10 @@ class AgUiFeishuAdapter:
             {"tag": "markdown",
              "content": "**🎯 当前状态**\n%s" %
                         self.card_state.get("状态", "待办")},
+            {"tag": "hr"},
+            {"tag": "markdown",
+             "content": "**📋 转发给 Agent 的指令**\n```\n%s\n```" %
+                        (self.card_state.get("指令") or "_（无）_")},
             {"tag": "hr"},
             {"tag": "markdown",
              "content": "**📈 进度时间线**（AG-UI 事件驱动）\n%s" % timeline_md},

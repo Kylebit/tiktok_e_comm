@@ -86,15 +86,47 @@ export ORCH_URL=http://<orch-host>:8773   # 若不在本机
 python codex_adapter.py
 ```
 
-运行后它会：①拉取收件箱存量任务 ②订阅 SSE 实时收任务 ③收到就执行并回报。
-`execute()` 函数里现在是占位逻辑，你把它换成自己的真实动作即可
-（读/改 tiktok_e_comm 代码、跑命令、git add+commit+push，并在关键节点调 `report()` 回报）。
+运行后它会：①拉取收件箱存量任务 ②订阅 SSE 实时收任务 ③收到就把任务写入本地 `codex_inbox/<task_id>.json`
+、向总控 `POST /ingest` 回 ACK、**并打印一条唤醒信号** `AGENT_A2A_TICK_codex {json}`（含 `prompt/path/task_id`），
+然后它**自己退出执行环节**——真正的活儿要**由你来干**（和 Cursor 的行为完全一致）。
+
+> 唤醒信号对齐 Cursor 的 `AGENT_A2A_TICK_cursor`：若你的环境配了
+> `notify_on_output` / 钩子匹配 `AGENT_A2A_TICK_codex` 前缀，就会被自动唤醒执行；
+> 没有自动钩子也不要紧，你只要**按下面的「正确做法」主动去读 inbox 任务并执行**即可。
+
+### adapter 附带的使用子命令（方便你回报）
+```bash
+# 回报进度 / 完成（向总控 POST /ingest）
+python codex_adapter.py --report --task-id <task_id> --text "DONE：已 push，commit abc1234，产物待审核" --tool edit_code --tool-input modules/ozon/settlement.py
+# 把本地 inbox 任务标记为 DONE
+python codex_adapter.py --complete --task-id <task_id>
+# 只看收件箱、不消费
+python codex_adapter.py --peek
+```
 
 > 如果你是 OpenAI Codex CLI 那种「按任务起进程」的形态，也可以不常驻这个 adapter，
 > 而是**每次被总控派活时**直接 `GET /agent/Orbit%20Codex/tasks?consume=1` 取任务、
-> 干完活再 `POST /ingest` 回报——端点完全一致，任选一种接入方式。
+> 干完活再 `POST /ingest` 回报（`--report` 子命令就是干这件事）——端点完全一致，任选一种接入方式。
 
-## 5. 注意
+## 5. 正确做法（像 Cursor 那样自己主动干，不要等 Boss 来催）
+
+总控派活后**不会**再由 Boss 人工转发给你（那是旧 EigenFlux 时代的做法，已弃用）。
+你要和 Cursor 一样：**主动**发现并执行 inbox 里的任务。标准一轮：
+
+1. **发现任务**：adapter 拉到你任务后会落盘 `codex_inbox/<task_id>.json`，并打印 `AGENT_A2A_TICK_codex ...`。
+   你读到它（或自动钩子唤醒你）后，读该 json 里的 `dispatch.prompt` 拿到具体要求。
+2. **真实执行**：在 `Kylebit/tiktok_e_comm` 仓库里改代码 / 跑命令，**不要造假**（不要伪造 DONE、commit hash、测试通过）。
+3. **关键节点回报**：每完成一个里程碑（改完文件、跑通校验、push 成功），调
+   `python codex_adapter.py --report --task-id <id> --text "..."` 回总控；**push 后务必把 commit hash 写进 text**。
+4. **终态**：干完后在最后一条 `--report` 的 `text` 里写明 **「DONE」/「待审核」**（= 完成，等 Boss 审核）；
+   若卡住写 **「BLOCKED」/「阻塞」** 并说明原因。终态回报后 `python codex_adapter.py --complete --task-id <id>` 收尾。
+5. **git 纪律**：必须 `git add + commit + push origin/master`，Commit 格式 `ORB-TASK-XXXX(Bot): 简述`，并回传 hash。
+6. **不要联系 Boss**：所有进度只回报给 Orchestrator / CEO肉肉（总控），不要去找人类用户。
+
+> 一句话：Cursor 怎么被总控唤醒、自己干活、自己回报，你就怎么来。差别只是唤醒信号前缀是
+> `AGENT_A2A_TICK_codex`（而不是 `_cursor`），其余收发、回报、git 纪律完全一致。
+
+## 6. 注意
 
 - **不要再用 EigenFlux 和总控/其它 agent 通信**，那条链路已退役。
 - 飞书卡只是给 Boss 看的进度视图，**不是**你和总控的通话通道。

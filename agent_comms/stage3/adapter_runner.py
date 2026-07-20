@@ -33,6 +33,9 @@ LIVE = os.environ.get("STAGE3_LIVE", "1") == "1"
 
 def main():
     adapters = {}
+    # 里程碑卡策略：仅这些状态变化才推飞书卡（过滤「进行中」等高频进度刷新）
+    MILESTONE = {"已派发", "待转发", "待审核", "已完成", "阻塞"}
+    last_pushed_status = {}  # thread_id -> 上次已推的里程碑状态（去重，避免重复推同状态）
 
     def get_ad(thread_id, record):
         if thread_id not in adapters:
@@ -61,12 +64,18 @@ def main():
                     tid = ev.get("threadId") or ev.get("taskId") or "default"
                     ad = get_ad(tid, None)
                     ad._on_event(ev)
-                    if LIVE and etype in (AGUIEvent.STATE_DELTA, AGUIEvent.RUN_FINISHED):
-                        try:
-                            task_card.push_card(ad.render_card())
-                            print("   [飞书卡] 已推卡 (thread=%s, 状态=%s)" % (tid, ad.card_state.get("状态")))
-                        except Exception as e:
-                            print("   [飞书卡] push err:", e)
+                    # 里程碑卡策略：只在状态切换到「里程碑节点」时推卡，
+                    # 过滤中间「进行中」等高频进度更新，避免群刷屏；
+                    # 同时通过 render_card 的完整时间线保留全部信息。
+                    if LIVE and etype == AGUIEvent.STATE_DELTA:
+                        st = ad.card_state.get("状态")
+                        if st in MILESTONE and last_pushed_status.get(tid) != st:
+                            try:
+                                task_card.push_card(ad.render_card())
+                                last_pushed_status[tid] = st
+                                print("   [飞书卡·里程碑] 已推卡 (thread=%s, 状态=%s)" % (tid, st))
+                            except Exception as e:
+                                print("   [飞书卡] push err:", e)
         except Exception as e:
             print("   [stage3] SSE 断开，3s 后重连:", e)
             time.sleep(3)

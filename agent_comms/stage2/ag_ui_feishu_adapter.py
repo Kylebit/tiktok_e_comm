@@ -195,7 +195,7 @@ class AgUiFeishuAdapter:
         st_emoji = STATUS_EMOJI.get(status, "🟡")
 
         tl_lines = []
-        for ln in self.progress_lines[-5:]:
+        for ln in self.progress_lines[-12:]:
             hm = ln.split("]")[0].strip("[")
             c1 = ln[ln.find("]") + 1:].strip()
             c1 = c1[:64] + "…" if len(c1) > 64 else c1
@@ -228,7 +228,7 @@ class AgUiFeishuAdapter:
                         (self.card_state.get("指令") or "_（无）_")},
             {"tag": "hr"},
             {"tag": "markdown",
-             "content": "**📈 进度时间线**（AG-UI 事件驱动）\n%s" % timeline_md},
+             "content": "**📈 进度时间线**（共 %d 条，AG-UI 事件驱动）\n%s" % (len(self.progress_lines), timeline_md)},
         ]
 
         return {

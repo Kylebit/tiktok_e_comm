@@ -12,6 +12,7 @@ import os
 import sys
 import subprocess
 import time
+import json
 
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "a2a_poc"))
@@ -28,28 +29,58 @@ VENV_PY = os.path.join(HERE, "..", "a2a_poc", "venv", "Scripts", "python.exe")
 ORCH_PY = os.path.join(HERE, "orchestrator.py")
 PORT = 8770
 
+# 总控(CEO肉肉) 在 EigenFlux 的真实 agent_id（生产监听器同此身份）
+CEO_AGENT_ID = "336760502698901504"
+
+
+def _conv_sender_ids(raw):
+    """从 msg history 的 JSON 输出里提取所有消息的 sender_id 集合（尽力解析）。"""
+    s = raw.find("{"); e = raw.rfind("}")
+    try:
+        d = json.loads(raw[s:e + 1]) if s != -1 and e > s else json.loads(raw)
+    except Exception:
+        return set()
+    msgs = (d.get("messages") or d.get("data") or d.get("items")
+            or (d if isinstance(d, list) else []))
+    ids = set()
+    for m in msgs:
+        if isinstance(m, dict):
+            sid = (m.get("sender_id") or m.get("from_id")
+                   or m.get("sender", {}).get("id"))
+            if sid:
+                ids.add(str(sid))
+    return ids
+
 
 def run_live_ping(tid, send=True):
-    """真机探测：给真实子 agent Cursor 发低风险 ping，验证 bridge 真实下行 + 上行读取 + A2A/AG-UI 转换。
+    """真机探测：以【CEO肉肉】身份给真实子 agent Cursor 发低风险 ping，
+    验证 bridge 真实下行 + 上行读取 + A2A/AG-UI 转换，并校验发送方身份。
 
-    send=True  : 真实经 EigenFlux 下行发一条 ping（需 CLI 可达 + 默认 home 已登录）
+    send=True  : 真实经 EigenFlux 下行发一条 ping（以 CEO肉肉 身份）
     send=False : 复用已有会话仅做上行读取 + 转换演示（不重复打扰子 agent）
     """
     agent = "Cursor"
     info = AGENT_ROSTER.get(agent)
     if not info:
         print(f"[live] ERROR: roster 缺少 {agent}"); return
+    conv_id = None
     if send:
-        print(f"\n[live] 真机下行：经 bridge 给 {agent} 发低风险 ping ...")
-        out = send_message_json(
-            info["agent_id"],
-            "[A2A bridge live demo] 自动验证下行链路，无需执行任务，回 PONG-OK 即可。",
-        )
-        print(f"      发送成功 conv_id={out.get('conv_id')} msg_id={out.get('msg_id')}")
+        print(f"\n[live] 真机下行：经 bridge.dispatch 以【CEO肉肉({CEO_AGENT_ID})】身份给 {agent} 发低风险 ping ...")
+        _, conv_id = dispatch(tid, live=True)
+        print(f"      发送成功 conv_id={conv_id}")
     else:
-        print(f"\n[live] 仅上行读取+转换演示（不重复下行），会话 conv={info['conv_id']}")
-    print(f"[live] 真机上行读取 + A2A 转换：ingest_live({tid}) ...")
-    ingest_live(tid)
+        conv_id = info["conv_id"]
+        print(f"\n[live] 仅上行读取+转换演示（不重复下行），会话 conv={conv_id}")
+    # 校验：该会话的参与者必须包含 CEO肉肉（证明下行身份正确；
+    # 之前错用 Orbit Codex 身份读旧会话会直接报 'sender is not a participant'）
+    if conv_id:
+        raw = get_history(conv_id)
+        ids = _conv_sender_ids(raw)
+        ok = (CEO_AGENT_ID in ids)
+        print(f"[live] 会话参与者 sender_ids={ids}  "
+              f"（期望含 {CEO_AGENT_ID}=CEO肉肉）-> {'✅ 身份正确' if ok else '❌ 身份异常'}")
+    print(f"[live] 真机上行读取 + A2A 转换：ingest_live({tid}, conv_id={conv_id}) ...")
+    last = ingest_live(tid, conv_id=conv_id)
     t = orch.get_task(tid)
     update = {
         "task_id": tid,
@@ -66,7 +97,7 @@ def run_live_ping(tid, send=True):
         if ev["type"] == AGUIEvent.STATE_DELTA:
             card_state = apply_state_delta(card_state, ev)
     print(f"[live] 读取内容经 bridge 转 A2A 事件 + AG-UI 映射 -> 飞书卡字段 {card_state}")
-    print("[live] 结论：下行(EigenFlux 发送) + 上行(历史读取) + 转换(A2A/AG-UI) 三通道真机可用。")
+    print("[live] 结论：下行(CEO肉肉 发送) + 上行(历史读取) + 转换(A2A/AG-UI) 三通道真机可用。")
 
 
 def main():

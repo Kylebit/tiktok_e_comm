@@ -12,6 +12,11 @@ import os
 import shutil
 import subprocess
 
+# 总控(CEO肉肉)在 EigenFlux 的真实身份 = agent_id 336760502698901504，
+# 数据目录固定为 ~/.eigenflux-workbuddy/.eigenflux（生产监听器 eigenflux_stream_listener.py 同此 home）。
+# 注意：默认 ~/.eigenflux 是「Orbit Codex」子agent(指挥中心) 的 home，绝不能当作总控身份使用。
+HOME = os.environ.get("EIGENFLUX_HOME") or r"C:\Users\Windows11\.eigenflux-workbuddy\.eigenflux"
+
 
 def _find_cli():
     p = shutil.which("eigenflux")
@@ -44,10 +49,12 @@ def _resolve_cli():
 
 
 def send_message(receiver_id, content, timeout=60):
-    """经 EigenFlux 给子 agent 发消息。返回 CLI 原始输出（stdout+stderr 合并，因 JSON 在 stderr）。"""
+    """经 EigenFlux 以【总控 CEO肉肉】身份给子 agent 发消息。
+    固定带 --homedir（CEO肉肉 home），绝不以 Orbit Codex 子agent 身份发送。
+    返回 CLI 原始输出（stdout+stderr 合并，因 JSON 在 stderr）。"""
     cli = _resolve_cli()
     r = subprocess.run(
-        [cli, "msg", "send", "--receiver-id", receiver_id, "--content", content],
+        [cli, "msg", "send", "--receiver-id", receiver_id, "--content", content, "--homedir", HOME],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout,
     )
     if r.returncode != 0:
@@ -72,10 +79,10 @@ def send_message_json(receiver_id, content, timeout=60):
 
 
 def get_history(conv_id, limit=20, timeout=60):
-    """读某会话的 EigenFlux 历史。返回 CLI 原始文本（stdout+stderr 合并，因 JSON 在 stderr）。"""
+    """以【总控 CEO肉肉】身份读某会话的 EigenFlux 历史。返回 CLI 原始文本（stdout+stderr 合并）。"""
     cli = _resolve_cli()
     r = subprocess.run(
-        [cli, "msg", "history", "--conv-id", conv_id, "--limit", str(limit)],
+        [cli, "msg", "history", "--conv-id", conv_id, "--limit", str(limit), "--homedir", HOME],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout,
     )
     if r.returncode != 0:

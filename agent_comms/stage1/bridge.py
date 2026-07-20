@@ -16,14 +16,20 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "a2a_poc"))
 from orchestrator import apply_a2a_event, get_task
-from eigenflux_client import send_message, get_history, parse_history
+from eigenflux_client import send_message, send_message_json, get_history, parse_history
 
-# 总控(CEO肉肉)在 EigenFlux 上的身份 = "Orbit Codex" (agent_id 336693310271782912)。
-# 故 Codex 不是独立子 agent，下面仅列真正的下级 agent + Claude 占位。
-# （2026-07-20 真机探测确认：Cursor 真实 DM conv = 336750845745954816，
-#   此前记忆里记的 336761709374996480 是错的，以本次真实发送结果为准。）
+# 身份澄清（2026-07-20 Boss 纠正 + 真机验证）：
+#   总控(CEO肉肉) 在 EigenFlux 的真实身份 = agent_id 336760502698901504，
+#   数据目录 ~/.eigenflux-workbuddy/.eigenflux（生产监听器同此 home）。
+#   「Orbit Codex」(336693310271782912) 是【子agent/指挥中心】，住在默认 ~/.eigenflux home，
+#   不是总控。bridge 经 eigenflux_client 发送时一律以 CEO肉肉 身份（--homedir workbuddy home）。
+# Cursor 真实 DM conv = 336750845745954816（此前记忆误记 336761709374996480，以真实发送为准）。
 AGENT_ROSTER = {
-    "Cursor": {"agent_id": "336745353602662400", "conv_id": "336750845745954816"},
+    # 注意：conv_id 是「以总控(CEO肉肉)身份」与子 agent 的 DM 会话。
+    # 若历史上用其他身份(如 Orbit Codex)创建过会话，conv_id 会不同且当前身份无权限读，
+    # 故 dispatch(live=True) 一律以 send 返回值里的 conv_id 为准。
+    "Codex":  {"agent_id": "336693310271782912", "conv_id": "336761705713369088"},
+    "Cursor": {"agent_id": "336745353602662400", "conv_id": "336761709374996480"},  # CEO肉肉↔Cursor（2026-07-20 真发产生）
     "Claude": {"agent_id": "CLAUDE_AGENT_ID", "conv_id": "CLAUDE_CONV_ID"},
 }
 
@@ -40,20 +46,28 @@ def build_prompt(t):
 
 
 def dispatch(task_id, live=False):
-    """派发任务。live=True 真发 EigenFlux（需 CLI 可达），否则仅标记 working 做安全联调。"""
+    """派发任务。live=True 以【CEO肉肉】身份真发 EigenFlux，返回 (prompt, conv_id)。
+
+    conv_id 为真实发送产生的会话 id，供后续 ingest_live 精确读取——
+    因总控与子 agent 各持独立 DM，必须用发送返回的 conv_id，
+    不能写死 roster 里的会话（那可能是旧身份创建的会话，当前身份无权限读）。
+    """
     t = get_task(task_id)
     if not t:
         raise KeyError(task_id)
     agent = t.get("assignee") or "Cursor"
     info = AGENT_ROSTER.get(agent)
     prompt = build_prompt(t)
+    conv_id = None
     if live and info:
-        send_message(info["agent_id"], prompt)
+        out = send_message_json(info["agent_id"], prompt)
+        conv_id = out.get("conv_id") or out.get("conversation_id")
         apply_a2a_event({
             "taskId": task_id, "contextId": t["context_id"],
             "status": {"state": "working",
                        "message": {"role": "agent",
-                                   "parts": [{"type": "text", "text": f"已派发至 {agent} (EigenFlux live)"}]}},
+                                   "parts": [{"type": "text",
+                                              "text": f"已派发至 {agent} (EigenFlux live, conv={conv_id})"}]}},
         })
     else:
         apply_a2a_event({
@@ -63,7 +77,7 @@ def dispatch(task_id, live=False):
                                    "parts": [{"type": "text",
                                               "text": f"[mock] 已派发至 {agent}（未真发，安全联调）"}]}},
         })
-    return prompt
+    return prompt, conv_id
 
 
 def ingest_mock(task_id, steps=None):
@@ -100,16 +114,21 @@ def ingest_mock(task_id, steps=None):
             })
 
 
-def ingest_live(task_id):
-    """读真实 EigenFlux 历史，把子 agent 最后一条回报转成 A2A 事件回灌。"""
+def ingest_live(task_id, conv_id=None):
+    """读真实 EigenFlux 历史，把子 agent 最后一条回报转成 A2A 事件回灌 Orchestrator。
+
+    conv_id 优先用 dispatch 真实发送返回的会话 id；缺省时回退 roster 里的 conv_id。
+    """
     t = get_task(task_id)
     if not t:
         raise KeyError(task_id)
     agent = t.get("assignee") or "Cursor"
     info = AGENT_ROSTER.get(agent)
-    if not info:
-        raise KeyError("no roster for " + str(agent))
-    raw = get_history(info["conv_id"])
+    if not conv_id and info:
+        conv_id = info.get("conv_id")
+    if not conv_id:
+        raise KeyError("no conv_id for " + str(agent))
+    raw = get_history(conv_id)
     msgs = parse_history(raw)
     last = msgs[-1]["raw"] if msgs else "（空回报）"
     apply_a2a_event({
@@ -120,3 +139,4 @@ def ingest_live(task_id):
         "artifact": {"artifactId": task_id + "-art", "name": "待审核",
                      "parts": [{"type": "text", "text": last}]},
     })
+    return last

@@ -282,6 +282,7 @@
         <button class="btn" type="button" id="tkPull">拉取结算</button>
         <span class="meta" id="tkMeta">等待加载</span>
       </div>
+      <p class="meta" id="tkFxMeta">汇率等待加载</p>
       <div id="tkProgress" hidden>
         <div class="progress-track"><div class="progress-fill" id="tkProgressFill"></div></div>
         <p class="meta" id="tkProgressText"></p>
@@ -340,7 +341,17 @@
         <button class="btn btn-primary" type="button" id="shopeeRefresh">刷新周报快照</button>
         <span class="meta" id="shopeeMeta">等待加载</span>
       </div>
-      <div class="cards" id="shopeeCards"></div>
+      <div class="toolbar">
+        <label>开始日期<input type="date" id="shopeeStart"></label>
+        <label>结束日期<input type="date" id="shopeeEnd"></label>
+        <button class="btn btn-primary" type="button" id="shopeeLoad">查询利润</button>
+      </div>
+      <p class="meta" id="shopeeFxMeta">汇率等待加载</p>
+      <div class="cards" id="shopeeSettlementCards"></div>
+      <div class="hidden" id="shopeeCards"></div>
+      <div class="panel"><h3>站点汇总</h3><div class="table-wrap"><table><thead><tr><th>站点</th><th class="num">订单</th><th class="num">GMV CNY</th><th class="num">拨款 CNY</th><th class="num">广告 CNY</th><th class="num">成本 CNY</th><th class="num">利润 CNY</th><th class="num">利润率</th></tr></thead><tbody id="shopeeRegionBody"><tr><td colspan="8" class="empty">等待查询</td></tr></tbody></table></div></div>
+      <div class="panel"><h3>订单明细</h3><div class="table-wrap"><table><thead><tr><th>图片</th><th>拨款日期</th><th>站点</th><th>订单</th><th>SKU</th><th>商品</th><th class="num">拨款 CNY</th><th class="num">广告 CNY</th><th class="num">成本 CNY</th><th class="num">利润 CNY</th><th class="num">利润率</th></tr></thead><tbody id="shopeeOrderBody"><tr><td colspan="11" class="empty">等待查询</td></tr></tbody></table></div></div>
+      <h3>周报快照</h3>
       <div class="table-wrap">
         <table>
           <thead>
@@ -447,7 +458,7 @@
         var tab = btn.dataset.tab;
         document.querySelectorAll('.tab').forEach(function(b) { b.classList.toggle('active', b === btn); });
         document.querySelectorAll('[data-panel]').forEach(function(p) { p.classList.toggle('hidden', p.dataset.panel !== tab); });
-        if (tab === 'shopee') loadShopeeReports();
+        if (tab === 'shopee') { loadShopeeReports(); loadShopeeSettlement(); }
         if (tab === 'ozon') loadOzon();
       };
     });
@@ -589,6 +600,27 @@
       });
     }
 
+    function renderShopeeSettlement(data) {
+      var s = data.summary || {}, fx = data.fx || {};
+      var mode = fx.live ? '实时' : (fx.fallback ? '报告快照回退' : '缓存/默认');
+      document.getElementById('shopeeFxMeta').textContent = '汇率来源：' + (fx.provider || mode) + (fx.as_of ? '；更新时间：' + fx.as_of : '') + (fx.error ? '；提示：' + fx.error : '');
+      document.getElementById('shopeeSettlementCards').innerHTML = card('订单数', fmt(s.order_count || 0, 0)) + card('GMV CNY', fmt(s.gmv_cny || 0)) + card('拨款 CNY', fmt(s.settlement_cny || 0)) + card('广告 CNY', fmt(s.ad_cost_cny || 0)) + card('成本 CNY', fmt(s.product_cost_cny || 0)) + card('利润 CNY', fmt(s.profit_cny || 0), cls(s.profit_cny));
+      document.getElementById('shopeeRegionBody').innerHTML = (data.regions || []).map(function(r) {
+        return '<tr><td>' + esc(r.region) + '</td><td class="num">' + fmt(r.order_count, 0) + '</td><td class="num">' + fmt(r.gmv_cny) + '</td><td class="num">' + fmt(r.settlement_cny) + '</td><td class="num">' + fmt(r.ad_cost_cny) + '</td><td class="num">' + fmt(r.product_cost_cny) + '</td><td class="num ' + cls(r.profit_cny) + '">' + fmt(r.profit_cny) + '</td><td class="num">' + (r.margin_pct == null ? '-' : fmt(r.margin_pct) + '%') + '</td></tr>';
+      }).join('') || '<tr><td colspan="8" class="empty">该日期范围暂无数据</td></tr>';
+      document.getElementById('shopeeOrderBody').innerHTML = (data.orders || []).map(function(o) {
+        var img = o.image_url ? '<img class="thumb" src="' + esc(o.image_url) + '" loading="lazy" alt="">' : '-';
+        return '<tr><td>' + img + '</td><td>' + esc(o.release_date) + '</td><td>' + esc(o.region) + '</td><td>' + esc(o.order_sn) + '</td><td>' + esc(o.sku) + '</td><td class="clip">' + esc(o.product_name) + '</td><td class="num">' + fmt(o.settlement_cny) + '</td><td class="num">' + fmt(o.ad_cost_cny) + '</td><td class="num">' + fmt(o.product_cost_cny) + '</td><td class="num ' + cls(o.profit_cny) + '">' + fmt(o.profit_cny) + '</td><td class="num">' + (o.margin_pct == null ? '-' : fmt(o.margin_pct) + '%') + '</td></tr>';
+      }).join('') || '<tr><td colspan="11" class="empty">该日期范围暂无订单</td></tr>';
+    }
+    function loadShopeeSettlement() {
+      var start = document.getElementById('shopeeStart').value, end = document.getElementById('shopeeEnd').value;
+      if (!start || !end) return;
+      document.getElementById('shopeeMeta').textContent = '加载中...';
+      jsonFetch('/api/billing/shopee_settlement?start=' + encodeURIComponent(start) + '&end=' + encodeURIComponent(end)).then(function(data) {
+        renderShopeeSettlement(data); document.getElementById('shopeeMeta').textContent = '已更新：' + start + ' ~ ' + end;
+      }).catch(function(e) { document.getElementById('shopeeMeta').textContent = '加载失败：' + (e.message || e); });
+    }
     function loadShopeeReports() {
       document.getElementById('shopeeMeta').textContent = '加载中...';
       jsonFetch('/api/billing/shopee_reports').then(function(d) {
@@ -673,12 +705,15 @@
     document.getElementById('tkLoad').onclick = loadTk;
     document.getElementById('tkPull').onclick = startTkPull;
     document.getElementById('tkRegionFilter').onchange = renderTkOrders;
+    document.getElementById('shopeeLoad').onclick = loadShopeeSettlement;
     document.getElementById('shopeeRefresh').onclick = loadShopeeReports;
     document.getElementById('ozonLoad').onclick = loadOzon;
     document.getElementById('ozonRefreshFx').onclick = function() { loadOzon(true); };
     document.getElementById('ozonOnlySettled').onchange = loadOzon;
 
     jsonFetch('/api/settlement/config').then(function(d) {
+      var tkFx = d.fx || {};
+      document.getElementById('tkFxMeta').textContent = '汇率来源：' + (tkFx.provider || (tkFx.live ? '实时' : '默认')) + (tkFx.as_of ? '；更新时间：' + tkFx.as_of : '') + (tkFx.error ? '；提示：' + tkFx.error : '');
       document.getElementById('tkStart').value = d.default_start || dateDefault(35);
       document.getElementById('tkEnd').value = d.default_end || dateDefault(1);
       buildRegionInputs('tkRateGrid', tkRates, d.rates, '汇率', loadTk);
@@ -689,6 +724,8 @@
       document.getElementById('tkStart').value = dateDefault(35);
       document.getElementById('tkEnd').value = dateDefault(1);
     });
+    document.getElementById('shopeeStart').value = dateDefault(7);
+    document.getElementById('shopeeEnd').value = dateDefault(0);
   </script>
 </body>
 </html>

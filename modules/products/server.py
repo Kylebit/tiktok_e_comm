@@ -1844,6 +1844,8 @@ class Handler(BaseHTTPRequestHandler):
                 default_ad_rates,
                 default_rates,
                 fee_column_defs,
+                live_fx,
+                live_rates,
             )
 
             ds, de = spull.default_period()
@@ -1853,7 +1855,9 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": True,
                     "default_start": ds.isoformat(),
                     "default_end": de.isoformat(),
-                    "rates": default_rates(),
+                    "rates": live_rates(),
+                    "live_rates": live_rates(),
+                    "fx": live_fx(),
                     "ad_rates": default_ad_rates(),
                     "fee_columns": fee_column_defs(),
                     "data_range": data_range(),
@@ -1864,6 +1868,7 @@ class Handler(BaseHTTPRequestHandler):
             from modules.finance.settlement_report import (
                 default_ad_rates,
                 default_rates,
+                live_rates,
                 parse_iso_date,
                 summarize_period,
             )
@@ -1876,7 +1881,7 @@ class Handler(BaseHTTPRequestHandler):
             if not start_s or not end_s:
                 return self._json(400, {"ok": False, "error": "需要 start 与 end"})
             try:
-                rates = default_rates()
+                rates = live_rates()
                 ad_rates = default_ad_rates()
                 if rates_raw:
                     rates.update(json.loads(rates_raw))
@@ -1894,6 +1899,7 @@ class Handler(BaseHTTPRequestHandler):
             from modules.finance.settlement_report import (
                 default_ad_rates,
                 default_rates,
+                live_rates,
                 orders_for_period,
                 parse_iso_date,
             )
@@ -1906,7 +1912,7 @@ class Handler(BaseHTTPRequestHandler):
             if not start_s or not end_s:
                 return self._json(400, {"ok": False, "error": "需要 start 与 end"})
             try:
-                rates = default_rates()
+                rates = live_rates()
                 ad_rates = default_ad_rates()
                 if rates_raw:
                     rates.update(json.loads(rates_raw))

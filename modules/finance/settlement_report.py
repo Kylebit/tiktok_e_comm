@@ -25,6 +25,38 @@ def default_rates() -> dict[str, float]:
     }
 
 
+def live_fx() -> dict:
+    """Shared FX metadata for the billing API; never prevents settlement viewing."""
+    try:
+        from modules.sourcing.fx_rates import get_exchange_rates
+
+        fx = get_exchange_rates()
+        currency_rates = fx.get("rates") or {}
+        rates = {
+            region: float(currency_rates.get(currency) or 0)
+            for region, currency in REGION_RATE_KEY.items()
+            if float(currency_rates.get(currency) or 0) > 0
+        }
+        if rates:
+            return {**fx, "rates": rates}
+        return {**fx, "rates": default_rates(), "live": False, "fallback": True}
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "provider": "settings-defaults",
+            "as_of": None,
+            "rates": default_rates(),
+            "live": False,
+            "stale": False,
+            "error": str(exc),
+            "fallback": True,
+        }
+
+
+def live_rates() -> dict[str, float]:
+    """CNY per 1 local unit keyed by TikTok region."""
+    return dict(live_fx().get("rates") or default_rates())
+
+
 def default_ad_rates() -> dict[str, float]:
     """各国广告成本占「卖家折扣后小计」的百分比，默认 20。"""
     cfg = get("settlement_ad_rates") or {}

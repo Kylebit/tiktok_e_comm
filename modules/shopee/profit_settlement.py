@@ -12,6 +12,7 @@ from core.config import ROOT
 
 OUTPUT_DIR = ROOT / "outputs"
 REPORT_GLOB = "weekly_shopee_profit_*.html"
+REGION_CURRENCY = {"PH": "PHP", "MY": "MYR", "TH": "THB", "VN": "VND"}
 
 
 def parse_iso_date(value: str | None) -> date:
@@ -98,6 +99,44 @@ def _row_date(row: dict[str, Any], release_idx: int, purchase_idx: int) -> date 
         return None
 
 
+def _fx_payload(snapshot_rates: dict[str, Any]) -> tuple[dict[str, float], dict[str, Any]]:
+    """Prefer the shared live FX feed, retaining report rates as a safe fallback."""
+    fallback = {
+        region: float(snapshot_rates.get(region) or 0)
+        for region in REGION_CURRENCY
+        if float(snapshot_rates.get(region) or 0) > 0
+    }
+    try:
+        from modules.sourcing.fx_rates import get_exchange_rates
+
+        source = get_exchange_rates()
+        live = bool(source.get("live"))
+        source_rates = source.get("rates") or {}
+        rates = {
+            region: float(source_rates.get(currency) or 0)
+            for region, currency in REGION_CURRENCY.items()
+            if float(source_rates.get(currency) or 0) > 0
+        }
+        if live and rates:
+            return rates, {**source, "rates": rates, "live": True, "fallback": False}
+        return fallback, {
+            **source,
+            "rates": fallback,
+            "live": False,
+            "stale": bool(source.get("stale")),
+            "fallback": True,
+            "fallback_source": "report_snapshot",
+        }
+    except Exception as exc:  # noqa: BLE001 - a saved report must remain viewable offline.
+        return fallback, {
+            "provider": "report_snapshot",
+            "as_of": None,
+            "rates": fallback,
+            "live": False,
+            "stale": False,
+            "error": str(exc),
+            "fallback": True,
+        }
 def settlement_summary(start: date, end: date) -> dict[str, Any]:
     if end < start:
         raise ValueError("end date cannot be earlier than start date")
@@ -110,7 +149,7 @@ def settlement_summary(start: date, end: date) -> dict[str, Any]:
         if not data:
             continue
         headers = data.get("headers") or []
-        rates = data.get("rates") or {}
+        rates, fx = _fx_payload(data.get("rates") or {})
         release_idx = _header_index(headers, "Release Time")
         purchase_idx = _header_index(headers, "Purchase Date")
         order_idx = _header_index(headers, "Order SN")
@@ -136,10 +175,11 @@ def settlement_summary(start: date, end: date) -> dict[str, Any]:
             rate = float(rates.get(region, 0) or 0)
             subtotal = float(row.get("subtotal") or 0)
             settlement = float(row.get("settlement") or 0)
-            profit_cny = float(row.get("profit_cny") or 0)
             settlement_cny = settlement * rate
             gmv_cny = subtotal * rate
             ad_cny = float(row.get("ad_cost") or 0) * rate
+            product_cost_cny = float(row.get("product_cost") or 0)
+            profit_cny = settlement_cny - ad_cny - product_cost_cny
             rec = {
                 "release_date": released.isoformat(),
                 "region": region,
@@ -153,7 +193,7 @@ def settlement_summary(start: date, end: date) -> dict[str, Any]:
                 "settlement": _round(settlement),
                 "settlement_cny": _round(settlement_cny),
                 "ad_cost_cny": _round(ad_cny),
-                "product_cost_cny": _round(row.get("product_cost")),
+                "product_cost_cny": _round(product_cost_cny),
                 "profit_cny": _round(profit_cny),
                 "margin_pct": _round(profit_cny / gmv_cny * 100) if gmv_cny else None,
                 "image_url": row.get("image_url") or "",
@@ -208,4 +248,5 @@ def settlement_summary(start: date, end: date) -> dict[str, Any]:
         "regions": regions,
         "orders": orders,
         "available_reports": list_reports(),
+        "fx": fx if orders else {"provider": "report_snapshot", "rates": {}, "live": False},
     }

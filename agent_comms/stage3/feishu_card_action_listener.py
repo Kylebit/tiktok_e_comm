@@ -102,11 +102,14 @@ def _handle(ev):
 
 
 def _drain_stderr(p):
-    """后台排空 stderr 到日志文件，避免管道写满阻塞子进程。"""
+    """后台排空 stderr 到日志文件，避免管道写满阻塞子进程。stderr 为二进制流。"""
     try:
-        for line in p.stderr:
-            with open(LOG, "ab") as f:
-                f.write(("[stderr] " + line).encode("utf-8", "replace"))
+        for raw in p.stderr:  # raw is bytes
+            try:
+                with open(LOG, "ab") as f:
+                    f.write(b"[stderr] " + raw.rstrip(b"\r\n") + b"\n")
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -115,19 +118,19 @@ def run_once():
     cmd = _build_cmd()
     print("[listener] spawn: %s" % " ".join(cmd))
     logf = open(LOG, "ab", buffering=0)
+    # 二进制模式读写：lark-cli 在中文 Windows 下输出 GBK，utf-8 解码会崩，
+    # 故统一读 bytes，再 decode('utf-8','replace')，遇到 GBK 残留也能容错。
     p = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
         stderr=logf,
         # 保持 stdin 打开（不 EOF），否则 event consume 无界运行会因 stdin EOF 优雅退出
         stdin=subprocess.PIPE,
-        bufsize=1,
-        encoding="utf-8",
-        errors="replace",
+        bufsize=0,
     )
     threading.Thread(target=_drain_stderr, args=(p,), daemon=True).start()
-    for line in p.stdout:
-        line = line.strip()
+    for raw in p.stdout:
+        line = raw.decode("utf-8", "replace").strip()
         if not line:
             continue
         try:

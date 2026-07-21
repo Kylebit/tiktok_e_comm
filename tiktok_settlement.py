@@ -9,6 +9,8 @@
   python3 tiktok_settlement.py --days 7     # 拉取近 7 天（按天拆分文件）
 """
 
+from __future__ import annotations
+
 import argparse
 import csv
 import json
@@ -19,7 +21,9 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from tiktok_data import api_get, get_shops, load_token
+from core import auth
+from core.api_client import get as api_get
+from core.shops import list_shops
 
 INCOME_DIR = Path("CURSOR/Income_Data")
 OUTPUT_HTML = Path("settlement_summary.html")
@@ -41,6 +45,14 @@ CSV_COLUMNS = [
     "Customer payment", "Customer refund", "Platform discounts",
     "Ajustment amount", "Related order ID",
 ]
+
+
+def load_token():
+    return auth.ensure_valid_token()
+
+
+def get_shops(access_token):
+    return list_shops(access_token)
 
 
 def parse_args():

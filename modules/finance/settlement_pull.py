@@ -24,8 +24,7 @@ def pull_status() -> dict:
 def _run_pull(start: date, end: date) -> None:
     global _pull_job
     try:
-        from tiktok_data import get_shops, load_token
-        from tiktok_settlement import pull_period
+        from tiktok_settlement import get_shops, load_token, pull_period
 
         tokens = load_token()
         access_token = tokens["access_token"]

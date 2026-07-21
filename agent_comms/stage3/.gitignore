@@ -6,6 +6,7 @@ cursor_inbox/*.json
 cursor_inbox/done/
 codex_inbox/
 codex_adapter_state.json
+codex_adapter.lock
 test_task_ids.json
 .stage3_pids.json
 logs/

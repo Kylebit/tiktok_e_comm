@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import msvcrt
 import os
 import sys
 import time
@@ -31,6 +32,7 @@ ORCH = os.environ.get("ORCH_URL", "http://127.0.0.1:8773").rstrip("/")
 HERE = Path(__file__).resolve().parent
 INBOX_DIR = HERE / "codex_inbox"
 STATE_FILE = HERE / "codex_adapter_state.json"
+LOCK_FILE = HERE / "codex_adapter.lock"
 # Wake prefix mirrored by Codex notify_on_output.
 WAKE_PREFIX = "AGENT_A2A_TICK_codex"
 
@@ -206,45 +208,82 @@ def poll_once(consume: bool = True, ack: bool = True) -> list[dict[str, Any]]:
     return tasks
 
 
-def stream_forever() -> None:
+def acquire_stream_lock() -> Any | None:
+    """Acquire the one local lock reserved for the long-running SSE subscriber."""
+    LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    handle = LOCK_FILE.open("a+b")
+    if LOCK_FILE.stat().st_size == 0:
+        handle.write(b"\0")
+        handle.flush()
+    try:
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:
+        handle.close()
+        return None
+
+    handle.seek(0)
+    handle.write(f"pid={os.getpid()} started={datetime.now(timezone.utc).isoformat()}\n".encode("utf-8"))
+    handle.truncate()
+    handle.flush()
+    return handle
+
+
+def release_stream_lock(handle: Any) -> None:
+    try:
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    finally:
+        handle.close()
+
+
+def stream_forever() -> int:
+    lock_handle = acquire_stream_lock()
+    if lock_handle is None:
+        print("[codex-stage3] another Codex SSE adapter already owns the stream lock", file=sys.stderr)
+        return 1
+
     name = urllib.parse.quote(AGENT_NAME)
     url = f"{ORCH}/agent/{name}/stream"
 
-    # First consume pending tasks so restart does not miss work.
     try:
-        drain_once(consume=True, ack=True)
-    except Exception as exc:  # noqa: BLE001
-        print(f"[codex-stage3] startup drain failed: {exc}", file=sys.stderr)
-
-    # Re-emit wake signals for tasks already persisted locally before this run.
-    emit_wake_for_pending_files()
-
-    while True:
-        print(f"[codex-stage3] subscribing {url}")
+        # First consume pending tasks so restart does not miss work.
         try:
-            with urllib.request.urlopen(url, timeout=None) as stream:
-                print("[codex-stage3] connected")
-                for raw in stream:
-                    line = raw.decode("utf-8", errors="replace").strip()
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[5:].strip()
-                    try:
-                        event = json.loads(data)
-                    except Exception:
-                        continue
-                    if event.get("type") == "connected":
-                        continue
-                    if event.get("task_id"):
-                        ack_task(event)
+            drain_once(consume=True, ack=True)
         except Exception as exc:  # noqa: BLE001
-            print(f"[codex-stage3] stream disconnected: {exc}", file=sys.stderr)
+            print(f"[codex-stage3] startup drain failed: {exc}", file=sys.stderr)
+
+        # Re-emit wake signals for tasks already persisted locally before this run.
+        emit_wake_for_pending_files()
+
+        while True:
+            print(f"[codex-stage3] subscribing {url}")
             try:
-                drain_once(consume=True, ack=True)
-                emit_wake_for_pending_files()
-            except Exception as drain_exc:  # noqa: BLE001
-                print(f"[codex-stage3] reconnect drain failed: {drain_exc}", file=sys.stderr)
-            time.sleep(3)
+                with urllib.request.urlopen(url, timeout=None) as stream:
+                    print("[codex-stage3] connected")
+                    for raw in stream:
+                        line = raw.decode("utf-8", errors="replace").strip()
+                        if not line.startswith("data:"):
+                            continue
+                        data = line[5:].strip()
+                        try:
+                            event = json.loads(data)
+                        except Exception:
+                            continue
+                        if event.get("type") == "connected":
+                            continue
+                        if event.get("task_id"):
+                            ack_task(event)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[codex-stage3] stream disconnected: {exc}", file=sys.stderr)
+                try:
+                    drain_once(consume=True, ack=True)
+                    emit_wake_for_pending_files()
+                except Exception as drain_exc:  # noqa: BLE001
+                    print(f"[codex-stage3] reconnect drain failed: {drain_exc}", file=sys.stderr)
+                time.sleep(3)
+    finally:
+        release_stream_lock(lock_handle)
 
 
 def cmd_report(task_id: str, text: str, tool: str, tool_input: str) -> int:
@@ -309,8 +348,7 @@ def main() -> int:
         return 0
 
     # Default is stream mode because this file is the long-running adapter.
-    stream_forever()
-    return 0
+    return stream_forever()
 
 
 if __name__ == "__main__":

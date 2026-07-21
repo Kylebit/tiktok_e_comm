@@ -41,11 +41,12 @@ PIDFILE = os.path.join(HERE, ".stage3_pids.json")
 LOGS = os.path.join(HERE, "logs")
 ORCH_HEALTH = "http://127.0.0.1:8773/health"
 
+# Codex adapter is deliberately excluded: its wake prefix must reach the live
+# Codex session's notify_on_output, not a detached process log.
 PROCS = [
     ("orchestrator", "orchestrator_service.py"),
     ("adapter_runner", "adapter_runner.py"),
     ("cursor_adapter", "cursor_adapter.py"),
-    ("codex_adapter", "codex_adapter.py"),
     ("feishu_card_action_listener", "feishu_card_action_listener.py"),
 ]
 
@@ -136,8 +137,8 @@ def start(force=False):
             data = json.load(open(PIDFILE, encoding="utf-8"))
         except Exception:
             data = {}
-    if not force and len(data) == len(PROCS) and all(_alive(data.get(n)) for n, _ in PROCS):
-        print("[start] 5 个进程均已在运行，跳过启动。")
+    if not force and all(_alive(data.get(n)) for n, _ in PROCS):
+        print("[start] Stage3 后台进程均已在运行，跳过启动。")
         status()
         return
 

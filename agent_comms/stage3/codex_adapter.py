@@ -31,7 +31,7 @@ ORCH = os.environ.get("ORCH_URL", "http://127.0.0.1:8773").rstrip("/")
 HERE = Path(__file__).resolve().parent
 INBOX_DIR = HERE / "codex_inbox"
 STATE_FILE = HERE / "codex_adapter_state.json"
-# 对齐 Cursor 的唤醒钩子：真实 Codex 会话若配了 notify_on_output 匹配此前缀即自动被唤醒执行
+# Wake prefix mirrored by Codex notify_on_output.
 WAKE_PREFIX = "AGENT_A2A_TICK_codex"
 
 
@@ -98,10 +98,11 @@ def _wake_payload(dispatch: dict[str, Any], path: Path) -> dict[str, Any]:
         "prompt": (
             "A2A Orbit Codex task: set ORCH_URL if needed (default http://127.0.0.1:8773); "
             f"read {path}; execute the task for real (no fake scrape); "
-            "report progress via: python agent_comms/stage3/codex_adapter.py report "
+            "report progress via: python agent_comms/stage3/codex_adapter.py --report "
             f"--task-id {task_id} --text \"...\"; "
-            "final text must contain DONE/待审核 or BLOCKED/阻塞; "
-            "do not contact the human user; report only to Orchestrator/CEO肉肉."
+            "final text must contain DONE or BLOCKED; "
+            f"then: python agent_comms/stage3/codex_adapter.py --complete --task-id {task_id}; "
+            "do not contact the human user; report only to Orchestrator/CEO."
         ),
         "task_id": task_id,
         "path": str(path).replace("\\", "/"),
@@ -119,14 +120,17 @@ def ack_task(dispatch: dict[str, Any]) -> Path:
     title = dispatch.get("title") or ""
     prompt = dispatch.get("prompt") or ""
     inbox_file = INBOX_DIR / f"{task_id}.json"
-    # 去重：本地 inbox 已有该任务文件则只补一次 ACK，避免重复持久化/回报
     if task_id and inbox_file.is_file():
-        report(task_id, "ACK(去重): Orbit Codex 已接收（本地 inbox 已有）",
-               tool="stage3_a2a_ack_dedup", title=title or "Orbit Codex ACK")
+        report(
+            task_id,
+            "ACK(dedup): Orbit Codex already has this task in local inbox.",
+            tool="stage3_a2a_ack_dedup",
+            title=title or "Orbit Codex ACK",
+        )
         return inbox_file
     inbox_file = persist_task(dispatch)
     text = (
-        "ACK: Orbit Codex 已接收 Stage3 A2A 任务，已写入本地 inbox；"
+        "ACK: Orbit Codex received Stage3 A2A task and wrote it to local inbox; "
         f"task={task_id} title={title[:80]}"
     )
     report(
@@ -140,7 +144,6 @@ def ack_task(dispatch: dict[str, Any]) -> Path:
         print(f"[codex-stage3] ACK {task_id}: {prompt[:120]}")
     else:
         print(f"[codex-stage3] ACK {task_id}")
-    # 唤醒真实 Codex 会话执行（对齐 Cursor 的 AGENT_A2A_TICK_cursor 行为）
     _emit_wake(dispatch, inbox_file)
     return inbox_file
 
@@ -157,7 +160,7 @@ def local_pending_files() -> list[Path]:
         try:
             payload = _read_json(path, {})
         except Exception as exc:  # noqa: BLE001
-            print(f"[codex-stage3] 读取 pending 失败: {path} {exc}", file=sys.stderr)
+            print(f"[codex-stage3] failed to read pending inbox file: {path} {exc}", file=sys.stderr)
             continue
         if str(payload.get("status") or "").upper() in DONE_LOCAL_STATES:
             continue
@@ -166,21 +169,25 @@ def local_pending_files() -> list[Path]:
 
 
 def emit_wake_for_pending_files() -> list[Path]:
-    """本地 pending 落盘任务也打一次唤醒（重启恢复 / 漏 notify 时）。"""
+    """Emit wake signals for unfinished local inbox tasks."""
     pending = local_pending_files()
     for path in pending:
         payload = _read_json(path, {})
         dispatch = payload.get("dispatch", payload)
         task_id = str(dispatch.get("task_id") or path.stem)
-        print(f"[codex-stage3] 本地 pending 待执行: {task_id}", flush=True)
+        print(f"[codex-stage3] local pending task: {task_id}", flush=True)
         _emit_wake(dispatch, path)
     return pending
 
 
-def poll_once(consume: bool = True, ack: bool = True) -> list[dict[str, Any]]:
+def drain_once(consume: bool = True, ack: bool = True) -> list[dict[str, Any]]:
+    """Drain the HTTP inbox once.
+
+    This is only a startup/reconnect recovery path. SSE is the live receive path.
+    """
     tasks = fetch_tasks(consume=consume)
     state = _read_json(STATE_FILE, {})
-    state["last_poll_at"] = datetime.now(timezone.utc).isoformat()
+    state["last_drain_at"] = datetime.now(timezone.utc).isoformat()
     state["last_count"] = len(tasks)
     state["orchestrator"] = ORCH
     _write_json(STATE_FILE, state)
@@ -188,6 +195,13 @@ def poll_once(consume: bool = True, ack: bool = True) -> list[dict[str, Any]]:
     if ack:
         for task in tasks:
             ack_task(task)
+    return tasks
+
+
+def poll_once(consume: bool = True, ack: bool = True) -> list[dict[str, Any]]:
+    """Compatibility helper for manual troubleshooting; not the primary receive loop."""
+    tasks = drain_once(consume=consume, ack=ack)
+    if ack:
         emit_wake_for_pending_files()
     return tasks
 
@@ -198,17 +212,17 @@ def stream_forever() -> None:
 
     # First consume pending tasks so restart does not miss work.
     try:
-        poll_once(consume=True, ack=True)
+        drain_once(consume=True, ack=True)
     except Exception as exc:  # noqa: BLE001
-        print(f"[codex-stage3] pending poll failed: {exc}", file=sys.stderr)
+        print(f"[codex-stage3] startup drain failed: {exc}", file=sys.stderr)
 
-    # 对本地已落盘但仍 pending 的任务补打唤醒信号（重启恢复 / 漏 notify 兜底）
+    # Re-emit wake signals for tasks already persisted locally before this run.
     emit_wake_for_pending_files()
 
     while True:
         print(f"[codex-stage3] subscribing {url}")
         try:
-            with urllib.request.urlopen(url, timeout=60) as stream:
+            with urllib.request.urlopen(url, timeout=None) as stream:
                 print("[codex-stage3] connected")
                 for raw in stream:
                     line = raw.decode("utf-8", errors="replace").strip()
@@ -225,15 +239,20 @@ def stream_forever() -> None:
                         ack_task(event)
         except Exception as exc:  # noqa: BLE001
             print(f"[codex-stage3] stream disconnected: {exc}", file=sys.stderr)
+            try:
+                drain_once(consume=True, ack=True)
+                emit_wake_for_pending_files()
+            except Exception as drain_exc:  # noqa: BLE001
+                print(f"[codex-stage3] reconnect drain failed: {drain_exc}", file=sys.stderr)
             time.sleep(3)
 
 
 def cmd_report(task_id: str, text: str, tool: str, tool_input: str) -> int:
     if not task_id:
-        print("需要 --task-id", file=sys.stderr)
+        print("missing --task-id", file=sys.stderr)
         return 2
     if not text:
-        print("需要 --text", file=sys.stderr)
+        print("missing --text", file=sys.stderr)
         return 2
     result = report(
         task_id, text,
@@ -247,7 +266,7 @@ def cmd_report(task_id: str, text: str, tool: str, tool_input: str) -> int:
 def cmd_complete(task_id: str) -> int:
     target = INBOX_DIR / f"{task_id}.json"
     if not target.is_file():
-        print(f"inbox 任务不存在: {task_id}", file=sys.stderr)
+        print(f"inbox task not found: {task_id}", file=sys.stderr)
         return 1
     payload = _read_json(target, {})
     payload["status"] = "DONE"
@@ -263,12 +282,12 @@ def main() -> int:
     parser.add_argument("--scan-local-inbox", action="store_true", help="Emit wake signals for unfinished local inbox tasks and exit")
     parser.add_argument("--peek", action="store_true", help="Fetch pending tasks without consuming or ACKing")
     parser.add_argument("--stream", action="store_true", help="Subscribe to task stream forever")
-    parser.add_argument("--report", action="store_true", help="POST /ingest 回报总控（配合 --task-id/--text）")
-    parser.add_argument("--complete", action="store_true", help="把 inbox 任务标记 DONE（配合 --task-id）")
-    parser.add_argument("--task-id", default="", help="任务 id（用于 --report/--complete）")
-    parser.add_argument("--text", default="", help="回报文本（用于 --report）")
-    parser.add_argument("--tool", default="", help="回报 tool 字段")
-    parser.add_argument("--tool-input", default="", help="回报 tool_input 字段")
+    parser.add_argument("--report", action="store_true", help="POST progress/final text to /ingest")
+    parser.add_argument("--complete", action="store_true", help="Mark a local inbox task DONE")
+    parser.add_argument("--task-id", default="", help="Task id for --report/--complete")
+    parser.add_argument("--text", default="", help="Report text for --report")
+    parser.add_argument("--tool", default="", help="Optional tool field for /ingest")
+    parser.add_argument("--tool-input", default="", help="Optional tool_input field for /ingest")
     args = parser.parse_args()
 
     if args.health:
@@ -296,3 +315,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

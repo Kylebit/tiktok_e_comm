@@ -143,3 +143,24 @@ python codex_adapter.py --peek
 4. 如果输出任何 `pending_local_inbox` 或 `AGENT_A2A_TICK_codex`，必须读取对应 `codex_inbox/<task_id>.json`，执行 `dispatch.prompt`，并通过 `--report` 回报总控。
 
 原因：adapter 会先消费 HTTP 队列并把任务落盘到 `codex_inbox`。此时 HTTP 队列会变空；如果 Codex 只查 HTTP 队列，就会漏掉已经 ACK 但尚未执行的本地任务。
+
+## 8. Codex / Cursor 对齐：SSE 优先，不用定时轮询当主收件
+
+Codex 的正确主路径与 Cursor 一致：
+
+1. 常驻适配器只跑 `python -u agent_comms/stage3/codex_adapter.py --stream`。
+2. 适配器启动时 drain 一次 `GET /agent/Orbit%20Codex/tasks?consume=1`，用于接走积压任务。
+3. 之后长期订阅 `GET /agent/Orbit%20Codex/stream`，收到 SSE `data:` 事件后落盘 `codex_inbox/<task_id>.json`、ACK `/ingest`、打印 `AGENT_A2A_TICK_codex {...}`。
+4. SSE 断线后 sleep 再重连；重连前可再 drain 一次，防止断线期间漏任务。
+5. Codex 会话侧应配置 `notify_on_output` 匹配 `^AGENT_A2A_TICK_codex`，被唤醒后读取 wake JSON 中的 `path`，真实执行 `dispatch.prompt`。
+6. `--poll-once` 只保留为手动排障命令，不作为主循环，不要再用每 N 分钟 `tasks?consume=1` 作为常规收件方式。
+7. heartbeat 只做兜底健康检查和本地 inbox 防漏扫描；一旦 SSE + notify 工作正常，heartbeat 不应承担主收件职责。
+
+执行端回报仍然固定：
+
+```bash
+python agent_comms/stage3/codex_adapter.py --report --task-id <id> --text "DONE: ... commit <hash>"
+python agent_comms/stage3/codex_adapter.py --complete --task-id <id>
+```
+
+适配器只 ACK 和唤醒，不伪造 DONE、测试通过、commit hash 或 push 结果；终态必须由真实 Codex 会话在完成工作后回报。

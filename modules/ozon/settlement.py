@@ -256,6 +256,20 @@ def summarize_transactions(
                 }
             )
 
+        advertising_rub = round(sale_price_rub * 0.22, 2)
+        fees["advertising"] = advertising_rub
+        fee_rows = [row for row in fee_rows if row.get("category") != "advertising"]
+        if advertising_rub:
+            fee_rows.append(
+                {
+                    "category": "advertising",
+                    "label": _fee_label("advertising"),
+                    "type_name": "销售价×22%",
+                    "amount_rub": _round(advertising_rub),
+                    "count": len(sale_ops),
+                }
+            )
+
         skus = sorted(data["items"].keys())
         product_names: list[str] = []
         offer_ids: list[str] = []

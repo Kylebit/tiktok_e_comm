@@ -256,8 +256,9 @@ def summarize_transactions(
                 }
             )
 
-        advertising_rub = round(sale_price_rub * 0.22, 2)
+        advertising_rub = -round(sale_price_rub * 0.22, 2)
         fees["advertising"] = advertising_rub
+        category_totals["advertising"] = advertising_rub
         fee_rows = [row for row in fee_rows if row.get("category") != "advertising"]
         if advertising_rub:
             fee_rows.append(

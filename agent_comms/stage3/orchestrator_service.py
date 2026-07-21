@@ -413,6 +413,40 @@ async def approve_task(request: Request):
     return JSONResponse({"ok": True, "task_id": task_id, "status": "已完成"})
 
 
+@app.post("/archive")
+async def archive_task(request: Request):
+    """Boss 在飞书卡点「🗄 归档」-> 把任务移出活跃视图（状态置 canceled），停止催办。
+
+    由飞书卡按钮回调监听器（feishu_card_action_listener）在用户点击「归档」时调用：
+    body: {"task_id","agent"?}
+    发布 STATE_DELTA(已取消) + 一条 TEXT 时间线，adapter_runner 据其把飞书卡移除该任务。
+    与 /approve 区别：approve=已完成(闭环)；archive=已取消(放弃/归档，不再出现在活跃总览)。
+    """
+    body = await request.json()
+    task_id = body.get("task_id")
+    if not task_id:
+        return JSONResponse({"ok": False, "error": "task_id required"}, status_code=400)
+
+    orch.apply_a2a_event({"task_id": task_id, "status": "canceled",
+                          "progress_text": "Boss 归档"})
+
+    ag_update = {
+        "task_id": task_id,
+        "status": "已取消",
+        "progress_text": "Boss 归档，任务关闭",
+        "tool": None,
+        "tool_input": None,
+        "card_fields": {"状态": "已取消", "进度": "100%",
+                        "负责Agent": body.get("agent") or "—"},
+    }
+    for ev in map_a2a_update_to_ag_ui(ag_update, thread_id=task_id):
+        await BUS.publish(ev)
+    await BUS.publish({"type": "TEXT_MESSAGE_CONTENT", "threadId": task_id,
+                       "delta": "🗄 Boss 归档，任务关闭"})
+
+    return JSONResponse({"ok": True, "task_id": task_id, "status": "已取消"})
+
+
 if __name__ == "__main__":
     import uvicorn
 

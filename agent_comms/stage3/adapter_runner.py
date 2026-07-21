@@ -166,9 +166,28 @@ def render_summary_card(tasks):
             ) % (emoji, t["seq"] or "?", t["title"], t["tid"], t["assignee"], t["status_cn"], tl_md)
             elements.append({"tag": "hr"})
             elements.append({"tag": "markdown", "content": block})
+            # 飞书卡按钮：审核通过 / 归档。点击即回灌 Orchestrator（经由按钮回调监听器），
+            # 无需 Boss 人工转发，状态自动闭环。
+            elements.append({
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "✅ 审核通过"},
+                        "type": "primary",
+                        "value": {"action": "approve", "task_id": t["tid"]},
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "🗄 归档"},
+                        "type": "default",
+                        "value": {"action": "archive", "task_id": t["tid"]},
+                    },
+                ],
+            })
         elements.append({"tag": "hr"})
         elements.append({"tag": "markdown",
-                         "content": "_本卡随任务状态自动更新，无需转发；审核通过请直接告诉我任务编号（如 #0032）。_"})
+                         "content": "_本卡随任务状态自动更新；点卡片上的「✅ 审核通过 / 🗄 归档」按钮即可处理，无需转发。_"})
 
     return {
         "header": {

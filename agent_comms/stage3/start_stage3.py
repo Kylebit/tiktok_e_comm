@@ -3,7 +3,7 @@
 Stage3 常驻启动器
 ================
 把 Orchestrator + adapter_runner + cursor_adapter + codex_adapter
-以 DETACHED 进程拉起，使其脱离本会话存活（会话结束不退出）。
++ feishu_card_action_listener 以 DETACHED 进程拉起，使其脱离本会话存活（会话结束不退出）。
 
 用法：
     python start_stage3.py           # 启动（已全运行则跳过）
@@ -46,6 +46,7 @@ PROCS = [
     ("adapter_runner", "adapter_runner.py"),
     ("cursor_adapter", "cursor_adapter.py"),
     ("codex_adapter", "codex_adapter.py"),
+    ("feishu_card_action_listener", "feishu_card_action_listener.py"),
 ]
 
 # Windows：DETACHED_PROCESS，使子进程脱离控制台/会话存活
@@ -136,7 +137,7 @@ def start(force=False):
         except Exception:
             data = {}
     if not force and len(data) == len(PROCS) and all(_alive(data.get(n)) for n, _ in PROCS):
-        print("[start] 4 个进程均已在运行，跳过启动。")
+        print("[start] 5 个进程均已在运行，跳过启动。")
         status()
         return
 

@@ -59,12 +59,36 @@ def _call_orch(path, payload):
         return json.loads(r.read().decode("utf-8"))
 
 
+def _parse_event(ev):
+    """从事件中提取 (event_type, event_id, action_value)，兼容两种结构：
+    - 飞书原始 OpenAPI：{header:{event_type, event_id}, event:{action:{value}}}
+    - lark-cli 可能扁平化：{type, event_id, action_value}
+    """
+    etype = ev.get("type") or (ev.get("header") or {}).get("event_type")
+    if etype != "card.action.trigger":
+        return None, None, None
+    eid = ev.get("event_id") or (ev.get("header") or {}).get("event_id")
+    av = None
+    if "action_value" in ev:
+        av = ev.get("action_value")
+    else:
+        action = None
+        ev_event = ev.get("event")
+        if isinstance(ev_event, dict):
+            action = ev_event.get("action")
+        if not isinstance(action, dict) and isinstance(ev.get("action"), dict):
+            action = ev.get("action")
+        if isinstance(action, dict):
+            av = action.get("value")
+    return etype, eid, av
+
+
 def _handle(ev):
     """处理一条 card.action.trigger 事件。"""
-    if ev.get("type") != "card.action.trigger":
+    etype, eid, av = _parse_event(ev)
+    if etype is None:
         return
     # event_id 去重
-    eid = ev.get("event_id")
     if eid:
         if eid in SEEN:
             return
@@ -72,7 +96,6 @@ def _handle(ev):
         if len(SEEN) > SEEN_CAP:
             SEEN.clear()
 
-    av = ev.get("action_value")
     if isinstance(av, str):
         try:
             val = json.loads(av)

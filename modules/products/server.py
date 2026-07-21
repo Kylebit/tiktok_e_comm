@@ -1443,6 +1443,25 @@ class Handler(BaseHTTPRequestHandler):
                     files.append({"name": p.name, "mtime": int(stat.st_mtime), "size": stat.st_size})
             return self._json(200, {"ok": True, "reports": files})
 
+        if path == "/api/shopee/profit/reports":
+            from modules.shopee import profit_settlement as sp_profit
+
+            return self._json(200, {"ok": True, "items": sp_profit.list_reports()})
+
+        if path == "/api/shopee/profit/status":
+            return self._json(200, {"ok": True, "running": False, "message": ""})
+
+        if path == "/api/billing/shopee_settlement":
+            from modules.shopee import profit_settlement as sp_profit
+
+            q = parse_qs(urlparse(self.path).query)
+            try:
+                start = sp_profit.parse_iso_date((q.get("start") or [""])[0])
+                end = sp_profit.parse_iso_date((q.get("end") or [""])[0])
+                return self._json(200, sp_profit.settlement_summary(start, end))
+            except Exception as e:
+                return self._json(400, {"ok": False, "error": str(e)})
+
         if path == "/api/mx/approvals":
             from modules.miaoshou import mx_web_approval as mx_web
 
@@ -1965,6 +1984,20 @@ class Handler(BaseHTTPRequestHandler):
             data = self._read_json()
         except json.JSONDecodeError:
             return self._json(400, {"ok": False, "error": "invalid json"})
+
+        if path == "/api/shopee/profit/run":
+            from modules.shopee import profit_settlement as sp_profit
+
+            try:
+                if data.get("date"):
+                    start = end = sp_profit.parse_iso_date(str(data.get("date")))
+                else:
+                    start = sp_profit.parse_iso_date(str(data.get("from") or data.get("start") or ""))
+                    end = sp_profit.parse_iso_date(str(data.get("to") or data.get("end") or ""))
+                result = sp_profit.settlement_summary(start, end)
+                return self._json(200, {"ok": True, "message": "Shopee range loaded", **result})
+            except Exception as e:
+                return self._json(400, {"ok": False, "error": str(e), "message": str(e)})
 
         if path == "/api/mx/approvals/clear":
             from modules.miaoshou import mx_web_approval as mx_web

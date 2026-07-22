@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>LinkFox 两个集成 Skill 用途调查</title>
+<style>
+  :root {
+    --bg: #f4f7fb;
+    --card: #ffffff;
+    --ink: #0f172a;
+    --muted: #64748b;
+    --line: #e2e8f0;
+    --accent: #0f766e;
+    --accent-soft: #ccfbf1;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    color: var(--ink);
+    background:
+      radial-gradient(1200px 500px at 10% -10%, #dbeafe 0%, transparent 55%),
+      radial-gradient(900px 400px at 100% 0%, #ccfbf1 0%, transparent 50%),
+      var(--bg);
+    line-height: 1.7;
+  }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 32px 20px 64px; }
+  .hero {
+    background: linear-gradient(135deg, #0f766e 0%, #1d4ed8 100%);
+    color: #fff;
+    border-radius: 18px;
+    padding: 28px;
+    box-shadow: 0 18px 40px rgba(15, 23, 42, 0.18);
+    margin-bottom: 20px;
+  }
+  .hero h1 { margin: 0 0 10px; font-size: 27px; line-height: 1.35; }
+  .hero .sub { opacity: 0.92; font-size: 14px; }
+  .badge {
+    display: inline-block;
+    background: rgba(255,255,255,0.18);
+    border: 1px solid rgba(255,255,255,0.28);
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    margin-bottom: 12px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 18px 22px;
+    margin: 14px 0;
+    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
+  }
+  .toc-title { font-weight: 700; margin-bottom: 8px; color: var(--accent); }
+  .toc ol { margin: 0; padding-left: 20px; }
+  .toc a { color: #1e293b; text-decoration: none; }
+  .toc a:hover { color: var(--accent); text-decoration: underline; }
+  h1 { font-size: 26px; }
+  h2 {
+    margin: 28px 0 12px;
+    font-size: 21px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid var(--accent-soft);
+    scroll-margin-top: 16px;
+  }
+  h3 { margin: 18px 0 8px; font-size: 16px; color: #334155; }
+  h4 { margin: 14px 0 6px; font-size: 14px; color: #475569; }
+  p { margin: 8px 0; }
+  blockquote {
+    margin: 10px 0;
+    padding: 10px 16px;
+    border-left: 4px solid var(--accent);
+    background: #f0fdfa;
+    border-radius: 0 10px 10px 0;
+    color: #134e4a;
+  }
+  blockquote p { margin: 4px 0; }
+  ul, ol { margin: 8px 0 8px 20px; }
+  li { margin: 4px 0; }
+  code {
+    font-family: Consolas, "Courier New", monospace;
+    background: #f1f5f9;
+    padding: 1px 6px;
+    border-radius: 5px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #0f172a;
+    color: #e2e8f0;
+    padding: 14px 16px;
+    border-radius: 10px;
+    overflow-x: auto;
+    font-size: 13px;
+  }
+  pre code { background: transparent; color: inherit; padding: 0; }
+  a { color: #1d4ed8; }
+  .table-wrap { overflow-x: auto; margin: 10px 0 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; background: #fff; }
+  th, td { border: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: #f8fafc; color: #334155; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 22px 0; }
+  .foot { margin-top: 28px; color: var(--muted); font-size: 12px; text-align: center; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="hero">
+      <div class="badge">Orbit Hive · 情报调研</div>
+      <h1>LinkFox 两个集成 Skill 用途调查</h1>
+      <div class="sub">两个集成 LinkFox skill（亚马逊选品 / 1688 货源）的用途、成本与安全红线对齐分析 · 2026-07-22 · HTML 交付</div>
+    </header>
+    <nav class="toc card"><div class="toc-title">目录</div><ol><li><a href="#sec1">1. 结论速览</a></li><li><a href="#sec2">2. 安装状态核实（本机实测）</a></li><li><a href="#sec3">3. 亚马逊选品 skill 用途</a></li><li><a href="#sec4">4. 1688 货源 skill 用途</a></li><li><a href="#sec5">5. 调用前置与成本</a></li><li><a href="#sec6">6. 安全红线对齐（重要）</a></li><li><a href="#sec7">7. 集成建议（按优先级）</a></li><li><a href="#sec8">8. 待 Boss 拍板</a></li></ol></nav>
+    <article class="card">
+['<h1>LinkFox 两个集成 Skill 用途调查</h1>', '<blockquote><p>调查对象：用户在本机 WorkBuddy 找到并已集成的两个 LinkFox skill —— <strong><code>linkfox-amazon-product-selection</code>（亚马逊选品）</strong> 与 <strong><code>linkfox-1688-sourcing</code>（1688 货源）</strong>。</p><p>调查目的：这两个 skill 到底能干什么、对 Orbit Hive（Orbit OS / Treasury 上品 / Ozon / Eyes 选品情报）有什么用处、调用前置与成本、安全红线如何对齐。</p><p>调查时间：2026-07-22 · CEO 肉肉</p></blockquote>', '<h2 id="sec1">1. 结论速览</h2>', '<div class="table-wrap"><table><tr><th>维度</th><th>亚马逊选品 skill</th><th>1688 货源 skill</th></tr><tr><td>子能力数量</td><td>12 类底层工具 / <strong>33 项子能力</strong></td><td>3 类底层工具 / <strong>4 项子能力</strong></td></tr><tr><td>安装完整度</td><td>完整（34 脚本 + 33 references）</td><td>完整（40 脚本 + 4 references）</td></tr><tr><td>当前可调用</td><td>❌ 缺 <code>LINKFOX_AGENT_API_KEY</code></td><td>❌ 缺 <code>LINKFOX_AGENT_API_KEY</code></td></tr><tr><td>计费方式</td><td>按工具独立计费 / 限频（含高价 AI 报告）</td><td>搜索≈9 积分、图搜≈4.5 积分、采购按操作计费</td></tr><tr><td>对 Orbit Hive 直接用处</td><td><strong>低（当前无 Amazon 业务块）</strong></td><td><strong>高（直接喂 Treasury 上品 + 选品情报）</strong></td></tr><tr><td>安全红线关注点</td><td>只读为主，无写操作</td><td>含<strong>高风险下单/支付/收货写操作</strong>，须走确认闸</td></tr><tr><td>建议定位</td><td>作为 Eyes 选品模块的<strong>参考架构</strong>存档；Amazon 扩张时启用</td><td>作为 Treasury 上品<strong>货源情报增强</strong>接入（只读部分）；采购走 Boss 确认闸</td></tr></table></div>', '<p><strong>一句话</strong>：1688 货源 skill 是当下就能用上的&quot;找货/比价/以图搜货源&quot;利器，与 Treasury 上品直接咬合；亚马逊选品 skill 是当前用不上的&quot;成熟选品能力样板&quot;，留作 Eyes 重建参考与未来扩张。两者都要先解决 API key + 积分。</p>', '<h2 id="sec2">2. 安装状态核实（本机实测）</h2>', '<p>通过扫描 <code>~/.workbuddy/skills/</code> 目录核实，两个 skill 均<strong>真实落地、非空壳</strong>：</p>', '<ul><li><code>linkfox-amazon-product-selection</code>：存在，34 个可执行脚本、33 个 references 文档、SKILL.md 23KB。</li><li><code>linkfox-1688-sourcing</code>：存在，40 个可执行脚本（含 12 个采购操作脚本 + 共享模块 + 图片上传）、4 个 references 文档、SKILL.md 20KB。</li><li>缺失项：<code>skills-version.json</code>、<code>onboarding.md</code>（仅影响本地计费清单与自助注册引导，不影响已装能力的调用逻辑）。</li></ul>', '<p><strong>调用前置（两者共通，当前未满足）</strong>：</p>', '<ol><li>环境变量 <code>LINKFOX_AGENT_API_KEY</code>（或 <code>LINKFOXAGENT_API_KEY</code>）—— 实测<strong>未设置</strong>。</li><li>网关地址 <code>LINKFOX_TOOL_GATEWAY</code> —— 实测<strong>未设置</strong>（正常由 onboarding/登录后写入）。</li><li>1688 采购类操作还需当前用户完成 <strong>1688 OAuth 授权</strong>（ACTIVE 且未过期）。</li><li>注册引导依赖 <code>linkfox-onboarding</code> skill（本机未装，需从 <code>agent-files.linkfox.com</code> 下载安装；渠道须传 <code>workbuddy</code>）。</li></ol>', '<blockquote><p>结论：工具已就绪，<strong>钥匙没配</strong>。要真调通，Boss 需先开 LinkFox 账号拿 API key 并配置环境变量。</p></blockquote>', '<h2 id="sec3">3. 亚马逊选品 skill 用途</h2>', '<h3>3.1 能力分层（12 类工具 / 33 子能力）</h3>', '<div class="table-wrap"><table><tr><th>层</th><th>代表子能力</th><th>能拿到什么</th></tr><tr><td>前台实时</td><td><code>amazon_search</code>（搜索/SERP）、<code>amazon_product_detail</code>（详情/五点/A+/变体）、<code>amazon_reviews</code>（按星级评论）、<code>amazon_alexa_assistant</code>（自然语言导购）、<code>amazon_search_by_image</code>（以图搜图）</td><td>实时排名、价格、评分、变体、评论原文、相似商品</td></tr><tr><td>历史时序</td><td><code>keepa</code>（价格/BSR/月销/卖家数历史）、<code>sorftime</code>（FBA 利润/Deal 历史/快照）</td><td>12 个月销量趋势、利润、BSR 曲线</td></tr><tr><td>关键词流量</td><td><code>aba</code>（官方搜索词）、<code>jungle_scout</code>（反查/拓展/历史/声量份额）、<code>sif</code>（ASIN 流量结构/竞争概览）、<code>sellersprite</code>（流量词反查）</td><td>搜索量、供需比、PPC 竞价、流量来源拆解</td></tr><tr><td>利基市场</td><td><code>jiimore</code>（细分市场指标/评论/潜力爆品）、<code>sellersprite</code>（选市场看板）</td><td>垄断度、品牌数、新品成功率、蓝海赛道</td></tr><tr><td>商业洞察</td><td><code>amazon_business_insight</code>（六维 AI 报告 / 反向按指标筛赛道）</td><td>市场潜力/产品特征/评论/客户画像/搜索趋势/定价，AI 生成</td></tr></table></div>', '<p>覆盖美国、英国、德国、日本等 15+ 站点。</p>', '<h3>3.2 对 Orbit Hive 的用处评估</h3>', '<ul><li><strong>直接用处：低。</strong> 当前 Orbit Hive 业务块是 TikTok / Ozon(8767) / Shopee / Treasury 上品，<strong>没有 Amazon 块</strong>，所以这套亚马逊选品能力暂无对应业务可落。</li><li><strong>间接用处：中高（参考架构价值）。</strong> Eyes(8768 选品情报) 目前处于 <strong>⚠️ 降级</strong>状态。这个亚马逊 skill 是一份&quot;成熟选品能力&quot;的活样本 —— 12 数据源、33 子能力、严格的能力边界与计费约束、统一的网关+脚本+references 结构。重建/增强 Eyes 时，可直接借鉴它的<strong>分层建模思路</strong>（前台实时 → 历史时序 → 关键词流量 → 利基 → 商业洞察）和<strong>输出规范</strong>（来源标注、币种提示、不可用值标 N/A）。</li><li><strong>未来用处：高。</strong> 若 Boss 决定把业务扩到 Amazon，该 skill 即插即用，无需自研。</li></ul>', '<blockquote><p>建议：当下<strong>不消耗积分</strong>去跑它；把它的 SKILL.md + references 当作 Eyes 重建的设计范本存档。</p></blockquote>', '<h2 id="sec4">4. 1688 货源 skill 用途</h2>', '<h3>4.1 能力分层（3 类工具 / 4 子能力）</h3>', '<div class="table-wrap"><table><tr><th>子能力</th><th>端点</th><th>能拿到什么</th><th>对上品的用处</th></tr><tr><td><code>dld_product_search</code>（商品搜索）</td><td>POST /dld/productSearch</td><td>按关键词/商品链接/ID 搜 1688 批发货，返回<strong>批发价、代发价、销售笔数/件数、预估销售额、起批量、供应商资质、店铺/商品链接</strong>；支持工厂/代发/跨境/新品筛选与排序</td><td>★★★ 直接喂上品&quot;找货&quot;：先发现货源再上架</td></tr><tr><td><code>dld_product_billboard</code>（热销榜单）</td><td>POST /dld/productBillboard</td><td>周榜/月榜（按销售笔数/额/量排序），发现爆款与趋势货源</td><td>★★★ 选品风向标：什么在 1688 端走热</td></tr><tr><td><code>alibaba1688_image_search</code>（以图搜图）</td><td>POST /alibaba1688/imageSearch</td><td>用图片 URL/Base64 视觉搜同款/相似货源，返回标题/批发价/代发价/月销/起批量/复购率/商家身份（超级工厂/实力商家）</td><td>★★★ 我们已有&quot;商品图&quot;能力，可反向：用成品图回搜 1688 同款货源</td></tr><tr><td><code>alibaba1688_procurement</code>（采购履约）</td><td>POST /alibaba1688/{operation}</td><td>授权检查、SKU/规格、下单预览、创建订单、支付链接、订单/物流状态、取消、确认收货（12 个操作）</td><td>★ 仅经 Boss 确认闸使用（见 §6 安全红线）</td></tr></table></div>', '<h3>4.2 对 Orbit Hive 的用处评估</h3>', '<ul><li><strong>直接用处：高，且与现有架构咬合紧密。</strong> MEMORY 已固化&quot;上品采集路径&quot;：前端<strong>上品</strong>页 → 粘 1688 链接/offer_id/妙手采集箱 ID → 妙手采集。这个 skill 的<strong>只读部分</strong>（搜索/榜单/图搜）恰好补上&quot;上品&quot;流程最前端的<strong>货源发现与比价情报</strong>——当前是人工去 1688 找，未来可由 skill 自动拉货源候选、比批发价/代发价/销量、再以图搜确认同款，再进入上架。</li><li><strong>与自建迷你 LinkFox 的关系</strong>：昨天调研结论是&quot;图像部分自建（ComfyUI+SDXL），非图像部分白嫖 LinkFox 开放 skill&quot;。<strong>1688 货源 skill 正是那个该&quot;白嫖&quot;的非图像能力</strong>——找货/比价/以图搜货源，无需自己爬 1688。</li><li><strong>数据口径注意</strong>：价格一律人民币（¥/CNY），须区分批发价 vs 代发价；销量按 <code>cycle=7/30</code> 或周/月榜标明时间窗。</li></ul>', '<h2 id="sec5">5. 调用前置与成本</h2>', '<div class="table-wrap"><table><tr><th>项</th><th>亚马逊选品</th><th>1688 货源</th></tr><tr><td>鉴权</td><td><code>LINKFOX_AGENT_API_KEY</code>（必需）</td><td>同左（必需）</td></tr><tr><td>计费</td><td>各工具独立计费/限频；AI 报告、反向筛赛道较贵</td><td>搜索≈9 积分(≈18000 token)、图搜≈4.5 积分(≈9000 token)、采购按操作</td></tr><tr><td>缓存</td><td>同参数 24h 本地缓存，避免重复计费</td><td>搜索/榜单/图搜同参数 24h 本地缓存</td></tr><tr><td>失败约束</td><td>空结果/失败不得自动换词翻页试探</td><td>同左；不得自动连续试探</td></tr><tr><td>输出落盘</td><td><code>&lt;cwd&gt;/linkfox/&lt;日期&gt;/&lt;session&gt;/data/*.json</code></td><td>同左；采购类默认脱敏不落盘，可 <code>--save</code></td></tr></table></div>', '<blockquote><p>关键点：<strong>每次调用都烧积分</strong>。在 Orbit Hive 里集成时，应在编排层加&quot;调用前预估成本 + 超阈值请示 Boss&quot;，避免 agent 自主连发把积分烧光（这与我们&quot;需 Boss 拍板走飞书&quot;的纪律一致）。</p></blockquote>', '<h2 id="sec6">6. 安全红线对齐（重要）</h2>', '<p><code>linkfox-1688-sourcing</code> 的<strong>采购履约</strong>部分含<strong>高风险写操作</strong>，设计上就要求&quot;用户单独中文确认 + Agent 注入 boolean 安全字段&quot;：</p>', '<div class="table-wrap"><table><tr><th>操作</th><th>风险</th><th>确认字段</th></tr><tr><td><code>createOrder</code>（创建订单）</td><td>高</td><td><code>confirmCreateOrder=true</code></td></tr><tr><td><code>paymentUrl</code>（获取支付链接）</td><td>高</td><td><code>confirmGetPaymentUrl=true</code></td></tr><tr><td><code>cancelOrder</code>（取消订单）</td><td>高</td><td><code>confirmCancel=true</code></td></tr><tr><td><code>confirmReceive</code>（确认收货）</td><td>高</td><td><code>confirmReceive=true</code></td></tr></table></div>', '<p>这与 Orbit Hive <strong>委派铁律的安全红线完全对齐</strong>：真实店铺下单/支付 = 必须 Boss 一次性确认。</p>', '<blockquote><p><strong>集成铁律</strong>：1688 采购履约<strong>绝不</strong>走 agent 自主执行；必须路由到与&quot;真实店铺发布/改价/下架&quot;同级别的 Boss 确认闸（飞书请示 + 按钮确认）。只读的搜索/榜单/图搜可放开给编排层自动调用（仍受积分阈值约束）。</p></blockquote>', '<h2 id="sec7">7. 集成建议（按优先级）</h2>', '<ol><li><strong>P0 — 先配钥匙</strong>：Boss 开 LinkFox 账号 → 拿到 <code>LINKFOX_AGENT_API_KEY</code> 并写入环境；可选装 <code>linkfox-onboarding</code> 做自助注册（渠道传 <code>workbuddy</code>）。</li><li><strong>P1 — 只读 1688 货源接入 Treasury 上品</strong>：把 <code>dld_product_search</code> / <code>dld_product_billboard</code> / <code>alibaba1688_image_search</code> 封装成一个&quot;货源情报&quot;子 agent，向上品流程供给货源候选 + 比价。低风险、直接产生价值。</li><li><strong>P1 — 积分护栏</strong>：编排层加&quot;单次/单任务积分预算 + 超阈飞书请示&quot;，防止 agent 烧光额度。</li><li><strong>P2 — 亚马逊 skill 存档为 Eyes 范本</strong>：不调用，仅把其分层建模与输出规范沉淀进 Eyes 重建设计。</li><li><strong>P3 — 1688 采购履约（高风险）</strong>：仅在 Boss 明确要求&quot;自动下单&quot;时启用，且强制走 Boss 确认闸；默认不接。</li></ol>', '<h2 id="sec8">8. 待 Boss 拍板</h2>', '<ol><li>是否现在就去开 LinkFox 账号拿 API key，把 1688 货源只读能力接进 Treasury 上品？</li><li>1688 采购履约（自动下单）是否授权接入？若授权，确认走哪一级 Boss 确认闸。</li><li>积分预算设多少（单次任务 / 每日上限），超出如何请示？</li><li>亚马逊选品 skill 是否也要在注册时一并开通（为未来 Amazon 扩张铺路）？</li></ol>', '<hr/>', '<p>*注：本报告基于两个 skill 的 SKILL.md / references 结构实测与内容分析；实际调用需 API key + 积分，未经真实请求验证。*</p>']
+    </article>
+    <div class="foot">源文件：linkfox_skills_audit.md · 经 8790 静态服务可直开</div>
+  </div>
+</body>
+</html>

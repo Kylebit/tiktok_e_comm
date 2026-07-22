@@ -1,0 +1,65 @@
+{
+  "product": {
+    "alias": "0005",
+    "sku_id": "1729650406795090866",
+    "name": "Contemporary Style 3D Window View Wall Stickers - Faux Window Frame with Floral Design, Self-Adhesive PVC Decals for Living Room and TV Background Decor, Detachable Single-Use Wall Art",
+    "sku_name": "1pc",
+    "source_image": "https://p19-oec-eu-common-no.tiktokcdn-eu.com/tos-no1a-i-t5fjg24jzw-no/5aa4c7507aab42b2b314ef1c75e306a4~tplv-t5fjg24jzw-origin-jpeg.jpeg?dr=11254&from=520841845&height=1000&idc=no1a&ps=933b5bde&shcp=2c1af732&shp=1f0b6a75&t=555f072d&width=1000",
+    "price": 13.8,
+    "currency": "GBP"
+  },
+  "results": [
+    {
+      "model": "gpt-image-2",
+      "type": "white_bg_hero",
+      "prompt": "Product title: Contemporary Style 3D Window View Wall Stickers - Faux Window Frame with Floral Design, Self-Adhesive PVC Decals for Living Room and TV Background Decor, Detachable Single-Use Wall Art. Variant: 1pc. Professional e-commerce product hero shot on pure white background, the product centered and filling frame, soft studio lighting, sharp detail, clean commercial photography. CRITICAL STYLE-LOCK: You must reproduce the EXACT product as described by the title with identical design, pattern, shape, color scheme, material, and visual style. Do NOT redesign, restyle, reinterpret, or alter the product's appearance in any way. You may only change the background / scene / lighting context; the product ITSELF must remain visually unchanged and recognizable.",
+      "elapsed_s": 10.4,
+      "credits_used": 1.2,
+      "ok": false,
+      "error": "{'created_at': 1784704328, 'error': {'code': 'generation_failed', 'message': '生成失败：任务处理失败'}, 'id': 'tsk_img_01KY4ANRATAR13HP0PDTP226ZN', 'model': 'gpt-image-2', 'object': 'generation.task', 'progress': 100, 'status': 'failed'}"
+    },
+    {
+      "model": "gpt-image-2",
+      "type": "lifestyle_scene",
+      "prompt": "Product title: Contemporary Style 3D Window View Wall Stickers - Faux Window Frame with Floral Design, Self-Adhesive PVC Decals for Living Room and TV Background Decor, Detachable Single-Use Wall Art. Variant: 1pc. The product placed in a realistic lifestyle scene, warm natural home environment showing contextual usage, cinematic soft lighting, 8k product photography. CRITICAL STYLE-LOCK: You must reproduce the EXACT product as described by the title with identical design, pattern, shape, color scheme, material, and visual style. Do NOT redesign, restyle, reinterpret, or alter the product's appearance in any way. You may only change the background / scene / lighting context; the product ITSELF must remain visually unchanged and recognizable.",
+      "elapsed_s": 9.4,
+      "credits_used": 1.2,
+      "ok": false,
+      "error": "{'created_at': 1784704337, 'error': {'code': 'generation_failed', 'message': '生成失败：任务处理失败'}, 'id': 'tsk_img_01KY4AP1GZ1X59340RWQPFRETB', 'model': 'gpt-image-2', 'object': 'generation.task', 'progress': 100, 'status': 'failed'}"
+    },
+    {
+      "model": "nano_banana",
+      "type": "white_bg_hero",
+      "prompt": "Product title: Contemporary Style 3D Window View Wall Stickers - Faux Window Frame with Floral Design, Self-Adhesive PVC Decals for Living Room and TV Background Decor, Detachable Single-Use Wall Art. Variant: 1pc. Professional e-commerce product hero shot on pure white background, the product centered and filling frame, soft studio lighting, sharp detail, clean commercial photography. CRITICAL STYLE-LOCK: You must reproduce the EXACT product as described by the title with identical design, pattern, shape, color scheme, material, and visual style. Do NOT redesign, restyle, reinterpret, or alter the product's appearance in any way. You may only change the background / scene / lighting context; the product ITSELF must remain visually unchanged and recognizable.",
+      "elapsed_s": 14.3,
+      "credits_used": 3.6,
+      "ok": true,
+      "task_id": "tsk_img_01KY4APBV947NZY4BJ4PD8MBKJ",
+      "files": [
+        "outputs\\linkfox_test\\0005\\nano_banana__white_bg_hero__1.png"
+      ]
+    },
+    {
+      "model": "nano_banana",
+      "type": "lifestyle_scene",
+      "prompt": "Product title: Contemporary Style 3D Window View Wall Stickers - Faux Window Frame with Floral Design, Self-Adhesive PVC Decals for Living Room and TV Background Decor, Detachable Single-Use Wall Art. Variant: 1pc. The product placed in a realistic lifestyle scene, warm natural home environment showing contextual usage, cinematic soft lighting, 8k product photography. CRITICAL STYLE-LOCK: You must reproduce the EXACT product as described by the title with identical design, pattern, shape, color scheme, material, and visual style. Do NOT redesign, restyle, reinterpret, or alter the product's appearance in any way. You may only change the background / scene / lighting context; the product ITSELF must remain visually unchanged and recognizable.",
+      "elapsed_s": 14.1,
+      "credits_used": 3.6,
+      "ok": true,
+      "task_id": "tsk_img_01KY4APZPPMJWJYM5RWCS2G8X6",
+      "files": [
+        "outputs\\linkfox_test\\0005\\nano_banana__lifestyle_scene__1.png"
+      ]
+    }
+  ],
+  "credits_per_usd": 200,
+  "balance_start_used": 77.4,
+  "balance_mid_used": 79.8,
+  "balance_end_used": 87.0,
+  "gpt_image_2_per_image_credits": 1.2,
+  "nano_banana_per_image_credits": 3.6,
+  "total_credits_used": 9.6,
+  "approx_usd": 0.048,
+  "credit_note": "toapis 余额接口严格限流(>60s)，本表为批量前/中段/后差值反推；若某次读数被限流则为 None。",
+  "generated_at": "2026-07-22T15:13:06"
+}

@@ -28,7 +28,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
+import shutil
+import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -41,6 +45,42 @@ HERE = Path(__file__).resolve().parent
 INBOX = HERE / "cursor_inbox"
 DONE_DIR = INBOX / "done"
 WAKE_PREFIX = "AGENT_A2A_TICK_cursor"
+
+# --- 无头执行后端 ----------------------------------------------------------
+# 根因：Cursor 的 GUI agent 在本环境无法被外部事件驱动（无 `cursor exec`、
+# 且 `notify_on_output` 从未配置；adapter 又是 DETACHED 进程，tick 到不了
+# Cursor 终端）。为让 "Orbit Cursor" 槽位真正自主回复，复用已验证的
+# `codex exec` 无头引擎执行任务，但由本适配器独占管理身份/收件箱/回报。
+def _detect_codex():
+    _hard = [
+        r"C:\Users\Windows11\.workbuddy\binaries\node\versions\22.22.2\codex.cmd",
+        r"C:\Users\Windows11\.workbuddy\binaries\node\versions\22.22.2\codex.ps1",
+    ]
+    for c in _hard:
+        if os.path.exists(c):
+            return c
+    for c in ("codex.cmd", "codex.ps1", "codex"):
+        p = shutil.which(c)
+        if p:
+            if p.startswith("/") and len(p) > 2 and p[2] == "/":
+                p = p[1].upper() + ":\\" + p[3:].replace("/", "\\")
+            return p
+    return "codex"
+
+
+def _detect_bash():
+    for b in (r"C:\Program Files\Git\bin\bash.exe",
+              r"C:\Program Files\Git\usr\bin\bash.exe"):
+        if os.path.exists(b):
+            return b
+    return shutil.which("bash") or "bash"
+
+
+CODEX_BIN = _detect_codex()
+BASH_BIN = _detect_bash()
+REPO = r"C:\Users\Windows11\Desktop\Agent_PR\tiktok_e_comm"
+# 设 CURSOR_HEADLESS_EXEC=0 可退回纯桥接模式（留给未来接真实 GUI Cursor）
+HEADLESS = os.environ.get("CURSOR_HEADLESS_EXEC", "1") != "0"
 
 
 def _ensure_dirs() -> None:
@@ -79,6 +119,21 @@ def save_dispatch(dispatch: dict) -> Path:
     payload["_status"] = "pending"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
+
+
+def set_status(task_id: str, status: str) -> None:
+    """更新 inbox 任务状态，并累计执行尝试次数（防重启无限重跑）。"""
+    p = _task_path(task_id)
+    if not p.is_file():
+        return
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+        d["_status"] = status
+        d["_exec_attempts"] = int(d.get("_exec_attempts", 0)) + 1
+        d["_last_attempt_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        p.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:  # noqa: BLE001
+        print("[cursor] set_status 失败:", task_id, e, flush=True)
 
 
 def mark_done(task_id: str) -> Path | None:
@@ -140,6 +195,57 @@ def execute(dispatch: dict) -> None:
     }
     print(f"{WAKE_PREFIX} {json.dumps(wake, ensure_ascii=False)}", flush=True)
 
+    # --- 无头执行后端：直接复用 codex exec 引擎真正执行任务 ---
+    if HEADLESS:
+        set_status(task_id, "executing")
+        threading.Thread(target=run_headless, args=(task_id, prompt), daemon=True).start()
+        print(f"[cursor] 已派无头执行引擎处理 {task_id}", flush=True)
+    else:
+        print("[cursor] 纯桥接模式：等待 Cursor GUI notify_on_output 唤醒（未配置则不会自跑）", flush=True)
+
+
+def run_headless(task_id: str, prompt: str) -> None:
+    """无头执行 Cursor 任务：复用 codex exec 引擎，回报走 Orbit Cursor 身份。
+
+    由于本环境无法事件驱动 Cursor GUI agent，这里用已验证的 codex exec
+    作为执行引擎真正完成任务；任务文件在 cursor_inbox/<id>.json，Codex 读
+    dispatch.prompt 执行后通过 cursor_adapter.py 回报（而非 codex_adapter）。
+    """
+    try:
+        set_status(task_id, "executing")
+        full = (
+            f"请读取文件 agent_comms/stage3/cursor_inbox/{task_id}.json 中的 dispatch.prompt 字段，"
+            f"那就是你要执行的任务要求（任务由 Orbit Cursor 派发，执行引擎为无头 codex）。\n"
+            f"在仓库 {REPO} 中真实执行（调研/写代码/跑命令/git 等）。任务通常要求产出某个 reports/*.md 并 git add/commit/push。\n"
+            f"完成后必须运行以下命令回报给 Orbit Cursor（不要调用 codex_adapter）：\n"
+            f"  python agent_comms/stage3/cursor_adapter.py report --task-id {task_id} --text \"DONE：<一句话简述>\"\n"
+            f"  python agent_comms/stage3/cursor_adapter.py complete --task-id {task_id}\n"
+            f"绝对不要伪造 DONE / commit hash / 测试通过。若确实无法完成，仍运行 report 写明 BLOCKED 及原因，并运行 complete。"
+        )
+        inner = "codex exec --sandbox workspace-write " + shlex.quote(full)
+        cmd = [BASH_BIN, "-lc", inner]
+        print(f"[cursor] 无头执行启动 task={task_id} (codex={CODEX_BIN})", flush=True)
+        r = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True, timeout=1800)
+        print(f"[cursor] 无头执行结束 task={task_id} rc={r.returncode}", flush=True)
+        # 兜底：若 codex 未自行 complete，确保任务进入终态
+        if _task_path(task_id).is_file():
+            report(task_id, "BLOCKED/兜底：codex 未调用 complete，适配器兜底收尾")
+            mark_done(task_id)
+            print(f"[cursor] 兜底收尾 task={task_id}", flush=True)
+    except subprocess.TimeoutExpired:
+        print(f"[cursor] 无头执行超时 task={task_id}", flush=True)
+        if _task_path(task_id).is_file():
+            report(task_id, "BLOCKED：无头执行超时(>30min)")
+            mark_done(task_id)
+    except Exception as e:  # noqa: BLE001
+        print(f"[cursor] 无头执行异常 task={task_id}: {e}", flush=True)
+        if _task_path(task_id).is_file():
+            try:
+                report(task_id, f"BLOCKED：无头执行异常 {e}")
+                mark_done(task_id)
+            except Exception:
+                pass
+
 
 def drain_pending() -> None:
     name_q = urllib.parse.quote(AGENT_NAME)
@@ -185,7 +291,7 @@ def subscribe_sse() -> None:
 
 
 def emit_wake_for_pending_files() -> None:
-    """本地 pending 落盘任务也打一次唤醒（重启恢复 / 漏 notify 时）。"""
+    """启动恢复：把本地仍 pending/executing 的落盘任务重新接上无头执行。"""
     for path in list_pending():
         try:
             dispatch = json.loads(path.read_text(encoding="utf-8"))
@@ -193,24 +299,34 @@ def emit_wake_for_pending_files() -> None:
             print("[cursor] 读取 pending 失败:", path, e, flush=True)
             continue
         task_id = str(dispatch.get("task_id") or path.stem)
-        if dispatch.get("_status") in ("done", "deferred"):
+        status = dispatch.get("_status")
+        attempts = int(dispatch.get("_exec_attempts", 0))
+        if status in ("done", "deferred"):
             continue
-        wake = {
-            "prompt": (
-                "A2A Orbit Cursor task: set ORCH_URL if needed (default http://127.0.0.1:8773); "
-                f"read {path}; execute the task for real (no fake scrape); "
-                "report progress via: python agent_comms/stage3/cursor_adapter.py report "
-                f"--task-id {task_id} --text \"...\"; "
-                "final text must contain DONE/待审核 or BLOCKED/阻塞; "
-                f"then: python agent_comms/stage3/cursor_adapter.py complete --task-id {task_id}; "
-                "do not contact the human user; report only to Orchestrator/CEO肉肉."
-            ),
-            "task_id": task_id,
-            "path": str(path).replace("\\", "/"),
-            "title": dispatch.get("title") or "",
-        }
-        print(f"[cursor] 本地 pending 待执行: {task_id}", flush=True)
-        print(f"{WAKE_PREFIX} {json.dumps(wake, ensure_ascii=False)}", flush=True)
+        if attempts >= 3:
+            print(f"[cursor] 跳过 {task_id}：已达最大重试({attempts})，需人工排查", flush=True)
+            continue
+        if HEADLESS:
+            set_status(task_id, "executing")
+            threading.Thread(target=run_headless, args=(task_id, ""), daemon=True).start()
+            print(f"[cursor] 启动恢复：重新派无头执行 {task_id} (attempt {attempts + 1})", flush=True)
+        else:
+            wake = {
+                "prompt": (
+                    "A2A Orbit Cursor task: set ORCH_URL if needed (default http://127.0.0.1:8773); "
+                    f"read {path}; execute the task for real (no fake scrape); "
+                    "report progress via: python agent_comms/stage3/cursor_adapter.py report "
+                    f"--task-id {task_id} --text \"...\"; "
+                    "final text must contain DONE/待审核 or BLOCKED/阻塞; "
+                    f"then: python agent_comms/stage3/cursor_adapter.py complete --task_id {task_id}; "
+                    "do not contact the human user; report only to Orchestrator/CEO肉肉."
+                ),
+                "task_id": task_id,
+                "path": str(path).replace("\\", "/"),
+                "title": dispatch.get("title") or "",
+            }
+            print(f"[cursor] 本地 pending 待执行: {task_id}", flush=True)
+            print(f"{WAKE_PREFIX} {json.dumps(wake, ensure_ascii=False)}", flush=True)
 
 
 def run() -> None:

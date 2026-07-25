@@ -147,7 +147,8 @@ def build_workbench_content_package_handoff(
             if candidate_id != artifact_id and isinstance(candidate, Mapping)
             and str(candidate.get("shot_id") or str(candidate_id).split("_", 1)[0]) == shot_id
         )
-        if not _has_final_content_approval(artifact_id, decisions, final_decisions):
+        decision_source = _final_content_approval_source(artifact_id, decisions, final_decisions)
+        if decision_source is None:
             missing.append(shot_id)
             blockers.append(f"{shot_id}: current artifact {artifact_id} lacks final content approval")
             continue
@@ -155,6 +156,7 @@ def build_workbench_content_package_handoff(
         generated_lineage.append(ContentAssetLineage(
             shot_id=shot_id, artifact_id=artifact_id, image_url=url,
             audit_id=str(audit.get("audit_id") or f"generation_audit:{artifact_id}"),
+            decision_source=decision_source,
         ))
 
     source_lineage, source_blockers = _approved_source_lineage(review)
@@ -176,12 +178,8 @@ def build_workbench_content_package_handoff(
     )
     blockers.extend(order_blockers)
     urls = tuple(row.image_url for row in lineage)
-    current_urls = tuple(
-        _audit_image_url(current[1]) for current in current_by_shot.values() if current is not None
-    )
     written_urls = _written_image_urls(content)
-    expected_external_urls = tuple(row.image_url for row in source_lineage) + current_urls
-    stale_external_write = bool(written_urls and any(url not in written_urls for url in expected_external_urls))
+    stale_external_write = bool(written_urls and written_urls != set(urls))
     if stale_external_write:
         blockers.append("external Miaoshou image write is stale for the current artifact set")
     resolved_package_id = str(package_id or "").strip() or f"content:{clean_product_id}"
@@ -241,11 +239,17 @@ def _version_key(artifact_id):
 
 
 def _has_final_content_approval(artifact_id, decisions, final_decisions):
+    return _final_content_approval_source(artifact_id, decisions, final_decisions) is not None
+
+
+def _final_content_approval_source(artifact_id, decisions, final_decisions):
     decision = decisions.get(artifact_id)
     if isinstance(decision, Mapping) and decision.get("decision") == "approved":
-        return True
+        return "asset_decisions.approved"
     final = final_decisions.get(artifact_id)
-    return isinstance(final, Mapping) and final.get("action") == "keep" and final.get("status") == "reviewed_locally"
+    if isinstance(final, Mapping) and final.get("action") == "keep" and final.get("status") == "reviewed_locally":
+        return "generated_image_miaoshou_decisions.keep_reviewed_locally"
+    return None
 
 
 def _approved_source_lineage(review: Mapping[str, Any]) -> tuple[list[ContentAssetLineage], list[str]]:
@@ -276,8 +280,11 @@ def _order_lineage(
     lineage: list[ContentAssetLineage], image_order: Any
 ) -> tuple[list[ContentAssetLineage], list[str]]:
     """Apply saved final order, then append approved assets in stable source/shot order."""
-    by_url = {row.image_url: row for row in lineage}
+    by_url: dict[str, ContentAssetLineage] = {}
+    for row in lineage:
+        by_url.setdefault(row.image_url, row)
     ordered: list[ContentAssetLineage] = []
+    seen_urls: set[str] = set()
     blockers: list[str] = []
     if isinstance(image_order, list):
         for raw_url in image_order:
@@ -287,9 +294,13 @@ def _order_lineage(
             row = by_url.get(url)
             if row is None:
                 blockers.append(f"review.image_order contains an unapproved or unknown URL: {url}")
-            elif row not in ordered:
+            elif url not in seen_urls:
                 ordered.append(row)
-    ordered.extend(row for row in lineage if row not in ordered)
+                seen_urls.add(url)
+    for row in lineage:
+        if row.image_url not in seen_urls:
+            ordered.append(row)
+            seen_urls.add(row.image_url)
     return ordered, blockers
 
 

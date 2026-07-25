@@ -210,7 +210,9 @@ def test_workbench_handoff_compares_iso_created_at_as_instants_across_offsets():
 
 def test_workbench_handoff_merges_kyles_final_five_images_in_saved_order():
     state = _workbench_state(new_size_action="keep", written_urls=[
-        "https://assets.example/old-1.png", "https://assets.example/old-2.png",
+        "https://assets.example/sc1-r4.png", "https://assets.example/source-2.jpg",
+        "https://assets.example/source-1.jpg", "https://assets.example/source-3.jpg",
+        "https://assets.example/sz1-r6.png", "https://assets.example/removed-legacy.jpg",
     ])
     state["review"] = {
         "image_actions": [
@@ -230,6 +232,7 @@ def test_workbench_handoff_merges_kyles_final_five_images_in_saved_order():
     state["content_package"]["generated_image_miaoshou_decisions"]["sz1_r4"] = {
         "action": "remove", "status": "reviewed_locally"
     }
+    state["content_package"]["asset_decisions"] = {"sc1_r4": {"decision": "approved"}}
     handoff = build_workbench_content_package_handoff(
         product_id="3828811808", state=state,
         suite_plan={"suite": {"items": [{"id": "sc1"}, {"id": "sz1"}]}},
@@ -246,6 +249,8 @@ def test_workbench_handoff_merges_kyles_final_five_images_in_saved_order():
         "generated", "source", "source", "source", "generated",
     ]
     assert handoff.asset_lineage[1].audit_id == "review.image_actions[1]"
+    assert handoff.asset_lineage[0].decision_source == "asset_decisions.approved"
+    assert handoff.asset_lineage[-1].decision_source == "generated_image_miaoshou_decisions.keep_reviewed_locally"
     assert handoff.stale_external_write is True
 
 
@@ -271,3 +276,22 @@ def test_workbench_handoff_pending_source_and_unknown_order_url_block_approval()
     assert handoff.content_package.approval.status == "pending"
     assert any("source image 2" in blocker for blocker in handoff.blockers)
     assert any("unknown URL" in blocker for blocker in handoff.blockers)
+
+
+def test_workbench_handoff_deduplicates_source_and_generated_urls_deterministically():
+    state = _workbench_state(new_size_action="keep")
+    state["review"] = {
+        "image_actions": [
+            {"action": "keep", "url": "https://assets.example/sc1-r4.png"},
+            {"action": "keep", "url": "https://assets.example/source-2.jpg"},
+        ],
+        "image_order": ["https://assets.example/sc1-r4.png"],
+    }
+    handoff = build_workbench_content_package_handoff(
+        product_id="3828811808", state=state,
+        suite_plan={"suite": {"items": [{"id": "sc1"}, {"id": "sz1"}]}},
+        generation_audits=_workbench_audits(), copy={"en": "Puppy wall sticker"},
+    )
+
+    assert handoff.content_package.image_urls.count("https://assets.example/sc1-r4.png") == 1
+    assert handoff.asset_lineage[0].asset_type == "source"

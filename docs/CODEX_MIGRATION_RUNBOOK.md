@@ -39,6 +39,23 @@ The `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value
 The disabled scheduled task `EigenFlux-Cursor-MsgFetch` remains disabled. The
 business task `OrbitWeeklyProfitPush` remains enabled.
 
+`OrbitWeeklyProfitPush` runs every Monday at 09:00 and now calls
+`scripts/weekly_profit_push.bat`. The launcher builds the previous complete
+Monday-to-Sunday profit digest and writes it only to the local Orbit report
+store/inbox. It does not call Feishu, pull marketplace APIs, or write an
+`outputs` report. A run with missing quantities, costs, advertising spend, or
+conflicting catalog facts is stored as `needs_review`, never as a successful
+confirmed-profit report.
+
+Safe manual rehearsal:
+
+```powershell
+.\.venv\Scripts\python.exe -m shared_platform.weekly_profit_runner
+```
+
+The command above is dry-run. Add `--persist-local` only when the result should
+become an Orbit inbox item.
+
 To restore a single startup bridge, move only its file from the disabled folder
 back to the parent `Startup` folder. To restore the EigenFlux listener, recreate
 the `EigenFluxStreamListener` string value with the preserved command above.

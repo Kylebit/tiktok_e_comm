@@ -25,6 +25,11 @@ sys.path.insert(0, str(ROOT))
 
 from core.config import CONFIG_PATH, EXAMPLE_PATH, load_settings
 from core.db import init_db
+from shared_platform.registry import cli_registry
+
+# Phase 1 ownership seam. Existing argparse handlers stay untouched; this
+# registry lets future domain CLIs be extracted without renaming commands.
+CLI_DOMAIN_REGISTRY = cli_registry()
 
 
 def cmd_init(_):

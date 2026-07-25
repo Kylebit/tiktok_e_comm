@@ -17,10 +17,15 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from core.config import ROOT
 from modules.products import costs as cost_mod
+from shared_platform.registry import http_registry
 
 WEB_DIR = ROOT / "web"
 DEFAULT_PORT = 8765
 IMAGE_CACHE_DIR = ROOT / "data" / "web_image_cache"
+
+# Phase 1 ownership seam. Handler dispatch and every existing URL remain
+# unchanged; later route modules can consume this registry during extraction.
+HTTP_DOMAIN_REGISTRY = http_registry()
 
 _scan_lock = threading.Lock()
 _scan_job: dict = {

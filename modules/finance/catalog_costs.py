@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import re
 
-from core.db import connect, init_db
+from core.db import connect_readonly
 
 AD_RATE = 0.20
 
 
 def load_sku_cost_maps() -> tuple[dict[str, float], dict[str, float]]:
     """sku_id → cost_cny；前 6 位前缀 → cost_cny（兼容收入表科学计数法）。"""
-    init_db()
-    conn = connect()
+    conn = connect_readonly()
     by_sku: dict[str, float] = {}
     by_prefix: dict[str, float] = {}
     for r in conn.execute("SELECT sku_id, cost_cny FROM sku_costs WHERE cost_cny > 0"):
@@ -29,8 +28,7 @@ def load_sku_cost_maps() -> tuple[dict[str, float], dict[str, float]]:
 
 def load_product_maps() -> tuple[dict[str, dict], dict[str, dict]]:
     """sku_id → {product_name, sku_name, image_url}。"""
-    init_db()
-    conn = connect()
+    conn = connect_readonly()
     by_sku: dict[str, dict] = {}
     for r in conn.execute(
         "SELECT sku_id, product_name, image_url, sku_name FROM products WHERE sku_id != ''"
@@ -59,8 +57,7 @@ def load_product_maps() -> tuple[dict[str, dict], dict[str, dict]]:
 
 
 def cost_stats() -> dict:
-    init_db()
-    conn = connect()
+    conn = connect_readonly()
     n = conn.execute("SELECT COUNT(*) AS c FROM sku_costs WHERE cost_cny > 0").fetchone()
     conn.close()
     return {"sku_with_cost": int(n["c"] or 0) if n else 0}

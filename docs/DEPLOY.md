@@ -106,12 +106,17 @@ python3 main.py serve --port 8765
 OLD=~/Desktop/e-commercial
 NEW=user@newhost:~/e-commercial
 
-# TikTok 凭据与库
+# TikTok 凭据
 scp $OLD/tiktok_e_comm/config/settings.json $NEW/tiktok_e_comm/config/
 scp $OLD/tiktok_e_comm/tiktok_tokens.json $NEW/tiktok_e_comm/
 scp $OLD/tiktok_e_comm/tiktok_ads_tokens.json $NEW/tiktok_e_comm/ 2>/dev/null || true
 scp $OLD/tiktok_e_comm/shopee_tokens.json $NEW/tiktok_e_comm/ 2>/dev/null || true
-scp $OLD/tiktok_e_comm/data/shop.db $NEW/tiktok_e_comm/data/
+
+# SQLite 热备份：不要在 WAL 模式下直接复制正在运行的 shop.db
+cd $OLD/tiktok_e_comm
+python scripts/database_maintenance.py backup \
+  --output backups/database/shop-transfer.db
+scp backups/database/shop-transfer.db $NEW/tiktok_e_comm/data/shop.db
 
 # Ozon webapp 代码 + 运营数据（排除日志）
 rsync -av --exclude 'logs/' --exclude '*.log' \

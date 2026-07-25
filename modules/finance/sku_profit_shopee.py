@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from core.config import ROOT, get
-from core.db import connect, init_db
+from core.db import connect_readonly
 from modules.finance.sku_key import seller_sku_tail4, same_seller_sku, sku_variants_for_lookup
 from modules.finance.sku_profit_model import (
     DEFAULT_AD_RATE,
@@ -76,8 +76,7 @@ def resolve_product(sku_query: str) -> dict[str, Any] | None:
     q = (sku_query or "").strip()
     if not q:
         return None
-    init_db()
-    conn = connect()
+    conn = connect_readonly()
     variants = sku_variants_for_lookup(q)
     tail = seller_sku_tail4(q)
     row = None

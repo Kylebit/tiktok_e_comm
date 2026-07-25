@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from core.config import ROOT
-from core.db import connect, init_db
+from core.db import connect_readonly
 from modules.finance.sku_key import seller_sku_tail4
 from modules.finance.sku_profit_service import estimate
 from modules.shopee.profit_settlement import REPORT_GLOB, _extract_data, _header_index
@@ -45,8 +45,7 @@ def _parse_sp_date(raw: str) -> date | None:
 def collect_ordered_skus(lookback_days: int = 90) -> dict[str, Any]:
     """按末四位汇总近 lookback_days 有结算单的 SKU。"""
     cutoff = datetime.now(timezone.utc).date() - timedelta(days=max(lookback_days, 1) - 1)
-    init_db()
-    conn = connect()
+    conn = connect_readonly()
 
     # platform sku_id → seller_sku (prefer THB)
     sku_id_map: dict[str, str] = {}

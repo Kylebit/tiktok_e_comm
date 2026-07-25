@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from core.db import connect, init_db
+from core.db import connect_readonly
 from modules.catalog.ozon_data import load_ozon_by_key
 from modules.catalog.sku_key import (
     SEA_REGIONS,
@@ -261,8 +261,7 @@ def _list_shopee_needs_seller_sku(
 
 def _cost_index() -> tuple[dict[str, float], dict[str, list[str]]]:
     """match_key → cost_cny；match_key → [sku_id]。"""
-    init_db()
-    conn = connect()
+    conn = connect_readonly()
     costs = {r["sku_id"]: float(r["cost_cny"]) for r in conn.execute(
         "SELECT sku_id, cost_cny FROM sku_costs WHERE cost_cny > 0"
     )}
@@ -297,8 +296,7 @@ def save_cost_by_match_key(match_key: str, cost_cny: float, note: str = "") -> i
     _, key_to_skus = _cost_index()
     sids = key_to_skus.get(key, [])
     if not sids:
-        init_db()
-        conn = connect()
+        conn = connect_readonly()
         for r in conn.execute(
             """SELECT sku_id, seller_sku FROM products WHERE seller_sku != ''"""
         ):
@@ -316,8 +314,7 @@ def save_cost_by_match_key(match_key: str, cost_cny: float, note: str = "") -> i
 
 def global_summary() -> dict:
     """全平台汇总（四国合并 + Ozon）。"""
-    init_db()
-    conn = connect()
+    conn = connect_readonly()
     tk_keys: set[str] = set()
     for r in conn.execute(
         """SELECT seller_sku, shop_cipher FROM products
@@ -363,8 +360,7 @@ def global_summary() -> dict:
 
 def store_summary() -> list[dict]:
     """保留按站点统计（卡片点击筛选用）。"""
-    init_db()
-    conn = connect()
+    conn = connect_readonly()
     out = []
     for reg in SEA_REGIONS:
         tk_keys: set[str] = set()
@@ -420,8 +416,7 @@ def resolve_sku_query(query: str) -> dict:
     if not raw:
         return {"query": "", "match_key": "", "resolved_via": None, "hints": []}
 
-    init_db()
-    conn = connect()
+    conn = connect_readonly()
     hints: list[str] = []
 
     if re.fullmatch(r"\d{10,}", raw):
@@ -544,13 +539,12 @@ def list_products(
     offset: int = 0,
 ) -> dict:
     """按 match_key 合并四国 TK + Shopee + Ozon；region 可选筛选。"""
-    init_db()
+    conn = connect_readonly()
     search_key = parse_search_key(sku) if sku else ""
     reg_filter = (region or "").upper()
     if reg_filter == "ALL":
         reg_filter = ""
 
-    conn = connect()
     if platform == "missing_tk_sku":
         items_all = _list_tk_missing_seller_sku(conn, reg_filter, sku or "")
         conn.close()

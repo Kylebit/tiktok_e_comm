@@ -12,7 +12,7 @@ from typing import Any
 from core import auth
 from core.api_client import get as api_get
 from core.config import ROOT, get
-from core.db import connect, init_db
+from core.db import connect_readonly
 from core.shops import list_shops
 from modules.finance.sku_key import seller_sku_tail4, sku_variants_for_lookup
 from modules.finance.sku_profit_model import (
@@ -61,8 +61,7 @@ def resolve_product(sku_query: str) -> dict[str, Any] | None:
     q = (sku_query or "").strip()
     if not q:
         return None
-    init_db()
-    conn = connect()
+    conn = connect_readonly()
 
     th_cipher = ""
     try:
@@ -593,8 +592,7 @@ def list_hot_skus(limit: int = 30) -> list[dict[str, Any]]:
     """从结算 CSV 统计 TH 近单最多的 seller_sku（经 products 反查；优先有货本）。"""
     from collections import Counter
 
-    init_db()
-    conn = connect()
+    conn = connect_readonly()
     th_cipher = ""
     try:
         tok = auth.ensure_valid_token()["access_token"]

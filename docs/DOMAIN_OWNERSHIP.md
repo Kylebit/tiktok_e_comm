@@ -11,9 +11,9 @@ temporary adapter seam; it describes ownership but does not dispatch calls.
 | --- | --- | --- | --- |
 | Product operations | Product master data, SKU, intake, package approval | `modules/catalog`, `modules/products/costs`, `modules/sourcing/new_product_workbench` | `ApprovedProductPackage` |
 | Content operations | Copy, images, future video | `modules/products/titles`, `modules/products/images`, `modules/sourcing/image_workbench` | `ContentPackage` |
-| Channel operations | TikTok, Shopee, Ozon, Miaoshou publishing; price, promotion, deactivation | `modules/ozon`, `modules/shopee`, `modules/miaoshou` | `ChannelListing` |
-| Supply-chain operations | Supplier sources, Yacang/Seaya, inventory, receiving, replenishment | `modules/sourcing`, `modules/catalog/logistics_weights` | `InventorySnapshot` |
-| Data operations | Cost, settlement, profit, ads, analytics | `modules/finance`, `modules/ads`, `modules/affiliate`, `modules/pricing` | `FinancialFact` |
+| Channel operations | TikTok, Shopee, Ozon, Miaoshou publishing; affiliate outreach, price, promotion, deactivation | `modules/ozon`, `modules/shopee`, `modules/miaoshou`, `modules/affiliate` | `ChannelListing` |
+| Supply-chain operations | Supplier sources, Yacang/Seaya, inventory, receiving, replenishment | New domain; `modules/catalog/logistics_weights` is the first legacy adapter | `InventorySnapshot` |
+| Data operations | Cost, settlement, profit, ads, analytics | `modules/finance`, `modules/ads`, `modules/pricing` | `FinancialFact` |
 
 ## Shared platform
 
@@ -25,13 +25,14 @@ They are immutable Python dataclasses and intentionally independent of SQLite
 rows, HTTP payloads, credentials, and channel clients.
 
 Existing table ownership is assigned as follows: product operations owns
-`products` and `sku_costs`; channel operations owns `shopee_shops` and
-`shopee_products`; supply-chain operations owns `sku_logistics_weights` and
-future warehouse/inventory extensions; data operations owns `settlement_lines`,
-`ad_spend_daily`, and `affiliate_invites`; shared platform owns `shops` and
-future approval, audit, jobs, notification, and health tables. Cross-domain
-code must exchange a stable contract or call an explicitly documented adapter,
-not query another domain's table directly.
+`products`; channel operations owns `shops`, `shopee_shops`,
+`shopee_products`, and `affiliate_invites`; supply-chain operations owns
+`purchasing_links`, `sku_logistics_weights`, and future warehouse/inventory
+extensions; data operations owns `sku_costs`, `settlement_lines`,
+`ad_spend_daily`, and `product_analytics`; shared platform owns future
+approval, audit, jobs, notification, and health tables. Cross-domain code must
+exchange a stable contract or call an explicitly documented adapter, not query
+another domain's table directly.
 
 ## Entry-point compatibility
 
@@ -40,6 +41,15 @@ not query another domain's table directly.
 not replace `argparse` or the existing `Handler`, so all paths, ports, and
 commands remain unchanged. The current registry has ownership metadata only;
 no live shop, channel, or production-data action is introduced by it.
+
+The current `sourcing` CLI, `/sourcing`, `/api/sourcing`, and port 8766
+Treasury workflow are legacy cross-domain orchestration hotspots. Product
+operations is their temporary primary owner because it owns the end-to-end
+intake and approval workflow. Content-, channel-, and supply-chain-specific
+steps must be extracted behind contracts rather than editing this shared
+workbench concurrently. Supply-chain operations intentionally has no exclusive
+CLI or HTTP entry point in Phase 1; its first deliverable is a read-only Seaya
+inventory adapter.
 
 ## Parallel delivery and integration
 

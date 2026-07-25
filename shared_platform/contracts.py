@@ -7,8 +7,10 @@ behind adapters without changing the public business hand-off.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from collections.abc import Mapping as MappingABC
+from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Mapping
 
 
@@ -72,13 +74,33 @@ class InventorySnapshot:
 class FinancialFact:
     fact_id: str
     fact_type: str
-    amount: float
+    amount: Decimal
     currency: str
     occurred_at: datetime
     product_id: str | None = None
     channel: str | None = None
 
 
+def _payload_value(value: Any) -> Any:
+    if is_dataclass(value) and not isinstance(value, type):
+        return {
+            item.name: _payload_value(getattr(value, item.name))
+            for item in fields(value)
+        }
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, MappingABC):
+        return {str(key): _payload_value(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_payload_value(item) for item in value]
+    return value
+
+
 def contract_payload(contract: object) -> dict[str, Any]:
-    """Return a serialization-ready representation without mutating a contract."""
-    return asdict(contract)
+    """Return a JSON-ready representation without mutating a contract."""
+    payload = _payload_value(contract)
+    if not isinstance(payload, dict):
+        raise TypeError("contract_payload expects a dataclass contract")
+    return payload

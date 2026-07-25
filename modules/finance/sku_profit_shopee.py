@@ -58,7 +58,10 @@ def _cost_from_weekly(seller_sku: str) -> float | None:
                 continue  # 多 SKU 行跳过
             if seller_sku_tail4(sku) != tail:
                 continue
-            pc = row.get("product_cost")
+            # Weekly snapshots now expose both unit and total line cost.  A
+            # SKU price estimate needs the unit cost; old snapshots retain
+            # product_cost as the compatible fallback.
+            pc = row.get("unit_cost_cny") or row.get("product_cost")
             if pc not in (None, "", 0, 0.0):
                 try:
                     vals.append(float(pc))

@@ -178,7 +178,10 @@ def settlement_summary(start: date, end: date) -> dict[str, Any]:
             settlement_cny = settlement * rate
             gmv_cny = subtotal * rate
             ad_cny = float(row.get("ad_cost") or 0) * rate
-            product_cost_cny = float(row.get("product_cost") or 0)
+            # New escrow snapshots provide an explicit total line cost.  Fall
+            # back to product_cost for historical snapshots, where it already
+            # meant the total cost for the recorded line.
+            product_cost_cny = float(row.get("product_cost_cny") or row.get("product_cost") or 0)
             profit_cny = settlement_cny - ad_cny - product_cost_cny
             rec = {
                 "release_date": released.isoformat(),
@@ -217,7 +220,7 @@ def settlement_summary(start: date, end: date) -> dict[str, Any]:
             agg["gmv_cny"] += gmv_cny
             agg["settlement_cny"] += settlement_cny
             agg["ad_cost_cny"] += ad_cny
-            agg["product_cost_cny"] += float(row.get("product_cost") or 0)
+            agg["product_cost_cny"] += product_cost_cny
             agg["profit_cny"] += profit_cny
 
     orders.sort(key=lambda item: (item["release_date"], item["region"], item["order_sn"]))

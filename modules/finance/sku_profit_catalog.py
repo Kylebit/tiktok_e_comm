@@ -62,6 +62,7 @@ def collect_ordered_skus(lookback_days: int = 90) -> dict[str, Any]:
 
     tk_counts: Counter[str] = Counter()
     tk_examples: dict[str, str] = {}
+    seen_tk_order_skus: set[tuple[str, str]] = set()
     if INCOME_DIR.is_dir():
         paths = sorted(INCOME_DIR.glob("income_TH_*.csv"))
         paths = [p for p in paths if "probe" not in p.name and "manual" not in p.name] or paths
@@ -76,6 +77,12 @@ def collect_ordered_skus(lookback_days: int = 90) -> dict[str, Any]:
                     sid = str(row.get("SKU ID") or "").strip()
                     if not sid:
                         continue
+                    order_id = str(row.get("Order/adjustment ID  ") or "").strip()
+                    identity = (order_id, sid)
+                    if order_id and identity in seen_tk_order_skus:
+                        continue
+                    if order_id:
+                        seen_tk_order_skus.add(identity)
                     seller = sku_id_map.get(sid) or ""
                     tail = seller_sku_tail4(seller) if seller else ""
                     if not tail:
@@ -85,21 +92,33 @@ def collect_ordered_skus(lookback_days: int = 90) -> dict[str, Any]:
 
     sp_counts: Counter[str] = Counter()
     sp_examples: dict[str, str] = {}
+    seen_sp_order_skus: set[tuple[str, str]] = set()
     if OUTPUT_DIR.is_dir():
         for path in sorted(OUTPUT_DIR.glob(REPORT_GLOB)):
             data = _extract_data(path)
             if not data:
                 continue
             headers = data.get("headers") or []
+            order_idx = _header_index(headers, "Order SN")
             sku_idx = _header_index(headers, "SKU")
             release_idx = _header_index(headers, "Release Time")
             for row in data.get("rows") or []:
                 if str(row.get("region") or "") != "TH":
                     continue
                 cells = row.get("cells") or []
+                order_id = str(
+                    cells[order_idx]
+                    if order_idx >= 0 and order_idx < len(cells)
+                    else ""
+                ).strip()
                 raw_sku = str(cells[sku_idx] if sku_idx >= 0 and sku_idx < len(cells) else "").strip()
                 if not raw_sku or "," in raw_sku:
                     continue
+                identity = (order_id, raw_sku)
+                if order_id and identity in seen_sp_order_skus:
+                    continue
+                if order_id:
+                    seen_sp_order_skus.add(identity)
                 released = _parse_sp_date(
                     str(cells[release_idx] if release_idx >= 0 and release_idx < len(cells) else "")
                 )

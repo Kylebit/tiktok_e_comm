@@ -126,6 +126,45 @@ class SkuProfitModelTests(unittest.TestCase):
         self.assertEqual(main["key"], "with_affiliate")
         self.assertEqual(main["confidence"], "prior_or_sparse")
 
+    def test_inferred_high_fee_scenario_is_not_labeled_as_observed_affiliate(self):
+        comps = mark_outliers(
+            [
+                enrich_comp(
+                    order_id="a",
+                    statement_date="2026/07/01",
+                    sale_local=100,
+                    settlement_local=30,
+                    cost_cny=5,
+                    fx=0.2,
+                ),
+                enrich_comp(
+                    order_id="b",
+                    statement_date="2026/07/02",
+                    sale_local=100,
+                    settlement_local=70,
+                    cost_cny=5,
+                    fx=0.2,
+                ),
+            ]
+        )
+        comps = apply_affiliate_quantile_split(comps)
+        sc = build_three_scenarios(
+            sale_local=100,
+            cost_cny=5,
+            fx=0.2,
+            comps=comps,
+            prior_with_creator=None,
+            prior_no_creator=None,
+        )
+
+        main = pick_main_conclusion(
+            scenarios=sc,
+            usable_n=sc["sample_counts"]["all_usable"],
+        )
+
+        self.assertEqual(main["confidence"], "prior_or_sparse")
+        self.assertEqual(main["label"], "高费情景（结算比分位推断）")
+
     def test_reprice_scenarios(self):
         comps = mark_outliers(
             [

@@ -178,6 +178,9 @@ def load_weekly_comps(
     same: list[dict[str, Any]] = []
     all_th: list[dict[str, Any]] = []
     all_th_unfiltered: list[dict[str, Any]] = []
+    latest_by_order_sku: dict[
+        tuple[str, str], tuple[tuple[str, str], date | None, str, dict[str, Any]]
+    ] = {}
     tail = seller_sku_tail4(seller_sku)
 
     for path in sorted(OUTPUT_DIR.glob(REPORT_GLOB), reverse=True):
@@ -188,7 +191,7 @@ def load_weekly_comps(
         order_idx = _header_index(headers, "Order SN")
         sku_idx = _header_index(headers, "SKU")
         release_idx = _header_index(headers, "Release Time")
-        for row in data.get("rows") or []:
+        for row_index, row in enumerate(data.get("rows") or []):
             if str(row.get("region") or "") != REGION:
                 continue
             cells = row.get("cells") or []
@@ -212,12 +215,25 @@ def load_weekly_comps(
                 ship_net_local=0.0,
                 source=f"weekly:{path.name}",
             )
-            all_th_unfiltered.append(rec)
-            if released and released < cutoff:
-                continue
-            all_th.append(rec)
-            if same_seller_sku(sku, seller_sku) or (tail and seller_sku_tail4(sku) == tail):
-                same.append(rec)
+            identity = (
+                (order_sn, sku)
+                if order_sn and sku
+                else (f"{path.name}:{row_index}", sku)
+            )
+            rank = (released.isoformat() if released else "", path.name)
+            previous = latest_by_order_sku.get(identity)
+            if previous is None or rank >= previous[0]:
+                latest_by_order_sku[identity] = (rank, released, sku, rec)
+
+    for _, released, sku, rec in latest_by_order_sku.values():
+        all_th_unfiltered.append(rec)
+        if released and released < cutoff:
+            continue
+        all_th.append(rec)
+        if same_seller_sku(sku, seller_sku) or (
+            tail and seller_sku_tail4(sku) == tail
+        ):
+            same.append(rec)
 
     # 窗口内为空时，退回未过滤 TH 池做弱先验
     if not all_th and all_th_unfiltered:
@@ -262,6 +278,7 @@ def _weak_prior_from_pool(
         ),
         "est_settlement_local": round(settle, 2),
         "median_settle_ratio": round(ratio, 4),
+        "evidence_basis": "inferred_settlement_ratio",
         "note": "Shopee 弱先验：用 TH 周报结算比分位近似（非完整费率栈）",
     }
 
@@ -327,7 +344,8 @@ def estimate(
     prior_with = _weak_prior_from_pool(sale, cost, fx, all_th or same, ad_rate, low_ratio=True)
     prior_no = _weak_prior_from_pool(sale, cost, fx, all_th or same, ad_rate, low_ratio=False)
 
-    comps = same if len([c for c in same if not c.get("outlier")]) >= 3 else all_th[:40]
+    # 全店样本只用于弱先验，绝不能冒充这个 SKU 的后验样本。
+    comps = same
     scenarios = build_three_scenarios(
         sale_local=sale,
         cost_cny=cost,
@@ -360,6 +378,7 @@ def estimate(
             "profit_local": p.get("profit_local"),
             "margin_pct": p.get("margin_pct"),
             "est_settlement_local": p.get("est_settlement_local"),
+            "evidence_basis": p.get("evidence_basis"),
         }
 
     price_views = [
@@ -438,7 +457,7 @@ def estimate(
             "comps_same_sku": len(same),
             "comps_th_pool": len(all_th),
             "min_samples_for_posterior": MIN_POSTERIOR_SAMPLES,
-            "recent_comps": (same or all_th)[:20],
+            "recent_comps": same[:20],
             "sale_stats": summarize_nums(usable_sales),
             "affiliate_note": "周报未拆达人佣金，has_affiliate 为结算比中位分档近似",
         },

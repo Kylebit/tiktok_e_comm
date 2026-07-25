@@ -225,8 +225,16 @@ def estimate_from_ratio(
     )
     profits = [float(c["profit_cny"]) for c in comps]
     ships = [float(c.get("ship_net_local") or 0) for c in comps]
+    inferred_n = sum(1 for c in comps if c.get("affiliate_approx"))
+    if inferred_n == len(comps):
+        evidence_basis = "inferred_settlement_ratio"
+    elif inferred_n:
+        evidence_basis = "mixed_observed_and_inferred"
+    else:
+        evidence_basis = "observed_settlement"
     return {
         "n": len(comps),
+        "evidence_basis": evidence_basis,
         "median_settle_ratio": round(med, 4),
         "est_settlement_local": round(settle, 2),
         **profit,
@@ -335,9 +343,14 @@ def pick_main_conclusion(
             **weighted,
         }
     if with_aff:
+        inferred = with_aff.get("evidence_basis") == "inferred_settlement_ratio"
         return {
             "key": "with_affiliate",
-            "label": "有达人（样本不足时保守）",
+            "label": (
+                "高费情景（结算比分位推断）"
+                if inferred
+                else "有达人（样本不足时保守）"
+            ),
             "confidence": "prior_or_sparse",
             **with_aff,
         }

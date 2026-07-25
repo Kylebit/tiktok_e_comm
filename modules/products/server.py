@@ -1612,6 +1612,10 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._json(400, {"ok": False, "error": str(e)})
 
+        if path == "/api/orbit/navigation":
+            from shared_platform.orbit_registry import navigation_payload
+
+            return self._json(200, {"ok": True, **navigation_payload()})
         if path == "/api/status":
             return self._json(200, _api_status())
         if path == "/api/health":

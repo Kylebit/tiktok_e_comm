@@ -10,7 +10,6 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import webview
@@ -34,59 +33,13 @@ def _project_root() -> Path:
 
 ROOT = _project_root()
 PYTHON = sys.executable if not getattr(sys, "frozen", False) else (shutil.which("pythonw") or shutil.which("python") or "python")
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from shared_platform.orbit_registry import ModuleSpec, build_module_specs, navigation_payload
 
 
-@dataclass
-class ModuleSpec:
-    key: str
-    title: str
-    subtitle: str
-    port: int
-    url: str
-    health_url: str
-    command: list[str]
-    quick_links: list[tuple[str, str]] = field(default_factory=list)
-    process: subprocess.Popen | None = None
-    logs: list[str] = field(default_factory=list)
-
-
-MODULES = [
-    ModuleSpec(
-        key="os",
-        title="Orbit OS 总控台",
-        subtitle="商品目录、结算、选品、分析与营销",
-        port=8765,
-        url="http://127.0.0.1:8765/",
-        health_url="http://127.0.0.1:8765/api/health",
-        command=[PYTHON, str(ROOT / "main.py"), "serve", "--port", "8765", "--no-browser"],
-        quick_links=[
-            ("首页", "http://127.0.0.1:8765/"),
-            ("商品目录", "http://127.0.0.1:8765/catalog"),
-            ("结算中心", "http://127.0.0.1:8765/settlement"),
-            ("选品中心", "http://127.0.0.1:8765/sourcing"),
-        ],
-    ),
-    ModuleSpec(
-        key="treasury",
-        title="Orbit Treasury 新品发布台",
-        subtitle="独立新品上架与审核工作台",
-        port=8766,
-        url="http://127.0.0.1:8766/",
-        health_url="http://127.0.0.1:8766/health",
-        command=[PYTHON, str(ROOT / "scripts" / "start_new_product_server.py"), "8766"],
-        quick_links=[("工作台", "http://127.0.0.1:8766/")],
-    ),
-    ModuleSpec(
-        key="rus",
-        title="Orbit Rus 俄罗斯台",
-        subtitle="独立俄罗斯与 Ozon 运营台",
-        port=8767,
-        url="http://127.0.0.1:8767/",
-        health_url="http://127.0.0.1:8767/health",
-        command=[PYTHON, str(ROOT / "scripts" / "start_rus_server.py"), "8767"],
-        quick_links=[("俄罗斯台", "http://127.0.0.1:8767/")],
-    ),
-]
+MODULES = build_module_specs(ROOT, PYTHON)
 
 
 HTML = """
@@ -95,7 +48,7 @@ HTML = """
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Orbit 桌面台</title>
+  <title>Orbit CEO Desktop</title>
   <style>
     :root {
       color-scheme: light;
@@ -122,7 +75,7 @@ HTML = """
     }
     .app {
       display: grid;
-      grid-template-columns: 300px 1fr;
+      grid-template-columns: 232px 1fr;
       height: 100vh;
     }
     .sidebar {
@@ -146,12 +99,21 @@ HTML = """
       font-size: 13px;
       line-height: 1.5;
     }
-    .global-actions {
-      display: flex;
-      gap: 8px;
-      padding: 14px 20px 10px;
-      flex-wrap: wrap;
+    .navigation { padding: 12px; overflow: auto; }
+    .nav-item {
+      display: block;
+      width: 100%;
+      padding: 10px 12px;
+      border: 0;
+      border-radius: 8px;
+      color: #cbd5e1;
+      background: transparent;
+      text-align: left;
+      font: inherit;
+      cursor: pointer;
     }
+    .nav-item:hover, .nav-item.active { color: #fff; background: #1f493f; }
+    .nav-divider { height: 1px; margin: 12px; background: rgba(255,255,255,.14); }
     .btn {
       border: 1px solid transparent;
       border-radius: 8px;
@@ -175,33 +137,6 @@ HTML = """
       color: #0f172a;
       border-color: var(--line);
     }
-    .modules {
-      padding: 8px 12px 18px;
-      overflow: auto;
-      display: grid;
-      gap: 10px;
-    }
-    .module {
-      border: 1px solid rgba(255,255,255,.08);
-      border-radius: 12px;
-      padding: 14px;
-      background: rgba(255,255,255,.03);
-      cursor: pointer;
-    }
-    .module.active {
-      background: rgba(37,99,235,.18);
-      border-color: rgba(96,165,250,.5);
-    }
-    .module h2 {
-      margin: 0;
-      font-size: 16px;
-    }
-    .module p {
-      margin: 6px 0 10px;
-      color: #94a3b8;
-      font-size: 12px;
-      line-height: 1.45;
-    }
     .status-pill {
       display: inline-flex;
       align-items: center;
@@ -216,10 +151,12 @@ HTML = """
     .status-pill.bad { background: rgba(220,38,38,.18); color: #fecaca; }
     .main {
       display: grid;
-      grid-template-rows: auto auto 1fr 220px;
+      grid-template-rows: auto 1fr;
       background: #f8fafc;
       min-width: 0;
     }
+    .main.system-mode { grid-template-rows: auto auto 1fr 220px; }
+    .hidden { display: none !important; }
     .toolbar {
       background: #fff;
       border-bottom: 1px solid var(--line);
@@ -291,33 +228,30 @@ HTML = """
   <div class="app">
     <aside class="sidebar">
       <div class="brand">
-        <h1>Orbit 桌面台</h1>
-        <p>把 Orbit OS、Orbit Treasury 和 Orbit Rus 放进同一个轻量桌面壳子里。</p>
+        <h1>Orbit</h1>
+        <p>CEO / Shared Platform</p>
       </div>
-      <div class="global-actions">
-        <button class="btn secondary" onclick="startAll()">全部启动</button>
-        <button class="btn secondary" onclick="stopAll()">全部停止</button>
-        <button class="btn secondary" onclick="refreshAll()">刷新</button>
-      </div>
-      <div id="modules" class="modules"></div>
+      <div id="navigation" class="navigation"></div>
     </aside>
-    <section class="main">
+    <section id="main" class="main">
       <div class="toolbar">
-        <h2 id="moduleTitle">Orbit OS 总控台</h2>
+        <h2 id="moduleTitle">公司运营总览</h2>
         <p id="moduleSubtitle"></p>
-        <div class="toolbar-actions">
+        <div id="serviceActions" class="toolbar-actions hidden">
           <button class="btn primary" onclick="openInPane()">在内嵌窗口打开</button>
           <button class="btn ghost" onclick="openExternal()">外部浏览器打开</button>
           <button class="btn ghost" onclick="startCurrent()">启动</button>
           <button class="btn ghost" onclick="restartCurrent()">重启</button>
           <button class="btn ghost" onclick="stopCurrent()">停止</button>
+          <button class="btn ghost" onclick="startAll()">全部启动</button>
+          <button class="btn ghost" onclick="stopAll()">全部停止</button>
         </div>
       </div>
-      <div id="quickLinks" class="quick-links"></div>
+      <div id="quickLinks" class="quick-links hidden"></div>
       <div class="viewer">
         <iframe id="frame" src="about:blank"></iframe>
       </div>
-      <div class="logs">
+      <div id="serviceLogs" class="logs hidden">
         <div class="logs-head">
           <strong>模块日志</strong>
           <button class="btn secondary" onclick="refreshAll()">刷新状态</button>
@@ -328,7 +262,9 @@ HTML = """
   </div>
   <script>
     let modules = [];
+    let navigation = [];
     let current = 'os';
+    let currentView = 'overview';
 
     function escapeHtml(s) {
       return String(s == null ? '' : s)
@@ -340,43 +276,61 @@ HTML = """
 
     async function refreshAll() {
       modules = await window.pywebview.api.list_modules();
-      renderModules();
-      renderCurrent();
+      if (currentView === 'system') renderCurrentService();
     }
 
-    function renderModules() {
-      const wrap = document.getElementById('modules');
-      wrap.innerHTML = modules.map(m => {
-        const cls = m.key === current ? 'module active' : 'module';
-        const pill = m.healthy ? 'status-pill ok' : 'status-pill bad';
-        const label = m.healthy ? '在线' : '离线';
-        return `
-          <div class="${cls}" onclick="selectModule('${m.key}')">
-            <h2>${escapeHtml(m.title)}</h2>
-            <p>${escapeHtml(m.subtitle)}</p>
-            <span class="${pill}">${label} · ${escapeHtml(m.url)}</span>
-          </div>
-        `;
-      }).join('');
+    function renderNavigation() {
+      const wrap = document.getElementById('navigation');
+      const primary = navigation.filter(x => x.level === 'primary');
+      const secondary = navigation.filter(x => x.level === 'secondary');
+      const buttons = items => items.map(item =>
+        `<button class="nav-item ${item.key === currentView ? 'active' : ''}" ` +
+        `onclick="selectView('${item.key}')">${escapeHtml(item.label)}</button>`
+      ).join('');
+      wrap.innerHTML = buttons(primary) + '<div class="nav-divider"></div>' + buttons(secondary);
     }
 
-    function renderCurrent() {
+    function renderCurrentService() {
       const m = modules.find(x => x.key === current) || modules[0];
       if (!m) return;
       current = m.key;
-      document.getElementById('moduleTitle').textContent = m.title;
-      document.getElementById('moduleSubtitle').textContent = m.subtitle + ' · Port ' + m.port;
       const quick = document.getElementById('quickLinks');
-      quick.innerHTML = (m.quick_links || []).map(link =>
+      quick.innerHTML = modules.map(service => {
+        const state = service.healthy ? '在线' : '不可用';
+        return `<button class="btn ghost" onclick="selectModule('${service.key}')">` +
+          `${escapeHtml(service.title)} · ${state}</button>`;
+      }).join('') + (m.quick_links || []).map(link =>
         `<button class="btn ghost" onclick="loadUrl('${link.url}')">${escapeHtml(link.label)}</button>`
       ).join('');
+      document.getElementById('moduleTitle').textContent = '系统与服务 · ' + m.title;
+      document.getElementById('moduleSubtitle').textContent =
+        m.subtitle + ' · Port ' + m.port + ' · ' + (m.healthy ? '在线' : '状态不可用');
       document.getElementById('logs').textContent = (m.logs || []).join('\\n') || '暂无日志。';
     }
 
     function selectModule(key) {
       current = key;
-      renderModules();
-      renderCurrent();
+      renderCurrentService();
+    }
+
+    function selectView(key) {
+      const item = navigation.find(x => x.key === key) || navigation[0];
+      if (!item) return;
+      currentView = item.key;
+      const system = currentView === 'system';
+      document.getElementById('main').classList.toggle('system-mode', system);
+      document.getElementById('serviceActions').classList.toggle('hidden', !system);
+      document.getElementById('serviceLogs').classList.toggle('hidden', !system);
+      document.getElementById('quickLinks').classList.toggle('hidden', !system);
+      renderNavigation();
+      if (system) {
+        renderCurrentService();
+        loadUrl('http://127.0.0.1:8765/?view=system');
+      } else {
+        document.getElementById('moduleTitle').textContent = item.label;
+        document.getElementById('moduleSubtitle').textContent = item.description;
+        loadUrl('http://127.0.0.1:8765' + item.href);
+      }
     }
 
     function loadUrl(url) {
@@ -418,8 +372,13 @@ HTML = """
     }
 
     setInterval(refreshAll, 3000);
-    refreshAll().then(() => {
-      loadUrl('http://127.0.0.1:8765/');
+    Promise.all([
+      window.pywebview.api.list_navigation(),
+      window.pywebview.api.list_modules()
+    ]).then(results => {
+      navigation = results[0].navigation || [];
+      modules = results[1] || [];
+      selectView('overview');
     });
   </script>
 </body>
@@ -431,6 +390,9 @@ class OrbitDesktopBridge:
     def __init__(self, modules: list[ModuleSpec]) -> None:
         self.modules = {m.key: m for m in modules}
         self.lock = threading.Lock()
+
+    def list_navigation(self) -> dict:
+        return navigation_payload()
 
     def _append_log(self, spec: ModuleSpec, line: str) -> None:
         with self.lock:
@@ -550,7 +512,7 @@ class OrbitDesktopBridge:
 def main() -> int:
     bridge = OrbitDesktopBridge(MODULES)
     window = webview.create_window(
-        "Orbit 桌面台",
+        "Orbit CEO Desktop",
         html=HTML,
         js_api=bridge,
         width=1440,

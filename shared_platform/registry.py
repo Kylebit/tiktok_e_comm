@@ -76,7 +76,7 @@ DOMAIN_REGISTRATIONS: tuple[DomainRegistration, ...] = (
     ),
     DomainRegistration(
         "shared_platform", ("init", "auth", "status", "tokens", "serve", "sync", "digest", "feishu"),
-        ("/", "/api/status", "/api/health", "/api/digest", "/api/feishu"),
+        ("/", "/api/status", "/api/health", "/api/orbit", "/api/digest", "/api/feishu"),
         ("core", "modules.hub", "modules.products.server"),
     ),
 )

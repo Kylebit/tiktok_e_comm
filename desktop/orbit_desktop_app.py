@@ -10,12 +10,10 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
-from dataclasses import dataclass, field
 from pathlib import Path
 from tkinter import BOTH, LEFT, RIGHT, TOP, X, Y, END, Tk, StringVar
 from tkinter import ttk
 from tkinter.scrolledtext import ScrolledText
-
 
 def _project_root() -> Path:
     candidates = [
@@ -35,69 +33,19 @@ def _project_root() -> Path:
 
 ROOT = _project_root()
 PYTHON = sys.executable if not getattr(sys, "frozen", False) else (shutil.which("pythonw") or shutil.which("python") or "python")
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from shared_platform.orbit_registry import ModuleSpec, NAVIGATION, build_module_specs
 
 
-@dataclass
-class ModuleSpec:
-    key: str
-    title: str
-    subtitle: str
-    port: int
-    url: str
-    health_url: str
-    command: list[str]
-    quick_links: list[tuple[str, str]] = field(default_factory=list)
-    process: subprocess.Popen | None = None
-    log_lines: list[str] = field(default_factory=list)
-
-
-MODULES = [
-    ModuleSpec(
-        key="os",
-        title="Orbit OS 总控台",
-        subtitle="商品目录、结算、选品、分析与营销",
-        port=8765,
-        url="http://127.0.0.1:8765/",
-        health_url="http://127.0.0.1:8765/api/health",
-        command=[PYTHON, str(ROOT / "main.py"), "serve", "--port", "8765", "--no-browser"],
-        quick_links=[
-            ("首页", "http://127.0.0.1:8765/"),
-            ("商品目录", "http://127.0.0.1:8765/catalog"),
-            ("结算中心", "http://127.0.0.1:8765/settlement"),
-            ("选品中心", "http://127.0.0.1:8765/sourcing"),
-        ],
-    ),
-    ModuleSpec(
-        key="treasury",
-        title="Orbit Treasury 新品发布台",
-        subtitle="独立新品上架与审核工作台",
-        port=8766,
-        url="http://127.0.0.1:8766/",
-        health_url="http://127.0.0.1:8766/health",
-        command=[PYTHON, str(ROOT / "scripts" / "start_new_product_server.py"), "8766"],
-        quick_links=[
-            ("工作台", "http://127.0.0.1:8766/"),
-        ],
-    ),
-    ModuleSpec(
-        key="rus",
-        title="Orbit Rus 俄罗斯台",
-        subtitle="独立俄罗斯与 Ozon 运营台",
-        port=8767,
-        url="http://127.0.0.1:8767/",
-        health_url="http://127.0.0.1:8767/health",
-        command=[PYTHON, str(ROOT / "scripts" / "start_rus_server.py"), "8767"],
-        quick_links=[
-            ("俄罗斯台", "http://127.0.0.1:8767/"),
-        ],
-    ),
-]
+MODULES = build_module_specs(ROOT, PYTHON)
 
 
 class OrbitDesktopApp:
     def __init__(self) -> None:
         self.root = Tk()
-        self.root.title("Orbit 桌面台")
+        self.root.title("Orbit CEO Desktop")
         self.root.geometry("1080x760")
         self.root.minsize(980, 680)
 
@@ -122,13 +70,21 @@ class OrbitDesktopApp:
 
         header = ttk.Frame(shell)
         header.pack(fill=X)
-        ttk.Label(header, text="Orbit 桌面台", font=("Segoe UI", 20, "bold")).pack(anchor="w")
+        ttk.Label(header, text="Orbit CEO Desktop", font=("Segoe UI", 20, "bold")).pack(anchor="w")
         ttk.Label(
             header,
-            text="把 Orbit OS、Orbit Treasury 和 Orbit Rus 放进同一个轻量桌面壳子里。",
+            text="公司运营总览与五个业务域入口；技术进程统一收纳在系统与服务。",
         ).pack(anchor="w", pady=(4, 12))
 
-        actions = ttk.Frame(shell)
+        business = ttk.LabelFrame(shell, text="业务导航", padding=10)
+        business.pack(fill=X, pady=(0, 12))
+        for item in (item for item in NAVIGATION if item.level == "primary"):
+            url = f"http://127.0.0.1:8765{item.href}"
+            ttk.Button(business, text=item.label, command=lambda u=url: webbrowser.open(u)).pack(
+                side=LEFT, padx=(0, 8)
+            )
+
+        actions = ttk.LabelFrame(shell, text="系统与服务", padding=10)
         actions.pack(fill=X, pady=(0, 12))
         ttk.Button(actions, text="全部启动", command=self.start_all).pack(side=LEFT)
         ttk.Button(actions, text="全部停止", command=self.stop_all).pack(side=LEFT, padx=(8, 0))

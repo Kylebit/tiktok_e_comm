@@ -1,134 +1,309 @@
-﻿<!DOCTYPE html>
-<html lang="en">
+<!DOCTYPE html>
+<html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Orbit OS 总控台</title>
-  <link rel="stylesheet" href="/static/app.css">
+  <title>Orbit CEO Desktop</title>
+  <link rel="stylesheet" href="/static/orbit.css">
 </head>
 <body>
-  <header class="topbar">
-    <a class="brand" href="/">Orbit OS 总控台</a>
-    <nav class="nav">
-      <a href="/" class="active">首页</a>
-      <a href="/catalog">商品目录</a>
-      <a href="/settlement">结算中心</a>
-      <a href="/sku-profit">SKU利润探针</a>
-      <a href="/billing">结算账单</a>
-      <a href="/costs">成本中心</a>
-      <a href="/titles">标题优化</a>
-      <a href="/images">主图优化</a>
-      <a href="/sourcing">选品中心</a>
-      <a href="http://127.0.0.1:8767/">Orbit Rus 俄罗斯台</a>
-      <a href="/mx">MX 审批</a>
-      <a href="/uk">UK 审批</a>
-      <a href="/analytics">数据分析</a>
-      <a href="/deactivate">下架巡检</a>
-      <a href="/promotions">促销活动</a>
-    </nav>
-  </header>
-  <main class="container">
-    <h1>Orbit OS 总控台</h1>
-    <p class="hint">本地总控台，集中处理商品目录、结算、选品、优化和日常运营。</p>
-    <div id="statusBar" class="status-bar">正在加载状态...</div>
-    <div class="grid">
-      <a class="card link-card" href="/titles">
-        <h2>标题优化</h2>
-        <p>查看分析信号并批量推进标题优化。</p>
-        <span class="badge" id="titleBadge">--</span>
+  <div class="orbit-shell">
+    <aside class="orbit-sidebar">
+      <a class="orbit-brand" href="/">
+        <strong>Orbit</strong>
+        <span>CEO / Shared Platform</span>
       </a>
-      <a class="card link-card" href="/images">
-        <h2>主图优化</h2>
-        <p>查看图片优化候选与主图提升任务。</p>
-        <span class="badge" id="imageBadge">--</span>
-      </a>
-      <a class="card link-card" href="/analytics">
-        <h2>数据分析</h2>
-        <p>查看商品分层与表现分桶。</p>
-      </a>
-      <a class="card link-card" href="/deactivate">
-        <h2>下架巡检</h2>
-        <p>把低表现商品加入下架复核队列。</p>
-        <span class="badge" id="deactBadge">--</span>
-      </a>
-      <a class="card link-card" href="/promotions">
-        <h2>促销活动</h2>
-        <p>管理折扣、活动扫描与优惠券流程。</p>
-        <span class="badge" id="promoBadge">--</span>
-      </a>
-      <a class="card link-card" href="/sourcing">
-        <h2>选品中心</h2>
-        <p>处理 1688 选品、素材准备和下游流转。</p>
-        <span class="badge">运行中</span>
-      </a>
-      <a class="card link-card" href="http://127.0.0.1:8766/">
-        <h2>Orbit Treasury 新品发布台</h2>
-        <p>独立新品上架与审核工作台。</p>
-        <span class="badge">运行中</span>
-      </a>
-      <a class="card link-card" href="http://127.0.0.1:8767/">
-        <h2>Orbit Rus 俄罗斯台</h2>
-        <p>独立俄罗斯与 Ozon 运营台。</p>
-      </a>
-      <a class="card link-card" href="/mx">
-        <h2>MX 墨西哥上架审批</h2>
-        <p>飞书派单候选 → POP 定价 → 本地 Web 批准发布（不在群内审批）</p>
-        <span class="badge" id="mxBadge">—</span>
-      </a>
-      <a class="card link-card" href="/uk">
-        <h2>UK 英国上架审批</h2>
-        <p>4PL 价卡 POP → Web 批准发布到 GB 店（满 £10 包邮 · 25% 折扣）</p>
-        <span class="badge" id="ukBadge">—</span>
-      </a>
-      <a class="card link-card" href="/catalog">
-        <h2>商品目录</h2>
-        <p>浏览并同步共享商品目录。</p>
-      </a>
-      <a class="card link-card" href="/costs">
-        <h2>成本中心</h2>
-        <p>维护定价与利润计算使用的 SKU 成本。</p>
-      </a>
-      <a class="card link-card" href="/settlement">
-        <h2>结算中心</h2>
-        <p>查看 TikTok 财务导入与利润汇总。</p>
-      </a>
-      <a class="card link-card" href="/sku-profit">
-        <h2>SKU 利润探针</h2>
-        <p>TH 试验：按当前售价估算 TK/Shopee 利润。</p>
-      </a>
-      <div class="card muted-card">
-        <h2>Ads</h2>
-        <p>Reserved for future marketing and ads integrations.</p>
-        <span class="badge soon">Soon</span>
-      </div>
-    </div>
-  </main>
+      <button class="nav-toggle" id="navToggle" type="button" aria-expanded="false">导航</button>
+      <nav id="orbitNav" class="orbit-nav" aria-label="Orbit 主导航">
+        <span class="loading-copy">正在加载导航…</span>
+      </nav>
+    </aside>
+
+    <main class="orbit-main">
+      <header class="orbit-header">
+        <div>
+          <span class="eyebrow">ORBIT V1</span>
+          <strong id="headerTitle">公司运营总览</strong>
+        </div>
+        <div class="header-meta">
+          <span id="serviceState" class="status-chip neutral">状态检查中</span>
+          <span id="updatedAt">尚未更新</span>
+        </div>
+      </header>
+
+      <section id="overviewView" class="orbit-content view-panel">
+        <div class="hero">
+          <div>
+            <h1>公司运营总览</h1>
+            <p>聚焦五个业务域的状态、审批、异常与最近任务。技术服务已收纳到“系统与服务”。</p>
+          </div>
+          <a class="text-link" href="/?view=approvals">查看待审批</a>
+        </div>
+
+        <div class="metrics" aria-label="关键状态">
+          <article class="metric-card">
+            <span>已接入待审批队列</span>
+            <strong id="approvalMetric">—</strong>
+            <small id="approvalDetail">等待本地状态接口</small>
+          </article>
+          <article class="metric-card">
+            <span>已知异常</span>
+            <strong id="exceptionMetric">—</strong>
+            <small id="exceptionDetail">未接入的域不计为零</small>
+          </article>
+          <article class="metric-card">
+            <span>最近任务</span>
+            <strong>未知</strong>
+            <small>任务运行记录接口尚未建设</small>
+          </article>
+          <article class="metric-card">
+            <span>数据新鲜度</span>
+            <strong>未知</strong>
+            <small>尚无统一跨域新鲜度接口</small>
+          </article>
+        </div>
+
+        <div class="overview-grid">
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <span class="eyebrow">DOMAINS</span>
+                <h2>五域状态</h2>
+              </div>
+              <span class="muted">仅展示已接入的本地信号</span>
+            </div>
+            <div id="domainCards" class="domain-grid">
+              <p class="empty-copy">正在加载域注册表…</p>
+            </div>
+          </section>
+
+          <div class="panel-stack">
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <span class="eyebrow">APPROVALS</span>
+                  <h2>待我审批</h2>
+                </div>
+                <a class="text-link" href="/?view=approvals">全部</a>
+              </div>
+              <div id="approvalList" class="list">
+                <p class="empty-copy">等待状态接口</p>
+              </div>
+            </section>
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <span class="eyebrow">RUNS</span>
+                  <h2>最近任务</h2>
+                </div>
+                <a class="text-link" href="/?view=tasks">任务与通知</a>
+              </div>
+              <div class="unknown-block">
+                <strong>运行记录不可用</strong>
+                <p>Shared Platform 尚未提供统一任务历史接口；V1 不推测任务结果。</p>
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
+
+      <section id="workspaceView" class="orbit-content view-panel hidden">
+        <div class="hero">
+          <div>
+            <span id="workspaceEyebrow" class="eyebrow">DOMAIN</span>
+            <h1 id="workspaceTitle">业务域</h1>
+            <p id="workspaceDescription"></p>
+          </div>
+          <a class="text-link" href="/">返回总览</a>
+        </div>
+        <div id="workspaceLinks" class="workspace-grid"></div>
+      </section>
+    </main>
+  </div>
+
   <script>
-    fetch('/api/status').then(function(r) { return r.json(); }).then(function(s) {
-      var el = document.getElementById('statusBar');
-      if (!s.ok) {
-        el.innerHTML = 'Auth required or local service unavailable';
-        el.className = 'status-bar warn';
-        return;
+    var registry = { navigation: [], workspaces: [] };
+    var statusPayload = null;
+
+    function escapeHtml(value) {
+      return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    function currentView() {
+      return new URLSearchParams(window.location.search).get('view') || 'overview';
+    }
+
+    function renderNavigation() {
+      var view = currentView();
+      var primary = registry.navigation.filter(function(item) { return item.level === 'primary'; });
+      var secondary = registry.navigation.filter(function(item) { return item.level === 'secondary'; });
+      function links(items) {
+        return items.map(function(item) {
+          var active = item.key === view ? ' active' : '';
+          return '<a class="orbit-nav-link' + active + '" href="' + escapeHtml(item.href) + '">' +
+            escapeHtml(item.label) + '</a>';
+        }).join('');
       }
-      var parts = ['Seller <b>' + (s.seller_name || '?') + '</b>'];
-      if (s.access_expires) parts.push('Access token until ' + s.access_expires.slice(0, 16).replace('T', ' '));
-      el.innerHTML = parts.join(' | ');
-      el.className = 'status-bar ok';
-      var b = document.getElementById('titleBadge');
-      if (b) b.textContent = (s.pending_titles || 0) + ' pending';
-      var pb = document.getElementById('promoBadge');
-      if (pb) pb.textContent = (s.pending_promos || 0) + ' pending';
-      var db = document.getElementById('deactBadge');
-      if (db) db.textContent = (s.pending_deactivate || 0) + ' pending';
-      var ib = document.getElementById('imageBadge');
-      if (ib) ib.textContent = (s.pending_images || 0) + ' 条待处理';
-      var mx = document.getElementById('mxBadge');
-      if (mx) mx.textContent = (s.pending_mx || 0) + ' 条待审';
-      var uk = document.getElementById('ukBadge');
-      if (uk) uk.textContent = (s.pending_uk || 0) + ' 条待审';
+      document.getElementById('orbitNav').innerHTML =
+        links(primary) + '<span class="nav-divider"></span>' + links(secondary);
+    }
+
+    function pendingCount(keys) {
+      if (!statusPayload || !statusPayload.ok) return null;
+      return keys.reduce(function(total, key) {
+        var value = statusPayload[key];
+        return total + (typeof value === 'number' ? value : 0);
+      }, 0);
+    }
+
+    function domainState(key) {
+      if (key === 'supply-chain') return { label: '待建设', tone: 'planned', detail: '统一供应链工作台尚未建设。' };
+      if (!statusPayload || !statusPayload.ok) {
+        return { label: '未知', tone: 'unknown', detail: '本地状态接口不可用。' };
+      }
+      var mappings = {
+        product: [],
+        content: ['pending_titles', 'pending_images'],
+        channel: ['pending_mx', 'pending_uk', 'pending_promos', 'pending_deactivate'],
+        data: []
+      };
+      var keys = mappings[key] || [];
+      if (!keys.length) return { label: '未知', tone: 'unknown', detail: '该域尚无统一状态信号。' };
+      var count = pendingCount(keys);
+      return count > 0
+        ? { label: '待处理 ' + count, tone: 'attention', detail: '来自现有本地队列。' }
+        : { label: '无已知待办', tone: 'ok', detail: '仅代表已接入的本地队列。' };
+    }
+
+    function renderDomains() {
+      var cards = registry.workspaces.map(function(workspace) {
+        var state = domainState(workspace.key);
+        return '<a class="domain-card" href="/?view=' + escapeHtml(workspace.key) + '">' +
+          '<div><strong>' + escapeHtml(workspace.label) + '</strong>' +
+          '<span class="status-chip ' + state.tone + '">' + escapeHtml(state.label) + '</span></div>' +
+          '<p>' + escapeHtml(workspace.description) + '</p>' +
+          '<small>' + escapeHtml(state.detail) + '</small></a>';
+      }).join('');
+      document.getElementById('domainCards').innerHTML = cards || '<p class="empty-copy">域注册表不可用</p>';
+    }
+
+    function renderOverviewStatus() {
+      var service = document.getElementById('serviceState');
+      var approvals = pendingCount(['pending_titles', 'pending_images', 'pending_mx', 'pending_uk']);
+      var warnings = statusPayload && statusPayload.ok && Array.isArray(statusPayload.warnings)
+        ? statusPayload.warnings : [];
+      if (!statusPayload || !statusPayload.ok) {
+        service.textContent = '状态不可用';
+        service.className = 'status-chip unknown';
+        document.getElementById('approvalMetric').textContent = '未知';
+        document.getElementById('approvalDetail').textContent = '本地状态接口未提供可用数据';
+        document.getElementById('exceptionMetric').textContent = '未知';
+        document.getElementById('exceptionDetail').textContent = '不把未接入状态显示为零';
+        document.getElementById('approvalList').innerHTML =
+          '<div class="unknown-block"><strong>审批汇总不可用</strong><p>可从商品、内容和渠道域进入现有审批入口。</p></div>';
+      } else {
+        service.textContent = '本地服务在线';
+        service.className = 'status-chip ok';
+        document.getElementById('approvalMetric').textContent = approvals;
+        document.getElementById('approvalDetail').textContent = '标题、图片、MX 与 UK 已接入队列';
+        document.getElementById('exceptionMetric').textContent = warnings.length;
+        document.getElementById('exceptionDetail').textContent = '现有状态接口报告的本地警告';
+        var rows = [
+          ['内容标题', statusPayload.pending_titles, '/titles'],
+          ['内容图片', statusPayload.pending_images, '/images'],
+          ['MX 发布', statusPayload.pending_mx, '/mx'],
+          ['UK 发布', statusPayload.pending_uk, '/uk']
+        ].filter(function(row) { return typeof row[1] === 'number'; });
+        document.getElementById('approvalList').innerHTML = rows.map(function(row) {
+          return '<a class="list-row" href="' + row[2] + '"><span>' + escapeHtml(row[0]) +
+            '</span><strong>' + row[1] + '</strong></a>';
+        }).join('') || '<p class="empty-copy">没有已接入的审批队列</p>';
+      }
+      renderDomains();
+    }
+
+    function renderWorkspace() {
+      var view = currentView();
+      var navItem = registry.navigation.find(function(item) { return item.key === view; });
+      var workspace = registry.workspaces.find(function(item) { return item.key === view; });
+      document.getElementById('overviewView').classList.toggle('hidden', view !== 'overview');
+      document.getElementById('workspaceView').classList.toggle('hidden', view === 'overview');
+      document.getElementById('headerTitle').textContent = navItem ? navItem.label : '公司运营总览';
+      if (view === 'overview') return;
+
+      var title = workspace ? workspace.label : (navItem ? navItem.label : '未知入口');
+      var description = workspace ? workspace.description : (navItem ? navItem.description : '入口尚未注册。');
+      document.getElementById('workspaceTitle').textContent = title;
+      document.getElementById('workspaceDescription').textContent = description;
+      document.getElementById('workspaceEyebrow').textContent =
+        workspace ? 'BUSINESS DOMAIN' : 'SHARED PLATFORM';
+
+      var links = workspace ? workspace.links.slice() : [];
+      if (view === 'approvals') {
+        links = [
+          { label: '标题审批', href: '/titles', description: '内容标题候选' },
+          { label: '图片审批', href: '/images', description: '内容图片候选' },
+          { label: 'MX 审批', href: '/mx', description: '墨西哥渠道发布' },
+          { label: 'UK 审批', href: '/uk', description: '英国渠道发布' }
+        ];
+      } else if (view === 'system') {
+        links = [
+          { label: 'Shared Platform 健康', href: '/api/health', description: '8765 · 本地健康接口' },
+          { label: 'Orbit Treasury', href: 'http://127.0.0.1:8766/', description: '8766 · 新品技术服务，状态未知' },
+          { label: 'Orbit Rus', href: 'http://127.0.0.1:8767/', description: '8767 · 俄罗斯技术服务，状态未知' }
+        ];
+      }
+
+      var html = links.map(function(link) {
+        return '<a class="workspace-card" href="' + escapeHtml(link.href) + '">' +
+          '<strong>' + escapeHtml(link.label) + '</strong><p>' + escapeHtml(link.description) + '</p>' +
+          '<span>进入现有入口 →</span></a>';
+      }).join('');
+      if (!html) {
+        var message = workspace && workspace.availability === 'planned'
+          ? '该业务域入口待建设。V1 不伪造库存、仓库或补货状态。'
+          : '该共享平台能力尚未建设，当前状态为 unavailable。';
+        html = '<div class="unknown-block wide"><strong>Unavailable</strong><p>' + message + '</p></div>';
+      }
+      document.getElementById('workspaceLinks').innerHTML = html;
+    }
+
+    document.getElementById('navToggle').addEventListener('click', function() {
+      var nav = document.getElementById('orbitNav');
+      var open = nav.classList.toggle('open');
+      this.setAttribute('aria-expanded', String(open));
+    });
+
+    Promise.all([
+      fetch('/api/orbit/navigation').then(function(response) {
+        if (!response.ok) throw new Error('navigation unavailable');
+        return response.json();
+      }),
+      fetch('/api/status').then(function(response) {
+        if (!response.ok) throw new Error('status unavailable');
+        return response.json();
+      }).catch(function(error) { return { ok: false, error: String(error) }; })
+    ]).then(function(results) {
+      registry = results[0];
+      statusPayload = results[1];
+      document.getElementById('updatedAt').textContent =
+        '更新于 ' + new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+      renderNavigation();
+      renderWorkspace();
+      renderOverviewStatus();
     }).catch(function() {
-      document.getElementById('statusBar').textContent = 'Unable to reach local service';
+      document.getElementById('serviceState').textContent = '注册表不可用';
+      document.getElementById('serviceState').className = 'status-chip unknown';
+      document.getElementById('orbitNav').innerHTML =
+        '<a class="orbit-nav-link active" href="/">总览</a>' +
+        '<a class="orbit-nav-link" href="/?view=system">系统与服务</a>';
+      statusPayload = { ok: false };
+      renderOverviewStatus();
     });
   </script>
 </body>

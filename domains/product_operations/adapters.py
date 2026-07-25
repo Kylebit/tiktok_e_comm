@@ -92,8 +92,12 @@ def approval_record_from_fact(
         raise ValueError("approval status must be 'approved'")
 
     approved_at = values.get("approved_at")
-    if isinstance(approved_at, str) and approved_at.strip():
-        approved_at = datetime.fromisoformat(approved_at.replace("Z", "+00:00"))
+    if isinstance(approved_at, str):
+        approved_at = approved_at.strip()
+        approved_at = (
+            datetime.fromisoformat(approved_at.replace("Z", "+00:00"))
+            if approved_at else None
+        )
     if approved_at is not None and not isinstance(approved_at, datetime):
         raise ValueError("approval approved_at must be a datetime or ISO-8601 string")
     approved_by = str(values.get("approved_by") or "").strip() or None

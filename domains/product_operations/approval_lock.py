@@ -16,7 +16,7 @@ from typing import Any, Mapping
 
 from shared_platform.contracts import ApprovedProductPackage, ContentPackage, contract_payload
 
-from .adapters import approval_record_from_fact, product_record_from_legacy_row
+from .adapters import _as_dict, approval_record_from_fact, product_record_from_legacy_row
 
 
 @dataclass(frozen=True)
@@ -42,6 +42,31 @@ def _fingerprint(product: object, content: ContentPackage, seller_sku: str) -> s
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _seller_sku_conflicts(candidate: str, known_skus: tuple[str, ...] | list[str] | set[str]) -> bool:
+    """Apply the catalog's numeric last-four SKU alignment rule safely."""
+    if candidate.isdigit():
+        candidate_key = candidate[-4:].zfill(4)
+        return any(
+            (known := _clean(value)) == candidate
+            or (known.isdigit() and known[-4:].zfill(4) == candidate_key)
+            for value in known_skus
+        )
+    return any(_clean(value) == candidate for value in known_skus)
+
+
+def _state_revision(state: Mapping[str, Any]) -> tuple[int | None, str | None]:
+    raw = state.get("_revision", 0)
+    if raw is None:
+        return 0, None
+    if isinstance(raw, bool):
+        return None, "state _revision must be an integer"
+    if isinstance(raw, int):
+        return raw, None
+    if isinstance(raw, str) and raw.strip().isdigit():
+        return int(raw.strip()), None
+    return None, "state _revision must be an integer"
 
 
 def _content_blockers(content: ContentPackage | None, product_id: str) -> list[str]:
@@ -78,7 +103,7 @@ def preview_product_approval_lock(
     superseded, never silently reused.
     """
     product = product_record_from_legacy_row(product_row)
-    fact = dict(approval_fact)
+    fact = _as_dict(approval_fact)
     clean_sku = _clean(seller_sku)
     blockers: list[str] = []
     if user_approved is not True:
@@ -87,11 +112,13 @@ def preview_product_approval_lock(
         blockers.append("seller_sku must match the product record")
     if not clean_sku:
         blockers.append("seller_sku is required")
-    if clean_sku in {_clean(value) for value in known_seller_skus}:
+    if _seller_sku_conflicts(clean_sku, known_seller_skus):
         blockers.append("seller_sku is already present in the catalog")
 
-    current_revision = int(state.get("_revision") or 0)
-    if expected_revision is not None and expected_revision != current_revision:
+    current_revision, revision_error = _state_revision(state)
+    if revision_error:
+        blockers.append(revision_error)
+    elif expected_revision is not None and expected_revision != current_revision:
         blockers.append("state revision is stale")
     state_offer_id = _clean(state.get("offer_id"))
     if state_offer_id and state_offer_id != product.product_id:
@@ -103,6 +130,10 @@ def preview_product_approval_lock(
         package_id = _clean(fact.get("package_id"))
         if not package_id:
             blockers.append("package_id is required")
+        if not approval.approved_by:
+            blockers.append("approval approved_by is required")
+        if not isinstance(approval.approved_at, datetime):
+            blockers.append("approval approved_at is required")
     except (TypeError, ValueError) as error:
         approval = None
         package_id = ""
@@ -122,8 +153,13 @@ def preview_product_approval_lock(
 
     source_reference = _clean(fact.get("source_reference")) or None
     package = ApprovedProductPackage(package_id, product, approval, source_reference)
+    current_review = state.get("review", {})
+    if not isinstance(current_review, Mapping):
+        return ProductApprovalLockPreview(None, {}, ("state review must be a mapping",), False, None)
+    complete_review = dict(current_review)
+    complete_review.update({"seller_sku": clean_sku, "fields_locked": True})
     patch = {
-        "review": {"seller_sku": clean_sku, "fields_locked": True},
+        "review": complete_review,
         "product_approval": {
             "approval_id": approval.approval_id,
             "package_id": package.package_id,
@@ -136,6 +172,7 @@ def preview_product_approval_lock(
             "input_fingerprint": signature,
             "approved_by": approval.approved_by,
             "approved_at": approval.approved_at.isoformat() if isinstance(approval.approved_at, datetime) else None,
+            "source_reference": source_reference,
         },
     }
     return ProductApprovalLockPreview(package, patch, (), False, prior_id if prior_active else None)

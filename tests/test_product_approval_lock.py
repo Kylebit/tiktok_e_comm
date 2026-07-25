@@ -26,16 +26,38 @@ def _product():
 
 def test_preview_requires_explicit_approval_and_returns_a_persistable_lock_patch():
     result = preview_product_approval_lock(
-        state={"offer_id": "3828811808", "_revision": 12}, product_row=_product(),
+        state={"offer_id": "3828811808", "_revision": 12, "review": {"image_order": ["kept.png"], "image_actions": [{"action": "keep"}]}}, product_row=_product(),
         content_package=_content(), seller_sku="0946", known_seller_skus=(),
         user_approved=True, approval_fact=_approval(), expected_revision=12,
     )
 
     assert result.blockers == ()
     assert result.approved_package is not None
-    assert result.state_patch["review"] == {"seller_sku": "0946", "fields_locked": True}
+    assert result.state_patch["review"] == {"image_order": ["kept.png"], "image_actions": [{"action": "keep"}], "seller_sku": "0946", "fields_locked": True}
     assert result.state_patch["product_approval"]["content_package_id"] == "content:3828811808"
     assert result.state_patch["product_approval"]["approved_at"] == datetime(2026, 7, 25, 12, tzinfo=timezone.utc).isoformat()
+
+
+class _SqliteStyleRow:
+    def __init__(self, values):
+        self.values = values
+
+    def keys(self):
+        return self.values.keys()
+
+    def __getitem__(self, key):
+        return self.values[key]
+
+
+def test_preview_accepts_sqlite_style_approval_facts_and_records_source_reference():
+    fact = _SqliteStyleRow({**_approval(), "source_reference": "workbench:3828811808"})
+    result = preview_product_approval_lock(
+        state={"offer_id": "3828811808"}, product_row=_product(), content_package=_content(),
+        seller_sku="0946", known_seller_skus=(), user_approved=True, approval_fact=fact,
+    )
+
+    assert result.approved_package is not None
+    assert result.state_patch["product_approval"]["source_reference"] == "workbench:3828811808"
 
 
 def test_preview_blocks_missing_user_approval_conflict_stale_revision_and_pending_content():
@@ -51,6 +73,45 @@ def test_preview_blocks_missing_user_approval_conflict_stale_revision_and_pendin
     assert "seller_sku is already present in the catalog" in result.blockers
     assert "state revision is stale" in result.blockers
     assert "content package approval is required" in result.blockers
+
+
+def test_numeric_seller_sku_conflicts_on_last_four_digits_but_non_numeric_values_are_exact():
+    numeric = preview_product_approval_lock(
+        state={"offer_id": "3828811808"}, product_row=_product(), content_package=_content(),
+        seller_sku="0946", known_seller_skus=("990946",), user_approved=True, approval_fact=_approval(),
+    )
+    short_numeric_product = {**_product(), "seller_sku": "946"}
+    short_numeric = preview_product_approval_lock(
+        state={"offer_id": "3828811808"}, product_row=short_numeric_product, content_package=_content(),
+        seller_sku="946", known_seller_skus=("0946",), user_approved=True, approval_fact=_approval(),
+    )
+    short_seventeen_product = {**_product(), "seller_sku": "17"}
+    short_seventeen = preview_product_approval_lock(
+        state={"offer_id": "3828811808"}, product_row=short_seventeen_product, content_package=_content(),
+        seller_sku="17", known_seller_skus=("990017",), user_approved=True, approval_fact=_approval(),
+    )
+    non_numeric_product = {**_product(), "seller_sku": "DOG-0946"}
+    non_numeric = preview_product_approval_lock(
+        state={"offer_id": "3828811808"}, product_row=non_numeric_product, content_package=_content(),
+        seller_sku="DOG-0946", known_seller_skus=("CAT-0946",), user_approved=True, approval_fact=_approval(),
+    )
+
+    assert "seller_sku is already present in the catalog" in numeric.blockers
+    assert "seller_sku is already present in the catalog" in short_numeric.blockers
+    assert "seller_sku is already present in the catalog" in short_seventeen.blockers
+    assert non_numeric.approved_package is not None
+
+
+def test_preview_requires_named_and_timestamped_approval_and_handles_bad_revision_as_blocker():
+    missing_audit_fields = preview_product_approval_lock(
+        state={"offer_id": "3828811808", "_revision": "not-a-number"}, product_row=_product(),
+        content_package=_content(), seller_sku="0946", known_seller_skus=(), user_approved=True,
+        approval_fact={**_approval(), "approved_by": "", "approved_at": ""},
+    )
+
+    assert "approval approved_by is required" in missing_audit_fields.blockers
+    assert "approval approved_at is required" in missing_audit_fields.blockers
+    assert "state _revision must be an integer" in missing_audit_fields.blockers
 
 
 def test_identical_active_lock_is_idempotent_but_changed_content_supersedes_it():

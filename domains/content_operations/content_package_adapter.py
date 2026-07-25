@@ -9,6 +9,7 @@ call a marketplace.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from shared_platform.contracts import ApprovalRecord, ContentPackage
@@ -189,8 +190,14 @@ def build_workbench_content_package_handoff(
 def _current_audits_by_shot(content, selected_shots, generation_audits):
     explicit = content.get("current_artifact_ids") if isinstance(content.get("current_artifact_ids"), Mapping) else {}
     overlay = content.get("dimension_overlay_upgrade") if isinstance(content.get("dimension_overlay_upgrade"), Mapping) else {}
-    if overlay.get("artifact_id"):
-        explicit = {**explicit, "sz1": overlay.get("artifact_id")}
+    overlay_artifact_id = str(overlay.get("artifact_id") or "").strip()
+    overlay_audit = generation_audits.get(overlay_artifact_id)
+    overlay_shot_id = str(
+        (overlay_audit.get("shot_id") if isinstance(overlay_audit, Mapping)
+        else overlay.get("shot_id")) or ""
+    ).strip()
+    if overlay_artifact_id and overlay_shot_id in selected_shots:
+        explicit = {**explicit, overlay_shot_id: overlay_artifact_id}
     result = {}
     for shot_id in selected_shots:
         candidates = [(str(key), value) for key, value in generation_audits.items() if isinstance(value, Mapping)
@@ -205,7 +212,16 @@ def _current_audits_by_shot(content, selected_shots, generation_audits):
 
 
 def _created_at_key(audit):
-    return str(audit.get("created_at") or "")
+    raw = str(audit.get("created_at") or "").strip()
+    if not raw:
+        return (0, 0.0, "")
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return (1, parsed.timestamp(), raw)
+    except ValueError:
+        return (0, 0.0, raw)
 
 
 def _version_key(artifact_id):
@@ -226,7 +242,7 @@ def _written_image_urls(content):
     write = content.get("miaoshou_ordered_images_write")
     if not isinstance(write, Mapping):
         write = content.get("miaoshou_generated_images_write")
-    if not isinstance(write, Mapping) or not write.get("verified"):
+    if not isinstance(write, Mapping) or not (write.get("verified") or write.get("status") == "verified"):
         return set()
     return {str(url).strip() for url in (write.get("ordered_image_urls") or write.get("image_urls") or write.get("generated_image_urls") or []) if str(url).strip()}
 

@@ -116,7 +116,7 @@ def _workbench_state(*, new_size_action="review", written_urls=None):
                 "sz1_r6_1784961073473": {"action": new_size_action, "status": "reviewed_locally"},
             },
             "dimension_overlay_upgrade": {"artifact_id": "sz1_r6_1784961073473", "overlay_version": "v4"},
-            "miaoshou_ordered_images_write": {"verified": True, "ordered_image_urls": written_urls or ["https://assets.example/sc1-r4.png", "https://assets.example/sz1-r4.png"]},
+            "miaoshou_ordered_images_write": {"status": "verified", "ordered_image_urls": written_urls or ["https://assets.example/sc1-r4.png", "https://assets.example/sz1-r4.png"]},
         },
         "review": {},
     }
@@ -157,3 +157,52 @@ def test_workbench_handoff_approves_current_version_in_suite_order_and_marks_sta
         ("sc1_r4", "audit-sc1"), ("sz1_r6_1784961073473", "audit-size-r6"),
     ]
     assert handoff.stale_external_write is True
+
+
+def test_overlay_artifact_resolves_its_non_sz1_shot_from_the_audit():
+    state = _workbench_state()
+    content = state["content_package"]
+    content["storyboard_reviews"] = {"dimension-card": {"decision": "approved"}}
+    content["generated_image_miaoshou_decisions"] = {
+        "dimension-card_r4": {"action": "keep", "status": "reviewed_locally"},
+        "dimension-card_r6": {"action": "keep", "status": "reviewed_locally"},
+    }
+    content["dimension_overlay_upgrade"] = {"artifact_id": "dimension-card_r6", "overlay_version": "v4"}
+    content.pop("miaoshou_ordered_images_write")
+    audits = {
+        "dimension-card_r4": _audit("dimension-card", "https://assets.example/dimension-r4.png"),
+        "dimension-card_r6": _audit("dimension-card", "https://assets.example/dimension-r6.png"),
+    }
+
+    handoff = build_workbench_content_package_handoff(
+        product_id="3828811808", state=state,
+        suite_plan={"suite": {"items": [{"id": "dimension-card"}]}},
+        generation_audits=audits, copy={"en": "Puppy wall sticker"},
+    )
+
+    assert handoff.content_package.approval.status == "approved"
+    assert handoff.asset_lineage[0].artifact_id == "dimension-card_r6"
+
+
+def test_workbench_handoff_compares_iso_created_at_as_instants_across_offsets():
+    state = {
+        "content_package": {
+            "product_id": "p-1", "fact_card_approved": True,
+            "planning_scope_approved": True, "suite_approved": True,
+            "storyboard_reviews": {"scene": {"decision": "approved"}},
+            "generated_image_miaoshou_decisions": {
+                "scene_r9": {"action": "keep", "status": "reviewed_locally"},
+                "scene_r1": {"action": "keep", "status": "reviewed_locally"},
+            },
+        },
+    }
+    earlier = _audit("scene", "https://assets.example/scene-earlier.png")
+    earlier["created_at"] = "2026-07-25T10:00:00+08:00"
+    later = _audit("scene", "https://assets.example/scene-later.png")
+    later["created_at"] = "2026-07-25T03:00:00+00:00"
+    handoff = build_workbench_content_package_handoff(
+        product_id="p-1", state=state, suite_plan={"suite": {"items": [{"id": "scene"}]}},
+        generation_audits={"scene_r9": earlier, "scene_r1": later}, copy={"en": "Copy"},
+    )
+
+    assert handoff.asset_lineage[0].artifact_id == "scene_r1"

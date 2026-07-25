@@ -42,3 +42,47 @@ def test_weekly_digest_is_idempotent_for_same_snapshot_and_configuration():
     first, second = build_weekly_profit_digest(**kwargs), build_weekly_profit_digest(**kwargs)
     assert first.run_id == second.run_id and first.idempotency_key == second.idempotency_key
     assert first.realized_by_sku[0]["profit_cny"] == Decimal("1.123456789")
+
+
+def test_weekly_digest_excludes_out_of_period_rows_and_records_the_exclusion():
+    report = build_weekly_profit_digest(
+        [
+            {"order_id": "inside", "sku_id": "A", "currency": "CNY", "settlement_amount": "10", "cost_cny": "2", "statement_date": "2026-07-20"},
+            {"order_id": "outside", "sku_id": "A", "currency": "CNY", "settlement_amount": "100", "cost_cny": "1", "statement_date": "2026-07-27"},
+        ], period_start="2026-07-20", period_end="2026-07-26", generated_at=datetime(2026, 7, 26, tzinfo=timezone.utc),
+    )
+    assert report.out_of_period_row_count == 1
+    assert report.realized_by_sku[0]["profit_cny"] == Decimal("8")
+    assert any(issue.code == "out_of_reporting_period" for issue in report.quality_issues)
+
+
+def test_weekly_digest_keeps_realized_and_estimate_with_same_business_key():
+    rows = [
+        {"order_id": "same", "sku_id": "A", "channel": "tiktok", "region": "US", "currency": "CNY", "settlement_amount": "10", "cost_cny": "1", "statement_date": "2026-07-20"},
+        {"order_id": "same", "sku_id": "A", "channel": "tiktok", "region": "US", "currency": "CNY", "settlement_amount": "20", "cost_cny": "1", "calculation_kind": "estimate", "statement_date": "2026-07-20"},
+    ]
+    report = build_weekly_profit_digest(rows, period_start="2026-07-20", period_end="2026-07-26", generated_at=datetime(2026, 7, 26, tzinfo=timezone.utc))
+    assert report.deduplicated_row_count == 2
+    assert report.realized_by_sku[0]["profit_cny"] == Decimal("9")
+    assert report.estimate_by_sku[0]["profit_cny"] == Decimal("19")
+
+
+def test_weekly_digest_separates_channels_and_preserves_negative_provenance():
+    rows = [
+        {"order_id": "tk", "sku_id": "A", "channel": "tiktok", "region": "US", "currency": "CNY", "settlement_amount": "10", "cost_cny": "1", "statement_date": "2026-07-20"},
+        {"order_id": "sp", "sku_id": "A", "channel": "shopee", "region": "TH", "currency": "CNY", "settlement_amount": "2", "cost_cny": "5", "calculation_kind": "estimate", "statement_date": "2026-07-20"},
+    ]
+    report = build_weekly_profit_digest(rows, period_start="2026-07-20", period_end="2026-07-26", generated_at=datetime(2026, 7, 26, tzinfo=timezone.utc))
+    assert report.realized_by_sku[0]["channel"] == "tiktok"
+    negative = report.negative_profit_skus[0]
+    assert (negative["calculation_kind"], negative["channel"], negative["region"], negative["sku_id"]) == ("estimate", "shopee", "TH", "A")
+
+
+def test_weekly_digest_requires_audit_metadata_for_ready_status():
+    row = {"order_id": "1", "sku_id": "A", "currency": "CNY", "settlement_amount": "2", "cost_cny": "1", "statement_date": "2026-07-20"}
+    incomplete = build_weekly_profit_digest([row], period_start="2026-07-20", period_end="2026-07-26", generated_at=datetime(2026, 7, 26, tzinfo=timezone.utc))
+    assert incomplete.status == "needs_review"
+    assert {issue.code for issue in incomplete.quality_issues} >= {"missing_cost_version", "missing_code_version", "missing_fx_as_of"}
+    complete = build_weekly_profit_digest([row], period_start="2026-07-20", period_end="2026-07-26", cost_version="sku-costs:2026-07-20", code_version="7689731", fx_source="approved-table", fx_as_of="2026-07-20", snapshot_id="fixture:1", generated_at=datetime(2026, 7, 20, tzinfo=timezone.utc))
+    assert complete.status == "ready"
+    assert complete.payload()["input_snapshot"]["snapshot_id"] == "fixture:1"

@@ -47,6 +47,7 @@ class ReportRun:
     input_snapshot: Mapping[str, Any]
     raw_row_count: int
     deduplicated_row_count: int
+    out_of_period_row_count: int
     fx: Mapping[str, Any]
     cost: Mapping[str, Any]
     assumptions: Mapping[str, Any]
@@ -67,7 +68,7 @@ class ReportRun:
             "calculation_kind": self.calculation_kind,
             "period": self.period.payload(),
             "input_snapshot": _json_value(self.input_snapshot),
-            "row_counts": {"before_deduplication": self.raw_row_count, "after_deduplication": self.deduplicated_row_count},
+            "row_counts": {"before_deduplication": self.raw_row_count, "after_deduplication": self.deduplicated_row_count, "out_of_reporting_period": self.out_of_period_row_count},
             "fx": _json_value(self.fx),
             "cost": _json_value(self.cost),
             "assumptions": _json_value(self.assumptions),
@@ -93,6 +94,7 @@ def build_weekly_profit_digest(
     cost_version: str = "unspecified",
     fx_source: str = "caller_supplied",
     fx_as_of: date | datetime | str | None = None,
+    snapshot_id: str | None = None,
     assumptions: Mapping[str, object] | None = None,
     code_version: str = "unknown",
     generated_at: datetime | None = None,
@@ -111,12 +113,25 @@ def build_weekly_profit_digest(
     now = _as_datetime(generated_at or datetime.now(timezone.utc), zone)
     source_rows = [dict(row) for row in rows]
     snapshot_checksum = _checksum(source_rows)
+    resolved_snapshot_id = _text(snapshot_id) or f"sha256:{snapshot_checksum}"
     issues: list[ReportQualityIssue] = []
-    deduped = _deduplicate(source_rows, issues)
+    in_period: list[dict[str, object]] = []
+    out_of_period = 0
+    for index, row in enumerate(source_rows):
+        occurred_at = _as_datetime(row.get("occurred_at") or row.get("statement_date") or row.get("release_time"), zone)
+        if occurred_at is None:
+            issues.append(_issue("missing_occurred_at", _record_id(row, index), "occurred_at"))
+        elif period.start <= occurred_at <= period.end:
+            in_period.append(row)
+        else:
+            out_of_period += 1
+    if out_of_period:
+        issues.append(ReportQualityIssue("out_of_reporting_period", "report", "occurred_at", f"{out_of_period} row(s) were excluded from the reporting period"))
+    deduped = _deduplicate(in_period, issues)
     rates = {str(currency).upper(): _decimal(rate) for currency, rate in (fx_rates_cny or {}).items()}
     rates["CNY"] = Decimal("1")
 
-    aggregates: dict[str, dict[str, dict[str, Any]]] = {"realized": {}, "estimate": {}}
+    aggregates: dict[str, dict[tuple[str, str, str], dict[str, Any]]] = {"realized": {}, "estimate": {}}
     observed_at: list[datetime] = []
     for row_index, row in enumerate(deduped):
         record_id = _record_id(row, row_index)
@@ -142,12 +157,13 @@ def build_weekly_profit_digest(
             issues.append(_issue("missing_cost", record_id, "cost_cny"))
             continue
         occurred_at = _as_datetime(row.get("occurred_at") or row.get("statement_date") or row.get("release_time"), zone)
-        if occurred_at is None:
-            issues.append(_issue("missing_occurred_at", record_id, "occurred_at"))
-        else:
-            observed_at.append(occurred_at)
+        if occurred_at is None:  # already reported before period filtering; defensive only.
+            continue
+        observed_at.append(occurred_at)
         ad_cost = _decimal(row.get("ad_cost_cny")) or Decimal("0")
-        bucket = aggregates[kind].setdefault(sku_id, {"sku_id": sku_id, "settlement_cny": Decimal("0"), "cost_cny": Decimal("0"), "ad_cost_cny": Decimal("0"), "profit_cny": Decimal("0"), "row_count": 0, "currencies": set()})
+        channel = _text(row.get("channel") or row.get("platform")).lower() or "unknown"
+        region = _text(row.get("region")).upper() or "unknown"
+        bucket = aggregates[kind].setdefault((channel, region, sku_id), {"calculation_kind": kind, "channel": channel, "region": region, "sku_id": sku_id, "settlement_cny": Decimal("0"), "cost_cny": Decimal("0"), "ad_cost_cny": Decimal("0"), "profit_cny": Decimal("0"), "row_count": 0, "currencies": set()})
         settlement_cny = settlement * rate
         bucket["settlement_cny"] += settlement_cny
         bucket["cost_cny"] += cost
@@ -162,11 +178,12 @@ def build_weekly_profit_digest(
     freshness = _freshness(observed_at, now, freshness_threshold)
     if freshness["state"] == "stale":
         issues.append(ReportQualityIssue("stale_data", "report", "occurred_at", "Newest source row is older than the freshness threshold"))
+    _audit_metadata_issues(issues, cost_version, code_version, fx_source, fx_as_of, resolved_snapshot_id)
     status = "ready" if not issues else "needs_review"
     fingerprint = _checksum({"period": period.payload(), "input": snapshot_checksum, "fx": rates, "cost_version": cost_version, "assumptions": assumptions or {}, "code_version": code_version})
     return ReportRun(
         run_id=f"weekly-profit-{fingerprint[:16]}", calculation_kind=CALCULATION_KIND, period=period,
-        input_snapshot={"checksum": snapshot_checksum, "row_count": len(source_rows)}, raw_row_count=len(source_rows), deduplicated_row_count=len(deduped),
+        input_snapshot={"snapshot_id": resolved_snapshot_id, "checksum": snapshot_checksum, "row_count": len(source_rows)}, raw_row_count=len(source_rows), deduplicated_row_count=len(deduped), out_of_period_row_count=out_of_period,
         fx={"source": fx_source, "as_of": _date_text(fx_as_of), "rates_cny": rates}, cost={"version": cost_version, "currency": "CNY"},
         assumptions=dict(assumptions or {}), code_version=code_version, status=status, idempotency_key=f"{CALCULATION_KIND}:{fingerprint}",
         generated_at=now, freshness=freshness, quality_issues=tuple(issues), realized_by_sku=realized, estimate_by_sku=estimates, negative_profit_skus=negatives,
@@ -174,15 +191,16 @@ def build_weekly_profit_digest(
 
 
 def _deduplicate(rows: list[dict[str, object]], issues: list[ReportQualityIssue]) -> list[dict[str, object]]:
-    kept: dict[tuple[str, str, str, str], dict[str, object]] = {}
+    kept: dict[tuple[str, str, str, str, str], dict[str, object]] = {}
     for index, row in enumerate(rows):
         sku = _text(row.get("sku_id") or row.get("seller_sku"))
         order = _text(row.get("order_id") or row.get("order_sn") or row.get("statement_id"))
         if not sku or not order:
             issues.append(_issue("missing_deduplication_key", _record_id(row, index), "order_id"))
-            kept[("__row__", str(index), "", "")] = row
+            kept[("__row__", str(index), "", "", "")] = row
             continue
-        key = (_text(row.get("channel") or row.get("platform")).lower(), _text(row.get("region")).upper(), order, sku)
+        kind = _text(row.get("calculation_kind") or row.get("kind")).lower() or "realized"
+        key = (kind, _text(row.get("channel") or row.get("platform")).lower(), _text(row.get("region")).upper(), order, sku)
         previous = kept.get(key)
         if previous is None or _sort_time(row) >= _sort_time(previous):
             kept[key] = row
@@ -197,6 +215,19 @@ def _freshness(observed: list[datetime], now: datetime, threshold: timedelta) ->
     newest = max(observed) if observed else None
     age = now - newest if newest else None
     return {"newest_occurred_at": newest.isoformat() if newest else None, "age_seconds": int(age.total_seconds()) if age else None, "threshold_seconds": int(threshold.total_seconds()), "state": "fresh" if age is not None and age <= threshold else "stale"}
+
+
+def _audit_metadata_issues(issues: list[ReportQualityIssue], cost_version: str, code_version: str, fx_source: str, fx_as_of: object, snapshot_id: str) -> None:
+    if not _text(cost_version) or _text(cost_version) == "unspecified":
+        issues.append(ReportQualityIssue("missing_cost_version", "report", "cost.version", "Cost version is required for an auditable run"))
+    if not _text(code_version) or _text(code_version) == "unknown":
+        issues.append(ReportQualityIssue("missing_code_version", "report", "code_version", "Code version is required for an auditable run"))
+    if not _text(fx_source):
+        issues.append(ReportQualityIssue("missing_fx_source", "report", "fx.source", "FX source is required for an auditable run"))
+    if _date_text(fx_as_of) is None:
+        issues.append(ReportQualityIssue("missing_fx_as_of", "report", "fx.as_of", "FX as-of timestamp is required for an auditable run"))
+    if not snapshot_id:
+        issues.append(ReportQualityIssue("missing_snapshot_identity", "report", "input_snapshot.snapshot_id", "Input snapshot identity is required for an auditable run"))
 
 
 def _period(start: date | datetime | str, end: date | datetime | str, zone: tzinfo, timezone_name: str) -> ReportingPeriod:

@@ -2,4 +2,11 @@
 
 from shared_platform.contracts import ApprovedProductPackage, ProductRecord
 
-__all__ = ["ApprovedProductPackage", "ProductRecord"]
+from .adapters import approved_product_package_from_facts, product_record_from_legacy_row
+
+__all__ = [
+    "ApprovedProductPackage",
+    "ProductRecord",
+    "approved_product_package_from_facts",
+    "product_record_from_legacy_row",
+]

@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#102b2a">
+  <title>Orbit Release Lab · 发布候选测试台</title>
+  <link rel="stylesheet" href="/static/release.css">
+  <script src="/static/release.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="返回 Orbit 总览">
+      <span class="brand-mark" aria-hidden="true">O</span>
+      <span><strong>Orbit</strong><small>Release Lab</small></span>
+    </a>
+    <nav aria-label="页面导航">
+      <a href="#listing">上品演练</a>
+      <a href="#profit">利润验证</a>
+      <a href="http://127.0.0.1:8766/" target="_blank" rel="noopener">Treasury ↗</a>
+    </nav>
+    <span class="mode-pill"><i aria-hidden="true"></i> 演练模式</span>
+  </header>
+
+  <main id="main">
+    <section class="hero">
+      <div class="eyebrow">RELEASE CANDIDATE · V1</div>
+      <h1>把上品与利润验证，<br>放进同一条安全跑道。</h1>
+      <p>这里读取真实本地证据、模拟 Kyle 的审批路径，并生成渠道草稿计划；不会保存审批、上传商品或触发外部发布。</p>
+      <div class="hero-actions">
+        <a class="button button-primary" href="#listing">开始上品预检</a>
+        <a class="button button-quiet" href="#profit">检查利润结果</a>
+      </div>
+      <div class="safety-card" role="status">
+        <span class="safety-icon" aria-hidden="true">✓</span>
+        <div><strong>真实发布保持关闭</strong><span id="safetyMessage">正在确认本地安全状态…</span></div>
+        <span class="safety-value">0 external writes</span>
+      </div>
+    </section>
+
+    <section id="listing" class="workspace">
+      <div class="section-heading">
+        <div>
+          <span class="section-number">01</span>
+          <div>
+            <p class="kicker">PRODUCT + CONTENT + CHANNEL</p>
+            <h2>上品候选版演练</h2>
+          </div>
+        </div>
+        <p>用真实工作台状态验证内容包、Seller SKU 审批和四渠道草稿合同。</p>
+      </div>
+
+      <form id="releaseForm" class="control-strip">
+        <label>采集箱 / Offer ID
+          <input id="offerId" name="offer_id" inputmode="numeric" pattern="[0-9]+" value="3828811808" required>
+        </label>
+        <label>候选 Seller SKU
+          <input id="sellerSku" name="seller_sku" inputmode="numeric" pattern="[0-9]+" value="0946" required>
+        </label>
+        <button class="button button-primary" type="submit">
+          <span class="button-label">运行完整预检</span>
+          <span class="button-loading">正在核验…</span>
+        </button>
+        <p class="form-note">只读数据库 + 纯函数模拟，不写回工作台</p>
+      </form>
+
+      <div id="releaseAlert" class="alert" role="alert" aria-live="assertive" hidden></div>
+      <div id="stageRail" class="stage-rail" aria-live="polite">
+        <div class="stage pending"><span>1</span><div><small>等待</small><strong>来源事实</strong></div></div>
+        <div class="stage pending"><span>2</span><div><small>等待</small><strong>内容与图片</strong></div></div>
+        <div class="stage pending"><span>3</span><div><small>等待</small><strong>SKU 审批模拟</strong></div></div>
+        <div class="stage pending"><span>4</span><div><small>等待</small><strong>渠道草稿模拟</strong></div></div>
+      </div>
+
+      <div class="listing-grid">
+        <article class="panel product-panel">
+          <div class="panel-heading">
+            <div><p class="kicker">PRODUCT FACTS</p><h3>商品事实</h3></div>
+            <span id="productApprovalBadge" class="badge neutral">读取中</span>
+          </div>
+          <div id="productFacts" class="fact-grid skeleton-lines" aria-live="polite"></div>
+          <div class="callout">
+            <span>候选 SKU</span>
+            <strong id="candidateSku">—</strong>
+            <small id="skuGateText">等待唯一性检查</small>
+          </div>
+        </article>
+
+        <article class="panel gate-panel">
+          <div class="panel-heading">
+            <div><p class="kicker">REAL RELEASE GATE</p><h3>正式发布门</h3></div>
+            <span id="realGateBadge" class="badge neutral">读取中</span>
+          </div>
+          <ul id="realGateList" class="check-list"></ul>
+          <div class="no-publish">
+            <span aria-hidden="true">⏸</span>
+            <div><strong>本页没有“发布”按钮</strong><small>完成真实审批后，仍需在拥有写权限的渠道流程中再次确认。</small></div>
+          </div>
+        </article>
+      </div>
+
+      <article class="panel image-panel">
+        <div class="panel-heading">
+          <div><p class="kicker">FINAL CONTENT SET</p><h3>最终图片序列</h3></div>
+          <span id="imageCountBadge" class="badge neutral">—</span>
+        </div>
+        <div id="imageGrid" class="image-grid skeleton-cards" aria-live="polite"></div>
+        <div id="contentNotes" class="subtle-notes"></div>
+      </article>
+
+      <article class="panel channel-panel">
+        <div class="panel-heading">
+          <div><p class="kicker">PUBLICATION CONTRACT</p><h3>渠道草稿计划</h3></div>
+          <span class="badge safe">DRY RUN</span>
+        </div>
+        <div id="channelGrid" class="channel-grid"></div>
+      </article>
+    </section>
+
+    <section id="profit" class="workspace profit-workspace">
+      <div class="section-heading">
+        <div>
+          <span class="section-number">02</span>
+          <div>
+            <p class="kicker">DATA OPERATIONS</p>
+            <h2>利润验证台</h2>
+          </div>
+        </div>
+        <p>周报看已发生利润，SKU 探针看单品估算；两种口径明确分开。</p>
+      </div>
+
+      <div class="profit-grid">
+        <article class="panel weekly-panel">
+          <div class="panel-heading">
+            <div><p class="kicker">WEEKLY REALIZED</p><h3>周度利润简报</h3></div>
+            <span id="weeklyBadge" class="badge neutral">读取中</span>
+          </div>
+          <div id="weeklyMetrics" class="metric-grid skeleton-lines"></div>
+          <div id="weeklyQuality" class="quality-box"></div>
+          <form id="weeklyForm" class="inline-form">
+            <label>开始日期<input id="weekStart" type="date" required></label>
+            <label>结束日期<input id="weekEnd" type="date" required></label>
+            <button class="button button-dark" type="submit">
+              <span class="button-label">只读复算</span>
+              <span class="button-loading">复算中…</span>
+            </button>
+          </form>
+          <p class="form-note">复算不会保存 ReportRun，也不会推送通知。</p>
+          <div id="weeklyAlert" class="alert" role="alert" aria-live="assertive" hidden></div>
+        </article>
+
+        <article class="panel probe-panel">
+          <div class="panel-heading">
+            <div><p class="kicker">SKU ESTIMATE</p><h3>SKU 利润探针</h3></div>
+            <a class="text-link" href="/sku-profit">完整工具 ↗</a>
+          </div>
+          <form id="skuForm" class="probe-form">
+            <label class="wide">Seller SKU 或平台 SKU ID
+              <input id="profitSku" name="sku" value="0021" autocomplete="off" required>
+            </label>
+            <label>平台
+              <select id="profitPlatform">
+                <option value="both">TikTok + Shopee</option>
+                <option value="tiktok">TikTok</option>
+                <option value="shopee">Shopee</option>
+              </select>
+            </label>
+            <label>广告费率 %
+              <input id="adRate" type="number" min="0" max="100" step="0.1" value="22" required>
+            </label>
+            <label>回看天数
+              <input id="lookbackDays" type="number" min="1" max="365" value="14" required>
+            </label>
+            <button class="button button-primary wide" type="submit">
+              <span class="button-label">计算 SKU 利润</span>
+              <span class="button-loading">计算中…</span>
+            </button>
+          </form>
+          <div id="skuAlert" class="alert" role="alert" aria-live="assertive" hidden></div>
+          <div id="skuResults" class="probe-results empty-state">
+            <span>输入 SKU 后运行</span>
+            <small>支持 4 位 Seller SKU 与完整平台 SKU ID</small>
+          </div>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span>Orbit Release Lab · local only</span>
+    <span>商品上传默认关闭 · 数据库只读 · 审批仅模拟</span>
+  </footer>
+</body>
+</html>

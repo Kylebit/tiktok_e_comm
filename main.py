@@ -227,7 +227,20 @@ def build_parser():
     psv.add_argument("--startup-refresh", action="store_true", help="启动后刷新 token；默认关闭以保证本地 UI 先可用")
     psv.add_argument(
         "--page",
-        choices=["index", "catalog", "settlement", "costs", "titles", "images", "sourcing", "promotions", "analytics", "deactivate"],
+        choices=[
+            "index",
+            "release",
+            "catalog",
+            "settlement",
+            "costs",
+            "titles",
+            "images",
+            "sourcing",
+            "promotions",
+            "analytics",
+            "deactivate",
+            "sku-profit",
+        ],
         default="index",
     )
     psv.set_defaults(

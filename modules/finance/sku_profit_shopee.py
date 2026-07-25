@@ -77,10 +77,38 @@ def resolve_product(sku_query: str) -> dict[str, Any] | None:
     if not q:
         return None
     conn = connect_readonly()
+    platform_id_query = q.startswith("item_") or (q.isdigit() and len(q) > 10)
     variants = sku_variants_for_lookup(q)
     tail = seller_sku_tail4(q)
     row = None
-    for v in variants:
+    if platform_id_query:
+        item_model_id = f"item_{q}" if q.isdigit() else q
+        exact_rows = conn.execute(
+            """
+            SELECT model_id, item_id, seller_sku, product_name, model_name, image_url, price, currency, status
+            FROM shopee_products
+            WHERE region = ? AND (model_id = ? OR model_id = ? OR item_id = ?)
+            ORDER BY
+                CASE WHEN model_id = ? THEN 0
+                     WHEN model_id = ? THEN 1
+                     WHEN item_id = ? THEN 2
+                     ELSE 3 END
+            """,
+            (REGION, q, item_model_id, q, q, item_model_id, q),
+        ).fetchall()
+        if len(exact_rows) == 1:
+            row = exact_rows[0]
+        elif len(exact_rows) > 1:
+            identities = {
+                (str(item["model_id"] or ""), str(item["item_id"] or ""))
+                for item in exact_rows
+            }
+            if len(identities) == 1:
+                row = exact_rows[0]
+        if row is None:
+            conn.close()
+            return None
+    for v in (() if platform_id_query else variants):
         row = conn.execute(
             """
             SELECT model_id, item_id, seller_sku, product_name, model_name, image_url, price, currency, status

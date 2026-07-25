@@ -901,6 +901,7 @@
     function loadPreview() {
       var rawUrl = document.getElementById('urlInput').value.trim();
       if (!rawUrl) { alert('请先输入商品链接或 ID'); return; }
+      if (!confirm('这一步可能在妙手公共采集箱创建预采集记录。确认继续读取并在必要时预采集该商品吗？')) return;
       var modeNode = document.querySelector('input[name="sourceMode"]:checked');
       var sourceMode = modeNode ? modeNode.value : 'auto';
       var url = sourceMode === 'miaoshou' && /^\d+$/.test(rawUrl) ? 'ms:' + rawUrl : rawUrl;
@@ -913,7 +914,12 @@
       api('/api/new-product/preview', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({url: url, overseas_urls: overseasLines(), precollect: true})
+        body: JSON.stringify({
+          url: url,
+          overseas_urls: overseasLines(),
+          precollect: true,
+          confirm_miaoshou_precollect: true
+        })
       }).then(function(d) {
         updateProgress(0, 'done', 'Offer ' + (d.offer_id || ''));
         if (!d.ok) { failProgress(1, d.error || '预采集失败'); setStatus(d.error || '失败'); return; }
@@ -2221,7 +2227,8 @@
         body: JSON.stringify({
           offer_id: preview.offer_id,
           reference_urls: refs,
-          storyboard_feedback: storyboardFeedback
+          storyboard_feedback: storyboardFeedback,
+          confirm_ai_planning: true
         })
       }).then(function(d) {
         if (!d.ok) { throw new Error(d.error || 'AI 分镜生成失败'); }
@@ -2679,7 +2686,7 @@
       return api('/api/new-product/preview', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({url: preview.offer_id, overseas_urls: overseasLines(), precollect: true})
+        body: JSON.stringify({url: preview.offer_id, overseas_urls: overseasLines(), precollect: false})
       }).then(function(d) {
         if (!d.ok) throw new Error(d.error || '刷新状态失败');
         if (imageReviewDraftDirty) {
@@ -2852,6 +2859,7 @@
     }
 
     function prepareSiteDrafts() {
+      if (!confirm('这一步会把商品资料写入所选店铺的真实草稿，但不会发布。确认创建或更新站点草稿吗？')) return;
       var button = document.getElementById('stageButton');
       button.disabled = true;
       button.textContent = '正在生成站点草稿...';
@@ -2865,7 +2873,10 @@
         return api('/api/new-product/site-drafts/prepare', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({offer_id: preview.offer_id})
+          body: JSON.stringify({
+            offer_id: preview.offer_id,
+            confirm_site_draft_write: true
+          })
         });
       }).then(function(d) {
         if (d && !d.ok) throw new Error(d.error || '站点草稿准备失败');
@@ -2939,6 +2950,7 @@
     }
 
     function continueAfterSecondReview() {
+      if (!confirm('这一步会修改连续 SKU，并把商品认领到 TikTok 采集箱。不会正式发布，确认继续吗？')) return;
       var button = document.getElementById('stageButton');
       button.disabled = true;
       button.textContent = '正在认领中...';
@@ -2946,7 +2958,10 @@
       api('/api/new-product/miaoshou-second-review/continue', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({offer_id: preview.offer_id})
+        body: JSON.stringify({
+          offer_id: preview.offer_id,
+          confirm_tiktok_claim: true
+        })
       }).then(function(d) {
         if (!d.ok) throw new Error(d.error || '继续同步到 TikTok 失败');
         startClaimPolling('正在认领 TikTok 采集箱');
@@ -2990,6 +3005,7 @@
     }
 
     function commitMiaoshouDraft() {
+      if (!confirm('这一步会修改妙手公共采集箱中的真实商品字段。确认写入并回读校验吗？')) return;
       var button = document.getElementById('stageButton');
       button.disabled = true;
       button.textContent = '正在写入并验证...';
@@ -2997,7 +3013,10 @@
       api('/api/new-product/miaoshou-draft/commit', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({offer_id: preview.offer_id})
+        body: JSON.stringify({
+          offer_id: preview.offer_id,
+          confirm_miaoshou_write: true
+        })
       }).then(function(d) {
         if (!d.ok) throw new Error(d.error || '妙手写入失败');
         if (!d.verified) throw new Error('妙手已响应，但回读校验未全部通过');

@@ -68,6 +68,7 @@ WORKSPACES: tuple[WorkspaceSpec, ...] = (
         "商品运营",
         "商品主数据、SKU、上品流程与数据库维护。",
         (
+            WorkspaceLink("Release Lab", "/release", "上品、内容与渠道发布的只读候选版演练"),
             WorkspaceLink("商品目录", "/catalog", "浏览与同步共享商品目录"),
             WorkspaceLink("成本维护", "/costs", "维护现有 SKU 成本入口"),
             WorkspaceLink("新品工作台", "/sourcing", "进入现有选品与上品流程"),
@@ -106,6 +107,7 @@ WORKSPACES: tuple[WorkspaceSpec, ...] = (
         "数据运营",
         "财务事实、运营快照、估算工具与分析入口。",
         (
+            WorkspaceLink("Release Lab", "/release#profit", "周报复算与 SKU 利润探针统一测试入口"),
             WorkspaceLink("结算中心", "/settlement", "TikTok 结算导入与汇总"),
             WorkspaceLink("SKU 利润估算探针", "/sku-profit", "单 SKU 估算与证据检查"),
             WorkspaceLink("结算账单", "/billing", "Shopee 周报与账单入口"),
@@ -159,7 +161,11 @@ def build_module_specs(root: Path, python_executable: str) -> list[ModuleSpec]:
             url=f"{base}:8765/",
             health_url=f"{base}:8765/api/health",
             command=[python_executable, str(root / "main.py"), "serve", "--port", "8765", "--no-browser"],
-            quick_links=[("总览", f"{base}:8765/"), ("系统与服务", f"{base}:8765/?view=system")],
+            quick_links=[
+                ("总览", f"{base}:8765/"),
+                ("Release Lab", f"{base}:8765/release"),
+                ("系统与服务", f"{base}:8765/?view=system"),
+            ],
         ),
         ModuleSpec(
             key="treasury",

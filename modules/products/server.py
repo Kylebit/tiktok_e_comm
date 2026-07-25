@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import mimetypes
+import socket
 import threading
 import time
 import hashlib
@@ -1071,15 +1073,53 @@ def _image_cache_path(url: str, content_type: str = "") -> Path:
     return IMAGE_CACHE_DIR / f"{digest}{ext}"
 
 
+def _validate_remote_image_url(url: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError("only public http/https image URLs are supported")
+    if parsed.username or parsed.password:
+        raise ValueError("image URLs must not include credentials")
+    if parsed.port not in (None, 80, 443):
+        raise ValueError("image URLs must use port 80 or 443")
+    try:
+        addresses = {
+            item[4][0]
+            for item in socket.getaddrinfo(
+                parsed.hostname,
+                parsed.port or (443 if parsed.scheme == "https" else 80),
+                type=socket.SOCK_STREAM,
+            )
+        }
+    except socket.gaierror as exc:
+        raise ValueError("image host could not be resolved") from exc
+    if not addresses:
+        raise ValueError("image host could not be resolved")
+    for address in addresses:
+        ip = ipaddress.ip_address(address)
+        if not ip.is_global:
+            raise ValueError("private or local image hosts are not allowed")
+
+
+class _NoRemoteImageRedirects(urllib.request.HTTPRedirectHandler):
+    """Fail closed so a public image URL cannot redirect into a private host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_REMOTE_IMAGE_OPENER = urllib.request.build_opener(_NoRemoteImageRedirects())
+
+
 def _download_remote_image(url: str) -> tuple[Path, str]:
     parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        raise ValueError("only http/https image URLs are supported")
+    _validate_remote_image_url(url)
 
     cached = _image_cache_path(url)
     for existing in IMAGE_CACHE_DIR.glob(cached.stem + ".*"):
         if existing.is_file() and existing.stat().st_size > 0:
             ctype = mimetypes.guess_type(str(existing))[0] or "image/jpeg"
+            if ctype == "image/svg+xml":
+                raise ValueError("SVG images are not allowed")
             return existing, ctype
 
     IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -1090,16 +1130,18 @@ def _download_remote_image(url: str) -> tuple[Path, str]:
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
             ),
-            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            "Accept": "image/avif,image/webp,image/apng,image/png,image/jpeg,image/*;q=0.8",
             "Referer": f"{parsed.scheme}://{parsed.netloc}/",
         },
     )
     for attempt in range(2):
         try:
-            with urllib.request.urlopen(req, timeout=8) as resp:
+            with _REMOTE_IMAGE_OPENER.open(req, timeout=8) as resp:
                 content_type = resp.headers.get("Content-Type") or "image/jpeg"
                 if not content_type.lower().startswith("image/"):
                     raise ValueError(f"remote URL is not an image: {content_type}")
+                if content_type.split(";", 1)[0].strip().lower() == "image/svg+xml":
+                    raise ValueError("SVG images are not allowed")
                 data = resp.read(12 * 1024 * 1024)
             break
         except (urllib.error.URLError, TimeoutError, OSError):
@@ -1175,6 +1217,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
 
@@ -1216,6 +1260,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("X-Content-Type-Options", "nosniff")
         if filename:
             self.send_header(
                 "Content-Disposition",
@@ -1235,6 +1280,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        if path.name == "release.html":
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; img-src 'self' https: data:; "
+                "style-src 'self'; script-src 'self'; connect-src 'self'; "
+                "base-uri 'none'; frame-ancestors 'none'",
+            )
+            self.send_header("Cache-Control", "no-store")
         if cache_seconds is not None:
             self.send_header("Cache-Control", f"public, max-age={cache_seconds}")
         self.end_headers()
@@ -1383,6 +1437,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if path in ("/", "/index.html"):
             return self._file(WEB_DIR / "index.html")
+        if path in ("/release", "/release.html"):
+            return self._file(WEB_DIR / "release.html")
         if path.startswith("/static/"):
             rel = path[len("/static/") :]
             return self._file(WEB_DIR / "static" / rel)
@@ -1616,6 +1672,50 @@ class Handler(BaseHTTPRequestHandler):
             from shared_platform.orbit_registry import navigation_payload
 
             return self._json(200, {"ok": True, **navigation_payload()})
+        if path == "/api/release/dashboard":
+            from shared_platform.release_control import build_release_dashboard
+
+            q = parse_qs(urlparse(self.path).query)
+            offer_id = (q.get("offer_id") or ["3828811808"])[0]
+            seller_sku = (q.get("seller_sku") or ["0946"])[0]
+            try:
+                return self._json(
+                    200,
+                    build_release_dashboard(offer_id=offer_id, seller_sku=seller_sku),
+                )
+            except FileNotFoundError as error:
+                return self._json(404, {"ok": False, "error": str(error)})
+            except (TypeError, ValueError) as error:
+                return self._json(400, {"ok": False, "error": str(error)})
+            except Exception as error:
+                return self._json(500, {"ok": False, "error": str(error)})
+        if path == "/api/release/weekly-preview":
+            from datetime import date
+
+            from shared_platform.release_control import build_weekly_profit_rehearsal
+
+            q = parse_qs(urlparse(self.path).query)
+            start_raw = (q.get("start") or [""])[0].strip()
+            end_raw = (q.get("end") or [""])[0].strip()
+            if not start_raw or not end_raw:
+                return self._json(
+                    400,
+                    {"ok": False, "error": "start and end are required (YYYY-MM-DD)"},
+                )
+            try:
+                return self._json(
+                    200,
+                    build_weekly_profit_rehearsal(
+                        period_start=date.fromisoformat(start_raw),
+                        period_end=date.fromisoformat(end_raw),
+                    ),
+                )
+            except (TypeError, ValueError) as error:
+                return self._json(400, {"ok": False, "error": str(error)})
+            except FileNotFoundError as error:
+                return self._json(404, {"ok": False, "error": str(error)})
+            except Exception as error:
+                return self._json(500, {"ok": False, "error": str(error)})
         if path in ("/api/orbit/report-runs", "/api/orbit/inbox"):
             from shared_platform.report_store import default_report_store
 
@@ -1981,8 +2081,22 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(400, {"ok": False, "error": "需要 file 参数"})
             try:
                 rate = float((q.get("rate") or ["0"])[0] or 0) or None
-                ad_rate = (q.get("ad_rate") or [""])[0]
-                ad_rate_pct = float(ad_rate) if ad_rate not in ("", None) else None
+                ad_rate_legacy = (q.get("ad_rate") or [""])[0]
+                ad_rate_percent = (q.get("ad_rate_percent") or [""])[0]
+                if ad_rate_legacy and ad_rate_percent:
+                    return self._json(
+                        400,
+                        {
+                            "ok": False,
+                            "error": "provide ad_rate_percent or legacy ad_rate, not both",
+                        },
+                    )
+                ad_rate_value = ad_rate_percent or ad_rate_legacy
+                ad_rate_pct = (
+                    float(ad_rate_value)
+                    if ad_rate_value not in ("", None)
+                    else None
+                )
                 statement_id = (q.get("statement_id") or [""])[0] or None
                 order_id = (q.get("order_id") or [""])[0] or None
                 data = order_rows_for_file(
@@ -2011,12 +2125,14 @@ class Handler(BaseHTTPRequestHandler):
             sku = (q.get("sku") or [""])[0].strip()
             platform = (q.get("platform") or ["both"])[0].strip() or "both"
             ad_raw = (q.get("ad_rate") or [""])[0].strip()
+            ad_percent_raw = (q.get("ad_rate_percent") or [""])[0].strip()
             lookback_raw = (q.get("lookback_days") or [""])[0].strip()
             sale_raw = (q.get("sale") or q.get("sale_override") or [""])[0].strip()
             cost_raw = (q.get("cost") or q.get("cost_override") or [""])[0].strip()
             force_fx = (q.get("force_fx") or [""])[0].strip() in ("1", "true", "yes")
             try:
                 ad_rate = float(ad_raw) if ad_raw else None
+                ad_rate_percent = float(ad_percent_raw) if ad_percent_raw else None
                 lookback_days = int(lookback_raw) if lookback_raw else None
                 sale_override = float(sale_raw) if sale_raw else None
                 cost_override = float(cost_raw) if cost_raw else None
@@ -2027,6 +2143,7 @@ class Handler(BaseHTTPRequestHandler):
                     sku,
                     platform=platform,
                     ad_rate=ad_rate,
+                    ad_rate_percent=ad_rate_percent,
                     lookback_days=lookback_days,
                     sale_override=sale_override,
                     cost_override=cost_override,
@@ -2034,6 +2151,8 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 code = 200 if data.get("ok") else 404
                 self._json(code, data)
+            except ValueError as e:
+                self._json(400, {"ok": False, "error": str(e)})
             except Exception as e:
                 self._json(500, {"ok": False, "error": str(e)})
             return
@@ -2049,6 +2168,8 @@ class Handler(BaseHTTPRequestHandler):
                 limit = 20
             try:
                 self._json(200, list_hot_skus(platform=platform, limit=min(max(limit, 1), 50)))
+            except ValueError as e:
+                self._json(400, {"ok": False, "error": str(e)})
             except Exception as e:
                 self._json(500, {"ok": False, "error": str(e)})
             return
@@ -2499,19 +2620,28 @@ class Handler(BaseHTTPRequestHandler):
             skus = data.get("skus") or []
             if isinstance(skus, str):
                 skus = [x.strip() for x in skus.replace(",", "\n").splitlines() if x.strip()]
+            elif not isinstance(skus, list):
+                return self._json(400, {"ok": False, "error": "skus must be an array or text list"})
             if not skus:
                 return self._json(400, {"ok": False, "error": "需要 skus 数组"})
+            if len(skus) > 30:
+                return self._json(400, {"ok": False, "error": "batch supports at most 30 SKUs"})
             try:
-                self._json(
-                    200,
-                    estimate_batch(
-                        skus[:30],
-                        platform=str(data.get("platform") or "both"),
-                        ad_rate=data.get("ad_rate"),
-                        lookback_days=data.get("lookback_days"),
-                        cost_override=data.get("cost_override") or data.get("cost"),
+                result = estimate_batch(
+                    skus,
+                    platform=str(data.get("platform") or "both"),
+                    ad_rate=data.get("ad_rate"),
+                    ad_rate_percent=data.get("ad_rate_percent"),
+                    lookback_days=data.get("lookback_days"),
+                    cost_override=(
+                        data.get("cost_override")
+                        if "cost_override" in data
+                        else data.get("cost")
                     ),
                 )
+                self._json(200 if result.get("ok") else 404, result)
+            except ValueError as e:
+                self._json(400, {"ok": False, "error": str(e)})
             except Exception as e:
                 self._json(500, {"ok": False, "error": str(e)})
             return
@@ -2879,6 +3009,7 @@ def serve(
         raise
     routes = {
         "index": "/",
+        "release": "/release",
         "catalog": "/catalog",
         "settlement": "/settlement",
         "costs": "/costs",
@@ -2895,6 +3026,7 @@ def serve(
     }
     url = f"http://127.0.0.1:{port}{routes.get(page, '/')}"
     print(f"  [OK] 控制台: http://127.0.0.1:{port}/")
+    print(f"  发布候选测试台: http://127.0.0.1:{port}/release")
     print(f"  商品目录: http://127.0.0.1:{port}/catalog")
     print(f"  结算利润: http://127.0.0.1:{port}/settlement")
     print(f"  SKU利润探针: http://127.0.0.1:{port}/sku-profit")

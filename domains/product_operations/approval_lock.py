@@ -34,11 +34,17 @@ def _clean(value: Any) -> str:
     return str(value or "").strip()
 
 
-def _fingerprint(product: object, content: ContentPackage, seller_sku: str) -> str:
+def _fingerprint(
+    product: object,
+    content: ContentPackage,
+    seller_sku: str,
+    approval_input_facts: Mapping[str, Any] | None = None,
+) -> str:
     payload = {
         "product": contract_payload(product),
         "content_package": contract_payload(content),
         "seller_sku": seller_sku,
+        "approval_input_facts": dict(approval_input_facts or {}),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -94,6 +100,7 @@ def preview_product_approval_lock(
     user_approved: bool,
     approval_fact: Mapping[str, Any] | Any,
     expected_revision: int | None = None,
+    approval_input_facts: Mapping[str, Any] | None = None,
 ) -> ProductApprovalLockPreview:
     """Validate an explicit approval and return the state patch it would make.
 
@@ -142,7 +149,12 @@ def preview_product_approval_lock(
     if blockers or approval is None or content_package is None:
         return ProductApprovalLockPreview(None, {}, tuple(blockers), False, None)
 
-    signature = _fingerprint(product, content_package, clean_sku)
+    signature = _fingerprint(
+        product,
+        content_package,
+        clean_sku,
+        approval_input_facts,
+    )
     prior = state.get("product_approval")
     if not isinstance(prior, Mapping):
         prior = {}
@@ -173,6 +185,7 @@ def preview_product_approval_lock(
             "approved_by": approval.approved_by,
             "approved_at": approval.approved_at.isoformat() if isinstance(approval.approved_at, datetime) else None,
             "source_reference": source_reference,
+            "approval_input_facts": dict(approval_input_facts or {}),
         },
     }
     return ProductApprovalLockPreview(package, patch, (), False, prior_id if prior_active else None)

@@ -23,6 +23,7 @@ def test_orbit_primary_information_architecture_is_domain_first():
 def test_data_workspace_aggregates_existing_routes_without_replacement():
     data = next(workspace for workspace in WORKSPACES if workspace.key == "data")
     assert [link.href for link in data.links] == [
+        "/release#profit",
         "/settlement",
         "/sku-profit",
         "/billing",
@@ -58,6 +59,8 @@ def test_navigation_payload_and_server_route_are_shared_platform_owned():
         "data",
     }
     assert owner_for_http_path("/api/orbit/navigation") == "shared_platform"
+    assert owner_for_http_path("/release") == "shared_platform"
+    assert owner_for_http_path("/api/release/dashboard") == "shared_platform"
     server_source = (ROOT / "modules/products/server.py").read_text(encoding="utf-8")
     assert 'if path == "/api/orbit/navigation":' in server_source
 

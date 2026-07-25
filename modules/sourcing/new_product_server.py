@@ -19,6 +19,12 @@ DEFAULT_PORT = 8766
 IMAGE_CACHE_DIR = ROOT / "data" / "new_product_image_cache"
 
 
+def require_explicit_confirmation(payload: dict, key: str, action: str) -> None:
+    """Reject business writes unless the caller sends a literal JSON true."""
+    if payload.get(key) is not True:
+        raise ValueError(f"explicit {action} confirmation is required")
+
+
 def _guess_type(path: Path) -> str:
     return mimetypes.guess_type(str(path))[0] or "application/octet-stream"
 
@@ -189,6 +195,16 @@ class NewProductHandler(BaseHTTPRequestHandler):
         return json.loads(raw.decode("utf-8"))
 
     def _dispatch_preview(self, payload: dict, *, allow_precollect: bool) -> None:
+        if allow_precollect and payload.get("precollect"):
+            try:
+                require_explicit_confirmation(
+                    payload,
+                    "confirm_miaoshou_precollect",
+                    "Miaoshou pre-collection",
+                )
+            except ValueError as exc:
+                self._json(400, {"ok": False, "error": str(exc)})
+                return
         from modules.sourcing import new_product_workbench as np_mod
 
         raw = str(payload.get("url") or payload.get("offer_id") or "").strip()
@@ -335,6 +351,10 @@ class NewProductHandler(BaseHTTPRequestHandler):
         if path == "/api/new-product/content-package/vision-proposal":
             if not raw:
                 return self._json(400, {"ok": False, "error": "missing offer_id"})
+            try:
+                require_explicit_confirmation(data, "confirm_ai_planning", "AI planning")
+            except ValueError as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
             refs = data.get("reference_urls") or []
             if not isinstance(refs, list):
                 return self._json(400, {"ok": False, "error": "reference_urls must be a list"})
@@ -432,6 +452,10 @@ class NewProductHandler(BaseHTTPRequestHandler):
             if not raw:
                 return self._json(400, {"ok": False, "error": "missing offer_id"})
             try:
+                require_explicit_confirmation(data, "confirm_miaoshou_write", "Miaoshou write")
+            except ValueError as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+            try:
                 return self._json(200, np_mod.sync_generated_image_to_miaoshou(
                     raw,
                     str(data.get("artifact_id") or ""),
@@ -464,6 +488,10 @@ class NewProductHandler(BaseHTTPRequestHandler):
             if not raw:
                 return self._json(400, {"ok": False, "error": "missing offer_id"})
             try:
+                require_explicit_confirmation(data, "confirm_miaoshou_write", "Miaoshou write")
+            except ValueError as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+            try:
                 return self._json(200, np_mod.write_miaoshou_draft(raw))
             except Exception as exc:
                 return self._json(400, {"ok": False, "error": str(exc)})
@@ -471,6 +499,10 @@ class NewProductHandler(BaseHTTPRequestHandler):
         if path == "/api/new-product/miaoshou-second-review/continue":
             if not raw:
                 return self._json(400, {"ok": False, "error": "missing offer_id"})
+            try:
+                require_explicit_confirmation(data, "confirm_tiktok_claim", "TikTok collection-box claim")
+            except ValueError as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
             try:
                 return self._json(200, np_mod.start_claim_miaoshou_to_tiktok(raw))
             except Exception as exc:
@@ -480,6 +512,10 @@ class NewProductHandler(BaseHTTPRequestHandler):
             if not raw:
                 return self._json(400, {"ok": False, "error": "missing offer_id"})
             try:
+                require_explicit_confirmation(data, "confirm_site_draft_write", "site-draft write")
+            except ValueError as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+            try:
                 return self._json(200, np_mod.prepare_miaoshou_site_drafts(raw))
             except Exception as exc:
                 return self._json(400, {"ok": False, "error": str(exc)})
@@ -487,6 +523,10 @@ class NewProductHandler(BaseHTTPRequestHandler):
         if path == "/api/new-product/sku-numbering/fix":
             if not raw:
                 return self._json(400, {"ok": False, "error": "missing offer_id"})
+            try:
+                require_explicit_confirmation(data, "confirm_miaoshou_write", "Miaoshou write")
+            except ValueError as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
             try:
                 return self._json(200, np_mod.ensure_common_sequential_skus(raw))
             except Exception as exc:

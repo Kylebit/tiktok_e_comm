@@ -629,7 +629,7 @@
       buildOrderHead([]);
       var url = '/api/settlement/orders?file=' + encodeURIComponent(file) +
         '&rate=' + encodeURIComponent(rate) +
-        '&ad_rate=' + encodeURIComponent(adRate);
+        '&ad_rate_percent=' + encodeURIComponent(adRate);
       if (orderId) url += '&order_id=' + encodeURIComponent(orderId);
       fetch(url)
         .then(function(r) { return r.json(); })

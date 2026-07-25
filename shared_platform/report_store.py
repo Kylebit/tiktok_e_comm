@@ -102,6 +102,19 @@ class ReportRunStore:
         conn.execute("PRAGMA busy_timeout=30000")
         return conn
 
+    def _connect_readonly(self) -> sqlite3.Connection:
+        source = self.path.resolve()
+        conn = sqlite3.connect(
+            source.as_uri() + "?mode=ro",
+            uri=True,
+            timeout=30,
+        )
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA query_only=ON")
+        return conn
+
     def _ensure_schema(self, conn: sqlite3.Connection) -> None:
         conn.executescript(_SCHEMA)
 
@@ -203,7 +216,7 @@ class ReportRunStore:
         if not self.path.is_file():
             return []
         safe_limit = min(max(int(limit), 1), 100)
-        with self._connect() as conn:
+        with self._connect_readonly() as conn:
             try:
                 rows = conn.execute(
                     """
@@ -259,7 +272,7 @@ class ReportRunStore:
                 LIMIT ?
             """
             filters = (safe_limit,)
-        with self._connect() as conn:
+        with self._connect_readonly() as conn:
             try:
                 rows = conn.execute(query, filters).fetchall()
             except sqlite3.OperationalError:

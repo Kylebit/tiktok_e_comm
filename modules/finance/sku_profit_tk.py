@@ -62,6 +62,7 @@ def resolve_product(sku_query: str) -> dict[str, Any] | None:
     if not q:
         return None
     conn = connect_readonly()
+    platform_id_query = q.isdigit() and len(q) > 10
 
     th_cipher = ""
     try:
@@ -150,7 +151,7 @@ def resolve_product(sku_query: str) -> dict[str, Any] | None:
 
     row = None
     # 1) 精确平台 sku_id（长 ID）
-    if len(q) > 10:
+    if platform_id_query:
         if th_cipher:
             row = conn.execute(
                 """
@@ -159,16 +160,21 @@ def resolve_product(sku_query: str) -> dict[str, Any] | None:
                 """,
                 (q, th_cipher),
             ).fetchone()
-        if row is None:
-            row = conn.execute(
+        else:
+            exact_rows = conn.execute(
                 """
                 SELECT sku_id, seller_sku, product_id, product_name, sku_name, image_url, price, currency, shop_cipher
-                FROM products WHERE sku_id = ? LIMIT 1
+                FROM products WHERE sku_id = ? AND currency = 'THB'
                 """,
                 (q,),
-            ).fetchone()
-            if row and th_cipher and str(row["shop_cipher"] or "") != th_cipher:
-                row = None
+            ).fetchall()
+            if len(exact_rows) == 1:
+                row = exact_rows[0]
+
+    # Unknown long platform IDs must never fall back to Seller SKU tail matching.
+    if platform_id_query and row is None:
+        conn.close()
+        return None
 
     # 2) seller_sku 候选（含 99/66 前缀变体）
     if row is None:

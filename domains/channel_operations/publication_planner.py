@@ -96,6 +96,11 @@ def _product_conditions(package: ApprovedProductPackage) -> tuple[str, ...]:
     missing: list[str] = []
     if package.approval.status.lower() != "approved":
         missing.append("product package approval is not approved")
+    if (
+        package.approval.subject_type.casefold() != "product"
+        or package.approval.subject_id != package.product.product_id
+    ):
+        missing.append("product package approval subject does not match product")
     if not package.product.product_id:
         missing.append("product id is required")
     if not package.product.seller_sku:
@@ -115,8 +120,15 @@ def _content_conditions(
     missing: list[str] = []
     if content_package.product_id != product_package.product.product_id:
         missing.append("content package product id does not match product package")
-    if content_package.approval and content_package.approval.status.lower() != "approved":
+    if content_package.approval is None:
+        missing.append("content package approval is required")
+    elif content_package.approval.status.lower() != "approved":
         missing.append("content package approval is not approved")
+    elif (
+        content_package.approval.subject_type.casefold() != "content_package"
+        or content_package.approval.subject_id != content_package.package_id
+    ):
+        missing.append("content package approval subject does not match package")
     if not content_package.copy:
         missing.append("channel-ready copy is required")
     if not content_package.image_urls:

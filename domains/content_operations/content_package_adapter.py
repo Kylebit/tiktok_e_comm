@@ -30,6 +30,7 @@ class ContentPackageHandoff:
 
     content_package: ContentPackage
     asset_lineage: tuple[ContentAssetLineage, ...]
+    missing_shot_ids: tuple[str, ...]
 
 
 def build_content_package_handoff(
@@ -55,16 +56,20 @@ def build_content_package_handoff(
     suite = suite_plan.get("suite") if isinstance(suite_plan.get("suite"), Mapping) else {}
     items = suite.get("items") if isinstance(suite.get("items"), list) else []
     lineage: list[ContentAssetLineage] = []
+    selected_shot_ids: list[str] = []
+    missing_shot_ids: list[str] = []
     seen_urls: set[str] = set()
 
     for item in items:
         if not isinstance(item, Mapping) or not bool(item.get("selected", True)):
             continue
         shot_id = str(item.get("id") or "").strip()
-        if not shot_id:
+        if not shot_id or shot_id in selected_shot_ids:
             continue
+        selected_shot_ids.append(shot_id)
         approved = _approved_audit_for_shot(shot_id, asset_decisions, generation_audits)
         if approved is None or approved.image_url in seen_urls:
+            missing_shot_ids.append(shot_id)
             continue
         seen_urls.add(approved.image_url)
         lineage.append(approved)
@@ -74,7 +79,7 @@ def build_content_package_handoff(
         approval_id=f"content-review:{resolved_package_id}",
         subject_type="content_package",
         subject_id=resolved_package_id,
-        status="approved" if lineage else "pending",
+        status="approved" if selected_shot_ids and not missing_shot_ids else "pending",
     )
     content_package = ContentPackage(
         package_id=resolved_package_id,
@@ -83,7 +88,11 @@ def build_content_package_handoff(
         image_urls=tuple(row.image_url for row in lineage),
         approval=approval,
     )
-    return ContentPackageHandoff(content_package=content_package, asset_lineage=tuple(lineage))
+    return ContentPackageHandoff(
+        content_package=content_package,
+        asset_lineage=tuple(lineage),
+        missing_shot_ids=tuple(missing_shot_ids),
+    )
 
 
 def _approved_audit_for_shot(

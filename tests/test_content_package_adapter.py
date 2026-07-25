@@ -12,7 +12,7 @@ def _audit(shot_id, url, *, verified=True, audit_id="audit-1"):
     }
 
 
-def test_handoff_uses_only_approved_assets_in_selected_suite_order_with_lineage():
+def test_partial_handoff_keeps_approved_assets_but_remains_pending_with_missing_shots():
     handoff = build_content_package_handoff(
         product_id="product-42",
         suite_plan={"suite": {"items": [
@@ -41,7 +41,29 @@ def test_handoff_uses_only_approved_assets_in_selected_suite_order_with_lineage(
     assert [(row.artifact_id, row.audit_id) for row in handoff.asset_lineage] == [
         ("hero_r1", "audit-hero"), ("detail_r1", "audit-detail"),
     ]
+    assert handoff.content_package.approval.status == "pending"
+    assert handoff.missing_shot_ids == ("scene",)
+
+
+def test_handoff_is_approved_only_when_every_selected_shot_is_verified_and_approved():
+    handoff = build_content_package_handoff(
+        product_id="product-42",
+        suite_plan={"suite": {"items": [
+            {"id": "hero", "selected": True},
+            {"id": "detail", "selected": True},
+        ]}},
+        asset_decisions={
+            "hero_r1": {"decision": "approved"},
+            "detail_r1": {"decision": "approved"},
+        },
+        generation_audits={
+            "hero_r1": _audit("hero", "https://assets.example/hero.png"),
+            "detail_r1": _audit("detail", "https://assets.example/detail.png"),
+        },
+    )
+
     assert handoff.content_package.approval.status == "approved"
+    assert handoff.missing_shot_ids == ()
 
 
 def test_handoff_excludes_unreviewed_unverified_and_unselected_assets():
@@ -67,6 +89,7 @@ def test_handoff_excludes_unreviewed_unverified_and_unselected_assets():
     assert handoff.content_package.image_urls == ()
     assert handoff.asset_lineage == ()
     assert handoff.content_package.approval.status == "pending"
+    assert handoff.missing_shot_ids == ("pending", "unverified")
 
 
 def test_handoff_requires_product_id():

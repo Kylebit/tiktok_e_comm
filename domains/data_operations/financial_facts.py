@@ -47,6 +47,8 @@ class FinancialFactAdaptation:
                     "occurred_at": fact.occurred_at.isoformat(),
                     "product_id": fact.product_id,
                     "channel": fact.channel,
+                    "sku_id": fact.sku_id,
+                    "region": fact.region,
                 }
                 for fact in self.facts
             ],
@@ -84,10 +86,20 @@ def adapt_financial_facts(
         if amount is None:
             issues.append(_issue("missing_cost", "sku_costs", sku_id, "cost_cny"))
             continue
+        if amount <= 0:
+            issues.append(_issue("invalid_cost", "sku_costs", sku_id, "cost_cny"))
+            continue
         if occurred_at is None:
             issues.append(_issue("missing_occurred_at", "sku_costs", sku_id, "updated_at"))
             continue
-        facts.append(FinancialFact(f"cost:{sku_id}:{occurred_at.isoformat()}", "cost", amount, "CNY", occurred_at, sku_id))
+        facts.append(FinancialFact(
+            fact_id=f"cost:{sku_id}:{occurred_at.isoformat()}",
+            fact_type="cost",
+            amount=amount,
+            currency="CNY",
+            occurred_at=occurred_at,
+            sku_id=sku_id,
+        ))
 
     for index, row in enumerate(settlement_lines):
         record_id = str(row.get("id") or row.get("statement_id") or row.get("order_id") or index)
@@ -104,11 +116,23 @@ def adapt_financial_facts(
         if occurred_at is None:
             issues.append(_issue("missing_occurred_at", "settlement_lines", record_id, "statement_date"))
             continue
-        if not sku_id or sku_id not in costs or _decimal(costs.get(sku_id, {}).get("cost_cny")) is None:
+        source_cost = _decimal(costs.get(sku_id, {}).get("cost_cny")) if sku_id in costs else None
+        if not sku_id or source_cost is None:
             issues.append(_issue("missing_cost", "settlement_lines", record_id, "sku_id"))
+        elif source_cost <= 0:
+            issues.append(_issue("invalid_cost", "settlement_lines", record_id, "sku_id"))
         line_type = _string(row.get("line_type")).lower()
         fact_type = line_type if line_type in {"fee", "refund", "return"} else "settlement"
-        facts.append(FinancialFact(f"settlement:{record_id}", fact_type, amount, currency, occurred_at, sku_id or None, _string(row.get("region")) or None))
+        facts.append(FinancialFact(
+            fact_id=f"settlement:{record_id}",
+            fact_type=fact_type,
+            amount=amount,
+            currency=currency,
+            occurred_at=occurred_at,
+            channel=_string(row.get("channel") or row.get("platform")) or None,
+            sku_id=sku_id or None,
+            region=_string(row.get("region")) or None,
+        ))
 
     return FinancialFactAdaptation(tuple(facts), tuple(issues))
 
@@ -125,6 +149,7 @@ def adapt_sqlite_fixture(database: sqlite3.Connection | str | Path) -> Financial
         connection = sqlite3.connect(uri, uri=True)
     else:
         connection = database
+    previous_row_factory = connection.row_factory
     try:
         connection.row_factory = sqlite3.Row
         costs = [dict(row) for row in connection.execute("SELECT sku_id, cost_cny, updated_at FROM sku_costs")]
@@ -133,12 +158,16 @@ def adapt_sqlite_fixture(database: sqlite3.Connection | str | Path) -> Financial
         )]
         return adapt_financial_facts(costs, lines)
     finally:
+        connection.row_factory = previous_row_factory
         if close_connection:
             connection.close()
 
 
 def _normalise_costs(source: Mapping[str, object] | Iterable[Mapping[str, object]]) -> dict[str, dict[str, object]]:
     if isinstance(source, Mapping):
+        if "sku_id" in source and ("cost_cny" in source or "amount" in source):
+            sku_id = _string(source.get("sku_id"))
+            return {sku_id: dict(source)} if sku_id else {}
         return {
             str(sku_id): dict(value) if isinstance(value, Mapping) else {"cost_cny": value}
             for sku_id, value in source.items()

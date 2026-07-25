@@ -27,7 +27,9 @@ def _product_package(*, approved: bool = True) -> ApprovedProductPackage:
 
 
 def _content_package(*, product_id: str = "product-1") -> ContentPackage:
-    approval = ApprovalRecord("content-approval-1", "content", product_id, "approved")
+    approval = ApprovalRecord(
+        "content-approval-1", "content_package", "content-1", "approved"
+    )
     return ContentPackage(
         "content-1", product_id, {"en": "A tidy desk in seconds."}, ("https://img.example/a.jpg",), approval=approval
     )
@@ -77,6 +79,31 @@ def test_reports_invalid_content_without_touching_any_external_boundary():
 
     assert plan.drafts[0].missing_conditions == (
         "content package product id does not match product package",
+    )
+
+
+def test_missing_or_mismatched_approval_records_never_pass_the_plan_gate():
+    no_content_approval = ContentPackage(
+        "content-1",
+        "product-1",
+        {"en": "Copy"},
+        ("https://img.example/a.jpg",),
+    )
+    wrong_subject = ContentPackage(
+        "content-1",
+        "product-1",
+        {"en": "Copy"},
+        ("https://img.example/a.jpg",),
+        approval=ApprovalRecord("approval-2", "content_package", "other-package", "approved"),
+    )
+
+    assert build_publication_plan(
+        _product_package(), no_content_approval
+    ).drafts[0].missing_conditions == ("content package approval is required",)
+    assert build_publication_plan(
+        _product_package(), wrong_subject
+    ).drafts[0].missing_conditions == (
+        "content package approval subject does not match package",
     )
 
 

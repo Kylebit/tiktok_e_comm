@@ -24,6 +24,11 @@ contracts are `ProductRecord`, `ApprovedProductPackage`, `ContentPackage`,
 They are immutable Python dataclasses and intentionally independent of SQLite
 rows, HTTP payloads, credentials, and channel clients.
 
+`FinancialFact` keeps `product_id`, `sku_id`, `channel`, and `region` as
+separate optional identities. Adapters must not put a SKU into `product_id` or
+a market region into `channel` merely because a source row lacks the other
+field.
+
 Existing table ownership is assigned as follows: product operations owns
 `products`; channel operations owns `shops`, `shopee_shops`,
 `shopee_products`, and `affiliate_invites`; supply-chain operations owns

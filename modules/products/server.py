@@ -1249,6 +1249,21 @@ class Handler(BaseHTTPRequestHandler):
 </html>""".encode("utf-8")
         return self._bytes(410, html, "text/html; charset=utf-8")
 
+    def _redirect(self, location: str, *, code: int = 302):
+        body = (
+            "<!DOCTYPE html><html><head><meta charset=\"UTF-8\">"
+            f"<meta http-equiv=\"refresh\" content=\"0;url={location}\">"
+            "</head><body></body></html>"
+        ).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Location", location)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _bytes(
         self,
         code: int,
@@ -1281,7 +1296,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("X-Content-Type-Options", "nosniff")
-        if path.name == "release.html":
+        if path.name in {
+            "index.html",
+            "release.html",
+            "product_workspace.html",
+            "profit_center.html",
+        }:
             self.send_header(
                 "Content-Security-Policy",
                 "default-src 'self'; img-src 'self' https: data:; "
@@ -1425,6 +1445,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
         if path in ("/new-product", "/new-product.html"):
+            return self._file(WEB_DIR / "product_workspace.html")
+        if path in ("/new-product-legacy", "/new-product-legacy.html"):
             return self._module_moved("Orbit Treasury", "http://127.0.0.1:8766/")
         if path in ("/ozon", "/ozon.html", "/rus", "/rus.html"):
             return self._module_moved("Orbit Rus", "http://127.0.0.1:8767/")
@@ -1438,7 +1460,11 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             return self._file(WEB_DIR / "index.html")
         if path in ("/release", "/release.html"):
+            return self._redirect("/new-product")
+        if path in ("/internal/release", "/internal/release.html"):
             return self._file(WEB_DIR / "release.html")
+        if path in ("/profit", "/profit.html"):
+            return self._file(WEB_DIR / "profit_center.html")
         if path.startswith("/static/"):
             rel = path[len("/static/") :]
             return self._file(WEB_DIR / "static" / rel)
@@ -1672,24 +1698,31 @@ class Handler(BaseHTTPRequestHandler):
             from shared_platform.orbit_registry import navigation_payload
 
             return self._json(200, {"ok": True, **navigation_payload()})
-        if path == "/api/release/dashboard":
+        if path in ("/api/release/dashboard", "/api/product-workspace/dashboard"):
             from shared_platform.release_control import build_release_dashboard
 
             q = parse_qs(urlparse(self.path).query)
             offer_id = (q.get("offer_id") or ["3828811808"])[0]
             seller_sku = (q.get("seller_sku") or ["0946"])[0]
             try:
-                return self._json(
-                    200,
-                    build_release_dashboard(offer_id=offer_id, seller_sku=seller_sku),
-                )
+                payload = build_release_dashboard(offer_id=offer_id, seller_sku=seller_sku)
+                if path == "/api/product-workspace/dashboard":
+                    payload = {
+                        **payload,
+                        "schema_version": "product-workspace-v1",
+                        "mode": "pre_release",
+                        "workspace_mode": "pre_release",
+                        "approval": payload.get("approval_rehearsal", {}),
+                        "publication_plan": payload.get("publication_rehearsal", {}),
+                    }
+                return self._json(200, payload)
             except FileNotFoundError as error:
                 return self._json(404, {"ok": False, "error": str(error)})
             except (TypeError, ValueError) as error:
                 return self._json(400, {"ok": False, "error": str(error)})
             except Exception as error:
                 return self._json(500, {"ok": False, "error": str(error)})
-        if path == "/api/release/weekly-preview":
+        if path in ("/api/release/weekly-preview", "/api/profit-center/weekly"):
             from datetime import date
 
             from shared_platform.release_control import build_weekly_profit_rehearsal
@@ -1703,13 +1736,17 @@ class Handler(BaseHTTPRequestHandler):
                     {"ok": False, "error": "start and end are required (YYYY-MM-DD)"},
                 )
             try:
-                return self._json(
-                    200,
-                    build_weekly_profit_rehearsal(
-                        period_start=date.fromisoformat(start_raw),
-                        period_end=date.fromisoformat(end_raw),
-                    ),
+                payload = build_weekly_profit_rehearsal(
+                    period_start=date.fromisoformat(start_raw),
+                    period_end=date.fromisoformat(end_raw),
                 )
+                if path == "/api/profit-center/weekly":
+                    payload = {
+                        **payload,
+                        "surface": "profit-center",
+                        "mode": "pre_release",
+                    }
+                return self._json(200, payload)
             except (TypeError, ValueError) as error:
                 return self._json(400, {"ok": False, "error": str(error)})
             except FileNotFoundError as error:
@@ -3009,7 +3046,9 @@ def serve(
         raise
     routes = {
         "index": "/",
-        "release": "/release",
+        "release": "/internal/release",
+        "product": "/new-product",
+        "profit": "/profit",
         "catalog": "/catalog",
         "settlement": "/settlement",
         "costs": "/costs",

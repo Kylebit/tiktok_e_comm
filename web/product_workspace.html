@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#173b36">
+  <title>Orbit · 商品发布中心</title>
+  <link rel="stylesheet" href="/static/product_workspace.css">
+  <script src="/static/product_workspace.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="返回 Orbit 总览">
+      <span class="brand-mark" aria-hidden="true">O</span>
+      <span><strong>Orbit</strong><small>商品运营</small></span>
+    </a>
+    <nav aria-label="页面导航">
+      <a href="#overview">发布进度</a>
+      <a href="#content">商品图片</a>
+      <a href="#channels">渠道准备</a>
+    </nav>
+    <span class="safety-pill"><i aria-hidden="true"></i> 外部发布关闭</span>
+  </header>
+
+  <main id="main">
+    <section class="hero" id="overview">
+      <div class="hero-copy">
+        <p class="eyebrow">PRODUCT OPERATIONS</p>
+        <h1>商品发布中心</h1>
+        <p>从商品事实、内容五图到渠道草稿，在一个页面确认发布前的每个关键条件。</p>
+      </div>
+
+      <form id="lookupForm" class="lookup-card" aria-label="加载商品">
+        <label>
+          <span>Offer ID</span>
+          <input id="offerId" name="offer_id" value="3828811808" inputmode="numeric"
+                 pattern="[0-9]{1,32}" autocomplete="off" required>
+        </label>
+        <label>
+          <span>Seller SKU</span>
+          <input id="sellerSku" name="seller_sku" value="0946" inputmode="numeric"
+                 pattern="[0-9]{1,32}" autocomplete="off" required>
+        </label>
+        <button class="button button-primary" type="submit">
+          <span class="button-label">查看发布状态</span>
+          <span class="button-loading">正在检查…</span>
+        </button>
+        <p>只读取本地审批与渠道证据，不会保存或上传商品。</p>
+      </form>
+    </section>
+
+    <div id="pageAlert" class="alert" role="alert" hidden></div>
+
+    <section class="status-hero" aria-live="polite">
+      <div>
+        <p class="kicker">CURRENT PRODUCT</p>
+        <h2 id="productTitle">正在读取商品…</h2>
+        <div id="productIdentity" class="identity-line"></div>
+      </div>
+      <div class="readiness">
+        <span id="readinessLabel">检查中</span>
+        <strong id="readinessValue">—</strong>
+        <small id="readinessNote">正在核对发布条件</small>
+      </div>
+    </section>
+
+    <section aria-labelledby="journeyTitle">
+      <div class="section-heading">
+        <div>
+          <p class="kicker">RELEASE JOURNEY</p>
+          <h2 id="journeyTitle">五阶段发布进度</h2>
+        </div>
+        <p>每一阶段都必须有真实证据；后续阶段不会覆盖前序缺口。</p>
+      </div>
+      <div id="stageRail" class="stage-rail" aria-live="polite">
+        <div class="stage pending"><span>01</span><strong>商品信息</strong><small>等待检查</small></div>
+        <div class="stage pending"><span>02</span><strong>内容与五图</strong><small>等待检查</small></div>
+        <div class="stage pending"><span>03</span><strong>审批与锁定</strong><small>等待检查</small></div>
+        <div class="stage pending"><span>04</span><strong>妙手同步</strong><small>等待检查</small></div>
+        <div class="stage pending"><span>05</span><strong>渠道草稿</strong><small>等待检查</small></div>
+      </div>
+    </section>
+
+    <section class="overview-grid">
+      <article class="panel facts-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="kicker">PRODUCT FACTS</p>
+            <h2>商品事实</h2>
+          </div>
+          <span id="factsBadge" class="badge neutral">读取中</span>
+        </div>
+        <div id="productFacts" class="fact-grid skeleton-lines"></div>
+      </article>
+
+      <article class="panel next-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="kicker">NEXT ACTION</p>
+            <h2>下一步</h2>
+          </div>
+          <span id="nextStepNumber" class="step-number">—</span>
+        </div>
+        <h3 id="nextStepTitle">正在确认当前阶段</h3>
+        <p id="nextStepDescription">完成检查后，这里会给出唯一明确的下一步。</p>
+        <ul id="blockerList" class="blocker-list"></ul>
+        <div class="action-row">
+          <a id="workbenchLink" class="button button-dark" href="http://127.0.0.1:8766/"
+             target="_blank" rel="noopener">前往详细工作台</a>
+          <button id="refreshButton" class="button button-secondary" type="button">重新检查</button>
+        </div>
+        <p class="boundary-note">
+          详细工作台中的付费生图、妙手写入、TikTok 认领和站点草稿均需再次确认。
+        </p>
+      </article>
+    </section>
+
+    <section id="content" class="content-section" aria-labelledby="contentTitle">
+      <div class="section-heading">
+        <div>
+          <p class="kicker">FINAL CONTENT SET</p>
+          <h2 id="contentTitle">最终商品图片</h2>
+        </div>
+        <div class="heading-badges">
+          <span id="contentBadge" class="badge neutral">读取中</span>
+          <span id="syncBadge" class="badge neutral">妙手状态未知</span>
+        </div>
+      </div>
+      <div id="imageGrid" class="image-grid skeleton-cards" aria-live="polite"></div>
+      <div id="contentNotice" class="content-notice"></div>
+    </section>
+
+    <section id="channels" class="channel-section" aria-labelledby="channelsTitle">
+      <div class="section-heading">
+        <div>
+          <p class="kicker">CHANNEL READINESS</p>
+          <h2 id="channelsTitle">渠道准备</h2>
+        </div>
+        <p>这里展示可生成的渠道草稿；当前页面不会创建真实草稿或发布商品。</p>
+      </div>
+      <div id="channelGrid" class="channel-grid"></div>
+    </section>
+
+    <section class="safety-card" aria-labelledby="safetyTitle">
+      <div class="safety-mark" aria-hidden="true">✓</div>
+      <div>
+        <p class="kicker">SAFE BY DEFAULT</p>
+        <h2 id="safetyTitle">真实发布保持关闭</h2>
+        <p>本页没有上传、认领、创建站点草稿或发布按钮。所有外部动作只在详细工作台中出现，并要求明确二次确认。</p>
+      </div>
+      <span>0 external writes</span>
+    </section>
+  </main>
+
+  <footer>
+    <span>Orbit 商品发布中心</span>
+    <span>本地审批事实 · 真实内容证据 · 外部发布默认关闭</span>
+  </footer>
+</body>
+</html>

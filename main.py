@@ -230,6 +230,8 @@ def build_parser():
         choices=[
             "index",
             "release",
+            "product",
+            "profit",
             "catalog",
             "settlement",
             "costs",

@@ -22,9 +22,11 @@ DOMAIN_REGISTRATIONS: tuple[DomainRegistration, ...] = (
     DomainRegistration(
         "product_operations", ("products", "sourcing", "treasury"),
         (
+            "/new-product",
             "/catalog",
             "/costs",
             "/sourcing",
+            "/api/product-workspace",
             "/api/catalog",
             "/api/costs",
             "/api/new-product",
@@ -62,9 +64,11 @@ DOMAIN_REGISTRATIONS: tuple[DomainRegistration, ...] = (
     DomainRegistration(
         "data_operations", ("finance", "ads"),
         (
+            "/profit",
             "/settlement",
             "/analytics",
             "/sku-profit",
+            "/api/profit-center",
             "/api/settlement",
             "/api/analytics",
             "/api/sku-profit",
@@ -79,6 +83,7 @@ DOMAIN_REGISTRATIONS: tuple[DomainRegistration, ...] = (
         (
             "/",
             "/release",
+            "/internal/release",
             "/api/status",
             "/api/health",
             "/api/orbit",

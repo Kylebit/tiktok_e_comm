@@ -24,6 +24,13 @@ class WorkspaceLink:
 
 
 @dataclass(frozen=True)
+class InternalTool:
+    label: str
+    href: str
+    description: str
+
+
+@dataclass(frozen=True)
 class WorkspaceSpec:
     key: str
     label: str
@@ -49,6 +56,8 @@ class ModuleSpec:
 
 
 NAVIGATION: tuple[NavigationItem, ...] = (
+    NavigationItem("new-product", "自动上品", "/new-product", "focus", "从采集箱到渠道草稿的新品主流程"),
+    NavigationItem("profit", "利润中心", "/profit", "focus", "周度利润、数据质量与单 SKU 查询"),
     NavigationItem("overview", "总览", "/", "primary", "五域状态、审批、异常与最近任务"),
     NavigationItem("product", "商品运营", "/?view=product", "primary", "商品主数据、SKU 与上品审批"),
     NavigationItem("content", "内容运营", "/?view=content", "primary", "文案、图片与内容包"),
@@ -68,10 +77,10 @@ WORKSPACES: tuple[WorkspaceSpec, ...] = (
         "商品运营",
         "商品主数据、SKU、上品流程与数据库维护。",
         (
-            WorkspaceLink("Release Lab", "/release", "上品、内容与渠道发布的只读候选版演练"),
+            WorkspaceLink("自动上品", "/new-product", "从采集箱开始完成商品资料、AI 图片与发布前确认"),
             WorkspaceLink("商品目录", "/catalog", "浏览与同步共享商品目录"),
             WorkspaceLink("成本维护", "/costs", "维护现有 SKU 成本入口"),
-            WorkspaceLink("新品工作台", "/sourcing", "进入现有选品与上品流程"),
+            WorkspaceLink("1688 选品工具（旧）", "/sourcing", "保留现有选品与素材处理工具"),
         ),
     ),
     WorkspaceSpec(
@@ -107,12 +116,21 @@ WORKSPACES: tuple[WorkspaceSpec, ...] = (
         "数据运营",
         "财务事实、运营快照、估算工具与分析入口。",
         (
-            WorkspaceLink("Release Lab", "/release#profit", "周报复算与 SKU 利润探针统一测试入口"),
+            WorkspaceLink("利润中心", "/profit", "查看周度利润、数据质量与单 SKU 利润"),
             WorkspaceLink("结算中心", "/settlement", "TikTok 结算导入与汇总"),
             WorkspaceLink("SKU 利润估算探针", "/sku-profit", "单 SKU 估算与证据检查"),
             WorkspaceLink("结算账单", "/billing", "Shopee 周报与账单入口"),
             WorkspaceLink("数据分析", "/analytics", "商品分层与表现分析"),
         ),
+    ),
+)
+
+
+INTERNAL_TOOLS: tuple[InternalTool, ...] = (
+    InternalTool(
+        "Release Lab",
+        "/internal/release",
+        "内部发布候选验收工具；不是日常业务入口",
     ),
 )
 
@@ -146,6 +164,14 @@ def navigation_payload() -> dict[str, list[dict[str, object]]]:
             }
             for workspace in WORKSPACES
         ],
+        "internal_tools": [
+            {
+                "label": tool.label,
+                "href": tool.href,
+                "description": tool.description,
+            }
+            for tool in INTERNAL_TOOLS
+        ],
     }
 
 
@@ -163,7 +189,7 @@ def build_module_specs(root: Path, python_executable: str) -> list[ModuleSpec]:
             command=[python_executable, str(root / "main.py"), "serve", "--port", "8765", "--no-browser"],
             quick_links=[
                 ("总览", f"{base}:8765/"),
-                ("Release Lab", f"{base}:8765/release"),
+                ("利润中心", f"{base}:8765/profit"),
                 ("系统与服务", f"{base}:8765/?view=system"),
             ],
         ),

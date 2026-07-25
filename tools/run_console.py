@@ -82,7 +82,7 @@ def start_server() -> subprocess.Popen:
             "--port",
             str(PORT),
             "--page",
-            "new_product",
+            "index",
             "--no-browser",
         ],
         cwd=str(ROOT),
@@ -100,7 +100,7 @@ def wait_health(timeout_sec: int = 15) -> dict:
         try:
             with urllib.request.urlopen(BASE + "/api/health", timeout=2) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-            if data.get("ok") and data.get("new_product"):
+            if data.get("ok"):
                 return data
             last_error = str(data)
         except Exception as e:

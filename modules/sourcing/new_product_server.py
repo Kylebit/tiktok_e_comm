@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
+import re
 import time
 import urllib.error
 import urllib.request
@@ -242,6 +243,44 @@ class NewProductHandler(BaseHTTPRequestHandler):
             q = parse_qs(parsed.query)
             raw = (q.get("offer_id") or q.get("url") or [""])[0]
             return self._dispatch_preview({"offer_id": raw}, allow_precollect=False)
+        if path in ("/api/new-product/content-report", "/api/new-product/content-image"):
+            q = parse_qs(parsed.query)
+            raw = (q.get("offer_id") or [""])[0]
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            try:
+                from modules.sourcing import new_product_workbench as np_mod
+
+                file_path = np_mod.content_package_file(
+                    raw,
+                    artifact_id=(q.get("artifact_id") or [""])[0],
+                    report=path.endswith("content-report"),
+                )
+                if not file_path:
+                    return self._json(404, {"ok": False, "error": "content package file not found"})
+                if path.endswith("content-report"):
+                    raw_html = file_path.read_text(encoding="utf-8")
+
+                    def rewrite_generated_src(match: re.Match[str]) -> str:
+                        image_name = match.group(2)
+                        artifact_id = Path(image_name).stem
+                        return (
+                            'src="/api/new-product/content-image?offer_id='
+                            + urllib.parse.quote(raw)
+                            + "&artifact_id="
+                            + urllib.parse.quote(artifact_id)
+                            + '"'
+                        )
+
+                    raw_html = re.sub(
+                        r"src=([\"'])generated/([^\"']+)\1",
+                        rewrite_generated_src,
+                        raw_html,
+                    )
+                    return self._bytes(200, raw_html.encode("utf-8"), "text/html; charset=utf-8")
+                return self._file(file_path)
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
         self.send_error(404)
 
     def do_POST(self) -> None:
@@ -269,6 +308,147 @@ class NewProductHandler(BaseHTTPRequestHandler):
                 return self._json(400, {"ok": False, "error": "missing offer_id or prompt"})
             try:
                 return self._json(200, np_mod.add_image_request(raw, prompt, kind=str(data.get("kind") or "supplement")))
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+
+        if path == "/api/new-product/content-package/sync":
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            try:
+                package = np_mod.sync_content_package(raw, collect_box_id=str(data.get("collect_box_id") or ""))
+                return self._json(200, {"ok": True, "content_package": package})
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+
+        if path == "/api/new-product/content-package/prepare":
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            try:
+                result = np_mod.prepare_content_package(
+                    raw,
+                    collect_box_id=str(data.get("collect_box_id") or ""),
+                )
+                return self._json(200, {"ok": True, **result})
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+
+        if path == "/api/new-product/content-package/vision-proposal":
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            refs = data.get("reference_urls") or []
+            if not isinstance(refs, list):
+                return self._json(400, {"ok": False, "error": "reference_urls must be a list"})
+            storyboard_feedback = data.get("storyboard_feedback") or {}
+            if not isinstance(storyboard_feedback, dict):
+                return self._json(400, {"ok": False, "error": "storyboard_feedback must be an object"})
+            try:
+                result = np_mod.propose_content_package_with_vision(
+                    raw,
+                    reference_urls=refs,
+                    storyboard_feedback=storyboard_feedback,
+                )
+                return self._json(200, {"ok": True, **result})
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+
+        if path == "/api/new-product/content-package/review":
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            try:
+                package = np_mod.save_content_package_review(raw, data.get("review") or {})
+                return self._json(200, {"ok": True, "content_package": package})
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+
+        if path == "/api/new-product/content-package/first-image-preflight":
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            try:
+                result = np_mod.prepare_first_image_generation(raw)
+                return self._json(200, result)
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+
+        if path == "/api/new-product/content-package/first-image-generate":
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            if data.get("confirm_paid_generation") is not True:
+                return self._json(400, {"ok": False, "error": "explicit paid generation confirmation is required"})
+            try:
+                result = np_mod.start_first_image_generation(raw)
+                return self._json(200, result)
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+
+        if path == "/api/new-product/content-package/remaining-images-preflight":
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            try:
+                result = np_mod.prepare_remaining_image_generations(raw)
+                return self._json(200, result)
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+
+        if path == "/api/new-product/content-package/suite-images-preflight":
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            force_shot_ids = data.get("force_shot_ids") or []
+            if not isinstance(force_shot_ids, list):
+                return self._json(400, {"ok": False, "error": "force_shot_ids must be a list"})
+            try:
+                result = np_mod.prepare_suite_image_generations(
+                    raw,
+                    force_shot_ids=[str(value) for value in force_shot_ids],
+                )
+                return self._json(200, result)
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+
+        if path == "/api/new-product/content-package/remaining-images-generate":
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            if data.get("confirm_paid_generation") is not True:
+                return self._json(400, {"ok": False, "error": "explicit paid generation confirmation is required"})
+            try:
+                result = np_mod.start_remaining_image_generation(
+                    raw,
+                    retry_failed_only=bool(data.get("retry_failed_only")),
+                )
+                return self._json(200, result)
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+
+        if path == "/api/new-product/content-package/miaoshou-images/commit":
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            if data.get("confirm_miaoshou_write") is not True:
+                return self._json(400, {"ok": False, "error": "explicit Miaoshou write confirmation is required"})
+            try:
+                return self._json(200, np_mod.write_ordered_images_to_miaoshou(raw))
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+
+        if path == "/api/new-product/content-package/generated-image/sync":
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            try:
+                return self._json(200, np_mod.sync_generated_image_to_miaoshou(
+                    raw,
+                    str(data.get("artifact_id") or ""),
+                    str(data.get("action") or ""),
+                ))
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+
+        if path == "/api/new-product/content-package/generated-image/decision":
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            try:
+                return self._json(200, np_mod.save_generated_image_decision(
+                    raw,
+                    str(data.get("artifact_id") or ""),
+                    str(data.get("action") or ""),
+                ))
             except Exception as exc:
                 return self._json(400, {"ok": False, "error": str(exc)})
 

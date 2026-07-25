@@ -1423,6 +1423,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._file(WEB_DIR / "billing.html")
         if path in ("/shopee-profit", "/shopee-profit.html"):
             return self._file(WEB_DIR / "shopee_profit.html")
+        if path in ("/sku-profit", "/sku_profit", "/sku_profit.html"):
+            return self._file(WEB_DIR / "sku_profit.html")
         if path == "/billing/shopee_report":
             q = parse_qs(urlparse(self.path).query)
             name = (q.get("f") or [""])[0]
@@ -1449,7 +1451,27 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True, "items": sp_profit.list_reports()})
 
         if path == "/api/shopee/profit/status":
-            return self._json(200, {"ok": True, "running": False, "message": ""})
+            from modules.finance import th_orders_pull as orders_pull
+
+            st = orders_pull.pull_status()
+            sp = ((st.get("result") or {}).get("platforms") or {}).get("shopee")
+            return self._json(
+                200,
+                {
+                    "ok": True,
+                    "running": bool(st.get("running")),
+                    "message": st.get("message") or "",
+                    "percent": st.get("percent") or 0,
+                    "error": st.get("error"),
+                    "last_result": sp,
+                    "scheduler_running": st.get("scheduler_running"),
+                },
+            )
+
+        if path == "/api/orders-pull/status":
+            from modules.finance import th_orders_pull as orders_pull
+
+            return self._json(200, {"ok": True, **orders_pull.pull_status()})
 
         if path == "/api/billing/shopee_settlement":
             from modules.shopee import profit_settlement as sp_profit
@@ -1958,6 +1980,55 @@ class Handler(BaseHTTPRequestHandler):
 
             return self._json(200, {"ok": True, **spull.pull_status()})
 
+        if path == "/api/sku-profit":
+            from modules.finance.sku_profit_service import estimate as sku_profit_estimate
+
+            q = parse_qs(urlparse(self.path).query)
+            sku = (q.get("sku") or [""])[0].strip()
+            platform = (q.get("platform") or ["both"])[0].strip() or "both"
+            ad_raw = (q.get("ad_rate") or [""])[0].strip()
+            lookback_raw = (q.get("lookback_days") or [""])[0].strip()
+            sale_raw = (q.get("sale") or q.get("sale_override") or [""])[0].strip()
+            cost_raw = (q.get("cost") or q.get("cost_override") or [""])[0].strip()
+            force_fx = (q.get("force_fx") or [""])[0].strip() in ("1", "true", "yes")
+            try:
+                ad_rate = float(ad_raw) if ad_raw else None
+                lookback_days = int(lookback_raw) if lookback_raw else None
+                sale_override = float(sale_raw) if sale_raw else None
+                cost_override = float(cost_raw) if cost_raw else None
+            except ValueError:
+                return self._json(400, {"ok": False, "error": "参数无效（ad_rate/lookback_days/sale/cost）"})
+            try:
+                data = sku_profit_estimate(
+                    sku,
+                    platform=platform,
+                    ad_rate=ad_rate,
+                    lookback_days=lookback_days,
+                    sale_override=sale_override,
+                    cost_override=cost_override,
+                    force_fx_refresh=force_fx,
+                )
+                code = 200 if data.get("ok") else 404
+                self._json(code, data)
+            except Exception as e:
+                self._json(500, {"ok": False, "error": str(e)})
+            return
+
+        if path == "/api/sku-profit/hot":
+            from modules.finance.sku_profit_service import list_hot_skus
+
+            q = parse_qs(urlparse(self.path).query)
+            platform = (q.get("platform") or ["both"])[0].strip() or "both"
+            try:
+                limit = int((q.get("limit") or ["20"])[0] or 20)
+            except ValueError:
+                limit = 20
+            try:
+                self._json(200, list_hot_skus(platform=platform, limit=min(max(limit, 1), 50)))
+            except Exception as e:
+                self._json(500, {"ok": False, "error": str(e)})
+            return
+
         if path == "/api/costs/export.csv":
             out = ROOT / "exports" / "sku_costs.csv"
             cost_mod.export_csv(out)
@@ -1992,7 +2063,27 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"ok": False, "error": "invalid json"})
 
         if path == "/api/shopee/profit/run":
+            from modules.finance import th_orders_pull as orders_pull
             from modules.shopee import profit_settlement as sp_profit
+
+            # 若请求 pull=1 / refresh=1，先走 escrow API 拉取
+            if str(data.get("pull") or data.get("refresh") or "").lower() in (
+                "1",
+                "true",
+                "yes",
+            ) or data.get("pull") is True:
+                lookback = data.get("lookback_days") or data.get("days") or 14
+                try:
+                    lookback = int(lookback)
+                except (TypeError, ValueError):
+                    lookback = 14
+                ok, msg = orders_pull.start_pull(
+                    platforms=["shopee"],
+                    regions=[str(data.get("region") or "TH").upper()],
+                    lookback_days=lookback,
+                )
+                code = 200 if ok else 409
+                return self._json(code, {"ok": ok, "message": msg, "pull_started": ok})
 
             try:
                 if data.get("date"):
@@ -2004,6 +2095,40 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"ok": True, "message": "Shopee range loaded", **result})
             except Exception as e:
                 return self._json(400, {"ok": False, "error": str(e), "message": str(e)})
+
+        if path == "/api/orders-pull":
+            from modules.finance import th_orders_pull as orders_pull
+            from modules.finance.settlement_report import parse_iso_date
+
+            platforms = data.get("platforms") or data.get("platform") or ["tiktok", "shopee"]
+            if isinstance(platforms, str):
+                platforms = (
+                    ["tiktok", "shopee"]
+                    if platforms.lower() in ("both", "all")
+                    else [platforms]
+                )
+            regions = data.get("regions") or data.get("region") or ["TH"]
+            if isinstance(regions, str):
+                regions = [r.strip().upper() for r in regions.replace(",", " ").split() if r.strip()]
+            lookback = data.get("lookback_days") or data.get("days")
+            start = end = None
+            try:
+                if data.get("start") and data.get("end"):
+                    start = parse_iso_date(str(data.get("start")))
+                    end = parse_iso_date(str(data.get("end")))
+                if lookback is not None:
+                    lookback = int(lookback)
+            except Exception as e:
+                return self._json(400, {"ok": False, "error": f"参数无效: {e}"})
+            ok, msg = orders_pull.start_pull(
+                platforms=list(platforms),
+                regions=list(regions),
+                lookback_days=lookback,
+                start=start,
+                end=end,
+            )
+            code = 200 if ok else 409
+            return self._json(code, {"ok": ok, "message": msg})
 
         if path == "/api/mx/approvals/clear":
             from modules.miaoshou import mx_web_approval as mx_web
@@ -2342,6 +2467,29 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(code, {"ok": ok, "message": msg})
             except Exception as e:
                 self._json(400, {"ok": False, "error": str(e)})
+            return
+
+        if path == "/api/sku-profit/batch":
+            from modules.finance.sku_profit_service import estimate_batch
+
+            skus = data.get("skus") or []
+            if isinstance(skus, str):
+                skus = [x.strip() for x in skus.replace(",", "\n").splitlines() if x.strip()]
+            if not skus:
+                return self._json(400, {"ok": False, "error": "需要 skus 数组"})
+            try:
+                self._json(
+                    200,
+                    estimate_batch(
+                        skus[:30],
+                        platform=str(data.get("platform") or "both"),
+                        ad_rate=data.get("ad_rate"),
+                        lookback_days=data.get("lookback_days"),
+                        cost_override=data.get("cost_override") or data.get("cost"),
+                    ),
+                )
+            except Exception as e:
+                self._json(500, {"ok": False, "error": str(e)})
             return
 
         if path == "/api/costs":
@@ -2719,11 +2867,13 @@ def serve(
         "ozon": "/ozon",
         "mx": "/mx",
         "uk": "/uk",
+        "sku-profit": "/sku-profit",
     }
     url = f"http://127.0.0.1:{port}{routes.get(page, '/')}"
     print(f"  [OK] 控制台: http://127.0.0.1:{port}/")
     print(f"  商品目录: http://127.0.0.1:{port}/catalog")
     print(f"  结算利润: http://127.0.0.1:{port}/settlement")
+    print(f"  SKU利润探针: http://127.0.0.1:{port}/sku-profit")
     print(f"  Ozon 运营: http://127.0.0.1:{port}/ozon")
     print(f"  MX 上架审批: http://127.0.0.1:{port}/mx")
     print(f"  UK 上架审批: http://127.0.0.1:{port}/uk")
@@ -2743,6 +2893,13 @@ def serve(
         threading.Timer(0.5, _startup_refresh_tokens).start()
     else:
         print("  [OK] Startup token refresh skipped; run `python main.py tokens refresh` when needed.")
+
+    try:
+        from modules.finance.th_orders_pull import start_scheduler
+
+        start_scheduler()
+    except Exception as e:
+        print(f"  [WARN] orders-pull 调度未启动: {e}")
 
     if open_browser:
         import webbrowser

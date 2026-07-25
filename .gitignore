@@ -53,6 +53,10 @@ outputs/
 web/shopee_profit.html
 tmp/
 tmp_*.json
+tmp_*.py
+tmp_*.sh
+logs/
+reports/*.html
 feishu_bot_live*.log
 feishu_bot_live*.err.log
 __pycache__/
@@ -67,3 +71,11 @@ agent_comms/stage1/orchestrator_tasks.json
 
 # Stage3 持久化 outbox（运行时产物，非源码）
 agent_comms/stage3/*_outbox.json
+agent_comms/stage3/*_bg.out
+agent_comms/stage3/*_bg.err
+agent_comms/stage3/*_state.json
+
+# Helper agent runtime queues and sequence state
+agent_comms/helper/.helper_seq.json
+agent_comms/helper/done/
+agent_comms/helper/outbox/

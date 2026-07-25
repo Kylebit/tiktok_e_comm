@@ -117,6 +117,10 @@ def _emit_wake(dispatch: dict[str, Any], path: Path) -> None:
     print(f"{WAKE_PREFIX} {json.dumps(wake, ensure_ascii=False)}", flush=True)
 
 
+
+
+
+
 def ack_task(dispatch: dict[str, Any]) -> Path:
     task_id = str(dispatch.get("task_id") or "")
     title = dispatch.get("title") or ""
@@ -150,7 +154,7 @@ def ack_task(dispatch: dict[str, Any]) -> Path:
     return inbox_file
 
 
-DONE_LOCAL_STATES = {"DONE", "COMPLETED", "CANCELED", "FAILED"}
+DONE_LOCAL_STATES = {"DONE", "COMPLETED", "CANCELED", "FAILED", "BLOCKED"}
 
 
 def local_pending_files() -> list[Path]:
@@ -180,6 +184,7 @@ def emit_wake_for_pending_files() -> list[Path]:
         print(f"[codex-stage3] local pending task: {task_id}", flush=True)
         _emit_wake(dispatch, path)
     return pending
+
 
 
 def drain_once(consume: bool = True, ack: bool = True) -> list[dict[str, Any]]:
@@ -253,7 +258,8 @@ def stream_forever() -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"[codex-stage3] startup drain failed: {exc}", file=sys.stderr)
 
-        # Re-emit wake signals for tasks already persisted locally before this run.
+        # Wake any unfinished local inbox tasks for a live Codex session.
+        # (Codex picks them up via its own Codex App Thread Automation / poll loop.)
         emit_wake_for_pending_files()
 
         while True:
@@ -353,4 +359,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -128,13 +128,13 @@ def _find_tk_row(match_key: str, region: str):
 
 
 def _find_tk_for_global(match_key: str, fallback_region: str) -> tuple:
-    """全球商品母版：优先 PH 英文，跳过非英文 TH/VN 标题。"""
+    """全球商品母版：优先 PH 英文（TK_SOURCE_ORDER），跳过非英文 TH/VN/MY 标题。"""
     from modules.shopee.global_copy import is_english_listing_text
 
+    # 保持 PH→MY→TH→VN；不要把 --region 挪到队尾（否则会先吃到马来文）
     order = list(TK_SOURCE_ORDER)
-    fb = fallback_region.upper()
-    if fb in order:
-        order.remove(fb)
+    fb = (fallback_region or "").upper()
+    if fb and fb not in order:
         order.append(fb)
     last_err = ""
     best: tuple | None = None

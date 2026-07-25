@@ -6,10 +6,15 @@ for expensive image/API work.
 
 from __future__ import annotations
 
+from copy import deepcopy
 import json
+import html
 import math
+import os
 import re
 import sqlite3
+import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -27,6 +32,7 @@ from modules.sourcing.pipeline import load_scrape
 WORKSPACE_ROOT = ROOT.parent.parent
 OUTPUTS_DIR = WORKSPACE_ROOT / "outputs"
 STATE_DIR = ROOT / "data" / "new_product_workbench"
+IMAGE_SUITE_OUTPUTS_DIR = ROOT / "outputs" / "image_suite_from_miaoshou"
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
@@ -47,8 +53,12 @@ SEA_MARKETS = [
 
 DISCOUNT_RESERVE_RATE = 0.35
 DEFAULT_LISTING_STOCK = 200
+MIN_ESTIMATED_PROFIT_CNY = 5.0
 _SITE_DRAFT_LOCKS: dict[str, threading.Lock] = {}
 _TIKTOK_CLAIM_LOCKS: dict[str, threading.Lock] = {}
+_IMAGE_GENERATION_LOCKS: dict[str, threading.Lock] = {}
+_IMAGE_GENERATION_QUEUE_LOCKS: dict[str, threading.Lock] = {}
+_STATE_WRITE_LOCKS: dict[str, threading.RLock] = {}
 
 
 @dataclass(frozen=True)
@@ -92,7 +102,7 @@ SEA_REGION_RULES = {
         cny_per_local=1.6868,
         commission_rate=0.092,
         transaction_rate=0.0378,
-        extra_rate=0.0486,
+        extra_rate=0.06,
         extra_label="BXP费率",
         extra_cap_local=0.0,
         affiliate_rate=0.0,
@@ -114,7 +124,7 @@ SEA_REGION_RULES = {
         affiliate_rate=0.0,
         ad_rate=0.20,
         creator_rate=0.08,
-        seller_tax_rate=0.10,
+        seller_tax_rate=0.15,
         fixed_fee_local=1.07,
         rounding_step=1.0,
     ),
@@ -253,6 +263,29 @@ def parse_common_collect_id(value: str) -> str:
     return m.group(1) if m else ""
 
 
+def _state_write_lock(offer_id: str) -> threading.RLock:
+    lock = _STATE_WRITE_LOCKS.get(offer_id)
+    if lock is None:
+        lock = threading.RLock()
+        _STATE_WRITE_LOCKS[offer_id] = lock
+    return lock
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    """Replace one JSON file atomically so restarts cannot leave a partial file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink(missing_ok=True)
+
+
 def resolve_offer_key(value: str) -> str:
     common_id = parse_common_collect_id(value)
     if common_id:
@@ -295,6 +328,22 @@ def _tiktok_claim_lock(offer_id: str) -> threading.Lock:
     if lock is None:
         lock = threading.Lock()
         _TIKTOK_CLAIM_LOCKS[offer_id] = lock
+    return lock
+
+
+def _image_generation_lock(offer_id: str) -> threading.Lock:
+    lock = _IMAGE_GENERATION_LOCKS.get(offer_id)
+    if lock is None:
+        lock = threading.Lock()
+        _IMAGE_GENERATION_LOCKS[offer_id] = lock
+    return lock
+
+
+def _image_generation_queue_lock(offer_id: str) -> threading.Lock:
+    lock = _IMAGE_GENERATION_QUEUE_LOCKS.get(offer_id)
+    if lock is None:
+        lock = threading.Lock()
+        _IMAGE_GENERATION_QUEUE_LOCKS[offer_id] = lock
     return lock
 
 
@@ -544,18 +593,2045 @@ def _dedupe_urls(urls: list[str]) -> list[str]:
 
 
 def load_state(offer_id: str) -> dict[str, Any]:
-    return _load_json(_state_path(offer_id)) or {}
+    state = _load_json(_state_path(offer_id)) or {}
+    state["_revision"] = max(0, int(state.get("_revision") or 0))
+    return state
 
 
 def save_state(offer_id: str, state: dict[str, Any]) -> dict[str, Any]:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    state["offer_id"] = offer_id
-    state["updated_at"] = _now()
-    _state_path(offer_id).write_text(
-        json.dumps(state, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    with _state_write_lock(offer_id):
+        current = _load_json(_state_path(offer_id)) or {}
+        current_revision = max(0, int(current.get("_revision") or 0))
+        expected_revision = max(0, int(state.get("_revision") if "_revision" in state else current_revision))
+        if expected_revision != current_revision:
+            raise RuntimeError("商品状态已被另一个操作更新，请刷新页面后重试")
+        state["offer_id"] = offer_id
+        state["updated_at"] = _now()
+        state["_revision"] = current_revision + 1
+        _write_json_atomic(_state_path(offer_id), state)
     return state
+
+
+def _content_collect_box_id(offer_id: str, state: dict[str, Any], source: dict[str, Any] | None = None) -> str:
+    """Find the collect-box ID that owns this product's image review package."""
+    saved = str((state.get("content_package") or {}).get("collect_box_id") or "").strip()
+    if saved.isdigit():
+        return saved
+    for row in ((source or {}).get("precollect") or {}).get("records") or []:
+        candidate = str((row or {}).get("common_collect_id") or "").strip()
+        if candidate.isdigit():
+            return candidate
+    return offer_id if offer_id.isdigit() else ""
+
+
+def _content_package_dir(collect_box_id: str) -> Path | None:
+    clean = str(collect_box_id or "").strip()
+    if not clean.isdigit():
+        return None
+    path = IMAGE_SUITE_OUTPUTS_DIR / clean
+    return path if path.is_dir() else None
+
+
+def _content_artifacts(package_dir: Path | None, decisions: dict[str, Any]) -> list[dict[str, Any]]:
+    if package_dir is None:
+        return []
+    rows: list[dict[str, Any]] = []
+    audit_paths = []
+    legacy = package_dir / "generation_audit.json"
+    if legacy.is_file():
+        audit_paths.append(legacy)
+    audit_paths.extend(sorted(package_dir.glob("generation_audit_*.json")))
+    for path in audit_paths:
+        audit = _load_json(path) or {}
+        artifact_id = "wb1" if path.name == "generation_audit.json" else path.stem.removeprefix("generation_audit_")
+        image_file = package_dir / "generated" / f"{artifact_id}.png"
+        decision = decisions.get(artifact_id) or {}
+        rows.append({
+            "id": artifact_id,
+            "shot_id": str(audit.get("shot_id") or artifact_id.split("_", 1)[0]),
+            "task_id": str(audit.get("task_id") or ""),
+            "technical_complete": bool(audit.get("download_verified")) and image_file.is_file(),
+            "has_local_image": image_file.is_file(),
+            "decision": str(decision.get("decision") or "pending"),
+            "note": str(decision.get("note") or ""),
+            "reviewed_at": str(decision.get("reviewed_at") or ""),
+        })
+    return rows
+
+
+def _generated_review_images(offer_id: str, saved: dict[str, Any], package_dir: Path | None) -> list[dict[str, Any]]:
+    """Expose verified generated images in Treasury's main image-review area.
+
+    These cards intentionally do not inherit the old content-package approval
+    decision. A generated image is visible after technical verification, while
+    the operator independently decides whether that individual image belongs in
+    Miaoshou's image list.
+    """
+    if package_dir is None:
+        return []
+    decisions = saved.get("generated_image_miaoshou_decisions")
+    decisions = decisions if isinstance(decisions, dict) else {}
+    legacy_write = saved.get("miaoshou_generated_images_write")
+    legacy_write = legacy_write if isinstance(legacy_write, dict) else {}
+    legacy_synced_urls = {
+        str(url).strip()
+        for url in (legacy_write.get("generated_image_urls") or [])
+        if str(url).strip()
+    }
+    rows_by_shot: dict[str, dict[str, Any]] = {}
+    version_counts: dict[str, int] = {}
+    for audit_path in sorted(package_dir.glob("generation_audit_*.json")):
+        artifact_id = audit_path.stem.removeprefix("generation_audit_")
+        audit = _load_json(audit_path) or {}
+        image_file = package_dir / "generated" / f"{artifact_id}.png"
+        data = ((audit.get("final_response") or {}).get("result") or {}).get("data") or []
+        remote_url = str((data[0] or {}).get("url") or "") if data and isinstance(data[0], dict) else ""
+        if not bool(audit.get("download_verified")) or not image_file.is_file() or not remote_url.startswith("https://"):
+            continue
+        shot_id = str(audit.get("shot_id") or artifact_id.split("_", 1)[0])
+        version_counts[shot_id] = version_counts.get(shot_id, 0) + 1
+        saved_decision = decisions.get(artifact_id) if isinstance(decisions.get(artifact_id), dict) else {}
+        if not saved_decision and remote_url in legacy_synced_urls:
+            saved_decision = {"action": "keep", "status": "synced", "synced_at": str(legacy_write.get("finished_at") or "")}
+        row = {
+            "artifact_id": artifact_id,
+            "shot_id": shot_id,
+            "task_id": str(audit.get("task_id") or ""),
+            "url": remote_url,
+            "local_url": f"/api/new-product/content-image?offer_id={offer_id}&artifact_id={artifact_id}",
+            "title": str(audit.get("shot_title") or artifact_id),
+            "miaoshou_action": str(saved_decision.get("action") or "review"),
+            "miaoshou_sync_status": str(saved_decision.get("status") or "not_synced"),
+            "miaoshou_sync_at": str(saved_decision.get("synced_at") or ""),
+            "miaoshou_error": str(saved_decision.get("error") or ""),
+            "created_at": str(audit.get("created_at") or ""),
+            "_mtime": audit_path.stat().st_mtime,
+        }
+        previous = rows_by_shot.get(shot_id)
+        if previous is None or float(row["_mtime"]) >= float(previous["_mtime"]):
+            rows_by_shot[shot_id] = row
+    rows = []
+    for row in rows_by_shot.values():
+        row["version_count"] = version_counts.get(str(row.get("shot_id") or ""), 1)
+        row.pop("_mtime", None)
+        rows.append(row)
+    return sorted(rows, key=lambda row: (str(row.get("shot_id") or ""), str(row.get("artifact_id") or "")))
+
+
+def _content_stage(
+    content: dict[str, Any],
+    artifacts: list[dict[str, Any]],
+    *,
+    ai_plan_valid: bool = False,
+) -> str:
+    if not content.get("fact_card_approved"):
+        return "待审核事实卡"
+    if not content.get("planning_scope_approved"):
+        return "待确认本地生图约束"
+    if not ai_plan_valid:
+        return "待 AI 生成分镜"
+    if not content.get("suite_approved"):
+        return "待审核 AI 分镜"
+    if artifacts and not any(row.get("decision") == "approved" for row in artifacts):
+        return "待审核生成素材"
+    if any(row.get("decision") == "approved" for row in artifacts):
+        return "内容素材可进入妙手写回审核"
+    return "等待生成或导入素材"
+
+
+def _contains_cjk(value: str) -> bool:
+    return bool(re.search(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]", value or ""))
+
+
+def _english_title_ready(value: str) -> bool:
+    title = str(value or "").strip()
+    return bool(title and re.search(r"[A-Za-z]", title) and not _contains_cjk(title))
+
+
+def _requested_image_count(content: dict[str, Any]) -> int:
+    customization = content.get("suite_customization") if isinstance(content.get("suite_customization"), dict) else {}
+    counts = customization.get("type_counts") if isinstance(customization.get("type_counts"), dict) else {}
+    if counts:
+        return sum(max(0, int(value or 0)) for value in counts.values())
+    return sum(1 for row in ((content.get("suite") or {}).get("items") or []) if row.get("selected"))
+
+
+def _product_workflow_summary(
+    *,
+    source: dict[str, Any],
+    review: dict[str, Any],
+    content: dict[str, Any],
+    miaoshou_draft: dict[str, Any],
+    tiktok_claim: dict[str, Any],
+    site_drafts: dict[str, Any],
+) -> dict[str, Any]:
+    """Build one canonical product-stage view shared by the API and workbench UI."""
+    requested_images = _requested_image_count(content)
+    generated = list(content.get("generated_review_images") or [])
+    generation = content.get("remaining_images_generation") or {}
+    generation_done = requested_images == 0 or (
+        str(generation.get("status") or "") in {"completed_waiting_human_review", "completed_with_errors"}
+        and len(generated) >= requested_images
+    )
+    source_actions = list(review.get("image_actions") or [])
+    kept_source = [row for row in source_actions if str(row.get("action") or "review") != "remove"]
+    kept_generated = [row for row in generated if str(row.get("miaoshou_action") or "review") != "remove"]
+    ai_plan_valid = bool((content.get("model_proposal") or {}).get("valid"))
+    content_ready = bool(
+        content.get("package_found")
+        and content.get("fact_card_approved")
+        and content.get("planning_scope_approved")
+        and ai_plan_valid
+        and content.get("suite_approved")
+    )
+    image_review_ready = bool(generation_done and len(kept_source) + len(kept_generated) >= 3)
+    commercial_blockers = []
+    if not _english_title_ready(str(review.get("title") or "")):
+        commercial_blockers.append("英文标题必须包含英文字母且不能含中文")
+    if float(review.get("weight_kg") or 0) <= 0:
+        commercial_blockers.append("请确认商品重量")
+    package = list(review.get("package_cm") or [])
+    if len(package) != 3 or any(float(value or 0) <= 0 for value in package):
+        commercial_blockers.append("请确认完整包装尺寸")
+    if not review.get("selected_sites"):
+        commercial_blockers.append("请至少选择一个目标站点")
+    if float(review.get("cost_cny") or source.get("cost_cny") or 0) <= 0:
+        commercial_blockers.append("请确认来源成本")
+    source_ready = bool(
+        str(review.get("title") or source.get("title_source") or "").strip()
+        and (review.get("image_actions") or source.get("images"))
+        and float(review.get("cost_cny") or source.get("cost_cny") or 0) > 0
+    )
+
+    steps = [
+        {"id": "source", "label": "来源与规格", "status": "done" if source_ready else "attention"},
+        {"id": "content", "label": "内容与配方", "status": "done" if content_ready else "current"},
+        {"id": "generation", "label": "整套生图", "status": "done" if generation_done else ("current" if content_ready else "pending")},
+        {"id": "images", "label": "图片审核", "status": "done" if image_review_ready else ("current" if generation_done else "pending")},
+        {"id": "commercial", "label": "价格与发布信息", "status": "done" if review.get("fields_locked") and not commercial_blockers else ("current" if image_review_ready else "pending")},
+        {"id": "miaoshou", "label": "应用到妙手", "status": "done" if miaoshou_draft.get("written_to_miaoshou") and miaoshou_draft.get("verified") else ("current" if review.get("fields_locked") else "pending")},
+        {"id": "channels", "label": "站点草稿", "status": "done" if site_drafts.get("ready") else ("current" if tiktok_claim.get("claimed") else "pending")},
+    ]
+    current = next((row for row in steps if row["status"] in {"attention", "current"}), steps[-1])
+    blockers = []
+    if current["id"] == "source":
+        if not str(review.get("title") or source.get("title_source") or "").strip():
+            blockers.append("缺少商品标题")
+        if not (review.get("image_actions") or source.get("images")):
+            blockers.append("缺少商品来源图片")
+        if float(review.get("cost_cny") or source.get("cost_cny") or 0) <= 0:
+            blockers.append("缺少来源成本")
+    elif current["id"] == "content":
+        if not content.get("package_found"):
+            blockers = ["先创建本地内容审核包"]
+        else:
+            if not content.get("fact_card_approved"):
+                blockers.append("审核商品身份与事实卡")
+            if not content.get("planning_scope_approved"):
+                blockers.append("确认图片类型、数量与本地类目约束")
+            if content.get("planning_scope_approved") and not ai_plan_valid:
+                blockers.append("调用 AI 生成当前配方的具体分镜")
+            if ai_plan_valid and not content.get("suite_approved"):
+                blockers.append("逐张审核并批准 AI 分镜")
+    elif current["id"] == "generation":
+        blockers = [f"生成并核验本次计划的 {requested_images} 张图片"]
+    elif current["id"] == "images":
+        if len(kept_source) + len(kept_generated) < 3:
+            blockers.append("最终至少保留 3 张图片")
+    elif current["id"] == "commercial":
+        blockers = commercial_blockers
+    return {
+        "schema_version": "1.0.0",
+        "current_stage": current["id"],
+        "current_label": current["label"],
+        "steps": steps,
+        "blockers": blockers,
+        "content_required": True,
+        "content_ready": content_ready,
+        "generation_ready": generation_done,
+        "image_review_ready": image_review_ready,
+        "commercial_ready": not commercial_blockers,
+        "requested_image_count": requested_images,
+        "generated_image_count": len(generated),
+        "kept_source_image_count": len(kept_source),
+        "kept_generated_image_count": len(kept_generated),
+    }
+
+
+def content_package_summary(offer_id_or_url: str) -> dict[str, Any]:
+    """Return local image-review metadata without calling models, ToAPI, or Miaoshou."""
+    offer_id = resolve_offer_key(offer_id_or_url)
+    state = load_state(offer_id)
+    source = _source_summary(offer_id)
+    saved = dict(state.get("content_package") or {})
+    collect_box_id = _content_collect_box_id(offer_id, state, source)
+    package_dir = _content_package_dir(collect_box_id)
+    decisions = saved.get("asset_decisions") if isinstance(saved.get("asset_decisions"), dict) else {}
+    artifacts = _content_artifacts(package_dir, decisions)
+    generated_review_images = _generated_review_images(offer_id, saved, package_dir)
+    report_ready = bool(package_dir and (package_dir / "review_report.html").is_file())
+    review_package = _load_json(package_dir / "review_package.json") if package_dir else {}
+    collect_box = review_package.get("collect_box") if isinstance(review_package.get("collect_box"), dict) else {}
+    fact_card = review_package.get("fact_card") if isinstance(review_package.get("fact_card"), dict) else {}
+    plan = review_package.get("plan") if isinstance(review_package.get("plan"), dict) else {}
+    suite = plan.get("suite") if isinstance(plan.get("suite"), dict) else {}
+    plan_meta = plan.get("_meta") if isinstance(plan.get("_meta"), dict) else {}
+    from modules.sourcing.image_shot_prompts import english_dimension_label
+
+    final_overlay_labels: dict[str, str] = {}
+    for item in suite.get("items") or []:
+        if not isinstance(item, dict) or str(item.get("type") or "") != "size_card":
+            continue
+        try:
+            final_overlay_labels[str(item.get("id") or "")] = english_dimension_label(
+                str(item.get("human_dimensions") or "")
+            )
+        except ValueError:
+            final_overlay_labels[str(item.get("id") or "")] = ""
+    model_proposal = review_package.get("model_proposal") if isinstance(review_package.get("model_proposal"), dict) else {}
+    proposal_usage = model_proposal.get("usage") if isinstance(model_proposal.get("usage"), dict) else {}
+    planning_signature = _planning_recipe_signature(saved)
+    model_proposal_valid = bool(
+        model_proposal
+        and str(model_proposal.get("planning_source") or "") == "ai"
+        and str(model_proposal.get("planning_signature") or "") == planning_signature
+    )
+    storyboard_reviews = (
+        saved.get("storyboard_reviews")
+        if isinstance(saved.get("storyboard_reviews"), dict)
+        else {}
+    )
+    preflight = saved.get("first_image_preflight") if isinstance(saved.get("first_image_preflight"), dict) else {}
+    first_generation = saved.get("first_image_generation") if isinstance(saved.get("first_image_generation"), dict) else {}
+    remaining_preflight = saved.get("remaining_images_preflight") if isinstance(saved.get("remaining_images_preflight"), dict) else {}
+    remaining_generation = saved.get("remaining_images_generation") if isinstance(saved.get("remaining_images_generation"), dict) else {}
+    remaining_generation_status = str(remaining_generation.get("status") or "not_started")
+    worker_pid = int(remaining_generation.get("worker_pid") or 0)
+    if remaining_generation_status in {"queued", "running"} and worker_pid and worker_pid != os.getpid():
+        remaining_generation_status = "interrupted_retry_available"
+    elif remaining_generation_status == "running" and not _image_generation_lock(offer_id).locked():
+        remaining_generation_status = "interrupted_retry_available"
+    miaoshou_write = (
+        saved.get("miaoshou_ordered_images_write")
+        if isinstance(saved.get("miaoshou_ordered_images_write"), dict)
+        else saved.get("miaoshou_generated_images_write")
+        if isinstance(saved.get("miaoshou_generated_images_write"), dict)
+        else {}
+    )
+    available_identity_images = [
+        str(url).strip()
+        for url in (collect_box.get("image_urls") or [])
+        if isinstance(url, str) and str(url).strip()
+    ]
+    default_primary = str(collect_box.get("primary_identity_image") or "").strip()
+    saved_refs = saved.get("identity_reference_urls") if isinstance(saved.get("identity_reference_urls"), list) else []
+    identity_reference_urls = [str(url) for url in saved_refs if str(url) in available_identity_images]
+    if not identity_reference_urls and default_primary:
+        identity_reference_urls = [default_primary]
+    saved_primary = str(saved.get("primary_identity_url") or "").strip()
+    primary_identity_url = saved_primary if saved_primary in identity_reference_urls else (identity_reference_urls[0] if identity_reference_urls else "")
+    return {
+        "schema_version": "1.0.0",
+        "collect_box_id": collect_box_id,
+        "package_found": package_dir is not None,
+        "report_ready": report_ready,
+        "fact_card_approved": bool(saved.get("fact_card_approved")),
+        "planning_scope_approved": bool(saved.get("planning_scope_approved")),
+        "suite_approved": bool(saved.get("suite_approved")),
+        "artifacts": artifacts,
+        "generated_review_images": generated_review_images,
+        "source_snapshot": {
+            "title": str(collect_box.get("source_title") or ""),
+            "item_num": str(collect_box.get("item_num") or ""),
+            "primary_identity_image": primary_identity_url,
+            "image_urls": available_identity_images,
+            "identity_reference_urls": identity_reference_urls,
+            "image_count": int(collect_box.get("image_count") or 0),
+        },
+        "fact_card": {
+            "verified": fact_card.get("verified") if isinstance(fact_card.get("verified"), list) else [],
+            "inferred": fact_card.get("inferred") if isinstance(fact_card.get("inferred"), list) else [],
+            "unknown_or_forbidden": fact_card.get("unknown_or_forbidden") if isinstance(fact_card.get("unknown_or_forbidden"), list) else [],
+        },
+        "suite": {
+            "summary": str(suite.get("summary") or ""),
+            "category_profile": str(plan_meta.get("category_profile") or ""),
+            "items": [
+                {
+                    "id": str(item.get("id") or ""),
+                    "type": str(item.get("type") or ""),
+                    "title": str(item.get("title") or ""),
+                    "focus": str(item.get("focus") or ""),
+                    "title_zh": str(item.get("operator_title_zh") or ""),
+                    "focus_zh": str(item.get("focus_zh") or ""),
+                    "ai_planned": bool(item.get("ai_planned")),
+                    "selected": bool(item.get("selected")),
+                    "review_decision": str(
+                        (storyboard_reviews.get(str(item.get("id") or "")) or {}).get("decision")
+                        or "pending"
+                    ),
+                    "review_note": str(
+                        (storyboard_reviews.get(str(item.get("id") or "")) or {}).get("note")
+                        or ""
+                    ),
+                    "model_base_contains_text": False if str(item.get("type") or "") == "size_card" else None,
+                    "final_overlay_label": final_overlay_labels.get(str(item.get("id") or ""), ""),
+                    "final_delivery_contains_numbers": bool(
+                        str(item.get("type") or "") == "size_card"
+                        and final_overlay_labels.get(str(item.get("id") or ""), "")
+                    ),
+                }
+                for item in (suite.get("items") or [])
+                if isinstance(item, dict)
+            ],
+        },
+        "suite_customization": saved.get("suite_customization") if isinstance(saved.get("suite_customization"), dict) else {},
+        "storyboard_reviews": storyboard_reviews,
+        "pending_regeneration_shot_ids": [
+            str(shot_id)
+            for shot_id in (saved.get("pending_regeneration_shot_ids") or [])
+            if str(shot_id)
+        ],
+        "suite_revision": max(1, int(saved.get("suite_revision") or 1)),
+        "recipe_changed_at": str(saved.get("recipe_changed_at") or ""),
+        "model_proposal": {
+            "available": bool(model_proposal),
+            "valid": model_proposal_valid,
+            "status": (
+                "completed_waiting_human_review"
+                if model_proposal_valid
+                else ("stale_recipe_changed" if model_proposal else "not_requested")
+            ),
+            "planning_source": str(model_proposal.get("planning_source") or ""),
+            "planning_signature": str(model_proposal.get("planning_signature") or ""),
+            "model": str(model_proposal.get("model") or ""),
+            "reference_count": int(model_proposal.get("reference_count") or 0),
+            "created_at": str(model_proposal.get("created_at") or ""),
+            "total_tokens": int(proposal_usage.get("total_tokens") or 0),
+            "revision_target_ids": [
+                str(shot_id)
+                for shot_id in (model_proposal.get("revision_target_ids") or [])
+                if str(shot_id)
+            ],
+            "unchanged_item_ids": [
+                str(shot_id)
+                for shot_id in (model_proposal.get("unchanged_item_ids") or [])
+                if str(shot_id)
+            ],
+            "accepted_shot_count": sum(1 for item in (suite.get("items") or []) if isinstance(item, dict) and item.get("selected")),
+            "policy_rejections": list((model_proposal.get("policy") or {}).get("rejected_item_ids") or []),
+            "candidate_items": [
+                {
+                    "id": str(item.get("id") or ""),
+                    "type": str(item.get("type") or ""),
+                    "title": str(item.get("title") or ""),
+                    "focus": str(item.get("focus") or ""),
+                    "title_zh": str(item.get("title_zh") or ""),
+                    "focus_zh": str(item.get("focus_zh") or ""),
+                    "aspect_ratio": str(item.get("aspect_ratio") or ""),
+                }
+                for item in (model_proposal.get("candidate_items") or [])
+                if isinstance(item, dict)
+            ],
+        },
+        "first_image_preflight": {
+            "ready": bool(preflight),
+            "status": str(preflight.get("status") or ""),
+            "shot_id": str(preflight.get("shot_id") or ""),
+            "title": str(preflight.get("title") or ""),
+            "focus": str(preflight.get("focus") or ""),
+            "aspect_ratio": str(preflight.get("aspect_ratio") or ""),
+        "reference_count": int(preflight.get("reference_count") or 0),
+        "reference_urls": [
+            str(url) for url in ((preflight.get("payload") or {}).get("reference_images") or [])
+            if str(url).startswith("https://")
+        ],
+        "model": str(preflight.get("model") or ""),
+        "prompt_preview": str(((preflight.get("payload") or {}).get("prompt") or ""))[:4000],
+        },
+        "first_image_generation": {
+            "status": str(first_generation.get("status") or "not_started"),
+            "artifact_id": str(first_generation.get("artifact_id") or ""),
+            "task_id": str(first_generation.get("task_id") or ""),
+            "result_summary": str(first_generation.get("result_summary") or ""),
+            "error": str(first_generation.get("error") or ""),
+        },
+        "remaining_images_preflight": {
+            "ready": bool(remaining_preflight),
+            "status": str(remaining_preflight.get("status") or ""),
+            "full_suite": bool(remaining_preflight.get("full_suite")),
+            "targeted_regeneration": bool(
+                remaining_preflight.get("targeted_regeneration")
+            ),
+            "prepared_at": str(remaining_preflight.get("prepared_at") or ""),
+            "suite_revision": int(remaining_preflight.get("suite_revision") or 0),
+            "total": len(remaining_preflight.get("shots") or []),
+            "shots": [
+                {
+                    "id": str(row.get("id") or ""),
+                    "title": str(row.get("title") or ""),
+                    "focus": str(row.get("focus") or ""),
+                    "aspect_ratio": str(row.get("aspect_ratio") or ""),
+                    "reference_count": int(row.get("reference_count") or 0),
+                    "model": str(row.get("model") or ""),
+                    "prompt_preview": str(((row.get("payload") or {}).get("prompt") or ""))[:4000],
+                    "reference_urls": [
+                        str(url) for url in ((row.get("payload") or {}).get("reference_images") or [])
+                        if str(url).startswith("https://")
+                    ],
+                }
+                for row in (remaining_preflight.get("shots") or [])
+                if isinstance(row, dict)
+            ],
+        },
+        "remaining_images_generation": {
+            "status": remaining_generation_status,
+            "started_at": str(remaining_generation.get("started_at") or ""),
+            "finished_at": str(remaining_generation.get("finished_at") or ""),
+            "current_shot_id": str(remaining_generation.get("current_shot_id") or ""),
+            "items": [
+                {
+                    "shot_id": str(row.get("shot_id") or ""),
+                    "artifact_id": str(row.get("artifact_id") or ""),
+                    "status": str(row.get("status") or ""),
+                    "task_id": str(row.get("task_id") or ""),
+                    "result_summary": str(row.get("result_summary") or ""),
+                }
+                for row in (remaining_generation.get("items") or [])
+                if isinstance(row, dict)
+            ],
+            "error": str(remaining_generation.get("error") or ""),
+        },
+        "miaoshou_generated_images_write": {
+            "status": str(miaoshou_write.get("status") or "not_started"),
+            "written_image_count": int(miaoshou_write.get("written_image_count") or 0),
+            "finished_at": str(miaoshou_write.get("finished_at") or ""),
+            "checks": miaoshou_write.get("checks") if isinstance(miaoshou_write.get("checks"), dict) else {},
+            "error": str(miaoshou_write.get("error") or ""),
+        },
+        "approved_asset_count": sum(1 for row in artifacts if row.get("decision") == "approved"),
+        "stage": _content_stage(saved, artifacts, ai_plan_valid=model_proposal_valid),
+        "updated_at": saved.get("updated_at") or "",
+        "note": str(saved.get("note") or ""),
+    }
+
+
+def sync_content_package(offer_id_or_url: str, *, collect_box_id: str = "") -> dict[str, Any]:
+    """Attach an existing local image-review package to a Treasury product case."""
+    offer_id = resolve_offer_key(offer_id_or_url)
+    state = load_state(offer_id)
+    clean_id = str(collect_box_id or "").strip()
+    if clean_id and not clean_id.isdigit():
+        raise ValueError("collect_box_id must contain digits only")
+    content = state.setdefault("content_package", {})
+    if clean_id:
+        content["collect_box_id"] = clean_id
+    else:
+        content["collect_box_id"] = _content_collect_box_id(offer_id, state, _source_summary(offer_id))
+    content["linked_at"] = _now()
+    save_state(offer_id, state)
+    return content_package_summary(offer_id)
+
+
+def prepare_content_package(offer_id_or_url: str, *, collect_box_id: str = "") -> dict[str, Any]:
+    """Create a local, review-only package from Miaoshou; never generate or write images."""
+    offer_id = resolve_offer_key(offer_id_or_url)
+    state = load_state(offer_id)
+    source = _source_summary(offer_id)
+    clean_id = str(collect_box_id or _content_collect_box_id(offer_id, state, source)).strip()
+    if not clean_id.isdigit():
+        raise ValueError("collect_box_id must contain digits only")
+
+    from modules.sourcing.image_review_package import create_package_from_miaoshou
+
+    result = create_package_from_miaoshou(int(clean_id), IMAGE_SUITE_OUTPUTS_DIR / clean_id)
+    content = state.setdefault("content_package", {})
+    content["collect_box_id"] = clean_id
+    content["prepared_at"] = _now()
+    content["prepare_mode"] = "review_only_no_model_or_generation_call"
+    content["fact_card_approved"] = False
+    content["planning_scope_approved"] = False
+    content["suite_approved"] = False
+    content.pop("asset_decisions", None)
+    content.pop("identity_reference_urls", None)
+    content.pop("primary_identity_url", None)
+    save_state(offer_id, state)
+    return {"preparation": result, "content_package": content_package_summary(offer_id)}
+
+
+def propose_content_package_with_vision(
+    offer_id_or_url: str,
+    *,
+    reference_urls: list[str],
+    storyboard_feedback: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Run mandatory AI storyboard planning inside locally validated constraints."""
+    offer_id = resolve_offer_key(offer_id_or_url)
+    state = load_state(offer_id)
+    content = state.setdefault("content_package", {})
+    if not content.get("fact_card_approved"):
+        raise ValueError("approve and save the fact card before requesting AI storyboard planning")
+    if not content.get("planning_scope_approved"):
+        raise ValueError("approve and save the local category rules and image counts before requesting AI storyboard planning")
+    saved_refs = [
+        str(url) for url in (content.get("identity_reference_urls") or [])
+        if str(url).startswith("https://")
+    ]
+    if not saved_refs:
+        raise ValueError("save at least one approved identity reference before requesting AI storyboard planning")
+    package_dir = _content_package_dir(str(content.get("collect_box_id") or ""))
+    if package_dir is None:
+        raise ValueError("create a local content review package before requesting a vision proposal")
+    from modules.sourcing.image_review_package import create_model_suite_proposal
+
+    requested_refs = [str(url) for url in reference_urls if str(url) in saved_refs]
+    refs = requested_refs or saved_refs
+    planning_signature = _planning_recipe_signature(content)
+    review_package = _load_json(package_dir / "review_package.json") or {}
+    current_items = {
+        str(item.get("id") or ""): item
+        for item in (((review_package.get("plan") or {}).get("suite") or {}).get("items") or [])
+        if isinstance(item, dict)
+    }
+    ai_feedback: dict[str, str] = {}
+    locally_satisfied_feedback: dict[str, str] = {}
+    overlay_only_pattern = re.compile(
+        r"^(?:图像中|图片中|最终图中)?\s*(?:需要|要|请)?\s*"
+        r"(?:出现|有|显示|添加|加上)?\s*(?:尺寸)?\s*"
+        r"(?:数字|尺寸数字|英文尺寸|尺寸标注)\s*[。！!]?$"
+    )
+    for shot_id, raw_note in (storyboard_feedback or {}).items():
+        note = str(raw_note or "").strip()[:1200]
+        if not note:
+            continue
+        item = current_items.get(str(shot_id)) or {}
+        if str(item.get("type") or "") == "size_card" and overlay_only_pattern.fullmatch(note):
+            locally_satisfied_feedback[str(shot_id)] = note
+        else:
+            ai_feedback[str(shot_id)] = note
+    if locally_satisfied_feedback and not ai_feedback:
+        from modules.sourcing.image_shot_prompts import english_dimension_label
+
+        dimensions = str(
+            ((content.get("suite_customization") or {}).get("size_card") or {}).get("dimensions")
+            or ""
+        )
+        label = english_dimension_label(dimensions)
+        return {
+            "proposal": {
+                "vision_model_called": False,
+                "paid_generation_called": False,
+                "local_feedback_satisfied": locally_satisfied_feedback,
+                "final_overlay_label": label,
+                "message": (
+                    "该要求无需重新调用 AI。最终尺寸图会在无文字底图生成后，"
+                    f"由本地程序自动添加已确认数字：{label}。"
+                ),
+            },
+            "content_package": content_package_summary(offer_id),
+        }
+    revision_target_ids = sorted(ai_feedback)
+    previous_storyboard_reviews = deepcopy(
+        content.get("storyboard_reviews")
+        if isinstance(content.get("storyboard_reviews"), dict)
+        else {}
+    )
+    result = create_model_suite_proposal(
+        package_dir,
+        refs,
+        suite_request=content.get("suite_customization") if isinstance(content.get("suite_customization"), dict) else {},
+        planning_signature=planning_signature,
+        storyboard_feedback=ai_feedback,
+        revision_target_ids=revision_target_ids,
+    )
+    _invalidate_paid_image_state(content)
+    if revision_target_ids:
+        content.pop("force_regenerate_all", None)
+        content["pending_regeneration_shot_ids"] = revision_target_ids
+    else:
+        content.pop("pending_regeneration_shot_ids", None)
+    content["suite_approved"] = False
+    if revision_target_ids:
+        revised_reviews: dict[str, dict[str, Any]] = {}
+        review_package = _load_json(package_dir / "review_package.json") or {}
+        revised_items = (
+            ((review_package.get("plan") or {}).get("suite") or {}).get("items")
+            or []
+        )
+        for item in revised_items:
+            if not isinstance(item, dict) or not item.get("selected"):
+                continue
+            shot_id = str(item.get("id") or "")
+            if not shot_id:
+                continue
+            if shot_id in revision_target_ids:
+                revised_reviews[shot_id] = {
+                    "decision": "pending",
+                    "note": "",
+                    "reviewed_at": _now(),
+                }
+            else:
+                previous = previous_storyboard_reviews.get(shot_id) or {}
+                revised_reviews[shot_id] = {
+                    "decision": (
+                        "approved"
+                        if str(previous.get("decision") or "") == "approved"
+                        else "pending"
+                    ),
+                    "note": str(previous.get("note") or "").strip()[:1200],
+                    "reviewed_at": str(previous.get("reviewed_at") or _now()),
+                }
+        content["storyboard_reviews"] = revised_reviews
+    else:
+        content["storyboard_reviews"] = {}
+    content["vision_proposal_at"] = _now()
+    content["vision_proposal_signature"] = planning_signature
+    save_state(offer_id, state)
+    return {"proposal": result, "content_package": content_package_summary(offer_id)}
+
+
+def _apply_suite_customization(
+    suite: dict[str, Any], customization: dict[str, Any] | None, *, profile_id: str = ""
+) -> dict[str, Any]:
+    """Apply explicit operator changes to a category's suggested image suite."""
+    result = deepcopy(suite) if isinstance(suite, dict) else {"summary": "", "items": []}
+    base_items = [dict(row) for row in result.get("items") or [] if isinstance(row, dict)]
+    custom = customization if isinstance(customization, dict) else {}
+    type_counts = custom.get("type_counts") if isinstance(custom.get("type_counts"), dict) else {}
+    size_card = custom.get("size_card") if isinstance(custom.get("size_card"), dict) else {}
+    type_specs = {
+        "white_bg": ("wb", "Clean White Product Hero", "Show the exact approved product on a clean white background."),
+        "scene": ("sc", "Source-Supported Lifestyle Scene", "Choose a distinct, believable use setting from the approved source material without inventing features."),
+        "selling_point": ("sp", "Source-Supported Selling Point", "Highlight one visible, source-supported product characteristic without text or invented claims."),
+        "macro_detail": ("dt", "Source-Supported Detail", "Show a close product detail only when it is visibly supported by the source references."),
+        "size_card": ("sz", "Operator-Confirmed Size Card", "Create a clean technical base for a later deterministic English size overlay."),
+    }
+    scene_variants = {
+        "wall_decal": [
+            ("Entryway Wall Application", "Show the exact decal applied to a clean entryway wall at believable scale."),
+            ("Bedroom Wall Application", "Show the exact decal on a calm bedroom wall with restrained, relevant props."),
+            ("Living Space Wall Application", "Show the exact decal on a bright living-space wall with realistic placement."),
+            ("Hallway Accent Application", "Show the exact decal on a simple hallway wall without changing its artwork or proportions."),
+            ("Children's Room Application", "Show the exact decal in a tidy children's room only when the source artwork suits that setting."),
+            ("Home Office Application", "Show the exact decal on a clean home-office wall with realistic scale and placement."),
+        ],
+        "product_sticker": [
+            ("Primary Product Application", "Show the exact sticker applied to the most source-supported compatible product surface."),
+            ("Alternate Product Application", "Show the exact sticker on a second believable compatible surface without inventing durability claims."),
+            ("Close Lifestyle Application", "Show the exact sticker in a tighter real-use composition with its artwork unchanged."),
+            ("Outdoor Use Context", "Show the exact sticker in a believable outdoor-use context only when supported by the source product."),
+            ("Indoor Storage Context", "Show the exact sticker on a clean personal-item surface in a realistic indoor setting."),
+            ("Gift Personalization Context", "Show the exact sticker as a decorative accent without implying unsupported customization."),
+        ],
+    }
+    items: list[dict[str, Any]] = []
+    for shot_type, (prefix, fallback_title, fallback_focus) in type_specs.items():
+        originals = [row for row in base_items if str(row.get("type") or "") == shot_type and bool(row.get("selected", True))]
+        raw_count = type_counts.get(shot_type)
+        if isinstance(raw_count, int) and not isinstance(raw_count, bool):
+            desired_count = max(0, min(raw_count, 6))
+        else:
+            # Compatibility with the previous scene-only editor.
+            legacy_scene_count = custom.get("scene_count") if shot_type == "scene" else None
+            desired_count = max(0, min(legacy_scene_count, 6)) if isinstance(legacy_scene_count, int) else len(originals)
+        if shot_type == "size_card" and bool(size_card.get("enabled")) and desired_count == 0:
+            desired_count = 1
+        if shot_type == "size_card":
+            desired_count = min(desired_count, 1)
+        for index in range(desired_count):
+            row = dict(originals[index]) if index < len(originals) else {
+                "id": f"{prefix}_custom_{index + 1:02d}",
+                "type": shot_type,
+                "title": f"{fallback_title} {index + 1}" if desired_count > 1 else fallback_title,
+                "focus": fallback_focus,
+                "focus_zh": "由 AI 根据已确认的商品身份参考图选择合规的构图变体。",
+                "aspect_ratio": "1:1",
+                "operator_added": True,
+            }
+            row["selected"] = True
+            if shot_type == "scene" and index < len(scene_variants.get(profile_id, [])):
+                row["title"], row["focus"] = scene_variants[profile_id][index]
+                row["focus_zh"] = "系统按类目规划的不同场景变体；AI 仅执行该构图，不得改变商品身份。"
+            if shot_type == "size_card":
+                row.update({
+                    "human_dimensions": str(size_card.get("dimensions") or "").strip()[:240],
+                    "human_dimensions_confirmed": bool(size_card.get("confirmed")),
+                    "human_override": True,
+                })
+            items.append(row)
+    result["items"] = items
+    return result
+
+
+def _safe_image_execution_plan(
+    review_package: dict[str, Any],
+    *,
+    suite_customization: dict[str, Any] | None = None,
+    required_planning_signature: str = "",
+) -> dict[str, Any]:
+    """Build paid prompts from a locally validated AI storyboard."""
+    plan = review_package.get("plan") if isinstance(review_package.get("plan"), dict) else {}
+    proposal = review_package.get("model_proposal") if isinstance(review_package.get("model_proposal"), dict) else {}
+    if str(proposal.get("planning_source") or "") != "ai":
+        raise ValueError("generate an AI storyboard before preparing paid image generation")
+    if (
+        required_planning_signature
+        and str(proposal.get("planning_signature") or "") != required_planning_signature
+    ):
+        raise ValueError("the AI storyboard is stale because references or image counts changed; generate it again")
+    fact_card = review_package.get("fact_card") if isinstance(review_package.get("fact_card"), dict) else {}
+    profile_id = str((plan.get("_meta") or {}).get("category_profile") or "")
+    material = ""
+    for row in fact_card.get("verified") or []:
+        if isinstance(row, dict) and str(row.get("field") or "") == "材质":
+            material = str(row.get("value") or "")
+            break
+    product_facts = {
+        "wall_decal": ("Flat decorative wall decal", "decorative wall decal", "flat printed wall decal artwork"),
+        "product_sticker": ("Flat decorative product sticker", "decorative product sticker", "flat printed sticker artwork"),
+    }
+    subject, category, structure = product_facts.get(profile_id, ("Decorative product", "decorative product", "source-supported product form"))
+    from modules.sourcing.image_suite_plan import enforce_category_policy
+
+    locked_plan = enforce_category_policy(
+        plan,
+        title=str((review_package.get("collect_box") or {}).get("source_title") or ""),
+        category=str((plan.get("analysis") or {}).get("category") or ""),
+        suite_request=suite_customization if isinstance(suite_customization, dict) else {},
+    )
+    return {
+        "analysis": {
+            "subject": subject,
+            "category": category,
+            "theme": "source-supported printed graphic",
+            "structure": structure,
+            "style_lock": "Use the approved source reference images to preserve the exact graphic, colors, cut edge, flat form, and proportions. Do not recreate, translate, or replace visible artwork.",
+            "materials": [material] if material else [],
+            "colors": [],
+            "craft_details": [],
+            "brand_dna": [],
+        },
+        "suite": locked_plan.get("suite") if isinstance(locked_plan.get("suite"), dict) else {},
+        "_meta": {
+            "title": str((review_package.get("collect_box") or {}).get("source_title") or ""),
+            "image_url": str((review_package.get("collect_box") or {}).get("primary_identity_image") or ""),
+            "category_profile": profile_id,
+            "plan_model": str(proposal.get("model") or ""),
+            "planning_source": "ai",
+        },
+    }
+
+
+def _planning_recipe_signature(content: dict[str, Any]) -> str:
+    """Fields that require a fresh AI storyboard when changed."""
+    recipe = {
+        "identity_reference_urls": list(content.get("identity_reference_urls") or []),
+        "primary_identity_url": str(content.get("primary_identity_url") or ""),
+        "suite_customization": content.get("suite_customization") or {},
+    }
+    return json.dumps(recipe, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _content_recipe_signature(content: dict[str, Any]) -> str:
+    """Stable signature for every field that changes a paid generation payload."""
+    recipe = {
+        "fact_card_approved": bool(content.get("fact_card_approved")),
+        "planning_scope_approved": bool(content.get("planning_scope_approved")),
+        "suite_approved": bool(content.get("suite_approved")),
+        "identity_reference_urls": list(content.get("identity_reference_urls") or []),
+        "primary_identity_url": str(content.get("primary_identity_url") or ""),
+        "suite_customization": content.get("suite_customization") or {},
+    }
+    return json.dumps(recipe, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _invalidate_paid_image_state(content: dict[str, Any]) -> None:
+    generation = content.get("remaining_images_generation")
+    if isinstance(generation, dict) and str(generation.get("status") or "") in {"queued", "running"}:
+        raise ValueError("cannot change the image recipe while paid generation is running")
+    if isinstance(generation, dict) and generation:
+        history = content.setdefault("image_generation_history", [])
+        if isinstance(history, list):
+            history.append(deepcopy(generation))
+            del history[:-20]
+    content.pop("remaining_images_preflight", None)
+    content.pop("remaining_images_generation", None)
+    content.pop("first_image_preflight", None)
+    content.pop("first_image_generation", None)
+    content["force_regenerate_all"] = True
+
+
+def prepare_first_image_generation(offer_id_or_url: str) -> dict[str, Any]:
+    """Create a no-network, no-charge preflight for the first identity-check image."""
+    offer_id = resolve_offer_key(offer_id_or_url)
+    state = load_state(offer_id)
+    content = state.setdefault("content_package", {})
+    if not content.get("fact_card_approved") or not content.get("suite_approved"):
+        raise ValueError("approve the fact card and suite scope before preparing image generation")
+    package_dir = _content_package_dir(str(content.get("collect_box_id") or ""))
+    if package_dir is None:
+        raise ValueError("content review package not found")
+    review_package = _load_json(package_dir / "review_package.json") or {}
+    # Model observations remain review-only. Paid execution receives only
+    # source-supported facts plus the approved composition direction.
+    execution_plan = _safe_image_execution_plan(
+        review_package,
+        suite_customization=content.get("suite_customization"),
+        required_planning_signature=_planning_recipe_signature(content),
+    )
+    from modules.sourcing.image_shot_prompts import build_shot_prompts
+    prompts = build_shot_prompts(execution_plan)
+    shots = prompts.get("shots") if isinstance(prompts.get("shots"), list) else []
+    shot = next((row for row in shots if isinstance(row, dict) and row.get("type") == "scene"), None)
+    if shot is None:
+        shot = next((row for row in shots if isinstance(row, dict)), None)
+    if shot is None:
+        raise ValueError("no selected image shot is available")
+    refs = content.get("identity_reference_urls") if isinstance(content.get("identity_reference_urls"), list) else []
+    refs = [str(url) for url in refs if str(url).startswith("https://")]
+    if not refs:
+        refs = [str(shot.get("reference_image_url") or "")]
+    from modules.sourcing.toapis_client import build_generation_payload
+
+    payload = build_generation_payload(
+        prompt=str(shot.get("prompt") or ""), model="gpt-image-2", size=str(shot.get("aspect_ratio") or "1:1"),
+        resolution="1k", reference_images=refs, n=1,
+    )
+    preflight = {
+        "status": "ready_for_explicit_paid_confirmation",
+        "prepared_at": _now(),
+        "shot_id": str(shot.get("id") or ""),
+        "title": str(shot.get("title") or ""),
+        "focus": str(shot.get("focus") or ""),
+        "aspect_ratio": str(shot.get("aspect_ratio") or ""),
+        "reference_count": len(refs),
+        "model": "gpt-image-2",
+        "payload": payload,
+    }
+    content["first_image_preflight"] = preflight
+    save_state(offer_id, state)
+    return {"ok": True, "preflight": preflight, "content_package": content_package_summary(offer_id)}
+
+
+def _run_first_image_generation(offer_id: str) -> None:
+    """Execute the explicitly confirmed first paid image task in the background."""
+    lock = _image_generation_lock(offer_id)
+    with lock:
+        state = load_state(offer_id)
+        content = state.setdefault("content_package", {})
+        preflight = content.get("first_image_preflight") if isinstance(content.get("first_image_preflight"), dict) else {}
+        package_dir = _content_package_dir(str(content.get("collect_box_id") or ""))
+        if package_dir is None or not preflight.get("payload"):
+            return
+        artifact_id = str((content.get("first_image_generation") or {}).get("artifact_id") or "sc1_first_preview")
+        generation = content.setdefault("first_image_generation", {})
+        generation.update({"status": "running", "artifact_id": artifact_id, "error": ""})
+        generation["worker_pid"] = os.getpid()
+        save_state(offer_id, state)
+        try:
+            runtime_path = package_dir / f"execution_{artifact_id}.json"
+            _write_json_atomic(runtime_path, {
+                "collect_box_id": str(content.get("collect_box_id") or ""),
+                "shot": {
+                    "id": str(preflight.get("shot_id") or "sc1"),
+                    "title": str(preflight.get("title") or ""),
+                    "focus": str(preflight.get("focus") or ""),
+                    "aspect_ratio": str(preflight.get("aspect_ratio") or "1:1"),
+                },
+                "payload": preflight.get("payload") or {},
+            })
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "generate_approved_image_shot.py"),
+                    "--payload-file", str(runtime_path),
+                    "--artifact-id", artifact_id,
+                    "--execute-paid",
+                ],
+                cwd=str(ROOT),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=420,
+            )
+            audit = _load_json(package_dir / f"generation_audit_{artifact_id}.json") or {}
+            verified = bool(audit.get("download_verified"))
+            state = load_state(offer_id)
+            content = state.setdefault("content_package", {})
+            generation = content.setdefault("first_image_generation", {})
+            generation.update({
+                "status": "completed_waiting_human_review" if verified else "failed",
+                "artifact_id": artifact_id,
+                "task_id": str(audit.get("task_id") or ""),
+                "result_summary": str(audit.get("result_summary") or (completed.stderr or "task did not produce a verified image"))[:1000],
+            })
+            save_state(offer_id, state)
+        except Exception as exc:
+            state = load_state(offer_id)
+            content = state.setdefault("content_package", {})
+            content.setdefault("first_image_generation", {}).update({
+                "status": "failed",
+                "artifact_id": artifact_id,
+                "error": str(exc)[:1000],
+            })
+            save_state(offer_id, state)
+
+
+def start_first_image_generation(offer_id_or_url: str) -> dict[str, Any]:
+    """Queue exactly one user-confirmed paid first-image task."""
+    offer_id = resolve_offer_key(offer_id_or_url)
+    lock = _image_generation_lock(offer_id)
+    if lock.locked():
+        raise ValueError("an image generation task is already running for this product")
+    state = load_state(offer_id)
+    content = state.setdefault("content_package", {})
+    preflight = content.get("first_image_preflight") if isinstance(content.get("first_image_preflight"), dict) else {}
+    if preflight.get("status") != "ready_for_explicit_paid_confirmation" or not preflight.get("payload"):
+        raise ValueError("prepare the first image preflight before starting paid generation")
+    existing = content.get("first_image_generation") if isinstance(content.get("first_image_generation"), dict) else {}
+    if str(existing.get("status") or "") in {"queued", "running"}:
+        raise ValueError("first image generation is already running")
+    content["first_image_generation"] = {
+        "status": "queued",
+        "worker_pid": os.getpid(),
+        "queued_at": _now(),
+        "artifact_id": "sc1_first_preview",
+        "task_id": "",
+        "result_summary": "等待创建 ToAPI 图片任务。",
+    }
+    save_state(offer_id, state)
+    threading.Thread(target=_run_first_image_generation, args=(offer_id,), daemon=True, name=f"first-image-{offer_id}").start()
+    return {"ok": True, "content_package": content_package_summary(offer_id)}
+
+
+def prepare_remaining_image_generations(
+    offer_id_or_url: str, *, artifact_suffix: str = "", include_first: bool = False,
+    force_shot_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Prepare a reviewed batch without creating paid tasks.
+
+    ``include_first`` is the current workflow: all selected suite shots are
+    prepared as one paid batch. The old first-image gate remains supported for
+    historical cases but is no longer used by the Treasury UI.
+    """
+    offer_id = resolve_offer_key(offer_id_or_url)
+    state = load_state(offer_id)
+    content = state.setdefault("content_package", {})
+    if not content.get("fact_card_approved") or not content.get("suite_approved"):
+        raise ValueError("approve the fact card and suite scope before preparing remaining images")
+
+    package_dir = _content_package_dir(str(content.get("collect_box_id") or ""))
+    if package_dir is None:
+        raise ValueError("content review package not found")
+    decisions = content.get("asset_decisions") if isinstance(content.get("asset_decisions"), dict) else {}
+    artifacts = _content_artifacts(package_dir, decisions)
+    technically_complete_shots = {
+        str(row.get("shot_id") or "")
+        for row in artifacts
+        if row.get("technical_complete")
+    }
+    approved_first_shots = {
+        str(row.get("shot_id") or "")
+        for row in artifacts
+        if row.get("technical_complete") and row.get("decision") == "approved"
+    }
+    if not include_first and not approved_first_shots:
+        raise ValueError("approve at least one generated identity-check image before preparing remaining shots")
+    requested_force_shots = force_shot_ids
+    if not requested_force_shots:
+        requested_force_shots = content.get("pending_regeneration_shot_ids") or []
+    forced_shots = {
+        str(value).strip() for value in requested_force_shots
+        if re.fullmatch(r"[A-Za-z0-9_-]{1,80}", str(value).strip())
+    }
+    force_all = bool(content.pop("force_regenerate_all", False))
+
+    review_package = _load_json(package_dir / "review_package.json") or {}
+    # The planning model is advisory. Paid prompts are rebuilt from source facts,
+    # the approved suite, and the selected identity references only.
+    execution_plan = _safe_image_execution_plan(
+        review_package,
+        suite_customization=content.get("suite_customization"),
+        required_planning_signature=_planning_recipe_signature(content),
+    )
+    from modules.sourcing.image_shot_prompts import build_shot_prompts
+    from modules.sourcing.toapis_client import build_generation_payload
+
+    bundle = build_shot_prompts(execution_plan)
+    refs = content.get("identity_reference_urls") if isinstance(content.get("identity_reference_urls"), list) else []
+    refs = [str(url) for url in refs if str(url).startswith("https://")]
+    if not refs:
+        refs = [str(execution_plan["_meta"].get("image_url") or "")]
+    refs = [url for url in refs if url.startswith("https://")]
+    if not refs:
+        raise ValueError("select at least one public HTTPS identity reference before preparing remaining shots")
+    clean_suffix = str(artifact_suffix or "").strip()
+    if clean_suffix and not re.fullmatch(r"[A-Za-z0-9_-]{1,48}", clean_suffix):
+        raise ValueError("artifact_suffix contains unsupported characters")
+
+    pending_shots = []
+    for shot in bundle.get("shots") or []:
+        if not isinstance(shot, dict) or (not include_first and str(shot.get("id") or "") in approved_first_shots):
+            continue
+        shot_id = str(shot.get("id") or "")
+        if not shot_id:
+            continue
+        if str(shot.get("type") or "") == "size_card":
+            source_item = next(
+                (row for row in ((execution_plan.get("suite") or {}).get("items") or []) if str(row.get("id") or "") == shot_id),
+                {},
+            )
+            if not bool(source_item.get("human_dimensions_confirmed")) or not str(source_item.get("human_dimensions") or "").strip():
+                raise ValueError("confirm the exact dimensions before generating an operator-requested size card")
+        if forced_shots and shot_id not in forced_shots:
+            continue
+        if include_first and shot_id in technically_complete_shots and not force_all and shot_id not in forced_shots:
+            continue
+        payload = build_generation_payload(
+            prompt=str(shot.get("prompt") or ""),
+            model="gpt-image-2",
+            size=str(shot.get("aspect_ratio") or "1:1"),
+            resolution="1k",
+            reference_images=refs,
+            n=1,
+        )
+        revision = max(1, int(content.get("suite_revision") or 1))
+        batch_token = str(int(time.time() * 1000))
+        pending_shots.append({
+            "id": shot_id,
+            "artifact_id": f"{shot_id}_{clean_suffix}" if clean_suffix else f"{shot_id}_r{revision}_{batch_token}",
+            "type": str(shot.get("type") or ""),
+            "title": str(shot.get("title") or ""),
+            "focus": str(shot.get("focus") or ""),
+            "aspect_ratio": str(shot.get("aspect_ratio") or ""),
+            "reference_count": len(refs),
+            "model": "gpt-image-2",
+            "payload": payload,
+            "human_dimensions": str(source_item.get("human_dimensions") or "") if str(shot.get("type") or "") == "size_card" else "",
+        })
+    if not pending_shots:
+        raise ValueError("all selected suite shots already have locally verified generated images")
+
+    preflight = {
+        "status": "ready_for_explicit_paid_confirmation",
+        "prepared_at": _now(),
+        "first_shot_ids": sorted(approved_first_shots),
+        "full_suite": include_first,
+        "targeted_regeneration": bool(forced_shots),
+        "suite_revision": max(1, int(content.get("suite_revision") or 1)),
+        "recipe_signature": _content_recipe_signature(content),
+        "shots": pending_shots,
+    }
+    content["remaining_images_preflight"] = preflight
+    save_state(offer_id, state)
+    return {"ok": True, "preflight": preflight, "content_package": content_package_summary(offer_id)}
+
+
+def prepare_suite_image_generations(
+    offer_id_or_url: str, *, force_shot_ids: list[str] | None = None
+) -> dict[str, Any]:
+    """Prepare all currently selected shots for one explicit paid batch."""
+    return prepare_remaining_image_generations(
+        offer_id_or_url, include_first=True, force_shot_ids=force_shot_ids
+    )
+
+
+def _run_remaining_image_generation(offer_id: str) -> None:
+    """Background worker. Each paid image uses the already-reviewed exact payload."""
+    lock = _image_generation_lock(offer_id)
+    with lock:
+        state = load_state(offer_id)
+        content = state.setdefault("content_package", {})
+        preflight = content.get("remaining_images_preflight") if isinstance(content.get("remaining_images_preflight"), dict) else {}
+        package_dir = _content_package_dir(str(content.get("collect_box_id") or ""))
+        if package_dir is None or not preflight.get("shots"):
+            return
+        generation = content.setdefault("remaining_images_generation", {})
+        generation["status"] = "running"
+        generation["worker_pid"] = os.getpid()
+        generation["started_at"] = generation.get("started_at") or _now()
+        generation.setdefault("items", [])
+        save_state(offer_id, state)
+
+        all_verified = True
+        try:
+            for shot in preflight.get("shots") or []:
+                if not isinstance(shot, dict):
+                    continue
+                shot_id = str(shot.get("id") or "")
+                if not shot_id:
+                    continue
+                artifact_id = str(shot.get("artifact_id") or f"{shot_id}_remaining")
+                state = load_state(offer_id)
+                content = state.setdefault("content_package", {})
+                generation = content.setdefault("remaining_images_generation", {})
+                generation["status"] = "running"
+                generation["current_shot_id"] = shot_id
+                items = generation.setdefault("items", [])
+                item = next((row for row in items if str(row.get("artifact_id") or "") == artifact_id), None)
+                if item is None:
+                    item = {"shot_id": shot_id, "artifact_id": artifact_id}
+                    items.append(item)
+                item.update({"status": "creating_task", "task_id": "", "result_summary": "正在创建 ToAPI 图片任务。"})
+                save_state(offer_id, state)
+
+                runtime_path = package_dir / f"execution_{artifact_id}.json"
+                _write_json_atomic(runtime_path, {
+                    "collect_box_id": str(content.get("collect_box_id") or ""),
+                    "shot": {key: shot.get(key) for key in ("id", "type", "title", "focus", "aspect_ratio", "human_dimensions")},
+                    "payload": shot.get("payload") or {},
+                })
+                completed = subprocess.run(
+                    [
+                        sys.executable,
+                        str(ROOT / "scripts" / "generate_approved_image_shot.py"),
+                        "--payload-file", str(runtime_path),
+                        "--artifact-id", artifact_id,
+                        "--execute-paid",
+                    ],
+                    cwd=str(ROOT),
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=420,
+                )
+                audit = _load_json(package_dir / f"generation_audit_{artifact_id}.json") or {}
+                verified = bool(audit.get("download_verified"))
+                all_verified = all_verified and verified
+                state = load_state(offer_id)
+                content = state.setdefault("content_package", {})
+                generation = content.setdefault("remaining_images_generation", {})
+                items = generation.setdefault("items", [])
+                item = next((row for row in items if str(row.get("artifact_id") or "") == artifact_id), None)
+                if item is None:
+                    item = {"shot_id": shot_id, "artifact_id": artifact_id}
+                    items.append(item)
+                item.update({
+                    "status": "completed_waiting_human_review" if verified else "failed",
+                    "task_id": str(audit.get("task_id") or ""),
+                    "result_summary": str(audit.get("result_summary") or (completed.stderr or "task did not produce a verified image"))[:1000],
+                })
+                save_state(offer_id, state)
+        except Exception as exc:
+            all_verified = False
+            state = load_state(offer_id)
+            content = state.setdefault("content_package", {})
+            generation = content.setdefault("remaining_images_generation", {})
+            generation["error"] = str(exc)[:1000]
+            save_state(offer_id, state)
+        finally:
+            state = load_state(offer_id)
+            content = state.setdefault("content_package", {})
+            generation = content.setdefault("remaining_images_generation", {})
+            generation["status"] = "completed_waiting_human_review" if all_verified else "completed_with_errors"
+            generation["current_shot_id"] = ""
+            generation["finished_at"] = _now()
+            if all_verified:
+                completed_shot_ids = {
+                    str(row.get("id") or "")
+                    for row in (preflight.get("shots") or [])
+                    if isinstance(row, dict) and str(row.get("id") or "")
+                }
+                pending_shot_ids = [
+                    str(shot_id)
+                    for shot_id in (
+                        content.get("pending_regeneration_shot_ids") or []
+                    )
+                    if str(shot_id) and str(shot_id) not in completed_shot_ids
+                ]
+                if pending_shot_ids:
+                    content["pending_regeneration_shot_ids"] = pending_shot_ids
+                else:
+                    content.pop("pending_regeneration_shot_ids", None)
+            save_state(offer_id, state)
+
+
+def _start_remaining_image_generation_unlocked(
+    offer_id_or_url: str,
+    *,
+    retry_failed_only: bool = False,
+) -> dict[str, Any]:
+    """Start the user-confirmed paid background batch for remaining image shots."""
+    offer_id = resolve_offer_key(offer_id_or_url)
+    lock = _image_generation_lock(offer_id)
+    if lock.locked():
+        raise ValueError("remaining image generation is already running")
+    state = load_state(offer_id)
+    content = state.setdefault("content_package", {})
+    preflight = content.get("remaining_images_preflight") if isinstance(content.get("remaining_images_preflight"), dict) else {}
+    if preflight.get("status") != "ready_for_explicit_paid_confirmation" or not preflight.get("shots"):
+        raise ValueError("prepare and review the remaining image preflight before starting paid generation")
+    current_revision = max(1, int(content.get("suite_revision") or 1))
+    if int(preflight.get("suite_revision") or 0) != current_revision:
+        raise ValueError("the image recipe changed after this preflight; prepare a new preflight before paid generation")
+    if str(preflight.get("recipe_signature") or "") != _content_recipe_signature(content):
+        raise ValueError("the image references or recipe changed after this preflight; prepare a new preflight")
+    existing = content.get("remaining_images_generation") if isinstance(content.get("remaining_images_generation"), dict) else {}
+    if str(existing.get("status") or "") in {"queued", "running"}:
+        worker_pid = int(existing.get("worker_pid") or 0)
+        if worker_pid == os.getpid() and (str(existing.get("status")) == "queued" or lock.locked()):
+            raise ValueError("remaining image generation is already running")
+    selected_shots = [
+        shot
+        for shot in preflight.get("shots") or []
+        if isinstance(shot, dict) and str(shot.get("id") or "")
+    ]
+    if retry_failed_only:
+        failed_shot_ids = {
+            str(row.get("shot_id") or "")
+            for row in (existing.get("items") or [])
+            if isinstance(row, dict) and str(row.get("status") or "") == "failed"
+        }
+        selected_shots = [
+            shot for shot in selected_shots if str(shot.get("id") or "") in failed_shot_ids
+        ]
+        if not selected_shots:
+            raise ValueError("there are no failed image tasks to retry")
+    if existing:
+        history = content.setdefault("image_generation_history", [])
+        if isinstance(history, list):
+            history.append(deepcopy(existing))
+            del history[:-20]
+    generation = {
+        "status": "queued",
+        "worker_pid": os.getpid(),
+        "queued_at": _now(),
+        "current_shot_id": "",
+        "retry_failed_only": bool(retry_failed_only),
+        "items": [
+            {"shot_id": str(shot.get("id") or ""), "artifact_id": str(shot.get("artifact_id") or f"{shot.get('id')}_remaining"), "status": "queued", "task_id": "", "result_summary": "等待创建任务。"}
+            for shot in selected_shots
+        ],
+    }
+    content["remaining_images_generation"] = generation
+    save_state(offer_id, state)
+    threading.Thread(target=_run_remaining_image_generation, args=(offer_id,), daemon=True, name=f"remaining-images-{offer_id}").start()
+    return {"ok": True, "content_package": content_package_summary(offer_id)}
+
+
+def start_remaining_image_generation(
+    offer_id_or_url: str,
+    *,
+    retry_failed_only: bool = False,
+) -> dict[str, Any]:
+    """Atomically validate and queue one explicitly confirmed paid image batch."""
+    offer_id = resolve_offer_key(offer_id_or_url)
+    with _image_generation_queue_lock(offer_id):
+        return _start_remaining_image_generation_unlocked(
+            offer_id,
+            retry_failed_only=retry_failed_only,
+        )
+
+
+def _approved_generated_image_urls(package_dir: Path, decisions: dict[str, Any]) -> list[dict[str, str]]:
+    """Return approved, locally verified ToAPI image outputs in suite order."""
+    rows: list[dict[str, str]] = []
+    seen_shots: set[str] = set()
+    for audit_path in sorted(package_dir.glob("generation_audit_*.json")):
+        artifact_id = audit_path.stem.removeprefix("generation_audit_")
+        decision = decisions.get(artifact_id) if isinstance(decisions.get(artifact_id), dict) else {}
+        audit = _load_json(audit_path) or {}
+        shot_id = str(audit.get("shot_id") or artifact_id.split("_", 1)[0])
+        image_file = package_dir / "generated" / f"{artifact_id}.png"
+        data = ((audit.get("final_response") or {}).get("result") or {}).get("data") or []
+        remote_url = str((data[0] or {}).get("url") or "") if data and isinstance(data[0], dict) else ""
+        if (
+            decision.get("decision") != "approved"
+            or not bool(audit.get("download_verified"))
+            or not image_file.is_file()
+            or not remote_url.startswith("https://")
+        ):
+            continue
+        if shot_id in seen_shots:
+            continue
+        seen_shots.add(shot_id)
+        rows.append({"shot_id": shot_id, "artifact_id": artifact_id, "url": remote_url})
+    priority = {"sc1": 0, "sc2": 1, "sc3": 2, "sp1": 3}
+    return sorted(rows, key=lambda row: (priority.get(row["shot_id"], 99), row["artifact_id"]))
+
+
+def _miaoshou_editable_weight_kg(value: float) -> float:
+    """Miaoshou accepts 0.01kg minimum and at most two decimal places.
+
+    Round upward so an existing shipping weight is never understated merely to
+    satisfy an API formatting constraint.
+    """
+    number = float(value or 0)
+    if number < 0.01:
+        raise ValueError("Miaoshou requires a weight of at least 0.01 kg")
+    return math.ceil((number - 1e-10) * 100) / 100
+
+
+def _generated_urls_for_artifacts(package_dir: Path, artifacts: list[dict[str, Any]]) -> list[str]:
+    urls: list[str] = []
+    for row in artifacts:
+        artifact_id = str((row or {}).get("artifact_id") or "")
+        audit = _load_json(package_dir / f"generation_audit_{artifact_id}.json") or {}
+        data = ((audit.get("final_response") or {}).get("result") or {}).get("data") or []
+        url = str((data[0] or {}).get("url") or "") if data and isinstance(data[0], dict) else ""
+        if url.startswith("https://") and url not in urls:
+            urls.append(url)
+    return urls
+
+
+def sync_generated_image_to_miaoshou(
+    offer_id_or_url: str, artifact_id: str, action: str, *, post=None
+) -> dict[str, Any]:
+    """Apply one explicit generated-image decision to Miaoshou.
+
+    Only the selected generated URL is added or removed. Existing source images,
+    title, SKU map, prices, variants, dimensions, inventory, claiming, and
+    publishing are deliberately outside this operation.
+    """
+    offer_id = resolve_offer_key(offer_id_or_url)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", str(artifact_id or "")):
+        raise ValueError("invalid generated image identifier")
+    if action not in {"keep", "remove"}:
+        raise ValueError("generated image action must be keep or remove")
+    state = load_state(offer_id)
+    content = state.setdefault("content_package", {})
+    package_dir = _content_package_dir(str(content.get("collect_box_id") or ""))
+    if package_dir is None:
+        raise ValueError("content review package not found")
+    audit = _load_json(package_dir / f"generation_audit_{artifact_id}.json") or {}
+    image_file = package_dir / "generated" / f"{artifact_id}.png"
+    data = ((audit.get("final_response") or {}).get("result") or {}).get("data") or []
+    image_url = str((data[0] or {}).get("url") or "") if data and isinstance(data[0], dict) else ""
+    if not bool(audit.get("download_verified")) or not image_file.is_file() or not image_url.startswith("https://"):
+        raise ValueError("the generated image has not passed local download verification")
+
+    if post is None:
+        from modules.miaoshou.client import post_open
+        post = post_open
+    detail_id = int(str(content.get("collect_box_id") or ""))
+    detail_path = "/open/v1/product/common_collect_box/common_collect_box/get_common_collect_box_detail"
+    edit_path = "/open/v1/product/common_collect_box/common_collect_box/edit_common_collect_box_detail"
+    current_resp = post(detail_path, {"commonCollectBoxDetailId": detail_id})
+    if current_resp.get("result") != "success":
+        raise RuntimeError(f"Miaoshou detail read failed: {current_resp.get('code')} {current_resp.get('message', '')}")
+    payload = current_resp.get("data") or {}
+    current = payload.get("editCommonCollectBoxDetail") or {}
+    oss_md5 = str(payload.get("ossMd5") or "")
+    if not current or not oss_md5:
+        raise RuntimeError("Miaoshou detail is missing editable data or ossMd5")
+
+    updated = dict(current)
+    current_urls = [str(url).strip() for url in current.get("imgUrls") or [] if str(url).strip()]
+    notes = str(current.get("notes") or "")
+    image_tag = f'<p><img src="{html.escape(image_url, quote=True)}" alt="Generated product image" style="display:block;width:100%;height:auto;"/></p>'
+    if action == "keep":
+        updated["imgUrls"] = list(dict.fromkeys(current_urls + [image_url]))
+        if image_url not in notes:
+            updated["notes"] = notes + image_tag
+    else:
+        updated["imgUrls"] = [url for url in current_urls if url != image_url]
+        updated["notes"] = re.sub(
+            r'<p><img[^>]*src=["\']' + re.escape(image_url) + r'["\'][^>]*></p>',
+            "", notes, flags=re.IGNORECASE,
+        )
+
+    current_weight = float(current.get("weight") or 0)
+    saved_weight = float((state.get("review") or {}).get("weight_kg") or 0)
+    candidate_weight = current_weight if current_weight >= 0.01 else saved_weight
+    if candidate_weight < 0.01:
+        raise ValueError("Miaoshou requires a saved Treasury weight of at least 0.01 kg before image sync")
+    editable_weight = _miaoshou_editable_weight_kg(candidate_weight)
+    if current_weight < 0.01 or abs(editable_weight - current_weight) > 0.000001:
+        updated["weight"] = editable_weight
+        updated["skuMap"] = {key: {**dict(row or {}), "weight": editable_weight} for key, row in (current.get("skuMap") or {}).items()}
+
+    decisions = content.setdefault("generated_image_miaoshou_decisions", {})
+    decisions[artifact_id] = {"action": action, "status": "writing", "started_at": _now(), "url": image_url}
+    save_state(offer_id, state)
+    try:
+        save_resp = post(edit_path, {"commonCollectBoxDetailId": detail_id, "editCommonCollectBoxDetail": updated, "ossMd5": oss_md5})
+    except Exception as exc:
+        decisions[artifact_id].update({"status": "failed", "error": str(exc)[:1000]})
+        save_state(offer_id, state)
+        raise
+    if save_resp.get("result") != "success":
+        error = str(save_resp.get("message") or save_resp.get("code") or "write failed")
+        decisions[artifact_id].update({"status": "failed", "error": error})
+        save_state(offer_id, state)
+        raise RuntimeError(f"Miaoshou image sync failed: {error}")
+    verify_resp = post(detail_path, {"commonCollectBoxDetailId": detail_id})
+    verified = ((verify_resp.get("data") or {}).get("editCommonCollectBoxDetail") or {}) if verify_resp.get("result") == "success" else {}
+    url_present = image_url in [str(url) for url in verified.get("imgUrls") or []]
+    note_present = image_url in str(verified.get("notes") or "")
+    checks = {"image_list": url_present == (action == "keep"), "detail_notes": note_present == (action == "keep"), "title_unchanged": str(verified.get("title") or "") == str(current.get("title") or "")}
+    decisions[artifact_id].update({"status": "synced" if all(checks.values()) else "verification_failed", "synced_at": _now(), "checks": checks, "error": ""})
+    save_state(offer_id, state)
+    return {"ok": all(checks.values()), "artifact_id": artifact_id, "action": action, "collect_box_id": str(detail_id), "checks": checks, "claimed": False, "published": False}
+
+
+def save_generated_image_decision(
+    offer_id_or_url: str, artifact_id: str, action: str
+) -> dict[str, Any]:
+    """Save one image-review decision locally without writing to Miaoshou."""
+    offer_id = resolve_offer_key(offer_id_or_url)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", str(artifact_id or "")):
+        raise ValueError("invalid generated image identifier")
+    if action not in {"keep", "remove"}:
+        raise ValueError("generated image action must be keep or remove")
+    state = load_state(offer_id)
+    content = state.setdefault("content_package", {})
+    package_dir = _content_package_dir(str(content.get("collect_box_id") or ""))
+    if package_dir is None:
+        raise ValueError("content review package not found")
+    audit = _load_json(package_dir / f"generation_audit_{artifact_id}.json") or {}
+    image_file = package_dir / "generated" / f"{artifact_id}.png"
+    data = ((audit.get("final_response") or {}).get("result") or {}).get("data") or []
+    image_url = str((data[0] or {}).get("url") or "") if data and isinstance(data[0], dict) else ""
+    if not bool(audit.get("download_verified")) or not image_file.is_file() or not image_url.startswith("https://"):
+        raise ValueError("the generated image has not passed local download verification")
+    decisions = content.setdefault("generated_image_miaoshou_decisions", {})
+    decisions[artifact_id] = {
+        "action": action,
+        "status": "reviewed_locally",
+        "reviewed_at": _now(),
+        "url": image_url,
+        "error": "",
+    }
+    review = state.setdefault("review", {})
+    image_order = [
+        str(url).strip()
+        for url in (review.get("image_order") or [])
+        if str(url).strip() and str(url).strip() != image_url
+    ]
+    if action == "keep":
+        image_order.append(image_url)
+    review["image_order"] = image_order
+    save_state(offer_id, state)
+    return {
+        "ok": True,
+        "artifact_id": artifact_id,
+        "action": action,
+        "content_package": content_package_summary(offer_id),
+        "written_to_miaoshou": False,
+    }
+
+
+def _ordered_selected_images(
+    offer_id: str, state: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Return the unified source + generated image bar in its saved order."""
+    state = state or load_state(offer_id)
+    source = _source_summary(offer_id)
+    review = state.get("review") if isinstance(state.get("review"), dict) else {}
+    content = (
+        state.get("content_package")
+        if isinstance(state.get("content_package"), dict)
+        else {}
+    )
+    available: dict[str, dict[str, str]] = {}
+    defaults: list[str] = []
+
+    source_rows = review.get("image_actions") or source.get("images") or []
+    for index, row in enumerate(source_rows, start=1):
+        if not isinstance(row, dict) or str(row.get("action") or "review") == "remove":
+            continue
+        url = str(row.get("output_url") or row.get("url") or "").strip()
+        if not url or url in available:
+            continue
+        available[url] = {
+            "url": url,
+            "kind": "source",
+            "label": f"Source image {index}",
+            "artifact_id": "",
+            "shot_id": "",
+        }
+        defaults.append(url)
+
+    package_dir = _content_package_dir(str(content.get("collect_box_id") or ""))
+    for row in _generated_review_images(offer_id, content, package_dir):
+        if str(row.get("miaoshou_action") or "review") == "remove":
+            continue
+        url = str(row.get("url") or "").strip()
+        if not url or url in available:
+            continue
+        available[url] = {
+            "url": url,
+            "kind": "generated",
+            "label": str(row.get("shot_id") or row.get("artifact_id") or "AI image"),
+            "artifact_id": str(row.get("artifact_id") or ""),
+            "shot_id": str(row.get("shot_id") or ""),
+        }
+        defaults.append(url)
+
+    requested = [
+        str(url).strip()
+        for url in (review.get("image_order") or [])
+        if str(url).strip()
+    ]
+    ordered_urls = list(dict.fromkeys(
+        [url for url in requested if url in available] + defaults
+    ))
+    items = [available[url] for url in ordered_urls]
+    return {
+        "items": items,
+        "urls": ordered_urls,
+        "source_urls": [row["url"] for row in items if row["kind"] == "source"],
+        "generated_urls": [row["url"] for row in items if row["kind"] == "generated"],
+    }
+
+
+def write_ordered_images_to_miaoshou(
+    offer_id_or_url: str, *, post=None
+) -> dict[str, Any]:
+    """Write the unified image bar to Miaoshou main and detail images.
+
+    The operator's saved order becomes the exact ``imgUrls`` order and the
+    image order in ``notes``. Other product fields are preserved. The function
+    performs a read-back verification and never claims or publishes a product.
+    """
+    offer_id = resolve_offer_key(offer_id_or_url)
+    state = load_state(offer_id)
+    content = state.setdefault("content_package", {})
+    selected = _ordered_selected_images(offer_id, state)
+    image_urls = list(selected["urls"])
+    if not image_urls:
+        raise ValueError("keep at least one image before synchronizing to Miaoshou")
+
+    if post is None:
+        from modules.miaoshou.client import post_open
+
+        post = post_open
+    detail_id = int(str(content.get("collect_box_id") or offer_id))
+    detail_path = "/open/v1/product/common_collect_box/common_collect_box/get_common_collect_box_detail"
+    edit_path = "/open/v1/product/common_collect_box/common_collect_box/edit_common_collect_box_detail"
+    current_resp = post(detail_path, {"commonCollectBoxDetailId": detail_id})
+    if current_resp.get("result") != "success":
+        raise RuntimeError(
+            f"妙手详情读取失败: {current_resp.get('code')} {current_resp.get('message', '')}"
+        )
+    payload = current_resp.get("data") or {}
+    current = payload.get("editCommonCollectBoxDetail") or {}
+    oss_md5 = str(payload.get("ossMd5") or "")
+    if not current or not oss_md5:
+        raise RuntimeError("妙手详情缺少编辑数据或 ossMd5")
+
+    current_notes = str(current.get("notes") or "")
+    notes_without_images = re.sub(
+        r"<p\b[^>]*>\s*<img\b[^>]*>\s*</p>",
+        "",
+        current_notes,
+        flags=re.IGNORECASE,
+    )
+    notes_without_images = re.sub(
+        r"<img\b[^>]*>",
+        "",
+        notes_without_images,
+        flags=re.IGNORECASE,
+    )
+    notes_without_images = re.sub(
+        r"<p\b[^>]*>\s*</p>",
+        "",
+        notes_without_images,
+        flags=re.IGNORECASE,
+    ).strip()
+    ordered_image_notes = "".join(
+        f'<p><img src="{html.escape(url, quote=True)}" alt="Product image {index}" '
+        'style="display:block;width:100%;height:auto;"/></p>'
+        for index, url in enumerate(image_urls, start=1)
+    )
+    notes = notes_without_images + ordered_image_notes
+
+    updated = dict(current)
+    updated["imgUrls"] = image_urls
+    updated["notes"] = notes
+    current_weight = float(current.get("weight") or 0)
+    saved_weight = float((state.get("review") or {}).get("weight_kg") or 0)
+    candidate_weight = current_weight if current_weight >= 0.01 else saved_weight
+    if candidate_weight < 0.01:
+        raise ValueError(
+            "Miaoshou requires a weight of at least 0.01 kg; save a valid "
+            "weight in Treasury before image synchronization"
+        )
+    editable_weight = _miaoshou_editable_weight_kg(candidate_weight)
+    if abs(editable_weight - current_weight) > 0.000001:
+        updated["weight"] = editable_weight
+        updated["skuMap"] = {
+            key: {**dict(row or {}), "weight": editable_weight}
+            for key, row in (current.get("skuMap") or {}).items()
+        }
+
+    write_state = {
+        "status": "writing",
+        "started_at": _now(),
+        "collect_box_id": str(detail_id),
+        "previous_img_urls": list(current.get("imgUrls") or []),
+        "previous_notes": current_notes,
+        "ordered_image_urls": image_urls,
+        "source_image_count": len(selected["source_urls"]),
+        "generated_image_count": len(selected["generated_urls"]),
+    }
+    content["miaoshou_ordered_images_write"] = write_state
+    state.setdefault("review", {})["image_order"] = image_urls
+    save_state(offer_id, state)
+
+    try:
+        save_resp = post(edit_path, {
+            "commonCollectBoxDetailId": detail_id,
+            "editCommonCollectBoxDetail": updated,
+            "ossMd5": oss_md5,
+        })
+    except Exception as exc:
+        write_state.update({"status": "failed", "error": str(exc)[:1000]})
+        save_state(offer_id, state)
+        raise
+    if save_resp.get("result") != "success":
+        write_state.update({
+            "status": "failed",
+            "error": str(save_resp.get("message") or save_resp.get("code") or "write failed"),
+        })
+        save_state(offer_id, state)
+        raise RuntimeError(
+            f"妙手图片写入失败: {save_resp.get('code')} {save_resp.get('message', '')}"
+        )
+
+    verify_resp = post(detail_path, {"commonCollectBoxDetailId": detail_id})
+    if verify_resp.get("result") != "success":
+        write_state.update({"status": "verification_failed", "error": "read-back failed"})
+        save_state(offer_id, state)
+        raise RuntimeError("妙手图片写入后验证读取失败")
+    verified = ((verify_resp.get("data") or {}).get("editCommonCollectBoxDetail") or {})
+    verified_notes = str(verified.get("notes") or "")
+    positions = [verified_notes.find(url) for url in image_urls]
+    checks = {
+        "main_images_exact_order": list(verified.get("imgUrls") or []) == image_urls,
+        "detail_images_exact_order": (
+            all(position >= 0 for position in positions)
+            and positions == sorted(positions)
+            and len(re.findall(r"<img\b", verified_notes, flags=re.IGNORECASE))
+            == len(image_urls)
+        ),
+        "title_unchanged": str(verified.get("title") or "") == str(current.get("title") or ""),
+        "item_num_unchanged": str(verified.get("itemNum") or "") == str(current.get("itemNum") or ""),
+    }
+    write_state.update({
+        "status": "verified" if all(checks.values()) else "verification_failed",
+        "finished_at": _now(),
+        "checks": checks,
+        "written_image_count": len(image_urls),
+    })
+    save_state(offer_id, state)
+    return {
+        "ok": all(checks.values()),
+        "written_to_miaoshou": True,
+        "verified": all(checks.values()),
+        "collect_box_id": str(detail_id),
+        "written_image_count": len(image_urls),
+        "source_image_count": len(selected["source_urls"]),
+        "generated_image_count": len(selected["generated_urls"]),
+        "image_urls": image_urls,
+        "checks": checks,
+        "claimed": False,
+        "published": False,
+    }
+
+
+def write_approved_generated_images_to_miaoshou(offer_id_or_url: str, *, post=None) -> dict[str, Any]:
+    """Replace one collect box's image URLs with human-approved generated outputs.
+
+    This is intentionally limited to ``imgUrls`` and image-only detail notes.
+    If the existing collect-box weight is below Miaoshou's editable minimum, it
+    also carries forward the operator's saved Treasury weight so the API can
+    accept the otherwise image-only write. It never claims, publishes, or
+    changes title, SKU, price, variants, dimensions, or inventory.
+    """
+    offer_id = resolve_offer_key(offer_id_or_url)
+    state = load_state(offer_id)
+    content = state.setdefault("content_package", {})
+    package_dir = _content_package_dir(str(content.get("collect_box_id") or ""))
+    if package_dir is None:
+        raise ValueError("content review package not found")
+    decisions = content.get("asset_decisions") if isinstance(content.get("asset_decisions"), dict) else {}
+    approved = _approved_generated_image_urls(package_dir, decisions)
+    if len(approved) < 4:
+        raise ValueError("all four generated images must be locally verified and explicitly approved before write-back")
+
+    if post is None:
+        from modules.miaoshou.client import post_open
+        post = post_open
+    detail_id = int(str(content.get("collect_box_id") or ""))
+    detail_path = "/open/v1/product/common_collect_box/common_collect_box/get_common_collect_box_detail"
+    edit_path = "/open/v1/product/common_collect_box/common_collect_box/edit_common_collect_box_detail"
+    current_resp = post(detail_path, {"commonCollectBoxDetailId": detail_id})
+    if current_resp.get("result") != "success":
+        raise RuntimeError(f"妙手详情读取失败: {current_resp.get('code')} {current_resp.get('message', '')}")
+    payload = current_resp.get("data") or {}
+    current = payload.get("editCommonCollectBoxDetail") or {}
+    oss_md5 = str(payload.get("ossMd5") or "")
+    if not current or not oss_md5:
+        raise RuntimeError("妙手详情缺少编辑数据或 ossMd5")
+
+    generated_urls = [row["url"] for row in approved]
+    prior_write = content.get("miaoshou_generated_images_write") if isinstance(content.get("miaoshou_generated_images_write"), dict) else {}
+    current_urls = [str(url).strip() for url in current.get("imgUrls") or [] if str(url).strip()]
+    previous_urls = [str(url).strip() for url in prior_write.get("previous_img_urls") or [] if str(url).strip()]
+    prior_generated_urls = [str(url).strip() for url in prior_write.get("generated_image_urls") or [] if str(url).strip()]
+    if not prior_generated_urls:
+        prior_generated_urls = _generated_urls_for_artifacts(package_dir, list(prior_write.get("artifacts") or []))
+    # Repair a legacy replacement write by restoring its snapshot before append.
+    if previous_urls and set(current_urls).issubset(set(prior_generated_urls)):
+        base_urls = previous_urls
+    else:
+        base_urls = [url for url in current_urls if url not in prior_generated_urls]
+    image_urls = list(dict.fromkeys(base_urls + generated_urls))
+    generated_notes = "".join(
+        f'<p><img src="{html.escape(url, quote=True)}" alt="Product image {idx}" style="display:block;width:100%;height:auto;"/></p>'
+        for idx, url in enumerate(generated_urls, start=1)
+    )
+    current_notes = str(current.get("notes") or "")
+    previous_notes = str(prior_write.get("previous_notes") or "")
+    if previous_notes and set(current_urls).issubset(set(prior_generated_urls)):
+        base_notes = previous_notes
+    else:
+        base_notes = current_notes
+        for url in prior_generated_urls:
+            base_notes = re.sub(
+                r'<p><img[^>]*src=["\']' + re.escape(url) + r'["\'][^>]*></p>',
+                "",
+                base_notes,
+                flags=re.IGNORECASE,
+            )
+    notes = base_notes + generated_notes
+    updated = dict(current)
+    updated["imgUrls"] = image_urls
+    updated["notes"] = notes
+    current_weight = float(current.get("weight") or 0)
+    saved_weight = float((state.get("review") or {}).get("weight_kg") or 0)
+    candidate_weight = current_weight if current_weight >= 0.01 else saved_weight
+    if candidate_weight < 0.01:
+        raise ValueError("Miaoshou requires a weight of at least 0.01 kg; save a valid weight in Treasury before image write-back")
+    editable_weight = _miaoshou_editable_weight_kg(candidate_weight)
+    used_saved_weight = current_weight < 0.01
+    weight_normalized = abs(editable_weight - current_weight) > 0.000001
+    if used_saved_weight or weight_normalized:
+        updated["weight"] = editable_weight
+        updated["skuMap"] = {
+            key: {**dict(row or {}), "weight": editable_weight}
+            for key, row in (current.get("skuMap") or {}).items()
+        }
+
+    # Persist a rollback snapshot locally before the real write.
+    content["miaoshou_generated_images_write"] = {
+        "status": "writing",
+        "started_at": _now(),
+        "collect_box_id": str(detail_id),
+        "previous_img_urls": base_urls,
+        "previous_notes": base_notes,
+        "previous_title": str(current.get("title") or ""),
+        "previous_weight": current_weight,
+        "written_weight": float(updated.get("weight") or 0),
+        "weight_source": "saved_treasury_review" if used_saved_weight else "existing_miaoshou_value",
+        "weight_normalized_upward": weight_normalized,
+        "artifacts": [{"shot_id": row["shot_id"], "artifact_id": row["artifact_id"]} for row in approved],
+        "generated_image_urls": generated_urls,
+    }
+    save_state(offer_id, state)
+
+    try:
+        save_resp = post(edit_path, {
+            "commonCollectBoxDetailId": detail_id,
+            "editCommonCollectBoxDetail": updated,
+            "ossMd5": oss_md5,
+        })
+    except Exception as exc:
+        content["miaoshou_generated_images_write"].update({"status": "failed", "error": str(exc)[:1000]})
+        save_state(offer_id, state)
+        raise
+    if save_resp.get("result") != "success":
+        content["miaoshou_generated_images_write"].update({"status": "failed", "error": str(save_resp.get("message") or save_resp.get("code") or "write failed")})
+        save_state(offer_id, state)
+        raise RuntimeError(f"妙手图片写入失败: {save_resp.get('code')} {save_resp.get('message', '')}")
+
+    verify_resp = post(detail_path, {"commonCollectBoxDetailId": detail_id})
+    if verify_resp.get("result") != "success":
+        raise RuntimeError("妙手图片写入后验证读取失败")
+    verified = ((verify_resp.get("data") or {}).get("editCommonCollectBoxDetail") or {})
+    current_skus = current.get("skuMap") or {}
+    verified_skus = verified.get("skuMap") or {}
+    sku_structure_unchanged = set(verified_skus) == set(current_skus) and all(
+        {
+            key: value
+            for key, value in dict(verified_skus.get(sku_key) or {}).items()
+            if key != "weight"
+        }
+        == {
+            key: value
+            for key, value in dict(current_skus.get(sku_key) or {}).items()
+            if key != "weight"
+        }
+        for sku_key in current_skus
+    )
+    checks = {
+        "images": list(verified.get("imgUrls") or []) == image_urls,
+        "generated_description_images": all(url in str(verified.get("notes") or "") for url in generated_urls),
+        "weight": abs(float(verified.get("weight") or 0) - float(updated.get("weight") or 0)) < 0.0001,
+        "sku_weights": all(
+            abs(float((row or {}).get("weight") or 0) - float(updated.get("weight") or 0)) < 0.0001
+            for row in (verified.get("skuMap") or {}).values()
+        ),
+        "title_unchanged": str(verified.get("title") or "") == str(current.get("title") or ""),
+        "sku_map_structure_unchanged": sku_structure_unchanged,
+    }
+    content["miaoshou_generated_images_write"].update({
+        "status": "verified" if all(checks.values()) else "verification_failed",
+        "finished_at": _now(),
+        "checks": checks,
+        "written_image_count": len(image_urls),
+    })
+    save_state(offer_id, state)
+    return {
+        "ok": all(checks.values()),
+        "written_to_miaoshou": True,
+        "collect_box_id": str(detail_id),
+        "written_image_count": len(image_urls),
+        "artifacts": [{"shot_id": row["shot_id"], "artifact_id": row["artifact_id"]} for row in approved],
+        "checks": checks,
+        "claimed": False,
+        "published": False,
+    }
+
+
+def save_content_package_review(offer_id_or_url: str, review: dict[str, Any]) -> dict[str, Any]:
+    """Persist explicit human content approvals; it never starts generation or writes Miaoshou."""
+    offer_id = resolve_offer_key(offer_id_or_url)
+    state = load_state(offer_id)
+    content = state.setdefault("content_package", {})
+    previous_recipe = _content_recipe_signature(content)
+    previous_planning_recipe = _planning_recipe_signature(content)
+    if "fact_card_approved" in review:
+        content["fact_card_approved"] = bool(review.get("fact_card_approved"))
+    if "planning_scope_approved" in review:
+        content["planning_scope_approved"] = bool(review.get("planning_scope_approved"))
+    if "suite_approved" in review and not isinstance(review.get("storyboard_reviews"), dict):
+        content["suite_approved"] = bool(review.get("suite_approved"))
+    if "note" in review:
+        content["note"] = str(review.get("note") or "").strip()[:2000]
+    raw_customization = review.get("suite_customization")
+    if isinstance(raw_customization, dict):
+        raw_counts = raw_customization.get("type_counts") if isinstance(raw_customization.get("type_counts"), dict) else {}
+        clean_counts = {}
+        for shot_type in ("white_bg", "scene", "selling_point", "macro_detail", "size_card"):
+            raw_count = raw_counts.get(shot_type)
+            if isinstance(raw_count, (int, float, str)) and str(raw_count).strip().isdigit():
+                clean_counts[shot_type] = max(0, min(int(raw_count), 6 if shot_type != "size_card" else 1))
+        size_card = raw_customization.get("size_card") if isinstance(raw_customization.get("size_card"), dict) else {}
+        content["suite_customization"] = {
+            "type_counts": clean_counts,
+            "size_card": {
+                "enabled": bool(size_card.get("enabled")) or bool(clean_counts.get("size_card")),
+                "dimensions": str(size_card.get("dimensions") or "").strip()[:240],
+                "confirmed": bool(size_card.get("confirmed")),
+            },
+        }
+    package_dir = _content_package_dir(str(content.get("collect_box_id") or ""))
+    review_package = _load_json(package_dir / "review_package.json") if package_dir else {}
+    plan = review_package.get("plan") if isinstance(review_package.get("plan"), dict) else {}
+    suite = plan.get("suite") if isinstance(plan.get("suite"), dict) else {}
+    allowed_storyboard_ids = {
+        str(item.get("id") or "")
+        for item in (suite.get("items") or [])
+        if isinstance(item, dict) and item.get("selected") and str(item.get("id") or "")
+    }
+    raw_storyboard_reviews = review.get("storyboard_reviews")
+    if isinstance(raw_storyboard_reviews, dict):
+        storyboard_reviews: dict[str, dict[str, Any]] = {}
+        for shot_id in allowed_storyboard_ids:
+            row = raw_storyboard_reviews.get(shot_id)
+            if not isinstance(row, dict):
+                storyboard_reviews[shot_id] = {"decision": "pending", "note": ""}
+                continue
+            decision = str(row.get("decision") or "pending")
+            if decision not in {"pending", "approved", "revise"}:
+                decision = "pending"
+            storyboard_reviews[shot_id] = {
+                "decision": decision,
+                "note": str(row.get("note") or "").strip()[:1200],
+                "reviewed_at": _now(),
+            }
+        content["storyboard_reviews"] = storyboard_reviews
+        content["suite_approved"] = bool(
+            allowed_storyboard_ids
+            and all(
+                storyboard_reviews.get(shot_id, {}).get("decision") == "approved"
+                for shot_id in allowed_storyboard_ids
+            )
+        )
+    collect_box = review_package.get("collect_box") if isinstance(review_package.get("collect_box"), dict) else {}
+    allowed_refs = {
+        str(url).strip()
+        for url in (collect_box.get("image_urls") or [])
+        if isinstance(url, str) and str(url).strip()
+    }
+    raw_refs = review.get("identity_reference_urls")
+    if isinstance(raw_refs, list):
+        refs = []
+        for url in raw_refs:
+            clean_url = str(url).strip()
+            if clean_url in allowed_refs and clean_url not in refs:
+                refs.append(clean_url)
+        content["identity_reference_urls"] = refs
+        requested_primary = str(review.get("primary_identity_url") or "").strip()
+        content["primary_identity_url"] = requested_primary if requested_primary in refs else (refs[0] if refs else "")
+    raw_decisions = review.get("asset_decisions")
+    if isinstance(raw_decisions, dict):
+        decisions = content.setdefault("asset_decisions", {})
+        for artifact_id, row in raw_decisions.items():
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", str(artifact_id)) or not isinstance(row, dict):
+                continue
+            decision = str(row.get("decision") or "pending")
+            if decision not in {"pending", "approved", "rework", "rejected"}:
+                continue
+            decisions[str(artifact_id)] = {
+                "decision": decision,
+                "note": str(row.get("note") or "").strip()[:1000],
+                "reviewed_at": _now(),
+            }
+    current_recipe = _content_recipe_signature(content)
+    if current_recipe != previous_recipe:
+        pending_regeneration_shot_ids = [
+            str(shot_id)
+            for shot_id in (content.get("pending_regeneration_shot_ids") or [])
+            if str(shot_id)
+        ]
+        planning_recipe_changed = (
+            _planning_recipe_signature(content) != previous_planning_recipe
+        )
+        _invalidate_paid_image_state(content)
+        if pending_regeneration_shot_ids and not planning_recipe_changed:
+            content.pop("force_regenerate_all", None)
+            content["pending_regeneration_shot_ids"] = (
+                pending_regeneration_shot_ids
+            )
+        elif planning_recipe_changed:
+            content.pop("pending_regeneration_shot_ids", None)
+        content["suite_revision"] = max(0, int(content.get("suite_revision") or 0)) + 1
+        content["recipe_changed_at"] = _now()
+    else:
+        content["suite_revision"] = max(1, int(content.get("suite_revision") or 1))
+    content["updated_at"] = _now()
+    save_state(offer_id, state)
+    return content_package_summary(offer_id)
+
+
+def content_package_file(offer_id_or_url: str, *, artifact_id: str = "", report: bool = False) -> Path | None:
+    """Resolve a safe local report/image path for the Treasury HTTP server."""
+    summary = content_package_summary(offer_id_or_url)
+    package_dir = _content_package_dir(str(summary.get("collect_box_id") or ""))
+    if package_dir is None:
+        return None
+    if report:
+        candidate = package_dir / "review_report.html"
+        return candidate if candidate.is_file() else None
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", artifact_id):
+        return None
+    candidate = package_dir / "generated" / f"{artifact_id}.png"
+    return candidate if candidate.is_file() else None
 
 
 def _load_source(offer_id: str) -> dict[str, Any]:
@@ -600,6 +2676,23 @@ def _ceil_price(value: float, region: str) -> float:
     step = SEA_REGION_RULES.get(region).rounding_step if SEA_REGION_RULES.get(region) else 1
     rounded = _round_up(value, step)
     return int(rounded) if step >= 1 else round(rounded, 2)
+
+
+def _enforce_min_profit_price(
+    list_price: float,
+    *,
+    price_step: float,
+    profit_cny_for_list_price,
+) -> tuple[float, bool]:
+    """Raise a rounded list price until the post-discount profit reaches the CNY floor."""
+    candidate = _round_up(float(list_price), price_step)
+    adjusted = False
+    for _ in range(100_000):
+        if float(profit_cny_for_list_price(candidate)) + 1e-9 >= MIN_ESTIMATED_PROFIT_CNY:
+            return (int(candidate) if price_step >= 1 else round(candidate, 2)), adjusted
+        candidate += price_step
+        adjusted = True
+    raise RuntimeError("unable to satisfy the minimum estimated profit price guard")
 
 
 def _volumetric_kg(package_cm: list[float]) -> float:
@@ -719,19 +2812,29 @@ def _sea_market_row(
     )
     list_price_raw = sale_local / (1 - DISCOUNT_RESERVE_RATE)
     list_price = _ceil_price(list_price_raw, region)
-    effective_sale_local = round(list_price * (1 - DISCOUNT_RESERVE_RATE), 2)
-    effective_profit_local = effective_sale_local - (
-        goods_cost_local
-        + logistics_local
-        + (effective_sale_local * rule.commission_rate)
-        + (effective_sale_local * rule.transaction_rate)
-        + _capped_fee(effective_sale_local, rule.extra_rate, rule.extra_cap_local)[0]
-        + (effective_sale_local * rule.affiliate_rate)
-        + (effective_sale_local * rule.ad_rate)
-        + (effective_sale_local * rule.creator_rate)
-        + (effective_sale_local * rule.seller_tax_rate)
-        + rule.fixed_fee_local
+
+    def effective_profit_for_list_price(candidate: float) -> tuple[float, float]:
+        effective_sale = round(candidate * (1 - DISCOUNT_RESERVE_RATE), 2)
+        effective_profit = effective_sale - (
+            goods_cost_local
+            + logistics_local
+            + (effective_sale * rule.commission_rate)
+            + (effective_sale * rule.transaction_rate)
+            + _capped_fee(effective_sale, rule.extra_rate, rule.extra_cap_local)[0]
+            + (effective_sale * rule.affiliate_rate)
+            + (effective_sale * rule.ad_rate)
+            + (effective_sale * rule.creator_rate)
+            + (effective_sale * rule.seller_tax_rate)
+            + rule.fixed_fee_local
+        )
+        return effective_sale, effective_profit
+
+    list_price, min_profit_adjusted = _enforce_min_profit_price(
+        list_price,
+        price_step=rule.rounding_step,
+        profit_cny_for_list_price=lambda candidate: effective_profit_for_list_price(candidate)[1] * rule.cny_per_local,
     )
+    effective_sale_local, effective_profit_local = effective_profit_for_list_price(list_price)
     margin_pct = round((effective_profit_local / effective_sale_local) * 100, 2) if effective_sale_local else None
     return {
         **market,
@@ -763,6 +2866,8 @@ def _sea_market_row(
         "discount_reserve_pct": int(DISCOUNT_RESERVE_RATE * 100),
         "estimated_profit_local": round(effective_profit_local, 2),
         "estimated_profit_cny": round(_local_to_cny(effective_profit_local, rule.cny_per_local) or 0, 2),
+        "minimum_profit_cny": MIN_ESTIMATED_PROFIT_CNY,
+        "min_profit_adjusted": min_profit_adjusted,
         "profit_margin_on_sale_pct": margin_pct,
         "header_meta": {
             "commission_rate": round(rule.commission_rate * 100, 2),
@@ -777,7 +2882,7 @@ def _sea_market_row(
             "fixed_fee_local": round(rule.fixed_fee_local, 2),
             "target_margin_pct": round(target_margin * 100, 2),
         },
-        "notes": "SEA reverse pricing; seller absorbs tax; 35% backend discount reserve included.",
+        "notes": "SEA reverse pricing; seller absorbs tax; 35% backend discount reserve and CNY 5 minimum estimated-profit guard included.",
         "status": "ok" if margin_pct is not None and margin_pct >= target_margin * 100 - 0.5 else "warn",
     }
 
@@ -832,17 +2937,27 @@ def _mx_pricing_row(cost_cny: float, weight_kg: float, package_cm: list[float]) 
     )
     list_price_raw = sale_local / (1 - MX_RULE["discount_reserve_rate"])
     list_price = int(math.ceil(list_price_raw))
-    effective_sale_local = round(list_price * (1 - MX_RULE["discount_reserve_rate"]), 2)
-    effective_profit_local = effective_sale_local - (
-        goods_cost_local
-        + hidden_shipping_local
-        + (effective_sale_local * MX_RULE["import_tax_rate"])
-        + (effective_sale_local * MX_RULE["commission_rate"])
-        + (effective_sale_local * MX_RULE["sfp_rate"])
-        + (effective_sale_local * MX_RULE["affiliate_rate"])
-        + (effective_sale_local * MX_RULE["ad_rate"])
-        + MX_RULE["per_item_fee_local"]
+
+    def effective_profit_for_list_price(candidate: float) -> tuple[float, float]:
+        effective_sale = round(candidate * (1 - MX_RULE["discount_reserve_rate"]), 2)
+        effective_profit = effective_sale - (
+            goods_cost_local
+            + hidden_shipping_local
+            + (effective_sale * MX_RULE["import_tax_rate"])
+            + (effective_sale * MX_RULE["commission_rate"])
+            + (effective_sale * MX_RULE["sfp_rate"])
+            + (effective_sale * MX_RULE["affiliate_rate"])
+            + (effective_sale * MX_RULE["ad_rate"])
+            + MX_RULE["per_item_fee_local"]
+        )
+        return effective_sale, effective_profit
+
+    list_price, min_profit_adjusted = _enforce_min_profit_price(
+        list_price,
+        price_step=1.0,
+        profit_cny_for_list_price=lambda candidate: effective_profit_for_list_price(candidate)[1] / MX_RULE["cny_per_local"],
     )
+    effective_sale_local, effective_profit_local = effective_profit_for_list_price(list_price)
     margin_pct = round((effective_profit_local / effective_sale_local) * 100, 2) if effective_sale_local else None
     return {
         "region": "MX",
@@ -867,6 +2982,8 @@ def _mx_pricing_row(cost_cny: float, weight_kg: float, package_cm: list[float]) 
         "list_price_raw_local": round(list_price_raw, 2),
         "estimated_profit": round(effective_profit_local, 2),
         "estimated_profit_cny": round(effective_profit_local / MX_RULE["cny_per_local"], 2),
+        "minimum_profit_cny": MIN_ESTIMATED_PROFIT_CNY,
+        "min_profit_adjusted": min_profit_adjusted,
         "profit_margin_on_sale_pct": margin_pct,
         "header_meta": {
             "import_tax_rate": round(MX_RULE["import_tax_rate"] * 100, 2),
@@ -880,7 +2997,7 @@ def _mx_pricing_row(cost_cny: float, weight_kg: float, package_cm: list[float]) 
         },
         "volumetric_dominates": volumetric > weight_kg,
         "status": "ok" if margin_pct is not None and margin_pct >= MX_RULE["target_margin"] * 100 - 0.5 else "warn",
-        "notes": "MX includes import tax, SFP, affiliate, ad, and 30% list discount reserve.",
+        "notes": "MX includes import tax, SFP, affiliate, ad, 30% list discount reserve, and a CNY 5 minimum estimated-profit guard.",
     }
 
 
@@ -909,16 +3026,26 @@ def _uk_pricing_row(cost_cny: float, weight_kg: float, package_cm: list[float]) 
     )
     list_price_raw = sale_local / (1 - GB_RULE["discount_reserve_rate"])
     list_price = int(math.ceil(list_price_raw))
-    effective_sale_local = round(list_price * (1 - GB_RULE["discount_reserve_rate"]), 2)
-    effective_profit_local = effective_sale_local - (
-        goods_cost_local
-        + shipping_local
-        + (effective_sale_local * GB_RULE["vat_rate"])
-        + (effective_sale_local * GB_RULE["commission_rate"])
-        + (effective_sale_local * GB_RULE["smart_promo_rate"])
-        + (effective_sale_local * GB_RULE["affiliate_rate"])
-        + (effective_sale_local * GB_RULE["ad_rate"])
+
+    def effective_profit_for_list_price(candidate: float) -> tuple[float, float]:
+        effective_sale = round(candidate * (1 - GB_RULE["discount_reserve_rate"]), 2)
+        effective_profit = effective_sale - (
+            goods_cost_local
+            + shipping_local
+            + (effective_sale * GB_RULE["vat_rate"])
+            + (effective_sale * GB_RULE["commission_rate"])
+            + (effective_sale * GB_RULE["smart_promo_rate"])
+            + (effective_sale * GB_RULE["affiliate_rate"])
+            + (effective_sale * GB_RULE["ad_rate"])
+        )
+        return effective_sale, effective_profit
+
+    list_price, min_profit_adjusted = _enforce_min_profit_price(
+        list_price,
+        price_step=1.0,
+        profit_cny_for_list_price=lambda candidate: effective_profit_for_list_price(candidate)[1] * GB_RULE["cny_per_local"],
     )
+    effective_sale_local, effective_profit_local = effective_profit_for_list_price(list_price)
     margin_pct = round((effective_profit_local / effective_sale_local) * 100, 2) if effective_sale_local else None
     return {
         "region": "GB",
@@ -942,6 +3069,8 @@ def _uk_pricing_row(cost_cny: float, weight_kg: float, package_cm: list[float]) 
         "list_price_raw_local": round(list_price_raw, 2),
         "estimated_profit": round(effective_profit_local, 2),
         "estimated_profit_cny": round(effective_profit_local * GB_RULE["cny_per_local"], 2),
+        "minimum_profit_cny": MIN_ESTIMATED_PROFIT_CNY,
+        "min_profit_adjusted": min_profit_adjusted,
         "profit_margin_on_sale_pct": margin_pct,
         "header_meta": {
             "commission_rate": round(GB_RULE["commission_rate"] * 100, 2),
@@ -954,7 +3083,7 @@ def _uk_pricing_row(cost_cny: float, weight_kg: float, package_cm: list[float]) 
         },
         "volumetric_dominates": volumetric > weight_kg,
         "status": "ok" if margin_pct is not None and margin_pct >= GB_RULE["target_margin"] * 100 - 0.5 else "warn",
-        "notes": "GB includes VAT-effective deduction, commission, smart promo, ad, and 25% list discount reserve.",
+        "notes": "GB includes VAT-effective deduction, commission, smart promo, ad, 25% list discount reserve, and a CNY 5 minimum estimated-profit guard.",
     }
 
 
@@ -1055,6 +3184,11 @@ def price_review(
                     if header.get("extra_cap_local")
                     else ""
                 ),
+                (
+                    f"已为最低 CNY {row.get('minimum_profit_cny', MIN_ESTIMATED_PROFIT_CNY):.2f} 利润上调挂牌价"
+                    if row.get("min_profit_adjusted")
+                    else f"最低预计利润 CNY {row.get('minimum_profit_cny', MIN_ESTIMATED_PROFIT_CNY):.2f}"
+                ),
             ],
             "rows": [[
                 row["shop"],
@@ -1121,6 +3255,11 @@ def price_review(
                         f"目标利润 {mx_header.get('target_margin_pct', 0):.2f}%",
                         f"固定费用 {_money(mx_header.get('fixed_fee_local', 0), 'MXN')}",
                         f"后台折扣预留 {mx_header.get('discount_reserve_pct', 0):.2f}%",
+                        (
+                            f"已为最低 CNY {mx.get('minimum_profit_cny', MIN_ESTIMATED_PROFIT_CNY):.2f} 利润上调挂牌价"
+                            if mx.get("min_profit_adjusted")
+                            else f"最低预计利润 CNY {mx.get('minimum_profit_cny', MIN_ESTIMATED_PROFIT_CNY):.2f}"
+                        ),
                     ],
                     "rows": [[
                         f"{mx.get('billable_kg', 0):.2f} kg",
@@ -1158,6 +3297,11 @@ def price_review(
                     "notes": [
                         f"目标利润 {uk_header.get('target_margin_pct', 0):.2f}%",
                         f"后台折扣预留 {uk_header.get('discount_reserve_pct', 0):.2f}%",
+                        (
+                            f"已为最低 CNY {uk.get('minimum_profit_cny', MIN_ESTIMATED_PROFIT_CNY):.2f} 利润上调挂牌价"
+                            if uk.get("min_profit_adjusted")
+                            else f"最低预计利润 CNY {uk.get('minimum_profit_cny', MIN_ESTIMATED_PROFIT_CNY):.2f}"
+                        ),
                     ],
                     "rows": [[
                         f"{uk.get('billable_kg', 0):.2f} kg",
@@ -1333,27 +3477,43 @@ def build_preview(offer_id_or_url: str, *, source_code: str = "") -> dict[str, A
     miaoshou_draft = _load_json(STATE_DIR / f"{offer_id}_miaoshou_draft.json") or {}
     tiktok_claim = _load_json(STATE_DIR / f"{offer_id}_tiktok_claim.json") or {}
     site_drafts = _load_json(STATE_DIR / f"{offer_id}_site_drafts.json") or {}
+    content = content_package_summary(offer_id)
+    source_sku_keys = [str(row.get("key") or row.get("name") or "") for row in source.get("skus") or [] if str(row.get("key") or row.get("name") or "")]
+    saved_sku_keys = review.get("selected_sku_keys") if isinstance(review.get("selected_sku_keys"), list) else None
+    review_payload = {
+        "selected_sites": review.get("selected_sites") or [m["id"] for m in SEA_MARKETS if m.get("enabled")],
+        "title": review.get("title") or source.get("title_recommended") or source.get("title_source"),
+        "seller_sku": review.get("seller_sku") or source.get("seller_sku"),
+        "category": review.get("category") or source.get("category"),
+        "cost_cny": cost,
+        "weight_kg": weight,
+        "package_cm": dims,
+        "video_action": review.get("video_action") or source.get("video", {}).get("action"),
+        "support_cod": True,
+        "image_actions": review.get("image_actions") or source.get("images"),
+        "generated_image_actions": content.get("generated_review_images") or [],
+        "image_order": list(review.get("image_order") or []),
+        "overseas_image_candidates": overseas_images,
+        "image_generation_requests": review.get("image_generation_requests") or [],
+        "selected_sku_keys": saved_sku_keys if saved_sku_keys is not None else source_sku_keys,
+        "fields_locked": bool(review.get("fields_locked")),
+        "fx_rates": fx_rates,
+    }
+    workflow = _product_workflow_summary(
+        source=source,
+        review=review_payload,
+        content=content,
+        miaoshou_draft=miaoshou_draft,
+        tiktok_claim=tiktok_claim,
+        site_drafts=site_drafts,
+    )
 
     return {
         "ok": True,
         "mode": "first_review_no_model_call",
         "offer_id": offer_id,
         "source": source,
-        "review": {
-            "selected_sites": review.get("selected_sites") or [m["id"] for m in SEA_MARKETS if m.get("enabled")],
-            "title": review.get("title") or source.get("title_recommended") or source.get("title_source"),
-            "seller_sku": review.get("seller_sku") or source.get("seller_sku"),
-            "category": review.get("category") or source.get("category"),
-            "weight_kg": weight,
-            "package_cm": dims,
-            "video_action": review.get("video_action") or source.get("video", {}).get("action"),
-            "support_cod": True,
-            "image_actions": review.get("image_actions") or source.get("images"),
-            "overseas_image_candidates": overseas_images,
-            "image_generation_requests": review.get("image_generation_requests") or [],
-            "fields_locked": bool(review.get("fields_locked")),
-            "fx_rates": fx_rates,
-        },
+        "review": review_payload,
         "overseas_sources": overseas_sources,
         "target_sites": SEA_MARKETS,
         "pricing": price_review(cost, weight, dims, fx_rates=fx_rates),
@@ -1364,6 +3524,8 @@ def build_preview(offer_id_or_url: str, *, source_code: str = "") -> dict[str, A
             "second_review_approved": bool(miaoshou_draft.get("second_review_approved")),
             "item_num": ((miaoshou_draft.get("draft") or {}).get("itemNum") or ""),
             "image_count": len((miaoshou_draft.get("draft") or {}).get("imgUrls") or []),
+            "change_summary": miaoshou_draft.get("change_summary") or {},
+            "blockers": miaoshou_draft.get("blockers") or [],
             "claimed": bool(miaoshou_draft.get("claimed")),
             "published": bool(miaoshou_draft.get("published")),
         },
@@ -1392,6 +3554,8 @@ def build_preview(offer_id_or_url: str, *, source_code: str = "") -> dict[str, A
             "started_at": site_drafts.get("started_at"),
             "updated_at": site_drafts.get("updated_at"),
         },
+        "content_package": content,
+        "workflow": workflow,
         "steps": [
             "First review page only uses local data and rule pricing.",
             "Changing weight or package dimensions recalculates SEA, MX, and UK audits immediately.",
@@ -1445,6 +3609,64 @@ def save_review(offer_id_or_url: str, review: dict[str, Any]) -> dict[str, Any]:
     state = load_state(offer_id)
     current = state.get("review") or {}
     current.update(review)
+    source = _source_summary(offer_id)
+    allowed_sku_keys = {
+        str(row.get("key") or row.get("name") or "")
+        for row in source.get("skus") or []
+        if str(row.get("key") or row.get("name") or "")
+    }
+    raw_selected_skus = current.get("selected_sku_keys")
+    if isinstance(raw_selected_skus, list):
+        current["selected_sku_keys"] = [
+            str(value) for value in raw_selected_skus
+            if str(value) in allowed_sku_keys
+        ]
+    if allowed_sku_keys and not current.get("selected_sku_keys"):
+        raise ValueError("至少保留一个商品规格")
+    selected_image_urls: list[str] = []
+    for row in current.get("image_actions") or []:
+        if str((row or {}).get("action") or "review") == "remove":
+            continue
+        url = str((row or {}).get("output_url") or (row or {}).get("url") or "").strip()
+        if url and url not in selected_image_urls:
+            selected_image_urls.append(url)
+    content = state.get("content_package") if isinstance(state.get("content_package"), dict) else {}
+    package_dir = _content_package_dir(str(content.get("collect_box_id") or ""))
+    for row in _generated_review_images(offer_id, content, package_dir):
+        if str(row.get("miaoshou_action") or "review") == "remove":
+            continue
+        url = str(row.get("url") or "").strip()
+        if url and url not in selected_image_urls:
+            selected_image_urls.append(url)
+    requested_order = [
+        str(url).strip()
+        for url in (current.get("image_order") or [])
+        if str(url).strip()
+    ]
+    current["image_order"] = list(dict.fromkeys(
+        [url for url in requested_order if url in selected_image_urls]
+        + selected_image_urls
+    ))
+    if current.get("fields_locked"):
+        content = content_package_summary(offer_id)
+        workflow = _product_workflow_summary(
+            source=source,
+            review=current,
+            content=content,
+            miaoshou_draft=_load_json(STATE_DIR / f"{offer_id}_miaoshou_draft.json") or {},
+            tiktok_claim=_load_json(STATE_DIR / f"{offer_id}_tiktok_claim.json") or {},
+            site_drafts=_load_json(STATE_DIR / f"{offer_id}_site_drafts.json") or {},
+        )
+        prerequisite_failures = []
+        if not workflow["content_ready"]:
+            prerequisite_failures.append("内容与图片配方尚未审核通过")
+        if not workflow["generation_ready"]:
+            prerequisite_failures.append("整套图片尚未生成完成")
+        if not workflow["image_review_ready"]:
+            prerequisite_failures.append("图片审核尚未完成")
+        prerequisite_failures.extend(workflow.get("blockers") or [] if workflow.get("current_stage") == "commercial" else [])
+        if prerequisite_failures:
+            raise ValueError("暂时不能锁定发布信息: " + "; ".join(dict.fromkeys(prerequisite_failures)))
     state["review"] = current
     save_state(offer_id, state)
     return build_preview(offer_id)
@@ -1771,6 +3993,7 @@ def prepare_miaoshou_draft(offer_id_or_url: str) -> dict[str, Any]:
     preview = build_preview(offer_id)
     review = preview.get("review") or {}
     source = preview.get("source") or {}
+    workflow = preview.get("workflow") or {}
     blockers: list[str] = []
 
     if not review.get("fields_locked"):
@@ -1784,19 +4007,32 @@ def prepare_miaoshou_draft(offer_id_or_url: str) -> dict[str, Any]:
             blockers.append(f"Seller SKU 自动分配失败: {exc}")
 
     selected_images: list[str] = []
+    selected_source_images: list[str] = []
+    selected_generated_images: list[str] = []
     optimization_items: list[dict[str, str]] = []
     for item in review.get("image_actions") or []:
         action = str(item.get("action") or "review")
         url = str(item.get("output_url") or item.get("url") or "").strip()
-        if action in ("translate", "redraw") and not item.get("output_url"):
-            optimization_items.append({"action": action, "url": url, "note": str(item.get("note") or "")})
-            continue
-        if action == "keep" and url and url not in selected_images:
+        if action != "remove" and url and url not in selected_images:
             selected_images.append(url)
+            selected_source_images.append(url)
+    for item in review.get("generated_image_actions") or []:
+        action = str(item.get("miaoshou_action") or "review")
+        url = str(item.get("url") or "").strip()
+        if action != "remove" and url and url not in selected_images:
+            selected_images.append(url)
+            selected_generated_images.append(url)
+    requested_image_order = [
+        str(url).strip()
+        for url in (review.get("image_order") or [])
+        if str(url).strip()
+    ]
+    selected_images = list(dict.fromkeys(
+        [url for url in requested_image_order if url in selected_images]
+        + selected_images
+    ))
     if len(selected_images) < 3:
         blockers.append("通过且去重后的商品图片少于 3 张")
-    if optimization_items:
-        blockers.append(f"仍有 {len(optimization_items)} 张图片需要翻译或重绘")
 
     package = [float(x or 0) for x in (review.get("package_cm") or [0, 0, 0])]
     if len(package) != 3 or any(x <= 0 for x in package):
@@ -1807,6 +4043,19 @@ def prepare_miaoshou_draft(offer_id_or_url: str) -> dict[str, Any]:
     title = _normalize_title(str(review.get("title") or "").strip())
     if not title:
         blockers.append("英文标题为空")
+    elif not _english_title_ready(title):
+        blockers.append("英文标题必须包含英文字母且不能含中文")
+    if workflow.get("content_required"):
+        if not workflow.get("content_ready"):
+            blockers.append("内容与图片配方尚未审核通过")
+        if not workflow.get("generation_ready"):
+            blockers.append("整套图片尚未生成完成")
+        if not workflow.get("image_review_ready"):
+            blockers.append("图片审核尚未完成")
+
+    selected_sku_keys = [str(value) for value in review.get("selected_sku_keys") or [] if str(value)]
+    if source.get("skus") and not selected_sku_keys:
+        blockers.append("至少保留一个商品规格")
 
     description = "<p>" + title + "</p>" + "".join(
         f'<p><img src="{url}" alt="Product detail" style="display:block;width:100%;height:auto;"/></p>'
@@ -1824,8 +4073,20 @@ def prepare_miaoshou_draft(offer_id_or_url: str) -> dict[str, Any]:
         "imgUrls": selected_images,
         "notes": description,
         "mainImgVideoUrl": source.get("video", {}).get("url") if review.get("video_action") == "keep" else "",
+        "selectedSkuKeys": selected_sku_keys,
         "selectedSites": list(review.get("selected_sites") or []),
         "supportCod": True,
+    }
+    change_summary = {
+        "title": title,
+        "seller_sku": seller_sku,
+        "weight_g": round(weight * 1000),
+        "package_cm": package,
+        "source_image_count": len(selected_source_images),
+        "generated_image_count": len(selected_generated_images),
+        "final_image_count": len(selected_images),
+        "selected_sku_count": len(selected_sku_keys) or len(source.get("skus") or []),
+        "selected_site_count": len(review.get("selected_sites") or []),
     }
     result = {
         "ok": True,
@@ -1835,13 +4096,11 @@ def prepare_miaoshou_draft(offer_id_or_url: str) -> dict[str, Any]:
         "draft": draft,
         "blockers": blockers,
         "optimization_items": optimization_items,
+        "change_summary": change_summary,
         "written_to_miaoshou": False,
         "updated_at": _now(),
     }
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    (STATE_DIR / f"{offer_id}_miaoshou_draft.json").write_text(
-        json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    _write_json_atomic(STATE_DIR / f"{offer_id}_miaoshou_draft.json", result)
     if seller_sku and seller_sku != review.get("seller_sku"):
         state = load_state(offer_id)
         state.setdefault("review", {})["seller_sku"] = seller_sku
@@ -1878,9 +4137,18 @@ def write_miaoshou_draft(offer_id_or_url: str, *, post=None) -> dict[str, Any]:
         "packageHeight", "imgUrls", "notes", "mainImgVideoUrl",
     ):
         updated[key] = draft[key]
+    current_sku_map = current.get("skuMap") or {}
+    selected_sku_keys = {str(value) for value in draft.get("selectedSkuKeys") or [] if str(value)}
+    if selected_sku_keys:
+        current_sku_map = {
+            key: value for key, value in current_sku_map.items()
+            if str(key) in selected_sku_keys or str(key).strip(";") in selected_sku_keys
+        }
+        if not current_sku_map:
+            raise RuntimeError("审核通过的规格无法与妙手当前 SKU 对应，请刷新商品后重新选择")
     updated_skus = {}
-    sku_numbers = _sequential_sku_numbers(current.get("skuMap") or {}, draft["itemNum"])
-    for key, value in (current.get("skuMap") or {}).items():
+    sku_numbers = _sequential_sku_numbers(current_sku_map, draft["itemNum"])
+    for key, value in current_sku_map.items():
         sku = dict(value)
         sku.update({
             "itemNum": sku_numbers[key],
@@ -1934,9 +4202,7 @@ def write_miaoshou_draft(offer_id_or_url: str, *, post=None) -> dict[str, Any]:
         "published": False,
         "updated_at": _now(),
     }
-    (STATE_DIR / f"{prepared['offer_id']}_miaoshou_draft.json").write_text(
-        json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    _write_json_atomic(STATE_DIR / f"{prepared['offer_id']}_miaoshou_draft.json", result)
     return result
 
 
@@ -2078,7 +4344,7 @@ def ensure_common_sequential_skus(offer_id_or_url: str, *, post=None) -> dict[st
     draft_state["sku_item_nums"] = list(sku_numbers.values())
     draft_state["sku_scheme_version"] = 2
     draft_state["updated_at"] = _now()
-    draft_path.write_text(json.dumps(draft_state, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_json_atomic(draft_path, draft_state)
     return {
         "ok": True,
         "offer_id": offer_id,
@@ -2157,7 +4423,7 @@ def sync_miaoshou_second_review(offer_id_or_url: str, *, post=None) -> dict[str,
         "published": False,
         "updated_at": _now(),
     })
-    draft_path.write_text(json.dumps(draft_state, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_json_atomic(draft_path, draft_state)
     return {
         "ok": True,
         "offer_id": offer_id,
@@ -2222,7 +4488,7 @@ def claim_miaoshou_to_tiktok(offer_id_or_url: str, *, post=None) -> dict[str, An
             "started_at": _now(),
             "updated_at": _now(),
         })
-        claim_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_atomic(claim_path, result)
 
         shops: dict[str, Any] = dict(existing.get("shops") or {})
         blocked: dict[str, str] = {}
@@ -2320,7 +4586,7 @@ def claim_miaoshou_to_tiktok(offer_id_or_url: str, *, post=None) -> dict[str, An
                 "claimed": False,
                 "updated_at": _now(),
             })
-            claim_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+            _write_json_atomic(claim_path, result)
 
         result = {
             "ok": True,
@@ -2356,11 +4622,11 @@ def claim_miaoshou_to_tiktok(offer_id_or_url: str, *, post=None) -> dict[str, An
             "started_at": result.get("started_at") or _now(),
             "updated_at": _now(),
         }
-        claim_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_atomic(claim_path, result)
         draft_path = STATE_DIR / f"{offer_id}_miaoshou_draft.json"
         draft_state = _load_json(draft_path) or {}
         draft_state.update({"claimed": True, "tiktok_detail_id": tiktok_detail_id, "published": False, "updated_at": _now()})
-        draft_path.write_text(json.dumps(draft_state, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_atomic(draft_path, draft_state)
         return result
     except Exception as exc:
         failed = _load_json(claim_path) or {"ok": False, "offer_id": offer_id, "shops": {}, "blocked_sites": {}}
@@ -2373,7 +4639,7 @@ def claim_miaoshou_to_tiktok(offer_id_or_url: str, *, post=None) -> dict[str, An
             "last_error": str(exc),
             "updated_at": _now(),
         })
-        claim_path.write_text(json.dumps(failed, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_atomic(claim_path, failed)
         raise
     finally:
         lock.release()
@@ -2412,7 +4678,7 @@ def start_claim_miaoshou_to_tiktok(offer_id_or_url: str) -> dict[str, Any]:
         "last_error": "",
         "updated_at": _now(),
     })
-    claim_path.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_json_atomic(claim_path, current)
     return current
 
 
@@ -2956,7 +5222,7 @@ def prepare_miaoshou_site_drafts(offer_id_or_url: str, *, post=None) -> dict[str
             "started_at": _now(),
             "updated_at": _now(),
         })
-        output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_atomic(output_path, result)
 
         pending_grouped: dict[str, list[tuple[str, dict[str, Any]]]] = {}
         prepared_targets: dict[str, dict[str, Any]] = {}
@@ -3037,7 +5303,7 @@ def prepare_miaoshou_site_drafts(offer_id_or_url: str, *, post=None) -> dict[str
             }
             for group, info in publish_group_claims.items()
         }
-        output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_atomic(output_path, result)
 
         for region, region_shops in pending_grouped.items():
             existing_site = (result.get("sites") or {}).get(region, {})
@@ -3116,7 +5382,7 @@ def prepare_miaoshou_site_drafts(offer_id_or_url: str, *, post=None) -> dict[str
                     "published": False,
                     "updated_at": _now(),
                 })
-                output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+                _write_json_atomic(output_path, result)
                 time.sleep(0.8)
                 continue
 
@@ -3182,7 +5448,7 @@ def prepare_miaoshou_site_drafts(offer_id_or_url: str, *, post=None) -> dict[str
                     "published": False,
                     "updated_at": _now(),
                 })
-                output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+                _write_json_atomic(output_path, result)
                 time.sleep(0.8)
                 continue
 
@@ -3190,7 +5456,7 @@ def prepare_miaoshou_site_drafts(offer_id_or_url: str, *, post=None) -> dict[str
 
         result["in_progress"] = False
         result["updated_at"] = _now()
-        output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_atomic(output_path, result)
         return result
     except Exception as exc:
         failed = _load_json(output_path) or {"ok": False, "offer_id": offer_id, "sites": {}}
@@ -3202,7 +5468,7 @@ def prepare_miaoshou_site_drafts(offer_id_or_url: str, *, post=None) -> dict[str
             "last_error": str(exc),
             "updated_at": _now(),
         })
-        output_path.write_text(json.dumps(failed, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json_atomic(output_path, failed)
         raise
     finally:
         lock.release()

@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>SKU 利润探针 · TH 试验</title>
+  <link rel="stylesheet" href="/static/app.css"/>
+  <style>
+    :root { --ok:#0d6b0d; --bad:#b91c1c; --muted:#64748b; --card:#fff; --line:#e2e8f0; --teal:#0f766e; }
+    body { background:#f1f5f9; margin:0; }
+    .wrap { max-width:1180px; margin:0 auto; padding:18px 14px 70px; }
+    h1 { font-size:1.35rem; margin:0 0 4px; }
+    .lead { color:var(--muted); margin:0 0 14px; font-size:.9rem; }
+    .panel { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; margin-bottom:12px; }
+    .row { display:flex; flex-wrap:wrap; gap:10px; align-items:end; }
+    label { font-size:12px; color:var(--muted); display:block; margin-bottom:4px; }
+    input, select, textarea { padding:8px 10px; border:1px solid #cbd5e1; border-radius:8px; font-size:14px; box-sizing:border-box; }
+    input[type=text], input[type=number] { min-width:120px; }
+    textarea { width:100%; min-height:72px; font-family:inherit; }
+    button { padding:9px 14px; border:0; border-radius:8px; background:var(--teal); color:#fff; font-weight:600; cursor:pointer; }
+    button.secondary { background:#334155; }
+    button.ghost { background:#e2e8f0; color:#0f172a; }
+    button:disabled { opacity:.55; cursor:wait; }
+    .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:10px; }
+    .card { background:#f8fafc; border:1px solid var(--line); border-radius:10px; padding:12px; }
+    .card.main { border-color:var(--teal); background:#f0fdfa; }
+    .card h3 { margin:0 0 6px; font-size:.92rem; }
+    .big { font-size:1.4rem; font-variant-numeric:tabular-nums; font-weight:700; }
+    .pos { color:var(--ok); } .neg { color:var(--bad); }
+    .muted { color:var(--muted); font-size:.82rem; }
+    .badge { display:inline-block; font-size:11px; padding:2px 8px; border-radius:999px; background:#ccfbf1; color:#115e59; margin-right:6px; }
+    .badge.warn { background:#fef3c7; color:#92400e; }
+    .badge.bad { background:#fee2e2; color:#991b1b; }
+    table { width:100%; border-collapse:collapse; font-size:12px; }
+    th, td { border-bottom:1px solid var(--line); padding:7px 8px; text-align:left; vertical-align:top; }
+    th { background:#f8fafc; color:#475569; position:sticky; top:0; }
+    td.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+    .err { color:var(--bad); background:#fef2f2; border:1px solid #fecaca; padding:10px 12px; border-radius:8px; }
+    .warnbox { color:#92400e; background:#fffbeb; border:1px solid #fde68a; padding:10px 12px; border-radius:8px; margin:8px 0; }
+    .tips li { margin:4px 0; }
+    .grid2 { display:grid; grid-template-columns:1.2fr .8fr; gap:12px; }
+    .prod { display:flex; gap:12px; align-items:flex-start; }
+    .prod img { width:72px; height:72px; object-fit:cover; border-radius:8px; border:1px solid var(--line); background:#fff; }
+    .hot { display:flex; flex-wrap:wrap; gap:6px; }
+    .hot button { font-size:12px; padding:5px 9px; }
+    .scroll { max-height:360px; overflow:auto; border:1px solid var(--line); border-radius:8px; }
+    details { margin-top:8px; }
+    details summary { cursor:pointer; font-weight:600; font-size:13px; }
+    @media (max-width:900px){ .grid2{ grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>SKU 利润探针 <span class="badge">TH 试验</span></h1>
+  <p class="lead">独立页 · 广告默认 22% · 三情景（有达人 / 无达人 / 最近加权）· SKU 只看末四位（990021≡0021）· 改规则只出建议不自动写回。</p>
+
+  <div class="panel">
+    <div class="row">
+      <div>
+        <label>SKU</label>
+        <input id="sku" type="text" placeholder="990001 / 0003" value="990001"/>
+      </div>
+      <div>
+        <label>平台</label>
+        <select id="platform">
+          <option value="both">TK + Shopee</option>
+          <option value="tiktok">仅 TikTok TH</option>
+          <option value="shopee">仅 Shopee TH</option>
+        </select>
+      </div>
+      <div>
+        <label>广告%</label>
+        <input id="adRate" type="number" step="1" min="0" max="100" value="22" style="width:72px"/>
+      </div>
+      <div>
+        <label>回看天数</label>
+        <input id="lookback" type="number" step="1" min="7" max="90" value="14" style="width:72px"/>
+      </div>
+      <div>
+        <label>手动售价(可选)</label>
+        <input id="sale" type="number" step="0.01" min="0" placeholder="覆盖" style="width:90px"/>
+      </div>
+      <div>
+        <label>手动货本¥(可选)</label>
+        <input id="cost" type="number" step="0.01" min="0" placeholder="覆盖" style="width:90px"/>
+      </div>
+      <button id="btn" type="button">估算</button>
+      <button id="btnFx" class="secondary" type="button">刷新汇率重算</button>
+      <button id="btnPull" class="secondary" type="button">拉取最新订单</button>
+      <button id="btnHot" class="ghost" type="button">加载热销 SKU</button>
+    </div>
+    <p id="pullStatus" class="muted" style="margin:8px 0 0"></p>
+    <p class="muted" style="margin:10px 0 0">主口径：利润 = 结算×实时汇率 − 售价×广告%×汇率 − 货本。样本≥5 → 最近加权；否则偏保守（有达人）。主售价优先近单实付中位，挂牌价另列对照。Shopee 回看至少 45 天；缺货本时可手动填，或用周报 product_cost。serve 默认每 6h 自动拉 TH 最新结算。</p>
+  </div>
+
+  <div class="panel">
+    <h3 style="margin:0 0 8px;font-size:14px">批量（每行一个 SKU，最多 30）</h3>
+    <textarea id="batch" placeholder="990001&#10;0003&#10;0011"></textarea>
+    <div class="row" style="margin-top:8px">
+      <button id="btnBatch" class="secondary" type="button">批量估算</button>
+      <button id="btnExport" class="ghost" type="button">导出当前 JSON</button>
+    </div>
+  </div>
+
+  <div id="hotBox" class="panel" hidden>
+    <h3 style="margin:0 0 8px;font-size:14px">热销快捷（点选填入）</h3>
+    <div id="hot" class="hot"></div>
+  </div>
+
+  <div id="status" class="muted"></div>
+  <div id="out"></div>
+</div>
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const money = (n, dig=2) => (n == null || n === '' || Number.isNaN(Number(n))) ? '—' : Number(n).toFixed(dig);
+  const cls = (n) => (Number(n) >= 0 ? 'pos' : 'neg');
+  let lastPayload = null;
+
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function scenarioCard(title, s) {
+    if (!s) return '<div class="card"><h3>' + esc(title) + '</h3><p class="muted">无数据</p></div>';
+    const src = s.source === 'prior_fallback' ? '<span class="badge warn">先验回退</span>' : '';
+    return '<div class="card"><h3>' + esc(title) + ' ' + src + '</h3>' +
+      '<div class="big ' + cls(s.profit_cny) + '">¥' + money(s.profit_cny) + '</div>' +
+      '<div class="muted">本地 ' + money(s.profit_local) + ' · 利率 ' + money(s.margin_pct) + '%</div>' +
+      '<div class="muted">估结算 ' + money(s.est_settlement_local) +
+      (s.median_settle_ratio != null ? ' · 比 ' + money(s.median_settle_ratio, 3) : '') +
+      (s.weighted_settle_ratio != null ? ' · 加权比 ' + money(s.weighted_settle_ratio, 3) : '') +
+      ' · n=' + (s.n != null ? s.n : '—') + '</div></div>';
+  }
+
+  function breakdownTable(bd) {
+    if (!bd) return '<p class="muted">无先验拆解</p>';
+    const rows = [
+      ['售价', bd.sale_local],
+      ['货本(当地)', bd.goods_local],
+      ['物流', bd.logistics_local],
+      ['佣金', bd.commission_local],
+      ['交易费', bd.transaction_local],
+      ['平台支持费', bd.extra_local],
+      ['达人', bd.creator_local],
+      ['广告', bd.ad_local],
+      ['卖家税', bd.seller_tax_local],
+      ['固定费', bd.fixed_fee_local],
+    ].map(([k,v]) => '<tr><td>' + k + '</td><td class="num">' + money(v) + '</td></tr>').join('');
+    return '<table><thead><tr><th>先验费项(THB)</th><th>金额</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+
+  function compsTable(comps) {
+    if (!comps || !comps.length) return '<p class="muted">无近单样本</p>';
+    const rows = comps.map(c => '<tr>' +
+      '<td>' + esc(c.statement_date || '') + '</td>' +
+      '<td><code>' + esc(c.order_id || '') + '</code></td>' +
+      '<td class="num">' + money(c.sale_local) + '</td>' +
+      '<td class="num">' + money(c.settlement_local) + '</td>' +
+      '<td class="num">' + money(c.settle_ratio, 3) + '</td>' +
+      '<td class="num">' + money(c.ship_net_local) + '</td>' +
+      '<td>' + (c.has_affiliate ? (c.affiliate_approx ? '高费*' : '有') : '无') + '</td>' +
+      '<td class="num ' + cls(c.profit_cny) + '">' + money(c.profit_cny) + '</td>' +
+      '<td>' + (c.outlier ? '异常' : '') + '</td>' +
+      '</tr>').join('');
+    return '<div class="scroll"><table><thead><tr>' +
+      '<th>日期</th><th>订单</th><th>小计</th><th>结算</th><th>比</th><th>净运费</th><th>达人</th><th>利润¥</th><th></th>' +
+      '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+  }
+
+  function priceViews(views) {
+    if (!views || !views.length) return '';
+    return '<details open><summary>多售价对照</summary><div class="cards" style="margin-top:8px">' +
+      views.map(v => {
+        const m = v.main || {};
+        return '<div class="card"><h3>' + esc(v.label) + '</h3>' +
+          '<div class="muted">售价 ' + money(v.sale_local) + '</div>' +
+          '<div class="big ' + cls(m.profit_cny) + '">¥' + money(m.profit_cny) + '</div>' +
+          '<div class="muted">' + esc(m.label || '') + ' · 利率 ' + money(m.margin_pct) + '%</div></div>';
+      }).join('') + '</div></details>';
+  }
+
+  function renderCompare(compare) {
+    if (!compare || compare.length < 2) return '';
+    const cards = compare.map(c => {
+      if (!c.ok) {
+        return '<div class="card"><h3>' + esc(c.platform) + '</h3><div class="muted neg">' + esc(c.error || '失败') + '</div></div>';
+      }
+      return '<div class="card"><h3>' + esc(c.platform) + '</h3>' +
+        '<div class="big ' + cls(c.profit_cny) + '">¥' + money(c.profit_cny) + '</div>' +
+        '<div class="muted">利率 ' + money(c.margin_pct) + '% · 售价 ' + money(c.sale_local) +
+        ' · ' + esc(c.label || '') + '</div></div>';
+    }).join('');
+    return '<div class="panel"><h2 style="margin:0 0 8px;font-size:1rem">双平台对照</h2><div class="cards">' + cards + '</div></div>';
+  }
+
+  function renderPlatform(p) {
+    if (!p) return '';
+    if (!p.ok) {
+      return '<div class="panel"><h2>' + esc(p.platform || '') + ' · ' + esc(p.region || '') +
+        '</h2><div class="err">' + esc(p.error || '失败') + '</div></div>';
+    }
+    const prod = p.product || {};
+    const main = p.main || {};
+    const sc = p.scenarios || {};
+    const fx = p.fx || {};
+    const prior = p.prior || {};
+    const tips = (p.rule_suggestions || []).map(t =>
+      '<li><b>' + esc(t.title) + '</b> — ' + esc(t.detail) + '</li>').join('');
+    const warns = (p.warnings || []).map(w => '<div class="warnbox">' + esc(w) + '</div>').join('');
+    const img = prod.image_url
+      ? '<img src="' + esc(prod.image_url) + '" alt=""/>'
+      : '<div style="width:72px;height:72px;background:#e2e8f0;border-radius:8px"></div>';
+
+    return '<div class="panel">' +
+      '<div class="prod">' + img + '<div style="flex:1">' +
+      '<h2 style="margin:0 0 6px">' + esc(p.shop || p.platform) + ' · ' + esc(p.region) +
+      ' <span class="badge">' + esc(p.platform) + '</span>' +
+      (main.confidence === 'posterior' ? '<span class="badge">后验</span>' : '<span class="badge warn">样本不足/先验</span>') +
+      '</h2>' +
+      '<div class="muted">SKU <code>' + esc(prod.seller_sku || '') + '</code>' +
+      (prod.sku_id ? ' · <code>' + esc(prod.sku_id) + '</code>' : '') +
+      '<br/>' + esc((prod.product_name || '').slice(0, 120)) + '</div>' +
+      '<div class="muted" style="margin-top:4px">主售价 <b>' + money(prod.sale_local) + '</b> ' + esc(p.currency || '') +
+      '（' + esc(prod.sale_basis || '') + '）' +
+      (prod.list_price_local != null ? ' · 挂牌 ' + money(prod.list_price_local) : '') +
+      (prod.recent_avg_sale_local != null ? ' · 近单中位 ' + money(prod.recent_avg_sale_local) : '') +
+      ' · 货本 ¥' + money(prod.cost_cny) +
+      (prod.cost_source ? ' <span class="muted">(' + esc(prod.cost_source) + ')</span>' : '') +
+      (prod.weight_kg != null ? ' · 重 ' + money(prod.weight_kg, 3) + 'kg' : '') +
+      '<br/>汇率 ' + money(fx.THB_CNY, 6) +
+      ' · ' + (fx.live ? 'live' : (fx.cached ? 'cache' : 'fx')) +
+      (fx.as_of ? ' · as_of ' + esc(fx.as_of) : '') +
+      ' · 广告 ' + Math.round((p.ad_rate || 0.22) * 100) + '%' +
+      (prior.target_margin_pct != null ? ' · 目标利率 ' + money(prior.target_margin_pct, 0) + '%' : '') +
+      '</div></div></div>' +
+      warns +
+      '<div class="cards" style="margin:12px 0">' +
+      '<div class="card main"><h3>主结论 · ' + esc(main.label || '') + '</h3>' +
+      '<div class="big ' + cls(main.profit_cny) + '">¥' + money(main.profit_cny) + '</div>' +
+      '<div class="muted">估结算 ' + money(main.est_settlement_local) + ' · 利率 ' + money(main.margin_pct) + '%</div></div>' +
+      scenarioCard('有达人', sc.with_affiliate) +
+      scenarioCard('无达人', sc.no_affiliate) +
+      scenarioCard('最近加权', sc.recent_weighted) +
+      '</div>' +
+      priceViews(p.price_views) +
+      '<div class="grid2" style="margin-top:12px">' +
+      '<div><h3 style="font-size:14px;margin:0 0 6px">近单样本' +
+      ' <span class="muted">窗=' + esc((p.posterior || {}).lookback_days) + '天 · ' +
+      JSON.stringify((sc.sample_counts) || {}) + '</span></h3>' +
+      compsTable((p.posterior || {}).recent_comps) +
+      '<p class="muted">* 高费=结算比低于中位的近似分档（Shopee 无真实达人字段）</p></div>' +
+      '<div><h3 style="font-size:14px;margin:0 0 6px">先验拆解 / 规则建议</h3>' +
+      breakdownTable(((prior.with_affiliate || {}).breakdown) || ((prior.no_affiliate || {}).breakdown)) +
+      '<ul class="tips" style="margin-top:10px">' + (tips || '<li class="muted">无</li>') + '</ul>' +
+      '<p class="muted">' + esc(p.ad_note || '') + '<br/>写回：' + esc(p.rule_writeback || '') + '</p></div>' +
+      '</div></div>';
+  }
+
+  function renderBatch(data) {
+    const rows = (data.rows || []).map(r => {
+      const cells = Object.keys(r.platforms || {}).map(k => {
+        const p = r.platforms[k];
+        if (!p.ok) return '<td class="neg">' + esc(k) + ': ' + esc(p.error || 'fail') + '</td>';
+        return '<td class="' + cls(p.profit_cny) + '">' + esc(k) + ' ¥' + money(p.profit_cny) +
+          ' <span class="muted">(' + money(p.margin_pct) + '%)</span></td>';
+      }).join('');
+      return '<tr><td><code>' + esc(r.sku) + '</code></td>' + cells + '</tr>';
+    }).join('');
+    return '<div class="panel"><h2 style="margin:0 0 8px">批量结果 · ' + (data.count || 0) + ' 个</h2>' +
+      '<div class="scroll"><table><thead><tr><th>SKU</th><th colspan="2">平台利润</th></tr></thead><tbody>' +
+      rows + '</tbody></table></div></div>';
+  }
+
+  function params(extra) {
+    const q = new URLSearchParams({
+      sku: $('sku').value.trim(),
+      platform: $('platform').value,
+      ad_rate: String($('adRate').value || '22'),
+      lookback_days: String($('lookback').value || '14'),
+    });
+    const sale = $('sale').value.trim();
+    if (sale) q.set('sale', sale);
+    const cost = $('cost').value.trim();
+    if (cost) q.set('cost', cost);
+    if (extra && extra.force_fx) q.set('force_fx', '1');
+    return q;
+  }
+
+  async function run(extra) {
+    const sku = $('sku').value.trim();
+    if (!sku) { alert('请输入 SKU'); return; }
+    $('btn').disabled = true; $('btnFx').disabled = true;
+    $('status').textContent = '计算中…';
+    $('out').innerHTML = '';
+    try {
+      const r = await fetch('/api/sku-profit?' + params(extra).toString());
+      const data = await r.json();
+      lastPayload = data;
+      let html = '';
+      if (data.partial) html += '<div class="warnbox">' + esc(data.warning || '部分平台失败') + '</div>';
+      if (!data.ok && !data.platforms) {
+        html += '<div class="err">' + esc(data.error || '失败') + '</div>';
+      } else {
+        html += renderCompare(data.compare);
+        const plats = data.platforms || {};
+        html += Object.keys(plats).map(k => renderPlatform(plats[k])).join('') ||
+          '<div class="err">' + esc(data.error || '无结果') + '</div>';
+      }
+      $('out').innerHTML = html;
+      $('status').textContent = '完成 · ' + new Date().toLocaleTimeString();
+    } catch (e) {
+      $('out').innerHTML = '<div class="err">' + esc(e) + '</div>';
+      $('status').textContent = '';
+    } finally {
+      $('btn').disabled = false; $('btnFx').disabled = false;
+    }
+  }
+
+  async function runBatch() {
+    const skus = $('batch').value.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+    if (!skus.length) { alert('请填写批量 SKU'); return; }
+    $('btnBatch').disabled = true;
+    $('status').textContent = '批量计算中…';
+    try {
+      const r = await fetch('/api/sku-profit/batch', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          skus,
+          platform: $('platform').value,
+          ad_rate: Number($('adRate').value || 22),
+          lookback_days: Number($('lookback').value || 14),
+          cost_override: $('cost').value.trim() ? Number($('cost').value) : null,
+        }),
+      });      const data = await r.json();
+      lastPayload = data;
+      $('out').innerHTML = renderBatch(data);
+      $('status').textContent = '批量完成 · ' + new Date().toLocaleTimeString();
+    } catch (e) {
+      $('out').innerHTML = '<div class="err">' + esc(e) + '</div>';
+    } finally {
+      $('btnBatch').disabled = false;
+    }
+  }
+
+  async function pullOrders() {
+    $('btnPull').disabled = true;
+    $('pullStatus').textContent = '正在后台拉取 TikTok Finance + Shopee escrow…';
+    try {
+      const r = await fetch('/api/orders-pull', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          platform: $('platform').value,
+          regions: ['TH'],
+          lookback_days: Number($('lookback').value || 14),
+        }),
+      });
+      const data = await r.json();
+      if (!data.ok) {
+        $('pullStatus').textContent = data.message || data.error || '拉取未启动';
+        return;
+      }
+      for (let i = 0; i < 180; i++) {
+        await new Promise(res => setTimeout(res, 2000));
+        const st = await (await fetch('/api/orders-pull/status')).json();
+        const msg = st.message || st.error || '';
+        $('pullStatus').textContent = (st.running ? '拉取中 ' : '完成 ') +
+          (st.percent != null ? st.percent + '% · ' : '') + msg;
+        if (!st.running) {
+          if (st.error) $('pullStatus').textContent = '拉取失败: ' + st.error;
+          else $('pullStatus').textContent = '订单已更新，可重新估算 · ' + new Date().toLocaleTimeString();
+          break;
+        }
+      }
+    } catch (e) {
+      $('pullStatus').textContent = String(e);
+    } finally {
+      $('btnPull').disabled = false;
+    }
+  }
+
+  async function loadHot() {
+    $('btnHot').disabled = true;
+    try {
+      const r = await fetch('/api/sku-profit/hot?platform=both&limit=15');
+      const data = await r.json();
+      const bits = [];
+      (data.tiktok || []).forEach(x => bits.push({...x, tag: 'TK'}));
+      (data.shopee || []).forEach(x => bits.push({...x, tag: 'SP'}));
+      $('hot').innerHTML = bits.map(x =>
+        '<button type="button" data-sku="' + esc(x.seller_sku) + '" title="' + esc(x.product_name || '') + '">' +
+        esc(x.tag) + ' ' + esc(x.seller_sku) +
+        (x.cost_cny != null ? ' ¥成本' + money(x.cost_cny, 1) : ' 缺成本') +
+        ' ·' + (x.order_lines || 0) + '</button>'
+      ).join('') || '<span class="muted">暂无</span>';
+      $('hotBox').hidden = false;
+      $('hot').onclick = (ev) => {
+        const b = ev.target.closest('button[data-sku]');
+        if (!b) return;
+        $('sku').value = b.getAttribute('data-sku');
+        run();
+      };
+    } catch (e) {
+      alert(e);
+    } finally {
+      $('btnHot').disabled = false;
+    }
+  }
+
+  $('btn').addEventListener('click', () => run());
+  $('btnFx').addEventListener('click', () => run({force_fx: true}));
+  $('btnPull').addEventListener('click', pullOrders);
+  $('btnBatch').addEventListener('click', runBatch);
+  $('btnHot').addEventListener('click', loadHot);
+  $('btnExport').addEventListener('click', () => {
+    if (!lastPayload) { alert('暂无结果'); return; }
+    const blob = new Blob([JSON.stringify(lastPayload, null, 2)], {type: 'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'sku_profit_' + ($('sku').value.trim() || 'batch') + '.json';
+    a.click();
+  });
+  $('sku').addEventListener('keydown', (e) => { if (e.key === 'Enter') run(); });
+})();
+</script>
+</body>
+</html>

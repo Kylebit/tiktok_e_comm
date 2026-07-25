@@ -1,0 +1,88 @@
+{
+  "version": "1.4.0",
+  "purpose": "Exploration-time rules for evidence-grounded ecommerce image suites.",
+  "global_rules": {
+    "required_output_aspect_ratio": "1:1",
+    "visual_text_language": "English only",
+    "visual_text_policy": "Prefer no generated text. Add approved English copy, measurements, arrows, and labels deterministically after generation.",
+    "reference_identity": "Use approved reference images to preserve the product's shape, color, print, material appearance, component arrangement, and proportions.",
+    "facts": "Only state claims supported by source text, source images, or explicit human review. Keep inferred visual observations separate from verified facts.",
+    "prohibited": [
+      "Chinese or other non-English visible text",
+      "invented logos, brands, certifications, performance claims, or components",
+      "watermarks, unreadable text, packaging art, and unrelated products",
+      "model-generated measurements or price claims"
+    ],
+    "review": "Approve the identity references, fact card, category rules, and full image recipe before funding one complete generation batch. Generated images remain subject to per-image human review."
+  },
+  "profiles": [
+    {
+      "id": "autumn_wreath",
+      "match_terms": ["wreath", "garland", "\u82b1\u73af", "\u85e4\u5708", "\u5357\u74dc", "\u67ab\u53f6"],
+      "description": "Artificial seasonal wreaths and door/wall hanging decorations.",
+      "planning_rules": [
+        "Use one approved hero reference as the sole product-identity source for generated images.",
+        "Treat component or dimension sheets as evidence only unless a human explicitly approves them as visual references.",
+        "Show realistic door, porch, or indoor mantel placement without obstructing the wreath."
+      ],
+      "recommended_suite": [
+        {"id": "wb1", "type": "white_bg", "title": "Clean White Hero", "aspect_ratio": "1:1"},
+        {"id": "sc1", "type": "scene", "title": "Front Door Display", "aspect_ratio": "1:1"},
+        {"id": "sc2", "type": "scene", "title": "Indoor Seasonal Decor", "aspect_ratio": "1:1"},
+        {"id": "sp1", "type": "selling_point", "title": "Harvest Color Story", "aspect_ratio": "1:1"},
+        {"id": "dt1", "type": "macro_detail", "title": "Material and Craft Detail", "aspect_ratio": "1:1"},
+        {"id": "sz1", "type": "size_card", "title": "Verified Size Card", "aspect_ratio": "1:1"}
+      ]
+    },
+    {
+      "id": "wall_decal",
+      "match_terms": ["wall sticker", "wall decal", "wallpaper", "\u8d34\u7eb8", "\u5899\u8d34", "\u81ea\u7c98"],
+      "description": "Flat wall decals, edge decals, and self-adhesive decorative stickers.",
+      "planning_rules": [
+        "Preserve flat decal geometry; do not turn a wall decal into a framed object, sculpture, or unrelated decor product.",
+        "Only depict peeling, adhesive layers, waterproofing, or removability when those claims are source-supported.",
+        "Show the product on a plausible approved wall or furniture surface, not a random door frame unless the product is actually a door decal.",
+        "By default, do not generate white-background hero, size-card, or macro-detail images for wall decals. The human operator may explicitly add a size card only after rejecting the existing size image and confirming exact dimensions; generate a no-text base and apply deterministic English dimensions locally.",
+        "If a model-generated scene contains readable English copy, hold it for human copy and claim review instead of automatically rejecting it."
+      ],
+      "recommended_suite": [
+        {"id": "sc1", "type": "scene", "title": "Living Space Application", "aspect_ratio": "1:1"},
+        {"id": "sc2", "type": "scene", "title": "Bedroom or Entry Accent", "aspect_ratio": "1:1"},
+        {"id": "sc3", "type": "scene", "title": "Bathroom Wall Accent", "aspect_ratio": "1:1"},
+        {"id": "sp1", "type": "selling_point", "title": "Print and Surface Detail", "aspect_ratio": "1:1"}
+      ]
+    },
+    {
+      "id": "product_sticker",
+      "match_terms": ["helmet sticker", "motorcycle sticker", "decal sticker", "\u5934\u76d4\u8d34", "\u8f66\u8d34", "\u8d34\u7eb8", "\u8d34\u7eb8"],
+      "description": "Flat decorative stickers intended for helmets, motorcycles, or other approved product surfaces.",
+      "planning_rules": [
+        "Preserve the exact flat sticker artwork, cut edges, colors, proportions, and intended surface application from the approved source identity image.",
+        "By default, do not generate white-background hero, size-card, or macro-detail images for stickers. The human operator may explicitly add a size card only after confirming exact dimensions; generate a no-text base and apply deterministic English dimensions locally.",
+        "Use believable application scenes only. Do not show peeling, adhesive layers, removability, waterproofing, durability, or safety performance unless separately source-supported and human-approved.",
+        "If a model-generated selling-point scene contains readable English copy, retain it for human copy and claim review instead of automatically rejecting it."
+      ],
+      "recommended_suite": [
+        {"id": "sc1", "type": "scene", "title": "Motorcycle Helmet Application", "aspect_ratio": "1:1"},
+        {"id": "sc2", "type": "scene", "title": "Electric Scooter Helmet Application", "aspect_ratio": "1:1"},
+        {"id": "sc3", "type": "scene", "title": "Everyday Riding Context", "aspect_ratio": "1:1"},
+        {"id": "sp1", "type": "selling_point", "title": "Graphic and Surface Focus", "aspect_ratio": "1:1"}
+      ]
+    },
+    {
+      "id": "generic_product",
+      "match_terms": [],
+      "description": "Fallback profile for products without a category-specific rule.",
+      "planning_rules": [
+        "Choose image types from visible product evidence and actual use, not generic marketing assumptions.",
+        "Use a white hero, at least one believable use scene, one feature view, one macro detail, and a size card only when dimensions are verified."
+      ],
+      "recommended_suite": [
+        {"id": "wb1", "type": "white_bg", "title": "Clean Product Hero", "aspect_ratio": "1:1"},
+        {"id": "sc1", "type": "scene", "title": "Realistic Use Scene", "aspect_ratio": "1:1"},
+        {"id": "sp1", "type": "selling_point", "title": "Primary Feature", "aspect_ratio": "1:1"},
+        {"id": "dt1", "type": "macro_detail", "title": "Material Detail", "aspect_ratio": "1:1"}
+      ]
+    }
+  ]
+}

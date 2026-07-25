@@ -93,6 +93,11 @@ python codex_adapter.py
 > 唤醒信号对齐 Cursor 的 `AGENT_A2A_TICK_cursor`：若你的环境配了
 > `notify_on_output` / 钩子匹配 `AGENT_A2A_TICK_codex` 前缀，就会被自动唤醒执行；
 > 没有自动钩子也不要紧，你只要**按下面的「正确做法」主动去读 inbox 任务并执行**即可。
+>
+> ⚠️ **本机实测重要限制（2026-07-21）**：Codex 的 `notify_on_output` 只监听 Codex 自身输出，
+> 看不到 adapter 子进程打印的 `AGENT_A2A_TICK_codex` 行 → **事件直唤醒在本机不通**。
+> 因此本机的**可靠主路径 = 你在 Codex App 里建一个「Thread Automation」定时轮询**（见第 9 节），
+> 不要用 notify 钩子当主收件。SSE 适配器仍会跑（实时加速可选），但任务保底靠定时器轮询。
 
 ### adapter 附带的使用子命令（方便你回报）
 ```bash
@@ -144,17 +149,45 @@ python codex_adapter.py --peek
 
 原因：adapter 会先消费 HTTP 队列并把任务落盘到 `codex_inbox`。此时 HTTP 队列会变空；如果 Codex 只查 HTTP 队列，就会漏掉已经 ACK 但尚未执行的本地任务。
 
-## 8. Codex / Cursor 对齐：SSE 优先，不用定时轮询当主收件
+## 8. 本机主路径：定时器轮询为主，SSE 为辅
 
-Codex 的正确主路径与 Cursor 一致：
+由于本机 `notify_on_output` 无法捕获 adapter 子进程输出，**事件直唤醒不通**。因此 Codex 的可靠收件方式是：
 
-1. 常驻适配器只跑 `python -u agent_comms/stage3/codex_adapter.py --stream`。
-2. 适配器启动时 drain 一次 `GET /agent/Orbit%20Codex/tasks?consume=1`，用于接走积压任务。
-3. 之后长期订阅 `GET /agent/Orbit%20Codex/stream`，收到 SSE `data:` 事件后落盘 `codex_inbox/<task_id>.json`、ACK `/ingest`、打印 `AGENT_A2A_TICK_codex {...}`。
-4. SSE 断线后 sleep 再重连；重连前可再 drain 一次，防止断线期间漏任务。
-5. Codex 会话侧应配置 `notify_on_output` 匹配 `^AGENT_A2A_TICK_codex`，被唤醒后读取 wake JSON 中的 `path`，真实执行 `dispatch.prompt`。
-6. `--poll-once` 只保留为手动排障命令，不作为主循环，不要再用每 N 分钟 `tasks?consume=1` 作为常规收件方式。
-7. heartbeat 只做兜底健康检查和本地 inbox 防漏扫描；一旦 SSE + notify 工作正常，heartbeat 不应承担主收件职责。
+1. **主路径（保底）**：在 Codex App 建「Thread Automation」定时轮询（见第 9 节）。
+2. **辅路径（可选加速）**：常驻 `python -u agent_comms/stage3/codex_adapter.py --stream`，
+   它启动 drain 一次 `GET /agent/Orbit%20Codex/tasks?consume=1` 接走积压，再长期订阅 SSE；
+   收到事件落盘 `codex_inbox/<task_id>.json`、ACK `/ingest`、打印 `AGENT_A2A_TICK_codex {...}`。
+3. SSE 断线后 sleep 重连，重连前再 drain 一次防漏。
+4. `--poll-once` / `--scan-local-inbox` 保留为手动排障命令。
+5. **不要依赖 `notify_on_output` 钩子当主收件**——本机不通。
+
+## 9. 用 Codex App「Thread Automation」定时轮询（本机可靠主路径）
+
+OpenAI Codex 桌面 App 自带 **Automations → Thread automations**：挂在某个会话线程上的
+「heartbeat 式定时唤醒」，支持分钟级间隔。用它来轮询肉肉派给你的任务，完全官方支持。
+
+**设置方法（在 Codex App 里）**：
+1. 打开 Codex App，进入你的 Orbit Codex 工作线程。
+2. 侧边栏 Automations → 新建 Thread automation。
+3. 调度选「自定义 / 分钟级」，例如每 2 分钟一次。
+4. 自动化提示词贴下面这段（**durable prompt**，每次唤醒都执行）：
+
+```
+每 2 分钟执行一次，循环检查我有没有新任务：
+1) 运行：python agent_comms/stage3/codex_adapter.py --scan-local-inbox
+2) 读取目录 agent_comms/stage3/codex_inbox/ 下所有 *.json，
+   跳过 status 已是 DONE / BLOCKED / CANCELED / FAILED 的文件。
+3) 对每个待处理任务，读取其中的 dispatch.prompt（任务具体要求），
+   在 Kylebit/tiktok_e_comm 仓库里真实执行（改代码 / 跑命令 / git add+commit+push origin/master），
+   不要伪造 DONE、commit hash、测试通过。
+4) 每完成一个里程碑，回报：
+   python agent_comms/stage3/codex_adapter.py --report --task-id <id> --text "DONE: ... commit <hash>" --tool edit_code
+5) 全部干完后，用 --complete 收尾，并在最后一条 --report 写明「DONE」/「待审核」或「BLOCKED」及原因。
+若没有任何新任务，安静结束本轮，等下次唤醒。
+```
+
+> 这样即便 SSE/notify 都不通，你也能稳定收到并执行肉肉派的任务。事件直唤醒作为锦上添花，
+> 后续我们再探索（Codex CLI `/hooks` 生命周期钩子、webhook 触发等）。
 
 执行端回报仍然固定：
 

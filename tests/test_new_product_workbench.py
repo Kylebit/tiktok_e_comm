@@ -15,7 +15,10 @@ from modules.sourcing.new_product_workbench import (
     _expected_region_site_state,
     _distribute_total,
     _normalize_title,
+    _miaoshou_editable_weight_kg,
+    _ordered_selected_images,
     _pick_default_warehouse_id,
+    _product_workflow_summary,
     _site_state_matches_expected,
     build_preview,
     claim_miaoshou_to_tiktok,
@@ -26,11 +29,19 @@ from modules.sourcing.new_product_workbench import (
     prepare_miaoshou_site_drafts,
     prepare_miaoshou_draft,
     price_review,
+    save_state,
     write_miaoshou_draft,
+    write_ordered_images_to_miaoshou,
 )
 
 
 class NewProductWorkbenchTests(unittest.TestCase):
+    def test_miaoshou_editable_weight_rounds_up_without_understating(self):
+        self.assertEqual(_miaoshou_editable_weight_kg(0.08), 0.08)
+        self.assertEqual(_miaoshou_editable_weight_kg(0.139), 0.14)
+        with self.assertRaises(ValueError):
+            _miaoshou_editable_weight_kg(0.005)
+
     def test_anchor_group_key_merges_lively_sea_mx_gb(self):
         self.assertEqual(_anchor_group_key({"shop": "LivelyHive", "region": "PH"}), "lively")
         self.assertEqual(_anchor_group_key({"shop": "LivelyHive", "region": "MX"}), "lively")
@@ -125,6 +136,17 @@ class NewProductWorkbenchTests(unittest.TestCase):
             self.assertGreaterEqual(row["profit_margin_on_sale_pct"], row["target_margin_pct"] - 0.5)
             self.assertEqual(row["status"], "ok")
 
+    def test_price_review_applies_cny_five_profit_floor_and_updated_tax_rates(self):
+        result = price_review(4.2, 0.055, [60, 30, 0.05])
+        rows = result["sea"] + [result["mx"], result["uk"]]
+
+        self.assertTrue(all(row["estimated_profit_cny"] >= 5.0 for row in rows))
+        my_row = next(row for row in result["sea"] if row["region"] == "MY")
+        th_row = next(row for row in result["sea"] if row["region"] == "TH")
+        self.assertEqual(my_row["header_meta"]["extra_rate"], 6.0)
+        self.assertEqual(th_row["header_meta"]["seller_tax_rate"], 15.0)
+        self.assertTrue(any(row["min_profit_adjusted"] for row in rows))
+
     def test_new_product_preview_forces_cod_support(self):
         result = build_preview("967648348081")
 
@@ -169,6 +191,243 @@ class NewProductWorkbenchTests(unittest.TestCase):
         self.assertEqual(len(result["draft"]["imgUrls"]), 3)
         self.assertEqual(result["draft"]["mainImgVideoUrl"], "")
 
+    def test_miaoshou_draft_merges_kept_source_and_generated_images(self):
+        preview = {
+            "source": {"source_id": "1688-1", "video": {}, "skus": []},
+            "workflow": {"content_required": True, "content_ready": True, "generation_ready": True, "image_review_ready": True},
+            "review": {
+                "fields_locked": True,
+                "seller_sku": "0942",
+                "title": "English product title",
+                "weight_kg": 0.08,
+                "package_cm": [34, 58, 1],
+                "selected_sites": ["lh_ph"],
+                "video_action": "remove",
+                "image_actions": [
+                    {"action": "keep", "url": "https://img.example/source-1.jpg"},
+                    {"action": "keep", "url": "https://img.example/source-2.jpg"},
+                ],
+                "image_order": [
+                    "https://img.example/generated-1.png",
+                    "https://img.example/source-2.jpg",
+                    "https://img.example/source-1.jpg",
+                ],
+                "generated_image_actions": [
+                    {"miaoshou_action": "keep", "url": "https://img.example/generated-1.png"},
+                    {"miaoshou_action": "remove", "url": "https://img.example/generated-2.png"},
+                ],
+            },
+        }
+        with TemporaryDirectory() as tmp, patch(
+            "modules.sourcing.new_product_workbench.resolve_offer_key", return_value="123"
+        ), patch(
+            "modules.sourcing.new_product_workbench.build_preview", return_value=preview
+        ), patch("modules.sourcing.new_product_workbench.STATE_DIR", Path(tmp)):
+            result = prepare_miaoshou_draft("123")
+
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["draft"]["imgUrls"], [
+            "https://img.example/generated-1.png",
+            "https://img.example/source-2.jpg",
+            "https://img.example/source-1.jpg",
+        ])
+        self.assertEqual(result["change_summary"]["generated_image_count"], 1)
+
+    def test_unified_image_bar_defaults_to_all_nonremoved_images_in_saved_order(self):
+        state = {
+            "review": {
+                "image_actions": [
+                    {"action": "review", "url": "https://img.example/source-1.jpg"},
+                    {"action": "remove", "url": "https://img.example/source-2.jpg"},
+                ],
+                "image_order": [
+                    "https://img.example/generated-1.png",
+                    "https://img.example/source-1.jpg",
+                ],
+            },
+            "content_package": {"collect_box_id": "123"},
+        }
+        generated = [
+            {
+                "artifact_id": "sc1_r1",
+                "shot_id": "sc1",
+                "url": "https://img.example/generated-1.png",
+                "miaoshou_action": "review",
+            },
+            {
+                "artifact_id": "sp1_r1",
+                "shot_id": "sp1",
+                "url": "https://img.example/generated-2.png",
+                "miaoshou_action": "remove",
+            },
+        ]
+        with patch(
+            "modules.sourcing.new_product_workbench._source_summary",
+            return_value={"images": []},
+        ), patch(
+            "modules.sourcing.new_product_workbench._content_package_dir",
+            return_value=Path("."),
+        ), patch(
+            "modules.sourcing.new_product_workbench._generated_review_images",
+            return_value=generated,
+        ):
+            selected = _ordered_selected_images("123", state)
+
+        self.assertEqual(selected["urls"], [
+            "https://img.example/generated-1.png",
+            "https://img.example/source-1.jpg",
+        ])
+
+    def test_ordered_image_sync_replaces_main_and_detail_images_and_verifies_order(self):
+        state = {
+            "review": {
+                "weight_kg": 0.08,
+                "image_actions": [
+                    {"action": "review", "url": "https://img.example/source-1.jpg"},
+                    {"action": "remove", "url": "https://img.example/source-2.jpg"},
+                ],
+                "image_order": [
+                    "https://img.example/generated-1.png",
+                    "https://img.example/source-1.jpg",
+                ],
+            },
+            "content_package": {"collect_box_id": "123"},
+        }
+        generated = [{
+            "artifact_id": "sc1_r1",
+            "shot_id": "sc1",
+            "url": "https://img.example/generated-1.png",
+            "miaoshou_action": "review",
+        }]
+        current = {
+            "title": "Existing title",
+            "itemNum": "0942",
+            "weight": 0.08,
+            "skuMap": {},
+            "imgUrls": ["https://img.example/old.jpg"],
+            "notes": '<p>Existing description</p><p><img src="https://img.example/old.jpg"></p>',
+        }
+        saved = {}
+
+        def fake_post(path, body=None):
+            if path.endswith("edit_common_collect_box_detail"):
+                saved.update((body or {})["editCommonCollectBoxDetail"])
+                return {"result": "success"}
+            if path.endswith("get_common_collect_box_detail"):
+                return {
+                    "result": "success",
+                    "data": {
+                        "editCommonCollectBoxDetail": saved or current,
+                        "ossMd5": "x",
+                    },
+                }
+            raise AssertionError(path)
+
+        with patch(
+            "modules.sourcing.new_product_workbench.resolve_offer_key",
+            return_value="123",
+        ), patch(
+            "modules.sourcing.new_product_workbench.load_state",
+            return_value=state,
+        ), patch(
+            "modules.sourcing.new_product_workbench.save_state",
+        ), patch(
+            "modules.sourcing.new_product_workbench._source_summary",
+            return_value={"images": []},
+        ), patch(
+            "modules.sourcing.new_product_workbench._content_package_dir",
+            return_value=Path("."),
+        ), patch(
+            "modules.sourcing.new_product_workbench._generated_review_images",
+            return_value=generated,
+        ):
+            result = write_ordered_images_to_miaoshou("123", post=fake_post)
+
+        self.assertTrue(result["verified"])
+        self.assertEqual(saved["imgUrls"], [
+            "https://img.example/generated-1.png",
+            "https://img.example/source-1.jpg",
+        ])
+        self.assertIn("Existing description", saved["notes"])
+        self.assertNotIn("old.jpg", saved["notes"])
+        self.assertLess(
+            saved["notes"].index("generated-1.png"),
+            saved["notes"].index("source-1.jpg"),
+        )
+        self.assertEqual(saved["notes"].count("<img "), 2)
+        self.assertEqual(saved["title"], "Existing title")
+        self.assertEqual(saved["itemNum"], "0942")
+
+    def test_workflow_includes_verified_ai_image_until_operator_removes_it(self):
+        workflow = _product_workflow_summary(
+            source={"title_source": "Title", "cost_cny": 5, "images": [{"url": "x"}]},
+            review={
+                "title": "English title", "cost_cny": 5, "weight_kg": 0.1,
+                "package_cm": [10, 10, 2], "selected_sites": ["lh_ph"],
+                "image_actions": [{"action": "keep"}, {"action": "keep"}, {"action": "keep"}],
+            },
+            content={
+                "package_found": True, "fact_card_approved": True,
+                "planning_scope_approved": True, "suite_approved": True,
+                "model_proposal": {"valid": True},
+                "suite_customization": {"type_counts": {"scene": 1}},
+                "remaining_images_generation": {"status": "completed_waiting_human_review"},
+                "generated_review_images": [{"miaoshou_action": "review"}],
+            },
+            miaoshou_draft={}, tiktok_claim={}, site_drafts={},
+        )
+
+        self.assertEqual(workflow["current_stage"], "commercial")
+        self.assertTrue(workflow["image_review_ready"])
+        self.assertNotIn("还有 1 张 AI 图待决定", workflow["blockers"])
+
+    def test_workflow_blocks_generation_until_ai_storyboard_is_valid(self):
+        workflow = _product_workflow_summary(
+            source={"title_source": "Title", "cost_cny": 5, "images": [{"url": "x"}]},
+            review={
+                "title": "English title", "cost_cny": 5, "weight_kg": 0.1,
+                "package_cm": [10, 10, 2], "selected_sites": ["lh_ph"],
+                "image_actions": [{"action": "keep"}, {"action": "keep"}, {"action": "keep"}],
+            },
+            content={
+                "package_found": True,
+                "fact_card_approved": True,
+                "planning_scope_approved": True,
+                "suite_approved": True,
+                "model_proposal": {"valid": False},
+                "suite_customization": {"type_counts": {"scene": 2}},
+            },
+            miaoshou_draft={}, tiktok_claim={}, site_drafts={},
+        )
+        self.assertEqual(workflow["current_stage"], "content")
+        self.assertFalse(workflow["content_ready"])
+        self.assertIn("调用 AI 生成当前配方的具体分镜", workflow["blockers"])
+
+    def test_state_save_is_valid_json_after_atomic_replace(self):
+        with TemporaryDirectory() as tmp, patch(
+            "modules.sourcing.new_product_workbench.STATE_DIR", Path(tmp)
+        ):
+            save_state("atomic", {"review": {"title": "One"}})
+            save_state("atomic", {"review": {"title": "Two"}})
+            payload = json.loads(Path(tmp, "atomic.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["review"]["title"], "Two")
+        self.assertEqual(list(Path(tmp).glob("*.tmp")), [])
+
+    def test_state_save_rejects_a_stale_concurrent_update(self):
+        with TemporaryDirectory() as tmp, patch(
+            "modules.sourcing.new_product_workbench.STATE_DIR", Path(tmp)
+        ):
+            save_state("conflict", {"review": {"title": "Initial"}})
+            from modules.sourcing.new_product_workbench import load_state
+            first = load_state("conflict")
+            stale = load_state("conflict")
+            first["review"]["title"] = "First writer"
+            save_state("conflict", first)
+            stale["review"]["title"] = "Stale writer"
+            with self.assertRaisesRegex(RuntimeError, "刷新页面后重试"):
+                save_state("conflict", stale)
+
     def test_miaoshou_draft_write_verifies_without_claiming(self):
         draft = {
             "commonCollectBoxDetailId": "123",
@@ -204,6 +463,34 @@ class NewProductWorkbenchTests(unittest.TestCase):
         self.assertTrue(result["written_to_miaoshou"])
         self.assertFalse(result["claimed"])
         self.assertFalse(result["published"])
+
+    def test_miaoshou_draft_write_keeps_only_selected_skus(self):
+        draft = {
+            "commonCollectBoxDetailId": "123", "title": "English title", "itemNum": "0942",
+            "weight": 0.2, "packageLength": 10.0, "packageWidth": 8.0, "packageHeight": 2.0,
+            "imgUrls": ["https://img/1", "https://img/2", "https://img/3"],
+            "notes": '<p><img src="1"><img src="2"><img src="3"></p>', "mainImgVideoUrl": "",
+            "selectedSkuKeys": [";Large;;"],
+        }
+        prepared = {"ok": True, "ready": True, "offer_id": "123", "draft": draft, "blockers": []}
+        current = {"skuMap": {";Small;;": {"stock": 10}, ";Large;;": {"stock": 12}}}
+        saved = {}
+
+        def fake_post(path, body=None):
+            if path.endswith("edit_common_collect_box_detail"):
+                saved.update((body or {})["editCommonCollectBoxDetail"])
+                return {"result": "success"}
+            if path.endswith("get_common_collect_box_detail"):
+                return {"result": "success", "data": {"editCommonCollectBoxDetail": saved or current, "ossMd5": "x"}}
+            raise AssertionError(path)
+
+        with TemporaryDirectory() as tmp, patch(
+            "modules.sourcing.new_product_workbench.prepare_miaoshou_draft", return_value=prepared
+        ), patch("modules.sourcing.new_product_workbench.STATE_DIR", Path(tmp)):
+            result = write_miaoshou_draft("123", post=fake_post)
+
+        self.assertTrue(result["verified"])
+        self.assertEqual(list(saved["skuMap"]), [";Large;;"])
 
     def test_common_sku_fix_preserves_content_and_numbers_variants(self):
         current = {

@@ -186,6 +186,7 @@ def normalize_detail(detail: dict[str, Any], *, source_url: str, source_id: str)
         row = row or {}
         sku_rows.append(
             {
+                "key": str(name),
                 "name": str(name).strip(";"),
                 "item_num": str(row.get("itemNum") or ""),
                 "price": row.get("price"),

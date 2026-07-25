@@ -172,6 +172,16 @@
     "note": "快速同步：TTL 内复用 data/cache 与 Ozon 快照"
   },
 
+  "orders_pull": {
+    "enabled": true,
+    "interval_hours": 6,
+    "lookback_days": 14,
+    "platforms": ["tiktok", "shopee"],
+    "regions": ["TH"],
+    "run_on_startup": false,
+    "note": "serve 内定期拉 TH TikTok Finance + Shopee escrow；POST /api/orders-pull 或 scripts/pull_th_orders.py"
+  },
+
   "sourcing": {
     "provider": "none",
     "alibaba_1688": {

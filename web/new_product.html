@@ -12,8 +12,11 @@
   <link rel="stylesheet" href="/static/app.css">
   <style>
     .topbar { display: none; }
-    .np-page { max-width: 1380px; }
-    .np-grid { display: grid; grid-template-columns: 360px 1fr; gap: 16px; align-items: start; }
+    body { background: #f4f6f8; color: #18212f; }
+    .np-page { max-width: 1460px; padding-top: 18px; }
+    .np-grid { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 18px; align-items: start; }
+    .np-grid > * { min-width: 0; }
+    .np-grid > aside { position: sticky; top: 14px; max-height: calc(100vh - 28px); overflow-y: auto; }
     .np-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 14px; }
     .np-card h2 { font-size: 15px; margin: 0 0 10px; }
     .np-card h3 { font-size: 13px; margin: 16px 0 8px; color: #475569; }
@@ -22,7 +25,7 @@
       width: 100%; border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px 10px; font-size: 13px;
     }
     .np-form textarea { min-height: 74px; }
-    .np-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .np-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
     .np-status { margin: 10px 0 0; font-size: 12px; color: #64748b; }
     .site-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; }
     .site-tile { border: 1px solid #e2e8f0; border-radius: 8px; padding: 8px 10px; background: #f8fafc; }
@@ -41,7 +44,7 @@
     .image-card.img-error .img-fallback { display: block; }
     .image-card .body { padding: 8px; }
     .image-card select { width: 100%; padding: 6px; font-size: 12px; }
-    .split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
     .muted { color: #64748b; }
     .locked { background: #f8fafc; border-color: #bbf7d0; }
     .source-alert { margin-bottom: 14px; padding: 11px 12px; border: 1px solid #f59e0b; background: #fffbeb; color: #78350f; border-radius: 6px; }
@@ -107,7 +110,127 @@
     .session-tab .x:hover { color: #dc2626; }
     .session-actions { display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap; }
     .session-actions .btn-secondary { width: auto; padding: 6px 10px; }
-    @media (max-width: 980px) { .np-grid, .split { grid-template-columns: 1fr; } }
+    .source-mode { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid #cbd5e1; border-radius: 7px; overflow: hidden; background: #fff; }
+    .source-mode label { position: relative; margin: 0; padding: 8px 5px; text-align: center; font-size: 12px; color: #64748b; cursor: pointer; border-right: 1px solid #e2e8f0; }
+    .source-mode label:last-child { border-right: 0; }
+    .source-mode input { position: absolute; opacity: 0; pointer-events: none; }
+    .source-mode label:has(input:checked) { background: #18212f; color: #fff; font-weight: 600; }
+    .workflow-overview { margin: 0 0 16px; padding: 14px 16px; border: 1px solid #cdd7e3; border-left: 4px solid #198754; background: #fff; }
+    .workflow-overview.attention { border-left-color: #d97706; }
+    .workflow-overview-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
+    .workflow-overview h2 { margin: 0 0 4px; font-size: 17px; color: #18212f; }
+    .workflow-overview p { margin: 0; font-size: 12px; color: #64748b; }
+    .workflow-counts { display: flex; gap: 7px; flex-wrap: wrap; justify-content: flex-end; }
+    .workflow-count { padding: 4px 7px; background: #f1f5f9; border: 1px solid #e2e8f0; font-size: 11px; color: #475569; }
+    .workflow-rail { display: grid; grid-template-columns: repeat(7, minmax(90px, 1fr)); margin-top: 13px; border-top: 1px solid #dbe2ea; }
+    .workflow-rail-step { padding: 9px 7px 0; color: #94a3b8; font-size: 11px; border-top: 3px solid transparent; margin-top: -2px; }
+    .workflow-rail-step.done { color: #166534; border-top-color: #22c55e; }
+    .workflow-rail-step.current, .workflow-rail-step.attention { color: #9a3412; border-top-color: #f97316; font-weight: 700; }
+    .work-section { margin: 0; padding: 18px 0; border-top: 1px solid #e2e8f0; }
+    .work-section:first-of-type { border-top: 0; padding-top: 0; }
+    .work-section-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin-bottom: 12px; }
+    .work-section-head h2 { margin: 0; font-size: 16px; color: #18212f; }
+    .work-section-kicker { color: #64748b; font-size: 12px; }
+    .exception-summary { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 10px; }
+    .exception-summary span { border: 1px solid #dbe2ea; padding: 5px 8px; background: #fff; font-size: 11px; }
+    .pricing-details > summary, .secondary-details > summary { cursor: pointer; color: #334155; font-weight: 600; padding: 9px 0; }
+    .sku-choice { width: auto !important; }
+    .draft-preview { margin-top: 10px; padding: 10px; border: 1px solid #d1fae5; background: #f0fdf4; font-size: 12px; }
+    .draft-preview-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px 10px; margin-top: 7px; }
+    .button-busy { position: relative; padding-left: 30px !important; }
+    .button-busy::before { content: ''; position: absolute; left: 11px; top: 50%; width: 10px; height: 10px; margin-top: -6px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: button-spin .7s linear infinite; }
+    @keyframes button-spin { to { transform: rotate(360deg); } }
+    .content-package { margin-top: 16px; border: 1px solid #bfdbfe; border-radius: 8px; background: #f8fbff; padding: 14px; }
+    .content-package h2 { color: #1e3a5f; }
+    .content-summary { display: flex; flex-wrap: wrap; gap: 7px; margin: 8px 0 12px; }
+    .content-chip { padding: 3px 7px; border-radius: 5px; font-size: 11px; background: #e0f2fe; color: #075985; }
+    .content-gate { padding: 9px 10px; border: 1px solid #dbeafe; border-radius: 6px; background: #fff; font-size: 12px; }
+    .content-gate label, .size-card-confirmation label { display: flex; align-items: center; gap: 7px; margin: 6px 0; }
+    .content-package input[type="checkbox"], .content-package input[type="radio"] { width: auto; flex: 0 0 auto; }
+    .content-asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; margin-top: 12px; }
+    .content-asset { border: 1px solid #dbe4ee; border-radius: 7px; overflow: hidden; background: #fff; }
+    .content-asset img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; background: #f1f5f9; }
+    .content-asset .body { padding: 9px; }
+    .content-asset select, .content-asset textarea, .content-package input { width: 100%; border: 1px solid #cbd5e1; border-radius: 6px; padding: 6px 8px; font-size: 12px; }
+    .content-asset textarea { min-height: 52px; margin-top: 6px; resize: vertical; }
+    .content-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
+    .content-actions .btn-secondary, .content-actions .btn-primary { width: auto; padding: 7px 10px; }
+    .content-next-step { margin: 14px 0; padding: 14px; border: 1px solid #b7dfc5; border-left: 4px solid #198754; border-radius: 6px; background: #f3fff6; }
+    .content-next-step h3 { margin: 0 0 5px; color: #145a32; font-size: 15px; }
+    .content-maintenance { margin-top: 12px; border-top: 1px solid #dbe4ee; padding-top: 10px; }
+    .content-maintenance summary { cursor: pointer; color: #475569; font-size: 13px; }
+    .next-generated-preview { display: grid; grid-template-columns: 120px 1fr; gap: 12px; align-items: center; margin-top: 9px; }
+    .next-generated-preview img { width: 120px; aspect-ratio: 2 / 3; object-fit: cover; border: 1px solid #b7dfc5; background: #fff; }
+    @media (max-width: 640px) { .next-generated-preview { grid-template-columns: 1fr; } .next-generated-preview img { width: min(220px, 100%); } }
+    .content-evidence { margin: 12px 0; padding: 12px; border: 1px solid #dbeafe; border-radius: 7px; background: #fff; }
+    .content-evidence h3 { margin: 0 0 8px; font-size: 13px; color: #1e3a5f; }
+    .identity-review { display: grid; grid-template-columns: minmax(150px, 240px) 1fr; gap: 12px; align-items: start; }
+    .identity-review img { display: block; width: 100%; aspect-ratio: 1; object-fit: contain; border: 1px solid #dbe4ee; background: #fff; }
+    .identity-reference-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-top: 12px; }
+    .identity-reference-card { border: 1px solid #dbe4ee; border-radius: 6px; padding: 8px; background: #fff; }
+    .identity-reference-card img { display: block; width: 100%; aspect-ratio: 1; object-fit: contain; border: 1px solid #dbe4ee; background: #fff; margin-bottom: 7px; }
+    .identity-reference-card label { display: flex; align-items: center; gap: 5px; margin: 5px 0 0; font-size: 12px; }
+    .planning-status { margin: 12px 0; padding: 13px; border: 1px solid #b7dfc5; border-left: 4px solid #198754; border-radius: 6px; background: #f3fff6; }
+    .planning-status.pending { border-color: #d8c57a; border-left-color: #9a7600; background: #fffbed; }
+    .planning-status.error { border-color: #efb6bc; border-left-color: #b4232f; background: #fff5f5; color: #8a1722; }
+    .planning-status h3 { margin: 0 0 6px; color: #145a32; font-size: 14px; }
+    .planning-status.pending h3 { color: #705600; }
+    .planning-status.error h3 { color: #8a1722; }
+    .generation-complete { margin: 12px 0 0; padding: 13px; border: 1px solid #a7d8b8; border-left: 4px solid #198754; border-radius: 6px; background: #f3fff6; }
+    .generation-complete.error { border-color: #efb6bc; border-left-color: #b4232f; background: #fff5f5; }
+    .generation-complete h3 { margin: 0 0 6px; font-size: 14px; color: #145a32; }
+    .generation-complete.error h3 { color: #8a1722; }
+    .generation-complete p { margin: 5px 0; }
+    .generation-complete .content-actions { margin-top: 10px; }
+    .generated-review-block { scroll-margin-top: 18px; }
+    .final-image-board { margin: 12px 0 16px; padding: 12px; border: 1px solid #bfdbfe; border-radius: 7px; background: #f8fbff; }
+    .final-image-board-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
+    .final-image-board-head h3 { margin: 0; font-size: 14px; color: #1e3a5f; }
+    .final-image-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 9px; }
+    .final-image-item { position: relative; min-width: 0; padding: 7px; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; cursor: grab; }
+    .final-image-item.drag-over { border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37, 99, 235, .16); }
+    .final-image-item img { display: block; width: 100%; aspect-ratio: 1; object-fit: contain; background: #fff; }
+    .final-image-number { position: absolute; top: 12px; left: 12px; width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; background: #111827; color: #fff; font-weight: 700; font-size: 12px; }
+    .final-image-remove { position: absolute; top: 10px; right: 10px; z-index: 2; width: 28px; height: 28px; padding: 0; display: grid; place-items: center; border: 1px solid #fecaca; border-radius: 50%; background: rgba(255,255,255,.96); color: #dc2626; font-size: 20px; line-height: 1; cursor: pointer; box-shadow: 0 1px 4px rgba(15,23,42,.16); }
+    .final-image-remove:hover { background: #fef2f2; border-color: #ef4444; }
+    .final-image-meta { display: flex; align-items: center; justify-content: space-between; gap: 5px; margin-top: 6px; font-size: 11px; color: #475569; }
+    .final-image-meta > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .final-image-actions { display: flex; align-items: center; gap: 5px; margin-top: 6px; }
+    .final-image-actions .btn-secondary { min-height: 30px; padding: 4px 8px; }
+    .final-image-actions .redo-shot { margin-right: auto; }
+    .final-image-sync { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; padding-top: 12px; border-top: 1px solid #dbeafe; }
+    .final-image-sync .btn-primary { width: auto; min-width: 190px; }
+    .final-order-actions { display: flex; gap: 4px; }
+    .final-order-actions button { width: 30px; height: 30px; padding: 0; display: grid; place-items: center; }
+    .final-image-empty { padding: 15px; border: 1px dashed #94a3b8; color: #64748b; text-align: center; background: #fff; }
+    .review-focus { animation: reviewFocus 1.8s ease-out; }
+    @keyframes reviewFocus { 0%, 35% { box-shadow: 0 0 0 4px rgba(37, 99, 235, .24); } 100% { box-shadow: none; } }
+    .planning-steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-top: 10px; }
+    .planning-step { padding: 8px; border: 1px solid #dbe4ee; border-radius: 5px; background: #fff; font-size: 12px; }
+    .planning-step strong { display: block; margin-bottom: 3px; }
+    .ai-candidate-list { display: grid; gap: 8px; margin-top: 10px; }
+    .ai-candidate-card { padding: 10px; border: 1px solid #cfe0f2; border-radius: 5px; background: #fbfdff; }
+    .ai-candidate-card p { margin: 5px 0; font-size: 12px; }
+    .ai-candidate-raw { color: #34475e; }
+    .storyboard-review-controls { display: grid; grid-template-columns: minmax(150px, 210px) minmax(0, 1fr); gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid #dbe4ee; }
+    .storyboard-review-controls label { display: grid; gap: 4px; color: #475569; font-size: 12px; }
+    .storyboard-review-controls select, .storyboard-review-controls textarea { width: 100%; border: 1px solid #cbd5e1; border-radius: 6px; padding: 7px 8px; font-size: 12px; background: #fff; }
+    .storyboard-review-controls textarea { min-height: 64px; resize: vertical; }
+    .storyboard-review-summary { margin: 10px 0; padding: 9px 10px; border-left: 3px solid #2563eb; background: #eff6ff; color: #1e3a5f; font-size: 12px; }
+    .final-delivery-note { margin: 9px 0; padding: 9px 10px; border-left: 3px solid #198754; background: #f3fff6; color: #145a32; font-size: 12px; }
+    @media (max-width: 640px) { .storyboard-review-controls { grid-template-columns: 1fr; } }
+    .content-save-feedback { margin-top: 10px; padding: 10px 12px; border: 1px solid #b7dfc5; border-left: 4px solid #198754; border-radius: 5px; background: #f3fff6; color: #145a32; font-size: 13px; }
+    .content-save-feedback.error { border-color: #efb6bc; border-left-color: #b4232f; background: #fff5f5; color: #8a1722; }
+    .fact-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .fact-table th, .fact-table td { padding: 6px 7px; border-bottom: 1px solid #e5e7eb; text-align: left; vertical-align: top; }
+    .fact-table th { color: #475569; width: 27%; }
+    .content-list { margin: 6px 0 0; padding-left: 19px; font-size: 12px; }
+    .content-list li { margin: 4px 0; }
+    .suite-item { margin: 7px 0; padding: 8px 9px; border-left: 3px solid #60a5fa; background: #f8fafc; font-size: 12px; }
+    .content-instruction { padding: 9px 10px; margin: 10px 0; border-left: 3px solid #2563eb; background: #eff6ff; color: #1e3a5f; font-size: 12px; }
+    @media (max-width: 640px) { .identity-review { grid-template-columns: 1fr; } .identity-review img { max-width: 240px; } }
+    @media (max-width: 980px) { .np-grid, .split { grid-template-columns: minmax(0, 1fr); } .np-grid > aside { position: static; max-height: none; } .workflow-rail { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+    @media (max-width: 640px) { .workflow-overview-head { display: block; } .workflow-counts { justify-content: flex-start; margin-top: 10px; } .workflow-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); } .draft-preview-grid, .np-row { grid-template-columns: 1fr; } .work-section-head { display: block; } .work-section-kicker { display: block; margin-top: 4px; } .price-table { min-width: 0; width: 100%; } .table-wrap { max-width: 100%; overflow-x: auto; } .identity-reference-grid, .image-grid, .final-image-list { grid-template-columns: repeat(2, minmax(0, 1fr)); } .final-image-sync { display: block; } .final-image-sync .btn-primary { width: 100%; margin-top: 9px; } }
   </style>
 </head>
 <body>
@@ -123,20 +246,26 @@
   </header>
 
   <main class="container np-page">
-    <div class="source-alert"><strong>Orbit Treasury 新品发布台</strong>独立新品上架与审核工作台。</div>
+    <div class="source-alert"><strong>Orbit Treasury 新品发布台</strong>一个商品、一条审核链路；所有外部写入都在最终确认后执行。</div>
     <h1>新品发布工作台</h1>
-    <p class="hint">第一波审核在这里完成；通过的字段会锁定。支持多商品并行上品：切换标签不会丢进度，刷新后也会从本地缓存恢复；仅在流程完成或你主动关闭时清除。</p>
+    <p class="hint">顶部显示唯一当前阶段，页面按来源、内容、生图、图片、价格、妙手和站点顺序推进。</p>
     <div id="sessionBar" class="session-bar"></div>
 
     <div class="np-grid">
       <aside class="np-card">
         <h2>输入</h2>
         <div class="np-form">
-          <label>1688 链接 / offer_id / 妙手采集箱详情 ID</label>
-          <input id="urlInput" placeholder="https://detail.1688.com/offer/... 或 3746058816 或 ms:3746058816" value="867328673540">
+          <label>商品来源</label>
+          <div class="source-mode">
+            <label><input type="radio" name="sourceMode" value="miaoshou" checked>妙手采集箱</label>
+            <label><input type="radio" name="sourceMode" value="1688">1688 货源</label>
+            <label><input type="radio" name="sourceMode" value="auto">自动识别</label>
+          </div>
+          <label>链接或商品 ID</label>
+          <input id="urlInput" placeholder="妙手采集箱 ID，例如 3828811808" value="">
           <label>海外同款链接 / 妙手采集箱详情 ID（可选，每行一个：Temu / Shopee / Lazada / Amazon / TikTok / ms:ID）</label>
           <textarea id="overseasInput" placeholder="https://www.temu.com/...&#10;ms:3746058817"></textarea>
-          <button id="previewButton" class="btn-primary" onclick="loadPreview()">生成第一波预览</button>
+          <button id="previewButton" class="btn-primary" onclick="loadPreview()">读取商品并开始审核</button>
           <div id="pipelineProgress" class="progress-card" style="display:none"></div>
           <div id="status" class="np-status"></div>
         </div>
@@ -145,12 +274,12 @@
           <div class="stage-head"><h3>当前阶段</h3><span id="stageBadge" class="stage-badge">等待预览</span></div>
           <p id="stageHint" class="stage-hint">生成预览并完成页面中的审核项。</p>
           <div id="stageFlow" class="stage-flow"></div>
-          <button id="stageButton" class="btn-primary" onclick="runStageAction()" disabled>先生成第一波预览</button>
+          <button id="stageButton" class="btn-primary" onclick="runStageAction()" disabled>先读取商品</button>
         </div>
       </aside>
 
       <section id="preview" class="np-card">
-        <div class="empty">输入 1688 链接后生成第一波预览。</div>
+        <div class="empty">输入 1688 链接、商品 ID 或妙手采集箱 ID 后开始。</div>
       </section>
     </div>
   </main>
@@ -163,6 +292,26 @@
     var miaoshouDraftPrepared = false;
     var packageDirty = false;
     var imageLoadState = {};
+    var contentReviewFeedback = '';
+    var contentReviewFeedbackError = false;
+    var visionProposalFeedback = '';
+    var visionProposalFeedbackError = false;
+    var visionProposalStartedAt = 0;
+    var visionProposalProgressTimer = null;
+    var firstImagePreflightFeedback = '';
+    var firstImageGenerationFeedback = '';
+    var firstImageGenerationFeedbackError = false;
+    var remainingImagesFeedback = '';
+    var remainingImagesFeedbackError = false;
+    var miaoshouImagesFeedback = '';
+    var miaoshouImagesFeedbackError = false;
+    var remainingGenerationPollTimer = null;
+    var firstGenerationPollTimer = null;
+    var imageReviewSaveTimer = null;
+    var imageReviewSaveInFlight = false;
+    var imageReviewDraftDirty = false;
+    var imageReviewDraftRevision = 0;
+    var finalImageDragUrl = '';
     var siteDraftPollTimer = null;
     var siteDraftPollAttempt = 0;
     var fxRateTimer = null;
@@ -219,6 +368,7 @@
         miaoshouDraftPrepared: false,
         packageDirty: false,
         imageLoadState: {},
+        contentPackageDraft: null,
         statusText: '',
         completed: false,
         updatedAt: Date.now()
@@ -250,12 +400,18 @@
           seq: sessionSeq,
           savedAt: Date.now()
         }));
-      } catch (e) {}
+      } catch (e) {
+        console.error('无法保存多商品会话', e);
+        var status = document.getElementById('status');
+        if (status) status.textContent = '本地会话缓存空间不足；服务器端商品状态仍然保留，请关闭不需要的并行标签后刷新。';
+      }
     }
 
     function stopBackgroundTimers() {
       if (siteDraftPollTimer) { clearTimeout(siteDraftPollTimer); siteDraftPollTimer = null; }
       if (claimPollTimer) { clearTimeout(claimPollTimer); claimPollTimer = null; }
+      if (remainingGenerationPollTimer) { clearTimeout(remainingGenerationPollTimer); remainingGenerationPollTimer = null; }
+      if (firstGenerationPollTimer) { clearTimeout(firstGenerationPollTimer); firstGenerationPollTimer = null; }
       siteDraftPollAttempt = 0;
       claimPollAttempt = 0;
     }
@@ -306,7 +462,7 @@
       if (preview) {
         render();
       } else {
-        document.getElementById('preview').innerHTML = '<div class="empty">输入 1688 链接后生成第一波预览。</div>';
+        document.getElementById('preview').innerHTML = '<div class="empty">输入 1688 链接、商品 ID 或妙手采集箱 ID 后开始。</div>';
         var badge = document.getElementById('stageBadge');
         var hint = document.getElementById('stageHint');
         var button = document.getElementById('stageButton');
@@ -316,12 +472,42 @@
         if (flow) flow.innerHTML = '';
         if (button) {
           button.disabled = true;
-          button.textContent = '先生成第一波预览';
+          button.textContent = '先读取商品';
         }
         var card = document.getElementById('reviewStage');
         if (card) card.classList.remove('ready');
       }
       renderSessionBar();
+    }
+
+    function currentContentPackageDraft() {
+      if (!activeSessionId || !sessionsById[activeSessionId] || !preview) return null;
+      var draft = sessionsById[activeSessionId].contentPackageDraft;
+      if (!draft || String(draft.offerId || '') !== String(preview.offer_id || '')) return null;
+      return draft.review || null;
+    }
+
+    function captureContentPackageDraft() {
+      if (!activeSessionId || !sessionsById[activeSessionId] || !preview) return;
+      var contentRoot = document.querySelector('.content-package');
+      if (!contentRoot) return;
+      sessionsById[activeSessionId].contentPackageDraft = {
+        offerId: String(preview.offer_id || ''),
+        review: collectContentPackageReview(),
+        updatedAt: Date.now()
+      };
+      sessionsById[activeSessionId].updatedAt = Date.now();
+      persistSessionStore();
+      var button = document.getElementById('contentReviewSaveButton');
+      if (button) button.textContent = '保存内容审核（有未保存修改）';
+      var status = document.getElementById('contentDraftStatus');
+      if (status) status.textContent = '当前配方有未保存修改；页面刷新、汇率更新或切换商品不会丢失。';
+    }
+
+    function clearContentPackageDraft() {
+      if (!activeSessionId || !sessionsById[activeSessionId]) return;
+      sessionsById[activeSessionId].contentPackageDraft = null;
+      persistSessionStore();
     }
 
     function renderSessionBar() {
@@ -580,6 +766,67 @@
       document.getElementById('status').textContent = msg || '';
     }
 
+    function goToImageReview() {
+      var target = document.getElementById('imageSection');
+      if (!target) return;
+      target.scrollIntoView({behavior: 'smooth', block: 'start'});
+      target.classList.remove('review-focus');
+      void target.offsetWidth;
+      target.classList.add('review-focus');
+      setTimeout(function() { target.classList.remove('review-focus'); }, 1900);
+      setStatus('已定位到统一图片栏。请删除不需要的图片、拖拽排序，确认后再同步回妙手。');
+    }
+
+    function scheduleRemainingGenerationPoll() {
+      if (remainingGenerationPollTimer) {
+        clearTimeout(remainingGenerationPollTimer);
+        remainingGenerationPollTimer = null;
+      }
+      var generation = (((preview || {}).content_package || {}).remaining_images_generation || {});
+      if (!preview || (generation.status !== 'queued' && generation.status !== 'running')) return;
+      remainingGenerationPollTimer = setTimeout(function() {
+        api('/api/new-product/preview?offer_id=' + encodeURIComponent(preview.offer_id)).then(function(d) {
+          if (!d.ok) throw new Error(d.error || '无法读取生成状态');
+          var previousStatus = generation.status;
+          preview = d;
+          render();
+          var current = ((d.content_package || {}).remaining_images_generation || {});
+          var currentId = current.current_shot_id ? '正在处理 ' + current.current_shot_id + '；' : '';
+          var generatedCount = ((d.content_package || {}).generated_review_images || []).length;
+          if ((previousStatus === 'queued' || previousStatus === 'running') && current.status === 'completed_waiting_human_review' && generatedCount) {
+            setStatus('本批图片生成完成，正在带你前往下方统一图片编排区。');
+            setTimeout(goToImageReview, 80);
+          } else if (current.status === 'completed_with_errors') {
+            setStatus('图片批次执行失败，没有把失败任务伪装成可审核结果。请查看红色失败提示并重试。');
+          } else {
+            setStatus(currentId + '本批图片生成状态已刷新。');
+          }
+        }).catch(function(e) {
+          setStatus('无法刷新剩余分镜状态：' + String(e.message || e));
+        });
+      }, 3000);
+    }
+
+    function scheduleFirstGenerationPoll() {
+      if (firstGenerationPollTimer) {
+        clearTimeout(firstGenerationPollTimer);
+        firstGenerationPollTimer = null;
+      }
+      var generation = (((preview || {}).content_package || {}).first_image_generation || {});
+      if (!preview || (generation.status !== 'queued' && generation.status !== 'running')) return;
+      firstGenerationPollTimer = setTimeout(function() {
+        api('/api/new-product/preview?offer_id=' + encodeURIComponent(preview.offer_id)).then(function(d) {
+          if (!d.ok) throw new Error(d.error || '无法读取首图生成状态');
+          preview = d;
+          render();
+          var current = ((d.content_package || {}).first_image_generation || {});
+          setStatus('首图任务状态已刷新：' + (current.status || '未知') + '。');
+        }).catch(function(e) {
+          setStatus('无法刷新首图任务状态：' + String(e.message || e));
+        });
+      }, 3000);
+    }
+
     function resetProgress(labels) {
       pipelineState = labels.map(function(label) { return {label: label, status: 'pending', message: ''}; });
       pipelineFailures = [];
@@ -628,14 +875,17 @@
     }
 
     function loadPreview() {
-      var url = document.getElementById('urlInput').value.trim();
-      if (!url) { alert('请先输入 1688 链接、offer_id 或妙手采集箱详情 ID'); return; }
+      var rawUrl = document.getElementById('urlInput').value.trim();
+      if (!rawUrl) { alert('请先输入商品链接或 ID'); return; }
+      var modeNode = document.querySelector('input[name="sourceMode"]:checked');
+      var sourceMode = modeNode ? modeNode.value : 'auto';
+      var url = sourceMode === 'miaoshou' && /^\d+$/.test(rawUrl) ? 'ms:' + rawUrl : rawUrl;
       var button = document.getElementById('previewButton');
       button.disabled = true;
       showAllImages = false;
       resetProgress(['解析输入来源', '读取妙手/1688 商品数据', '抓取海外素材', '生成页面预览和价格审查']);
       updateProgress(0, 'running', '准备中');
-      setStatus('正在生成第一波预览...');
+      setStatus('正在读取商品数据并生成审核页面...');
       api('/api/new-product/preview', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -653,7 +903,7 @@
           return saveOverseasLinks(true, true).then(function(ok) {
             updateProgress(2, ok ? 'done' : 'failed', ok ? '完成' : '部分失败');
             updateProgress(3, 'done', '已渲染');
-            setStatus('已生成第一波预览：' + (preview.mode || 'preview'));
+            setStatus('商品审核页面已准备：' + (preview.mode || 'preview'));
             render();
             applyLiveFxRates(false);
             captureActiveSession();
@@ -661,7 +911,7 @@
         }
         updateProgress(2, 'done', '无海外链接');
         updateProgress(3, 'done', '已渲染');
-        setStatus('已生成第一波预览：' + d.mode);
+        setStatus('商品审核页面已准备：' + d.mode);
         render();
         applyLiveFxRates(false);
         captureActiveSession();
@@ -673,7 +923,7 @@
       var s = preview.source || {};
       var r = preview.review || {};
       var p = preview.pricing || {};
-      var html = '';
+      var html = renderWorkflowOverview(preview.workflow || {});
 
       if (preview.precollect_error) {
         html += '<div class="source-alert"><strong>妙手预采集失败，当前显示本地缓存</strong>' + esc(preview.precollect_error) + '</div>';
@@ -690,68 +940,70 @@
         }).join('') + '</div></div>';
       }
 
-      html += '<div class="split">';
-      html += '<div>';
-      html += '<h2>商品基础信息</h2>';
-      html += '<table class="price-table">';
-      html += row('Offer ID', preview.offer_id);
-      html += row('1688', '<a href="' + esc(s.source_url) + '" target="_blank">打开原链</a>');
-      html += row('来源价', '<input id="costCny" type="number" step="0.01" value="' + esc((p.input || {}).cost_cny || s.cost_cny || 0) + '" oninput="recalc()"> CNY');
-      html += row('库存', esc(s.stock || ''));
-      html += row('Seller SKU', '<input id="sellerSku" value="' + esc(r.seller_sku || '') + '" maxlength="4">');
-      html += row('货到付款', '<span class="ok-pill">已开启</span><input type="hidden" id="supportCod" value="true">');
-      html += '</table>';
-      html += '</div>';
+      var productHtml = '<div class="split">';
+      productHtml += '<div>';
+      productHtml += '<h2>商品基础信息</h2>';
+      productHtml += '<table class="price-table">';
+      productHtml += row('当前任务 ID', preview.offer_id);
+      productHtml += row('来源链接', '<a href="' + esc(s.source_url) + '" target="_blank">打开来源</a>');
+      productHtml += row('来源价', '<input id="costCny" type="number" step="0.01" value="' + esc((p.input || {}).cost_cny || s.cost_cny || 0) + '" oninput="recalc()"> CNY');
+      productHtml += row('库存', esc(s.stock || ''));
+      productHtml += row('Seller SKU', '<input id="sellerSku" value="' + esc(r.seller_sku || '') + '" maxlength="4">');
+      productHtml += row('货到付款', '<span class="ok-pill">已开启</span><input type="hidden" id="supportCod" value="true">');
+      productHtml += '</table>';
+      productHtml += '</div>';
 
-      html += '<div>';
-      html += '<h2>标题 / 类目</h2>';
-      html += '<label>英文标题</label><textarea id="titleInput">' + esc(r.title || '') + '</textarea>';
-      html += '<label>类目</label><input id="categoryInput" value="' + esc((r.category || {}).name || '') + '">';
-      html += '<p class="muted">源标题：' + esc(s.title_source || '') + (s.title_source_kind ? ' · ' + esc(s.title_source_kind) : '') + '</p>';
-      html += '</div>';
-      html += '</div>';
+      productHtml += '<div>';
+      productHtml += '<h2>标题 / 类目</h2>';
+      productHtml += '<label>英文标题</label><textarea id="titleInput">' + esc(r.title || '') + '</textarea>';
+      productHtml += '<label>类目</label><input id="categoryInput" value="' + esc((r.category || {}).name || '') + '">';
+      productHtml += '<p class="muted">源标题：' + esc(s.title_source || '') + (s.title_source_kind ? ' · ' + esc(s.title_source_kind) : '') + '</p>';
+      productHtml += '</div>';
+      productHtml += '</div>';
 
-      html += renderPrecollect(s.precollect || {});
-      html += renderSourceDetails(s.skus || [], s.attributes || {});
+      productHtml += renderPrecollect(s.precollect || {});
+      productHtml += renderSourceDetails(s.skus || [], s.attributes || {}, r.selected_sku_keys || []);
+      productHtml += '<details class="secondary-details"><summary>海外同款素材与来源补充</summary>' + renderOverseas(preview.overseas_sources || [], r.overseas_image_candidates || []) + '</details>';
+      html += workSection('sourceSection', '1. 来源、标题与规格', '先确认这次究竟发布哪个商品和哪些规格', productHtml);
 
-      html += '<h2>目标站点</h2><div class="site-grid">';
+      html += workSection('contentSection', '2. 内容事实与图片配方', '事实、参考图和生成数量在这里一次确认', renderContentPackage(preview.content_package || {}));
+      html += workSection('imageSection', '3. 图片编排', '妙手原图与 AI 图统一删除、拖拽和同步', renderImages(r.image_actions || [], r.generated_image_actions || []));
+
+      var commercialHtml = '<h2>目标站点</h2><div class="site-grid">';
       (preview.target_sites || []).forEach(function(site) {
         var checked = (r.selected_sites || []).indexOf(site.id) >= 0 ? ' checked' : '';
-        html += '<div class="site-tile"><label><input type="checkbox" class="siteCheck" value="' + esc(site.id) + '"' + checked + '> ' +
+        commercialHtml += '<div class="site-tile"><label><input type="checkbox" class="siteCheck" value="' + esc(site.id) + '"' + checked + '> ' +
           esc(site.shop + ' ' + site.region + ' / ' + site.currency) + '</label></div>';
       });
-      html += '</div>';
+      commercialHtml += '</div>';
 
-      html += '<div class="split">';
-      html += '<div><h2>尺寸重量</h2>';
-      html += '<div class="np-row">';
+      commercialHtml += '<div class="split">';
+      commercialHtml += '<div><h2>尺寸重量</h2>';
+      commercialHtml += '<div class="np-row">';
       var weightG = Math.round(((p.input || {}).weight_kg || r.weight_kg || 0) * 1000);
-      html += '<div><label>重量 g</label><input id="weightG" type="number" step="1" value="' + esc(weightG) + '" oninput="markPackageDirty()"></div>';
+      commercialHtml += '<div><label>重量 g</label><input id="weightG" type="number" step="1" value="' + esc(weightG) + '" oninput="markPackageDirty()"></div>';
       var dims = (p.input || {}).package_cm || r.package_cm || [0,0,0];
-      html += '<div><label>长 cm</label><input id="dimL" type="number" step="0.1" value="' + esc(dims[0] || 0) + '" oninput="markPackageDirty()"></div>';
-      html += '<div><label>宽 cm</label><input id="dimW" type="number" step="0.1" value="' + esc(dims[1] || 0) + '" oninput="markPackageDirty()"></div>';
-      html += '</div><div class="np-row" style="margin-top:8px">';
-      html += '<div><label>高 cm</label><input id="dimH" type="number" step="0.1" value="' + esc(dims[2] || 0) + '" oninput="markPackageDirty()"></div>';
-      html += '</div><div class="sub-actions">';
-      html += '<button id="packageSaveButton" class="btn-secondary" onclick="savePackageReview()" disabled>保存尺寸重量并重算价格</button>';
-      html += '<span id="packageSaveState" class="muted">当前尺寸重量已保存</span>';
-      html += '</div></div>';
+      commercialHtml += '<div><label>长 cm</label><input id="dimL" type="number" step="0.1" value="' + esc(dims[0] || 0) + '" oninput="markPackageDirty()"></div>';
+      commercialHtml += '<div><label>宽 cm</label><input id="dimW" type="number" step="0.1" value="' + esc(dims[1] || 0) + '" oninput="markPackageDirty()"></div>';
+      commercialHtml += '</div><div class="np-row" style="margin-top:8px">';
+      commercialHtml += '<div><label>高 cm</label><input id="dimH" type="number" step="0.1" value="' + esc(dims[2] || 0) + '" oninput="markPackageDirty()"></div>';
+      commercialHtml += '</div><div class="sub-actions">';
+      commercialHtml += '<button id="packageSaveButton" class="btn-secondary" onclick="savePackageReview()" disabled>保存尺寸重量并重算价格</button>';
+      commercialHtml += '<span id="packageSaveState" class="muted">当前尺寸重量已保存</span>';
+      commercialHtml += '</div></div>';
 
-      html += '<div><h2>视频</h2>';
+      commercialHtml += '<div><h2>视频</h2>';
       if ((s.video || {}).url) {
-        html += '<p><a href="' + esc(s.video.url) + '" target="_blank">打开 1688 视频</a></p>';
-        html += '<select id="videoAction"><option value="keep">保留</option><option value="remove">不使用</option></select>';
+        commercialHtml += '<p><a href="' + esc(s.video.url) + '" target="_blank">打开来源视频</a></p>';
+        commercialHtml += '<select id="videoAction"><option value="keep">保留</option><option value="remove">不使用</option></select>';
       } else {
-        html += '<p class="muted">未发现视频</p><input type="hidden" id="videoAction" value="none">';
+        commercialHtml += '<p class="muted">未发现视频</p><input type="hidden" id="videoAction" value="none">';
       }
-      html += '</div></div>';
-
-      html += renderFxRates(p);
-      html += renderPricing(p);
-      html += renderOverseas(preview.overseas_sources || [], r.overseas_image_candidates || []);
-      html += renderImages(r.image_actions || []);
-      html += renderImageRequests(r.image_generation_requests || []);
-      html += renderRisks(s.risks || []);
+      commercialHtml += '</div></div>';
+      commercialHtml += renderFxRates(p);
+      commercialHtml += renderPricing(p);
+      html += workSection('commercialSection', '4. 价格与发布信息', '这里只处理商业信息；写入妙手仍需最后确认', commercialHtml);
+      if ((s.risks || []).length) html += workSection('riskSection', '风险与例外', '发布前必须处理的来源风险', renderRisks(s.risks || []));
 
       document.getElementById('preview').innerHTML = html;
       var v = document.getElementById('videoAction');
@@ -761,10 +1013,26 @@
       updateReviewStage();
       captureActiveSession();
       renderSessionBar();
+      scheduleRemainingGenerationPoll();
+      scheduleFirstGenerationPoll();
     }
 
     function row(k, v) {
       return '<tr><th>' + esc(k) + '</th><td>' + v + '</td></tr>';
+    }
+
+    function workSection(id, title, kicker, body) {
+      return '<section id="' + esc(id) + '" class="work-section"><div class="work-section-head"><h2>' + esc(title) + '</h2><span class="work-section-kicker">' + esc(kicker) + '</span></div>' + body + '</section>';
+    }
+
+    function renderWorkflowOverview(workflow) {
+      workflow = workflow || {};
+      var blockers = workflow.blockers || [];
+      var html = '<section class="workflow-overview' + (blockers.length ? ' attention' : '') + '"><div class="workflow-overview-head"><div><h2>当前：' + esc(workflow.current_label || '读取商品') + '</h2><p>' + esc(blockers.length ? blockers.join('；') : '当前阶段没有阻塞项，请按主按钮继续。') + '</p></div>';
+      html += '<div class="workflow-counts"><span class="workflow-count">计划 ' + esc(workflow.requested_image_count || 0) + ' 图</span><span class="workflow-count">已生成 ' + esc(workflow.generated_image_count || 0) + '</span><span class="workflow-count">最终保留 ' + esc((workflow.kept_source_image_count || 0) + (workflow.kept_generated_image_count || 0)) + '</span></div></div>';
+      html += '<div class="workflow-rail">';
+      (workflow.steps || []).forEach(function(step) { html += '<div class="workflow-rail-step ' + esc(step.status || '') + '">' + esc(step.label || '') + '</div>'; });
+      return html + '</div></section>';
     }
 
     function readStoredFxRates() {
@@ -916,7 +1184,7 @@
         if (n > 0) next[code] = n;
       });
       writeStoredFxRates(next);
-      if (preview) saveReview(false, true, 'fx');
+      if (preview && forceAll) saveReview(false, true, 'fx');
       else if (document.getElementById('preview')) render();
     }
 
@@ -965,7 +1233,11 @@
       var sections = audit.sections || [];
       if (!sections.length) return '<h2>价格审查</h2><p class="muted">还没有可展示的定价审计结果。</p>';
       var html = '<h2>价格审查</h2>';
-      html += '<p class="hint">这一组表格就是审核页当前记住并实际采用的价格计算规则，后面可以继续按结算单修正。SEA 行标题含当前汇率。</p>';
+      var priceRows = (p.sea || []).concat([p.mx || {}, p.uk || {}]).filter(function(row) { return row.region; });
+      var adjusted = priceRows.filter(function(row) { return row.min_profit_adjusted; }).length;
+      var minimum = priceRows.reduce(function(acc, row) { var value = Number(row.estimated_profit_cny); return isNaN(value) ? acc : Math.min(acc, value); }, Infinity);
+      html += '<div class="exception-summary"><span>站点 ' + esc(priceRows.length) + '</span><span>最低预计利润 ' + esc(isFinite(minimum) ? minimum.toFixed(2) : '-') + ' CNY</span><span>利润底线自动调整 ' + esc(adjusted) + ' 个</span></div>';
+      html += '<details class="pricing-details"><summary>查看完整费率、运费和利润计算</summary>';
       sections.forEach(function(section) {
         html += '<div class="card-lite">';
         html += '<div class="section-head"><strong>' + esc(section.title || section.section || 'Pricing Audit') + '</strong>';
@@ -992,38 +1264,243 @@
         });
         html += '</tbody></table></div></div>';
       });
-      return html;
+      return html + '</details>';
     }
 
-    function renderImages(images) {
-      var html = '<h2>图片审核</h2>';
-      html += '<p class="hint">保留、删除、翻译、重绘、补充图生成都在第一波审核里决定。生成补图只记录需求，不自动调用付费 API。</p>';
-      var visible = showAllImages ? images : images.slice(0, 6);
-      html += '<div class="image-toolbar"><span class="muted">显示 ' + visible.length + ' / ' + images.length + ' 张；首屏限量加载以提高速度。</span>';
-      if (images.length > 6) html += '<button class="btn-secondary" onclick="toggleImages()">' + (showAllImages ? '收起图片' : '显示全部图片') + '</button>';
-      html += '</div>';
-      html += '<div class="image-statusbar" data-image-progress="review"></div>';
-      html += '<div class="image-grid">';
-      visible.forEach(function(img, idx) {
-        var scope = 'review';
-        var key = imageKey(scope, idx);
-        var src = imgSrc(img.url || '');
-        if (!imageLoadState[key]) imageLoadState[key] = 'pending';
-        html += '<div class="image-card">';
-        html += '<img src="' + esc(src) + '" alt="" loading="' + (idx < 4 ? 'eager' : 'lazy') + '" decoding="async" fetchpriority="' + (idx < 4 ? 'high' : 'low') + '" data-img-scope="' + scope + '" data-img-idx="' + idx + '" data-img-key="' + key + '" data-orig-url="' + esc(img.url || '') + '" data-base-src="' + esc(src) + '" onload="markImageLoaded(this)" onerror="markImageError(this)">';
-        html += '<div class="img-fallback">图片加载失败<br>' + esc(img.url || '') + '<br><button class="btn-secondary" onclick="retryImage(\'' + scope + '\',' + idx + ')">重新拉取</button></div>';
-        html += '<div class="body">';
-        html += '<select class="imageAction" data-idx="' + idx + '">';
-        ['review','keep','translate','redraw','remove'].forEach(function(a) {
-          html += '<option value="' + a + '"' + (img.action === a ? ' selected' : '') + '>' + labelAction(a) + '</option>';
-        });
-        html += '</select>';
-        html += '<input class="imageNote" data-idx="' + idx + '" placeholder="备注" value="' + esc(img.note || '') + '" style="margin-top:6px">';
+    function selectedFinalImages(images, generatedImages) {
+      var byUrl = {};
+      var defaults = [];
+      (images || []).forEach(function(img, idx) {
+        var url = String(img.output_url || img.url || '').trim();
+        if (img.action === 'remove' || !url || byUrl[url]) return;
+        byUrl[url] = {
+          url: url,
+          src: imgSrc(url),
+          kind: 'source',
+          kindLabel: '妙手原图',
+          label: '原图 ' + (idx + 1),
+          artifactId: '',
+          shotId: ''
+        };
+        defaults.push(url);
+      });
+      (generatedImages || []).forEach(function(img) {
+        var url = String(img.url || '').trim();
+        if (img.miaoshou_action === 'remove' || !url || byUrl[url]) return;
+        byUrl[url] = {
+          url: url,
+          src: img.local_url || imgSrc(url),
+          kind: 'generated',
+          kindLabel: 'AI 生成',
+          label: String(img.shot_id || img.artifact_id || 'AI 图'),
+          artifactId: String(img.artifact_id || ''),
+          shotId: String(img.shot_id || '')
+        };
+        defaults.push(url);
+      });
+      var requested = (((preview || {}).review || {}).image_order || []).map(String);
+      var orderedUrls = [];
+      requested.concat(defaults).forEach(function(url) {
+        if (byUrl[url] && orderedUrls.indexOf(url) < 0) orderedUrls.push(url);
+      });
+      return orderedUrls.map(function(url) { return byUrl[url]; });
+    }
+
+    function renderFinalImageBoard(images, generatedImages) {
+      var selected = selectedFinalImages(images, generatedImages);
+      var html = '<section class="final-image-board"><div class="final-image-board-head"><h3>妙手最终图片栏</h3><span class="muted">' + esc(selected.length) + ' 张；第 1 张为主图</span></div>';
+      if (!selected.length) {
+        return html + '<div class="final-image-empty">图片栏为空。请重新读取商品恢复妙手原图，或重新生成 AI 图片。</div></section>';
+      }
+      html += '<div id="finalImageList" class="final-image-list">';
+      selected.forEach(function(item, idx) {
+        html += '<div class="final-image-item" draggable="true" data-final-url="' + esc(item.url) + '" data-final-kind="' + esc(item.kind) + '" data-artifact-id="' + esc(item.artifactId) + '" data-shot-id="' + esc(item.shotId) + '" ondragstart="startFinalImageDrag(event)" ondragover="allowFinalImageDrop(event)" ondragleave="leaveFinalImageDrop(event)" ondrop="dropFinalImage(event)">';
+        html += '<span class="final-image-number">' + esc(idx + 1) + '</span><img src="' + esc(item.src) + '" alt="' + esc(item.label) + '">';
+        html += '<button type="button" class="final-image-remove" title="从最终图片栏删除" aria-label="从最终图片栏删除" onclick="removeUnifiedImage(this,event)">×</button>';
+        html += '<div class="final-image-meta"><span>' + esc(item.kindLabel + ' · ' + item.label) + '</span></div><div class="final-image-actions">';
+        if (item.kind === 'generated' && item.shotId) {
+          html += '<button type="button" class="btn-secondary redo-shot" title="重新生成这个分镜" onclick="prepareSingleShotRegeneration(\'' + esc(item.shotId) + '\')">重做</button>';
+        } else {
+          html += '<span class="redo-shot"></span>';
+        }
+        html += '<button type="button" class="btn-secondary" title="向前移动" aria-label="向前移动" onclick="moveFinalImageFromButton(this,-1)"' + (idx === 0 ? ' disabled' : '') + '>←</button>';
+        html += '<button type="button" class="btn-secondary" title="向后移动" aria-label="向后移动" onclick="moveFinalImageFromButton(this,1)"' + (idx === selected.length - 1 ? ' disabled' : '') + '>→</button>';
         html += '</div></div>';
       });
-      html += '</div>';
-      html += '<h3>新增图片需求</h3><div class="np-form"><textarea id="imagePrompt" placeholder="例如：生成一张英文尺寸说明图，白底，突出高度和宽度"></textarea>';
-      html += '<button class="btn-secondary" onclick="addImageRequest()">记录新增图片需求</button></div>';
+      html += '</div><p class="muted">妙手原图和 AI 图都在同一个图片栏。拖拽或使用箭头排序，右上角 × 删除；修改会自动保存到本机。</p>';
+      html += '<div class="final-image-sync"><span class="muted">同步后，当前顺序会同时用于妙手主图与详情图片；不会认领店铺或发布商品。</span>';
+      html += '<button id="syncFinalImagesButton" type="button" class="btn-primary" onclick="syncFinalImagesToMiaoshou()">同步图片回妙手</button></div>';
+      if (miaoshouImagesFeedback) {
+        html += '<div class="content-save-feedback' + (miaoshouImagesFeedbackError ? ' error' : '') + '">' + esc(miaoshouImagesFeedback) + '</div>';
+      }
+      return html + '</section>';
+    }
+
+    function refreshFinalImageBoard() {
+      if (!preview) return;
+      var host = document.getElementById('finalImageBoardHost');
+      if (!host) return;
+      host.innerHTML = renderFinalImageBoard(
+        (preview.review || {}).image_actions || [],
+        (preview.review || {}).generated_image_actions || []
+      );
+    }
+
+    function currentFinalImageOrder() {
+      var nodes = Array.prototype.slice.call(document.querySelectorAll('#finalImageList [data-final-url]'));
+      if (nodes.length) return nodes.map(function(node) { return node.dataset.finalUrl; });
+      return selectedFinalImages(
+        ((preview || {}).review || {}).image_actions || [],
+        ((preview || {}).review || {}).generated_image_actions || []
+      ).map(function(item) { return item.url; });
+    }
+
+    function captureImageReviewDraftFromDom() {
+      if (!preview) return;
+      var review = preview.review = preview.review || {};
+      var rows = (review.image_actions || []).map(function(img, idx) {
+        var out = Object.assign({}, img);
+        var action = document.querySelector('.imageAction[data-idx="' + idx + '"]');
+        var note = document.querySelector('.imageNote[data-idx="' + idx + '"]');
+        if (action) out.action = action.value;
+        if (note) out.note = note.value;
+        return out;
+      });
+      review.image_actions = rows;
+      review.image_order = currentFinalImageOrder();
+      imageReviewDraftDirty = true;
+      captureActiveSession();
+    }
+
+    function queueImageReviewSave() {
+      captureImageReviewDraftFromDom();
+      refreshFinalImageBoard();
+      imageReviewDraftRevision += 1;
+      if (imageReviewSaveTimer) clearTimeout(imageReviewSaveTimer);
+      imageReviewSaveTimer = setTimeout(flushImageReviewSave, 250);
+      setStatus('图片选择已更新，正在自动保存到本机...');
+    }
+
+    function flushImageReviewSave() {
+      if (!preview || imageReviewSaveInFlight) return;
+      imageReviewSaveInFlight = true;
+      var savingRevision = imageReviewDraftRevision;
+      var payload = collectReview(false);
+      api('/api/new-product/review', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({offer_id: preview.offer_id, review: payload})
+      }).then(function(d) {
+        if (!d.ok) throw new Error(d.error || '图片审核自动保存失败');
+        if (savingRevision === imageReviewDraftRevision) {
+          preview = d;
+          imageReviewDraftDirty = false;
+          updateReviewStage();
+          captureActiveSession();
+          setStatus('图片选择与顺序已自动保存到本机，尚未写入妙手。');
+        } else {
+          var localActions = (preview.review || {}).image_actions || [];
+          var localOrder = (preview.review || {}).image_order || [];
+          preview = d;
+          preview.review.image_actions = localActions;
+          preview.review.image_order = localOrder;
+        }
+      }).catch(function(e) {
+        setStatus('图片审核自动保存失败：' + String(e.message || e) + '。页面会保留当前选择，请重试。');
+      }).finally(function() {
+        imageReviewSaveInFlight = false;
+        if (savingRevision !== imageReviewDraftRevision) flushImageReviewSave();
+      });
+    }
+
+    function startFinalImageDrag(event) {
+      var item = event.currentTarget;
+      finalImageDragUrl = item ? item.dataset.finalUrl : '';
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', finalImageDragUrl);
+      }
+    }
+
+    function allowFinalImageDrop(event) {
+      event.preventDefault();
+      if (event.currentTarget) event.currentTarget.classList.add('drag-over');
+    }
+
+    function leaveFinalImageDrop(event) {
+      if (event.currentTarget) event.currentTarget.classList.remove('drag-over');
+    }
+
+    function dropFinalImage(event) {
+      event.preventDefault();
+      var target = event.currentTarget;
+      if (target) target.classList.remove('drag-over');
+      var sourceUrl = finalImageDragUrl || (event.dataTransfer ? event.dataTransfer.getData('text/plain') : '');
+      var targetUrl = target ? target.dataset.finalUrl : '';
+      if (!sourceUrl || !targetUrl || sourceUrl === targetUrl) return;
+      var order = currentFinalImageOrder().filter(function(url) { return url !== sourceUrl; });
+      var targetIndex = order.indexOf(targetUrl);
+      order.splice(targetIndex < 0 ? order.length : targetIndex, 0, sourceUrl);
+      preview.review.image_order = order;
+      imageReviewDraftDirty = true;
+      refreshFinalImageBoard();
+      queueImageReviewSave();
+    }
+
+    function moveFinalImageFromButton(button, delta) {
+      var item = button && button.closest ? button.closest('[data-final-url]') : null;
+      if (!item) return;
+      var url = item.dataset.finalUrl;
+      var order = currentFinalImageOrder();
+      var from = order.indexOf(url);
+      var to = from + delta;
+      if (from < 0 || to < 0 || to >= order.length) return;
+      var swap = order[to];
+      order[to] = order[from];
+      order[from] = swap;
+      preview.review.image_order = order;
+      imageReviewDraftDirty = true;
+      refreshFinalImageBoard();
+      queueImageReviewSave();
+    }
+
+    function removeUnifiedImage(button, event) {
+      if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      if (!preview || !button || !button.closest) return;
+      var item = button.closest('[data-final-url]');
+      if (!item) return;
+      var url = item.dataset.finalUrl || '';
+      var kind = item.dataset.finalKind || '';
+      var artifactId = item.dataset.artifactId || '';
+      if (!url) return;
+      preview.review = preview.review || {};
+      preview.review.image_order = currentFinalImageOrder().filter(function(value) { return value !== url; });
+      if (kind === 'generated') {
+        var generatedRows = preview.review.generated_image_actions || [];
+        generatedRows.forEach(function(row) {
+          if (row.artifact_id === artifactId) row.miaoshou_action = 'remove';
+        });
+        refreshFinalImageBoard();
+        persistGeneratedImageAction(artifactId, 'remove');
+        return;
+      }
+      (preview.review.image_actions || []).forEach(function(row) {
+        var rowUrl = String(row.output_url || row.url || '').trim();
+        if (rowUrl === url) row.action = 'remove';
+      });
+      imageReviewDraftDirty = true;
+      refreshFinalImageBoard();
+      queueImageReviewSave();
+    }
+
+    function renderImages(images, generatedImages) {
+      generatedImages = generatedImages || [];
+      var html = '<h2>图片编排</h2>';
+      html += '<div class="content-instruction"><strong>这里只保留一套图片。</strong>妙手原图与通过技术核验的 AI 图已经合并；没有被删除的图片默认保留。调整完成后，用底部按钮把当前顺序同步到妙手主图和详情页。</div>';
+      html += '<div id="finalImageBoardHost">' + renderFinalImageBoard(images, generatedImages) + '</div>';
       return html;
     }
 
@@ -1076,15 +1553,18 @@
       return html;
     }
 
-    function renderSourceDetails(skus, attributes) {
+    function renderSourceDetails(skus, attributes, selectedSkuKeys) {
       var keys = Object.keys(attributes || {});
+      selectedSkuKeys = selectedSkuKeys || [];
       if (!skus.length && !keys.length) return '';
       var html = '<div class="split">';
-      html += '<div><h2>1688 规格</h2>';
+      html += '<div><h2>本次发布规格</h2><p class="muted">取消勾选的规格不会写入最终妙手草稿。默认保留全部规格。</p>';
       if (skus.length) {
-        html += '<table class="price-table"><thead><tr><th>规格</th><th>来源价</th><th>库存</th><th>重量</th></tr></thead><tbody>';
+        html += '<table class="price-table"><thead><tr><th>发布</th><th>规格</th><th>来源价</th><th>库存</th><th>重量</th></tr></thead><tbody>';
         skus.forEach(function(row) {
-          html += '<tr><td>' + esc(row.name || '') + '</td><td>CNY ' + esc(row.price || '') + '</td><td>' + esc(row.stock || '') +
+          var skuKey = row.key || row.name || '';
+          var checked = selectedSkuKeys.indexOf(skuKey) >= 0 ? ' checked' : '';
+          html += '<tr><td><input class="sku-choice" type="checkbox" data-sku-key="' + esc(skuKey) + '"' + checked + '></td><td>' + esc(row.name || '') + '</td><td>CNY ' + esc(row.price || '') + '</td><td>' + esc(row.stock || '') +
             '</td><td>' + esc(row.weight == null ? '' : row.weight + ' kg') + '</td></tr>';
         });
         html += '</tbody></table>';
@@ -1099,14 +1579,946 @@
       return {review:'待审核', keep:'保留', translate:'翻译成英文', redraw:'重绘/修复', remove:'删除'}[a] || a;
     }
 
-    function renderImageRequests(reqs) {
-      if (!reqs.length) return '';
-      var html = '<h2>待生成图片需求</h2><table class="price-table"><thead><tr><th>ID</th><th>需求</th><th>状态</th></tr></thead><tbody>';
-      reqs.forEach(function(r) {
-        html += '<tr><td>' + esc(r.id) + '</td><td>' + esc(r.prompt) + '</td><td>' + esc(r.status) + '</td></tr>';
-      });
-      html += '</tbody></table>';
+    function renderContentPackage(content) {
+      return renderUnifiedContentPackage(content || {});
+      /* Legacy two-stage content-package UI is retained below only so older
+         locally saved cases remain readable by the client code. */
+      content = content || {};
+      var hasPackage = !!content.package_found;
+      var collectId = content.collect_box_id || '';
+      var artifacts = content.artifacts || [];
+      var source = content.source_snapshot || {};
+      var referenceImages = source.image_urls || [];
+      var selectedReferences = source.identity_reference_urls || [];
+      var facts = content.fact_card || {};
+      var suite = content.suite || {};
+      var suiteCustomization = content.suite_customization || {};
+      var typeCounts = suiteCustomization.type_counts || {};
+      var sizeCard = suiteCustomization.size_card || {};
+      var modelProposal = content.model_proposal || {};
+      var firstImagePreflight = content.first_image_preflight || {};
+      var firstImageGeneration = content.first_image_generation || {};
+      var remainingImagesPreflight = content.remaining_images_preflight || {};
+      var remainingImagesGeneration = content.remaining_images_generation || {};
+      var miaoshouImagesWrite = content.miaoshou_generated_images_write || {};
+      var html = '<section class="content-package"><h2>内容资产与生图审核</h2>';
+      html += '<p class="muted">这里连接妙手采集箱与本地生图审核包。同步、保存审核只写 Treasury 本地状态；不会调用 ToAPI，也不会自动写回妙手。</p>';
+      html += '<div class="content-summary">';
+      html += '<span class="content-chip">采集箱：' + esc(collectId || '未关联') + '</span>';
+      html += '<span class="content-chip">状态：' + esc(content.stage || '等待同步') + '</span>';
+      html += '<span class="content-chip">已通过素材：' + esc(content.approved_asset_count || 0) + '</span>';
+      html += '</div>';
+      if (hasPackage) {
+        if (modelProposal.available) {
+          html += '<div class="planning-status"><h3>AI 候选分镜已完成，等待你重新审核</h3>';
+          html += '<p>本次已调用 ToAPI 视觉模型 <strong>' + esc(modelProposal.model || '') + '</strong>，读取 ' + esc(modelProposal.reference_count || 0) + ' 张参考图，耗用 ' + esc(modelProposal.total_tokens || 0) + ' Token。它只完成“读图与候选分镜”，没有生成商品图片。</p>';
+          html += '<div class="planning-steps"><div class="planning-step"><strong>1. 来源审核包</strong>已完成</div><div class="planning-step"><strong>2. AI 候选分镜</strong>已完成</div><div class="planning-step"><strong>3. 本地规则校验</strong>保留 ' + esc(modelProposal.accepted_shot_count || 0) + ' 张，剔除 ' + esc((modelProposal.policy_rejections || []).length) + ' 张</div><div class="planning-step"><strong>4. 你的下一步</strong>重新审核事实卡和分镜，再保存</div></div></div>';
+        } else {
+          html += '<div class="planning-status pending"><h3>尚未请求 AI 候选分镜</h3><p>当前显示的是本地规则初稿。你可以先审核它，或主动调用 ToAPI 视觉模型提出候选方案；调用前会再次弹窗确认 Token 消耗。</p></div>';
+        }
+      }
+      if (!hasPackage) {
+        html += '<div class="content-instruction"><strong>还没有可审核的内容包。</strong>请先核对采集箱 ID，再点击“创建审核包”。该动作只读取妙手来源数据，在本地建立身份参考图、事实卡与分镜；不会调用大模型、付费生图或写回妙手。</div>';
+      } else {
+        html += '<div class="content-instruction"><strong>推荐审核顺序：</strong>1. 看唯一身份参考图和事实卡；2. 看本次允许的分镜；3. 看每张已生成图；4. 再保存审核。不要在看不到证据时直接勾选通过。</div>';
+        html += '<div class="content-evidence"><h3>1. 商品身份参考：必须先看</h3><div class="identity-review">';
+        if (source.primary_identity_image) {
+          html += '<img src="' + esc(imgSrc(source.primary_identity_image)) + '" alt="主商品身份参考图">';
+        }
+        html += '<div><p><strong>来源标题：</strong>' + esc(source.title || '未读取到') + '</p>';
+        html += '<p><strong>来源 SKU：</strong>' + esc(source.item_num || '未读取到') + ' · <strong>来源图片：</strong>' + esc(source.image_count || 0) + ' 张</p>';
+        html += '<p class="muted">可选多张参考：选 1 张主参考图，再勾选同一商品的补充参考图。主图用于锁定整体身份；补充图用于校对图案、切边、材质外观或贴附位置。不同款式、不同图案或与本商品无关的图不要勾选。</p></div></div>';
+        html += '<div class="identity-reference-grid">';
+        referenceImages.forEach(function(url, idx) {
+          var selected = selectedReferences.indexOf(url) >= 0;
+          var primary = source.primary_identity_image === url;
+          html += '<div class="identity-reference-card"><img src="' + esc(imgSrc(url)) + '" alt="来源参考图 ' + (idx + 1) + '">';
+          html += '<label><input class="identityRefCheckbox" type="checkbox" data-url="' + esc(url) + '"' + (selected ? ' checked' : '') + ' onchange="keepPrimaryIdentityReference(this)"> 作为补充参考</label>';
+          html += '<label><input class="identityRefPrimary" type="radio" name="identityRefPrimary" data-url="' + esc(url) + '"' + (primary ? ' checked' : '') + ' onchange="selectPrimaryIdentityReference(this)"> 设为主参考</label></div>';
+        });
+        html += '</div></div>';
+        var verified = facts.verified || [];
+        html += '<div class="content-evidence"><h3>2. 事实卡：确认“能说什么、不能说什么”</h3>';
+        if (verified.length) {
+          html += '<table class="fact-table"><thead><tr><th>已验证事实</th><th>值</th><th>来源</th></tr></thead><tbody>';
+          verified.forEach(function(row) { html += '<tr><th>' + esc(row.field || '') + '</th><td>' + esc(row.value || '') + '</td><td>' + esc(row.source || '') + '</td></tr>'; });
+          html += '</tbody></table>';
+        }
+        if ((facts.inferred || []).length) html += '<p><strong>视觉推断（不能当作硬卖点）：</strong></p><ul class="content-list">' + facts.inferred.map(function(x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul>';
+        if ((facts.unknown_or_forbidden || []).length) html += '<p><strong>禁止自行宣传：</strong></p><ul class="content-list">' + facts.unknown_or_forbidden.map(function(x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul>';
+        html += '</div>';
+        html += '<div class="content-evidence"><h3>3. 本次允许的生图范围</h3><p class="muted">分镜会根据类目规则生成。贴纸类目由人工输入白底图和尺寸图，系统不生成白底、尺寸或细节图。</p>';
+        (suite.items || []).filter(function(item) { return item.selected; }).forEach(function(item) {
+          html += '<div class="suite-item"><strong>' + esc(item.id) + ' · ' + esc(item.title || item.type) + '</strong><br>' + esc(item.focus_zh || '请在完整审核报告中查看分镜说明') + '</div>';
+        });
+        html += '</div>';
+        html += '<div class="content-evidence"><h3>4. ToAPI 原始候选分镜返回</h3>';
+        if (modelProposal.available) {
+          html += '<p>已获得大模型候选：' + esc(modelProposal.model || 'ToAPI vision') + '；参考图 ' + esc(modelProposal.reference_count || 0) + ' 张。规则剔除镜头：' + esc((modelProposal.policy_rejections || []).join('、') || '无') + '。模型观察仅作为待审候选，不能自动成为商品卖点。</p>';
+          html += '<p class="muted">以下是本次 ToAPI 模型真实返回的候选构图，不是第 3 部分的本地规则。模型候选必须经过规则校验和人工审核后，才可能进入后续生图。</p><div class="ai-candidate-list">';
+          (modelProposal.candidate_items || []).forEach(function(item) {
+            html += '<div class="ai-candidate-card"><strong>' + esc(item.id) + ' · ' + esc(item.title_zh || item.title || item.type) + '</strong>';
+            html += '<p><b>中文翻译：</b>' + esc(item.focus_zh || '当前历史记录尚未补齐中文翻译，请查看英文原文。') + '</p>';
+            html += '<p><b>API 英文原文：</b><span class="ai-candidate-raw">' + esc(item.focus || '模型未返回该镜头说明') + '</span></p>';
+            html += '<p><b>画幅：</b>' + esc(item.aspect_ratio || '未返回') + ' · <b>类型：</b>' + esc(item.type || '未返回') + '</p></div>';
+          });
+          if (!(modelProposal.candidate_items || []).length) html += '<p>旧版历史记录未保存结构化候选；请在完整审核报告的“英文候选原文与用量（审计）”查看原始返回。</p>';
+          html += '</div>';
+        } else {
+          html += '<p class="muted">当前是本地规则初稿。选定身份参考图后，可主动请求大模型提出候选分镜；本地规则会再次校验，仍须人工审核。</p>';
+        }
+        html += '</div>';
+        html += '<div class="content-evidence"><h3>5. 首张试生成</h3>';
+        if (content.fact_card_approved && content.suite_approved) {
+          if (firstImagePreflight.ready) {
+            if (firstImageGeneration.status === 'queued' || firstImageGeneration.status === 'running') {
+              html += '<p><strong>首图真实生成中。</strong>任务状态：' + esc(firstImageGeneration.status) + '。页面会每 3 秒自动刷新；不会生成剩余三张。</p>';
+            } else if (firstImageGeneration.status === 'completed_waiting_human_review') {
+              html += '<p><strong>首图已完成并通过本地图片核验，等待人工审核。</strong>任务：' + esc(firstImageGeneration.task_id || '已完成') + '。</p>';
+            } else {
+              html += '<p><strong>预检已完成，等待付费确认。</strong>首张：' + esc(firstImagePreflight.shot_id) + ' · ' + esc(firstImagePreflight.title) + '；模型：' + esc(firstImagePreflight.model) + '；参考图：' + esc(firstImagePreflight.reference_count) + ' 张；画幅：' + esc(firstImagePreflight.aspect_ratio) + '。</p>';
+              html += '<p class="muted">这一步尚未创建 ToAPI 图片任务，尚未生成图片，也未扣费。下一步将是明确确认后真实生成这 1 张首图，用于商品身份审核。</p>';
+            }
+            html += '<p><b>将发送给 ToAPI 的图生图参考：</b></p><div class="identity-reference-grid">';
+            (firstImagePreflight.reference_urls || []).forEach(function(url, idx) {
+              html += '<div class="identity-reference-card"><img src="' + esc(imgSrc(url)) + '" alt="ToAPI 参考图 ' + (idx + 1) + '"><small>参考图 ' + (idx + 1) + '</small><details><summary>查看 URL</summary><code>' + esc(url) + '</code></details></div>';
+            });
+            if (!(firstImagePreflight.reference_urls || []).length) html += '<p class="muted">预检记录中没有可用参考图 URL，不能进入付费生成。</p>';
+            html += '</div>';
+            html += '<details open><summary>查看本次将发送的 Prompt 摘要（英文执行内容）</summary><pre class="ai-candidate-raw">' + esc(firstImagePreflight.prompt_preview || '预检记录中没有 Prompt 摘要，请刷新预检。') + '</pre></details>';
+            if (firstImageGeneration.status !== 'queued' && firstImageGeneration.status !== 'running' && firstImageGeneration.status !== 'completed_waiting_human_review') {
+              html += '<div class="content-actions" style="margin-top:12px"><button id="firstImageGenerateButton" class="btn-primary" onclick="confirmFirstImageGeneration()">确认并生成首张预览（付费）</button></div>';
+            }
+            if (firstImagePreflightFeedback) html += '<div class="content-save-feedback">' + esc(firstImagePreflightFeedback) + '</div>';
+            if (firstImageGenerationFeedback) html += '<div class="content-save-feedback' + (firstImageGenerationFeedbackError ? ' error' : '') + '">' + esc(firstImageGenerationFeedback) + '</div>';
+          } else {
+            html += '<p>事实卡和分镜已通过。下一步先准备 1 张首图试生成，不会自动生成剩余 3 张。</p>';
+          }
+        } else {
+          html += '<p class="muted">请先保存并通过事实卡与分镜审核，才能进入首张试生成准备。</p>';
+        }
+        html += '</div>';
+        if (remainingImagesPreflight.ready) {
+          html += '<div class="content-evidence"><h3>6. 剩余分镜：付费前预检</h3>';
+          if (remainingImagesGeneration.status === 'queued' || remainingImagesGeneration.status === 'running') {
+            html += '<p><strong>真实生成进行中。</strong>当前 ' + esc(remainingImagesGeneration.current_shot_id || '等待后台开始') + '；页面每 3 秒自动刷新。请不要重复点击生成按钮。</p>';
+          } else if (remainingImagesGeneration.status === 'completed_waiting_human_review') {
+            html += '<p><strong>3 张真实生成已完成，并已通过本地文件核验，等待你逐张人工审核。</strong>系统不会自动采用或写回妙手。</p>';
+          } else if (remainingImagesGeneration.status === 'completed_with_errors') {
+            html += '<p><strong>批量生成已结束，但至少有一张没有通过本地核验。</strong>请查看下方每张状态和审计文件，不会把失败任务当成成功。</p>';
+          } else {
+            html += '<p><strong>已准备 ' + esc(remainingImagesPreflight.total || 0) + ' 张，尚未创建 ToAPI 图片任务、尚未生成图片、尚未扣费。</strong>这些分镜会继续使用已选择的商品身份参考图，但不会重复生成首张。</p>';
+          }
+          html += '<div class="ai-candidate-list">';
+          (remainingImagesPreflight.shots || []).forEach(function(shot) {
+            html += '<div class="ai-candidate-card"><strong>' + esc(shot.id) + ' · ' + esc(shot.title || '待生成分镜') + '</strong>';
+            html += '<p><b>构图重点：</b>' + esc(shot.focus || '请查看执行 Prompt') + '</p>';
+            html += '<p><b>画幅：</b>' + esc(shot.aspect_ratio || '未设置') + ' · <b>参考图：</b>' + esc(shot.reference_count || 0) + ' 张 · <b>模型：</b>' + esc(shot.model || '') + '</p>';
+            html += '<details><summary>查看英文执行 Prompt 摘要</summary><pre class="ai-candidate-raw">' + esc(shot.prompt_preview || '没有保存 Prompt 摘要') + '</pre></details></div>';
+          });
+          html += '</div>';
+          if ((remainingImagesGeneration.items || []).length) {
+            html += '<div class="planning-steps">';
+            (remainingImagesGeneration.items || []).forEach(function(item) {
+              html += '<div class="planning-step"><strong>' + esc(item.shot_id || item.artifact_id || '分镜') + ' · ' + esc(item.status || '等待') + '</strong>';
+              if (item.task_id) html += '<span class="muted">任务：' + esc(item.task_id) + '</span><br>';
+              html += '<span class="muted">' + esc(item.result_summary || '') + '</span></div>';
+            });
+            html += '</div>';
+          }
+          if (remainingImagesFeedback) html += '<div class="content-save-feedback' + (remainingImagesFeedbackError ? ' error' : '') + '">' + esc(remainingImagesFeedback) + '</div>';
+          html += '</div>';
+        }
+        if (miaoshouImagesWrite.status !== 'not_started') {
+          html += '<div class="content-evidence"><h3>7. 妙手图片写回</h3>';
+          if (miaoshouImagesWrite.status === 'verified') {
+            html += '<p><strong>已验证写回妙手。</strong>主图与详情图片已经按统一图片栏顺序同步；没有认领店铺或发布商品。</p>';
+          } else if (miaoshouImagesWrite.status === 'writing') {
+            html += '<p><strong>正在写回妙手并回读验证。</strong>请不要重复提交。</p>';
+          } else {
+            html += '<p><strong>上次妙手写回未通过验证。</strong>' + esc(miaoshouImagesWrite.error || '请查看本地审计状态。') + '</p>';
+          }
+          if (miaoshouImagesFeedback) html += '<div class="content-save-feedback' + (miaoshouImagesFeedbackError ? ' error' : '') + '">' + esc(miaoshouImagesFeedback) + '</div>';
+          html += '</div>';
+        }
+      }
+      html += '<div class="content-gate">';
+      html += '<label><input id="contentFactApproved" type="checkbox"' + (content.fact_card_approved ? ' checked' : '') + (hasPackage ? '' : ' disabled') + '> 我已审核事实卡与唯一商品身份参考图</label><br>';
+      html += '<label><input id="contentSuiteApproved" type="checkbox"' + (content.suite_approved ? ' checked' : '') + (hasPackage ? '' : ' disabled') + '> 我已审核本次生图范围与类目规则</label>';
+      html += '</div>';
+      if (artifacts.length) {
+        html += '<div id="generatedAssetReview" class="content-asset-grid">';
+        artifacts.forEach(function(asset) {
+          var image = asset.has_local_image
+            ? '<img src="/api/new-product/content-image?offer_id=' + encodeURIComponent(preview.offer_id) + '&artifact_id=' + encodeURIComponent(asset.id) + '" alt="' + esc(asset.id) + '">'
+            : '<div class="img-fallback" style="display:block">未找到通过本地核验的图片文件</div>';
+          html += '<div class="content-asset">' + image + '<div class="body">';
+          html += '<strong>' + esc(asset.id) + '</strong><div class="muted">任务：' + esc(asset.task_id || '未创建') + '</div>';
+          html += '<div class="muted">技术：' + (asset.technical_complete ? '已完成' : '未完成') + '</div>';
+          html += '<select class="contentAssetDecision" data-artifact-id="' + esc(asset.id) + '">';
+          ['pending','approved','rework','rejected'].forEach(function(option) {
+            var labels = {pending:'待人工审核', approved:'采用', rework:'重做/后期处理', rejected:'不采用'};
+            html += '<option value="' + option + '"' + (asset.decision === option ? ' selected' : '') + '>' + labels[option] + '</option>';
+          });
+          html += '</select><textarea class="contentAssetNote" data-artifact-id="' + esc(asset.id) + '" placeholder="审核备注（可选）">' + esc(asset.note || '') + '</textarea>';
+          html += '</div></div>';
+        });
+        html += '</div>';
+      }
+      html += '<div class="content-next-step">';
+      var generatedAssets = artifacts.filter(function(asset) { return asset.technical_complete && asset.has_local_image; });
+      var pendingGeneratedAssets = generatedAssets.filter(function(asset) { return asset.decision === 'pending'; });
+      var allGeneratedAssetsApproved = generatedAssets.length >= 4 && generatedAssets.every(function(asset) { return asset.decision === 'approved'; });
+      if (allGeneratedAssetsApproved) {
+        html += '<h3>下一步：统一编排图片</h3><p>AI 生成图与妙手原图已经合并到下方图片栏。请在那里删除、拖拽排序，并使用图片栏底部的同步按钮。</p><button class="btn-primary" onclick="document.getElementById(\'imageSection\').scrollIntoView({behavior:\'smooth\',block:\'start\'})">前往图片编排</button>';
+      } else if (pendingGeneratedAssets.length) {
+        var firstGenerated = pendingGeneratedAssets[0];
+        var isFirstIdentityShot = firstGenerated.shot_id === 'sc1';
+        html += '<h3>下一步：审核已生成图片</h3><p>' + (isFirstIdentityShot ? '首张已生成并通过本地图片核验。' : '已有剩余分镜完成生成并通过本地图片核验。') + ' 请在本流程内决定采用、重做或不采用。' + ((remainingImagesGeneration.status === 'queued' || remainingImagesGeneration.status === 'running') ? '其余后台任务仍在继续，页面会自动刷新。' : '') + '</p>';
+        html += '<div class="next-generated-preview"><img src="/api/new-product/content-image?offer_id=' + encodeURIComponent(preview.offer_id) + '&artifact_id=' + encodeURIComponent(firstGenerated.id) + '" alt="已生成图片预览"><div><strong>' + esc(firstGenerated.id) + '</strong><p class="muted">任务：' + esc(firstGenerated.task_id || '已完成') + '</p><button class="btn-secondary" onclick="document.getElementById(\'generatedAssetReview\').scrollIntoView({behavior:\'smooth\',block:\'center\'})">查看图片审核</button><button class="btn-primary" onclick="saveContentPackageReview()">保存图片审核决定</button></div></div>';
+      } else if (generatedAssets.some(function(asset) { return asset.decision === 'approved'; })) {
+        if (remainingImagesPreflight.ready) {
+          if (remainingImagesGeneration.status === 'queued' || remainingImagesGeneration.status === 'running') {
+            html += '<h3>正在生成剩余 ' + esc(remainingImagesPreflight.total || 0) + ' 张</h3><p>已创建真实后台队列，页面会每 3 秒自动刷新任务状态。完成后图片会出现在本页的素材审核区，仍需要你逐张决定采用、重做或不采用。</p><button class="btn-secondary" disabled>生成中，请勿重复提交</button>';
+          } else if (remainingImagesGeneration.status === 'completed_waiting_human_review' || remainingImagesGeneration.status === 'completed_with_errors') {
+            html += '<h3>下一步：审核剩余生成结果</h3><p>请在上方素材审核区逐张检查商品身份、图案文字、贴附位置与场景是否合理，再保存每张的采用、重做或不采用决定。</p><button class="btn-primary" onclick="document.getElementById(\'generatedAssetReview\').scrollIntoView({behavior:\'smooth\',block:\'center\'})">查看并审核生成结果</button>';
+          } else {
+            html += '<h3>下一步：确认生成剩余 ' + esc(remainingImagesPreflight.total || 0) + ' 张</h3><p>预检已完成：每张的参考图、画幅和英文执行 Prompt 都在上方。确认后会创建 ' + esc(remainingImagesPreflight.total || 0) + ' 个真实 ToAPI 图片任务并产生费用；不会重复生成首图。</p><button id="remainingImagesGenerateButton" class="btn-primary" onclick="confirmRemainingImageGeneration()">确认并生成剩余 ' + esc(remainingImagesPreflight.total || 0) + ' 张（付费）</button><button class="btn-secondary" onclick="document.getElementById(\'generatedAssetReview\').scrollIntoView({behavior:\'smooth\',block:\'center\'})">回看首图审核</button>';
+          }
+        } else {
+          html += '<h3>下一步：准备剩余 3 张分镜</h3><p>首图已采纳。先生成剩余场景与卖点图的无付费预检，确认每张的参考图和 Prompt；不会重新生成首图，也不会创建 ToAPI 任务。</p><button id="remainingImagesButton" class="btn-primary" onclick="prepareRemainingShots()">准备剩余 3 张分镜</button>';
+        }
+      } else if (!hasPackage) {
+        html += '<h3>下一步：创建审核包</h3><p>先读取妙手来源并建立事实卡、身份参考图和分镜。不会调用模型或生图。</p><button class="btn-primary" onclick="prepareContentPackage()">创建审核包</button>';
+      } else if (!content.fact_card_approved || !content.suite_approved) {
+        html += '<h3>下一步：保存你的内容审核</h3><p>确认身份参考图、事实卡与分镜后保存；保存不会写回妙手或生成图片。</p><button id="contentReviewSaveButton" class="btn-primary" onclick="saveContentPackageReview()">保存内容审核</button>';
+      } else if (!firstImagePreflight.ready) {
+        html += '<h3>下一步：准备首张试生成</h3><p>先锁定首张、参考图和 Prompt；不会创建 ToAPI 图片任务。</p><button class="btn-primary" onclick="prepareFirstImagePreflight()">准备首张试生成</button>';
+      } else {
+        if (firstImageGeneration.status === 'queued' || firstImageGeneration.status === 'running') {
+          html += '<h3>正在生成首张预览</h3><p>已创建真实 ToAPI 图片任务，页面会自动刷新。其余 3 张不会自动生成。</p><button class="btn-secondary" disabled>首图生成中，请勿重复提交</button>';
+        } else if (firstImageGeneration.status === 'failed') {
+          html += '<h3>首图生成未完成</h3><p>没有将本次任务视为成功。请查看上方状态后重新发起。</p><button class="btn-primary" onclick="confirmFirstImageGeneration()">重新确认生成首张（付费）</button>';
+        } else {
+          html += '<h3>下一步：确认付费生成首张预览</h3><p>首张 <strong>' + esc(firstImagePreflight.shot_id) + '</strong> 的预检已完成。确认后只生成这一张，用于检查商品身份；其余 3 张仍不会自动生成。</p><p class="muted">当前尚未创建图片任务，也未扣费。可直接在上方第 5 步点击“确认并生成首张预览（付费）”。</p>';
+        }
+      }
+      html += '</div>';
+      if (false) { html += '<details class="content-maintenance"><summary>更多操作与历史文件</summary><div class="content-actions">';
+      html += '<input id="contentCollectBoxId" value="' + esc(collectId) + '" placeholder="妙手采集箱 ID，例如 3825215286">';
+      html += '<button class="btn-secondary" onclick="prepareContentPackage()">重新创建审核包</button>';
+      html += '<button class="btn-secondary" onclick="requestVisionProposal()"' + (hasPackage ? '' : ' disabled') + '>' + (modelProposal.available ? '重新生成候选分镜（再次消耗 Token）' : 'AI 生成候选分镜（消耗 ToAPI Token）') + '</button>';
+      html += '<button class="btn-secondary" onclick="syncContentPackage()">同步已有审核包</button>';
+      if (content.report_ready) html += '<a class="btn-secondary" target="_blank" href="/api/new-product/content-report?offer_id=' + encodeURIComponent(preview.offer_id) + '">打开中文完整审核报告</a>';
+      if (hasPackage && content.fact_card_approved && content.suite_approved) html += '<button class="btn-secondary" onclick="prepareFirstImagePreflight()">刷新首张生成预检</button>';
+      html += '</div></details>'; }
+      if (contentReviewFeedback) {
+        html += '<div class="content-save-feedback' + (contentReviewFeedbackError ? ' error' : '') + '">' + esc(contentReviewFeedback) + '</div>';
+      } else if (content.updated_at) {
+        html += '<div class="content-save-feedback">内容审核已保存：事实卡 ' + (content.fact_card_approved ? '已通过' : '未通过') + '；分镜范围 ' + (content.suite_approved ? '已通过' : '未通过') + '。保存后没有写回妙手，也没有生成商品图片。</div>';
+      }
+      html += '</section>';
       return html;
+    }
+
+    function renderUnifiedContentPackage(content) {
+      var hasPackage = !!content.package_found;
+      var source = content.source_snapshot || {};
+      var facts = content.fact_card || {};
+      var suite = content.suite || {};
+      var draftReview = typeof currentContentPackageDraft === 'function' ? currentContentPackageDraft() : null;
+      var hasDraft = !!draftReview;
+      var suiteCustomization = (draftReview && draftReview.suite_customization) || content.suite_customization || {};
+      var typeCounts = suiteCustomization.type_counts || {};
+      var sizeCard = suiteCustomization.size_card || {};
+      var identityReferenceUrls = (draftReview && draftReview.identity_reference_urls) || source.identity_reference_urls || [];
+      var primaryIdentityUrl = (draftReview && draftReview.primary_identity_url) || source.primary_identity_image || '';
+      var factApproved = draftReview ? !!draftReview.fact_card_approved : !!content.fact_card_approved;
+      var scopeApproved = draftReview ? !!draftReview.planning_scope_approved : !!content.planning_scope_approved;
+      var suiteApproved = draftReview ? !!draftReview.suite_approved : !!content.suite_approved;
+      var storyboardReviews = (draftReview && draftReview.storyboard_reviews) || content.storyboard_reviews || {};
+      var modelProposal = content.model_proposal || {};
+      var aiPlanValid = !!modelProposal.valid;
+      var recipeDraftChanged = hasDraft && JSON.stringify({
+        fact_card_approved: !!draftReview.fact_card_approved,
+        planning_scope_approved: !!draftReview.planning_scope_approved,
+        identity_reference_urls: draftReview.identity_reference_urls || [],
+        primary_identity_url: draftReview.primary_identity_url || '',
+        suite_customization: draftReview.suite_customization || {}
+      }) !== JSON.stringify({
+        fact_card_approved: !!content.fact_card_approved,
+        planning_scope_approved: !!content.planning_scope_approved,
+        identity_reference_urls: source.identity_reference_urls || [],
+        primary_identity_url: source.primary_identity_image || '',
+        suite_customization: content.suite_customization || {}
+      });
+      var requestedCount = Object.keys(typeCounts).reduce(function(total, key) { return total + (parseInt(typeCounts[key] || '0', 10) || 0); }, 0);
+      var preflight = content.remaining_images_preflight || {};
+      var generation = content.remaining_images_generation || {};
+      var generationItems = generation.items || [];
+      var generationSuccessCount = generationItems.filter(function(item) { return item.status === 'completed_waiting_human_review'; }).length;
+      var generationFailedItems = generationItems.filter(function(item) { return item.status === 'failed'; });
+      var generatedReviewCount = (content.generated_review_images || []).length;
+      var html = '<section class="content-package" oninput="captureContentPackageDraft()" onchange="captureContentPackageDraft()"><h2>内容资产与生图审核</h2>';
+      html += '<p class="muted">确认商品身份、事实与图片数量后，一次性生成整套图片。结果会进入下一阶段“图片审核”，不会自动写入妙手。</p>';
+      if (!hasPackage) {
+        html += '<div class="content-instruction"><strong>先创建本地审核包。</strong>读取妙手采集箱中的来源信息，创建商品身份参考、事实卡和分镜；不会调用模型、不会生成图片、不会写回妙手。</div>';
+        html += '<div class="content-actions"><input id="contentCollectBoxId" value="' + esc(content.collect_box_id || '') + '" placeholder="妙手采集箱 ID，例如 3825215286"><button class="btn-primary" onclick="prepareContentPackage()">创建审核包</button></div>';
+        return html + '</section>';
+      }
+      html += '<div class="content-summary"><span class="content-chip">采集箱：' + esc(content.collect_box_id || '') + '</span><span class="content-chip">配方版本：v' + esc(content.suite_revision || 1) + '</span><span class="content-chip">画幅：1:1</span><span class="content-chip">当前待审：' + esc((content.generated_review_images || []).length) + ' 张</span></div>';
+      html += '<div class="stage-flow"><span class="stage-step done">1 商品身份</span><span class="stage-step ' + (factApproved ? 'done' : 'current') + '">2 事实卡</span><span class="stage-step ' + (scopeApproved ? 'done' : 'current') + '">3 本地约束</span><span class="stage-step ' + (aiPlanValid ? 'done' : 'current') + '">4 AI 分镜</span><span class="stage-step ' + (aiPlanValid && suiteApproved ? 'done' : '') + '">5 人工审核</span><span class="stage-step ' + (!hasDraft && preflight.ready ? 'done' : '') + '">6 生图预检</span><span class="stage-step ' + ((generation.status === 'queued' || generation.status === 'running') ? 'current' : '') + '">7 整套生图</span></div>';
+      html += '<div class="content-evidence"><h3>1. 商品身份参考图</h3><p class="muted">选择同一商品的来源图。主参考锁定整体身份，补充参考用于校对图案、外形和比例。</p><div class="identity-reference-grid">';
+      (source.image_urls || []).forEach(function(url, idx) {
+        var selected = identityReferenceUrls.indexOf(url) >= 0;
+        var primary = primaryIdentityUrl === url;
+        html += '<div class="identity-reference-card"><img src="' + esc(imgSrc(url)) + '" alt="来源参考图 ' + (idx + 1) + '">';
+        html += '<label><input class="identityRefCheckbox" type="checkbox" data-url="' + esc(url) + '"' + (selected ? ' checked' : '') + ' onchange="keepPrimaryIdentityReference(this)"> 作为补充参考</label>';
+        html += '<label><input class="identityRefPrimary" type="radio" name="identityRefPrimary" data-url="' + esc(url) + '"' + (primary ? ' checked' : '') + ' onchange="selectPrimaryIdentityReference(this)"> 设为主参考</label></div>';
+      });
+      html += '</div></div>';
+      html += '<div class="content-evidence"><h3>2. 事实卡</h3><table class="fact-table"><tbody>';
+      (facts.verified || []).forEach(function(row) { html += '<tr><th>' + esc(row.field || '') + '</th><td>' + esc(row.value || '') + '</td><td>' + esc(row.source || '') + '</td></tr>'; });
+      html += '</tbody></table>';
+      if ((facts.inferred || []).length) html += '<p><strong>视觉推断（不能写成硬卖点）：</strong>' + esc((facts.inferred || []).join('；')) + '</p>';
+      if ((facts.unknown_or_forbidden || []).length) html += '<p><strong>禁止自行宣传：</strong>' + esc((facts.unknown_or_forbidden || []).join('；')) + '</p>';
+      html += '</div>';
+      html += '<div class="content-evidence"><h3>3. 图片类型与本次数量</h3><p class="muted">系统支持 5 种生成图片类型。每类显示按当前商品规则给出的推荐数量；你只需调整本次数量。场景的具体变体由 AI 在受商品身份、事实卡和类目约束的前提下自行规划。所有输出均为 1:1。</p>';
+      var typeRows = [
+        {id:'white_bg', name:'白底主图', desc:'清晰展示完整商品，适合可由 AI 生成白底图的类目。'},
+        {id:'scene', name:'场景图', desc:'在可信使用环境中展示商品；具体场景变体由 AI 规划。'},
+        {id:'selling_point', name:'卖点图', desc:'突出一个有来源支持的可见特点，不生成未经证实的宣称。'},
+        {id:'macro_detail', name:'细节图', desc:'放大来源可支持的材质、印刷或工艺细节。'},
+        {id:'size_card', name:'尺寸图', desc:'生成技术底图后，在本地确定性添加经人工确认的英文尺寸。'}
+      ];
+      typeRows.forEach(function(row) {
+        var recommended = (suite.items || []).filter(function(item) { return item.selected && item.type === row.id; }).length;
+        var count = Object.prototype.hasOwnProperty.call(typeCounts, row.id) ? typeCounts[row.id] : recommended;
+        var max = row.id === 'size_card' ? 1 : 6;
+        html += '<div class="suite-item"><strong>' + esc(row.name) + '</strong><span class="muted"> 推荐 ' + esc(recommended) + ' 张</span><br><span class="muted">' + esc(row.desc) + '</span><label>本次生成 <input class="suiteTypeCount" data-shot-type="' + esc(row.id) + '" type="number" min="0" max="' + max + '" value="' + esc(count) + '"> 张</label>';
+        if (row.id === 'size_card') html += '<div class="size-card-confirmation"><input id="operatorSizeCardDimensions" value="' + esc(sizeCard.dimensions || '') + '" placeholder="人工确认的尺寸，例如：宽 16 cm，高 28 cm"><label><input id="operatorSizeCardConfirmed" type="checkbox"' + (sizeCard.confirmed ? ' checked' : '') + '> 我已确认以上尺寸准确无误</label></div>';
+        html += '</div>';
+      });
+      html += '</div>';
+      html += '<div class="content-gate"><label><input id="contentFactApproved" type="checkbox"' + (factApproved ? ' checked' : '') + '> 我已审核事实卡与商品身份参考图</label><br><label><input id="contentScopeApproved" type="checkbox"' + (scopeApproved ? ' checked' : '') + '> 我确认本次图片类型、数量与本地类目约束</label>';
+      if (aiPlanValid) html += '<br><span class="muted">AI 分镜请在下方逐张选择“通过”或“需要修改”；系统不会再用一个总勾选框代替逐张审核。</span>';
+      html += '</div>';
+      html += '<div class="content-actions"><button id="contentReviewSaveButton" class="btn-primary" onclick="saveContentPackageReview()">' + (hasDraft ? '保存内容审核（有未保存修改）' : '保存内容审核') + '</button><span id="contentDraftStatus" class="muted">' + (hasDraft ? '当前配方有未保存修改；页面刷新、汇率更新或切换商品不会丢失。' : '修改图片数量后请保存，系统才会更新分镜预检。') + '</span></div>';
+      html += '<div class="content-evidence"><h3>4. AI 分镜规划与生图预检</h3>';
+      if (recipeDraftChanged) {
+        html += '<div class="content-instruction"><strong>先保存本次约束修改。</strong>参考图、图片数量或尺寸变化都会让旧 AI 分镜失效；保存本身不会调用付费 API。</div>';
+      } else if (!factApproved || !scopeApproved) {
+        html += '<div class="content-instruction"><strong>先完成本地约束审核。</strong>确认事实卡、参考图、图片类型和数量并保存后，才能调用 AI 规划具体分镜。</div>';
+      } else if (!aiPlanValid) {
+        if (modelProposal.status === 'stale_recipe_changed') html += '<p><strong>上一版 AI 分镜已失效。</strong>当前参考图、图片数量或尺寸与生成该分镜时不同，需要重新规划。</p>';
+        html += '<p><strong>本地约束已经准备完成，尚未生成本版 AI 分镜。</strong>下一步会把已选参考图、事实卡、禁止项和精确数量发送给 ToAPI 视觉规划模型；模型只规划分镜，不生成商品图片。</p>';
+        html += '<button id="visionProposalButton" class="btn-primary" onclick="requestVisionProposal()">AI 生成 ' + esc(requestedCount) + ' 张分镜（消耗 Token）</button>';
+        html += '<div id="visionProposalFeedback" class="planning-status' + (visionProposalFeedbackError ? ' error' : ' pending') + '" style="' + (visionProposalFeedback ? '' : 'display:none') + '"><h3>' + (visionProposalFeedbackError ? 'AI 分镜未完成' : 'AI 正在规划分镜') + '</h3><p>' + esc(visionProposalFeedback) + '</p></div>';
+      } else {
+        html += '<div class="planning-status"><h3>AI 分镜已生成并通过本地规则校验</h3><p>模型：<strong>' + esc(modelProposal.model || 'ToAPI vision') + '</strong>；参考图：' + esc(modelProposal.reference_count || 0) + ' 张；Token：' + esc(modelProposal.total_tokens || 0) + '。以下场景、构图标题和焦点来自 AI，本地系统没有补写分镜。</p></div>';
+        html += '<div id="visionProposalFeedback" class="planning-status' + (visionProposalFeedbackError ? ' error' : ' pending') + '" style="' + (visionProposalFeedback ? '' : 'display:none') + '"><h3>' + (visionProposalFeedbackError ? 'AI 修订未完成' : 'AI 正在修订分镜') + '</h3><p>' + esc(visionProposalFeedback) + '</p></div><div class="ai-candidate-list">';
+        var activeStoryboardItems = (suite.items || []).filter(function(item) { return item.selected; });
+        activeStoryboardItems.forEach(function(item) {
+          var review = storyboardReviews[item.id] || {};
+          var decision = review.decision || item.review_decision || 'pending';
+          var note = Object.prototype.hasOwnProperty.call(review, 'note') ? review.note : (item.review_note || '');
+          html += '<div class="ai-candidate-card"><strong>' + esc(item.id) + ' · ' + esc(item.title_zh || item.title || '') + '</strong><p>' + (item.type === 'size_card' ? '<strong>AI 底图要求：</strong>' : '') + esc(item.focus_zh || '等待中文说明') + '</p>';
+          if (item.type === 'size_card' && item.final_overlay_label) {
+            html += '<div class="final-delivery-note"><strong>最终交付会有数字：</strong>AI 先生成无文字底图，系统下载后再自动叠加已确认的英文尺寸 <strong>' + esc(item.final_overlay_label) + '</strong>。进入图片审核区的是叠字后的最终图，不是无文字底图。</div>';
+          }
+          html += '<details><summary>查看 AI 英文原文</summary><p><strong>' + esc(item.title || '') + '</strong></p><pre class="ai-candidate-raw">' + esc(item.focus || '') + '</pre></details>';
+          html += '<div class="storyboard-review-controls"><label>本张审核决定<select class="storyboardDecision" data-shot-id="' + esc(item.id) + '" data-shot-type="' + esc(item.type || '') + '"><option value="pending"' + (decision === 'pending' ? ' selected' : '') + '>待审核</option><option value="approved"' + (decision === 'approved' ? ' selected' : '') + '>通过</option><option value="revise"' + (decision === 'revise' ? ' selected' : '') + '>需要修改</option></select></label>';
+          html += '<label>修改意见<textarea class="storyboardReviewNote" data-shot-id="' + esc(item.id) + '" placeholder="' + esc(item.type === 'size_card' ? '尺寸数字由本地自动叠加；这里只填写底图构图问题，例如：增加四周留白、改成纯白背景。' : '选择“需要修改”时必填。例如：不要放在客厅，改成儿童卧室；商品图案和比例保持不变。') + '">' + esc(note) + '</textarea></label></div></div>';
+        });
+        html += '</div>';
+        if (!suiteApproved) {
+          var approvedCount = activeStoryboardItems.filter(function(item) { return ((storyboardReviews[item.id] || {}).decision || item.review_decision) === 'approved'; }).length;
+          var reviseCount = activeStoryboardItems.filter(function(item) { return ((storyboardReviews[item.id] || {}).decision || item.review_decision) === 'revise'; }).length;
+          html += '<div id="storyboardReviewSummary" class="storyboard-review-summary">逐张检查场景、构图、商品身份和事实边界。当前：通过 ' + esc(approvedCount) + ' 张，需要修改 ' + esc(reviseCount) + ' 张，待审核 ' + esc(Math.max(0, activeStoryboardItems.length - approvedCount - reviseCount)) + ' 张。</div>';
+          html += '<div class="content-actions"><button class="btn-primary" onclick="saveContentPackageReview()">保存分镜审核</button><button class="btn-secondary" onclick="approveAllStoryboardsAndContinue()">全部通过并准备生图预检</button>';
+          if (reviseCount > 0) html += '<button id="storyboardReplanButton" class="btn-secondary" onclick="requestVisionProposal(true)">按修改意见只重做需要修改的 ' + esc(reviseCount) + ' 张分镜（消耗 Token）</button>';
+          html += '</div>';
+          html += '<div class="content-instruction"><strong>有问题时不用接受。</strong>把该张设为“需要修改”并填写中文意见，再让 AI 重做。若图片类型或数量不对，请修改上方数量并先保存本地约束。</div>';
+        } else if (preflight.ready && preflight.full_suite) {
+          var targetedPreflight = !!preflight.targeted_regeneration;
+          html += '<p><strong>' + (targetedPreflight ? '修改分镜已批准，本次只准备重新生成 ' : 'AI 分镜已批准，生图预检已准备 ') + esc(preflight.total || 0) + ' 张，配方版本 v' + esc(preflight.suite_revision || content.suite_revision || 1) + '。</strong>' + (targetedPreflight ? '其他已通过图片保持不变。' : '') + '预计创建 ' + esc(preflight.total || 0) + ' 个付费图片任务。尚未点击确认前不会创建 ToAPI 图片任务或扣费。</p><div class="ai-candidate-list">';
+          (preflight.shots || []).forEach(function(shot) { html += '<div class="ai-candidate-card"><strong>' + esc(shot.id) + ' · ' + esc(shot.title || '') + '</strong><p>参考图：' + esc(shot.reference_count || 0) + ' 张；画幅：' + esc(shot.aspect_ratio || '1:1') + '</p><details><summary>查看英文执行 Prompt</summary><pre class="ai-candidate-raw">' + esc(shot.prompt_preview || '') + '</pre></details></div>'; });
+          html += '</div>';
+          if (generation.status === 'queued' || generation.status === 'running') html += '<p><strong>' + (targetedPreflight ? '修改图片' : '整套图片') + '正在真实生成中。</strong>当前分镜：' + esc(generation.current_shot_id || '等待后台开始') + '。页面会自动刷新，请不要重复提交。</p><button class="btn-secondary" disabled>生成中</button>';
+          else if (generation.status === 'completed_waiting_human_review') {
+            html += '<div class="generation-complete"><h3>' + (targetedPreflight ? '修改图片生成完成' : '整套图片生成完成') + '</h3><p>本批成功生成并通过本地核验 <strong>' + esc(generationSuccessCount || preflight.total || 0) + ' 张</strong>。新版本位于本区域下方的“3. 图片编排”，不会自动写入妙手。</p><div class="content-actions"><button class="btn-primary" onclick="goToImageReview()">前往下方图片编排</button></div></div>';
+          } else if (generation.status === 'completed_with_errors') {
+            html += '<div class="generation-complete error"><h3>本批次没有完整生成，不能进入图片审核</h3><p>成功 ' + esc(generationSuccessCount) + ' 张，失败 <strong>' + esc(generationFailedItems.length) + ' 张</strong>，当前图片审核区可见 AI 图片 ' + esc(generatedReviewCount) + ' 张。失败任务不会被显示成“已核验图片”。</p>';
+            if (generationFailedItems.length) {
+              html += '<ul class="content-list">' + generationFailedItems.map(function(item) { return '<li><strong>' + esc(item.shot_id || item.artifact_id || '未知分镜') + '</strong>：生成服务执行失败</li>'; }).join('') + '</ul>';
+              html += '<div class="content-actions"><button id="retryFailedSuiteImagesButton" class="btn-primary" onclick="retryFailedSuiteImageGeneration()">修复后重试失败的 ' + esc(generationFailedItems.length) + ' 张（付费接口）</button>';
+              if (generatedReviewCount) html += '<button class="btn-secondary" onclick="goToImageReview()">先审核已成功图片</button>';
+              html += '</div>';
+            }
+            html += '<details><summary>查看技术错误</summary><pre class="ai-candidate-raw">' + esc(generationFailedItems.map(function(item) { return (item.shot_id || item.artifact_id || '') + ': ' + (item.result_summary || 'unknown error'); }).join('\n\n')) + '</pre></details></div>';
+          }
+          else html += '<button id="suiteImagesGenerateButton" class="btn-primary" onclick="confirmSuiteImageGeneration()">确认并生成本批 ' + esc(preflight.total || 0) + ' 张图片（付费）</button>';
+        } else {
+          var pendingRegenerationCount = (content.pending_regeneration_shot_ids || []).length;
+          html += '<p>' + (pendingRegenerationCount ? '修改分镜已批准。下一步只会为这 ' + esc(pendingRegenerationCount) + ' 张构建生图预检，其他图片保持不变。' : 'AI 分镜已批准。现在可以构建不扣费的生图 Prompt 与参考图预检。') + '</p><button id="suiteImagesPreflightButton" class="btn-primary" onclick="prepareSuiteShots()">' + (pendingRegenerationCount ? '准备修改图片生图预检' : '准备 AI 分镜生图预检') + '</button>';
+        }
+      }
+      html += '</div>';
+      return html + '</section>';
+    }
+
+    function collectStoryboardReviews() {
+      var reviews = {};
+      Array.prototype.slice.call(document.querySelectorAll('.storyboardDecision')).forEach(function(node) {
+        var shotId = node.dataset.shotId;
+        var note = document.querySelector('.storyboardReviewNote[data-shot-id="' + shotId + '"]');
+        reviews[shotId] = {
+          decision: node.value || 'pending',
+          note: note ? note.value.trim() : '',
+          shot_type: node.dataset.shotType || ''
+        };
+      });
+      return reviews;
+    }
+
+    function collectContentPackageReview() {
+      var decisions = {};
+      var storyboardReviews = collectStoryboardReviews();
+      var storyboardIds = Object.keys(storyboardReviews);
+      Array.prototype.slice.call(document.querySelectorAll('.contentAssetDecision')).forEach(function(node) {
+        var id = node.dataset.artifactId;
+        var note = document.querySelector('.contentAssetNote[data-artifact-id="' + id + '"]');
+        decisions[id] = {decision: node.value, note: note ? note.value : ''};
+      });
+      return {
+        fact_card_approved: !!((document.getElementById('contentFactApproved') || {}).checked),
+        planning_scope_approved: !!((document.getElementById('contentScopeApproved') || {}).checked),
+        suite_approved: storyboardIds.length > 0 && storyboardIds.every(function(shotId) { return storyboardReviews[shotId].decision === 'approved'; }),
+        storyboard_reviews: storyboardReviews,
+        identity_reference_urls: Array.prototype.slice.call(document.querySelectorAll('.identityRefCheckbox:checked')).map(function(node) { return node.dataset.url; }),
+        primary_identity_url: ((document.querySelector('.identityRefPrimary:checked') || {}).dataset || {}).url || '',
+        suite_customization: {
+          type_counts: Array.prototype.slice.call(document.querySelectorAll('.suiteTypeCount')).reduce(function(acc, node) { acc[node.dataset.shotType] = parseInt(node.value || '0', 10) || 0; return acc; }, {}),
+          size_card: {
+            enabled: (parseInt(((document.querySelector('.suiteTypeCount[data-shot-type="size_card"]') || {}).value || '0'), 10) || 0) > 0,
+            dimensions: (document.getElementById('operatorSizeCardDimensions') || {}).value || '',
+            confirmed: !!((document.getElementById('operatorSizeCardConfirmed') || {}).checked)
+          }
+        },
+        asset_decisions: decisions
+      };
+    }
+
+    function selectPrimaryIdentityReference(radio) {
+      var target = radio && radio.dataset ? radio.dataset.url : '';
+      if (!target) return;
+      var checkbox = Array.prototype.slice.call(document.querySelectorAll('.identityRefCheckbox')).find(function(node) { return node.dataset.url === target; });
+      if (checkbox) checkbox.checked = true;
+    }
+
+    function keepPrimaryIdentityReference(checkbox) {
+      var target = checkbox && checkbox.dataset ? checkbox.dataset.url : '';
+      var primary = document.querySelector('.identityRefPrimary:checked');
+      if (target && primary && primary.dataset.url === target && !checkbox.checked) checkbox.checked = true;
+    }
+
+    function syncContentPackage() {
+      if (!preview) return;
+      var input = document.getElementById('contentCollectBoxId');
+      api('/api/new-product/content-package/sync', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({offer_id: preview.offer_id, collect_box_id: input ? input.value.trim() : ''})
+      }).then(function(d) {
+        if (!d.ok) { alert(d.error || '同步失败'); return; }
+        preview.content_package = d.content_package;
+        clearContentPackageDraft();
+        render();
+        setStatus('已同步本地生图审核包；未发起生成或写回妙手。');
+      });
+    }
+
+    function prepareContentPackage() {
+      if (!preview) return;
+      var input = document.getElementById('contentCollectBoxId');
+      var collectBoxId = input ? input.value.trim() : '';
+      if (!collectBoxId) { alert('请先填写妙手采集箱 ID'); return; }
+      var buttons = Array.prototype.slice.call(document.querySelectorAll('.content-actions button'));
+      buttons.forEach(function(button) { button.disabled = true; });
+      setStatus('正在读取妙手采集箱并创建本地审核包；不会调用模型、生图或写回妙手...');
+      api('/api/new-product/content-package/prepare', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({offer_id: preview.offer_id, collect_box_id: collectBoxId})
+      }).then(function(d) {
+        if (!d.ok) { alert(d.error || '创建审核包失败'); return; }
+        preview.content_package = d.content_package;
+        clearContentPackageDraft();
+        render();
+        setStatus('审核包已创建：仅含来源参考、事实卡和分镜；尚未调用模型或生成图片。');
+      }).catch(function(e) {
+        alert(String(e));
+      }).finally(function() {
+        buttons.forEach(function(button) { button.disabled = false; });
+      });
+    }
+
+    function requestVisionProposal(revisionMode) {
+      if (!preview) return;
+      var refs = Array.prototype.slice.call(document.querySelectorAll('.identityRefCheckbox:checked')).map(function(node) { return node.dataset.url; });
+      var total = Array.prototype.slice.call(document.querySelectorAll('.suiteTypeCount')).reduce(function(sum, node) { return sum + (parseInt(node.value || '0', 10) || 0); }, 0);
+      var storyboardFeedback = {};
+      var locallySatisfiedFeedback = {};
+      if (revisionMode) {
+        var storyboardReviews = collectStoryboardReviews();
+        Object.keys(storyboardReviews).forEach(function(shotId) {
+          if (storyboardReviews[shotId].decision === 'revise' && storyboardReviews[shotId].note) {
+            var note = storyboardReviews[shotId].note;
+            var overlayOnly = /^(?:图像中|图片中|最终图中)?\s*(?:需要|要|请)?\s*(?:出现|有|显示|添加|加上)?\s*(?:尺寸)?\s*(?:数字|尺寸数字|英文尺寸|尺寸标注)\s*[。！!]*$/.test(note);
+            if (storyboardReviews[shotId].shot_type === 'size_card' && overlayOnly) {
+              locallySatisfiedFeedback[shotId] = note;
+            } else {
+              storyboardFeedback[shotId] = note;
+            }
+          }
+        });
+        var reviseWithoutNote = Object.keys(storyboardReviews).filter(function(shotId) {
+          return storyboardReviews[shotId].decision === 'revise' && !storyboardReviews[shotId].note;
+        });
+        if (reviseWithoutNote.length) {
+          var missingMessage = '请先为 ' + reviseWithoutNote.join('、') + ' 填写具体修改意见。';
+          var summary = document.getElementById('storyboardReviewSummary');
+          if (summary) { summary.textContent = missingMessage; summary.style.color = '#8a1722'; }
+          setStatus(missingMessage);
+          return;
+        }
+        if (!Object.keys(storyboardFeedback).length) {
+          if (Object.keys(locallySatisfiedFeedback).length) {
+            var overlayLabel = '';
+            var sizeItem = (((preview || {}).content_package || {}).suite || {}).items || [];
+            sizeItem.some(function(item) {
+              if (item.type === 'size_card' && item.final_overlay_label) {
+                overlayLabel = item.final_overlay_label;
+                return true;
+              }
+              return false;
+            });
+            var overlayMessage = '无需重新调用 AI，也不会再次消耗 Token。尺寸图最终会由本地程序自动添加数字' + (overlayLabel ? '：' + overlayLabel : '') + '。请核对上方“最终交付会有数字”，确认后把本张改为“通过”。';
+            var overlaySummary = document.getElementById('storyboardReviewSummary');
+            if (overlaySummary) { overlaySummary.textContent = overlayMessage; overlaySummary.style.color = '#145a32'; }
+            setStatus(overlayMessage);
+            return;
+          }
+          var noFeedbackMessage = '请先把有问题的分镜设为“需要修改”，并填写修改意见。';
+          var emptySummary = document.getElementById('storyboardReviewSummary');
+          if (emptySummary) { emptySummary.textContent = noFeedbackMessage; emptySummary.style.color = '#8a1722'; }
+          setStatus(noFeedbackMessage);
+          return;
+        }
+      }
+      if (!refs.length) { alert('请先至少选择一张商品身份参考图'); return; }
+      var confirmMessage = revisionMode
+        ? '将把你对 ' + Object.keys(storyboardFeedback).length + ' 张分镜的修改意见、上一版分镜和本地规则一起发送给 AI。系统只采用这 ' + Object.keys(storyboardFeedback).length + ' 张的修订，其他已通过分镜保持不变；此步骤再次消耗 Token，但不会生成商品图片。是否继续？'
+        : '将调用 ToAPI 视觉模型读取 ' + refs.length + ' 张参考图，并严格按照本地规则规划 ' + total + ' 张分镜。此步骤消耗 Token，但不会生成商品图片。是否继续？';
+      if (!confirm(confirmMessage)) return;
+      var button = document.getElementById(revisionMode ? 'storyboardReplanButton' : 'visionProposalButton');
+      visionProposalFeedbackError = false;
+      visionProposalStartedAt = Date.now();
+      if (visionProposalProgressTimer) clearInterval(visionProposalProgressTimer);
+      function updateVisionProgress() {
+        var elapsed = Math.max(0, Math.floor((Date.now() - visionProposalStartedAt) / 1000));
+        visionProposalFeedback = (revisionMode ? '正在按你的修改意见只修订 ' + Object.keys(storyboardFeedback).length + ' 张分镜，其他分镜保持不变' : '正在读取 ' + refs.length + ' 张参考图并规划 ' + total + ' 张分镜') + '，已等待 ' + elapsed + ' 秒。视觉规划通常需要 1–5 分钟；请保持本页打开，不要重复点击。';
+        var feedback = document.getElementById('visionProposalFeedback');
+        if (feedback) {
+          feedback.style.display = '';
+          feedback.className = 'planning-status pending';
+          feedback.innerHTML = '<h3>' + (revisionMode ? 'AI 正在按意见修订分镜' : 'AI 正在规划分镜') + '</h3><p>' + esc(visionProposalFeedback) + '</p>';
+        }
+        if (button) button.textContent = 'AI 规划中 · ' + elapsed + ' 秒';
+      }
+      if (button) { button.disabled = true; button.classList.add('button-busy'); }
+      updateVisionProgress();
+      visionProposalProgressTimer = setInterval(updateVisionProgress, 1000);
+      setStatus('AI 正在读取参考图并规划分镜；页面会显示已等待时间，完成后还会经过本地规则校验。');
+      api('/api/new-product/content-package/vision-proposal', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          offer_id: preview.offer_id,
+          reference_urls: refs,
+          storyboard_feedback: storyboardFeedback
+        })
+      }).then(function(d) {
+        if (!d.ok) { throw new Error(d.error || 'AI 分镜生成失败'); }
+        if (d.proposal && d.proposal.vision_model_called === false && d.proposal.local_feedback_satisfied) {
+          visionProposalFeedback = d.proposal.message || '该要求已由本地确定性后处理满足，无需重新调用 AI。';
+          visionProposalFeedbackError = false;
+          preview.content_package = d.content_package;
+          render();
+          setStatus(visionProposalFeedback);
+          return;
+        }
+        visionProposalFeedback = '';
+        visionProposalFeedbackError = false;
+        preview.content_package = d.content_package;
+        clearContentPackageDraft();
+        render();
+        setStatus((revisionMode ? 'AI 已按修改意见修订指定分镜，其他已通过分镜保持不变' : 'AI 分镜已生成') + '并通过本地规则校验；请审核修订后的分镜。');
+      }).catch(function(e) {
+        var detail = String(e.message || e);
+        visionProposalFeedbackError = true;
+        visionProposalFeedback = detail + ' 本次没有自动重试。请确认网络稳定后，再点击上方按钮手动重试一次。';
+        var feedback = document.getElementById('visionProposalFeedback');
+        if (feedback) {
+          feedback.style.display = '';
+          feedback.className = 'planning-status error';
+          feedback.innerHTML = '<h3>AI 分镜未完成</h3><p>' + esc(visionProposalFeedback) + '</p>';
+        }
+        setStatus('AI 分镜未完成：' + detail);
+      }).finally(function() {
+        if (visionProposalProgressTimer) {
+          clearInterval(visionProposalProgressTimer);
+          visionProposalProgressTimer = null;
+        }
+        if (button) {
+          button.disabled = false;
+          button.classList.remove('button-busy');
+          button.textContent = revisionMode ? '按修改意见只重做需要修改的分镜（消耗 Token）' : '重新尝试 AI 分镜规划（消耗 Token）';
+        }
+      });
+    }
+
+    function approveAllStoryboardsAndContinue() {
+      var decisions = Array.prototype.slice.call(document.querySelectorAll('.storyboardDecision'));
+      if (!decisions.length) {
+        setStatus('当前没有可审核的 AI 分镜。');
+        return;
+      }
+      decisions.forEach(function(node) { node.value = 'approved'; });
+      captureContentPackageDraft();
+      saveContentPackageReview('preflight');
+    }
+
+    function saveContentPackageReview(afterSave) {
+      if (!preview) return;
+      var previousRevision = Number(((preview.content_package || {}).suite_revision) || 1);
+      var reviewPayload = collectContentPackageReview();
+      var button = document.getElementById('contentReviewSaveButton');
+      if (button) { button.disabled = true; button.textContent = '正在保存内容审核...'; }
+      contentReviewFeedback = '正在保存审核选择...';
+      contentReviewFeedbackError = false;
+      var feedback = document.querySelector('.content-save-feedback');
+      if (feedback) { feedback.className = 'content-save-feedback'; feedback.textContent = contentReviewFeedback; }
+      api('/api/new-product/content-package/review', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({offer_id: preview.offer_id, review: reviewPayload})
+      }).then(function(d) {
+        if (!d.ok) { throw new Error(d.error || '保存内容审核失败'); }
+        preview.content_package = d.content_package;
+        clearContentPackageDraft();
+        var revisionChanged = Number(d.content_package.suite_revision || 1) !== previousRevision;
+        contentReviewFeedback = '内容审核已保存：事实卡 ' + (d.content_package.fact_card_approved ? '已通过' : '未通过') + '；本地约束 ' + (d.content_package.planning_scope_approved ? '已通过' : '未通过') + '；AI 分镜 ' + (d.content_package.suite_approved ? '已批准' : '待规划或待批准') + '。' + (revisionChanged ? '配方已升级到 v' + d.content_package.suite_revision + '，旧的 AI 分镜或生图预检会按签名自动作废。' : '配方内容未变化。') + ' 未写回妙手，未生成商品图片。';
+        contentReviewFeedbackError = false;
+        render();
+        if (afterSave === 'preflight' && d.content_package.suite_approved) {
+          setStatus('全部 AI 分镜已通过，正在准备无付费生图预检...');
+          prepareSuiteShots();
+        } else {
+          setStatus(d.content_package.suite_approved ? 'AI 分镜审核已全部通过；下一步可准备生图预检。' : '分镜审核决定已保存；需要修改的分镜可按意见交给 AI 重做。');
+        }
+      }).catch(function(e) {
+        contentReviewFeedback = '保存失败：' + String(e.message || e);
+        contentReviewFeedbackError = true;
+        render();
+        setStatus(contentReviewFeedback);
+      });
+    }
+
+    function prepareSuiteShots() {
+      if (!preview) return;
+      var pendingShotIds = (((preview || {}).content_package || {}).pending_regeneration_shot_ids || []).map(String);
+      var isTargeted = pendingShotIds.length > 0;
+      var button = document.getElementById('suiteImagesPreflightButton');
+      if (button) { button.disabled = true; button.textContent = isTargeted ? '正在准备修改图片的预检...' : '正在准备整套分镜预检...'; }
+      setStatus(isTargeted ? '正在只为修改的 ' + pendingShotIds.length + ' 张分镜准备无付费预检；其他图片不会重新生成...' : '正在准备整套分镜的无付费预检，不会调用 ToAPI 生图或写回妙手...');
+      api('/api/new-product/content-package/suite-images-preflight', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({offer_id: preview.offer_id, force_shot_ids: pendingShotIds})
+      }).then(function(d) {
+        if (!d.ok) throw new Error(d.error || '整套分镜预检失败');
+        preview.content_package = d.content_package;
+        render();
+        setStatus(isTargeted ? '修改分镜预检已完成：本批只包含 ' + pendingShotIds.length + ' 张；其他图片保持不变。请核对后确认付费生成。' : '整套分镜预检已完成：尚未创建图片任务、尚未生成图片、尚未扣费。请核对后确认一次性生成。');
+      }).catch(function(e) {
+        if (button) { button.disabled = false; button.textContent = isTargeted ? '重新准备修改图片预检' : '重新准备整套分镜预检'; }
+        setStatus((isTargeted ? '修改图片预检失败：' : '整套分镜预检失败：') + String(e.message || e));
+      });
+    }
+
+    function prepareSingleShotRegeneration(shotId) {
+      if (!preview || !shotId) return;
+      if (!confirm('将为分镜 ' + shotId + ' 准备一个新的重做版本。此步骤不扣费，准备完成后仍需再次确认付费生成。是否继续？')) return;
+      setStatus('正在准备 ' + shotId + ' 的重做预检；尚未调用付费生图...');
+      api('/api/new-product/content-package/suite-images-preflight', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({offer_id: preview.offer_id, force_shot_ids: [shotId]})
+      }).then(function(d) {
+        if (!d.ok) throw new Error(d.error || '重做预检失败');
+        preview.content_package = d.content_package;
+        render();
+        var target = document.querySelector('.content-package');
+        if (target) target.scrollIntoView({behavior:'smooth', block:'start'});
+        setStatus('重做预检已准备完成。请核对 Prompt，再点击付费生成按钮。');
+      }).catch(function(e) {
+        setStatus('重做预检失败：' + String(e.message || e));
+      });
+    }
+
+    function confirmSuiteImageGeneration() {
+      if (!preview) return;
+      var preflight = ((preview.content_package || {}).remaining_images_preflight || {});
+      var total = preflight.total || 0;
+      var targeted = !!preflight.targeted_regeneration;
+      if (!total) { setStatus('请先准备整套分镜预检。'); return; }
+      if (!confirm('将只创建 ' + total + ' 个真实 ToAPI 图片任务并产生费用。' + (targeted ? '其他已通过图片不会重新生成。' : '') + '图片完成后只进入本页图片编排区，不会自动写入妙手。确认继续吗？')) return;
+      var button = document.getElementById('suiteImagesGenerateButton');
+      if (button) { button.disabled = true; button.textContent = targeted ? '正在创建修改图片生成队列...' : '正在创建整套生成队列...'; }
+      setStatus(targeted ? '已收到付费确认，正在只创建修改图片的后台生成队列；其他图片保持不变...' : '已收到付费确认，正在创建整套图片的真实后台生成队列...');
+      api('/api/new-product/content-package/remaining-images-generate', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({offer_id: preview.offer_id, confirm_paid_generation: true})
+      }).then(function(d) {
+        if (!d.ok) throw new Error(d.error || '无法创建整套图片生成队列');
+        preview.content_package = d.content_package;
+        render();
+        setStatus((targeted ? '修改图片' : '整套图片') + '真实生成已开始。完成后新版本会进入下方统一图片编排区。');
+      }).catch(function(e) {
+        if (button) { button.disabled = false; button.textContent = '确认并生成本批 ' + total + ' 张图片（付费）'; }
+        setStatus('未创建本批生成队列：' + String(e.message || e));
+      });
+    }
+
+    function retryFailedSuiteImageGeneration() {
+      if (!preview) return;
+      var generation = ((preview.content_package || {}).remaining_images_generation || {});
+      var failedCount = (generation.items || []).filter(function(item) { return item.status === 'failed'; }).length;
+      if (!failedCount) {
+        setStatus('当前没有失败的图片任务需要重试。');
+        return;
+      }
+      if (!confirm('将只重试失败的 ' + failedCount + ' 张图片，并调用真实 ToAPI 付费接口。已成功图片不会重复生成。确认继续吗？')) return;
+      var button = document.getElementById('retryFailedSuiteImagesButton');
+      if (button) { button.disabled = true; button.textContent = '正在重建失败任务队列...'; }
+      setStatus('已收到确认，正在只重试失败图片；已成功图片不会重复生成。');
+      api('/api/new-product/content-package/remaining-images-generate', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          offer_id: preview.offer_id,
+          confirm_paid_generation: true,
+          retry_failed_only: true
+        })
+      }).then(function(d) {
+        if (!d.ok) throw new Error(d.error || '无法重试失败图片');
+        preview.content_package = d.content_package;
+        render();
+        setStatus('失败图片已重新进入生成队列。页面会持续显示进度，完成后自动定位到下方图片审核。');
+      }).catch(function(e) {
+        if (button) { button.disabled = false; button.textContent = '重试失败的 ' + failedCount + ' 张（付费接口）'; }
+        setStatus('失败图片重试未开始：' + String(e.message || e));
+      });
+    }
+
+    function persistGeneratedImageAction(artifactId, action) {
+      if (!preview || !artifactId || (action !== 'keep' && action !== 'remove')) return;
+      setStatus(action === 'remove' ? '正在从本地最终图片栏删除 AI 图片...' : '正在恢复 AI 图片...');
+      api('/api/new-product/content-package/generated-image/decision', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({offer_id: preview.offer_id, artifact_id: artifactId, action: action})
+      }).then(function(d) {
+        if (!d.ok) throw new Error(d.error || '图片决定保存失败');
+        return refreshPreviewState(true);
+      }).then(function() {
+        setStatus('AI 图片栏已更新并保存到本机，尚未写入妙手。');
+      }).catch(function(e) {
+        setStatus('图片决定保存失败：' + String(e.message || e));
+      });
+    }
+
+    function prepareFirstImagePreflight() {
+      if (!preview) return;
+      firstImagePreflightFeedback = '正在刷新首张生成预检；不会调用 ToAPI 或生成图片...';
+      setStatus('正在准备首张试生成预检；不会调用 ToAPI 或生成图片...');
+      api('/api/new-product/content-package/first-image-preflight', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({offer_id: preview.offer_id})
+      }).then(function(d) {
+        if (!d.ok) { throw new Error(d.error || '首张预检失败'); }
+        preview.content_package = d.content_package;
+        firstImagePreflightFeedback = '首张生成预检已刷新：尚未创建 ToAPI 任务、尚未生成图片、尚未扣费。请核对上方 Prompt 摘要后，再进入明确的付费生成确认。';
+        render();
+        setStatus('首张试生成预检已完成，等待你明确确认付费生成。');
+      }).catch(function(e) { setStatus('首张预检失败：' + String(e.message || e)); });
+    }
+
+    function confirmFirstImageGeneration() {
+      if (!preview) return;
+      var preflight = ((preview.content_package || {}).first_image_preflight || {});
+      if (!preflight.ready) {
+        setStatus('请先完成首张生成预检。');
+        return;
+      }
+      if (!confirm('将创建 1 个真实 ToAPI 图片任务并产生费用，仅生成首张预览。其余 3 张不会自动生成。确认继续吗？')) return;
+      var button = document.getElementById('firstImageGenerateButton');
+      if (button) {
+        button.disabled = true;
+        button.textContent = '正在创建首图任务...';
+      }
+      firstImageGenerationFeedback = '已收到付费确认，正在创建首张真实 ToAPI 图片任务；页面会自动刷新状态。';
+      firstImageGenerationFeedbackError = false;
+      setStatus('正在创建首张真实 ToAPI 图片任务...');
+      api('/api/new-product/content-package/first-image-generate', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({offer_id: preview.offer_id, confirm_paid_generation: true})
+      }).then(function(d) {
+        if (!d.ok) throw new Error(d.error || '无法创建首图生成任务');
+        preview.content_package = d.content_package;
+        firstImageGenerationFeedback = '首图真实任务已创建，正在轮询、下载并进行本地图片核验。其余 3 张仍不会自动生成。';
+        firstImageGenerationFeedbackError = false;
+        render();
+        setStatus('首图任务已开始，等待生成结果。');
+      }).catch(function(e) {
+        firstImageGenerationFeedback = '未创建首图任务：' + String(e.message || e);
+        firstImageGenerationFeedbackError = true;
+        if (button) {
+          button.disabled = false;
+          button.textContent = '确认并生成首张预览（付费）';
+        }
+        render();
+        setStatus(firstImageGenerationFeedback);
+      });
+    }
+
+    function prepareRemainingShots() {
+      if (!preview) return;
+      var button = document.getElementById('remainingImagesButton');
+      if (button) {
+        button.disabled = true;
+        button.textContent = '正在准备剩余 3 张预检...';
+      }
+      remainingImagesFeedback = '正在根据已采纳的首图准备剩余 3 张分镜：只整理参考图、画幅和 Prompt，不调用 ToAPI，不生成图片，也不扣费。';
+      remainingImagesFeedbackError = false;
+      setStatus('正在准备剩余 3 张分镜的无付费预检...');
+      api('/api/new-product/content-package/remaining-images-preflight', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({offer_id: preview.offer_id})
+      }).then(function(d) {
+        if (!d.ok) { throw new Error(d.error || '剩余分镜预检失败'); }
+        preview.content_package = d.content_package;
+        var total = ((d.content_package.remaining_images_preflight || {}).total || 0);
+        remainingImagesFeedback = '剩余 ' + total + ' 张分镜预检已完成：没有创建 ToAPI 任务、没有生成图片、没有扣费。请核对上方每张的参考图、构图和 Prompt 后，再进入付费生成确认。';
+        remainingImagesFeedbackError = false;
+        render();
+        setStatus('剩余分镜预检已完成，等待你审核并明确确认付费生成。');
+      }).catch(function(e) {
+        remainingImagesFeedback = '剩余分镜预检失败：' + String(e.message || e);
+        remainingImagesFeedbackError = true;
+        if (button) {
+          button.disabled = false;
+          button.textContent = '重新准备剩余 3 张分镜';
+        }
+        render();
+        setStatus(remainingImagesFeedback);
+      });
+    }
+
+    function confirmRemainingImageGeneration() {
+      if (!preview) return;
+      var preflight = ((preview.content_package || {}).remaining_images_preflight || {});
+      var total = preflight.total || 0;
+      if (!total) {
+        setStatus('没有可生成的剩余分镜，请先重新准备预检。');
+        return;
+      }
+      if (!confirm('将创建 ' + total + ' 个真实 ToAPI 图片任务并产生费用。首图不会重新生成；生成完成后仍需逐张人工审核。确认继续吗？')) return;
+      var button = document.getElementById('remainingImagesGenerateButton');
+      if (button) {
+        button.disabled = true;
+        button.textContent = '正在创建后台生成队列...';
+      }
+      remainingImagesFeedback = '已收到你的付费确认，正在创建剩余 ' + total + ' 张的真实后台生成队列。页面会自动刷新每张任务状态。';
+      remainingImagesFeedbackError = false;
+      setStatus('正在创建剩余分镜的真实 ToAPI 图片任务...');
+      api('/api/new-product/content-package/remaining-images-generate', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({offer_id: preview.offer_id, confirm_paid_generation: true})
+      }).then(function(d) {
+        if (!d.ok) throw new Error(d.error || '无法创建剩余分镜生成队列');
+        preview.content_package = d.content_package;
+        remainingImagesFeedback = '真实后台队列已创建：将按 sc2、sc3、sp1 依次生成、轮询和下载核验。请保持此页面打开；即使刷新，服务器端任务仍会继续。';
+        remainingImagesFeedbackError = false;
+        render();
+        setStatus('剩余分镜生成已开始，正在等待第一个任务状态。');
+      }).catch(function(e) {
+        remainingImagesFeedback = '未创建生成队列：' + String(e.message || e);
+        remainingImagesFeedbackError = true;
+        if (button) {
+          button.disabled = false;
+          button.textContent = '确认并生成剩余 ' + total + ' 张（付费）';
+        }
+        render();
+        setStatus(remainingImagesFeedback);
+      });
+    }
+
+    function syncFinalImagesToMiaoshou() {
+      if (!preview) return;
+      var orderedUrls = currentFinalImageOrder();
+      if (!orderedUrls.length) {
+        setStatus('最终图片栏为空，不能同步到妙手。');
+        return;
+      }
+      if (!confirm('将按当前顺序把 ' + orderedUrls.length + ' 张图片同步到妙手。第 1 张会成为主图，详情页图片也会使用相同顺序；被删除的图片将不再保留。此操作不会认领店铺或发布商品。确认继续吗？')) return;
+      var button = document.getElementById('syncFinalImagesButton');
+      if (button) {
+        button.disabled = true;
+        button.textContent = '正在保存顺序...';
+      }
+      captureImageReviewDraftFromDom();
+      miaoshouImagesFeedback = '正在先保存当前删除与排序，再同步到妙手并回读验证。';
+      miaoshouImagesFeedbackError = false;
+      setStatus('正在保存最终图片顺序...');
+      api('/api/new-product/review', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({offer_id: preview.offer_id, review: collectReview(false)})
+      }).then(function(d) {
+        if (!d.ok) throw new Error(d.error || '最终图片顺序保存失败');
+        preview = d;
+        if (button) button.textContent = '正在同步并回读验证...';
+        setStatus('图片顺序已保存，正在同步妙手主图与详情图片...');
+        return api('/api/new-product/content-package/miaoshou-images/commit', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({offer_id: preview.offer_id, confirm_miaoshou_write: true})
+        });
+      }).then(function(d) {
+        if (!d.ok) throw new Error(d.error || '妙手图片写回失败');
+        if (!d.verified) throw new Error('妙手已返回写入结果，但回读顺序验证没有全部通过');
+        miaoshouImagesFeedback = '已同步 ' + (d.written_image_count || orderedUrls.length) + ' 张图片：妙手主图与详情图片顺序均已回读验证。';
+        return api('/api/new-product/preview?offer_id=' + encodeURIComponent(preview.offer_id));
+      }).then(function(d) {
+        if (!d.ok) throw new Error(d.error || '妙手写回后无法刷新状态');
+        preview = d;
+        miaoshouImagesFeedbackError = false;
+        render();
+        setStatus(miaoshouImagesFeedback);
+      }).catch(function(e) {
+        miaoshouImagesFeedback = '图片未完成同步：' + String(e.message || e);
+        miaoshouImagesFeedbackError = true;
+        if (button) {
+          button.disabled = false;
+          button.textContent = '重试同步图片回妙手';
+        }
+        render();
+        setStatus(miaoshouImagesFeedback);
+      });
     }
 
     function renderRisks(risks) {
@@ -1139,6 +2551,8 @@
         video_action: (document.getElementById('videoAction') || {}).value || 'none',
         support_cod: true,
         image_actions: imgs,
+        image_order: currentFinalImageOrder(),
+        selected_sku_keys: Array.prototype.slice.call(document.querySelectorAll('.sku-choice:checked')).map(function(node) { return node.dataset.skuKey; }),
         fx_rates: collectFxRatesFromDom(),
         fields_locked: !!lockFields
       };
@@ -1164,56 +2578,37 @@
     }
 
     function stageSnapshot() {
-      if (!preview) return {index: 0, blockedSites: []};
-      var locked = !!((preview.review || {}).fields_locked);
-      var written = !!((preview.miaoshou_draft || {}).written_to_miaoshou && (preview.miaoshou_draft || {}).verified);
-      var claimed = !!((preview.tiktok_claim || {}).claimed);
-      var claimInProgress = !!((preview.tiktok_claim || {}).in_progress);
-      var siteReady = !!((preview.site_drafts || {}).ready);
-      var blocked = Object.keys((preview.tiktok_claim || {}).blocked_sites || {});
-      var index = 0;
-      if (siteReady) index = 4;
-      else if (claimed || claimInProgress) index = 3;
-      else if (written) index = 2;
-      else if (locked) index = 1;
-      return {
-        index: index,
-        locked: locked,
-        written: written,
-        claimed: claimed,
-        claimInProgress: claimInProgress,
-        siteReady: siteReady,
-        blockedSites: blocked
-      };
+      return preview ? (preview.workflow || {}) : {steps: [], current_stage: 'source', blockers: []};
     }
 
     function renderStageFlow(snapshot) {
-      var steps = [
-        {label: '第一轮审核中', meta: '修改标题、图片、尺寸重量、站点选择和价格审查'},
-        {label: '第一轮已通过', meta: '字段锁定，准备妙手二审草稿'},
-        {label: '妙手二审待确认', meta: '已写入妙手公共采集箱，等待继续同步到 TikTok'},
-        {label: '站点配置中', meta: '已认领 TikTok 采集箱，正在生成各站点草稿'},
-        {label: '站点草稿待发布', meta: '草稿已就绪，等待人工发布审批'}
-      ];
       var html = '';
-      steps.forEach(function(step, idx) {
-        var cls = idx < snapshot.index ? 'stage-step done' : (idx === snapshot.index ? 'stage-step current' : 'stage-step');
-        html += '<div class="' + cls + '"><span class="dot"></span><div><div>' + esc(step.label) + '</div><div class="meta">' + esc(step.meta) + '</div></div></div>';
+      (snapshot.steps || []).forEach(function(step) {
+        var cls = step.status === 'done' ? 'stage-step done' : ((step.status === 'current' || step.status === 'attention') ? 'stage-step current' : 'stage-step');
+        html += '<div class="' + cls + '"><span class="dot"></span><div><div>' + esc(step.label) + '</div></div></div>';
       });
-      if ((snapshot.blockedSites || []).length) {
-        html += '<div class="blocked-sites"><strong>待授权站点</strong><br>' + esc(snapshot.blockedSites.join('、')) + '</div>';
+      if ((snapshot.blockers || []).length) {
+        html += '<div class="blocked-sites"><strong>当前待处理</strong><br>' + esc(snapshot.blockers.join('；')) + '</div>';
       }
       return html;
     }
 
     function refreshPreviewState(quiet) {
       if (!preview || !preview.offer_id) return Promise.resolve(preview);
+      if (imageReviewDraftDirty) captureImageReviewDraftFromDom();
+      var localImageActions = imageReviewDraftDirty ? ((preview.review || {}).image_actions || []).map(function(row) { return Object.assign({}, row); }) : null;
+      var localImageOrder = imageReviewDraftDirty ? ((preview.review || {}).image_order || []).slice() : null;
       return api('/api/new-product/preview', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({url: preview.offer_id, overseas_urls: overseasLines(), precollect: true})
       }).then(function(d) {
         if (!d.ok) throw new Error(d.error || '刷新状态失败');
+        if (imageReviewDraftDirty) {
+          d.review = d.review || {};
+          d.review.image_actions = localImageActions;
+          d.review.image_order = localImageOrder;
+        }
         preview = d;
         render();
         if (!quiet) setStatus('已刷新当前阶段状态');
@@ -1244,34 +2639,30 @@
       }).join(' | ');
       var blockedCount = Object.keys((preview.tiktok_claim || {}).blocked_sites || {}).length;
       var snapshot = stageSnapshot();
-      card.classList.toggle('ready', locked);
+      var currentStage = snapshot.current_stage || 'source';
+      card.classList.toggle('ready', currentStage === 'miaoshou' || currentStage === 'channels');
       if (flow) flow.innerHTML = renderStageFlow(snapshot);
-      badge.textContent = siteReady ? '站点草稿待发布' : ((claimed || claimInProgress) ? '站点配置中' : (written ? '妙手二审待确认' : (locked ? '第一轮已通过' : '第一轮审核中')));
-      hint.textContent = siteReady
-        ? ('已生成并校验 ' + (preview.site_drafts.site_count || 0) + ' 个国家/地区的站点草稿；尚未发布。')
-        : (claimed || claimInProgress)
-        ? ((claimInProgress ? 'TikTok 认领进行中；' : '') +
-          (siteDrafts.in_progress ? '站点草稿生成中；' : '') +
-          '已认领 TikTok 采集箱 ' + (preview.tiktok_claim.claimed_shop_count || 0) + ' 个授权店铺，' + blockedCount + ' 个站点待授权' +
-          (claimState.last_error ? '；错误：' + claimState.last_error : '') +
-          (siteDrafts.last_error ? '；草稿错误：' + siteDrafts.last_error : '') +
-          (failedSummary ? '；校验失败：' + failedSummary : '') +
-          '。')
-        : written
-        ? '已写入妙手公共采集箱，等待继续同步到 TikTok'
-        : locked
-        ? '字段锁定，准备妙手二审草稿。若继续修改图片动作，将自动重新保存。'
-        : '修改标题、图片、尺寸重量、站点选择和价格审查';
+      badge.textContent = snapshot.current_label || '商品审核中';
+      hint.textContent = (snapshot.blockers || []).length
+        ? snapshot.blockers.join('；')
+        : (siteReady ? '站点草稿已经生成并校验，等待发布审批。' : '当前阶段已就绪，可以继续。');
       button.disabled = false;
-      button.textContent = siteReady
-        ? '站点草稿已就绪，等待发布审批'
-        : (claimed || claimInProgress)
-        ? '继续：生成站点草稿'
-        : written
-        ? '继续同步到 TikTok'
-        : locked
-        ? (miaoshouDraftPrepared ? '写入妙手公共采集箱' : '继续：准备妙手二审')
-        : '提交并进入下一步';
+      var labels = {
+        source: '去确认来源与规格',
+        content: '去审核内容与图片配方',
+        generation: '去完成整套生图',
+        images: '去完成图片审核',
+        commercial: '确认并锁定发布信息',
+        miaoshou: miaoshouDraftPrepared ? '确认应用到妙手' : '预览妙手变更',
+        channels: siteReady ? '站点草稿已就绪' : ((claimed || claimInProgress) ? '继续生成站点草稿' : '继续同步到 TikTok')
+      };
+      button.textContent = labels[currentStage] || '继续';
+      var changeSummary = (preview.miaoshou_draft || {}).change_summary || {};
+      var oldDraft = document.getElementById('draftPreview');
+      if (oldDraft) oldDraft.remove();
+      if (currentStage === 'miaoshou' && Object.keys(changeSummary).length) {
+        card.insertAdjacentHTML('beforeend', renderDraftChangeSummary(changeSummary));
+      }
       if (siteReady && activeSessionId && sessionsById[activeSessionId]) {
         sessionsById[activeSessionId].completed = true;
         persistSessionStore();
@@ -1281,6 +2672,13 @@
 
     function runStageAction() {
       if (!preview) return;
+      var currentStage = ((preview.workflow || {}).current_stage || 'source');
+      var sectionByStage = {source: 'sourceSection', content: 'contentSection', generation: 'contentSection', images: 'imageSection'};
+      if (sectionByStage[currentStage]) {
+        var target = document.getElementById(sectionByStage[currentStage]);
+        if (target) target.scrollIntoView({behavior: 'smooth', block: 'start'});
+        return;
+      }
       if (pendingStageAction === 'drop-long-video') {
         applyLongVideoFallback();
         return;
@@ -1304,7 +2702,7 @@
         continueAfterSecondReview();
         return;
       }
-      if (!((preview.review || {}).fields_locked)) {
+      if (currentStage === 'commercial' || !((preview.review || {}).fields_locked)) {
         saveReview(true);
         return;
       }
@@ -1313,6 +2711,17 @@
         return;
       }
       prepareMiaoshouDraft();
+    }
+
+    function renderDraftChangeSummary(summary) {
+      return '<div id="draftPreview" class="draft-preview"><strong>即将应用到妙手</strong><div class="draft-preview-grid">' +
+        '<span>标题：' + esc(summary.title || '-') + '</span>' +
+        '<span>Seller SKU：' + esc(summary.seller_sku || '-') + '</span>' +
+        '<span>重量：' + esc(summary.weight_g || 0) + ' g</span>' +
+        '<span>包装：' + esc((summary.package_cm || []).join(' × ')) + ' cm</span>' +
+        '<span>图片：来源 ' + esc(summary.source_image_count || 0) + ' + AI ' + esc(summary.generated_image_count || 0) + '</span>' +
+        '<span>规格：' + esc(summary.selected_sku_count || 0) + ' 个；站点：' + esc(summary.selected_site_count || 0) + ' 个</span>' +
+        '</div><p class="muted">确认后将一次写入并回读验证，不会直接发布商品。</p></div>';
     }
 
     function startSiteDraftPolling(reason) {
@@ -1488,8 +2897,12 @@
           return;
         }
         miaoshouDraftPrepared = true;
+        preview.miaoshou_draft = preview.miaoshou_draft || {};
+        preview.miaoshou_draft.ready = true;
+        preview.miaoshou_draft.change_summary = d.change_summary || {};
+        preview.miaoshou_draft.blockers = d.blockers || [];
         setStatus('妙手二审草稿已准备：SKU ' + sku + '，' + count + ' 张图片；尚未写入妙手。');
-        button.textContent = '写入妙手公共采集箱';
+        updateReviewStage();
       }).catch(function(e) {
         setStatus(String(e));
       }).finally(function() {
@@ -1572,22 +2985,6 @@
       saveReview(false);
     }
 
-    function addImageRequest() {
-      if (!preview) return;
-      var prompt = document.getElementById('imagePrompt').value.trim();
-      if (!prompt) { alert('请输入图片需求'); return; }
-      api('/api/new-product/image-request', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({offer_id: preview.offer_id, prompt: prompt})
-      }).then(function(d) {
-        if (!d.ok) { alert(d.error || '记录失败'); return; }
-        preview = d;
-        render();
-        setStatus('已记录补充图片需求（未调用付费 API）');
-      });
-    }
-
     window.addEventListener('DOMContentLoaded', function() {
       var q = new URLSearchParams(location.search);
       loadSessionStore();
@@ -1609,6 +3006,7 @@
         }
         captureActiveSession();
         renderSessionBar();
+        if (preview && preview.offer_id) refreshPreviewState(true).catch(function(e) { setStatus('刷新任务状态失败：' + String(e.message || e)); });
       });
       window.addEventListener('focus', function() {
         if (preview && preview.offer_id) refreshPreviewState(true).catch(function() {});

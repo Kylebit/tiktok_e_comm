@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from modules.catalog.sku_key import parse_search_key, tk_match_key
 from modules.shopee.auth import ensure_shop_token
 from modules.shopee.client import merchant_get, merchant_post
@@ -51,11 +53,24 @@ def _sku_image_url(sku: dict) -> str:
     return ""
 
 
+_SIZE_NAME_RE = re.compile(r"size|尺寸|规格|dimension", re.I)
+_SIZE_VAL_RE = re.compile(r"\d+\s*(cm|mm|m|inch|in)\b|\d+\s*[x×*]\s*\d+", re.I)
+
+
 def _option_label(sku: dict, fallback: str) -> str:
+    """优先取尺寸规格名；否则拼接全部销售属性，避免多 SKU 都落成同一 Color。"""
     attrs = sku.get("sales_attributes") or []
-    raw = ""
-    if attrs:
-        raw = (attrs[0].get("value_name") or "").strip()
+    values: list[str] = []
+    size_vals: list[str] = []
+    for a in attrs:
+        val = (a.get("value_name") or "").strip()
+        if not val:
+            continue
+        values.append(val)
+        name = str(a.get("name") or a.get("id_name") or "")
+        if _SIZE_NAME_RE.search(name) or _SIZE_VAL_RE.search(val):
+            size_vals.append(val)
+    raw = size_vals[0] if size_vals else (" / ".join(values) if values else "")
     return english_variant_label(raw, fallback)
 
 
@@ -131,6 +146,15 @@ def load_tk_group(match_keys: list[str], source_region: str = "PH") -> dict:
                 "image_url": _sku_image_url(s),
             }
         )
+
+    # Shopee tier option 名必须唯一
+    seen_names: dict[str, int] = {}
+    for v in variants:
+        name = (v["model_name"] or "").strip() or v["match_key"]
+        n = seen_names.get(name.lower(), 0)
+        if n:
+            v["model_name"] = f"{name} ({v['match_key']})"
+        seen_names[name.lower()] = n + 1
 
     return {
         "match_keys": keys,

@@ -17,6 +17,13 @@ _CJK_RE = re.compile(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\udfff]")
 _VIET_RE = re.compile(
     r"[àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđĐ]"
 )
+# 马来文同为拉丁字母，需词表排除，否则会被当成英文母版
+_MALAY_HINT_RE = re.compile(
+    r"\b(yang|untuk|dengan|adalah|kertas|dinding|pelekat|diri|reka|bentuk|"
+    r"hiasan|rumah|mudah|dipakai|sesuai|pengubahsuaian|dan|atau|sebuah|"
+    r"kepada|warna|saiz|bahan|produk|kualiti|penghantaran)\b",
+    re.I,
+)
 
 _SYSTEM = """You are a Shopee CNSC cross-border listing copywriter. Write in English ONLY.
 
@@ -60,6 +67,8 @@ def is_english_listing_text(text: str) -> bool:
     if not (text or "").strip():
         return False
     if contains_non_english_script(text):
+        return False
+    if _MALAY_HINT_RE.search(text):
         return False
     return is_mostly_english(text)
 

@@ -222,7 +222,9 @@ def run_headless(task_id: str, prompt: str) -> None:
             f"  python agent_comms/stage3/cursor_adapter.py complete --task-id {task_id}\n"
             f"绝对不要伪造 DONE / commit hash / 测试通过。若确实无法完成，仍运行 report 写明 BLOCKED 及原因，并运行 complete。"
         )
-        inner = "codex exec --sandbox workspace-write " + shlex.quote(full)
+        # danger-full-access：生图任务需经宿主代理 127.0.0.1:10808 出网调 toapis，
+        # workspace-write 沙箱无网络出口，故放行网络（Boss 2026-07-22 要求 agent 亲自生图）。
+        inner = "codex exec --sandbox danger-full-access " + shlex.quote(full)
         cmd = [BASH_BIN, "-lc", inner]
         print(f"[cursor] 无头执行启动 task={task_id} (codex={CODEX_BIN})", flush=True)
         r = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True, timeout=1800)

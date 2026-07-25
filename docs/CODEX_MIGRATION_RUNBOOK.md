@@ -73,8 +73,16 @@ Before enabling five simultaneous code-writing threads:
 4. Confirm `git rev-parse --show-toplevel` returns the `tiktok_e_comm` path.
 5. Use a separate Git worktree for every code-writing domain thread.
 
-Until these steps are complete, only one Codex thread may write the repository
-at a time. Other domain threads may analyze and plan read-only.
+The parent Git directory could not be renamed from the active Codex project
+because Windows reported it as in use. This does not block native worktrees
+created directly from the valid `tiktok_e_comm` repository. As an interim
+mode, every domain thread must receive one explicit worktree path, verify that
+`git rev-parse --show-toplevel` returns that exact path, and refuse to edit the
+parent checkout or another domain worktree.
+
+When a thread cannot be pinned to an isolated worktree, only one Codex thread
+may write the repository at a time. Other domain threads may analyze and plan
+read-only.
 
 ## Five-thread delivery rule
 
@@ -90,4 +98,3 @@ Every hand-off must include:
 - tests run and results;
 - real external writes performed, if any;
 - commit hash and remaining risks.
-

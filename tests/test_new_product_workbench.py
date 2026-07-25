@@ -233,11 +233,11 @@ class NewProductWorkbenchTests(unittest.TestCase):
         ])
         self.assertEqual(result["change_summary"]["generated_image_count"], 1)
 
-    def test_unified_image_bar_defaults_to_all_nonremoved_images_in_saved_order(self):
+    def test_unified_image_bar_only_includes_explicitly_kept_images(self):
         state = {
             "review": {
                 "image_actions": [
-                    {"action": "review", "url": "https://img.example/source-1.jpg"},
+                    {"action": "keep", "url": "https://img.example/source-1.jpg"},
                     {"action": "remove", "url": "https://img.example/source-2.jpg"},
                 ],
                 "image_order": [
@@ -273,17 +273,14 @@ class NewProductWorkbenchTests(unittest.TestCase):
         ):
             selected = _ordered_selected_images("123", state)
 
-        self.assertEqual(selected["urls"], [
-            "https://img.example/generated-1.png",
-            "https://img.example/source-1.jpg",
-        ])
+        self.assertEqual(selected["urls"], ["https://img.example/source-1.jpg"])
 
     def test_ordered_image_sync_replaces_main_and_detail_images_and_verifies_order(self):
         state = {
             "review": {
                 "weight_kg": 0.08,
                 "image_actions": [
-                    {"action": "review", "url": "https://img.example/source-1.jpg"},
+                    {"action": "keep", "url": "https://img.example/source-1.jpg"},
                     {"action": "remove", "url": "https://img.example/source-2.jpg"},
                 ],
                 "image_order": [
@@ -297,7 +294,7 @@ class NewProductWorkbenchTests(unittest.TestCase):
             "artifact_id": "sc1_r1",
             "shot_id": "sc1",
             "url": "https://img.example/generated-1.png",
-            "miaoshou_action": "review",
+            "miaoshou_action": "keep",
         }]
         current = {
             "title": "Existing title",
@@ -358,7 +355,22 @@ class NewProductWorkbenchTests(unittest.TestCase):
         self.assertEqual(saved["title"], "Existing title")
         self.assertEqual(saved["itemNum"], "0942")
 
-    def test_workflow_includes_verified_ai_image_until_operator_removes_it(self):
+    def test_ordered_image_sync_rejects_pending_images_before_calling_post(self):
+        state = {
+            "review": {"image_actions": [{"action": "review", "url": "https://img.example/pending.jpg"}]},
+            "content_package": {"collect_box_id": "123"},
+        }
+        calls = []
+        with patch("modules.sourcing.new_product_workbench.resolve_offer_key", return_value="123"), patch(
+            "modules.sourcing.new_product_workbench.load_state", return_value=state
+        ), patch("modules.sourcing.new_product_workbench._source_summary", return_value={"images": []}), patch(
+            "modules.sourcing.new_product_workbench._content_package_dir", return_value=Path(".")
+        ), patch("modules.sourcing.new_product_workbench._generated_review_images", return_value=[]):
+            with self.assertRaisesRegex(ValueError, "explicit keep or remove"):
+                write_ordered_images_to_miaoshou("123", post=lambda *args, **kwargs: calls.append(args))
+        self.assertEqual(calls, [])
+
+    def test_workflow_blocks_until_every_visible_image_has_a_final_decision(self):
         workflow = _product_workflow_summary(
             source={"title_source": "Title", "cost_cny": 5, "images": [{"url": "x"}]},
             review={
@@ -377,8 +389,9 @@ class NewProductWorkbenchTests(unittest.TestCase):
             miaoshou_draft={}, tiktok_claim={}, site_drafts={},
         )
 
-        self.assertEqual(workflow["current_stage"], "commercial")
-        self.assertTrue(workflow["image_review_ready"])
+        self.assertEqual(workflow["current_stage"], "images")
+        self.assertFalse(workflow["image_review_ready"])
+        self.assertEqual(workflow["pending_generated_image_count"], 1)
         self.assertNotIn("还有 1 张 AI 图待决定", workflow["blockers"])
 
     def test_workflow_blocks_generation_until_ai_storyboard_is_valid(self):

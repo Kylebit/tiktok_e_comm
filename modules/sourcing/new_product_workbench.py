@@ -774,8 +774,10 @@ def _product_workflow_summary(
         and len(generated) >= requested_images
     )
     source_actions = list(review.get("image_actions") or [])
-    kept_source = [row for row in source_actions if str(row.get("action") or "review") != "remove"]
-    kept_generated = [row for row in generated if str(row.get("miaoshou_action") or "review") != "remove"]
+    kept_source = [row for row in source_actions if str(row.get("action") or "review") == "keep"]
+    kept_generated = [row for row in generated if str(row.get("miaoshou_action") or "review") == "keep"]
+    pending_source = [row for row in source_actions if str(row.get("action") or "review") not in {"keep", "remove"}]
+    pending_generated = [row for row in generated if str(row.get("miaoshou_action") or "review") not in {"keep", "remove"}]
     ai_plan_valid = bool((content.get("model_proposal") or {}).get("valid"))
     content_ready = bool(
         content.get("package_found")
@@ -784,7 +786,7 @@ def _product_workflow_summary(
         and ai_plan_valid
         and content.get("suite_approved")
     )
-    image_review_ready = bool(generation_done and len(kept_source) + len(kept_generated) >= 3)
+    image_review_ready = bool(generation_done and not pending_source and not pending_generated and len(kept_source) + len(kept_generated) >= 3)
     commercial_blockers = []
     if not _english_title_ready(str(review.get("title") or "")):
         commercial_blockers.append("英文标题必须包含英文字母且不能含中文")
@@ -836,6 +838,8 @@ def _product_workflow_summary(
     elif current["id"] == "generation":
         blockers = [f"生成并核验本次计划的 {requested_images} 张图片"]
     elif current["id"] == "images":
+        if pending_source or pending_generated:
+            blockers.append(f"{len(pending_source) + len(pending_generated)} image(s) still require an explicit keep or remove decision")
         if len(kept_source) + len(kept_generated) < 3:
             blockers.append("最终至少保留 3 张图片")
     elif current["id"] == "commercial":
@@ -855,6 +859,8 @@ def _product_workflow_summary(
         "generated_image_count": len(generated),
         "kept_source_image_count": len(kept_source),
         "kept_generated_image_count": len(kept_generated),
+        "pending_source_image_count": len(pending_source),
+        "pending_generated_image_count": len(pending_generated),
     }
 
 
@@ -2130,7 +2136,7 @@ def _ordered_selected_images(
 
     source_rows = review.get("image_actions") or source.get("images") or []
     for index, row in enumerate(source_rows, start=1):
-        if not isinstance(row, dict) or str(row.get("action") or "review") == "remove":
+        if not isinstance(row, dict) or str(row.get("action") or "review") != "keep":
             continue
         url = str(row.get("output_url") or row.get("url") or "").strip()
         if not url or url in available:
@@ -2146,7 +2152,7 @@ def _ordered_selected_images(
 
     package_dir = _content_package_dir(str(content.get("collect_box_id") or ""))
     for row in _generated_review_images(offer_id, content, package_dir):
-        if str(row.get("miaoshou_action") or "review") == "remove":
+        if str(row.get("miaoshou_action") or "review") != "keep":
             continue
         url = str(row.get("url") or "").strip()
         if not url or url in available:
@@ -2177,6 +2183,29 @@ def _ordered_selected_images(
     }
 
 
+def _image_approval_blockers(offer_id: str, state: dict[str, Any]) -> list[str]:
+    """Return local review blockers before any Miaoshou request is attempted."""
+    review = state.get("review") if isinstance(state.get("review"), dict) else {}
+    source = _source_summary(offer_id)
+    source_rows = review.get("image_actions") or source.get("images") or []
+    pending_source = sum(
+        1 for row in source_rows if isinstance(row, dict)
+        and str(row.get("action") or "review") not in {"keep", "remove"}
+    )
+    content = state.get("content_package") if isinstance(state.get("content_package"), dict) else {}
+    package_dir = _content_package_dir(str(content.get("collect_box_id") or ""))
+    pending_generated = sum(
+        1 for row in _generated_review_images(offer_id, content, package_dir)
+        if str(row.get("miaoshou_action") or "review") not in {"keep", "remove"}
+    )
+    blockers = []
+    if pending_source:
+        blockers.append(f"{pending_source} source image(s) still require explicit keep or remove")
+    if pending_generated:
+        blockers.append(f"{pending_generated} generated image(s) still require explicit keep or remove")
+    return blockers
+
+
 def write_ordered_images_to_miaoshou(
     offer_id_or_url: str, *, post=None
 ) -> dict[str, Any]:
@@ -2189,6 +2218,9 @@ def write_ordered_images_to_miaoshou(
     offer_id = resolve_offer_key(offer_id_or_url)
     state = load_state(offer_id)
     content = state.setdefault("content_package", {})
+    approval_blockers = _image_approval_blockers(offer_id, state)
+    if approval_blockers:
+        raise ValueError("cannot synchronize images: " + "; ".join(approval_blockers))
     selected = _ordered_selected_images(offer_id, state)
     image_urls = list(selected["urls"])
     if not image_urls:
@@ -3625,7 +3657,7 @@ def save_review(offer_id_or_url: str, review: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("至少保留一个商品规格")
     selected_image_urls: list[str] = []
     for row in current.get("image_actions") or []:
-        if str((row or {}).get("action") or "review") == "remove":
+        if str((row or {}).get("action") or "review") != "keep":
             continue
         url = str((row or {}).get("output_url") or (row or {}).get("url") or "").strip()
         if url and url not in selected_image_urls:
@@ -3633,7 +3665,7 @@ def save_review(offer_id_or_url: str, review: dict[str, Any]) -> dict[str, Any]:
     content = state.get("content_package") if isinstance(state.get("content_package"), dict) else {}
     package_dir = _content_package_dir(str(content.get("collect_box_id") or ""))
     for row in _generated_review_images(offer_id, content, package_dir):
-        if str(row.get("miaoshou_action") or "review") == "remove":
+        if str(row.get("miaoshou_action") or "review") != "keep":
             continue
         url = str(row.get("url") or "").strip()
         if url and url not in selected_image_urls:
@@ -4013,13 +4045,13 @@ def prepare_miaoshou_draft(offer_id_or_url: str) -> dict[str, Any]:
     for item in review.get("image_actions") or []:
         action = str(item.get("action") or "review")
         url = str(item.get("output_url") or item.get("url") or "").strip()
-        if action != "remove" and url and url not in selected_images:
+        if action == "keep" and url and url not in selected_images:
             selected_images.append(url)
             selected_source_images.append(url)
     for item in review.get("generated_image_actions") or []:
         action = str(item.get("miaoshou_action") or "review")
         url = str(item.get("url") or "").strip()
-        if action != "remove" and url and url not in selected_images:
+        if action == "keep" and url and url not in selected_images:
             selected_images.append(url)
             selected_generated_images.append(url)
     requested_image_order = [

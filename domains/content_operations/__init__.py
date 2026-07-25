@@ -5,6 +5,7 @@ from domains.content_operations.content_package_adapter import (
     ContentAssetLineage,
     ContentPackageHandoff,
     build_content_package_handoff,
+    build_workbench_content_package_handoff,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "ContentAssetLineage",
     "ContentPackageHandoff",
     "build_content_package_handoff",
+    "build_workbench_content_package_handoff",
 ]

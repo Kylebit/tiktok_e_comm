@@ -89,6 +89,22 @@ def test_discovery_excludes_manual_and_probe_tiktok_experiments(tmp_path):
     assert [item["name"] for item in result.source_files] == ["income_TH_latest.api.csv", "income_TH_standard.csv"]
 
 
+def test_discovery_excludes_filename_periods_that_cannot_overlap(tmp_path):
+    old = "Type ,Order/adjustment ID  ,SKU ID,Statement Date,Total settlement amount,Quantity\nOrder,O-OLD,P-1,2026-06-10,2,1\n"
+    current = "Type ,Order/adjustment ID  ,SKU ID,Statement Date,Total settlement amount,Quantity\nOrder,O-NOW,P-1,2026-07-20,2,1\n"
+    (tmp_path / "income_TH_260601_260630.csv").write_text(old, encoding="utf-8")
+    (tmp_path / "income_TH_260720_260726.csv").write_text(current, encoding="utf-8")
+
+    result = discover_local_profit_snapshots(
+        [tmp_path],
+        seller_sku_by_platform_sku={"P-1": "0001"},
+        reporting_period=(date(2026, 7, 20), date(2026, 7, 26)),
+    )
+
+    assert [item["name"] for item in result.source_files] == ["income_TH_260720_260726.csv"]
+    assert result.raw_row_count == 1
+
+
 def test_out_of_period_rows_do_not_emit_sku_or_mapping_blockers():
     tiktok = adapt_profit_snapshot_text("Type ,Order/adjustment ID  ,SKU ID,Statement Date,Total settlement amount,Quantity\nOrder,O-1,unmapped,2026-07-01,2,0\n", source_name="income_TH_fixture.csv", source_updated_at="2026-07-21T00:00:00+00:00", reporting_period=(date(2026, 7, 20), date(2026, 7, 26)))
     assert [issue.code for issue in tiktok.issues] == ["out_of_reporting_period"]

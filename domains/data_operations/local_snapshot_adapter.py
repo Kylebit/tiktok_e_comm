@@ -19,6 +19,12 @@ from domains.data_operations.financial_facts import DataQualityIssue
 
 _CURRENCY_BY_REGION = {"TH": "THB", "MY": "MYR", "PH": "PHP", "VN": "VND"}
 _TIKTOK_REGION = re.compile(r"income_([A-Z]{2})_", re.IGNORECASE)
+_TIKTOK_FILE_PERIOD = re.compile(
+    r"income_[A-Z]{2}_(\d{6})_(\d{6}).*\.csv$", re.IGNORECASE
+)
+_SHOPEE_FILE_PERIOD = re.compile(
+    r"weekly_shopee_profit_(\d{8})_(\d{8})\.html$", re.IGNORECASE
+)
 _SHOPEE_DATA = re.compile(r"const\s+DATA\s*=\s*(\{.*?\})\s*;", re.DOTALL)
 
 
@@ -88,8 +94,12 @@ def discover_local_profit_snapshots(
             paths.extend(
                 path for path in sorted(root.glob("income_TH_*.csv"))
                 if "manual" not in path.name.lower() and "probe" not in path.name.lower()
+                and _file_overlaps_period(path.name, reporting_period)
             )
-            paths.extend(sorted(root.glob("weekly_shopee_profit_*.html")))
+            paths.extend(
+                path for path in sorted(root.glob("weekly_shopee_profit_*.html"))
+                if _file_overlaps_period(path.name, reporting_period)
+            )
     return adapt_local_profit_snapshots(paths, costs_by_sku=costs_by_sku, seller_sku_by_platform_sku=seller_sku_by_platform_sku, reporting_period=reporting_period)
 
 
@@ -213,6 +223,25 @@ def _date_value(value):
     normalized = _normalise_occurred(value)
     try: return date.fromisoformat(normalized[:10]) if normalized else None
     except ValueError: return None
+def _file_overlaps_period(name, period):
+    if period is None: return True
+    match = _TIKTOK_FILE_PERIOD.fullmatch(name)
+    if match:
+        try:
+            start = datetime.strptime(match.group(1), "%y%m%d").date()
+            end = datetime.strptime(match.group(2), "%y%m%d").date()
+        except ValueError:
+            return True
+        return start <= period[1] and end >= period[0]
+    match = _SHOPEE_FILE_PERIOD.fullmatch(name)
+    if match:
+        try:
+            start = datetime.strptime(match.group(1), "%Y%m%d").date()
+            end = datetime.strptime(match.group(2), "%Y%m%d").date()
+        except ValueError:
+            return True
+        return start <= period[1] and end >= period[0]
+    return True
 def _decimal(value):
     if value is None or str(value).strip() == "": return None
     try: return Decimal(str(value))

@@ -128,3 +128,21 @@ def test_weekly_digest_propagates_upstream_quality_issues_into_status_payload_an
     assert clean.status == "ready" and flagged.status == "needs_review"
     assert flagged.idempotency_key != clean.idempotency_key
     assert flagged.payload()["quality_issues"][0]["code"] == "upstream:missing_quantity"
+
+
+def test_input_snapshot_metadata_is_auditable_and_changes_run_identity():
+    row = {"order_id": "1", "sku_id": "A", "channel": "tiktok", "region": "TH", "currency": "CNY", "settlement_amount": "2", "cost_cny": "1", "statement_date": "2026-07-20"}
+    base = dict(period_start="2026-07-20", period_end="2026-07-26", cost_version="cost:v1", code_version="code:v1", fx_source="approved", fx_as_of="2026-07-20", assumptions={"version": "v1"}, generated_at=datetime(2026, 7, 20, tzinfo=timezone.utc))
+    first = build_weekly_profit_digest(
+        [row],
+        input_snapshot_metadata={"source_files": [{"name": "income.csv", "checksum": "one"}]},
+        **base,
+    )
+    second = build_weekly_profit_digest(
+        [row],
+        input_snapshot_metadata={"source_files": [{"name": "income.csv", "checksum": "two"}]},
+        **base,
+    )
+
+    assert first.payload()["input_snapshot"]["source_metadata"]["source_files"][0]["checksum"] == "one"
+    assert first.idempotency_key != second.idempotency_key

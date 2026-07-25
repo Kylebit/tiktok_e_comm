@@ -95,6 +95,7 @@ def build_weekly_profit_digest(
     fx_source: str = "caller_supplied",
     fx_as_of: date | datetime | str | None = None,
     snapshot_id: str | None = None,
+    input_snapshot_metadata: Mapping[str, object] | None = None,
     assumptions: Mapping[str, object] | None = None,
     upstream_source_quality_issues: Iterable[object] | None = None,
     code_version: str = "unknown",
@@ -115,6 +116,7 @@ def build_weekly_profit_digest(
     source_rows = [dict(row) for row in rows]
     snapshot_checksum = _checksum(source_rows)
     resolved_snapshot_id = _text(snapshot_id) or f"sha256:{snapshot_checksum}"
+    source_metadata = dict(input_snapshot_metadata or {})
     upstream_issues = tuple(_upstream_issue(item) for item in (upstream_source_quality_issues or ()))
     issues: list[ReportQualityIssue] = list(upstream_issues)
     in_period: list[dict[str, object]] = []
@@ -191,10 +193,16 @@ def build_weekly_profit_digest(
         issues.append(ReportQualityIssue("stale_data", "report", "occurred_at", "Newest source row is older than the freshness threshold"))
     _audit_metadata_issues(issues, cost_version, code_version, fx_source, fx_as_of, resolved_snapshot_id, assumptions)
     status = "ready" if not issues else "needs_review"
-    fingerprint = _checksum({"period": period.payload(), "input": {"snapshot_id": resolved_snapshot_id, "checksum": snapshot_checksum}, "fx": {"source": fx_source, "as_of": _date_text(fx_as_of), "rates_cny": rates}, "cost_version": cost_version, "assumptions": assumptions or {}, "code_version": code_version, "upstream_quality_issues": upstream_issues})
+    input_snapshot = {
+        "snapshot_id": resolved_snapshot_id,
+        "checksum": snapshot_checksum,
+        "row_count": len(source_rows),
+        "source_metadata": source_metadata,
+    }
+    fingerprint = _checksum({"period": period.payload(), "input": input_snapshot, "fx": {"source": fx_source, "as_of": _date_text(fx_as_of), "rates_cny": rates}, "cost_version": cost_version, "assumptions": assumptions or {}, "code_version": code_version, "upstream_quality_issues": upstream_issues})
     return ReportRun(
         run_id=f"weekly-profit-{fingerprint[:16]}", calculation_kind=CALCULATION_KIND, period=period,
-        input_snapshot={"snapshot_id": resolved_snapshot_id, "checksum": snapshot_checksum, "row_count": len(source_rows)}, raw_row_count=len(source_rows), deduplicated_row_count=len(deduped), out_of_period_row_count=out_of_period,
+        input_snapshot=input_snapshot, raw_row_count=len(source_rows), deduplicated_row_count=len(deduped), out_of_period_row_count=out_of_period,
         fx={"source": fx_source, "as_of": _date_text(fx_as_of), "rates_cny": rates}, cost={"version": cost_version, "currency": "CNY"},
         assumptions=dict(assumptions or {}), code_version=code_version, status=status, idempotency_key=f"{CALCULATION_KIND}:{fingerprint}",
         generated_at=now, freshness=freshness, quality_issues=tuple(issues), realized_by_sku=realized, estimate_by_sku=estimates, negative_profit_skus=negatives,

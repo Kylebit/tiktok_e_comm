@@ -3,6 +3,7 @@ from decimal import Decimal
 import json
 
 from domains.data_operations import build_weekly_profit_digest
+from domains.data_operations.financial_facts import DataQualityIssue
 
 
 def test_weekly_digest_separates_realized_estimates_deduplicates_and_is_json_ready():
@@ -116,3 +117,14 @@ def test_weekly_digest_freshness_uses_in_period_source_rows_missing_cost():
     assert report.freshness["state"] == "fresh"
     assert "stale_data" not in {issue.code for issue in report.quality_issues}
     assert "missing_cost" in {issue.code for issue in report.quality_issues}
+
+
+def test_weekly_digest_propagates_upstream_quality_issues_into_status_payload_and_fingerprint():
+    row = {"order_id": "1", "sku_id": "A", "channel": "tiktok", "region": "TH", "currency": "CNY", "settlement_amount": "2", "cost_cny": "1", "statement_date": "2026-07-20"}
+    base = dict(period_start="2026-07-20", period_end="2026-07-26", cost_version="cost:v1", code_version="code:v1", fx_source="approved", fx_as_of="2026-07-20", assumptions={"version": "v1"}, generated_at=datetime(2026, 7, 20, tzinfo=timezone.utc))
+    clean = build_weekly_profit_digest([row], **base)
+    issue = DataQualityIssue("missing_quantity", "shopee_snapshot", "source:1", "quantity", "legacy source has no quantity")
+    flagged = build_weekly_profit_digest([row], upstream_source_quality_issues=[issue], **base)
+    assert clean.status == "ready" and flagged.status == "needs_review"
+    assert flagged.idempotency_key != clean.idempotency_key
+    assert flagged.payload()["quality_issues"][0]["code"] == "upstream:missing_quantity"

@@ -206,3 +206,68 @@ def test_workbench_handoff_compares_iso_created_at_as_instants_across_offsets():
     )
 
     assert handoff.asset_lineage[0].artifact_id == "scene_r1"
+
+
+def test_workbench_handoff_merges_kyles_final_five_images_in_saved_order():
+    state = _workbench_state(new_size_action="keep", written_urls=[
+        "https://assets.example/old-1.png", "https://assets.example/old-2.png",
+    ])
+    state["review"] = {
+        "image_actions": [
+            {"action": "keep", "url": "https://assets.example/source-1.jpg"},
+            {"action": "keep", "url": "https://assets.example/source-2.jpg"},
+            {"action": "keep", "url": "https://assets.example/source-3.jpg"},
+            {"action": "remove", "url": "https://assets.example/source-4.jpg"},
+        ],
+        "image_order": [
+            "https://assets.example/sc1-r4.png",
+            "https://assets.example/source-2.jpg",
+            "https://assets.example/source-1.jpg",
+            "https://assets.example/source-3.jpg",
+            "https://assets.example/sz1-r6.png",
+        ],
+    }
+    state["content_package"]["generated_image_miaoshou_decisions"]["sz1_r4"] = {
+        "action": "remove", "status": "reviewed_locally"
+    }
+    handoff = build_workbench_content_package_handoff(
+        product_id="3828811808", state=state,
+        suite_plan={"suite": {"items": [{"id": "sc1"}, {"id": "sz1"}]}},
+        generation_audits=_workbench_audits(), copy={"en": "Puppy wall sticker"},
+    )
+
+    assert handoff.content_package.approval.status == "approved"
+    assert handoff.content_package.image_urls == (
+        "https://assets.example/sc1-r4.png", "https://assets.example/source-2.jpg",
+        "https://assets.example/source-1.jpg", "https://assets.example/source-3.jpg",
+        "https://assets.example/sz1-r6.png",
+    )
+    assert [row.asset_type for row in handoff.asset_lineage] == [
+        "generated", "source", "source", "source", "generated",
+    ]
+    assert handoff.asset_lineage[1].audit_id == "review.image_actions[1]"
+    assert handoff.stale_external_write is True
+
+
+def test_workbench_handoff_pending_source_and_unknown_order_url_block_approval():
+    state = _workbench_state(new_size_action="keep")
+    state["review"] = {
+        "image_actions": [
+            {"action": "keep", "url": "https://assets.example/source-kept.jpg"},
+            {"action": "review", "url": "https://assets.example/source-pending.jpg"},
+        ],
+        "image_order": [
+            "https://assets.example/source-kept.jpg",
+            "https://assets.example/unknown.jpg",
+        ],
+    }
+    handoff = build_workbench_content_package_handoff(
+        product_id="3828811808", state=state,
+        suite_plan={"suite": {"items": [{"id": "sc1"}, {"id": "sz1"}]}},
+        generation_audits=_workbench_audits(), copy={"en": "Puppy wall sticker"},
+    )
+
+    assert "https://assets.example/source-pending.jpg" not in handoff.content_package.image_urls
+    assert handoff.content_package.approval.status == "pending"
+    assert any("source image 2" in blocker for blocker in handoff.blockers)
+    assert any("unknown URL" in blocker for blocker in handoff.blockers)

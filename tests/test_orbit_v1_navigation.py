@@ -67,8 +67,18 @@ def test_home_html_uses_registry_and_explicit_unknown_states():
     css = (ROOT / "web/static/orbit.css").read_text(encoding="utf-8")
 
     assert "fetch('/api/orbit/navigation')" in html
-    assert "任务运行记录接口尚未建设" in html
     assert "V1 不推测任务结果" in html
     assert "V1 不伪造库存、仓库或补货状态" in html
     assert "statusPayload.pending_mx" in html
+    assert "fetch('/api/orbit/inbox?limit=20')" in html
+    assert "'/api/orbit/report-runs?limit=50'" in html
+    assert "不会把“没有记录”显示成任务成功" in html
     assert "@media (max-width: 720px)" in css
+
+
+def test_orbit_report_and_inbox_routes_are_read_only_shared_platform_views():
+    server_source = (ROOT / "modules/products/server.py").read_text(encoding="utf-8")
+
+    assert 'path in ("/api/orbit/report-runs", "/api/orbit/inbox")' in server_source
+    assert "store.list_report_runs(limit=limit)" in server_source
+    assert "store.list_inbox(status=status, limit=limit)" in server_source

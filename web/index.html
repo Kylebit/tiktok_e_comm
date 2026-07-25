@@ -53,8 +53,8 @@
           </article>
           <article class="metric-card">
             <span>最近任务</span>
-            <strong>未知</strong>
-            <small>任务运行记录接口尚未建设</small>
+            <strong id="runMetric">—</strong>
+            <small id="runDetail">正在读取本地收件箱</small>
           </article>
           <article class="metric-card">
             <span>数据新鲜度</span>
@@ -98,9 +98,8 @@
                 </div>
                 <a class="text-link" href="/?view=tasks">任务与通知</a>
               </div>
-              <div class="unknown-block">
-                <strong>运行记录不可用</strong>
-                <p>Shared Platform 尚未提供统一任务历史接口；V1 不推测任务结果。</p>
+              <div id="recentRunList" class="list">
+                <p class="empty-copy">正在读取本地收件箱…</p>
               </div>
             </section>
           </div>
@@ -124,6 +123,7 @@
   <script>
     var registry = { navigation: [], workspaces: [] };
     var statusPayload = null;
+    var inboxPayload = { ok: false, items: [] };
 
     function escapeHtml(value) {
       return String(value == null ? '' : value)
@@ -224,7 +224,61 @@
             '</span><strong>' + row[1] + '</strong></a>';
         }).join('') || '<p class="empty-copy">没有已接入的审批队列</p>';
       }
+      if (inboxPayload && inboxPayload.ok) {
+        var inboxItems = Array.isArray(inboxPayload.items) ? inboxPayload.items : [];
+        var unread = inboxItems.filter(function(item) { return item.status === 'unread'; });
+        document.getElementById('runMetric').textContent = String(unread.length);
+        document.getElementById('runDetail').textContent =
+          inboxItems.length ? '本地收件箱未读' : '尚无本地运行记录';
+        document.getElementById('recentRunList').innerHTML = inboxItems.slice(0, 4).map(function(item) {
+          return '<a class="list-row" href="/?view=tasks"><span>' + escapeHtml(item.title) +
+            '</span><strong>' + escapeHtml(item.severity === 'warning' ? '需复核' : '已生成') +
+            '</strong></a>';
+        }).join('') || '<p class="empty-copy">尚无本地运行记录</p>';
+      } else {
+        document.getElementById('runMetric').textContent = '未知';
+        document.getElementById('runDetail').textContent = '本地收件箱接口不可用';
+        document.getElementById('recentRunList').innerHTML =
+          '<div class="unknown-block"><strong>运行记录不可用</strong><p>V1 不推测任务结果。</p></div>';
+      }
       renderDomains();
+    }
+
+    function renderPlatformCollection(view) {
+      var target = document.getElementById('workspaceLinks');
+      var endpoint = view === 'tasks'
+        ? '/api/orbit/inbox?limit=50'
+        : '/api/orbit/report-runs?limit=50';
+      target.innerHTML = '<p class="empty-copy">正在读取本地记录…</p>';
+      fetch(endpoint).then(function(response) {
+        if (!response.ok) throw new Error('collection unavailable');
+        return response.json();
+      }).then(function(payload) {
+        var items = Array.isArray(payload.items) ? payload.items : [];
+        if (!items.length) {
+          target.innerHTML = '<div class="unknown-block wide"><strong>暂无记录</strong>' +
+            '<p>本地运行记录库尚未收到报告；不会把“没有记录”显示成任务成功。</p></div>';
+          return;
+        }
+        target.innerHTML = items.map(function(item) {
+          var report = view === 'tasks' ? item.payload || {} : item;
+          var period = report.period || {};
+          var status = view === 'tasks' ? (report.status || item.status) : item.status;
+          var title = view === 'tasks' ? item.title : (item.calculation_kind + ' · ' + item.run_id);
+          var detail = [
+            String(period.start || '').slice(0, 10),
+            String(period.end || '').slice(0, 10),
+            status || 'unknown'
+          ].filter(Boolean).join(' · ');
+          return '<article class="workspace-card"><strong>' + escapeHtml(title) + '</strong>' +
+            '<p>' + escapeHtml(detail) + '</p><span>' +
+            escapeHtml(view === 'tasks' && item.severity === 'warning' ? '需要复核' : '本地审计记录') +
+            '</span></article>';
+        }).join('');
+      }).catch(function() {
+        target.innerHTML = '<div class="unknown-block wide"><strong>Unavailable</strong>' +
+          '<p>本地运行记录接口当前不可用。</p></div>';
+      });
     }
 
     function renderWorkspace() {
@@ -244,6 +298,10 @@
         workspace ? 'BUSINESS DOMAIN' : 'SHARED PLATFORM';
 
       var links = workspace ? workspace.links.slice() : [];
+      if (view === 'tasks' || view === 'audit') {
+        renderPlatformCollection(view);
+        return;
+      }
       if (view === 'approvals') {
         links = [
           { label: '标题审批', href: '/titles', description: '内容标题候选' },
@@ -287,10 +345,15 @@
       fetch('/api/status').then(function(response) {
         if (!response.ok) throw new Error('status unavailable');
         return response.json();
-      }).catch(function(error) { return { ok: false, error: String(error) }; })
+      }).catch(function(error) { return { ok: false, error: String(error) }; }),
+      fetch('/api/orbit/inbox?limit=20').then(function(response) {
+        if (!response.ok) throw new Error('inbox unavailable');
+        return response.json();
+      }).catch(function(error) { return { ok: false, error: String(error), items: [] }; })
     ]).then(function(results) {
       registry = results[0];
       statusPayload = results[1];
+      inboxPayload = results[2];
       document.getElementById('updatedAt').textContent =
         '更新于 ' + new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
       renderNavigation();

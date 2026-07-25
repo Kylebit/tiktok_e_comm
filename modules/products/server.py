@@ -1616,6 +1616,21 @@ class Handler(BaseHTTPRequestHandler):
             from shared_platform.orbit_registry import navigation_payload
 
             return self._json(200, {"ok": True, **navigation_payload()})
+        if path in ("/api/orbit/report-runs", "/api/orbit/inbox"):
+            from shared_platform.report_store import default_report_store
+
+            q = parse_qs(urlparse(self.path).query)
+            try:
+                limit = int((q.get("limit") or ["20"])[0])
+            except (TypeError, ValueError):
+                return self._json(400, {"ok": False, "error": "limit must be an integer"})
+            store = default_report_store()
+            if path == "/api/orbit/report-runs":
+                items = store.list_report_runs(limit=limit)
+            else:
+                status = (q.get("status") or [None])[0]
+                items = store.list_inbox(status=status, limit=limit)
+            return self._json(200, {"ok": True, "items": items, "count": len(items)})
         if path == "/api/status":
             return self._json(200, _api_status())
         if path == "/api/health":

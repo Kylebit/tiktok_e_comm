@@ -13,7 +13,6 @@ import datetime as dt
 import html
 import json
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -21,13 +20,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from modules.sourcing.image_shot_prompts import english_dimension_label
+from modules.sourcing.dimension_overlay import apply_dimension_overlay
 
 
 PROXY = "http://127.0.0.1:10808"
@@ -92,31 +92,11 @@ def download(url: str, destination: Path) -> tuple[bool, str]:
         return False, f"downloaded file did not verify as an image: {exc}"
 
 
-def _font(size: int) -> ImageFont.ImageFont:
-    for candidate in (Path("C:/Windows/Fonts/arialbd.ttf"), Path("C:/Windows/Fonts/arial.ttf")):
-        if candidate.is_file():
-            return ImageFont.truetype(str(candidate), size=size)
-    return ImageFont.load_default()
-
-
 def apply_size_overlay(path: Path, dimensions: str) -> str:
     label = english_dimension_label(dimensions)
     if not label:
         raise ValueError("confirmed dimensions are required for a size card")
-    backup = path.with_name(path.stem + "_model" + path.suffix)
-    shutil.copy2(path, backup)
-    with Image.open(path) as source:
-        image = source.convert("RGB")
-    draw = ImageDraw.Draw(image, "RGBA")
-    width, height = image.size
-    band_height = max(96, int(height * 0.14))
-    draw.rectangle((0, height - band_height, width, height), fill=(255, 255, 255, 238))
-    font = _font(max(26, int(width * 0.045)))
-    box = draw.textbbox((0, 0), label, font=font)
-    text_width = box[2] - box[0]
-    text_height = box[3] - box[1]
-    draw.text(((width - text_width) / 2, height - band_height + (band_height - text_height) / 2 - box[1]), label, fill=(24, 38, 51, 255), font=font)
-    image.save(path, format="PNG", optimize=True)
+    apply_dimension_overlay(path, dimensions)
     return label
 
 

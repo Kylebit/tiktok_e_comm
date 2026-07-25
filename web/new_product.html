@@ -190,6 +190,7 @@
     .final-image-item { position: relative; min-width: 0; padding: 7px; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; cursor: grab; }
     .final-image-item.drag-over { border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37, 99, 235, .16); }
     .final-image-item img { display: block; width: 100%; aspect-ratio: 1; object-fit: contain; background: #fff; }
+    .final-image-item img:hover { outline: 2px solid #93c5fd; outline-offset: -2px; cursor: zoom-in; }
     .final-image-number { position: absolute; top: 12px; left: 12px; width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; background: #111827; color: #fff; font-weight: 700; font-size: 12px; }
     .final-image-remove { position: absolute; top: 10px; right: 10px; z-index: 2; width: 28px; height: 28px; padding: 0; display: grid; place-items: center; border: 1px solid #fecaca; border-radius: 50%; background: rgba(255,255,255,.96); color: #dc2626; font-size: 20px; line-height: 1; cursor: pointer; box-shadow: 0 1px 4px rgba(15,23,42,.16); }
     .final-image-remove:hover { background: #fef2f2; border-color: #ef4444; }
@@ -203,6 +204,13 @@
     .final-order-actions { display: flex; gap: 4px; }
     .final-order-actions button { width: 30px; height: 30px; padding: 0; display: grid; place-items: center; }
     .final-image-empty { padding: 15px; border: 1px dashed #94a3b8; color: #64748b; text-align: center; background: #fff; }
+    .image-preview-dialog { width: min(92vw, 940px); max-width: none; padding: 0; border: 0; border-radius: 8px; background: #fff; box-shadow: 0 24px 70px rgba(15,23,42,.35); }
+    .image-preview-dialog::backdrop { background: rgba(15,23,42,.72); }
+    .image-preview-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border-bottom: 1px solid #e2e8f0; }
+    .image-preview-head strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .image-preview-close { width: 34px; height: 34px; padding: 0; display: grid; place-items: center; border: 1px solid #cbd5e1; border-radius: 50%; background: #fff; color: #334155; font-size: 22px; cursor: pointer; }
+    .image-preview-body { display: grid; place-items: center; min-height: 300px; max-height: calc(100vh - 110px); padding: 14px; overflow: auto; background: #f8fafc; }
+    .image-preview-body img { display: block; max-width: 100%; max-height: calc(100vh - 140px); object-fit: contain; background: #fff; }
     .review-focus { animation: reviewFocus 1.8s ease-out; }
     @keyframes reviewFocus { 0%, 35% { box-shadow: 0 0 0 4px rgba(37, 99, 235, .24); } 100% { box-shadow: none; } }
     .planning-steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-top: 10px; }
@@ -211,6 +219,13 @@
     .ai-candidate-list { display: grid; gap: 8px; margin-top: 10px; }
     .ai-candidate-card { padding: 10px; border: 1px solid #cfe0f2; border-radius: 5px; background: #fbfdff; }
     .ai-candidate-card p { margin: 5px 0; font-size: 12px; }
+    .storyboard-card-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .storyboard-status-badge { flex: 0 0 auto; padding: 3px 7px; border: 1px solid currentColor; border-radius: 4px; font-size: 11px; font-weight: 700; }
+    .storyboard-pending { border-color: #d97706; background: #fffbeb; }
+    .storyboard-pending .storyboard-status-badge { color: #92400e; background: #fef3c7; }
+    .storyboard-approved .storyboard-status-badge { color: #166534; background: #dcfce7; }
+    .storyboard-revise { border-color: #dc2626; background: #fff7f7; }
+    .storyboard-revise .storyboard-status-badge { color: #991b1b; background: #fee2e2; }
     .ai-candidate-raw { color: #34475e; }
     .storyboard-review-controls { display: grid; grid-template-columns: minmax(150px, 210px) minmax(0, 1fr); gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid #dbe4ee; }
     .storyboard-review-controls label { display: grid; gap: 4px; color: #475569; font-size: 12px; }
@@ -283,6 +298,15 @@
       </section>
     </div>
   </main>
+  <dialog id="imagePreviewDialog" class="image-preview-dialog" aria-labelledby="imagePreviewTitle">
+    <div class="image-preview-head">
+      <strong id="imagePreviewTitle">图片预览</strong>
+      <button type="button" class="image-preview-close" aria-label="关闭预览" title="关闭预览" onclick="closeImagePreview()">×</button>
+    </div>
+    <div class="image-preview-body">
+      <img id="imagePreviewFull" alt="">
+    </div>
+  </dialog>
 
   <script>
     var preview = null;
@@ -1315,7 +1339,7 @@
       html += '<div id="finalImageList" class="final-image-list">';
       selected.forEach(function(item, idx) {
         html += '<div class="final-image-item" draggable="true" data-final-url="' + esc(item.url) + '" data-final-kind="' + esc(item.kind) + '" data-artifact-id="' + esc(item.artifactId) + '" data-shot-id="' + esc(item.shotId) + '" ondragstart="startFinalImageDrag(event)" ondragover="allowFinalImageDrop(event)" ondragleave="leaveFinalImageDrop(event)" ondrop="dropFinalImage(event)">';
-        html += '<span class="final-image-number">' + esc(idx + 1) + '</span><img src="' + esc(item.src) + '" alt="' + esc(item.label) + '">';
+        html += '<span class="final-image-number">' + esc(idx + 1) + '</span><img src="' + esc(item.src) + '" alt="' + esc(item.label) + '" data-preview-label="' + esc(item.kindLabel + ' · ' + item.label) + '" title="点击放大查看" onclick="openImagePreview(this,event)">';
         html += '<button type="button" class="final-image-remove" title="从最终图片栏删除" aria-label="从最终图片栏删除" onclick="removeUnifiedImage(this,event)">×</button>';
         html += '<div class="final-image-meta"><span>' + esc(item.kindLabel + ' · ' + item.label) + '</span></div><div class="final-image-actions">';
         if (item.kind === 'generated' && item.shotId) {
@@ -1334,6 +1358,32 @@
         html += '<div class="content-save-feedback' + (miaoshouImagesFeedbackError ? ' error' : '') + '">' + esc(miaoshouImagesFeedback) + '</div>';
       }
       return html + '</section>';
+    }
+
+    function openImagePreview(trigger, event) {
+      if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      var dialog = document.getElementById('imagePreviewDialog');
+      var image = document.getElementById('imagePreviewFull');
+      var title = document.getElementById('imagePreviewTitle');
+      if (!dialog || !image || !title || !trigger) return;
+      var label = trigger.dataset.previewLabel || trigger.alt || '图片预览';
+      image.src = trigger.currentSrc || trigger.src;
+      image.alt = label;
+      title.textContent = label;
+      if (typeof dialog.showModal === 'function') dialog.showModal();
+      else dialog.setAttribute('open', 'open');
+    }
+
+    function closeImagePreview() {
+      var dialog = document.getElementById('imagePreviewDialog');
+      var image = document.getElementById('imagePreviewFull');
+      if (!dialog) return;
+      if (typeof dialog.close === 'function') dialog.close();
+      else dialog.removeAttribute('open');
+      if (image) image.removeAttribute('src');
     }
 
     function refreshFinalImageBoard() {
@@ -1904,7 +1954,7 @@
       if (aiPlanValid) html += '<br><span class="muted">AI 分镜请在下方逐张选择“通过”或“需要修改”；系统不会再用一个总勾选框代替逐张审核。</span>';
       html += '</div>';
       html += '<div class="content-actions"><button id="contentReviewSaveButton" class="btn-primary" onclick="saveContentPackageReview()">' + (hasDraft ? '保存内容审核（有未保存修改）' : '保存内容审核') + '</button><span id="contentDraftStatus" class="muted">' + (hasDraft ? '当前配方有未保存修改；页面刷新、汇率更新或切换商品不会丢失。' : '修改图片数量后请保存，系统才会更新分镜预检。') + '</span></div>';
-      html += '<div class="content-evidence"><h3>4. AI 分镜规划与生图预检</h3>';
+      html += '<div class="content-evidence"><h3>4. AI 分镜审核与生图预检</h3>';
       if (recipeDraftChanged) {
         html += '<div class="content-instruction"><strong>先保存本次约束修改。</strong>参考图、图片数量或尺寸变化都会让旧 AI 分镜失效；保存本身不会调用付费 API。</div>';
       } else if (!factApproved || !scopeApproved) {
@@ -1922,9 +1972,21 @@
           var review = storyboardReviews[item.id] || {};
           var decision = review.decision || item.review_decision || 'pending';
           var note = Object.prototype.hasOwnProperty.call(review, 'note') ? review.note : (item.review_note || '');
-          html += '<div class="ai-candidate-card"><strong>' + esc(item.id) + ' · ' + esc(item.title_zh || item.title || '') + '</strong><p>' + (item.type === 'size_card' ? '<strong>AI 底图要求：</strong>' : '') + esc(item.focus_zh || '等待中文说明') + '</p>';
+          var decisionLabel = {pending:'待审核分镜', approved:'分镜已通过', revise:'分镜需修改'}[decision] || '待审核分镜';
+          html += '<div id="storyboard-card-' + esc(item.id) + '" class="ai-candidate-card storyboard-' + esc(decision) + '"><div class="storyboard-card-header"><strong>' + esc(item.id) + ' · ' + esc(item.title_zh || item.title || '') + '</strong><span class="storyboard-status-badge">' + esc(decisionLabel) + '</span></div><p>' + (item.type === 'size_card' ? '<strong>AI 底图要求：</strong>' : '') + esc(item.focus_zh || '等待中文说明') + '</p>';
           if (item.type === 'size_card' && item.final_overlay_label) {
-            html += '<div class="final-delivery-note"><strong>最终交付会有数字：</strong>AI 先生成无文字底图，系统下载后再自动叠加已确认的英文尺寸 <strong>' + esc(item.final_overlay_label) + '</strong>。进入图片审核区的是叠字后的最终图，不是无文字底图。</div>';
+            var finalOverlayLabel = String(item.final_overlay_label)
+              .replace(/\bL\s+/g, 'LENGTH ')
+              .replace(/\bW\s+/g, 'WIDTH ')
+              .replace(/\bH\s+/g, 'HEIGHT ')
+              .replace(/\bD\s+/g, 'DEPTH ');
+            var finalOverlayParts = finalOverlayLabel.split('|');
+            if (finalOverlayParts.length >= 2) {
+              finalOverlayParts[0] = finalOverlayParts[0].trim().replace(/^[A-Z]+\s+/, 'WIDTH ');
+              finalOverlayParts[1] = finalOverlayParts[1].trim().replace(/^[A-Z]+\s+/, 'HEIGHT ');
+              finalOverlayLabel = finalOverlayParts.join(' | ');
+            }
+            html += '<div class="final-delivery-note"><strong>最终交付会有数字：</strong>AI 先生成无文字底图，系统下载后再自动叠加已确认的英文尺寸 <strong>' + esc(finalOverlayLabel) + '</strong>。进入图片审核区的是叠字后的最终图，不是无文字底图。</div>';
           }
           html += '<details><summary>查看 AI 英文原文</summary><p><strong>' + esc(item.title || '') + '</strong></p><pre class="ai-candidate-raw">' + esc(item.focus || '') + '</pre></details>';
           html += '<div class="storyboard-review-controls"><label>本张审核决定<select class="storyboardDecision" data-shot-id="' + esc(item.id) + '" data-shot-type="' + esc(item.type || '') + '"><option value="pending"' + (decision === 'pending' ? ' selected' : '') + '>待审核</option><option value="approved"' + (decision === 'approved' ? ' selected' : '') + '>通过</option><option value="revise"' + (decision === 'revise' ? ' selected' : '') + '>需要修改</option></select></label>';
@@ -1934,7 +1996,8 @@
         if (!suiteApproved) {
           var approvedCount = activeStoryboardItems.filter(function(item) { return ((storyboardReviews[item.id] || {}).decision || item.review_decision) === 'approved'; }).length;
           var reviseCount = activeStoryboardItems.filter(function(item) { return ((storyboardReviews[item.id] || {}).decision || item.review_decision) === 'revise'; }).length;
-          html += '<div id="storyboardReviewSummary" class="storyboard-review-summary">逐张检查场景、构图、商品身份和事实边界。当前：通过 ' + esc(approvedCount) + ' 张，需要修改 ' + esc(reviseCount) + ' 张，待审核 ' + esc(Math.max(0, activeStoryboardItems.length - approvedCount - reviseCount)) + ' 张。</div>';
+          var pendingStoryboardIds = activeStoryboardItems.filter(function(item) { return ((storyboardReviews[item.id] || {}).decision || item.review_decision) === 'pending'; }).map(function(item) { return item.id; });
+          html += '<div id="storyboardReviewSummary" class="storyboard-review-summary"><strong>这里审核的是分镜文字方案，不是成品图片。</strong> 当前：已通过分镜 ' + esc(approvedCount) + ' 张；需修改分镜 ' + esc(reviseCount) + ' 张；待审核分镜 ' + esc(pendingStoryboardIds.length) + ' 张' + (pendingStoryboardIds.length ? '（' + esc(pendingStoryboardIds.join('、')) + '）' : '') + '。' + (pendingStoryboardIds.length ? '<button type="button" class="btn-secondary" data-target-shot="' + esc(pendingStoryboardIds[0]) + '" onclick="focusStoryboard(this.dataset.targetShot)">定位到 ' + esc(pendingStoryboardIds[0]) + '</button>' : '') + '</div>';
           html += '<div class="content-actions"><button class="btn-primary" onclick="saveContentPackageReview()">保存分镜审核</button><button class="btn-secondary" onclick="approveAllStoryboardsAndContinue()">全部通过并准备生图预检</button>';
           if (reviseCount > 0) html += '<button id="storyboardReplanButton" class="btn-secondary" onclick="requestVisionProposal(true)">按修改意见只重做需要修改的 ' + esc(reviseCount) + ' 张分镜（消耗 Token）</button>';
           html += '</div>';
@@ -1965,6 +2028,21 @@
       }
       html += '</div>';
       return html + '</section>';
+    }
+
+    function focusStoryboard(shotId) {
+      var card = document.getElementById('storyboard-card-' + shotId);
+      if (!card) {
+        setStatus('没有找到待审核分镜 ' + shotId + '，请刷新页面后重试。');
+        return;
+      }
+      card.scrollIntoView({behavior:'smooth', block:'center'});
+      card.classList.remove('review-focus');
+      void card.offsetWidth;
+      card.classList.add('review-focus');
+      var decision = card.querySelector('.storyboardDecision');
+      if (decision) decision.focus();
+      setStatus('已定位到待审核分镜 ' + shotId + '。这里审核的是文字构图方案，通过后才会生成新图片。');
     }
 
     function collectStoryboardReviews() {

@@ -34,26 +34,42 @@ TYPE_DIRECTIVES = {
         "Show only source-supported material, texture, craft, or component details."
     ),
     "size_card": (
-        "Create a clean white-background technical base image with the full product visible and "
-        "generous empty margin for a later deterministic English measurement overlay."
+        "Create a clean pure-white technical base image containing only the full product. Keep the "
+        "product inside the upper-left 72 percent of the square canvas and reserve at least 20 percent "
+        "blank margin on the right and bottom for deterministic measurement graphics."
     ),
 }
 
 
 def english_dimension_label(value: str) -> str:
     """Format verified operator dimensions for deterministic English overlay."""
-    labels = {"长": "L", "宽": "W", "高": "H", "厚": "D"}
+    labels = {
+        "长": "LENGTH",
+        "宽": "WIDTH",
+        "高": "HEIGHT",
+        "厚": "DEPTH",
+        "L": "LENGTH",
+        "W": "WIDTH",
+        "H": "HEIGHT",
+        "D": "DEPTH",
+    }
     pairs = re.findall(
         r"([长宽高厚LWH])\s*[:：]?\s*(\d+(?:\.\d+)?)\s*(cm|mm|m|in)?",
         str(value or ""),
         re.I,
     )
     if pairs:
-        return "  |  ".join(
-            f"{labels.get(label.upper(), labels.get(label, label.upper()))} "
-            f"{number} {(unit or 'cm').lower()}"
-            for label, number, unit in pairs
-        )
+        formatted = []
+        for index, (label, number, unit) in enumerate(pairs):
+            display_label = (
+                "WIDTH"
+                if index == 0
+                else "HEIGHT"
+                if index == 1
+                else labels.get(label.upper(), labels.get(label, label.upper()))
+            )
+            formatted.append(f"{display_label} {number} {(unit or 'cm').lower()}")
+        return "  |  ".join(formatted)
     if re.search(r"[\u4e00-\u9fff]", str(value or "")):
         raise ValueError("size dimensions must contain recognizable length/width/height values")
     return re.sub(r"\s+", " ", str(value or "").strip())
@@ -147,10 +163,9 @@ def build_shot_prompt(
             human_dimensions_prompt = "operator-verified dimensions"
     no_text_requirement = (
         "ABSOLUTE NO-TEXT REQUIREMENT: Return a single image with no letters, words, typography, "
-        "labels, callouts, badges, split panels, captions, prices, numeric measurements, or claim text. "
-        "Simple black dimension guide lines and arrowheads explicitly requested by the approved shot "
-        "composition are allowed, but do not add any numbers. Exact English dimensions are applied "
-        "deterministically after generation."
+        "labels, arrows, dimension lines, callouts, badges, split panels, captions, prices, numeric "
+        "measurements, or claim text. Render only the clean product base. All measurement lines, "
+        "arrowheads, and exact English dimensions are applied deterministically after generation."
         if itype == "size_card"
         else
         "ABSOLUTE NO-TEXT REQUIREMENT: Return a single image with no letters, words, typography, "
@@ -189,8 +204,8 @@ def build_shot_prompt(
         (
             "HUMAN-APPROVED SIZE-CARD EXCEPTION: The operator has explicitly requested a size-card base "
             f"using these verified dimensions: {human_dimensions_prompt}. Generate no text, numbers, or labels; "
-            "simple black dimension guide lines and arrowheads may be used when requested by the approved "
-            "composition. The exact English dimension text is applied deterministically after generation."
+            "generate no arrows or dimension lines. The complete measurement graphic and exact English "
+            "dimension text are applied deterministically after generation."
         ) if human_size_override else "",
         "",
         f"Shot id: {item.get('id')}. Shot type: {itype}.",
@@ -212,9 +227,8 @@ def build_shot_prompt(
         lines.append("Keep the crop tied to the same product. Do not invent micro-details or separate components.")
     elif itype == "size_card":
         lines.append(
-            "Do not render numbers, prices, labels, or text. You may render simple black dimension "
-            "guide lines and arrowheads requested by the approved composition; exact dimension text "
-            "is added after human verification."
+            "Render only the isolated product on pure white with generous right and bottom whitespace. "
+            "Do not render numbers, prices, labels, text, arrows, guide lines, or measurement graphics."
         )
 
     prompt = _ascii_safe("\n".join(x for x in lines if x is not None).strip())

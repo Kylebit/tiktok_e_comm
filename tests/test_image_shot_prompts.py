@@ -106,8 +106,8 @@ class ShotPromptTest(unittest.TestCase):
         prompt = build_shot_prompts(plan)["shots"][0]["prompt"]
         self.assertIn("HUMAN-APPROVED SIZE-CARD EXCEPTION", prompt)
         self.assertIn("16 cm x 28 cm", prompt)
-        self.assertIn("dimension guide lines and arrowheads", prompt)
-        self.assertIn("do not add any numbers", prompt)
+        self.assertIn("generate no arrows or dimension lines", prompt)
+        self.assertIn("All measurement lines, arrowheads", prompt)
         self.assertNotIn("Do not generate white-background hero images", prompt)
 
     def test_size_card_normalizes_chinese_dimensions_for_english_prompt(self):
@@ -117,7 +117,7 @@ class ShotPromptTest(unittest.TestCase):
             "human_dimensions": "长34cm 宽58cm", "human_dimensions_confirmed": True,
         }]}}
         prompt = build_shot_prompts(plan)["shots"][0]["prompt"]
-        self.assertIn("L 34 cm  |  W 58 cm", prompt)
+        self.assertIn("WIDTH 34 cm  |  HEIGHT 58 cm", prompt)
         self.assertNotIn("长34cm", prompt)
 
 

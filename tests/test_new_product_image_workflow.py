@@ -31,6 +31,8 @@ class NewProductImageWorkflowTests(unittest.TestCase):
         self.assertIn("妙手最终图片栏", html)
         self.assertIn("removeUnifiedImage(this,event)", html)
         self.assertIn("同步图片回妙手", html)
+        self.assertIn('id="imagePreviewDialog"', html)
+        self.assertIn("openImagePreview(this,event)", html)
         self.assertIn("重做", html)
         self.assertNotIn('class="imageAction"', html)
         self.assertNotIn('class="generatedMiaoshouAction"', html)
@@ -39,6 +41,9 @@ class NewProductImageWorkflowTests(unittest.TestCase):
         self.assertNotIn("记录新增图片需求</button>", html)
         self.assertIn("按修改意见只重做需要修改的", html)
         self.assertIn("if (reviseCount > 0)", html)
+        self.assertIn("待审核分镜", html)
+        self.assertIn("这里审核的是分镜文字方案，不是成品图片", html)
+        self.assertIn("function focusStoryboard(shotId)", html)
         self.assertNotIn("按修改意见让 AI 重做整套分镜", html)
         self.assertIn("force_shot_ids: pendingShotIds", html)
 
@@ -554,7 +559,7 @@ if (currentContentPackageDraft() !== null) process.exit(5);
         self.assertFalse(result["proposal"]["vision_model_called"])
         self.assertEqual(
             result["proposal"]["final_overlay_label"],
-            "L 34 cm  |  W 58 cm",
+            "WIDTH 34 cm  |  HEIGHT 58 cm",
         )
 
     def test_storyboard_review_requires_every_ai_shot_to_pass(self):
@@ -802,7 +807,10 @@ if (currentContentPackageDraft() !== null) process.exit(5);
         save_mock.assert_called_once()
 
     def test_chinese_dimension_input_becomes_english_overlay_copy(self):
-        self.assertEqual(english_dimension_label("长34cm 宽58cm"), "L 34 cm  |  W 58 cm")
+        self.assertEqual(
+            english_dimension_label("长34cm 宽58cm"),
+            "WIDTH 34 cm  |  HEIGHT 58 cm",
+        )
 
     def test_generated_image_decision_saves_locally_without_miaoshou_write(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,0 +1,21 @@
+{
+  "snapshot_at": "2026-07-25T08:00:00+00:00",
+  "warehouse": "Yacang Shenzhen",
+  "items": [
+    {
+      "sku_id": "SKU-ALPHA",
+      "available": 12,
+      "allocated": 3,
+      "frozen": 1,
+      "inbound": 20,
+      "supplier_id": "supplier-7"
+    },
+    {
+      "sku_id": "SKU-BETA",
+      "available": 2,
+      "allocated": 0,
+      "frozen": 0,
+      "inbound": 0
+    }
+  ]
+}

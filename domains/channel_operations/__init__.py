@@ -2,4 +2,6 @@
 
 from shared_platform.contracts import ChannelListing
 
-__all__ = ["ChannelListing"]
+from .publication_planner import ChannelPublicationPlan, build_publication_plan
+
+__all__ = ["ChannelListing", "ChannelPublicationPlan", "build_publication_plan"]

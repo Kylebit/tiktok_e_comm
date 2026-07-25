@@ -7,6 +7,7 @@ from domains.data_operations.financial_facts import (
     adapt_financial_facts,
     adapt_sqlite_fixture,
 )
+from domains.data_operations.weekly_profit_digest import ReportRun, build_weekly_profit_digest
 
 __all__ = [
     "DataQualityIssue",
@@ -14,4 +15,6 @@ __all__ = [
     "FinancialFactAdaptation",
     "adapt_financial_facts",
     "adapt_sqlite_fixture",
+    "ReportRun",
+    "build_weekly_profit_digest",
 ]

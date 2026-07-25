@@ -125,6 +125,63 @@ def test_release_dashboard_is_a_complete_no_write_rehearsal(tmp_path):
     assert all(row["status"] == "draft" for row in result["publication_rehearsal"]["drafts"])
     assert result["actual_release_gate"]["ready"] is False
     assert "Product approval has not been persisted." in result["actual_release_gate"]["blockers"]
+    omnichannel = result["omnichannel_preview"]
+    assert omnichannel["available"] is True
+    assert omnichannel["all_preflights_passed"] is False
+    assert omnichannel["adapter_calls_performed"] is False
+    assert omnichannel["confirmation_token_summary"]["masked"].startswith("PUBLISH-")
+    target_status = {
+        (row["channel"], row["site"]): (
+            row["repository_adapter_audited"],
+            row["executable"],
+        )
+        for row in omnichannel["targets"]
+    }
+    assert target_status == {
+        ("miaoshou", "COMMON"): (True, True),
+        ("tiktok", "TH"): (False, False),
+        ("shopee", "TH"): (True, True),
+        ("ozon", "RU"): (True, True),
+    }
+    shopee = next(
+        row for row in omnichannel["targets"] if row["channel"] == "shopee"
+    )
+    assert shopee["depends_on"] == ["tiktok:MASTER:verified_readback"]
+
+
+def test_release_dashboard_normalises_sea_sites_into_shared_channel_matrix(tmp_path):
+    root, database = _release_fixture(tmp_path)
+    state_path = root / "data" / "new_product_workbench" / "3828811808.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["review"]["selected_sites"] = ["lh_ph", "lh_my", "lh_th", "lh_vn"]
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    result = build_release_dashboard(
+        root=root,
+        database_path=database,
+        report_store_path=root / "data" / "missing-orbit.db",
+    )
+
+    preview = result["omnichannel_preview"]
+    assert preview["site_selection"] == {
+        "miaoshou": ["COMMON"],
+        "tiktok": ["MY", "PH", "TH", "VN"],
+        "shopee": ["MY", "PH", "TH", "VN"],
+        "ozon": ["RU"],
+    }
+    status = {
+        (row["channel"], row["site"]): (
+            row["repository_adapter_audited"],
+            row["executable"],
+        )
+        for row in preview["targets"]
+    }
+    assert all(status[("tiktok", site)] == (False, False) for site in ("MY", "PH", "TH", "VN"))
+    assert all(status[("shopee", site)] == (True, True) for site in ("MY", "PH", "TH", "VN"))
+    assert status[("ozon", "RU")] == (True, True)
+    assert status[("miaoshou", "COMMON")] == (True, True)
+    assert preview["all_preflights_passed"] is False
+    assert preview["ready"] is False
 
 
 def test_release_dashboard_blocks_conflicting_candidate_sku(tmp_path):
@@ -140,6 +197,79 @@ def test_release_dashboard_blocks_conflicting_candidate_sku(tmp_path):
     assert result["approval_rehearsal"]["ready"] is False
     assert "seller_sku is already present in the catalog" in result["approval_rehearsal"]["blockers"]
     assert result["publication_rehearsal"]["drafts"] == []
+    assert result["omnichannel_preview"]["available"] is False
+    assert result["omnichannel_preview"]["targets"] == []
+    assert (
+        "seller_sku is already present in the catalog"
+        in result["omnichannel_preview"]["blockers"]
+    )
+
+
+def test_release_dashboard_treats_other_approved_workbench_as_sku_reservation(
+    tmp_path,
+):
+    root, database = _release_fixture(tmp_path)
+    _write_json(
+        root / "data" / "new_product_workbench" / "9999999999.json",
+        {
+            "offer_id": "9999999999",
+            "product_approval": {
+                "status": "approved",
+                "subject_type": "product",
+                "subject_id": "9999999999",
+                "seller_sku": "990946",
+            },
+        },
+    )
+
+    result = build_release_dashboard(
+        root=root,
+        database_path=database,
+        report_store_path=root / "data" / "missing-orbit.db",
+        offer_id="3828811808",
+        seller_sku="0946",
+    )
+
+    assert result["approval_rehearsal"]["ready"] is False
+    assert (
+        "seller_sku is already present in the catalog"
+        in result["approval_rehearsal"]["blockers"]
+    )
+
+
+def test_release_dashboard_ignores_unapproved_and_self_reservations(tmp_path):
+    root, database = _release_fixture(tmp_path)
+    state_path = root / "data" / "new_product_workbench" / "3828811808.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["product_approval"] = {
+        "status": "approved",
+        "subject_type": "product",
+        "subject_id": "3828811808",
+        "seller_sku": "0946",
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    _write_json(
+        root / "data" / "new_product_workbench" / "7777777777.json",
+        {
+            "offer_id": "7777777777",
+            "product_approval": {
+                "status": "pending",
+                "subject_type": "product",
+                "subject_id": "7777777777",
+                "seller_sku": "990946",
+            },
+        },
+    )
+
+    result = build_release_dashboard(
+        root=root,
+        database_path=database,
+        report_store_path=root / "data" / "missing-orbit.db",
+        offer_id="3828811808",
+        seller_sku="0946",
+    )
+
+    assert result["approval_rehearsal"]["ready"] is True
 
 
 def test_release_dashboard_rejects_unlinked_collect_box_identity(tmp_path):

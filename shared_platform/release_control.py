@@ -19,7 +19,11 @@ from typing import Any
 
 from core.config import ROOT
 from core.db import connect_readonly
-from domains.channel_operations import build_publication_plan
+from domains.channel_operations import (
+    OmnichannelPublicationPlan,
+    build_omnichannel_publication_plan,
+    build_publication_plan,
+)
 from domains.content_operations import build_workbench_content_package_handoff
 from domains.product_operations import preview_product_approval_lock
 from shared_platform.report_store import ReportRunStore
@@ -89,6 +93,47 @@ def _known_seller_skus(database_path: Path) -> tuple[str, ...]:
     return tuple(sorted(values))
 
 
+def _locally_reserved_seller_skus(
+    project_root: Path,
+    *,
+    exclude_offer_id: str,
+) -> tuple[str, ...]:
+    """Read active local product approvals as SKU reservations.
+
+    Catalog uniqueness alone is insufficient while several products are being
+    prepared in parallel: an approved workbench may not have reached the
+    catalog yet. Malformed or unrelated files are ignored, while only explicit
+    approved product facts reserve a value.
+    """
+
+    state_dir = project_root / "data" / "new_product_workbench"
+    values: set[str] = set()
+    if not state_dir.is_dir():
+        return ()
+    for path in state_dir.glob("*.json"):
+        if path.stem == exclude_offer_id or not path.stem.isdigit():
+            continue
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(state, Mapping):
+            continue
+        approval = state.get("product_approval")
+        if not isinstance(approval, Mapping):
+            continue
+        if (
+            str(approval.get("status") or "").strip().lower() != "approved"
+            or str(approval.get("subject_type") or "").strip() != "product"
+            or str(approval.get("subject_id") or "").strip() != path.stem
+        ):
+            continue
+        seller_sku = str(approval.get("seller_sku") or "").strip()
+        if seller_sku:
+            values.add(seller_sku)
+    return tuple(sorted(values))
+
+
 def _content_copy(review: Mapping[str, Any], collect_box: Mapping[str, Any]) -> dict[str, str]:
     title = str(review.get("title") or collect_box.get("source_title") or "").strip()
     short_copy = str(
@@ -133,6 +178,137 @@ def _verified_image_write(content_state: Mapping[str, Any]) -> tuple[bool, list[
     )
     urls = list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
     return verified, urls
+
+
+def _normalise_release_sites(values: object) -> tuple[str, ...]:
+    """Map workbench site keys (for example ``lh_ph``) to channel sites."""
+
+    if isinstance(values, (str, bytes)) or not isinstance(values, (list, tuple, set)):
+        return ()
+    sites: set[str] = set()
+    for value in values:
+        raw = str(value or "").strip().upper().replace("-", "_")
+        if not raw:
+            continue
+        site = raw.rsplit("_", 1)[-1]
+        if site and site.isalnum() and len(site) <= 8:
+            sites.add(site)
+    return tuple(sorted(sites))
+
+
+def _default_omnichannel_targets(review: Mapping[str, Any]) -> dict[str, tuple[str, ...]]:
+    """Build the shared target matrix from the workbench's approved scope."""
+
+    sites = _normalise_release_sites(review.get("selected_sites"))
+    targets: dict[str, tuple[str, ...]] = {"miaoshou": ("COMMON",)}
+    if sites:
+        targets["tiktok"] = sites
+        targets["shopee"] = sites
+    targets["ozon"] = ("RU",)
+    return targets
+
+
+def _blocked_omnichannel_preview(
+    *,
+    site_selection: Mapping[str, tuple[str, ...]],
+    blockers: list[str],
+) -> dict[str, Any]:
+    return {
+        "available": False,
+        "ready": False,
+        "dry_run": True,
+        "plan_id": "",
+        "all_preflights_passed": False,
+        "confirmation_token_summary": None,
+        "approval_summary": None,
+        "workflow": {
+            "common_draft": "miaoshou:COMMON",
+            "master": "tiktok:approved_master_readback",
+            "derived_channels": ["shopee", "ozon"],
+        },
+        "site_selection": {
+            channel: list(sites) for channel, sites in site_selection.items()
+        },
+        "targets": [],
+        "blockers": list(dict.fromkeys(blockers)),
+        "adapter_calls_performed": False,
+    }
+
+
+def _serialize_omnichannel_preview(
+    plan: OmnichannelPublicationPlan,
+) -> dict[str, Any]:
+    token = plan.approval.confirmation_token
+    return {
+        "available": True,
+        "ready": plan.all_preflights_passed,
+        "dry_run": plan.dry_run,
+        "plan_id": plan.plan_id,
+        "all_preflights_passed": plan.all_preflights_passed,
+        "confirmation_token_summary": {
+            "prefix": token.split("-", 1)[0],
+            "scope_fingerprint": plan.approval.approval_scope_digest[:16],
+            "masked": f"{token[:12]}...{token[-4:]}",
+        },
+        "approval_summary": {
+            "collect_box_id": plan.approval.collect_box_id,
+            "product_id": plan.approval.product_id,
+            "seller_sku": plan.approval.seller_sku,
+            "product_package_id": plan.approval.product_package_id,
+            "content_package_id": plan.approval.content_package_id,
+            "target_labels": list(plan.approval.target_labels),
+            "image_count": plan.approval.image_count,
+            "approval_scope_digest": plan.approval.approval_scope_digest,
+            "irreversible_action_count": plan.approval.irreversible_action_count,
+            "statement": plan.approval.statement,
+        },
+        "workflow": {
+            "common_draft": "miaoshou:COMMON",
+            "master": "tiktok:approved_master_readback",
+            "derived_channels": ["shopee", "ozon"],
+        },
+        "site_selection": {
+            target.channel: sorted(
+                {
+                    row.site
+                    for row in plan.targets
+                    if row.channel == target.channel
+                }
+            )
+            for target in plan.targets
+        },
+        "targets": [
+            {
+                "channel": target.channel,
+                "site": target.site,
+                "adapter": target.adapter,
+                "adapter_gate_status": target.adapter_gate_status,
+                "repository_adapter_audited": next(
+                    (
+                        check.passed
+                        for check in target.preflight
+                        if check.code == "audited_adapter_site"
+                    ),
+                    False,
+                ),
+                "depends_on": list(target.depends_on),
+                "preflights": [asdict(check) for check in target.preflight],
+                "steps": [asdict(step) for step in target.steps],
+                "idempotency_key": target.idempotency_key,
+                "executable": target.executable,
+            }
+            for target in plan.targets
+        ],
+        "blockers": list(
+            dict.fromkeys(
+                check.detail
+                for target in plan.targets
+                for check in target.preflight
+                if not check.passed
+            )
+        ),
+        "adapter_calls_performed": plan.adapter_calls_performed,
+    }
 
 
 def build_release_dashboard(
@@ -195,7 +371,17 @@ def build_release_dashboard(
     )
 
     db_path = Path(database_path or project_root / "data" / "shop.db")
-    known_skus = _known_seller_skus(db_path)
+    known_skus = tuple(
+        sorted(
+            {
+                *_known_seller_skus(db_path),
+                *_locally_reserved_seller_skus(
+                    project_root,
+                    exclude_offer_id=clean_offer_id,
+                ),
+            }
+        )
+    )
     product_row = {
         "product_id": clean_offer_id,
         "seller_sku": clean_seller_sku,
@@ -233,6 +419,25 @@ def build_release_dashboard(
         )
         if approval_preview.approved_package is not None
         else None
+    )
+    omnichannel_selection = _default_omnichannel_targets(review)
+    omnichannel_preview = (
+        _serialize_omnichannel_preview(
+            build_omnichannel_publication_plan(
+                approval_preview.approved_package,
+                content_handoff.content_package,
+                site_selection=omnichannel_selection,
+            )
+        )
+        if approval_preview.approved_package is not None
+        else _blocked_omnichannel_preview(
+            site_selection=omnichannel_selection,
+            blockers=[
+                *content_handoff.blockers,
+                *approval_preview.blockers,
+            ]
+            or ["Approved product and content packages are not ready."],
+        )
     )
 
     actual_approval = (
@@ -338,6 +543,9 @@ def build_release_dashboard(
         },
         "content": {
             "package_id": content_handoff.content_package.package_id,
+            "strategy": str(
+                content_state.get("content_strategy") or "ai_assisted"
+            ),
             "approved": content_approved,
             "approval_status": (
                 content_handoff.content_package.approval.status
@@ -384,6 +592,7 @@ def build_release_dashboard(
                 else []
             ),
         },
+        "omnichannel_preview": omnichannel_preview,
         "stages": [
             {"key": "source", "label": "Source facts", "status": "ready"},
             {

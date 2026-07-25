@@ -487,7 +487,7 @@ def estimate(
             "comps_same_sku": len(same),
             "comps_th_pool": len(all_th),
             "min_samples_for_posterior": MIN_POSTERIOR_SAMPLES,
-            "recent_comps": same[:20],
+            "recent_comps": same,
             "sale_stats": summarize_nums(usable_sales),
             "affiliate_note": "周报未拆达人佣金，has_affiliate 为结算比中位分档近似",
         },

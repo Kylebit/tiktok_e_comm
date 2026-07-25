@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#173b36">
   <title>Orbit · 商品发布中心</title>
-  <link rel="stylesheet" href="/static/product_workspace.css">
-  <script src="/static/product_workspace.js" defer></script>
+  <link rel="stylesheet" href="/static/product_workspace.css?v=20260726-4">
+  <script src="/static/product_workspace.js?v=20260726-4" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -19,8 +19,10 @@
     </a>
     <nav aria-label="页面导航">
       <a href="#overview">发布进度</a>
+      <a href="#approval">商品审批</a>
       <a href="#content">商品图片</a>
       <a href="#channels">渠道准备</a>
+      <a id="studioNavLink" href="/ai-image-studio">AI 图片工作室</a>
     </nav>
     <span class="safety-pill"><i aria-hidden="true"></i> 外部发布关闭</span>
   </header>
@@ -30,10 +32,10 @@
       <div class="hero-copy">
         <p class="eyebrow">PRODUCT OPERATIONS</p>
         <h1>商品发布中心</h1>
-        <p>从商品事实、内容五图到渠道草稿，在一个页面确认发布前的每个关键条件。</p>
+        <p>从商品事实、原素材或 AI 辅助图片到全渠道计划，在一个页面确认发布前的每个关键条件。</p>
       </div>
 
-      <form id="lookupForm" class="lookup-card" aria-label="加载商品">
+      <form id="lookupForm" class="lookup-card" aria-label="添加商品到并行发布队列">
         <label>
           <span>Offer ID</span>
           <input id="offerId" name="offer_id" value="3828811808" inputmode="numeric"
@@ -45,11 +47,27 @@
                  pattern="[0-9]{1,32}" autocomplete="off" required>
         </label>
         <button class="button button-primary" type="submit">
-          <span class="button-label">查看发布状态</span>
+          <span class="button-label">加入队列并打开</span>
           <span class="button-loading">正在检查…</span>
         </button>
-        <p>只读取本地审批与渠道证据，不会保存或上传商品。</p>
+        <p>多个商品可以并行检查；只有当前打开商品可执行本地审批。</p>
       </form>
+    </section>
+
+    <section class="queue-section" aria-labelledby="queueTitle">
+      <div class="queue-heading">
+        <div>
+          <p class="kicker">PARALLEL RELEASE QUEUE</p>
+          <h2 id="queueTitle">并行发布队列</h2>
+          <p>队列保存在本机浏览器。批量刷新只读取状态，不会上传、同步或发布商品。</p>
+        </div>
+        <button id="refreshAllButton" class="button button-secondary" type="button">
+          <span class="refresh-all-label">刷新全部商品</span>
+          <span class="refresh-all-loading">并行刷新中…</span>
+        </button>
+      </div>
+      <div id="queueGrid" class="queue-grid" aria-live="polite"></div>
+      <p id="queueMessage" class="queue-message" role="status"></p>
     </section>
 
     <div id="pageAlert" class="alert" role="alert" hidden></div>
@@ -77,7 +95,7 @@
       </div>
       <div id="stageRail" class="stage-rail" aria-live="polite">
         <div class="stage pending"><span>01</span><strong>商品信息</strong><small>等待检查</small></div>
-        <div class="stage pending"><span>02</span><strong>内容与五图</strong><small>等待检查</small></div>
+        <div class="stage pending"><span>02</span><strong>内容与图片</strong><small>等待检查</small></div>
         <div class="stage pending"><span>03</span><strong>审批与锁定</strong><small>等待检查</small></div>
         <div class="stage pending"><span>04</span><strong>妙手同步</strong><small>等待检查</small></div>
         <div class="stage pending"><span>05</span><strong>渠道草稿</strong><small>等待检查</small></div>
@@ -108,13 +126,57 @@
         <p id="nextStepDescription">完成检查后，这里会给出唯一明确的下一步。</p>
         <ul id="blockerList" class="blocker-list"></ul>
         <div class="action-row">
-          <a id="workbenchLink" class="button button-dark" href="http://127.0.0.1:8766/"
-             target="_blank" rel="noopener">前往详细工作台</a>
+          <a id="workbenchLink" class="button button-dark" href="/ai-image-studio">打开内容与图片工作室</a>
           <button id="refreshButton" class="button button-secondary" type="button">重新检查</button>
         </div>
         <p class="boundary-note">
-          详细工作台中的付费生图、妙手写入、TikTok 认领和站点草稿均需再次确认。
+          AI 图片工作室中的付费生图与妙手写入默认关闭，开启后仍需明确二次确认。
         </p>
+      </article>
+    </section>
+
+    <section id="approval" class="approval-section" aria-labelledby="approvalTitle">
+      <div class="section-heading">
+        <div>
+          <p class="kicker">LOCAL PRODUCT APPROVAL</p>
+          <h2 id="approvalTitle">商品审批与字段锁定</h2>
+        </div>
+        <p>这是正式商品流程中的本地审批步骤。保存后只锁定当前工作台字段，不会上传妙手、创建渠道草稿或发布商品。</p>
+      </div>
+      <article class="approval-card">
+        <div class="approval-summary">
+          <div>
+            <span>候选 Seller SKU</span>
+            <strong id="approvalSku">—</strong>
+          </div>
+          <div>
+            <span>当前 revision</span>
+            <strong id="approvalRevision">—</strong>
+          </div>
+          <div>
+            <span>内容包</span>
+            <strong id="approvalContent">读取中</strong>
+          </div>
+          <div>
+            <span>审批状态</span>
+            <strong id="approvalStatus">未审批</strong>
+          </div>
+        </div>
+        <div id="approvalFacts" class="approval-facts" aria-live="polite"></div>
+        <form id="approvalForm" class="approval-form">
+          <label class="approval-confirm">
+            <input id="approvalCheckbox" type="checkbox">
+            <span>我已核对 Seller SKU、成本、重量、包装、站点和规格，并批准锁定当前 revision。</span>
+          </label>
+          <div class="approval-actions">
+            <span>审批人：<strong>Kyle</strong></span>
+            <button id="approvalButton" class="button button-primary" type="submit" disabled>
+              <span class="approval-button-label">批准并锁定商品字段</span>
+              <span class="approval-button-loading">正在保存本地审批…</span>
+            </button>
+          </div>
+          <p id="approvalMessage" class="approval-message" role="status"></p>
+        </form>
       </article>
     </section>
 
@@ -137,11 +199,32 @@
       <div class="section-heading">
         <div>
           <p class="kicker">CHANNEL READINESS</p>
-          <h2 id="channelsTitle">渠道准备</h2>
+          <h2 id="channelsTitle">一键全渠道发布准备</h2>
         </div>
-        <p>这里展示可生成的渠道草稿；当前页面不会创建真实草稿或发布商品。</p>
+        <p>先建立妙手公共草稿，再以 TikTok 审定商品为主版本，派生 Shopee 与 Ozon。当前只做预检，不会调用渠道接口。</p>
       </div>
-      <div id="channelGrid" class="channel-grid"></div>
+      <div class="channel-flow" aria-label="全渠道发布依赖流程">
+        <span>妙手公共草稿</span><i aria-hidden="true">→</i>
+        <span>TikTok 主商品回读</span><i aria-hidden="true">→</i>
+        <span>Shopee / Ozon 派生</span>
+      </div>
+      <div class="channel-toolbar">
+        <div id="channelPlanSummary" class="channel-plan-summary">正在读取发布计划…</div>
+        <button id="refreshChannelsButton" class="button button-secondary" type="button">
+          刷新全渠道预检
+        </button>
+      </div>
+      <div id="channelGrid" class="channel-grid" aria-live="polite"></div>
+      <div id="channelBlockers" class="channel-blockers"></div>
+      <div class="publish-all-card">
+        <div>
+          <strong>一次确认，覆盖当前矩阵中的全部店铺</strong>
+          <p id="publishAllNote">只有全部适配器完成审计、商品审批和妙手回读后，正式发布按钮才会开放。</p>
+        </div>
+        <button id="publishAllButton" class="button button-primary" type="button" disabled>
+          一键发布全部店铺（尚未开放）
+        </button>
+      </div>
     </section>
 
     <section class="safety-card" aria-labelledby="safetyTitle">
@@ -149,7 +232,7 @@
       <div>
         <p class="kicker">SAFE BY DEFAULT</p>
         <h2 id="safetyTitle">真实发布保持关闭</h2>
-        <p>本页没有上传、认领、创建站点草稿或发布按钮。所有外部动作只在详细工作台中出现，并要求明确二次确认。</p>
+        <p>全渠道按钮已作为正式流程入口呈现，但在适配器审计和前置事实未完成前强制禁用；本页当前不会上传、认领、创建站点草稿或发布商品。</p>
       </div>
       <span>0 external writes</span>
     </section>

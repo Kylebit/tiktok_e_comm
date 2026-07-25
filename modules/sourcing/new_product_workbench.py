@@ -718,16 +718,84 @@ def _generated_review_images(offer_id: str, saved: dict[str, Any], package_dir: 
     return sorted(rows, key=lambda row: (str(row.get("shot_id") or ""), str(row.get("artifact_id") or "")))
 
 
+CONTENT_STRATEGIES = {"source_only", "ai_assisted"}
+
+
+def _content_strategy(content: dict[str, Any]) -> str:
+    value = str(content.get("content_strategy") or "ai_assisted").strip()
+    return value if value in CONTENT_STRATEGIES else "ai_assisted"
+
+
+def _source_only_selection(review: dict[str, Any]) -> dict[str, Any]:
+    rows = review.get("image_actions") if isinstance(review.get("image_actions"), list) else []
+    kept_urls: list[str] = []
+    blockers: list[str] = []
+    if not rows:
+        blockers.append("来源图必须逐张明确保留或移除")
+    for index, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            blockers.append(f"来源图 {index} 必须明确保留或移除")
+            continue
+        action = str(row.get("action") or "review")
+        url = str(row.get("output_url") or row.get("url") or "").strip()
+        if action == "keep":
+            if not url.startswith("https://"):
+                blockers.append(f"来源图 {index} 已保留，但不是 HTTPS 图片")
+            elif url not in kept_urls:
+                kept_urls.append(url)
+        elif action != "remove":
+            blockers.append(f"来源图 {index} 必须明确保留或移除")
+    if not kept_urls:
+        blockers.append("来源方案至少需要保留 1 张 HTTPS 图片")
+
+    raw_order = review.get("image_order")
+    ordered_urls = [
+        str(url).strip()
+        for url in raw_order
+        if str(url).strip()
+    ] if isinstance(raw_order, list) else []
+    if not ordered_urls:
+        blockers.append("来源方案必须保存最终图片顺序")
+    if len(ordered_urls) != len(set(ordered_urls)):
+        blockers.append("最终图片顺序不能包含重复 URL")
+    unknown = [url for url in ordered_urls if url not in kept_urls]
+    if unknown:
+        blockers.append("最终图片顺序只能包含已保留的 HTTPS 来源图")
+    missing = [url for url in kept_urls if url not in ordered_urls]
+    if missing:
+        blockers.append("每张已保留来源图都必须进入最终图片顺序")
+    return {
+        "ready": bool(kept_urls) and not blockers,
+        "kept_urls": kept_urls,
+        "ordered_urls": ordered_urls,
+        "blockers": blockers,
+    }
+
+
+def _require_ai_assisted(content: dict[str, Any], action: str) -> None:
+    if _content_strategy(content) != "ai_assisted":
+        raise ValueError(
+            f"{action} is disabled while content_strategy is source_only"
+        )
+
+
 def _content_stage(
     content: dict[str, Any],
     artifacts: list[dict[str, Any]],
     *,
     ai_plan_valid: bool = False,
+    source_only_ready: bool = False,
 ) -> str:
     if not content.get("fact_card_approved"):
         return "待审核事实卡"
     if not content.get("planning_scope_approved"):
-        return "待确认本地生图约束"
+        return (
+            "待确认来源素材范围"
+            if _content_strategy(content) == "source_only"
+            else "待确认本地生图约束"
+        )
+    if _content_strategy(content) == "source_only":
+        return "来源素材内容已完成" if source_only_ready else "待完成来源图审核与排序"
     if not ai_plan_valid:
         return "待 AI 生成分镜"
     if not content.get("suite_approved"):
@@ -749,6 +817,8 @@ def _english_title_ready(value: str) -> bool:
 
 
 def _requested_image_count(content: dict[str, Any]) -> int:
+    if _content_strategy(content) == "source_only":
+        return 0
     customization = content.get("suite_customization") if isinstance(content.get("suite_customization"), dict) else {}
     counts = customization.get("type_counts") if isinstance(customization.get("type_counts"), dict) else {}
     if counts:
@@ -766,27 +836,50 @@ def _product_workflow_summary(
     site_drafts: dict[str, Any],
 ) -> dict[str, Any]:
     """Build one canonical product-stage view shared by the API and workbench UI."""
+    strategy = _content_strategy(content)
+    source_only = strategy == "source_only"
+    source_only_selection = _source_only_selection(review)
     requested_images = _requested_image_count(content)
     generated = list(content.get("generated_review_images") or [])
     generation = content.get("remaining_images_generation") or {}
-    generation_done = requested_images == 0 or (
+    generation_done = source_only or requested_images == 0 or (
         str(generation.get("status") or "") in {"completed_waiting_human_review", "completed_with_errors"}
         and len(generated) >= requested_images
     )
     source_actions = list(review.get("image_actions") or [])
     kept_source = [row for row in source_actions if str(row.get("action") or "review") == "keep"]
-    kept_generated = [row for row in generated if str(row.get("miaoshou_action") or "review") == "keep"]
+    kept_generated = [] if source_only else [
+        row for row in generated
+        if str(row.get("miaoshou_action") or "review") == "keep"
+    ]
     pending_source = [row for row in source_actions if str(row.get("action") or "review") not in {"keep", "remove"}]
-    pending_generated = [row for row in generated if str(row.get("miaoshou_action") or "review") not in {"keep", "remove"}]
+    pending_generated = [] if source_only else [
+        row for row in generated
+        if str(row.get("miaoshou_action") or "review") not in {"keep", "remove"}
+    ]
     ai_plan_valid = bool((content.get("model_proposal") or {}).get("valid"))
-    content_ready = bool(
-        content.get("package_found")
-        and content.get("fact_card_approved")
-        and content.get("planning_scope_approved")
-        and ai_plan_valid
-        and content.get("suite_approved")
-    )
-    image_review_ready = bool(generation_done and not pending_source and not pending_generated and len(kept_source) + len(kept_generated) >= 3)
+    if source_only:
+        content_ready = bool(
+            content.get("package_found")
+            and content.get("fact_card_approved")
+            and content.get("planning_scope_approved")
+            and source_only_selection["ready"]
+        )
+        image_review_ready = content_ready
+    else:
+        content_ready = bool(
+            content.get("package_found")
+            and content.get("fact_card_approved")
+            and content.get("planning_scope_approved")
+            and ai_plan_valid
+            and content.get("suite_approved")
+        )
+        image_review_ready = bool(
+            generation_done
+            and not pending_source
+            and not pending_generated
+            and len(kept_source) + len(kept_generated) >= 3
+        )
     commercial_blockers = []
     if not _english_title_ready(str(review.get("title") or "")):
         commercial_blockers.append("英文标题必须包含英文字母且不能含中文")
@@ -808,7 +901,11 @@ def _product_workflow_summary(
     steps = [
         {"id": "source", "label": "来源与规格", "status": "done" if source_ready else "attention"},
         {"id": "content", "label": "内容与配方", "status": "done" if content_ready else "current"},
-        {"id": "generation", "label": "整套生图", "status": "done" if generation_done else ("current" if content_ready else "pending")},
+        {
+            "id": "generation",
+            "label": "AI 生图（来源方案跳过）" if source_only else "整套生图",
+            "status": "done" if generation_done else ("current" if content_ready else "pending"),
+        },
         {"id": "images", "label": "图片审核", "status": "done" if image_review_ready else ("current" if generation_done else "pending")},
         {"id": "commercial", "label": "价格与发布信息", "status": "done" if review.get("fields_locked") and not commercial_blockers else ("current" if image_review_ready else "pending")},
         {"id": "miaoshou", "label": "应用到妙手", "status": "done" if miaoshou_draft.get("written_to_miaoshou") and miaoshou_draft.get("verified") else ("current" if review.get("fields_locked") else "pending")},
@@ -830,22 +927,29 @@ def _product_workflow_summary(
             if not content.get("fact_card_approved"):
                 blockers.append("审核商品身份与事实卡")
             if not content.get("planning_scope_approved"):
-                blockers.append("确认图片类型、数量与本地类目约束")
-            if content.get("planning_scope_approved") and not ai_plan_valid:
+                blockers.append(
+                    "确认来源素材范围与最终顺序"
+                    if source_only
+                    else "确认图片类型、数量与本地类目约束"
+                )
+            if source_only:
+                blockers.extend(source_only_selection["blockers"])
+            elif content.get("planning_scope_approved") and not ai_plan_valid:
                 blockers.append("调用 AI 生成当前配方的具体分镜")
-            if ai_plan_valid and not content.get("suite_approved"):
+            if not source_only and ai_plan_valid and not content.get("suite_approved"):
                 blockers.append("逐张审核并批准 AI 分镜")
     elif current["id"] == "generation":
         blockers = [f"生成并核验本次计划的 {requested_images} 张图片"]
     elif current["id"] == "images":
         if pending_source or pending_generated:
             blockers.append(f"{len(pending_source) + len(pending_generated)} image(s) still require an explicit keep or remove decision")
-        if len(kept_source) + len(kept_generated) < 3:
-            blockers.append("最终至少保留 3 张图片")
+        if len(kept_source) + len(kept_generated) < (1 if source_only else 3):
+            blockers.append("最终至少保留 1 张来源图" if source_only else "最终至少保留 3 张图片")
     elif current["id"] == "commercial":
         blockers = commercial_blockers
     return {
         "schema_version": "1.0.0",
+        "content_strategy": strategy,
         "current_stage": current["id"],
         "current_label": current["label"],
         "steps": steps,
@@ -870,6 +974,9 @@ def content_package_summary(offer_id_or_url: str) -> dict[str, Any]:
     state = load_state(offer_id)
     source = _source_summary(offer_id)
     saved = dict(state.get("content_package") or {})
+    strategy = _content_strategy(saved)
+    state_review = state.get("review") if isinstance(state.get("review"), dict) else {}
+    source_only_selection = _source_only_selection(state_review)
     collect_box_id = _content_collect_box_id(offer_id, state, source)
     package_dir = _content_package_dir(collect_box_id)
     decisions = saved.get("asset_decisions") if isinstance(saved.get("asset_decisions"), dict) else {}
@@ -938,12 +1045,31 @@ def content_package_summary(offer_id_or_url: str) -> dict[str, Any]:
     primary_identity_url = saved_primary if saved_primary in identity_reference_urls else (identity_reference_urls[0] if identity_reference_urls else "")
     return {
         "schema_version": "1.0.0",
+        "content_strategy": strategy,
         "collect_box_id": collect_box_id,
         "package_found": package_dir is not None,
         "report_ready": report_ready,
         "fact_card_approved": bool(saved.get("fact_card_approved")),
         "planning_scope_approved": bool(saved.get("planning_scope_approved")),
         "suite_approved": bool(saved.get("suite_approved")),
+        "content_approved": bool(
+            package_dir is not None
+            and saved.get("fact_card_approved")
+            and saved.get("planning_scope_approved")
+            and (
+                source_only_selection["ready"]
+                if strategy == "source_only"
+                else model_proposal_valid and saved.get("suite_approved")
+            )
+        ),
+        "source_only_ready": bool(
+            strategy == "source_only" and source_only_selection["ready"]
+        ),
+        "source_only_blockers": (
+            list(source_only_selection["blockers"])
+            if strategy == "source_only"
+            else []
+        ),
         "artifacts": artifacts,
         "generated_review_images": generated_review_images,
         "source_snapshot": {
@@ -1116,7 +1242,12 @@ def content_package_summary(offer_id_or_url: str) -> dict[str, Any]:
             "error": str(miaoshou_write.get("error") or ""),
         },
         "approved_asset_count": sum(1 for row in artifacts if row.get("decision") == "approved"),
-        "stage": _content_stage(saved, artifacts, ai_plan_valid=model_proposal_valid),
+        "stage": _content_stage(
+            saved,
+            artifacts,
+            ai_plan_valid=model_proposal_valid,
+            source_only_ready=source_only_selection["ready"],
+        ),
         "updated_at": saved.get("updated_at") or "",
         "note": str(saved.get("note") or ""),
     }
@@ -1152,6 +1283,7 @@ def prepare_content_package(offer_id_or_url: str, *, collect_box_id: str = "") -
 
     result = create_package_from_miaoshou(int(clean_id), IMAGE_SUITE_OUTPUTS_DIR / clean_id)
     content = state.setdefault("content_package", {})
+    content.setdefault("content_strategy", "ai_assisted")
     content["collect_box_id"] = clean_id
     content["prepared_at"] = _now()
     content["prepare_mode"] = "review_only_no_model_or_generation_call"
@@ -1175,6 +1307,7 @@ def propose_content_package_with_vision(
     offer_id = resolve_offer_key(offer_id_or_url)
     state = load_state(offer_id)
     content = state.setdefault("content_package", {})
+    _require_ai_assisted(content, "AI storyboard planning")
     if not content.get("fact_card_approved"):
         raise ValueError("approve and save the fact card before requesting AI storyboard planning")
     if not content.get("planning_scope_approved"):
@@ -1376,7 +1509,7 @@ def _safe_image_execution_plan(
     required_planning_signature: str = "",
 ) -> dict[str, Any]:
     """Build paid prompts from a locally validated AI storyboard."""
-    plan = review_package.get("plan") if isinstance(review_package.get("plan"), dict) else {}
+    plan = deepcopy(review_package.get("plan")) if isinstance(review_package.get("plan"), dict) else {}
     proposal = review_package.get("model_proposal") if isinstance(review_package.get("model_proposal"), dict) else {}
     if str(proposal.get("planning_source") or "") != "ai":
         raise ValueError("generate an AI storyboard before preparing paid image generation")
@@ -1398,6 +1531,31 @@ def _safe_image_execution_plan(
     }
     subject, category, structure = product_facts.get(profile_id, ("Decorative product", "decorative product", "source-supported product form"))
     from modules.sourcing.image_suite_plan import enforce_category_policy
+
+    # Older partial-storyboard revisions kept the approved English composition
+    # but discarded the model's operator translations for untouched shots.
+    # Hydrate only those missing review labels; never replace approved title,
+    # focus, selection, or geometry used by paid generation.
+    candidate_items = {
+        str(row.get("id") or ""): row
+        for row in proposal.get("candidate_items") or []
+        if isinstance(row, dict)
+    }
+    for item in ((plan.get("suite") or {}).get("items") or []):
+        if not isinstance(item, dict):
+            continue
+        candidate = candidate_items.get(str(item.get("id") or "")) or {}
+        if not str(item.get("operator_title_zh") or "").strip():
+            item["operator_title_zh"] = str(
+                candidate.get("title_zh") or item.get("title") or ""
+            ).strip()
+        if not str(item.get("operator_focus_zh") or "").strip():
+            item["operator_focus_zh"] = str(
+                candidate.get("focus_zh")
+                or item.get("focus_zh")
+                or item.get("focus")
+                or ""
+            ).strip()
 
     locked_plan = enforce_category_policy(
         plan,
@@ -1431,6 +1589,7 @@ def _safe_image_execution_plan(
 def _planning_recipe_signature(content: dict[str, Any]) -> str:
     """Fields that require a fresh AI storyboard when changed."""
     recipe = {
+        "content_strategy": _content_strategy(content),
         "identity_reference_urls": list(content.get("identity_reference_urls") or []),
         "primary_identity_url": str(content.get("primary_identity_url") or ""),
         "suite_customization": content.get("suite_customization") or {},
@@ -1441,6 +1600,7 @@ def _planning_recipe_signature(content: dict[str, Any]) -> str:
 def _content_recipe_signature(content: dict[str, Any]) -> str:
     """Stable signature for every field that changes a paid generation payload."""
     recipe = {
+        "content_strategy": _content_strategy(content),
         "fact_card_approved": bool(content.get("fact_card_approved")),
         "planning_scope_approved": bool(content.get("planning_scope_approved")),
         "suite_approved": bool(content.get("suite_approved")),
@@ -1472,6 +1632,7 @@ def prepare_first_image_generation(offer_id_or_url: str) -> dict[str, Any]:
     offer_id = resolve_offer_key(offer_id_or_url)
     state = load_state(offer_id)
     content = state.setdefault("content_package", {})
+    _require_ai_assisted(content, "image generation preflight")
     if not content.get("fact_card_approved") or not content.get("suite_approved"):
         raise ValueError("approve the fact card and suite scope before preparing image generation")
     package_dir = _content_package_dir(str(content.get("collect_box_id") or ""))
@@ -1592,6 +1753,7 @@ def start_first_image_generation(offer_id_or_url: str) -> dict[str, Any]:
         raise ValueError("an image generation task is already running for this product")
     state = load_state(offer_id)
     content = state.setdefault("content_package", {})
+    _require_ai_assisted(content, "paid image generation")
     preflight = content.get("first_image_preflight") if isinstance(content.get("first_image_preflight"), dict) else {}
     if preflight.get("status") != "ready_for_explicit_paid_confirmation" or not preflight.get("payload"):
         raise ValueError("prepare the first image preflight before starting paid generation")
@@ -1624,6 +1786,7 @@ def prepare_remaining_image_generations(
     offer_id = resolve_offer_key(offer_id_or_url)
     state = load_state(offer_id)
     content = state.setdefault("content_package", {})
+    _require_ai_assisted(content, "image generation preflight")
     if not content.get("fact_card_approved") or not content.get("suite_approved"):
         raise ValueError("approve the fact card and suite scope before preparing remaining images")
 
@@ -1645,8 +1808,9 @@ def prepare_remaining_image_generations(
     if not include_first and not approved_first_shots:
         raise ValueError("approve at least one generated identity-check image before preparing remaining shots")
     requested_force_shots = force_shot_ids
-    if not requested_force_shots:
+    if not requested_force_shots and (not include_first or technically_complete_shots):
         requested_force_shots = content.get("pending_regeneration_shot_ids") or []
+    requested_force_shots = requested_force_shots or []
     forced_shots = {
         str(value).strip() for value in requested_force_shots
         if re.fullmatch(r"[A-Za-z0-9_-]{1,80}", str(value).strip())
@@ -1866,6 +2030,7 @@ def _start_remaining_image_generation_unlocked(
         raise ValueError("remaining image generation is already running")
     state = load_state(offer_id)
     content = state.setdefault("content_package", {})
+    _require_ai_assisted(content, "paid image generation")
     preflight = content.get("remaining_images_preflight") if isinstance(content.get("remaining_images_preflight"), dict) else {}
     if preflight.get("status") != "ready_for_explicit_paid_confirmation" or not preflight.get("shots"):
         raise ValueError("prepare and review the remaining image preflight before starting paid generation")
@@ -1895,6 +2060,25 @@ def _start_remaining_image_generation_unlocked(
         ]
         if not selected_shots:
             raise ValueError("there are no failed image tasks to retry")
+    elif str(existing.get("status") or "") in {
+        "completed_waiting_human_review",
+        "completed_with_errors",
+    }:
+        existing_artifacts = {
+            str(row.get("artifact_id") or "")
+            for row in (existing.get("items") or [])
+            if isinstance(row, dict) and str(row.get("artifact_id") or "")
+        }
+        selected_artifacts = {
+            str(row.get("artifact_id") or "")
+            for row in selected_shots
+            if str(row.get("artifact_id") or "")
+        }
+        if existing_artifacts and existing_artifacts == selected_artifacts:
+            raise ValueError(
+                "this paid-generation preflight has already been consumed; "
+                "prepare an explicit regeneration preflight before creating new tasks"
+            )
     if existing:
         history = content.setdefault("image_generation_history", [])
         if isinstance(history, list):
@@ -1904,6 +2088,7 @@ def _start_remaining_image_generation_unlocked(
         "status": "queued",
         "worker_pid": os.getpid(),
         "queued_at": _now(),
+        "preflight_prepared_at": str(preflight.get("prepared_at") or ""),
         "current_shot_id": "",
         "retry_failed_only": bool(retry_failed_only),
         "items": [
@@ -2536,16 +2721,30 @@ def save_content_package_review(offer_id_or_url: str, review: dict[str, Any]) ->
     content = state.setdefault("content_package", {})
     previous_recipe = _content_recipe_signature(content)
     previous_planning_recipe = _planning_recipe_signature(content)
+    if "content_strategy" in review:
+        strategy = str(review.get("content_strategy") or "").strip()
+        if strategy not in CONTENT_STRATEGIES:
+            raise ValueError(
+                "content_strategy must be source_only or ai_assisted"
+            )
+        content["content_strategy"] = strategy
+    else:
+        content.setdefault("content_strategy", "ai_assisted")
     if "fact_card_approved" in review:
         content["fact_card_approved"] = bool(review.get("fact_card_approved"))
     if "planning_scope_approved" in review:
         content["planning_scope_approved"] = bool(review.get("planning_scope_approved"))
-    if "suite_approved" in review and not isinstance(review.get("storyboard_reviews"), dict):
+    ai_assisted = _content_strategy(content) == "ai_assisted"
+    if (
+        ai_assisted
+        and "suite_approved" in review
+        and not isinstance(review.get("storyboard_reviews"), dict)
+    ):
         content["suite_approved"] = bool(review.get("suite_approved"))
     if "note" in review:
         content["note"] = str(review.get("note") or "").strip()[:2000]
     raw_customization = review.get("suite_customization")
-    if isinstance(raw_customization, dict):
+    if ai_assisted and isinstance(raw_customization, dict):
         raw_counts = raw_customization.get("type_counts") if isinstance(raw_customization.get("type_counts"), dict) else {}
         clean_counts = {}
         for shot_type in ("white_bg", "scene", "selling_point", "macro_detail", "size_card"):
@@ -2571,7 +2770,7 @@ def save_content_package_review(offer_id_or_url: str, review: dict[str, Any]) ->
         if isinstance(item, dict) and item.get("selected") and str(item.get("id") or "")
     }
     raw_storyboard_reviews = review.get("storyboard_reviews")
-    if isinstance(raw_storyboard_reviews, dict):
+    if ai_assisted and isinstance(raw_storyboard_reviews, dict):
         storyboard_reviews: dict[str, dict[str, Any]] = {}
         for shot_id in allowed_storyboard_ids:
             row = raw_storyboard_reviews.get(shot_id)

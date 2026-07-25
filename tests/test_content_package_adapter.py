@@ -159,6 +159,134 @@ def test_workbench_handoff_approves_current_version_in_suite_order_and_marks_sta
     assert handoff.stale_external_write is True
 
 
+def test_workbench_handoff_does_not_block_explicitly_rejected_removed_shot():
+    state = _workbench_state(new_size_action="keep")
+    content = state["content_package"]
+    content["asset_decisions"] = {
+        "sc1_r4": {"decision": "approved"},
+        "sz1_r6_1784961073473": {"decision": "rejected"},
+    }
+    content["generated_image_miaoshou_decisions"][
+        "sz1_r6_1784961073473"
+    ] = {
+        "action": "remove",
+        "status": "reviewed_locally",
+    }
+    state["review"] = {
+        "image_actions": [
+            {"action": "keep", "url": "https://assets.example/source-1.jpg"},
+        ],
+        "image_order": [
+            "https://assets.example/source-1.jpg",
+            "https://assets.example/sc1-r4.png",
+        ],
+    }
+
+    handoff = build_workbench_content_package_handoff(
+        product_id="3828811808",
+        state=state,
+        suite_plan={"suite": {"items": [{"id": "sc1"}, {"id": "sz1"}]}},
+        generation_audits=_workbench_audits(),
+        copy={"en": "Puppy wall sticker"},
+    )
+
+    assert handoff.missing_shot_ids == ()
+    assert not any("sz1" in blocker for blocker in handoff.blockers)
+    assert handoff.content_package.approval.status == "approved"
+    assert handoff.content_package.image_urls == (
+        "https://assets.example/source-1.jpg",
+        "https://assets.example/sc1-r4.png",
+    )
+
+
+def test_source_only_handoff_uses_exact_source_order_and_ignores_generated_history():
+    source_a = "https://assets.example/source-a.jpg"
+    source_b = "https://assets.example/source-b.jpg"
+    generated = "https://assets.example/generated.png"
+    state = {
+        "content_package": {
+            "product_id": "source-product",
+            "content_strategy": "source_only",
+            "fact_card_approved": True,
+            "planning_scope_approved": True,
+            "suite_approved": False,
+            "miaoshou_ordered_images_write": {
+                "status": "verified",
+                "ordered_image_urls": [source_a, source_b, generated],
+            },
+        },
+        "review": {
+            "image_actions": [
+                {"action": "keep", "url": source_a},
+                {"action": "remove", "url": "https://assets.example/rejected.jpg"},
+                {"action": "keep", "url": source_b},
+            ],
+            "image_order": [source_b, source_a],
+        },
+    }
+
+    handoff = build_workbench_content_package_handoff(
+        product_id="source-product",
+        state=state,
+        suite_plan={"suite": {"items": [{"id": "ai-shot"}]}},
+        generation_audits={
+            "ai-shot_r1": _audit("ai-shot", generated),
+        },
+        copy={"en": "Source-approved copy"},
+    )
+
+    assert handoff.content_package.approval.status == "approved"
+    assert handoff.content_package.image_urls == (source_b, source_a)
+    assert all(row.asset_type == "source" for row in handoff.asset_lineage)
+    assert handoff.missing_shot_ids == ()
+    assert handoff.superseded_artifact_ids == ()
+    assert handoff.stale_external_write is True
+
+
+@pytest.mark.parametrize(
+    ("image_actions", "image_order"),
+    [
+        (
+            [
+                {"action": "keep", "url": "https://assets.example/source.jpg"},
+                {"action": "review", "url": "https://assets.example/pending.jpg"},
+            ],
+            ["https://assets.example/source.jpg"],
+        ),
+        (
+            [{"action": "keep", "url": "https://assets.example/source.jpg"}],
+            [
+                "https://assets.example/source.jpg",
+                "https://assets.example/generated.png",
+            ],
+        ),
+    ],
+)
+def test_source_only_handoff_rejects_incomplete_review_or_non_source_order(
+    image_actions, image_order
+):
+    handoff = build_workbench_content_package_handoff(
+        product_id="source-product",
+        state={
+            "content_package": {
+                "content_strategy": "source_only",
+                "fact_card_approved": True,
+                "planning_scope_approved": True,
+            },
+            "review": {
+                "image_actions": image_actions,
+                "image_order": image_order,
+            },
+        },
+        suite_plan={},
+        generation_audits={},
+        copy={"en": "Source-approved copy"},
+    )
+
+    assert handoff.content_package.approval.status == "pending"
+    assert handoff.blockers
+
+
 def test_overlay_artifact_resolves_its_non_sz1_shot_from_the_audit():
     state = _workbench_state()
     content = state["content_package"]

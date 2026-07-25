@@ -121,8 +121,11 @@ def build_workbench_content_package_handoff(
         raise ValueError("product_id is required for a ContentPackage hand-off")
     content = state.get("content_package") if isinstance(state.get("content_package"), Mapping) else {}
     review = state.get("review") if isinstance(state.get("review"), Mapping) else {}
+    strategy = str(content.get("content_strategy") or "ai_assisted").strip()
+    if strategy not in {"source_only", "ai_assisted"}:
+        strategy = "ai_assisted"
     suite = suite_plan.get("suite") if isinstance(suite_plan.get("suite"), Mapping) else {}
-    selected_shots = [
+    selected_shots = [] if strategy == "source_only" else [
         str(item.get("id") or "").strip()
         for item in (suite.get("items") or [])
         if isinstance(item, Mapping) and bool(item.get("selected", True)) and str(item.get("id") or "").strip()
@@ -149,6 +152,10 @@ def build_workbench_content_package_handoff(
         )
         decision_source = _final_content_approval_source(artifact_id, decisions, final_decisions)
         if decision_source is None:
+            if _has_explicit_final_rejection(
+                artifact_id, decisions, final_decisions
+            ):
+                continue
             missing.append(shot_id)
             blockers.append(f"{shot_id}: current artifact {artifact_id} lacks final content approval")
             continue
@@ -167,15 +174,26 @@ def build_workbench_content_package_handoff(
     subject = str(content.get("approval_subject_id") or content.get("product_id") or "").strip()
     if subject and subject != clean_product_id:
         blockers.append("content approval subject does not match product_id")
-    if not all(bool(content.get(key)) for key in ("fact_card_approved", "planning_scope_approved", "suite_approved")):
-        blockers.append("content fact-card, planning scope, and suite approvals are required")
-    storyboard = content.get("storyboard_reviews") if isinstance(content.get("storyboard_reviews"), Mapping) else {}
-    if any(str((storyboard.get(shot_id) or {}).get("decision") or "") != "approved" for shot_id in selected_shots):
-        blockers.append("every selected storyboard shot requires approval")
-
-    lineage, order_blockers = _order_lineage(
-        source_lineage + generated_lineage, review.get("image_order")
-    )
+    if strategy == "source_only":
+        if not all(
+            bool(content.get(key))
+            for key in ("fact_card_approved", "planning_scope_approved")
+        ):
+            blockers.append(
+                "content fact-card and source planning scope approvals are required"
+            )
+        lineage, order_blockers = _source_only_order_lineage(
+            source_lineage, review.get("image_order")
+        )
+    else:
+        if not all(bool(content.get(key)) for key in ("fact_card_approved", "planning_scope_approved", "suite_approved")):
+            blockers.append("content fact-card, planning scope, and suite approvals are required")
+        storyboard = content.get("storyboard_reviews") if isinstance(content.get("storyboard_reviews"), Mapping) else {}
+        if any(str((storyboard.get(shot_id) or {}).get("decision") or "") != "approved" for shot_id in selected_shots):
+            blockers.append("every selected storyboard shot requires approval")
+        lineage, order_blockers = _order_lineage(
+            source_lineage + generated_lineage, review.get("image_order")
+        )
     blockers.extend(order_blockers)
     urls = tuple(row.image_url for row in lineage)
     written_urls = _written_image_urls(content)
@@ -186,7 +204,15 @@ def build_workbench_content_package_handoff(
     approval = ApprovalRecord(
         approval_id=f"content-review:{resolved_package_id}", subject_type="content_package",
         subject_id=resolved_package_id,
-        status="approved" if selected_shots and not missing and not [b for b in blockers if not b.startswith("external ")] else "pending",
+        status=(
+            "approved"
+            if (
+                (bool(lineage) if strategy == "source_only" else bool(selected_shots))
+                and not missing
+                and not [b for b in blockers if not b.startswith("external ")]
+            )
+            else "pending"
+        ),
     )
     return ContentPackageHandoff(
         content_package=ContentPackage(resolved_package_id, clean_product_id, dict(copy or {}), urls, approval=approval),
@@ -252,6 +278,19 @@ def _final_content_approval_source(artifact_id, decisions, final_decisions):
     return None
 
 
+def _has_explicit_final_rejection(artifact_id, decisions, final_decisions):
+    """Treat a reviewed reject+remove pair as an intentional suite exclusion."""
+    decision = decisions.get(artifact_id)
+    final = final_decisions.get(artifact_id)
+    return bool(
+        isinstance(decision, Mapping)
+        and decision.get("decision") == "rejected"
+        and isinstance(final, Mapping)
+        and final.get("action") == "remove"
+        and final.get("status") == "reviewed_locally"
+    )
+
+
 def _approved_source_lineage(review: Mapping[str, Any]) -> tuple[list[ContentAssetLineage], list[str]]:
     """Read final source-image decisions without treating them as generation audits."""
     rows = review.get("image_actions") if isinstance(review.get("image_actions"), list) else []
@@ -301,6 +340,47 @@ def _order_lineage(
         if row.image_url not in seen_urls:
             ordered.append(row)
             seen_urls.add(row.image_url)
+    return ordered, blockers
+
+
+def _source_only_order_lineage(
+    lineage: list[ContentAssetLineage], image_order: Any
+) -> tuple[list[ContentAssetLineage], list[str]]:
+    """Require one exact saved order containing only approved source images."""
+    by_url: dict[str, ContentAssetLineage] = {}
+    for row in lineage:
+        by_url.setdefault(row.image_url, row)
+    blockers: list[str] = []
+    if not by_url:
+        blockers.append("source_only requires at least one approved HTTPS source image")
+    if not isinstance(image_order, list) or not [
+        value for value in image_order if str(value or "").strip()
+    ]:
+        blockers.append("source_only requires an explicit final image_order")
+        return [], blockers
+
+    ordered: list[ContentAssetLineage] = []
+    seen_urls: set[str] = set()
+    for raw_url in image_order:
+        url = str(raw_url or "").strip()
+        if not url:
+            continue
+        if url in seen_urls:
+            blockers.append(f"review.image_order contains a duplicate URL: {url}")
+            continue
+        seen_urls.add(url)
+        row = by_url.get(url)
+        if row is None:
+            blockers.append(
+                f"review.image_order contains a non-source or unapproved URL: {url}"
+            )
+            continue
+        ordered.append(row)
+    missing_urls = [url for url in by_url if url not in seen_urls]
+    if missing_urls:
+        blockers.append(
+            "every kept source image must appear exactly once in review.image_order"
+        )
     return ordered, blockers
 
 

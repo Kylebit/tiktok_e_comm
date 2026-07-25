@@ -126,7 +126,34 @@ def test_product_workspace_is_the_user_surface_and_fails_without_stale_results()
     assert "/api/product-workspace/dashboard" in script
     assert "renderFailure(message)" in script
     assert "页面不会沿用上一次商品结果" in script
-    assert 'method: "POST"' not in script
+    assert "商品审批与字段锁定" in html
+    assert "我已核对 Seller SKU、成本、重量、包装、站点和规格" in html
+    assert "/api/product-workspace/approve" in script
+    assert 'method: "POST"' in script
+    assert "expected_revision" in script
+    assert "user_approved: true" in script
+    assert "approvalEligible" in script
+    assert "不会上传妙手、创建渠道草稿或发布商品" in html
+    assert ".approval-card" in css
+    assert "并行发布队列" in html
+    assert "refreshAllButton" in html
+    assert "localStorage.getItem(QUEUE_STORAGE_KEY)" in script
+    assert "localStorage.setItem(" in script
+    assert "QUEUE_REFRESH_CONCURRENCY = 4" in script
+    assert "Promise.allSettled(workers)" in script
+    assert 'data-action="switch"' in script
+    assert 'data-action="remove"' in script
+    assert "key !== currentQueueKey" in script
+    assert "loadedQueueKey !== currentQueueKey" in script
+    assert "history.replaceState" in script
+    assert ".queue-grid { grid-template-columns: 1fr; }" in css
+    assert "一键全渠道发布准备" in html
+    assert "妙手公共草稿" in html
+    assert "TikTok 主商品回读" in html
+    assert "publishAllButton" in html
+    assert "omnichannel_preview" in script
+    assert "repository_adapter_audited" in script
+    assert "$(\"#publishAllButton\").disabled = true" in script
     assert "@media (max-width:" in css
 
 

@@ -579,7 +579,7 @@ def estimate(
             "comps_total": len(comps_all),
             "comps_in_window": len(comps),
             "min_samples_for_posterior": MIN_POSTERIOR_SAMPLES,
-            "recent_comps": comps[:20],
+            "recent_comps": comps,
             "sale_stats": summarize_nums(usable_sales),
             "ship_stats": summarize_nums(
                 [float(c.get("ship_net_local") or 0) for c in comps if not c.get("outlier")]

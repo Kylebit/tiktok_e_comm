@@ -1,0 +1,78 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+HTML = (ROOT / "web/ai_image_studio.html").read_text(encoding="utf-8")
+SCRIPT = (ROOT / "web/static/ai_image_studio.js").read_text(encoding="utf-8")
+
+
+def test_wall_decal_recipe_exposes_only_supported_operator_counts():
+    for shot_type in ("scene", "selling_point", "size_card"):
+        assert f'data-recipe-type="{shot_type}"' in HTML
+
+    assert 'data-recipe-type="white_bg"' not in HTML
+    assert 'data-recipe-type="macro_detail"' not in HTML
+    assert 'id="sizeDimensions"' in HTML
+    assert 'id="sizeConfirmed"' in HTML
+    assert "白底主图和微距细节不允许由 AI 生成" in HTML
+
+
+def test_empty_saved_recipe_falls_back_to_selected_storyboard_counts():
+    assert "function deriveRecipeCounts(" in SCRIPT
+    assert "content.suite_customization?.type_counts" in SCRIPT
+    assert "content.suite?.items || []" in SCRIPT
+    assert "item.selected !== false" in SCRIPT
+    assert "derivedCounts[item.type] += 1" in SCRIPT
+    assert "hasSavedCounts ? savedCounts : derivedCounts" in SCRIPT
+
+
+def test_recipe_is_persisted_and_validated_before_ai_planning():
+    assert "suite_customization: collectRecipeFromDom()" in SCRIPT
+    assert "请至少选择一张场景图、卖点图或尺寸图" in SCRIPT
+    assert "尺寸图需要填写来源已确认的尺寸，并勾选人工确认" in SCRIPT
+
+    planning_function = SCRIPT.split("async function requestAiPlan()", 1)[1].split(
+        "async function prepareGeneration()", 1
+    )[0]
+    assert planning_function.index("validateRecipe()") < planning_function.index("confirm(")
+    assert planning_function.index("saveContentReview({ quiet: true })") < planning_function.index(
+        'post("content-package/vision-proposal"'
+    )
+    assert "confirm_ai_planning: true" in planning_function
+
+
+def test_saved_identity_references_are_restored_from_summary_contract():
+    assert "content_package?.source_snapshot || {}" in SCRIPT
+    assert "sourceSnapshot.identity_reference_urls" in SCRIPT
+    assert "sourceSnapshot.primary_identity_image" in SCRIPT
+
+
+def test_completed_paid_batch_cannot_be_started_again_from_the_ui():
+    assert (
+        '["completed_waiting_human_review", "completed_with_errors"].includes(generation.status)'
+        in SCRIPT
+    )
+    assert "!total || running || completed" in SCRIPT
+
+
+def test_content_strategy_selector_defaults_to_ai_and_persists_explicit_choice():
+    assert 'name="contentStrategy"' in HTML
+    assert 'value="source_only"' in HTML
+    assert 'value="ai_assisted" checked' in HTML
+    assert "content_strategy: currentContentStrategy()" in SCRIPT
+    assert '|| "ai_assisted"' in SCRIPT
+
+
+def test_source_only_disables_paid_ai_actions_and_excludes_generated_images():
+    assert 'id="sourceOnlyGenerationNotice"' in HTML
+    assert "const generatedItems = (sourceOnlyActive() ? [] : generatedCurrentRows())" in SCRIPT
+    assert '["aiPlanButton", "preflightButton", "paidGenerateButton", "saveVersionsButton"]' in SCRIPT
+    assert 'if (sourceOnlyActive()) return;' in SCRIPT
+    for message in (
+        "AI 分镜已禁用",
+        "生图预检已禁用",
+        "付费生图已禁用",
+    ):
+        assert message in SCRIPT

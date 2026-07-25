@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#152f2c">
+  <title>Orbit · AI 图片工作室</title>
+  <link rel="stylesheet" href="/static/ai_image_studio.css">
+  <script src="/static/ai_image_studio.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="返回 Orbit 总览">
+      <span class="brand-mark" aria-hidden="true">O</span>
+      <span><strong>Orbit</strong><small>内容运营</small></span>
+    </a>
+    <nav aria-label="产品导航">
+      <a id="productCenterLink" href="/product-workspace">商品发布中心</a>
+      <a href="#sources">来源图</a>
+      <a href="#storyboard">分镜</a>
+      <a href="#generated">生成版本</a>
+      <a href="#final">最终排序</a>
+    </nav>
+    <span class="safe-pill"><i aria-hidden="true"></i> 写入默认关闭</span>
+  </header>
+
+  <main id="main">
+    <section class="hero">
+      <div>
+        <p class="eyebrow">CONTENT OPERATIONS</p>
+        <h1>AI 图片工作室</h1>
+        <p>围绕同一个商品，完成来源图判断、分镜审核、图片生成、版本选择和最终排序。</p>
+      </div>
+      <form id="offerForm" class="offer-form">
+        <label>Offer ID
+          <input id="offerId" value="3828540231" inputmode="numeric" pattern="[0-9]{1,32}" required>
+        </label>
+        <button class="button primary" type="submit">
+          <span class="button-label">打开图片项目</span>
+          <span class="button-loading">正在加载…</span>
+        </button>
+        <p>加载只读取现有工作台状态，不会预采集或触发生成。</p>
+      </form>
+    </section>
+
+    <div id="alert" class="alert" role="alert" hidden></div>
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+    <section class="project-header">
+      <div>
+        <p class="kicker">CURRENT PROJECT</p>
+        <h2 id="projectTitle">正在读取商品…</h2>
+        <p id="projectMeta">Offer —</p>
+      </div>
+      <div class="project-score">
+        <span>内容完成度</span>
+        <strong id="completionScore">—</strong>
+        <small id="currentStage">等待状态</small>
+      </div>
+    </section>
+
+    <section aria-labelledby="flowTitle">
+      <div class="section-heading">
+        <div><p class="kicker">CONTENT FLOW</p><h2 id="flowTitle">图片制作流程</h2></div>
+        <button id="refreshButton" class="button secondary" type="button">刷新状态</button>
+      </div>
+      <div id="flowRail" class="flow-rail"></div>
+    </section>
+
+    <section id="sources" aria-labelledby="sourceTitle">
+      <div class="section-heading">
+        <div><p class="kicker">01 · SOURCE REVIEW</p><h2 id="sourceTitle">来源图审核</h2></div>
+        <p>逐张决定保留或移除，并选择真正能代表商品身份的参考图。</p>
+      </div>
+      <div class="toolbar">
+        <div id="sourceStats" class="stats"></div>
+        <button id="saveSourceButton" class="button dark" type="button">保存来源图决定</button>
+      </div>
+      <div id="sourceGrid" class="asset-grid skeleton"></div>
+    </section>
+
+    <section id="storyboard" aria-labelledby="storyboardTitle">
+      <div class="section-heading">
+        <div><p class="kicker">02 · STORYBOARD</p><h2 id="storyboardTitle">分镜与内容范围</h2></div>
+        <p>先批准事实与约束，再决定每个分镜是否可进入生图。</p>
+      </div>
+      <article class="strategy-panel" aria-labelledby="strategyTitle">
+        <div>
+          <p class="kicker">CONTENT STRATEGY</p>
+          <h3 id="strategyTitle">选择本商品的图片策略</h3>
+          <p>来源图直用不会调用 AI；AI 辅助沿用分镜、预检与人工审核门禁。</p>
+        </div>
+        <div class="strategy-options">
+          <label class="strategy-card">
+            <input id="sourceOnlyStrategy" name="contentStrategy" type="radio" value="source_only">
+            <span><strong>仅使用来源图</strong><small>逐张保留或移除，保存严格顺序；不调用 AI。</small></span>
+          </label>
+          <label class="strategy-card">
+            <input id="aiAssistedStrategy" name="contentStrategy" type="radio" value="ai_assisted" checked>
+            <span><strong>AI 辅助套图</strong><small>保留现有严格分镜、付费确认和版本审核流程。</small></span>
+          </label>
+        </div>
+        <p id="strategyStatus" class="strategy-status" role="status"></p>
+      </article>
+      <article id="generationRecipe" class="recipe-panel" aria-labelledby="recipeTitle">
+        <header class="recipe-header">
+          <div>
+            <p class="kicker">GENERATION RECIPE</p>
+            <h3 id="recipeTitle">本次生成配方</h3>
+            <p>数量会作为本地硬约束保存，AI 只能按这个配方规划分镜。</p>
+          </div>
+          <strong id="recipeTotal" class="recipe-total">共 0 张</strong>
+        </header>
+        <div class="recipe-grid">
+          <label class="recipe-card" for="sceneCount">
+            <span><strong>场景图</strong><small>可信空间中的商品应用效果</small></span>
+            <span class="count-control"><input id="sceneCount" class="recipe-count" data-recipe-type="scene" type="number" min="0" max="6" step="1" value="0"><em>张</em></span>
+          </label>
+          <label class="recipe-card" for="sellingPointCount">
+            <span><strong>卖点图</strong><small>只突出来源证据支持的可见特点</small></span>
+            <span class="count-control"><input id="sellingPointCount" class="recipe-count" data-recipe-type="selling_point" type="number" min="0" max="6" step="1" value="0"><em>张</em></span>
+          </label>
+          <label class="recipe-card" for="sizeCardCount">
+            <span><strong>尺寸图</strong><small>AI 生成底图，本地叠加确认过的尺寸</small></span>
+            <span class="count-control"><input id="sizeCardCount" class="recipe-count" data-recipe-type="size_card" type="number" min="0" max="1" step="1" value="0"><em>张</em></span>
+          </label>
+        </div>
+        <div id="sizeCardFields" class="size-card-fields" hidden>
+          <label for="sizeDimensions">已核对尺寸
+            <input id="sizeDimensions" type="text" maxlength="240" placeholder="例如：宽 102.6 cm，高 76.2 cm">
+          </label>
+          <label class="confirm-size">
+            <input id="sizeConfirmed" type="checkbox">
+            我已根据来源证据确认以上尺寸准确
+          </label>
+        </div>
+        <div class="recipe-policy">
+          <span aria-hidden="true">i</span>
+          <p><strong>墙贴类目保护已启用。</strong>白底主图和微距细节不允许由 AI 生成；尺寸图必须填写尺寸并人工确认。</p>
+        </div>
+        <p id="recipeValidation" class="recipe-validation" role="status" aria-live="polite"></p>
+      </article>
+      <article class="approval-strip">
+        <label class="check-row">
+          <input id="factApproved" type="checkbox">
+          <span><strong>商品事实已核对</strong><small>商品身份、尺寸与来源信息没有被 AI 改写</small></span>
+        </label>
+        <label class="check-row">
+          <input id="scopeApproved" type="checkbox">
+          <span><strong id="scopeApprovalTitle">本地生图约束已确认</strong><small id="scopeApprovalHint">图片数量、类型与类目规则符合本次需求</small></span>
+        </label>
+        <button id="preparePackageButton" class="button secondary" type="button" hidden>创建内容审核包</button>
+        <button id="savePlanButton" class="button dark" type="button">保存内容审核</button>
+        <button id="aiPlanButton" class="button secondary" type="button">使用 AI 规划分镜</button>
+      </article>
+      <div id="storyboardGrid" class="storyboard-grid"></div>
+    </section>
+
+    <section id="generated" aria-labelledby="generatedTitle">
+      <div class="section-heading">
+        <div><p class="kicker">03 · GENERATION</p><h2 id="generatedTitle">生成版本</h2></div>
+        <p>同一分镜的历史版本并列展示，只有通过技术核验和人工批准的版本可进入最终图片。</p>
+      </div>
+      <p id="sourceOnlyGenerationNotice" class="source-only-notice" hidden>当前使用“仅来源图”策略：AI 分镜、生图预检、付费生成及历史 AI 图片混入均已禁用。切回“AI 辅助套图”后会恢复原有严格门禁。</p>
+      <div class="generation-toolbar">
+        <div id="generationSummary" class="generation-summary"></div>
+        <div class="generation-actions">
+          <button id="preflightButton" class="button secondary" type="button">生成前检查</button>
+          <button id="paidGenerateButton" class="button paid" type="button" disabled>确认付费并生成</button>
+        </div>
+      </div>
+      <div id="versionGrid" class="version-grid skeleton"></div>
+      <div class="inline-actions">
+        <button id="saveVersionsButton" class="button dark" type="button">保存版本审核</button>
+      </div>
+    </section>
+
+    <section id="final" aria-labelledby="finalTitle">
+      <div class="section-heading">
+        <div><p class="kicker">04 · FINAL SET</p><h2 id="finalTitle">最终图片与排序</h2></div>
+        <p>第 1 张将作为主图；排序先保存到本地，再单独决定是否同步妙手。</p>
+      </div>
+      <div id="finalGrid" class="final-grid"></div>
+      <div class="inline-actions">
+        <button id="saveOrderButton" class="button dark" type="button">保存最终顺序</button>
+      </div>
+
+      <details class="danger-zone">
+        <summary>外部写入</summary>
+        <div>
+          <span class="danger-mark" aria-hidden="true">!</span>
+          <div>
+            <h3>同步当前图片到妙手</h3>
+            <p>这会替换妙手公共采集箱中的主图和详情图，但不会认领店铺或发布商品。</p>
+            <label class="confirm-row">
+              <input id="miaoshouConfirm" type="checkbox">
+              我已核对最终图片和顺序，允许写入妙手并回读验证
+            </label>
+          </div>
+          <button id="syncMiaoshouButton" class="button danger" type="button" disabled>同步到妙手</button>
+        </div>
+      </details>
+    </section>
+  </main>
+
+  <dialog id="imageDialog">
+    <button id="closeDialog" type="button" aria-label="关闭图片预览">×</button>
+    <img id="dialogImage" alt="">
+    <p id="dialogCaption"></p>
+  </dialog>
+
+  <footer>
+    <span>Orbit AI 图片工作室</span>
+    <span>来源证据优先 · 付费与外部写入必须明确确认</span>
+  </footer>
+</body>
+</html>

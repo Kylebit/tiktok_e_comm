@@ -42,7 +42,71 @@
     ],
   ]);
 
+  const QUEUE_STORAGE_KEY = "orbit.productWorkspace.releaseQueue.v1";
+  const MAX_QUEUE_ITEMS = 50;
+  const QUEUE_REFRESH_CONCURRENCY = 4;
   let currentData = null;
+  let approvalSubmitting = false;
+  let pageLoading = false;
+  let queueRefreshing = false;
+  let queueItems = [];
+  let currentQueueKey = "";
+  let loadedQueueKey = "";
+
+  function productKey(offerId, sellerSku) {
+    return `${String(offerId || "").trim()}::${String(sellerSku || "").trim()}`;
+  }
+
+  function validIdentity(offerId, sellerSku) {
+    return /^\d{1,32}$/.test(String(offerId || "").trim())
+      && /^\d{1,32}$/.test(String(sellerSku || "").trim());
+  }
+
+  function readQueue() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(QUEUE_STORAGE_KEY) || "[]");
+      if (!Array.isArray(parsed)) return [];
+      const seen = new Set();
+      return parsed
+        .filter((item) => validIdentity(item?.offer_id, item?.seller_sku))
+        .map((item) => ({
+          offer_id: String(item.offer_id).trim(),
+          seller_sku: String(item.seller_sku).trim(),
+          data: null,
+          error: "",
+          loading: false,
+        }))
+        .filter((item) => {
+          const key = productKey(item.offer_id, item.seller_sku);
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+        .slice(0, MAX_QUEUE_ITEMS);
+    } catch (_error) {
+      return [];
+    }
+  }
+
+  function saveQueue() {
+    try {
+      localStorage.setItem(
+        QUEUE_STORAGE_KEY,
+        JSON.stringify(queueItems.map(({ offer_id, seller_sku }) => ({
+          offer_id,
+          seller_sku,
+        }))),
+      );
+    } catch (_error) {
+      $("#queueMessage").textContent = "浏览器无法保存队列；本次页面内仍可继续使用。";
+    }
+  }
+
+  function queueItem(key) {
+    return queueItems.find((item) => (
+      productKey(item.offer_id, item.seller_sku) === key
+    ));
+  }
 
   function money(value) {
     const parsed = Number(value);
@@ -56,12 +120,30 @@
 
   function translateBlocker(value) {
     const text = String(value || "").trim();
+    const unaudited = text.match(/^([a-z]+):([A-Z0-9_]+) has no audited repository adapter path$/);
+    if (unaudited) {
+      return `${channelNames[unaudited[1]] || unaudited[1]} ${unaudited[2]} 的真实发布适配器尚未完成仓库审计。`;
+    }
+    const dependency = text.match(/^([a-z]+):([A-Z0-9_]+) requires (.+)$/);
+    if (dependency) {
+      return `${channelNames[dependency[1]] || dependency[1]} ${dependency[2]} 等待前置结果：${dependency[3]}。`;
+    }
     return blockerTranslations.get(text) || text;
   }
 
+  function friendlyError(value) {
+    const text = String(value || "").trim();
+    if (text.includes("required release evidence not found")) {
+      return "这件商品还没有本地发布档案。请先进入 AI 图片工作室，从妙手采集箱重新读取并完成图片审核。";
+    }
+    return text || "商品状态读取失败，请确认本地服务已启动。";
+  }
+
   function setLoading(loading) {
+    pageLoading = loading;
     $("#lookupForm").classList.toggle("is-loading", loading);
     $("#refreshButton").disabled = loading;
+    if ($("#approvalButton")) updateApprovalButton(currentData || {});
   }
 
   function showError(message) {
@@ -79,7 +161,7 @@
     $("#readinessNote").textContent = "请检查 Offer ID、Seller SKU 或本地数据";
     $("#stageRail").innerHTML = [
       "商品信息",
-      "内容与五图",
+      "内容与图片",
       "审批与锁定",
       "妙手同步",
       "渠道草稿",
@@ -106,8 +188,21 @@
     $("#contentNotice").innerHTML = "";
     $("#channelGrid").innerHTML =
       '<div class="channel-card"><p>读取商品后展示渠道准备状态。</p></div>';
+    $("#channelPlanSummary").textContent = "尚未形成全渠道发布计划。";
+    $("#channelBlockers").innerHTML = "";
+    $("#publishAllButton").disabled = true;
+    $("#publishAllNote").textContent = "请先成功读取商品与内容审批事实。";
     $("#workbenchLink").removeAttribute("href");
     $("#workbenchLink").setAttribute("aria-disabled", "true");
+    $("#approvalSku").textContent = "—";
+    $("#approvalRevision").textContent = "—";
+    $("#approvalContent").textContent = "未加载";
+    $("#approvalStatus").textContent = "未加载";
+    $("#approvalFacts").innerHTML = "";
+    $("#approvalCheckbox").checked = false;
+    $("#approvalCheckbox").disabled = true;
+    $("#approvalButton").disabled = true;
+    $("#approvalMessage").textContent = "";
   }
 
   function setBadge(element, text, tone) {
@@ -161,7 +256,7 @@
 
     const raw = [
       { key: "product", label: "商品信息", ready: productReady, readyText: "事实完整", waitText: "待补全" },
-      { key: "content", label: "内容与五图", ready: contentReady, readyText: "已批准", waitText: "待审核" },
+      { key: "content", label: "内容与图片", ready: contentReady, readyText: "已批准", waitText: "待审核" },
       { key: "approval", label: "审批与锁定", ready: approvalReady, readyText: "已批准", waitText: "待批准" },
       { key: "sync", label: "妙手同步", ready: imageSyncReady, readyText: "已验证", waitText: "待同步" },
       {
@@ -187,6 +282,116 @@
         <small>${esc(stage.ready ? stage.readyText : stage.waitText)}</small>
       </div>
     `).join("");
+  }
+
+  function queueSummary(item) {
+    if (item.loading) {
+      return {
+        stage: "正在读取最新本地证据",
+        blockers: "—",
+        images: "—",
+        approval: "检查中",
+        tone: "neutral",
+      };
+    }
+    if (item.error || !item.data) {
+      return {
+        stage: item.error || "等待首次刷新",
+        blockers: "—",
+        images: "—",
+        approval: "未读取",
+        tone: item.error ? "danger" : "neutral",
+      };
+    }
+    const stages = stageModel(item.data);
+    const active = stages.find((stage) => !stage.ready);
+    const blockers = new Set([
+      ...(item.data.actual_release_gate?.blockers || []),
+      ...(item.data.content?.blockers || []),
+    ]);
+    return {
+      stage: active ? `当前阶段：${active.label}` : "发布前条件已满足",
+      blockers: String(blockers.size),
+      images: String(item.data.content?.image_count || 0),
+      approval: item.data.product?.actual_product_approved ? "已锁定" : "待审批",
+      tone: item.data.actual_release_gate?.ready ? "safe" : "warn",
+    };
+  }
+
+  function renderQueue() {
+    const grid = $("#queueGrid");
+    if (!queueItems.length) {
+      grid.innerHTML = '<div class="image-fallback">队列为空。请在上方输入商品并加入队列。</div>';
+      return;
+    }
+    grid.innerHTML = queueItems.map((item) => {
+      const key = productKey(item.offer_id, item.seller_sku);
+      const summary = queueSummary(item);
+      const isCurrent = key === currentQueueKey;
+      const title = item.data?.product?.title || `Offer ${item.offer_id}`;
+      return `
+        <article class="queue-card${isCurrent ? " current" : ""}${item.loading ? " is-loading" : ""}"
+                 data-key="${esc(key)}">
+          <header>
+            <h3 title="${esc(title)}">${esc(title)}</h3>
+            <span class="badge ${summary.tone}">${isCurrent ? "当前商品" : "队列中"}</span>
+          </header>
+          <div class="queue-identity">
+            <span>Offer ${esc(item.offer_id)}</span>
+            <span>Seller SKU ${esc(item.seller_sku)}</span>
+          </div>
+          <div class="queue-metrics">
+            <div><span>阻塞</span><strong>${esc(summary.blockers)}</strong></div>
+            <div><span>内容图</span><strong>${esc(summary.images)}</strong></div>
+            <div><span>审批</span><strong>${esc(summary.approval)}</strong></div>
+          </div>
+          <p class="queue-stage">${esc(summary.stage)}</p>
+          <footer>
+            <button type="button" data-action="switch" data-key="${esc(key)}"
+                    ${isCurrent || item.loading || approvalSubmitting ? "disabled" : ""}>
+              ${isCurrent ? "正在查看" : "打开商品"}
+            </button>
+            <button type="button" data-action="remove" data-key="${esc(key)}"
+                    ${isCurrent || approvalSubmitting ? "disabled" : ""}>
+              移出队列
+            </button>
+          </footer>
+        </article>
+      `;
+    }).join("");
+  }
+
+  function syncCurrentUrl(item) {
+    const url = new URL(window.location.href);
+    url.searchParams.set("offer_id", item.offer_id);
+    url.searchParams.set("seller_sku", item.seller_sku);
+    history.replaceState(null, "", url);
+  }
+
+  function addToQueue(offerId, sellerSku, { select = true } = {}) {
+    const cleanOffer = String(offerId || "").trim();
+    const cleanSku = String(sellerSku || "").trim();
+    if (!validIdentity(cleanOffer, cleanSku)) return null;
+    const key = productKey(cleanOffer, cleanSku);
+    let item = queueItem(key);
+    if (!item) {
+      if (queueItems.length >= MAX_QUEUE_ITEMS) {
+        $("#queueMessage").textContent = `队列最多保存 ${MAX_QUEUE_ITEMS} 件商品。`;
+        return null;
+      }
+      item = {
+        offer_id: cleanOffer,
+        seller_sku: cleanSku,
+        data: null,
+        error: "",
+        loading: false,
+      };
+      queueItems.push(item);
+      saveQueue();
+    }
+    if (select) currentQueueKey = key;
+    renderQueue();
+    return item;
   }
 
   function renderProduct(data) {
@@ -228,6 +433,128 @@
     $("#readinessNote").textContent = ready
       ? "可以进入受控渠道流程"
       : `${(data.actual_release_gate?.blockers || []).length} 项关键条件待处理`;
+  }
+
+  function approvalEligible(data) {
+    return Boolean(
+      data.content?.approved
+      && data.approval?.ready
+      && data.approval?.state_patch_preview?.product_approval?.input_fingerprint
+    );
+  }
+
+  function updateApprovalButton(data) {
+    const approved = Boolean(data?.product?.actual_product_approved);
+    const eligible = approvalEligible(data || {});
+    $("#approvalCheckbox").disabled = (
+      approved || !eligible || approvalSubmitting || pageLoading
+    );
+    $("#approvalButton").disabled = (
+      approved
+      || !eligible
+      || !$("#approvalCheckbox").checked
+      || approvalSubmitting
+      || pageLoading
+    );
+  }
+
+  function renderApproval(data, message = "") {
+    const product = data.product || {};
+    const approved = Boolean(product.actual_product_approved);
+    const eligible = approvalEligible(data);
+    const packageCm = Array.isArray(product.package_cm) ? product.package_cm : [];
+    $("#approvalSku").textContent = product.seller_sku_candidate || "—";
+    $("#approvalRevision").textContent = String(product.revision ?? "—");
+    $("#approvalContent").textContent = data.content?.approved
+      ? `${data.content.image_count || 0} 图已批准`
+      : "内容包未批准";
+    $("#approvalStatus").textContent = approved
+      ? "已批准并锁定"
+      : (eligible ? "可以审批" : "等待前置条件");
+    $("#approvalFacts").innerHTML = [
+      ["采购成本", product.cost_cny ? `¥ ${money(product.cost_cny)} CNY` : "—"],
+      ["商品重量", product.weight_kg ? `${product.weight_kg} kg` : "—"],
+      ["包装尺寸", packageCm.length ? `${packageCm.join(" × ")} cm` : "—"],
+      ["目标站点", (product.selected_sites || []).map((site) => siteNames[site] || site).join(" · ") || "—"],
+      ["保留规格", (product.selected_sku_keys || []).join(" · ") || "—"],
+      ["内容包 ID", data.content?.package_id || "—"],
+    ].map(([label, value]) => `
+      <div><span>${esc(label)}</span><strong>${esc(value)}</strong></div>
+    `).join("");
+    $("#approvalCheckbox").checked = approved;
+    $(".approval-button-label").textContent = approved
+      ? "商品字段已锁定"
+      : "批准并锁定商品字段";
+    $("#approvalMessage").textContent = message || (
+      approved
+        ? "本地审批事实已保存；外部发布仍保持关闭。"
+        : (eligible
+          ? "请逐项核对上方事实，再勾选确认。"
+          : "内容包批准且审批预览通过后，才可保存本地商品审批。")
+    );
+    updateApprovalButton(data);
+  }
+
+  async function submitApproval() {
+    if (!currentData || !$("#approvalCheckbox").checked || approvalSubmitting) return;
+    const approvalKey = productKey(
+      currentData.product?.offer_id,
+      currentData.product?.seller_sku_candidate,
+    );
+    if (loadedQueueKey !== currentQueueKey || approvalKey !== currentQueueKey) {
+      showError("当前商品仍在加载，不能使用上一件商品的审批 revision。");
+      updateApprovalButton({});
+      return;
+    }
+    approvalSubmitting = true;
+    renderQueue();
+    $("#approvalForm").classList.add("is-submitting");
+    $("#approvalMessage").textContent = "正在复核 SKU 唯一性、内容包和 revision…";
+    updateApprovalButton(currentData);
+    try {
+      const response = await fetch("/api/product-workspace/approve", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          offer_id: currentData.product?.offer_id,
+          seller_sku: currentData.product?.seller_sku_candidate,
+          expected_revision: currentData.product?.revision,
+          approved_by: "Kyle",
+          user_approved: true,
+        }),
+      });
+      const payload = await response.json().catch(() => ({
+        ok: false,
+        error: `服务返回 HTTP ${response.status}`,
+      }));
+      if (!response.ok || payload.ok === false) {
+        throw new Error(payload.error || `服务返回 HTTP ${response.status}`);
+      }
+      currentData = payload.dashboard;
+      loadedQueueKey = approvalKey;
+      const item = queueItem(approvalKey);
+      if (item) item.data = payload.dashboard;
+      render(payload.dashboard);
+      renderApproval(
+        payload.dashboard,
+        payload.idempotent
+          ? "该 revision 已审批，无需重复写入；外部发布仍保持关闭。"
+          : "本地商品审批已保存，字段已锁定；没有发生妙手、渠道或数据库写入。",
+      );
+      showError("");
+    } catch (error) {
+      const message = friendlyError(error.message);
+      showError(message);
+      $("#approvalMessage").textContent = `${message} 请重新读取最新状态后再审批。`;
+    } finally {
+      approvalSubmitting = false;
+      $("#approvalForm").classList.remove("is-submitting");
+      updateApprovalButton(currentData || {});
+      renderQueue();
+    }
   }
 
   function renderNextStep(data, stages) {
@@ -275,7 +602,9 @@
     const synced = Boolean(content?.current_image_write_verified);
     setBadge(
       $("#contentBadge"),
-      approved ? `${content.image_count} 图已批准` : "待内容审核",
+      approved
+        ? `${content.image_count} 图已批准 · ${content.strategy === "source_only" ? "原素材直发" : "AI 辅助"}`
+        : "待内容审核",
       approved ? "safe" : "warn",
     );
     setBadge(
@@ -337,82 +666,263 @@
       .join("");
   }
 
-  function renderChannels(publication, releaseReady) {
-    const drafts = Array.isArray(publication?.drafts) ? publication.drafts : [];
+  function renderChannels(omnichannel, publication, releaseReady) {
+    const targets = Array.isArray(omnichannel?.targets) ? omnichannel.targets : [];
     const grid = $("#channelGrid");
-    if (!drafts.length) {
+    const summary = $("#channelPlanSummary");
+    const blockers = Array.from(new Set(
+      (omnichannel?.blockers || []).map(translateBlocker).filter(Boolean),
+    ));
+    const token = omnichannel?.confirmation_token_summary?.masked || "未生成";
+    const approval = omnichannel?.approval_summary || {};
+    const targetLabels = Array.isArray(approval.target_labels)
+      ? approval.target_labels
+      : [];
+    summary.textContent = targets.length
+      ? `计划 ${omnichannel.plan_id || "—"} · ${targets.length} 个店铺目标 · ${approval.image_count || 0} 张图 · 确认令牌 ${token}`
+      : "商品与内容审批完成后，系统会生成精确的店铺矩阵和一次性确认摘要。";
+    $("#channelBlockers").innerHTML = blockers
+      .map((item) => `<span>${esc(item)}</span>`)
+      .join("");
+
+    if (!targets.length) {
       grid.innerHTML = '<div class="channel-card"><p>商品审批完成后将生成渠道草稿预览。</p></div>';
+      $("#publishAllButton").disabled = true;
+      $("#publishAllNote").textContent = blockers[0] || "全渠道计划尚未就绪。";
       return;
     }
-    grid.innerHTML = drafts.map((draft) => {
-      const contractReady = !(draft.missing_conditions || []).length;
-      const ready = releaseReady && contractReady;
-      const message = ready
-        ? "发布前条件已满足；进入渠道流程后仍需单独确认。"
-        : (contractReady
-          ? "草稿合同已生成，等待商品审批与妙手同步完成。"
-          : (draft.missing_conditions || []).map(translateBlocker).join("；"));
+
+    grid.innerHTML = targets.map((target) => {
+      const failedChecks = (target.preflights || []).filter((check) => !check.passed);
+      const preflightReady = Boolean(target.executable) && !failedChecks.length;
+      const adapterStatus = target.repository_adapter_audited ? "已审计" : "未审计";
+      const dependencies = (target.depends_on || []).length
+        ? target.depends_on.join(" → ")
+        : "无";
+      const message = preflightReady
+        ? "该目标的本地发布预检通过；仍未调用真实渠道适配器。"
+        : translateBlocker(failedChecks[0]?.detail || "等待前置依赖和适配器审计。");
+      const externalStepCount = (target.steps || [])
+        .filter((step) => step.mutates_external_state).length;
       return `
-        <article class="channel-card">
+        <article class="channel-card ${preflightReady ? "ready" : "blocked"}">
           <header>
-            <h3>${esc(channelNames[draft.channel] || draft.channel)}</h3>
-            <span class="badge ${ready ? "safe" : "neutral"}">${ready ? "可进入" : "未提交"}</span>
+            <h3>
+              ${esc(channelNames[target.channel] || target.channel)}
+              <small>${esc(target.site || "COMMON")}</small>
+            </h3>
+            <span class="badge ${preflightReady ? "safe" : "warn"}">
+              ${preflightReady ? "预检通过" : "已阻塞"}
+            </span>
           </header>
           <p>${esc(message)}</p>
+          <dl class="channel-meta">
+            <div><dt>适配器</dt><dd>${esc(adapterStatus)}</dd></div>
+            <div><dt>步骤 / 外部动作</dt><dd>${target.steps?.length || 0} / ${externalStepCount}</dd></div>
+            <div><dt>依赖</dt><dd>${esc(dependencies)}</dd></div>
+          </dl>
         </article>
       `;
     }).join("");
+
+    const allReady = Boolean(
+      releaseReady
+      && omnichannel?.ready
+      && omnichannel?.all_preflights_passed
+      && targetLabels.length === targets.length,
+    );
+    // The execution endpoint is deliberately absent in this release.  Even a
+    // fully green preview must not turn a disabled control into a network write.
+    $("#publishAllButton").disabled = true;
+    $("#publishAllNote").textContent = allReady
+      ? "全部预检已经通过；真实执行端点仍在发布审计中，本版本不会调用渠道接口。"
+      : `${targets.length} 个目标中有前置条件未完成；当前按钮保持强制禁用。`;
   }
 
   function render(data) {
     currentData = data;
     const stages = stageModel(data);
     renderProduct(data);
+    renderApproval(data);
     renderStages(stages);
     renderNextStep(data, stages);
     renderImages(data.content || {});
-    renderChannels(data.publication_rehearsal || {}, Boolean(data.actual_release_gate?.ready));
+    renderChannels(
+      data.omnichannel_preview || {},
+      data.publication_rehearsal || {},
+      Boolean(data.actual_release_gate?.ready),
+    );
 
     const offer = data.product?.offer_id || $("#offerId").value.trim();
-    $("#workbenchLink").href = `http://127.0.0.1:8766/?offer_id=${encodeURIComponent(offer)}`;
+    const studioUrl = `/ai-image-studio?offer_id=${encodeURIComponent(offer)}`;
+    $("#workbenchLink").href = studioUrl;
+    $("#studioNavLink").href = studioUrl;
     $("#workbenchLink").removeAttribute("aria-disabled");
   }
 
-  async function load() {
+  function clearCurrentApprovalContext() {
+    currentData = null;
+    loadedQueueKey = "";
+    $("#approvalCheckbox").checked = false;
+    updateApprovalButton({});
+  }
+
+  async function refreshQueueProduct(item) {
+    if (item.loading && item.promise) return item.promise;
+    const key = productKey(item.offer_id, item.seller_sku);
+    item.loading = true;
+    item.error = "";
+    if (key === currentQueueKey) {
+      clearCurrentApprovalContext();
+      setLoading(true);
+    }
+    renderQueue();
+    item.promise = (async () => {
+      try {
+        const data = await fetchDashboard(item.offer_id, item.seller_sku);
+        item.data = data;
+        item.error = "";
+        if (key === currentQueueKey) {
+          loadedQueueKey = key;
+          $("#offerId").value = item.offer_id;
+          $("#sellerSku").value = item.seller_sku;
+          syncCurrentUrl(item);
+          render(data);
+          showError("");
+        }
+        return data;
+      } catch (error) {
+        const message = friendlyError(error.message);
+        item.data = null;
+        item.error = message;
+        if (key === currentQueueKey) {
+          showError(message);
+          renderFailure(message);
+        }
+        throw error;
+      } finally {
+        item.loading = false;
+        item.promise = null;
+        if (key === currentQueueKey) setLoading(false);
+        renderQueue();
+      }
+    })();
+    return item.promise;
+  }
+
+  async function selectQueueProduct(key) {
+    if (approvalSubmitting) return;
+    const item = queueItem(key);
+    if (!item) return;
+    currentQueueKey = key;
+    $("#offerId").value = item.offer_id;
+    $("#sellerSku").value = item.seller_sku;
+    syncCurrentUrl(item);
+    clearCurrentApprovalContext();
+    renderQueue();
+    await refreshQueueProduct(item).catch(() => {});
+  }
+
+  async function addAndOpenCurrentInput() {
     const offerId = $("#offerId").value.trim();
     const sellerSku = $("#sellerSku").value.trim();
-    if (!/^\d{1,32}$/.test(offerId) || !/^\d{1,32}$/.test(sellerSku)) {
+    if (!validIdentity(offerId, sellerSku)) {
       const message = "Offer ID 和 Seller SKU 必须是 1–32 位数字。";
       showError(message);
-      renderFailure(message);
       return;
     }
-    setLoading(true);
-    showError("");
-    try {
-      const data = await fetchDashboard(offerId, sellerSku);
-      render(data);
-      const url = new URL(window.location.href);
-      url.searchParams.set("offer_id", offerId);
-      url.searchParams.set("seller_sku", sellerSku);
-      history.replaceState(null, "", url);
-    } catch (error) {
-      const message = error.message || "商品状态读取失败，请确认本地服务已启动。";
-      showError(message);
-      renderFailure(message);
-    } finally {
-      setLoading(false);
-    }
+    const item = addToQueue(offerId, sellerSku, { select: true });
+    if (!item) return;
+    $("#queueMessage").textContent = "商品已加入并行队列。";
+    await selectQueueProduct(productKey(item.offer_id, item.seller_sku));
+  }
+
+  async function refreshAllQueueProducts() {
+    if (queueRefreshing || !queueItems.length) return;
+    queueRefreshing = true;
+    $("#refreshAllButton").disabled = true;
+    $(".queue-section").classList.add("is-refreshing");
+    $("#queueMessage").textContent = `最多 ${QUEUE_REFRESH_CONCURRENCY} 件商品并行读取中。`;
+    clearCurrentApprovalContext();
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < queueItems.length) {
+        const item = queueItems[cursor];
+        cursor += 1;
+        await refreshQueueProduct(item).catch(() => {});
+      }
+    };
+    const workers = Array.from(
+      { length: Math.min(QUEUE_REFRESH_CONCURRENCY, queueItems.length) },
+      () => worker(),
+    );
+    await Promise.allSettled(workers);
+    queueRefreshing = false;
+    $("#refreshAllButton").disabled = false;
+    $(".queue-section").classList.remove("is-refreshing");
+    const failures = queueItems.filter((item) => item.error).length;
+    $("#queueMessage").textContent = failures
+      ? `刷新完成，${failures} 件商品读取失败；其余商品已更新。`
+      : `刷新完成，共更新 ${queueItems.length} 件商品。`;
+    renderQueue();
   }
 
   $("#lookupForm").addEventListener("submit", (event) => {
     event.preventDefault();
-    load();
+    addAndOpenCurrentInput();
   });
-  $("#refreshButton").addEventListener("click", load);
+  $("#refreshButton").addEventListener("click", () => {
+    const item = queueItem(currentQueueKey);
+    if (item) refreshQueueProduct(item).catch(() => {});
+  });
+  $("#refreshAllButton").addEventListener("click", refreshAllQueueProducts);
+  $("#refreshChannelsButton").addEventListener("click", () => {
+    const item = queueItem(currentQueueKey);
+    if (item) refreshQueueProduct(item).catch(() => {});
+  });
+  $("#queueGrid").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-action]");
+    if (!button || button.disabled) return;
+    const key = button.dataset.key || "";
+    if (button.dataset.action === "switch") {
+      selectQueueProduct(key);
+      return;
+    }
+    if (button.dataset.action === "remove" && key !== currentQueueKey) {
+      queueItems = queueItems.filter((item) => (
+        productKey(item.offer_id, item.seller_sku) !== key
+      ));
+      saveQueue();
+      renderQueue();
+      $("#queueMessage").textContent = "商品已移出队列。";
+    }
+  });
+  $("#approvalCheckbox").addEventListener("change", () => {
+    updateApprovalButton(currentData || {});
+  });
+  $("#approvalForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitApproval();
+  });
 
   const initial = new URLSearchParams(window.location.search);
-  if (initial.get("offer_id")) $("#offerId").value = initial.get("offer_id");
-  if (initial.get("seller_sku")) $("#sellerSku").value = initial.get("seller_sku");
-  load();
+  queueItems = readQueue();
+  const initialOffer = initial.get("offer_id");
+  const initialSku = initial.get("seller_sku");
+  let initialItem = null;
+  if (validIdentity(initialOffer, initialSku)) {
+    initialItem = addToQueue(initialOffer, initialSku, { select: true });
+  } else if (queueItems.length) {
+    initialItem = queueItems[0];
+    currentQueueKey = productKey(initialItem.offer_id, initialItem.seller_sku);
+  } else {
+    initialItem = addToQueue($("#offerId").value, $("#sellerSku").value, { select: true });
+  }
+  renderQueue();
+  if (initialItem) {
+    $("#offerId").value = initialItem.offer_id;
+    $("#sellerSku").value = initialItem.seller_sku;
+    syncCurrentUrl(initialItem);
+    refreshQueueProduct(initialItem).catch(() => {});
+  }
 })();

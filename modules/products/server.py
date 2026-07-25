@@ -11,6 +11,7 @@ import time
 import hashlib
 import os
 from concurrent.futures import ThreadPoolExecutor, wait
+from datetime import datetime, timezone
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -24,10 +25,196 @@ from shared_platform.registry import http_registry
 WEB_DIR = ROOT / "web"
 DEFAULT_PORT = 8765
 IMAGE_CACHE_DIR = ROOT / "data" / "web_image_cache"
+PRODUCT_APPROVAL_BODY_LIMIT = 64 * 1024
+_product_approval_lock = threading.Lock()
 
 # Phase 1 ownership seam. Handler dispatch and every existing URL remain
 # unchanged; later route modules can consume this registry during extraction.
 HTTP_DOMAIN_REGISTRY = http_registry()
+
+
+def _product_workspace_view(payload: dict) -> dict:
+    """Present the governed release evidence as the formal product workspace."""
+    return {
+        **payload,
+        "schema_version": "product-workspace-v1",
+        "mode": "pre_release",
+        "workspace_mode": "pre_release",
+        "approval": payload.get("approval_rehearsal", {}),
+        "publication_plan": payload.get("publication_rehearsal", {}),
+    }
+
+
+def _approve_product_workspace_locally(data: dict) -> tuple[int, dict]:
+    """Serialize local SKU reservation, preview, revision check, and save."""
+
+    with _product_approval_lock:
+        return _approve_product_workspace_locally_locked(data)
+
+
+def _approve_product_workspace_locally_locked(data: dict) -> tuple[int, dict]:
+    """Persist one explicit, revision-checked local product approval.
+
+    The governed dashboard performs the current content-package validation and
+    read-only catalog uniqueness check through
+    ``preview_product_approval_lock``.  This function only applies the exact
+    review lock and approval fact returned by that gate.
+    """
+    from modules.sourcing import new_product_workbench as np_mod
+    from shared_platform import release_control
+
+    offer_id = str(data.get("offer_id") or "").strip()
+    seller_sku = str(data.get("seller_sku") or "").strip()
+    approved_by = str(data.get("approved_by") or "").strip()
+    expected_revision = data.get("expected_revision")
+    if not offer_id.isdigit() or not 1 <= len(offer_id) <= 32:
+        return 400, {"ok": False, "error": "offer_id must contain 1-32 digits"}
+    if not seller_sku.isdigit() or not 1 <= len(seller_sku) <= 32:
+        return 400, {"ok": False, "error": "seller_sku must contain 1-32 digits"}
+    if data.get("user_approved") is not True:
+        return 400, {
+            "ok": False,
+            "error": "explicit user_approved=true is required",
+        }
+    if (
+        isinstance(expected_revision, bool)
+        or not isinstance(expected_revision, int)
+        or expected_revision < 0
+    ):
+        return 400, {
+            "ok": False,
+            "error": "expected_revision must be a non-negative integer",
+        }
+    if approved_by != "Kyle":
+        return 400, {
+            "ok": False,
+            "error": "approved_by must be Kyle for this local approval surface",
+        }
+
+    try:
+        state = np_mod.load_state(offer_id)
+    except (FileNotFoundError, ValueError) as error:
+        return 404, {"ok": False, "error": str(error)}
+    current_revision = int(state.get("_revision") or 0)
+    if current_revision != expected_revision:
+        return 409, {
+            "ok": False,
+            "error": "state revision is stale",
+            "current_revision": current_revision,
+        }
+
+    try:
+        dashboard = release_control.build_release_dashboard(
+            offer_id=offer_id,
+            seller_sku=seller_sku,
+        )
+    except FileNotFoundError as error:
+        return 404, {"ok": False, "error": str(error)}
+    except (TypeError, ValueError) as error:
+        return 400, {"ok": False, "error": str(error)}
+    except Exception as error:
+        return 500, {"ok": False, "error": str(error)}
+
+    dashboard_revision = int((dashboard.get("product") or {}).get("revision") or 0)
+    if dashboard_revision != expected_revision:
+        return 409, {
+            "ok": False,
+            "error": "state revision is stale",
+            "current_revision": dashboard_revision,
+        }
+    if not bool((dashboard.get("content") or {}).get("approved")):
+        return 409, {
+            "ok": False,
+            "error": "current content package is not approved",
+            "blockers": list((dashboard.get("content") or {}).get("blockers") or ()),
+        }
+    preview = dashboard.get("approval_rehearsal") or dashboard.get("approval") or {}
+    preview_patch = preview.get("state_patch_preview") or {}
+    proposed_approval = preview_patch.get("product_approval") or {}
+    if not bool(preview.get("ready")) or not proposed_approval:
+        return 409, {
+            "ok": False,
+            "error": "product approval preview is not ready",
+            "blockers": list(preview.get("blockers") or ()),
+        }
+
+    current_product = dashboard.get("product") or {}
+    if (
+        bool(current_product.get("actual_product_approved"))
+        and bool((state.get("review") or {}).get("fields_locked"))
+        and str((state.get("review") or {}).get("seller_sku") or "") == seller_sku
+    ):
+        return 200, {
+            "ok": True,
+            "idempotent": True,
+            "persisted": False,
+            "external_writes_performed": [],
+            "dashboard": _product_workspace_view(dashboard),
+        }
+
+    fingerprint = str(proposed_approval.get("input_fingerprint") or "").strip()
+    if not fingerprint:
+        return 409, {
+            "ok": False,
+            "error": "approval preview is missing its input fingerprint",
+        }
+    approved_at = datetime.now(timezone.utc).isoformat()
+    approval_id = (
+        f"product-approval:{offer_id}:{seller_sku}:{fingerprint[:16]}"
+    )
+    product_approval = {
+        **dict(proposed_approval),
+        "approval_id": approval_id,
+        "package_id": f"product:{offer_id}:{seller_sku}",
+        "status": "approved",
+        "subject_type": "product",
+        "subject_id": offer_id,
+        "seller_sku": seller_sku,
+        "approved_by": approved_by,
+        "approved_at": approved_at,
+        "source_reference": (
+            f"workbench:{offer_id}:revision:{expected_revision}"
+        ),
+    }
+
+    next_state = dict(state)
+    review = state.get("review")
+    if not isinstance(review, dict):
+        return 409, {"ok": False, "error": "state review must be a mapping"}
+    next_review = dict(review)
+    next_review["seller_sku"] = seller_sku
+    next_review["fields_locked"] = True
+    next_state["review"] = next_review
+    next_state["product_approval"] = product_approval
+    try:
+        np_mod.save_state(offer_id, next_state)
+    except RuntimeError:
+        latest = np_mod.load_state(offer_id)
+        return 409, {
+            "ok": False,
+            "error": "state revision is stale",
+            "current_revision": int(latest.get("_revision") or 0),
+        }
+
+    try:
+        updated = release_control.build_release_dashboard(
+            offer_id=offer_id,
+            seller_sku=seller_sku,
+        )
+    except Exception as error:
+        return 500, {
+            "ok": False,
+            "error": f"approval was saved but dashboard refresh failed: {error}",
+            "approval_id": approval_id,
+        }
+    return 200, {
+        "ok": True,
+        "idempotent": False,
+        "persisted": True,
+        "approval_id": approval_id,
+        "external_writes_performed": [],
+        "dashboard": _product_workspace_view(updated),
+    }
 
 _scan_lock = threading.Lock()
 _scan_job: dict = {
@@ -1300,6 +1487,7 @@ class Handler(BaseHTTPRequestHandler):
             "index.html",
             "release.html",
             "product_workspace.html",
+            "ai_image_studio.html",
             "profit_center.html",
         }:
             self.send_header(
@@ -1329,6 +1517,102 @@ class Handler(BaseHTTPRequestHandler):
         if not length:
             return {}
         return json.loads(raw.decode("utf-8"))
+
+    def _handle_product_flow_proxy(self, method: str) -> bool:
+        """Expose the Treasury workflow behind Orbit's same-origin product API."""
+        parsed = urlparse(self.path)
+        prefix = "/api/product-flow/"
+        if not parsed.path.startswith(prefix):
+            return False
+        action = parsed.path[len(prefix) :].strip("/")
+        allowed_get = {
+            "preview",
+            "content-report",
+            "content-image",
+        }
+        allowed_post = {
+            "review",
+            "content-package/prepare",
+            "content-package/vision-proposal",
+            "content-package/review",
+            "content-package/suite-images-preflight",
+            "content-package/remaining-images-generate",
+            "content-package/miaoshou-images/commit",
+            "content-package/generated-image/decision",
+        }
+        allowed = allowed_get if method == "GET" else allowed_post
+        if action not in allowed:
+            self._json(404, {"ok": False, "error": "product-flow action is not registered"})
+            return True
+
+        target = f"http://127.0.0.1:8766/api/new-product/{action}"
+        if parsed.query:
+            target = f"{target}?{parsed.query}"
+        body = None
+        if method == "POST":
+            origin = (self.headers.get("Origin") or "").strip()
+            if origin:
+                expected_port = int(self.server.server_address[1])
+                expected_origins = {
+                    f"http://127.0.0.1:{expected_port}",
+                    f"http://localhost:{expected_port}",
+                }
+                if origin not in expected_origins:
+                    self._json(403, {"ok": False, "error": "cross-origin product-flow write rejected"})
+                    return True
+            content_type = (self.headers.get("Content-Type") or "").lower()
+            if "application/json" not in content_type:
+                self._json(415, {"ok": False, "error": "product-flow writes require application/json"})
+                return True
+            length = int(self.headers.get("Content-Length", 0))
+            if length > 2 * 1024 * 1024:
+                self._json(413, {"ok": False, "error": "request body is too large"})
+                return True
+            body = self.rfile.read(length) if length else b"{}"
+        request = urllib.request.Request(
+            target,
+            data=body,
+            method=method,
+            headers={
+                "Accept": self.headers.get("Accept") or "*/*",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+        )
+        opener = urllib.request.build_opener(_NoRemoteImageRedirects())
+        try:
+            with opener.open(request, timeout=120) as response:
+                data = response.read(64 * 1024 * 1024)
+                content_type = response.headers.get("Content-Type") or "application/octet-stream"
+                if action == "content-report" and "text/html" in content_type:
+                    data = data.replace(b"/api/new-product/", b"/api/product-flow/")
+                self.send_response(response.status)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                self.wfile.write(data)
+        except urllib.error.HTTPError as error:
+            data = error.read(4 * 1024 * 1024)
+            self.send_response(error.code)
+            self.send_header(
+                "Content-Type",
+                error.headers.get("Content-Type") or "application/json; charset=utf-8",
+            )
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(data)
+        except (urllib.error.URLError, TimeoutError, OSError):
+            self._json(
+                503,
+                {
+                    "ok": False,
+                    "error": "product workflow service is unavailable",
+                },
+            )
+        return True
 
     def _handle_ozon_proxy(self, method: str) -> bool:
         path = urlparse(self.path).path
@@ -1444,12 +1728,28 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path
-        if path in ("/new-product", "/new-product.html"):
+        if path in (
+            "/new-product",
+            "/new-product.html",
+            "/product-workspace",
+            "/product-workspace.html",
+        ):
             return self._file(WEB_DIR / "product_workspace.html")
+        if path in (
+            "/new-product/images",
+            "/new-product/images.html",
+            "/ai-image-studio",
+            "/ai-image-studio.html",
+            "/ai-images",
+            "/ai-images.html",
+        ):
+            return self._file(WEB_DIR / "ai_image_studio.html")
         if path in ("/new-product-legacy", "/new-product-legacy.html"):
             return self._module_moved("Orbit Treasury", "http://127.0.0.1:8766/")
         if path in ("/ozon", "/ozon.html", "/rus", "/rus.html"):
             return self._module_moved("Orbit Rus", "http://127.0.0.1:8767/")
+        if self._handle_product_flow_proxy("GET"):
+            return
         if path.startswith("/api/new-product/"):
             return self._json(410, {"ok": False, "error": "Orbit Treasury moved to http://127.0.0.1:8766/"})
         if self._handle_ozon_proxy("GET"):
@@ -1707,14 +2007,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 payload = build_release_dashboard(offer_id=offer_id, seller_sku=seller_sku)
                 if path == "/api/product-workspace/dashboard":
-                    payload = {
-                        **payload,
-                        "schema_version": "product-workspace-v1",
-                        "mode": "pre_release",
-                        "workspace_mode": "pre_release",
-                        "approval": payload.get("approval_rehearsal", {}),
-                        "publication_plan": payload.get("publication_rehearsal", {}),
-                    }
+                    payload = _product_workspace_view(payload)
                 return self._json(200, payload)
             except FileNotFoundError as error:
                 return self._json(404, {"ok": False, "error": str(error)})
@@ -2233,6 +2526,48 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/api/feishu/event":
             return self._handle_feishu_event()
+        if path == "/api/product-workspace/approve":
+            origin = (self.headers.get("Origin") or "").strip()
+            if origin:
+                expected_port = int(self.server.server_address[1])
+                if origin not in {
+                    f"http://127.0.0.1:{expected_port}",
+                    f"http://localhost:{expected_port}",
+                }:
+                    return self._json(
+                        403,
+                        {
+                            "ok": False,
+                            "error": "cross-origin product approval rejected",
+                        },
+                    )
+            content_type = (self.headers.get("Content-Type") or "").lower()
+            if "application/json" not in content_type:
+                return self._json(
+                    415,
+                    {
+                        "ok": False,
+                        "error": "product approval requires application/json",
+                    },
+                )
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+            except (TypeError, ValueError):
+                return self._json(400, {"ok": False, "error": "invalid Content-Length"})
+            if length < 0:
+                return self._json(400, {"ok": False, "error": "invalid Content-Length"})
+            if length > PRODUCT_APPROVAL_BODY_LIMIT:
+                return self._json(413, {"ok": False, "error": "request body is too large"})
+            try:
+                data = self._read_json()
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return self._json(400, {"ok": False, "error": "invalid json"})
+            if not isinstance(data, dict):
+                return self._json(400, {"ok": False, "error": "json body must be an object"})
+            status, payload = _approve_product_workspace_locally(data)
+            return self._json(status, payload)
+        if self._handle_product_flow_proxy("POST"):
+            return
         if path.startswith("/api/new-product/"):
             return self._json(410, {"ok": False, "error": "Orbit Treasury moved to http://127.0.0.1:8766/"})
         if self._handle_ozon_proxy("POST"):

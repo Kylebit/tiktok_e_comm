@@ -83,6 +83,36 @@ def test_weekly_digest_requires_audit_metadata_for_ready_status():
     incomplete = build_weekly_profit_digest([row], period_start="2026-07-20", period_end="2026-07-26", generated_at=datetime(2026, 7, 26, tzinfo=timezone.utc))
     assert incomplete.status == "needs_review"
     assert {issue.code for issue in incomplete.quality_issues} >= {"missing_cost_version", "missing_code_version", "missing_fx_as_of"}
-    complete = build_weekly_profit_digest([row], period_start="2026-07-20", period_end="2026-07-26", cost_version="sku-costs:2026-07-20", code_version="7689731", fx_source="approved-table", fx_as_of="2026-07-20", snapshot_id="fixture:1", generated_at=datetime(2026, 7, 20, tzinfo=timezone.utc))
+    complete_row = {**row, "channel": "tiktok", "region": "US"}
+    complete = build_weekly_profit_digest([complete_row], period_start="2026-07-20", period_end="2026-07-26", cost_version="sku-costs:2026-07-20", code_version="7689731", fx_source="approved-table", fx_as_of="2026-07-20", snapshot_id="fixture:1", assumptions={"version": "v1"}, generated_at=datetime(2026, 7, 20, tzinfo=timezone.utc))
     assert complete.status == "ready"
     assert complete.payload()["input_snapshot"]["snapshot_id"] == "fixture:1"
+
+
+def test_weekly_digest_fingerprint_includes_fx_provenance_and_snapshot_identity():
+    row = {"order_id": "1", "sku_id": "A", "channel": "tiktok", "region": "US", "currency": "CNY", "settlement_amount": "2", "cost_cny": "1", "statement_date": "2026-07-20"}
+    base = dict(period_start="2026-07-20", period_end="2026-07-26", cost_version="cost:v1", code_version="code:v1", fx_source="source-a", fx_as_of="2026-07-20", snapshot_id="fixture:a", assumptions={"version": "v1"}, generated_at=datetime(2026, 7, 20, tzinfo=timezone.utc))
+    first = build_weekly_profit_digest([row], **base)
+    changed_as_of = build_weekly_profit_digest([row], **{**base, "fx_as_of": "2026-07-21"})
+    changed_source = build_weekly_profit_digest([row], **{**base, "fx_source": "source-b"})
+    changed_snapshot = build_weekly_profit_digest([row], **{**base, "snapshot_id": "fixture:b"})
+    assert len({first.idempotency_key, changed_as_of.idempotency_key, changed_source.idempotency_key, changed_snapshot.idempotency_key}) == 4
+
+
+def test_weekly_digest_marks_missing_channel_region_and_assumptions():
+    report = build_weekly_profit_digest(
+        [{"order_id": "1", "sku_id": "A", "currency": "CNY", "settlement_amount": "2", "cost_cny": "1", "statement_date": "2026-07-20"}],
+        period_start="2026-07-20", period_end="2026-07-26", cost_version="cost:v1", code_version="code:v1", fx_source="approved", fx_as_of="2026-07-20", generated_at=datetime(2026, 7, 20, tzinfo=timezone.utc),
+    )
+    assert report.status == "needs_review"
+    assert {issue.code for issue in report.quality_issues} >= {"missing_channel", "missing_region", "missing_assumptions"}
+
+
+def test_weekly_digest_freshness_uses_in_period_source_rows_missing_cost():
+    report = build_weekly_profit_digest(
+        [{"order_id": "new", "sku_id": "A", "channel": "tiktok", "region": "US", "currency": "CNY", "settlement_amount": "5", "statement_date": "2026-07-26"}],
+        period_start="2026-07-20", period_end="2026-07-26", generated_at=datetime(2026, 7, 26, 1, tzinfo=timezone.utc),
+    )
+    assert report.freshness["state"] == "fresh"
+    assert "stale_data" not in {issue.code for issue in report.quality_issues}
+    assert "missing_cost" in {issue.code for issue in report.quality_issues}

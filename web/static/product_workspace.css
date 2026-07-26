@@ -581,6 +581,20 @@ section { scroll-margin-top: 20px; }
   margin-bottom: 22px;
 }
 .panel-heading h2 { font-size: 24px; }
+.facts-panel .panel-heading > div:first-child > p:last-child {
+  max-width: 610px;
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+}
+.facts-heading-status {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
 .badge {
   display: inline-flex;
   align-items: center;
@@ -630,30 +644,6 @@ section { scroll-margin-top: 20px; }
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
-.facts-editor {
-  margin-top: 20px;
-  padding-top: 20px;
-  border-top: 1px solid var(--line);
-  scroll-margin-top: 22px;
-}
-.facts-editor-heading {
-  display: flex;
-  align-items: start;
-  justify-content: space-between;
-  gap: 22px;
-  margin-bottom: 17px;
-}
-.facts-editor-heading h3 {
-  margin: 6px 0 7px;
-  font: 650 21px/1.2 Georgia, "Songti SC", serif;
-}
-.facts-editor-heading p:last-child {
-  max-width: 540px;
-  margin: 0;
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.55;
-}
 .revision-pill {
   flex: 0 0 auto;
   padding: 7px 9px;
@@ -666,6 +656,9 @@ section { scroll-margin-top: 20px; }
 .facts-edit-form {
   display: grid;
   gap: 17px;
+}
+.unified-facts-form > .fact-grid {
+  margin-bottom: 1px;
 }
 .facts-edit-grid {
   display: grid;
@@ -720,6 +713,12 @@ section { scroll-margin-top: 20px; }
 .dimension-editor label span {
   color: var(--muted);
   font-size: 9px;
+}
+.dimension-editor > small {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.4;
 }
 .source-spec-editor > p {
   margin: 0 0 12px;
@@ -806,6 +805,23 @@ section { scroll-margin-top: 20px; }
   background: rgba(24, 49, 46, .05);
   font-size: 10px;
   text-align: center;
+}
+.facts-pricing-linkage {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 13px;
+  border: 1px solid rgba(35, 118, 107, .2);
+  border-radius: 11px;
+  color: #3b5d57;
+  background: rgba(213, 238, 229, .32);
+  font-size: 9px;
+  line-height: 1.45;
+}
+.facts-pricing-linkage strong {
+  flex: 0 0 auto;
+  color: var(--teal);
+  font-size: 10px;
 }
 .facts-edit-actions {
   display: flex;
@@ -1710,7 +1726,7 @@ footer {
   .panel { padding: 20px; }
   .fact-grid { grid-template-columns: 1fr; }
   .fact.wide { grid-column: auto; }
-  .facts-editor-heading,
+  .facts-heading-status,
   .facts-edit-actions { display: grid; }
   .revision-pill { justify-self: start; }
   .facts-edit-grid,

@@ -240,6 +240,66 @@ def test_facts_save_updates_one_revision_and_preserves_unrelated_state(monkeypat
     assert payload["dashboard"]["product"]["revision"] == 5
 
 
+def test_facts_save_returns_pricing_recalculated_from_the_new_revision(monkeypatch):
+    initial = {
+        "offer_id": OFFER_ID,
+        "_revision": 4,
+        "review": copy.deepcopy(_preview()["review"]),
+    }
+    state, _saves = _memory_workbench(monkeypatch, initial)
+    monkeypatch.setattr(
+        new_product_workbench,
+        "_source_summary",
+        lambda *_args, **_kwargs: _preview()["source"],
+    )
+
+    def dashboard_from_current_state(**_kwargs) -> dict:
+        review = state["review"]
+        dashboard = _dashboard(int(state["_revision"]))
+        dashboard["pricing_review"] = {
+            "input_cost_cny": review["cost_cny"],
+            "input_weight_kg": review["weight_kg"],
+            "input_package_cm": list(review["package_cm"]),
+            "target_pricing": {
+                "tiktok:LH_TH": {
+                    "list_price": (
+                        review["cost_cny"] * 10
+                        + review["weight_kg"] * 100
+                        + sum(review["package_cm"])
+                    )
+                }
+            },
+        }
+        return dashboard
+
+    monkeypatch.setattr(
+        release_control,
+        "build_release_dashboard",
+        dashboard_from_current_state,
+    )
+
+    status, payload = product_server._save_product_workspace_facts_locally(
+        {
+            "offer_id": OFFER_ID,
+            "expected_revision": 4,
+            "title": "Edited butterfly wall decal",
+            "cost_cny": 9.25,
+            "weight_kg": 0.18,
+            "package_cm": [31.0, 4.0, 3.0],
+            "selected_sku_keys": ["30x90-2pcs"],
+        }
+    )
+
+    assert status == 200
+    assert payload["revision"] == 5
+    pricing = payload["dashboard"]["pricing_review"]
+    assert pricing["input_cost_cny"] == 9.25
+    assert pricing["input_weight_kg"] == 0.18
+    assert pricing["input_package_cm"] == [31.0, 4.0, 3.0]
+    assert pricing["target_pricing"]["tiktok:LH_TH"]["list_price"] == 148.5
+    assert payload["external_writes_performed"] == []
+
+
 @pytest.mark.parametrize(
     "locked_state",
     [
@@ -457,6 +517,9 @@ def test_formal_frontend_collects_first_and_has_an_inline_facts_editor():
     script = (ROOT / "web/static/product_workspace.js").read_text(encoding="utf-8")
 
     assert 'id="productFactsForm"' in html
+    assert 'id="productFactsPanel"' in html
+    assert "商品事实 · 直接编辑" in html
+    assert "核对并编辑商品" not in html
     assert 'name="title"' in html
     assert 'name="cost_cny"' in html
     assert 'name="weight_kg"' in html
@@ -464,6 +527,10 @@ def test_formal_frontend_collects_first_and_has_an_inline_facts_editor():
     assert 'name="package_width_cm"' in html
     assert 'name="package_height_cm"' in html
     assert 'id="productSpecGrid"' in html
+    assert 'id="factsEditCostSource"' in html
+    assert 'id="factsEditWeightSource"' in html
+    assert 'id="factsEditPackageSource"' in html
+    assert "保存并刷新全部售价" in html
     assert "/api/product-workspace/collect" in script
     assert "/api/product-workspace/facts" in script
     assert "expected_revision" in script
@@ -471,3 +538,11 @@ def test_formal_frontend_collects_first_and_has_an_inline_facts_editor():
     assert "请先进入 AI 图片工作室" not in script
     assert "AI 图片工作室" in html
     assert 'target="_blank"' in html
+    save_start = script.index("async function submitFactsEdit()")
+    save_end = script.index("function approvalEligible", save_start)
+    save_flow = script[save_start:save_end]
+    assert "render(data);" in save_flow
+    assert "全部国家与店铺售价、费用审计和渠道预检已按新值刷新" in save_flow
+    render_start = script.index("function render(data)")
+    render_end = script.index("function clearCurrentApprovalContext", render_start)
+    assert "renderPricingReview(" in script[render_start:render_end]

@@ -589,8 +589,6 @@
     const product = data.product || {};
     const skuGovernance = product.seller_sku_governance || {};
     const evidence = product.fact_evidence || {};
-    const evidenceFields = evidence.fields || {};
-    const sourceFor = (field) => evidenceFields[field]?.selected_source || "未记录";
     $("#productTitle").textContent = product.title || "未命名商品";
     $("#productIdentity").innerHTML = [
       `Offer ${esc(product.offer_id || "—")}`,
@@ -621,7 +619,6 @@
       ? (product.category?.name || Object.values(product.category || {}).filter(Boolean).join(" / "))
       : product.category;
     const facts = [
-      ["候选 Seller SKU", product.seller_sku_candidate || "—"],
       [
         "SKU 占用审查",
         skuGovernance.available
@@ -638,14 +635,9 @@
         (skuGovernance.suggested_sku_range || []).join(" → ") || "—",
       ],
       ["商品类目", category || "—"],
-      ["商品标题", `${product.title || "—"} · 来源 ${sourceFor("title")}`, true],
-      ["采购成本", `¥ ${money(product.cost_cny)} CNY · 来源 ${sourceFor("cost_cny")}`],
-      ["商品重量", product.weight_kg ? `${product.weight_kg} kg · 来源 ${sourceFor("weight_kg")}` : "—"],
-      ["包装尺寸", (product.package_cm || []).length ? `${product.package_cm.join(" × ")} cm · 来源 ${sourceFor("package_cm")}` : "—"],
       ["目标站点", (product.selected_sites || []).map((site) => siteNames[site] || site).join(" · ") || "—"],
-      ["保留规格", (product.selected_sku_keys || []).join(" · ") || "—"],
       [
-        "规格价格证据",
+        "当前规格价格证据",
         (evidence.selected_sku_prices || []).map(
           (row) => `${row.label || row.selected_key}: ¥${row.price_cny ?? "—"}`,
         ).join(" · ") || "—",
@@ -725,6 +717,8 @@
 
   function renderFactsEditor(data) {
     const product = data.product || {};
+    const evidenceFields = product.fact_evidence?.fields || {};
+    const sourceFor = (field) => evidenceFields[field]?.selected_source || "未记录";
     const dimensions = Array.isArray(product.package_cm) ? product.package_cm : [];
     const selected = new Set((product.selected_sku_keys || []).map(String));
     const locked = Boolean(product.actual_product_approved || product.fields_locked);
@@ -739,6 +733,10 @@
     $("#factsEditLength").value = dimensions[0] ?? "";
     $("#factsEditWidth").value = dimensions[1] ?? "";
     $("#factsEditHeight").value = dimensions[2] ?? "";
+    $("#factsEditTitleSource").textContent = `来源：${sourceFor("title")}`;
+    $("#factsEditCostSource").textContent = `来源：${sourceFor("cost_cny")}`;
+    $("#factsEditWeightSource").textContent = `来源：${sourceFor("weight_kg")}`;
+    $("#factsEditPackageSource").textContent = `来源：${sourceFor("package_cm")}`;
 
     const options = sourceSkuOptions(product);
     $("#productSpecGrid").innerHTML = options.length
@@ -838,7 +836,7 @@
       showError("");
       const revision = data.product?.revision ?? payload.revision ?? "新";
       $("#factsEditMessage").textContent =
-        `已保存 revision ${revision}；售价、事实证据与全渠道预检已按新值刷新。`;
+        `已保存 revision ${revision}；全部国家与店铺售价、费用审计和渠道预检已按新值刷新。`;
     } catch (error) {
       const message = error.status === 409
         ? `保存被拒绝：${friendlyError(error.message)} 请刷新当前商品后再核对。`
@@ -1927,7 +1925,7 @@
   $("#productFactsForm").addEventListener("input", () => {
     if (!currentData || factsSubmitting) return;
     $("#factsEditMessage").textContent =
-      "有尚未保存的修改；保存后会建立新 revision 并重新计算售价与发布预检。";
+      "有尚未保存的修改；当前售价仍是上一 revision。保存后会建立新 revision，并重新计算全部国家与店铺售价。";
   });
   $("#productFactsForm").addEventListener("submit", (event) => {
     event.preventDefault();

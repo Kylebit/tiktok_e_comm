@@ -425,6 +425,28 @@ def _save_product_workspace_facts_locally(data: dict) -> tuple[int, dict]:
             }
         )
         next_state["review"] = next_review
+        listing_copy = (
+            dict(state.get("listing_copy"))
+            if isinstance(state.get("listing_copy"), dict)
+            else {}
+        )
+        if listing_copy:
+            from domains.content_operations import listing_title_fact_signature
+
+            title_facts = _listing_title_facts(
+                np_mod,
+                offer_id,
+                next_state,
+                source=source,
+            )
+            if listing_copy.get("input_signature") != listing_title_fact_signature(
+                title_facts
+            ):
+                listing_copy["status"] = "superseded_product_facts_changed"
+            elif title == str(listing_copy.get("semantic_master_en") or "").strip():
+                listing_copy["status"] = "adopted_in_product_facts"
+                listing_copy["adopted_title"] = title
+            next_state["listing_copy"] = listing_copy
         try:
             saved = np_mod.save_state(offer_id, next_state)
         except RuntimeError:
@@ -456,6 +478,116 @@ def _save_product_workspace_facts_locally(data: dict) -> tuple[int, dict]:
             "external_writes_performed": [],
             "dashboard": _product_workspace_view(dashboard),
         }
+
+
+def _listing_title_facts(
+    np_mod,
+    offer_id: str,
+    state: dict,
+    *,
+    source: dict | None = None,
+) -> dict:
+    """Build the explicit fact input used by the content-domain title model."""
+
+    source = source or np_mod._source_summary(offer_id)
+    review = state.get("review") if isinstance(state.get("review"), dict) else {}
+    selected = set(str(value) for value in (review.get("selected_sku_keys") or ()))
+    selected_skus = [
+        {
+            "key": str(row.get("key") or row.get("name") or ""),
+            "label": str(row.get("name") or row.get("key") or ""),
+            "price_cny": row.get("price"),
+        }
+        for row in (source.get("skus") or ())
+        if isinstance(row, dict)
+        and str(row.get("key") or row.get("name") or "") in selected
+    ]
+    return {
+        "offer_id": offer_id,
+        "source_title_zh": str(source.get("title_source") or "").strip(),
+        "category": dict(review.get("category") or {}),
+        "package_cm": list(review.get("package_cm") or ()),
+        "selected_skus": selected_skus,
+        "verified_attributes": dict(source.get("attributes") or {}),
+    }
+
+
+def _generate_product_workspace_title_draft(data: dict) -> tuple[int, dict]:
+    """Generate and persist model copy candidates; perform no marketplace write."""
+
+    from domains.content_operations import generate_title_candidates
+    from modules.sourcing import new_product_workbench as np_mod
+    from shared_platform import release_control
+
+    offer_id = str(data.get("offer_id") or "").strip()
+    expected_revision = data.get("expected_revision")
+    if not offer_id.isdigit() or not 1 <= len(offer_id) <= 32:
+        return 400, {"ok": False, "error": "offer_id must contain 1-32 digits"}
+    if (
+        isinstance(expected_revision, bool)
+        or not isinstance(expected_revision, int)
+        or expected_revision < 1
+    ):
+        return 400, {
+            "ok": False,
+            "error": "expected_revision must be a positive integer",
+        }
+
+    with _product_workbench_lock(offer_id):
+        state = np_mod.load_state(offer_id)
+        current_revision = int(state.get("_revision") or 0)
+        if current_revision != expected_revision:
+            return 409, {
+                "ok": False,
+                "error": "state revision is stale",
+                "current_revision": current_revision,
+            }
+        review = state.get("review")
+        if not isinstance(review, dict):
+            return 409, {"ok": False, "error": "state review must be a mapping"}
+        if bool(review.get("fields_locked")):
+            return 409, {
+                "ok": False,
+                "error": "approved product facts are locked",
+            }
+        facts = _listing_title_facts(np_mod, offer_id, state)
+        try:
+            draft = generate_title_candidates(facts)
+        except (RuntimeError, TypeError, ValueError) as error:
+            return 502, {
+                "ok": False,
+                "error": str(error),
+                "model_request_failed": True,
+                "marketplace_writes_performed": [],
+            }
+        next_state = dict(state)
+        next_state["listing_copy"] = draft
+        try:
+            saved = np_mod.save_state(offer_id, next_state)
+        except RuntimeError:
+            latest = np_mod.load_state(offer_id)
+            return 409, {
+                "ok": False,
+                "error": "state revision is stale",
+                "current_revision": int(latest.get("_revision") or 0),
+            }
+
+    try:
+        dashboard = release_control.build_release_dashboard(offer_id=offer_id)
+    except Exception as error:
+        return 500, {
+            "ok": False,
+            "error": f"title draft persisted but dashboard refresh failed: {error}",
+            "current_revision": int(saved.get("_revision") or 0),
+        }
+    return 200, {
+        "ok": True,
+        "persisted": True,
+        "revision": int(saved.get("_revision") or 0),
+        "language_model_request_performed": True,
+        "marketplace_writes_performed": [],
+        "dashboard": _product_workspace_view(dashboard),
+    }
 
 
 def _release_plan_payload_from_dashboard(dashboard: dict) -> tuple[dict, list[str]]:
@@ -3746,6 +3878,7 @@ class Handler(BaseHTTPRequestHandler):
         if path in {
             "/api/product-workspace/collect",
             "/api/product-workspace/facts",
+            "/api/product-workspace/title-draft",
             "/api/product-workspace/approve",
             "/api/product-workspace/release-plan/approve",
             "/api/product-workspace/miaoshou-draft/commit",
@@ -3792,6 +3925,8 @@ class Handler(BaseHTTPRequestHandler):
                 status, payload = _collect_product_workspace_locally(data)
             elif path == "/api/product-workspace/facts":
                 status, payload = _save_product_workspace_facts_locally(data)
+            elif path == "/api/product-workspace/title-draft":
+                status, payload = _generate_product_workspace_title_draft(data)
             elif path == "/api/product-workspace/approve":
                 status, payload = _approve_product_workspace_locally(data)
             elif path == "/api/product-workspace/release-plan/approve":

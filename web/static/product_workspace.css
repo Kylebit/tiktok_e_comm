@@ -657,6 +657,79 @@ section { scroll-margin-top: 20px; }
   display: grid;
   gap: 17px;
 }
+.title-assistant {
+  padding: 16px;
+  border: 1px solid rgba(35, 118, 107, .2);
+  border-radius: 15px;
+  background: linear-gradient(135deg, rgba(213, 238, 229, .42), rgba(255, 255, 255, .58));
+}
+.title-assistant-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 18px;
+}
+.title-assistant-heading h3 {
+  margin: 4px 0 5px;
+  font: 650 20px/1.15 Georgia, "Songti SC", serif;
+}
+.title-assistant-heading p:last-child {
+  max-width: 610px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.55;
+}
+.title-draft-loading { display: none; }
+.title-assistant .is-loading .title-draft-label { display: none; }
+.title-assistant .is-loading .title-draft-loading { display: inline; }
+.title-draft-status {
+  margin: 13px 0 0;
+  color: #41615b;
+  font-size: 9px;
+  line-height: 1.5;
+}
+.title-candidate-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+.title-candidate {
+  min-width: 0;
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 253, 247, .82);
+}
+.title-candidate.master {
+  grid-column: 1 / -1;
+  border-color: rgba(35, 118, 107, .35);
+}
+.title-candidate > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--teal);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.title-candidate small { color: var(--muted); }
+.title-candidate strong {
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.title-candidate .button {
+  justify-self: start;
+  min-height: 34px;
+  padding: 0 12px;
+  font-size: 9px;
+}
 .unified-facts-form > .fact-grid {
   margin-bottom: 1px;
 }
@@ -1735,6 +1808,9 @@ footer {
   .dimension-editor { grid-column: auto; }
   .dimension-editor { grid-template-columns: 1fr; }
   .facts-edit-actions .button { width: 100%; }
+  .title-assistant-heading { display: grid; }
+  .title-assistant-heading .button { width: 100%; }
+  .title-candidate-grid { grid-template-columns: 1fr; }
   .action-row { display: grid; }
   .approval-summary { grid-template-columns: 1fr; }
   .approval-summary > div,

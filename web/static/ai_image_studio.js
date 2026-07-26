@@ -217,9 +217,9 @@
     const states = {
       skipped: ["本次只使用来源图", "AI 生图已禁用。", "已跳过", "neutral", 0],
       not_started: ["尚未开始生成", "先完成 AI 分镜与生成前检查。", "未开始", "neutral", 0],
-      preflighting: ["正在执行生成前检查", "只验证配方、参考图与任务参数，不会创建付费任务。", "检查中", "warn", 2],
-      "preflight-ready": ["生成前检查已完成", `本次已准备 ${total} 张；等待 Kyle 确认付费。`, "等待付费确认", "warn", 2],
-      submitting: ["正在提交付费生成确认", "正在建立任务队列；请勿重复点击。", "提交中", "warn", 2],
+      preflighting: ["正在执行生成前检查", "只验证配方、参考图与任务参数，不会创建付费任务。", "检查中", "warn", 0],
+      "preflight-ready": ["生成前检查已完成", `本次已准备 ${total} 张；等待 Kyle 确认付费。`, "等待付费确认", "warn", 1],
+      submitting: ["正在提交付费生成确认", "正在建立任务队列；请勿重复点击。", "提交中", "warn", 1],
       queued: ["图片生成任务已排队", `${total || items.length} 张等待生成，页面会自动刷新。`, "排队中", "warn", 2],
       running: [
         "图片生成进行中",
@@ -265,7 +265,7 @@
       "neutral",
       0,
     ];
-    const stepLabels = ["尚未开始", "生成前检查", "任务队列", "成图审核"];
+    const stepLabels = ["生成前检查", "付费确认", "任务队列", "成图审核"];
     const running = ["preflighting", "submitting", "queued", "running"].includes(status);
     const failed = ["failed", "error", "completed_with_errors"].includes(status);
     host.classList.toggle("running", running);
@@ -781,10 +781,23 @@
       grid.innerHTML = '<article class="story-card"><p>当前策略仅使用来源图。历史 AI 版本保留但不会显示、审核或混入最终图片。</p></article>';
       $("#generationSummary").innerHTML = "<span>AI 生图已跳过</span><span>付费调用已禁用</span>";
       $("#preflightButton").disabled = true;
+      $("#preflightButton").hidden = true;
       $("#paidGenerateButton").disabled = true;
       $("#saveVersionsButton").disabled = true;
       return;
     }
+    const proposalReady = Boolean(
+      content.model_proposal?.valid
+      && content.suite_approved
+      && content.planning_review_mode === "experience_recipe_auto_v1"
+    );
+    $("#preflightButton").hidden = preflightReady || !proposalReady;
+    setButtonLabel(
+      $("#preflightButton"),
+      preflight.status && preflight.status !== "not_started"
+        ? "重新运行生成检查"
+        : "运行生成检查",
+    );
     grid.innerHTML = artifacts.length ? artifacts.map((artifact) => {
       const current = currentByArtifact.get(artifact.id);
       const decision = artifact.decision || "pending";
@@ -796,17 +809,16 @@
           </div>
           <div class="version-meta">
             <header><h3>${esc(artifact.id)}</h3><small>${artifact.technical_complete ? "技术核验通过" : "技术未完成"}</small></header>
-            <label>版本审核
+            <label>图片决定
               <select class="asset-decision" data-artifact-id="${esc(artifact.id)}">
-                ${["pending", "approved", "rework", "rejected"].map((value) => `<option value="${value}" ${decision === value ? "selected" : ""}>${({pending:"待审核",approved:"通过",rework:"重做",rejected:"拒绝"})[value]}</option>`).join("")}
+                ${["pending", "approved", "rework", "rejected"].map((value) => `<option value="${value}" ${decision === value ? "selected" : ""}>${({
+                  pending:"待决定",
+                  approved: current ? "通过并保留" : "历史通过（已被新版本替代）",
+                  rework:"返工且不保留",
+                  rejected:"拒绝且不保留",
+                })[value]}</option>`).join("")}
               </select>
             </label>
-            ${current ? `<label>进入最终图片
-              <select class="final-action" data-artifact-id="${esc(artifact.id)}">
-                <option value="keep" ${current.miaoshou_action === "keep" ? "selected" : ""}>保留</option>
-                <option value="remove" ${current.miaoshou_action === "remove" ? "selected" : ""}>移除</option>
-              </select>
-            </label>` : ""}
             <label>版本备注<textarea class="asset-note" data-artifact-id="${esc(artifact.id)}">${esc(artifact.note || "")}</textarea></label>
             <p>${esc(artifact.task_id || "无任务 ID")}</p>
           </div>
@@ -1279,10 +1291,15 @@
       showAlert("当前为仅来源图策略，不审核或混入 AI 版本。");
       return;
     }
-    const finalActions = $$(".final-action").map((node) => ({
-      artifact_id: node.dataset.artifactId,
-      action: node.value,
-    }));
+    const currentArtifactIds = new Set(
+      generatedCurrentRows().map((row) => row.artifact_id),
+    );
+    const finalActions = $$(".asset-decision")
+      .filter((node) => currentArtifactIds.has(node.dataset.artifactId))
+      .map((node) => ({
+        artifact_id: node.dataset.artifactId,
+        action: node.value === "approved" ? "keep" : "remove",
+      }));
     setLoading($("#saveVersionsButton"), true);
     try {
       await saveContentReview({ quiet: true });
@@ -1293,7 +1310,7 @@
         });
       }
       await load({ quiet: true });
-      toast("版本审核与最终图片决定已保存到本地。");
+      toast("图片决定已保存：通过即保留，返工、拒绝或待定均不进入最终图片。");
     } catch (error) {
       showAlert(error.message);
     } finally {

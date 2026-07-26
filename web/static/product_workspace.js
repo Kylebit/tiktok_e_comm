@@ -76,6 +76,7 @@
   let currentData = null;
   let approvalSubmitting = false;
   let factsSubmitting = false;
+  let titleDraftSubmitting = false;
   let releaseSubmitting = false;
   let pageLoading = false;
   let queueRefreshing = false;
@@ -286,14 +287,15 @@
     $("#approvalContent").textContent = "未加载";
     $("#approvalStatus").textContent = "未加载";
     $("#approvalFacts").innerHTML = "";
-    $("#approvalCheckbox").checked = false;
-    $("#approvalCheckbox").disabled = true;
     $("#approvalButton").disabled = true;
     $("#approvalMessage").textContent = "";
     $("#productFactsForm").reset();
     $("#productFactsForm").dataset.revision = "";
     $("#productFactsForm").dataset.locked = "true";
     $("#factsEditRevision").textContent = "revision —";
+    $("#titleDraftStatus").textContent = "读取商品后才能生成平台标题候选。";
+    $("#titleCandidateGrid").innerHTML = "";
+    $("#generateTitleDraftButton").disabled = true;
     $("#productSpecGrid").innerHTML =
       '<span class="source-spec-empty">采集完成后显示来源规格。</span>';
     $("#factsEditMessage").textContent = message;
@@ -733,7 +735,9 @@
     $("#factsEditLength").value = dimensions[0] ?? "";
     $("#factsEditWidth").value = dimensions[1] ?? "";
     $("#factsEditHeight").value = dimensions[2] ?? "";
-    $("#factsEditTitleSource").textContent = `来源：${sourceFor("title")}`;
+    $("#factsEditTitleSource").textContent = product.source_title_zh
+      ? `中文来源标题：${product.source_title_zh}`
+      : `来源：${sourceFor("title")}`;
     $("#factsEditCostSource").textContent = `来源：${sourceFor("cost_cny")}`;
     $("#factsEditWeightSource").textContent = `来源：${sourceFor("weight_kg")}`;
     $("#factsEditPackageSource").textContent = `来源：${sourceFor("package_cm")}`;
@@ -763,6 +767,83 @@
     updateFactsEditControls();
   }
 
+  function renderTitleDraft(data) {
+    const draft = data.listing_copy || {};
+    const candidates = Array.isArray(draft.candidates) ? draft.candidates : [];
+    const product = data.product || {};
+    const locked = Boolean(product.actual_product_approved || product.fields_locked);
+    const button = $("#generateTitleDraftButton");
+    button.disabled = locked || titleDraftSubmitting || pageLoading;
+    button.classList.toggle("is-loading", titleDraftSubmitting);
+    if (!draft.semantic_master_en) {
+      $("#titleDraftStatus").textContent =
+        "尚未生成。点击后只调用大模型生成本地候选，不会写妙手或任何平台。";
+      $("#titleCandidateGrid").innerHTML = "";
+      return;
+    }
+    const status = draft.status === "adopted_in_product_facts"
+      ? "已采用到当前商品事实"
+      : "候选待 Kyle 采用";
+    $("#titleDraftStatus").textContent =
+      `${status} · 模型 ${draft.model || "未记录"} · 规则 ${draft.policy_version || "未记录"} · 输入签名 ${(draft.input_signature || "").slice(0, 16)}`;
+    const rows = [
+      {
+        channel: "商品主数据",
+        site: "EN MASTER",
+        language: "English",
+        title: draft.semantic_master_en,
+        master: true,
+      },
+      ...candidates,
+    ];
+    $("#titleCandidateGrid").innerHTML = rows.map((row) => `
+      <article class="title-candidate ${row.master ? "master" : ""}">
+        <div>
+          <span>${esc(row.channel || "渠道")} · ${esc(row.site || "")}</span>
+          <small>${esc(row.language || "")}${row.limit ? ` · ≤${esc(row.limit)}` : ""}</small>
+        </div>
+        <strong>${esc(row.title || "")}</strong>
+        ${row.master ? `<button class="button button-secondary adopt-title-candidate"
+          type="button" data-title="${esc(row.title || "")}">采用为正式英文标题</button>` : ""}
+      </article>
+    `).join("");
+  }
+
+  async function generateTitleDraft() {
+    if (!currentData || titleDraftSubmitting || pageLoading) return;
+    const product = currentData.product || {};
+    titleDraftSubmitting = true;
+    let failureMessage = "";
+    renderTitleDraft(currentData);
+    $("#titleDraftStatus").textContent =
+      "大模型正在依据中文来源、类目、尺寸和保留规格生成平台候选…";
+    try {
+      const payload = await postProductWorkspace("/api/product-workspace/title-draft", {
+        offer_id: product.offer_id,
+        expected_revision: product.revision,
+      });
+      const data = dashboardFromPayload(payload) || payload.dashboard || currentData;
+      currentData = data;
+      const item = queueItem(currentQueueKey);
+      if (item) item.data = data;
+      render(data);
+      const master = String(data.listing_copy?.semantic_master_en || "").trim();
+      if (master) {
+        $("#factsEditTitle").value = master;
+        $("#factsEditMessage").textContent =
+          "已把英文语义母版放入正式标题输入框；请核对后点击“保存并确认商品事实 · 刷新全部售价”。";
+      }
+    } catch (error) {
+      failureMessage =
+        `标题生成失败：${friendlyError(error.message)}；商品事实没有被修改。`;
+      $("#titleDraftStatus").textContent = failureMessage;
+    } finally {
+      titleDraftSubmitting = false;
+      renderTitleDraft(currentData || {});
+      if (failureMessage) $("#titleDraftStatus").textContent = failureMessage;
+    }
+  }
+
   function updateFactsEditControls() {
     const form = $("#productFactsForm");
     if (!form) return;
@@ -777,6 +858,9 @@
       }
     });
     $("#factsEditSaveButton").disabled = disabled;
+    if ($("#generateTitleDraftButton")) {
+      $("#generateTitleDraftButton").disabled = disabled || titleDraftSubmitting;
+    }
   }
 
   async function submitFactsEdit() {
@@ -836,7 +920,7 @@
       showError("");
       const revision = data.product?.revision ?? payload.revision ?? "新";
       $("#factsEditMessage").textContent =
-        `已保存 revision ${revision}；全部国家与店铺售价、费用审计和渠道预检已按新值刷新。`;
+        `已核对并保存 revision ${revision}；全部国家与店铺售价、费用审计和渠道预检已按新值刷新。当前尚未锁定或发布。`;
     } catch (error) {
       const message = error.status === 409
         ? `保存被拒绝：${friendlyError(error.message)} 请刷新当前商品后再核对。`
@@ -861,13 +945,9 @@
   function updateApprovalButton(data) {
     const approved = Boolean(data?.product?.actual_product_approved);
     const eligible = approvalEligible(data || {});
-    $("#approvalCheckbox").disabled = (
-      approved || !eligible || approvalSubmitting || pageLoading
-    );
     $("#approvalButton").disabled = (
       approved
       || !eligible
-      || !$("#approvalCheckbox").checked
       || approvalSubmitting
       || pageLoading
     );
@@ -899,24 +979,26 @@
     ].map(([label, value]) => `
       <div><span>${esc(label)}</span><strong>${esc(value)}</strong></div>
     `).join("");
-    $("#approvalCheckbox").checked = approved;
     $(".approval-button-label").textContent = approved
       ? "商品字段已锁定"
-      : "批准并锁定商品字段";
+      : `批准并锁定 revision ${product.revision ?? "—"}`;
+    const approvalBlockers = data.approval?.blockers || [];
     $("#approvalMessage").textContent = message || (
       approved
         ? "商品事实审批已保存；内容包与发布计划仍按各自版本独立审批。"
         : (!skuGovernance.available && skuGovernance.suggested_base_sku
           ? `当前候选已被旧工作台/已验证声明占用；请改用 ${skuGovernance.suggested_base_sku} 后重新审查。`
         : (eligible
-          ? "请逐项核对上方事实，再勾选确认。"
-          : "先解决商品事实、成本证据或 Seller SKU 冲突，再保存商品审批。"))
+          ? "点击即代表 Kyle 最终批准并锁定当前 revision；不会上传或发布。"
+          : (approvalBlockers.length
+            ? `当前不能锁定：${approvalBlockers.map(translateBlocker).join("；")}`
+            : "先解决商品事实、成本证据或 Seller SKU 冲突，再保存商品审批。")))
     );
     updateApprovalButton(data);
   }
 
   async function submitApproval() {
-    if (!currentData || !$("#approvalCheckbox").checked || approvalSubmitting) return;
+    if (!currentData || approvalSubmitting || !approvalEligible(currentData)) return;
     const approvalKey = productKey(
       currentData.product?.offer_id,
       currentData.product?.seller_sku_candidate,
@@ -1667,6 +1749,7 @@
     currentData = data;
     const stages = stageModel(data);
     renderProduct(data);
+    renderTitleDraft(data);
     renderApproval(data);
     renderStages(stages);
     renderNextStep(data, stages);
@@ -1693,7 +1776,6 @@
   function clearCurrentApprovalContext() {
     currentData = null;
     loadedQueueKey = "";
-    $("#approvalCheckbox").checked = false;
     $("#releasePlanCheckbox").checked = false;
     $("#prepareMiaoshouCheckbox").checked = false;
     $("#publishAllCheckbox").checked = false;
@@ -1915,9 +1997,6 @@
       $("#queueMessage").textContent = "商品已移出队列。";
     }
   });
-  $("#approvalCheckbox").addEventListener("change", () => {
-    updateApprovalButton(currentData || {});
-  });
   $("#approvalForm").addEventListener("submit", (event) => {
     event.preventDefault();
     submitApproval();
@@ -1930,6 +2009,15 @@
   $("#productFactsForm").addEventListener("submit", (event) => {
     event.preventDefault();
     submitFactsEdit();
+  });
+  $("#generateTitleDraftButton").addEventListener("click", generateTitleDraft);
+  $("#titleCandidateGrid").addEventListener("click", (event) => {
+    const button = event.target.closest(".adopt-title-candidate");
+    if (!button || button.disabled) return;
+    $("#factsEditTitle").value = button.dataset.title || "";
+    $("#factsEditMessage").textContent =
+      "已采用大模型英文语义母版；核对后保存，才会建立新 revision 并刷新全部售价。";
+    $("#factsEditTitle").focus();
   });
   $("#releasePlanCheckbox").addEventListener("change", () => {
     updateReleaseControls(currentData || {});

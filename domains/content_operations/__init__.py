@@ -7,6 +7,10 @@ from domains.content_operations.content_package_adapter import (
     build_content_package_handoff,
     build_workbench_content_package_handoff,
 )
+from domains.content_operations.listing_title_candidates import (
+    fact_signature as listing_title_fact_signature,
+    generate_title_candidates,
+)
 
 __all__ = [
     "ContentPackage",
@@ -14,4 +18,6 @@ __all__ = [
     "ContentPackageHandoff",
     "build_content_package_handoff",
     "build_workbench_content_package_handoff",
+    "generate_title_candidates",
+    "listing_title_fact_signature",
 ]

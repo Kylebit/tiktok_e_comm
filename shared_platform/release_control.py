@@ -1238,6 +1238,11 @@ def build_release_dashboard(
             ),
             "seller_sku_candidate": clean_seller_sku,
             "title": product_row["title"],
+            "source_title_zh": str(
+                source.get("title_source")
+                or collect_box.get("source_title")
+                or ""
+            ).strip(),
             "category": dict(review.get("category") or {}),
             "cost_cny": review.get("cost_cny"),
             "weight_kg": review.get("weight_kg"),
@@ -1296,6 +1301,11 @@ def build_release_dashboard(
                 ),
             },
         },
+        "listing_copy": (
+            dict(state.get("listing_copy"))
+            if isinstance(state.get("listing_copy"), Mapping)
+            else {}
+        ),
         "pricing_review": release_pricing,
         "publication_scope": publication_scope,
         "content": {

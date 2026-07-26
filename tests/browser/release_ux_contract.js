@@ -371,6 +371,54 @@ async function productAsyncFeedback(browser) {
   const { page, context, errors, state } = scenario;
   try {
     await page.waitForSelector("#productFactsForm[data-locked='false']");
+    await page.route("**/api/product-workspace/title-draft", (route) => {
+      state.pending.titleDraft = route;
+    });
+    await page.locator("#generateTitleDraftButton").click();
+    await page.waitForFunction(() => document.querySelector("#generateTitleDraftButton")?.classList.contains("is-loading"));
+    check(
+      await computedVisibility(page, "#titleDraftStatus"),
+      "product: title model action exposes visible progress feedback",
+    );
+    const listingCopy = {
+      status: "draft_pending_kyle_review",
+      semantic_master_en: "Watercolour Floral Butterfly Wall Decal",
+      candidates: [
+        {
+          channel: "tiktok",
+          site: "PH",
+          language: "English",
+          limit: 255,
+          title: "Watercolour Floral Butterfly Wall Decal",
+        },
+        {
+          channel: "ozon",
+          site: "RU",
+          language: "Russian",
+          limit: 200,
+          title: "Наклейка на стену с цветами и бабочками",
+        },
+      ],
+      input_signature: "sha256:offline-title-fixture",
+      policy_version: "listing-title-candidates-v1",
+      model: "offline-model",
+    };
+    await state.pending.titleDraft.fulfill(
+      jsonResponse({
+        ok: true,
+        marketplace_writes_performed: [],
+        dashboard: { ...productDashboard, listing_copy: listingCopy },
+      }),
+    );
+    await page.waitForFunction(() => !document.querySelector("#generateTitleDraftButton")?.classList.contains("is-loading"));
+    check(
+      (await page.locator("#titleCandidateGrid").innerText()).includes("Watercolour Floral"),
+      "product: generated platform title candidates are visible",
+    );
+    check(
+      (await page.locator("#factsEditTitle").inputValue()).includes("Watercolour Floral"),
+      "product: semantic English master is adopted into the editable fact field",
+    );
     await page.route("**/api/product-workspace/facts", (route) => {
       state.pending.productFacts = route;
     });
@@ -421,6 +469,13 @@ async function aiAsyncFeedback(browser) {
       "AI studio: ready preflight is not presented as not-started",
       generationState,
     );
+    check(
+      generationState.includes("生成前检查")
+      && generationState.includes("付费确认")
+      && !generationState.includes("尚未开始"),
+      "AI studio: progress steps describe actual actions instead of a fake phase",
+      generationState,
+    );
     const generationSummary = (await page.locator("#generationSummary").innerText()).trim();
     const emptyVersionMessage = (await page.locator("#versionGrid").innerText()).trim();
     check(
@@ -429,6 +484,10 @@ async function aiAsyncFeedback(browser) {
       && !emptyVersionMessage.includes("先保存经验配方"),
       "AI studio: summary and empty-state agree with the ready preflight",
       { generationSummary, emptyVersionMessage },
+    );
+    check(
+      !(await computedVisibility(page, "#preflightButton")),
+      "AI studio: completed automatic preflight hides the redundant manual button",
     );
     // Do not confuse the successful initial project-load toast with the result
     // of the subsequent save operation under test.

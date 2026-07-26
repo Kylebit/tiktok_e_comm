@@ -98,7 +98,6 @@ const document = {
       ".identity-reference:checked",
       ".story-decision",
       ".asset-decision",
-      ".final-action",
     ].includes(selector)) return [];
     return [];
   },
@@ -282,7 +281,9 @@ def test_storyboard_cards_are_informational_but_generated_images_keep_human_revi
     assert "无需逐卡审批" in storyboard
     assert "asset-decision" in versions
     assert '"pending", "approved", "rework", "rejected"' in versions
-    assert "版本审核" in versions
+    assert "图片决定" in versions
+    assert "通过并保留" in versions
+    assert "final-action" not in versions
     assert 'id="saveVersionsButton"' in HTML
 
 

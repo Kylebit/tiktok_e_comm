@@ -104,6 +104,13 @@ def test_every_formal_async_action_has_loading_success_and_failure_feedback():
                 "finally",
                 "factsEditMessage",
             ],
+            "generateTitleDraft": [
+                "titleDraftSubmitting = true",
+                "try {",
+                "titleDraftStatus",
+                "catch (error)",
+                "finally",
+            ],
             "submitApproval": [
                 "is-submitting",
                 "try {",

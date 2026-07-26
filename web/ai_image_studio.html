@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#152f2c">
   <title>Orbit · AI 图片工作室</title>
-  <link rel="stylesheet" href="/static/ai_image_studio.css?v=20260726-7">
-  <script src="/static/ai_image_studio.js?v=20260726-7" defer></script>
+  <link rel="stylesheet" href="/static/ai_image_studio.css?v=20260726-9">
+  <script src="/static/ai_image_studio.js?v=20260726-9" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -197,14 +197,14 @@
       <div class="generation-toolbar">
         <div id="generationSummary" class="generation-summary"></div>
         <div class="generation-actions">
-          <button id="preflightButton" class="button secondary" type="button">生成前检查</button>
+          <button id="preflightButton" class="button secondary" type="button" hidden>重新运行生成检查</button>
           <button id="paidGenerateButton" class="button paid" type="button" disabled>确认付费并生成</button>
         </div>
       </div>
       <article id="generationProgress" class="operation-progress compact" role="status" aria-live="polite"></article>
       <div id="versionGrid" class="version-grid skeleton"></div>
       <div class="inline-actions">
-        <button id="saveVersionsButton" class="button dark" type="button">保存版本审核</button>
+        <button id="saveVersionsButton" class="button dark" type="button">保存图片决定</button>
       </div>
     </section>
 

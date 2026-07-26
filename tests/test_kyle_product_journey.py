@@ -13,6 +13,7 @@ import pytest
 
 from modules.products import server as product_server
 from modules.sourcing import new_product_workbench
+from domains import content_operations
 from shared_platform import release_control
 
 
@@ -300,6 +301,92 @@ def test_facts_save_returns_pricing_recalculated_from_the_new_revision(monkeypat
     assert payload["external_writes_performed"] == []
 
 
+def test_title_draft_uses_model_once_and_only_persists_local_candidates(monkeypatch):
+    initial = {
+        "offer_id": OFFER_ID,
+        "_revision": 4,
+        "review": copy.deepcopy(_preview()["review"]),
+    }
+    state, saves = _memory_workbench(monkeypatch, initial)
+    monkeypatch.setattr(
+        new_product_workbench,
+        "_source_summary",
+        lambda *_args, **_kwargs: {
+            **_preview()["source"],
+            "title_source": "水彩复古花卉蝴蝶墙贴",
+            "attributes": {"材质": "PVC"},
+        },
+    )
+    calls = []
+
+    def generate(facts):
+        calls.append(copy.deepcopy(facts))
+        return {
+            "schema_version": "listing-title-candidates-v1",
+            "status": "draft_pending_kyle_review",
+            "semantic_master_en": "Watercolour Floral Butterfly PVC Wall Decal",
+            "candidates": [
+                {
+                    "channel": "tiktok",
+                    "site": "PH",
+                    "language": "English",
+                    "limit": 255,
+                    "title": "Watercolour Floral Butterfly PVC Wall Decal",
+                }
+            ],
+            "input_signature": "sha256:test",
+            "policy_version": "listing-title-candidates-v1",
+            "model": "test-model",
+        }
+
+    monkeypatch.setattr(content_operations, "generate_title_candidates", generate)
+
+    status, payload = product_server._generate_product_workspace_title_draft(
+        {"offer_id": OFFER_ID, "expected_revision": 4}
+    )
+
+    assert status == 200
+    assert calls[0]["source_title_zh"] == "水彩复古花卉蝴蝶墙贴"
+    assert calls[0]["selected_skus"][0]["key"] == "30x90-2pcs"
+    assert len(saves) == 1
+    assert state["listing_copy"]["semantic_master_en"].startswith("Watercolour")
+    assert payload["language_model_request_performed"] is True
+    assert payload["marketplace_writes_performed"] == []
+    assert state["review"]["title"] == _preview()["review"]["title"]
+
+
+def test_title_draft_model_failure_is_visible_and_does_not_write_state(monkeypatch):
+    initial = {
+        "offer_id": OFFER_ID,
+        "_revision": 4,
+        "review": copy.deepcopy(_preview()["review"]),
+    }
+    state, saves = _memory_workbench(monkeypatch, initial)
+    monkeypatch.setattr(
+        new_product_workbench,
+        "_source_summary",
+        lambda *_args, **_kwargs: {
+            **_preview()["source"],
+            "title_source": "水彩复古花卉蝴蝶墙贴",
+        },
+    )
+    monkeypatch.setattr(
+        content_operations,
+        "generate_title_candidates",
+        lambda _facts: (_ for _ in ()).throw(RuntimeError("model auth failed")),
+    )
+
+    status, payload = product_server._generate_product_workspace_title_draft(
+        {"offer_id": OFFER_ID, "expected_revision": 4}
+    )
+
+    assert status == 502
+    assert payload["model_request_failed"] is True
+    assert payload["marketplace_writes_performed"] == []
+    assert saves == []
+    assert "listing_copy" not in state
+
+
 @pytest.mark.parametrize(
     "locked_state",
     [
@@ -530,7 +617,7 @@ def test_formal_frontend_collects_first_and_has_an_inline_facts_editor():
     assert 'id="factsEditCostSource"' in html
     assert 'id="factsEditWeightSource"' in html
     assert 'id="factsEditPackageSource"' in html
-    assert "保存并刷新全部售价" in html
+    assert "保存并确认商品事实 · 刷新全部售价" in html
     assert "/api/product-workspace/collect" in script
     assert "/api/product-workspace/facts" in script
     assert "expected_revision" in script

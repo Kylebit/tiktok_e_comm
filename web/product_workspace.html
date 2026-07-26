@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#173b36">
   <title>Orbit · 商品发布中心</title>
-  <link rel="stylesheet" href="/static/product_workspace.css?v=20260726-v5">
-  <script src="/static/product_workspace.js?v=20260726-v5" defer></script>
+  <link rel="stylesheet" href="/static/product_workspace.css?v=20260726-v6">
+  <script src="/static/product_workspace.js?v=20260726-v6" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -126,9 +126,9 @@
           <div id="productFacts" class="fact-grid skeleton-lines"></div>
           <div class="facts-edit-grid">
             <label class="facts-edit-title">
-              <span>商品标题</span>
+              <span>正式英文商品标题</span>
               <textarea id="factsEditTitle" name="title" rows="3" maxlength="220"
-                        placeholder="从妙手采集后可在这里修改" required></textarea>
+                        placeholder="先生成大模型候选，或直接输入经核对的英文标题" required></textarea>
               <small id="factsEditTitleSource">来源：读取中</small>
             </label>
             <label>
@@ -157,6 +157,21 @@
               <small id="factsEditPackageSource">来源：读取中</small>
             </fieldset>
           </div>
+          <section class="title-assistant" aria-labelledby="titleAssistantTitle">
+            <div class="title-assistant-heading">
+              <div>
+                <p class="kicker">AI LISTING COPY</p>
+                <h3 id="titleAssistantTitle">中文事实 → 平台标题候选</h3>
+                <p>大模型读取当前商品事实，生成可审计的英文语义母版，并分别给出 TikTok、Shopee 与 Ozon 候选。只生成本地候选，不写妙手或平台。</p>
+              </div>
+              <button id="generateTitleDraftButton" class="button button-secondary" type="button">
+                <span class="title-draft-label">AI 生成平台标题</span>
+                <span class="title-draft-loading">大模型正在生成…</span>
+              </button>
+            </div>
+            <p id="titleDraftStatus" class="title-draft-status" role="status">尚未为当前商品事实生成标题候选。</p>
+            <div id="titleCandidateGrid" class="title-candidate-grid"></div>
+          </section>
           <fieldset class="source-spec-editor">
             <legend>本次保留的来源规格（可多选）</legend>
             <p>规格与采购价来自采集箱原始数据。至少保留一个真实可采购规格；“咨询客服/定制”等占位规格会被事实审查阻止。</p>
@@ -171,8 +186,8 @@
           <div class="facts-edit-actions">
             <p id="factsEditMessage" class="facts-edit-message" role="status">正在读取商品 revision…</p>
             <button id="factsEditSaveButton" class="button button-primary" type="submit" disabled>
-              <span class="facts-edit-save-label">保存并刷新全部售价</span>
-              <span class="facts-edit-save-loading">正在保存并重新计算全部售价…</span>
+              <span class="facts-edit-save-label">保存并确认商品事实 · 刷新全部售价</span>
+              <span class="facts-edit-save-loading">正在核对、保存并重新计算全部售价…</span>
             </button>
           </div>
         </form>
@@ -206,7 +221,7 @@
           <p class="kicker">LOCAL PRODUCT APPROVAL</p>
           <h2 id="approvalTitle">商品事实审批与版本锁定</h2>
         </div>
-        <p>商品事实与内容审批相互独立。保存后锁定当前成本、重量、尺寸、规格与 Seller SKU 版本；不会上传妙手、创建渠道草稿或发布商品。</p>
+        <p>上方按钮负责编辑、核对和刷新售价；这里仅负责最终锁定当前 revision。不会上传妙手、创建渠道草稿或发布商品。</p>
       </div>
       <article class="approval-card">
         <div class="approval-summary">
@@ -229,14 +244,10 @@
         </div>
         <div id="approvalFacts" class="approval-facts" aria-live="polite"></div>
         <form id="approvalForm" class="approval-form">
-          <label class="approval-confirm">
-            <input id="approvalCheckbox" type="checkbox">
-            <span>我已核对 Seller SKU、成本、重量、包装、站点和规格，并批准锁定当前 revision。</span>
-          </label>
           <div class="approval-actions">
             <span>审批人：<strong>Kyle</strong></span>
             <button id="approvalButton" class="button button-primary" type="submit" disabled>
-              <span class="approval-button-label">批准并锁定商品字段</span>
+              <span class="approval-button-label">批准并锁定当前 revision</span>
               <span class="approval-button-loading">正在保存本地审批…</span>
             </button>
           </div>

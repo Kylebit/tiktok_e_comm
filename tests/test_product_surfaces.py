@@ -127,7 +127,8 @@ def test_product_workspace_is_the_user_surface_and_fails_without_stale_results()
     assert "renderFailure(message)" in script
     assert "页面不会沿用上一次商品结果" in script
     assert "商品事实审批与版本锁定" in html
-    assert "我已核对 Seller SKU、成本、重量、包装、站点和规格" in html
+    assert "批准并锁定当前 revision" in html
+    assert 'id="approvalCheckbox"' not in html
     assert "/api/product-workspace/approve" in script
     assert 'method: "POST"' in script
     assert "expected_revision" in script
@@ -197,6 +198,10 @@ def test_product_workspace_is_the_user_surface_and_fails_without_stale_results()
     assert "repository_adapter_audited" in script
     assert "updateReleaseControls" in script
     assert "@media (max-width:" in css
+    assert "中文事实 → 平台标题候选" in html
+    assert "/api/product-workspace/title-draft" in script
+    assert "AI 生成平台标题" in html
+    assert "只生成本地候选，不写妙手或平台" in html
 
 
 def test_profit_center_keeps_realized_and_estimate_semantics_separate():

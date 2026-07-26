@@ -401,9 +401,12 @@
     const channelTargets = runTargets.filter(
       (target) => target.target_label !== "miaoshou:COMMON",
     );
+    const runCounts = releaseRunCounts(release.run);
     const channelExecutionReady = Boolean(
       channelTargets.length
-      && channelTargets.every((target) => target.status === "SUCCEEDED"),
+      && channelTargets.every(
+        (target) => target.status === "SUCCEEDED" || awaitsOfficialReadback(target),
+      ),
     );
     const reconciliationReady = Boolean(
       release.run?.status === "SUCCEEDED"
@@ -417,8 +420,16 @@
       { key: "approval", label: "商品审批", ready: approvalReady, readyText: "已锁定", waitText: "待批准" },
       { key: "plan", label: "发布计划", ready: planReady, readyText: "已批准", waitText: "待批准" },
       { key: "sync", label: "妙手待发布", ready: imageSyncReady, readyText: "回读一致", waitText: "待同步" },
-      { key: "channels", label: "渠道执行", ready: channelExecutionReady, readyText: "目标已完成", waitText: "待执行" },
-      { key: "reconcile", label: "回读对账", ready: reconciliationReady, readyText: "全部一致", waitText: "待对账" },
+      { key: "channels", label: "渠道执行", ready: channelExecutionReady, readyText: "执行已结束", waitText: "待执行" },
+      {
+        key: "reconcile",
+        label: "回读对账",
+        ready: reconciliationReady,
+        readyText: "全部一致",
+        waitText: runCounts.awaitingReadback
+          ? `${runCounts.awaitingReadback} 个待读回授权`
+          : "待对账",
+      },
     ];
     const firstIncomplete = raw.findIndex((stage) => !stage.ready);
     return raw.map((stage, index) => ({
@@ -1108,6 +1119,11 @@
     const factBlockers = (data.product?.fact_evidence?.blockers || [])
       .map(translateBlocker);
     const planBlockers = (data.release_v1?.blockers || []).map(translateBlocker);
+    const run = data.release_v1?.run;
+    const runCounts = releaseRunCounts(run);
+    const awaitingReadbackLabels = (run?.targets || [])
+      .filter(awaitsOfficialReadback)
+      .map((target) => targetDisplayName(target.target_label));
     let allBlockers = [
       ...blockers,
       ...contentBlockers,
@@ -1130,6 +1146,17 @@
       channels: "按已批准计划执行所选店铺；失败目标可独立重试。",
       reconcile: "核对每个目标的回读结果和外部商品身份，完成发布对账。",
     };
+    if (awaitingReadbackLabels.length) {
+      descriptions.reconcile =
+        `${runCounts.succeeded}/${runCounts.total} 个目标已完成官方回读；`
+        + `${awaitingReadbackLabels.join("、")} 已提交且不会重复提交，`
+        + "连接对应 TikTok 官方读回授权后即可完成最终对账。";
+      allBlockers.push(
+        `${awaitingReadbackLabels.join("、")} 当前只缺官方读回授权；`
+        + "这不是重复发布入口，也不影响其余目标的成功证据。",
+      );
+    }
+    allBlockers = [...new Set(allBlockers)];
     $("#nextStepNumber").textContent = String(currentIndex + 1).padStart(2, "0");
     $("#nextStepTitle").textContent = data.release_v1?.run?.status === "SUCCEEDED"
       ? "本次正式发布已完成"

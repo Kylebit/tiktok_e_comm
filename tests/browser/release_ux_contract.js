@@ -497,6 +497,22 @@ async function productReleaseTerminalState(browser) {
       const dashboard = JSON.parse(JSON.stringify(productDashboard));
       const targetLabels = ["miaoshou:COMMON", "tiktok:MX", "ozon:RU"];
       dashboard.product.seller_sku_candidate = "0953";
+      dashboard.product.actual_product_approved = true;
+      dashboard.content = {
+        approved: true,
+        image_count: 5,
+        images: [],
+        blockers: [],
+      };
+      dashboard.approval = {
+        ready: true,
+        blockers: [],
+        warnings: [],
+        state_patch_preview: {
+          product_approval: { input_fingerprint: "sha256:offline-terminal" },
+        },
+      };
+      dashboard.actual_release_gate = { ready: true, blockers: [] };
       dashboard.publication_scope = {
         selected_labels: targetLabels,
         default_labels: targetLabels,
@@ -585,6 +601,22 @@ async function productReleaseTerminalState(browser) {
     check(
       await computedVisibility(page, ".run-target.awaiting-readback"),
       "product release: awaiting-readback state is visually distinct",
+    );
+    const stages = (await page.locator("#stageRail").innerText()).trim();
+    check(
+      stages.includes("渠道执行")
+      && stages.includes("执行已结束")
+      && stages.includes("回读对账")
+      && stages.includes("1 个待读回授权"),
+      "product release: journey advances to reconciliation after submissions finish",
+      stages,
+    );
+    const nextStep = (await page.locator("#nextStepDescription").innerText()).trim();
+    check(
+      nextStep.includes("2/3 个目标已完成官方回读")
+      && nextStep.includes("连接对应 TikTok 官方读回授权"),
+      "product release: next action explains the remaining authorization task",
+      nextStep,
     );
     check(
       errors.length === 0,

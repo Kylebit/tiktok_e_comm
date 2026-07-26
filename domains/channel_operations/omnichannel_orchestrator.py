@@ -113,6 +113,7 @@ def build_omnichannel_publication_plan(
     execute: bool = False,
     user_approved: bool = False,
     confirmation_token: str | None = None,
+    commercial_scope: Mapping[str, object] | None = None,
 ) -> OmnichannelPublicationPlan:
     """Build one reviewable plan for every selected marketplace site.
 
@@ -130,7 +131,12 @@ def build_omnichannel_publication_plan(
         content_package,
         collect_box_id=collect_box_id,
     )
-    scope_payload = _scope_payload(product_package, content_package, selected)
+    scope_payload = _scope_payload(
+        product_package,
+        content_package,
+        selected,
+        commercial_scope=commercial_scope,
+    )
     approval_digest = _sha256(scope_payload)
     expected_token = f"PUBLISH-{approval_digest[:16].upper()}"
 
@@ -419,6 +425,8 @@ def _scope_payload(
     product_package: ApprovedProductPackage,
     content_package: ContentPackage,
     selected: tuple[tuple[str, tuple[str, ...]], ...],
+    *,
+    commercial_scope: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     product = product_package.product
     return {
@@ -448,6 +456,7 @@ def _scope_payload(
             {"channel": channel, "sites": list(sites)}
             for channel, sites in selected
         ],
+        "commercial_scope": dict(commercial_scope or {}),
     }
 
 

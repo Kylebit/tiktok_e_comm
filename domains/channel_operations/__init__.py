@@ -10,6 +10,7 @@ from .omnichannel_orchestrator import (
     build_omnichannel_publication_plan,
 )
 from .publication_planner import ChannelPublicationPlan, build_publication_plan
+from .pricing_preview import build_channel_pricing_preview
 
 __all__ = [
     "ChannelListing",
@@ -20,4 +21,5 @@ __all__ = [
     "PublicationAuthorizationError",
     "SingleApprovalSummary",
     "build_omnichannel_publication_plan",
+    "build_channel_pricing_preview",
 ]

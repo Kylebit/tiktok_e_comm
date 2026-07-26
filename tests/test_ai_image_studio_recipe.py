@@ -76,3 +76,26 @@ def test_source_only_disables_paid_ai_actions_and_excludes_generated_images():
         "付费生图已禁用",
     ):
         assert message in SCRIPT
+
+
+def test_legacy_source_video_review_is_preserved_in_ai_studio():
+    assert 'id="videoReviewPanel"' in HTML
+    assert 'id="videoAction"' in HTML
+    assert '<option value="keep">' in HTML
+    assert '<option value="remove">' in HTML
+    assert 'video_action: videoUrl ? ($("#videoAction")?.value || "remove") : "none"' in SCRIPT
+    assert "preview?.review?.video_action || sourceVideo.action || \"keep\"" in SCRIPT
+    assert '<video controls preload="none">' in SCRIPT
+    assert 'target="_blank" rel="noopener">在新标签页打开来源视频' in SCRIPT
+
+
+def test_release_center_and_studio_can_remain_open_in_parallel_tabs():
+    assert (
+        'id="productCenterLink" href="/product-workspace" target="_blank" rel="noopener"'
+        in HTML
+    )
+    assert "url.searchParams.set(\"offer_id\", offerId)" in SCRIPT
+    assert (
+        "`/product-workspace?offer_id=${encodeURIComponent(preview.offer_id)}`"
+        in SCRIPT
+    )

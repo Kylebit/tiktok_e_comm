@@ -58,6 +58,7 @@ _SITE_DRAFT_LOCKS: dict[str, threading.Lock] = {}
 _TIKTOK_CLAIM_LOCKS: dict[str, threading.Lock] = {}
 _IMAGE_GENERATION_LOCKS: dict[str, threading.Lock] = {}
 _IMAGE_GENERATION_QUEUE_LOCKS: dict[str, threading.Lock] = {}
+_MIAOSHOU_IMAGE_SYNC_LOCKS: dict[str, threading.Lock] = {}
 _STATE_WRITE_LOCKS: dict[str, threading.RLock] = {}
 
 
@@ -345,6 +346,15 @@ def _image_generation_queue_lock(offer_id: str) -> threading.Lock:
         lock = threading.Lock()
         _IMAGE_GENERATION_QUEUE_LOCKS[offer_id] = lock
     return lock
+
+
+def _miaoshou_image_sync_lock(offer_id: str) -> threading.Lock:
+    with _state_write_lock(offer_id):
+        lock = _MIAOSHOU_IMAGE_SYNC_LOCKS.get(offer_id)
+        if lock is None:
+            lock = threading.Lock()
+            _MIAOSHOU_IMAGE_SYNC_LOCKS[offer_id] = lock
+        return lock
 
 
 def _is_english_variant_value(text: str) -> bool:
@@ -785,6 +795,7 @@ def _content_stage(
     *,
     ai_plan_valid: bool = False,
     source_only_ready: bool = False,
+    completed_ai_suite: bool = False,
 ) -> str:
     if not content.get("fact_card_approved"):
         return "待审核事实卡"
@@ -796,6 +807,13 @@ def _content_stage(
         )
     if _content_strategy(content) == "source_only":
         return "来源素材内容已完成" if source_only_ready else "待完成来源图审核与排序"
+    if completed_ai_suite:
+        write = content.get("miaoshou_ordered_images_write") or {}
+        return (
+            "内容素材已审核并完成妙手回读验证"
+            if str(write.get("status") or "") == "verified"
+            else "内容素材可进入妙手写回审核"
+        )
     if not ai_plan_valid:
         return "待 AI 生成分镜"
     if not content.get("suite_approved"):
@@ -824,6 +842,49 @@ def _requested_image_count(content: dict[str, Any]) -> int:
     if counts:
         return sum(max(0, int(value or 0)) for value in counts.values())
     return sum(1 for row in ((content.get("suite") or {}).get("items") or []) if row.get("selected"))
+
+
+def _completed_ai_suite_evidence(
+    review: dict[str, Any],
+    content: dict[str, Any],
+    generated: list[dict[str, Any]],
+) -> bool:
+    """Recognize completed legacy suites without weakening paid-generation gates."""
+    generation = (
+        content.get("remaining_images_generation")
+        if isinstance(content.get("remaining_images_generation"), dict)
+        else {}
+    )
+    source_actions = [
+        row for row in (review.get("image_actions") or []) if isinstance(row, dict)
+    ]
+    pending_source = any(
+        str(row.get("action") or "review") not in {"keep", "remove"}
+        for row in source_actions
+    )
+    pending_generated = any(
+        str(row.get("miaoshou_action") or "review") not in {"keep", "remove"}
+        for row in generated
+    )
+    kept_count = sum(
+        str(row.get("action") or "") == "keep" for row in source_actions
+    ) + sum(
+        str(row.get("miaoshou_action") or "") == "keep" for row in generated
+    )
+    return bool(
+        content.get("suite_approved")
+        and str(generation.get("status") or "")
+        in {"completed_waiting_human_review", "completed_with_errors"}
+        and generated
+        and not pending_source
+        and not pending_generated
+        and kept_count >= 3
+        and [
+            value
+            for value in (review.get("image_order") or [])
+            if str(value or "").strip()
+        ]
+    )
 
 
 def _product_workflow_summary(
@@ -858,6 +919,10 @@ def _product_workflow_summary(
         if str(row.get("miaoshou_action") or "review") not in {"keep", "remove"}
     ]
     ai_plan_valid = bool((content.get("model_proposal") or {}).get("valid"))
+    completed_ai_suite = bool(
+        not source_only
+        and _completed_ai_suite_evidence(review, content, generated)
+    )
     if source_only:
         content_ready = bool(
             content.get("package_found")
@@ -871,7 +936,7 @@ def _product_workflow_summary(
             content.get("package_found")
             and content.get("fact_card_approved")
             and content.get("planning_scope_approved")
-            and ai_plan_valid
+            and (ai_plan_valid or completed_ai_suite)
             and content.get("suite_approved")
         )
         image_review_ready = bool(
@@ -1009,6 +1074,14 @@ def content_package_summary(offer_id_or_url: str) -> dict[str, Any]:
         and str(model_proposal.get("planning_source") or "") == "ai"
         and str(model_proposal.get("planning_signature") or "") == planning_signature
     )
+    completed_ai_suite = bool(
+        strategy == "ai_assisted"
+        and _completed_ai_suite_evidence(
+            state_review,
+            saved,
+            generated_review_images,
+        )
+    )
     storyboard_reviews = (
         saved.get("storyboard_reviews")
         if isinstance(saved.get("storyboard_reviews"), dict)
@@ -1059,9 +1132,13 @@ def content_package_summary(offer_id_or_url: str) -> dict[str, Any]:
             and (
                 source_only_selection["ready"]
                 if strategy == "source_only"
-                else model_proposal_valid and saved.get("suite_approved")
+                else (
+                    (model_proposal_valid and saved.get("suite_approved"))
+                    or completed_ai_suite
+                )
             )
         ),
+        "completed_ai_suite_evidence": completed_ai_suite,
         "source_only_ready": bool(
             strategy == "source_only" and source_only_selection["ready"]
         ),
@@ -1236,9 +1313,23 @@ def content_package_summary(offer_id_or_url: str) -> dict[str, Any]:
         },
         "miaoshou_generated_images_write": {
             "status": str(miaoshou_write.get("status") or "not_started"),
+            "phase": str(miaoshou_write.get("phase") or ""),
+            "started_at": str(miaoshou_write.get("started_at") or ""),
             "written_image_count": int(miaoshou_write.get("written_image_count") or 0),
             "finished_at": str(miaoshou_write.get("finished_at") or ""),
             "checks": miaoshou_write.get("checks") if isinstance(miaoshou_write.get("checks"), dict) else {},
+            "steps": [
+                {
+                    "id": str(row.get("id") or ""),
+                    "label": str(row.get("label") or ""),
+                    "status": str(row.get("status") or "pending"),
+                    "detail": str(row.get("detail") or ""),
+                }
+                for row in (miaoshou_write.get("steps") or [])
+                if isinstance(row, dict)
+            ],
+            "ordered_image_count": len(miaoshou_write.get("ordered_image_urls") or []),
+            "collect_box_id": str(miaoshou_write.get("collect_box_id") or collect_box_id),
             "error": str(miaoshou_write.get("error") or ""),
         },
         "approved_asset_count": sum(1 for row in artifacts if row.get("decision") == "approved"),
@@ -1247,6 +1338,7 @@ def content_package_summary(offer_id_or_url: str) -> dict[str, Any]:
             artifacts,
             ai_plan_valid=model_proposal_valid,
             source_only_ready=source_only_selection["ready"],
+            completed_ai_suite=completed_ai_suite,
         ),
         "updated_at": saved.get("updated_at") or "",
         "note": str(saved.get("note") or ""),
@@ -2391,7 +2483,66 @@ def _image_approval_blockers(offer_id: str, state: dict[str, Any]) -> list[str]:
     return blockers
 
 
+def _miaoshou_sync_steps(active_id: str = "") -> list[dict[str, str]]:
+    definitions = (
+        ("review_gate", "审核门禁与最终顺序"),
+        ("read_current", "读取妙手采集箱当前版本"),
+        ("write_images", "写入主图与详情图"),
+        ("readback_verify", "回读并逐项验证"),
+    )
+    active_found = False
+    rows = []
+    for step_id, label in definitions:
+        if step_id == active_id:
+            status = "running"
+            active_found = True
+        elif active_found:
+            status = "pending"
+        else:
+            status = "completed"
+        rows.append({"id": step_id, "label": label, "status": status, "detail": ""})
+    return rows
+
+
+def _set_miaoshou_sync_phase(
+    write_state: dict[str, Any],
+    *,
+    status: str,
+    phase: str,
+    active_step: str = "",
+    error: str = "",
+    detail: str = "",
+) -> None:
+    write_state["status"] = status
+    write_state["phase"] = phase
+    write_state["steps"] = _miaoshou_sync_steps(active_step)
+    if detail and active_step:
+        for row in write_state["steps"]:
+            if row["id"] == active_step:
+                row["detail"] = detail
+    if error:
+        write_state["error"] = error[:1000]
+        for row in write_state["steps"]:
+            if row["id"] == active_step:
+                row["status"] = "failed"
+                row["detail"] = error[:1000]
+
+
 def write_ordered_images_to_miaoshou(
+    offer_id_or_url: str, *, post=None
+) -> dict[str, Any]:
+    """Run one guarded image sync; duplicate clicks cannot start two writes."""
+    offer_id = resolve_offer_key(offer_id_or_url)
+    lock = _miaoshou_image_sync_lock(offer_id)
+    if not lock.acquire(blocking=False):
+        raise RuntimeError("妙手图片同步已在进行中，请等待当前任务完成")
+    try:
+        return _write_ordered_images_to_miaoshou_unlocked(offer_id, post=post)
+    finally:
+        lock.release()
+
+
+def _write_ordered_images_to_miaoshou_unlocked(
     offer_id_or_url: str, *, post=None
 ) -> dict[str, Any]:
     """Write the unified image bar to Miaoshou main and detail images.
@@ -2418,16 +2569,66 @@ def write_ordered_images_to_miaoshou(
     detail_id = int(str(content.get("collect_box_id") or offer_id))
     detail_path = "/open/v1/product/common_collect_box/common_collect_box/get_common_collect_box_detail"
     edit_path = "/open/v1/product/common_collect_box/common_collect_box/edit_common_collect_box_detail"
-    current_resp = post(detail_path, {"commonCollectBoxDetailId": detail_id})
+    write_state = {
+        "status": "preparing",
+        "phase": "read_current",
+        "started_at": _now(),
+        "collect_box_id": str(detail_id),
+        "ordered_image_urls": image_urls,
+        "source_image_count": len(selected["source_urls"]),
+        "generated_image_count": len(selected["generated_urls"]),
+        "steps": _miaoshou_sync_steps("read_current"),
+        "checks": {},
+        "error": "",
+    }
+    content["miaoshou_ordered_images_write"] = write_state
+    state.setdefault("review", {})["image_order"] = image_urls
+    save_state(offer_id, state)
+    try:
+        current_resp = post(detail_path, {"commonCollectBoxDetailId": detail_id})
+    except Exception as exc:
+        _set_miaoshou_sync_phase(
+            write_state,
+            status="failed",
+            phase="read_current",
+            active_step="read_current",
+            error=str(exc),
+        )
+        write_state["finished_at"] = _now()
+        save_state(offer_id, state)
+        raise
     if current_resp.get("result") != "success":
+        message = (
+            f"妙手详情读取失败: {current_resp.get('code')} "
+            f"{current_resp.get('message', '')}"
+        ).strip()
+        _set_miaoshou_sync_phase(
+            write_state,
+            status="failed",
+            phase="read_current",
+            active_step="read_current",
+            error=message,
+        )
+        write_state["finished_at"] = _now()
+        save_state(offer_id, state)
         raise RuntimeError(
-            f"妙手详情读取失败: {current_resp.get('code')} {current_resp.get('message', '')}"
+            message
         )
     payload = current_resp.get("data") or {}
     current = payload.get("editCommonCollectBoxDetail") or {}
     oss_md5 = str(payload.get("ossMd5") or "")
     if not current or not oss_md5:
-        raise RuntimeError("妙手详情缺少编辑数据或 ossMd5")
+        message = "妙手详情缺少编辑数据或 ossMd5"
+        _set_miaoshou_sync_phase(
+            write_state,
+            status="failed",
+            phase="read_current",
+            active_step="read_current",
+            error=message,
+        )
+        write_state["finished_at"] = _now()
+        save_state(offer_id, state)
+        raise RuntimeError(message)
 
     current_notes = str(current.get("notes") or "")
     notes_without_images = re.sub(
@@ -2462,10 +2663,20 @@ def write_ordered_images_to_miaoshou(
     saved_weight = float((state.get("review") or {}).get("weight_kg") or 0)
     candidate_weight = current_weight if current_weight >= 0.01 else saved_weight
     if candidate_weight < 0.01:
-        raise ValueError(
+        message = (
             "Miaoshou requires a weight of at least 0.01 kg; save a valid "
             "weight in Treasury before image synchronization"
         )
+        _set_miaoshou_sync_phase(
+            write_state,
+            status="failed",
+            phase="write_images",
+            active_step="write_images",
+            error=message,
+        )
+        write_state["finished_at"] = _now()
+        save_state(offer_id, state)
+        raise ValueError(message)
     editable_weight = _miaoshou_editable_weight_kg(candidate_weight)
     if abs(editable_weight - current_weight) > 0.000001:
         updated["weight"] = editable_weight
@@ -2474,18 +2685,17 @@ def write_ordered_images_to_miaoshou(
             for key, row in (current.get("skuMap") or {}).items()
         }
 
-    write_state = {
-        "status": "writing",
-        "started_at": _now(),
-        "collect_box_id": str(detail_id),
+    write_state.update({
         "previous_img_urls": list(current.get("imgUrls") or []),
         "previous_notes": current_notes,
-        "ordered_image_urls": image_urls,
-        "source_image_count": len(selected["source_urls"]),
-        "generated_image_count": len(selected["generated_urls"]),
-    }
-    content["miaoshou_ordered_images_write"] = write_state
-    state.setdefault("review", {})["image_order"] = image_urls
+    })
+    _set_miaoshou_sync_phase(
+        write_state,
+        status="writing",
+        phase="write_images",
+        active_step="write_images",
+        detail=f"正在写入 {len(image_urls)} 张主图与详情图",
+    )
     save_state(offer_id, state)
 
     try:
@@ -2495,22 +2705,61 @@ def write_ordered_images_to_miaoshou(
             "ossMd5": oss_md5,
         })
     except Exception as exc:
-        write_state.update({"status": "failed", "error": str(exc)[:1000]})
+        _set_miaoshou_sync_phase(
+            write_state,
+            status="failed",
+            phase="write_images",
+            active_step="write_images",
+            error=str(exc),
+        )
+        write_state["finished_at"] = _now()
         save_state(offer_id, state)
         raise
     if save_resp.get("result") != "success":
-        write_state.update({
-            "status": "failed",
-            "error": str(save_resp.get("message") or save_resp.get("code") or "write failed"),
-        })
+        error = str(save_resp.get("message") or save_resp.get("code") or "write failed")
+        _set_miaoshou_sync_phase(
+            write_state,
+            status="failed",
+            phase="write_images",
+            active_step="write_images",
+            error=error,
+        )
+        write_state["finished_at"] = _now()
         save_state(offer_id, state)
         raise RuntimeError(
             f"妙手图片写入失败: {save_resp.get('code')} {save_resp.get('message', '')}"
         )
 
-    verify_resp = post(detail_path, {"commonCollectBoxDetailId": detail_id})
+    _set_miaoshou_sync_phase(
+        write_state,
+        status="verifying",
+        phase="readback_verify",
+        active_step="readback_verify",
+        detail="妙手已接受写入，正在回读核对顺序与关键字段",
+    )
+    save_state(offer_id, state)
+    try:
+        verify_resp = post(detail_path, {"commonCollectBoxDetailId": detail_id})
+    except Exception as exc:
+        _set_miaoshou_sync_phase(
+            write_state,
+            status="verification_failed",
+            phase="readback_verify",
+            active_step="readback_verify",
+            error=str(exc),
+        )
+        write_state["finished_at"] = _now()
+        save_state(offer_id, state)
+        raise
     if verify_resp.get("result") != "success":
-        write_state.update({"status": "verification_failed", "error": "read-back failed"})
+        _set_miaoshou_sync_phase(
+            write_state,
+            status="verification_failed",
+            phase="readback_verify",
+            active_step="readback_verify",
+            error="read-back failed",
+        )
+        write_state["finished_at"] = _now()
         save_state(offer_id, state)
         raise RuntimeError("妙手图片写入后验证读取失败")
     verified = ((verify_resp.get("data") or {}).get("editCommonCollectBoxDetail") or {})
@@ -2527,23 +2776,40 @@ def write_ordered_images_to_miaoshou(
         "title_unchanged": str(verified.get("title") or "") == str(current.get("title") or ""),
         "item_num_unchanged": str(verified.get("itemNum") or "") == str(current.get("itemNum") or ""),
     }
+    checks_passed = all(checks.values())
+    _set_miaoshou_sync_phase(
+        write_state,
+        status="verified" if checks_passed else "verification_failed",
+        phase="completed" if checks_passed else "readback_verify",
+        active_step="" if checks_passed else "readback_verify",
+        error="" if checks_passed else "one or more read-back checks failed",
+    )
     write_state.update({
-        "status": "verified" if all(checks.values()) else "verification_failed",
         "finished_at": _now(),
         "checks": checks,
         "written_image_count": len(image_urls),
     })
     save_state(offer_id, state)
     return {
-        "ok": all(checks.values()),
+        "ok": checks_passed,
         "written_to_miaoshou": True,
-        "verified": all(checks.values()),
+        "verified": checks_passed,
         "collect_box_id": str(detail_id),
         "written_image_count": len(image_urls),
         "source_image_count": len(selected["source_urls"]),
         "generated_image_count": len(selected["generated_urls"]),
         "image_urls": image_urls,
         "checks": checks,
+        "sync": {
+            "status": write_state["status"],
+            "phase": write_state["phase"],
+            "steps": list(write_state["steps"]),
+            "error": str(write_state.get("error") or ""),
+            "written_image_count": len(image_urls),
+            "ordered_image_count": len(image_urls),
+            "checks": dict(checks),
+            "collect_box_id": str(detail_id),
+        },
         "claimed": False,
         "published": False,
     }

@@ -148,9 +148,19 @@ def test_product_workspace_is_the_user_surface_and_fails_without_stale_results()
     assert "history.replaceState" in script
     assert ".queue-grid { grid-template-columns: 1fr; }" in css
     assert "一键全渠道发布准备" in html
+    assert "全部国家与店铺售价审查" in html
+    assert "pricing_review" in script
+    assert "all_legacy_store_prices" in script
+    assert "renderPricingReview" in script
+    assert "channelPriceLine" in script
+    assert "佣金" in script
+    assert "平台附加费" in script
+    assert ".store-price-grid" in css
     assert "妙手公共草稿" in html
     assert "TikTok 主商品回读" in html
     assert "publishAllButton" in html
+    assert "并行打开内容与图片工作室" in html
+    assert 'id="workbenchLink"' in html and 'target="_blank"' in html
     assert "omnichannel_preview" in script
     assert "repository_adapter_audited" in script
     assert "$(\"#publishAllButton\").disabled = true" in script

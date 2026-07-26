@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#152f2c">
   <title>Orbit · AI 图片工作室</title>
-  <link rel="stylesheet" href="/static/ai_image_studio.css">
-  <script src="/static/ai_image_studio.js" defer></script>
+  <link rel="stylesheet" href="/static/ai_image_studio.css?v=20260726-2">
+  <script src="/static/ai_image_studio.js?v=20260726-2" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -17,7 +17,7 @@
       <span><strong>Orbit</strong><small>内容运营</small></span>
     </a>
     <nav aria-label="产品导航">
-      <a id="productCenterLink" href="/product-workspace">商品发布中心</a>
+      <a id="productCenterLink" href="/product-workspace" target="_blank" rel="noopener">商品发布中心 ↗</a>
       <a href="#sources">来源图</a>
       <a href="#storyboard">分镜</a>
       <a href="#generated">生成版本</a>
@@ -79,6 +79,21 @@
         <button id="saveSourceButton" class="button dark" type="button">保存来源图决定</button>
       </div>
       <div id="sourceGrid" class="asset-grid skeleton"></div>
+      <article id="videoReviewPanel" class="video-review" hidden>
+        <div>
+          <p class="kicker">SOURCE VIDEO</p>
+          <h3>来源视频审核</h3>
+          <p>沿用旧版审核合同：保留时才进入商品草稿；不使用则不会写入视频字段。</p>
+        </div>
+        <div id="videoPreviewHost" class="video-preview"></div>
+        <label for="videoAction">视频决定
+          <select id="videoAction">
+            <option value="keep">保留</option>
+            <option value="remove">不使用</option>
+          </select>
+        </label>
+      </article>
+      <p id="noSourceVideo" class="source-video-empty" hidden>当前来源未发现视频，无需审核。</p>
     </section>
 
     <section id="storyboard" aria-labelledby="storyboardTitle">
@@ -199,7 +214,18 @@
               我已核对最终图片和顺序，允许写入妙手并回读验证
             </label>
           </div>
-          <button id="syncMiaoshouButton" class="button danger" type="button" disabled>同步到妙手</button>
+          <button id="syncMiaoshouButton" class="button danger" type="button" disabled>
+            <span class="sync-button-label">同步到妙手</span>
+            <span class="sync-button-loading">同步与回读中…</span>
+          </button>
+          <div id="syncProgress" class="sync-progress" aria-live="polite">
+            <header>
+              <strong id="syncProgressTitle">等待同步确认</strong>
+              <span id="syncProgressBadge" class="badge neutral">未开始</span>
+            </header>
+            <ol id="syncStepList"></ol>
+            <p id="syncProgressMessage">勾选确认并点击同步后，这里会展示每个真实步骤和回读结果。</p>
+          </div>
         </div>
       </details>
     </section>

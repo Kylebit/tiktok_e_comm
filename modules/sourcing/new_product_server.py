@@ -446,7 +446,26 @@ class NewProductHandler(BaseHTTPRequestHandler):
             try:
                 return self._json(200, np_mod.write_ordered_images_to_miaoshou(raw))
             except Exception as exc:
-                return self._json(400, {"ok": False, "error": str(exc)})
+                try:
+                    sync = (
+                        np_mod.content_package_summary(raw).get(
+                            "miaoshou_generated_images_write"
+                        )
+                        or {}
+                    )
+                except Exception:
+                    sync = {}
+                status = 409 if "已在进行中" in str(exc) else 400
+                return self._json(
+                    status,
+                    {
+                        "ok": False,
+                        "error": str(exc),
+                        "sync": sync,
+                        "claimed": False,
+                        "published": False,
+                    },
+                )
 
         if path == "/api/new-product/content-package/generated-image/sync":
             if not raw:

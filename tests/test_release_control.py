@@ -125,6 +125,27 @@ def test_release_dashboard_is_a_complete_no_write_rehearsal(tmp_path):
     assert all(row["status"] == "draft" for row in result["publication_rehearsal"]["drafts"])
     assert result["actual_release_gate"]["ready"] is False
     assert "Product approval has not been persisted." in result["actual_release_gate"]["blockers"]
+    pricing = result["pricing_review"]
+    assert pricing["algorithm"]["legacy_api"] == "/api/new-product/preview"
+    assert pricing["algorithm"]["legacy_ui"] == "/new-product#renderPricing"
+    assert pricing["input"] == {
+        "cost_cny": 4.4,
+        "weight_kg": 0.02,
+        "package_cm": [58.0, 34.0, 0.02],
+        "volumetric_kg": 0.0049,
+        "billable_kg": 0.02,
+    }
+    assert pricing["selected_store_prices"][0]["target_key"] == "lh_th"
+    assert pricing["target_pricing"]["tiktok:TH"]["store_prices"][0][
+        "list_price"
+    ] > 0
+    assert pricing["target_pricing"]["shopee:TH"]["depends_on"] == (
+        "tiktok:MASTER:verified_readback"
+    )
+    assert pricing["target_pricing"]["ozon:RU"]["write_fields"] == [
+        "draft.price",
+        "draft.old_price",
+    ]
     omnichannel = result["omnichannel_preview"]
     assert omnichannel["available"] is True
     assert omnichannel["all_preflights_passed"] is False
@@ -147,6 +168,7 @@ def test_release_dashboard_is_a_complete_no_write_rehearsal(tmp_path):
         row for row in omnichannel["targets"] if row["channel"] == "shopee"
     )
     assert shopee["depends_on"] == ["tiktok:MASTER:verified_readback"]
+    assert shopee["pricing"]["source"]["target_key"] == "lh_th"
 
 
 def test_release_dashboard_normalises_sea_sites_into_shared_channel_matrix(tmp_path):
@@ -203,6 +225,30 @@ def test_release_dashboard_blocks_conflicting_candidate_sku(tmp_path):
         "seller_sku is already present in the catalog"
         in result["omnichannel_preview"]["blockers"]
     )
+
+
+def test_release_dashboard_preserves_legacy_english_title_gate(tmp_path):
+    root, database = _release_fixture(tmp_path)
+    state_path = root / "data" / "new_product_workbench" / "3828811808.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["review"]["title"] = "可爱小狗墙贴"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    result = build_release_dashboard(
+        root=root,
+        database_path=database,
+        report_store_path=root / "data" / "missing-orbit.db",
+    )
+
+    blocker = "英文标题必须包含英文字母且不能含中文"
+    assert result["approval_rehearsal"]["ready"] is False
+    assert result["approval_rehearsal"]["state_patch_preview"] == {}
+    assert blocker in result["approval_rehearsal"]["blockers"]
+    assert result["publication_rehearsal"]["drafts"] == []
+    assert result["omnichannel_preview"]["available"] is False
+    assert blocker in result["omnichannel_preview"]["blockers"]
+    assert result["actual_release_gate"]["ready"] is False
+    assert blocker in result["actual_release_gate"]["blockers"]
 
 
 def test_release_dashboard_treats_other_approved_workbench_as_sku_reservation(

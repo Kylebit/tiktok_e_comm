@@ -29,6 +29,7 @@ from modules.sourcing.new_product_workbench import (
     prepare_miaoshou_site_drafts,
     prepare_miaoshou_draft,
     price_review,
+    content_package_summary,
     save_state,
     write_miaoshou_draft,
     write_ordered_images_to_miaoshou,
@@ -354,6 +355,151 @@ class NewProductWorkbenchTests(unittest.TestCase):
         self.assertEqual(saved["notes"].count("<img "), 2)
         self.assertEqual(saved["title"], "Existing title")
         self.assertEqual(saved["itemNum"], "0942")
+        self.assertEqual(result["sync"]["status"], "verified")
+        self.assertEqual(
+            [row["status"] for row in result["sync"]["steps"]],
+            ["completed", "completed", "completed", "completed"],
+        )
+        self.assertEqual(result["sync"]["written_image_count"], 2)
+        self.assertEqual(result["sync"]["ordered_image_count"], 2)
+        self.assertTrue(all(result["sync"]["checks"].values()))
+        self.assertEqual(result["sync"]["collect_box_id"], "123")
+        self.assertTrue(all(result["checks"].values()))
+
+    def test_completed_reviewed_ai_suite_does_not_regress_to_ai_planning_stage(self):
+        source_actions = [
+            {"action": action, "url": f"https://img.example/source-{index}.jpg"}
+            for index, action in enumerate(("keep", "keep", "keep", "keep", "remove"), start=1)
+        ]
+        generated = [
+            {
+                "artifact_id": f"sc{index}_r5",
+                "miaoshou_action": action,
+                "url": f"https://img.example/generated-{index}.png",
+            }
+            for index, action in enumerate(("remove", "remove", "keep", "keep"), start=1)
+        ]
+        workflow = _product_workflow_summary(
+            source={
+                "title_source": "Watercolour floral wall decal",
+                "cost_cny": 0.2,
+                "images": source_actions,
+            },
+            review={
+                "title": "Watercolour Floral Butterfly Wall Decal",
+                "cost_cny": 0.2,
+                "weight_kg": 0.14,
+                "package_cm": [30, 3, 3],
+                "selected_sites": ["lh_th"],
+                "image_actions": source_actions,
+                "image_order": [
+                    row["url"] for row in source_actions if row["action"] == "keep"
+                ] + [
+                    row["url"] for row in generated if row["miaoshou_action"] == "keep"
+                ],
+            },
+            content={
+                "content_strategy": "ai_assisted",
+                "package_found": True,
+                "fact_card_approved": True,
+                "planning_scope_approved": True,
+                "suite_approved": True,
+                "model_proposal": {"valid": False},
+                "suite_customization": {
+                    "type_counts": {"scene": 3, "selling_point": 1}
+                },
+                "remaining_images_generation": {
+                    "status": "completed_waiting_human_review"
+                },
+                "generated_review_images": generated,
+            },
+            miaoshou_draft={"written_to_miaoshou": True, "verified": True},
+            tiktok_claim={},
+            site_drafts={},
+        )
+
+        self.assertTrue(workflow["content_ready"])
+        self.assertTrue(workflow["generation_ready"])
+        self.assertTrue(workflow["image_review_ready"])
+        self.assertNotEqual(workflow["current_stage"], "content")
+        self.assertNotIn("调用 AI 生成当前配方", workflow["blockers"])
+
+    def test_content_summary_keeps_completed_legacy_suite_approved_without_model_proposal(self):
+        generated = [
+            {
+                "artifact_id": f"sc{index}_r5",
+                "miaoshou_action": action,
+                "url": f"https://img.example/generated-{index}.png",
+            }
+            for index, action in enumerate(("remove", "remove", "keep", "keep"), start=1)
+        ]
+        source_actions = [
+            {"action": action, "url": f"https://img.example/source-{index}.jpg"}
+            for index, action in enumerate(("keep", "keep", "keep", "keep", "remove"), start=1)
+        ]
+        state = {
+            "offer_id": "123",
+            "review": {
+                "image_actions": source_actions,
+                "image_order": [
+                    row["url"] for row in source_actions if row["action"] == "keep"
+                ] + [
+                    row["url"] for row in generated if row["miaoshou_action"] == "keep"
+                ],
+            },
+            "content_package": {
+                "collect_box_id": "123",
+                "content_strategy": "ai_assisted",
+                "fact_card_approved": True,
+                "planning_scope_approved": True,
+                "suite_approved": True,
+                "remaining_images_generation": {
+                    "status": "completed_waiting_human_review"
+                },
+                "miaoshou_ordered_images_write": {
+                    "status": "verified",
+                    "ordered_image_urls": ["https://img.example/source-1.jpg"],
+                },
+            },
+        }
+        with TemporaryDirectory() as tmp:
+            package_dir = Path(tmp)
+            (package_dir / "review_package.json").write_text(
+                json.dumps({
+                    "collect_box": {},
+                    "fact_card": {},
+                    "plan": {"suite": {"items": []}},
+                }),
+                encoding="utf-8",
+            )
+            with patch(
+                "modules.sourcing.new_product_workbench.resolve_offer_key",
+                return_value="123",
+            ), patch(
+                "modules.sourcing.new_product_workbench.load_state",
+                return_value=state,
+            ), patch(
+                "modules.sourcing.new_product_workbench._source_summary",
+                return_value={"images": []},
+            ), patch(
+                "modules.sourcing.new_product_workbench._content_package_dir",
+                return_value=package_dir,
+            ), patch(
+                "modules.sourcing.new_product_workbench._content_artifacts",
+                return_value=[],
+            ), patch(
+                "modules.sourcing.new_product_workbench._generated_review_images",
+                return_value=generated,
+            ):
+                summary = content_package_summary("123")
+
+        self.assertTrue(summary["completed_ai_suite_evidence"])
+        self.assertTrue(summary["content_approved"])
+        self.assertNotEqual(summary["stage"], "待 AI 生成分镜")
+        self.assertEqual(
+            summary["miaoshou_generated_images_write"]["status"],
+            "verified",
+        )
 
     def test_ordered_image_sync_rejects_pending_images_before_calling_post(self):
         state = {
@@ -369,6 +515,53 @@ class NewProductWorkbenchTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "explicit keep or remove"):
                 write_ordered_images_to_miaoshou("123", post=lambda *args, **kwargs: calls.append(args))
         self.assertEqual(calls, [])
+
+    def test_ordered_image_sync_records_read_failure_with_stage_feedback(self):
+        state = {
+            "review": {
+                "weight_kg": 0.08,
+                "image_actions": [
+                    {"action": "keep", "url": "https://img.example/source-1.jpg"},
+                ],
+                "image_order": ["https://img.example/source-1.jpg"],
+            },
+            "content_package": {"collect_box_id": "123"},
+        }
+        snapshots = []
+        with patch(
+            "modules.sourcing.new_product_workbench.resolve_offer_key",
+            return_value="123",
+        ), patch(
+            "modules.sourcing.new_product_workbench.load_state",
+            return_value=state,
+        ), patch(
+            "modules.sourcing.new_product_workbench.save_state",
+            side_effect=lambda _offer, value: snapshots.append(
+                json.loads(json.dumps(value))
+            ),
+        ), patch(
+            "modules.sourcing.new_product_workbench._source_summary",
+            return_value={"images": []},
+        ), patch(
+            "modules.sourcing.new_product_workbench._content_package_dir",
+            return_value=Path("."),
+        ), patch(
+            "modules.sourcing.new_product_workbench._generated_review_images",
+            return_value=[],
+        ):
+            with self.assertRaisesRegex(RuntimeError, "network unavailable"):
+                write_ordered_images_to_miaoshou(
+                    "123",
+                    post=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                        RuntimeError("network unavailable")
+                    ),
+                )
+
+        feedback = snapshots[-1]["content_package"]["miaoshou_ordered_images_write"]
+        self.assertEqual(feedback["status"], "failed")
+        self.assertEqual(feedback["phase"], "read_current")
+        self.assertEqual(feedback["steps"][1]["status"], "failed")
+        self.assertIn("network unavailable", feedback["steps"][1]["detail"])
 
     def test_workflow_blocks_until_every_visible_image_has_a_final_decision(self):
         workflow = _product_workflow_summary(

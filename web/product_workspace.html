@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#173b36">
   <title>Orbit · 商品发布中心</title>
-  <link rel="stylesheet" href="/static/product_workspace.css?v=20260726-4">
-  <script src="/static/product_workspace.js?v=20260726-4" defer></script>
+  <link rel="stylesheet" href="/static/product_workspace.css?v=20260726-5">
+  <script src="/static/product_workspace.js?v=20260726-5" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -22,7 +22,7 @@
       <a href="#approval">商品审批</a>
       <a href="#content">商品图片</a>
       <a href="#channels">渠道准备</a>
-      <a id="studioNavLink" href="/ai-image-studio">AI 图片工作室</a>
+      <a id="studioNavLink" href="/ai-image-studio" target="_blank" rel="noopener">内容与图片工作室 ↗</a>
     </nav>
     <span class="safety-pill"><i aria-hidden="true"></i> 外部发布关闭</span>
   </header>
@@ -126,7 +126,8 @@
         <p id="nextStepDescription">完成检查后，这里会给出唯一明确的下一步。</p>
         <ul id="blockerList" class="blocker-list"></ul>
         <div class="action-row">
-          <a id="workbenchLink" class="button button-dark" href="/ai-image-studio">打开内容与图片工作室</a>
+          <a id="workbenchLink" class="button button-dark" href="/ai-image-studio"
+             target="_blank" rel="noopener">并行打开内容与图片工作室 ↗</a>
           <button id="refreshButton" class="button button-secondary" type="button">重新检查</button>
         </div>
         <p class="boundary-note">
@@ -203,6 +204,21 @@
         </div>
         <p>先建立妙手公共草稿，再以 TikTok 审定商品为主版本，派生 Shopee 与 Ozon。当前只做预检，不会调用渠道接口。</p>
       </div>
+      <article class="pricing-panel" aria-labelledby="pricingTitle">
+        <div class="pricing-panel-head">
+          <div>
+            <p class="kicker">LEGACY PRICING — PRESERVED</p>
+            <h3 id="pricingTitle">全部国家与店铺售价审查</h3>
+            <p>沿用上一版反向定价、费率、折扣预留与最低利润保护；未选择的店铺也保留计算供核对。</p>
+          </div>
+          <div id="pricingSummary" class="pricing-summary">正在计算全部店铺售价…</div>
+        </div>
+        <div id="storePriceGrid" class="store-price-grid" aria-live="polite"></div>
+        <details class="legacy-pricing-audit">
+          <summary>展开上一版完整费用、汇率与利润计算</summary>
+          <div id="pricingAuditTables"></div>
+        </details>
+      </article>
       <div class="channel-flow" aria-label="全渠道发布依赖流程">
         <span>妙手公共草稿</span><i aria-hidden="true">→</i>
         <span>TikTok 主商品回读</span><i aria-hidden="true">→</i>

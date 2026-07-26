@@ -200,6 +200,24 @@ def test_token_is_invalidated_by_image_order_or_target_change():
     assert changed_targets.approval.confirmation_token != preview.approval.confirmation_token
 
 
+def test_token_is_invalidated_by_commercial_pricing_scope_change():
+    first = build_omnichannel_publication_plan(
+        _product_package(),
+        _content_package(),
+        site_selection=ALL_TARGETS,
+        commercial_scope={"pricing_digest": "price-v1"},
+    )
+    changed = build_omnichannel_publication_plan(
+        _product_package(),
+        _content_package(),
+        site_selection=ALL_TARGETS,
+        commercial_scope={"pricing_digest": "price-v2"},
+    )
+
+    assert first.plan_id != changed.plan_id
+    assert first.approval.confirmation_token != changed.approval.confirmation_token
+
+
 def test_preflight_blocks_unapproved_identity_or_unaudited_site():
     plan = build_omnichannel_publication_plan(
         _product_package(approved=False, source_reference=None),

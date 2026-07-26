@@ -23,6 +23,24 @@
     lh_mx: "墨西哥",
     uk_import: "英国",
   };
+  const feeNames = {
+    goods_cost_local: "货值",
+    logistics_local: "物流",
+    hidden_shipping_local: "隐藏物流",
+    shipping_local: "物流",
+    commission_local: "佣金",
+    transaction_local: "交易费",
+    extra_fee_local: "平台附加费",
+    import_tax_local: "进口税",
+    vat_local: "VAT",
+    sfp_local: "SFP",
+    smart_promo_local: "Smart Promo",
+    affiliate_local: "达人费",
+    ad_local: "广告费",
+    creator_local: "创作者费",
+    seller_tax_local: "卖家税",
+    fixed_fee_local: "固定费",
+  };
   const blockerTranslations = new Map([
     ["Product approval has not been persisted.", "商品审批尚未正式保存。"],
     ["Workbench commercial fields are not locked.", "标题、SKU、成本、重量和站点等商品字段尚未锁定。"],
@@ -118,6 +136,16 @@
       : "—";
   }
 
+  function localMoney(value, currency = "") {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return "—";
+    const digits = currency === "VND" ? 0 : 2;
+    return `${new Intl.NumberFormat("zh-CN", {
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+    }).format(parsed)} ${currency}`.trim();
+  }
+
   function translateBlocker(value) {
     const text = String(value || "").trim();
     const unaudited = text.match(/^([a-z]+):([A-Z0-9_]+) has no audited repository adapter path$/);
@@ -188,6 +216,10 @@
     $("#contentNotice").innerHTML = "";
     $("#channelGrid").innerHTML =
       '<div class="channel-card"><p>读取商品后展示渠道准备状态。</p></div>';
+    $("#pricingSummary").textContent = "尚未读取售价计算。";
+    $("#storePriceGrid").innerHTML =
+      '<div class="image-fallback">读取商品后展示全部国家与店铺售价。</div>';
+    $("#pricingAuditTables").innerHTML = "";
     $("#channelPlanSummary").textContent = "尚未形成全渠道发布计划。";
     $("#channelBlockers").innerHTML = "";
     $("#publishAllButton").disabled = true;
@@ -666,6 +698,109 @@
       .join("");
   }
 
+  function renderPricingReview(pricing) {
+    const allRows = Array.isArray(pricing?.all_legacy_store_prices)
+      ? pricing.all_legacy_store_prices
+      : [];
+    const selectedKeys = new Set(
+      (pricing?.selected_store_prices || []).map((row) => row.target_key),
+    );
+    const validProfits = allRows
+      .map((row) => Number(row.estimated_profit_cny))
+      .filter(Number.isFinite);
+    const adjusted = allRows.filter((row) => row.min_profit_adjusted).length;
+    $("#pricingSummary").textContent = allRows.length
+      ? `${allRows.length} 个国家/店铺价格 · 最低预计利润 ¥${money(Math.min(...validProfits))} · ${adjusted} 个触发利润底线`
+      : "当前没有可展示的售价计算。";
+
+    const grid = $("#storePriceGrid");
+    if (!allRows.length) {
+      grid.innerHTML = '<div class="image-fallback">补全成本、重量和包装后计算售价。</div>';
+    } else {
+      grid.innerHTML = allRows.map((row) => {
+        const selected = selectedKeys.has(row.target_key);
+        const fees = Object.entries(row.fees || {});
+        const formula = Object.entries(row.formula_parameters || {});
+        return `
+          <article class="store-price-card${selected ? " selected" : ""}">
+            <div class="store-price-main">
+              <header>
+                <h4>${esc(row.shop || "店铺")}<small>${esc(row.region)} · ${esc(row.shop_id || row.target_key || "—")}</small></h4>
+                <span class="price-selection">${selected ? "本次选择" : "保留计算"}</span>
+              </header>
+              <div class="price-hero">
+                <span>建议挂牌价</span>
+                <strong>${esc(localMoney(row.list_price, row.currency))}</strong>
+                <small>折扣后成交价 ${esc(localMoney(row.sale_after_discount, row.currency))}</small>
+              </div>
+              <div class="price-profit">
+                <div><span>预计利润</span><strong>¥${esc(money(row.estimated_profit_cny))}</strong></div>
+                <div><span>利润率</span><strong>${esc(money(row.profit_margin_on_sale_pct))}%</strong></div>
+              </div>
+            </div>
+            <details>
+              <summary>费用与公式参数</summary>
+              <dl class="price-fees">
+                ${fees.map(([key, value]) => `
+                  <div><dt>${esc(feeNames[key] || key)}</dt><dd>${esc(localMoney(value, row.currency))}</dd></div>
+                `).join("")}
+                ${formula.map(([key, value]) => `
+                  <div><dt>${esc(key)}</dt><dd>${esc(String(value))}</dd></div>
+                `).join("")}
+              </dl>
+            </details>
+          </article>
+        `;
+      }).join("");
+    }
+
+    const sections = pricing?.legacy_audit?.sections || [];
+    $("#pricingAuditTables").innerHTML = sections.map((section) => `
+      <section class="pricing-audit-section">
+        <h4>${esc(section.title || section.section || "售价审计")}</h4>
+        <p>${(section.notes || []).filter(Boolean).map(esc).join(" · ")}</p>
+        <div class="pricing-table-wrap">
+          <table class="pricing-table">
+            <thead><tr>${(section.header_labels || []).map((label) => `<th>${esc(label)}</th>`).join("")}</tr></thead>
+            <tbody>${(section.rows || []).map((row) => `
+              <tr>${row.map((cell) => `<td>${esc(cell == null ? "—" : String(cell)).replaceAll("\n", "<br>")}</td>`).join("")}</tr>
+            `).join("")}</tbody>
+          </table>
+        </div>
+      </section>
+    `).join("");
+  }
+
+  function channelPriceLine(pricing) {
+    if ((pricing?.store_prices || []).length > 1) {
+      return {
+        label: "妙手公共草稿包含价格",
+        value: `${pricing.store_prices.length} 个已选店铺`,
+      };
+    }
+    const store = (pricing?.store_prices || [])[0];
+    if (store?.list_price != null) {
+      return {
+        label: `${store.shop || "TikTok"} ${store.region || ""} 建议挂牌价`,
+        value: localMoney(store.list_price, store.currency),
+      };
+    }
+    const derived = pricing?.derived_preview || {};
+    if (derived.global_original_price_cny != null) {
+      return {
+        label: `由 TikTok ${derived.source_currency || ""} 价格派生`,
+        value: `¥${money(derived.global_original_price_cny)} CNY`,
+      };
+    }
+    if (derived.price_cny != null) {
+      return {
+        label: "由 TikTok 主商品派生（划线价同时保留）",
+        value: `¥${money(derived.price_cny)} / 划线 ¥${money(derived.old_price_cny)}`,
+      };
+    }
+    return null;
+  }
+
   function renderChannels(omnichannel, publication, releaseReady) {
     const targets = Array.isArray(omnichannel?.targets) ? omnichannel.targets : [];
     const grid = $("#channelGrid");
@@ -704,6 +839,7 @@
         : translateBlocker(failedChecks[0]?.detail || "等待前置依赖和适配器审计。");
       const externalStepCount = (target.steps || [])
         .filter((step) => step.mutates_external_state).length;
+      const priceLine = channelPriceLine(target.pricing || {});
       return `
         <article class="channel-card ${preflightReady ? "ready" : "blocked"}">
           <header>
@@ -716,6 +852,12 @@
             </span>
           </header>
           <p>${esc(message)}</p>
+          ${priceLine ? `
+            <p class="channel-price">
+              <span>${esc(priceLine.label)}</span>
+              <strong>${esc(priceLine.value)}</strong>
+            </p>
+          ` : ""}
           <dl class="channel-meta">
             <div><dt>适配器</dt><dd>${esc(adapterStatus)}</dd></div>
             <div><dt>步骤 / 外部动作</dt><dd>${target.steps?.length || 0} / ${externalStepCount}</dd></div>
@@ -747,6 +889,7 @@
     renderStages(stages);
     renderNextStep(data, stages);
     renderImages(data.content || {});
+    renderPricingReview(data.pricing_review || {});
     renderChannels(
       data.omnichannel_preview || {},
       data.publication_rehearsal || {},

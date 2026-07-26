@@ -20,6 +20,9 @@
   let pollTimer = null;
   let toastTimer = null;
   let contentStrategyDraft = null;
+  let syncPollTimer = null;
+  let syncInFlight = false;
+  let syncFeedbackOverride = null;
   const RECIPE_LIMITS = Object.freeze({
     scene: 6,
     selling_point: 6,
@@ -58,7 +61,9 @@
       error: `服务返回 HTTP ${response.status}`,
     }));
     if (!response.ok || data.ok === false) {
-      throw new Error(data.error || `服务返回 HTTP ${response.status}`);
+      const error = new Error(data.error || `服务返回 HTTP ${response.status}`);
+      error.payload = data;
+      throw error;
     }
     return data;
   }
@@ -101,10 +106,12 @@
   }
 
   function reviewPayload(overrides = {}) {
+    const videoUrl = String(preview?.source?.video?.url || "").trim();
     const review = {
       ...(preview?.review || {}),
       image_actions: sourceRowsFromDom(),
       image_order: finalOrder.map((row) => row.url),
+      video_action: videoUrl ? ($("#videoAction")?.value || "remove") : "none",
       ...overrides,
     };
     delete review.generated_image_actions;
@@ -378,6 +385,24 @@
       );
       if (checkbox) checkbox.checked = true;
     }));
+    const sourceVideo = preview?.source?.video || {};
+    const videoUrl = String(sourceVideo.url || "").trim();
+    $("#videoReviewPanel").hidden = !videoUrl;
+    $("#noSourceVideo").hidden = Boolean(videoUrl);
+    if (videoUrl) {
+      const savedAction = preview?.review?.video_action || sourceVideo.action || "keep";
+      $("#videoAction").value = ["keep", "remove"].includes(savedAction)
+        ? savedAction
+        : "remove";
+      $("#videoPreviewHost").innerHTML = `
+        <video controls preload="none">
+          <source src="${esc(videoUrl)}">
+        </video>
+        <a href="${esc(videoUrl)}" target="_blank" rel="noopener">在新标签页打开来源视频 ↗</a>
+      `;
+    } else {
+      $("#videoPreviewHost").innerHTML = "";
+    }
     attachImagePreview();
   }
 
@@ -547,6 +572,71 @@
     }));
   }
 
+  function defaultSyncSteps(activeId = "") {
+    const rows = [
+      ["review_gate", "审核门禁与最终顺序"],
+      ["read_current", "读取妙手当前版本"],
+      ["write_images", "写入主图与详情图"],
+      ["readback_verify", "回读并逐项验证"],
+    ];
+    const activeIndex = rows.findIndex(([id]) => id === activeId);
+    return rows.map(([id, label], index) => ({
+      id,
+      label,
+      status: activeIndex < 0
+        ? "pending"
+        : (index < activeIndex ? "completed" : (index === activeIndex ? "running" : "pending")),
+      detail: "",
+    }));
+  }
+
+  function renderSyncFeedback(override = null) {
+    if (override) syncFeedbackOverride = override;
+    const sync = syncFeedbackOverride
+      || preview?.content_package?.miaoshou_generated_images_write
+      || {};
+    const status = String(sync.status || "not_started");
+    let steps = Array.isArray(sync.steps) && sync.steps.length
+      ? sync.steps
+      : defaultSyncSteps(status === "not_started" ? "" : String(sync.phase || ""));
+    if (status === "verified" && !(sync.steps || []).length) {
+      steps = defaultSyncSteps().map((step) => ({ ...step, status: "completed" }));
+    }
+    const statusMeta = {
+      not_started: ["等待同步确认", "未开始", "neutral"],
+      preparing: ["正在读取妙手当前版本", "进行中", "warn"],
+      writing: ["正在写入主图与详情图", "写入中", "warn"],
+      verifying: ["写入已完成，正在回读验证", "回读中", "warn"],
+      verified: ["妙手图片已同步并通过回读验证", "已验证", "safe"],
+      failed: ["妙手同步失败", "失败", "danger"],
+      verification_failed: ["写入后回读验证未通过", "需处理", "danger"],
+    };
+    const [title, badge, tone] = statusMeta[status] || ["妙手同步状态", status, "neutral"];
+    $("#syncProgressTitle").textContent = title;
+    $("#syncProgressBadge").textContent = badge;
+    $("#syncProgressBadge").className = `badge ${tone}`;
+    $("#syncStepList").innerHTML = steps.map((step) => `
+      <li class="${esc(step.status || "pending")}">
+        <strong>${esc(step.label || step.id || "同步步骤")}</strong>
+        <span>${esc(step.detail || (
+          step.status === "completed" ? "已完成" :
+          step.status === "running" ? "正在执行" :
+          step.status === "failed" ? "执行失败" : "等待执行"
+        ))}</span>
+      </li>
+    `).join("");
+    const checks = sync.checks || {};
+    const passedChecks = Object.values(checks).filter(Boolean).length;
+    const totalChecks = Object.keys(checks).length;
+    $("#syncProgressMessage").textContent = sync.error
+      ? `失败原因：${sync.error}`
+      : (status === "verified"
+        ? `已写入 ${sync.written_image_count || sync.ordered_image_count || finalOrder.length} 张图片；${passedChecks}/${totalChecks || 4} 项回读检查通过。未认领或发布商品。`
+        : (syncInFlight
+          ? "页面会持续读取任务状态；请勿关闭或重复点击。"
+          : "勾选确认并点击同步后，这里会展示每个真实步骤和回读结果。"));
+  }
+
   function render() {
     finalOrder = buildFinalItems();
     renderProject();
@@ -554,6 +644,7 @@
     renderStoryboard();
     renderVersions();
     renderFinal();
+    renderSyncFeedback();
     schedulePoll();
   }
 
@@ -582,6 +673,7 @@
     if (!quiet) showAlert("");
     try {
       preview = await requestJson(`${flowApi("preview")}?offer_id=${encodeURIComponent(offerId)}`);
+      if (!syncInFlight) syncFeedbackOverride = null;
       contentStrategyDraft = null;
       finalOrder = buildFinalItems();
       render();
@@ -821,23 +913,71 @@
       return;
     }
     if (!confirm(`将按当前顺序把 ${finalOrder.length} 张图片写入妙手公共采集箱并回读验证。此操作不会发布商品。再次确认继续吗？`)) return;
+    syncInFlight = true;
+    $("#miaoshouConfirm").disabled = true;
     setLoading($("#syncMiaoshouButton"), true);
+    renderSyncFeedback({
+      status: "preparing",
+      phase: "review_gate",
+      steps: defaultSyncSteps("review_gate"),
+      ordered_image_count: finalOrder.length,
+    });
     try {
       await saveOrder({ quiet: true });
-      const result = await post("content-package/miaoshou-images/commit", {
+      renderSyncFeedback({
+        status: "preparing",
+        phase: "read_current",
+        steps: defaultSyncSteps("read_current"),
+        ordered_image_count: finalOrder.length,
+      });
+      const commit = post("content-package/miaoshou-images/commit", {
         offer_id: currentOfferId(),
         confirm_miaoshou_write: true,
       });
+      clearInterval(syncPollTimer);
+      syncPollTimer = setInterval(async () => {
+        try {
+          const latest = await requestJson(
+            `${flowApi("preview")}?offer_id=${encodeURIComponent(currentOfferId())}`,
+          );
+          preview.content_package = latest.content_package;
+          renderSyncFeedback(
+            latest.content_package?.miaoshou_generated_images_write || null,
+          );
+        } catch (_error) {
+          // The commit request remains authoritative; transient poll failures
+          // are surfaced only if the commit itself fails.
+        }
+      }, 800);
+      const result = await commit;
       if (!result.verified) throw new Error("妙手已响应，但图片顺序回读验证未全部通过。");
+      renderSyncFeedback(result.sync || {
+        status: "verified",
+        written_image_count: result.written_image_count,
+        checks: result.checks,
+      });
       await load({ quiet: true });
+      syncFeedbackOverride = null;
+      renderSyncFeedback();
       $("#miaoshouConfirm").checked = false;
       $("#syncMiaoshouButton").disabled = true;
       toast(`已同步 ${result.written_image_count || finalOrder.length} 张图片并通过回读验证。`);
     } catch (error) {
+      renderSyncFeedback(error.payload?.sync || {
+        status: "failed",
+        phase: "write_images",
+        steps: defaultSyncSteps("write_images"),
+        error: error.message,
+      });
       showAlert(error.message);
     } finally {
+      clearInterval(syncPollTimer);
+      syncPollTimer = null;
+      syncInFlight = false;
+      $("#miaoshouConfirm").disabled = false;
       setLoading($("#syncMiaoshouButton"), false);
       $("#syncMiaoshouButton").disabled = !$("#miaoshouConfirm").checked;
+      renderSyncFeedback();
     }
   }
 
@@ -863,7 +1003,7 @@
   $("#saveVersionsButton").addEventListener("click", saveVersionReview);
   $("#saveOrderButton").addEventListener("click", () => saveOrder());
   $("#miaoshouConfirm").addEventListener("change", (event) => {
-    $("#syncMiaoshouButton").disabled = !event.currentTarget.checked;
+    $("#syncMiaoshouButton").disabled = syncInFlight || !event.currentTarget.checked;
   });
   $("#syncMiaoshouButton").addEventListener("click", syncMiaoshou);
   $("#closeDialog").addEventListener("click", () => $("#imageDialog").close());

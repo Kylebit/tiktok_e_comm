@@ -15,17 +15,22 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 from core.config import ROOT
 from core.db import connect_readonly
 from domains.channel_operations import (
     OmnichannelPublicationPlan,
+    build_channel_pricing_preview,
     build_omnichannel_publication_plan,
     build_publication_plan,
 )
 from domains.content_operations import build_workbench_content_package_handoff
 from domains.product_operations import preview_product_approval_lock
+from modules.finance.profit_engine import exchange_rate_for
+from modules.ozon.price_convert import exchange_rates as ozon_exchange_rates
+from modules.sourcing.new_product_workbench import price_review
 from shared_platform.report_store import ReportRunStore
 from shared_platform.weekly_profit_runner import build_weekly_profit_preview
 
@@ -149,7 +154,10 @@ def _content_copy(review: Mapping[str, Any], collect_box: Mapping[str, Any]) -> 
     }
 
 
-def _commercial_approval_facts(review: Mapping[str, Any]) -> dict[str, Any]:
+def _commercial_approval_facts(
+    review: Mapping[str, Any],
+    pricing_review: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     category = review.get("category")
     return {
         "cost_cny": review.get("cost_cny"),
@@ -160,7 +168,60 @@ def _commercial_approval_facts(review: Mapping[str, Any]) -> dict[str, Any]:
         "category": dict(category) if isinstance(category, Mapping) else category,
         "support_cod": review.get("support_cod"),
         "video_action": str(review.get("video_action") or ""),
+        "fx_rates": {
+            str(key).upper(): value
+            for key, value in sorted(
+                (review.get("fx_rates") or {}).items()
+                if isinstance(review.get("fx_rates"), Mapping)
+                else ()
+            )
+        },
+        "pricing_algorithm": "modules.sourcing.new_product_workbench.price_review",
+        "selected_store_prices": list(
+            (pricing_review or {}).get("selected_store_prices") or ()
+        ),
     }
+
+
+def _commercial_release_blockers(review: Mapping[str, Any]) -> list[str]:
+    """Preserve the legacy workbench's commercial release gates.
+
+    The formal product centre must never be more permissive than the detailed
+    workbench it replaces.  Keep these messages aligned with
+    ``_product_workflow_summary`` so an existing product cannot appear ready
+    here while the legacy workflow still reports a commercial blocker.
+    """
+
+    blockers: list[str] = []
+    title = str(review.get("title") or "").strip()
+    if not re.search(r"[A-Za-z]", title) or re.search(r"[\u3400-\u9fff]", title):
+        blockers.append("英文标题必须包含英文字母且不能含中文")
+    try:
+        weight = float(review.get("weight_kg") or 0)
+    except (TypeError, ValueError):
+        weight = 0
+    if weight <= 0:
+        blockers.append("请确认商品重量")
+    package = (
+        list(review.get("package_cm") or ())
+        if isinstance(review.get("package_cm"), (list, tuple))
+        else []
+    )
+    try:
+        package_ready = len(package) == 3 and all(float(value or 0) > 0 for value in package)
+    except (TypeError, ValueError):
+        package_ready = False
+    if not package_ready:
+        blockers.append("请确认完整包装尺寸")
+    if not review.get("selected_sites"):
+        blockers.append("请至少选择一个目标站点")
+    try:
+        cost = float(review.get("cost_cny") or 0)
+    except (TypeError, ValueError):
+        cost = 0
+    if cost <= 0:
+        blockers.append("请确认来源成本")
+    return blockers
 
 
 def _verified_image_write(content_state: Mapping[str, Any]) -> tuple[bool, list[str]]:
@@ -237,6 +298,8 @@ def _blocked_omnichannel_preview(
 
 def _serialize_omnichannel_preview(
     plan: OmnichannelPublicationPlan,
+    *,
+    pricing_by_target: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     token = plan.approval.confirmation_token
     return {
@@ -296,6 +359,12 @@ def _serialize_omnichannel_preview(
                 "steps": [asdict(step) for step in target.steps],
                 "idempotency_key": target.idempotency_key,
                 "executable": target.executable,
+                "pricing": dict(
+                    (pricing_by_target or {}).get(
+                        f"{target.channel}:{target.site}",
+                        {},
+                    )
+                ),
             }
             for target in plan.targets
         ],
@@ -309,6 +378,41 @@ def _serialize_omnichannel_preview(
         ),
         "adapter_calls_performed": plan.adapter_calls_performed,
     }
+
+
+def _release_pricing_review(review: Mapping[str, Any]) -> dict[str, Any]:
+    """Replay the persisted legacy pricing inputs without fetching live FX."""
+
+    cost = float(_decimal(review.get("cost_cny")))
+    weight = float(_decimal(review.get("weight_kg")))
+    raw_package = review.get("package_cm")
+    package = list(raw_package) if isinstance(raw_package, (list, tuple)) else []
+    package_cm = [float(_decimal(value)) for value in package[:3]]
+    while len(package_cm) < 3:
+        package_cm.append(0.0)
+    fx_rates = (
+        dict(review.get("fx_rates") or {})
+        if isinstance(review.get("fx_rates"), Mapping)
+        else {}
+    )
+    legacy = price_review(
+        cost,
+        weight,
+        package_cm,
+        fx_rates=fx_rates,
+    )
+    currencies = ("PHP", "MYR", "THB", "VND", "GBP", "MXN")
+    shopee_rates: dict[str, float] = {}
+    for currency in currencies:
+        rate = exchange_rate_for(currency)
+        if rate > 0:
+            shopee_rates[currency] = rate
+    return build_channel_pricing_preview(
+        legacy,
+        selected_site_keys=review.get("selected_sites") or (),
+        shopee_exchange_rates=shopee_rates,
+        ozon_exchange_rates=ozon_exchange_rates(),
+    )
 
 
 def build_release_dashboard(
@@ -401,6 +505,7 @@ def build_release_dashboard(
     }
     simulation_state = dict(state)
     simulation_state.pop("product_approval", None)
+    release_pricing = _release_pricing_review(review)
     approval_preview = preview_product_approval_lock(
         state=simulation_state,
         product_row=product_row,
@@ -410,31 +515,55 @@ def build_release_dashboard(
         user_approved=True,
         approval_fact=simulated_approval,
         expected_revision=int(state.get("_revision") or 0),
-        approval_input_facts=_commercial_approval_facts(review),
+        approval_input_facts=_commercial_approval_facts(review, release_pricing),
+    )
+    commercial_blockers = _commercial_release_blockers(review)
+    approval_blockers = list(
+        dict.fromkeys([*approval_preview.blockers, *commercial_blockers])
+    )
+    approved_product_package = (
+        approval_preview.approved_package if not commercial_blockers else None
+    )
+    approval_state_patch = (
+        dict(approval_preview.state_patch)
+        if approved_product_package is not None
+        else {}
     )
     publication_plan = (
         build_publication_plan(
-            approval_preview.approved_package,
+            approved_product_package,
             content_handoff.content_package,
         )
-        if approval_preview.approved_package is not None
+        if approved_product_package is not None
         else None
     )
     omnichannel_selection = _default_omnichannel_targets(review)
     omnichannel_preview = (
         _serialize_omnichannel_preview(
             build_omnichannel_publication_plan(
-                approval_preview.approved_package,
+                approved_product_package,
                 content_handoff.content_package,
                 site_selection=omnichannel_selection,
-            )
+                commercial_scope={
+                    "pricing_schema": release_pricing["schema_version"],
+                    "selected_store_prices": release_pricing["selected_store_prices"],
+                    "workbench_exchange_rates": release_pricing[
+                        "workbench_exchange_rates"
+                    ],
+                    "shopee_exchange_rates": release_pricing[
+                        "shopee_exchange_rates"
+                    ],
+                    "ozon_exchange_rates": release_pricing["ozon_exchange_rates"],
+                },
+            ),
+            pricing_by_target=release_pricing["target_pricing"],
         )
-        if approval_preview.approved_package is not None
+        if approved_product_package is not None
         else _blocked_omnichannel_preview(
             site_selection=omnichannel_selection,
             blockers=[
                 *content_handoff.blockers,
-                *approval_preview.blockers,
+                *approval_blockers,
             ]
             or ["Approved product and content packages are not ready."],
         )
@@ -449,14 +578,14 @@ def build_release_dashboard(
         content_handoff.content_package.approval is not None
         and content_handoff.content_package.approval.status == "approved"
     )
-    simulated_ready = approval_preview.approved_package is not None
+    simulated_ready = approved_product_package is not None
     channel_ready = bool(
         publication_plan
         and all(not draft.missing_conditions for draft in publication_plan.drafts)
     )
     expected_approval = (
-        approval_preview.state_patch.get("product_approval")
-        if isinstance(approval_preview.state_patch.get("product_approval"), Mapping)
+        approval_state_patch.get("product_approval")
+        if isinstance(approval_state_patch.get("product_approval"), Mapping)
         else {}
     )
     required_approval_matches = {
@@ -493,6 +622,7 @@ def build_release_dashboard(
         and bool(current_image_urls)
     )
     actual_blockers: list[str] = []
+    actual_blockers.extend(commercial_blockers)
     if not actual_approval:
         actual_blockers.append("Product approval has not been persisted.")
     elif not actual_product_approved:
@@ -541,6 +671,7 @@ def build_release_dashboard(
             "actual_product_approved": actual_product_approved,
             "actual_approval": dict(actual_approval),
         },
+        "pricing_review": release_pricing,
         "content": {
             "package_id": content_handoff.content_package.package_id,
             "strategy": str(
@@ -569,8 +700,8 @@ def build_release_dashboard(
         },
         "approval_rehearsal": {
             "ready": simulated_ready,
-            "blockers": list(approval_preview.blockers),
-            "state_patch_preview": dict(approval_preview.state_patch),
+            "blockers": approval_blockers,
+            "state_patch_preview": approval_state_patch,
             "persisted": False,
         },
         "publication_rehearsal": {

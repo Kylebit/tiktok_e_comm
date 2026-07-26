@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#152f2c">
   <title>Orbit · AI 图片工作室</title>
-  <link rel="stylesheet" href="/static/ai_image_studio.css?v=20260726-4">
-  <script src="/static/ai_image_studio.js?v=20260726-4" defer></script>
+  <link rel="stylesheet" href="/static/ai_image_studio.css?v=20260726-7">
+  <script src="/static/ai_image_studio.js?v=20260726-7" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -167,9 +167,23 @@
           <input id="scopeApproved" type="checkbox">
           <span><strong id="scopeApprovalTitle">本地生图约束已确认</strong><small id="scopeApprovalHint">图片数量、类型与类目规则符合本次需求</small></span>
         </label>
-        <button id="preparePackageButton" class="button secondary" type="button" hidden>创建内容审核包</button>
+        <button id="preparePackageButton" class="button secondary" type="button" hidden>
+          <span class="button-label">读取妙手并创建本地包</span>
+          <span class="button-loading">正在创建…</span>
+        </button>
         <button id="savePlanButton" class="button dark" type="button">保存本次配方</button>
-        <button id="aiPlanButton" class="button secondary" type="button">使用 AI 规划分镜</button>
+        <button id="aiPlanButton" class="button secondary" type="button">
+          <span class="button-label">AI 规划分镜（不生成图片）</span>
+          <span class="button-loading">AI 规划中…</span>
+        </button>
+      </article>
+      <article id="planningProgress" class="operation-progress" role="status" aria-live="polite" hidden>
+        <header>
+          <div><strong id="planningProgressTitle">准备 AI 分镜</strong><span id="planningProgressMessage">等待开始</span></div>
+          <span id="planningProgressBadge" class="badge neutral">未开始</span>
+        </header>
+        <div class="progress-track" aria-hidden="true"><span id="planningProgressBar"></span></div>
+        <ol id="planningProgressSteps"></ol>
       </article>
       <div id="storyboardGrid" class="storyboard-grid"></div>
     </section>
@@ -187,6 +201,7 @@
           <button id="paidGenerateButton" class="button paid" type="button" disabled>确认付费并生成</button>
         </div>
       </div>
+      <article id="generationProgress" class="operation-progress compact" role="status" aria-live="polite"></article>
       <div id="versionGrid" class="version-grid skeleton"></div>
       <div class="inline-actions">
         <button id="saveVersionsButton" class="button dark" type="button">保存版本审核</button>

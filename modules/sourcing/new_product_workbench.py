@@ -825,6 +825,12 @@ def _adopt_current_storyboard_recipe(
         != EXPERIENCE_RECIPE_REVIEW_MODE
     ):
         return
+    if not bool(content.get("fact_card_approved")):
+        content["suite_approved"] = False
+        content["storyboard_reviews"] = {}
+        content.pop("storyboard_recipe_adopted_at", None)
+        content.pop("storyboard_recipe_signature", None)
+        return
     proposal = (
         review_package.get("model_proposal")
         if isinstance(review_package.get("model_proposal"), dict)
@@ -3048,6 +3054,7 @@ def save_content_package_review(offer_id_or_url: str, review: dict[str, Any]) ->
     content = state.setdefault("content_package", {})
     previous_recipe = _content_recipe_signature(content)
     previous_planning_recipe = _planning_recipe_signature(content)
+    previous_fact_card_approved = bool(content.get("fact_card_approved"))
     if "content_strategy" in review:
         strategy = str(review.get("content_strategy") or "").strip()
         if strategy not in CONTENT_STRATEGIES:
@@ -3059,6 +3066,10 @@ def save_content_package_review(offer_id_or_url: str, review: dict[str, Any]) ->
         content.setdefault("content_strategy", "ai_assisted")
     if "fact_card_approved" in review:
         content["fact_card_approved"] = bool(review.get("fact_card_approved"))
+    fact_approval_changed = (
+        bool(content.get("fact_card_approved"))
+        != previous_fact_card_approved
+    )
     if "planning_scope_approved" in review:
         content["planning_scope_approved"] = bool(
             review.get("planning_scope_approved")
@@ -3159,8 +3170,13 @@ def save_content_package_review(offer_id_or_url: str, review: dict[str, Any]) ->
                 "note": str(row.get("note") or "").strip()[:1000],
                 "reviewed_at": _now(),
             }
-    if ai_assisted:
+    if ai_assisted and not fact_approval_changed:
         _adopt_current_storyboard_recipe(content, review_package)
+    elif ai_assisted:
+        content["suite_approved"] = False
+        content["storyboard_reviews"] = {}
+        content.pop("storyboard_recipe_adopted_at", None)
+        content.pop("storyboard_recipe_signature", None)
     current_recipe = _content_recipe_signature(content)
     if current_recipe != previous_recipe:
         pending_regeneration_shot_ids = [

@@ -16,6 +16,7 @@
   font-family: "Segoe UI Variable", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html { scroll-behavior: smooth; }
 body {
   min-width: 320px;
@@ -204,6 +205,38 @@ section { scroll-margin-top: 18px; }
   white-space: nowrap;
 }
 .story-controls { display: grid; grid-template-columns: .65fr 1.35fr; gap: 8px; }
+.operation-progress {
+  display: grid;
+  gap: 12px;
+  margin: 14px 0;
+  padding: 17px;
+  border: 1px solid rgba(35,119,108,.28);
+  border-radius: 15px;
+  background: rgba(239,246,241,.88);
+}
+.operation-progress.compact { margin-top: -2px; }
+.operation-progress header { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.operation-progress header > div { display: grid; gap: 4px; }
+.operation-progress header strong { font-size: 12px; }
+.operation-progress header span:not(.badge) { color: var(--muted); font-size: 10px; line-height: 1.45; }
+.operation-progress .badge { flex: 0 0 auto; padding: 6px 9px; border-radius: 999px; font-size: 9px; font-weight: 800; }
+.operation-progress .badge.neutral { color: var(--muted); background: rgba(23,48,45,.07); }
+.operation-progress .badge.warn { color: #875620; background: rgba(239,189,99,.25); }
+.operation-progress .badge.safe { color: var(--teal); background: var(--mint); }
+.operation-progress .badge.danger { color: var(--red); background: rgba(166,66,55,.1); }
+.progress-track { height: 7px; overflow: hidden; border-radius: 999px; background: rgba(23,48,45,.09); }
+.progress-track > span { width: 0; height: 100%; display: block; border-radius: inherit; background: linear-gradient(90deg,var(--teal),#50a18e); transition: width .3s ease; }
+.operation-progress.running .progress-track > span {
+  background: linear-gradient(90deg,var(--teal),var(--amber),var(--teal));
+  background-size: 200% 100%;
+  animation: progress-pulse 1.4s linear infinite;
+}
+.operation-progress.failed .progress-track > span { background: var(--red); }
+.operation-progress ol { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 7px; margin: 0; padding: 0; list-style: none; }
+.operation-progress li { padding: 8px 9px; border-radius: 9px; color: var(--muted); background: rgba(23,48,45,.05); font-size: 9px; }
+.operation-progress li.done { color: var(--teal); background: rgba(213,238,229,.66); }
+.operation-progress li.current { color: #875620; background: rgba(239,189,99,.22); }
+@keyframes progress-pulse { to { background-position: -200% 0; } }
 .generation-actions,.inline-actions { display: flex; gap: 9px; }
 .version-grid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 14px; }
 .version-card.rework { opacity: .64; }
@@ -303,6 +336,7 @@ footer { width: min(1320px,calc(100% - 40px)); min-height: 72px; display: flex; 
   .recipe-total { justify-self:start; }
   .size-card-fields { grid-template-columns:1fr; }
   .approval-strip { grid-template-columns:1fr; }
+  .operation-progress ol { grid-template-columns:1fr 1fr; }
   .asset-grid,.version-grid,.storyboard-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
   .story-controls { grid-template-columns:1fr; }
   .final-row { grid-template-columns:42px 62px minmax(0,1fr); }

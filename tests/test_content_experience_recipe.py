@@ -4,6 +4,8 @@ import copy
 import json
 from pathlib import Path
 
+import pytest
+
 from domains.content_operations.content_package_adapter import (
     EXPERIENCE_RECIPE_REVIEW_MODE,
     build_workbench_content_package_handoff,
@@ -158,3 +160,186 @@ def test_auto_adopted_storyboard_does_not_approve_generated_image():
     assert approved.content_package.approval.status == "approved"
     assert approved.content_package.image_urls == (image_url,)
     assert approved.asset_lineage[0].decision_source == "asset_decisions.approved"
+
+
+def _legacy_migration_fixture(tmp_path: Path, monkeypatch):
+    first = "https://assets.example/source.jpg"
+    second = "https://assets.example/alternate.jpg"
+    content = {
+        "content_strategy": "ai_assisted",
+        "collect_box_id": "3828540231",
+        "fact_card_approved": True,
+        "planning_scope_approved": True,
+        "suite_approved": False,
+        "identity_reference_urls": [first],
+        "primary_identity_url": first,
+        "suite_customization": {
+            "type_counts": {"scene": 1},
+            "size_card": {
+                "enabled": False,
+                "dimensions": "",
+                "confirmed": False,
+            },
+        },
+    }
+    package = {
+        "collect_box": {
+            "source_title": "Watercolour floral wall decal",
+            "primary_identity_image": first,
+            "image_urls": [first, second],
+        },
+        "fact_card": {
+            "verified": [{"field": "material", "value": "PVC"}],
+        },
+        "model_proposal": {
+            "planning_source": "ai",
+            "planning_signature": workbench._planning_recipe_signature(content),
+            "model": "legacy-planner",
+        },
+        "plan": {
+            "analysis": {
+                "subject": "Watercolour floral wall decal",
+                "category": "wall decal",
+                "style_lock": "Preserve the exact printed pattern.",
+            },
+            "_meta": {"category_profile": "wall_decal"},
+            "suite": {
+                "items": [
+                    {
+                        "id": "sc1",
+                        "type": "scene",
+                        "title": "Living Room Application",
+                        "focus": "Show the exact decal on a living-room wall.",
+                        "selected": True,
+                    }
+                ]
+            },
+        },
+    }
+    package_path = tmp_path / "review_package.json"
+    package_path.write_text(json.dumps(package), encoding="utf-8")
+    state = {
+        "offer_id": "3828540231",
+        "_revision": 13,
+        "content_package": copy.deepcopy(content),
+    }
+    saved_states: list[dict] = []
+    monkeypatch.setattr(
+        workbench,
+        "resolve_offer_key",
+        lambda _value: "3828540231",
+    )
+    monkeypatch.setattr(workbench, "load_state", lambda _offer: state)
+    monkeypatch.setattr(
+        workbench,
+        "_content_package_dir",
+        lambda _collect_box: tmp_path,
+    )
+    monkeypatch.setattr(
+        workbench,
+        "save_state",
+        lambda _offer, value: saved_states.append(copy.deepcopy(value)) or value,
+    )
+    monkeypatch.setattr(
+        workbench,
+        "content_package_summary",
+        lambda _offer: {"ok": True},
+    )
+    return state, package_path, saved_states, first, second
+
+
+@pytest.mark.parametrize(
+    "review_update",
+    [
+        {
+            "suite_customization": {
+                "type_counts": {"scene": 2},
+                "size_card": {
+                    "enabled": False,
+                    "dimensions": "",
+                    "confirmed": False,
+                },
+            }
+        },
+        {
+            "identity_reference_urls": ["https://assets.example/alternate.jpg"],
+            "primary_identity_url": "https://assets.example/alternate.jpg",
+        },
+        {"fact_card_approved": False},
+    ],
+    ids=("recipe_changed", "reference_changed", "fact_changed"),
+)
+def test_legacy_proposal_migration_rejects_recipe_reference_or_fact_drift(
+    tmp_path,
+    monkeypatch,
+    review_update,
+):
+    state, _package_path, _saved, _first, _second = _legacy_migration_fixture(
+        tmp_path,
+        monkeypatch,
+    )
+
+    workbench.save_content_package_review("3828540231", review_update)
+
+    content = state["content_package"]
+    assert content["planning_review_mode"] == EXPERIENCE_RECIPE_REVIEW_MODE
+    assert content["suite_approved"] is False
+    assert content["storyboard_reviews"] == {}
+    assert "storyboard_recipe_signature" not in content
+
+
+def test_matching_legacy_proposal_migrates_then_builds_local_suite_preflight_only(
+    tmp_path,
+    monkeypatch,
+):
+    state, package_path, saved, _first, _second = _legacy_migration_fixture(
+        tmp_path,
+        monkeypatch,
+    )
+    before_package = package_path.read_bytes()
+
+    workbench.save_content_package_review("3828540231", {})
+
+    content = state["content_package"]
+    assert content["planning_review_mode"] == EXPERIENCE_RECIPE_REVIEW_MODE
+    assert content["suite_approved"] is True
+    assert content["storyboard_reviews"]["sc1"]["decision"] == "auto_adopted"
+
+    thread_calls: list[tuple] = []
+    subprocess_calls: list[tuple] = []
+    monkeypatch.setattr(
+        workbench.threading,
+        "Thread",
+        lambda *args, **kwargs: thread_calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        workbench.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess_calls.append((args, kwargs)),
+    )
+    from modules.sourcing import toapis_client
+
+    payload_calls: list[dict] = []
+    monkeypatch.setattr(
+        toapis_client,
+        "build_generation_payload",
+        lambda **kwargs: payload_calls.append(dict(kwargs))
+        or {
+            "model": kwargs["model"],
+            "prompt": kwargs["prompt"],
+            "reference_images": kwargs["reference_images"],
+        },
+    )
+
+    result = workbench.prepare_suite_image_generations("3828540231")
+
+    assert result["ok"] is True
+    assert result["preflight"]["status"] == "ready_for_explicit_paid_confirmation"
+    assert [row["id"] for row in result["preflight"]["shots"]] == ["sc1"]
+    assert len(payload_calls) == 1
+    assert "remaining_images_preflight" in content
+    assert "remaining_images_generation" not in content
+    assert thread_calls == []
+    assert subprocess_calls == []
+    assert package_path.read_bytes() == before_package
+    assert len(saved) == 2

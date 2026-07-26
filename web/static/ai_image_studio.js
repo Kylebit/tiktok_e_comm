@@ -27,6 +27,8 @@
   let syncPollTimer = null;
   let syncInFlight = false;
   let syncFeedbackOverride = null;
+  let planningProgressOverride = null;
+  let generationProgressOverride = null;
   const RECIPE_LIMITS = Object.freeze({
     scene: 6,
     selling_point: 6,
@@ -49,6 +51,241 @@
     if (!element) return;
     element.classList.toggle("is-loading", loading);
     if ("disabled" in element) element.disabled = loading;
+    if (loading) element.setAttribute("aria-busy", "true");
+    else element.removeAttribute("aria-busy");
+  }
+
+  function setButtonLabel(element, text) {
+    if (!element) return;
+    const label = element.querySelector(".button-label");
+    if (label) label.textContent = text;
+    else element.textContent = text;
+  }
+
+  function nextPaint() {
+    return new Promise((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    });
+  }
+
+  const PLANNING_STEPS = Object.freeze([
+    "保存本次配方",
+    "AI 规划分镜",
+    "自动采用经验配方",
+    "生成前检查",
+  ]);
+
+  function renderPlanningProgress(override) {
+    if (override !== undefined) {
+      planningProgressOverride = override
+        ? { ...override, offer_id: currentOfferId() }
+        : null;
+    }
+    const host = $("#planningProgress");
+    if (!host) return;
+    if (sourceOnlyActive()) {
+      host.hidden = true;
+      return;
+    }
+    const content = preview?.content_package || {};
+    const preflightReady = (
+      content.remaining_images_preflight?.status
+      === "ready_for_explicit_paid_confirmation"
+    );
+    const proposalValid = Boolean(content.model_proposal?.valid);
+    const proposalAutoAdopted = Boolean(
+      proposalValid
+      && content.suite_approved
+      && content.planning_review_mode === "experience_recipe_auto_v1"
+    );
+    const feedback = (
+      planningProgressOverride?.offer_id === currentOfferId()
+        ? planningProgressOverride
+        : null
+    ) || (
+      preflightReady
+        ? {
+          status: "complete",
+          completedThrough: 3,
+          title: "AI 分镜与生成前检查已完成",
+          message: "尚未创建任何付费图片任务；等待 Kyle 确认付费。",
+          badge: "等待付费确认",
+        }
+        : proposalAutoAdopted
+          ? {
+            status: "waiting",
+            completedThrough: 2,
+            step: 3,
+            title: "AI 分镜已规划并自动采用",
+            message: "经验配方已采用；下一步是无付费的生成前检查。",
+            badge: "待检查",
+          }
+          : proposalValid
+            ? {
+              status: "waiting",
+              completedThrough: 1,
+              step: 2,
+              title: "已有有效 AI 分镜",
+              message: "这是升级前的旧状态；保存当前配方时会无费用迁移并自动采用，不会再次调用 AI。",
+              badge: "待迁移",
+            }
+          : {
+            status: "idle",
+            completedThrough: -1,
+            step: 0,
+            title: "准备 AI 分镜",
+            message: "确认商品事实、身份参考与图片配方后开始。",
+            badge: "未开始",
+          }
+    );
+    const status = feedback.status || "idle";
+    const completedThrough = Number(feedback.completedThrough ?? -1);
+    const currentStep = Number(feedback.step ?? Math.min(completedThrough + 1, 3));
+    const complete = status === "complete";
+    const failed = status === "failed";
+    const running = status === "running";
+    const finishedCount = complete ? PLANNING_STEPS.length : Math.max(0, completedThrough + 1);
+    const partial = running ? 0.45 : 0;
+    const progress = complete
+      ? 100
+      : Math.min(100, Math.round(((finishedCount + partial) / PLANNING_STEPS.length) * 100));
+    const tone = failed ? "danger" : (complete ? "safe" : (running || status === "waiting" ? "warn" : "neutral"));
+
+    host.hidden = false;
+    host.classList.toggle("running", running);
+    host.classList.toggle("failed", failed);
+    $("#planningProgressTitle").textContent = feedback.title || "AI 分镜进度";
+    $("#planningProgressMessage").textContent = failed
+      ? `失败原因：${feedback.error || feedback.message || "未知错误"}`
+      : (feedback.message || "正在处理。");
+    $("#planningProgressBadge").textContent = feedback.badge || (
+      failed ? "失败" : (complete ? "已完成" : (running ? "进行中" : "等待"))
+    );
+    $("#planningProgressBadge").className = `badge ${tone}`;
+    $("#planningProgressBar").style.width = `${progress}%`;
+    $("#planningProgressSteps").innerHTML = PLANNING_STEPS.map((label, index) => {
+      const state = complete || index <= completedThrough
+        ? "done"
+        : (index === currentStep && (running || failed || status === "waiting") ? "current" : "");
+      return `<li class="${state}">${esc(label)}</li>`;
+    }).join("");
+  }
+
+  function renderGenerationProgress(override) {
+    if (override !== undefined) {
+      generationProgressOverride = override
+        ? { ...override, offer_id: currentOfferId() }
+        : null;
+    }
+    const host = $("#generationProgress");
+    if (!host) return;
+    const content = preview?.content_package || {};
+    const generation = content.remaining_images_generation || {};
+    const preflight = content.remaining_images_preflight || {};
+    const persistedStatus = String(generation.status || "");
+    const persistedDisplayStatus = (
+      preflight.status === "ready_for_explicit_paid_confirmation"
+      && (!persistedStatus || persistedStatus === "not_started")
+    )
+      ? "preflight-ready"
+      : (persistedStatus || "not_started");
+    const feedback = (
+      generationProgressOverride?.offer_id === currentOfferId()
+        ? generationProgressOverride
+        : null
+    );
+    const status = String(feedback?.status || (
+      sourceOnlyActive()
+        ? "skipped"
+        : persistedDisplayStatus
+    ));
+    const items = Array.isArray(generation.items) ? generation.items : [];
+    const total = Number(preflight.total || preflight.shots?.length || items.length || 0);
+    const completedCount = items.filter(
+      (item) => ["completed", "completed_waiting_human_review"].includes(item.status),
+    ).length;
+    const failedCount = items.filter((item) => item.status === "failed").length;
+    const settledCount = completedCount + failedCount;
+    const progress = feedback?.progress ?? (
+      ["completed_waiting_human_review", "completed_with_errors", "completed"].includes(status)
+        ? 100
+        : (status === "running" && total
+          ? Math.max(8, Math.round((settledCount / total) * 100))
+          : (["queued", "submitting"].includes(status) ? 6 : (status === "preflighting" ? 55 : 0)))
+    );
+    const currentShot = String(generation.current_shot_id || "").trim();
+    const states = {
+      skipped: ["本次只使用来源图", "AI 生图已禁用。", "已跳过", "neutral", 0],
+      not_started: ["尚未开始生成", "先完成 AI 分镜与生成前检查。", "未开始", "neutral", 0],
+      preflighting: ["正在执行生成前检查", "只验证配方、参考图与任务参数，不会创建付费任务。", "检查中", "warn", 2],
+      "preflight-ready": ["生成前检查已完成", `本次已准备 ${total} 张；等待 Kyle 确认付费。`, "等待付费确认", "warn", 2],
+      submitting: ["正在提交付费生成确认", "正在建立任务队列；请勿重复点击。", "提交中", "warn", 2],
+      queued: ["图片生成任务已排队", `${total || items.length} 张等待生成，页面会自动刷新。`, "排队中", "warn", 2],
+      running: [
+        "图片生成进行中",
+        `${settledCount}/${total || items.length} 张已返回${currentShot ? `；当前 ${currentShot}` : ""}。`,
+        "生成中",
+        "warn",
+        2,
+      ],
+      completed: ["图片生成完成", `${completedCount || total} 张已返回，等待逐图审核。`, "待审核", "safe", 3],
+      completed_waiting_human_review: [
+        "图片生成完成",
+        `${completedCount || total} 张通过本地技术核验；等待逐图人工审核。`,
+        "待审核",
+        "safe",
+        3,
+      ],
+      completed_with_errors: [
+        "图片生成结束但存在失败项",
+        `${completedCount} 张可审核，${failedCount || "部分"} 张失败；请查看每个版本的原因。`,
+        "需处理",
+        "danger",
+        3,
+      ],
+      failed: [
+        "图片生成失败",
+        `失败原因：${feedback?.error || generation.error || "任务未产生可验证图片。"}`,
+        "失败",
+        "danger",
+        2,
+      ],
+      error: [
+        "生成操作失败",
+        `失败原因：${feedback?.error || generation.error || "未知错误"}`,
+        "失败",
+        "danger",
+        Number(feedback?.step ?? 0),
+      ],
+    };
+    const [title, message, badge, tone, activeStep] = states[status] || [
+      "图片生成状态",
+      `当前状态：${status || "未知"}`,
+      status || "未知",
+      "neutral",
+      0,
+    ];
+    const stepLabels = ["尚未开始", "生成前检查", "任务队列", "成图审核"];
+    const running = ["preflighting", "submitting", "queued", "running"].includes(status);
+    const failed = ["failed", "error", "completed_with_errors"].includes(status);
+    host.classList.toggle("running", running);
+    host.classList.toggle("failed", failed);
+    host.innerHTML = `
+      <header>
+        <div><strong>${esc(title)}</strong><span>${esc(feedback?.message || message)}</span></div>
+        <span class="badge ${esc(tone)}">${esc(feedback?.badge || badge)}</span>
+      </header>
+      <div class="progress-track" aria-hidden="true"><span style="width:${Number(progress) || 0}%"></span></div>
+      <ol>${stepLabels.map((label, index) => {
+        const done = (
+          ["completed", "completed_waiting_human_review"].includes(status)
+          || (status === "completed_with_errors" && index < 3)
+          || index < activeStep
+        );
+        const current = index === activeStep && status !== "not_started" && status !== "skipped";
+        return `<li class="${done ? "done" : (current ? "current" : "")}">${esc(label)}</li>`;
+      }).join("")}</ol>
+    `;
   }
 
   async function requestJson(path, options = {}) {
@@ -530,6 +767,13 @@
   function renderVersions() {
     const content = preview?.content_package || {};
     const artifacts = content.artifacts || [];
+    const generation = content.remaining_images_generation || {};
+    const preflight = content.remaining_images_preflight || {};
+    const total = Number(preflight.total || preflight.shots?.length || 0);
+    const preflightReady = (
+      preflight.status === "ready_for_explicit_paid_confirmation"
+      && total > 0
+    );
     const currentByArtifact = new Map(generatedCurrentRows().map((row) => [row.artifact_id, row]));
     const grid = $("#versionGrid");
     grid.classList.remove("skeleton");
@@ -568,25 +812,31 @@
           </div>
         </article>
       `;
-    }).join("") : '<article class="story-card"><p>当前没有生成版本。先保存经验配方并完成生成前检查。</p></article>';
+    }).join("") : (
+      preflightReady
+        ? '<article class="story-card"><p>生成前检查已经完成，但尚未创建付费任务，因此当前没有生成版本。确认付费后会在这里逐张显示进度和结果。</p></article>'
+        : '<article class="story-card"><p>当前没有生成版本。先保存经验配方并完成生成前检查。</p></article>'
+    );
 
-    const generation = content.remaining_images_generation || {};
-    const preflight = content.remaining_images_preflight || {};
-    const total = Number(preflight.total || preflight.shots?.length || 0);
     const running = ["queued", "running"].includes(generation.status);
     const completed = ["completed_waiting_human_review", "completed_with_errors"].includes(generation.status);
+    const generationStatusLabel = (
+      preflightReady && (!generation.status || generation.status === "not_started")
+    )
+      ? "等待付费确认"
+      : (generation.status || "未运行");
     $("#generationSummary").innerHTML = [
       `已生成 ${content.generated_review_images?.length || 0}`,
       `历史版本 ${artifacts.length}`,
-      `任务状态 ${generation.status || "未运行"}`,
+      `任务状态 ${generationStatusLabel}`,
       `本次预检 ${total} 张`,
     ].map((text) => `<span>${esc(text)}</span>`).join("");
     $("#paidGenerateButton").disabled = !total || running || completed;
-    $("#paidGenerateButton").textContent = running
+    setButtonLabel($("#paidGenerateButton"), running
       ? "生成任务进行中"
       : completed
         ? "本次付费生成已完成"
-        : `确认付费并生成${total ? ` ${total} 张` : ""}`;
+        : `确认付费并生成${total ? ` ${total} 张` : ""}`);
     attachImagePreview();
   }
 
@@ -685,7 +935,9 @@
     renderProject();
     renderSources();
     renderStoryboard();
+    renderPlanningProgress();
     renderVersions();
+    renderGenerationProgress();
     renderFinal();
     renderSyncFeedback();
     schedulePoll();
@@ -723,6 +975,10 @@
         && JSON.stringify(recipeFromContent(loadedPreview.content_package || {})) !== recipeDraftBaseline
       ) {
         showAlert("服务端配方已发生变化；页面已保留你尚未保存的数字。请核对后再保存，不会静默覆盖。");
+      }
+      if (!quiet || String(preview?.offer_id || "") !== offerId) {
+        planningProgressOverride = null;
+        generationProgressOverride = null;
       }
       preview = loadedPreview;
       if (!syncInFlight) syncFeedbackOverride = null;
@@ -803,15 +1059,32 @@
   async function preparePackage() {
     if (!confirm("将从现有妙手采集箱读取素材并创建本地审核包。若已有内容决定，重新创建会重置审核状态。确认继续吗？")) return;
     setLoading($("#preparePackageButton"), true);
+    renderPlanningProgress({
+      status: "running",
+      step: 0,
+      completedThrough: -1,
+      title: "正在创建本地内容审核包",
+      message: "正在读取现有妙手采集箱素材；不会调用模型或生成图片。",
+      badge: "创建中",
+    });
     try {
       const result = await post("content-package/prepare", {
         offer_id: currentOfferId(),
         collect_box_id: preview?.content_package?.collect_box_id || currentOfferId(),
       });
       preview.content_package = result.content_package;
+      planningProgressOverride = null;
       render();
       toast("本地内容审核包已创建；未调用模型或生成图片。");
     } catch (error) {
+      renderPlanningProgress({
+        status: "failed",
+        step: 0,
+        completedThrough: -1,
+        title: "本地内容审核包创建失败",
+        error: error.message,
+        badge: "失败",
+      });
       showAlert(error.message);
     } finally {
       setLoading($("#preparePackageButton"), false);
@@ -840,8 +1113,27 @@
     const recipe = collectRecipeFromDom();
     if (!confirm(`将调用 AI 读取 ${refs.length} 张身份参考图，并严格按场景 ${recipe.type_counts.scene}、卖点 ${recipe.type_counts.selling_point}、尺寸 ${recipe.type_counts.size_card}，共 ${recipeCheck.total} 张规划分镜。会产生模型费用，但不会生成商品图片。确认继续吗？`)) return;
     setLoading($("#aiPlanButton"), true);
+    showAlert("");
+    renderPlanningProgress({
+      status: "running",
+      step: 0,
+      completedThrough: -1,
+      title: "正在保存本次图片配方",
+      message: "先固定商品事实、身份参考与图片数量。",
+      badge: "1 / 4",
+    });
     try {
+      await nextPaint();
       await saveContentReview({ quiet: true });
+      renderPlanningProgress({
+        status: "running",
+        step: 1,
+        completedThrough: 0,
+        title: "AI 正在规划本次分镜",
+        message: `正在读取 ${refs.length} 张身份参考图并规划 ${recipeCheck.total} 张构图；此步骤不生成商品图片。`,
+        badge: "2 / 4",
+      });
+      await nextPaint();
       const result = await post("content-package/vision-proposal", {
         offer_id: currentOfferId(),
         reference_urls: refs,
@@ -849,9 +1141,56 @@
         confirm_ai_planning: true,
       });
       preview.content_package = result.content_package;
+      renderPlanningProgress({
+        status: "running",
+        step: 2,
+        completedThrough: 1,
+        title: "AI 分镜已返回，正在自动采用",
+        message: "系统只采用符合类目政策与当前配方的分镜，不跳过付费确认。",
+        badge: "3 / 4",
+      });
       render();
-      toast("AI 已按经验配方完成分镜规划；无需逐卡审核，可继续生成前检查。");
+      await nextPaint();
+      renderPlanningProgress({
+        status: "running",
+        step: 3,
+        completedThrough: 2,
+        title: "正在执行生成前检查",
+        message: "只验证最终提示词、参考图和任务参数；不会创建付费任务。",
+        badge: "4 / 4",
+      });
+      renderGenerationProgress({
+        status: "preflighting",
+        message: "AI 分镜已自动采用，正在执行无付费生成前检查。",
+      });
+      await nextPaint();
+      const pending = preview?.content_package?.pending_regeneration_shot_ids || [];
+      const preflightResult = await post("content-package/suite-images-preflight", {
+        offer_id: currentOfferId(),
+        force_shot_ids: pending,
+      });
+      preview.content_package = preflightResult.content_package;
+      planningProgressOverride = null;
+      generationProgressOverride = null;
+      render();
+      toast("AI 分镜与生成前检查已完成；尚未创建付费任务，等待 Kyle 确认。");
     } catch (error) {
+      const currentStep = Number(planningProgressOverride?.step ?? 0);
+      renderPlanningProgress({
+        status: "failed",
+        step: currentStep,
+        completedThrough: currentStep - 1,
+        title: `${PLANNING_STEPS[currentStep] || "AI 分镜"}失败`,
+        error: error.message,
+        badge: "失败",
+      });
+      if (currentStep === 3) {
+        renderGenerationProgress({
+          status: "error",
+          step: 1,
+          error: error.message,
+        });
+      }
       showAlert(error.message);
     } finally {
       setLoading($("#aiPlanButton"), false);
@@ -864,7 +1203,13 @@
       return;
     }
     setLoading($("#preflightButton"), true);
+    showAlert("");
+    renderGenerationProgress({
+      status: "preflighting",
+      message: "正在保存最新配方并执行无付费生成前检查。",
+    });
     try {
+      await nextPaint();
       await saveContentReview({ quiet: true });
       const pending = preview?.content_package?.pending_regeneration_shot_ids || [];
       const result = await post("content-package/suite-images-preflight", {
@@ -872,9 +1217,15 @@
         force_shot_ids: pending,
       });
       preview.content_package = result.content_package;
+      generationProgressOverride = null;
       render();
-      toast("生成前检查已完成；尚未创建付费任务。");
+      toast("生成前检查已完成；尚未创建付费任务，等待 Kyle 确认。");
     } catch (error) {
+      renderGenerationProgress({
+        status: "error",
+        step: 1,
+        error: error.message,
+      });
       showAlert(error.message);
     } finally {
       setLoading($("#preflightButton"), false);
@@ -894,18 +1245,32 @@
     }
     if (!confirm(`将创建 ${total} 个真实图片生成任务并产生费用。生成完成后仍需逐图人工审核。确认付费并继续吗？`)) return;
     setLoading($("#paidGenerateButton"), true);
+    showAlert("");
+    renderGenerationProgress({
+      status: "submitting",
+      message: `已收到 Kyle 对 ${total} 张图片的付费确认，正在建立任务队列。`,
+    });
     try {
+      await nextPaint();
       const result = await post("content-package/remaining-images-generate", {
         offer_id: currentOfferId(),
         confirm_paid_generation: true,
       });
       preview.content_package = result.content_package;
+      generationProgressOverride = null;
       render();
       toast("付费生成任务已开始，页面会自动刷新进度。");
     } catch (error) {
+      renderGenerationProgress({
+        status: "error",
+        step: 2,
+        error: error.message,
+      });
       showAlert(error.message);
     } finally {
       setLoading($("#paidGenerateButton"), false);
+      renderVersions();
+      renderGenerationProgress();
     }
   }
 

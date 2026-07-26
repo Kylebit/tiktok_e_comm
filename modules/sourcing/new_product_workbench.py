@@ -74,6 +74,7 @@ _APPROVAL_BOUND_REVIEW_FIELDS = frozenset(
         "fx_rates",
     }
 )
+EXPERIENCE_RECIPE_REVIEW_MODE = "experience_recipe_auto_v1"
 
 
 @dataclass(frozen=True)
@@ -803,6 +804,70 @@ def _require_ai_assisted(content: dict[str, Any], action: str) -> None:
         )
 
 
+def _enable_experience_recipe_review(content: dict[str, Any]) -> None:
+    """Adopt storyboard plans as an operational recipe, not a human gate."""
+
+    if _content_strategy(content) != "ai_assisted":
+        return
+    content["planning_review_mode"] = EXPERIENCE_RECIPE_REVIEW_MODE
+    content["planning_scope_source"] = "content_operations_experience_recipe"
+
+
+def _adopt_current_storyboard_recipe(
+    content: dict[str, Any],
+    review_package: dict[str, Any],
+) -> None:
+    """Auto-adopt only a current AI plan; generated assets remain unapproved."""
+
+    if (
+        _content_strategy(content) != "ai_assisted"
+        or str(content.get("planning_review_mode") or "")
+        != EXPERIENCE_RECIPE_REVIEW_MODE
+    ):
+        return
+    proposal = (
+        review_package.get("model_proposal")
+        if isinstance(review_package.get("model_proposal"), dict)
+        else {}
+    )
+    current_signature = _planning_recipe_signature(content)
+    proposal_valid = bool(
+        proposal
+        and str(proposal.get("planning_source") or "") == "ai"
+        and str(proposal.get("planning_signature") or "") == current_signature
+    )
+    plan = (
+        review_package.get("plan")
+        if isinstance(review_package.get("plan"), dict)
+        else {}
+    )
+    suite = plan.get("suite") if isinstance(plan.get("suite"), dict) else {}
+    selected_ids = [
+        str(item.get("id") or "").strip()
+        for item in (suite.get("items") or [])
+        if isinstance(item, dict)
+        and bool(item.get("selected", True))
+        and str(item.get("id") or "").strip()
+    ]
+    adopted = bool(proposal_valid and selected_ids)
+    content["suite_approved"] = adopted
+    content["storyboard_reviews"] = {
+        shot_id: {
+            "decision": "auto_adopted",
+            "note": "Automatically adopted from the current experience recipe.",
+            "reviewed_at": _now(),
+            "review_source": EXPERIENCE_RECIPE_REVIEW_MODE,
+        }
+        for shot_id in dict.fromkeys(selected_ids)
+    } if adopted else {}
+    if adopted:
+        content["storyboard_recipe_adopted_at"] = _now()
+        content["storyboard_recipe_signature"] = current_signature
+    else:
+        content.pop("storyboard_recipe_adopted_at", None)
+        content.pop("storyboard_recipe_signature", None)
+
+
 def _content_stage(
     content: dict[str, Any],
     artifacts: list[dict[str, Any]],
@@ -1101,6 +1166,11 @@ def content_package_summary(offer_id_or_url: str) -> dict[str, Any]:
         if isinstance(saved.get("storyboard_reviews"), dict)
         else {}
     )
+    planning_review_mode = str(saved.get("planning_review_mode") or "manual_legacy")
+    automatic_storyboard_recipe = (
+        strategy == "ai_assisted"
+        and planning_review_mode == EXPERIENCE_RECIPE_REVIEW_MODE
+    )
     preflight = saved.get("first_image_preflight") if isinstance(saved.get("first_image_preflight"), dict) else {}
     first_generation = saved.get("first_image_generation") if isinstance(saved.get("first_image_generation"), dict) else {}
     remaining_preflight = saved.get("remaining_images_preflight") if isinstance(saved.get("remaining_images_preflight"), dict) else {}
@@ -1139,6 +1209,9 @@ def content_package_summary(offer_id_or_url: str) -> dict[str, Any]:
         "fact_card_approved": bool(saved.get("fact_card_approved")),
         "planning_scope_approved": bool(saved.get("planning_scope_approved")),
         "suite_approved": bool(saved.get("suite_approved")),
+        "planning_review_mode": planning_review_mode,
+        "storyboard_human_approval_required": not automatic_storyboard_recipe,
+        "generated_asset_human_approval_required": True,
         "content_approved": bool(
             package_dir is not None
             and saved.get("fact_card_approved")
@@ -1191,7 +1264,13 @@ def content_package_summary(offer_id_or_url: str) -> dict[str, Any]:
                     "selected": bool(item.get("selected")),
                     "review_decision": str(
                         (storyboard_reviews.get(str(item.get("id") or "")) or {}).get("decision")
-                        or "pending"
+                        or (
+                            "auto_adopted"
+                            if automatic_storyboard_recipe
+                            and model_proposal_valid
+                            and bool(item.get("selected"))
+                            else "pending"
+                        )
                     ),
                     "review_note": str(
                         (storyboard_reviews.get(str(item.get("id") or "")) or {}).get("note")
@@ -1221,7 +1300,9 @@ def content_package_summary(offer_id_or_url: str) -> dict[str, Any]:
             "available": bool(model_proposal),
             "valid": model_proposal_valid,
             "status": (
-                "completed_waiting_human_review"
+                "auto_adopted_experience_recipe"
+                if model_proposal_valid and automatic_storyboard_recipe
+                else "completed_waiting_human_review"
                 if model_proposal_valid
                 else ("stale_recipe_changed" if model_proposal else "not_requested")
             ),
@@ -1395,7 +1476,9 @@ def prepare_content_package(offer_id_or_url: str, *, collect_box_id: str = "") -
     content["prepare_mode"] = "review_only_no_model_or_generation_call"
     content["fact_card_approved"] = False
     content["planning_scope_approved"] = False
+    _enable_experience_recipe_review(content)
     content["suite_approved"] = False
+    content["storyboard_reviews"] = {}
     content.pop("asset_decisions", None)
     content.pop("identity_reference_urls", None)
     content.pop("primary_identity_url", None)
@@ -1414,10 +1497,11 @@ def propose_content_package_with_vision(
     state = load_state(offer_id)
     content = state.setdefault("content_package", {})
     _require_ai_assisted(content, "AI storyboard planning")
+    _enable_experience_recipe_review(content)
     if not content.get("fact_card_approved"):
         raise ValueError("approve and save the fact card before requesting AI storyboard planning")
     if not content.get("planning_scope_approved"):
-        raise ValueError("approve and save the local category rules and image counts before requesting AI storyboard planning")
+        raise ValueError("confirm and save the local category rules and image counts before requesting AI storyboard planning")
     saved_refs = [
         str(url) for url in (content.get("identity_reference_urls") or [])
         if str(url).startswith("https://")
@@ -1476,11 +1560,6 @@ def propose_content_package_with_vision(
             "content_package": content_package_summary(offer_id),
         }
     revision_target_ids = sorted(ai_feedback)
-    previous_storyboard_reviews = deepcopy(
-        content.get("storyboard_reviews")
-        if isinstance(content.get("storyboard_reviews"), dict)
-        else {}
-    )
     result = create_model_suite_proposal(
         package_dir,
         refs,
@@ -1495,40 +1574,8 @@ def propose_content_package_with_vision(
         content["pending_regeneration_shot_ids"] = revision_target_ids
     else:
         content.pop("pending_regeneration_shot_ids", None)
-    content["suite_approved"] = False
-    if revision_target_ids:
-        revised_reviews: dict[str, dict[str, Any]] = {}
-        review_package = _load_json(package_dir / "review_package.json") or {}
-        revised_items = (
-            ((review_package.get("plan") or {}).get("suite") or {}).get("items")
-            or []
-        )
-        for item in revised_items:
-            if not isinstance(item, dict) or not item.get("selected"):
-                continue
-            shot_id = str(item.get("id") or "")
-            if not shot_id:
-                continue
-            if shot_id in revision_target_ids:
-                revised_reviews[shot_id] = {
-                    "decision": "pending",
-                    "note": "",
-                    "reviewed_at": _now(),
-                }
-            else:
-                previous = previous_storyboard_reviews.get(shot_id) or {}
-                revised_reviews[shot_id] = {
-                    "decision": (
-                        "approved"
-                        if str(previous.get("decision") or "") == "approved"
-                        else "pending"
-                    ),
-                    "note": str(previous.get("note") or "").strip()[:1200],
-                    "reviewed_at": str(previous.get("reviewed_at") or _now()),
-                }
-        content["storyboard_reviews"] = revised_reviews
-    else:
-        content["storyboard_reviews"] = {}
+    review_package = _load_json(package_dir / "review_package.json") or {}
+    _adopt_current_storyboard_recipe(content, review_package)
     content["vision_proposal_at"] = _now()
     content["vision_proposal_signature"] = planning_signature
     save_state(offer_id, state)
@@ -3013,10 +3060,14 @@ def save_content_package_review(offer_id_or_url: str, review: dict[str, Any]) ->
     if "fact_card_approved" in review:
         content["fact_card_approved"] = bool(review.get("fact_card_approved"))
     if "planning_scope_approved" in review:
-        content["planning_scope_approved"] = bool(review.get("planning_scope_approved"))
+        content["planning_scope_approved"] = bool(
+            review.get("planning_scope_approved")
+        )
     ai_assisted = _content_strategy(content) == "ai_assisted"
+    if ai_assisted:
+        _enable_experience_recipe_review(content)
     if (
-        ai_assisted
+        not ai_assisted
         and "suite_approved" in review
         and not isinstance(review.get("storyboard_reviews"), dict)
     ):
@@ -3050,7 +3101,12 @@ def save_content_package_review(offer_id_or_url: str, review: dict[str, Any]) ->
         if isinstance(item, dict) and item.get("selected") and str(item.get("id") or "")
     }
     raw_storyboard_reviews = review.get("storyboard_reviews")
-    if ai_assisted and isinstance(raw_storyboard_reviews, dict):
+    if (
+        ai_assisted
+        and str(content.get("planning_review_mode") or "")
+        != EXPERIENCE_RECIPE_REVIEW_MODE
+        and isinstance(raw_storyboard_reviews, dict)
+    ):
         storyboard_reviews: dict[str, dict[str, Any]] = {}
         for shot_id in allowed_storyboard_ids:
             row = raw_storyboard_reviews.get(shot_id)
@@ -3103,6 +3159,8 @@ def save_content_package_review(offer_id_or_url: str, review: dict[str, Any]) ->
                 "note": str(row.get("note") or "").strip()[:1000],
                 "reviewed_at": _now(),
             }
+    if ai_assisted:
+        _adopt_current_storyboard_recipe(content, review_package)
     current_recipe = _content_recipe_signature(content)
     if current_recipe != previous_recipe:
         pending_regeneration_shot_ids = [

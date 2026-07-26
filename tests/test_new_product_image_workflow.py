@@ -443,6 +443,24 @@ if (currentContentPackageDraft() !== null) process.exit(5);
             (package / "review_package.json").write_text(
                 json.dumps(review_package), encoding="utf-8"
             )
+
+            def revise_storyboard(_package_dir, _refs, **kwargs):
+                updated = json.loads(
+                    (package / "review_package.json").read_text(encoding="utf-8")
+                )
+                updated["model_proposal"] = {
+                    "planning_source": "ai",
+                    "planning_signature": kwargs["planning_signature"],
+                }
+                (package / "review_package.json").write_text(
+                    json.dumps(updated),
+                    encoding="utf-8",
+                )
+                return {
+                    "vision_model_called": True,
+                    "revision_target_ids": ["sz1"],
+                }
+
             with patch(
                 "modules.sourcing.new_product_workbench.resolve_offer_key",
                 return_value="123",
@@ -454,10 +472,7 @@ if (currentContentPackageDraft() !== null) process.exit(5);
                 return_value=package,
             ), patch(
                 "modules.sourcing.image_review_package.create_model_suite_proposal",
-                return_value={
-                    "vision_model_called": True,
-                    "revision_target_ids": ["sz1"],
-                },
+                side_effect=revise_storyboard,
             ) as planner, patch(
                 "modules.sourcing.new_product_workbench.save_state"
             ), patch(
@@ -477,11 +492,12 @@ if (currentContentPackageDraft() !== null) process.exit(5);
         content = state["content_package"]
         self.assertEqual(content["pending_regeneration_shot_ids"], ["sz1"])
         self.assertEqual(
-            content["storyboard_reviews"]["sc1"]["decision"], "approved"
+            content["storyboard_reviews"]["sc1"]["decision"], "auto_adopted"
         )
         self.assertEqual(
-            content["storyboard_reviews"]["sz1"]["decision"], "pending"
+            content["storyboard_reviews"]["sz1"]["decision"], "auto_adopted"
         )
+        self.assertTrue(content["suite_approved"])
         self.assertNotIn("force_regenerate_all", content)
 
     def test_partial_planner_merge_keeps_non_target_storyboard_unchanged(self):
@@ -670,7 +686,7 @@ if (currentContentPackageDraft() !== null) process.exit(5);
             "WIDTH 34 cm  |  HEIGHT 58 cm",
         )
 
-    def test_storyboard_review_requires_every_ai_shot_to_pass(self):
+    def test_legacy_storyboard_review_values_do_not_create_an_approval_gate(self):
         state = {
             "content_package": {
                 "collect_box_id": "123",
@@ -725,19 +741,13 @@ if (currentContentPackageDraft() !== null) process.exit(5);
                 )
                 self.assertFalse(state["content_package"]["suite_approved"])
                 self.assertEqual(
-                    state["content_package"]["storyboard_reviews"]["sz1"]["decision"],
-                    "revise",
+                    state["content_package"]["planning_review_mode"],
+                    "experience_recipe_auto_v1",
                 )
-                save_content_package_review(
-                    "123",
-                    {
-                        "storyboard_reviews": {
-                            "sc1": {"decision": "approved", "note": ""},
-                            "sz1": {"decision": "approved", "note": ""},
-                        }
-                    },
+                self.assertEqual(
+                    state["content_package"]["storyboard_reviews"],
+                    {},
                 )
-        self.assertTrue(state["content_package"]["suite_approved"])
 
     def test_generated_review_shows_only_latest_verified_version_per_shot(self):
         with tempfile.TemporaryDirectory() as tmp:

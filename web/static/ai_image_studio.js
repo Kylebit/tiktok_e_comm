@@ -20,6 +20,10 @@
   let pollTimer = null;
   let toastTimer = null;
   let contentStrategyDraft = null;
+  let recipeDraft = null;
+  let recipeDraftOfferId = "";
+  let recipeDraftDirty = false;
+  let recipeDraftBaseline = "";
   let syncPollTimer = null;
   let syncInFlight = false;
   let syncFeedbackOverride = null;
@@ -120,18 +124,6 @@
     return review;
   }
 
-  function storyboardReviewsFromDom() {
-    const result = {};
-    $$(".story-decision").forEach((node) => {
-      const shotId = node.dataset.shotId;
-      result[shotId] = {
-        decision: node.value,
-        note: $(`.story-note[data-shot-id="${shotId}"]`)?.value || "",
-      };
-    });
-    return result;
-  }
-
   function assetDecisionsFromDom() {
     const result = {};
     $$(".asset-decision").forEach((node) => {
@@ -172,6 +164,46 @@
         confirmed: Boolean($("#sizeConfirmed")?.checked),
       },
     };
+  }
+
+  function recipeFromContent(content = preview?.content_package || {}) {
+    const sizeCard = content.suite_customization?.size_card || {};
+    const typeCounts = deriveRecipeCounts(content);
+    return {
+      type_counts: typeCounts,
+      size_card: {
+        enabled: typeCounts.size_card > 0,
+        dimensions: String(sizeCard.dimensions || ""),
+        confirmed: Boolean(sizeCard.confirmed),
+      },
+    };
+  }
+
+  function visibleRecipe(content = preview?.content_package || {}) {
+    if (
+      recipeDraftDirty
+      && recipeDraft
+      && recipeDraftOfferId === currentOfferId()
+    ) {
+      return recipeDraft;
+    }
+    return recipeFromContent(content);
+  }
+
+  function captureRecipeDraft() {
+    if (!recipeDraftDirty) {
+      recipeDraftBaseline = JSON.stringify(recipeFromContent());
+    }
+    recipeDraft = collectRecipeFromDom();
+    recipeDraftOfferId = currentOfferId();
+    recipeDraftDirty = true;
+  }
+
+  function clearRecipeDraft() {
+    recipeDraft = null;
+    recipeDraftOfferId = "";
+    recipeDraftDirty = false;
+    recipeDraftBaseline = "";
   }
 
   function validateRecipe(recipe = collectRecipeFromDom(), { display = true } = {}) {
@@ -226,15 +258,11 @@
   }
 
   function contentReviewPayload() {
-    const storyboards = storyboardReviewsFromDom();
     const refs = selectedIdentityReferences();
     return {
       content_strategy: currentContentStrategy(),
       fact_card_approved: $("#factApproved").checked,
       planning_scope_approved: $("#scopeApproved").checked,
-      suite_approved: Object.keys(storyboards).length > 0
-        && Object.values(storyboards).every((row) => row.decision === "approved"),
-      storyboard_reviews: storyboards,
       identity_reference_urls: refs,
       primary_identity_url: refs.includes(selectedPrimaryReference())
         ? selectedPrimaryReference()
@@ -298,13 +326,39 @@
     ].filter(Boolean).length;
     $("#projectTitle").textContent = review.title || source.title_source || `Offer ${preview.offer_id}`;
     $("#projectMeta").textContent = `Offer ${preview.offer_id} · ${source.skus?.length || 0} 个规格 · ${sourceTotal} 张来源图`;
+    const precollectRecord = (source.precollect?.records || []).find(
+      (row) => row && (row.common_collect_id || row.url),
+    ) || {};
+    const collectBoxId = String(
+      content.collect_box_id || precollectRecord.common_collect_id || "",
+    ).trim();
+    let sourceUrl = String(precollectRecord.url || source.source_url || "").trim();
+    try {
+      const parsed = new URL(sourceUrl);
+      if (parsed.protocol === "http:" && /(^|\.)1688\.com$/i.test(parsed.hostname)) {
+        parsed.protocol = "https:";
+        sourceUrl = parsed.href;
+      }
+    } catch (_error) {
+      sourceUrl = "";
+    }
+    const sourceLinkAllowed = /^https:\/\/[^/]*1688\.com(?:\/|$)/i.test(sourceUrl);
+    const sourceOfferId = sourceUrl.match(/\/offer\/(\d+)/i)?.[1] || "";
+    $("#projectSourceLinks").innerHTML = [
+      collectBoxId
+        ? `<a id="miaoshouCollectLink" href="https://erp.91miaoshou.com/" target="_blank" rel="noopener" title="打开妙手后按采集箱 ID 定位">妙手采集箱 · ${esc(collectBoxId)} ↗</a>`
+        : '<span class="source-link-missing">妙手采集箱 · 未关联</span>',
+      sourceLinkAllowed
+        ? `<a id="source1688Link" href="${esc(sourceUrl)}" target="_blank" rel="noopener">1688 商品 · ${esc(sourceOfferId || source.source_item_code || "打开来源")} ↗</a>`
+        : '<span class="source-link-missing">1688 来源 · 未关联</span>',
+    ].join("");
     $("#completionScore").textContent = `${completedParts}/5`;
     $("#currentStage").textContent = workflow.current_label || content.stage || "等待审核";
     $("#productCenterLink").href = `/product-workspace?offer_id=${encodeURIComponent(preview.offer_id)}`;
 
     const baseSteps = [
       ["来源审核", sourceTotal > 0 && sourceReviewed === sourceTotal ? "done" : "current"],
-      ["分镜审批", content.fact_card_approved && content.planning_scope_approved && content.suite_approved ? "done" : "pending"],
+      ["经验配方", content.fact_card_approved && content.planning_scope_approved && content.suite_approved ? "done" : "pending"],
       ["生成版本", workflow.generation_ready ? "done" : (content.remaining_images_generation?.status || "pending")],
       ["最终排序", workflow.image_review_ready && finalOrder.length ? "done" : "pending"],
     ];
@@ -423,8 +477,9 @@
     $("#scopeApproved").checked = Boolean(content.planning_scope_approved);
     $("#preparePackageButton").hidden = Boolean(content.package_found);
     const items = content.suite?.items || [];
-    const recipeCounts = deriveRecipeCounts(content);
-    const sizeCard = content.suite_customization?.size_card || {};
+    const visible = visibleRecipe(content);
+    const recipeCounts = visible.type_counts;
+    const sizeCard = visible.size_card;
     Object.entries(recipeCounts).forEach(([type, value]) => {
       const node = $(`.recipe-count[data-recipe-type="${type}"]`);
       if (node) node.value = String(value);
@@ -432,32 +487,20 @@
     $("#sizeDimensions").value = sizeCard.dimensions || "";
     $("#sizeConfirmed").checked = Boolean(sizeCard.confirmed);
     $$(".recipe-count").forEach((node) => {
-      node.oninput = () => updateRecipeUi();
-      node.onchange = () => updateRecipeUi({ validate: true });
+      node.oninput = () => { captureRecipeDraft(); updateRecipeUi(); };
+      node.onchange = () => { captureRecipeDraft(); updateRecipeUi({ validate: true }); };
     });
-    $("#sizeDimensions").oninput = () => updateRecipeUi();
-    $("#sizeDimensions").onchange = () => updateRecipeUi({ validate: true });
-    $("#sizeConfirmed").onchange = () => updateRecipeUi({ validate: true });
+    $("#sizeDimensions").oninput = () => { captureRecipeDraft(); updateRecipeUi(); };
+    $("#sizeDimensions").onchange = () => { captureRecipeDraft(); updateRecipeUi({ validate: true }); };
+    $("#sizeConfirmed").onchange = () => { captureRecipeDraft(); updateRecipeUi({ validate: true }); };
     updateRecipeUi();
     updateStrategyUi();
     $("#storyboardGrid").innerHTML = items.length ? items.map((item) => `
       <article class="story-card">
-        <header><h3>${esc(item.title_zh || item.title || item.id)}</h3><span class="asset-index">${esc(item.id)}</span></header>
+        <header><h3>${esc(item.title_zh || item.title || item.id)}</h3><span class="experience-badge">经验配方 · 自动采用</span></header>
         <p>${esc(item.focus_zh || item.focus || "")}</p>
-        <div class="story-controls">
-          <label>审核决定
-            <select class="story-decision" data-shot-id="${esc(item.id)}">
-              <option value="pending" ${item.review_decision === "pending" ? "selected" : ""}>待审核</option>
-              <option value="approved" ${item.review_decision === "approved" ? "selected" : ""}>通过</option>
-              <option value="revise" ${item.review_decision === "revise" ? "selected" : ""}>需要修改</option>
-            </select>
-          </label>
-          <label>给 AI 的修改意见
-            <textarea class="story-note" data-shot-id="${esc(item.id)}" placeholder="仅在需要修改时填写">${esc(item.review_note || "")}</textarea>
-          </label>
-        </div>
       </article>
-    `).join("") : '<article class="story-card"><p>尚未建立分镜。先创建内容审核包，并确认商品事实与生图范围。</p></article>';
+    `).join("") : '<article class="story-card"><p>尚未建立经验配方。先确认商品事实与图片数量，再由 AI 生成本次分镜；分镜无需逐卡审批。</p></article>';
   }
 
   function updateStrategyUi() {
@@ -473,8 +516,8 @@
       : "图片数量、类型与类目规则符合本次需求";
     $("#strategyStatus").textContent = sourceOnly
       ? "AI 相关入口已关闭；历史 AI 图片不会进入本次最终图片。"
-      : "AI 入口可用，但仍需事实、分镜、预检、付费确认和版本审核。";
-    $$(".recipe-count, #sizeDimensions, #sizeConfirmed, .story-decision, .story-note")
+      : "AI 入口可用；商品事实与配方需确认，经验分镜自动采用，付费生成和成图审核仍由人工决定。";
+    $$(".recipe-count, #sizeDimensions, #sizeConfirmed")
       .forEach((node) => { node.disabled = sourceOnly; });
     ["aiPlanButton", "preflightButton", "paidGenerateButton", "saveVersionsButton"]
       .forEach((id) => { $(`#${id}`).disabled = sourceOnly; });
@@ -525,7 +568,7 @@
           </div>
         </article>
       `;
-    }).join("") : '<article class="story-card"><p>当前没有生成版本。先完成分镜审批和生成前检查。</p></article>';
+    }).join("") : '<article class="story-card"><p>当前没有生成版本。先保存经验配方并完成生成前检查。</p></article>';
 
     const generation = content.remaining_images_generation || {};
     const preflight = content.remaining_images_preflight || {};
@@ -672,9 +715,19 @@
     setLoading($("#offerForm"), true);
     if (!quiet) showAlert("");
     try {
-      preview = await requestJson(`${flowApi("preview")}?offer_id=${encodeURIComponent(offerId)}`);
+      const loadedPreview = await requestJson(`${flowApi("preview")}?offer_id=${encodeURIComponent(offerId)}`);
+      if (
+        recipeDraftDirty
+        && recipeDraftOfferId === offerId
+        && recipeDraftBaseline
+        && JSON.stringify(recipeFromContent(loadedPreview.content_package || {})) !== recipeDraftBaseline
+      ) {
+        showAlert("服务端配方已发生变化；页面已保留你尚未保存的数字。请核对后再保存，不会静默覆盖。");
+      }
+      preview = loadedPreview;
       if (!syncInFlight) syncFeedbackOverride = null;
-      contentStrategyDraft = null;
+      if (!quiet) contentStrategyDraft = null;
+      if (recipeDraftOfferId && recipeDraftOfferId !== offerId) clearRecipeDraft();
       finalOrder = buildFinalItems();
       render();
       const url = new URL(window.location.href);
@@ -732,9 +785,10 @@
       });
       preview.content_package = result.content_package;
       contentStrategyDraft = null;
+      clearRecipeDraft();
       if (!quiet) {
         render();
-        toast("内容范围、身份参考与分镜决定已保存到本地。");
+        toast("本次配方、身份参考与内容范围已保存到本地。");
       }
       return result;
     } catch (error) {
@@ -788,21 +842,15 @@
     setLoading($("#aiPlanButton"), true);
     try {
       await saveContentReview({ quiet: true });
-      const feedback = storyboardReviewsFromDom();
-      const revisionFeedback = Object.fromEntries(
-        Object.entries(feedback)
-          .filter(([, row]) => row.decision === "revise" && row.note.trim())
-          .map(([key, row]) => [key, row.note.trim()])
-      );
       const result = await post("content-package/vision-proposal", {
         offer_id: currentOfferId(),
         reference_urls: refs,
-        storyboard_feedback: revisionFeedback,
+        storyboard_feedback: {},
         confirm_ai_planning: true,
       });
       preview.content_package = result.content_package;
       render();
-      toast("AI 分镜规划已完成，请逐项审核。");
+      toast("AI 已按经验配方完成分镜规划；无需逐卡审核，可继续生成前检查。");
     } catch (error) {
       showAlert(error.message);
     } finally {

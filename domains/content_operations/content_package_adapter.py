@@ -14,6 +14,8 @@ from typing import Any, Mapping
 
 from shared_platform.contracts import ApprovalRecord, ContentPackage
 
+EXPERIENCE_RECIPE_REVIEW_MODE = "experience_recipe_auto_v1"
+
 
 @dataclass(frozen=True)
 class ContentAssetLineage:
@@ -195,11 +197,32 @@ def build_workbench_content_package_handoff(
             source_lineage, review.get("image_order")
         )
     else:
-        if not all(bool(content.get(key)) for key in ("fact_card_approved", "planning_scope_approved", "suite_approved")):
-            blockers.append("content fact-card, planning scope, and suite approvals are required")
-        storyboard = content.get("storyboard_reviews") if isinstance(content.get("storyboard_reviews"), Mapping) else {}
-        if any(str((storyboard.get(shot_id) or {}).get("decision") or "") != "approved" for shot_id in selected_shots):
-            blockers.append("every selected storyboard shot requires approval")
+        if not all(
+            bool(content.get(key))
+            for key in (
+                "fact_card_approved",
+                "planning_scope_approved",
+                "suite_approved",
+            )
+        ):
+            blockers.append(
+                "content fact-card and a current adopted storyboard recipe are required"
+            )
+        if (
+            str(content.get("planning_review_mode") or "")
+            != EXPERIENCE_RECIPE_REVIEW_MODE
+        ):
+            storyboard = (
+                content.get("storyboard_reviews")
+                if isinstance(content.get("storyboard_reviews"), Mapping)
+                else {}
+            )
+            if any(
+                str((storyboard.get(shot_id) or {}).get("decision") or "")
+                != "approved"
+                for shot_id in selected_shots
+            ):
+                blockers.append("every selected storyboard shot requires approval")
         lineage, order_blockers = _order_lineage(
             source_lineage + generated_lineage, review.get("image_order")
         )

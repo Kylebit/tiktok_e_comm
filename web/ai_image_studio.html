@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#152f2c">
   <title>Orbit · AI 图片工作室</title>
-  <link rel="stylesheet" href="/static/ai_image_studio.css?v=20260726-2">
-  <script src="/static/ai_image_studio.js?v=20260726-2" defer></script>
+  <link rel="stylesheet" href="/static/ai_image_studio.css?v=20260726-4">
+  <script src="/static/ai_image_studio.js?v=20260726-4" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -31,7 +31,7 @@
       <div>
         <p class="eyebrow">CONTENT OPERATIONS</p>
         <h1>AI 图片工作室</h1>
-        <p>围绕同一个商品，完成来源图判断、分镜审核、图片生成、版本选择和最终排序。</p>
+        <p>围绕同一个商品，完成来源图判断、经验配方规划、图片生成、版本审核和最终排序。</p>
       </div>
       <form id="offerForm" class="offer-form">
         <label>Offer ID
@@ -53,6 +53,7 @@
         <p class="kicker">CURRENT PROJECT</p>
         <h2 id="projectTitle">正在读取商品…</h2>
         <p id="projectMeta">Offer —</p>
+        <nav id="projectSourceLinks" class="project-source-links" aria-label="商品来源入口"></nav>
       </div>
       <div class="project-score">
         <span>内容完成度</span>
@@ -98,14 +99,14 @@
 
     <section id="storyboard" aria-labelledby="storyboardTitle">
       <div class="section-heading">
-        <div><p class="kicker">02 · STORYBOARD</p><h2 id="storyboardTitle">分镜与内容范围</h2></div>
-        <p>先批准事实与约束，再决定每个分镜是否可进入生图。</p>
+        <div><p class="kicker">02 · EXPERIENCE RECIPE</p><h2 id="storyboardTitle">经验配方与内容范围</h2></div>
+        <p>确认商品事实和本次图片数量后，AI 分镜作为持续优化的经验配方自动采用；最终成图仍需逐张人工审核。</p>
       </div>
       <article class="strategy-panel" aria-labelledby="strategyTitle">
         <div>
           <p class="kicker">CONTENT STRATEGY</p>
           <h3 id="strategyTitle">选择本商品的图片策略</h3>
-          <p>来源图直用不会调用 AI；AI 辅助沿用分镜、预检与人工审核门禁。</p>
+          <p>来源图直用不会调用 AI；AI 辅助使用经验配方自动规划，保留生成预检、付费确认与成图人工审核。</p>
         </div>
         <div class="strategy-options">
           <label class="strategy-card">
@@ -114,7 +115,7 @@
           </label>
           <label class="strategy-card">
             <input id="aiAssistedStrategy" name="contentStrategy" type="radio" value="ai_assisted" checked>
-            <span><strong>AI 辅助套图</strong><small>保留现有严格分镜、付费确认和版本审核流程。</small></span>
+            <span><strong>AI 辅助套图</strong><small>经验分镜自动采用；付费生成与最终图片仍由人工确认。</small></span>
           </label>
         </div>
         <p id="strategyStatus" class="strategy-status" role="status"></p>
@@ -167,7 +168,7 @@
           <span><strong id="scopeApprovalTitle">本地生图约束已确认</strong><small id="scopeApprovalHint">图片数量、类型与类目规则符合本次需求</small></span>
         </label>
         <button id="preparePackageButton" class="button secondary" type="button" hidden>创建内容审核包</button>
-        <button id="savePlanButton" class="button dark" type="button">保存内容审核</button>
+        <button id="savePlanButton" class="button dark" type="button">保存本次配方</button>
         <button id="aiPlanButton" class="button secondary" type="button">使用 AI 规划分镜</button>
       </article>
       <div id="storyboardGrid" class="storyboard-grid"></div>

@@ -481,7 +481,12 @@ def claim_common_to_tiktok(common_collect_box_detail_ids: list[int]) -> dict[int
 def ensure_mx_claimed(collect_box_detail_id: int, *, mx_shop_id: int = MX_SHOP_ID) -> None:
     from modules.miaoshou.client import post_open
 
-    rd = post_open(GET_SHOP_PATH, {"detailId": collect_box_detail_id, "shopId": mx_shop_id})
+    try:
+        rd = post_open(GET_SHOP_PATH, {"detailId": collect_box_detail_id, "shopId": mx_shop_id})
+    except RuntimeError as exc:
+        if "\u672a\u9009\u62e9\u9884\u53d1\u5e03\u5e97\u94fa" not in str(exc):
+            raise
+        rd = {"data": {"claimToShopIds": []}}
     claim_ids = [int(x) for x in ((rd.get("data") or {}).get("claimToShopIds") or [])]
     if mx_shop_id in claim_ids:
         return

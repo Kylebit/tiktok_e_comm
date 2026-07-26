@@ -34,12 +34,16 @@ def ensure_offer_reset(
     cur_type = int(info.get("type_id") or 0)
     statuses = info.get("statuses") or {}
     validation = (statuses.get("validation_status") or "").lower()
-    is_created = bool(statuses.get("is_created"))
     archived = bool(info.get("is_archived"))
-    declined = bool(statuses.get("decline_reasons") or statuses.get("status_failed"))
-
     mismatch = cur_cat != int(category_id) or cur_type != int(type_id)
-    failed = validation in ("fail", "failed", "not_passed") or not is_created or declined
+    # A newly imported offer can be validation-successful while Ozon is still
+    # assigning its public SKU (is_created=False). Deleting that transitional
+    # offer makes a safe retry destructive and can create a loop. Only an
+    # explicit terminal validation failure or decline is eligible for reset.
+    # Moderation declines on an already-created card must be repaired in
+    # place. Ozon rejects deletion of such cards with ITEM_IS_CREATED.
+    # Only terminal schema validation failures are safe reset candidates.
+    failed = validation in ("fail", "failed", "not_passed")
     needs_reset = mismatch or failed or archived
 
     if not needs_reset:

@@ -148,3 +148,34 @@ def test_content_changes_do_not_supersede_product_facts_but_product_changes_do()
     assert changed_content_result.supersedes_approval_id is None
     assert changed_product.supersedes_approval_id == "product-approval-1"
     assert changed_product.approved_package is not None
+
+
+def test_equivalent_integral_float_facts_do_not_supersede_approval():
+    initial = preview_product_approval_lock(
+        state={"offer_id": "3828811808"},
+        product_row=_product(),
+        content_package=_content(),
+        seller_sku="0946",
+        known_seller_skus=(),
+        user_approved=True,
+        approval_fact=_approval(),
+        approval_input_facts={"package_cm": [58, 34, 0.02]},
+    )
+    state = {
+        "offer_id": "3828811808",
+        "product_approval": initial.state_patch["product_approval"],
+    }
+
+    repeated = preview_product_approval_lock(
+        state=state,
+        product_row=_product(),
+        content_package=_content(),
+        seller_sku="0946",
+        known_seller_skus=(),
+        user_approved=True,
+        approval_fact=_approval(),
+        approval_input_facts={"package_cm": [58.0, 34.0, 0.02]},
+    )
+
+    assert repeated.idempotent is True
+    assert repeated.state_patch == {}

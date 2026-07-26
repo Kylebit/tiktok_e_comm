@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from modules.products import server as product_server
+from modules.products import release_adapters
 from modules.sourcing import new_product_workbench
+from domains.channel_operations.release_executor import (
+    AdapterExecutionResult,
+    AdapterRegistration,
+)
 from shared_platform import release_control, release_store
 from shared_platform.release_store import ReleaseStore
 
@@ -98,7 +103,7 @@ def _request(view: dict, **extra) -> dict:
     }
 
 
-def test_formal_v1_preview_is_write_free_and_reports_unified_adapter_blockers(
+def test_formal_v1_preview_is_write_free_and_reports_executable_registry(
     tmp_path,
     monkeypatch,
 ):
@@ -113,7 +118,7 @@ def test_formal_v1_preview_is_write_free_and_reports_unified_adapter_blockers(
         "miaoshou:COMMON",
         "tiktok:MX",
     ]
-    assert view["release_v1"]["adapter_blockers"]
+    assert view["release_v1"]["adapter_blockers"] == []
     assert not store.path.exists()
 
 
@@ -170,16 +175,17 @@ def test_release_plan_approval_and_miaoshou_prepare_are_exact_and_durable(
     assert writes == ["3828540231"]
 
 
-def test_publish_endpoint_refuses_legacy_adapters_without_external_calls(
+def test_publish_endpoint_executes_unified_adapter_and_persists_readback(
     tmp_path,
     monkeypatch,
 ):
     store = ReleaseStore(tmp_path / "release.db")
     monkeypatch.setattr(release_store, "default_release_store", lambda: store)
+    dashboard = _dashboard()
     monkeypatch.setattr(
         release_control,
         "build_release_dashboard",
-        lambda **_kwargs: _dashboard(),
+        lambda **_kwargs: dashboard,
     )
     monkeypatch.setattr(
         new_product_workbench,
@@ -198,18 +204,64 @@ def test_publish_endpoint_refuses_legacy_adapters_without_external_calls(
     assert product_server._prepare_miaoshou_release(
         {**request, "confirm_miaoshou_write": True}
     )[0] == 200
+    # External readback evidence advances the workbench document revision in
+    # production. It must not invalidate otherwise identical approved facts.
+    dashboard["product"]["revision"] += 1
+    calls = []
+
+    def execute(req):
+        calls.append(req)
+        return AdapterExecutionResult(
+            succeeded=True,
+            readback_verified=True,
+            detail="verified",
+            external_reference="mx-product-1",
+            readback_evidence={
+                "source": "fake-official-api",
+                "verified": True,
+                "title": "approved title",
+            },
+        )
+
+    monkeypatch.setattr(
+        release_adapters,
+        "production_adapter_registry",
+        lambda: {
+            "new_product_workbench_miaoshou_commit": AdapterRegistration(
+                adapter_name="new_product_workbench_miaoshou_commit",
+                execute=lambda _req: AdapterExecutionResult(
+                    True,
+                    True,
+                    "common",
+                ),
+                consumes_unified_plan=True,
+                validates_confirmation_token=True,
+                preserves_idempotency_key=True,
+                verifies_readback=True,
+            ),
+            "miaoshou_tiktok_publish": AdapterRegistration(
+                adapter_name="miaoshou_tiktok_publish",
+                execute=execute,
+                consumes_unified_plan=True,
+                validates_confirmation_token=True,
+                preserves_idempotency_key=True,
+                verifies_readback=True,
+            ),
+        },
+    )
 
     status, payload = product_server._publish_selected_release(
         {**request, "confirm_publish": True}
     )
 
-    assert status == 409
-    assert payload["external_writes_performed"] == []
-    assert payload["adapter_blockers"][0]["target"] == "tiktok:MX"
+    assert status == 200
+    assert payload["external_writes_performed"] == ["tiktok:MX"]
+    assert len(calls) == 1
     tiktok = next(
         row
         for row in payload["run"]["targets"]
         if row["target_label"] == "tiktok:MX"
     )
-    assert tiktok["status"] == "PENDING"
-    assert tiktok["attempts"] == 0
+    assert tiktok["status"] == "SUCCEEDED"
+    assert tiktok["attempts"] == 1
+    assert tiktok["readback"]["evidence"]["source"] == "fake-official-api"

@@ -478,6 +478,129 @@ async function productAsyncFeedback(browser) {
   }
 }
 
+async function productReleaseTerminalState(browser) {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await context.newPage();
+  const errors = [];
+  const requests = [];
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+  });
+  await page.route("**/*", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.origin !== baseUrl) return route.abort("blockedbyclient");
+    if (!url.pathname.startsWith("/api/")) return route.continue();
+    requests.push({ method: request.method(), url: request.url() });
+    if (url.pathname === "/api/product-workspace/dashboard") {
+      const dashboard = JSON.parse(JSON.stringify(productDashboard));
+      const targetLabels = ["miaoshou:COMMON", "tiktok:MX", "ozon:RU"];
+      dashboard.product.seller_sku_candidate = "0953";
+      dashboard.publication_scope = {
+        selected_labels: targetLabels,
+        default_labels: targetLabels,
+        available_targets: [
+          { label: "miaoshou:COMMON", channel: "miaoshou", country: "COMMON" },
+          { label: "tiktok:MX", channel: "tiktok", shop: "LivelyHive", country: "MX" },
+          { label: "ozon:RU", channel: "ozon", country: "RU" },
+        ],
+      };
+      dashboard.release_v1 = {
+        eligible_for_plan_approval: false,
+        plan_persisted: true,
+        plan_approved: true,
+        miaoshou_prepared: true,
+        publish_ready: true,
+        blockers: [],
+        adapter_blockers: [],
+        plan: {
+          plan_id: "omnichannel:offline-terminal",
+          confirmation_token: "PUBLISH-OFFLINE-TERMINAL",
+          targets: targetLabels,
+          payload: {
+            product_revision: 1,
+            content_package_id: "content:offline",
+            targets: targetLabels,
+          },
+        },
+        run: {
+          run_id: "release-run:offline-terminal",
+          status: "PARTIAL_FAILED",
+          targets: [
+            {
+              target_label: "miaoshou:COMMON",
+              status: "SUCCEEDED",
+              attempts: 1,
+              external_id: "3828811808",
+              error: null,
+            },
+            {
+              target_label: "tiktok:MX",
+              status: "FAILED",
+              attempts: 2,
+              external_id: "3224868435:16265910",
+              error: "Miaoshou already accepted MX; retry did not resubmit. An authorised official TikTok readback is still unavailable.",
+            },
+            {
+              target_label: "ozon:RU",
+              status: "SUCCEEDED",
+              attempts: 1,
+              external_id: "5673889199",
+              error: null,
+            },
+          ],
+        },
+      };
+      return route.fulfill(jsonResponse(dashboard));
+    }
+    const fixture = apiFixture(
+      url,
+      request.method(),
+      { delayWeekly: false, delaySku: false, pending: {} },
+    );
+    return route.fulfill(fixture || jsonResponse({ ok: false }, 404));
+  });
+  try {
+    await page.goto(`${baseUrl}/product-workspace?offer_id=3828811808`, {
+      waitUntil: "networkidle",
+    });
+    const ledger = (await page.locator("#releaseRunLedger").innerText()).trim();
+    check(
+      ledger.includes("2 已回读 · 1 待读回授权"),
+      "product release: terminal run separates verified targets from readback authorization",
+      ledger,
+    );
+    check(
+      ledger.includes("已提交 · 待读回授权")
+      && ledger.includes("系统不会伪装为成功，也不会重复提交"),
+      "product release: accepted-but-unverified target is not presented as a publish failure",
+      ledger,
+    );
+    check(
+      !ledger.includes("正式发布处理中"),
+      "product release: terminal partial run is not presented as still processing",
+      ledger,
+    );
+    check(
+      await computedVisibility(page, ".run-target.awaiting-readback"),
+      "product release: awaiting-readback state is visually distinct",
+    );
+    check(
+      errors.length === 0,
+      "product release terminal state: no console/page errors",
+      errors,
+    );
+    check(
+      requests.filter((row) => row.method === "POST").length === 0,
+      "product release terminal state: initial render performs zero writes",
+      requests,
+    );
+  } finally {
+    await context.close();
+  }
+}
+
 async function aiAsyncFeedback(browser) {
   const scenario = await openScenario(
     browser,
@@ -683,6 +806,7 @@ async function legacyStateSafety(browser) {
       await auditPage(browser, definition, { width: 390, height: 844 });
     }
     await productAsyncFeedback(browser);
+    await productReleaseTerminalState(browser);
     await aiAsyncFeedback(browser);
     await profitAsyncAndNoFalseSuccess(browser);
     await legacyStateSafety(browser);

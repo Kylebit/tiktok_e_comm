@@ -191,8 +191,23 @@ def _reference_item(region: str, shop_id: int, token: str) -> dict | None:
     return items[0] if items else None
 
 
+_LOGISTICS_WITHOUT_PACKAGE_MEASUREMENTS = {
+    # MY self-collection lockers / points reject audited package measurements.
+    20087,
+    20097,
+    28056,
+    28079,
+    # VN smart-box / locker channels have the same limitation.
+    50039,
+    50052,
+    # TH instant / express channels do not accept package measurements.
+    7002,
+    70126,
+}
+
+
 def _logistic_info(shop_id: int, token: str, ref: dict | None) -> list[dict]:
-    exclude_logistic = {50039}  # VN Viettel Smartbox 对部分 SKU 不支持 weight/size
+    exclude_logistic = _LOGISTICS_WITHOUT_PACKAGE_MEASUREMENTS
     if ref and ref.get("logistic_info"):
         out = []
         for lg in ref["logistic_info"]:
@@ -323,7 +338,11 @@ def build_payload(
     token: str,
     model_sku: str,
     image_ids: list[str],
+    item_status: str = "UNLIST",
 ) -> dict:
+    clean_status = str(item_status or "").strip().upper()
+    if clean_status not in {"UNLIST", "NORMAL"}:
+        raise ValueError("Shopee item_status must be UNLIST or NORMAL")
     ref = _reference_item(region, shop_id, token)
     category_id = (ref or {}).get("category_id") or DEFAULT_CATEGORY.get(region.upper())
     if not category_id:
@@ -354,11 +373,14 @@ def build_payload(
     height = int(float(dim.get("height") or 2))
 
     desc = _strip_html(detail.get("description") or "")
-    if len(desc) < 60:
+    if len(desc) < 100:
         desc = (detail.get("title") or "") + " " + desc
     desc = desc.strip()[:3000]
-    if len(desc) < 60:
-        desc = desc + " " * (60 - len(desc))
+    if len(desc) < 100:
+        desc = (
+            f"{desc} Please review the product images and specifications "
+            "before purchase."
+        ).strip()[:3000]
 
     brand = (ref or {}).get("brand") or {"brand_id": 0, "original_brand_name": "NoBrand"}
 
@@ -382,7 +404,7 @@ def build_payload(
         "condition": "NEW",
         "item_dangerous": 0,
         "pre_order": {"is_pre_order": False, "days_to_ship": 2},
-        "item_status": "UNLIST",
+        "item_status": clean_status,
         "image": {"image_id_list": image_ids[:9]},
         "seller_stock": [{"location_id": "CNZ", "stock": stock}],
     }
@@ -465,7 +487,7 @@ def _shopee_title(raw: str, model_sku: str, *, max_len: int = 120) -> str:
 def _english_safe_sku(raw: str) -> str:
     digits = "".join(ch for ch in str(raw or "") if ch.isdigit())
     if digits:
-        return f"SKU{digits[-8:]}"
+        return digits[-8:]
     token = "".join(ch for ch in str(raw or "").upper() if ch.isalnum())
     return f"SKU{token[:8] or '0000'}"
 
@@ -481,13 +503,42 @@ def _local_item_fields(
     sku = (detail.get("skus") or [{}])[0]
     price = float((sku.get("price") or {}).get("sale_price") or 0)
     desc = _strip_html(detail.get("description") or "")
-    if len(desc) < 60:
+    if len(desc) < 100:
         desc = ((detail.get("title") or "") + " " + desc).strip()
     local_desc = desc[:3000]
-    if len(local_desc) < 60:
-        local_desc = local_desc + " " * (60 - len(local_desc))
+    if len(local_desc) < 100:
+        local_desc = (
+            f"{local_desc} Please review the product images and "
+            "specifications before purchase."
+        ).strip()[:3000]
     title = _shopee_title(detail.get("title") or "", model_sku, max_len=180)
     return title, local_desc, price
+
+
+def _regional_listing_detail(
+    regional_detail: dict,
+    semantic_detail: dict,
+    *,
+    title_override: str = "",
+) -> dict:
+    """Combine regional commercial facts with the approved semantic master.
+
+    Prices must come from the target-region TikTok listing.  Copy and images
+    may come from the PH English semantic master, but must never drag the PH
+    price into MY/TH/VN publication tasks.
+    """
+
+    merged = dict(regional_detail)
+    merged["title"] = (
+        str(title_override or "").strip()
+        or str(semantic_detail.get("title") or "").strip()
+        or str(regional_detail.get("title") or "").strip()
+    )
+    if semantic_detail.get("description"):
+        merged["description"] = semantic_detail["description"]
+    if semantic_detail.get("main_images"):
+        merged["main_images"] = semantic_detail["main_images"]
+    return merged
 
 
 def _run_publish_task(
@@ -499,7 +550,11 @@ def _run_publish_task(
     token: str,
     model_sku: str,
     ref: dict | None,
+    item_status: str = "UNLIST",
 ) -> dict:
+    clean_status = str(item_status or "").strip().upper()
+    if clean_status not in {"UNLIST", "NORMAL"}:
+        raise ValueError("Shopee item_status must be UNLIST or NORMAL")
     meta = _shop_meta(shop_id, token)
     merchant_id = int(meta.get("merchant_id") or 0)
     if not merchant_id:
@@ -516,7 +571,7 @@ def _run_publish_task(
         "item": {
             "item_name": title,
             "description": local_desc,
-            "item_status": "UNLIST",
+            "item_status": clean_status,
             "original_price": price,
             "item_sku": _english_safe_sku(model_sku),
             "logistic": _logistic_info(shop_id, token, ref),
@@ -570,6 +625,7 @@ def _publish_existing_global(
     token: str,
     model_sku: str,
     ref: dict | None,
+    item_status: str = "UNLIST",
 ) -> dict:
     result = _run_publish_task(
         global_item_id=global_item_id,
@@ -579,6 +635,7 @@ def _publish_existing_global(
         token=token,
         model_sku=model_sku,
         ref=ref,
+        item_status=item_status,
     )
     if result.get("item_id"):
         record_shop_item(
@@ -666,6 +723,7 @@ def _create_global_item(
 def _publish_global(
     detail: dict,
     *,
+    local_detail: dict | None = None,
     region: str,
     shop_id: int,
     token: str,
@@ -673,6 +731,7 @@ def _publish_global(
     image_ids: list[str],
     ref: dict | None,
     tk_source_region: str = "",
+    item_status: str = "UNLIST",
 ) -> dict:
     created = _create_global_item(
         detail,
@@ -687,12 +746,13 @@ def _publish_global(
     global_item_id = int(created["global_item_id"])
     result = _run_publish_task(
         global_item_id=global_item_id,
-        detail=detail,
+        detail=local_detail or detail,
         region=region,
         shop_id=shop_id,
         token=token,
         model_sku=model_sku,
         ref=ref,
+        item_status=item_status,
     )
     return {**created, **result, "flow": "global_product"}
 
@@ -704,6 +764,8 @@ def publish_match_key(
     dry_run: bool = False,
     global_only: bool = True,
     publish_shops: bool = False,
+    item_status: str = "UNLIST",
+    title_override: str = "",
 ) -> dict:
     """将 TK 商品发布到 Shopee。默认仅建全球商品，不自动发国家店。"""
     if publish_shops:
@@ -716,8 +778,16 @@ def publish_match_key(
     shop_id = int(shop_map[reg])
 
     row = _find_tk_row(key, reg)
+    regional_detail = _fetch_tk_detail(row)
     tk_row, tk_detail, tk_source = _find_tk_for_global(key, reg)
-    detail = tk_detail
+    detail = dict(tk_detail)
+    if str(title_override or "").strip():
+        detail["title"] = str(title_override).strip()
+    local_detail = _regional_listing_detail(
+        regional_detail,
+        detail,
+        title_override=title_override,
+    )
 
     urls = _collect_image_urls(detail)
 
@@ -741,7 +811,7 @@ def publish_match_key(
             "used_ph_english": global_preview.get("used_ph_english"),
             "image_urls": urls[:8],
             "model_sku": model_sku,
-            "price": (detail.get("skus") or [{}])[0].get("price"),
+            "price": (local_detail.get("skus") or [{}])[0].get("price"),
         }
         if existing_gid:
             out["mode"] = "publish_existing_global" if not global_only else "existing_global"
@@ -756,12 +826,13 @@ def publish_match_key(
         if existing_gid and not global_only:
             result = _publish_existing_global(
                 int(existing_gid),
-                detail,
+                local_detail,
                 region=reg,
                 shop_id=shop_id,
                 token=token,
                 model_sku=model_sku,
                 ref=ref,
+                item_status=item_status,
             )
         elif existing_gid and global_only:
             return {
@@ -796,6 +867,7 @@ def publish_match_key(
             else:
                 result = _publish_global(
                     detail,
+                    local_detail=local_detail,
                     region=reg,
                     shop_id=shop_id,
                     token=token,
@@ -803,7 +875,23 @@ def publish_match_key(
                     image_ids=image_ids,
                     ref=ref,
                     tk_source_region=tk_source,
+                    item_status=item_status,
                 )
+                if result.get("global_item_id"):
+                    upsert_global_entry(
+                        str(result["global_item_id"]),
+                        match_key=key,
+                        global_model_sku=model_sku,
+                        title=result.get("global_title") or global_preview["title"],
+                        published_regions=[reg],
+                    )
+                    if result.get("item_id"):
+                        record_shop_item(
+                            str(result["global_item_id"]),
+                            reg,
+                            shop_id=shop_id,
+                            item_id=result["item_id"],
+                        )
         return {
             **result,
             "region": reg,
@@ -814,12 +902,13 @@ def publish_match_key(
 
     image_ids = _upload_images(urls)
     payload = build_payload(
-        detail,
+        local_detail,
         region=reg,
         shop_id=shop_id,
         token=token,
         model_sku=model_sku,
         image_ids=image_ids,
+        item_status=item_status,
     )
     resp = shop_post("/api/v2/product/add_item", shop_id, token, payload)
     if resp.get("error"):

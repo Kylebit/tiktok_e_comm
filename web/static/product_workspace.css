@@ -1676,6 +1676,11 @@ section { scroll-margin-top: 20px; }
   background: var(--surface);
 }
 .run-target.succeeded { border-color: rgba(35, 118, 107, .35); background: rgba(213, 238, 229, .32); }
+.run-target.awaiting-readback {
+  border-color: rgba(197, 136, 38, .42);
+  background: rgba(252, 235, 193, .38);
+}
+.run-target.awaiting-readback p { color: #805b16; }
 .run-target.failed,
 .run-target.partial_failed { border-color: rgba(182, 75, 60, .35); background: rgba(245, 211, 202, .28); }
 .run-target strong { color: var(--ink); }

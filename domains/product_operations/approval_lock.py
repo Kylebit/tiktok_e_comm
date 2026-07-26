@@ -39,12 +39,26 @@ def _fingerprint(
     seller_sku: str,
     approval_input_facts: Mapping[str, Any] | None = None,
 ) -> str:
+    facts = dict(approval_input_facts or {})
+    package_cm = facts.get("package_cm")
+    if isinstance(package_cm, (list, tuple)):
+        facts["package_cm"] = [
+            int(value)
+            if isinstance(value, float) and value.is_integer()
+            else value
+            for value in package_cm
+        ]
     payload = {
         "product": contract_payload(product),
         "seller_sku": seller_sku,
-        "approval_input_facts": dict(approval_input_facts or {}),
+        "approval_input_facts": facts,
     }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 

@@ -13,11 +13,14 @@ from modules.sourcing.miaoshou_precollect import (
 )
 from modules.sourcing.new_product_workbench import (
     _anchor_group_key,
+    _audited_english_variant_value,
     _expected_region_site_state,
     _distribute_total,
     _normalize_title,
     _next_seller_sku,
     _miaoshou_editable_weight_kg,
+    _miaoshou_platform_package_cm,
+    _miaoshou_post_retry,
     _ordered_selected_images,
     _pick_default_warehouse_id,
     _product_workflow_summary,
@@ -33,12 +36,134 @@ from modules.sourcing.new_product_workbench import (
     price_review,
     content_package_summary,
     save_state,
+    sync_miaoshou_second_review,
     write_miaoshou_draft,
     write_ordered_images_to_miaoshou,
 )
 
 
 class NewProductWorkbenchTests(unittest.TestCase):
+    def test_audited_variant_translation_uses_verified_size_only(self):
+        self.assertEqual(
+            _audited_english_variant_value("大号（34x58cm）"),
+            "Large (34 x 58 cm)",
+        )
+        self.assertEqual(
+            _audited_english_variant_value("定制花色"),
+            "定制花色",
+        )
+
+    def test_miaoshou_readback_preserves_locked_image_lineage(self):
+        source_urls = [
+            "https://img.example/source-1.jpg",
+            "https://img.example/source-2.jpg",
+            "https://img.example/source-3.jpg",
+        ]
+        generated_urls = [
+            "https://img.example/generated-scene.png",
+            "https://img.example/generated-size.png",
+        ]
+        image_order = [
+            generated_urls[0],
+            *source_urls,
+            generated_urls[1],
+        ]
+        state = {
+            "offer_id": "123456789",
+            "review": {
+                "title": "Approved wall decal",
+                "seller_sku": "0953",
+                "weight_kg": 0.02,
+                "package_cm": [58, 34, 0.02],
+                "video_action": "keep",
+                "fields_locked": True,
+                "image_order": image_order,
+                "image_actions": [
+                    {"url": url, "action": "keep", "kind": "source"}
+                    for url in source_urls
+                ],
+            },
+            "product_approval": {"status": "approved"},
+        }
+        detail = {
+            "commonCollectBoxDetailId": "123456789",
+            "title": "Approved wall decal",
+            "itemNum": "0953",
+            "weight": 0.02,
+            "packageLength": 58.0,
+            "packageWidth": 34.0,
+            "packageHeight": 0.02,
+            "imgUrls": image_order,
+            "mainImgVideoUrl": "https://video.example/approved.mp4",
+            "skuMap": {"only": {"itemNum": "0953"}},
+        }
+
+        def fake_post(_path, _body=None):
+            return {
+                "result": "success",
+                "data": {"editCommonCollectBoxDetail": detail},
+            }
+
+        with TemporaryDirectory() as tmp, patch(
+            "modules.sourcing.new_product_workbench.STATE_DIR",
+            Path(tmp),
+        ), patch(
+            "modules.sourcing.new_product_workbench.resolve_offer_key",
+            return_value="123456789",
+        ):
+            save_state("123456789", state)
+            Path(tmp, "123456789_miaoshou_draft.json").write_text(
+                json.dumps({
+                    "draft": {
+                        "mainImgVideoUrl": "https://video.example/approved.mp4",
+                    }
+                }),
+                encoding="utf-8",
+            )
+            result = sync_miaoshou_second_review("123456789", post=fake_post)
+            saved = json.loads(
+                Path(tmp, "123456789.json").read_text(encoding="utf-8")
+            )
+
+        self.assertTrue(result["locked_approval_preserved"])
+        self.assertEqual(saved["review"]["image_actions"], state["review"]["image_actions"])
+        self.assertEqual(saved["review"]["image_order"], image_order)
+        self.assertEqual(saved["miaoshou_second_review"]["status"], "verified")
+
+    def test_tiktok_transport_package_floor_preserves_source_fact(self):
+        draft = {
+            "packageLength": 58,
+            "packageWidth": 34,
+            "packageHeight": 0.02,
+        }
+
+        self.assertEqual(
+            _miaoshou_platform_package_cm(draft),
+            (58.0, 34.0, 1.0),
+        )
+        self.assertEqual(draft["packageHeight"], 0.02)
+
+    def test_miaoshou_retry_handles_client_rate_limit_exceptions(self):
+        calls = []
+
+        def fake_post(path, body):
+            calls.append((path, body))
+            if len(calls) < 3:
+                raise RuntimeError("账户接口每秒请求频率超限")
+            return {"result": "success", "data": {"ok": True}}
+
+        with patch("modules.sourcing.new_product_workbench.time.sleep") as sleep:
+            result = _miaoshou_post_retry(
+                fake_post,
+                "/open/test",
+                {"value": 1},
+                "read draft",
+            )
+
+        self.assertEqual(result["data"], {"ok": True})
+        self.assertEqual(len(calls), 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [2, 4])
+
     def test_next_seller_sku_skips_legacy_locks_and_verified_claim_range(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -103,11 +228,11 @@ class NewProductWorkbenchTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _miaoshou_editable_weight_kg(0.005)
 
-    def test_anchor_group_key_merges_lively_sea_mx_gb(self):
-        self.assertEqual(_anchor_group_key({"shop": "LivelyHive", "region": "PH"}), "lively")
-        self.assertEqual(_anchor_group_key({"shop": "LivelyHive", "region": "MX"}), "lively")
-        self.assertEqual(_anchor_group_key({"shop": "LivelyHive", "region": "GB"}), "lively")
-        self.assertEqual(_anchor_group_key({"shop": "HomeBloom", "region": "PH"}), "homebloom")
+    def test_anchor_group_key_isolates_each_global_shop_subsite(self):
+        self.assertEqual(_anchor_group_key({"shop": "LivelyHive", "region": "PH"}), "lively:PH")
+        self.assertEqual(_anchor_group_key({"shop": "LivelyHive", "region": "MX"}), "lively:MX")
+        self.assertEqual(_anchor_group_key({"shop": "LivelyHive", "region": "GB"}), "lively:GB")
+        self.assertEqual(_anchor_group_key({"shop": "HomeBloom", "region": "PH"}), "homebloom:PH")
 
     def test_pick_default_warehouse_id_prefers_default_then_cnsc(self):
         rows = [
@@ -705,7 +830,7 @@ class NewProductWorkbenchTests(unittest.TestCase):
             "packageHeight": 10.0,
             "imgUrls": ["https://img.example/1.jpg", "https://img.example/2.jpg", "https://img.example/3.jpg"],
             "notes": '<p><img src="1"><img src="2"><img src="3"></p>',
-            "mainImgVideoUrl": "",
+            "mainImgVideoUrl": "https://video.example/approved.mp4",
         }
         prepared = {"ok": True, "ready": True, "offer_id": "123", "draft": draft, "blockers": []}
         current = {"skuMap": {";Red;;": {"stock": 10, "price": 9}}, "title": "old"}
@@ -729,6 +854,11 @@ class NewProductWorkbenchTests(unittest.TestCase):
         self.assertTrue(result["written_to_miaoshou"])
         self.assertFalse(result["claimed"])
         self.assertFalse(result["published"])
+        self.assertTrue(result["checks"]["video_action"])
+        self.assertEqual(
+            saved["mainImgVideoUrl"],
+            "https://video.example/approved.mp4",
+        )
 
     def test_miaoshou_draft_write_keeps_only_selected_skus(self):
         draft = {
@@ -739,7 +869,18 @@ class NewProductWorkbenchTests(unittest.TestCase):
             "selectedSkuKeys": [";Large;;"],
         }
         prepared = {"ok": True, "ready": True, "offer_id": "123", "draft": draft, "blockers": []}
-        current = {"skuMap": {";Small;;": {"stock": 10}, ";Large;;": {"stock": 12}}}
+        current = {
+            "colorMap": {
+                "Small": {"name": "Small"},
+                "Large": {"name": "Large"},
+            },
+            "sizeMap": {"Cotton": {"name": "Cotton"}},
+            "skuMap": {
+                ";Small;Cotton;": {"stock": 10},
+                ";Large;Cotton;": {"stock": 12},
+            },
+        }
+        draft["selectedSkuKeys"] = [";Large;Cotton;"]
         saved = {}
 
         def fake_post(path, body=None):
@@ -756,7 +897,9 @@ class NewProductWorkbenchTests(unittest.TestCase):
             result = write_miaoshou_draft("123", post=fake_post)
 
         self.assertTrue(result["verified"])
-        self.assertEqual(list(saved["skuMap"]), [";Large;;"])
+        self.assertEqual(list(saved["skuMap"]), [";Large;Cotton;"])
+        self.assertEqual(list(saved["colorMap"]), ["Large"])
+        self.assertEqual(list(saved["sizeMap"]), ["Cotton"])
 
     def test_common_sku_fix_preserves_content_and_numbers_variants(self):
         current = {
@@ -846,6 +989,79 @@ class NewProductWorkbenchTests(unittest.TestCase):
         self.assertEqual(claim_calls[0]["shopIds"], ["7676267"])
         self.assertFalse(result["published"])
 
+    def test_claim_to_tiktok_retry_reuses_existing_detail_group(self):
+        calls = []
+        collect_rows = [{
+            "collectBoxDetailId": "456",
+            "commonCollectBoxDetailId": "123",
+            "gmtCreate": "2026-07-01 11:00:00",
+            "collectBoxDetailShopList": [{"shopId": "7676267"}],
+        }]
+
+        def fake_post(path, body=None):
+            calls.append(path)
+            if path.endswith("common_collect_box/claimed"):
+                raise AssertionError("retry must not create another TikTok collect detail")
+            if path.endswith("claim_to_shop"):
+                return {"result": "success"}
+            if path.endswith("search_collect_box_detail_list"):
+                return {"result": "success", "data": {"detailList": collect_rows}}
+            if path.endswith("get_shop_warehouse_list"):
+                return {"result": "success", "data": {"shopWarehouseList": []}}
+            raise AssertionError(path)
+
+        custom_markets = [{
+            "id": "lh_ph",
+            "shop": "LivelyHive",
+            "region": "PH",
+            "currency": "PHP",
+            "enabled": True,
+            "shop_id": 7676267,
+            "publish_group": "lively",
+        }]
+        with TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            (state_dir / "123_tiktok_claim.json").write_text(
+                json.dumps({
+                    "ok": False,
+                    "offer_id": "123",
+                    "shops": {},
+                    "detail_group_detail_ids": {"lively:PH": 456},
+                    "tiktok_detail_id": 456,
+                }),
+                encoding="utf-8",
+            )
+            with patch(
+                "modules.sourcing.new_product_workbench.resolve_offer_key",
+                return_value="123",
+            ), patch(
+                "modules.sourcing.new_product_workbench.build_preview",
+                return_value={"source": {"source_id": "src-1"}},
+            ), patch(
+                "modules.sourcing.new_product_workbench.sync_miaoshou_second_review",
+                return_value={"ok": True, "second_review_approved": True},
+            ), patch(
+                "modules.sourcing.new_product_workbench.ensure_common_sequential_skus",
+                return_value={"ok": True, "verified": True, "sku_item_nums": ["0942"]},
+            ), patch(
+                "modules.sourcing.new_product_workbench.load_state",
+                return_value={"review": {"selected_sites": ["lh_ph"]}},
+            ), patch(
+                "modules.sourcing.new_product_workbench.STATE_DIR",
+                state_dir,
+            ), patch(
+                "modules.sourcing.new_product_workbench.SEA_MARKETS",
+                custom_markets,
+            ):
+                result = claim_miaoshou_to_tiktok("123", post=fake_post)
+
+        self.assertTrue(result["claimed"])
+        self.assertEqual(result["tiktok_detail_id"], 456)
+        self.assertNotIn(
+            "/open/v1/product/common_collect_box/common_collect_box/claimed",
+            calls,
+        )
+
     def test_claim_to_tiktok_claims_each_selected_shop_without_final_reset(self):
         claim_calls = []
         claimed_calls = []
@@ -897,11 +1113,14 @@ class NewProductWorkbenchTests(unittest.TestCase):
             result = claim_miaoshou_to_tiktok("123", post=fake_post)
 
         self.assertTrue(result["claimed"])
-        self.assertEqual(len(claim_calls), 1)
-        self.assertEqual(len(claimed_calls), 1)
-        self.assertEqual([call["shopIds"] for call in claim_calls], [["7676267"]])
+        self.assertEqual(len(claim_calls), 2)
+        self.assertEqual(len(claimed_calls), 2)
+        self.assertEqual(
+            [call["shopIds"] for call in claim_calls],
+            [["7676267"], ["10204699"]],
+        )
         self.assertEqual(result["shops"]["lh_ph"]["detail_id"], 456)
-        self.assertEqual(result["shops"]["gb"]["detail_id"], 456)
+        self.assertEqual(result["shops"]["gb"]["detail_id"], 457)
 
     def test_claim_to_tiktok_keeps_all_requested_shop_claims(self):
         claim_calls = []
@@ -914,7 +1133,7 @@ class NewProductWorkbenchTests(unittest.TestCase):
         def fake_post(path, body=None):
             if path.endswith("common_collect_box/claimed"):
                 claimed_calls.append(body or {})
-                detail_id = {1: 456, 2: 457}.get(len(claimed_calls), 458)
+                detail_id = {1: 456, 2: 457, 3: 458}.get(len(claimed_calls), 459)
                 return {"result": "success", "data": {"platformCollectBoxDetailIdMap": {"tiktok": {"123": detail_id}}}}
             if path.endswith("claim_to_shop"):
                 claim_calls.append(body or {})
@@ -926,6 +1145,7 @@ class NewProductWorkbenchTests(unittest.TestCase):
                 claim_ids = {
                     "456": [7676267, 10204699],
                     "457": [15173238],
+                    "458": [10204699],
                 }.get(detail_id, [])
                 return {"result": "success", "data": {"shopCollectItemInfo": {
                     "title": "Title", "cid": "1", "imgUrls": ["https://img/1.jpg"],
@@ -960,12 +1180,15 @@ class NewProductWorkbenchTests(unittest.TestCase):
             result = claim_miaoshou_to_tiktok("123", post=fake_post)
 
         self.assertTrue(result["claimed"])
-        self.assertEqual(len(claimed_calls), 2)
-        self.assertEqual(len(claim_calls), 2)
-        self.assertEqual([call["shopIds"] for call in claim_calls], [["7676267"], ["15173238"]])
+        self.assertEqual(len(claimed_calls), 3)
+        self.assertEqual(len(claim_calls), 3)
+        self.assertEqual(
+            [call["shopIds"] for call in claim_calls],
+            [["7676267"], ["15173238"], ["10204699"]],
+        )
         self.assertEqual(result["shops"]["lh_ph"]["detail_id"], 456)
         self.assertEqual(result["shops"]["hb_ph"]["detail_id"], 457)
-        self.assertEqual(result["shops"]["gb"]["detail_id"], 456)
+        self.assertEqual(result["shops"]["gb"]["detail_id"], 458)
 
     def test_site_draft_writes_price_cod_english_variants_and_warehouse(self):
         self.skipTest("legacy shop-mode expectations replaced by live site-mode regression")
@@ -1025,7 +1248,11 @@ class NewProductWorkbenchTests(unittest.TestCase):
         ), patch(
             "modules.sourcing.new_product_workbench.STATE_DIR", Path(tmp)
         ), patch(
-            "modules.sourcing.new_product_workbench.build_preview", return_value={"pricing": pricing}
+            "modules.sourcing.new_product_workbench.build_preview",
+            return_value={
+                "pricing": pricing,
+                "review": {"category": {"name": "贴饰 > 墙贴"}},
+            },
         ):
             Path(tmp, "123_tiktok_claim.json").write_text(json.dumps(claim), encoding="utf-8")
             Path(tmp, "123_miaoshou_draft.json").write_text(json.dumps(draft), encoding="utf-8")
@@ -1033,7 +1260,7 @@ class NewProductWorkbenchTests(unittest.TestCase):
 
         self.assertTrue(result["ready"])
         self.assertFalse(result["published"])
-        self.assertEqual(saved["7676267"]["cid"], "853256")
+        self.assertEqual(saved["7676267"]["cid"], "600338")
         self.assertEqual(saved["7676267"]["isCodOpen"], "1")
         self.assertEqual(saved["7676267"]["skuPropertyList"][0]["attrValueList"][0]["attrValue"], "Ivory Red")
         self.assertEqual(
@@ -1178,7 +1405,11 @@ class NewProductWorkbenchTests(unittest.TestCase):
         ), patch(
             "modules.sourcing.new_product_workbench.STATE_DIR", Path(tmp)
         ), patch(
-            "modules.sourcing.new_product_workbench.build_preview", return_value={"pricing": pricing}
+            "modules.sourcing.new_product_workbench.build_preview",
+            return_value={
+                "pricing": pricing,
+                "review": {"category": {"name": "贴饰 > 墙贴"}},
+            },
         ):
             Path(tmp, "123_tiktok_claim.json").write_text(json.dumps(claim), encoding="utf-8")
             Path(tmp, "123_miaoshou_draft.json").write_text(json.dumps(draft), encoding="utf-8")
@@ -1400,7 +1631,11 @@ class NewProductWorkbenchTests(unittest.TestCase):
         ), patch(
             "modules.sourcing.new_product_workbench.STATE_DIR", Path(tmp)
         ), patch(
-            "modules.sourcing.new_product_workbench.build_preview", return_value={"pricing": pricing}
+            "modules.sourcing.new_product_workbench.build_preview",
+            return_value={
+                "pricing": pricing,
+                "review": {"category": {"name": "贴饰 > 墙贴"}},
+            },
         ):
             Path(tmp, "123_tiktok_claim.json").write_text(json.dumps(claim), encoding="utf-8")
             Path(tmp, "123_miaoshou_draft.json").write_text(json.dumps(draft), encoding="utf-8")

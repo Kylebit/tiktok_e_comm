@@ -157,6 +157,17 @@ CREATE TABLE IF NOT EXISTS release_target_runs (
 CREATE INDEX IF NOT EXISTS idx_release_target_runs_status
     ON release_target_runs(run_id, status);
 
+CREATE TABLE IF NOT EXISTS release_target_readbacks (
+    run_id TEXT NOT NULL,
+    target_label TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    evidence_digest TEXT NOT NULL,
+    verified_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, target_label),
+    FOREIGN KEY (run_id, target_label)
+        REFERENCES release_target_runs(run_id, target_label)
+);
+
 CREATE TABLE IF NOT EXISTS release_sku_reservations (
     reservation_id TEXT PRIMARY KEY,
     plan_id TEXT NOT NULL UNIQUE,
@@ -729,7 +740,7 @@ class ReleaseStore:
                 """
                 UPDATE release_target_runs
                 SET status = 'RUNNING', attempts = attempts + 1,
-                    external_id = NULL, error = NULL, completed_at = NULL,
+                    error = NULL, completed_at = NULL,
                     updated_at = ?
                 WHERE run_id = ? AND target_label = ?
                 """,
@@ -759,8 +770,19 @@ class ReleaseStore:
         target_label: str,
         *,
         external_id: str | None = None,
+        readback_evidence: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Record verified success; repeated identical readback is idempotent."""
+        evidence_json = (
+            _canonical_json(dict(readback_evidence))
+            if readback_evidence is not None
+            else None
+        )
+        evidence_digest = (
+            hashlib.sha256(evidence_json.encode("utf-8")).hexdigest()
+            if evidence_json is not None
+            else None
+        )
         with self._transaction() as connection:
             row = self._target_for_update(connection, run_id, target_label)
             clean_external_id = _text(external_id) or None
@@ -769,13 +791,68 @@ class ReleaseStore:
                     raise ImmutableReleaseError(
                         "successful target already has a different external_id"
                     )
-                return dict(row)
+                existing_evidence = connection.execute(
+                    """
+                    SELECT evidence_json, evidence_digest
+                    FROM release_target_readbacks
+                    WHERE run_id = ? AND target_label = ?
+                    """,
+                    (row["run_id"], row["target_label"]),
+                ).fetchone()
+                if evidence_json is not None and existing_evidence:
+                    if existing_evidence["evidence_digest"] != evidence_digest:
+                        raise ImmutableReleaseError(
+                            "successful target already has different readback evidence"
+                        )
+                elif evidence_json is not None:
+                    connection.execute(
+                        """
+                        INSERT INTO release_target_readbacks (
+                            run_id, target_label, evidence_json,
+                            evidence_digest, verified_at
+                        ) VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            row["run_id"],
+                            row["target_label"],
+                            evidence_json,
+                            evidence_digest,
+                            _utc_now(),
+                        ),
+                    )
+                result = dict(row)
+                result["readback"] = (
+                    json.loads(evidence_json)
+                    if evidence_json is not None
+                    else (
+                        json.loads(existing_evidence["evidence_json"])
+                        if existing_evidence
+                        else None
+                    )
+                )
+                return result
             self._require_active_run(connection, row["run_id"])
             if row["status"] != TARGET_RUNNING:
                 raise ReleaseStoreError(
                     f"target must be RUNNING before success; found {row['status']}"
                 )
             now = _utc_now()
+            if evidence_json is not None:
+                connection.execute(
+                    """
+                    INSERT INTO release_target_readbacks (
+                        run_id, target_label, evidence_json,
+                        evidence_digest, verified_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row["run_id"],
+                        row["target_label"],
+                        evidence_json,
+                        evidence_digest,
+                        now,
+                    ),
+                )
             connection.execute(
                 """
                 UPDATE release_target_runs
@@ -892,7 +969,55 @@ class ReleaseStore:
             connection.execute(
                 f"""
                 UPDATE release_target_runs
-                SET status = 'PENDING', external_id = NULL, error = NULL,
+                SET status = 'PENDING', error = NULL,
+                    updated_at = ?, completed_at = NULL
+                WHERE run_id = ? AND target_label IN ({placeholders})
+                """,
+                (now, _text(run_id), *sorted(selected)),
+            )
+            self._refresh_run_status(connection, _text(run_id), now=now)
+            return self._run_in_transaction(connection, _text(run_id))
+
+    def recover_interrupted_targets(
+        self,
+        run_id: str,
+        target_labels: Iterable[str] | None = None,
+    ) -> dict[str, Any]:
+        """Return explicitly selected stale RUNNING targets to PENDING.
+
+        This is only a crash-recovery control-plane operation.  Marketplace
+        adapters must still perform an idempotent read-back before any new
+        submission, so recovery cannot duplicate an already-created listing.
+        """
+
+        with self._transaction() as connection:
+            self._require_active_run(connection, _text(run_id))
+            running_rows = connection.execute(
+                """
+                SELECT target_label FROM release_target_runs
+                WHERE run_id = ? AND status = 'RUNNING'
+                ORDER BY target_label
+                """,
+                (_text(run_id),),
+            ).fetchall()
+            running = {row["target_label"] for row in running_rows}
+            if not running:
+                raise ReleaseStoreError("release run has no interrupted targets")
+            if target_labels is None:
+                selected = running
+            else:
+                selected = {_text(label) for label in target_labels}
+                if not selected or not selected.issubset(running):
+                    raise ReleaseStoreError(
+                        "recovery targets must be a non-empty subset of RUNNING targets"
+                    )
+            now = _utc_now()
+            placeholders = ",".join("?" for _ in selected)
+            connection.execute(
+                f"""
+                UPDATE release_target_runs
+                SET status = 'PENDING',
+                    error = 'recovered after an interrupted worker',
                     updated_at = ?, completed_at = NULL
                 WHERE run_id = ? AND target_label IN ({placeholders})
                 """,
@@ -1039,7 +1164,33 @@ class ReleaseStore:
             """,
             (run["run_id"],),
         ).fetchall()
-        return {**dict(run), "targets": [dict(row) for row in targets]}
+        try:
+            readback_rows = connection.execute(
+                """
+                SELECT target_label, evidence_json, evidence_digest, verified_at
+                FROM release_target_readbacks
+                WHERE run_id = ?
+                """,
+                (run["run_id"],),
+            )
+            readbacks = {
+                row["target_label"]: {
+                    "evidence": json.loads(row["evidence_json"]),
+                    "evidence_digest": row["evidence_digest"],
+                    "verified_at": row["verified_at"],
+                }
+                for row in readback_rows
+            }
+        except sqlite3.OperationalError:
+            # Old stores remain readable before the next controlled write
+            # creates the additive evidence table.
+            readbacks = {}
+        target_payloads: list[dict[str, Any]] = []
+        for row in targets:
+            payload = dict(row)
+            payload["readback"] = readbacks.get(row["target_label"])
+            target_payloads.append(payload)
+        return {**dict(run), "targets": target_payloads}
 
     def _refresh_run_status(
         self,

@@ -329,6 +329,14 @@ def record_shop_item(
         "item_id": str(item_id),
         "model_id": str(model_id or f"item_{item_id}"),
     }
+    published_regions = {
+        str(value).upper()
+        for value in (entry.get("published_regions") or [])
+        if str(value).strip()
+    }
+    published_regions.add(str(region).upper())
+    entry["published_regions"] = sorted(published_regions)
+    data[gid] = entry
     save_map(data)
 
 

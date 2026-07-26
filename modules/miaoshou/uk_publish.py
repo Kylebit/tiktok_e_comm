@@ -50,6 +50,8 @@ def publish_uk_listing(
     volumetric_confirmed: bool = False,
     confirm_token: str | None = None,
     skip_user_confirm: bool = False,
+    listing_title: str | None = None,
+    image_urls: list[str] | None = None,
 ) -> int:
     init_db()
     if gbp_sale is None and gbp_list is None:
@@ -97,6 +99,14 @@ def publish_uk_listing(
         for u in info.get("imgUrls") or []:
             if isinstance(u, str) and u.startswith("http"):
                 good_urls.append(u)
+    if image_urls is not None:
+        good_urls = list(dict.fromkeys(
+            str(url).strip()
+            for url in image_urls
+            if str(url).strip().lower().startswith("https://")
+        ))
+        if not good_urls:
+            raise RuntimeError("Audited GB image override did not contain any HTTPS image")
 
     if weight_kg is None:
         mk = tk_match_key(seller_sku)
@@ -136,6 +146,13 @@ def publish_uk_listing(
         info["title"] = str(master_product["title"])[:255]
     elif len(title) > 255:
         info["title"] = title[:255].rstrip()
+    if listing_title is not None:
+        audited_title = str(listing_title).strip()
+        if not audited_title:
+            raise RuntimeError("Audited GB listing title cannot be empty")
+        if len(audited_title) > 255:
+            raise RuntimeError("Audited GB listing title exceeds TikTok's 255-character limit")
+        info["title"] = audited_title
     print(f"UK title: {(info.get('title') or '')[:120]}")
 
     sr = post_open(

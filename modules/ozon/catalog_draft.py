@@ -98,6 +98,24 @@ def _product_type_hint(migrate_profile: str, type_id: int) -> str:
     return ""
 
 
+def russian_piece_label(quantity: int) -> str:
+    """Return the correct Russian label for a counted set of pieces."""
+    value = int(quantity)
+    if value <= 0:
+        raise ValueError("Ozon quantity must be positive")
+    last_two = value % 100
+    last = value % 10
+    if 11 <= last_two <= 14:
+        noun = "штук"
+    elif last == 1:
+        noun = "штука"
+    elif 2 <= last <= 4:
+        noun = "штуки"
+    else:
+        noun = "штук"
+    return f"{value} {noun}"
+
+
 def _pre_dims(tpl: dict, variant_label: str) -> tuple[str, str]:
     len_cm = _sanitize_dim(str(tpl["len_cm"]), str(tpl["len_cm"]))
     wid_cm = _sanitize_dim(str(tpl["wid_cm"]), str(tpl["wid_cm"]))
@@ -141,7 +159,35 @@ def _invoke_deepseek(
     )
 
 
-def build_draft(seller_sku: str) -> dict:
+def build_draft(
+    seller_sku: str,
+    *,
+    allow_deepseek: bool = True,
+    title_candidate: str = "",
+    product_size_cm: tuple[float, float] | None = None,
+    quantity: int | None = None,
+    color_name_override: str = "",
+    price_cny_override: int | None = None,
+    old_price_cny_override: int | None = None,
+    price_source_override: str = "",
+    price_label_override: str = "",
+    image_urls_override: list[str] | tuple[str, ...] | None = None,
+    category_id_override: int | None = None,
+    type_id_override: int | None = None,
+    migrate_profile_override: str = "",
+) -> dict:
+    """Build an Ozon draft without requiring a particular title provider.
+
+    A release flow with an audited ToAPI candidate sets
+    ``allow_deepseek=False`` and passes that candidate explicitly.  The local
+    rules still derive attributes and descriptions from verified facts.
+    """
+
+    def invoke_model(**kwargs):
+        if not allow_deepseek:
+            raise RuntimeError("DeepSeek disabled for audited ToAPI title flow")
+        return _invoke_deepseek(**kwargs)
+
     sync_catalog_to_tk_map(max_items=50)
 
     cat_item = catalog_item_by_seller_sku(seller_sku)
@@ -185,6 +231,17 @@ def build_draft(seller_sku: str) -> dict:
     default_type_id = tpl["type_id"]
 
     pre_len, pre_wid = _pre_dims(tpl, variant_label or "")
+    if product_size_cm:
+        dimensions = [float(value) for value in product_size_cm]
+        if any(value <= 0 for value in dimensions):
+            raise ValueError("Ozon product_size_cm values must be positive")
+        pre_len = str(int(max(dimensions)))
+        pre_wid = str(int(min(dimensions)))
+    kit_value = (
+        russian_piece_label(int(quantity))
+        if quantity is not None and int(quantity) > 0
+        else tpl["kit"]
+    )
     sku_name = ""
     if row:
         sku_name = (row.get("sku_name") or row.get("model_name") or "").strip()
@@ -193,7 +250,7 @@ def build_draft(seller_sku: str) -> dict:
         offer_id,
         len_cm=pre_len,
         wid_cm=pre_wid,
-        kit=tpl["kit"],
+        kit=kit_value,
         variant_label=variant_label or "",
         sku_name=sku_name,
     )
@@ -202,12 +259,24 @@ def build_draft(seller_sku: str) -> dict:
     d: dict = {}
     deepseek_ok = False
 
-    if cat_match.get("match_method") == "tk_category_map":
+    if category_id_override is not None or type_id_override is not None:
+        if category_id_override is None or type_id_override is None:
+            raise ValueError("Ozon category and type overrides must be provided together")
+        category_id = int(category_id_override)
+        type_id = int(type_id_override)
+        if category_id <= 0 or type_id <= 0:
+            raise ValueError("Ozon category and type overrides must be positive")
+        migrate_profile = _effective_profile(
+            type_id,
+            str(migrate_profile_override or "").strip() or None,
+        )
+        source = "audited_category_override"
+    elif cat_match.get("match_method") == "tk_category_map":
         type_id = int(cat_match["type_id"])
         category_id = int(cat_match["category_id"])
         migrate_profile = _effective_profile(type_id, cat_match.get("migrate_profile"))
         try:
-            d = _invoke_deepseek(
+            d = invoke_model(
                 title_ms=title_ms,
                 offer_id=offer_id,
                 price_info=price_info,
@@ -228,7 +297,7 @@ def build_draft(seller_sku: str) -> dict:
         category_id = int(cat_match["category_id"])
         migrate_profile = "tablecloth"
         try:
-            d = _invoke_deepseek(
+            d = invoke_model(
                 title_ms=title_ms,
                 offer_id=offer_id,
                 price_info=price_info,
@@ -251,7 +320,7 @@ def build_draft(seller_sku: str) -> dict:
         category_id = default_category_id
         migrate_profile = "generic"
         try:
-            d = _invoke_deepseek(
+            d = invoke_model(
                 title_ms=title_ms,
                 offer_id=offer_id,
                 price_info=price_info,
@@ -278,7 +347,19 @@ def build_draft(seller_sku: str) -> dict:
         type_id = ai_type_id if cat_entry else default_type_id
         migrate_profile = _effective_profile(type_id, cat_match.get("migrate_profile"))
 
-    if variant_label and price_cny:
+    if price_cny_override is not None:
+        if int(price_cny_override) <= 0:
+            raise ValueError("Ozon price_cny_override must be positive")
+        price_cny_str = str(int(price_cny_override))
+        resolved_old_price = (
+            int(old_price_cny_override)
+            if old_price_cny_override is not None
+            else old_price_cny(float(price_cny_override))
+        )
+        if resolved_old_price <= int(price_cny_override):
+            raise ValueError("Ozon old price must be greater than the sale price")
+        old_price_str = str(resolved_old_price)
+    elif variant_label and price_cny:
         price_cny_str = str(int(price_cny))
         old_price_str = str(old_price_cny(price_cny))
     elif d.get("price_cny"):
@@ -290,7 +371,7 @@ def build_draft(seller_sku: str) -> dict:
     else:
         price_cny_str, old_price_str = "45", "62"
 
-    color_name = d.get("color_name", tpl["color"][0])
+    color_name = str(color_name_override or "").strip() or d.get("color_name", tpl["color"][0])
     material_name = d.get("material", "Полиэстер" if migrate_profile == "tablecloth" else "ПВХ (поливинилхлорид)")
     cat_names = lookup_category_names(category_id, type_id)
 
@@ -302,18 +383,29 @@ def build_draft(seller_sku: str) -> dict:
             len_cm = _sanitize_dim(v_len, len_cm)
         if v_wid:
             wid_cm = _sanitize_dim(v_wid, wid_cm)
+    if product_size_cm:
+        len_cm = pre_len
+        wid_cm = pre_wid
 
     rule_title = translate.draft_title(title_ms, offer_id, len_cm=len_cm, wid_cm=wid_cm)
     rule_desc = translate.draft_description(
         title_ms,
         len_cm=len_cm,
         wid_cm=wid_cm,
-        kit=d.get("kit", tpl["kit"]),
+        kit=d.get("kit") or kit_value,
     )
     ai_title = (d.get("title") or "").strip()
     ai_desc = (d.get("description") or "").strip()
 
-    if ai_title:
+    if str(title_candidate or "").strip():
+        draft_title = polish_ozon_title(
+            str(title_candidate).strip(),
+            len_cm=len_cm,
+            wid_cm=wid_cm,
+            migrate_profile=migrate_profile,
+        )
+        title_source = "toapi_approved_candidate"
+    elif ai_title:
         draft_title = polish_ozon_title(
             ai_title,
             len_cm=len_cm,
@@ -375,12 +467,25 @@ def build_draft(seller_sku: str) -> dict:
 
     material_dict_id, material_canonical = _lookup_material(material_name, category_id, type_id)
     color_dict_id, color_canonical = _lookup_color(color_name, category_id, type_id)
+    if color_name_override and color_dict_id != 61571:
+        # The legacy helper can decode an Ozon canonical value using the wrong
+        # source encoding.  Keep the exact audited Russian request when the API
+        # returned a non-fallback dictionary id.
+        color_canonical = str(color_name_override).strip()
 
     return {
         "offer_id": offer_id,
         "seller_sku": entry["seller_sku"],
         "title_ms": title_ms,
-        "images": entry.get("image_urls") or [],
+        "images": (
+            [
+                str(url).strip()
+                for url in image_urls_override
+                if str(url).strip().lower().startswith("https://")
+            ]
+            if image_urls_override is not None
+            else entry.get("image_urls") or []
+        ),
         "draft_title": draft_title,
         "draft_description": draft_description,
         "hashtags": hashtags,
@@ -393,7 +498,7 @@ def build_draft(seller_sku: str) -> dict:
         "migrate_profile": migrate_profile,
         "color_name": color_canonical,
         "color_dict_id": color_dict_id,
-        "kit": d.get("kit", tpl["kit"]),
+        "kit": d.get("kit") or kit_value,
         "weight": weight,
         "depth": depth,
         "width": width,
@@ -406,8 +511,17 @@ def build_draft(seller_sku: str) -> dict:
         "title_source": title_source,
         "desc_source": desc_source,
         "deepseek_used": deepseek_ok,
-        "price_source": price_info["source"] if price_info else "",
-        "price_label": price_label,
+        "price_source": (
+            str(price_source_override).strip() or "release_plan_override"
+            if price_cny_override is not None
+            else (price_info["source"] if price_info else "")
+        ),
+        "price_label": (
+            str(price_label_override).strip()
+            or f"Approved Ozon release price {price_cny_str} CNY"
+            if price_cny_override is not None
+            else price_label
+        ),
         "price_local": price_info["amount"] if price_info else None,
         "price_currency": price_info["currency"] if price_info else "",
         "price_cny_computed": price_cny,
@@ -423,5 +537,5 @@ def build_draft(seller_sku: str) -> dict:
         "dimensions_source": "tk_listing" if pkg_dim_cm else "",
         "dimensions_missing": not bool(pkg_dim_cm),
         **logistics_meta,
-        "error": d.get("error"),
+        "error": None if not allow_deepseek and title_candidate else d.get("error"),
     }

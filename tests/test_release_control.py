@@ -8,6 +8,7 @@ import sqlite3
 import pytest
 
 from shared_platform.release_control import (
+    _catalog_sku_is_owned_by_release,
     build_weekly_profit_rehearsal,
     build_release_dashboard,
     latest_weekly_profit_summary,
@@ -93,6 +94,67 @@ def _release_fixture(tmp_path: Path) -> tuple[Path, Path]:
     return tmp_path, database
 
 
+def test_catalogue_row_owned_by_successful_release_is_not_a_new_sku_conflict(
+    tmp_path,
+):
+    database = tmp_path / "shop.db"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE products (product_id TEXT, seller_sku TEXT)"
+        )
+        connection.execute(
+            "CREATE TABLE shopee_products (item_id TEXT, seller_sku TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO products VALUES ('tk-product-1', '0953')"
+        )
+
+    class Store:
+        def active_plan_for_product(self, product_id):
+            assert product_id == "3828811808"
+            return {
+                "status": "APPROVED",
+                "seller_sku": "0953",
+                "payload_digest": "a" * 64,
+            }
+
+        def get_run(self, run_id):
+            assert run_id == f"release-run:{'a' * 24}"
+            return {
+                "targets": [
+                    {
+                        "target_label": "tiktok:LH_PH",
+                        "status": "SUCCEEDED",
+                        "external_id": "tk-product-1",
+                        "readback": {
+                            "evidence": {
+                                "seller_sku": "0953",
+                                "product_id": "tk-product-1",
+                            }
+                        },
+                    }
+                ]
+            }
+
+    assert _catalog_sku_is_owned_by_release(
+        database,
+        Store(),
+        product_id="3828811808",
+        seller_sku="0953",
+    )
+
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO products VALUES ('unrelated-product', '0953')"
+        )
+    assert not _catalog_sku_is_owned_by_release(
+        database,
+        Store(),
+        product_id="3828811808",
+        seller_sku="0953",
+    )
+
+
 def test_release_dashboard_is_a_complete_no_write_rehearsal(tmp_path):
     root, database = _release_fixture(tmp_path)
     before = {
@@ -153,7 +215,7 @@ def test_release_dashboard_is_a_complete_no_write_rehearsal(tmp_path):
     ]
     omnichannel = result["omnichannel_preview"]
     assert omnichannel["available"] is True
-    assert omnichannel["all_preflights_passed"] is False
+    assert omnichannel["all_preflights_passed"] is True
     assert omnichannel["adapter_calls_performed"] is False
     assert omnichannel["confirmation_token_summary"]["masked"].startswith("PUBLISH-")
     target_status = {
@@ -165,7 +227,7 @@ def test_release_dashboard_is_a_complete_no_write_rehearsal(tmp_path):
     }
     assert target_status == {
         ("miaoshou", "COMMON"): (True, True),
-        ("tiktok", "LH_TH"): (False, False),
+        ("tiktok", "LH_TH"): (True, True),
         ("shopee", "TH"): (True, True),
         ("ozon", "RU"): (True, True),
     }
@@ -262,14 +324,14 @@ def test_release_dashboard_normalises_sea_sites_into_shared_channel_matrix(tmp_p
         for row in preview["targets"]
     }
     assert all(
-        status[("tiktok", f"LH_{site}")] == (False, False)
+        status[("tiktok", f"LH_{site}")] == (True, True)
         for site in ("MY", "PH", "TH", "VN")
     )
     assert all(status[("shopee", site)] == (True, True) for site in ("MY", "PH", "TH", "VN"))
     assert status[("ozon", "RU")] == (True, True)
     assert status[("miaoshou", "COMMON")] == (True, True)
-    assert preview["all_preflights_passed"] is False
-    assert preview["ready"] is False
+    assert preview["all_preflights_passed"] is True
+    assert preview["ready"] is True
     assert result["publication_scope"]["default_labels"] == [
         "miaoshou:COMMON",
         "tiktok:LH_PH",
@@ -751,8 +813,10 @@ def test_real_gate_requires_matching_approval_and_verified_current_image_order(t
         "The current final image set has not been verified as written to Miaoshou."
         in missing_write["actual_release_gate"]["blockers"]
     )
+    approved_plan_id = missing_write["omnichannel_preview"]["plan_id"]
 
     current_urls = [row["image_url"] for row in missing_write["content"]["images"]]
+    state["_revision"] = int(state.get("_revision") or 0) + 1
     state["content_package"]["miaoshou_ordered_images_write"] = {
         "status": "verified",
         "ordered_image_urls": list(reversed(current_urls)),
@@ -765,6 +829,7 @@ def test_real_gate_requires_matching_approval_and_verified_current_image_order(t
     )
     assert wrong_order["actual_release_gate"]["ready"] is False
     assert "The previous 11-image Miaoshou write is stale." in wrong_order["actual_release_gate"]["blockers"]
+    assert wrong_order["omnichannel_preview"]["plan_id"] == approved_plan_id
 
     state["content_package"]["miaoshou_ordered_images_write"]["ordered_image_urls"] = current_urls
     state_path.write_text(json.dumps(state), encoding="utf-8")

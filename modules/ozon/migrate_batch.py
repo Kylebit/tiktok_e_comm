@@ -25,12 +25,46 @@ def list_unmigrated() -> list[dict]:
     return list_unmigrated_from_catalog()
 
 
-def migrate_one(seller_sku: str, on_progress: Callable[[str], None] | None = None) -> dict:
+def migrate_one(
+    seller_sku: str,
+    on_progress: Callable[[str], None] | None = None,
+    *,
+    allow_deepseek: bool = True,
+    title_candidate: str = "",
+    product_size_cm: tuple[float, float] | None = None,
+    quantity: int | None = None,
+    color_name_override: str = "",
+    price_cny_override: int | None = None,
+    old_price_cny_override: int | None = None,
+    price_source_override: str = "",
+    price_label_override: str = "",
+    image_urls_override: list[str] | tuple[str, ...] | None = None,
+    skip_rich_content: bool = False,
+    process_images: bool = True,
+    category_id_override: int | None = None,
+    type_id_override: int | None = None,
+    migrate_profile_override: str = "",
+) -> dict:
     """seller_sku: 6位 TK 货号；migrate  payload 用 draft 返回的 4位 offer_id。"""
     _progress(on_progress, f"  {seller_sku}: 生成俄语草稿…")
     from modules.ozon.catalog_draft import build_draft
 
-    draft = build_draft(seller_sku)
+    draft = build_draft(
+        seller_sku,
+        allow_deepseek=allow_deepseek,
+        title_candidate=title_candidate,
+        product_size_cm=product_size_cm,
+        quantity=quantity,
+        color_name_override=color_name_override,
+        price_cny_override=price_cny_override,
+        old_price_cny_override=old_price_cny_override,
+        price_source_override=price_source_override,
+        price_label_override=price_label_override,
+        image_urls_override=image_urls_override,
+        category_id_override=category_id_override,
+        type_id_override=type_id_override,
+        migrate_profile_override=migrate_profile_override,
+    )
     if not isinstance(draft, dict) or (draft.get("error") and not draft.get("draft_title")):
         return {"seller_sku": seller_sku, "ok": False, "step": "draft", "error": draft}
 
@@ -40,14 +74,28 @@ def migrate_one(seller_sku: str, on_progress: Callable[[str], None] | None = Non
         return {"seller_sku": seller_sku, "offer_id": offer_id, "ok": False, "step": "draft", "error": "无源图"}
 
     _progress(on_progress, f"  {seller_sku}: 转换并上传图片 ({len(images_src)} 张)…")
-    status, proc = proxy_json(
-        "POST",
-        f"process_images/{seller_sku}",
-        payload={"images": images_src},
-    )
+    if process_images:
+        status, proc = proxy_json(
+            "POST",
+            f"process_images/{seller_sku}",
+            payload={"images": images_src, "max_images": min(len(images_src), 15)},
+        )
+    else:
+        status, proc = 200, {"images": list(images_src[:15]), "errors": []}
     if status != 200 or not isinstance(proc, dict):
         return {"seller_sku": seller_sku, "offer_id": offer_id, "ok": False, "step": "images", "error": proc}
     images = proc.get("images") or []
+    if not images and proc.get("errors"):
+        return {
+            "seller_sku": seller_sku,
+            "offer_id": offer_id,
+            "ok": False,
+            "step": "images",
+            "error": {
+                "message": "image processing failed",
+                "details": proc.get("errors"),
+            },
+        }
     if not images:
         return {"seller_sku": seller_sku, "offer_id": offer_id, "ok": False, "step": "images", "error": "图片处理失败"}
 
@@ -75,6 +123,7 @@ def migrate_one(seller_sku: str, on_progress: Callable[[str], None] | None = Non
         "migrate_profile": draft.get("migrate_profile") or "generic",
         "tk_category_id": draft.get("tk_category_id") or "",
         "tk_category_leaf": draft.get("tk_category_leaf") or "",
+        "skip_rich_content": bool(skip_rich_content),
     }
 
     _progress(on_progress, f"  {offer_id}: 提交 Ozon import（含 Rich 内容，可能需数分钟）…")

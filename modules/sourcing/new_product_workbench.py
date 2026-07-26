@@ -54,6 +54,13 @@ SEA_MARKETS = [
 DISCOUNT_RESERVE_RATE = 0.35
 DEFAULT_LISTING_STOCK = 200
 MIN_ESTIMATED_PROFIT_CNY = 5.0
+TIKTOK_CATEGORY_BY_PRODUCT_CATEGORY = {
+    "贴饰 > 墙贴": "600338",
+    "贴饰>墙贴": "600338",
+    "墙贴": "600338",
+    "wall sticker": "600338",
+    "wall stickers": "600338",
+}
 _SITE_DRAFT_LOCKS: dict[str, threading.Lock] = {}
 _TIKTOK_CLAIM_LOCKS: dict[str, threading.Lock] = {}
 _IMAGE_GENERATION_LOCKS: dict[str, threading.Lock] = {}
@@ -393,6 +400,59 @@ def _english_variant_checks_pass(verified: dict[str, Any]) -> bool:
     if not values:
         return True
     return all(_is_english_variant_value(value.get("attrValue") or "") for value in values)
+
+
+def _audited_english_variant_value(text: str) -> str:
+    """Translate only recognized size facts; unknown variants remain blocked."""
+
+    value = str(text or "").strip()
+    if _is_english_variant_value(value):
+        return value
+    size_name = ""
+    for marker, translated in (
+        ("大号", "Large"),
+        ("中号", "Medium"),
+        ("小号", "Small"),
+    ):
+        if marker in value:
+            size_name = translated
+            break
+    dimensions = re.search(
+        r"(\d+(?:\.\d+)?)\s*[xX×]\s*(\d+(?:\.\d+)?)\s*cm",
+        value,
+        re.IGNORECASE,
+    )
+    if not dimensions:
+        return value
+    width, height = dimensions.groups()
+    dimension_label = f"{width} x {height} cm"
+    return (
+        f"{size_name} ({dimension_label})"
+        if size_name
+        else dimension_label
+    )
+
+
+def _apply_audited_english_variant_labels(info: dict[str, Any]) -> None:
+    props = info.get("skuPropertyList") or []
+    if not props:
+        return
+    values = props[0].get("attrValueList") or []
+    has_dimensions = any(
+        re.search(r"\d+(?:\.\d+)?\s*[xX×]\s*\d+(?:\.\d+)?\s*cm", str(row.get("attrValue") or ""), re.I)
+        for row in values
+    )
+    props[0]["attrName"] = "Size" if has_dimensions else "Color"
+    known_values = {
+        "87333b5fe4": "Ivory Red",
+        "a8fefa8b1f": "Ivory Pink",
+    }
+    for value in values:
+        value_id = str(value.get("attrValueId") or "")
+        value["attrValue"] = known_values.get(
+            value_id,
+            _audited_english_variant_value(value.get("attrValue") or ""),
+        )
 
 
 def _public_source_type(url: str) -> str:
@@ -4552,13 +4612,17 @@ def _publish_group_for_target(target: dict[str, Any]) -> str:
 
 
 def _anchor_group_key(target: dict[str, Any]) -> str:
-    shop = str(target.get("shop") or "").strip().lower()
-    if shop == "homebloom":
-        return "homebloom"
-    if shop == "livelyhive" or not shop:
-        return "lively"
+    # Miaoshou only permits one sub-site of the same global TikTok shop on a
+    # collect-box detail.  A single "lively" detail therefore cannot safely
+    # represent PH, MY, TH, VN, MX and GB: publishing the first site consumes
+    # the only claimed detail and every later site reports "no data".
+    #
+    # Keep the commercial publish group in the key, but isolate each region
+    # onto its own collect-box detail.  Different brands in the same country
+    # also remain isolated because their publish groups differ.
+    publish_group = _publish_group_for_target(target)
     region = str(target.get("region") or "").strip().upper()
-    return f"{shop or 'shop'}_{region or 'default'}"
+    return f"{publish_group}:{region or 'DEFAULT'}"
 
 
 def _claim_anchor_shop_ids(group_targets: list[tuple[str, dict[str, Any], str]]) -> list[str]:
@@ -4574,6 +4638,22 @@ def _claim_all_shop_ids(group_targets: list[tuple[str, dict[str, Any], str]]) ->
         for _target_id, _target, shop_id in (group_targets or [])
         if str(shop_id).strip()
     })
+
+
+def _claim_serial_number(
+    group_targets: list[tuple[str, dict[str, Any], str]],
+) -> int:
+    """Return a stable Miaoshou copy number for one site-isolated detail."""
+
+    market_positions = {
+        str(market.get("id") or ""): index
+        for index, market in enumerate(SEA_MARKETS, start=1)
+    }
+    positions = [
+        market_positions.get(str(target_id), len(SEA_MARKETS) + 1)
+        for target_id, _target, _shop_id in group_targets
+    ]
+    return min(positions) if positions else 1
 
 
 def _detail_group_for_target(target: dict[str, Any]) -> str:
@@ -4598,6 +4678,22 @@ def _web_related_shop_rows(payload: dict[str, Any], anchor_shop_id: str) -> list
     related_map = payload.get("shopIdAndRelatedShopListMap") or {}
     rows = related_map.get(str(anchor_shop_id)) or []
     return [dict(row or {}) for row in rows]
+
+
+def _miaoshou_platform_package_cm(
+    draft: dict[str, Any],
+) -> tuple[float, float, float]:
+    """Map approved package facts to Miaoshou/TikTok transport constraints.
+
+    The product fact remains exact (for example a 0.02 cm decal thickness).
+    TikTok's site draft requires each transport dimension to be at least
+    1 cm, so only the marketplace payload uses this conservative floor.
+    """
+
+    return tuple(
+        max(1.0, float(draft.get(field) or 0))
+        for field in ("packageLength", "packageWidth", "packageHeight")
+    )
 
 
 def _web_collect_payload_for_targets(
@@ -4628,14 +4724,18 @@ def _web_collect_payload_for_targets(
     info["notes"] = draft.get("notes") or info.get("notes") or ""
     info["imgUrls"] = list(draft.get("imgUrls") or [])
     info["weight"] = float(draft.get("weight") or 0)
-    info["packageLength"] = float(draft.get("packageLength") or 0)
-    info["packageWidth"] = float(draft.get("packageWidth") or 0)
-    info["packageHeight"] = float(draft.get("packageHeight") or 0)
+    package_length, package_width, package_height = _miaoshou_platform_package_cm(
+        draft
+    )
+    info["packageLength"] = package_length
+    info["packageWidth"] = package_width
+    info["packageHeight"] = package_height
     info["mainImgVideoUrl"] = draft.get("mainImgVideoUrl") or ""
     info["mainImgAppVideoId"] = ""
     info["mainImgPlatformVideoId"] = ""
     info["isCodOpen"] = "1" if cod_enabled else "0"
     info["itemNum"] = str(draft.get("itemNum") or info.get("itemNum") or "")[-4:]
+    _apply_audited_english_variant_labels(info)
 
     sku_map = info.get("skuMap") or {}
     sku_numbers = _sequential_sku_numbers(sku_map, info["itemNum"])
@@ -4742,6 +4842,78 @@ def _site_state_matches_expected(existing_site: dict[str, Any], expected_state: 
         actual_detail_ids == list(expected_state.get("detail_ids") or [])
         and actual_shop_ids == list(expected_state.get("site_collect_shop_ids") or [])
     )
+
+
+def _tiktok_category_id(preview: dict[str, Any]) -> str:
+    """Resolve a TikTok leaf category from the approved product category."""
+
+    review = preview.get("review") if isinstance(preview.get("review"), dict) else {}
+    raw_category = review.get("category")
+    values = (
+        (
+            raw_category.get("name"),
+            raw_category.get("leaf"),
+            raw_category.get("label"),
+        )
+        if isinstance(raw_category, dict)
+        else (raw_category,)
+    )
+    for value in values:
+        clean = re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+        compact = clean.replace(" ", "")
+        for label, category_id in TIKTOK_CATEGORY_BY_PRODUCT_CATEGORY.items():
+            normalized = label.casefold()
+            if clean == normalized or compact == normalized.replace(" ", ""):
+                return category_id
+    raise RuntimeError(
+        "No audited TikTok category mapping exists for the approved product category"
+    )
+
+
+def _audited_listing_title(
+    state: dict[str, Any],
+    *,
+    channel: str,
+    site: str,
+    fallback: str,
+) -> str:
+    listing_copy = (
+        state.get("listing_copy")
+        if isinstance(state.get("listing_copy"), dict)
+        else {}
+    )
+    status = str(listing_copy.get("status") or "")
+    if status.startswith("superseded"):
+        raise RuntimeError("Audited listing title candidates are stale")
+    for row in listing_copy.get("candidates") or []:
+        if not isinstance(row, dict):
+            continue
+        if (
+            str(row.get("channel") or "").casefold() == channel.casefold()
+            and str(row.get("site") or "").upper() == site.upper()
+            and str(row.get("policy_check") or "") == "passed"
+        ):
+            title = _normalize_title(str(row.get("title") or ""))
+            if title:
+                return title
+    return _normalize_title(fallback)
+
+
+def _regional_listing_draft(
+    draft: dict[str, Any],
+    state: dict[str, Any],
+    *,
+    channel: str,
+    site: str,
+) -> dict[str, Any]:
+    regional = dict(draft)
+    regional["title"] = _audited_listing_title(
+        state,
+        channel=channel,
+        site=site,
+        fallback=str(draft.get("title") or ""),
+    )
+    return regional
 
 
 def prepare_miaoshou_draft(offer_id_or_url: str) -> dict[str, Any]:
@@ -4867,6 +5039,30 @@ def prepare_miaoshou_draft(offer_id_or_url: str) -> dict[str, Any]:
     return result
 
 
+def _filter_miaoshou_variant_maps(
+    detail: dict[str, Any],
+    selected_sku_map: dict[str, Any],
+) -> None:
+    """Keep sale-property maps aligned with the selected SKU combinations."""
+
+    selected_parts: list[set[str]] = [set(), set(), set()]
+    for sku_key in selected_sku_map:
+        parts = str(sku_key).strip(";").split(";")
+        for index, part in enumerate(parts[:3]):
+            if part:
+                selected_parts[index].add(part)
+
+    for index, field in enumerate(("colorMap", "sizeMap", "saleProp3Map")):
+        current_map = detail.get(field)
+        if not isinstance(current_map, dict) or not selected_parts[index]:
+            continue
+        detail[field] = {
+            key: value
+            for key, value in current_map.items()
+            if str(key) in selected_parts[index]
+        }
+
+
 def write_miaoshou_draft(offer_id_or_url: str, *, post=None) -> dict[str, Any]:
     """Write an approved draft to the common collect box, without claiming or publishing it."""
     prepared = prepare_miaoshou_draft(offer_id_or_url)
@@ -4918,6 +5114,7 @@ def write_miaoshou_draft(offer_id_or_url: str, *, post=None) -> dict[str, Any]:
         })
         updated_skus[key] = sku
     updated["skuMap"] = updated_skus
+    _filter_miaoshou_variant_maps(updated, updated_skus)
 
     save_resp = post(edit_path, {
         "commonCollectBoxDetailId": detail_id,
@@ -4944,7 +5141,10 @@ def write_miaoshou_draft(offer_id_or_url: str, *, post=None) -> dict[str, Any]:
         ] == [draft["packageLength"], draft["packageWidth"], draft["packageHeight"]],
         "images": list(verified.get("imgUrls") or []) == draft["imgUrls"],
         "description_images": str(verified.get("notes") or "").count("<img ") == len(draft["imgUrls"]),
-        "video_action": not draft["mainImgVideoUrl"] and not verified.get("mainImgVideoUrl"),
+        "video_action": (
+            str(verified.get("mainImgVideoUrl") or "")
+            == str(draft.get("mainImgVideoUrl") or "")
+        ),
         "sku_fields": bool(verified_skus) and all(
             str(sku.get("itemNum") or "") == sku_numbers.get(key)
             and abs(float(sku.get("weight") or 0) - draft["weight"]) < 0.0001
@@ -4962,19 +5162,56 @@ def write_miaoshou_draft(offer_id_or_url: str, *, post=None) -> dict[str, Any]:
         "updated_at": _now(),
     }
     _write_json_atomic(STATE_DIR / f"{prepared['offer_id']}_miaoshou_draft.json", result)
+    if result["verified"]:
+        state = load_state(prepared["offer_id"])
+        content = state.setdefault("content_package", {})
+        content["miaoshou_ordered_images_write"] = {
+            "status": "verified",
+            "verified": True,
+            "collect_box_id": str(detail_id),
+            "ordered_image_urls": list(draft["imgUrls"]),
+            "written_image_count": len(draft["imgUrls"]),
+            "checks": {
+                "images": checks["images"],
+                "description_images": checks["description_images"],
+            },
+            "finished_at": _now(),
+            "source": "formal_release_common_draft",
+        }
+        save_state(prepared["offer_id"], state)
     return result
 
 
 def _miaoshou_post_retry(post, path: str, payload: dict[str, Any], action: str) -> dict[str, Any]:
     response: dict[str, Any] = {}
+    last_error = ""
     for attempt in range(5):
-        response = post(path, payload)
+        try:
+            response = post(path, payload)
+        except RuntimeError as exc:
+            last_error = str(exc)
+            rate_limited = any(
+                marker in last_error.lower()
+                for marker in (
+                    "platformqpsratelimit",
+                    "频率超限",
+                    "qps",
+                    "rate limit",
+                    "too many requests",
+                )
+            )
+            if not rate_limited or attempt == 4:
+                raise RuntimeError(f"{action}失败: {last_error}") from exc
+            time.sleep(2 + attempt * 2)
+            continue
         if response.get("result") == "success":
             return response
         if response.get("code") != "platformQpsRateLimit":
             break
         time.sleep(2 + attempt * 2)
-    raise RuntimeError(f"{action}失败: {response.get('code')} {response.get('message', '')}")
+    raise RuntimeError(
+        f"{action}失败: {response.get('code')} {response.get('message', '') or last_error}"
+    )
 
 
 def _tiktok_collect_rows_for_source_item(post, source_item_id: str) -> list[dict[str, Any]]:
@@ -5115,7 +5352,7 @@ def ensure_common_sequential_skus(offer_id_or_url: str, *, post=None) -> dict[st
 
 
 def sync_miaoshou_second_review(offer_id_or_url: str, *, post=None) -> dict[str, Any]:
-    """Read the user's final Miaoshou edits back into the locked local snapshot."""
+    """Read Miaoshou back without rewriting an already approved fact snapshot."""
     offer_id = resolve_offer_key(offer_id_or_url)
     if post is None:
         from modules.miaoshou.client import post_open
@@ -5136,23 +5373,98 @@ def sync_miaoshou_second_review(offer_id_or_url: str, *, post=None) -> dict[str,
     ]
     state = load_state(offer_id)
     review = state.setdefault("review", {})
-    review.update({
-        "title": str(detail.get("title") or review.get("title") or "").strip(),
-        "seller_sku": str(detail.get("itemNum") or review.get("seller_sku") or "").strip()[-4:],
-        "weight_kg": float(detail.get("weight") or 0),
-        "package_cm": package,
-        "video_action": "keep" if detail.get("mainImgVideoUrl") else "remove",
-        "image_actions": [
-            {"url": url, "kind": "miaoshou_final", "action": "keep", "note": "Approved in Miaoshou second review."}
-            for url in images
-        ],
-        "fields_locked": True,
-        "support_cod": True,
-    })
-    save_state(offer_id, state)
-
     draft_path = STATE_DIR / f"{offer_id}_miaoshou_draft.json"
     draft_state = _load_json(draft_path) or {}
+    approval = (
+        state.get("product_approval")
+        if isinstance(state.get("product_approval"), dict)
+        else {}
+    )
+    locked = bool(
+        review.get("fields_locked")
+        and str(approval.get("status") or "").casefold() == "approved"
+    )
+    checks: dict[str, bool] = {}
+    if locked:
+        expected_package = [
+            float(value)
+            for value in (review.get("package_cm") or ())
+        ]
+        expected_images = [
+            str(value).strip()
+            for value in (review.get("image_order") or ())
+            if str(value).strip()
+        ]
+        expected_video = str(
+            ((draft_state.get("draft") or {}).get("mainImgVideoUrl"))
+            or ""
+        )
+        checks = {
+            "title": (
+                str(detail.get("title") or "").strip()
+                == str(review.get("title") or "").strip()
+            ),
+            "seller_sku": (
+                str(detail.get("itemNum") or "").strip()[-4:]
+                == str(review.get("seller_sku") or "").strip()[-4:]
+            ),
+            "weight": abs(
+                float(detail.get("weight") or 0)
+                - float(review.get("weight_kg") or 0)
+            ) < 0.0001,
+            "package": (
+                len(expected_package) == 3
+                and all(
+                    abs(actual - expected) < 0.0001
+                    for actual, expected in zip(package, expected_package)
+                )
+            ),
+            "images": images == expected_images,
+            "video": (
+                (
+                    str(review.get("video_action") or "").casefold() == "keep"
+                    and bool(detail.get("mainImgVideoUrl"))
+                    and (
+                        not expected_video
+                        or str(detail.get("mainImgVideoUrl") or "")
+                        == expected_video
+                    )
+                )
+                or (
+                    str(review.get("video_action") or "").casefold() != "keep"
+                    and not detail.get("mainImgVideoUrl")
+                )
+            ),
+        }
+        failed = [name for name, passed in checks.items() if not passed]
+        if failed:
+            raise RuntimeError(
+                "Miaoshou readback differs from the locked approval: "
+                + ", ".join(failed)
+            )
+        state["miaoshou_second_review"] = {
+            "status": "verified",
+            "verified": True,
+            "checks": checks,
+            "verified_at": _now(),
+            "source": "miaoshou_open_api",
+        }
+    else:
+        review.update({
+            "title": str(detail.get("title") or review.get("title") or "").strip(),
+            "seller_sku": str(detail.get("itemNum") or review.get("seller_sku") or "").strip()[-4:],
+            "weight_kg": float(detail.get("weight") or 0),
+            "package_cm": package,
+            "video_action": "keep" if detail.get("mainImgVideoUrl") else "remove",
+            "image_actions": [
+                {"url": url, "kind": "miaoshou_final", "action": "keep", "note": "Approved in Miaoshou second review."}
+                for url in images
+            ],
+            "fields_locked": True,
+            "support_cod": True,
+        })
+    save_state(offer_id, state)
+
     draft = draft_state.setdefault("draft", {})
     draft.update({
         "commonCollectBoxDetailId": offer_id,
@@ -5195,10 +5507,17 @@ def sync_miaoshou_second_review(offer_id_or_url: str, *, post=None) -> dict[str,
         "sku_count": len(detail.get("skuMap") or {}),
         "video_kept": bool(detail.get("mainImgVideoUrl")),
         "second_review_approved": True,
+        "locked_approval_preserved": locked,
+        "checks": checks,
     }
 
 
-def claim_miaoshou_to_tiktok(offer_id_or_url: str, *, post=None) -> dict[str, Any]:
+def claim_miaoshou_to_tiktok(
+    offer_id_or_url: str,
+    *,
+    post=None,
+    selected_target_ids: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, Any]:
     """Claim an approved common item to TikTok and available selected shops; never publish."""
     offer_id = resolve_offer_key(offer_id_or_url)
     claim_path = STATE_DIR / f"{offer_id}_tiktok_claim.json"
@@ -5218,6 +5537,7 @@ def claim_miaoshou_to_tiktok(offer_id_or_url: str, *, post=None) -> dict[str, An
         sync = sync_miaoshou_second_review(offer_id, post=post)
         sku_numbering = ensure_common_sequential_skus(offer_id, post=post)
         preview = build_preview(offer_id)
+        state = load_state(offer_id)
         source = preview.get("source") or {}
         source_item_id = (
             source.get("source_id")
@@ -5225,7 +5545,12 @@ def claim_miaoshou_to_tiktok(offer_id_or_url: str, *, post=None) -> dict[str, An
             or offer_id
         )
         state = load_state(offer_id)
-        selected = list((state.get("review") or {}).get("selected_sites") or [])
+        selected = list(
+            selected_target_ids
+            if selected_target_ids is not None
+            else (state.get("review") or {}).get("selected_sites") or []
+        )
+        selected = list(dict.fromkeys(str(value).strip().lower() for value in selected if str(value).strip()))
         target_map = {row["id"]: row for row in SEA_MARKETS}
         existing = _load_json(claim_path) or {}
         tiktok_detail_id = existing.get("tiktok_detail_id")
@@ -5249,7 +5574,14 @@ def claim_miaoshou_to_tiktok(offer_id_or_url: str, *, post=None) -> dict[str, An
         })
         _write_json_atomic(claim_path, result)
 
-        shops: dict[str, Any] = dict(existing.get("shops") or {})
+        # A governed release adapter executes one target at a time.  Do not
+        # carry stale shops from an earlier attempt into a new claim, otherwise
+        # a retry can silently prepare or publish an already-successful site.
+        shops: dict[str, Any] = {
+            key: dict(value)
+            for key, value in (existing.get("shops") or {}).items()
+            if key in selected and isinstance(value, dict)
+        }
         blocked: dict[str, str] = {}
         claimable_targets: list[tuple[str, dict[str, Any], str]] = []
         for target_id in selected:
@@ -5267,12 +5599,24 @@ def claim_miaoshou_to_tiktok(offer_id_or_url: str, *, post=None) -> dict[str, An
         for target_id, target, shop_id in claimable_targets:
             grouped_targets.setdefault(_anchor_group_key(target), []).append((target_id, target, shop_id))
 
-        detail_group_detail_ids: dict[str, int] = {}
+        detail_group_detail_ids: dict[str, int] = {
+            str(key): int(value)
+            for key, value in (
+                existing.get("detail_group_detail_ids")
+                or existing.get("publish_group_detail_ids")
+                or {}
+            ).items()
+            if value
+        }
         detail_group_targets: dict[str, dict[str, Any]] = {}
-        serial_number = 1
         for detail_group, group_targets in grouped_targets.items():
-            group_detail_id = _claim_common_to_tiktok_detail(post, offer_id, serial_number=serial_number)
-            serial_number += 1
+            group_detail_id = int(detail_group_detail_ids.get(detail_group) or 0)
+            if not group_detail_id:
+                group_detail_id = _claim_common_to_tiktok_detail(
+                    post,
+                    offer_id,
+                    serial_number=_claim_serial_number(group_targets),
+                )
             detail_group_detail_ids[detail_group] = int(group_detail_id)
             anchor_shop_ids = _claim_anchor_shop_ids(group_targets)
             detail_group_targets[detail_group] = {
@@ -5289,7 +5633,16 @@ def claim_miaoshou_to_tiktok(offer_id_or_url: str, *, post=None) -> dict[str, An
             )
             time.sleep(0.5)
 
-        tiktok_detail_id = int(tiktok_detail_id or next(iter(detail_group_detail_ids.values()), 0) or 0)
+        current_detail_ids = [
+            int(detail_group_detail_ids.get(group_key) or 0)
+            for group_key in grouped_targets
+            if int(detail_group_detail_ids.get(group_key) or 0)
+        ]
+        tiktok_detail_id = int(
+            current_detail_ids[0]
+            if current_detail_ids
+            else tiktok_detail_id or 0
+        )
 
         detail_rows = _tiktok_collect_rows_for_source_item(post, str(source_item_id))
         shop_detail_ids, normalized_rows = _shop_detail_map_from_collect_rows(detail_rows, common_detail_id=offer_id)
@@ -5545,14 +5898,17 @@ def _prepare_shop_mode_draft(
     if not info or not oss_md5:
         raise RuntimeError(f"{region} 缺少店铺草稿或 ossMd5")
     list_price = float(pricing["list_price"])
+    package_length, package_width, package_height = _miaoshou_platform_package_cm(
+        draft
+    )
     info.update({
         "title": draft.get("title") or info.get("title"),
         "notes": draft.get("notes") or info.get("notes") or "",
         "imgUrls": list(draft.get("imgUrls") or []),
         "weight": float(draft.get("weight") or 0),
-        "packageLength": float(draft.get("packageLength") or 0),
-        "packageWidth": float(draft.get("packageWidth") or 0),
-        "packageHeight": float(draft.get("packageHeight") or 0),
+        "packageLength": package_length,
+        "packageWidth": package_width,
+        "packageHeight": package_height,
         "cid": category_id,
         "isCodOpen": "1" if cod_enabled else "0",
         "mainImgVideoUrl": draft.get("mainImgVideoUrl") or "",
@@ -5569,15 +5925,7 @@ def _prepare_shop_mode_draft(
         "productAttributes": [],
         "productCertifications": info.get("productCertifications") or [],
     })
-    props = info.get("skuPropertyList") or []
-    if props:
-        props[0]["attrName"] = "Color"
-        for value in props[0].get("attrValueList") or []:
-            value_id = str(value.get("attrValueId") or "")
-            if value_id == "87333b5fe4":
-                value["attrValue"] = "Ivory Red"
-            elif value_id == "a8fefa8b1f":
-                value["attrValue"] = "Ivory Pink"
+    _apply_audited_english_variant_labels(info)
     sku_numbers = _sequential_sku_numbers(info.get("skuMap") or {}, draft.get("itemNum") or "")
     for sku_key, sku in (info.get("skuMap") or {}).items():
         stock = int(DEFAULT_LISTING_STOCK)
@@ -5587,9 +5935,9 @@ def _prepare_shop_mode_draft(
             "itemNum": sku_numbers[sku_key],
             "stock": stock,
             "weight": float(draft.get("weight") or 0),
-            "packageLength": float(draft.get("packageLength") or 0),
-            "packageWidth": float(draft.get("packageWidth") or 0),
-            "packageHeight": float(draft.get("packageHeight") or 0),
+            "packageLength": package_length,
+            "packageWidth": package_width,
+            "packageHeight": package_height,
             "shopIdToWarehouseIdAndStockMap": {str(shop_id): {warehouse_id: str(stock)}},
         })
     _miaoshou_post_retry(post, save_path, {
@@ -5638,6 +5986,16 @@ def _prepare_shop_mode_draft(
         "sku_item_nums": list(sku_numbers.values()),
         "verified_claim_shop_ids": verified_claim_shop_ids,
         "sku_scheme_version": 2,
+        "source_package_cm": [
+            float(draft.get("packageLength") or 0),
+            float(draft.get("packageWidth") or 0),
+            float(draft.get("packageHeight") or 0),
+        ],
+        "platform_package_cm": [
+            package_length,
+            package_width,
+            package_height,
+        ],
         "checks": checks,
         "ready": all(checks.values()),
     }
@@ -5695,14 +6053,17 @@ def _prepare_site_mode_draft(
             raise RuntimeError(f"{shop.get('shop')} {region} 没有可用仓库")
         warehouse_ids[str(shop["shop_id"])] = warehouse_id
 
+    package_length, package_width, package_height = _miaoshou_platform_package_cm(
+        draft
+    )
     info.update({
         "title": _normalize_title(draft.get("title") or info.get("title") or ""),
         "notes": draft.get("notes") or info.get("notes") or "",
         "imgUrls": list(draft.get("imgUrls") or []),
         "weight": float(draft.get("weight") or 0),
-        "packageLength": float(draft.get("packageLength") or 0),
-        "packageWidth": float(draft.get("packageWidth") or 0),
-        "packageHeight": float(draft.get("packageHeight") or 0),
+        "packageLength": package_length,
+        "packageWidth": package_width,
+        "packageHeight": package_height,
         "cid": category_id,
         "site": region,
         "editModel": "site",
@@ -5741,15 +6102,7 @@ def _prepare_site_mode_draft(
         for shop_id in shop_ids
     ]
 
-    props = info.get("skuPropertyList") or []
-    if props:
-        props[0]["attrName"] = "Color"
-        for value in props[0].get("attrValueList") or []:
-            value_id = str(value.get("attrValueId") or "")
-            if value_id == "87333b5fe4":
-                value["attrValue"] = "Ivory Red"
-            elif value_id == "a8fefa8b1f":
-                value["attrValue"] = "Ivory Pink"
+    _apply_audited_english_variant_labels(info)
 
     sku_map = info.get("skuMap") or {}
     sku_numbers = _sequential_sku_numbers(sku_map, draft.get("itemNum") or "")
@@ -5770,9 +6123,9 @@ def _prepare_site_mode_draft(
             "itemNum": sku_numbers[sku_key],
             "stock": sum(per_shop_allocations),
             "weight": float(draft.get("weight") or 0),
-            "packageLength": float(draft.get("packageLength") or 0),
-            "packageWidth": float(draft.get("packageWidth") or 0),
-            "packageHeight": float(draft.get("packageHeight") or 0),
+            "packageLength": package_length,
+            "packageWidth": package_width,
+            "packageHeight": package_height,
             "shopIdToWarehouseIdAndStockMap": warehouse_map,
         })
 
@@ -5827,6 +6180,16 @@ def _prepare_site_mode_draft(
         "verified_claim_shop_ids": [str(x) for x in (verified_data.get("claimToShopIds") or [])],
         "site_collect_shop_ids": [str(row.get("shopId") or "") for row in verified_shop_rows],
         "sku_scheme_version": 3,
+        "source_package_cm": [
+            float(draft.get("packageLength") or 0),
+            float(draft.get("packageWidth") or 0),
+            float(draft.get("packageHeight") or 0),
+        ],
+        "platform_package_cm": [
+            package_length,
+            package_width,
+            package_height,
+        ],
         "checks": checks,
         "ready": all(checks.values()),
         "detail_id": detail_id,
@@ -5943,6 +6306,7 @@ def prepare_miaoshou_site_drafts(offer_id_or_url: str, *, post=None) -> dict[str
             raise RuntimeError("Miaoshou second review is not approved yet")
 
         preview = build_preview(offer_id)
+        state = load_state(offer_id)
         sea_rows = preview.get("pricing", {}).get("sea") or []
         price_by_region = {row["region"]: row for row in sea_rows}
         price_by_target = {row.get("id"): row for row in sea_rows if row.get("id")}
@@ -5959,7 +6323,7 @@ def prepare_miaoshou_site_drafts(offer_id_or_url: str, *, post=None) -> dict[str
             detail_grouped.setdefault(detail_group, []).append((target_id, shop))
 
         detail_id = int(claim.get("tiktok_detail_id") or 0)
-        category_id = "853256"
+        category_id = _tiktok_category_id(preview)
         result = _load_json(output_path) or {
             "ok": True,
             "offer_id": offer_id,
@@ -6092,7 +6456,12 @@ def prepare_miaoshou_site_drafts(offer_id_or_url: str, *, post=None) -> dict[str
                         detail_id=group_detail_id,
                         region=region,
                         region_targets=grouped_targets,
-                        draft=draft,
+                        draft=_regional_listing_draft(
+                            draft,
+                            state,
+                            channel="tiktok",
+                            site=region,
+                        ),
                         category_id=category_id,
                         cod_enabled=region in SEA_REGION_RULES,
                     )
@@ -6157,7 +6526,12 @@ def prepare_miaoshou_site_drafts(offer_id_or_url: str, *, post=None) -> dict[str
                         region=region,
                         shop=shop,
                         pricing=prepared_target["pricing"],
-                        draft=draft,
+                        draft=_regional_listing_draft(
+                            draft,
+                            state,
+                            channel="tiktok",
+                            site=region,
+                        ),
                         category_id=category_id,
                         cod_enabled=False,
                         claim_shop_ids=[str(shop["shop_id"])],

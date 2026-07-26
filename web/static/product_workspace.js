@@ -1556,6 +1556,59 @@
     return `${channelNames[channel] || channel} · ${publicationSiteNames[site] || site}`;
   }
 
+  function awaitsOfficialReadback(target) {
+    const error = String(target?.error || "").toLowerCase();
+    return Boolean(
+      target?.status === "FAILED"
+      && target?.external_id
+      && error.includes("official")
+      && error.includes("readback")
+      && (
+        error.includes("unavailable")
+        || error.includes("no authorised")
+        || error.includes("no authorized")
+      ),
+    );
+  }
+
+  function releaseRunCounts(run) {
+    const targets = run?.targets || [];
+    return {
+      total: targets.length,
+      succeeded: targets.filter((target) => target.status === "SUCCEEDED").length,
+      running: targets.filter((target) => target.status === "RUNNING").length,
+      awaitingReadback: targets.filter(awaitsOfficialReadback).length,
+      failed: targets.filter(
+        (target) => target.status === "FAILED" && !awaitsOfficialReadback(target),
+      ).length,
+    };
+  }
+
+  function releaseRunLabel(run) {
+    const counts = releaseRunCounts(run);
+    if (run?.status === "SUCCEEDED") return `${counts.succeeded}/${counts.total} 全部回读成功`;
+    if (run?.status === "RUNNING") return `${counts.succeeded}/${counts.total} 正在执行`;
+    if (counts.awaitingReadback && !counts.failed && !counts.running) {
+      return `${counts.succeeded} 已回读 · ${counts.awaitingReadback} 待读回授权`;
+    }
+    if (run?.status === "PARTIAL_FAILED") {
+      return `${counts.succeeded} 已回读 · ${counts.failed} 失败`;
+    }
+    return run?.status || "未知";
+  }
+
+  function releaseTargetLabel(target, statusNames) {
+    if (awaitsOfficialReadback(target)) return "已提交 · 待读回授权";
+    return statusNames[target?.status] || target?.status || "未知";
+  }
+
+  function releaseTargetDetail(target) {
+    if (awaitsOfficialReadback(target)) {
+      return "平台已接收并返回外部 ID；当前账号缺少官方读回授权，系统不会伪装为成功，也不会重复提交。";
+    }
+    return target?.error || "";
+  }
+
   function updateReleaseControls(data) {
     const release = data?.release_v1 || {};
     const plan = release.plan || {};
@@ -1641,17 +1694,19 @@
       $("#releaseRunLedger").innerHTML = `
         <div class="run-ledger-head">
           <strong>${esc(run.run_id || "ReleaseRun")}</strong>
-          <span>${esc(statusNames[run.status] || run.status || "未知")}</span>
+          <span>${esc(releaseRunLabel(run))}</span>
         </div>
         <div class="run-target-grid">
-          ${(run.targets || []).map((target) => `
-            <article class="run-target ${esc(String(target.status || "").toLowerCase())}">
+          ${(run.targets || []).map((target) => {
+            const targetDetail = releaseTargetDetail(target);
+            return `
+            <article class="run-target ${esc(awaitsOfficialReadback(target) ? "awaiting-readback" : String(target.status || "").toLowerCase())}">
               <span>${esc(targetDisplayName(target.target_label))}</span>
-              <strong>${esc(statusNames[target.status] || target.status || "未知")}</strong>
+              <strong>${esc(releaseTargetLabel(target, statusNames))}</strong>
               <small>尝试 ${esc(String(target.attempts || 0))} 次${target.external_id ? ` · 外部 ID ${esc(target.external_id)}` : ""}</small>
-              ${target.error ? `<p>${esc(target.error)}</p>` : ""}
-            </article>
-          `).join("")}
+              ${targetDetail ? `<p>${esc(targetDetail)}</p>` : ""}
+            </article>`;
+          }).join("")}
         </div>
       `;
     }
@@ -1764,8 +1819,52 @@
     if (!currentData || releaseSubmitting || !$("#publishAllCheckbox").checked) return;
     releaseSubmitting = true;
     updateReleaseControls(currentData);
+    let releasePollBusy = false;
+    const pollReleaseProgress = async () => {
+      if (releasePollBusy || !currentData) return;
+      releasePollBusy = true;
+      try {
+        const latest = await fetchDashboard(
+          currentData.product?.offer_id,
+          currentData.publication_scope?.selected_labels || [],
+        );
+        adoptWorkflowDashboard(latest);
+        const run = latest.release_v1?.run;
+        if (run) {
+          const counts = releaseRunCounts(run);
+          const running = (run.targets || []).find(
+            (target) => target.status === "RUNNING",
+          );
+          if (running) {
+            $("#publishRunMessage").textContent =
+              `正在执行 ${targetDisplayName(running.target_label)}；${counts.succeeded}/${counts.total} 个目标已完成并回读。`;
+          } else if (run.status === "SUCCEEDED") {
+            $("#publishRunMessage").textContent =
+              `执行完成；${counts.succeeded}/${counts.total} 个目标均已完成官方回读。`;
+          } else if (counts.awaitingReadback && !counts.failed) {
+            $("#publishRunMessage").textContent =
+              `执行已结束；${counts.succeeded}/${counts.total} 个目标已官方回读，`
+              + `${counts.awaitingReadback} 个目标已提交但等待官方读回授权。`;
+          } else {
+            $("#publishRunMessage").textContent =
+              `执行已结束；${counts.succeeded}/${counts.total} 个目标已官方回读，`
+              + `${counts.failed} 个目标需要修复后重试。`;
+          }
+        }
+      } catch (_error) {
+        // A transient progress request must not cancel the authoritative POST.
+      } finally {
+        releasePollBusy = false;
+      }
+    };
+    const releaseProgressTimer = window.setInterval(pollReleaseProgress, 2000);
     $("#publishRunMessage").textContent = "正在校验统一适配器、幂等键和前置回读…";
     try {
+      const latest = await fetchDashboard(
+        currentData.product?.offer_id,
+        currentData.publication_scope?.selected_labels || [],
+      );
+      adoptWorkflowDashboard(latest);
       const payload = await postReleaseAction(
         "/api/product-workspace/publish",
         currentReleaseBody({ confirm_publish: true }),
@@ -1779,6 +1878,8 @@
       showError(message);
       $("#publishRunMessage").textContent = message;
     } finally {
+      window.clearInterval(releaseProgressTimer);
+      await pollReleaseProgress();
       releaseSubmitting = false;
       updateReleaseControls(currentData || {});
     }

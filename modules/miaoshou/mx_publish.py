@@ -58,6 +58,8 @@ def publish_mx_listing(
     confirm_token: str | None = None,
     skip_user_confirm: bool = False,
     spanish_copy: bool = True,
+    listing_title: str | None = None,
+    image_urls: list[str] | None = None,
 ) -> int:
     init_db()
     row = connect().execute(
@@ -118,6 +120,14 @@ def publish_mx_listing(
         for u in info.get("imgUrls") or []:
             if isinstance(u, str) and u.startswith("http"):
                 good_urls.append(u)
+    if image_urls is not None:
+        good_urls = list(dict.fromkeys(
+            str(url).strip()
+            for url in image_urls
+            if str(url).strip().lower().startswith("https://")
+        ))
+        if not good_urls:
+            raise RuntimeError("Audited MX image override did not contain any HTTPS image")
 
     if weight_kg is None:
         mk = tk_match_key(seller_sku)
@@ -167,6 +177,13 @@ def publish_mx_listing(
             info["notes"] = clean_notes(info.get("notes") or "", good_urls)
     else:
         info["notes"] = clean_notes(info.get("notes") or "", good_urls)
+    if listing_title is not None:
+        audited_title = str(listing_title).strip()
+        if not audited_title:
+            raise RuntimeError("Audited MX listing title cannot be empty")
+        if len(audited_title) > 255:
+            raise RuntimeError("Audited MX listing title exceeds TikTok's 255-character limit")
+        info["title"] = audited_title
 
     sr = post_open(
         SAVE_PATH,

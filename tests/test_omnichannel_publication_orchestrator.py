@@ -263,7 +263,7 @@ def test_token_binds_exact_store_price_and_fx_snapshot():
     )
 
 
-def test_preflight_blocks_unapproved_identity_or_unaudited_site():
+def test_preflight_blocks_unapproved_identity_and_missing_upstream():
     plan = build_omnichannel_publication_plan(
         _product_package(approved=False, source_reference=None),
         _content_package(product_id="another-product"),
@@ -279,7 +279,6 @@ def test_preflight_blocks_unapproved_identity_or_unaudited_site():
         "product_approval",
         "product_content_identity",
         "collect_box_lineage",
-        "audited_adapter_site",
         "upstream_target_selected",
     }
     assert plan.all_preflights_passed is False

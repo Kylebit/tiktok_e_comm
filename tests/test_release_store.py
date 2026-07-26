@@ -229,6 +229,7 @@ def test_partial_failure_retry_preserves_success_and_idempotency_key(tmp_path):
 
     second_attempt = store.begin_target(run_id, "tiktok:LH_PH")
     assert second_attempt["attempts"] == 2
+    assert second_attempt["external_id"] == "task-1"
     store.record_target_success(
         run_id,
         "tiktok:LH_PH",
@@ -237,6 +238,67 @@ def test_partial_failure_retry_preserves_success_and_idempotency_key(tmp_path):
     completed = store.get_run(run_id)
     assert completed["status"] == "SUCCEEDED"
     assert completed["completed_at"]
+
+
+def test_verified_readback_is_immutable_and_returned_with_target(tmp_path):
+    store, plan, _approval = _approved_store(
+        tmp_path,
+        targets=["miaoshou:COMMON"],
+    )
+    run = store.start_run(plan["plan_id"])
+    store.begin_target(run["run_id"], "miaoshou:COMMON")
+    evidence = {
+        "source": "official-api",
+        "verified": True,
+        "checks": {"title": True, "seller_sku": True},
+    }
+    store.record_target_success(
+        run["run_id"],
+        "miaoshou:COMMON",
+        external_id="common-1",
+        readback_evidence=evidence,
+    )
+
+    target = store.get_run(run["run_id"])["targets"][0]
+    assert target["readback"]["evidence"] == evidence
+    assert target["readback"]["evidence_digest"]
+
+    with pytest.raises(ImmutableReleaseError, match="different readback evidence"):
+        store.record_target_success(
+            run["run_id"],
+            "miaoshou:COMMON",
+            external_id="common-1",
+            readback_evidence={**evidence, "verified": False},
+        )
+
+
+def test_interrupted_target_recovery_preserves_attempt_and_idempotency(tmp_path):
+    store, plan, _approval = _approved_store(
+        tmp_path,
+        targets=["miaoshou:COMMON", "tiktok:LH_PH"],
+    )
+    run = store.start_run(plan["plan_id"])
+    store.begin_target(run["run_id"], "miaoshou:COMMON")
+    store.record_target_success(
+        run["run_id"],
+        "miaoshou:COMMON",
+        external_id="common",
+    )
+    running = store.begin_target(run["run_id"], "tiktok:LH_PH")
+
+    recovered = store.recover_interrupted_targets(
+        run["run_id"],
+        ["tiktok:LH_PH"],
+    )
+    target = next(
+        row
+        for row in recovered["targets"]
+        if row["target_label"] == "tiktok:LH_PH"
+    )
+    assert target["status"] == "PENDING"
+    assert target["attempts"] == 1
+    assert target["idempotency_key"] == running["idempotency_key"]
+    assert "interrupted worker" in target["error"]
 
 
 def test_supersede_invalidates_approval_unfinished_run_and_reservation(tmp_path):

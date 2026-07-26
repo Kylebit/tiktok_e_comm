@@ -29,6 +29,7 @@ DEFAULT_PORT = 8765
 IMAGE_CACHE_DIR = ROOT / "data" / "web_image_cache"
 PRODUCT_APPROVAL_BODY_LIMIT = 64 * 1024
 _product_approval_lock = threading.Lock()
+_release_execution_lock = threading.Lock()
 _product_workbench_locks_guard = threading.Lock()
 _product_workbench_locks: dict[str, threading.Lock] = {}
 
@@ -651,6 +652,28 @@ def _release_plan_payload_from_dashboard(dashboard: dict) -> tuple[dict, list[st
         "product_fingerprint": str(actual_approval.get("input_fingerprint") or ""),
         "content_approval_status": str(content.get("approval_status") or ""),
         "content_strategy": str(content.get("strategy") or ""),
+        "product_facts": {
+            "title": str(product.get("title") or ""),
+            "source_title_zh": str(product.get("source_title_zh") or ""),
+            "source_offer_id": str(product.get("source_offer_id") or ""),
+            "category": dict(product.get("category") or {}),
+            "cost_cny": product.get("cost_cny"),
+            "weight_kg": product.get("weight_kg"),
+            "package_cm": list(product.get("package_cm") or ()),
+            "selected_sku_keys": list(product.get("selected_sku_keys") or ()),
+        },
+        "listing_copy": {
+            "status": str((dashboard.get("listing_copy") or {}).get("status") or ""),
+            "model": str((dashboard.get("listing_copy") or {}).get("model") or ""),
+            "facts_signature": str(
+                (dashboard.get("listing_copy") or {}).get("facts_signature") or ""
+            ),
+            "candidates": [
+                dict(row)
+                for row in ((dashboard.get("listing_copy") or {}).get("candidates") or ())
+                if isinstance(row, dict)
+            ],
+        },
         "images": images,
         "video_urls": list(content.get("video_urls") or ()),
         "pricing": {
@@ -675,15 +698,74 @@ def _release_plan_payload_from_dashboard(dashboard: dict) -> tuple[dict, list[st
     return payload, list(dict.fromkeys(value for value in blockers if value))
 
 
+def _approved_plan_matches_current_payload(
+    persisted_plan: dict,
+    current_preview: dict,
+) -> bool:
+    """Compare immutable business scope while ignoring state-container churn.
+
+    ``product_revision`` is the workbench document revision, not a commercial
+    facts revision. Recording Miaoshou/API evidence advances it even though
+    the approved fingerprint, packages, facts, images, copy, pricing and
+    target scope remain identical. Every business-bearing field stays in the
+    comparison; only that operational counter is excluded.
+    """
+
+    persisted_payload = dict(persisted_plan.get("payload") or {})
+    current_payload = dict(current_preview.get("payload") or {})
+    persisted_payload.pop("product_revision", None)
+    current_payload.pop("product_revision", None)
+    return persisted_payload == current_payload
+
+
 def _release_v1_view(dashboard: dict) -> dict:
-    from domains.channel_operations.release_executor import (
-        production_adapter_registry,
-    )
+    from modules.products.release_adapters import production_adapter_registry
     from shared_platform.release_store import default_release_store
 
     payload, blockers = _release_plan_payload_from_dashboard(dashboard)
-    if not payload.get("plan_id"):
+    store = default_release_store()
+    product_id = str(
+        (dashboard.get("product") or {}).get("offer_id")
+        or payload.get("product_id")
+        or ""
+    )
+
+    def historical_view() -> dict | None:
+        active = store.active_plan_for_product(product_id) if product_id else None
+        if not active:
+            return None
+        historical_run = store.get_run(
+            f"release-run:{active['payload_digest'][:24]}"
+        )
+        common = next(
+            (
+                row
+                for row in ((historical_run or {}).get("targets") or ())
+                if row.get("target_label") == "miaoshou:COMMON"
+            ),
+            None,
+        )
+        approved = bool(
+            active.get("status") == "APPROVED"
+            and (active.get("approval") or {}).get("status") == "APPROVED"
+        )
         return {
+            "eligible_for_plan_approval": False,
+            "blockers": blockers,
+            "plan": active,
+            "plan_persisted": True,
+            "plan_approved": approved,
+            "run": historical_run,
+            "miaoshou_prepared": bool(
+                common and common.get("status") == "SUCCEEDED"
+            ),
+            "adapter_blockers": [],
+            "publish_ready": False,
+            "historical": True,
+        }
+
+    if not payload.get("plan_id"):
+        return historical_view() or {
             "eligible_for_plan_approval": False,
             "blockers": blockers,
             "plan": None,
@@ -691,13 +773,13 @@ def _release_v1_view(dashboard: dict) -> dict:
             "miaoshou_prepared": False,
             "publish_ready": False,
         }
-    store = default_release_store()
     try:
         preview = store.preview_plan(payload)
     except (TypeError, ValueError) as error:
-        return {
+        blockers = list(dict.fromkeys([*blockers, str(error)]))
+        return historical_view() or {
             "eligible_for_plan_approval": False,
-            "blockers": list(dict.fromkeys([*blockers, str(error)])),
+            "blockers": blockers,
             "plan": None,
             "run": None,
             "miaoshou_prepared": False,
@@ -1104,7 +1186,7 @@ def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
     if (
         plan_id != preview["plan_id"]
         or not plan
-        or plan.get("payload_digest") != preview["payload_digest"]
+        or not _approved_plan_matches_current_payload(plan, preview)
         or plan.get("status") != "APPROVED"
         or token != plan.get("confirmation_token")
     ):
@@ -1144,11 +1226,32 @@ def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
     try:
         result = np_mod.write_miaoshou_draft(plan_payload["product_id"])
         if not result.get("written_to_miaoshou") or not result.get("verified"):
-            raise RuntimeError("Miaoshou draft readback did not verify every approved field")
+            failed_checks = [
+                str(name)
+                for name, passed in (result.get("checks") or {}).items()
+                if not passed
+            ]
+            detail = ", ".join(failed_checks) or "unknown fields"
+            raise RuntimeError(
+                "Miaoshou draft readback did not verify every approved field: "
+                + detail
+            )
         store.record_target_success(
             run["run_id"],
             "miaoshou:COMMON",
             external_id=str(result.get("offer_id") or plan_payload["product_id"]),
+            readback_evidence={
+                "source": "miaoshou_open_api",
+                "verified": True,
+                "offer_id": str(
+                    result.get("offer_id") or plan_payload["product_id"]
+                ),
+                "collect_box_detail_id": result.get("detail_id"),
+                "checks": dict(result.get("checks") or {}),
+                "image_count": len(
+                    ((result.get("draft") or {}).get("imgUrls") or ())
+                ),
+            },
         )
     except Exception as error:
         store_record_error = ""
@@ -1182,10 +1285,9 @@ def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
 
 
 def _publish_selected_release(data: dict) -> tuple[int, dict]:
-    """Fail closed until every selected target has a unified V1 adapter."""
-    from domains.channel_operations.release_executor import (
-        production_adapter_registry,
-    )
+    """Execute the approved plan once through durable per-target adapters."""
+    from domains.channel_operations.release_executor import AdapterExecutionRequest
+    from modules.products.release_adapters import production_adapter_registry
     from shared_platform.release_store import default_release_store
 
     if data.get("confirm_publish") is not True:
@@ -1212,7 +1314,7 @@ def _publish_selected_release(data: dict) -> tuple[int, dict]:
     if (
         plan_id != preview["plan_id"]
         or not plan
-        or plan.get("payload_digest") != preview["payload_digest"]
+        or not _approved_plan_matches_current_payload(plan, preview)
         or plan.get("status") != "APPROVED"
         or token != plan.get("confirmation_token")
     ):
@@ -1271,16 +1373,156 @@ def _publish_selected_release(data: dict) -> tuple[int, dict]:
             "dashboard": _product_workspace_view(dashboard),
         }
 
-    # The production registry deliberately contains no executable adapter in
-    # V1.  Keep an explicit terminal guard so a future registry change cannot
-    # accidentally bypass the durable TargetRun execution bridge.
-    return 501, {
-        "ok": False,
-        "error": "unified adapter execution bridge is not installed",
-        "external_writes_performed": [],
-        "run": run,
-        "dashboard": _product_workspace_view(dashboard),
-    }
+    with _release_execution_lock:
+        run = store.get_run(run["run_id"]) or run
+        failed = [
+            row["target_label"]
+            for row in (run.get("targets") or ())
+            if row.get("status") == "FAILED"
+        ]
+        if failed:
+            run = store.retry_failed_targets(run["run_id"], failed)
+        interrupted = [
+            row["target_label"]
+            for row in (run.get("targets") or ())
+            if row.get("status") == "RUNNING"
+        ]
+        if interrupted:
+            run = store.recover_interrupted_targets(
+                run["run_id"],
+                interrupted,
+            )
+
+        target_by_label = {
+            f"{target.get('channel')}:{target.get('site')}": target
+            for target in target_rows
+        }
+        channel_order = {"miaoshou": 0, "tiktok": 1, "shopee": 2, "ozon": 3}
+        ordered = sorted(
+            (run.get("targets") or ()),
+            key=lambda row: (
+                channel_order.get(
+                    str(row.get("target_label") or "").split(":", 1)[0],
+                    99,
+                ),
+                str(row.get("target_label") or ""),
+            ),
+        )
+        external_writes: list[str] = []
+        for durable_target in ordered:
+            label = str(durable_target.get("target_label") or "")
+            if (
+                label == "miaoshou:COMMON"
+                or durable_target.get("status") == "SUCCEEDED"
+            ):
+                continue
+            channel, site = label.split(":", 1)
+            current_run = store.get_run(run["run_id"]) or run
+            statuses = {
+                row["target_label"]: row.get("status")
+                for row in (current_run.get("targets") or ())
+            }
+            if channel == "tiktok":
+                dependencies = ("miaoshou:COMMON",)
+            elif channel == "shopee":
+                dependencies = tuple(
+                    candidate
+                    for candidate in (
+                        f"tiktok:LH_{site}",
+                        f"tiktok:HB_{site}",
+                        f"tiktok:{site}",
+                    )
+                    if candidate in statuses
+                )
+            elif channel == "ozon":
+                dependencies = tuple(
+                    candidate
+                    for candidate in (
+                        "tiktok:LH_PH",
+                        "tiktok:HB_PH",
+                        "tiktok:PH",
+                    )
+                    if candidate in statuses
+                )
+            else:
+                dependencies = ()
+            if dependencies and not any(
+                statuses.get(dependency) == "SUCCEEDED"
+                for dependency in dependencies
+            ):
+                continue
+
+            plan_target = target_by_label.get(label) or {}
+            registration = registry.get(str(plan_target.get("adapter") or ""))
+            if not registration or not registration.executable:
+                continue
+            try:
+                store.begin_target(run["run_id"], label)
+                request = AdapterExecutionRequest(
+                    plan_id=plan_id,
+                    confirmation_token=token,
+                    approval_scope_digest=str(
+                        plan_payload.get("omnichannel_scope_digest") or ""
+                    ),
+                    product_id=str(plan_payload["product_id"]),
+                    seller_sku=str(plan_payload["seller_sku"]),
+                    product_package_id=str(plan_payload["product_package_id"]),
+                    content_package_id=str(plan_payload["content_package_id"]),
+                    channel=channel,
+                    site=site,
+                    target_label=label,
+                    idempotency_key=str(durable_target["idempotency_key"]),
+                )
+                result = registration.execute(request)  # type: ignore[misc]
+                if result.succeeded and result.readback_verified:
+                    store.record_target_success(
+                        run["run_id"],
+                        label,
+                        external_id=result.external_reference,
+                        readback_evidence=result.readback_evidence,
+                    )
+                    external_writes.append(label)
+                else:
+                    store.record_target_failure(
+                        run["run_id"],
+                        label,
+                        error=result.detail,
+                        external_id=result.external_reference,
+                    )
+            except Exception as error:
+                try:
+                    store.record_target_failure(
+                        run["run_id"],
+                        label,
+                        error=str(error),
+                    )
+                except Exception:
+                    pass
+
+        final_run = store.get_run(run["run_id"]) or run
+        try:
+            from shared_platform import release_control
+
+            refreshed_dashboard = release_control.build_release_dashboard(
+                offer_id=str(plan_payload["product_id"]),
+                publication_targets=list(plan_payload["targets"]),
+            )
+        except Exception:
+            refreshed_dashboard = dashboard
+        complete = final_run.get("status") == "SUCCEEDED"
+        return 200, {
+            "ok": True,
+            "completed": complete,
+            "partial": not complete,
+            "message": (
+                "all selected targets succeeded with verified readback"
+                if complete
+                else "some selected targets still require retry or verified readback"
+            ),
+            "external_writes_performed": external_writes,
+            "run": final_run,
+            "dashboard": _product_workspace_view(refreshed_dashboard),
+        }
 
 
 _scan_lock = threading.Lock()

@@ -25,7 +25,9 @@ CHANNEL_ORDER = ("miaoshou", "tiktok", "shopee", "ozon")
 # called out by ``adapter_gate_status`` below.
 AUDITED_ADAPTER_SITES: Mapping[str, tuple[str, ...]] = {
     "miaoshou": ("COMMON",),
-    "tiktok": ("GB", "MX"),
+    # Store-level LH_/HB_ targets are normalised to their country before this
+    # allowlist is checked.
+    "tiktok": ("PH", "MY", "TH", "VN", "GB", "MX"),
     "shopee": ("MY", "PH", "TH", "VN"),
     "ozon": ("RU",),
 }
@@ -465,9 +467,10 @@ def _steps_for(channel: str, site: str) -> tuple[PublicationStep, ...]:
         ),
         "ozon": (
             ("prepare_ru_draft", "Prepare Russian copy and the Ozon attribute payload", False),
-            ("prepare_images", "Prepare channel-compliant image assets", True),
+            ("prepare_images", "Reuse the exact verified TikTok CDN image set", False),
             ("import_product", "Submit the Ozon product import", True),
-            ("verify_listing", "Poll import and verify product/rich-content status", False),
+            ("set_stock", "Set stock on the single approved seller warehouse", True),
+            ("verify_listing", "Poll moderation and verify the sellable listing", False),
         ),
     }
     return tuple(

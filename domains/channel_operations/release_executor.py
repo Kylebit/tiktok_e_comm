@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from typing import Literal
+from typing import Any, Literal
 
 from domains.channel_operations.omnichannel_orchestrator import (
     ADAPTER_NAMES,
@@ -58,6 +58,7 @@ class AdapterExecutionResult:
     readback_verified: bool
     detail: str
     external_reference: str | None = None
+    readback_evidence: Mapping[str, Any] | None = None
 
 
 AdapterCallable = Callable[[AdapterExecutionRequest], AdapterExecutionResult]

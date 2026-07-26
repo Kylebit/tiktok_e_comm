@@ -16,6 +16,7 @@ from decimal import Decimal, InvalidOperation
 import json
 from pathlib import Path
 import re
+import sqlite3
 from typing import Any
 
 from core.config import ROOT
@@ -136,6 +137,88 @@ def _known_tiktok_seller_skus(database_path: Path) -> tuple[str, ...]:
         ).fetchall()
         values.update(str(row["seller_sku"]).strip() for row in rows)
     return tuple(sorted(values))
+
+
+def _catalog_sku_is_owned_by_release(
+    database_path: Path,
+    release_store,
+    *,
+    product_id: str,
+    seller_sku: str,
+) -> bool:
+    """Recognize catalogue rows created by this product's approved release.
+
+    The SKU uniqueness gate runs before publication.  After a successful
+    official read-back is cached into the catalogue, the exact same row must
+    become lifecycle evidence rather than invalidate its own approval.
+    Unknown rows or last-four aliases remain conflicts.
+    """
+
+    active = release_store.active_plan_for_product(product_id)
+    if (
+        not active
+        or str(active.get("status") or "") != "APPROVED"
+        or str(active.get("seller_sku") or "").strip() != seller_sku
+    ):
+        return False
+    digest = str(active.get("payload_digest") or "")
+    run = release_store.get_run(f"release-run:{digest[:24]}") if digest else None
+    if not run:
+        return False
+
+    owned_tiktok_ids: set[str] = set()
+    owned_shopee_ids: set[str] = set()
+    for target in run.get("targets") or ():
+        if str(target.get("status") or "") != "SUCCEEDED":
+            continue
+        label = str(target.get("target_label") or "")
+        evidence = (target.get("readback") or {}).get("evidence") or {}
+        evidence_sku = str(evidence.get("seller_sku") or "").strip()
+        if evidence_sku and evidence_sku != seller_sku:
+            continue
+        external_id = str(
+            evidence.get("product_id")
+            or evidence.get("item_id")
+            or target.get("external_id")
+            or ""
+        ).strip()
+        if not external_id:
+            continue
+        if label.startswith("tiktok:"):
+            owned_tiktok_ids.add(external_id)
+        elif label.startswith("shopee:"):
+            owned_shopee_ids.add(external_id)
+
+    exact_rows: list[tuple[str, str]] = []
+    with connect_readonly(database_path) as connection:
+        try:
+            exact_rows.extend(
+                ("tiktok", str(row["product_id"]))
+                for row in connection.execute(
+                    "SELECT product_id FROM products WHERE seller_sku = ?",
+                    (seller_sku,),
+                ).fetchall()
+            )
+        except sqlite3.Error:
+            pass
+        try:
+            exact_rows.extend(
+                ("shopee", str(row["item_id"]))
+                for row in connection.execute(
+                    "SELECT item_id FROM shopee_products WHERE seller_sku = ?",
+                    (seller_sku,),
+                ).fetchall()
+            )
+        except sqlite3.Error:
+            pass
+    if not exact_rows:
+        return False
+    return all(
+        identity in (
+            owned_tiktok_ids if platform == "tiktok" else owned_shopee_ids
+        )
+        for platform, identity in exact_rows
+    )
 
 
 def _locally_reserved_seller_skus(
@@ -813,7 +896,8 @@ def build_release_dashboard(
     release_store_path = Path(
         report_store_path or project_root / "data" / "orbit_platform.db"
     )
-    for row in ReleaseStore(release_store_path).active_sku_reservations():
+    release_store = ReleaseStore(release_store_path)
+    for row in release_store.active_sku_reservations():
         if str(row.get("product_id") or "").strip() == clean_offer_id:
             continue
         reservation_facts.append(
@@ -873,6 +957,16 @@ def build_release_dashboard(
             )
         clean_seller_sku = next_seller_skus[0]
         seller_sku_source = "automatic_catalog_and_reservation_scan"
+    approval_known_skus = known_skus
+    if _catalog_sku_is_owned_by_release(
+        db_path,
+        release_store,
+        product_id=clean_offer_id,
+        seller_sku=clean_seller_sku,
+    ):
+        approval_known_skus = tuple(
+            value for value in known_skus if value != clean_seller_sku
+        )
     displayed_sku_range = (
         (clean_seller_sku,)
         if seller_sku_source == "approved_workbench_lock"
@@ -988,6 +1082,15 @@ def build_release_dashboard(
         "sku_ids": list(review.get("selected_sku_keys") or ()),
         "platform": "orbit_release_rehearsal",
     }
+    approved_source_reference = ""
+    if (
+        str(actual_approval.get("status") or "").strip().casefold() == "approved"
+        and str(actual_approval.get("subject_id") or "").strip() == clean_offer_id
+        and str(actual_approval.get("seller_sku") or "").strip() == clean_seller_sku
+    ):
+        approved_source_reference = str(
+            actual_approval.get("source_reference") or ""
+        ).strip()
     simulated_approval = {
         "approval_id": f"simulation:product:{clean_offer_id}:{clean_seller_sku}",
         "package_id": f"product:{clean_offer_id}:{clean_seller_sku}",
@@ -996,13 +1099,39 @@ def build_release_dashboard(
         "status": "approved",
         "approved_by": "Kyle (release rehearsal only)",
         "approved_at": str(state.get("updated_at") or "2026-07-25T00:00:00+08:00"),
-        "source_reference": f"workbench:{clean_offer_id}:revision:{state.get('_revision', 0)}",
+        # Operational state writes (for example Miaoshou readback evidence)
+        # advance the workbench revision.  Once product facts are approved,
+        # keep the publication identity pinned to that approval's immutable
+        # source reference so execution state cannot invalidate ReleasePlan.
+        "source_reference": (
+            approved_source_reference
+            or f"workbench:{clean_offer_id}:revision:{state.get('_revision', 0)}"
+        ),
     }
     simulation_state = dict(state)
     simulation_state.pop("product_approval", None)
+    effective_publication_targets = publication_targets
+    if effective_publication_targets is None:
+        active_release_plan = release_store.active_plan_for_product(
+            clean_offer_id
+        )
+        if (
+            active_release_plan
+            and str(active_release_plan.get("status") or "") == "APPROVED"
+            and str(active_release_plan.get("seller_sku") or "").strip()
+            == clean_seller_sku
+            and active_release_plan.get("targets")
+        ):
+            # A browser reload must reopen the exact approved scope. Falling
+            # back to the workbench's older default sites would silently
+            # replace a 12-target plan with a new 10-target preview and disable
+            # safe retries.
+            effective_publication_targets = list(
+                active_release_plan["targets"]
+            )
     omnichannel_selection, publication_scope = _publication_scope(
         review,
-        publication_targets,
+        effective_publication_targets,
     )
     base_release_pricing = _release_pricing_review(review)
     scope_site_keys = _pricing_site_keys_for_scope(
@@ -1032,7 +1161,7 @@ def build_release_dashboard(
         product_row=product_row,
         content_package=content_handoff.content_package,
         seller_sku=clean_seller_sku,
-        known_seller_skus=known_skus,
+        known_seller_skus=approval_known_skus,
         user_approved=True,
         approval_fact=simulated_approval,
         expected_revision=int(state.get("_revision") or 0),

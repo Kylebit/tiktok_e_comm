@@ -219,6 +219,7 @@ def _next_available_seller_skus(
     reserved_skus: object,
     *,
     requested_count: int,
+    additional_occupied_skus: object = (),
 ) -> tuple[str, ...]:
     catalog_numeric = {
         int(_canonical_seller_sku(value))
@@ -230,6 +231,11 @@ def _next_available_seller_skus(
         *(
             int(_canonical_seller_sku(value))
             for value in reserved_skus
+            if _canonical_seller_sku(value).isdigit()
+        ),
+        *(
+            int(_canonical_seller_sku(value))
+            for value in additional_occupied_skus
             if _canonical_seller_sku(value).isdigit()
         ),
     }
@@ -765,7 +771,7 @@ def _apply_store_level_pricing(
 def build_release_dashboard(
     *,
     offer_id: object = DEFAULT_OFFER_ID,
-    seller_sku: object = DEFAULT_CANDIDATE_SELLER_SKU,
+    seller_sku: object = None,
     root: str | Path = ROOT,
     database_path: str | Path | None = None,
     report_store_path: str | Path | None = None,
@@ -773,13 +779,91 @@ def build_release_dashboard(
 ) -> dict[str, Any]:
     """Build the complete local release rehearsal without side effects."""
     clean_offer_id = _clean_offer_id(offer_id)
-    clean_seller_sku = _clean_seller_sku(seller_sku)
     project_root = Path(root)
     state_path = project_root / "data" / "new_product_workbench" / f"{clean_offer_id}.json"
     state = _read_json(state_path)
     if str(state.get("offer_id") or "").strip() != clean_offer_id:
         raise ValueError("workbench offer identity does not match the requested offer_id")
     review = state.get("review") if isinstance(state.get("review"), Mapping) else {}
+    db_path = Path(database_path or project_root / "data" / "shop.db")
+    known_skus = _known_seller_skus(db_path)
+    tiktok_skus = _known_tiktok_seller_skus(db_path)
+    reservation_facts = list(
+        _local_seller_sku_reservations(
+            project_root,
+            exclude_offer_id=clean_offer_id,
+        )
+    )
+    from shared_platform.release_store import ReleaseStore
+
+    release_store_path = Path(
+        report_store_path or project_root / "data" / "orbit_platform.db"
+    )
+    for row in ReleaseStore(release_store_path).active_sku_reservations():
+        if str(row.get("product_id") or "").strip() == clean_offer_id:
+            continue
+        reservation_facts.append(
+            {
+                "seller_sku": str(row.get("seller_sku") or "").strip(),
+                "offer_id": str(row.get("product_id") or "").strip(),
+                "source": "release_plan_reservation",
+                "status": str(row.get("status") or "").strip().lower(),
+            }
+        )
+    reserved_skus = tuple(
+        sorted(
+            {
+                fact["seller_sku"]
+                for fact in reservation_facts
+                if str(fact.get("seller_sku") or "").strip()
+            }
+        )
+    )
+    requested_sku_count = max(
+        1,
+        len(review.get("selected_sku_keys") or ()),
+    )
+    next_seller_skus = _next_available_seller_skus(
+        tiktok_skus,
+        reserved_skus,
+        requested_count=requested_sku_count,
+        additional_occupied_skus=known_skus,
+    )
+    actual_approval = (
+        state.get("product_approval")
+        if isinstance(state.get("product_approval"), Mapping)
+        else {}
+    )
+    locked_review_sku = str(review.get("seller_sku") or "").strip()
+    has_locked_sku = bool(
+        locked_review_sku.isdigit()
+        and (
+            bool(review.get("fields_locked"))
+            or str(actual_approval.get("status") or "").strip().casefold()
+            == "approved"
+        )
+    )
+    requested_seller_sku = str(seller_sku or "").strip()
+    if has_locked_sku:
+        clean_seller_sku = _clean_seller_sku(locked_review_sku)
+        seller_sku_source = "approved_workbench_lock"
+    elif requested_seller_sku:
+        # Kept for internal/legacy callers. The formal product workspace omits
+        # this argument and always consumes the automatic catalog candidate.
+        clean_seller_sku = _clean_seller_sku(requested_seller_sku)
+        seller_sku_source = "legacy_explicit_candidate"
+    else:
+        if not next_seller_skus:
+            raise ValueError(
+                "no contiguous Seller SKU range is available in the 0001-9999 namespace"
+            )
+        clean_seller_sku = next_seller_skus[0]
+        seller_sku_source = "automatic_catalog_and_reservation_scan"
+    displayed_sku_range = (
+        (clean_seller_sku,)
+        if seller_sku_source == "approved_workbench_lock"
+        else next_seller_skus
+    )
     source = (
         _source_summary(clean_offer_id)
         if project_root.resolve() == Path(ROOT).resolve()
@@ -843,29 +927,10 @@ def build_release_dashboard(
         package_id=f"content:{clean_offer_id}",
     )
 
-    db_path = Path(database_path or project_root / "data" / "shop.db")
-    known_skus = _known_seller_skus(db_path)
-    tiktok_skus = _known_tiktok_seller_skus(db_path)
-    reservation_facts = _local_seller_sku_reservations(
-        project_root,
-        exclude_offer_id=clean_offer_id,
-    )
-    reserved_skus = tuple(
-        sorted({fact["seller_sku"] for fact in reservation_facts})
-    )
     candidate_reservations = tuple(
         fact
         for fact in reservation_facts
         if _seller_sku_matches(clean_seller_sku, (fact["seller_sku"],))
-    )
-    requested_sku_count = max(
-        1,
-        len(review.get("selected_sku_keys") or ()),
-    )
-    next_seller_skus = _next_available_seller_skus(
-        tiktok_skus,
-        reserved_skus,
-        requested_count=requested_sku_count,
     )
     product_row = {
         "product_id": clean_offer_id,
@@ -1018,11 +1083,6 @@ def build_release_dashboard(
         )
     )
 
-    actual_approval = (
-        state.get("product_approval")
-        if isinstance(state.get("product_approval"), Mapping)
-        else {}
-    )
     content_approved = (
         content_handoff.content_package.approval is not None
         and content_handoff.content_package.approval.status == "approved"
@@ -1129,15 +1189,24 @@ def build_release_dashboard(
                     not candidate_reservations
                     and not _seller_sku_matches(clean_seller_sku, known_skus)
                 ),
+                "generated_by_system": seller_sku_source
+                == "automatic_catalog_and_reservation_scan",
+                "allocation_source": seller_sku_source,
                 "reservation_conflicts": [
                     dict(fact) for fact in candidate_reservations
                 ],
                 "suggested_base_sku": (
-                    next_seller_skus[0] if next_seller_skus else ""
+                    displayed_sku_range[0] if displayed_sku_range else ""
                 ),
-                "suggested_sku_range": list(next_seller_skus),
+                "suggested_sku_range": list(displayed_sku_range),
+                "next_available_sku_range": list(next_seller_skus),
                 "requested_sku_count": requested_sku_count,
-                "source": "catalog_plus_workbench_locks_plus_verified_claims",
+                "catalog_sku_count": len(known_skus),
+                "reservation_count": len(reserved_skus),
+                "source": (
+                    "tiktok_catalog_sequence_plus_all_catalog_occupancy_plus_"
+                    "workbench_locks_plus_verified_claims_plus_release_reservations"
+                ),
             },
         },
         "pricing_review": release_pricing,

@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#173b36">
   <title>Orbit · 商品发布中心</title>
-  <link rel="stylesheet" href="/static/product_workspace.css?v=20260726-v1">
-  <script src="/static/product_workspace.js?v=20260726-v1" defer></script>
+  <link rel="stylesheet" href="/static/product_workspace.css?v=20260726-v2">
+  <script src="/static/product_workspace.js?v=20260726-v2" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -42,16 +42,16 @@
           <input id="offerId" name="offer_id" value="3828811808" inputmode="numeric"
                  pattern="[0-9]{1,32}" autocomplete="off" required>
         </label>
-        <label>
+        <div class="automatic-sku" aria-live="polite">
           <span>Seller SKU</span>
-          <input id="sellerSku" name="seller_sku" value="0946" inputmode="numeric"
-                 pattern="[0-9]{1,32}" autocomplete="off" required>
-        </label>
+          <strong id="sellerSku">系统读取后自动分配</strong>
+          <small>依据 TikTok 商品目录序列，并避开全目录占用、工作台锁、已验证认领及正式发布计划预留。</small>
+        </div>
         <button class="button button-primary" type="submit">
           <span class="button-label">加入队列并打开</span>
           <span class="button-loading">正在检查…</span>
         </button>
-        <p>多个商品可以并行检查；只有当前打开商品可执行本地审批。</p>
+        <p>你只需输入 Offer ID。多个商品可以并行检查；Seller SKU 在审批前会再次自动核验。</p>
       </form>
     </section>
 

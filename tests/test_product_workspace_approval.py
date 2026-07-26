@@ -182,6 +182,21 @@ def test_local_approval_rejects_an_untrusted_approval_actor(approval_state):
     assert saves == []
 
 
+def test_local_approval_rejects_a_stale_browser_sku_candidate(approval_state):
+    _, saves = approval_state
+
+    status, payload = _approve_product_workspace_locally(
+        _approval_request(seller_sku="0946")
+    )
+
+    assert status == 409
+    assert payload["error"] == (
+        "automatic Seller SKU candidate changed; refresh before approval"
+    )
+    assert payload["seller_sku"] == "0947"
+    assert saves == []
+
+
 @pytest.mark.parametrize(
     ("content_approved", "preview_ready", "blockers", "expected_error"),
     [
@@ -313,7 +328,7 @@ def test_product_workspace_dashboard_forwards_repeated_publication_targets(
     status, payload = _get(
         product_server
         + "/api/product-workspace/dashboard"
-        + "?offer_id=3828540231&seller_sku=0947"
+        + "?offer_id=3828540231"
         + "&target=miaoshou%3ACOMMON&target=tiktok%3ATH&target=shopee%3ATH"
     )
 
@@ -324,6 +339,7 @@ def test_product_workspace_dashboard_forwards_repeated_publication_targets(
         "tiktok:TH",
         "shopee:TH",
     ]
+    assert "seller_sku" not in captured
 
 
 def test_product_approval_http_requires_same_origin_json_and_explicit_confirmation(

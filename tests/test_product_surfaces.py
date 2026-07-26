@@ -71,7 +71,7 @@ def test_product_workspace_api_is_a_product_named_view_of_read_only_evidence(
 
     status, _, body = _get(
         product_server
-        + "/api/product-workspace/dashboard?offer_id=3828811808&seller_sku=0946"
+        + "/api/product-workspace/dashboard?offer_id=3828811808"
     )
     payload = json.loads(body)
 
@@ -79,7 +79,7 @@ def test_product_workspace_api_is_a_product_named_view_of_read_only_evidence(
     assert payload["schema_version"] == "product-workspace-v1"
     assert payload["workspace_mode"] == "formal_v1"
     assert payload["safety"]["external_writes_performed"] == []
-    assert payload["received"]["seller_sku"] == "0946"
+    assert "seller_sku" not in payload["received"]
 
 
 def test_profit_center_weekly_api_reuses_governed_week_contract(
@@ -136,6 +136,13 @@ def test_product_workspace_is_the_user_surface_and_fails_without_stale_results()
     assert "不会上传妙手、创建渠道草稿或发布商品" in html
     assert ".approval-card" in css
     assert "并行发布队列" in html
+    assert 'name="seller_sku"' not in html
+    assert "系统读取后自动分配" in html
+    assert "你只需输入 Offer ID" in html
+    assert "validOfferId" in script
+    assert 'url.searchParams.delete("seller_sku")' in script
+    assert "请检查 Offer ID、Seller SKU" not in script
+    assert "automatic-sku" in css
     assert "refreshAllButton" in html
     assert "localStorage.getItem(QUEUE_STORAGE_KEY)" in script
     assert "localStorage.setItem(" in script

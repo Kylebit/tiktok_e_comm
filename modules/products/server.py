@@ -237,12 +237,18 @@ def _approve_product_workspace_locally_locked(data: dict) -> tuple[int, dict]:
     from shared_platform import release_control
 
     offer_id = str(data.get("offer_id") or "").strip()
-    seller_sku = str(data.get("seller_sku") or "").strip()
+    requested_seller_sku = str(data.get("seller_sku") or "").strip()
     approved_by = str(data.get("approved_by") or "").strip()
     expected_revision = data.get("expected_revision")
     if not offer_id.isdigit() or not 1 <= len(offer_id) <= 32:
         return 400, {"ok": False, "error": "offer_id must contain 1-32 digits"}
-    if not seller_sku.isdigit() or not 1 <= len(seller_sku) <= 32:
+    if (
+        requested_seller_sku
+        and (
+            not requested_seller_sku.isdigit()
+            or not 1 <= len(requested_seller_sku) <= 32
+        )
+    ):
         return 400, {"ok": False, "error": "seller_sku must contain 1-32 digits"}
     if data.get("user_approved") is not True:
         return 400, {
@@ -279,7 +285,6 @@ def _approve_product_workspace_locally_locked(data: dict) -> tuple[int, dict]:
     try:
         dashboard = release_control.build_release_dashboard(
             offer_id=offer_id,
-            seller_sku=seller_sku,
         )
     except FileNotFoundError as error:
         return 404, {"ok": False, "error": str(error)}
@@ -294,6 +299,20 @@ def _approve_product_workspace_locally_locked(data: dict) -> tuple[int, dict]:
             "ok": False,
             "error": "state revision is stale",
             "current_revision": dashboard_revision,
+        }
+    seller_sku = str(
+        (dashboard.get("product") or {}).get("seller_sku_candidate") or ""
+    ).strip()
+    if not seller_sku:
+        return 409, {
+            "ok": False,
+            "error": "automatic Seller SKU allocation did not return a candidate",
+        }
+    if requested_seller_sku and requested_seller_sku != seller_sku:
+        return 409, {
+            "ok": False,
+            "error": "automatic Seller SKU candidate changed; refresh before approval",
+            "seller_sku": seller_sku,
         }
     preview = dashboard.get("approval_rehearsal") or dashboard.get("approval") or {}
     preview_patch = preview.get("state_patch_preview") or {}
@@ -366,7 +385,6 @@ def _approve_product_workspace_locally_locked(data: dict) -> tuple[int, dict]:
     try:
         updated = release_control.build_release_dashboard(
             offer_id=offer_id,
-            seller_sku=seller_sku,
         )
     except Exception as error:
         return 500, {
@@ -388,11 +406,17 @@ def _release_dashboard_for_request(data: dict) -> tuple[dict | None, tuple[int, 
     from shared_platform import release_control
 
     offer_id = str(data.get("offer_id") or "").strip()
-    seller_sku = str(data.get("seller_sku") or "").strip()
+    requested_seller_sku = str(data.get("seller_sku") or "").strip()
     targets = data.get("publication_targets")
     if not offer_id.isdigit() or not 1 <= len(offer_id) <= 32:
         return None, (400, {"ok": False, "error": "offer_id must contain 1-32 digits"})
-    if not seller_sku.isdigit() or not 1 <= len(seller_sku) <= 32:
+    if (
+        requested_seller_sku
+        and (
+            not requested_seller_sku.isdigit()
+            or not 1 <= len(requested_seller_sku) <= 32
+        )
+    ):
         return None, (400, {"ok": False, "error": "seller_sku must contain 1-32 digits"})
     if isinstance(targets, (str, bytes)) or not isinstance(targets, list):
         return None, (
@@ -402,7 +426,6 @@ def _release_dashboard_for_request(data: dict) -> tuple[dict | None, tuple[int, 
     try:
         dashboard = release_control.build_release_dashboard(
             offer_id=offer_id,
-            seller_sku=seller_sku,
             publication_targets=targets,
         )
     except FileNotFoundError as error:
@@ -411,6 +434,18 @@ def _release_dashboard_for_request(data: dict) -> tuple[dict | None, tuple[int, 
         return None, (400, {"ok": False, "error": str(error)})
     except Exception as error:
         return None, (500, {"ok": False, "error": str(error)})
+    current_seller_sku = str(
+        (dashboard.get("product") or {}).get("seller_sku_candidate") or ""
+    ).strip()
+    if requested_seller_sku and requested_seller_sku != current_seller_sku:
+        return None, (
+            409,
+            {
+                "ok": False,
+                "error": "automatic Seller SKU candidate changed; refresh before continuing",
+                "seller_sku": current_seller_sku,
+            },
+        )
     return dashboard, None
 
 
@@ -2754,14 +2789,17 @@ class Handler(BaseHTTPRequestHandler):
 
             q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
             offer_id = (q.get("offer_id") or ["3828811808"])[0]
-            seller_sku = (q.get("seller_sku") or ["0946"])[0]
             publication_targets = q.get("target")
             try:
-                payload = build_release_dashboard(
-                    offer_id=offer_id,
-                    seller_sku=seller_sku,
-                    publication_targets=publication_targets,
-                )
+                kwargs = {
+                    "offer_id": offer_id,
+                    "publication_targets": publication_targets,
+                }
+                if path == "/api/release/dashboard":
+                    kwargs["seller_sku"] = (
+                        q.get("seller_sku") or ["0946"]
+                    )[0]
+                payload = build_release_dashboard(**kwargs)
                 if path == "/api/product-workspace/dashboard":
                     payload = _product_workspace_view(payload)
                 return self._json(200, payload)

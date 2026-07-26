@@ -84,13 +84,12 @@
   let pendingPublicationTargets = new Set();
   let appliedPublicationTargets = new Set();
 
-  function productKey(offerId, sellerSku) {
-    return `${String(offerId || "").trim()}::${String(sellerSku || "").trim()}`;
+  function productKey(offerId) {
+    return String(offerId || "").trim();
   }
 
-  function validIdentity(offerId, sellerSku) {
-    return /^\d{1,32}$/.test(String(offerId || "").trim())
-      && /^\d{1,32}$/.test(String(sellerSku || "").trim());
+  function validOfferId(offerId) {
+    return /^\d{1,32}$/.test(String(offerId || "").trim());
   }
 
   function readQueue() {
@@ -99,16 +98,16 @@
       if (!Array.isArray(parsed)) return [];
       const seen = new Set();
       return parsed
-        .filter((item) => validIdentity(item?.offer_id, item?.seller_sku))
+        .filter((item) => validOfferId(item?.offer_id))
         .map((item) => ({
           offer_id: String(item.offer_id).trim(),
-          seller_sku: String(item.seller_sku).trim(),
+          seller_sku: "",
           data: null,
           error: "",
           loading: false,
         }))
         .filter((item) => {
-          const key = productKey(item.offer_id, item.seller_sku);
+          const key = productKey(item.offer_id);
           if (seen.has(key)) return false;
           seen.add(key);
           return true;
@@ -123,9 +122,8 @@
     try {
       localStorage.setItem(
         QUEUE_STORAGE_KEY,
-        JSON.stringify(queueItems.map(({ offer_id, seller_sku }) => ({
+        JSON.stringify(queueItems.map(({ offer_id }) => ({
           offer_id,
-          seller_sku,
         }))),
       );
     } catch (_error) {
@@ -135,7 +133,7 @@
 
   function queueItem(key) {
     return queueItems.find((item) => (
-      productKey(item.offer_id, item.seller_sku) === key
+      productKey(item.offer_id) === key
     ));
   }
 
@@ -217,7 +215,7 @@
     $("#productIdentity").innerHTML = "";
     $("#readinessLabel").textContent = "当前状态";
     $("#readinessValue").textContent = "未加载";
-    $("#readinessNote").textContent = "请检查 Offer ID、Seller SKU 或本地数据";
+    $("#readinessNote").textContent = "请检查 Offer ID，或先在内容与图片工作室读取来源";
     $("#stageRail").innerHTML = [
       "商品事实",
       "内容审批",
@@ -297,10 +295,9 @@
     element.className = `badge ${tone}`;
   }
 
-  async function fetchDashboard(offerId, sellerSku, publicationTargets = null) {
+  async function fetchDashboard(offerId, publicationTargets = null) {
     const params = new URLSearchParams({
       offer_id: offerId,
-      seller_sku: sellerSku,
     });
     if (Array.isArray(publicationTargets)) {
       publicationTargets.forEach((target) => params.append("target", target));
@@ -425,10 +422,15 @@
       return;
     }
     grid.innerHTML = queueItems.map((item) => {
-      const key = productKey(item.offer_id, item.seller_sku);
+      const key = productKey(item.offer_id);
       const summary = queueSummary(item);
       const isCurrent = key === currentQueueKey;
       const title = item.data?.product?.title || `Offer ${item.offer_id}`;
+      const sellerSku = (
+        item.data?.product?.seller_sku_candidate
+        || item.seller_sku
+        || "待系统分配"
+      );
       return `
         <article class="queue-card${isCurrent ? " current" : ""}${item.loading ? " is-loading" : ""}"
                  data-key="${esc(key)}">
@@ -438,7 +440,7 @@
           </header>
           <div class="queue-identity">
             <span>Offer ${esc(item.offer_id)}</span>
-            <span>Seller SKU ${esc(item.seller_sku)}</span>
+            <span>Seller SKU ${esc(sellerSku)}</span>
           </div>
           <div class="queue-metrics">
             <div><span>阻塞</span><strong>${esc(summary.blockers)}</strong></div>
@@ -464,15 +466,14 @@
   function syncCurrentUrl(item) {
     const url = new URL(window.location.href);
     url.searchParams.set("offer_id", item.offer_id);
-    url.searchParams.set("seller_sku", item.seller_sku);
+    url.searchParams.delete("seller_sku");
     history.replaceState(null, "", url);
   }
 
-  function addToQueue(offerId, sellerSku, { select = true } = {}) {
+  function addToQueue(offerId, { select = true } = {}) {
     const cleanOffer = String(offerId || "").trim();
-    const cleanSku = String(sellerSku || "").trim();
-    if (!validIdentity(cleanOffer, cleanSku)) return null;
-    const key = productKey(cleanOffer, cleanSku);
+    if (!validOfferId(cleanOffer)) return null;
+    const key = productKey(cleanOffer);
     let item = queueItem(key);
     if (!item) {
       if (queueItems.length >= MAX_QUEUE_ITEMS) {
@@ -481,7 +482,7 @@
       }
       item = {
         offer_id: cleanOffer,
-        seller_sku: cleanSku,
+        seller_sku: "",
         data: null,
         error: "",
         loading: false,
@@ -1431,7 +1432,7 @@
 
   async function refreshQueueProduct(item, options = {}) {
     if (item.loading && item.promise) return item.promise;
-    const key = productKey(item.offer_id, item.seller_sku);
+    const key = productKey(item.offer_id);
     item.loading = true;
     item.error = "";
     if (key === currentQueueKey) {
@@ -1446,15 +1447,17 @@
           : (item.data?.publication_scope?.selected_labels || null);
         const data = await fetchDashboard(
           item.offer_id,
-          item.seller_sku,
           requestedTargets,
         );
         item.data = data;
+        item.seller_sku = data.product?.seller_sku_candidate || "";
         item.error = "";
         if (key === currentQueueKey) {
           loadedQueueKey = key;
           $("#offerId").value = item.offer_id;
-          $("#sellerSku").value = item.seller_sku;
+          $("#sellerSku").textContent = item.seller_sku
+            ? `自动候选 ${item.seller_sku}`
+            : "系统读取后自动分配";
           syncCurrentUrl(item);
           render(data);
           showError("");
@@ -1485,7 +1488,9 @@
     if (!item) return;
     currentQueueKey = key;
     $("#offerId").value = item.offer_id;
-    $("#sellerSku").value = item.seller_sku;
+    $("#sellerSku").textContent = item.seller_sku
+      ? `自动候选 ${item.seller_sku}`
+      : "正在重新核验";
     syncCurrentUrl(item);
     clearCurrentApprovalContext();
     renderQueue();
@@ -1494,16 +1499,15 @@
 
   async function addAndOpenCurrentInput() {
     const offerId = $("#offerId").value.trim();
-    const sellerSku = $("#sellerSku").value.trim();
-    if (!validIdentity(offerId, sellerSku)) {
-      const message = "Offer ID 和 Seller SKU 必须是 1–32 位数字。";
+    if (!validOfferId(offerId)) {
+      const message = "Offer ID 必须是 1–32 位数字。";
       showError(message);
       return;
     }
-    const item = addToQueue(offerId, sellerSku, { select: true });
+    const item = addToQueue(offerId, { select: true });
     if (!item) return;
-    $("#queueMessage").textContent = "商品已加入并行队列。";
-    await selectQueueProduct(productKey(item.offer_id, item.seller_sku));
+    $("#queueMessage").textContent = "商品已加入并行队列；系统正在分配未占用 Seller SKU。";
+    await selectQueueProduct(productKey(item.offer_id));
   }
 
   async function refreshAllQueueProducts() {
@@ -1586,7 +1590,7 @@
     }
     if (button.dataset.action === "remove" && key !== currentQueueKey) {
       queueItems = queueItems.filter((item) => (
-        productKey(item.offer_id, item.seller_sku) !== key
+        productKey(item.offer_id) !== key
       ));
       saveQueue();
       renderQueue();
@@ -1619,20 +1623,21 @@
   const initial = new URLSearchParams(window.location.search);
   queueItems = readQueue();
   const initialOffer = initial.get("offer_id");
-  const initialSku = initial.get("seller_sku");
   let initialItem = null;
-  if (validIdentity(initialOffer, initialSku)) {
-    initialItem = addToQueue(initialOffer, initialSku, { select: true });
+  if (validOfferId(initialOffer)) {
+    initialItem = addToQueue(initialOffer, { select: true });
   } else if (queueItems.length) {
     initialItem = queueItems[0];
-    currentQueueKey = productKey(initialItem.offer_id, initialItem.seller_sku);
+    currentQueueKey = productKey(initialItem.offer_id);
   } else {
-    initialItem = addToQueue($("#offerId").value, $("#sellerSku").value, { select: true });
+    initialItem = addToQueue($("#offerId").value, { select: true });
   }
   renderQueue();
   if (initialItem) {
     $("#offerId").value = initialItem.offer_id;
-    $("#sellerSku").value = initialItem.seller_sku;
+    $("#sellerSku").textContent = initialItem.seller_sku
+      ? `自动候选 ${initialItem.seller_sku}`
+      : "正在读取并自动分配";
     syncCurrentUrl(initialItem);
     refreshQueueProduct(initialItem).catch(() => {});
   }

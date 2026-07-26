@@ -171,6 +171,64 @@ def test_release_dashboard_is_a_complete_no_write_rehearsal(tmp_path):
     assert shopee["pricing"]["source"]["target_key"] == "lh_th"
 
 
+def test_formal_candidate_is_generated_from_catalog_and_all_reservations(tmp_path):
+    root, database = _release_fixture(tmp_path)
+    with sqlite3.connect(database) as connection:
+        connection.execute("INSERT INTO products VALUES ('0945')")
+        connection.execute("INSERT INTO shopee_products VALUES ('0946')")
+    _write_json(
+        root / "data" / "new_product_workbench" / "4000000001.json",
+        {
+            "offer_id": "4000000001",
+            "review": {
+                "seller_sku": "0947",
+                "fields_locked": True,
+            },
+        },
+    )
+
+    result = build_release_dashboard(
+        root=root,
+        database_path=database,
+        report_store_path=root / "data" / "missing-orbit.db",
+        offer_id="3828811808",
+    )
+
+    governance = result["product"]["seller_sku_governance"]
+    assert result["product"]["seller_sku_candidate"] == "0948"
+    assert governance["generated_by_system"] is True
+    assert governance["allocation_source"] == (
+        "automatic_catalog_and_reservation_scan"
+    )
+    assert governance["available"] is True
+    assert governance["suggested_sku_range"] == ["0948"]
+    assert governance["reservation_count"] == 1
+
+
+def test_locked_product_keeps_its_approved_seller_sku(tmp_path):
+    root, database = _release_fixture(tmp_path)
+    state_path = (
+        root / "data" / "new_product_workbench" / "3828811808.json"
+    )
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["review"]["seller_sku"] = "0031"
+    state["review"]["fields_locked"] = True
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    result = build_release_dashboard(
+        root=root,
+        database_path=database,
+        report_store_path=root / "data" / "missing-orbit.db",
+        offer_id="3828811808",
+    )
+
+    governance = result["product"]["seller_sku_governance"]
+    assert result["product"]["seller_sku_candidate"] == "0031"
+    assert governance["generated_by_system"] is False
+    assert governance["allocation_source"] == "approved_workbench_lock"
+    assert governance["suggested_sku_range"] == ["0031"]
+
+
 def test_release_dashboard_normalises_sea_sites_into_shared_channel_matrix(tmp_path):
     root, database = _release_fixture(tmp_path)
     state_path = root / "data" / "new_product_workbench" / "3828811808.json"
@@ -669,7 +727,7 @@ def test_real_gate_requires_matching_approval_and_verified_current_image_order(t
     )
     state = json.loads(state_path.read_text(encoding="utf-8"))
     state["review"]["fields_locked"] = True
-    state["review"]["seller_sku"] = "0946"
+    state["review"]["seller_sku"] = initial["product"]["seller_sku_candidate"]
     state["product_approval"] = dict(
         initial["approval_rehearsal"]["state_patch_preview"]["product_approval"]
     )

@@ -35,14 +35,186 @@ HTTP_DOMAIN_REGISTRY = http_registry()
 
 
 def _product_workspace_view(payload: dict) -> dict:
-    """Present the governed release evidence as the formal product workspace."""
+    """Present governed evidence and durable V1 state as the formal workspace."""
+    release_v1 = _release_v1_view(payload)
     return {
         **payload,
         "schema_version": "product-workspace-v1",
-        "mode": "pre_release",
-        "workspace_mode": "pre_release",
+        "mode": "formal_v1",
+        "workspace_mode": "formal_v1",
         "approval": payload.get("approval_rehearsal", {}),
         "publication_plan": payload.get("publication_rehearsal", {}),
+        "release_v1": release_v1,
+    }
+
+
+def _release_plan_payload_from_dashboard(dashboard: dict) -> tuple[dict, list[str]]:
+    """Build the exact immutable V1 payload without persisting it."""
+    product = dashboard.get("product") or {}
+    content = dashboard.get("content") or {}
+    scope = dashboard.get("publication_scope") or {}
+    pricing = dashboard.get("pricing_review") or {}
+    omnichannel = dashboard.get("omnichannel_preview") or {}
+    actual_approval = product.get("actual_approval") or {}
+    blockers: list[str] = []
+    if not product.get("actual_product_approved"):
+        blockers.append("商品事实尚未由 Kyle 批准并锁定")
+    if not content.get("approved"):
+        blockers.append("最终内容包尚未批准")
+    targets = list(scope.get("selected_labels") or ())
+    if not targets:
+        blockers.append("尚未选择发布目标")
+    if not omnichannel.get("available") or not omnichannel.get("plan_id"):
+        blockers.extend(str(value) for value in (omnichannel.get("blockers") or ()))
+    for target in omnichannel.get("targets") or ():
+        for check in target.get("preflights") or ():
+            if check.get("passed") or check.get("code") == "audited_adapter_site":
+                continue
+            blockers.append(str(check.get("detail") or "渠道依赖预检未通过"))
+    if pricing.get("status") != "ready":
+        blockers.extend(str(value) for value in (pricing.get("blockers") or ()))
+    product_package_id = str(actual_approval.get("package_id") or "").strip()
+    if not product_package_id:
+        blockers.append("商品审批缺少 product package ID")
+    content_package_id = str(content.get("package_id") or "").strip()
+    if not content_package_id:
+        blockers.append("内容审批缺少 content package ID")
+
+    target_pricing = pricing.get("target_pricing") or {}
+    selected_target_pricing = {
+        label: dict(target_pricing.get(label) or {})
+        for label in targets
+    }
+    images = [
+        {
+            "position": row.get("position"),
+            "image_url": row.get("image_url"),
+            "artifact_id": row.get("artifact_id"),
+            "audit_id": row.get("audit_id"),
+            "asset_type": row.get("asset_type"),
+            "decision_source": row.get("decision_source"),
+        }
+        for row in (content.get("images") or ())
+    ]
+    plan_id = str(omnichannel.get("plan_id") or "").strip()
+    payload = {
+        "plan_id": plan_id,
+        "product_id": str(product.get("offer_id") or "").strip(),
+        "seller_sku": str(product.get("seller_sku_candidate") or "").strip(),
+        "product_package_id": product_package_id,
+        "content_package_id": content_package_id,
+        "targets": targets,
+        "product_revision": int(product.get("revision") or 0),
+        "product_approval_id": str(actual_approval.get("approval_id") or ""),
+        "product_fingerprint": str(actual_approval.get("input_fingerprint") or ""),
+        "content_approval_status": str(content.get("approval_status") or ""),
+        "content_strategy": str(content.get("strategy") or ""),
+        "images": images,
+        "video_urls": list(content.get("video_urls") or ()),
+        "pricing": {
+            "schema_version": pricing.get("schema_version"),
+            "selected_targets": selected_target_pricing,
+            "workbench_exchange_rates": dict(
+                pricing.get("workbench_exchange_rates") or {}
+            ),
+            "shopee_exchange_rates": dict(
+                pricing.get("shopee_exchange_rates") or {}
+            ),
+            "ozon_exchange_rates": dict(
+                pricing.get("ozon_exchange_rates") or {}
+            ),
+        },
+        "omnichannel_scope_digest": (
+            (omnichannel.get("approval_summary") or {}).get(
+                "approval_scope_digest"
+            )
+        ),
+    }
+    return payload, list(dict.fromkeys(value for value in blockers if value))
+
+
+def _release_v1_view(dashboard: dict) -> dict:
+    from domains.channel_operations.release_executor import (
+        production_adapter_registry,
+    )
+    from shared_platform.release_store import default_release_store
+
+    payload, blockers = _release_plan_payload_from_dashboard(dashboard)
+    if not payload.get("plan_id"):
+        return {
+            "eligible_for_plan_approval": False,
+            "blockers": blockers,
+            "plan": None,
+            "run": None,
+            "miaoshou_prepared": False,
+            "publish_ready": False,
+        }
+    store = default_release_store()
+    try:
+        preview = store.preview_plan(payload)
+    except (TypeError, ValueError) as error:
+        return {
+            "eligible_for_plan_approval": False,
+            "blockers": list(dict.fromkeys([*blockers, str(error)])),
+            "plan": None,
+            "run": None,
+            "miaoshou_prepared": False,
+            "publish_ready": False,
+        }
+    persisted = store.get_plan(preview["plan_id"])
+    plan = persisted or preview
+    run = (
+        store.get_run(f"release-run:{plan['payload_digest'][:24]}")
+        if persisted
+        else None
+    )
+    miaoshou_target = next(
+        (
+            row
+            for row in ((run or {}).get("targets") or ())
+            if row.get("target_label") == "miaoshou:COMMON"
+        ),
+        None,
+    )
+    adapter_blockers = [
+        str(check.get("detail") or "渠道适配器未通过审计")
+        for target in ((dashboard.get("omnichannel_preview") or {}).get("targets") or ())
+        for check in (target.get("preflights") or ())
+        if check.get("code") == "audited_adapter_site" and not check.get("passed")
+    ]
+    registry = production_adapter_registry()
+    for target in ((dashboard.get("omnichannel_preview") or {}).get("targets") or ()):
+        registration = registry.get(str(target.get("adapter") or ""))
+        if not registration or not registration.executable:
+            detail = (
+                registration.blocker.detail
+                if registration and registration.blocker
+                else f"{target.get('channel')}:{target.get('site')} 尚无统一发布适配器"
+            )
+            adapter_blockers.append(str(detail))
+    approved = bool(
+        persisted
+        and persisted.get("status") == "APPROVED"
+        and (persisted.get("approval") or {}).get("status") == "APPROVED"
+    )
+    miaoshou_prepared = bool(
+        miaoshou_target and miaoshou_target.get("status") == "SUCCEEDED"
+    )
+    return {
+        "eligible_for_plan_approval": not blockers,
+        "blockers": blockers,
+        "plan": plan,
+        "plan_persisted": bool(persisted),
+        "plan_approved": approved,
+        "run": run,
+        "miaoshou_prepared": miaoshou_prepared,
+        "adapter_blockers": list(dict.fromkeys(adapter_blockers)),
+        "publish_ready": bool(
+            approved
+            and miaoshou_prepared
+            and not adapter_blockers
+            and (dashboard.get("actual_release_gate") or {}).get("ready")
+        ),
     }
 
 
@@ -122,12 +294,6 @@ def _approve_product_workspace_locally_locked(data: dict) -> tuple[int, dict]:
             "ok": False,
             "error": "state revision is stale",
             "current_revision": dashboard_revision,
-        }
-    if not bool((dashboard.get("content") or {}).get("approved")):
-        return 409, {
-            "ok": False,
-            "error": "current content package is not approved",
-            "blockers": list((dashboard.get("content") or {}).get("blockers") or ()),
         }
     preview = dashboard.get("approval_rehearsal") or dashboard.get("approval") or {}
     preview_patch = preview.get("state_patch_preview") or {}
@@ -216,6 +382,322 @@ def _approve_product_workspace_locally_locked(data: dict) -> tuple[int, dict]:
         "external_writes_performed": [],
         "dashboard": _product_workspace_view(updated),
     }
+
+
+def _release_dashboard_for_request(data: dict) -> tuple[dict | None, tuple[int, dict] | None]:
+    from shared_platform import release_control
+
+    offer_id = str(data.get("offer_id") or "").strip()
+    seller_sku = str(data.get("seller_sku") or "").strip()
+    targets = data.get("publication_targets")
+    if not offer_id.isdigit() or not 1 <= len(offer_id) <= 32:
+        return None, (400, {"ok": False, "error": "offer_id must contain 1-32 digits"})
+    if not seller_sku.isdigit() or not 1 <= len(seller_sku) <= 32:
+        return None, (400, {"ok": False, "error": "seller_sku must contain 1-32 digits"})
+    if isinstance(targets, (str, bytes)) or not isinstance(targets, list):
+        return None, (
+            400,
+            {"ok": False, "error": "publication_targets must be a list"},
+        )
+    try:
+        dashboard = release_control.build_release_dashboard(
+            offer_id=offer_id,
+            seller_sku=seller_sku,
+            publication_targets=targets,
+        )
+    except FileNotFoundError as error:
+        return None, (404, {"ok": False, "error": str(error)})
+    except (TypeError, ValueError) as error:
+        return None, (400, {"ok": False, "error": str(error)})
+    except Exception as error:
+        return None, (500, {"ok": False, "error": str(error)})
+    return dashboard, None
+
+
+def _approve_release_plan_locally(data: dict) -> tuple[int, dict]:
+    """Persist the exact plan and Kyle approval; perform no external action."""
+    from shared_platform.release_store import (
+        ReleaseAuthorizationError,
+        ReleaseStoreError,
+        SkuReservationConflict,
+        default_release_store,
+    )
+
+    if data.get("user_approved") is not True:
+        return 400, {
+            "ok": False,
+            "error": "explicit user_approved=true is required",
+        }
+    if str(data.get("approved_by") or "").strip() != "Kyle":
+        return 400, {"ok": False, "error": "approved_by must be Kyle"}
+    dashboard, failure = _release_dashboard_for_request(data)
+    if failure:
+        return failure
+    assert dashboard is not None
+    plan_payload, blockers = _release_plan_payload_from_dashboard(dashboard)
+    if blockers:
+        return 409, {
+            "ok": False,
+            "error": "release plan is not ready for approval",
+            "blockers": blockers,
+        }
+    store = default_release_store()
+    preview = store.preview_plan(plan_payload)
+    requested_plan_id = str(data.get("plan_id") or "").strip()
+    requested_token = str(data.get("confirmation_token") or "").strip()
+    if requested_plan_id != preview["plan_id"]:
+        return 409, {
+            "ok": False,
+            "error": "release plan identity changed; refresh before approval",
+            "current_plan_id": preview["plan_id"],
+        }
+    if requested_token != preview["confirmation_token"]:
+        return 409, {
+            "ok": False,
+            "error": "release confirmation token changed; refresh before approval",
+        }
+    try:
+        existing = store.get_plan(preview["plan_id"])
+        active = store.active_plan_for_product(preview["product_id"])
+        if existing is None:
+            predecessor = (
+                active["plan_id"]
+                if active and active["plan_id"] != preview["plan_id"]
+                else None
+            )
+            store.create_plan(
+                plan_payload,
+                supersedes_plan_id=predecessor,
+            )
+        approval = store.approve_plan(
+            preview["plan_id"],
+            approved_by="Kyle",
+            user_approved=True,
+            confirmation_token=preview["confirmation_token"],
+        )
+    except (ReleaseAuthorizationError, SkuReservationConflict, ReleaseStoreError) as error:
+        return 409, {"ok": False, "error": str(error)}
+    updated = _product_workspace_view(dashboard)
+    return 200, {
+        "ok": True,
+        "persisted": True,
+        "external_writes_performed": [],
+        "approval": approval,
+        "dashboard": updated,
+    }
+
+
+def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
+    """Execute only the approved common-draft write and verified readback."""
+    from modules.sourcing import new_product_workbench as np_mod
+    from shared_platform.release_store import (
+        ReleaseAuthorizationError,
+        ReleaseStoreError,
+        default_release_store,
+    )
+
+    if data.get("confirm_miaoshou_write") is not True:
+        return 400, {
+            "ok": False,
+            "error": "explicit confirm_miaoshou_write=true is required",
+        }
+    dashboard, failure = _release_dashboard_for_request(data)
+    if failure:
+        return failure
+    assert dashboard is not None
+    plan_payload, blockers = _release_plan_payload_from_dashboard(dashboard)
+    if blockers:
+        return 409, {
+            "ok": False,
+            "error": "current release facts no longer match an approvable plan",
+            "blockers": blockers,
+        }
+    store = default_release_store()
+    preview = store.preview_plan(plan_payload)
+    plan_id = str(data.get("plan_id") or "").strip()
+    token = str(data.get("confirmation_token") or "").strip()
+    plan = store.get_plan(plan_id)
+    if (
+        plan_id != preview["plan_id"]
+        or not plan
+        or plan.get("payload_digest") != preview["payload_digest"]
+        or plan.get("status") != "APPROVED"
+        or token != plan.get("confirmation_token")
+    ):
+        return 409, {
+            "ok": False,
+            "error": "approved ReleasePlan no longer matches current facts",
+        }
+    if "miaoshou:COMMON" not in (plan.get("targets") or ()):
+        return 409, {
+            "ok": False,
+            "error": "Miaoshou COMMON must be selected before draft preparation",
+        }
+    try:
+        run = store.start_run(plan_id)
+        target = next(
+            row
+            for row in run["targets"]
+            if row["target_label"] == "miaoshou:COMMON"
+        )
+        if target["status"] == "SUCCEEDED":
+            return 200, {
+                "ok": True,
+                "idempotent": True,
+                "external_writes_performed": [],
+                "run": run,
+                "dashboard": _product_workspace_view(dashboard),
+            }
+        if target["status"] == "FAILED":
+            run = store.retry_failed_targets(
+                run["run_id"],
+                ["miaoshou:COMMON"],
+            )
+        store.begin_target(run["run_id"], "miaoshou:COMMON")
+    except (ReleaseAuthorizationError, ReleaseStoreError, StopIteration) as error:
+        return 409, {"ok": False, "error": str(error)}
+
+    try:
+        result = np_mod.write_miaoshou_draft(plan_payload["product_id"])
+        if not result.get("written_to_miaoshou") or not result.get("verified"):
+            raise RuntimeError("Miaoshou draft readback did not verify every approved field")
+        store.record_target_success(
+            run["run_id"],
+            "miaoshou:COMMON",
+            external_id=str(result.get("offer_id") or plan_payload["product_id"]),
+        )
+    except Exception as error:
+        store_record_error = ""
+        try:
+            store.record_target_failure(
+                run["run_id"],
+                "miaoshou:COMMON",
+                error=str(error),
+            )
+        except Exception as record_error:
+            store_record_error = str(record_error)
+        payload = {
+            "ok": False,
+            "error": str(error),
+            "run": store.get_run(run["run_id"]),
+        }
+        if store_record_error:
+            payload["run_record_error"] = store_record_error
+        return 502, payload
+    refreshed, refresh_failure = _release_dashboard_for_request(data)
+    if refresh_failure:
+        refreshed = dashboard
+    return 200, {
+        "ok": True,
+        "idempotent": False,
+        "external_writes_performed": ["miaoshou:COMMON:draft_write_and_readback"],
+        "result": result,
+        "run": store.get_run(run["run_id"]),
+        "dashboard": _product_workspace_view(refreshed or dashboard),
+    }
+
+
+def _publish_selected_release(data: dict) -> tuple[int, dict]:
+    """Fail closed until every selected target has a unified V1 adapter."""
+    from domains.channel_operations.release_executor import (
+        production_adapter_registry,
+    )
+    from shared_platform.release_store import default_release_store
+
+    if data.get("confirm_publish") is not True:
+        return 400, {
+            "ok": False,
+            "error": "explicit confirm_publish=true is required",
+        }
+    dashboard, failure = _release_dashboard_for_request(data)
+    if failure:
+        return failure
+    assert dashboard is not None
+    plan_payload, blockers = _release_plan_payload_from_dashboard(dashboard)
+    if blockers:
+        return 409, {
+            "ok": False,
+            "error": "current release facts no longer match the approved plan",
+            "blockers": blockers,
+        }
+    store = default_release_store()
+    preview = store.preview_plan(plan_payload)
+    plan_id = str(data.get("plan_id") or "").strip()
+    token = str(data.get("confirmation_token") or "").strip()
+    plan = store.get_plan(plan_id)
+    if (
+        plan_id != preview["plan_id"]
+        or not plan
+        or plan.get("payload_digest") != preview["payload_digest"]
+        or plan.get("status") != "APPROVED"
+        or token != plan.get("confirmation_token")
+    ):
+        return 409, {
+            "ok": False,
+            "error": "approved ReleasePlan no longer matches current facts",
+        }
+
+    run = store.start_run(plan_id)
+    common = next(
+        (
+            row
+            for row in (run.get("targets") or ())
+            if row.get("target_label") == "miaoshou:COMMON"
+        ),
+        None,
+    )
+    if not common or common.get("status") != "SUCCEEDED":
+        return 409, {
+            "ok": False,
+            "error": "Miaoshou COMMON must succeed with verified readback first",
+            "run": run,
+        }
+
+    registry = production_adapter_registry()
+    target_rows = (dashboard.get("omnichannel_preview") or {}).get("targets") or ()
+    adapter_blockers: list[dict[str, str]] = []
+    for target in target_rows:
+        label = f"{target.get('channel')}:{target.get('site')}"
+        if label == "miaoshou:COMMON":
+            continue
+        registration = registry.get(str(target.get("adapter") or ""))
+        if not registration or not registration.executable:
+            adapter_blockers.append(
+                {
+                    "target": label,
+                    "code": (
+                        registration.blocker.code
+                        if registration and registration.blocker
+                        else "adapter_not_registered"
+                    ),
+                    "detail": (
+                        registration.blocker.detail
+                        if registration and registration.blocker
+                        else "unified V1 adapter is not registered"
+                    ),
+                }
+            )
+    if adapter_blockers:
+        return 409, {
+            "ok": False,
+            "error": "selected targets are not yet executable through unified V1 adapters",
+            "adapter_blockers": adapter_blockers,
+            "external_writes_performed": [],
+            "run": run,
+            "dashboard": _product_workspace_view(dashboard),
+        }
+
+    # The production registry deliberately contains no executable adapter in
+    # V1.  Keep an explicit terminal guard so a future registry change cannot
+    # accidentally bypass the durable TargetRun execution bridge.
+    return 501, {
+        "ok": False,
+        "error": "unified adapter execution bridge is not installed",
+        "external_writes_performed": [],
+        "run": run,
+        "dashboard": _product_workspace_view(dashboard),
+    }
+
 
 _scan_lock = threading.Lock()
 _scan_job: dict = {
@@ -2813,7 +3295,12 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/api/feishu/event":
             return self._handle_feishu_event()
-        if path == "/api/product-workspace/approve":
+        if path in {
+            "/api/product-workspace/approve",
+            "/api/product-workspace/release-plan/approve",
+            "/api/product-workspace/miaoshou-draft/commit",
+            "/api/product-workspace/publish",
+        }:
             origin = (self.headers.get("Origin") or "").strip()
             if origin:
                 expected_port = int(self.server.server_address[1])
@@ -2825,7 +3312,7 @@ class Handler(BaseHTTPRequestHandler):
                         403,
                         {
                             "ok": False,
-                            "error": "cross-origin product approval rejected",
+                            "error": "cross-origin product workflow write rejected",
                         },
                     )
             content_type = (self.headers.get("Content-Type") or "").lower()
@@ -2834,7 +3321,7 @@ class Handler(BaseHTTPRequestHandler):
                     415,
                     {
                         "ok": False,
-                        "error": "product approval requires application/json",
+                        "error": "product workflow writes require application/json",
                     },
                 )
             try:
@@ -2851,7 +3338,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(400, {"ok": False, "error": "invalid json"})
             if not isinstance(data, dict):
                 return self._json(400, {"ok": False, "error": "json body must be an object"})
-            status, payload = _approve_product_workspace_locally(data)
+            if path == "/api/product-workspace/approve":
+                status, payload = _approve_product_workspace_locally(data)
+            elif path == "/api/product-workspace/release-plan/approve":
+                status, payload = _approve_release_plan_locally(data)
+            elif path == "/api/product-workspace/miaoshou-draft/commit":
+                status, payload = _prepare_miaoshou_release(data)
+            else:
+                status, payload = _publish_selected_release(data)
             return self._json(status, payload)
         if self._handle_product_flow_proxy("POST"):
             return
@@ -3695,7 +4189,7 @@ def serve(
     }
     url = f"http://127.0.0.1:{port}{routes.get(page, '/')}"
     print(f"  [OK] 控制台: http://127.0.0.1:{port}/")
-    print(f"  发布候选测试台: http://127.0.0.1:{port}/release")
+    print(f"  商品发布中心: http://127.0.0.1:{port}/new-product")
     print(f"  商品目录: http://127.0.0.1:{port}/catalog")
     print(f"  结算利润: http://127.0.0.1:{port}/settlement")
     print(f"  SKU利润探针: http://127.0.0.1:{port}/sku-profit")

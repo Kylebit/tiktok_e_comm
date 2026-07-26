@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#173b36">
   <title>Orbit · 商品发布中心</title>
-  <link rel="stylesheet" href="/static/product_workspace.css?v=20260726-6">
-  <script src="/static/product_workspace.js?v=20260726-6" defer></script>
+  <link rel="stylesheet" href="/static/product_workspace.css?v=20260726-v1">
+  <script src="/static/product_workspace.js?v=20260726-v1" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -22,9 +22,10 @@
       <a href="#approval">商品审批</a>
       <a href="#content">商品图片</a>
       <a href="#channels">渠道准备</a>
+      <a href="#releasePlan">发布确认</a>
       <a id="studioNavLink" href="/ai-image-studio" target="_blank" rel="noopener">内容与图片工作室 ↗</a>
     </nav>
-    <span class="safety-pill"><i aria-hidden="true"></i> 外部发布关闭</span>
+    <span class="safety-pill"><i aria-hidden="true"></i> 正式 V1 · 外部动作需二次确认</span>
   </header>
 
   <main id="main">
@@ -32,7 +33,7 @@
       <div class="hero-copy">
         <p class="eyebrow">PRODUCT OPERATIONS</p>
         <h1>商品发布中心</h1>
-        <p>从商品事实、原素材或 AI 辅助图片到全渠道计划，在一个页面确认发布前的每个关键条件。</p>
+        <p>从商品事实、原素材或 AI 辅助图片，到妙手待发布草稿与 16 个渠道目标，在同一个正式流程完成审核、准备、发布和回读。</p>
       </div>
 
       <form id="lookupForm" class="lookup-card" aria-label="添加商品到并行发布队列">
@@ -89,16 +90,18 @@
       <div class="section-heading">
         <div>
           <p class="kicker">RELEASE JOURNEY</p>
-          <h2 id="journeyTitle">五阶段发布进度</h2>
+          <h2 id="journeyTitle">七阶段正式发布进度</h2>
         </div>
         <p>每一阶段都必须有真实证据；后续阶段不会覆盖前序缺口。</p>
       </div>
       <div id="stageRail" class="stage-rail" aria-live="polite">
-        <div class="stage pending"><span>01</span><strong>商品信息</strong><small>等待检查</small></div>
-        <div class="stage pending"><span>02</span><strong>内容与图片</strong><small>等待检查</small></div>
-        <div class="stage pending"><span>03</span><strong>审批与锁定</strong><small>等待检查</small></div>
-        <div class="stage pending"><span>04</span><strong>妙手同步</strong><small>等待检查</small></div>
-        <div class="stage pending"><span>05</span><strong>渠道草稿</strong><small>等待检查</small></div>
+        <div class="stage pending"><span>01</span><strong>商品事实</strong><small>等待检查</small></div>
+        <div class="stage pending"><span>02</span><strong>内容审批</strong><small>等待检查</small></div>
+        <div class="stage pending"><span>03</span><strong>商品审批</strong><small>等待检查</small></div>
+        <div class="stage pending"><span>04</span><strong>发布计划</strong><small>等待检查</small></div>
+        <div class="stage pending"><span>05</span><strong>妙手待发布</strong><small>等待检查</small></div>
+        <div class="stage pending"><span>06</span><strong>渠道执行</strong><small>等待检查</small></div>
+        <div class="stage pending"><span>07</span><strong>回读对账</strong><small>等待检查</small></div>
       </div>
     </section>
 
@@ -111,6 +114,9 @@
           </div>
           <span id="factsBadge" class="badge neutral">读取中</span>
         </div>
+        <p id="factsNotice" class="facts-notice">
+          当前显示的是带来源的前序采集值。只有 Kyle 完成商品事实审批后，它们才成为锁定版本；后续修改会废止旧发布计划并要求重新审批。
+        </p>
         <div id="productFacts" class="fact-grid skeleton-lines"></div>
       </article>
 
@@ -140,9 +146,9 @@
       <div class="section-heading">
         <div>
           <p class="kicker">LOCAL PRODUCT APPROVAL</p>
-          <h2 id="approvalTitle">商品审批与字段锁定</h2>
+          <h2 id="approvalTitle">商品事实审批与版本锁定</h2>
         </div>
-        <p>这是正式商品流程中的本地审批步骤。保存后只锁定当前工作台字段，不会上传妙手、创建渠道草稿或发布商品。</p>
+        <p>商品事实与内容审批相互独立。保存后锁定当前成本、重量、尺寸、规格与 Seller SKU 版本；不会上传妙手、创建渠道草稿或发布商品。</p>
       </div>
       <article class="approval-card">
         <div class="approval-summary">
@@ -200,7 +206,7 @@
       <div class="section-heading">
         <div>
           <p class="kicker">CHANNEL READINESS</p>
-          <h2 id="channelsTitle">一键全渠道发布准备</h2>
+          <h2 id="channelsTitle">16 目标全渠道发布准备</h2>
         </div>
         <p>先建立妙手公共草稿，再以 TikTok 审定商品为主版本，派生 Shopee 与 Ozon。当前只做预检，不会调用渠道接口。</p>
       </div>
@@ -212,7 +218,7 @@
             <p>每个目标可独立选择。修改后只会重新生成本地预检、售价审查与确认令牌，不会创建草稿或发布商品。</p>
           </div>
           <div class="scope-actions">
-            <button id="selectAllTargetsButton" class="text-button" type="button">全选 10 个目标</button>
+            <button id="selectAllTargetsButton" class="text-button" type="button">全选 16 个目标</button>
             <button id="restoreTargetDefaultsButton" class="text-button" type="button">恢复商品默认</button>
           </div>
         </div>
@@ -261,25 +267,92 @@
       </div>
       <div id="channelGrid" class="channel-grid" aria-live="polite"></div>
       <div id="channelBlockers" class="channel-blockers"></div>
-      <div class="publish-all-card">
+    </section>
+
+    <section id="releasePlan" class="release-plan-section" aria-labelledby="releasePlanTitle">
+      <div class="section-heading">
         <div>
-          <strong>一次确认，覆盖当前矩阵中的全部店铺</strong>
-          <p id="publishAllNote">只有全部适配器完成审计、商品审批和妙手回读后，正式发布按钮才会开放。</p>
+          <p class="kicker">IMMUTABLE RELEASE PLAN</p>
+          <h2 id="releasePlanTitle">发布计划批准与正式执行</h2>
         </div>
-        <button id="publishAllButton" class="button button-primary" type="button" disabled>
-          一键发布全部店铺（尚未开放）
-        </button>
+        <p>发布计划把商品 revision、内容包、图片与视频、精确目标、来源店铺、售价、成本、汇率和费用规则绑定为同一个不可变版本。</p>
       </div>
+
+      <article class="release-plan-card">
+        <div id="releasePlanSummary" class="release-plan-summary">
+          <div><span>ReleasePlan</span><strong>尚未生成</strong></div>
+          <div><span>商品 / 内容版本</span><strong>—</strong></div>
+          <div><span>精确目标</span><strong>—</strong></div>
+          <div><span>批准状态</span><strong>未批准</strong></div>
+        </div>
+        <form id="releasePlanApprovalForm" class="release-plan-form">
+          <label class="approval-confirm">
+            <input id="releasePlanCheckbox" type="checkbox">
+            <span>我已核对本次商品、内容、视频、目标店铺、来源映射、售价与费用，并批准当前 ReleasePlan。</span>
+          </label>
+          <div class="approval-actions">
+            <span>批准人：<strong>Kyle</strong></span>
+            <button id="approveReleasePlanButton" class="button button-primary" type="submit" disabled>
+              批准当前发布计划
+            </button>
+          </div>
+          <p id="releasePlanMessage" class="approval-message" role="status"></p>
+        </form>
+      </article>
+
+      <div class="release-actions-grid">
+        <article class="external-action-card">
+          <div>
+            <p class="kicker">STEP 1 · PREPARE</p>
+            <h3>同步到妙手待发布并回读</h3>
+            <p>写入已批准的标题、SKU、规格、重量、包装、图片与视频；不会认领站点或提交发布。</p>
+          </div>
+          <label class="approval-confirm compact">
+            <input id="prepareMiaoshouCheckbox" type="checkbox">
+            <span>我确认将当前 ReleasePlan 写入妙手公共采集箱并执行回读验证。</span>
+          </label>
+          <button id="prepareMiaoshouButton" class="button button-secondary" type="button" disabled>
+            同步到妙手待发布
+          </button>
+          <p id="prepareMiaoshouMessage" class="approval-message" role="status"></p>
+        </article>
+
+        <article class="external-action-card publish">
+          <div>
+            <p class="kicker">STEP 2 · PUBLISH</p>
+            <h3>一键发布已选店铺</h3>
+            <p id="publishAllNote">只有发布计划已批准、妙手回读一致且所有目标适配器通过审计后，按钮才会开放。</p>
+          </div>
+          <label class="approval-confirm compact">
+            <input id="publishAllCheckbox" type="checkbox">
+            <span>我确认按当前确认令牌执行所选目标；成功目标不会因部分重试而重复发布。</span>
+          </label>
+          <button id="publishAllButton" class="button button-primary" type="button" disabled>
+            一键发布已选店铺
+          </button>
+          <p id="publishRunMessage" class="approval-message" role="status"></p>
+        </article>
+      </div>
+
+      <article class="run-ledger">
+        <div>
+          <p class="kicker">RELEASE RUN</p>
+          <h3>逐目标执行与回读账本</h3>
+        </div>
+        <div id="releaseRunLedger" class="release-run-ledger">
+          当前没有发布运行。批准计划不会自动触发外部写入。
+        </div>
+      </article>
     </section>
 
     <section class="safety-card" aria-labelledby="safetyTitle">
       <div class="safety-mark" aria-hidden="true">✓</div>
       <div>
         <p class="kicker">SAFE BY DEFAULT</p>
-        <h2 id="safetyTitle">真实发布保持关闭</h2>
-        <p>全渠道按钮已作为正式流程入口呈现，但在适配器审计和前置事实未完成前强制禁用；本页当前不会上传、认领、创建站点草稿或发布商品。</p>
+        <h2 id="safetyTitle">正式执行由精确计划和确认令牌保护</h2>
+        <p>读取、选择和审批不会自动发布。两个外部动作均需要当前 ReleasePlan、Kyle 的批准、未过期 revision 和独立二次确认。</p>
       </div>
-      <span>0 external writes</span>
+      <span>GUARDED EXECUTION</span>
     </section>
   </main>
 

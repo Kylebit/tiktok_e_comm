@@ -146,8 +146,10 @@ def build_omnichannel_publication_plan(
             site=site,
             common_preflight=common,
             approval_digest=approval_digest,
-            selected_channels=frozenset(
-                selected_channel for selected_channel, _sites in selected
+            selected_targets=frozenset(
+                (selected_channel, selected_site)
+                for selected_channel, selected_sites in selected
+                for selected_site in selected_sites
             ),
         )
         for channel, sites in selected
@@ -323,15 +325,26 @@ def _target_plan(
     site: str,
     common_preflight: tuple[PublicationPreflight, ...],
     approval_digest: str,
-    selected_channels: frozenset[str],
+    selected_targets: frozenset[tuple[str, str]],
 ) -> ChannelExecutionPlan:
-    site_supported = site in AUDITED_ADAPTER_SITES[channel]
+    adapter_site = _tiktok_country(site) if channel == "tiktok" else site
+    site_supported = adapter_site in AUDITED_ADAPTER_SITES[channel]
+    selected_channels = frozenset(
+        selected_channel for selected_channel, _site in selected_targets
+    )
     dependency_ready = (
         True
         if channel == "miaoshou"
         else "miaoshou" in selected_channels
         if channel == "tiktok"
-        else "tiktok" in selected_channels
+        else any(
+            selected_channel == "tiktok"
+            and (
+                channel == "ozon"
+                or _tiktok_country(selected_site) == site
+            )
+            for selected_channel, selected_site in selected_targets
+        )
     )
     preflight = common_preflight + (
         PublicationPreflight(
@@ -370,7 +383,11 @@ def _target_plan(
         site=site,
         adapter=ADAPTER_NAMES[channel],
         adapter_gate_status=ADAPTER_GATE_STATUS[channel],
-        depends_on=_dependencies_for(channel),
+        depends_on=_dependencies_for_target(
+            channel,
+            site=site,
+            selected_targets=selected_targets,
+        ),
         preflight=preflight,
         steps=_steps_for(channel, site),
         idempotency_key=f"publish:{channel}:{site}:{target_digest}",
@@ -378,14 +395,52 @@ def _target_plan(
     )
 
 
-def _dependencies_for(channel: str) -> tuple[str, ...]:
+def _tiktok_country(site: str) -> str:
+    """Return the country component for both legacy and store-level sites."""
+
+    normalised = str(site or "").strip().upper()
+    prefix, separator, country = normalised.partition("_")
+    if separator and prefix in {"LH", "HB"}:
+        return country
+    return normalised
+
+
+def _dependencies_for_target(
+    channel: str,
+    *,
+    site: str,
+    selected_targets: frozenset[tuple[str, str]],
+) -> tuple[str, ...]:
     """Describe the intended product-data lineage without executing it."""
 
     if channel == "miaoshou":
         return ()
     if channel == "tiktok":
         return ("miaoshou:COMMON:verified_draft",)
-    return ("tiktok:MASTER:verified_readback",)
+    candidates = [
+        selected_site
+        for selected_channel, selected_site in selected_targets
+        if selected_channel == "tiktok"
+        and (channel == "ozon" or _tiktok_country(selected_site) == site)
+    ]
+    if not candidates:
+        return ("tiktok:MASTER:verified_readback",)
+    source = min(candidates, key=_tiktok_source_priority)
+    return (f"tiktok:{source}:verified_readback",)
+
+
+def _tiktok_source_priority(site: str) -> tuple[int, int, str]:
+    country_order = {"PH": 0, "MY": 1, "TH": 2, "VN": 3, "MX": 4, "GB": 5}
+    normalised = str(site or "").strip().upper()
+    country = _tiktok_country(normalised)
+    shop_rank = (
+        0
+        if normalised.startswith("LH_")
+        else 1
+        if normalised.startswith("HB_")
+        else 0
+    )
+    return (country_order.get(country, 99), shop_rank, normalised)
 
 
 def _steps_for(channel: str, site: str) -> tuple[PublicationStep, ...]:

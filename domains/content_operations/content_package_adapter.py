@@ -47,6 +47,8 @@ def build_content_package_handoff(
     generation_audits: Mapping[str, Any],
     copy: Mapping[str, str] | None = None,
     package_id: str | None = None,
+    video_action: str = "none",
+    video_url: str = "",
 ) -> ContentPackageHandoff:
     """Build a ``ContentPackage`` using only explicitly approved assets.
 
@@ -80,24 +82,31 @@ def build_content_package_handoff(
         seen_urls.add(approved.image_url)
         lineage.append(approved)
 
+    video_urls, video_blockers = _approved_video_urls(video_action, video_url)
     resolved_package_id = str(package_id or "").strip() or f"content:{clean_product_id}"
     approval = ApprovalRecord(
         approval_id=f"content-review:{resolved_package_id}",
         subject_type="content_package",
         subject_id=resolved_package_id,
-        status="approved" if selected_shot_ids and not missing_shot_ids else "pending",
+        status=(
+            "approved"
+            if selected_shot_ids and not missing_shot_ids and not video_blockers
+            else "pending"
+        ),
     )
     content_package = ContentPackage(
         package_id=resolved_package_id,
         product_id=clean_product_id,
         copy=dict(copy or {}),
         image_urls=tuple(row.image_url for row in lineage),
+        video_urls=video_urls,
         approval=approval,
     )
     return ContentPackageHandoff(
         content_package=content_package,
         asset_lineage=tuple(lineage),
         missing_shot_ids=tuple(missing_shot_ids),
+        blockers=video_blockers,
     )
 
 
@@ -196,6 +205,18 @@ def build_workbench_content_package_handoff(
         )
     blockers.extend(order_blockers)
     urls = tuple(row.image_url for row in lineage)
+    video_action = str(
+        review.get("video_action") or content.get("video_action") or "none"
+    ).strip()
+    video_url = str(
+        review.get("video_url")
+        or content.get("approved_video_url")
+        or content.get("video_url")
+        or content.get("source_video_url")
+        or ""
+    ).strip()
+    video_urls, video_blockers = _approved_video_urls(video_action, video_url)
+    blockers.extend(video_blockers)
     written_urls = _written_image_urls(content)
     stale_external_write = bool(written_urls and written_urls != set(urls))
     if stale_external_write:
@@ -215,9 +236,35 @@ def build_workbench_content_package_handoff(
         ),
     )
     return ContentPackageHandoff(
-        content_package=ContentPackage(resolved_package_id, clean_product_id, dict(copy or {}), urls, approval=approval),
+        content_package=ContentPackage(
+            package_id=resolved_package_id,
+            product_id=clean_product_id,
+            copy=dict(copy or {}),
+            image_urls=urls,
+            video_urls=video_urls,
+            approval=approval,
+        ),
         asset_lineage=tuple(lineage), missing_shot_ids=tuple(missing), blockers=tuple(blockers),
         superseded_artifact_ids=tuple(sorted(set(superseded))), stale_external_write=stale_external_write,
+    )
+
+
+def _approved_video_urls(
+    video_action: Any,
+    video_url: Any,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return only an explicitly kept HTTPS video, or an explicit no-video set."""
+
+    action = str(video_action or "none").strip().lower()
+    url = str(video_url or "").strip()
+    if action == "keep":
+        if not url.startswith("https://"):
+            return (), ("video_action=keep requires an approved HTTPS video URL",)
+        return (url,), ()
+    if action in {"none", "remove"}:
+        return (), ()
+    return (), (
+        "video requires an explicit keep, remove, or none decision",
     )
 
 

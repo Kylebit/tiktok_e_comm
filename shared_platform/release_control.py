@@ -28,12 +28,13 @@ from domains.channel_operations import (
 )
 from domains.content_operations import build_workbench_content_package_handoff
 from domains.product_operations import (
+    build_product_facts_snapshot,
     preview_product_approval_lock,
     reservations_from_documents,
 )
 from modules.finance.profit_engine import exchange_rate_for
 from modules.ozon.price_convert import exchange_rates as ozon_exchange_rates
-from modules.sourcing.new_product_workbench import price_review
+from modules.sourcing.new_product_workbench import _source_summary, price_review
 from shared_platform.report_store import ReportRunStore
 from shared_platform.weekly_profit_runner import build_weekly_profit_preview
 
@@ -41,12 +42,21 @@ from shared_platform.weekly_profit_runner import build_weekly_profit_preview
 DEFAULT_OFFER_ID = "3828811808"
 DEFAULT_CANDIDATE_SELLER_SKU = "0946"
 
+TIKTOK_STORE_TARGETS: Mapping[str, tuple[str, str, str]] = {
+    "LH_PH": ("lh_ph", "LivelyHive", "PH"),
+    "LH_MY": ("lh_my", "LivelyHive", "MY"),
+    "LH_TH": ("lh_th", "LivelyHive", "TH"),
+    "LH_VN": ("lh_vn", "LivelyHive", "VN"),
+    "HB_PH": ("hb_ph", "HomeBloom", "PH"),
+    "HB_MY": ("hb_my", "HomeBloom", "MY"),
+    "HB_TH": ("hb_th", "HomeBloom", "TH"),
+    "HB_VN": ("hb_vn", "HomeBloom", "VN"),
+    "MX": ("mx", "LivelyHive", "MX"),
+    "GB": ("gb", "UK_IMPORT", "GB"),
+}
 PUBLICATION_TARGET_ALLOWLIST: tuple[tuple[str, str], ...] = (
     ("miaoshou", "COMMON"),
-    ("tiktok", "PH"),
-    ("tiktok", "MY"),
-    ("tiktok", "TH"),
-    ("tiktok", "VN"),
+    *(("tiktok", site) for site in TIKTOK_STORE_TARGETS),
     ("shopee", "PH"),
     ("shopee", "MY"),
     ("shopee", "TH"),
@@ -354,15 +364,26 @@ def _normalise_release_sites(values: object) -> tuple[str, ...]:
 def _default_omnichannel_targets(review: Mapping[str, Any]) -> dict[str, tuple[str, ...]]:
     """Build the shared target matrix from the workbench's approved scope."""
 
-    sites = tuple(
+    selected_store_keys = {
+        str(value or "").strip().lower()
+        for value in (review.get("selected_sites") or ())
+        if str(value or "").strip()
+    }
+    tiktok_sites = tuple(
         site
-        for site in _normalise_release_sites(review.get("selected_sites"))
-        if f"tiktok:{site}" in PUBLICATION_TARGET_LABELS
+        for site, (target_key, _shop, country) in TIKTOK_STORE_TARGETS.items()
+        if target_key in selected_store_keys and country in {"PH", "MY", "TH", "VN"}
     )
     targets: dict[str, tuple[str, ...]] = {"miaoshou": ("COMMON",)}
-    if sites:
-        targets["tiktok"] = sites
-        targets["shopee"] = sites
+    if tiktok_sites:
+        targets["tiktok"] = tiktok_sites
+        targets["shopee"] = tuple(
+            dict.fromkeys(
+                country
+                for site in tiktok_sites
+                for _target_key, _shop, country in (TIKTOK_STORE_TARGETS[site],)
+            )
+        )
     targets["ozon"] = ("RU",)
     return targets
 
@@ -375,7 +396,7 @@ def _publication_scope(
 
     Browser-controlled values are never forwarded as arbitrary adapter names
     or sites.  The allowlist is deliberately narrower than the legacy
-    repository: this release surface only offers the ten targets that its UI
+    repository: this release surface only offers the sixteen targets that its UI
     can name, price, and review explicitly.
     """
 
@@ -425,15 +446,22 @@ def _publication_scope(
     if not ordered_labels:
         raise ValueError("at least one publication target must be selected")
 
-    available_targets = [
-        {
+    available_targets: list[dict[str, Any]] = []
+    for channel, site in PUBLICATION_TARGET_ALLOWLIST:
+        row: dict[str, Any] = {
             "label": f"{channel}:{site}",
             "channel": channel,
             "site": site,
             "selected": f"{channel}:{site}" in selected_labels,
         }
-        for channel, site in PUBLICATION_TARGET_ALLOWLIST
-    ]
+        if channel == "tiktok":
+            target_key, shop, country = TIKTOK_STORE_TARGETS[site]
+            row.update(
+                target_key=target_key,
+                shop=shop,
+                country=country,
+            )
+        available_targets.append(row)
     return selection, {
         "source": source,
         "default_labels": default_labels,
@@ -606,55 +634,132 @@ def _pricing_site_keys_for_scope(
 ) -> tuple[str, ...]:
     """Resolve store-level pricing rows for the selected country targets.
 
-    Existing workbench store choices remain authoritative for their regions.
-    When Kyle adds a new country from the release centre, every legacy store
-    row for that country is shown so the page does not silently invent one
-    preferred shop.  The complete ten-store legacy audit remains present
-    regardless of this selected subset.
+    TikTok target labels carry an exact legacy ``lh_*`` or ``hb_*`` store key.
+    Only those selected store rows feed the channel pricing preview; selecting
+    a country on Shopee never silently selects a TikTok store.  The complete
+    ten-store legacy audit remains present regardless of this selected subset.
     """
 
-    requested_sites = {
-        site
-        for channel in ("tiktok", "shopee")
-        for site in site_selection.get(channel, ())
-    }
-    current_keys = tuple(
-        dict.fromkeys(
-            str(value or "").strip().lower()
-            for value in (review.get("selected_sites") or ())
-            if str(value or "").strip()
-        )
+    del review, base_pricing
+    return tuple(
+        TIKTOK_STORE_TARGETS[site][0]
+        for site in site_selection.get("tiktok", ())
+        if site in TIKTOK_STORE_TARGETS
     )
-    all_rows = [
+
+
+def _apply_store_level_pricing(
+    pricing: dict[str, Any],
+    site_selection: Mapping[str, tuple[str, ...]],
+) -> None:
+    """Bind every channel price to the exact selected TikTok store targets."""
+
+    target_pricing = pricing.get("target_pricing")
+    if not isinstance(target_pricing, dict):
+        return
+    selected_rows = [
         row
-        for row in (base_pricing.get("all_legacy_store_prices") or ())
+        for row in (pricing.get("selected_store_prices") or ())
         if isinstance(row, Mapping)
     ]
     rows_by_key = {
-        str(row.get("target_key") or "").strip().lower(): row
-        for row in all_rows
+        str(row.get("target_key") or "").strip().lower(): dict(row)
+        for row in selected_rows
         if str(row.get("target_key") or "").strip()
     }
-    selected: list[str] = []
-    for site in ("PH", "MY", "TH", "VN"):
-        if site not in requested_sites:
+
+    for site in site_selection.get("tiktok", ()):
+        target_key, shop, country = TIKTOK_STORE_TARGETS[site]
+        row = rows_by_key.get(target_key)
+        target_pricing[f"tiktok:{site}"] = {
+            "role": "master_listing",
+            "status": "ready" if row and row.get("list_price") is not None else "blocked",
+            "store_prices": [row] if row else [],
+            "source_field": "legacy price_review.*.list_price",
+            "store_target": {
+                "target_key": target_key,
+                "shop": shop,
+                "country": country,
+            },
+            "write_fields": ["skuMap.*.price", "skuMap.*.priceIncludeVat"],
+            **(
+                {}
+                if row
+                else {"blocker": f"No legacy pricing row exists for {target_key}."}
+            ),
+        }
+
+    rows_by_country = {
+        country: [
+            rows_by_key[target_key]
+            for site, (target_key, _shop, row_country) in TIKTOK_STORE_TARGETS.items()
+            if row_country == country and target_key in rows_by_key
+        ]
+        for country in ("PH", "MY", "TH", "VN")
+    }
+    for country in site_selection.get("shopee", ()):
+        candidates = rows_by_country.get(country, [])
+        existing = target_pricing.get(f"shopee:{country}")
+        if not candidates or not isinstance(existing, Mapping):
+            target_pricing[f"shopee:{country}"] = {
+                "role": "derived_listing",
+                "status": "blocked",
+                "depends_on": f"tiktok:{country}:selected_store_readback",
+                "source_policy": "same_country_selected_tiktok_store_required",
+                "source_candidates": [],
+                "blocker": (
+                    f"Shopee {country} requires a selected TikTok store "
+                    f"in {country}."
+                ),
+            }
             continue
-        existing = [
-            key
-            for key in current_keys
-            if str((rows_by_key.get(key) or {}).get("region") or "").upper() == site
-        ]
-        candidates = existing or [
-            key
-            for key, row in rows_by_key.items()
-            if str(row.get("region") or "").upper() == site
-        ]
-        selected.extend(candidates)
-    if selected:
-        return tuple(dict.fromkeys(selected))
-    # Miaoshou-only and temporarily dependency-blocked Ozon scopes still show
-    # the workbench's current store prices as a truthful reference.
-    return current_keys
+        chosen_key = str((existing.get("source") or {}).get("target_key") or "")
+        target_pricing[f"shopee:{country}"] = {
+            **dict(existing),
+            "source_policy": "prefer_livelyhive_then_homebloom_within_country",
+            "source_candidates": [
+                {
+                    "target_key": row.get("target_key"),
+                    "shop": row.get("shop"),
+                    "region": row.get("region"),
+                    "list_price": row.get("list_price"),
+                    "currency": row.get("currency"),
+                }
+                for row in candidates
+            ],
+            "selected_source_target_key": chosen_key,
+            "source_selection_note": (
+                f"{chosen_key} is the deterministic master; all selected "
+                f"{country} TikTok stores remain visible for review."
+            ),
+        }
+
+    ozon = target_pricing.get("ozon:RU")
+    if "RU" in site_selection.get("ozon", ()) and isinstance(ozon, Mapping):
+        chosen_key = str((ozon.get("source") or {}).get("target_key") or "")
+        target_pricing["ozon:RU"] = {
+            **dict(ozon),
+            "source_policy": (
+                "country_priority_PH_MY_TH_VN_MX_GB_then_"
+                "prefer_livelyhive_then_homebloom"
+            ),
+            "source_candidates": [
+                {
+                    "target_key": row.get("target_key"),
+                    "shop": row.get("shop"),
+                    "region": row.get("region"),
+                    "list_price": row.get("list_price"),
+                    "currency": row.get("currency"),
+                }
+                for row in selected_rows
+            ],
+            "selected_source_target_key": chosen_key,
+            "source_selection_note": (
+                f"{chosen_key} is the deterministic Ozon master source."
+                if chosen_key
+                else "Ozon requires at least one selected TikTok store."
+            ),
+        }
 
 
 def build_release_dashboard(
@@ -675,6 +780,15 @@ def build_release_dashboard(
     if str(state.get("offer_id") or "").strip() != clean_offer_id:
         raise ValueError("workbench offer identity does not match the requested offer_id")
     review = state.get("review") if isinstance(state.get("review"), Mapping) else {}
+    source = (
+        _source_summary(clean_offer_id)
+        if project_root.resolve() == Path(ROOT).resolve()
+        else (
+            state.get("source")
+            if isinstance(state.get("source"), Mapping)
+            else {}
+        )
+    )
     content_state = (
         state.get("content_package")
         if isinstance(state.get("content_package"), Mapping)
@@ -708,9 +822,21 @@ def build_release_dashboard(
         else {}
     )
     audits = _generation_audits(package_dir)
+    handoff_state = dict(state)
+    source_video = (
+        source.get("video") if isinstance(source.get("video"), Mapping) else {}
+    )
+    if (
+        str(review.get("video_action") or "").strip().casefold() == "keep"
+        and not str(review.get("video_url") or "").strip()
+        and str(source_video.get("url") or "").strip()
+    ):
+        handoff_review = dict(review)
+        handoff_review["video_url"] = str(source_video["url"]).strip()
+        handoff_state["review"] = handoff_review
     content_handoff = build_workbench_content_package_handoff(
         product_id=clean_offer_id,
-        state=state,
+        state=handoff_state,
         suite_plan=suite_plan,
         generation_audits=audits,
         copy=_content_copy(review, collect_box),
@@ -774,12 +900,18 @@ def build_release_dashboard(
         review,
         selected_site_keys=scope_site_keys,
     )
+    _apply_store_level_pricing(release_pricing, omnichannel_selection)
     release_pricing["selection_source"] = publication_scope["source"]
     release_pricing["publication_target_labels"] = list(
         publication_scope["selected_labels"]
     )
     release_pricing["workbench_selected_store_prices"] = list(
         base_release_pricing["selected_store_prices"]
+    )
+    product_facts = build_product_facts_snapshot(
+        product_id=clean_offer_id,
+        source=source,
+        review=review,
     )
     approval_preview = preview_product_approval_lock(
         state=simulation_state,
@@ -806,12 +938,15 @@ def build_release_dashboard(
                 *approval_preview.blockers,
                 *seller_sku_blockers,
                 *commercial_blockers,
+                *product_facts.blockers,
             ]
         )
     )
     approved_product_package = (
         approval_preview.approved_package
-        if not commercial_blockers and not seller_sku_blockers
+        if not commercial_blockers
+        and not seller_sku_blockers
+        and product_facts.ready
         else None
     )
     approval_state_patch = (
@@ -843,6 +978,31 @@ def build_release_dashboard(
                         "shopee_exchange_rates"
                     ],
                     "ozon_exchange_rates": release_pricing["ozon_exchange_rates"],
+                    "derived_source_bindings": {
+                        f"{channel}:{site}": {
+                            "selected_source_target_key": (
+                                release_pricing["target_pricing"]
+                                .get(f"{channel}:{site}", {})
+                                .get("selected_source_target_key")
+                            ),
+                            "source_policy": (
+                                release_pricing["target_pricing"]
+                                .get(f"{channel}:{site}", {})
+                                .get("source_policy")
+                            ),
+                            "source_candidate_keys": [
+                                row.get("target_key")
+                                for row in (
+                                    release_pricing["target_pricing"]
+                                    .get(f"{channel}:{site}", {})
+                                    .get("source_candidates")
+                                    or ()
+                                )
+                            ],
+                        }
+                        for channel in ("shopee", "ozon")
+                        for site in omnichannel_selection.get(channel, ())
+                    },
                 },
             ),
             pricing_by_target=release_pricing["target_pricing"],
@@ -882,12 +1042,6 @@ def build_release_dashboard(
         "subject_type": "product",
         "subject_id": clean_offer_id,
         "seller_sku": clean_seller_sku,
-        "content_package_id": content_handoff.content_package.package_id,
-        "content_approval_id": (
-            content_handoff.content_package.approval.approval_id
-            if content_handoff.content_package.approval
-            else ""
-        ),
         "input_fingerprint": str(expected_approval.get("input_fingerprint") or ""),
     }
     actual_product_approved = (
@@ -913,11 +1067,12 @@ def build_release_dashboard(
     actual_blockers: list[str] = []
     actual_blockers.extend(commercial_blockers)
     actual_blockers.extend(seller_sku_blockers)
+    actual_blockers.extend(product_facts.blockers)
     if not actual_approval:
         actual_blockers.append("Product approval has not been persisted.")
     elif not actual_product_approved:
         actual_blockers.append(
-            "Persisted product approval does not match the current product, SKU, content package, and input fingerprint."
+            "Persisted product approval does not match the current product facts, Seller SKU, and input fingerprint."
         )
     if not bool(review.get("fields_locked")):
         actual_blockers.append("Workbench commercial fields are not locked.")
@@ -958,6 +1113,14 @@ def build_release_dashboard(
             "selected_sites": list(review.get("selected_sites") or ()),
             "selected_sku_keys": list(review.get("selected_sku_keys") or ()),
             "revision": int(state.get("_revision") or 0),
+            "fields_locked": bool(review.get("fields_locked")),
+            "facts_status": (
+                "approved_locked"
+                if actual_product_approved and bool(review.get("fields_locked"))
+                else "awaiting_kyle_review"
+            ),
+            "facts_source": "miaoshou_precollect_plus_workbench_review",
+            "fact_evidence": product_facts.payload(),
             "actual_product_approved": actual_product_approved,
             "actual_approval": dict(actual_approval),
             "seller_sku_governance": {
@@ -1004,6 +1167,7 @@ def build_release_dashboard(
             "stale_external_write": content_handoff.stale_external_write,
             "current_image_write_verified": current_images_written,
             "written_image_count": len(written_image_urls),
+            "video_urls": list(content_handoff.content_package.video_urls),
         },
         "approval_rehearsal": {
             "ready": simulated_ready,

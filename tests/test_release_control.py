@@ -136,7 +136,7 @@ def test_release_dashboard_is_a_complete_no_write_rehearsal(tmp_path):
         "billable_kg": 0.02,
     }
     assert pricing["selected_store_prices"][0]["target_key"] == "lh_th"
-    assert pricing["target_pricing"]["tiktok:TH"]["store_prices"][0][
+    assert pricing["target_pricing"]["tiktok:LH_TH"]["store_prices"][0][
         "list_price"
     ] > 0
     assert pricing["target_pricing"]["shopee:TH"]["depends_on"] == (
@@ -160,14 +160,14 @@ def test_release_dashboard_is_a_complete_no_write_rehearsal(tmp_path):
     }
     assert target_status == {
         ("miaoshou", "COMMON"): (True, True),
-        ("tiktok", "TH"): (False, False),
+        ("tiktok", "LH_TH"): (False, False),
         ("shopee", "TH"): (True, True),
         ("ozon", "RU"): (True, True),
     }
     shopee = next(
         row for row in omnichannel["targets"] if row["channel"] == "shopee"
     )
-    assert shopee["depends_on"] == ["tiktok:MASTER:verified_readback"]
+    assert shopee["depends_on"] == ["tiktok:LH_TH:verified_readback"]
     assert shopee["pricing"]["source"]["target_key"] == "lh_th"
 
 
@@ -187,7 +187,7 @@ def test_release_dashboard_normalises_sea_sites_into_shared_channel_matrix(tmp_p
     preview = result["omnichannel_preview"]
     assert preview["site_selection"] == {
         "miaoshou": ["COMMON"],
-        "tiktok": ["MY", "PH", "TH", "VN"],
+        "tiktok": ["LH_MY", "LH_PH", "LH_TH", "LH_VN"],
         "shopee": ["MY", "PH", "TH", "VN"],
         "ozon": ["RU"],
     }
@@ -198,12 +198,31 @@ def test_release_dashboard_normalises_sea_sites_into_shared_channel_matrix(tmp_p
         )
         for row in preview["targets"]
     }
-    assert all(status[("tiktok", site)] == (False, False) for site in ("MY", "PH", "TH", "VN"))
+    assert all(
+        status[("tiktok", f"LH_{site}")] == (False, False)
+        for site in ("MY", "PH", "TH", "VN")
+    )
     assert all(status[("shopee", site)] == (True, True) for site in ("MY", "PH", "TH", "VN"))
     assert status[("ozon", "RU")] == (True, True)
     assert status[("miaoshou", "COMMON")] == (True, True)
     assert preview["all_preflights_passed"] is False
     assert preview["ready"] is False
+    assert result["publication_scope"]["default_labels"] == [
+        "miaoshou:COMMON",
+        "tiktok:LH_PH",
+        "tiktok:LH_MY",
+        "tiktok:LH_TH",
+        "tiktok:LH_VN",
+        "shopee:PH",
+        "shopee:MY",
+        "shopee:TH",
+        "shopee:VN",
+        "ozon:RU",
+    ]
+    assert not any(
+        "HB_" in label or label in {"tiktok:MX", "tiktok:GB"}
+        for label in result["publication_scope"]["default_labels"]
+    )
 
 
 def test_release_dashboard_applies_exact_user_selected_channel_scope_and_prices(
@@ -212,7 +231,8 @@ def test_release_dashboard_applies_exact_user_selected_channel_scope_and_prices(
     root, database = _release_fixture(tmp_path)
     selected = [
         "miaoshou:COMMON",
-        "tiktok:PH",
+        "tiktok:LH_PH",
+        "tiktok:HB_PH",
         "shopee:PH",
         "ozon:RU",
     ]
@@ -227,13 +247,13 @@ def test_release_dashboard_applies_exact_user_selected_channel_scope_and_prices(
     scope = result["publication_scope"]
     assert scope["source"] == "user_selection"
     assert scope["selected_labels"] == selected
-    assert scope["selected_count"] == 4
-    assert len(scope["available_targets"]) == 10
+    assert scope["selected_count"] == 5
+    assert len(scope["available_targets"]) == 16
     assert scope["selection_applied_to_plan"] is True
     assert scope["read_only_preflight"] is True
     assert result["omnichannel_preview"]["site_selection"] == {
         "miaoshou": ["COMMON"],
-        "tiktok": ["PH"],
+        "tiktok": ["HB_PH", "LH_PH"],
         "shopee": ["PH"],
         "ozon": ["RU"],
     }
@@ -242,7 +262,8 @@ def test_release_dashboard_applies_exact_user_selected_channel_scope_and_prices(
         for row in result["omnichannel_preview"]["targets"]
     } == {
         ("miaoshou", "COMMON"),
-        ("tiktok", "PH"),
+        ("tiktok", "LH_PH"),
+        ("tiktok", "HB_PH"),
         ("shopee", "PH"),
         ("ozon", "RU"),
     }
@@ -252,9 +273,27 @@ def test_release_dashboard_applies_exact_user_selected_channel_scope_and_prices(
     assert {
         row["target_key"] for row in pricing["selected_store_prices"]
     } == {"lh_ph", "hb_ph"}
-    assert len(pricing["target_pricing"]["tiktok:PH"]["store_prices"]) == 2
+    assert pricing["target_pricing"]["tiktok:LH_PH"]["store_prices"][0][
+        "target_key"
+    ] == "lh_ph"
+    assert pricing["target_pricing"]["tiktok:HB_PH"]["store_prices"][0][
+        "target_key"
+    ] == "hb_ph"
     assert pricing["target_pricing"]["shopee:PH"]["source"]["region"] == "PH"
+    assert pricing["target_pricing"]["shopee:PH"][
+        "source_policy"
+    ] == "prefer_livelyhive_then_homebloom_within_country"
+    assert pricing["target_pricing"]["shopee:PH"][
+        "selected_source_target_key"
+    ] == "lh_ph"
+    assert [
+        row["target_key"]
+        for row in pricing["target_pricing"]["shopee:PH"]["source_candidates"]
+    ] == ["lh_ph", "hb_ph"]
     assert pricing["target_pricing"]["ozon:RU"]["source"]["region"] == "PH"
+    assert pricing["target_pricing"]["ozon:RU"][
+        "selected_source_target_key"
+    ] == "lh_ph"
     assert pricing["publication_target_labels"] == selected
     assert pricing["workbench_selected_store_prices"][0]["target_key"] == "lh_th"
 
@@ -269,11 +308,19 @@ def test_release_dashboard_channel_scope_changes_plan_and_confirmation_token(tmp
 
     thailand = build_release_dashboard(
         **common,
-        publication_targets=["miaoshou:COMMON", "tiktok:TH", "shopee:TH"],
+        publication_targets=[
+            "miaoshou:COMMON",
+            "tiktok:LH_TH",
+            "shopee:TH",
+        ],
     )
     philippines = build_release_dashboard(
         **common,
-        publication_targets=["miaoshou:COMMON", "tiktok:PH", "shopee:PH"],
+        publication_targets=[
+            "miaoshou:COMMON",
+            "tiktok:LH_PH",
+            "shopee:PH",
+        ],
     )
 
     assert (
@@ -290,15 +337,114 @@ def test_release_dashboard_channel_scope_changes_plan_and_confirmation_token(tmp
     )
 
 
+def test_release_dashboard_exposes_audited_mx_gb_targets_without_defaulting_them(
+    tmp_path,
+):
+    root, database = _release_fixture(tmp_path)
+
+    result = build_release_dashboard(
+        root=root,
+        database_path=database,
+        report_store_path=root / "data" / "missing-orbit.db",
+        publication_targets=[
+            "miaoshou:COMMON",
+            "tiktok:MX",
+            "tiktok:GB",
+            "ozon:RU",
+        ],
+    )
+
+    assert len(result["publication_scope"]["available_targets"]) == 16
+    status = {
+        (row["channel"], row["site"]): (
+            row["repository_adapter_audited"],
+            row["executable"],
+        )
+        for row in result["omnichannel_preview"]["targets"]
+    }
+    assert status[("tiktok", "MX")] == (True, True)
+    assert status[("tiktok", "GB")] == (True, True)
+    assert {
+        row["target_key"] for row in result["pricing_review"]["selected_store_prices"]
+    } == {"mx", "gb"}
+    assert result["pricing_review"]["target_pricing"]["tiktok:MX"][
+        "store_prices"
+    ][0]["target_key"] == "mx"
+    assert result["pricing_review"]["target_pricing"]["tiktok:GB"][
+        "store_prices"
+    ][0]["target_key"] == "gb"
+    ozon = result["pricing_review"]["target_pricing"]["ozon:RU"]
+    assert ozon["selected_source_target_key"] == "mx"
+    assert ozon["source_policy"] == (
+        "country_priority_PH_MY_TH_VN_MX_GB_then_"
+        "prefer_livelyhive_then_homebloom"
+    )
+
+
+def test_release_dashboard_never_defaults_mx_or_gb_from_workbench_site_keys(tmp_path):
+    root, database = _release_fixture(tmp_path)
+    state_path = root / "data" / "new_product_workbench" / "3828811808.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["review"]["selected_sites"] = ["lh_th", "mx", "gb"]
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    result = build_release_dashboard(
+        root=root,
+        database_path=database,
+        report_store_path=root / "data" / "missing-orbit.db",
+    )
+
+    assert result["publication_scope"]["default_labels"] == [
+        "miaoshou:COMMON",
+        "tiktok:LH_TH",
+        "shopee:TH",
+        "ozon:RU",
+    ]
+    assert "tiktok:MX" not in result["publication_scope"]["selected_labels"]
+    assert "tiktok:GB" not in result["publication_scope"]["selected_labels"]
+
+
+def test_release_dashboard_blocks_shopee_without_selected_same_country_tiktok(
+    tmp_path,
+):
+    root, database = _release_fixture(tmp_path)
+
+    result = build_release_dashboard(
+        root=root,
+        database_path=database,
+        report_store_path=root / "data" / "missing-orbit.db",
+        publication_targets=[
+            "miaoshou:COMMON",
+            "tiktok:LH_TH",
+            "shopee:PH",
+        ],
+    )
+
+    shopee = next(
+        row
+        for row in result["omnichannel_preview"]["targets"]
+        if row["channel"] == "shopee"
+    )
+    assert shopee["executable"] is False
+    assert any(
+        check["code"] == "upstream_target_selected" and not check["passed"]
+        for check in shopee["preflights"]
+    )
+    pricing = result["pricing_review"]["target_pricing"]["shopee:PH"]
+    assert pricing["status"] == "blocked"
+    assert pricing["source_candidates"] == []
+    assert "selected TikTok store in PH" in pricing["blocker"]
+
+
 @pytest.mark.parametrize(
     "targets",
     [
         [],
         [""],
-        ["tiktok:GB"],
+        ["tiktok:US"],
         ["unknown:TH"],
-        ["tiktok:TH", "tiktok:th"],
-        "tiktok:TH",
+        ["tiktok:LH_TH", "tiktok:lh_th"],
+        "tiktok:LH_TH",
     ],
 )
 def test_release_dashboard_rejects_unallowlisted_or_invalid_channel_scope(

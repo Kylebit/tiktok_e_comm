@@ -21,6 +21,8 @@
     MY: "马来西亚",
     TH: "泰国",
     VN: "越南",
+    MX: "墨西哥",
+    GB: "英国",
     RU: "俄罗斯",
   };
   const siteNames = {
@@ -73,6 +75,7 @@
   const QUEUE_REFRESH_CONCURRENCY = 4;
   let currentData = null;
   let approvalSubmitting = false;
+  let releaseSubmitting = false;
   let pageLoading = false;
   let queueRefreshing = false;
   let queueItems = [];
@@ -158,6 +161,22 @@
 
   function translateBlocker(value) {
     const text = String(value || "").trim();
+    const customSku = text.match(/^selected SKU (.+) is a customer-service\/custom placeholder/);
+    if (customSku) {
+      return `已选规格 ${customSku[1]} 是“咨询客服/定制”占位项，不能作为正式采购成本。`;
+    }
+    const priceConflict = text.match(/^selected SKU prices conflict: (.+)$/);
+    if (priceConflict) {
+      return `已选规格存在多个采购价：${priceConflict[1]}；请只保留真实可采购规格或明确成本规则。`;
+    }
+    const costMismatch = text.match(/^cost_cny does not match the selected SKU price: (.+)$/);
+    if (costMismatch) {
+      return `当前采购成本与已选规格价格不一致：${costMismatch[1]}。`;
+    }
+    const missingSku = text.match(/^selected SKU (.+) is not present in source\.skus$/);
+    if (missingSku) {
+      return `已选规格 ${missingSku[1]} 已不在当前来源商品中，请重新同步并选择。`;
+    }
     const unaudited = text.match(/^([a-z]+):([A-Z0-9_]+) has no audited repository adapter path$/);
     if (unaudited) {
       return `${channelNames[unaudited[1]] || unaudited[1]} ${unaudited[2]} 的真实发布适配器尚未完成仓库审计。`;
@@ -183,6 +202,7 @@
     $("#refreshButton").disabled = loading;
     if ($("#approvalButton")) updateApprovalButton(currentData || {});
     if ($("#applyPublicationScopeButton")) updatePublicationScopeControls();
+    if ($("#approveReleasePlanButton")) updateReleaseControls(currentData || {});
   }
 
   function showError(message) {
@@ -199,11 +219,13 @@
     $("#readinessValue").textContent = "未加载";
     $("#readinessNote").textContent = "请检查 Offer ID、Seller SKU 或本地数据";
     $("#stageRail").innerHTML = [
-      "商品信息",
-      "内容与图片",
-      "审批与锁定",
-      "妙手同步",
-      "渠道草稿",
+      "商品事实",
+      "内容审批",
+      "商品审批",
+      "发布计划",
+      "妙手待发布",
+      "渠道执行",
+      "回读对账",
     ].map((label, index) => `
       <div class="stage waiting">
         <span>${String(index + 1).padStart(2, "0")}</span>
@@ -242,7 +264,21 @@
     $("#channelPlanSummary").textContent = "尚未形成全渠道发布计划。";
     $("#channelBlockers").innerHTML = "";
     $("#publishAllButton").disabled = true;
+    $("#publishAllCheckbox").checked = false;
+    $("#publishAllCheckbox").disabled = true;
     $("#publishAllNote").textContent = "请先成功读取商品与内容审批事实。";
+    $("#releasePlanSummary").innerHTML =
+      '<div><span>ReleasePlan</span><strong>尚未生成</strong></div>';
+    $("#releasePlanCheckbox").checked = false;
+    $("#releasePlanCheckbox").disabled = true;
+    $("#approveReleasePlanButton").disabled = true;
+    $("#releasePlanMessage").textContent = "";
+    $("#prepareMiaoshouCheckbox").checked = false;
+    $("#prepareMiaoshouCheckbox").disabled = true;
+    $("#prepareMiaoshouButton").disabled = true;
+    $("#prepareMiaoshouMessage").textContent = "";
+    $("#publishRunMessage").textContent = "";
+    $("#releaseRunLedger").textContent = "当前没有发布运行。";
     $("#workbenchLink").removeAttribute("href");
     $("#workbenchLink").setAttribute("aria-disabled", "true");
     $("#approvalSku").textContent = "—";
@@ -293,6 +329,7 @@
       && dimensions.every((value) => Number(value) > 0)
       && (product.selected_sites || []).length
       && (product.selected_sku_keys || []).length
+      && product.fact_evidence?.ready !== false
     );
   }
 
@@ -304,22 +341,31 @@
       && !(data.content?.blockers || []).some((row) => !String(row).startsWith("external "))
     );
     const approvalReady = Boolean(data.product?.actual_product_approved);
-    const imageSyncReady = Boolean(data.content?.current_image_write_verified);
-    const channelPreviewReady = Boolean(data.publication_rehearsal?.ready);
-    const releaseReady = Boolean(data.actual_release_gate?.ready);
+    const release = data.release_v1 || {};
+    const planReady = Boolean(release.plan_approved);
+    const imageSyncReady = Boolean(release.miaoshou_prepared);
+    const runTargets = release.run?.targets || [];
+    const channelTargets = runTargets.filter(
+      (target) => target.target_label !== "miaoshou:COMMON",
+    );
+    const channelExecutionReady = Boolean(
+      channelTargets.length
+      && channelTargets.every((target) => target.status === "SUCCEEDED"),
+    );
+    const reconciliationReady = Boolean(
+      release.run?.status === "SUCCEEDED"
+      && runTargets.length
+      && runTargets.every((target) => target.status === "SUCCEEDED"),
+    );
 
     const raw = [
-      { key: "product", label: "商品信息", ready: productReady, readyText: "事实完整", waitText: "待补全" },
-      { key: "content", label: "内容与图片", ready: contentReady, readyText: "已批准", waitText: "待审核" },
-      { key: "approval", label: "审批与锁定", ready: approvalReady, readyText: "已批准", waitText: "待批准" },
-      { key: "sync", label: "妙手同步", ready: imageSyncReady, readyText: "已验证", waitText: "待同步" },
-      {
-        key: "channels",
-        label: "渠道草稿",
-        ready: releaseReady,
-        readyText: "可进入渠道",
-        waitText: channelPreviewReady ? "草稿已预览" : "等待前置条件",
-      },
+      { key: "product", label: "商品事实", ready: productReady, readyText: "证据完整", waitText: "待核对" },
+      { key: "content", label: "内容审批", ready: contentReady, readyText: "已批准", waitText: "待审核" },
+      { key: "approval", label: "商品审批", ready: approvalReady, readyText: "已锁定", waitText: "待批准" },
+      { key: "plan", label: "发布计划", ready: planReady, readyText: "已批准", waitText: "待批准" },
+      { key: "sync", label: "妙手待发布", ready: imageSyncReady, readyText: "回读一致", waitText: "待同步" },
+      { key: "channels", label: "渠道执行", ready: channelExecutionReady, readyText: "目标已完成", waitText: "待执行" },
+      { key: "reconcile", label: "回读对账", ready: reconciliationReady, readyText: "全部一致", waitText: "待对账" },
     ];
     const firstIncomplete = raw.findIndex((stage) => !stage.ready);
     return raw.map((stage, index) => ({
@@ -451,6 +497,9 @@
   function renderProduct(data) {
     const product = data.product || {};
     const skuGovernance = product.seller_sku_governance || {};
+    const evidence = product.fact_evidence || {};
+    const evidenceFields = evidence.fields || {};
+    const sourceFor = (field) => evidenceFields[field]?.selected_source || "未记录";
     $("#productTitle").textContent = product.title || "未命名商品";
     $("#productIdentity").innerHTML = [
       `Offer ${esc(product.offer_id || "—")}`,
@@ -459,7 +508,24 @@
     ].map((item) => `<span>${item}</span>`).join("");
 
     const factsReady = productFactsReady(product);
-    setBadge($("#factsBadge"), factsReady ? "信息完整" : "需要补充", factsReady ? "safe" : "warn");
+    const factsApproved = Boolean(
+      product.actual_product_approved && product.fields_locked,
+    );
+    setBadge(
+      $("#factsBadge"),
+      factsApproved
+        ? "Kyle 已批准并锁定"
+        : (factsReady ? "证据完整 · 待 Kyle 核对" : "事实存在冲突"),
+      factsApproved ? "safe" : "warn",
+    );
+    const evidenceBlockers = (evidence.blockers || []).map(translateBlocker);
+    $("#factsNotice").textContent = factsApproved
+      ? "这些值已由 Kyle 批准并锁定；商业字段若要修改，必须显式废止旧审批和旧发布计划。"
+      : (
+        evidenceBlockers.length
+          ? `当前是前序采集值，尚未批准。发现 ${evidenceBlockers.length} 项事实冲突：${evidenceBlockers.join("；")}`
+          : "当前是带来源的前序采集值，尚未成为不可更改的正式事实；请核对后再由 Kyle 批准锁定。"
+      );
     const category = typeof product.category === "object"
       ? (product.category?.name || Object.values(product.category || {}).filter(Boolean).join(" / "))
       : product.category;
@@ -481,12 +547,19 @@
         (skuGovernance.suggested_sku_range || []).join(" → ") || "—",
       ],
       ["商品类目", category || "—"],
-      ["商品标题", product.title || "—", true],
-      ["采购成本", `¥ ${money(product.cost_cny)} CNY`],
-      ["商品重量", product.weight_kg ? `${product.weight_kg} kg` : "—"],
-      ["包装尺寸", (product.package_cm || []).join(" × ") || "—"],
+      ["商品标题", `${product.title || "—"} · 来源 ${sourceFor("title")}`, true],
+      ["采购成本", `¥ ${money(product.cost_cny)} CNY · 来源 ${sourceFor("cost_cny")}`],
+      ["商品重量", product.weight_kg ? `${product.weight_kg} kg · 来源 ${sourceFor("weight_kg")}` : "—"],
+      ["包装尺寸", (product.package_cm || []).length ? `${product.package_cm.join(" × ")} cm · 来源 ${sourceFor("package_cm")}` : "—"],
       ["目标站点", (product.selected_sites || []).map((site) => siteNames[site] || site).join(" · ") || "—"],
       ["保留规格", (product.selected_sku_keys || []).join(" · ") || "—"],
+      [
+        "规格价格证据",
+        (evidence.selected_sku_prices || []).map(
+          (row) => `${row.label || row.selected_key}: ¥${row.price_cny ?? "—"}`,
+        ).join(" · ") || "—",
+        true,
+      ],
     ];
     const factsElement = $("#productFacts");
     factsElement.classList.remove("skeleton-lines");
@@ -507,7 +580,7 @@
 
   function approvalEligible(data) {
     return Boolean(
-      data.content?.approved
+      data.product?.fact_evidence?.ready !== false
       && data.approval?.ready
       && data.approval?.state_patch_preview?.product_approval?.input_fingerprint
     );
@@ -539,8 +612,8 @@
       : `${product.seller_sku_candidate || "—"}（已占用）`;
     $("#approvalRevision").textContent = String(product.revision ?? "—");
     $("#approvalContent").textContent = data.content?.approved
-      ? `${data.content.image_count || 0} 图已批准`
-      : "内容包未批准";
+      ? `${data.content.image_count || 0} 图已批准（独立版本）`
+      : "内容包独立审批，不阻塞商品事实批准";
     $("#approvalStatus").textContent = approved
       ? "已批准并锁定"
       : (eligible ? "可以审批" : "等待前置条件");
@@ -550,7 +623,7 @@
       ["包装尺寸", packageCm.length ? `${packageCm.join(" × ")} cm` : "—"],
       ["目标站点", (product.selected_sites || []).map((site) => siteNames[site] || site).join(" · ") || "—"],
       ["保留规格", (product.selected_sku_keys || []).join(" · ") || "—"],
-      ["内容包 ID", data.content?.package_id || "—"],
+      ["事实证据", product.fact_evidence?.ready === false ? "存在成本或规格冲突" : "证据一致"],
     ].map(([label, value]) => `
       <div><span>${esc(label)}</span><strong>${esc(value)}</strong></div>
     `).join("");
@@ -560,12 +633,12 @@
       : "批准并锁定商品字段";
     $("#approvalMessage").textContent = message || (
       approved
-        ? "本地审批事实已保存；外部发布仍保持关闭。"
+        ? "商品事实审批已保存；内容包与发布计划仍按各自版本独立审批。"
         : (!skuGovernance.available && skuGovernance.suggested_base_sku
           ? `当前候选已被旧工作台/已验证声明占用；请改用 ${skuGovernance.suggested_base_sku} 后重新审查。`
         : (eligible
           ? "请逐项核对上方事实，再勾选确认。"
-          : "内容包批准且审批预览通过后，才可保存本地商品审批。"))
+          : "先解决商品事实、成本证据或 Seller SKU 冲突，再保存商品审批。"))
     );
     updateApprovalButton(data);
   }
@@ -584,7 +657,7 @@
     approvalSubmitting = true;
     renderQueue();
     $("#approvalForm").classList.add("is-submitting");
-    $("#approvalMessage").textContent = "正在复核 SKU 唯一性、内容包和 revision…";
+    $("#approvalMessage").textContent = "正在复核 SKU 唯一性、事实证据和 revision…";
     updateApprovalButton(currentData);
     try {
       const response = await fetch("/api/product-workspace/approve", {
@@ -639,7 +712,15 @@
     const contentBlockers = (data.content?.blockers || [])
       .map(translateBlocker)
       .filter((item) => !blockers.includes(item));
-    let allBlockers = [...blockers, ...contentBlockers];
+    const factBlockers = (data.product?.fact_evidence?.blockers || [])
+      .map(translateBlocker);
+    const planBlockers = (data.release_v1?.blockers || []).map(translateBlocker);
+    let allBlockers = [
+      ...blockers,
+      ...contentBlockers,
+      ...factBlockers,
+      ...planBlockers,
+    ];
     if (
       data.content?.stale_external_write
       && blockers.some((item) => item.includes("旧的 11 图版本"))
@@ -651,15 +732,17 @@
       product: "补齐商品标题、规格、成本、重量、包装尺寸与目标站点。",
       content: "完成内容审核，并确认最终图片的选择、版本与顺序。",
       approval: "确认候选 Seller SKU，保存商品审批并锁定当前商业字段。",
-      sync: "将当前最终图片同步到妙手，并以回读结果确认内容完全一致。",
-      channels: "检查各渠道草稿条件，再进入需要二次确认的渠道流程。",
+      plan: "核对精确目标、来源店铺、售价和费用，批准不可变 ReleasePlan。",
+      sync: "将当前 ReleasePlan 同步到妙手待发布，并以回读结果确认完全一致。",
+      channels: "按已批准计划执行所选店铺；失败目标可独立重试。",
+      reconcile: "核对每个目标的回读结果和外部商品身份，完成发布对账。",
     };
     $("#nextStepNumber").textContent = String(currentIndex + 1).padStart(2, "0");
-    $("#nextStepTitle").textContent = data.actual_release_gate?.ready
-      ? "进入受控渠道流程"
+    $("#nextStepTitle").textContent = data.release_v1?.run?.status === "SUCCEEDED"
+      ? "本次正式发布已完成"
       : stage.label;
-    $("#nextStepDescription").textContent = data.actual_release_gate?.ready
-      ? "发布前条件已满足。进入详细工作台后，外部动作仍需逐项确认。"
+    $("#nextStepDescription").textContent = data.release_v1?.run?.status === "SUCCEEDED"
+      ? "所有已选店铺均已成功发布并完成回读，账本保留每个目标的幂等记录。"
       : descriptions[stage.key];
     $("#blockerList").innerHTML = allBlockers.length
       ? allBlockers.map((item) => `<li>${esc(item)}</li>`).join("")
@@ -736,8 +819,26 @@
         safe: true,
       });
     }
+    const videos = Array.isArray(content?.video_urls) ? content.video_urls : [];
+    if (videos.length) {
+      notices.push({
+        text: `视频已审核保留 · ${videos.length} 条 HTTPS 素材`,
+        safe: true,
+        url: videos[0],
+      });
+    } else {
+      notices.push({
+        text: "本内容包不包含保留视频；不会把未审核视频带入发布计划",
+        safe: true,
+      });
+    }
     $("#contentNotice").innerHTML = notices
-      .map((item) => `<span class="${item.safe ? "safe" : ""}">${esc(item.text)}</span>`)
+      .map((item) => `
+        <span class="${item.safe ? "safe" : ""}">
+          ${esc(item.text)}
+          ${item.url ? ` · <a href="${esc(item.url)}" target="_blank" rel="noopener">打开审核视频 ↗</a>` : ""}
+        </span>
+      `)
       .join("");
   }
 
@@ -775,7 +876,9 @@
     }
     grid.innerHTML = available.map((target, index) => {
       const channel = channelNames[target.channel] || target.channel;
-      const site = publicationSiteNames[target.site] || target.site;
+      const site = target.channel === "tiktok" && target.shop && target.country
+        ? `${target.shop} · ${publicationSiteNames[target.country] || target.country}`
+        : (publicationSiteNames[target.site] || target.site);
       const checked = pendingPublicationTargets.has(target.label);
       return `
         <div class="publication-target">
@@ -866,15 +969,22 @@
     }
 
     const selectedLabels = publicationScope?.selected_labels || [];
+    const availableByLabel = new Map(
+      (publicationScope?.available_targets || []).map((row) => [row.label, row]),
+    );
     const targetPricing = pricing?.target_pricing || {};
     $("#selectedChannelPriceGrid").innerHTML = selectedLabels.length
       ? selectedLabels.map((label) => {
           const [channel, site] = String(label).split(":");
+          const targetMeta = availableByLabel.get(label) || {};
+          const siteLabel = channel === "tiktok" && targetMeta.shop
+            ? `${targetMeta.shop} · ${publicationSiteNames[targetMeta.country] || targetMeta.country}`
+            : (publicationSiteNames[site] || site);
           const detail = channelPriceLine(targetPricing[label] || {});
           return `
             <article class="selected-channel-price-card ${esc(detail.status)}">
               <header>
-                <h5>${esc(channelNames[channel] || channel)} · ${esc(publicationSiteNames[site] || site)}</h5>
+                <h5>${esc(channelNames[channel] || channel)} · ${esc(siteLabel)}</h5>
                 <span>${esc(detail.statusText)}</span>
               </header>
               <strong>${esc(detail.value)}</strong>
@@ -940,7 +1050,7 @@
         value: `¥${money(derived.global_original_price_cny)} CNY`,
         status,
         statusText,
-        source: `来源：${source.shop || "TikTok"} ${source.region || ""} ${source.target_key || ""}，真实写入前必须重新回读`,
+        source: `来源：${source.shop || "TikTok"} ${source.region || ""} ${source.target_key || ""}；${pricing?.source_selection_note || "真实写入前必须重新回读"}`,
       };
     }
     if (derived.price_cny != null) {
@@ -949,7 +1059,7 @@
         value: `¥${money(derived.price_cny)} / 划线 ¥${money(derived.old_price_cny)}`,
         status,
         statusText,
-        source: `来源：${source.shop || "TikTok"} ${source.region || ""} ${source.target_key || ""}，真实写入前必须重新回读`,
+        source: `来源：${source.shop || "TikTok"} ${source.region || ""} ${source.target_key || ""}；${pricing?.source_selection_note || "真实写入前必须重新回读"}`,
       };
     }
     return {
@@ -982,8 +1092,6 @@
 
     if (!targets.length) {
       grid.innerHTML = '<div class="channel-card"><p>商品审批完成后将生成渠道草稿预览。</p></div>';
-      $("#publishAllButton").disabled = true;
-      $("#publishAllNote").textContent = blockers[0] || "全渠道计划尚未就绪。";
       return;
     }
 
@@ -1000,12 +1108,17 @@
       const externalStepCount = (target.steps || [])
         .filter((step) => step.mutates_external_state).length;
       const priceLine = channelPriceLine(target.pricing || {});
+      const targetMeta = (currentData?.publication_scope?.available_targets || [])
+        .find((row) => row.label === `${target.channel}:${target.site}`) || {};
+      const targetSiteLabel = target.channel === "tiktok" && targetMeta.shop
+        ? `${targetMeta.shop} · ${publicationSiteNames[targetMeta.country] || targetMeta.country}`
+        : (publicationSiteNames[target.site] || target.site || "COMMON");
       return `
         <article class="channel-card ${preflightReady ? "ready" : "blocked"}">
           <header>
             <h3>
               ${esc(channelNames[target.channel] || target.channel)}
-              <small>${esc(target.site || "COMMON")}</small>
+              <small>${esc(targetSiteLabel)}</small>
             </h3>
             <span class="badge ${preflightReady ? "safe" : "warn"}">
               ${preflightReady ? "预检通过" : "已阻塞"}
@@ -1028,18 +1141,254 @@
       `;
     }).join("");
 
-    const allReady = Boolean(
-      releaseReady
-      && omnichannel?.ready
-      && omnichannel?.all_preflights_passed
-      && targetLabels.length === targets.length,
+    void publication;
+    void releaseReady;
+    void targetLabels;
+  }
+
+  function maskedToken(token) {
+    const value = String(token || "");
+    return value.length > 18
+      ? `${value.slice(0, 12)}…${value.slice(-4)}`
+      : (value || "—");
+  }
+
+  function targetDisplayName(label) {
+    const meta = (currentData?.publication_scope?.available_targets || [])
+      .find((row) => row.label === label);
+    if (meta?.shop) {
+      return `${channelNames[meta.channel] || meta.channel} · ${meta.shop} · ${publicationSiteNames[meta.country] || meta.country}`;
+    }
+    const [channel, site] = String(label || "").split(":");
+    return `${channelNames[channel] || channel} · ${publicationSiteNames[site] || site}`;
+  }
+
+  function updateReleaseControls(data) {
+    const release = data?.release_v1 || {};
+    const plan = release.plan || {};
+    const approved = Boolean(release.plan_approved);
+    const eligible = Boolean(release.eligible_for_plan_approval && plan.plan_id);
+    const busy = releaseSubmitting || approvalSubmitting || pageLoading;
+
+    $("#releasePlanCheckbox").disabled = approved || !eligible || busy;
+    $("#approveReleasePlanButton").disabled = Boolean(
+      approved || !eligible || !$("#releasePlanCheckbox").checked || busy,
     );
-    // The execution endpoint is deliberately absent in this release.  Even a
-    // fully green preview must not turn a disabled control into a network write.
-    $("#publishAllButton").disabled = true;
-    $("#publishAllNote").textContent = allReady
-      ? "全部预检已经通过；真实执行端点仍在发布审计中，本版本不会调用渠道接口。"
-      : `${targets.length} 个目标中有前置条件未完成；当前按钮保持强制禁用。`;
+
+    const prepared = Boolean(release.miaoshou_prepared);
+    $("#prepareMiaoshouCheckbox").disabled = !approved || prepared || busy;
+    $("#prepareMiaoshouButton").disabled = Boolean(
+      !approved || prepared || !$("#prepareMiaoshouCheckbox").checked || busy,
+    );
+
+    const publishReady = Boolean(release.publish_ready);
+    $("#publishAllCheckbox").disabled = !publishReady || busy;
+    $("#publishAllButton").disabled = Boolean(
+      !publishReady || !$("#publishAllCheckbox").checked || busy,
+    );
+  }
+
+  function renderReleaseV1(data) {
+    const release = data.release_v1 || {};
+    const plan = release.plan || {};
+    const payload = plan.payload || {};
+    const targets = plan.targets || payload.targets || [];
+    const planStatus = release.plan_approved
+      ? "Kyle 已批准"
+      : (release.plan_persisted ? "等待批准" : "尚未持久化");
+    $("#releasePlanSummary").innerHTML = `
+      <div><span>ReleasePlan</span><strong>${esc(plan.plan_id || "尚未生成")}</strong></div>
+      <div><span>商品 / 内容版本</span><strong>revision ${esc(payload.product_revision ?? "—")} · ${esc(payload.content_package_id || plan.content_package_id || "—")}</strong></div>
+      <div><span>精确目标</span><strong>${esc(String(targets.length))} 个店铺 · ${esc(maskedToken(plan.confirmation_token))}</strong></div>
+      <div><span>批准状态</span><strong>${esc(planStatus)}</strong></div>
+    `;
+    $("#releasePlanCheckbox").checked = Boolean(release.plan_approved);
+    $("#releasePlanMessage").textContent = release.plan_approved
+      ? "当前计划已绑定商品 revision、内容包、16 目标范围中的本次选择、来源映射、售价与费用。"
+      : (
+        release.eligible_for_plan_approval
+          ? "计划预览已形成。批准只保存本地不可变计划，不会同步或发布。"
+          : translateBlocker((release.blockers || [])[0] || "完成商品事实和内容审批后生成正式计划。")
+      );
+
+    $("#prepareMiaoshouCheckbox").checked = Boolean(release.miaoshou_prepared);
+    $("#prepareMiaoshouMessage").textContent = release.miaoshou_prepared
+      ? "妙手公共草稿已写入并回读一致；可以继续检查渠道执行条件。"
+      : (
+        release.plan_approved
+          ? "等待你的独立确认；此动作只准备妙手待发布商品，不会提交站点发布。"
+          : "先批准当前 ReleasePlan。"
+      );
+
+    const adapterBlockers = release.adapter_blockers || [];
+    $("#publishAllNote").textContent = release.publish_ready
+      ? `将按当前令牌执行 ${targets.length} 个已选目标；成功目标不会重复发布。`
+      : (
+        !release.miaoshou_prepared
+          ? "先完成妙手待发布写入和回读。"
+          : (adapterBlockers.length
+            ? `仍有 ${adapterBlockers.length} 项统一适配器审计未完成；正式按钮保持关闭，不会调用旧发布函数。`
+            : "等待当前计划的所有发布前条件通过。")
+      );
+    $("#publishAllCheckbox").checked = false;
+
+    const run = release.run;
+    if (!run) {
+      $("#releaseRunLedger").textContent =
+        "当前没有发布运行。批准计划不会自动触发外部写入。";
+    } else {
+      const statusNames = {
+        PENDING: "等待执行",
+        RUNNING: "执行中",
+        FAILED: "失败待重试",
+        PARTIAL_FAILED: "部分失败",
+        SUCCEEDED: "回读成功",
+        SUPERSEDED: "已废止",
+      };
+      $("#releaseRunLedger").innerHTML = `
+        <div class="run-ledger-head">
+          <strong>${esc(run.run_id || "ReleaseRun")}</strong>
+          <span>${esc(statusNames[run.status] || run.status || "未知")}</span>
+        </div>
+        <div class="run-target-grid">
+          ${(run.targets || []).map((target) => `
+            <article class="run-target ${esc(String(target.status || "").toLowerCase())}">
+              <span>${esc(targetDisplayName(target.target_label))}</span>
+              <strong>${esc(statusNames[target.status] || target.status || "未知")}</strong>
+              <small>尝试 ${esc(String(target.attempts || 0))} 次${target.external_id ? ` · 外部 ID ${esc(target.external_id)}` : ""}</small>
+              ${target.error ? `<p>${esc(target.error)}</p>` : ""}
+            </article>
+          `).join("")}
+        </div>
+      `;
+    }
+    updateReleaseControls(data);
+  }
+
+  function currentReleaseBody(extra = {}) {
+    const release = currentData?.release_v1 || {};
+    const plan = release.plan || {};
+    return {
+      offer_id: currentData?.product?.offer_id,
+      seller_sku: currentData?.product?.seller_sku_candidate,
+      publication_targets: [...(currentData?.publication_scope?.selected_labels || [])],
+      plan_id: plan.plan_id,
+      confirmation_token: plan.confirmation_token,
+      ...extra,
+    };
+  }
+
+  function adoptWorkflowDashboard(dashboard) {
+    if (!dashboard) return;
+    currentData = dashboard;
+    const key = productKey(
+      dashboard.product?.offer_id,
+      dashboard.product?.seller_sku_candidate,
+    );
+    loadedQueueKey = key;
+    const item = queueItem(key);
+    if (item) item.data = dashboard;
+    render(dashboard);
+    renderQueue();
+  }
+
+  async function postReleaseAction(path, body) {
+    const response = await fetch(path, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    const payload = await response.json().catch(() => ({
+      ok: false,
+      error: `服务返回 HTTP ${response.status}`,
+    }));
+    if (!response.ok || payload.ok === false) {
+      const targetDetails = (payload.adapter_blockers || [])
+        .slice(0, 3)
+        .map((row) => `${row.target}: ${row.detail}`)
+        .join("；");
+      throw new Error(
+        `${payload.error || `服务返回 HTTP ${response.status}`}${targetDetails ? `（${targetDetails}）` : ""}`,
+      );
+    }
+    return payload;
+  }
+
+  async function approveReleasePlan() {
+    if (!currentData || releaseSubmitting || !$("#releasePlanCheckbox").checked) return;
+    releaseSubmitting = true;
+    updateReleaseControls(currentData);
+    $("#releasePlanMessage").textContent = "正在重新计算精确计划并校验确认令牌…";
+    try {
+      const payload = await postReleaseAction(
+        "/api/product-workspace/release-plan/approve",
+        currentReleaseBody({ approved_by: "Kyle", user_approved: true }),
+      );
+      adoptWorkflowDashboard(payload.dashboard);
+      $("#releasePlanMessage").textContent =
+        "当前 ReleasePlan 已由 Kyle 批准并持久化；没有发生外部写入。";
+      showError("");
+    } catch (error) {
+      const message = friendlyError(error.message);
+      showError(message);
+      $("#releasePlanMessage").textContent = `${message} 请刷新后重新核对计划。`;
+    } finally {
+      releaseSubmitting = false;
+      updateReleaseControls(currentData || {});
+    }
+  }
+
+  async function prepareMiaoshou() {
+    if (!currentData || releaseSubmitting || !$("#prepareMiaoshouCheckbox").checked) return;
+    releaseSubmitting = true;
+    updateReleaseControls(currentData);
+    $("#prepareMiaoshouMessage").textContent = "正在写入妙手待发布草稿并逐字段回读…";
+    try {
+      const payload = await postReleaseAction(
+        "/api/product-workspace/miaoshou-draft/commit",
+        currentReleaseBody({ confirm_miaoshou_write: true }),
+      );
+      adoptWorkflowDashboard(payload.dashboard);
+      $("#prepareMiaoshouMessage").textContent = payload.idempotent
+        ? "该计划的妙手草稿已回读成功，本次没有重复写入。"
+        : "妙手待发布草稿已写入并回读一致；尚未发布到任何站点。";
+      showError("");
+    } catch (error) {
+      const message = friendlyError(error.message);
+      showError(message);
+      $("#prepareMiaoshouMessage").textContent =
+        `${message} 失败状态已写入运行账本，可在修复后重试。`;
+    } finally {
+      releaseSubmitting = false;
+      updateReleaseControls(currentData || {});
+    }
+  }
+
+  async function publishSelectedTargets() {
+    if (!currentData || releaseSubmitting || !$("#publishAllCheckbox").checked) return;
+    releaseSubmitting = true;
+    updateReleaseControls(currentData);
+    $("#publishRunMessage").textContent = "正在校验统一适配器、幂等键和前置回读…";
+    try {
+      const payload = await postReleaseAction(
+        "/api/product-workspace/publish",
+        currentReleaseBody({ confirm_publish: true }),
+      );
+      adoptWorkflowDashboard(payload.dashboard);
+      $("#publishRunMessage").textContent =
+        "已选目标执行完成；请在下方逐店核对回读账本。";
+      showError("");
+    } catch (error) {
+      const message = friendlyError(error.message);
+      showError(message);
+      $("#publishRunMessage").textContent = message;
+    } finally {
+      releaseSubmitting = false;
+      updateReleaseControls(currentData || {});
+    }
   }
 
   function render(data) {
@@ -1060,6 +1409,7 @@
       data.publication_rehearsal || {},
       Boolean(data.actual_release_gate?.ready),
     );
+    renderReleaseV1(data);
 
     const offer = data.product?.offer_id || $("#offerId").value.trim();
     const studioUrl = `/ai-image-studio?offer_id=${encodeURIComponent(offer)}`;
@@ -1072,7 +1422,11 @@
     currentData = null;
     loadedQueueKey = "";
     $("#approvalCheckbox").checked = false;
+    $("#releasePlanCheckbox").checked = false;
+    $("#prepareMiaoshouCheckbox").checked = false;
+    $("#publishAllCheckbox").checked = false;
     updateApprovalButton({});
+    updateReleaseControls({});
   }
 
   async function refreshQueueProduct(item, options = {}) {
@@ -1126,7 +1480,7 @@
   }
 
   async function selectQueueProduct(key) {
-    if (approvalSubmitting) return;
+    if (approvalSubmitting || releaseSubmitting) return;
     const item = queueItem(key);
     if (!item) return;
     currentQueueKey = key;
@@ -1246,6 +1600,21 @@
     event.preventDefault();
     submitApproval();
   });
+  $("#releasePlanCheckbox").addEventListener("change", () => {
+    updateReleaseControls(currentData || {});
+  });
+  $("#releasePlanApprovalForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    approveReleasePlan();
+  });
+  $("#prepareMiaoshouCheckbox").addEventListener("change", () => {
+    updateReleaseControls(currentData || {});
+  });
+  $("#prepareMiaoshouButton").addEventListener("click", prepareMiaoshou);
+  $("#publishAllCheckbox").addEventListener("change", () => {
+    updateReleaseControls(currentData || {});
+  });
+  $("#publishAllButton").addEventListener("click", publishSelectedTargets);
 
   const initial = new URLSearchParams(window.location.search);
   queueItems = readQueue();

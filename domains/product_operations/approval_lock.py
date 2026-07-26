@@ -36,13 +36,11 @@ def _clean(value: Any) -> str:
 
 def _fingerprint(
     product: object,
-    content: ContentPackage,
     seller_sku: str,
     approval_input_facts: Mapping[str, Any] | None = None,
 ) -> str:
     payload = {
         "product": contract_payload(product),
-        "content_package": contract_payload(content),
         "seller_sku": seller_sku,
         "approval_input_facts": dict(approval_input_facts or {}),
     }
@@ -130,8 +128,6 @@ def preview_product_approval_lock(
     state_offer_id = _clean(state.get("offer_id"))
     if state_offer_id and state_offer_id != product.product_id:
         blockers.append("state offer_id must match product_id")
-    blockers.extend(_content_blockers(content_package, product.product_id))
-
     try:
         approval = approval_record_from_fact(fact, product_id=product.product_id)
         package_id = _clean(fact.get("package_id"))
@@ -146,12 +142,11 @@ def preview_product_approval_lock(
         package_id = ""
         blockers.append(str(error))
 
-    if blockers or approval is None or content_package is None:
+    if blockers or approval is None:
         return ProductApprovalLockPreview(None, {}, tuple(blockers), False, None)
 
     signature = _fingerprint(
         product,
-        content_package,
         clean_sku,
         approval_input_facts,
     )
@@ -170,22 +165,36 @@ def preview_product_approval_lock(
         return ProductApprovalLockPreview(None, {}, ("state review must be a mapping",), False, None)
     complete_review = dict(current_review)
     complete_review.update({"seller_sku": clean_sku, "fields_locked": True})
+    approval_patch = {
+        "approval_id": approval.approval_id,
+        "package_id": package.package_id,
+        "status": "approved",
+        "subject_type": "product",
+        "subject_id": product.product_id,
+        "seller_sku": clean_sku,
+        "input_fingerprint": signature,
+        "approved_by": approval.approved_by,
+        "approved_at": approval.approved_at.isoformat() if isinstance(approval.approved_at, datetime) else None,
+        "source_reference": source_reference,
+        "approval_input_facts": dict(approval_input_facts or {}),
+    }
+    # Product facts and content are approved independently in V1. Preserve
+    # linkage metadata when an already-approved content package is supplied,
+    # but never make that package a prerequisite or part of the product-facts
+    # fingerprint. ReleasePlan approval binds both immutable approvals later.
+    if (
+        content_package is not None
+        and not _content_blockers(content_package, product.product_id)
+        and content_package.approval is not None
+    ):
+        approval_patch.update(
+            {
+                "content_package_id": content_package.package_id,
+                "content_approval_id": content_package.approval.approval_id,
+            }
+        )
     patch = {
         "review": complete_review,
-        "product_approval": {
-            "approval_id": approval.approval_id,
-            "package_id": package.package_id,
-            "status": "approved",
-            "subject_type": "product",
-            "subject_id": product.product_id,
-            "seller_sku": clean_sku,
-            "content_package_id": content_package.package_id,
-            "content_approval_id": content_package.approval.approval_id,
-            "input_fingerprint": signature,
-            "approved_by": approval.approved_by,
-            "approved_at": approval.approved_at.isoformat() if isinstance(approval.approved_at, datetime) else None,
-            "source_reference": source_reference,
-            "approval_input_facts": dict(approval_input_facts or {}),
-        },
+        "product_approval": approval_patch,
     }
     return ProductApprovalLockPreview(package, patch, (), False, prior_id if prior_active else None)

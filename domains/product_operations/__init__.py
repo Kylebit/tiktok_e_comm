@@ -10,6 +10,13 @@ from .catalog_update_preview import (
     preview_catalog_update,
     reservations_from_documents,
 )
+from .product_facts import (
+    FieldSourceCandidate,
+    FieldSourceEvidence,
+    ProductFactsSnapshot,
+    SelectedSkuPriceFact,
+    build_product_facts_snapshot,
+)
 
 __all__ = [
     "ApprovedProductPackage",
@@ -22,4 +29,9 @@ __all__ = [
     "SellerSkuReservation",
     "preview_catalog_update",
     "reservations_from_documents",
+    "FieldSourceCandidate",
+    "FieldSourceEvidence",
+    "ProductFactsSnapshot",
+    "SelectedSkuPriceFact",
+    "build_product_facts_snapshot",
 ]

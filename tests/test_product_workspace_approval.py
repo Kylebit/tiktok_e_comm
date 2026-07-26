@@ -185,7 +185,6 @@ def test_local_approval_rejects_an_untrusted_approval_actor(approval_state):
 @pytest.mark.parametrize(
     ("content_approved", "preview_ready", "blockers", "expected_error"),
     [
-        (False, True, (), "current content package is not approved"),
         (
             True,
             False,
@@ -194,7 +193,7 @@ def test_local_approval_rejects_an_untrusted_approval_actor(approval_state):
         ),
     ],
 )
-def test_local_approval_blocks_unapproved_content_and_readonly_sku_conflicts(
+def test_local_approval_blocks_readonly_sku_conflicts(
     approval_state,
     monkeypatch,
     content_approved,
@@ -221,6 +220,28 @@ def test_local_approval_blocks_unapproved_content_and_readonly_sku_conflicts(
     assert saves == []
     if blockers:
         assert payload["blockers"] == list(blockers)
+
+
+def test_local_product_facts_approval_is_independent_of_content_approval(
+    approval_state,
+    monkeypatch,
+):
+    state, saves = approval_state
+    monkeypatch.setattr(
+        release_control,
+        "build_release_dashboard",
+        lambda **_kwargs: _dashboard(
+            state,
+            content_approved=False,
+            preview_ready=True,
+        ),
+    )
+
+    status, payload = _approve_product_workspace_locally(_approval_request())
+
+    assert status == 200
+    assert payload["persisted"] is True
+    assert len(saves) == 1
 
 
 def test_identical_current_approval_is_idempotent_without_rewriting(approval_state):
@@ -297,7 +318,7 @@ def test_product_workspace_dashboard_forwards_repeated_publication_targets(
     )
 
     assert status == 200
-    assert payload["workspace_mode"] == "pre_release"
+    assert payload["workspace_mode"] == "formal_v1"
     assert captured["publication_targets"] == [
         "miaoshou:COMMON",
         "tiktok:TH",
@@ -317,7 +338,7 @@ def test_product_approval_http_requires_same_origin_json_and_explicit_confirmati
         },
     )
     assert status == 403
-    assert payload["error"] == "cross-origin product approval rejected"
+    assert payload["error"] == "cross-origin product workflow write rejected"
 
     status, payload = _post(
         product_server + "/api/product-workspace/approve",

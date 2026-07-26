@@ -326,6 +326,13 @@ input {
   transition: transform .15s ease, box-shadow .15s ease, opacity .15s ease;
 }
 .button:hover { transform: translateY(-1px); }
+.button:disabled {
+  cursor: not-allowed;
+  opacity: .42;
+  filter: grayscale(.25);
+  box-shadow: none;
+  transform: none;
+}
 .button[aria-disabled="true"] {
   opacity: .48;
   pointer-events: none;
@@ -429,18 +436,18 @@ section { scroll-margin-top: 20px; }
 }
 .stage-rail {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(7, 1fr);
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 20px;
   background: rgba(255, 255, 255, .48);
 }
 .stage {
-  min-height: 116px;
+  min-height: 108px;
   display: grid;
   align-content: center;
   gap: 5px;
-  padding: 18px;
+  padding: 16px 13px;
   border-right: 1px solid var(--line);
   position: relative;
 }
@@ -511,6 +518,15 @@ section { scroll-margin-top: 20px; }
   border: 1px solid var(--line);
   border-radius: 14px;
   background: var(--line);
+}
+.facts-notice {
+  margin: 0 0 15px;
+  padding: 11px 13px;
+  border-left: 3px solid var(--amber);
+  color: #70513a;
+  background: rgba(240, 189, 98, .13);
+  font-size: 10px;
+  line-height: 1.55;
 }
 .fact {
   min-height: 76px;
@@ -1180,20 +1196,120 @@ section { scroll-margin-top: 20px; }
   font-size: 10px;
   line-height: 1.5;
 }
-.publish-all-card {
-  margin-top: 18px;
-  padding: 18px 20px;
-  border: 1px solid rgba(35, 118, 107, .2);
-  border-radius: 17px;
-  background: rgba(213, 238, 229, .28);
+.release-plan-card,
+.external-action-card,
+.run-ledger {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(255, 253, 247, .82);
 }
-.publish-all-card strong { font: 650 17px/1.3 Georgia, "Songti SC", serif; }
-.publish-all-card p {
-  margin: 7px 0 0;
+.release-plan-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--line);
+}
+.release-plan-summary > div {
+  min-height: 84px;
+  display: grid;
+  align-content: center;
+  gap: 7px;
+  padding: 16px 18px;
+  background: var(--forest);
+}
+.release-plan-summary span {
+  color: rgba(255, 255, 255, .58);
+  font-size: 9px;
+}
+.release-plan-summary strong {
+  color: white;
+  font: 650 14px/1.35 Georgia, "Songti SC", serif;
+  overflow-wrap: anywhere;
+}
+.release-plan-form {
+  display: grid;
+  gap: 16px;
+  padding: 22px;
+}
+.release-actions-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+.external-action-card {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  padding: 22px;
+}
+.external-action-card.publish {
+  border-color: rgba(35, 118, 107, .32);
+  background: rgba(213, 238, 229, .24);
+}
+.external-action-card h3,
+.run-ledger h3 {
+  margin: 6px 0 7px;
+  font: 650 20px/1.2 Georgia, "Songti SC", serif;
+}
+.external-action-card p,
+.run-ledger p {
+  margin: 0;
   color: var(--muted);
   font-size: 10px;
   line-height: 1.55;
 }
+.approval-confirm.compact {
+  padding: 12px 13px;
+  font-size: 10px;
+}
+.run-ledger {
+  display: grid;
+  gap: 16px;
+  margin-top: 14px;
+  padding: 22px;
+}
+.release-run-ledger {
+  display: grid;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.run-ledger-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 11px 13px;
+  border-radius: 10px;
+  color: white;
+  background: var(--forest);
+}
+.run-target-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.run-target {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-height: 102px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.run-target.succeeded { border-color: rgba(35, 118, 107, .35); background: rgba(213, 238, 229, .32); }
+.run-target.failed,
+.run-target.partial_failed { border-color: rgba(182, 75, 60, .35); background: rgba(245, 211, 202, .28); }
+.run-target strong { color: var(--ink); }
+.run-target span {
+  font: 700 9px/1.4 ui-monospace, monospace;
+  overflow-wrap: anywhere;
+}
+.run-target small { color: var(--muted); }
+.run-target p { color: #9b4033; overflow-wrap: anywhere; }
 .safety-card {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -1275,6 +1391,8 @@ footer {
   .store-price-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .selected-channel-price-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .channel-grid { grid-template-columns: repeat(2, 1fr); }
+  .release-plan-summary { grid-template-columns: repeat(2, 1fr); }
+  .run-target-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 580px) {
@@ -1339,7 +1457,9 @@ footer {
   .channel-flow i { transform: rotate(90deg); text-align: center; }
   .channel-toolbar, .publish-all-card { align-items: stretch; display: grid; }
   .channel-grid { grid-template-columns: 1fr; }
-  .channel-grid { grid-template-columns: 1fr; }
+  .release-plan-summary { grid-template-columns: 1fr; }
+  .release-actions-grid { grid-template-columns: 1fr; }
+  .run-target-grid { grid-template-columns: 1fr; }
   .safety-card { grid-template-columns: auto 1fr; }
   .safety-card > span { grid-column: 2; }
   footer { display: grid; align-content: center; padding: 16px 0; }

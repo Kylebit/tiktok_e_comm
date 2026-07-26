@@ -77,7 +77,7 @@ def test_product_workspace_api_is_a_product_named_view_of_read_only_evidence(
 
     assert status == 200
     assert payload["schema_version"] == "product-workspace-v1"
-    assert payload["workspace_mode"] == "pre_release"
+    assert payload["workspace_mode"] == "formal_v1"
     assert payload["safety"]["external_writes_performed"] == []
     assert payload["received"]["seller_sku"] == "0946"
 
@@ -121,12 +121,12 @@ def test_product_workspace_is_the_user_surface_and_fails_without_stale_results()
     css = (ROOT / "web/static/product_workspace.css").read_text(encoding="utf-8")
 
     assert "商品发布中心" in html
-    assert "五阶段发布进度" in html
+    assert "七阶段正式发布进度" in html
     assert "最终商品图片" in html
     assert "/api/product-workspace/dashboard" in script
     assert "renderFailure(message)" in script
     assert "页面不会沿用上一次商品结果" in script
-    assert "商品审批与字段锁定" in html
+    assert "商品事实审批与版本锁定" in html
     assert "我已核对 Seller SKU、成本、重量、包装、站点和规格" in html
     assert "/api/product-workspace/approve" in script
     assert 'method: "POST"' in script
@@ -147,11 +147,11 @@ def test_product_workspace_is_the_user_surface_and_fails_without_stale_results()
     assert "loadedQueueKey !== currentQueueKey" in script
     assert "history.replaceState" in script
     assert ".queue-grid { grid-template-columns: 1fr; }" in css
-    assert "一键全渠道发布准备" in html
+    assert "16 目标全渠道发布准备" in html
     assert "选择本次准备的平台与国家" in html
     assert 'id="publicationScopeForm"' in html
     assert 'id="publicationTargetGrid"' in html
-    assert "全选 10 个目标" in html
+    assert "全选 16 个目标" in html
     assert "应用选择并审查售价" in html
     assert 'params.append("target", target)' in script
     assert "renderPublicationScope" in script
@@ -174,11 +174,16 @@ def test_product_workspace_is_the_user_surface_and_fails_without_stale_results()
     assert "妙手公共草稿" in html
     assert "TikTok 主商品回读" in html
     assert "publishAllButton" in html
+    assert "releasePlanApprovalForm" in html
+    assert "prepareMiaoshouButton" in html
+    assert "/api/product-workspace/release-plan/approve" in script
+    assert "/api/product-workspace/miaoshou-draft/commit" in script
+    assert "/api/product-workspace/publish" in script
     assert "并行打开内容与图片工作室" in html
     assert 'id="workbenchLink"' in html and 'target="_blank"' in html
     assert "omnichannel_preview" in script
     assert "repository_adapter_audited" in script
-    assert "$(\"#publishAllButton\").disabled = true" in script
+    assert "updateReleaseControls" in script
     assert "@media (max-width:" in css
 
 

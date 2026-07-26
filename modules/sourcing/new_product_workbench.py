@@ -60,6 +60,20 @@ _IMAGE_GENERATION_LOCKS: dict[str, threading.Lock] = {}
 _IMAGE_GENERATION_QUEUE_LOCKS: dict[str, threading.Lock] = {}
 _MIAOSHOU_IMAGE_SYNC_LOCKS: dict[str, threading.Lock] = {}
 _STATE_WRITE_LOCKS: dict[str, threading.RLock] = {}
+_APPROVAL_BOUND_REVIEW_FIELDS = frozenset(
+    {
+        "title",
+        "seller_sku",
+        "category",
+        "cost_cny",
+        "weight_kg",
+        "package_cm",
+        "selected_sites",
+        "selected_sku_keys",
+        "support_cod",
+        "fx_rates",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -3986,6 +4000,7 @@ def build_preview(offer_id_or_url: str, *, source_code: str = "") -> dict[str, A
         "weight_kg": weight,
         "package_cm": dims,
         "video_action": review.get("video_action") or source.get("video", {}).get("action"),
+        "video_url": review.get("video_url") or source.get("video", {}).get("url"),
         "support_cod": True,
         "image_actions": review.get("image_actions") or source.get("images"),
         "generated_image_actions": content.get("generated_review_images") or [],
@@ -4004,6 +4019,42 @@ def build_preview(offer_id_or_url: str, *, source_code: str = "") -> dict[str, A
         tiktok_claim=tiktok_claim,
         site_drafts=site_drafts,
     )
+    from domains.product_operations.product_facts import (
+        build_product_facts_snapshot,
+    )
+
+    product_facts = build_product_facts_snapshot(
+        product_id=offer_id,
+        source=source,
+        review=review,
+    )
+    workflow["product_facts_ready"] = product_facts.ready
+    workflow["product_fact_blockers"] = list(product_facts.blockers)
+    workflow["commercial_ready"] = bool(
+        workflow.get("commercial_ready") and product_facts.ready
+    )
+    if product_facts.blockers:
+        workflow["blockers"] = list(
+            dict.fromkeys(
+                list(workflow.get("blockers") or []) + list(product_facts.blockers)
+            )
+        )
+        commercial_step = next(
+            (
+                step
+                for step in workflow.get("steps") or []
+                if step.get("id") == "commercial"
+            ),
+            None,
+        )
+        if commercial_step is not None:
+            commercial_step["status"] = (
+                "current" if workflow.get("image_review_ready") else "pending"
+            )
+        if workflow.get("current_stage") in {"commercial", "miaoshou", "channels"}:
+            workflow["current_stage"] = "commercial"
+            if commercial_step is not None:
+                workflow["current_label"] = commercial_step.get("label")
 
     return {
         "ok": True,
@@ -4052,6 +4103,7 @@ def build_preview(offer_id_or_url: str, *, source_code: str = "") -> dict[str, A
             "updated_at": site_drafts.get("updated_at"),
         },
         "content_package": content,
+        "product_facts": product_facts.payload(),
         "workflow": workflow,
         "steps": [
             "First review page only uses local data and rule pricing.",
@@ -4104,8 +4156,86 @@ def precollect_preview(
 def save_review(offer_id_or_url: str, review: dict[str, Any]) -> dict[str, Any]:
     offer_id = resolve_offer_key(offer_id_or_url)
     state = load_state(offer_id)
-    current = state.get("review") or {}
-    current.update(review)
+    saved_review = state.get("review")
+    current = dict(saved_review) if isinstance(saved_review, dict) else {}
+    updates = dict(review or {})
+    supersede = updates.pop("supersede", False)
+    expected_revision = updates.pop("expected_revision", None)
+    supersede_reason = str(updates.pop("supersede_reason", "") or "").strip()
+    product_approval = (
+        state.get("product_approval")
+        if isinstance(state.get("product_approval"), dict)
+        else {}
+    )
+    was_formally_locked = bool(current.get("fields_locked")) or str(
+        product_approval.get("status") or ""
+    ).strip().lower() == "approved"
+    approval_bound_changes = {
+        field
+        for field in _APPROVAL_BOUND_REVIEW_FIELDS
+        if field in updates and updates.get(field) != current.get(field)
+    }
+    if (
+        was_formally_locked
+        and "fields_locked" in updates
+        and updates.get("fields_locked") is not True
+    ):
+        approval_bound_changes.add("fields_locked")
+    if was_formally_locked and approval_bound_changes:
+        if supersede is not True:
+            raise ValueError(
+                "approved product facts are locked; commercial changes require supersede=true and expected_revision"
+            )
+        if isinstance(expected_revision, bool):
+            clean_expected_revision = None
+        elif isinstance(expected_revision, int):
+            clean_expected_revision = expected_revision
+        elif (
+            isinstance(expected_revision, str)
+            and expected_revision.strip().isdigit()
+        ):
+            clean_expected_revision = int(expected_revision.strip())
+        else:
+            clean_expected_revision = None
+        current_revision = max(0, int(state.get("_revision") or 0))
+        if clean_expected_revision is None:
+            raise ValueError(
+                "expected_revision is required to supersede approved product facts"
+            )
+        if clean_expected_revision != current_revision:
+            raise ValueError(
+                "expected_revision is stale; refresh before superseding approved product facts"
+            )
+        current.update(updates)
+        current["fields_locked"] = False
+        superseded_at = _now()
+        prior_approval_id = str(product_approval.get("approval_id") or "").strip()
+        if product_approval:
+            state["product_approval"] = {
+                **product_approval,
+                "status": "superseded",
+                "superseded_at": superseded_at,
+                "superseded_by": "legacy_save_review",
+                "superseded_revision": clean_expected_revision,
+                "superseded_fields": sorted(approval_bound_changes),
+            }
+        supersessions = list(state.get("commercial_supersessions") or [])
+        supersessions.append(
+            {
+                "source": "legacy_save_review",
+                "status": "superseded",
+                "expected_revision": clean_expected_revision,
+                "changed_fields": sorted(approval_bound_changes),
+                "reason": supersede_reason,
+                "superseded_at": superseded_at,
+                "prior_approval_id": prior_approval_id or None,
+            }
+        )
+        state["commercial_supersessions"] = supersessions
+    else:
+        current.update(updates)
+        if was_formally_locked:
+            current["fields_locked"] = True
     source = _source_summary(offer_id)
     allowed_sku_keys = {
         str(row.get("key") or row.get("name") or "")
@@ -4162,6 +4292,17 @@ def save_review(offer_id_or_url: str, review: dict[str, Any]) -> dict[str, Any]:
         if not workflow["image_review_ready"]:
             prerequisite_failures.append("图片审核尚未完成")
         prerequisite_failures.extend(workflow.get("blockers") or [] if workflow.get("current_stage") == "commercial" else [])
+        if not was_formally_locked:
+            from domains.product_operations.product_facts import (
+                build_product_facts_snapshot,
+            )
+
+            product_facts = build_product_facts_snapshot(
+                product_id=offer_id,
+                source=source,
+                review=current,
+            )
+            prerequisite_failures.extend(product_facts.blockers)
         if prerequisite_failures:
             raise ValueError("暂时不能锁定发布信息: " + "; ".join(dict.fromkeys(prerequisite_failures)))
     state["review"] = current

@@ -60,7 +60,7 @@ def test_preview_accepts_sqlite_style_approval_facts_and_records_source_referenc
     assert result.state_patch["product_approval"]["source_reference"] == "workbench:3828811808"
 
 
-def test_preview_blocks_missing_user_approval_conflict_stale_revision_and_pending_content():
+def test_preview_blocks_user_approval_conflict_and_stale_revision_but_not_content():
     pending = ContentPackage("content:3828811808", "3828811808")
     result = preview_product_approval_lock(
         state={"offer_id": "3828811808", "_revision": 9}, product_row=_product(),
@@ -72,7 +72,7 @@ def test_preview_blocks_missing_user_approval_conflict_stale_revision_and_pendin
     assert "explicit user_approved=True is required" in result.blockers
     assert "seller_sku is already present in the catalog" in result.blockers
     assert "state revision is stale" in result.blockers
-    assert "content package approval is required" in result.blockers
+    assert "content package approval is required" not in result.blockers
 
 
 def test_numeric_seller_sku_conflicts_on_last_four_digits_but_non_numeric_values_are_exact():
@@ -114,7 +114,7 @@ def test_preview_requires_named_and_timestamped_approval_and_handles_bad_revisio
     assert "state _revision must be an integer" in missing_audit_fields.blockers
 
 
-def test_identical_active_lock_is_idempotent_but_changed_content_supersedes_it():
+def test_content_changes_do_not_supersede_product_facts_but_product_changes_do():
     initial = preview_product_approval_lock(
         state={"offer_id": "3828811808"}, product_row=_product(), content_package=_content(),
         seller_sku="0946", known_seller_skus=(), user_approved=True, approval_fact=_approval(),
@@ -128,12 +128,23 @@ def test_identical_active_lock_is_idempotent_but_changed_content_supersedes_it()
         "content:3828811808", "3828811808", {"en": "Updated copy"}, ("https://assets.example/2.png",),
         approval=_content().approval,
     )
-    changed = preview_product_approval_lock(
+    changed_content_result = preview_product_approval_lock(
         state=state, product_row=_product(), content_package=changed_content, seller_sku="0946",
         known_seller_skus=(), user_approved=True, approval_fact={**_approval(), "approval_id": "product-approval-2"},
+    )
+    changed_product = preview_product_approval_lock(
+        state=state,
+        product_row={**_product(), "product_name": "Updated dog wall decal"},
+        content_package=changed_content,
+        seller_sku="0946",
+        known_seller_skus=(),
+        user_approved=True,
+        approval_fact={**_approval(), "approval_id": "product-approval-3"},
     )
 
     assert repeated.idempotent is True
     assert repeated.state_patch == {}
-    assert changed.supersedes_approval_id == "product-approval-1"
-    assert changed.approved_package is not None
+    assert changed_content_result.idempotent is True
+    assert changed_content_result.supersedes_approval_id is None
+    assert changed_product.supersedes_approval_id == "product-approval-1"
+    assert changed_product.approved_package is not None

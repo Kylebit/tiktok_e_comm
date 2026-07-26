@@ -1,8 +1,9 @@
 """Pure product-fact evidence and selected-SKU price review.
 
 This module deliberately does not choose or rewrite commercial values.  It
-shows which source won the legacy precedence rules and blocks approval when
-the selected SKU facts do not support one unambiguous product cost.
+shows which source won the legacy precedence rules. Missing, invalid, or
+ambiguous source SKU facts block approval; a deliberate reviewed cost that
+differs from one unambiguous source price is retained as an approval warning.
 """
 
 from __future__ import annotations
@@ -271,7 +272,7 @@ def build_product_facts_snapshot(
         )
         effective_cost = _decimal(cost_evidence.value)
         if effective_cost is not None and effective_cost > 0 and effective_cost != valid_prices[0]:
-            blockers.append(
+            warnings.append(
                 "cost_cny does not match the selected SKU price: "
                 f"{_decimal_text(effective_cost)} CNY vs {_decimal_text(valid_prices[0])} CNY"
             )

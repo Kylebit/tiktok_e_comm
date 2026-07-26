@@ -322,7 +322,8 @@ def test_title_draft_uses_model_once_and_only_persists_local_candidates(monkeypa
     def generate(facts):
         calls.append(copy.deepcopy(facts))
         return {
-            "schema_version": "listing-title-candidates-v1",
+            "schema_version": "listing-title-candidates-v2",
+            "provider": "toapi",
             "status": "draft_pending_kyle_review",
             "semantic_master_en": "Watercolour Floral Butterfly PVC Wall Decal",
             "candidates": [
@@ -335,7 +336,7 @@ def test_title_draft_uses_model_once_and_only_persists_local_candidates(monkeypa
                 }
             ],
             "input_signature": "sha256:test",
-            "policy_version": "listing-title-candidates-v1",
+            "policy_version": "listing-title-candidates-v2",
             "model": "test-model",
         }
 

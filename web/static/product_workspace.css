@@ -1055,6 +1055,13 @@ section { scroll-margin-top: 20px; }
   font-size: 11px;
   line-height: 1.5;
 }
+.approval-message.has-warning {
+  padding: 10px 12px;
+  border-left: 3px solid var(--amber);
+  border-radius: 8px;
+  color: #70513a;
+  background: rgba(240, 189, 98, .13);
+}
 
 .heading-badges { display: flex; gap: 8px; }
 .image-grid {

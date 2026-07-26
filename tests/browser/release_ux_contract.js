@@ -36,7 +36,13 @@ const productDashboard = {
     source_skus: [{ key: "30x90", label: "30 × 90 cm", price_cny: 9 }],
     fields_locked: false,
     actual_product_approved: false,
-    fact_evidence: { ready: true, blockers: [] },
+    fact_evidence: {
+      ready: true,
+      blockers: [],
+      warnings: [
+        "cost_cny does not match the selected SKU price: 9 CNY vs 8.1 CNY",
+      ],
+    },
     seller_sku_governance: {
       available: true,
       candidate: "0952",
@@ -50,7 +56,17 @@ const productDashboard = {
     images: [],
     blockers: ["content approval required"],
   },
-  approval: { ready: false, blockers: ["Kyle approval required"] },
+  approval: {
+    ready: true,
+    blockers: [],
+    warnings: [
+      "当前商品标题仍含中文或缺少英文字母；可以先锁定事实，但发布前建议采用平台标题候选",
+      "cost_cny does not match the selected SKU price: 9 CNY vs 8.1 CNY",
+    ],
+    state_patch_preview: {
+      product_approval: { input_fingerprint: "sha256:offline-product" },
+    },
+  },
   actual_release_gate: {
     ready: false,
     blockers: ["content approval required", "product approval required"],
@@ -371,6 +387,17 @@ async function productAsyncFeedback(browser) {
   const { page, context, errors, state } = scenario;
   try {
     await page.waitForSelector("#productFactsForm[data-locked='false']");
+    check(
+      await page.locator("#approvalButton").isEnabled(),
+      "product: Chinese title and reviewed cost mismatch remain warnings and do not disable approval",
+    );
+    const approvalMessage = (await page.locator("#approvalMessage").innerText()).trim();
+    check(
+      approvalMessage.includes("可以批准并锁定")
+      && approvalMessage.includes("采购成本与已选规格价格不一致"),
+      "product: approval warnings are visible beside the enabled lock action",
+      approvalMessage,
+    );
     await page.route("**/api/product-workspace/title-draft", (route) => {
       state.pending.titleDraft = route;
     });
@@ -400,8 +427,9 @@ async function productAsyncFeedback(browser) {
         },
       ],
       input_signature: "sha256:offline-title-fixture",
-      policy_version: "listing-title-candidates-v1",
-      model: "offline-model",
+      policy_version: "listing-title-candidates-v2",
+      provider: "toapi",
+      model: "gpt-5.4-mini-official",
     };
     await state.pending.titleDraft.fulfill(
       jsonResponse({

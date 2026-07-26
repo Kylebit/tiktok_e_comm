@@ -294,18 +294,17 @@ def _commercial_approval_facts(
 
 
 def _commercial_release_blockers(review: Mapping[str, Any]) -> list[str]:
-    """Preserve the legacy workbench's commercial release gates.
+    """Return only missing or structurally invalid commercial facts.
 
-    The formal product centre must never be more permissive than the detailed
-    workbench it replaces.  Keep these messages aligned with
-    ``_product_workflow_summary`` so an existing product cannot appear ready
-    here while the legacy workflow still reports a commercial blocker.
+    Kyle may deliberately approve a Chinese working title or a reviewed cost
+    that differs from source price evidence. Those differences remain visible
+    warnings and are written into the approval audit rather than hard gates.
     """
 
     blockers: list[str] = []
     title = str(review.get("title") or "").strip()
-    if not re.search(r"[A-Za-z]", title) or re.search(r"[\u3400-\u9fff]", title):
-        blockers.append("英文标题必须包含英文字母且不能含中文")
+    if not title:
+        blockers.append("请确认商品标题")
     try:
         weight = float(review.get("weight_kg") or 0)
     except (TypeError, ValueError):
@@ -332,6 +331,21 @@ def _commercial_release_blockers(review: Mapping[str, Any]) -> list[str]:
     if cost <= 0:
         blockers.append("请确认来源成本")
     return blockers
+
+
+def _commercial_approval_warnings(review: Mapping[str, Any]) -> list[str]:
+    """Return reviewable commercial differences that Kyle may override."""
+
+    title = str(review.get("title") or "").strip()
+    warnings: list[str] = []
+    if title and (
+        not re.search(r"[A-Za-z]", title)
+        or re.search(r"[\u3400-\u9fff]", title)
+    ):
+        warnings.append(
+            "当前商品标题仍含中文或缺少英文字母；可以先锁定事实，但发布前建议采用平台标题候选"
+        )
+    return warnings
 
 
 def _verified_image_write(content_state: Mapping[str, Any]) -> tuple[bool, list[str]]:
@@ -1025,6 +1039,14 @@ def build_release_dashboard(
         approval_input_facts=_commercial_approval_facts(review, base_release_pricing),
     )
     commercial_blockers = _commercial_release_blockers(review)
+    approval_warnings = list(
+        dict.fromkeys(
+            [
+                *_commercial_approval_warnings(review),
+                *product_facts.warnings,
+            ]
+        )
+    )
     seller_sku_blockers = (
         [
             "seller_sku is reserved by another workbench or verified TikTok claim"
@@ -1338,6 +1360,7 @@ def build_release_dashboard(
         "approval_rehearsal": {
             "ready": simulated_ready,
             "blockers": approval_blockers,
+            "warnings": approval_warnings,
             "state_patch_preview": approval_state_patch,
             "persisted": False,
         },

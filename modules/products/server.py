@@ -859,6 +859,11 @@ def _approve_product_workspace_locally_locked(data: dict) -> tuple[int, dict]:
     preview = dashboard.get("approval_rehearsal") or dashboard.get("approval") or {}
     preview_patch = preview.get("state_patch_preview") or {}
     proposed_approval = preview_patch.get("product_approval") or {}
+    approval_warnings = [
+        str(value).strip()
+        for value in (preview.get("warnings") or ())
+        if str(value).strip()
+    ]
     if not bool(preview.get("ready")) or not proposed_approval:
         return 409, {
             "ok": False,
@@ -900,6 +905,7 @@ def _approve_product_workspace_locally_locked(data: dict) -> tuple[int, dict]:
         "seller_sku": seller_sku,
         "approved_by": approved_by,
         "approved_at": approved_at,
+        "approval_warnings_acknowledged": approval_warnings,
         "source_reference": (
             f"workbench:{offer_id}:revision:{expected_revision}"
         ),
@@ -939,6 +945,7 @@ def _approve_product_workspace_locally_locked(data: dict) -> tuple[int, dict]:
         "idempotent": False,
         "persisted": True,
         "approval_id": approval_id,
+        "approval_warnings_acknowledged": approval_warnings,
         "external_writes_performed": [],
         "dashboard": _product_workspace_view(updated),
     }

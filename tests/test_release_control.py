@@ -546,7 +546,7 @@ def test_release_dashboard_blocks_conflicting_candidate_sku(tmp_path):
     )
 
 
-def test_release_dashboard_preserves_legacy_english_title_gate(tmp_path):
+def test_release_dashboard_surfaces_chinese_title_as_approval_warning(tmp_path):
     root, database = _release_fixture(tmp_path)
     state_path = root / "data" / "new_product_workbench" / "3828811808.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -559,15 +559,18 @@ def test_release_dashboard_preserves_legacy_english_title_gate(tmp_path):
         report_store_path=root / "data" / "missing-orbit.db",
     )
 
-    blocker = "英文标题必须包含英文字母且不能含中文"
-    assert result["approval_rehearsal"]["ready"] is False
-    assert result["approval_rehearsal"]["state_patch_preview"] == {}
-    assert blocker in result["approval_rehearsal"]["blockers"]
-    assert result["publication_rehearsal"]["drafts"] == []
-    assert result["omnichannel_preview"]["available"] is False
-    assert blocker in result["omnichannel_preview"]["blockers"]
+    warning = (
+        "当前商品标题仍含中文或缺少英文字母；"
+        "可以先锁定事实，但发布前建议采用平台标题候选"
+    )
+    assert result["approval_rehearsal"]["ready"] is True
+    assert result["approval_rehearsal"]["state_patch_preview"]["product_approval"]
+    assert result["approval_rehearsal"]["blockers"] == []
+    assert warning in result["approval_rehearsal"]["warnings"]
+    assert result["publication_rehearsal"]["drafts"]
+    assert result["omnichannel_preview"]["available"] is True
     assert result["actual_release_gate"]["ready"] is False
-    assert blocker in result["actual_release_gate"]["blockers"]
+    assert warning not in result["actual_release_gate"]["blockers"]
 
 
 def test_release_dashboard_treats_other_approved_workbench_as_sku_reservation(

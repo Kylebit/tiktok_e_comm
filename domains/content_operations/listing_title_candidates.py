@@ -8,9 +8,10 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from core.llm import ai_config, chat_completion
+from modules.sourcing.image_suite_plan import chat_completions, message_content
 
-POLICY_VERSION = "listing-title-candidates-v1"
+POLICY_VERSION = "listing-title-candidates-v2"
+TOAPI_TITLE_MODEL = "gpt-5.4-mini-official"
 EXPECTED_TARGETS = (
     ("tiktok", "MY", "English / Malay", 255),
     ("tiktok", "PH", "English", 255),
@@ -22,11 +23,16 @@ EXPECTED_TARGETS = (
     ("ozon", "RU", "Russian", 200),
 )
 
-SYSTEM_PROMPT = """You are a senior cross-border ecommerce listing editor.
+SYSTEM_PROMPT = """You are a senior cross-border ecommerce listing strategist.
+This is not a literal translation task. Use the verified Chinese source facts
+to create commercially useful, platform-native product titles. Preserve the
+product identity, but optimize word order, search intent, local vocabulary,
+readability, and platform conventions for each market.
+
 Use only the verified product facts supplied by the user. Never invent
 material, dimensions, quantity, certification, waterproof/removable claims,
 brand, compatibility, or performance. Produce natural search-friendly titles,
-not keyword lists.
+not keyword lists or translated source-platform noise.
 
 Return strict JSON only:
 {
@@ -44,9 +50,34 @@ Return strict JSON only:
   "notes_zh": "brief Chinese explanation of choices and uncertainty"
 }
 
+Platform strategy:
+- TikTok Shop: lead with the recognizable product type and strongest verified
+  visual/use-context phrase; keep the title scannable on mobile.
+- Shopee CNSC: use concise English search phrases without repetition.
+- Ozon RU: write natural Russian retail copy, not transliterated English.
+- Localize meaning and search phrasing for each site; do not merely translate
+  the English master word for word.
+
 Rules: no emoji, ALL CAPS, superlatives, medical claims, unsupported promises,
 or source-platform words. Put the product type and strongest verified visual
 attribute early. Respect the platform limits supplied in the facts."""
+
+
+def toapi_title_completion(
+    messages: list[dict[str, Any]],
+    *,
+    temperature: float,
+    max_tokens: int,
+) -> str:
+    """Use the configured ToAPI gateway for a text-only title request."""
+
+    response = chat_completions(
+        messages,
+        model=TOAPI_TITLE_MODEL,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+    return message_content(response)
 
 
 def _canonical(value: Any) -> str:
@@ -108,7 +139,7 @@ def _validate_language(title: str, *, channel: str, site: str) -> None:
 def generate_title_candidates(
     facts: dict[str, Any],
     *,
-    model_call: Callable[..., str] = chat_completion,
+    model_call: Callable[..., str] = toapi_title_completion,
 ) -> dict[str, Any]:
     """Generate local candidates; never approve or write a marketplace."""
 
@@ -173,14 +204,15 @@ def generate_title_candidates(
         )
 
     return {
-        "schema_version": "listing-title-candidates-v1",
+        "schema_version": "listing-title-candidates-v2",
+        "provider": "toapi",
         "status": "draft_pending_kyle_review",
         "semantic_master_en": master,
         "candidates": candidates,
         "notes_zh": str(parsed.get("notes_zh") or "").strip(),
         "input_signature": fact_signature(facts),
         "policy_version": POLICY_VERSION,
-        "model": str(ai_config().get("model") or ""),
+        "model": TOAPI_TITLE_MODEL,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "external_writes_performed": ["language_model_request"],
         "marketplace_writes_performed": [],

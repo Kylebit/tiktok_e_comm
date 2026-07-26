@@ -87,7 +87,7 @@ def test_snapshot_records_field_sources_and_accepts_one_supported_price():
     }
 
 
-def test_snapshot_blocks_cost_that_is_not_supported_by_selected_sku_price():
+def test_snapshot_warns_but_does_not_block_reviewed_cost_that_differs_from_source_price():
     source = _source(prices=("8.1", "8.1"))
 
     snapshot = build_product_facts_snapshot(
@@ -99,9 +99,11 @@ def test_snapshot_blocks_cost_that_is_not_supported_by_selected_sku_price():
         },
     )
 
+    assert snapshot.ready is True
+    assert not snapshot.blockers
     assert any(
-        "cost_cny does not match the selected SKU price" in blocker
-        for blocker in snapshot.blockers
+        "cost_cny does not match the selected SKU price" in warning
+        for warning in snapshot.warnings
     )
 
 

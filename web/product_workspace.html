@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#173b36">
   <title>Orbit · 商品发布中心</title>
-  <link rel="stylesheet" href="/static/product_workspace.css?v=20260726-v6">
-  <script src="/static/product_workspace.js?v=20260726-v6" defer></script>
+  <link rel="stylesheet" href="/static/product_workspace.css?v=20260726-v7">
+  <script src="/static/product_workspace.js?v=20260726-v7" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -128,7 +128,7 @@
             <label class="facts-edit-title">
               <span>正式英文商品标题</span>
               <textarea id="factsEditTitle" name="title" rows="3" maxlength="220"
-                        placeholder="先生成大模型候选，或直接输入经核对的英文标题" required></textarea>
+                        placeholder="先生成 ToAPI 平台候选，或直接输入经核对的商品标题" required></textarea>
               <small id="factsEditTitleSource">来源：读取中</small>
             </label>
             <label>
@@ -162,11 +162,11 @@
               <div>
                 <p class="kicker">AI LISTING COPY</p>
                 <h3 id="titleAssistantTitle">中文事实 → 平台标题候选</h3>
-                <p>大模型读取当前商品事实，生成可审计的英文语义母版，并分别给出 TikTok、Shopee 与 Ozon 候选。只生成本地候选，不写妙手或平台。</p>
+                <p>ToAPI 文本模型读取当前商品事实，按平台搜索习惯、词序、语言与长度分别重写 TikTok、Shopee 和 Ozon 标题；不是逐字翻译。只生成本地候选，不写妙手或平台。</p>
               </div>
               <button id="generateTitleDraftButton" class="button button-secondary" type="button">
                 <span class="title-draft-label">AI 生成平台标题</span>
-                <span class="title-draft-loading">大模型正在生成…</span>
+                <span class="title-draft-loading">ToAPI 正在优化…</span>
               </button>
             </div>
             <p id="titleDraftStatus" class="title-draft-status" role="status">尚未为当前商品事实生成标题候选。</p>

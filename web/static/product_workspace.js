@@ -602,19 +602,26 @@
     const factsApproved = Boolean(
       product.actual_product_approved && product.fields_locked,
     );
+    const hasFactWarnings = Boolean((evidence.warnings || []).length);
     setBadge(
       $("#factsBadge"),
       factsApproved
         ? "Kyle 已批准并锁定"
-        : (factsReady ? "证据完整 · 待 Kyle 核对" : "事实存在冲突"),
+        : (
+          factsReady
+            ? (hasFactWarnings ? "有提醒 · 可审批" : "证据完整 · 待 Kyle 核对")
+            : "事实存在冲突"
+        ),
       factsApproved ? "safe" : "warn",
     );
     const evidenceBlockers = (evidence.blockers || []).map(translateBlocker);
+    const evidenceWarnings = (evidence.warnings || []).map(translateBlocker);
+    const factAttention = [...evidenceBlockers, ...evidenceWarnings];
     $("#factsNotice").textContent = factsApproved
       ? "这些值已由 Kyle 批准并锁定；商业字段若要修改，必须显式废止旧审批和旧发布计划。"
       : (
-        evidenceBlockers.length
-          ? `当前是前序采集值，尚未批准。发现 ${evidenceBlockers.length} 项事实冲突：${evidenceBlockers.join("；")}`
+        factAttention.length
+          ? `当前是前序采集值，尚未批准。发现 ${factAttention.length} 项需要留意：${factAttention.join("；")} 这些提醒不会阻止 Kyle 锁定当前 revision。`
           : "当前是带来源的前序采集值，尚未成为不可更改的正式事实；请核对后再由 Kyle 批准锁定。"
       );
     const category = typeof product.category === "object"
@@ -777,7 +784,7 @@
     button.classList.toggle("is-loading", titleDraftSubmitting);
     if (!draft.semantic_master_en) {
       $("#titleDraftStatus").textContent =
-        "尚未生成。点击后只调用大模型生成本地候选，不会写妙手或任何平台。";
+        "尚未生成。点击后由 ToAPI 文本模型按平台特点优化本地候选，不会写妙手或任何平台。";
       $("#titleCandidateGrid").innerHTML = "";
       return;
     }
@@ -816,7 +823,7 @@
     let failureMessage = "";
     renderTitleDraft(currentData);
     $("#titleDraftStatus").textContent =
-      "大模型正在依据中文来源、类目、尺寸和保留规格生成平台候选…";
+      "ToAPI 正在依据中文来源、类目、尺寸和保留规格，按各平台搜索习惯优化标题…";
     try {
       const payload = await postProductWorkspace("/api/product-workspace/title-draft", {
         offer_id: product.offer_id,
@@ -968,14 +975,23 @@
       : "内容包独立审批，不阻塞商品事实批准";
     $("#approvalStatus").textContent = approved
       ? "已批准并锁定"
-      : (eligible ? "可以审批" : "等待前置条件");
+      : (
+        eligible
+          ? ((data.approval?.warnings || []).length ? "有提醒 · 可以审批" : "可以审批")
+          : "等待前置条件"
+      );
     $("#approvalFacts").innerHTML = [
       ["采购成本", product.cost_cny ? `¥ ${money(product.cost_cny)} CNY` : "—"],
       ["商品重量", product.weight_kg ? `${product.weight_kg} kg` : "—"],
       ["包装尺寸", packageCm.length ? `${packageCm.join(" × ")} cm` : "—"],
       ["目标站点", (product.selected_sites || []).map((site) => siteNames[site] || site).join(" · ") || "—"],
       ["保留规格", (product.selected_sku_keys || []).join(" · ") || "—"],
-      ["事实证据", product.fact_evidence?.ready === false ? "存在成本或规格冲突" : "证据一致"],
+      [
+        "事实证据",
+        product.fact_evidence?.ready === false
+          ? "存在必须修复的证据错误"
+          : ((product.fact_evidence?.warnings || []).length ? "有提醒 · 可由 Kyle 批准" : "证据一致"),
+      ],
     ].map(([label, value]) => `
       <div><span>${esc(label)}</span><strong>${esc(value)}</strong></div>
     `).join("");
@@ -983,13 +999,22 @@
       ? "商品字段已锁定"
       : `批准并锁定 revision ${product.revision ?? "—"}`;
     const approvalBlockers = data.approval?.blockers || [];
+    const approvalWarnings = (data.approval?.warnings || []).map(translateBlocker);
+    $("#approvalMessage").classList.toggle(
+      "has-warning",
+      !approved && eligible && approvalWarnings.length > 0,
+    );
     $("#approvalMessage").textContent = message || (
       approved
         ? "商品事实审批已保存；内容包与发布计划仍按各自版本独立审批。"
         : (!skuGovernance.available && skuGovernance.suggested_base_sku
           ? `当前候选已被旧工作台/已验证声明占用；请改用 ${skuGovernance.suggested_base_sku} 后重新审查。`
         : (eligible
-          ? "点击即代表 Kyle 最终批准并锁定当前 revision；不会上传或发布。"
+          ? (
+            approvalWarnings.length
+              ? `可以批准并锁定。审批提醒：${approvalWarnings.join("；")}`
+              : "点击即代表 Kyle 最终批准并锁定当前 revision；不会上传或发布。"
+          )
           : (approvalBlockers.length
             ? `当前不能锁定：${approvalBlockers.map(translateBlocker).join("；")}`
             : "先解决商品事实、成本证据或 Seller SKU 冲突，再保存商品审批。")))
@@ -999,6 +1024,20 @@
 
   async function submitApproval() {
     if (!currentData || approvalSubmitting || !approvalEligible(currentData)) return;
+    const approvalWarnings = (currentData.approval?.warnings || [])
+      .map(translateBlocker)
+      .filter(Boolean);
+    if (
+      approvalWarnings.length
+      && !window.confirm(
+        `当前 revision 有以下审批提醒，但不会阻止锁定：\n\n`
+        + approvalWarnings.map((warning) => `• ${warning}`).join("\n")
+        + "\n\n确认仍按当前值批准并锁定吗？",
+      )
+    ) {
+      $("#approvalMessage").textContent = "已取消锁定；商品事实保持可编辑状态。";
+      return;
+    }
     const approvalKey = productKey(
       currentData.product?.offer_id,
       currentData.product?.seller_sku_candidate,
@@ -2016,7 +2055,7 @@
     if (!button || button.disabled) return;
     $("#factsEditTitle").value = button.dataset.title || "";
     $("#factsEditMessage").textContent =
-      "已采用大模型英文语义母版；核对后保存，才会建立新 revision 并刷新全部售价。";
+      "已采用 ToAPI 优化的英文语义母版；核对后保存，才会建立新 revision 并刷新全部售价。";
     $("#factsEditTitle").focus();
   });
   $("#releasePlanCheckbox").addEventListener("change", () => {

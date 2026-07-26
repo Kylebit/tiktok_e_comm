@@ -20,6 +20,7 @@ def _dashboard(
     content_approved: bool = True,
     preview_ready: bool = True,
     blockers: tuple[str, ...] = (),
+    warnings: tuple[str, ...] = (),
 ) -> dict:
     approval = state.get("product_approval") or {}
     actual_approved = bool(
@@ -62,6 +63,7 @@ def _dashboard(
         "approval_rehearsal": {
             "ready": preview_ready,
             "blockers": list(blockers),
+            "warnings": list(warnings),
             "state_patch_preview": {
                 "review": {
                     **state["review"],
@@ -148,6 +150,30 @@ def test_local_approval_only_locks_review_and_persists_approval_fact(approval_st
     assert saved["product_approval"]["content_package_id"] == "content:3828540231"
     assert saved["product_approval"]["input_fingerprint"] == "fingerprint-123"
     assert payload["dashboard"]["product"]["actual_product_approved"] is True
+
+
+def test_local_approval_persists_reviewable_warnings_without_blocking(
+    approval_state,
+    monkeypatch,
+):
+    state, saves = approval_state
+    warnings = (
+        "当前商品标题仍含中文或缺少英文字母；可以先锁定事实，但发布前建议采用平台标题候选",
+        "cost_cny does not match the selected SKU price: 9 CNY vs 8.1 CNY",
+    )
+    monkeypatch.setattr(
+        release_control,
+        "build_release_dashboard",
+        lambda **_kwargs: _dashboard(state, warnings=warnings),
+    )
+
+    status, payload = _approve_product_workspace_locally(_approval_request())
+
+    assert status == 200
+    assert payload["approval_warnings_acknowledged"] == list(warnings)
+    assert saves[0]["product_approval"]["approval_warnings_acknowledged"] == list(
+        warnings
+    )
 
 
 def test_local_approval_rejects_stale_revision_before_preview_or_write(

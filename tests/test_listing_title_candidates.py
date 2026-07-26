@@ -6,6 +6,7 @@ import pytest
 
 from domains.content_operations.listing_title_candidates import (
     EXPECTED_TARGETS,
+    TOAPI_TITLE_MODEL,
     fact_signature,
     generate_title_candidates,
 )
@@ -53,11 +54,7 @@ def _model_payload() -> str:
     )
 
 
-def test_model_candidates_are_platform_specific_and_auditable(monkeypatch):
-    monkeypatch.setattr(
-        "domains.content_operations.listing_title_candidates.ai_config",
-        lambda: {"model": "test-model"},
-    )
+def test_model_candidates_are_platform_specific_and_auditable():
     calls = []
 
     def model_call(messages, **kwargs):
@@ -67,7 +64,8 @@ def test_model_candidates_are_platform_specific_and_auditable(monkeypatch):
     result = generate_title_candidates(_facts(), model_call=model_call)
 
     assert result["status"] == "draft_pending_kyle_review"
-    assert result["model"] == "test-model"
+    assert result["provider"] == "toapi"
+    assert result["model"] == TOAPI_TITLE_MODEL
     assert result["input_signature"] == fact_signature(_facts())
     assert len(result["candidates"]) == len(EXPECTED_TARGETS)
     assert {(row["channel"], row["site"]) for row in result["candidates"]} == {
@@ -75,6 +73,8 @@ def test_model_candidates_are_platform_specific_and_auditable(monkeypatch):
     }
     assert result["marketplace_writes_performed"] == []
     assert calls and "source_title_zh" in calls[0][0][1]["content"]
+    assert "not a literal translation task" in calls[0][0][0]["content"]
+    assert "platform-native product titles" in calls[0][0][0]["content"]
 
 
 def test_missing_platform_candidate_is_rejected():

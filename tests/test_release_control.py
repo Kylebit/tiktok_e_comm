@@ -119,6 +119,11 @@ def test_release_dashboard_is_a_complete_no_write_rehearsal(tmp_path):
     assert result["safety"]["publish_enabled"] is False
     assert result["content"]["approved"] is True
     assert [row["position"] for row in result["content"]["images"]] == [1, 2]
+    assert result["product"]["thumbnail"] == {
+        "url": "https://example.com/source.jpg",
+        "source": "approved_content_package",
+        "approved": True,
+    }
     assert result["approval_rehearsal"]["ready"] is True
     assert result["approval_rehearsal"]["persisted"] is False
     assert result["publication_rehearsal"]["ready"] is True

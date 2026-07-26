@@ -431,23 +431,48 @@
         || item.seller_sku
         || "待系统分配"
       );
+      const thumbnail = item.data?.product?.thumbnail || {};
+      const thumbnailUrl = String(
+        thumbnail.url
+        || item.data?.content?.images?.[0]?.image_url
+        || "",
+      ).trim();
+      const thumbnailProxy = thumbnailUrl
+        ? `/api/proxy-image?url=${encodeURIComponent(thumbnailUrl)}`
+        : "";
+      const thumbnailLabel = thumbnail.approved ? "已批准主图" : "来源预览";
       return `
         <article class="queue-card${isCurrent ? " current" : ""}${item.loading ? " is-loading" : ""}"
                  data-key="${esc(key)}">
-          <header>
-            <h3 title="${esc(title)}">${esc(title)}</h3>
-            <span class="badge ${summary.tone}">${isCurrent ? "当前商品" : "队列中"}</span>
-          </header>
-          <div class="queue-identity">
-            <span>Offer ${esc(item.offer_id)}</span>
-            <span>Seller SKU ${esc(sellerSku)}</span>
+          <div class="queue-main">
+            <div class="queue-thumbnail">
+              ${thumbnailProxy ? `
+                <img src="${esc(thumbnailProxy)}" alt="${esc(title)} 主图" loading="lazy" data-queue-image>
+                <span>${esc(thumbnailLabel)}</span>
+              ` : `
+                <div class="queue-thumbnail-placeholder">
+                  <strong>${item.loading ? "读取中" : "暂无主图"}</strong>
+                  <small>${item.error ? "来源读取失败" : "刷新后自动补图"}</small>
+                </div>
+              `}
+            </div>
+            <div class="queue-copy">
+              <header>
+                <h3 title="${esc(title)}">${esc(title)}</h3>
+                <span class="badge ${summary.tone}">${isCurrent ? "当前商品" : "队列中"}</span>
+              </header>
+              <div class="queue-identity">
+                <span>Offer ${esc(item.offer_id)}</span>
+                <span>Seller SKU ${esc(sellerSku)}</span>
+              </div>
+              <p class="queue-stage">${esc(summary.stage)}</p>
+            </div>
           </div>
           <div class="queue-metrics">
             <div><span>阻塞</span><strong>${esc(summary.blockers)}</strong></div>
             <div><span>内容图</span><strong>${esc(summary.images)}</strong></div>
             <div><span>审批</span><strong>${esc(summary.approval)}</strong></div>
           </div>
-          <p class="queue-stage">${esc(summary.stage)}</p>
           <footer>
             <button type="button" data-action="switch" data-key="${esc(key)}"
                     ${isCurrent || item.loading || approvalSubmitting ? "disabled" : ""}>
@@ -461,6 +486,17 @@
         </article>
       `;
     }).join("");
+    grid.querySelectorAll("img[data-queue-image]").forEach((image) => {
+      image.addEventListener("error", () => {
+        const frame = image.closest(".queue-thumbnail");
+        frame.innerHTML = `
+          <div class="queue-thumbnail-placeholder">
+            <strong>主图不可用</strong>
+            <small>商品证据仍保留</small>
+          </div>
+        `;
+      }, { once: true });
+    });
   }
 
   function syncCurrentUrl(item) {
@@ -1540,6 +1576,28 @@
     renderQueue();
   }
 
+  async function hydrateUnloadedQueueProducts() {
+    const pending = queueItems.filter((item) => (
+      productKey(item.offer_id) !== currentQueueKey
+      && !item.data
+      && !item.loading
+    ));
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < pending.length) {
+        const item = pending[cursor];
+        cursor += 1;
+        await refreshQueueProduct(item).catch(() => {});
+      }
+    };
+    await Promise.allSettled(
+      Array.from(
+        { length: Math.min(QUEUE_REFRESH_CONCURRENCY, pending.length) },
+        () => worker(),
+      ),
+    );
+  }
+
   $("#lookupForm").addEventListener("submit", (event) => {
     event.preventDefault();
     addAndOpenCurrentInput();
@@ -1639,6 +1697,8 @@
       ? `自动候选 ${initialItem.seller_sku}`
       : "正在读取并自动分配";
     syncCurrentUrl(initialItem);
-    refreshQueueProduct(initialItem).catch(() => {});
+    refreshQueueProduct(initialItem)
+      .catch(() => {})
+      .finally(() => hydrateUnloadedQueueProducts());
   }
 })();

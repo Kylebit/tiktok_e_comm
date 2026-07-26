@@ -1118,6 +1118,21 @@ def build_release_dashboard(
         )
     )
     current_image_urls = list(content_handoff.content_package.image_urls)
+    source_thumbnail_url = next(
+        (
+            str(row.get("url") or "").strip()
+            for row in (source.get("images") or ())
+            if isinstance(row, Mapping)
+            and str(row.get("url") or "").strip().startswith("https://")
+        ),
+        "",
+    )
+    thumbnail_url = (
+        str(current_image_urls[0]).strip()
+        if current_image_urls
+        and str(current_image_urls[0]).strip().startswith("https://")
+        else source_thumbnail_url
+    )
     image_write_verified, written_image_urls = _verified_image_write(content_state)
     current_images_written = (
         image_write_verified
@@ -1206,6 +1221,20 @@ def build_release_dashboard(
                 "source": (
                     "tiktok_catalog_sequence_plus_all_catalog_occupancy_plus_"
                     "workbench_locks_plus_verified_claims_plus_release_reservations"
+                ),
+            },
+            "thumbnail": {
+                "url": thumbnail_url,
+                "source": (
+                    "approved_content_package"
+                    if thumbnail_url
+                    and thumbnail_url in current_image_urls
+                    else ("source_preview" if thumbnail_url else "missing")
+                ),
+                "approved": bool(
+                    thumbnail_url
+                    and thumbnail_url in current_image_urls
+                    and content_approved
                 ),
             },
         },

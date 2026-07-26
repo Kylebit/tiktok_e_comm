@@ -148,6 +148,11 @@ def test_product_workspace_is_the_user_surface_and_fails_without_stale_results()
     assert "localStorage.setItem(" in script
     assert "QUEUE_REFRESH_CONCURRENCY = 4" in script
     assert "Promise.allSettled(workers)" in script
+    assert "hydrateUnloadedQueueProducts" in script
+    assert "product?.thumbnail" in script
+    assert "data-queue-image" in script
+    assert "/api/proxy-image?url=" in script
+    assert ".queue-thumbnail" in css
     assert 'data-action="switch"' in script
     assert 'data-action="remove"' in script
     assert "key !== currentQueueKey" in script

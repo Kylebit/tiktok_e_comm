@@ -560,6 +560,7 @@ def test_ozon_release_uses_verified_tiktok_images_without_third_party_rehosting(
     ]
     assert calls[0][1]["process_images"] is False
     assert calls[0][1]["skip_rich_content"] is True
+    assert calls[0][1]["skip_mapping_write"] is True
 
 
 def test_ozon_readback_requires_approved_moderation_stock_and_exact_image_count(

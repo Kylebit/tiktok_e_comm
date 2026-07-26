@@ -493,7 +493,7 @@ def api_migrate():
             rich_status = "skipped_by_audited_release"
         else:
             rich_status = add_rich_content(offer_id, p["title"], p["description"])
-        if p.get("tk_category_id"):
+        if p.get("tk_category_id") and not p.get("skip_mapping_write"):
             record_mapping(
                 tk_category_id=str(p["tk_category_id"]),
                 tk_category_name=str(p.get("tk_category_leaf") or ""),

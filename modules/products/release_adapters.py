@@ -1388,6 +1388,10 @@ def execute_ozon_target(
         # governed V1 publishes only the approved title, description and
         # images; it must not generate an unaudited Rich JSON payload.
         skip_rich_content=True,
+        # A governed release must not silently train the shared TikTok→Ozon
+        # category mapping from one product. Mapping changes remain a separate
+        # reviewed catalogue operation.
+        skip_mapping_write=True,
     )
     offer_id = str(result.get("offer_id") or offer_id)
     if not result.get("ok"):

@@ -40,6 +40,7 @@ def migrate_one(
     price_label_override: str = "",
     image_urls_override: list[str] | tuple[str, ...] | None = None,
     skip_rich_content: bool = False,
+    skip_mapping_write: bool = False,
     process_images: bool = True,
     category_id_override: int | None = None,
     type_id_override: int | None = None,
@@ -124,6 +125,7 @@ def migrate_one(
         "tk_category_id": draft.get("tk_category_id") or "",
         "tk_category_leaf": draft.get("tk_category_leaf") or "",
         "skip_rich_content": bool(skip_rich_content),
+        "skip_mapping_write": bool(skip_mapping_write),
     }
 
     _progress(on_progress, f"  {offer_id}: 提交 Ozon import（含 Rich 内容，可能需数分钟）…")

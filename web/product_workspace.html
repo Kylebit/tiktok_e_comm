@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#173b36">
   <title>Orbit · 商品发布中心</title>
-  <link rel="stylesheet" href="/static/product_workspace.css?v=20260726-v3">
-  <script src="/static/product_workspace.js?v=20260726-v3" defer></script>
+  <link rel="stylesheet" href="/static/product_workspace.css?v=20260726-v4">
+  <script src="/static/product_workspace.js?v=20260726-v4" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -19,6 +19,7 @@
     </a>
     <nav aria-label="页面导航">
       <a href="#overview">发布进度</a>
+      <a href="#factsEditor">编辑商品</a>
       <a href="#approval">商品审批</a>
       <a href="#content">商品图片</a>
       <a href="#channels">渠道准备</a>
@@ -118,6 +119,62 @@
           当前显示的是带来源的前序采集值。只有 Kyle 完成商品事实审批后，它们才成为锁定版本；后续修改会废止旧发布计划并要求重新审批。
         </p>
         <div id="productFacts" class="fact-grid skeleton-lines"></div>
+
+        <div id="factsEditor" class="facts-editor">
+          <div class="facts-editor-heading">
+            <div>
+              <p class="kicker">EDIT PRODUCT FACTS</p>
+              <h3>核对并编辑商品</h3>
+              <p>保存只会建立新的本地 revision，并立即重新计算售价与发布预检；不会同步妙手或发布到任何渠道。</p>
+            </div>
+            <span id="factsEditRevision" class="revision-pill">revision —</span>
+          </div>
+          <form id="productFactsForm" class="facts-edit-form">
+            <div class="facts-edit-grid">
+              <label class="facts-edit-title">
+                <span>商品标题</span>
+                <textarea id="factsEditTitle" name="title" rows="3" maxlength="220"
+                          placeholder="从妙手采集后可在这里修改" required></textarea>
+              </label>
+              <label>
+                <span>Seller SKU（系统自动分配）</span>
+                <input id="factsEditSellerSku" type="text" readonly
+                       aria-describedby="factsEditSellerSkuNote">
+                <small id="factsEditSellerSkuNote">不可手填；保存前会再次核对目录与预留占用。</small>
+              </label>
+              <label>
+                <span>采购成本（CNY）</span>
+                <input id="factsEditCost" name="cost_cny" type="number"
+                       min="0.01" step="0.01" inputmode="decimal" required>
+              </label>
+              <label>
+                <span>商品重量（kg）</span>
+                <input id="factsEditWeight" name="weight_kg" type="number"
+                       min="0.001" step="0.001" inputmode="decimal" required>
+              </label>
+              <fieldset class="dimension-editor">
+                <legend>包装尺寸（cm）</legend>
+                <label><span>长</span><input id="factsEditLength" name="package_length_cm" type="number" min="0.1" step="0.1" inputmode="decimal" required></label>
+                <label><span>宽</span><input id="factsEditWidth" name="package_width_cm" type="number" min="0.1" step="0.1" inputmode="decimal" required></label>
+                <label><span>高</span><input id="factsEditHeight" name="package_height_cm" type="number" min="0.1" step="0.1" inputmode="decimal" required></label>
+              </fieldset>
+            </div>
+            <fieldset class="source-spec-editor">
+              <legend>本次保留的来源规格（可多选）</legend>
+              <p>规格与采购价来自采集箱原始数据。至少保留一个真实可采购规格；“咨询客服/定制”等占位规格会被事实审查阻止。</p>
+              <div id="productSpecGrid" class="source-spec-grid" aria-live="polite">
+                <span class="source-spec-empty">采集完成后显示来源规格。</span>
+              </div>
+            </fieldset>
+            <div class="facts-edit-actions">
+              <p id="factsEditMessage" class="facts-edit-message" role="status">正在读取商品 revision…</p>
+              <button id="factsEditSaveButton" class="button button-primary" type="submit" disabled>
+                <span class="facts-edit-save-label">保存商品事实新 revision</span>
+                <span class="facts-edit-save-loading">正在保存并重新预检…</span>
+              </button>
+            </div>
+          </form>
+        </div>
       </article>
 
       <article class="panel next-panel">

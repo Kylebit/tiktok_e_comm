@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import date
 from decimal import Decimal, InvalidOperation
 import json
@@ -892,13 +892,22 @@ def build_release_dashboard(
                 "content collect-box identity is not explicitly linked to the requested offer"
             )
     package_dir = project_root / "outputs" / "image_suite_from_miaoshou" / collect_box_id
-    review_package = _read_json(package_dir / "review_package.json")
+    review_package_path = package_dir / "review_package.json"
+    review_package_available = review_package_path.is_file()
+    review_package = (
+        _read_json(review_package_path)
+        if review_package_available
+        else {}
+    )
     collect_box = (
         review_package.get("collect_box")
         if isinstance(review_package.get("collect_box"), Mapping)
         else {}
     )
-    if str(collect_box.get("detail_id") or "").strip() != collect_box_id:
+    if (
+        review_package_available
+        and str(collect_box.get("detail_id") or "").strip() != collect_box_id
+    ):
         raise ValueError("review package collect-box identity does not match its evidence directory")
     suite_plan = (
         review_package.get("plan")
@@ -926,6 +935,27 @@ def build_release_dashboard(
         copy=_content_copy(review, collect_box),
         package_id=f"content:{clean_offer_id}",
     )
+    if not review_package_available:
+        missing_package_blocker = (
+            "Image review package has not been prepared; review source images "
+            "or open the AI image studio before content approval."
+        )
+        pending_approval = replace(
+            content_handoff.content_package.approval,
+            status="pending",
+        )
+        content_handoff = replace(
+            content_handoff,
+            content_package=replace(
+                content_handoff.content_package,
+                approval=pending_approval,
+            ),
+            blockers=tuple(
+                dict.fromkeys(
+                    [*content_handoff.blockers, missing_package_blocker]
+                )
+            ),
+        )
 
     candidate_reservations = tuple(
         fact
@@ -935,7 +965,12 @@ def build_release_dashboard(
     product_row = {
         "product_id": clean_offer_id,
         "seller_sku": clean_seller_sku,
-        "title": str(review.get("title") or collect_box.get("source_title") or "").strip(),
+        "title": str(
+            review.get("title")
+            or collect_box.get("source_title")
+            or source.get("title_source")
+            or ""
+        ).strip(),
         "sku_ids": list(review.get("selected_sku_keys") or ()),
         "platform": "orbit_release_rehearsal",
     }
@@ -1166,6 +1201,24 @@ def build_release_dashboard(
         report_store_path
         or project_root / "data" / "orbit_platform.db"
     )
+    source_skus: list[dict[str, Any]] = []
+    seen_source_sku_keys: set[str] = set()
+    for row in source.get("skus") or ():
+        if not isinstance(row, Mapping):
+            continue
+        key = str(row.get("key") or row.get("name") or "").strip()
+        if not key or key in seen_source_sku_keys:
+            continue
+        seen_source_sku_keys.add(key)
+        name = str(row.get("name") or key).strip() or key
+        source_skus.append(
+            {
+                "key": key,
+                "label": name,
+                "name": name,
+                "price_cny": row.get("price"),
+            }
+        )
     return {
         "ok": True,
         "schema_version": "release-candidate-v1",
@@ -1178,7 +1231,11 @@ def build_release_dashboard(
         },
         "product": {
             "offer_id": clean_offer_id,
-            "source_offer_id": str(collect_box.get("source_item_id") or ""),
+            "source_offer_id": str(
+                collect_box.get("source_item_id")
+                or source.get("source_item_code")
+                or ""
+            ),
             "seller_sku_candidate": clean_seller_sku,
             "title": product_row["title"],
             "category": dict(review.get("category") or {}),
@@ -1187,6 +1244,7 @@ def build_release_dashboard(
             "package_cm": list(review.get("package_cm") or ()),
             "selected_sites": list(review.get("selected_sites") or ()),
             "selected_sku_keys": list(review.get("selected_sku_keys") or ()),
+            "source_skus": source_skus,
             "revision": int(state.get("_revision") or 0),
             "fields_locked": bool(review.get("fields_locked")),
             "facts_status": (

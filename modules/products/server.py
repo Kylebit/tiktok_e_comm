@@ -9,6 +9,7 @@ import socket
 import threading
 import time
 import hashlib
+import math
 import os
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone
@@ -28,6 +29,8 @@ DEFAULT_PORT = 8765
 IMAGE_CACHE_DIR = ROOT / "data" / "web_image_cache"
 PRODUCT_APPROVAL_BODY_LIMIT = 64 * 1024
 _product_approval_lock = threading.Lock()
+_product_workbench_locks_guard = threading.Lock()
+_product_workbench_locks: dict[str, threading.Lock] = {}
 
 # Phase 1 ownership seam. Handler dispatch and every existing URL remain
 # unchanged; later route modules can consume this registry during extraction.
@@ -46,6 +49,413 @@ def _product_workspace_view(payload: dict) -> dict:
         "publication_plan": payload.get("publication_rehearsal", {}),
         "release_v1": release_v1,
     }
+
+
+_INITIAL_PRODUCT_REVIEW_FIELDS = (
+    "selected_sites",
+    "title",
+    "category",
+    "cost_cny",
+    "weight_kg",
+    "package_cm",
+    "video_action",
+    "video_url",
+    "support_cod",
+    "image_actions",
+    "image_order",
+    "selected_sku_keys",
+    "fx_rates",
+)
+
+
+def _product_workbench_lock(offer_id: str) -> threading.Lock:
+    """Return a per-product lock without serializing unrelated queue items."""
+
+    with _product_workbench_locks_guard:
+        return _product_workbench_locks.setdefault(offer_id, threading.Lock())
+
+
+def _collect_product_workspace_locally(data: dict) -> tuple[int, dict]:
+    """Read one Miaoshou collect-box item and create its local workbench.
+
+    This boundary intentionally performs only one upstream read and one local
+    state write.  It never prepares images, writes Miaoshou, claims a listing,
+    or calls any channel publication adapter.
+    """
+
+    from modules.sourcing import new_product_workbench as np_mod
+    from shared_platform import release_control
+
+    offer_id = str(data.get("offer_id") or "").strip()
+    if not offer_id.isdigit() or not 1 <= len(offer_id) <= 32:
+        return 400, {
+            "ok": False,
+            "error_code": "invalid_offer_id",
+            "error": "offer_id must contain 1-32 digits",
+        }
+
+    with _product_workbench_lock(offer_id):
+        state = np_mod.load_state(offer_id)
+        current_revision = int(state.get("_revision") or 0)
+        if current_revision:
+            if str(state.get("offer_id") or "").strip() != offer_id:
+                return 409, {
+                    "ok": False,
+                    "error_code": "workbench_identity_conflict",
+                    "error": "existing workbench identity does not match offer_id",
+                    "current_revision": current_revision,
+                }
+            try:
+                dashboard = release_control.build_release_dashboard(
+                    offer_id=offer_id,
+                )
+            except (TypeError, ValueError) as error:
+                return 409, {
+                    "ok": False,
+                    "error_code": "existing_workbench_invalid",
+                    "error": str(error),
+                    "current_revision": current_revision,
+                }
+            except FileNotFoundError as error:
+                return 404, {
+                    "ok": False,
+                    "error_code": "existing_workbench_evidence_missing",
+                    "error": str(error),
+                    "current_revision": current_revision,
+                }
+            except Exception as error:
+                return 500, {
+                    "ok": False,
+                    "error_code": "dashboard_refresh_failed",
+                    "error": str(error),
+                    "current_revision": current_revision,
+                }
+            return 200, {
+                "ok": True,
+                "idempotent": True,
+                "persisted": False,
+                "source_read_performed": False,
+                "local_writes_performed": [],
+                "external_writes_performed": [],
+                "dashboard": _product_workspace_view(dashboard),
+            }
+
+        try:
+            preview = np_mod.precollect_preview(offer_id)
+        except (FileNotFoundError, RuntimeError, ValueError) as error:
+            return 502, {
+                "ok": False,
+                "error_code": "miaoshou_collect_read_failed",
+                "error": str(error),
+                "retryable": True,
+                "external_writes_performed": [],
+            }
+        except Exception as error:
+            return 502, {
+                "ok": False,
+                "error_code": "miaoshou_collect_read_failed",
+                "error": str(error),
+                "retryable": True,
+                "external_writes_performed": [],
+            }
+
+        if str(preview.get("offer_id") or "").strip() != offer_id:
+            return 409, {
+                "ok": False,
+                "error_code": "miaoshou_collect_identity_mismatch",
+                "error": "Miaoshou collect detail identity does not match offer_id",
+                "external_writes_performed": [],
+            }
+        preview_review = preview.get("review")
+        if not isinstance(preview_review, dict):
+            return 502, {
+                "ok": False,
+                "error_code": "miaoshou_collect_payload_invalid",
+                "error": "Miaoshou collect preview did not return product review facts",
+                "external_writes_performed": [],
+            }
+        initial_review = {
+            key: preview_review[key]
+            for key in _INITIAL_PRODUCT_REVIEW_FIELDS
+            if key in preview_review
+        }
+        initial_review["fields_locked"] = False
+        initial_state = {
+            "_revision": 0,
+            "review": initial_review,
+            "collection": {
+                "source": "miaoshou_common_collect_detail",
+                "collect_box_id": offer_id,
+                "read_only": True,
+            },
+        }
+        try:
+            saved = np_mod.save_state(offer_id, initial_state)
+        except RuntimeError:
+            latest = np_mod.load_state(offer_id)
+            if (
+                int(latest.get("_revision") or 0) > 0
+                and str(latest.get("offer_id") or "").strip() == offer_id
+            ):
+                try:
+                    dashboard = release_control.build_release_dashboard(
+                        offer_id=offer_id,
+                    )
+                except Exception as error:
+                    return 500, {
+                        "ok": False,
+                        "error_code": "dashboard_refresh_failed",
+                        "error": str(error),
+                        "current_revision": int(latest.get("_revision") or 0),
+                    }
+                return 200, {
+                    "ok": True,
+                    "idempotent": True,
+                    "persisted": False,
+                    "source_read_performed": True,
+                    "local_writes_performed": [],
+                    "external_writes_performed": [],
+                    "dashboard": _product_workspace_view(dashboard),
+                }
+            return 409, {
+                "ok": False,
+                "error_code": "state_revision_conflict",
+                "error": "workbench state changed while collection was being saved",
+                "current_revision": int(latest.get("_revision") or 0),
+                "external_writes_performed": [],
+            }
+
+        try:
+            dashboard = release_control.build_release_dashboard(
+                offer_id=offer_id,
+            )
+        except Exception as error:
+            return 500, {
+                "ok": False,
+                "error_code": "dashboard_refresh_failed_after_collection",
+                "error": str(error),
+                "current_revision": int(saved.get("_revision") or 0),
+                "collection_persisted": True,
+                "external_writes_performed": [],
+            }
+        return 201, {
+            "ok": True,
+            "idempotent": False,
+            "persisted": True,
+            "source_read_performed": True,
+            "local_writes_performed": ["workbench_state"],
+            "external_writes_performed": [],
+            "dashboard": _product_workspace_view(dashboard),
+        }
+
+
+def _save_product_workspace_facts_locally(data: dict) -> tuple[int, dict]:
+    """Save one unlocked commercial-facts revision; perform no external write."""
+
+    from modules.sourcing import new_product_workbench as np_mod
+    from shared_platform import release_control
+
+    offer_id = str(data.get("offer_id") or "").strip()
+    expected_revision = data.get("expected_revision")
+    if not offer_id.isdigit() or not 1 <= len(offer_id) <= 32:
+        return 400, {
+            "ok": False,
+            "error_code": "invalid_offer_id",
+            "error": "offer_id must contain 1-32 digits",
+        }
+    if (
+        isinstance(expected_revision, bool)
+        or not isinstance(expected_revision, int)
+        or expected_revision < 1
+    ):
+        return 400, {
+            "ok": False,
+            "error_code": "invalid_expected_revision",
+            "error": "expected_revision must be a positive integer",
+        }
+    title = str(data.get("title") or "").strip()
+    if not title or len(title) > 220:
+        return 400, {
+            "ok": False,
+            "error_code": "invalid_title",
+            "error": "title must contain 1-220 characters",
+        }
+
+    def positive_number(name: str) -> tuple[float | None, tuple[int, dict] | None]:
+        raw = data.get(name)
+        if isinstance(raw, bool):
+            return None, (
+                400,
+                {
+                    "ok": False,
+                    "error_code": f"invalid_{name}",
+                    "error": f"{name} must be a positive finite number",
+                },
+            )
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 0.0
+        if not math.isfinite(value) or value <= 0:
+            return None, (
+                400,
+                {
+                    "ok": False,
+                    "error_code": f"invalid_{name}",
+                    "error": f"{name} must be a positive finite number",
+                },
+            )
+        return value, None
+
+    cost_cny, failure = positive_number("cost_cny")
+    if failure:
+        return failure
+    weight_kg, failure = positive_number("weight_kg")
+    if failure:
+        return failure
+    package_raw = data.get("package_cm")
+    if not isinstance(package_raw, list) or len(package_raw) != 3:
+        return 400, {
+            "ok": False,
+            "error_code": "invalid_package_cm",
+            "error": "package_cm must contain exactly three positive numbers",
+        }
+    package_cm: list[float] = []
+    for raw in package_raw:
+        if isinstance(raw, bool):
+            value = 0.0
+        else:
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                value = 0.0
+        if not math.isfinite(value) or value <= 0:
+            return 400, {
+                "ok": False,
+                "error_code": "invalid_package_cm",
+                "error": "package_cm must contain exactly three positive numbers",
+            }
+        package_cm.append(value)
+    raw_sku_keys = data.get("selected_sku_keys")
+    if not isinstance(raw_sku_keys, list):
+        return 400, {
+            "ok": False,
+            "error_code": "invalid_selected_sku_keys",
+            "error": "selected_sku_keys must be a list",
+        }
+    selected_sku_keys = list(
+        dict.fromkeys(str(value or "").strip() for value in raw_sku_keys)
+    )
+    if any(not value or len(value) > 240 for value in selected_sku_keys):
+        return 400, {
+            "ok": False,
+            "error_code": "invalid_selected_sku_keys",
+            "error": "selected_sku_keys contains an invalid source SKU key",
+        }
+
+    with _product_workbench_lock(offer_id):
+        state = np_mod.load_state(offer_id)
+        current_revision = int(state.get("_revision") or 0)
+        if current_revision < 1 or str(state.get("offer_id") or "").strip() != offer_id:
+            return 404, {
+                "ok": False,
+                "error_code": "workbench_not_collected",
+                "error": "collect this Miaoshou item before editing product facts",
+            }
+        if current_revision != expected_revision:
+            return 409, {
+                "ok": False,
+                "error_code": "state_revision_conflict",
+                "error": "state revision is stale",
+                "current_revision": current_revision,
+            }
+        review = state.get("review")
+        if not isinstance(review, dict):
+            return 409, {
+                "ok": False,
+                "error_code": "workbench_review_invalid",
+                "error": "state review must be a mapping",
+                "current_revision": current_revision,
+            }
+        approval = state.get("product_approval")
+        if bool(review.get("fields_locked")) or (
+            isinstance(approval, dict)
+            and str(approval.get("status") or "").strip().casefold() == "approved"
+        ):
+            return 409, {
+                "ok": False,
+                "error_code": "product_facts_locked",
+                "error": "approved product facts are locked; supersede the approval before editing",
+                "current_revision": current_revision,
+            }
+
+        source = np_mod._source_summary(offer_id)
+        available_sku_keys = {
+            str(row.get("key") or row.get("name") or "").strip()
+            for row in (source.get("skus") or ())
+            if isinstance(row, dict)
+            and str(row.get("key") or row.get("name") or "").strip()
+        }
+        unknown_sku_keys = [
+            value for value in selected_sku_keys if value not in available_sku_keys
+        ]
+        if unknown_sku_keys:
+            return 400, {
+                "ok": False,
+                "error_code": "unknown_source_sku",
+                "error": "selected_sku_keys contains keys not present in the collected source",
+                "unknown_sku_keys": unknown_sku_keys,
+            }
+        if available_sku_keys and not selected_sku_keys:
+            return 400, {
+                "ok": False,
+                "error_code": "missing_source_sku_selection",
+                "error": "select at least one collected source SKU",
+            }
+
+        next_state = dict(state)
+        next_review = dict(review)
+        next_review.update(
+            {
+                "title": title,
+                "cost_cny": cost_cny,
+                "weight_kg": weight_kg,
+                "package_cm": package_cm,
+                "selected_sku_keys": selected_sku_keys,
+            }
+        )
+        next_state["review"] = next_review
+        try:
+            saved = np_mod.save_state(offer_id, next_state)
+        except RuntimeError:
+            latest = np_mod.load_state(offer_id)
+            return 409, {
+                "ok": False,
+                "error_code": "state_revision_conflict",
+                "error": "state revision is stale",
+                "current_revision": int(latest.get("_revision") or 0),
+            }
+        try:
+            dashboard = release_control.build_release_dashboard(
+                offer_id=offer_id,
+            )
+        except Exception as error:
+            return 500, {
+                "ok": False,
+                "error_code": "dashboard_refresh_failed_after_facts_save",
+                "error": str(error),
+                "current_revision": int(saved.get("_revision") or 0),
+                "facts_persisted": True,
+                "external_writes_performed": [],
+            }
+        return 200, {
+            "ok": True,
+            "persisted": True,
+            "revision": int(saved.get("_revision") or 0),
+            "local_writes_performed": ["workbench_state"],
+            "external_writes_performed": [],
+            "dashboard": _product_workspace_view(dashboard),
+        }
 
 
 def _release_plan_payload_from_dashboard(dashboard: dict) -> tuple[dict, list[str]]:
@@ -3334,6 +3744,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/feishu/event":
             return self._handle_feishu_event()
         if path in {
+            "/api/product-workspace/collect",
+            "/api/product-workspace/facts",
             "/api/product-workspace/approve",
             "/api/product-workspace/release-plan/approve",
             "/api/product-workspace/miaoshou-draft/commit",
@@ -3376,7 +3788,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(400, {"ok": False, "error": "invalid json"})
             if not isinstance(data, dict):
                 return self._json(400, {"ok": False, "error": "json body must be an object"})
-            if path == "/api/product-workspace/approve":
+            if path == "/api/product-workspace/collect":
+                status, payload = _collect_product_workspace_locally(data)
+            elif path == "/api/product-workspace/facts":
+                status, payload = _save_product_workspace_facts_locally(data)
+            elif path == "/api/product-workspace/approve":
                 status, payload = _approve_product_workspace_locally(data)
             elif path == "/api/product-workspace/release-plan/approve":
                 status, payload = _approve_release_plan_locally(data)

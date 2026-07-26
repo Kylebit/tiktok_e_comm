@@ -75,6 +75,7 @@
   const QUEUE_REFRESH_CONCURRENCY = 4;
   let currentData = null;
   let approvalSubmitting = false;
+  let factsSubmitting = false;
   let releaseSubmitting = false;
   let pageLoading = false;
   let queueRefreshing = false;
@@ -189,7 +190,7 @@
   function friendlyError(value) {
     const text = String(value || "").trim();
     if (text.includes("required release evidence not found")) {
-      return "这件商品还没有本地发布档案。请先进入 AI 图片工作室，从妙手采集箱重新读取并完成图片审核。";
+      return "这件商品还没有本地发布档案。请在上方重新加入队列，系统会立即从妙手采集箱读取并建档。";
     }
     return text || "商品状态读取失败，请确认本地服务已启动。";
   }
@@ -198,6 +199,7 @@
     pageLoading = loading;
     $("#lookupForm").classList.toggle("is-loading", loading);
     $("#refreshButton").disabled = loading;
+    if ($("#factsEditSaveButton")) updateFactsEditControls();
     if ($("#approvalButton")) updateApprovalButton(currentData || {});
     if ($("#applyPublicationScopeButton")) updatePublicationScopeControls();
     if ($("#approveReleasePlanButton")) updateReleaseControls(currentData || {});
@@ -288,6 +290,14 @@
     $("#approvalCheckbox").disabled = true;
     $("#approvalButton").disabled = true;
     $("#approvalMessage").textContent = "";
+    $("#productFactsForm").reset();
+    $("#productFactsForm").dataset.revision = "";
+    $("#productFactsForm").dataset.locked = "true";
+    $("#factsEditRevision").textContent = "revision —";
+    $("#productSpecGrid").innerHTML =
+      '<span class="source-spec-empty">采集完成后显示来源规格。</span>';
+    $("#factsEditMessage").textContent = message;
+    updateFactsEditControls();
   }
 
   function setBadge(element, text, tone) {
@@ -310,9 +320,53 @@
       error: `服务返回 HTTP ${response.status}`,
     }));
     if (!response.ok || payload.ok === false) {
-      throw new Error(payload.error || `服务返回 HTTP ${response.status}`);
+      const error = new Error(payload.error || `服务返回 HTTP ${response.status}`);
+      error.status = response.status;
+      error.payload = payload;
+      throw error;
     }
     return payload;
+  }
+
+  async function postProductWorkspace(path, body) {
+    const response = await fetch(path, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    const payload = await response.json().catch(() => ({
+      ok: false,
+      error: `服务返回 HTTP ${response.status}`,
+    }));
+    if (!response.ok || payload.ok === false) {
+      const error = new Error(payload.error || `服务返回 HTTP ${response.status}`);
+      error.status = response.status;
+      error.payload = payload;
+      throw error;
+    }
+    return payload;
+  }
+
+  function dashboardFromPayload(payload) {
+    if (payload?.product) return payload;
+    if (payload?.dashboard?.product) return payload.dashboard;
+    if (payload?.data?.product) return payload.data;
+    return null;
+  }
+
+  async function collectProduct(offerId) {
+    const payload = await postProductWorkspace("/api/product-workspace/collect", {
+      offer_id: offerId,
+    });
+    return dashboardFromPayload(payload) || fetchDashboard(offerId);
+  }
+
+  function missingProductError(error) {
+    return error?.status === 404
+      || String(error?.message || "").includes("required release evidence not found");
   }
 
   function productFactsReady(product) {
@@ -384,7 +438,7 @@
   function queueSummary(item) {
     if (item.loading) {
       return {
-        stage: "正在读取最新本地证据",
+        stage: item.activity || "正在读取最新本地证据",
         blockers: "—",
         images: "—",
         approval: "检查中",
@@ -606,6 +660,7 @@
         <strong>${esc(value)}</strong>
       </div>
     `).join("");
+    renderFactsEditor(data);
 
     const ready = Boolean(data.actual_release_gate?.ready);
     $("#readinessLabel").textContent = ready ? "发布前条件" : "当前状态";
@@ -613,6 +668,188 @@
     $("#readinessNote").textContent = ready
       ? "可以进入受控渠道流程"
       : `${(data.actual_release_gate?.blockers || []).length} 项关键条件待处理`;
+  }
+
+  function sourceSkuOptions(product) {
+    const evidence = product.fact_evidence || {};
+    const raw = (
+      product.source_skus
+      || product.source_sku_options
+      || product.available_skus
+      || evidence.source_skus
+      || []
+    );
+    const selected = new Set((product.selected_sku_keys || []).map(String));
+    const options = [];
+    const seen = new Set();
+    (Array.isArray(raw) ? raw : []).forEach((row) => {
+      const source = typeof row === "object" && row !== null ? row : { key: row };
+      const key = String(
+        source.key
+        ?? source.sku_key
+        ?? source.selected_key
+        ?? source.id
+        ?? "",
+      ).trim();
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      options.push({
+        key,
+        label: String(
+          source.label
+          ?? source.name
+          ?? source.spec
+          ?? source.title
+          ?? key,
+        ).trim() || key,
+        price_cny: source.price_cny ?? source.price ?? source.cost_cny ?? null,
+      });
+    });
+    (evidence.selected_sku_prices || []).forEach((row) => {
+      const key = String(row.selected_key ?? row.key ?? "").trim();
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      options.push({
+        key,
+        label: String(row.label || key),
+        price_cny: row.price_cny ?? null,
+      });
+    });
+    selected.forEach((key) => {
+      if (seen.has(key)) return;
+      seen.add(key);
+      options.push({ key, label: key, price_cny: null });
+    });
+    return options;
+  }
+
+  function renderFactsEditor(data) {
+    const product = data.product || {};
+    const dimensions = Array.isArray(product.package_cm) ? product.package_cm : [];
+    const selected = new Set((product.selected_sku_keys || []).map(String));
+    const locked = Boolean(product.actual_product_approved || product.fields_locked);
+    const form = $("#productFactsForm");
+    form.dataset.revision = String(product.revision ?? "");
+    form.dataset.locked = locked ? "true" : "false";
+    $("#factsEditRevision").textContent = `revision ${product.revision ?? "—"}`;
+    $("#factsEditTitle").value = product.title || "";
+    $("#factsEditSellerSku").value = product.seller_sku_candidate || "";
+    $("#factsEditCost").value = product.cost_cny ?? "";
+    $("#factsEditWeight").value = product.weight_kg ?? "";
+    $("#factsEditLength").value = dimensions[0] ?? "";
+    $("#factsEditWidth").value = dimensions[1] ?? "";
+    $("#factsEditHeight").value = dimensions[2] ?? "";
+
+    const options = sourceSkuOptions(product);
+    $("#productSpecGrid").innerHTML = options.length
+      ? options.map((option, index) => {
+        const price = Number(option.price_cny);
+        const priceLabel = Number.isFinite(price)
+          ? `采购价 ¥${money(price)}`
+          : "来源价待核对";
+        return `
+          <label class="source-spec-option">
+            <input type="checkbox" name="selected_sku_key"
+                   value="${esc(option.key)}" ${selected.has(option.key) ? "checked" : ""}>
+            <span>
+              <strong>${esc(option.label)}</strong>
+              <small>${esc(option.key)} · ${esc(priceLabel)}</small>
+            </span>
+          </label>
+        `;
+      }).join("")
+      : '<span class="source-spec-empty">当前来源没有可选规格，请重新采集后再保存。</span>';
+    $("#factsEditMessage").textContent = locked
+      ? "当前 revision 已审批锁定。如需修改，必须先显式废止旧审批与发布计划。"
+      : `正在编辑 revision ${product.revision ?? "—"}；保存后会生成下一版并重新运行售价与发布预检。`;
+    updateFactsEditControls();
+  }
+
+  function updateFactsEditControls() {
+    const form = $("#productFactsForm");
+    if (!form) return;
+    const locked = form.dataset.locked !== "false";
+    const disabled = locked || factsSubmitting || pageLoading || !currentData;
+    form.querySelectorAll("textarea, input").forEach((field) => {
+      if (field.id === "factsEditSellerSku") {
+        field.readOnly = true;
+        field.disabled = !currentData;
+      } else {
+        field.disabled = disabled;
+      }
+    });
+    $("#factsEditSaveButton").disabled = disabled;
+  }
+
+  async function submitFactsEdit() {
+    if (!currentData || factsSubmitting || pageLoading) return;
+    const form = $("#productFactsForm");
+    if (form.dataset.locked !== "false") {
+      $("#factsEditMessage").textContent =
+        "当前 revision 已锁定，不能直接覆盖；请先废止旧审批与发布计划。";
+      return;
+    }
+    if (!form.reportValidity()) return;
+    const selectedSkuKeys = [...form.querySelectorAll(
+      'input[name="selected_sku_key"]:checked',
+    )].map((input) => input.value);
+    if (!selectedSkuKeys.length) {
+      $("#factsEditMessage").textContent = "请至少保留一个真实可采购的来源规格。";
+      $("#productSpecGrid").focus?.();
+      return;
+    }
+    const product = currentData.product || {};
+    const key = productKey(product.offer_id);
+    if (!key || key !== currentQueueKey || loadedQueueKey !== currentQueueKey) {
+      showError("当前商品仍在切换中，不能用上一件商品的 revision 保存。");
+      return;
+    }
+    factsSubmitting = true;
+    form.classList.add("is-submitting");
+    $("#factsEditMessage").textContent =
+      "正在核对来源规格、Seller SKU 占用和当前 revision…";
+    updateFactsEditControls();
+    try {
+      const payload = await postProductWorkspace("/api/product-workspace/facts", {
+        offer_id: product.offer_id,
+        expected_revision: Number(form.dataset.revision),
+        title: $("#factsEditTitle").value.trim(),
+        cost_cny: Number($("#factsEditCost").value),
+        weight_kg: Number($("#factsEditWeight").value),
+        package_cm: [
+          Number($("#factsEditLength").value),
+          Number($("#factsEditWidth").value),
+          Number($("#factsEditHeight").value),
+        ],
+        selected_sku_keys: selectedSkuKeys,
+      });
+      const data = dashboardFromPayload(payload)
+        || await fetchDashboard(product.offer_id);
+      const item = queueItem(currentQueueKey);
+      if (item) {
+        item.data = data;
+        item.seller_sku = data.product?.seller_sku_candidate || "";
+        item.error = "";
+      }
+      currentData = data;
+      loadedQueueKey = currentQueueKey;
+      render(data);
+      renderQueue();
+      showError("");
+      const revision = data.product?.revision ?? payload.revision ?? "新";
+      $("#factsEditMessage").textContent =
+        `已保存 revision ${revision}；售价、事实证据与全渠道预检已按新值刷新。`;
+    } catch (error) {
+      const message = error.status === 409
+        ? `保存被拒绝：${friendlyError(error.message)} 请刷新当前商品后再核对。`
+        : `保存失败：${friendlyError(error.message)}`;
+      $("#factsEditMessage").textContent = message;
+      showError(message);
+    } finally {
+      factsSubmitting = false;
+      form.classList.remove("is-submitting");
+      updateFactsEditControls();
+    }
   }
 
   function approvalEligible(data) {
@@ -1467,9 +1704,18 @@
   }
 
   async function refreshQueueProduct(item, options = {}) {
-    if (item.loading && item.promise) return item.promise;
+    if (item.loading && item.promise) {
+      if (!options.collectIfMissing) return item.promise;
+      return item.promise.catch((error) => {
+        if (!missingProductError(error) || item.data) throw error;
+        return refreshQueueProduct(item, options);
+      });
+    }
     const key = productKey(item.offer_id);
     item.loading = true;
+    item.activity = options.collectIfMissing
+      ? "正在检查本地档案；缺失时将立即从妙手采集"
+      : "正在读取最新本地证据";
     item.error = "";
     if (key === currentQueueKey) {
       clearCurrentApprovalContext();
@@ -1481,10 +1727,20 @@
         const requestedTargets = Object.hasOwn(options, "publicationTargets")
           ? options.publicationTargets
           : (item.data?.publication_scope?.selected_labels || null);
-        const data = await fetchDashboard(
-          item.offer_id,
-          requestedTargets,
-        );
+        let data;
+        try {
+          data = await fetchDashboard(
+            item.offer_id,
+            requestedTargets,
+          );
+        } catch (error) {
+          if (!options.collectIfMissing || !missingProductError(error)) throw error;
+          item.activity = "正在从妙手采集箱读取并建立本地商品档案";
+          $("#queueMessage").textContent =
+            `Offer ${item.offer_id} 正在从妙手采集箱读取；完成后会自动分配 Seller SKU。`;
+          renderQueue();
+          data = await collectProduct(item.offer_id);
+        }
         item.data = data;
         item.seller_sku = data.product?.seller_sku_candidate || "";
         item.error = "";
@@ -1497,6 +1753,10 @@
           syncCurrentUrl(item);
           render(data);
           showError("");
+          if (options.collectIfMissing) {
+            $("#queueMessage").textContent =
+              `Offer ${item.offer_id} 已读取完成；商品事实可在当前页面直接修改。`;
+          }
         }
         return data;
       } catch (error) {
@@ -1510,6 +1770,7 @@
         throw error;
       } finally {
         item.loading = false;
+        item.activity = "";
         item.promise = null;
         if (key === currentQueueKey) setLoading(false);
         renderQueue();
@@ -1518,7 +1779,7 @@
     return item.promise;
   }
 
-  async function selectQueueProduct(key) {
+  async function selectQueueProduct(key, { collectIfMissing = true } = {}) {
     if (approvalSubmitting || releaseSubmitting) return;
     const item = queueItem(key);
     if (!item) return;
@@ -1530,7 +1791,7 @@
     syncCurrentUrl(item);
     clearCurrentApprovalContext();
     renderQueue();
-    await refreshQueueProduct(item).catch(() => {});
+    await refreshQueueProduct(item, { collectIfMissing }).catch(() => {});
   }
 
   async function addAndOpenCurrentInput() {
@@ -1542,8 +1803,9 @@
     }
     const item = addToQueue(offerId, { select: true });
     if (!item) return;
-    $("#queueMessage").textContent = "商品已加入并行队列；系统正在分配未占用 Seller SKU。";
-    await selectQueueProduct(productKey(item.offer_id));
+    $("#queueMessage").textContent =
+      "商品已加入并行队列；正在从妙手采集箱读取并建立本地档案。";
+    await selectQueueProduct(productKey(item.offer_id), { collectIfMissing: true });
   }
 
   async function refreshAllQueueProducts() {
@@ -1604,7 +1866,7 @@
   });
   $("#refreshButton").addEventListener("click", () => {
     const item = queueItem(currentQueueKey);
-    if (item) refreshQueueProduct(item).catch(() => {});
+    if (item) refreshQueueProduct(item, { collectIfMissing: true }).catch(() => {});
   });
   $("#refreshAllButton").addEventListener("click", refreshAllQueueProducts);
   $("#refreshChannelsButton").addEventListener("click", () => {
@@ -1662,6 +1924,15 @@
     event.preventDefault();
     submitApproval();
   });
+  $("#productFactsForm").addEventListener("input", () => {
+    if (!currentData || factsSubmitting) return;
+    $("#factsEditMessage").textContent =
+      "有尚未保存的修改；保存后会建立新 revision 并重新计算售价与发布预检。";
+  });
+  $("#productFactsForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitFactsEdit();
+  });
   $("#releasePlanCheckbox").addEventListener("change", () => {
     updateReleaseControls(currentData || {});
   });
@@ -1697,7 +1968,7 @@
       ? `自动候选 ${initialItem.seller_sku}`
       : "正在读取并自动分配";
     syncCurrentUrl(initialItem);
-    refreshQueueProduct(initialItem)
+    refreshQueueProduct(initialItem, { collectIfMissing: true })
       .catch(() => {})
       .finally(() => hydrateUnloadedQueueProducts());
   }

@@ -8,12 +8,36 @@
       window.location.replace('http://127.0.0.1:8765/catalog' + window.location.search + window.location.hash);
     }
   </script>
-  <title>商品目录 · TK + Shopee + Ozon</title>
+  <title>Orbit · 商品目录</title>
   <link rel="stylesheet" href="/static/app.css">
+  <style>
+    .catalog-sync-governance { border:1px solid #cfded8; background:#f7fbf8; margin:18px 0; }
+    .catalog-sync-head { display:flex; align-items:flex-start; justify-content:space-between; gap:24px; }
+    .catalog-sync-head h2 { margin:0 0 6px; }
+    .catalog-sync-mode { min-width:210px; }
+    .catalog-sync-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin:14px 0; }
+    .catalog-sync-fact { border:1px solid #dbe4df; border-radius:12px; background:#fff; padding:12px; min-width:0; }
+    .catalog-sync-fact span { display:block; color:#64746d; font-size:12px; margin-bottom:5px; }
+    .catalog-sync-fact strong, .catalog-sync-fact code { overflow-wrap:anywhere; }
+    .catalog-sync-confirm { display:flex; align-items:flex-start; gap:9px; padding:12px; border-radius:12px; background:#fff4df; border:1px solid #eed6a8; }
+    .catalog-sync-confirm input { margin-top:3px; }
+    .catalog-sync-actions { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-top:12px; }
+    .catalog-sync-result { margin-top:12px; padding:12px; border-radius:12px; background:#fff; border:1px solid #dbe4df; white-space:pre-wrap; }
+    .catalog-sync-result[data-status="failed"] { border-color:#e6b6ad; background:#fff6f3; }
+    .catalog-sync-result[data-status="partial"] { border-color:#e7cb8b; background:#fffaed; }
+    .catalog-sync-result[data-status="success"] { border-color:#acd2c0; background:#f3fbf7; }
+    .sync-progress-wrap[hidden] { display:none !important; }
+    @media (max-width:800px) {
+      .catalog-sync-head { display:block; }
+      .catalog-sync-mode { margin-top:12px; width:100%; }
+      .catalog-sync-grid { grid-template-columns:1fr 1fr; }
+    }
+    @media (max-width:480px) { .catalog-sync-grid { grid-template-columns:1fr; } }
+  </style>
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="/">TikTok Shop 控制台</a>
+    <a class="brand" href="/">Orbit · 商品运营</a>
     <nav class="nav">
       <a href="/">首页</a>
       <a href="/catalog" class="active">商品目录</a>
@@ -29,6 +53,45 @@
   <main class="container catalog-page">
     <h1>商品目录</h1>
     <p class="hint">四国 TK + Shopee 按<strong>后四位对齐码</strong>合并展示；<strong>未填/非标准规格货号</strong>的 TK、Shopee 商品默认置顶，可填写并推送到后台；Ozon 来自 <code>tk_sku_map</code>。</p>
+
+    <section class="scan-panel catalog-sync-governance" aria-labelledby="catalogSyncTitle">
+      <div class="catalog-sync-head">
+        <div>
+          <h2 id="catalogSyncTitle" class="panel-title">目录更新预检</h2>
+          <p class="hint">更新前固定当前数据库快照并执行完整性检查。确认后系统先创建 WAL 安全、不可覆盖且校验通过的备份，再启动远程同步。</p>
+        </div>
+        <label class="catalog-sync-mode">更新模式
+          <select id="catalogSyncMode">
+            <option value="fast">快速更新（使用有效缓存）</option>
+            <option value="full">全量更新（重新拉取 API）</option>
+          </select>
+        </label>
+      </div>
+      <div id="catalogSyncPreviewState" class="meta">正在读取只读预检…</div>
+      <div class="catalog-sync-grid">
+        <div class="catalog-sync-fact"><span>数据库完整性</span><strong id="catalogSyncIntegrity">—</strong></div>
+        <div class="catalog-sync-fact"><span>核心目录行数</span><strong id="catalogSyncRows">—</strong></div>
+        <div class="catalog-sync-fact"><span>业务数据质量</span><strong id="catalogSyncQuality">—</strong></div>
+        <div class="catalog-sync-fact"><span>快照指纹</span><code id="catalogSyncSnapshot">—</code></div>
+        <div class="catalog-sync-fact"><span>执行前备份</span><strong id="catalogSyncBackup">必须且尚未创建</strong></div>
+      </div>
+      <label class="catalog-sync-confirm">
+        <input type="checkbox" id="confirmCatalogUpdate" disabled>
+        <span>我已查看本次预检快照，并确认在真正同步前创建独立备份。若预检后目录发生变化，系统必须拒绝执行并要求重新预检。</span>
+      </label>
+      <div class="catalog-sync-actions">
+        <button class="btn btn-secondary" id="btnCatalogSyncPreview">重新预检</button>
+        <button class="btn btn-primary" id="btnSync" disabled>确认并开始目录更新</button>
+        <div id="syncProgressWrap" class="sync-progress-wrap" hidden>
+          <div class="sync-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div id="syncProgressFill" class="sync-progress-fill"></div>
+          </div>
+          <span id="syncProgressPct" class="sync-progress-pct">0%</span>
+        </div>
+        <span id="syncStatus" class="meta sync-status"></span>
+      </div>
+      <div id="catalogSyncResult" class="catalog-sync-result" data-status="idle">尚未执行目录更新。</div>
+    </section>
 
     <div id="storeCards" class="store-grid"></div>
     <div id="globalStats" class="global-stats meta"></div>
@@ -90,17 +153,7 @@
         <label class="chk-inline" title="Shopee 规格货号为空或非 4 位/66xxxx 标准码"><input type="checkbox" id="missingSpSku"> 仅看缺 Shopee 规范货号 <span id="missingSpSkuCount" class="meta"></span></label>
         <button class="btn btn-primary" id="btnSearch">搜索</button>
         <button class="btn btn-secondary" id="btnExportPdf" title="导出当前筛选结果：对齐码、商品名、SKU 名（译中文）、主图">导出 PDF</button>
-        <button class="btn btn-secondary" id="btnSync">快速同步</button>
-        <button class="btn btn-secondary" id="btnSyncFull" title="忽略缓存，重新拉取全部 API">全量同步</button>
-        <label class="chk-inline" title="6 小时内复用 TikTok/Shopee/Ozon 本地缓存，显著加快速度"><input type="checkbox" id="syncUseCache" checked> 用缓存</label>
         <button class="btn btn-secondary" id="btnReset">重置</button>
-        <div id="syncProgressWrap" class="sync-progress-wrap" hidden>
-          <div class="sync-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-            <div id="syncProgressFill" class="sync-progress-fill"></div>
-          </div>
-          <span id="syncProgressPct" class="sync-progress-pct">0%</span>
-        </div>
-        <span id="syncStatus" class="meta sync-status"></span>
         <span id="listMeta" class="meta"></span>
       </div>
     </div>
@@ -362,6 +415,7 @@
     var _editMatchKey = '';
     var _editSkuId = '';
     var _editExtraRows = [];
+    var _catalogSyncPreview = null;
     function skuFieldLabel(row) {
       if (row.platform === 'shopee') return '规格货号';
       if (row.platform === 'ozon') return 'offer_id';
@@ -1084,60 +1138,191 @@
         if (st) st.textContent = message;
       }
     }
-    function hideSyncProgress() {
-      var wrap = document.getElementById('syncProgressWrap');
-      if (wrap) wrap.hidden = true;
+    function catalogCoreRowText(rows) {
+      rows = rows || {};
+      return 'TikTok ' + (rows.products || 0) +
+        ' · Shopee ' + (rows.shopee_products || 0) +
+        ' · 成本 ' + (rows.sku_costs || 0) +
+        ' · 重量 ' + (rows.sku_logistics_weights || 0);
     }
-    function startSync(mode) {
+    function renderCatalogSyncPreview(preview) {
+      _catalogSyncPreview = preview && preview.ok !== false ? preview : null;
+      var integrity = document.getElementById('catalogSyncIntegrity');
+      var rows = document.getElementById('catalogSyncRows');
+      var quality = document.getElementById('catalogSyncQuality');
+      var snapshot = document.getElementById('catalogSyncSnapshot');
+      var backup = document.getElementById('catalogSyncBackup');
+      var state = document.getElementById('catalogSyncPreviewState');
+      var confirm = document.getElementById('confirmCatalogUpdate');
+      var start = document.getElementById('btnSync');
+      if (!_catalogSyncPreview) {
+        integrity.textContent = '预检失败';
+        rows.textContent = '—';
+        quality.textContent = '—';
+        snapshot.textContent = '—';
+        backup.textContent = '未创建';
+        confirm.checked = false;
+        confirm.disabled = true;
+        start.disabled = true;
+        state.textContent = (preview && (preview.error || preview.message)) || '无法读取目录预检';
+        return;
+      }
+      var check = _catalogSyncPreview.integrity || {};
+      var qualityReview = _catalogSyncPreview.business_quality || {};
+      var metrics = qualityReview.metrics || {};
+      integrity.textContent = check.ok ? '通过 · quick/integrity 均为 ok' : '未通过 · 禁止执行';
+      rows.textContent = catalogCoreRowText(_catalogSyncPreview.row_counts);
+      quality.textContent = qualityReview.status === 'ready'
+        ? '通过 · 未发现已定义异常'
+        : '待复核 · 同店 SKU 冲突 ' + (metrics.same_shop_duplicate_seller_sku_groups || 0) +
+          ' · 缺直接成本 ' + (metrics.tiktok_rows_without_direct_cost || 0) +
+          ' · 物流孤儿 ' + (metrics.logistics_rows_without_tiktok_tail4 || 0) +
+          ' · Shopee 非正价格 ' + (metrics.shopee_nonpositive_price_rows || 0);
+      snapshot.textContent = _catalogSyncPreview.snapshot_id || '—';
+      snapshot.title = _catalogSyncPreview.snapshot_id || '';
+      backup.textContent = _catalogSyncPreview.backup_required ? '确认后创建独立备份' : '无需备份';
+      state.textContent = (_catalogSyncPreview.mode === 'full' ? '全量' : '快速') +
+        '模式预检完成；快照只在目录未变化时有效。';
+      confirm.checked = false;
+      confirm.disabled = !check.ok;
+      start.disabled = true;
+    }
+    function loadCatalogSyncPreview() {
+      var mode = document.getElementById('catalogSyncMode').value;
+      var state = document.getElementById('catalogSyncPreviewState');
+      var refresh = document.getElementById('btnCatalogSyncPreview');
+      refresh.disabled = true;
+      state.textContent = '正在只读检查数据库完整性…';
+      fetch('/api/catalog/sync/preview?mode=' + encodeURIComponent(mode))
+        .then(function(r) { return r.json(); })
+        .then(function(preview) {
+          refresh.disabled = false;
+          renderCatalogSyncPreview(preview);
+        })
+        .catch(function() {
+          refresh.disabled = false;
+          renderCatalogSyncPreview({ ok:false, error:'预检网络错误' });
+        });
+    }
+    function catalogSnapshotLine(label, snapshot) {
+      if (!snapshot) return label + '：未生成';
+      var quality = snapshot.business_quality || {};
+      return label + '：' + (snapshot.snapshot_id || '—') +
+        '\n  ' + catalogCoreRowText(snapshot.row_counts) +
+        '\n  业务质量：' + (!snapshot.business_quality
+          ? '本次运行前未记录'
+          : (quality.status === 'ready'
+            ? '通过'
+            : '待复核 ' + (quality.issue_metric_count || 0) + ' 类'));
+    }
+    function renderCatalogSyncJob(job) {
+      var result = document.getElementById('catalogSyncResult');
+      var status = (job && job.status) || 'idle';
+      var statusLabels = {
+        idle:'尚未执行',
+        running:'运行中',
+        success:'成功',
+        partial:'部分完成',
+        failed:'失败'
+      };
+      function localTime(value) {
+        if (!value) return '—';
+        var parsed = new Date(value);
+        return Number.isNaN(parsed.getTime())
+          ? value
+          : parsed.toLocaleString('zh-CN', { hour12:false });
+      }
+      result.setAttribute('data-status', status);
+      if (!job || status === 'idle') {
+        result.textContent = '尚未执行目录更新。';
+        return;
+      }
+      var lines = [
+        '运行：' + (job.run_id || '—') + ' · 状态：' + (statusLabels[status] || status),
+        '模式：' + (job.mode === 'full' ? '全量更新' : '快速更新'),
+        '开始：' + localTime(job.started_at) + (job.finished_at ? ' · 完成：' + localTime(job.finished_at) : ''),
+        catalogSnapshotLine('更新前', job.baseline),
+        catalogSnapshotLine('更新后', job.after)
+      ];
+      if (job.backup) {
+        lines.push('备份：' + (job.backup.destination_path || '—'));
+        lines.push('备份 SHA-256：' + (job.backup.sha256 || '—'));
+      }
+      if (job.message) lines.push('结果：' + job.message);
+      if (job.error) lines.push('错误：' + job.error);
+      result.textContent = lines.join('\n');
+    }
+    function startSync() {
       var btn = document.getElementById('btnSync');
-      var btnFull = document.getElementById('btnSyncFull');
       var st = document.getElementById('syncStatus');
-      var useCache = document.getElementById('syncUseCache');
-      var effectiveMode = (mode === 'full' || !(useCache && useCache.checked)) ? 'full' : 'fast';
+      var confirm = document.getElementById('confirmCatalogUpdate');
+      var effectiveMode = document.getElementById('catalogSyncMode').value;
+      if (!_catalogSyncPreview || _catalogSyncPreview.mode !== effectiveMode) {
+        st.textContent = '请先完成当前模式的预检';
+        return;
+      }
+      if (!confirm.checked) {
+        st.textContent = '请勾选显式确认';
+        return;
+      }
       btn.disabled = true;
-      if (btnFull) btnFull.disabled = true;
       setSyncProgress(0, (effectiveMode === 'fast' ? '快速' : '全量') + '同步提交中…');
       fetch('/api/catalog/sync', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ mode: effectiveMode })
+        body: JSON.stringify({
+          mode: effectiveMode,
+          confirm_catalog_update: true,
+          expected_snapshot_id: _catalogSyncPreview.snapshot_id
+        })
       })
         .then(function(r) { return r.json(); })
         .then(function(res) {
           if (!res.ok) {
-            btn.disabled = false;
-            if (btnFull) btnFull.disabled = false;
-            hideSyncProgress();
             st.textContent = res.message || res.error || '失败';
+            renderCatalogSyncJob({
+              status:'failed',
+              mode:effectiveMode,
+              baseline:res.current_preview || _catalogSyncPreview,
+              message:st.textContent
+            });
+            if (res.current_preview) renderCatalogSyncPreview(res.current_preview);
+            else btn.disabled = !confirm.checked;
             return;
           }
-          pollSync(btn, st, btnFull);
+          confirm.checked = false;
+          confirm.disabled = true;
+          renderCatalogSyncJob({
+            run_id:res.run_id,
+            status:res.status || 'running',
+            mode:effectiveMode,
+            baseline:res.baseline,
+            backup:res.backup,
+            message:res.message
+          });
+          pollSync(btn, st);
         })
         .catch(function() {
-          btn.disabled = false;
-          if (btnFull) btnFull.disabled = false;
-          hideSyncProgress();
           st.textContent = '网络错误';
+          btn.disabled = false;
         });
     }
-    function pollSync(btn, st, btnFull) {
+    function pollSync(btn, st) {
       fetch('/api/catalog/sync/status').then(function(r) { return r.json(); }).then(function(s) {
+        renderCatalogSyncJob(s);
         if (s.running) {
           setSyncProgress(s.percent || 0, s.message || '同步中…');
-          setTimeout(function() { pollSync(btn, st, btnFull); }, 1500);
+          setTimeout(function() { pollSync(btn, st); }, 1500);
           return;
         }
-        btn.disabled = false;
-        if (btnFull) btnFull.disabled = false;
-        setSyncProgress(s.percent || 100, s.message || '同步完成');
-        if (s.error && !s.message) {
-          st.textContent = '失败: ' + s.error;
-          return;
-        }
-        st.textContent = s.message || '同步完成';
+        setSyncProgress(s.percent || 0, s.message || '同步已结束');
+        st.textContent = s.message || (s.status === 'success' ? '同步完成' : '同步未完成');
         loadStores();
         loadList();
-        setTimeout(hideSyncProgress, 4000);
+        loadCatalogSyncPreview();
+      }).catch(function() {
+        st.textContent = '无法读取同步状态，请保留本页并重试';
+        btn.disabled = false;
       });
     }
     function buildCatalogQuery(basePath) {
@@ -1232,8 +1417,14 @@
       }
       syncTkToShopee(_editMatchKey, document.getElementById('tkShopeeSyncMeta'), this);
     };
-    document.getElementById('btnSync').onclick = function() { startSync('fast'); };
-    document.getElementById('btnSyncFull').onclick = function() { startSync('full'); };
+    document.getElementById('btnCatalogSyncPreview').onclick = loadCatalogSyncPreview;
+    document.getElementById('catalogSyncMode').onchange = loadCatalogSyncPreview;
+    document.getElementById('confirmCatalogUpdate').onchange = function() {
+      document.getElementById('btnSync').disabled =
+        !this.checked || !_catalogSyncPreview ||
+        !((_catalogSyncPreview.integrity || {}).ok);
+    };
+    document.getElementById('btnSync').onclick = startSync;
     document.getElementById('btnReset').onclick = function() {
       document.getElementById('skuQ').value = '';
       document.getElementById('skuLookup').value = '';
@@ -1256,15 +1447,17 @@
     };
     (function initFromUrl() {
       loadStores();
+      loadCatalogSyncPreview();
       fetch('/api/catalog/sync/status').then(function(r) { return r.json(); }).then(function(s) {
+        renderCatalogSyncJob(s);
         if (s.running) {
           var btn = document.getElementById('btnSync');
           var st = document.getElementById('syncStatus');
           if (btn) btn.disabled = true;
-          var btnFull = document.getElementById('btnSyncFull');
-          if (btnFull) btnFull.disabled = true;
           setSyncProgress(s.percent || 0, s.message || '同步中…');
-          pollSync(btn, st, btnFull);
+          pollSync(btn, st);
+        } else if (s.status && s.status !== 'idle') {
+          setSyncProgress(s.percent || 0, s.message || '同步已结束');
         }
       }).catch(function() {});
       var p = new URLSearchParams(window.location.search);

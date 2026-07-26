@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -15,6 +16,7 @@ from modules.sourcing.new_product_workbench import (
     _expected_region_site_state,
     _distribute_total,
     _normalize_title,
+    _next_seller_sku,
     _miaoshou_editable_weight_kg,
     _ordered_selected_images,
     _pick_default_warehouse_id,
@@ -37,6 +39,64 @@ from modules.sourcing.new_product_workbench import (
 
 
 class NewProductWorkbenchTests(unittest.TestCase):
+    def test_next_seller_sku_skips_legacy_locks_and_verified_claim_range(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state_dir = root / "data" / "new_product_workbench"
+            state_dir.mkdir(parents=True)
+            database = root / "data" / "shop.db"
+            connection = sqlite3.connect(database)
+            connection.execute("CREATE TABLE products (seller_sku TEXT)")
+            connection.execute("INSERT INTO products VALUES ('990945')")
+            connection.commit()
+            connection.close()
+            for offer_id in (
+                "3749982947",
+                "3749982951",
+                "3749982953",
+                "780091850593",
+            ):
+                (state_dir / f"{offer_id}.json").write_text(
+                    json.dumps(
+                        {
+                            "review": {
+                                "seller_sku": "0946",
+                                "fields_locked": True,
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+            (state_dir / "3749982951_tiktok_claim.json").write_text(
+                json.dumps(
+                    {
+                        "claimed": True,
+                        "sku_numbering": {
+                            "base_sku": "0946",
+                            "sku_item_nums": [
+                                "0946",
+                                "0947",
+                                "0948",
+                                "0949",
+                                "0950",
+                                "0951",
+                            ],
+                            "verified": True,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch(
+                "modules.sourcing.new_product_workbench.ROOT",
+                root,
+            ), patch(
+                "modules.sourcing.new_product_workbench.STATE_DIR",
+                state_dir,
+            ):
+                self.assertEqual(_next_seller_sku(2), "0952")
+
     def test_miaoshou_editable_weight_rounds_up_without_understating(self):
         self.assertEqual(_miaoshou_editable_weight_kg(0.08), 0.08)
         self.assertEqual(_miaoshou_editable_weight_kg(0.139), 0.14)

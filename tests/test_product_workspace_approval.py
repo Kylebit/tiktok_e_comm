@@ -269,6 +269,42 @@ def _post(url: str, payload: dict, *, headers: dict[str, str]) -> tuple[int, dic
         return error.code, json.loads(error.read())
 
 
+def _get(url: str) -> tuple[int, dict]:
+    try:
+        with urllib.request.urlopen(url, timeout=10) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as error:
+        return error.code, json.loads(error.read())
+
+
+def test_product_workspace_dashboard_forwards_repeated_publication_targets(
+    product_server,
+    monkeypatch,
+):
+    captured = {}
+
+    def build_dashboard(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "publication_scope": {"selected_labels": []}}
+
+    monkeypatch.setattr(release_control, "build_release_dashboard", build_dashboard)
+
+    status, payload = _get(
+        product_server
+        + "/api/product-workspace/dashboard"
+        + "?offer_id=3828540231&seller_sku=0947"
+        + "&target=miaoshou%3ACOMMON&target=tiktok%3ATH&target=shopee%3ATH"
+    )
+
+    assert status == 200
+    assert payload["workspace_mode"] == "pre_release"
+    assert captured["publication_targets"] == [
+        "miaoshou:COMMON",
+        "tiktok:TH",
+        "shopee:TH",
+    ]
+
+
 def test_product_approval_http_requires_same_origin_json_and_explicit_confirmation(
     product_server,
 ):

@@ -249,13 +249,21 @@ def sync_shop(
         }
 
     items = _fetch_items_base(shop_id, token, item_ids)
+    fetched_item_ids = {
+        int(item["item_id"])
+        for item in items
+        if item.get("item_id") is not None
+    }
+    expected_item_ids = {int(item_id) for item_id in item_ids}
+    if fetched_item_ids != expected_item_ids:
+        missing = sorted(expected_item_ids - fetched_item_ids)
+        unexpected = sorted(fetched_item_ids - expected_item_ids)
+        raise RuntimeError(
+            "Shopee item detail snapshot is incomplete "
+            f"(missing={missing[:10]}, unexpected={unexpected[:10]})"
+        )
 
-    conn = connect()
-    _upsert_shop(conn, shop_id, region, label)
-    if force_refresh:
-        _clear_shop_products(conn, shop_id)
-
-    total_rows = 0
+    all_rows: list[dict] = []
     total_items = len(items)
     cache_hits = 0
     api_fetches = 0
@@ -272,7 +280,11 @@ def sync_shop(
             cache_hits += 1
         elif item.get("has_model"):
             api_fetches += 1
-        total_rows += _upsert_products(conn, rows)
+        if item.get("has_model") and not rows:
+            raise RuntimeError(
+                f"Shopee item {item.get('item_id')} has models but returned no model rows"
+            )
+        all_rows.extend(rows)
         if on_progress and (i % 5 == 0 or i == total_items):
             on_progress(
                 i,
@@ -282,10 +294,42 @@ def sync_shop(
         elif i % 20 == 0 or i == total_items:
             print(f"{i}/{total_items}", end=" ", flush=True)
 
-    conn.commit()
-    conn.close()
-    if use_cache:
+    conn = connect()
+    try:
+        existing_rows = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM shopee_products WHERE shop_id = ?",
+                (shop_id,),
+            ).fetchone()[0]
+            or 0
+        )
+        if not item_ids and existing_rows:
+            raise RuntimeError(
+                f"Shopee {label} [{region}] returned an empty item list; "
+                f"refusing to delete {existing_rows} existing catalog rows"
+            )
+
+        conn.execute("BEGIN IMMEDIATE")
+        _upsert_shop(conn, shop_id, region, label)
+        # ``items`` and every model row above form a complete shop snapshot.
+        # Replace the shop only after that snapshot is valid so removed items
+        # and removed models cannot linger during a changed fast sync.
+        _clear_shop_products(conn, shop_id)
+        if all_rows:
+            _upsert_products(conn, all_rows)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    # A successful force refresh is itself the newest manifest. Persisting it
+    # does not reuse old cache data and prevents a subsequent fast run from
+    # trusting a pre-refresh manifest.
+    if use_cache or force_refresh:
         save_shopee_manifest(shop_id, item_ids)
+    total_rows = len(all_rows)
     print(f"→ {len(items)} 商品, {total_rows} SKU (API {api_fetches}, 缓存 {cache_hits})")
     return {
         "items": len(items),

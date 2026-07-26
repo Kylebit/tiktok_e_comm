@@ -750,6 +750,112 @@ section { scroll-margin-top: 20px; }
 }
 .content-notice span.safe { color: #26675c; background: rgba(213, 238, 229, .55); }
 
+.publication-scope-panel {
+  margin: -8px 0 22px;
+  padding: 22px;
+  border: 1px solid rgba(35, 118, 107, .25);
+  border-radius: 20px;
+  background:
+    linear-gradient(135deg, rgba(213, 238, 229, .48), rgba(255, 253, 247, .9) 52%);
+}
+.scope-panel-head,
+.scope-apply {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 20px;
+}
+.publication-scope-panel h3 {
+  margin: 6px 0 7px;
+  font: 650 24px/1.15 Georgia, "Songti SC", serif;
+}
+.publication-scope-panel p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+}
+.scope-actions { display: flex; flex-wrap: wrap; justify-content: end; gap: 8px; }
+.text-button {
+  padding: 7px 9px;
+  border: 0;
+  border-bottom: 1px solid currentColor;
+  color: var(--teal);
+  background: transparent;
+  cursor: pointer;
+  font: 750 10px/1.2 inherit;
+}
+.publication-target-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin: 18px 0 14px;
+}
+.publication-target {
+  position: relative;
+  min-width: 0;
+}
+.publication-target input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+}
+.publication-target label {
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: rgba(255, 253, 247, .76);
+  cursor: pointer;
+  transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease;
+}
+.publication-target label::before {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(24, 49, 46, .28);
+  border-radius: 6px;
+  color: transparent;
+  content: "✓";
+  font-size: 11px;
+  font-weight: 900;
+}
+.publication-target input:checked + label {
+  border-color: rgba(35, 118, 107, .5);
+  background: rgba(213, 238, 229, .56);
+  box-shadow: 0 8px 20px rgba(23, 59, 54, .07);
+}
+.publication-target input:checked + label::before {
+  border-color: var(--teal);
+  color: #fff;
+  background: var(--teal);
+}
+.publication-target input:focus-visible + label {
+  outline: 3px solid rgba(35, 118, 107, .22);
+  outline-offset: 2px;
+}
+.publication-target label:hover { transform: translateY(-1px); }
+.publication-target strong { min-width: 0; font-size: 11px; }
+.publication-target small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font: 650 8px/1.2 ui-monospace, monospace;
+}
+.scope-apply {
+  align-items: center;
+  padding-top: 14px;
+  border-top: 1px solid rgba(35, 118, 107, .14);
+}
+.scope-apply p.is-dirty { color: #9c552f; font-weight: 750; }
+
 .pricing-panel {
   margin: -8px 0 24px;
   padding: 22px;
@@ -863,6 +969,61 @@ section { scroll-margin-top: 20px; }
 .price-fees dd { margin: 0; font-size: 8px; }
 .price-fees dt { color: var(--muted); }
 .price-fees dd { font-weight: 750; text-align: right; }
+.selected-channel-pricing {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.selected-channel-pricing h4 { margin: 0 0 4px; font-size: 13px; }
+.selected-channel-pricing > div > p {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.5;
+}
+.selected-channel-price-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 9px;
+}
+.selected-channel-price-card {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  padding: 11px;
+  border: 1px solid rgba(35, 118, 107, .2);
+  border-radius: 11px;
+  background: rgba(213, 238, 229, .22);
+}
+.selected-channel-price-card.awaiting_tiktok_readback {
+  border-color: rgba(240, 189, 98, .45);
+  background: rgba(240, 189, 98, .11);
+}
+.selected-channel-price-card.blocked {
+  border-color: rgba(181, 88, 56, .25);
+  background: rgba(181, 88, 56, .07);
+}
+.selected-channel-price-card header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 7px;
+}
+.selected-channel-price-card h5 { margin: 0; font-size: 10px; }
+.selected-channel-price-card header span {
+  color: var(--muted);
+  font-size: 7px;
+  font-weight: 800;
+  text-align: right;
+}
+.selected-channel-price-card strong { font: 650 15px/1.2 Georgia, serif; }
+.selected-channel-price-card small {
+  color: var(--muted);
+  font-size: 7px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
 .legacy-pricing-audit {
   margin-top: 14px;
   border: 1px solid var(--line);
@@ -974,6 +1135,18 @@ section { scroll-margin-top: 20px; }
 }
 .channel-price span { color: var(--muted); font-size: 8px; }
 .channel-price strong { font: 700 13px/1.25 Georgia, serif; }
+.channel-price small {
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.45;
+}
+.channel-price.awaiting_tiktok_readback {
+  background: rgba(240, 189, 98, .16);
+}
+.channel-price.blocked {
+  color: #7f432e !important;
+  background: rgba(181, 88, 56, .1);
+}
 .channel-meta {
   display: grid;
   gap: 7px;
@@ -1098,7 +1271,9 @@ footer {
   .approval-summary > div:nth-child(-n+2) { border-bottom: 1px solid rgba(255, 255, 255, .13); }
   .approval-facts { grid-template-columns: repeat(2, 1fr); }
   .image-grid { grid-template-columns: repeat(3, 1fr); }
+  .publication-target-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .store-price-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .selected-channel-price-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .channel-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
@@ -1151,10 +1326,15 @@ footer {
   .approval-actions { display: grid; }
   .heading-badges { align-items: start; flex-wrap: wrap; }
   .image-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .publication-scope-panel { padding: 17px; }
+  .scope-panel-head, .scope-apply { align-items: stretch; display: grid; }
+  .scope-actions { justify-content: start; }
+  .publication-target-grid { grid-template-columns: 1fr; }
   .pricing-panel { padding: 17px; }
   .pricing-panel-head { align-items: stretch; display: grid; }
   .pricing-summary { justify-self: start; }
   .store-price-grid { grid-template-columns: 1fr; }
+  .selected-channel-price-grid { grid-template-columns: 1fr; }
   .channel-flow { align-items: stretch; display: grid; grid-template-columns: 1fr; }
   .channel-flow i { transform: rotate(90deg); text-align: center; }
   .channel-toolbar, .publish-all-card { align-items: stretch; display: grid; }

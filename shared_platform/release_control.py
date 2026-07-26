@@ -27,7 +27,10 @@ from domains.channel_operations import (
     build_publication_plan,
 )
 from domains.content_operations import build_workbench_content_package_handoff
-from domains.product_operations import preview_product_approval_lock
+from domains.product_operations import (
+    preview_product_approval_lock,
+    reservations_from_documents,
+)
 from modules.finance.profit_engine import exchange_rate_for
 from modules.ozon.price_convert import exchange_rates as ozon_exchange_rates
 from modules.sourcing.new_product_workbench import price_review
@@ -37,6 +40,22 @@ from shared_platform.weekly_profit_runner import build_weekly_profit_preview
 
 DEFAULT_OFFER_ID = "3828811808"
 DEFAULT_CANDIDATE_SELLER_SKU = "0946"
+
+PUBLICATION_TARGET_ALLOWLIST: tuple[tuple[str, str], ...] = (
+    ("miaoshou", "COMMON"),
+    ("tiktok", "PH"),
+    ("tiktok", "MY"),
+    ("tiktok", "TH"),
+    ("tiktok", "VN"),
+    ("shopee", "PH"),
+    ("shopee", "MY"),
+    ("shopee", "TH"),
+    ("shopee", "VN"),
+    ("ozon", "RU"),
+)
+PUBLICATION_TARGET_LABELS = frozenset(
+    f"{channel}:{site}" for channel, site in PUBLICATION_TARGET_ALLOWLIST
+)
 
 
 def _clean_offer_id(value: object) -> str:
@@ -98,25 +117,55 @@ def _known_seller_skus(database_path: Path) -> tuple[str, ...]:
     return tuple(sorted(values))
 
 
+def _known_tiktok_seller_skus(database_path: Path) -> tuple[str, ...]:
+    values: set[str] = set()
+    with connect_readonly(database_path) as connection:
+        rows = connection.execute(
+            "SELECT seller_sku FROM products "
+            "WHERE seller_sku IS NOT NULL AND TRIM(seller_sku) != ''"
+        ).fetchall()
+        values.update(str(row["seller_sku"]).strip() for row in rows)
+    return tuple(sorted(values))
+
+
 def _locally_reserved_seller_skus(
     project_root: Path,
     *,
     exclude_offer_id: str,
 ) -> tuple[str, ...]:
-    """Read active local product approvals as SKU reservations.
+    return tuple(
+        sorted(
+            {
+                fact["seller_sku"]
+                for fact in _local_seller_sku_reservations(
+                    project_root,
+                    exclude_offer_id=exclude_offer_id,
+                )
+            }
+        )
+    )
 
-    Catalog uniqueness alone is insufficient while several products are being
-    prepared in parallel: an approved workbench may not have reached the
-    catalog yet. Malformed or unrelated files are ignored, while only explicit
-    approved product facts reserve a value.
+
+def _local_seller_sku_reservations(
+    project_root: Path,
+    *,
+    exclude_offer_id: str,
+) -> tuple[dict[str, str], ...]:
+    """Read approved, legacy-locked, and verified-claim reservations.
+
+    A catalog row is not the only proof that a Seller SKU is occupied. Older
+    workbench flows locked the base SKU before the product reached the local
+    catalog, while a verified TikTok claim can reserve a contiguous variant
+    range. Both facts must remain active until their legacy lifecycle is
+    explicitly reconciled.
     """
-
     state_dir = project_root / "data" / "new_product_workbench"
-    values: set[str] = set()
     if not state_dir.is_dir():
         return ()
+    states: dict[str, Mapping[str, Any]] = {}
+    claims: dict[str, Mapping[str, Any]] = {}
     for path in state_dir.glob("*.json"):
-        if path.stem == exclude_offer_id or not path.stem.isdigit():
+        if not path.stem.isdigit():
             continue
         try:
             state = json.loads(path.read_text(encoding="utf-8"))
@@ -124,19 +173,64 @@ def _locally_reserved_seller_skus(
             continue
         if not isinstance(state, Mapping):
             continue
-        approval = state.get("product_approval")
-        if not isinstance(approval, Mapping):
+        states[path.stem] = state
+    for path in state_dir.glob("*_tiktok_claim.json"):
+        offer_id = path.name.removesuffix("_tiktok_claim.json")
+        if not offer_id.isdigit():
             continue
-        if (
-            str(approval.get("status") or "").strip().lower() != "approved"
-            or str(approval.get("subject_type") or "").strip() != "product"
-            or str(approval.get("subject_id") or "").strip() != path.stem
-        ):
+        try:
+            claim = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             continue
-        seller_sku = str(approval.get("seller_sku") or "").strip()
-        if seller_sku:
-            values.add(seller_sku)
-    return tuple(sorted(values))
+        if isinstance(claim, Mapping):
+            claims[offer_id] = claim
+    return tuple(
+        fact.payload()
+        for fact in reservations_from_documents(states, claims)
+        if fact.offer_id != exclude_offer_id
+    )
+
+
+def _canonical_seller_sku(value: object) -> str:
+    raw = str(value or "").strip()
+    return raw[-4:].zfill(4) if raw.isdigit() else raw
+
+
+def _seller_sku_matches(candidate: str, occupied: object) -> bool:
+    clean_candidate = _canonical_seller_sku(candidate)
+    return any(
+        _canonical_seller_sku(value) == clean_candidate
+        for value in occupied
+    )
+
+
+def _next_available_seller_skus(
+    catalog_skus: object,
+    reserved_skus: object,
+    *,
+    requested_count: int,
+) -> tuple[str, ...]:
+    catalog_numeric = {
+        int(_canonical_seller_sku(value))
+        for value in catalog_skus
+        if _canonical_seller_sku(value).isdigit()
+    }
+    occupied_numeric = {
+        *catalog_numeric,
+        *(
+            int(_canonical_seller_sku(value))
+            for value in reserved_skus
+            if _canonical_seller_sku(value).isdigit()
+        ),
+    }
+    width = max(1, int(requested_count or 1))
+    start = max(catalog_numeric, default=0) + 1
+    while start + width - 1 <= 9999:
+        block = tuple(range(start, start + width))
+        if all(value not in occupied_numeric for value in block):
+            return tuple(f"{value:04d}" for value in block)
+        start += 1
+    return ()
 
 
 def _content_copy(review: Mapping[str, Any], collect_box: Mapping[str, Any]) -> dict[str, str]:
@@ -260,13 +354,95 @@ def _normalise_release_sites(values: object) -> tuple[str, ...]:
 def _default_omnichannel_targets(review: Mapping[str, Any]) -> dict[str, tuple[str, ...]]:
     """Build the shared target matrix from the workbench's approved scope."""
 
-    sites = _normalise_release_sites(review.get("selected_sites"))
+    sites = tuple(
+        site
+        for site in _normalise_release_sites(review.get("selected_sites"))
+        if f"tiktok:{site}" in PUBLICATION_TARGET_LABELS
+    )
     targets: dict[str, tuple[str, ...]] = {"miaoshou": ("COMMON",)}
     if sites:
         targets["tiktok"] = sites
         targets["shopee"] = sites
     targets["ozon"] = ("RU",)
     return targets
+
+
+def _publication_scope(
+    review: Mapping[str, Any],
+    requested_targets: object,
+) -> tuple[dict[str, tuple[str, ...]], dict[str, Any]]:
+    """Validate and resolve the read-only publication target selection.
+
+    Browser-controlled values are never forwarded as arbitrary adapter names
+    or sites.  The allowlist is deliberately narrower than the legacy
+    repository: this release surface only offers the ten targets that its UI
+    can name, price, and review explicitly.
+    """
+
+    default_selection = _default_omnichannel_targets(review)
+    default_labels = [
+        f"{channel}:{site}"
+        for channel, site in PUBLICATION_TARGET_ALLOWLIST
+        if site in default_selection.get(channel, ())
+    ]
+    if requested_targets is None:
+        selected_labels = {
+            f"{channel}:{site}"
+            for channel, sites in default_selection.items()
+            for site in sites
+        }
+        source = "workbench_default"
+    else:
+        if isinstance(requested_targets, (str, bytes)) or not isinstance(
+            requested_targets,
+            (list, tuple, set),
+        ):
+            raise TypeError("publication_targets must be a list of channel:site labels")
+        raw_labels = [str(value or "").strip() for value in requested_targets]
+        if not raw_labels or any(not value for value in raw_labels):
+            raise ValueError("at least one publication target must be selected")
+        normalised: list[str] = []
+        for raw in raw_labels:
+            channel, separator, site = raw.partition(":")
+            label = f"{channel.strip().lower()}:{site.strip().upper()}"
+            if not separator or label not in PUBLICATION_TARGET_LABELS:
+                raise ValueError(f"unsupported publication target: {raw}")
+            normalised.append(label)
+        if len(set(normalised)) != len(normalised):
+            raise ValueError("publication targets must not contain duplicates")
+        selected_labels = set(normalised)
+        source = "user_selection"
+
+    selection: dict[str, tuple[str, ...]] = {}
+    ordered_labels: list[str] = []
+    for channel, site in PUBLICATION_TARGET_ALLOWLIST:
+        label = f"{channel}:{site}"
+        if label not in selected_labels:
+            continue
+        selection.setdefault(channel, ())
+        selection[channel] = (*selection[channel], site)
+        ordered_labels.append(label)
+    if not ordered_labels:
+        raise ValueError("at least one publication target must be selected")
+
+    available_targets = [
+        {
+            "label": f"{channel}:{site}",
+            "channel": channel,
+            "site": site,
+            "selected": f"{channel}:{site}" in selected_labels,
+        }
+        for channel, site in PUBLICATION_TARGET_ALLOWLIST
+    ]
+    return selection, {
+        "source": source,
+        "default_labels": default_labels,
+        "selected_labels": ordered_labels,
+        "selected_count": len(ordered_labels),
+        "available_targets": available_targets,
+        "selection_applied_to_plan": True,
+        "read_only_preflight": True,
+    }
 
 
 def _blocked_omnichannel_preview(
@@ -380,7 +556,11 @@ def _serialize_omnichannel_preview(
     }
 
 
-def _release_pricing_review(review: Mapping[str, Any]) -> dict[str, Any]:
+def _release_pricing_review(
+    review: Mapping[str, Any],
+    *,
+    selected_site_keys: object | None = None,
+) -> dict[str, Any]:
     """Replay the persisted legacy pricing inputs without fetching live FX."""
 
     cost = float(_decimal(review.get("cost_cny")))
@@ -409,10 +589,72 @@ def _release_pricing_review(review: Mapping[str, Any]) -> dict[str, Any]:
             shopee_rates[currency] = rate
     return build_channel_pricing_preview(
         legacy,
-        selected_site_keys=review.get("selected_sites") or (),
+        selected_site_keys=(
+            review.get("selected_sites") or ()
+            if selected_site_keys is None
+            else selected_site_keys
+        ),
         shopee_exchange_rates=shopee_rates,
         ozon_exchange_rates=ozon_exchange_rates(),
     )
+
+
+def _pricing_site_keys_for_scope(
+    review: Mapping[str, Any],
+    site_selection: Mapping[str, tuple[str, ...]],
+    base_pricing: Mapping[str, Any],
+) -> tuple[str, ...]:
+    """Resolve store-level pricing rows for the selected country targets.
+
+    Existing workbench store choices remain authoritative for their regions.
+    When Kyle adds a new country from the release centre, every legacy store
+    row for that country is shown so the page does not silently invent one
+    preferred shop.  The complete ten-store legacy audit remains present
+    regardless of this selected subset.
+    """
+
+    requested_sites = {
+        site
+        for channel in ("tiktok", "shopee")
+        for site in site_selection.get(channel, ())
+    }
+    current_keys = tuple(
+        dict.fromkeys(
+            str(value or "").strip().lower()
+            for value in (review.get("selected_sites") or ())
+            if str(value or "").strip()
+        )
+    )
+    all_rows = [
+        row
+        for row in (base_pricing.get("all_legacy_store_prices") or ())
+        if isinstance(row, Mapping)
+    ]
+    rows_by_key = {
+        str(row.get("target_key") or "").strip().lower(): row
+        for row in all_rows
+        if str(row.get("target_key") or "").strip()
+    }
+    selected: list[str] = []
+    for site in ("PH", "MY", "TH", "VN"):
+        if site not in requested_sites:
+            continue
+        existing = [
+            key
+            for key in current_keys
+            if str((rows_by_key.get(key) or {}).get("region") or "").upper() == site
+        ]
+        candidates = existing or [
+            key
+            for key, row in rows_by_key.items()
+            if str(row.get("region") or "").upper() == site
+        ]
+        selected.extend(candidates)
+    if selected:
+        return tuple(dict.fromkeys(selected))
+    # Miaoshou-only and temporarily dependency-blocked Ozon scopes still show
+    # the workbench's current store prices as a truthful reference.
+    return current_keys
 
 
 def build_release_dashboard(
@@ -422,6 +664,7 @@ def build_release_dashboard(
     root: str | Path = ROOT,
     database_path: str | Path | None = None,
     report_store_path: str | Path | None = None,
+    publication_targets: object = None,
 ) -> dict[str, Any]:
     """Build the complete local release rehearsal without side effects."""
     clean_offer_id = _clean_offer_id(offer_id)
@@ -475,16 +718,28 @@ def build_release_dashboard(
     )
 
     db_path = Path(database_path or project_root / "data" / "shop.db")
-    known_skus = tuple(
-        sorted(
-            {
-                *_known_seller_skus(db_path),
-                *_locally_reserved_seller_skus(
-                    project_root,
-                    exclude_offer_id=clean_offer_id,
-                ),
-            }
-        )
+    known_skus = _known_seller_skus(db_path)
+    tiktok_skus = _known_tiktok_seller_skus(db_path)
+    reservation_facts = _local_seller_sku_reservations(
+        project_root,
+        exclude_offer_id=clean_offer_id,
+    )
+    reserved_skus = tuple(
+        sorted({fact["seller_sku"] for fact in reservation_facts})
+    )
+    candidate_reservations = tuple(
+        fact
+        for fact in reservation_facts
+        if _seller_sku_matches(clean_seller_sku, (fact["seller_sku"],))
+    )
+    requested_sku_count = max(
+        1,
+        len(review.get("selected_sku_keys") or ()),
+    )
+    next_seller_skus = _next_available_seller_skus(
+        tiktok_skus,
+        reserved_skus,
+        requested_count=requested_sku_count,
     )
     product_row = {
         "product_id": clean_offer_id,
@@ -505,7 +760,27 @@ def build_release_dashboard(
     }
     simulation_state = dict(state)
     simulation_state.pop("product_approval", None)
-    release_pricing = _release_pricing_review(review)
+    omnichannel_selection, publication_scope = _publication_scope(
+        review,
+        publication_targets,
+    )
+    base_release_pricing = _release_pricing_review(review)
+    scope_site_keys = _pricing_site_keys_for_scope(
+        review,
+        omnichannel_selection,
+        base_release_pricing,
+    )
+    release_pricing = _release_pricing_review(
+        review,
+        selected_site_keys=scope_site_keys,
+    )
+    release_pricing["selection_source"] = publication_scope["source"]
+    release_pricing["publication_target_labels"] = list(
+        publication_scope["selected_labels"]
+    )
+    release_pricing["workbench_selected_store_prices"] = list(
+        base_release_pricing["selected_store_prices"]
+    )
     approval_preview = preview_product_approval_lock(
         state=simulation_state,
         product_row=product_row,
@@ -515,14 +790,29 @@ def build_release_dashboard(
         user_approved=True,
         approval_fact=simulated_approval,
         expected_revision=int(state.get("_revision") or 0),
-        approval_input_facts=_commercial_approval_facts(review, release_pricing),
+        approval_input_facts=_commercial_approval_facts(review, base_release_pricing),
     )
     commercial_blockers = _commercial_release_blockers(review)
+    seller_sku_blockers = (
+        [
+            "seller_sku is reserved by another workbench or verified TikTok claim"
+        ]
+        if candidate_reservations
+        else []
+    )
     approval_blockers = list(
-        dict.fromkeys([*approval_preview.blockers, *commercial_blockers])
+        dict.fromkeys(
+            [
+                *approval_preview.blockers,
+                *seller_sku_blockers,
+                *commercial_blockers,
+            ]
+        )
     )
     approved_product_package = (
-        approval_preview.approved_package if not commercial_blockers else None
+        approval_preview.approved_package
+        if not commercial_blockers and not seller_sku_blockers
+        else None
     )
     approval_state_patch = (
         dict(approval_preview.state_patch)
@@ -537,7 +827,6 @@ def build_release_dashboard(
         if approved_product_package is not None
         else None
     )
-    omnichannel_selection = _default_omnichannel_targets(review)
     omnichannel_preview = (
         _serialize_omnichannel_preview(
             build_omnichannel_publication_plan(
@@ -623,6 +912,7 @@ def build_release_dashboard(
     )
     actual_blockers: list[str] = []
     actual_blockers.extend(commercial_blockers)
+    actual_blockers.extend(seller_sku_blockers)
     if not actual_approval:
         actual_blockers.append("Product approval has not been persisted.")
     elif not actual_product_approved:
@@ -670,8 +960,25 @@ def build_release_dashboard(
             "revision": int(state.get("_revision") or 0),
             "actual_product_approved": actual_product_approved,
             "actual_approval": dict(actual_approval),
+            "seller_sku_governance": {
+                "candidate": clean_seller_sku,
+                "available": (
+                    not candidate_reservations
+                    and not _seller_sku_matches(clean_seller_sku, known_skus)
+                ),
+                "reservation_conflicts": [
+                    dict(fact) for fact in candidate_reservations
+                ],
+                "suggested_base_sku": (
+                    next_seller_skus[0] if next_seller_skus else ""
+                ),
+                "suggested_sku_range": list(next_seller_skus),
+                "requested_sku_count": requested_sku_count,
+                "source": "catalog_plus_workbench_locks_plus_verified_claims",
+            },
         },
         "pricing_review": release_pricing,
+        "publication_scope": publication_scope,
         "content": {
             "package_id": content_handoff.content_package.package_id,
             "strategy": str(

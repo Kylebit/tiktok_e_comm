@@ -17,6 +17,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
+from uuid import uuid4
 
 from core.config import ROOT
 from modules.products import costs as cost_mod
@@ -313,10 +314,17 @@ _image_scan_job: dict = {
 _catalog_sync_lock = threading.Lock()
 _catalog_sync_job: dict = {
     "running": False,
+    "run_id": None,
+    "status": "idle",
+    "started_at": None,
+    "finished_at": None,
     "message": "",
     "percent": 0,
     "phase": "",
     "mode": "fast",
+    "baseline": None,
+    "after": None,
+    "backup": None,
     "result": None,
     "error": None,
 }
@@ -1115,11 +1123,202 @@ def _dewatermark_status() -> dict:
         return dict(_dewatermark_job)
 
 
+def _catalog_database_baseline(mode: str) -> dict:
+    """Build a read-only database snapshot bound to the requested sync mode."""
+    from core.database_maintenance import inspect_database
+    from core.db import connect_readonly
+
+    normalized_mode = str(mode or "").strip().lower()
+    if normalized_mode not in {"fast", "full"}:
+        raise ValueError("mode must be fast or full")
+    health = inspect_database(full_integrity=True)
+    health_payload = health.payload()
+    content_digest = hashlib.sha256()
+    with connect_readonly(health.path) as connection:
+        for statement in connection.iterdump():
+            content_digest.update(statement.encode("utf-8"))
+            content_digest.update(b"\n")
+        def quality_count(sql: str) -> int | None:
+            try:
+                return int(connection.execute(sql).fetchone()[0] or 0)
+            except Exception:
+                return None
+
+        quality_metrics = {
+            "same_shop_duplicate_seller_sku_groups": quality_count(
+                """
+                SELECT COUNT(*) FROM (
+                    SELECT shop_cipher, seller_sku
+                    FROM products
+                    WHERE TRIM(COALESCE(seller_sku, '')) != ''
+                    GROUP BY shop_cipher, seller_sku
+                    HAVING COUNT(*) > 1
+                )
+                """
+            ),
+            "tiktok_rows_without_direct_cost": quality_count(
+                """
+                SELECT COUNT(*)
+                FROM products p
+                LEFT JOIN sku_costs c ON c.sku_id = p.sku_id
+                WHERE c.sku_id IS NULL
+                """
+            ),
+            "logistics_rows_without_tiktok_tail4": quality_count(
+                """
+                SELECT COUNT(*)
+                FROM sku_logistics_weights w
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM products p
+                    WHERE p.seller_sku GLOB '[0-9]*'
+                      AND SUBSTR(PRINTF('%04d', CAST(p.seller_sku AS INTEGER)), -4)
+                          = SUBSTR(PRINTF('%04d', CAST(w.seller_sku AS INTEGER)), -4)
+                )
+                """
+            ),
+            "shopee_nonpositive_price_rows": quality_count(
+                """
+                SELECT COUNT(*)
+                FROM shopee_products
+                WHERE price IS NOT NULL AND price <= 0
+                """
+            ),
+        }
+    content_sha256 = content_digest.hexdigest()
+    quality_issue_count = sum(
+        1 for value in quality_metrics.values() if value not in (None, 0)
+    )
+    fingerprint_input = {
+        "mode": normalized_mode,
+        "content_sha256": content_sha256,
+        "size_bytes": health.size_bytes,
+        "wal_size_bytes": health.wal_size_bytes,
+        "shm_size_bytes": health.shm_size_bytes,
+        "journal_mode": health.journal_mode,
+        "page_size": health.page_size,
+        "page_count": health.page_count,
+        "freelist_count": health.freelist_count,
+        "user_version": health.user_version,
+        "row_counts": health.row_counts,
+        "quick_check": health.quick_check,
+        "integrity_check": health.integrity_check,
+        "foreign_key_violation_count": health.foreign_key_violation_count,
+    }
+    snapshot_id = "sha256:" + hashlib.sha256(
+        json.dumps(
+            fingerprint_input,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return {
+        "mode": normalized_mode,
+        "snapshot_id": snapshot_id,
+        "content_sha256": content_sha256,
+        "row_counts": dict(health.row_counts),
+        "integrity": {
+            "ok": health.ok,
+            "quick_check": list(health.quick_check),
+            "integrity_check": list(health.integrity_check or ()),
+            "foreign_key_violation_count": health.foreign_key_violation_count,
+        },
+        "business_quality": {
+            "status": "needs_review" if quality_issue_count else "ready",
+            "issue_metric_count": quality_issue_count,
+            "metrics": quality_metrics,
+        },
+        "backup_required": True,
+        "database": health_payload,
+    }
+
+
+def _catalog_sync_result_parts(result: dict) -> list[str]:
+    parts: list[str] = []
+    tk = result.get("tiktok") or {}
+    if tk.get("skus") is not None and not tk.get("error"):
+        parts.append(f"TK {int(tk.get('skus') or 0)} SKU")
+    sp = result.get("shopee") or {}
+    if sp.get("skus") is not None and not sp.get("error"):
+        parts.append(f"Shopee {int(sp.get('skus') or 0)} SKU")
+    elif sp.get("skipped"):
+        parts.append("Shopee 跳过")
+    oz = result.get("ozon") or {}
+    if oz.get("offers") is not None and not oz.get("error"):
+        parts.append(f"Ozon {int(oz.get('offers') or 0)} 商品")
+    lw = result.get("logistics_weights") or {}
+    if lw.get("skus") and not lw.get("error"):
+        parts.append(f"重量 {int(lw.get('skus') or 0)}")
+    return parts
+
+
+def _catalog_sync_audit_payload(job: dict) -> dict:
+    return {
+        key: value
+        for key, value in job.items()
+        if key
+        in {
+            "running",
+            "run_id",
+            "status",
+            "started_at",
+            "finished_at",
+            "message",
+            "percent",
+            "phase",
+            "mode",
+            "baseline",
+            "after",
+            "backup",
+            "result",
+            "error",
+        }
+    }
+
+
+def _write_catalog_sync_audit_file(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+            json.dump(payload, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _persist_catalog_sync_status(job: dict | None = None) -> None:
+    payload = _catalog_sync_audit_payload(job or _catalog_sync_job)
+    run_id = str(payload.get("run_id") or "").strip()
+    if not run_id:
+        return
+    base = ROOT / "backups" / "catalog_sync"
+    _write_catalog_sync_audit_file(base / run_id / "run.json", payload)
+    _write_catalog_sync_audit_file(base / "latest.json", payload)
+
+
+def _load_latest_catalog_sync_status() -> dict | None:
+    path = ROOT / "backups" / "catalog_sync" / "latest.json"
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) and payload.get("run_id") else None
+
+
 def _run_catalog_sync() -> None:
     global _catalog_sync_job
     try:
         from modules.catalog.sync import run_catalog_sync
-        from modules.catalog.sync_progress import CatalogSyncProgress
+
+        with _catalog_sync_lock:
+            mode = str(_catalog_sync_job.get("mode") or "fast")
 
         def on_state(state: dict) -> None:
             with _catalog_sync_lock:
@@ -1134,67 +1333,137 @@ def _run_catalog_sync() -> None:
         result = run_catalog_sync(
             on_progress=on_progress,
             on_state=on_state,
-            mode=_catalog_sync_job.get("mode") or "fast",
+            mode=mode,
         )
-        errs = result.get("errors") or []
-        msg_parts = []
-        tk = result.get("tiktok") or {}
-        if tk.get("skus"):
-            msg_parts.append(f"TK {tk.get('skus')} SKU")
-        sp = result.get("shopee") or {}
-        if sp.get("skus"):
-            msg_parts.append(f"Shopee {sp.get('skus')} SKU")
-        elif sp.get("skipped"):
-            msg_parts.append("Shopee 跳过")
-        oz = result.get("ozon") or {}
-        if oz.get("offers"):
-            msg_parts.append(f"Ozon {oz.get('offers')} 商品")
-        lw = result.get("logistics_weights") or {}
-        if lw.get("skus"):
-            msg_parts.append(f"重量 {lw.get('skus')}")
-        summary = " · ".join(msg_parts) or "完成"
-        if errs:
-            summary += f"（部分失败: {'; '.join(errs)}）"
-        _catalog_sync_job.update(
-            running=False,
-            message=summary,
-            percent=100,
-            phase="done",
-            result=result,
-            error="; ".join(errs) if errs and not msg_parts else None,
+        errors = [str(item) for item in (result.get("errors") or []) if str(item)]
+        parts = _catalog_sync_result_parts(result)
+        status = "partial" if errors and parts else ("failed" if errors else "success")
+        summary = " · ".join(parts) or (
+            "同步完成" if status == "success" else "未完成任何目录同步"
         )
-    except Exception as e:
-        _catalog_sync_job.update(
-            running=False,
-            message="",
-            percent=0,
-            phase="",
-            result=None,
-            error=str(e),
-        )
+        if errors:
+            summary += f"（{'部分失败' if status == 'partial' else '失败'}: {'; '.join(errors)}）"
+        try:
+            after = _catalog_database_baseline(mode)
+        except Exception as error:
+            after = None
+            errors.append(f"同步后数据库检查失败: {error}")
+            status = "partial" if parts else "failed"
+            summary += f"（同步后检查失败: {error}）"
+        with _catalog_sync_lock:
+            _catalog_sync_job.update(
+                running=False,
+                status=status,
+                finished_at=datetime.now(timezone.utc).isoformat(),
+                message=summary,
+                percent=100 if status in {"success", "partial"} else 0,
+                phase="done" if status in {"success", "partial"} else "failed",
+                after=after,
+                result=result,
+                error="; ".join(errors) if errors else None,
+            )
+            completed_job = dict(_catalog_sync_job)
+        _persist_catalog_sync_status(completed_job)
+    except Exception as error:
+        with _catalog_sync_lock:
+            _catalog_sync_job.update(
+                running=False,
+                status="failed",
+                finished_at=datetime.now(timezone.utc).isoformat(),
+                message=f"同步失败: {error}",
+                percent=0,
+                phase="failed",
+                after=None,
+                result=None,
+                error=str(error),
+            )
+            failed_job = dict(_catalog_sync_job)
+        _persist_catalog_sync_status(failed_job)
 
 
-def _start_catalog_sync(mode: str = "fast") -> tuple[bool, str]:
+def _start_catalog_sync(
+    *,
+    mode: str,
+    expected_snapshot_id: str,
+    confirm_catalog_update: bool,
+) -> tuple[bool, str, int, dict]:
+    normalized_mode = str(mode or "").strip().lower()
+    if normalized_mode not in {"fast", "full"}:
+        return False, "mode must be fast or full", 400, {}
+    if confirm_catalog_update is not True:
+        return False, "需要显式 confirm_catalog_update=true", 400, {}
+    expected = str(expected_snapshot_id or "").strip()
+    if not expected:
+        return False, "缺少 expected_snapshot_id，请先执行目录预检", 400, {}
+
+    from core.database_maintenance import backup_database
+
     with _catalog_sync_lock:
         if _catalog_sync_job["running"]:
-            return False, "已有同步任务在进行中，请稍候"
+            return False, "已有同步任务在进行中，请稍候", 409, {}
+        try:
+            baseline = _catalog_database_baseline(normalized_mode)
+        except Exception as error:
+            return False, f"目录预检失败: {error}", 500, {}
+        if baseline["snapshot_id"] != expected:
+            return (
+                False,
+                "目录快照已变化，请重新预检后再确认",
+                409,
+                {"current_preview": baseline},
+            )
+        run_id = (
+            datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            + "-"
+            + uuid4().hex[:8]
+        )
+        destination = ROOT / "backups" / "catalog_sync" / run_id / "shop.db"
+        try:
+            backup = backup_database(destination)
+        except Exception as error:
+            return False, f"目录备份失败，已阻止同步: {error}", 500, {}
+        started_at = datetime.now(timezone.utc).isoformat()
         _catalog_sync_job.update(
             running=True,
-            message="启动中…",
+            run_id=run_id,
+            status="running",
+            started_at=started_at,
+            finished_at=None,
+            message="WAL 安全备份已验证，正在启动同步…",
             percent=0,
             phase="tokens",
-            mode="full" if mode == "full" else "fast",
+            mode=normalized_mode,
+            baseline=baseline,
+            after=None,
+            backup=backup.payload(),
             result=None,
             error=None,
         )
-    t = threading.Thread(target=_run_catalog_sync, daemon=True)
-    t.start()
-    return True, "已开始同步"
+        started_job = dict(_catalog_sync_job)
+    _persist_catalog_sync_status(started_job)
+    thread = threading.Thread(target=_run_catalog_sync, daemon=True)
+    thread.start()
+    return (
+        True,
+        "目录预检与备份已通过，已开始同步",
+        202,
+        {
+            "run_id": run_id,
+            "status": "running",
+            "baseline": baseline,
+            "backup": backup.payload(),
+        },
+    )
 
 
 def _catalog_sync_status() -> dict:
     with _catalog_sync_lock:
-        return dict(_catalog_sync_job)
+        current = dict(_catalog_sync_job)
+    if not current.get("run_id") and not current.get("running"):
+        persisted = _load_latest_catalog_sync_status()
+        if persisted:
+            return {**current, **persisted, "running": False}
+    return current
 
 
 def _image_scan_status() -> dict:
@@ -2001,11 +2270,16 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/api/release/dashboard", "/api/product-workspace/dashboard"):
             from shared_platform.release_control import build_release_dashboard
 
-            q = parse_qs(urlparse(self.path).query)
+            q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
             offer_id = (q.get("offer_id") or ["3828811808"])[0]
             seller_sku = (q.get("seller_sku") or ["0946"])[0]
+            publication_targets = q.get("target")
             try:
-                payload = build_release_dashboard(offer_id=offer_id, seller_sku=seller_sku)
+                payload = build_release_dashboard(
+                    offer_id=offer_id,
+                    seller_sku=seller_sku,
+                    publication_targets=publication_targets,
+                )
                 if path == "/api/product-workspace/dashboard":
                     payload = _product_workspace_view(payload)
                 return self._json(200, payload)
@@ -2280,6 +2554,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(400, {"ok": False, "error": "请提供 q 参数"})
             live = (q.get("live") or ["1"])[0] not in ("0", "false", "no")
             return self._json(200, sku_edit_mod.find_shopee_rows(query, live=live))
+
+        if path == "/api/catalog/sync/preview":
+            q = parse_qs(urlparse(self.path).query)
+            mode = str((q.get("mode") or ["fast"])[0]).strip().lower()
+            try:
+                preview = _catalog_database_baseline(mode)
+            except ValueError as error:
+                return self._json(400, {"ok": False, "error": str(error)})
+            except Exception as error:
+                return self._json(
+                    500, {"ok": False, "error": f"目录预检失败: {error}"}
+                )
+            return self._json(200, {"ok": True, **preview})
 
         if path == "/api/catalog/sync/status":
             return self._json(200, {"ok": True, **_catalog_sync_status()})
@@ -2779,10 +3066,18 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/catalog/sync":
             mode = str(data.get("mode") or "fast").strip().lower()
-            ok, msg = _start_catalog_sync(mode=mode)
+            ok, msg, status_code, details = _start_catalog_sync(
+                mode=mode,
+                expected_snapshot_id=str(data.get("expected_snapshot_id") or ""),
+                confirm_catalog_update=data.get("confirm_catalog_update") is True,
+            )
             if not ok:
-                return self._json(409, {"ok": False, "message": msg})
-            return self._json(200, {"ok": True, "message": msg})
+                return self._json(
+                    status_code, {"ok": False, "message": msg, **details}
+                )
+            return self._json(
+                status_code, {"ok": True, "message": msg, **details}
+            )
 
         if path == "/api/shopee/th_dim_fix/save":
             from modules.shopee.dim_fix import save_dimension

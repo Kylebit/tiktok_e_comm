@@ -4215,7 +4215,14 @@ def save_overseas_sources(offer_id_or_url: str, urls: list[str], *, fetch: bool 
     return build_preview(offer_id)
 
 
-def _next_seller_sku() -> str:
+def _next_seller_sku(requested_count: int = 1) -> str:
+    """Return the first free contiguous Seller-SKU block.
+
+    The legacy allocator only inspected published TikTok rows, so it could
+    hand out a base number that another workbench had already locked or that a
+    verified TikTok claim had expanded into variant numbers. The allocator is
+    still read-only, but now treats those local facts as occupied too.
+    """
     db_path = ROOT / "data" / "shop.db"
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
@@ -4231,7 +4238,45 @@ def _next_seller_sku() -> str:
         conn.close()
     if not values:
         raise RuntimeError("商品目录中没有可用于分配 Seller SKU 的数字记录")
-    return f"{max(values) + 1:04d}"[-4:]
+
+    from domains.product_operations import reservations_from_documents
+
+    states: dict[str, dict[str, Any]] = {}
+    claims: dict[str, dict[str, Any]] = {}
+    if STATE_DIR.is_dir():
+        for path in STATE_DIR.glob("*.json"):
+            if not path.stem.isdigit():
+                continue
+            try:
+                value = json.loads(path.read_text(encoding="utf-8-sig"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if isinstance(value, dict):
+                states[path.stem] = value
+        for path in STATE_DIR.glob("*_tiktok_claim.json"):
+            offer_id = path.name.removesuffix("_tiktok_claim.json")
+            if not offer_id.isdigit():
+                continue
+            try:
+                value = json.loads(path.read_text(encoding="utf-8-sig"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if isinstance(value, dict):
+                claims[offer_id] = value
+    reserved = {
+        int(fact.seller_sku)
+        for fact in reservations_from_documents(states, claims)
+        if fact.seller_sku.isdigit()
+    }
+    occupied = {*values, *reserved}
+    width = max(1, int(requested_count or 1))
+    start = max(values) + 1
+    while start + width - 1 <= 9999:
+        candidate = range(start, start + width)
+        if all(number not in occupied for number in candidate):
+            return f"{start:04d}"
+        start += 1
+    raise RuntimeError("没有足够的连续 Seller SKU 编号可供分配")
 
 
 def _sequential_sku_numbers(sku_map: dict[str, Any], base_sku: str) -> dict[str, str]:
@@ -4499,7 +4544,9 @@ def prepare_miaoshou_draft(offer_id_or_url: str) -> dict[str, Any]:
     seller_sku = str(review.get("seller_sku") or "").strip()
     if not seller_sku:
         try:
-            seller_sku = _next_seller_sku()
+            seller_sku = _next_seller_sku(
+                len(review.get("selected_sku_keys") or ()) or 1
+            )
         except (OSError, sqlite3.Error, RuntimeError) as exc:
             blockers.append(f"Seller SKU 自动分配失败: {exc}")
 

@@ -191,6 +191,11 @@ def sync_shop(
 ) -> dict:
     from modules.catalog.sync_cache import load_tk_detail, save_tk_detail
 
+    if not fetch_images:
+        raise ValueError(
+            "safe catalog sync requires product details; fetch_images=False is read-incomplete"
+        )
+
     cipher = shop.get("cipher") or shop.get("shop_cipher", "")
     region = shop.get("region", "?")
     name = shop.get("name", "")
@@ -213,14 +218,8 @@ def sync_shop(
             break
         time.sleep(0.08)
 
-    conn = connect()
-    _upsert_shop(conn, shop)
-    if force_refresh:
-        _clear_shop_products(conn, cipher)
-    else:
-        _delete_stale_products(conn, cipher, set(product_ids))
-
-    total_skus = 0
+    all_rows: list[dict] = []
+    details_to_cache: list[tuple[str, dict]] = []
     total = len(product_ids)
     cache_hits = 0
     api_fetches = 0
@@ -233,14 +232,12 @@ def sync_shop(
         if fetch_images and detail is None:
             detail = _fetch_product_detail(access_token, cipher, pid)
             api_fetches += 1
-            if use_cache:
-                save_tk_detail(cipher, pid, detail)
+            if use_cache or force_refresh:
+                details_to_cache.append((pid, detail))
             time.sleep(0.06)
-        elif not fetch_images:
-            detail = {"id": pid, "skus": []}
         rows = _rows_from_product(shop, detail)
         if rows:
-            total_skus += _upsert_products(conn, rows)
+            all_rows.extend(rows)
         if on_progress and (i % 5 == 0 or i == total):
             tag = f"（缓存 {cache_hits}）" if cache_hits else ""
             on_progress(
@@ -251,8 +248,43 @@ def sync_shop(
         elif i % 20 == 0 or i == total:
             print(f"{i}/{total}", end=" ", flush=True)
 
-    conn.commit()
-    conn.close()
+    # Do not advance any detail cache until every product detail was fetched
+    # and normalized successfully. A later detail failure must leave both the
+    # current catalog snapshot and its reusable detail set untouched.
+    for pid, detail in details_to_cache:
+        save_tk_detail(cipher, pid, detail)
+
+    conn = connect()
+    try:
+        existing_rows = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM products WHERE shop_cipher = ?",
+                (cipher,),
+            ).fetchone()[0]
+            or 0
+        )
+        if not product_ids and existing_rows:
+            raise RuntimeError(
+                f"TikTok {name} [{region}] returned an empty product list; "
+                f"refusing to delete {existing_rows} existing catalog rows"
+            )
+
+        conn.execute("BEGIN IMMEDIATE")
+        _upsert_shop(conn, shop)
+        if force_refresh:
+            _clear_shop_products(conn, cipher)
+        else:
+            _delete_stale_products(conn, cipher, set(product_ids))
+        if all_rows:
+            _upsert_products(conn, all_rows)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    total_skus = len(all_rows)
     print(f"→ {len(product_ids)} 商品, {total_skus} SKU (API {api_fetches}, 缓存 {cache_hits})")
     return {"skus": total_skus, "products": len(product_ids), "cache_hits": cache_hits, "api_fetches": api_fetches}
 
@@ -265,6 +297,10 @@ def sync_all(
     use_cache: bool = True,
     force_refresh: bool = False,
 ) -> dict:
+    if not fetch_images:
+        raise ValueError(
+            "safe catalog sync requires product details; fetch_images=False is read-incomplete"
+        )
     init_db()
     token = access_token or auth.access_token()
     shop_list = shops.list_shops(token)

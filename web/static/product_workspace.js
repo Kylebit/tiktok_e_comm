@@ -15,6 +15,14 @@
     ozon: "Ozon",
     miaoshou: "妙手",
   };
+  const publicationSiteNames = {
+    COMMON: "公共草稿",
+    PH: "菲律宾",
+    MY: "马来西亚",
+    TH: "泰国",
+    VN: "越南",
+    RU: "俄罗斯",
+  };
   const siteNames = {
     lh_ph: "菲律宾",
     lh_my: "马来西亚",
@@ -70,6 +78,8 @@
   let queueItems = [];
   let currentQueueKey = "";
   let loadedQueueKey = "";
+  let pendingPublicationTargets = new Set();
+  let appliedPublicationTargets = new Set();
 
   function productKey(offerId, sellerSku) {
     return `${String(offerId || "").trim()}::${String(sellerSku || "").trim()}`;
@@ -172,6 +182,7 @@
     $("#lookupForm").classList.toggle("is-loading", loading);
     $("#refreshButton").disabled = loading;
     if ($("#approvalButton")) updateApprovalButton(currentData || {});
+    if ($("#applyPublicationScopeButton")) updatePublicationScopeControls();
   }
 
   function showError(message) {
@@ -214,11 +225,19 @@
     $("#imageGrid").innerHTML =
       '<div class="image-fallback">当前没有可展示的商品图片。</div>';
     $("#contentNotice").innerHTML = "";
+    pendingPublicationTargets = new Set();
+    appliedPublicationTargets = new Set();
+    $("#publicationTargetGrid").innerHTML =
+      '<div class="image-fallback">读取商品后选择发布平台与国家。</div>';
+    $("#publicationScopeNote").textContent = "尚未读取可选发布范围。";
+    $("#applyPublicationScopeButton").disabled = true;
     $("#channelGrid").innerHTML =
       '<div class="channel-card"><p>读取商品后展示渠道准备状态。</p></div>';
     $("#pricingSummary").textContent = "尚未读取售价计算。";
     $("#storePriceGrid").innerHTML =
       '<div class="image-fallback">读取商品后展示全部国家与店铺售价。</div>';
+    $("#selectedChannelPriceGrid").innerHTML =
+      '<div class="image-fallback">读取商品后展示已选渠道售价。</div>';
     $("#pricingAuditTables").innerHTML = "";
     $("#channelPlanSummary").textContent = "尚未形成全渠道发布计划。";
     $("#channelBlockers").innerHTML = "";
@@ -242,11 +261,14 @@
     element.className = `badge ${tone}`;
   }
 
-  async function fetchDashboard(offerId, sellerSku) {
+  async function fetchDashboard(offerId, sellerSku, publicationTargets = null) {
     const params = new URLSearchParams({
       offer_id: offerId,
       seller_sku: sellerSku,
     });
+    if (Array.isArray(publicationTargets)) {
+      publicationTargets.forEach((target) => params.append("target", target));
+    }
     const response = await fetch(`/api/product-workspace/dashboard?${params}`, {
       headers: { Accept: "application/json" },
     });
@@ -428,6 +450,7 @@
 
   function renderProduct(data) {
     const product = data.product || {};
+    const skuGovernance = product.seller_sku_governance || {};
     $("#productTitle").textContent = product.title || "未命名商品";
     $("#productIdentity").innerHTML = [
       `Offer ${esc(product.offer_id || "—")}`,
@@ -442,6 +465,21 @@
       : product.category;
     const facts = [
       ["候选 Seller SKU", product.seller_sku_candidate || "—"],
+      [
+        "SKU 占用审查",
+        skuGovernance.available
+          ? "目录与预留均未占用"
+          : (
+            `已被 ${skuGovernance.reservation_conflicts?.length || 0} 条旧流程占用`
+            + (skuGovernance.suggested_base_sku
+              ? ` · 建议改用 ${skuGovernance.suggested_base_sku}`
+              : "")
+          ),
+      ],
+      [
+        "建议连续 SKU",
+        (skuGovernance.suggested_sku_range || []).join(" → ") || "—",
+      ],
       ["商品类目", category || "—"],
       ["商品标题", product.title || "—", true],
       ["采购成本", `¥ ${money(product.cost_cny)} CNY`],
@@ -492,10 +530,13 @@
 
   function renderApproval(data, message = "") {
     const product = data.product || {};
+    const skuGovernance = product.seller_sku_governance || {};
     const approved = Boolean(product.actual_product_approved);
     const eligible = approvalEligible(data);
     const packageCm = Array.isArray(product.package_cm) ? product.package_cm : [];
-    $("#approvalSku").textContent = product.seller_sku_candidate || "—";
+    $("#approvalSku").textContent = skuGovernance.available
+      ? (product.seller_sku_candidate || "—")
+      : `${product.seller_sku_candidate || "—"}（已占用）`;
     $("#approvalRevision").textContent = String(product.revision ?? "—");
     $("#approvalContent").textContent = data.content?.approved
       ? `${data.content.image_count || 0} 图已批准`
@@ -520,9 +561,11 @@
     $("#approvalMessage").textContent = message || (
       approved
         ? "本地审批事实已保存；外部发布仍保持关闭。"
+        : (!skuGovernance.available && skuGovernance.suggested_base_sku
+          ? `当前候选已被旧工作台/已验证声明占用；请改用 ${skuGovernance.suggested_base_sku} 后重新审查。`
         : (eligible
           ? "请逐项核对上方事实，再勾选确认。"
-          : "内容包批准且审批预览通过后，才可保存本地商品审批。")
+          : "内容包批准且审批预览通过后，才可保存本地商品审批。"))
     );
     updateApprovalButton(data);
   }
@@ -698,7 +741,74 @@
       .join("");
   }
 
-  function renderPricingReview(pricing) {
+  function sameTargetSet(left, right) {
+    if (left.size !== right.size) return false;
+    return [...left].every((label) => right.has(label));
+  }
+
+  function updatePublicationScopeControls() {
+    const dirty = !sameTargetSet(pendingPublicationTargets, appliedPublicationTargets);
+    const count = pendingPublicationTargets.size;
+    const note = $("#publicationScopeNote");
+    note.classList.toggle("is-dirty", dirty);
+    if (!count) {
+      note.textContent = "请至少选择一个平台与国家目标。";
+    } else if (dirty) {
+      note.textContent = `已选择 ${count} 个目标；应用后会生成新的预检计划和确认令牌。`;
+    } else {
+      note.textContent = `当前计划已包含 ${count} 个目标；选择结果已由服务端校验。`;
+    }
+    $("#applyPublicationScopeButton").disabled = pageLoading || !dirty || !count;
+  }
+
+  function renderPublicationScope(scope) {
+    const available = Array.isArray(scope?.available_targets)
+      ? scope.available_targets
+      : [];
+    appliedPublicationTargets = new Set(scope?.selected_labels || []);
+    pendingPublicationTargets = new Set(appliedPublicationTargets);
+    const grid = $("#publicationTargetGrid");
+    if (!available.length) {
+      grid.innerHTML = '<div class="image-fallback">当前没有服务端允许的发布目标。</div>';
+      updatePublicationScopeControls();
+      return;
+    }
+    grid.innerHTML = available.map((target, index) => {
+      const channel = channelNames[target.channel] || target.channel;
+      const site = publicationSiteNames[target.site] || target.site;
+      const checked = pendingPublicationTargets.has(target.label);
+      return `
+        <div class="publication-target">
+          <input
+            id="publicationTarget${index}"
+            type="checkbox"
+            name="publication_target"
+            value="${esc(target.label)}"
+            ${checked ? "checked" : ""}
+          >
+          <label for="publicationTarget${index}">
+            <span>
+              <strong>${esc(channel)} · ${esc(site)}</strong>
+              <small>${esc(target.label)}</small>
+            </span>
+          </label>
+        </div>
+      `;
+    }).join("");
+    updatePublicationScopeControls();
+  }
+
+  function setPendingPublicationTargets(labels) {
+    const desired = new Set(labels || []);
+    $("#publicationTargetGrid").querySelectorAll('input[name="publication_target"]')
+      .forEach((input) => {
+        input.checked = desired.has(input.value);
+      });
+    pendingPublicationTargets = desired;
+    updatePublicationScopeControls();
+  }
+
+  function renderPricingReview(pricing, publicationScope) {
     const allRows = Array.isArray(pricing?.all_legacy_store_prices)
       ? pricing.all_legacy_store_prices
       : [];
@@ -709,8 +819,9 @@
       .map((row) => Number(row.estimated_profit_cny))
       .filter(Number.isFinite);
     const adjusted = allRows.filter((row) => row.min_profit_adjusted).length;
+    const minimumProfit = validProfits.length ? money(Math.min(...validProfits)) : "—";
     $("#pricingSummary").textContent = allRows.length
-      ? `${allRows.length} 个国家/店铺价格 · 最低预计利润 ¥${money(Math.min(...validProfits))} · ${adjusted} 个触发利润底线`
+      ? `${allRows.length} 个国家/店铺价格 · 当前范围 ${selectedKeys.size} 个店铺价 · 最低预计利润 ¥${minimumProfit} · ${adjusted} 个触发利润底线`
       : "当前没有可展示的售价计算。";
 
     const grid = $("#storePriceGrid");
@@ -754,6 +865,25 @@
       }).join("");
     }
 
+    const selectedLabels = publicationScope?.selected_labels || [];
+    const targetPricing = pricing?.target_pricing || {};
+    $("#selectedChannelPriceGrid").innerHTML = selectedLabels.length
+      ? selectedLabels.map((label) => {
+          const [channel, site] = String(label).split(":");
+          const detail = channelPriceLine(targetPricing[label] || {});
+          return `
+            <article class="selected-channel-price-card ${esc(detail.status)}">
+              <header>
+                <h5>${esc(channelNames[channel] || channel)} · ${esc(publicationSiteNames[site] || site)}</h5>
+                <span>${esc(detail.statusText)}</span>
+              </header>
+              <strong>${esc(detail.value)}</strong>
+              <small>${esc(detail.label)}<br>${esc(detail.source)}</small>
+            </article>
+          `;
+        }).join("")
+      : '<div class="image-fallback">请至少选择一个发布目标。</div>';
+
     const sections = pricing?.legacy_audit?.sections || [];
     $("#pricingAuditTables").innerHTML = sections.map((section) => `
       <section class="pricing-audit-section">
@@ -772,10 +902,24 @@
   }
 
   function channelPriceLine(pricing) {
+    const status = String(pricing?.status || "blocked");
+    const statusText = {
+      ready: "售价可审查",
+      awaiting_tiktok_readback: "等待 TikTok 回读",
+      blocked: "售价被阻塞",
+    }[status] || status;
     if ((pricing?.store_prices || []).length > 1) {
+      const stores = pricing.store_prices;
       return {
-        label: "妙手公共草稿包含价格",
-        value: `${pricing.store_prices.length} 个已选店铺`,
+        label: pricing?.role === "common_draft"
+          ? "妙手公共草稿包含所选逐店价格"
+          : "所选 TikTok 店铺建议挂牌价",
+        value: stores.map((store) => (
+          `${store.shop || store.target_key} ${localMoney(store.list_price, store.currency)}`
+        )).join(" · "),
+        status,
+        statusText,
+        source: `来源：${stores.map((store) => store.target_key).join("、")} 的旧版逐店反向定价审计`,
       };
     }
     const store = (pricing?.store_prices || [])[0];
@@ -783,22 +927,38 @@
       return {
         label: `${store.shop || "TikTok"} ${store.region || ""} 建议挂牌价`,
         value: localMoney(store.list_price, store.currency),
+        status,
+        statusText,
+        source: `来源：${store.target_key || "legacy price_review"} · 折后 ${localMoney(store.sale_after_discount, store.currency)}`,
       };
     }
     const derived = pricing?.derived_preview || {};
+    const source = pricing?.source || {};
     if (derived.global_original_price_cny != null) {
       return {
         label: `由 TikTok ${derived.source_currency || ""} 价格派生`,
         value: `¥${money(derived.global_original_price_cny)} CNY`,
+        status,
+        statusText,
+        source: `来源：${source.shop || "TikTok"} ${source.region || ""} ${source.target_key || ""}，真实写入前必须重新回读`,
       };
     }
     if (derived.price_cny != null) {
       return {
         label: "由 TikTok 主商品派生（划线价同时保留）",
         value: `¥${money(derived.price_cny)} / 划线 ¥${money(derived.old_price_cny)}`,
+        status,
+        statusText,
+        source: `来源：${source.shop || "TikTok"} ${source.region || ""} ${source.target_key || ""}，真实写入前必须重新回读`,
       };
     }
-    return null;
+    return {
+      label: "当前范围没有可用售价",
+      value: "—",
+      status: "blocked",
+      statusText: "售价被阻塞",
+      source: pricing?.blocker || "缺少对应 TikTok 主商品价格",
+    };
   }
 
   function renderChannels(omnichannel, publication, releaseReady) {
@@ -853,10 +1013,11 @@
           </header>
           <p>${esc(message)}</p>
           ${priceLine ? `
-            <p class="channel-price">
-              <span>${esc(priceLine.label)}</span>
+            <div class="channel-price ${esc(priceLine.status)}">
+              <span>${esc(priceLine.label)} · ${esc(priceLine.statusText)}</span>
               <strong>${esc(priceLine.value)}</strong>
-            </p>
+              <small>${esc(priceLine.source)}</small>
+            </div>
           ` : ""}
           <dl class="channel-meta">
             <div><dt>适配器</dt><dd>${esc(adapterStatus)}</dd></div>
@@ -889,7 +1050,11 @@
     renderStages(stages);
     renderNextStep(data, stages);
     renderImages(data.content || {});
-    renderPricingReview(data.pricing_review || {});
+    renderPublicationScope(data.publication_scope || {});
+    renderPricingReview(
+      data.pricing_review || {},
+      data.publication_scope || {},
+    );
     renderChannels(
       data.omnichannel_preview || {},
       data.publication_rehearsal || {},
@@ -910,7 +1075,7 @@
     updateApprovalButton({});
   }
 
-  async function refreshQueueProduct(item) {
+  async function refreshQueueProduct(item, options = {}) {
     if (item.loading && item.promise) return item.promise;
     const key = productKey(item.offer_id, item.seller_sku);
     item.loading = true;
@@ -922,7 +1087,14 @@
     renderQueue();
     item.promise = (async () => {
       try {
-        const data = await fetchDashboard(item.offer_id, item.seller_sku);
+        const requestedTargets = Object.hasOwn(options, "publicationTargets")
+          ? options.publicationTargets
+          : (item.data?.publication_scope?.selected_labels || null);
+        const data = await fetchDashboard(
+          item.offer_id,
+          item.seller_sku,
+          requestedTargets,
+        );
         item.data = data;
         item.error = "";
         if (key === currentQueueKey) {
@@ -1022,6 +1194,33 @@
   $("#refreshChannelsButton").addEventListener("click", () => {
     const item = queueItem(currentQueueKey);
     if (item) refreshQueueProduct(item).catch(() => {});
+  });
+  $("#publicationTargetGrid").addEventListener("change", (event) => {
+    if (!event.target.matches('input[name="publication_target"]')) return;
+    pendingPublicationTargets = new Set(
+      [...$("#publicationTargetGrid").querySelectorAll(
+        'input[name="publication_target"]:checked',
+      )].map((input) => input.value),
+    );
+    updatePublicationScopeControls();
+  });
+  $("#selectAllTargetsButton").addEventListener("click", () => {
+    setPendingPublicationTargets(
+      [...$("#publicationTargetGrid").querySelectorAll(
+        'input[name="publication_target"]',
+      )].map((input) => input.value),
+    );
+  });
+  $("#restoreTargetDefaultsButton").addEventListener("click", () => {
+    setPendingPublicationTargets(currentData?.publication_scope?.default_labels || []);
+  });
+  $("#publicationScopeForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const item = queueItem(currentQueueKey);
+    if (!item || !pendingPublicationTargets.size || pageLoading) return;
+    refreshQueueProduct(item, {
+      publicationTargets: [...pendingPublicationTargets],
+    }).catch(() => {});
   });
   $("#queueGrid").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-action]");

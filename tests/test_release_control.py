@@ -206,6 +206,116 @@ def test_release_dashboard_normalises_sea_sites_into_shared_channel_matrix(tmp_p
     assert preview["ready"] is False
 
 
+def test_release_dashboard_applies_exact_user_selected_channel_scope_and_prices(
+    tmp_path,
+):
+    root, database = _release_fixture(tmp_path)
+    selected = [
+        "miaoshou:COMMON",
+        "tiktok:PH",
+        "shopee:PH",
+        "ozon:RU",
+    ]
+
+    result = build_release_dashboard(
+        root=root,
+        database_path=database,
+        report_store_path=root / "data" / "missing-orbit.db",
+        publication_targets=selected,
+    )
+
+    scope = result["publication_scope"]
+    assert scope["source"] == "user_selection"
+    assert scope["selected_labels"] == selected
+    assert scope["selected_count"] == 4
+    assert len(scope["available_targets"]) == 10
+    assert scope["selection_applied_to_plan"] is True
+    assert scope["read_only_preflight"] is True
+    assert result["omnichannel_preview"]["site_selection"] == {
+        "miaoshou": ["COMMON"],
+        "tiktok": ["PH"],
+        "shopee": ["PH"],
+        "ozon": ["RU"],
+    }
+    assert {
+        (row["channel"], row["site"])
+        for row in result["omnichannel_preview"]["targets"]
+    } == {
+        ("miaoshou", "COMMON"),
+        ("tiktok", "PH"),
+        ("shopee", "PH"),
+        ("ozon", "RU"),
+    }
+
+    pricing = result["pricing_review"]
+    assert len(pricing["all_legacy_store_prices"]) == 10
+    assert {
+        row["target_key"] for row in pricing["selected_store_prices"]
+    } == {"lh_ph", "hb_ph"}
+    assert len(pricing["target_pricing"]["tiktok:PH"]["store_prices"]) == 2
+    assert pricing["target_pricing"]["shopee:PH"]["source"]["region"] == "PH"
+    assert pricing["target_pricing"]["ozon:RU"]["source"]["region"] == "PH"
+    assert pricing["publication_target_labels"] == selected
+    assert pricing["workbench_selected_store_prices"][0]["target_key"] == "lh_th"
+
+
+def test_release_dashboard_channel_scope_changes_plan_and_confirmation_token(tmp_path):
+    root, database = _release_fixture(tmp_path)
+    common = {
+        "root": root,
+        "database_path": database,
+        "report_store_path": root / "data" / "missing-orbit.db",
+    }
+
+    thailand = build_release_dashboard(
+        **common,
+        publication_targets=["miaoshou:COMMON", "tiktok:TH", "shopee:TH"],
+    )
+    philippines = build_release_dashboard(
+        **common,
+        publication_targets=["miaoshou:COMMON", "tiktok:PH", "shopee:PH"],
+    )
+
+    assert (
+        thailand["omnichannel_preview"]["plan_id"]
+        != philippines["omnichannel_preview"]["plan_id"]
+    )
+    assert (
+        thailand["omnichannel_preview"]["confirmation_token_summary"][
+            "scope_fingerprint"
+        ]
+        != philippines["omnichannel_preview"]["confirmation_token_summary"][
+            "scope_fingerprint"
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    "targets",
+    [
+        [],
+        [""],
+        ["tiktok:GB"],
+        ["unknown:TH"],
+        ["tiktok:TH", "tiktok:th"],
+        "tiktok:TH",
+    ],
+)
+def test_release_dashboard_rejects_unallowlisted_or_invalid_channel_scope(
+    tmp_path,
+    targets,
+):
+    root, database = _release_fixture(tmp_path)
+
+    with pytest.raises((TypeError, ValueError)):
+        build_release_dashboard(
+            root=root,
+            database_path=database,
+            report_store_path=root / "data" / "missing-orbit.db",
+            publication_targets=targets,
+        )
+
+
 def test_release_dashboard_blocks_conflicting_candidate_sku(tmp_path):
     root, database = _release_fixture(tmp_path)
 
@@ -278,9 +388,79 @@ def test_release_dashboard_treats_other_approved_workbench_as_sku_reservation(
 
     assert result["approval_rehearsal"]["ready"] is False
     assert (
-        "seller_sku is already present in the catalog"
+        "seller_sku is reserved by another workbench or verified TikTok claim"
         in result["approval_rehearsal"]["blockers"]
     )
+
+
+def test_release_dashboard_blocks_legacy_lock_and_claim_and_suggests_next_range(
+    tmp_path,
+):
+    root, database = _release_fixture(tmp_path)
+    with sqlite3.connect(database) as connection:
+        connection.execute("INSERT INTO products VALUES ('990945')")
+    for offer_id in (
+        "3749982947",
+        "3749982951",
+        "3749982953",
+        "780091850593",
+    ):
+        _write_json(
+            root / "data" / "new_product_workbench" / f"{offer_id}.json",
+            {
+                "offer_id": offer_id,
+                "review": {
+                    "seller_sku": "0946",
+                    "fields_locked": True,
+                },
+            },
+        )
+    _write_json(
+        root
+        / "data"
+        / "new_product_workbench"
+        / "3749982951_tiktok_claim.json",
+        {
+            "claimed": True,
+            "sku_numbering": {
+                "base_sku": "0946",
+                "sku_item_nums": [
+                    "0946",
+                    "0947",
+                    "0948",
+                    "0949",
+                    "0950",
+                    "0951",
+                ],
+                "verified": True,
+            },
+        },
+    )
+
+    result = build_release_dashboard(
+        root=root,
+        database_path=database,
+        report_store_path=root / "data" / "missing-orbit.db",
+        offer_id="3828811808",
+        seller_sku="0946",
+    )
+
+    governance = result["product"]["seller_sku_governance"]
+    assert governance["available"] is False
+    assert governance["suggested_base_sku"] == "0952"
+    assert governance["suggested_sku_range"] == ["0952"]
+    assert {row["offer_id"] for row in governance["reservation_conflicts"]} == {
+        "3749982947",
+        "3749982951",
+        "3749982953",
+        "780091850593",
+    }
+    blocker = (
+        "seller_sku is reserved by another workbench or verified TikTok claim"
+    )
+    assert blocker in result["approval_rehearsal"]["blockers"]
+    assert result["approval_rehearsal"]["ready"] is False
+    assert blocker in result["actual_release_gate"]["blockers"]
 
 
 def test_release_dashboard_ignores_unapproved_and_self_reservations(tmp_path):

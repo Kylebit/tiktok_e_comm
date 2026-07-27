@@ -2602,7 +2602,12 @@ def _ozon_readback(
             "verified": False,
             "source": "official_ozon_seller_api",
             "offer_id": offer_id,
-            "reason": "offer_not_found",
+            "reason": (
+                "offer_not_found"
+                if not items
+                else "ambiguous_offer_identity"
+            ),
+            "item_count": len(items),
         }
     item = items[0]
     prices = [
@@ -2656,6 +2661,7 @@ def _ozon_readback(
         "errors": item_errors,
         "image_urls": images,
         "has_stock": bool(visibility.get("has_stock")),
+        "is_created": bool(statuses.get("is_created")),
         "checks": checks,
     }
     return bool(evidence["verified"]), evidence
@@ -2845,7 +2851,179 @@ def _ozon_existing_listing_is_processing(evidence: dict[str, Any]) -> bool:
         and checks.get("price")
         and checks.get("images")
         and not (evidence.get("errors") or ())
-        and str(evidence.get("validation_status") or "").lower() == "success"
+    )
+
+
+def _ozon_product_creation_probe(*, offer_id: str) -> dict[str, Any]:
+    """Read the official product identity without mutating stock or listing data."""
+
+    from modules.ozon.client import ozon_post
+
+    response = ozon_post("/v3/product/info/list", {"offer_id": [offer_id]})
+    items = response.get("items") or ()
+    if not items:
+        return {
+            "state": "pending",
+            "offer_id": offer_id,
+            "reason": "product_not_visible",
+        }
+    if len(items) != 1:
+        return {
+            "state": "ambiguous",
+            "offer_id": offer_id,
+            "reason": "multiple_products_returned",
+            "item_count": len(items),
+        }
+    item = items[0]
+    actual_offer_id = str(item.get("offer_id") or "")
+    product_id = str(item.get("id") or item.get("product_id") or "")
+    if actual_offer_id != offer_id or not product_id:
+        return {
+            "state": "ambiguous",
+            "offer_id": offer_id,
+            "actual_offer_id": actual_offer_id,
+            "product_id": product_id,
+            "reason": "product_identity_mismatch",
+        }
+    statuses = item.get("statuses") or {}
+    if not statuses.get("is_created"):
+        return {
+            "state": "pending",
+            "offer_id": offer_id,
+            "product_id": product_id,
+            "reason": "product_not_created",
+            "status": statuses.get("status"),
+            "validation_status": statuses.get("validation_status"),
+        }
+    return {
+        "state": "created",
+        "offer_id": offer_id,
+        "product_id": product_id,
+        "status": statuses.get("status"),
+        "validation_status": statuses.get("validation_status"),
+        "is_created": True,
+    }
+
+
+def _await_ozon_product_creation(
+    *,
+    offer_id: str,
+    task_id: str = "",
+    attempts: int = 24,
+    delay_seconds: float = 5,
+) -> dict[str, Any]:
+    """Wait until import task and exact product identity are safe for stock writes."""
+
+    from modules.ozon.client import ozon_post
+
+    last_task: dict[str, Any] = {}
+    last_product: dict[str, Any] = {}
+    for attempt in range(max(1, attempts)):
+        if attempt and delay_seconds:
+            time.sleep(delay_seconds)
+        task_ready = not task_id
+        if task_id:
+            try:
+                response = ozon_post(
+                    "/v1/product/import/info",
+                    {"task_id": task_id},
+                )
+                rows = (response.get("result") or {}).get("items") or ()
+                if len(rows) > 1:
+                    return {
+                        "state": "ambiguous",
+                        "offer_id": offer_id,
+                        "task_id": task_id,
+                        "poll_attempt": attempt + 1,
+                        "reason": "multiple_import_task_items",
+                        "task_item_count": len(rows),
+                    }
+                if rows:
+                    row = rows[0]
+                    row_offer_id = str(row.get("offer_id") or "")
+                    if row_offer_id and row_offer_id != offer_id:
+                        return {
+                            "state": "ambiguous",
+                            "offer_id": offer_id,
+                            "task_id": task_id,
+                            "poll_attempt": attempt + 1,
+                            "reason": "import_task_offer_mismatch",
+                            "task_offer_id": row_offer_id,
+                        }
+                    status = str(row.get("status") or "").lower()
+                    errors = list(row.get("errors") or ())
+                    last_task = {
+                        "status": status,
+                        "errors": errors,
+                        "offer_id": row_offer_id,
+                    }
+                    if errors or status not in {"", "pending", "imported"}:
+                        return {
+                            "state": "failed",
+                            "offer_id": offer_id,
+                            "task_id": task_id,
+                            "poll_attempt": attempt + 1,
+                            "reason": "import_task_failed",
+                            "task": last_task,
+                        }
+                    task_ready = status == "imported" and not errors
+            except Exception as error:
+                last_task = {"error": str(error)}
+        if not task_ready:
+            continue
+        try:
+            last_product = _ozon_product_creation_probe(offer_id=offer_id)
+        except Exception as error:
+            last_product = {
+                "state": "pending",
+                "offer_id": offer_id,
+                "reason": "product_probe_failed",
+                "error": str(error),
+            }
+        if last_product.get("state") == "created":
+            return {
+                **last_product,
+                "task_id": task_id,
+                "poll_attempt": attempt + 1,
+                "task": last_task,
+            }
+        if last_product.get("state") == "ambiguous":
+            return {
+                **last_product,
+                "task_id": task_id,
+                "poll_attempt": attempt + 1,
+                "task": last_task,
+            }
+    return {
+        "state": "timeout",
+        "offer_id": offer_id,
+        "task_id": task_id,
+        "poll_attempts": max(1, attempts),
+        "reason": "product_creation_not_confirmed",
+        "task": last_task,
+        "product": last_product,
+    }
+
+
+def _ozon_reconciliation_result(
+    *,
+    offer_id: str,
+    detail: str,
+    evidence: dict[str, Any],
+) -> AdapterExecutionResult:
+    receipt = {
+        **evidence,
+        "source": "official_ozon_seller_api",
+        "offer_id": offer_id,
+        "reconciliation_required": True,
+    }
+    return AdapterExecutionResult(
+        succeeded=True,
+        readback_verified=False,
+        detail=detail,
+        external_reference=offer_id,
+        readback_evidence=receipt,
+        submission_accepted=True,
     )
 
 
@@ -2942,6 +3120,19 @@ def execute_ozon_target(
             evidence,
         )
     if _ozon_only_rich_content_declined(evidence):
+        if not evidence.get("is_created") or not evidence.get("product_id"):
+            return _ozon_reconciliation_result(
+                offer_id=offer_id,
+                detail=(
+                    "Ozon listing exists but product creation is not yet "
+                    "confirmed; Rich Content and stock writes were not attempted"
+                ),
+                evidence={
+                    "phase": "existing_product_creation",
+                    "existing_readback": evidence,
+                    "external_writes_performed": [],
+                },
+            )
         repair_evidence = _repair_ozon_rich_content(
             offer_id=offer_id,
             title=expected_platform_title,
@@ -2978,6 +3169,31 @@ def execute_ozon_target(
             repaired,
         )
     if _ozon_existing_listing_is_processing(evidence):
+        creation_evidence = (
+            {
+                "state": "created",
+                "offer_id": offer_id,
+                "product_id": evidence.get("product_id"),
+                "is_created": True,
+                "reused_readback": True,
+            }
+            if evidence.get("is_created") and evidence.get("product_id")
+            else _await_ozon_product_creation(offer_id=offer_id)
+        )
+        if creation_evidence.get("state") != "created":
+            return _ozon_reconciliation_result(
+                offer_id=offer_id,
+                detail=(
+                    "Existing Ozon import is still awaiting exact product "
+                    "creation; duplicate import and stock update were blocked"
+                ),
+                evidence={
+                    "phase": "existing_product_creation",
+                    "existing_readback": evidence,
+                    "creation": creation_evidence,
+                    "external_writes_performed": [],
+                },
+            )
         stock_evidence = (
             {"reused": True}
             if evidence.get("has_stock")
@@ -2993,6 +3209,7 @@ def execute_ozon_target(
                 expected_image_count=len(context["images"]),
             )
             processing["poll_attempt"] = attempt + 1
+            processing["creation"] = creation_evidence
             processing["stock_write"] = stock_evidence
             if verified:
                 return AdapterExecutionResult(
@@ -3008,6 +3225,49 @@ def execute_ozon_target(
             "Ozon listing is still processing after the official readback window",
             offer_id,
             processing,
+        )
+    if int(evidence.get("item_count") or 0) > 1:
+        return AdapterExecutionResult(
+            False,
+            False,
+            "Ozon official readback returned an ambiguous existing offer identity",
+            None,
+            {
+                **evidence,
+                "external_writes_performed": [],
+                "duplicate_import_blocked": True,
+            },
+        )
+    if evidence.get("product_id") or evidence.get("is_created"):
+        return AdapterExecutionResult(
+            False,
+            False,
+            "Existing Ozon offer does not match the immutable release payload",
+            str(evidence.get("product_id") or offer_id),
+            {
+                **evidence,
+                "external_writes_performed": [],
+                "duplicate_import_blocked": True,
+            },
+        )
+    durable_attempts = int(
+        ((context.get("target") or {}).get("attempts") or 1)
+    )
+    if durable_attempts > 1:
+        return _ozon_reconciliation_result(
+            offer_id=offer_id,
+            detail=(
+                "A prior Ozon target attempt may already have dispatched an "
+                "import, but no exact product is visible yet; a second import "
+                "was blocked"
+            ),
+            evidence={
+                "phase": "prior_import_reconciliation",
+                "durable_attempts": durable_attempts,
+                "existing_readback": evidence,
+                "duplicate_import_blocked": True,
+                "external_writes_performed": [],
+            },
         )
 
     source_key = str(pricing.get("selected_source_target_key") or "lh_ph")
@@ -3069,7 +3329,21 @@ def execute_ozon_target(
         skip_mapping_write=True,
     )
     offer_id = str(result.get("offer_id") or offer_id)
-    if not result.get("ok"):
+    import_attempted = bool(result.get("import_request_attempted"))
+    task_id = str(result.get("task_id") or "")
+    import_evidence = {
+        "phase": "product_import",
+        "task_id": task_id,
+        "status": result.get("status"),
+        "dispatch_outcome": result.get("import_dispatch_outcome"),
+        "errors": list(result.get("errors") or ()),
+        "external_writes_performed": (
+            ["ozon:product_import:create"]
+            if import_attempted
+            else []
+        ),
+    }
+    if not result.get("ok") and not import_attempted:
         return AdapterExecutionResult(
             False,
             False,
@@ -3077,7 +3351,59 @@ def execute_ozon_target(
             offer_id,
             {"source": "official_ozon_seller_api", "import_result": result},
         )
-    stock_evidence = _ozon_set_release_stock(offer_id=offer_id)
+    if import_attempted and not task_id:
+        return _ozon_reconciliation_result(
+            offer_id=offer_id,
+            detail=(
+                "Ozon import dispatch did not return a stable task identity; "
+                "stock update and duplicate import were blocked"
+            ),
+            evidence={
+                **import_evidence,
+                "import_result": result,
+                "creation": {
+                    "state": "ambiguous",
+                    "reason": "missing_import_task_id",
+                },
+            },
+        )
+    creation_evidence = _await_ozon_product_creation(
+        offer_id=offer_id,
+        task_id=task_id,
+    )
+    if creation_evidence.get("state") != "created":
+        return _ozon_reconciliation_result(
+            offer_id=offer_id,
+            detail=(
+                "Ozon import was dispatched but exact product creation did "
+                "not converge; stock update and duplicate import were blocked"
+            ),
+            evidence={
+                **import_evidence,
+                "import_result": result,
+                "creation": creation_evidence,
+            },
+        )
+    try:
+        stock_evidence = _ozon_set_release_stock(offer_id=offer_id)
+    except Exception as error:
+        return _ozon_reconciliation_result(
+            offer_id=offer_id,
+            detail=(
+                "Ozon product was created but the stock update outcome "
+                "requires reconciliation"
+            ),
+            evidence={
+                **import_evidence,
+                "import_result": result,
+                "creation": creation_evidence,
+                "stock_error": str(error),
+                "external_writes_performed": [
+                    *import_evidence["external_writes_performed"],
+                    "ozon:stock:update_attempted",
+                ],
+            },
+        )
     for attempt in range(24):
         if attempt:
             time.sleep(10)
@@ -3088,7 +3414,13 @@ def execute_ozon_target(
             expected_image_count=len(context["images"]),
         )
         evidence["poll_attempt"] = attempt + 1
+        evidence["import"] = import_evidence
+        evidence["creation"] = creation_evidence
         evidence["stock_write"] = stock_evidence
+        evidence["external_writes_performed"] = [
+            *import_evidence["external_writes_performed"],
+            "ozon:stock:update",
+        ]
         if verified:
             return AdapterExecutionResult(
                 True,
@@ -3097,10 +3429,11 @@ def execute_ozon_target(
                 str(evidence.get("product_id") or offer_id),
                 evidence,
             )
-    return AdapterExecutionResult(
-        True,
-        False,
-        "Ozon import completed but exact official API readback did not converge",
-        offer_id,
-        evidence,
+    return _ozon_reconciliation_result(
+        offer_id=offer_id,
+        detail=(
+            "Ozon product creation and stock update completed but exact "
+            "official readback did not converge"
+        ),
+        evidence=evidence,
     )

@@ -1878,6 +1878,15 @@ def test_ozon_release_uses_verified_tiktok_images_without_third_party_rehosting(
     )
     monkeypatch.setattr(
         release_adapters,
+        "_await_ozon_product_creation",
+        lambda **_kwargs: {
+            "state": "created",
+            "offer_id": "0953",
+            "product_id": "ozon-product-1",
+        },
+    )
+    monkeypatch.setattr(
+        release_adapters,
         "_tiktok_readback",
         lambda **_kwargs: (
             True,
@@ -1895,7 +1904,14 @@ def test_ozon_release_uses_verified_tiktok_images_without_third_party_rehosting(
         migrate_batch,
         "migrate_one",
         lambda *args, **kwargs: calls.append((args, kwargs))
-        or {"ok": True, "offer_id": "0953", "status": "imported"},
+        or {
+            "ok": True,
+            "offer_id": "0953",
+            "status": "imported",
+            "task_id": "task-1",
+            "import_request_attempted": True,
+            "import_dispatch_outcome": "accepted",
+        },
     )
 
     result = release_adapters.execute_ozon_target(request)
@@ -2036,3 +2052,489 @@ def test_ozon_stock_write_uses_only_single_eligible_non_kgt_warehouse(monkeypatc
             ]
         },
     )
+
+
+def _ozon_release_fixture():
+    context = _context()
+    context["payload"]["targets"] = ["ozon:RU"]
+    context["payload"]["listing_copy"]["candidates"] = [
+        {
+            "channel": "ozon",
+            "site": "RU",
+            "title": "袩袙啸 薪邪泻谢械泄泻邪 薪邪 褋褌械薪褍 34 x 58 褋屑",
+            "policy_check": "passed",
+        },
+        {
+            "channel": "tiktok",
+            "site": "PH",
+            "title": "Cute Black Line-Art Dog PVC Wall Decal 34 x 58 cm",
+            "policy_check": "passed",
+        },
+    ]
+    context["payload"]["pricing"]["selected_targets"] = {
+        "ozon:RU": {
+            "selected_source_target_key": "lh_ph",
+            "derived_preview": {
+                "price_cny": 49,
+                "old_price_cny": 65,
+            },
+        },
+        "tiktok:LH_PH": {
+            "store_prices": [
+                {
+                    "target_key": "lh_ph",
+                    "list_price": 257,
+                    "currency": "PHP",
+                }
+            ]
+        },
+    }
+    base = _request("RU")
+    request = AdapterExecutionRequest(
+        **{
+            **base.__dict__,
+            "channel": "ozon",
+            "site": "RU",
+            "target_label": "ozon:RU",
+        }
+    )
+    return context, request
+
+
+def test_ozon_creation_waits_for_task_and_exact_product_identity(monkeypatch):
+    from modules.ozon import client
+
+    calls = []
+    task_rows = iter(
+        [
+            {"status": "pending", "offer_id": "0953", "errors": []},
+            {"status": "imported", "offer_id": "0953", "errors": []},
+            {"status": "imported", "offer_id": "0953", "errors": []},
+        ]
+    )
+    product_rows = iter(
+        [
+            {
+                "id": 765,
+                "offer_id": "0953",
+                "statuses": {"is_created": False, "status": "processing"},
+            },
+            {
+                "id": 765,
+                "offer_id": "0953",
+                "statuses": {"is_created": True, "status": "created"},
+            },
+        ]
+    )
+
+    def fake_post(path, body):
+        calls.append((path, body))
+        if path == "/v1/product/import/info":
+            return {"result": {"items": [next(task_rows)]}}
+        if path == "/v3/product/info/list":
+            return {"items": [next(product_rows)]}
+        raise AssertionError(f"unexpected write or endpoint: {path}")
+
+    monkeypatch.setattr(client, "ozon_post", fake_post)
+    monkeypatch.setattr(release_adapters.time, "sleep", lambda _seconds: None)
+
+    evidence = release_adapters._await_ozon_product_creation(
+        offer_id="0953",
+        task_id="task-1",
+        attempts=3,
+        delay_seconds=0,
+    )
+
+    assert evidence["state"] == "created"
+    assert evidence["product_id"] == "765"
+    assert evidence["poll_attempt"] == 3
+    assert [path for path, _body in calls] == [
+        "/v1/product/import/info",
+        "/v1/product/import/info",
+        "/v3/product/info/list",
+        "/v1/product/import/info",
+        "/v3/product/info/list",
+    ]
+    assert not any(path == "/v2/products/stocks" for path, _body in calls)
+
+
+def test_ozon_creation_immediate_happy_path(monkeypatch):
+    from modules.ozon import client
+
+    calls = []
+
+    def fake_post(path, body):
+        calls.append((path, body))
+        if path == "/v1/product/import/info":
+            return {
+                "result": {
+                    "items": [
+                        {
+                            "status": "imported",
+                            "offer_id": "0953",
+                            "errors": [],
+                        }
+                    ]
+                }
+            }
+        return {
+            "items": [
+                {
+                    "id": 765,
+                    "offer_id": "0953",
+                    "statuses": {"is_created": True, "status": "created"},
+                }
+            ]
+        }
+
+    monkeypatch.setattr(client, "ozon_post", fake_post)
+
+    evidence = release_adapters._await_ozon_product_creation(
+        offer_id="0953",
+        task_id="task-1",
+        attempts=1,
+        delay_seconds=0,
+    )
+
+    assert evidence["state"] == "created"
+    assert [path for path, _body in calls] == [
+        "/v1/product/import/info",
+        "/v3/product/info/list",
+    ]
+
+
+def test_ozon_create_then_creation_then_stock_then_readback(monkeypatch):
+    from modules.ozon import migrate_batch
+
+    context, request = _ozon_release_fixture()
+    events = []
+    reads = iter(
+        [
+            (
+                False,
+                {
+                    "verified": False,
+                    "reason": "offer_not_found",
+                    "item_count": 0,
+                },
+            ),
+            (
+                True,
+                {
+                    "verified": True,
+                    "product_id": "ozon-product-1",
+                },
+            ),
+        ]
+    )
+
+    def readback(**_kwargs):
+        events.append("initial_readback" if not events else "final_readback")
+        return next(reads)
+
+    monkeypatch.setattr(release_adapters, "_validated_context", lambda _r: context)
+    monkeypatch.setattr(release_adapters, "_ozon_readback", readback)
+    monkeypatch.setattr(
+        release_adapters,
+        "_tiktok_readback",
+        lambda **_kwargs: (
+            True,
+            {
+                "verified": True,
+                "image_urls": [
+                    "https://tiktok.example/approved-1.jpg",
+                    "https://tiktok.example/approved-2.jpg",
+                ],
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        migrate_batch,
+        "migrate_one",
+        lambda *_args, **_kwargs: events.append("create")
+        or {
+            "ok": True,
+            "offer_id": "0953",
+            "status": "imported",
+            "task_id": "task-1",
+            "import_request_attempted": True,
+            "import_dispatch_outcome": "accepted",
+        },
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_await_ozon_product_creation",
+        lambda **_kwargs: events.append("creation_confirmed")
+        or {
+            "state": "created",
+            "offer_id": "0953",
+            "product_id": "ozon-product-1",
+        },
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_ozon_set_release_stock",
+        lambda **_kwargs: events.append("stock")
+        or {"warehouse_id": "warehouse-1", "stock": 50},
+    )
+
+    result = release_adapters.execute_ozon_target(request)
+
+    assert result.succeeded is True
+    assert result.readback_verified is True
+    assert events == [
+        "initial_readback",
+        "create",
+        "creation_confirmed",
+        "stock",
+        "final_readback",
+    ]
+    assert result.readback_evidence["external_writes_performed"] == [
+        "ozon:product_import:create",
+        "ozon:stock:update",
+    ]
+
+
+def test_ozon_creation_timeout_never_updates_stock_and_requires_reconciliation(
+    monkeypatch,
+):
+    from modules.ozon import migrate_batch
+
+    context, request = _ozon_release_fixture()
+    monkeypatch.setattr(release_adapters, "_validated_context", lambda _r: context)
+    monkeypatch.setattr(
+        release_adapters,
+        "_ozon_readback",
+        lambda **_kwargs: (
+            False,
+            {
+                "verified": False,
+                "reason": "offer_not_found",
+                "item_count": 0,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_tiktok_readback",
+        lambda **_kwargs: (
+            True,
+            {
+                "verified": True,
+                "image_urls": [
+                    "https://tiktok.example/approved-1.jpg",
+                    "https://tiktok.example/approved-2.jpg",
+                ],
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        migrate_batch,
+        "migrate_one",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "offer_id": "0953",
+            "status": "imported",
+            "task_id": "task-1",
+            "import_request_attempted": True,
+            "import_dispatch_outcome": "accepted",
+        },
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_await_ozon_product_creation",
+        lambda **_kwargs: {
+            "state": "timeout",
+            "offer_id": "0953",
+            "task_id": "task-1",
+        },
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_ozon_set_release_stock",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("stock must wait for exact product creation")
+        ),
+    )
+
+    result = release_adapters.execute_ozon_target(request)
+
+    assert result.succeeded is True
+    assert result.submission_accepted is True
+    assert result.readback_verified is False
+    assert result.readback_evidence["reconciliation_required"] is True
+    assert result.readback_evidence["creation"]["state"] == "timeout"
+    assert result.readback_evidence["external_writes_performed"] == [
+        "ozon:product_import:create"
+    ]
+
+
+def test_ozon_ambiguous_create_receipt_blocks_stock_and_second_create(monkeypatch):
+    from modules.ozon import migrate_batch
+
+    context, request = _ozon_release_fixture()
+    monkeypatch.setattr(release_adapters, "_validated_context", lambda _r: context)
+    monkeypatch.setattr(
+        release_adapters,
+        "_ozon_readback",
+        lambda **_kwargs: (
+            False,
+            {
+                "verified": False,
+                "reason": "offer_not_found",
+                "item_count": 0,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_tiktok_readback",
+        lambda **_kwargs: (
+            True,
+            {
+                "verified": True,
+                "image_urls": [
+                    "https://tiktok.example/approved-1.jpg",
+                    "https://tiktok.example/approved-2.jpg",
+                ],
+            },
+        ),
+    )
+    create_calls = []
+    monkeypatch.setattr(
+        migrate_batch,
+        "migrate_one",
+        lambda *_args, **_kwargs: create_calls.append(True)
+        or {
+            "ok": False,
+            "offer_id": "0953",
+            "step": "migrate",
+            "error": "transport response lost",
+            "import_request_attempted": True,
+            "import_dispatch_outcome": "unknown_after_dispatch",
+        },
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_await_ozon_product_creation",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("missing task identity must fail before polling")
+        ),
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_ozon_set_release_stock",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("ambiguous create must not update stock")
+        ),
+    )
+
+    result = release_adapters.execute_ozon_target(request)
+
+    assert len(create_calls) == 1
+    assert result.submission_accepted is True
+    assert result.readback_evidence["creation"] == {
+        "state": "ambiguous",
+        "reason": "missing_import_task_id",
+    }
+
+
+def test_ozon_visible_pending_product_is_never_imported_twice(monkeypatch):
+    from modules.ozon import migrate_batch
+
+    context, request = _ozon_release_fixture()
+    monkeypatch.setattr(release_adapters, "_validated_context", lambda _r: context)
+    monkeypatch.setattr(
+        release_adapters,
+        "_ozon_readback",
+        lambda **_kwargs: (
+            False,
+            {
+                "verified": False,
+                "item_count": 1,
+                "product_id": "ozon-product-1",
+                "offer_id": "0953",
+                "title": "expected",
+                "errors": [],
+                "is_created": False,
+                "checks": {
+                    "offer_id": True,
+                    "title": True,
+                    "price": True,
+                    "images": True,
+                    "moderation": False,
+                    "stock": False,
+                },
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_await_ozon_product_creation",
+        lambda **_kwargs: {
+            "state": "timeout",
+            "offer_id": "0953",
+            "product_id": "ozon-product-1",
+        },
+    )
+    monkeypatch.setattr(
+        migrate_batch,
+        "migrate_one",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("visible pending product must never be imported again")
+        ),
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_ozon_set_release_stock",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("pending product must not receive stock")
+        ),
+    )
+
+    result = release_adapters.execute_ozon_target(request)
+
+    assert result.submission_accepted is True
+    assert result.readback_evidence["creation"]["state"] == "timeout"
+    assert result.readback_evidence["external_writes_performed"] == []
+
+
+def test_ozon_retry_with_invisible_prior_import_never_creates_again(monkeypatch):
+    from modules.ozon import migrate_batch
+
+    context, request = _ozon_release_fixture()
+    context["target"] = {"attempts": 2, "status": "RUNNING"}
+    monkeypatch.setattr(release_adapters, "_validated_context", lambda _r: context)
+    monkeypatch.setattr(
+        release_adapters,
+        "_ozon_readback",
+        lambda **_kwargs: (
+            False,
+            {
+                "verified": False,
+                "reason": "offer_not_found",
+                "item_count": 0,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        migrate_batch,
+        "migrate_one",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a retry must never dispatch a second Ozon import")
+        ),
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_ozon_set_release_stock",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("invisible prior import must not receive stock")
+        ),
+    )
+
+    result = release_adapters.execute_ozon_target(request)
+
+    assert result.submission_accepted is True
+    assert result.readback_evidence["duplicate_import_blocked"] is True
+    assert result.readback_evidence["durable_attempts"] == 2
+    assert result.readback_evidence["external_writes_performed"] == []

@@ -129,9 +129,28 @@ def migrate_one(
     }
 
     _progress(on_progress, f"  {offer_id}: 提交 Ozon import（含 Rich 内容，可能需数分钟）…")
-    status, result = proxy_json("POST", "migrate", payload=payload)
+    try:
+        status, result = proxy_json("POST", "migrate", payload=payload)
+    except Exception as error:
+        return {
+            "seller_sku": seller_sku,
+            "offer_id": offer_id,
+            "ok": False,
+            "step": "migrate",
+            "error": str(error),
+            "import_request_attempted": True,
+            "import_dispatch_outcome": "unknown_after_dispatch",
+        }
     if status != 200 or not isinstance(result, dict):
-        return {"seller_sku": seller_sku, "offer_id": offer_id, "ok": False, "step": "migrate", "error": result}
+        return {
+            "seller_sku": seller_sku,
+            "offer_id": offer_id,
+            "ok": False,
+            "step": "migrate",
+            "error": result,
+            "import_request_attempted": True,
+            "import_dispatch_outcome": "rejected_or_unknown",
+        }
 
     import_status = result.get("status")
     if import_status == "pending":
@@ -143,6 +162,13 @@ def migrate_one(
         "offer_id": offer_id,
         "ok": ok,
         "status": import_status,
+        "task_id": str(result.get("task_id") or ""),
+        "import_request_attempted": True,
+        "import_dispatch_outcome": (
+            "accepted"
+            if result.get("task_id")
+            else "ambiguous_missing_task_id"
+        ),
         "rich_status": result.get("rich_status"),
         "errors": result.get("errors") or [],
         "title": payload["title"],

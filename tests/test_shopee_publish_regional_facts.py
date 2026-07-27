@@ -223,7 +223,13 @@ def test_live_publish_task_sends_normal_status_and_regional_price():
         return_value=[{"logistic_id": 1, "enabled": True}],
     ), patch(
         "modules.shopee.publish.ensure_single_global_model",
-        return_value={"created": False, "model_skus": ["0952"]},
+        return_value={
+            "created": False,
+            "model_skus": ["0952"],
+            "publish_models": [
+                {"global_model_sku": "0952", "tier_index": [0]}
+            ],
+        },
     ), patch(
         "modules.shopee.publish.enable_all_applicable_logistics",
         return_value={"verified": True, "enabled_logistic_ids": [1]},
@@ -252,15 +258,31 @@ def test_live_publish_task_sends_normal_status_and_regional_price():
             model_sku="0952",
             ref=None,
             item_status="NORMAL",
+            global_original_price_cny_override=78.75,
+            local_original_price_override=45,
+            local_price_currency_override="MYR",
         )
 
     assert result["item_id"] == 456
     assert seen["body"]["item"]["item_status"] == "NORMAL"
     assert seen["body"]["item"]["original_price"] == 45.0
+    assert seen["body"]["item"]["model"] == [
+        {"tier_index": [0], "original_price": 45.0}
+    ]
     assert "item_name" not in seen["body"]["item"]
     assert "description" not in seen["body"]["item"]
     assert "item_sku" not in seen["body"]["item"]
     assert result["copy_mode"] == "shopee_global_master_auto_translation"
+    assert result["price_contract"] == {
+        "source": "immutable_release_plan",
+        "global_original_price_cny": 78.75,
+        "local_original_price": 45.0,
+        "local_currency": "MYR",
+        "manual_model_price_count": 1,
+    }
+    assert result["pre_publish_logistics"] == [
+        {"logistic_id": 1, "enabled": True}
+    ]
 
 
 def test_publish_task_rejects_unknown_item_status_before_network():
@@ -277,6 +299,56 @@ def test_publish_task_rejects_unknown_item_status_before_network():
         )
 
 
+def test_publish_task_rejects_incompatible_logistics_before_model_or_publish_write():
+    with patch(
+        "modules.shopee.publish._shop_meta",
+        return_value={"merchant_id": 9},
+    ), patch(
+        "modules.shopee.publish._merchant_token",
+        return_value="merchant-token",
+    ), patch(
+        "modules.shopee.publish._logistic_info",
+        return_value=[],
+    ), patch(
+        "modules.shopee.publish.ensure_single_global_model",
+    ) as ensure_model, patch(
+        "modules.shopee.publish.merchant_post",
+    ) as merchant_post, pytest.raises(
+        RuntimeError,
+        match="no Shopee logistics channel supports",
+    ):
+        _run_publish_task(
+            global_item_id=77,
+            detail={
+                "title": "Approved Shopee title",
+                "description": "<p>Approved product description long enough.</p>",
+                "skus": [
+                    {
+                        "price": {"currency": "VND", "sale_price": "210000"},
+                        "sku_weight": {"value": 0.12, "unit": "KILOGRAM"},
+                        "sku_dimensions": {
+                            "length": 40,
+                            "width": 3,
+                            "height": 3,
+                        },
+                    }
+                ],
+            },
+            region="VN",
+            shop_id=8,
+            token="shop-token",
+            model_sku="0952",
+            ref=None,
+            item_status="NORMAL",
+            global_original_price_cny_override=62,
+            local_original_price_override=210000,
+            local_price_currency_override="VND",
+        )
+
+    ensure_model.assert_not_called()
+    merchant_post.assert_not_called()
+
+
 def test_logistic_info_preserves_reference_eligibility_without_a_silent_cap():
     reference = {
         "logistic_info": [
@@ -289,17 +361,107 @@ def test_logistic_info_preserves_reference_eligibility_without_a_silent_cap():
         ]
     }
 
-    assert [
-        row["logistic_id"]
-        for row in _logistic_info(123, "token", reference)
-    ] == [20087, 28079, 70126, 50052, 2000, 28016]
-    assert [row["enabled"] for row in _logistic_info(123, "token", reference)] == [
-        True,
-        True,
-        True,
-        True,
-        True,
-        False,
+    live_channels = [
+        {
+            "logistics_channel_id": logistic_id,
+            "enabled": True,
+            "weight_limit": {"item_max_weight": 10},
+            "item_max_dimension": {
+                "unit": "CM",
+                "length": 100,
+                "width": 100,
+                "height": 100,
+            },
+        }
+        for logistic_id in [20087, 28079, 70126, 50052, 2000, 28016]
+    ]
+    with patch(
+        "modules.shopee.publish.shop_get",
+        return_value={
+            "response": {"logistics_channel_list": live_channels}
+        },
+    ):
+        result = _logistic_info(
+            123,
+            "token",
+            reference,
+            region="PH",
+            weight_kg=0.12,
+            dimensions_cm=(40, 3, 3),
+        )
+
+    assert [row["logistic_id"] for row in result] == [
+        20087,
+        28079,
+        70126,
+        50052,
+        2000,
+        28016,
+    ]
+    assert all(row["enabled"] is True for row in result)
+
+
+def test_vn_logistics_enable_all_compatible_channels_and_exclude_50052():
+    live_channels = [
+        {
+            "logistics_channel_id": 50052,
+            "enabled": True,
+        },
+        {
+            "logistics_channel_id": 50053,
+            "enabled": True,
+            "weight_limit": {"item_max_weight": 10},
+            "item_max_dimension": {
+                "unit": "CM",
+                "length": 100,
+                "width": 100,
+                "height": 100,
+            },
+        },
+        {
+            "logistics_channel_id": 50054,
+            "enabled": True,
+            "weight_limit": {"item_max_weight": 0.1},
+        },
+        {
+            "logistics_channel_id": 50055,
+            "enabled": True,
+            "weight_limit": {"item_max_weight": 10},
+            "item_max_dimension": {
+                "unit": "CM",
+                "length": 30,
+                "width": 3,
+                "height": 3,
+            },
+        },
+        {
+            "logistics_channel_id": 50056,
+            "enabled": False,
+        },
+    ]
+    with patch(
+        "modules.shopee.publish.shop_get",
+        return_value={
+            "response": {"logistics_channel_list": live_channels}
+        },
+    ):
+        result = _logistic_info(
+            123,
+            "token",
+            {"logistic_info": [{"logistic_id": 50053}]},
+            region="VN",
+            weight_kg=0.12,
+            dimensions_cm=(40, 3, 3),
+        )
+
+    assert result == [
+        {
+            "logistic_id": 50053,
+            "enabled": True,
+            "shipping_fee": 0,
+            "size_id": 0,
+            "is_free": False,
+        }
     ]
 
 
@@ -334,6 +496,7 @@ def test_single_variant_global_item_gets_an_explicit_model_sku():
                         {
                             "global_model_id": 88,
                             "global_model_sku": "0953",
+                            "tier_index": [0],
                         }
                     ]
                 }
@@ -370,6 +533,9 @@ def test_single_variant_global_item_gets_an_explicit_model_sku():
         }
     ]
     assert body["global_model"][0]["global_model_sku"] == "0953"
+    assert result["publish_models"] == [
+        {"global_model_sku": "0953", "tier_index": [0]}
+    ]
 
 
 def test_published_legacy_single_sku_is_not_destructively_converted_to_a_model():

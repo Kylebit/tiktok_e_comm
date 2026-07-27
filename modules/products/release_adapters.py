@@ -2702,7 +2702,6 @@ def execute_shopee_target(
     description = _shopee_description(payload)
     pricing = _target_pricing(payload, request.target_label)
     expected_price = _shopee_price_expectation(pricing, region=region)
-
     item_id = (
         _shopee_item_id_for_match_key(request.seller_sku, region)
         or _discover_shopee_item_id_by_sku(
@@ -2814,6 +2813,10 @@ def execute_shopee_target(
             evidence,
         )
 
+    local_original_price = expected_price["source_local_price"]
+    local_currency = expected_price["source_local_currency"]
+    global_original_price_cny = expected_price["value"]
+
     from modules.shopee.publish import publish_match_key
 
     result = publish_match_key(
@@ -2825,6 +2828,9 @@ def execute_shopee_target(
         item_status="NORMAL",
         title_override=title,
         description_override=description,
+        global_original_price_cny_override=global_original_price_cny,
+        local_original_price_override=local_original_price,
+        local_price_currency_override=local_currency,
     )
     item_id = str(result.get("item_id") or _shopee_item_id_for_match_key(
         request.seller_sku,

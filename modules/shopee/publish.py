@@ -25,7 +25,7 @@ from modules.shopee.client import (
 )
 from modules.shopee.global_copy import TK_SOURCE_ORDER, build_global_copy
 from modules.shopee.global_sku_map import global_item_id_for_match_key, record_shop_item, upsert_global_entry
-from modules.shopee.pricing import tk_local_to_cny
+from modules.shopee.pricing import REGION_CURRENCY, tk_local_to_cny
 from modules.shopee.shops import sync_shop_ids
 
 # TH 墙贴类目（category_recommend + 同类商品实测）
@@ -191,50 +191,100 @@ def _reference_item(region: str, shop_id: int, token: str) -> dict | None:
     return items[0] if items else None
 
 
-def _logistic_info(shop_id: int, token: str, ref: dict | None) -> list[dict]:
-    """Include every reference channel without overriding its eligibility.
+_UNSUPPORTED_PARCEL_FACT_LOGISTICS = {
+    # Observed official VN create_publish_task rejection: this checkout
+    # channel cannot consume global-item weight/dimension facts.
+    ("VN", 50052): "channel does not accept global-item parcel facts",
+}
 
-    A previous implementation silently dropped locker/express channels and
-    capped the fallback at two rows. After publication, each disabled channel
-    is tried separately by :func:`enable_all_applicable_logistics`.
-    """
 
-    seen: set[int] = set()
-    if ref and ref.get("logistic_info"):
-        out = []
-        for lg in ref["logistic_info"]:
-            lid = lg.get("logistic_id")
-            if lid is None or int(lid) in seen:
-                continue
-            seen.add(int(lid))
-            out.append(
-                {
-                    "logistic_id": lid,
-                    "enabled": bool(lg.get("enabled")),
-                    "shipping_fee": lg.get("shipping_fee", 0),
-                    "size_id": lg.get("size_id", 0),
-                    "is_free": bool(lg.get("is_free", False)),
-                }
-            )
-        if out:
-            return out
+def _channel_supports_parcel(
+    channel: dict,
+    *,
+    region: str,
+    weight_kg: float,
+    dimensions_cm: tuple[float, float, float],
+) -> bool:
+    logistic_id = channel.get("logistics_channel_id") or channel.get("logistic_id")
+    if logistic_id is None:
+        return False
+    if (region.upper(), int(logistic_id)) in _UNSUPPORTED_PARCEL_FACT_LOGISTICS:
+        return False
+    limits = channel.get("weight_limit") or {}
+    minimum = float(limits.get("item_min_weight") or 0)
+    maximum = float(limits.get("item_max_weight") or 0)
+    if minimum and weight_kg < minimum:
+        return False
+    if maximum and weight_kg > maximum:
+        return False
+    dimension = channel.get("item_max_dimension") or {}
+    unit = str(dimension.get("unit") or "CM").upper()
+    multiplier = 0.1 if unit == "MM" else 1.0
+    actual_dimensions = sorted(
+        (float(value) for value in dimensions_cm),
+        reverse=True,
+    )
+    dimension_limits = sorted(
+        (
+            float(dimension.get("length") or 0) * multiplier,
+            float(dimension.get("width") or 0) * multiplier,
+            float(dimension.get("height") or 0) * multiplier,
+        ),
+        reverse=True,
+    )
+    if any(
+        limit and actual > limit
+        for actual, limit in zip(actual_dimensions, dimension_limits)
+    ):
+        return False
+    dimension_sum = float(dimension.get("dimension_sum") or 0) * multiplier
+    return not dimension_sum or sum(dimensions_cm) <= dimension_sum
+
+
+def _logistic_info(
+    shop_id: int,
+    token: str,
+    ref: dict | None,
+    *,
+    region: str,
+    weight_kg: float,
+    dimensions_cm: tuple[float, float, float],
+) -> list[dict]:
+    """Enable every shop channel proven compatible with the parcel facts."""
+
     resp = shop_get("/api/v2/logistics/get_channel_list", shop_id, token)
     channels = (resp.get("response") or {}).get("logistics_channel_list") or []
+    reference_rows = {
+        int(row["logistic_id"]): row
+        for row in ((ref or {}).get("logistic_info") or ())
+        if row.get("logistic_id") is not None
+    }
+    seen: set[int] = set()
     out = []
     for ch in channels:
         if not ch.get("enabled"):
             continue
         lid = ch.get("logistics_channel_id") or ch.get("logistic_id")
-        if lid is None or int(lid) in seen:
+        if (
+            lid is None
+            or int(lid) in seen
+            or not _channel_supports_parcel(
+                ch,
+                region=region,
+                weight_kg=weight_kg,
+                dimensions_cm=dimensions_cm,
+            )
+        ):
             continue
         seen.add(int(lid))
+        reference = reference_rows.get(int(lid)) or {}
         out.append(
             {
-                "logistic_id": lid,
+                "logistic_id": int(lid),
                 "enabled": True,
-                "shipping_fee": 0,
-                "size_id": 0,
-                "is_free": False,
+                "shipping_fee": reference.get("shipping_fee", 0),
+                "size_id": reference.get("size_id", 0),
+                "is_free": bool(reference.get("is_free", False)),
             }
         )
     if not out:
@@ -504,7 +554,18 @@ def build_payload(
             "package_width": max(width, 1),
             "package_height": max(height, 1),
         },
-        "logistic_info": _logistic_info(shop_id, token, ref),
+        "logistic_info": _logistic_info(
+            shop_id,
+            token,
+            ref,
+            region=region,
+            weight_kg=max(weight, 0.01),
+            dimensions_cm=(
+                max(float(length), 1),
+                max(float(width), 1),
+                max(float(height), 1),
+            ),
+        ),
         "attribute_list": _attribute_list(shop_id, token, int(category_id), ref),
         "brand": brand,
         "condition": "NEW",
@@ -673,6 +734,23 @@ def _local_item_fields(
     return title, local_desc, price
 
 
+def _parcel_facts(detail: dict) -> tuple[float, tuple[float, float, float]]:
+    sku = (detail.get("skus") or [{}])[0]
+    weight_value = sku.get("sku_weight") or detail.get("package_weight") or {}
+    weight_kg = float(weight_value.get("value") or 0.2)
+    if str(weight_value.get("unit") or "").upper() == "GRAM":
+        weight_kg /= 1000.0
+    dimensions = sku.get("sku_dimensions") or detail.get("package_dimensions") or {}
+    return (
+        max(weight_kg, 0.01),
+        (
+            max(float(dimensions.get("length") or 30), 1),
+            max(float(dimensions.get("width") or 20), 1),
+            max(float(dimensions.get("height") or 2), 1),
+        ),
+    )
+
+
 def _regional_listing_detail(
     regional_detail: dict,
     semantic_detail: dict,
@@ -710,6 +788,10 @@ def _run_publish_task(
     ref: dict | None,
     item_status: str = "UNLIST",
     create_model_when_missing: bool = True,
+    global_original_price_cny_override: float | None = None,
+    local_original_price_override: float | None = None,
+    local_price_currency_override: str = "",
+    logistics_override: list[dict] | None = None,
 ) -> dict:
     clean_status = str(item_status or "").strip().upper()
     if clean_status not in {"UNLIST", "NORMAL"}:
@@ -720,9 +802,45 @@ def _run_publish_task(
         raise RuntimeError("店铺无 merchant_id，无法走 CNSC 全球商品流程")
     mtoken = _merchant_token(shop_id, token)
 
-    _title, _local_desc, price = _local_item_fields(
+    _title, _local_desc, source_price = _local_item_fields(
         detail, shop_id=shop_id, token=token, model_sku=model_sku, ref=ref
     )
+    expected_currency = REGION_CURRENCY.get(region.upper())
+    local_currency = str(local_price_currency_override or expected_currency or "").upper()
+    if local_currency != expected_currency:
+        raise ValueError(
+            f"Shopee {region.upper()} local price must use {expected_currency}"
+        )
+    price = float(
+        local_original_price_override
+        if local_original_price_override is not None
+        else source_price
+    )
+    if price <= 0:
+        raise ValueError("Shopee local original price must be positive")
+    global_price_cny = float(
+        global_original_price_cny_override
+        if global_original_price_cny_override is not None
+        else tk_local_to_cny(price, region=region)
+    )
+    if global_price_cny <= 0:
+        raise ValueError("Shopee global original price must be positive CNY")
+    weight_kg, dimensions_cm = _parcel_facts(detail)
+    logistics = (
+        list(logistics_override)
+        if logistics_override is not None
+        else _logistic_info(
+            shop_id,
+            token,
+            ref,
+            region=region,
+            weight_kg=weight_kg,
+            dimensions_cm=dimensions_cm,
+        )
+    )
+    if not logistics:
+        raise RuntimeError("no Shopee logistics channel supports the approved parcel")
+    pre_publish_logistics = list(logistics)
     sku = (detail.get("skus") or [{}])[0]
     stock = (
         sum(int(row.get("quantity") or 0) for row in sku.get("inventory") or [])
@@ -734,10 +852,17 @@ def _run_publish_task(
         merchant_token=mtoken,
         detail=detail,
         model_sku=model_sku,
-        original_price=float(tk_local_to_cny(price, region=region)),
+        original_price=global_price_cny,
         stock=stock,
         create_when_missing=create_model_when_missing,
     )
+    manual_models = [
+        {
+            "tier_index": list(row["tier_index"]),
+            "original_price": price,
+        }
+        for row in (global_model.get("publish_models") or ())
+    ]
     pub_body = {
         "global_item_id": int(global_item_id),
         "shop_id": int(shop_id),
@@ -745,7 +870,8 @@ def _run_publish_task(
         "item": {
             "item_status": clean_status,
             "original_price": price,
-            "logistic": _logistic_info(shop_id, token, ref),
+            "logistic": logistics,
+            **({"model": manual_models} if manual_models else {}),
         },
     }
     p_resp = merchant_post(
@@ -798,7 +924,19 @@ def _run_publish_task(
         "item_id": item_id,
         "publish_status": last_status,
         "copy_mode": "shopee_global_master_auto_translation",
+        "price_contract": {
+            "source": (
+                "immutable_release_plan"
+                if local_original_price_override is not None
+                else "regional_tiktok_detail"
+            ),
+            "global_original_price_cny": global_price_cny,
+            "local_original_price": price,
+            "local_currency": local_currency,
+            "manual_model_price_count": len(manual_models),
+        },
         "global_model": global_model,
+        "pre_publish_logistics": pre_publish_logistics,
         "logistics": logistics,
         "raw_publish": p_resp,
     }
@@ -814,6 +952,10 @@ def _publish_existing_global(
     model_sku: str,
     ref: dict | None,
     item_status: str = "UNLIST",
+    global_original_price_cny_override: float | None = None,
+    local_original_price_override: float | None = None,
+    local_price_currency_override: str = "",
+    logistics_override: list[dict] | None = None,
 ) -> dict:
     result = _run_publish_task(
         global_item_id=global_item_id,
@@ -825,6 +967,10 @@ def _publish_existing_global(
         ref=ref,
         item_status=item_status,
         create_model_when_missing=False,
+        global_original_price_cny_override=global_original_price_cny_override,
+        local_original_price_override=local_original_price_override,
+        local_price_currency_override=local_price_currency_override,
+        logistics_override=logistics_override,
     )
     if result.get("item_id"):
         record_shop_item(
@@ -880,14 +1026,29 @@ def ensure_single_global_model(
             str(model.get("global_model_sku") or "").strip()
             for model in models
         }
-        if model_sku not in model_skus:
+        if model_skus != {model_sku} or len(models) != 1:
             raise RuntimeError(
                 f"global item {global_item_id} model SKU mismatch: {sorted(model_skus)}"
+            )
+        tier_index = models[0].get("tier_index")
+        if (
+            not isinstance(tier_index, (list, tuple))
+            or not tier_index
+            or any(not isinstance(value, int) for value in tier_index)
+        ):
+            raise RuntimeError(
+                f"global item {global_item_id} model tier index is unavailable"
             )
         return {
             "created": False,
             "global_item_id": int(global_item_id),
             "model_skus": sorted(model_skus),
+            "publish_models": [
+                {
+                    "global_model_sku": model_sku,
+                    "tier_index": list(tier_index),
+                }
+            ],
             "variant_label": _single_variant_label(detail),
             "legacy_item_sku": False,
         }
@@ -942,14 +1103,29 @@ def ensure_single_global_model(
         str(model.get("global_model_sku") or "").strip()
         for model in models
     }
-    if model_sku not in model_skus:
+    if model_skus != {model_sku} or len(models) != 1:
         raise RuntimeError(
             f"global item {global_item_id} did not expose Model SKU {model_sku}"
+        )
+    tier_index = models[0].get("tier_index")
+    if (
+        not isinstance(tier_index, (list, tuple))
+        or not tier_index
+        or any(not isinstance(value, int) for value in tier_index)
+    ):
+        raise RuntimeError(
+            f"global item {global_item_id} did not expose a model tier index"
         )
     return {
         "created": True,
         "global_item_id": int(global_item_id),
         "model_skus": sorted(model_skus),
+        "publish_models": [
+            {
+                "global_model_sku": model_sku,
+                "tier_index": list(tier_index),
+            }
+        ],
         "variant_label": label,
         "legacy_item_sku": False,
     }
@@ -1096,6 +1272,7 @@ def _create_global_item(
     tk_source_region: str = "",
     title_override: str = "",
     description_override: str = "",
+    global_original_price_cny_override: float | None = None,
 ) -> dict:
     """仅创建 CNSC 全球商品，不发布到国家店（由卖家在后台手动发布）。"""
     meta = _shop_meta(shop_id, token)
@@ -1107,7 +1284,13 @@ def _create_global_item(
     category_id = (ref or {}).get("category_id") or DEFAULT_CATEGORY.get(region.upper()) or 101157
     sku = (detail.get("skus") or [{}])[0]
     local_price = float((sku.get("price") or {}).get("sale_price") or 0)
-    price = tk_local_to_cny(local_price, region=region)
+    price = float(
+        global_original_price_cny_override
+        if global_original_price_cny_override is not None
+        else tk_local_to_cny(local_price, region=region)
+    )
+    if price <= 0:
+        raise ValueError("Shopee global original price must be positive CNY")
     stock = sum(int(i.get("quantity") or 0) for i in (sku.get("inventory") or [])) or 50
     w = sku.get("sku_weight") or detail.get("package_weight") or {}
     weight = float(w.get("value") or 0.2)
@@ -1204,6 +1387,10 @@ def _publish_global(
     item_status: str = "UNLIST",
     title_override: str = "",
     description_override: str = "",
+    global_original_price_cny_override: float | None = None,
+    local_original_price_override: float | None = None,
+    local_price_currency_override: str = "",
+    logistics_override: list[dict] | None = None,
 ) -> dict:
     created = _create_global_item(
         detail,
@@ -1216,6 +1403,7 @@ def _publish_global(
         tk_source_region=tk_source_region,
         title_override=title_override,
         description_override=description_override,
+        global_original_price_cny_override=global_original_price_cny_override,
     )
     global_item_id = int(created["global_item_id"])
     result = _run_publish_task(
@@ -1227,6 +1415,10 @@ def _publish_global(
         model_sku=model_sku,
         ref=ref,
         item_status=item_status,
+        global_original_price_cny_override=global_original_price_cny_override,
+        local_original_price_override=local_original_price_override,
+        local_price_currency_override=local_price_currency_override,
+        logistics_override=logistics_override,
     )
     return {**created, **result, "flow": "global_product"}
 
@@ -1241,6 +1433,9 @@ def publish_match_key(
     item_status: str = "UNLIST",
     title_override: str = "",
     description_override: str = "",
+    global_original_price_cny_override: float | None = None,
+    local_original_price_override: float | None = None,
+    local_price_currency_override: str = "",
 ) -> dict:
     """将 TK 商品发布到 Shopee。默认仅建全球商品，不自动发国家店。"""
     if publish_shops:
@@ -1307,6 +1502,31 @@ def publish_match_key(
         return out
 
     ref = _reference_item(reg, shop_id, token)
+    preflight_logistics = None
+    if not global_only:
+        expected_currency = REGION_CURRENCY.get(reg)
+        override_currency = str(local_price_currency_override or "").upper()
+        if local_original_price_override is not None:
+            if override_currency != expected_currency:
+                raise ValueError(
+                    f"Shopee {reg} local price must use {expected_currency}"
+                )
+            if float(local_original_price_override) <= 0:
+                raise ValueError("Shopee local original price must be positive")
+        if (
+            global_original_price_cny_override is not None
+            and float(global_original_price_cny_override) <= 0
+        ):
+            raise ValueError("Shopee global original price must be positive CNY")
+        weight_kg, dimensions_cm = _parcel_facts(local_detail)
+        preflight_logistics = _logistic_info(
+            shop_id,
+            token,
+            ref,
+            region=reg,
+            weight_kg=weight_kg,
+            dimensions_cm=dimensions_cm,
+        )
     meta = _shop_meta(shop_id, token)
     if meta.get("is_cb") or meta.get("is_upgraded_cbsc"):
         if existing_gid and not global_only:
@@ -1330,6 +1550,12 @@ def publish_match_key(
                 model_sku=model_sku,
                 ref=ref,
                 item_status=item_status,
+                global_original_price_cny_override=(
+                    global_original_price_cny_override
+                ),
+                local_original_price_override=local_original_price_override,
+                local_price_currency_override=local_price_currency_override,
+                logistics_override=preflight_logistics,
             )
         elif existing_gid and global_only:
             return {
@@ -1356,6 +1582,9 @@ def publish_match_key(
                     tk_source_region=tk_source,
                     title_override=title_override,
                     description_override=description_override,
+                    global_original_price_cny_override=(
+                        global_original_price_cny_override
+                    ),
                 )
                 upsert_global_entry(
                     str(result["global_item_id"]),
@@ -1377,6 +1606,12 @@ def publish_match_key(
                     item_status=item_status,
                     title_override=title_override,
                     description_override=description_override,
+                    global_original_price_cny_override=(
+                        global_original_price_cny_override
+                    ),
+                    local_original_price_override=local_original_price_override,
+                    local_price_currency_override=local_price_currency_override,
+                    logistics_override=preflight_logistics,
                 )
                 if result.get("global_item_id"):
                     upsert_global_entry(

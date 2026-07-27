@@ -1619,6 +1619,161 @@ def test_shopee_readback_uses_get_endpoints_and_item_price_info(monkeypatch):
     ]
 
 
+def test_new_shopee_publish_uses_immutable_local_and_global_prices(monkeypatch):
+    context = _context()
+    context["payload"]["targets"] = ["shopee:MY"]
+    context["payload"]["listing_copy"] = {
+        "candidates": [
+            {
+                "channel": "shopee",
+                "site": "CNSC",
+                "title": "Approved English Shopee master",
+                "policy_check": "passed",
+            }
+        ],
+        "shopee_description_en": "Verified product description. " * 30,
+    }
+    context["payload"]["pricing"]["selected_targets"] = {
+        "shopee:MY": {
+            "target_site": "MY",
+            "source": {"list_price": 45, "currency": "MYR"},
+            "derived_preview": {
+                "local_original_price": 45,
+                "source_currency": "MYR",
+                "global_original_price_cny": 78.75,
+                "exchange_rate_cny_per_local": 1.75,
+            },
+        }
+    }
+    monkeypatch.setattr(
+        release_adapters,
+        "_validated_context",
+        lambda _request: context,
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_shopee_item_id_for_match_key",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_discover_shopee_item_id_by_sku",
+        lambda *_args, **_kwargs: None,
+    )
+    readbacks = iter(
+        [
+            (
+                True,
+                {
+                    "verified": True,
+                    "checks": {"price": True, "model_sku": True},
+                },
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_shopee_readback",
+        lambda **_kwargs: next(readbacks),
+    )
+    published = []
+    monkeypatch.setattr(
+        "modules.shopee.publish.publish_match_key",
+        lambda *args, **kwargs: published.append((args, kwargs))
+        or {"item_id": "my-item-0953"},
+    )
+
+    request = AdapterExecutionRequest(
+        plan_id="omnichannel:test",
+        confirmation_token="PUBLISH-TEST",
+        approval_scope_digest="scope",
+        product_id="3828811808",
+        seller_sku="0953",
+        product_package_id="product:3828811808:0953",
+        content_package_id="content:3828811808",
+        channel="shopee",
+        site="MY",
+        target_label="shopee:MY",
+        idempotency_key="publish:shopee:MY:test",
+    )
+    result = release_adapters.execute_shopee_target(request)
+
+    assert result.succeeded is True
+    assert published[0][1]["local_original_price_override"] == 45
+    assert published[0][1]["local_price_currency_override"] == "MYR"
+    assert published[0][1]["global_original_price_cny_override"] == 78.75
+
+
+def test_new_shopee_publish_rejects_stale_local_currency_before_publish(
+    monkeypatch,
+):
+    context = _context()
+    context["payload"]["targets"] = ["shopee:MY"]
+    context["payload"]["listing_copy"] = {
+        "candidates": [
+            {
+                "channel": "shopee",
+                "site": "CNSC",
+                "title": "Approved English Shopee master",
+                "policy_check": "passed",
+            }
+        ],
+        "shopee_description_en": "Verified product description. " * 30,
+    }
+    context["payload"]["pricing"]["selected_targets"] = {
+        "shopee:MY": {
+            "target_site": "MY",
+            "source": {"list_price": 45, "currency": "MYR"},
+            "derived_preview": {
+                "local_original_price": 45,
+                "source_currency": "CNY",
+                "global_original_price_cny": 78.75,
+                "exchange_rate_cny_per_local": 1.75,
+            },
+        }
+    }
+    monkeypatch.setattr(
+        release_adapters,
+        "_validated_context",
+        lambda _request: context,
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_shopee_item_id_for_match_key",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_discover_shopee_item_id_by_sku",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "modules.shopee.publish.publish_match_key",
+        lambda *_args, **_kwargs: pytest.fail(
+            "invalid immutable price evidence must fail before publish"
+        ),
+    )
+    request = AdapterExecutionRequest(
+        plan_id="omnichannel:test",
+        confirmation_token="PUBLISH-TEST",
+        approval_scope_digest="scope",
+        product_id="3828811808",
+        seller_sku="0953",
+        product_package_id="product:3828811808:0953",
+        content_package_id="content:3828811808",
+        channel="shopee",
+        site="MY",
+        target_label="shopee:MY",
+        idempotency_key="publish:shopee:MY:test",
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="source currency does not match target region",
+    ):
+        release_adapters.execute_shopee_target(request)
+
+
 def test_existing_shopee_mismatch_is_never_republished_as_a_duplicate(monkeypatch):
     context = _context()
     context["payload"]["targets"] = ["shopee:TH"]

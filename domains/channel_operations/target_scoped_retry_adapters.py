@@ -156,7 +156,17 @@ def build_official_target_proof(request: TargetScopedOperationRequest, allow_ref
         raise TargetScopedRetryError("target-scoped proof forbids token refresh")
     if request.target_label in _SHOPEE_TARGETS:
         checks, evidence = _shopee_proof(request)
-        return _proof_payload(request, checks=checks, semantic_evidence=evidence, summary={"target": request.target_label, "state": "exact-zero regional listing", "refresh": "not-used"})
+        image = evidence["global_image_observation"]
+        outcome = evidence["global_image_outcome"]
+        return _proof_payload(request, checks=checks, semantic_evidence=evidence, summary={
+            "target": request.target_label, "state": "exact-zero regional listing", "refresh": "not-used",
+            "global_image_status": image["status"],
+            "global_image_verification_scope": outcome.get("global_image_verification_scope"),
+            "global_image_count": image.get("official_image_id_count"),
+            "manual_review_required": outcome.get("manual_review_required") is True,
+            "global_image_rule_ids": list(outcome.get("matched_rule_ids") or ()),
+            "global_image_evidence_digest": image.get("evidence_digest"),
+        })
     if request.target_label == _OZON_TARGET:
         checks, evidence = _ozon_proof(request)
         return _proof_payload(request, checks=checks, semantic_evidence=evidence, summary={"target": request.target_label, "state": "existing product stock-only"})
@@ -187,7 +197,7 @@ def execute_target_scoped_operation(request: TargetScopedOperationRequest, proof
             return AdapterExecutionResult(False, False, "Shopee accepted publish requires reconciliation", error.external_reference, allowed, submission_accepted=True)
         if receipt.get("verified") is not True:
             return AdapterExecutionResult(False, False, "Shopee dispatch/readback requires reconciliation", str(receipt.get("item_id") or "") or None, {"external_writes_performed": ["shopee:regional_publish"], "reconciliation_required": True})
-        return AdapterExecutionResult(True, True, "Shopee one-site publish readback verified", str(receipt["item_id"]), {"verified": True, "external_writes_performed": ["shopee:regional_publish"], "manual_review_required": receipt.get("manual_review_required") is True, "profit_status": "unverified", "derived_translation_status": receipt.get("derived_translation_status"), "derived_image_status": receipt.get("derived_image_status"), "global_image_status": receipt.get("global_image_status"), "global_image_verification_scope": receipt.get("global_image_verification_scope"), "global_image_url_identity_exact": False, "global_image_approved_order_exact": receipt.get("global_image_approved_order_exact") is True, "semantic_equivalence": "unverified", "matched_rule_ids": receipt.get("matched_rule_ids") or [], "observation_evidence_digest": receipt.get("observation_evidence_digest"), "readback": receipt})
+        return AdapterExecutionResult(True, True, "Shopee one-site publish readback verified", str(receipt["item_id"]), {"verified": True, "source_copy_verified": receipt.get("source_copy_verified") is True, "external_writes_performed": ["shopee:regional_publish"], "manual_review_required": receipt.get("manual_review_required") is True, "profit_status": "unverified", "derived_translation_status": receipt.get("derived_translation_status"), "derived_image_status": receipt.get("derived_image_status"), "global_image_status": receipt.get("global_image_status"), "global_image_verification_scope": receipt.get("global_image_verification_scope"), "global_image_url_identity_exact": False, "global_image_approved_order_exact": receipt.get("global_image_approved_order_exact") is True, "semantic_equivalence": "unverified", "matched_rule_ids": receipt.get("matched_rule_ids") or [], "observation_evidence_digest": receipt.get("observation_evidence_digest"), "global_image_observation_digest": receipt.get("global_image_observation_digest"), "global_image_outcome_digest": receipt.get("global_image_outcome_digest"), "readback": receipt})
     if request.target_label == _OZON_TARGET:
         if not request.planned_command:
             raise TargetScopedRetryError("Ozon successor stock decision is required")

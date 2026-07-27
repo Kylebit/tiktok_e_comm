@@ -101,6 +101,20 @@ def inspect_existing_global(*, shop_id: int, access_token: str, global_item_id: 
     return {"global_model_id": model_id, "tier_index": tier}
 
 
+def runtime_global_master(*, shop_id: int, merchant_id: int, merchant_token: str, global_item_id: str, approved_master_digest: str) -> dict:
+    """Read exact source copy for in-memory evaluation; caller persists only summary."""
+    from modules.shopee.client import merchant_get
+    from shared_platform.target_scoped_release_contracts import approved_shopee_channel_master_digest
+    response = merchant_get("/api/v2/global_product/get_global_item_info", merchant_id, merchant_token, {"global_item_id_list": str(global_item_id)})
+    rows = (response.get("response") or {}).get("global_item_list") if isinstance(response, dict) else None
+    if response.get("error") or not isinstance(rows, list) or len(rows) != 1: raise RuntimeError("official global master response is invalid")
+    row = rows[0]; image = row.get("image") or {}; urls = image.get("image_url_list") if isinstance(image, dict) else None
+    title, description = row.get("global_item_name"), row.get("description") or row.get("global_item_description")
+    digest = approved_shopee_channel_master_digest(title, description, urls)
+    if digest != approved_master_digest: raise RuntimeError("official global master drift")
+    return {"title": title, "description": description, "urls": list(urls), "digest": digest, "summary": {"global_item_id": str(global_item_id), "master_digest": digest, "image_count": len(urls)}}
+
+
 def publish_existing_global_site(*, request, evidence: dict) -> dict:
     """One create_publish_task from the immutable command; bounded/explicit."""
     from modules.shopee.client import merchant_get, merchant_post
@@ -110,6 +124,7 @@ def publish_existing_global_site(*, request, evidence: dict) -> dict:
     store = load_tokens(); merchant_id = int((store.get("shops", {}).get(str(shop_id), {}) or {}).get("merchant_id") or 0)
     token = str((store.get("merchants", {}).get(str(merchant_id), {}) or {}).get("access_token") or "")
     if not merchant_id or not token: raise RuntimeError("prepared merchant token is required")
+    master = runtime_global_master(shop_id=shop_id, merchant_id=merchant_id, merchant_token=token, global_item_id=str(evidence["global_item_id"]), approved_master_digest=command["approved_master_digest"])
     body = {"global_item_id": int(evidence["global_item_id"]), "shop_id": int(shop_id), "shop_region": command["region"], "item": {"item_status": command["item_status"], "original_price": command["local_original_price"], "logistic": [{"logistic_id": x, "enabled": True} for x in evidence["selected_logistics_ids"]], "model": [{"tier_index": evidence["global_tier_index"], "original_price": command["local_original_price"]}]}}
     response = merchant_post("/api/v2/global_product/create_publish_task", merchant_id, token, body)
     task_id = (response.get("response") or {}).get("publish_task_id")
@@ -135,10 +150,12 @@ def publish_existing_global_site(*, request, evidence: dict) -> dict:
     logistics = item.get("logistic_info") or []
     enabled = {int(row.get("logistic_id")) for row in logistics if isinstance(row, dict) and row.get("enabled") and row.get("logistic_id") is not None}
     expected = set(int(x) for x in evidence["selected_logistics_ids"])
-    hard = (resolved == str(evidence["global_item_id"]) and str(item.get("item_status") or "") == "NORMAL" and any(str(row.get("model_sku") or "") == str(command["model_sku"]) for row in (model_rows or [])) and enabled == expected)
+    image_urls = ((item.get("image") or {}).get("image_url_list") if isinstance(item.get("image"), dict) else None)
+    hard_checks = {"global_linkage": resolved == str(evidence["global_item_id"]), "normal_status": str(item.get("item_status") or "") == "NORMAL", "unique_model_sku": isinstance(model_rows, list) and len([row for row in model_rows if str(row.get("model_sku") or "") == str(command["model_sku"])]) == 1, "logistics_exact": enabled == expected, "images_present": isinstance(image_urls, list) and len(image_urls) == int(command["approved_image_count"]) and bool(image_urls and image_urls[0])}
+    hard = all(hard_checks.values())
     from shared_platform.target_scoped_release_contracts import evaluate_shopee_regional_copy_observation, evaluate_shopee_regional_image_observation, shopee_regional_observation_outcome
     # Source master is re-read by the verifier boundary; never persist text/URLs.
-    copy = evaluate_shopee_regional_copy_observation(source_title="official-master", source_description="official-master", regional_title=item.get("item_name"), regional_description=item.get("description"), source_global_master_digest=command["approved_master_digest"], site=command["region"])
-    image = evaluate_shopee_regional_image_observation(approved_count=command["approved_image_count"], regional_image_urls=item.get("image") or item.get("images") or [], global_linkage_verified=resolved == str(evidence["global_item_id"]))
+    copy = evaluate_shopee_regional_copy_observation(source_title=master["title"], source_description=master["description"], regional_title=item.get("item_name"), regional_description=item.get("description"), source_global_master_digest=command["approved_master_digest"], site=command["region"])
+    image = evaluate_shopee_regional_image_observation(approved_count=command["approved_image_count"], regional_image_urls=image_urls or [], global_linkage_verified=hard_checks["global_linkage"])
     outcome = shopee_regional_observation_outcome(listing_hard_exact=hard, copy_observation=copy, image_observation=image)
-    return {"item_id": item_id, "verified": outcome.get("succeeded") is True, "task_status": "success", "global_item_id_verified": resolved == str(evidence["global_item_id"]), "enabled_logistics_count": len(enabled), "image_count": len(item.get("image") or item.get("images") or []), "observation_status": outcome.get("status"), "reconciliation_required": outcome.get("status") == "reconciliation_required", "external_writes_performed": ["shopee:regional_publish"]}
+    return {"item_id": item_id, "verified": outcome.get("succeeded") is True, "task_status": "success", "hard_checks": hard_checks, "enabled_logistics_count": len(enabled), "image_count": len(image_urls or []), "master_digest": master["digest"], "observation_status": outcome.get("status"), "reconciliation_required": outcome.get("status") == "reconciliation_required", "external_writes_performed": ["shopee:regional_publish"]}

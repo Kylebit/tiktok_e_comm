@@ -9,25 +9,43 @@ def scan_prepared_shop_sku(*, shop_id: int, access_token: str, seller_sku: str) 
     completeness = {}
     for status in ("NORMAL", "UNLIST", "BANNED"):
         offset = 0
+        seen = set()
+        pages = item_count = base_rows = model_rows = 0
         while True:
-            page = shop_get("/api/v2/product/get_item_list", shop_id, access_token, {"offset": offset, "page_size": 100, "item_status": status}).get("response") or {}
-            ids = [str(x.get("item_id") or "") for x in page.get("item") or () if x.get("item_id")]
+            if offset in seen or len(seen) >= 100:
+                raise RuntimeError(f"Shopee {status} pagination is non-terminating")
+            seen.add(offset); pages += 1
+            raw = shop_get("/api/v2/product/get_item_list", shop_id, access_token, {"offset": offset, "page_size": 100, "item_status": status})
+            if not isinstance(raw, dict) or raw.get("error") or not isinstance(raw.get("response"), dict): raise RuntimeError(f"Shopee {status} list response is invalid")
+            page = raw["response"]; entries = page.get("item")
+            if not isinstance(entries, list): raise RuntimeError(f"Shopee {status} item list is invalid")
+            ids = [str(x.get("item_id") or "") for x in entries if isinstance(x, dict) and x.get("item_id")]
+            if len(ids) != len(entries) or len(set(ids)) != len(ids): raise RuntimeError(f"Shopee {status} item ids are incomplete")
+            item_count += len(ids)
             for start in range(0, len(ids), 50):
-                rows = shop_get("/api/v2/product/get_item_base_info", shop_id, access_token, {"item_id_list": ",".join(ids[start:start+50])}).get("response", {}).get("item_list", ())
+                expected = ids[start:start+50]
+                raw_base = shop_get("/api/v2/product/get_item_base_info", shop_id, access_token, {"item_id_list": ",".join(expected)})
+                if not isinstance(raw_base, dict) or raw_base.get("error") or not isinstance(raw_base.get("response"), dict) or not isinstance(raw_base["response"].get("item_list"), list): raise RuntimeError("Shopee base-info response is invalid")
+                rows = raw_base["response"]["item_list"]
+                returned = [str(row.get("item_id") or "") for row in rows if isinstance(row, dict)]
+                if len(returned) != len(rows) or set(returned) != set(expected) or len(set(returned)) != len(returned): raise RuntimeError("Shopee base-info batch is incomplete")
+                base_rows += len(rows)
                 for row in rows:
                     if str(row.get("item_sku") or "") == seller_sku:
                         found.append({"item_id": str(row.get("item_id") or ""), "scope": "item"})
                     if row.get("has_model"):
-                        for model in shop_get("/api/v2/product/get_model_list", shop_id, access_token, {"item_id": int(row["item_id"])}).get("response", {}).get("model", ()):
+                        raw_model = shop_get("/api/v2/product/get_model_list", shop_id, access_token, {"item_id": int(row["item_id"])})
+                        if not isinstance(raw_model, dict) or raw_model.get("error") or not isinstance(raw_model.get("response"), dict) or not isinstance(raw_model["response"].get("model"), list): raise RuntimeError("Shopee model response is invalid")
+                        models = raw_model["response"]["model"]; model_rows += len(models)
+                        for model in models:
                             if str(model.get("model_sku") or "") == seller_sku:
                                 found.append({"item_id": str(row.get("item_id") or ""), "model_id": str(model.get("model_id") or ""), "scope": "model"})
             if not page.get("has_next_page"):
-                completeness[status] = {"pages": completeness.get(status, {}).get("pages", 0) + 1, "complete": True}
+                completeness[status] = {"pages": pages, "item_count": item_count, "base_rows": base_rows, "model_rows": model_rows, "count": len(found), "digest": __import__("hashlib").sha256(repr((status, ids, item_count, base_rows, model_rows)).encode()).hexdigest(), "complete": True}
                 break
             next_offset = page.get("next_offset")
             if not isinstance(next_offset, int) or next_offset <= offset:
                 raise RuntimeError(f"Shopee {status} pagination cursor is non-terminating")
-            completeness[status] = {"pages": completeness.get(status, {}).get("pages", 0) + 1, "complete": False}
             offset = next_offset
     return {"matches": found, "statuses": completeness, "complete": all(row.get("complete") for row in completeness.values())}
 
@@ -96,6 +114,20 @@ def publish_existing_global_site(*, request, evidence: dict) -> dict:
     response = merchant_post("/api/v2/global_product/create_publish_task", merchant_id, token, body)
     task_id = (response.get("response") or {}).get("publish_task_id")
     if not task_id: raise RuntimeError("create_publish_task response is ambiguous")
-    result = merchant_get("/api/v2/global_product/get_publish_task_result", merchant_id, token, {"publish_task_id": int(task_id)}).get("response") or {}
+    result = {}
+    for _ in range(3):
+        raw_task = merchant_get("/api/v2/global_product/get_publish_task_result", merchant_id, token, {"publish_task_id": int(task_id)})
+        if not isinstance(raw_task, dict) or raw_task.get("error") or not isinstance(raw_task.get("response"), dict): raise RuntimeError("accepted publish task readback is unknown")
+        result = raw_task["response"]
+        if result.get("publish_status") in {"success", "failed"}: break
     item_id = str(result.get("item_id") or (result.get("success") or {}).get("item_id") or "")
-    return {"item_id": item_id, "verified": bool(item_id and result.get("publish_status") == "success"), "task_status": str(result.get("publish_status") or "unknown")}
+    if result.get("publish_status") != "success" or not item_id: return {"item_id": item_id, "verified": False, "task_status": str(result.get("publish_status") or "unknown")}
+    # Regional identity is read through the prepared shop token, never token refresh.
+    base = shop_get("/api/v2/product/get_item_base_info", shop_id, _shop_token, {"item_id_list": item_id})
+    rows = (base.get("response") or {}).get("item_list") if isinstance(base, dict) else None
+    if not isinstance(rows, list) or len(rows) != 1: return {"item_id": item_id, "verified": False, "task_status": "regional_readback_unknown"}
+    item = rows[0]
+    models = shop_get("/api/v2/product/get_model_list", shop_id, _shop_token, {"item_id": int(item_id)})
+    model_rows = (models.get("response") or {}).get("model") if isinstance(models, dict) else None
+    exact = (str(item.get("item_status") or "") == "NORMAL" and str(item.get("item_name") or "") == str(command["regional_title"]) and str(item.get("description") or "") == str(command["regional_description"]) and any(str(row.get("model_sku") or "") == str(command["model_sku"]) for row in (model_rows or [])))
+    return {"item_id": item_id, "verified": bool(exact), "task_status": "success"}

@@ -68,6 +68,9 @@ def _shopee_proof(request: TargetScopedOperationRequest) -> tuple[dict[str, Any]
     from modules.shopee.target_scoped import scan_prepared_shop_sku
 
     region = request.target_label.rsplit(":", 1)[1]
+    required_regional = ("regional_title", "regional_description", "regional_image_urls")
+    if any(not request.planned_command.get(field) for field in required_regional):
+        raise TargetScopedRetryError("planned_command_incomplete: exact regional copy is required for bounded readback")
     shop_id, token = _prepared_shopee_credentials(region)
     seller_sku = request.seller_sku[-4:].zfill(4)
     scan = scan_prepared_shop_sku(

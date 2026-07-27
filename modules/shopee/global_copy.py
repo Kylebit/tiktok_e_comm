@@ -25,6 +25,37 @@ _MALAY_HINT_RE = re.compile(
     r"kepada|warna|saiz|bahan|produk|kualiti|penghantaran)\b",
     re.I,
 )
+_CANONICAL_MATERIAL_RE = re.compile(
+    r"(?<![A-Z0-9])("
+    r"PVC|PET|EVA|ABS|MDF|PU|PE|PP|"
+    r"acrylic|ceramic|wood(?:en)?|bamboo|metal|iron|plastic|glass|"
+    r"fabric|cotton|resin"
+    r")(?![A-Z0-9])",
+    re.I,
+)
+_DIMENSION_PAIR_RE = re.compile(
+    r"(?<!\d)(\d+(?:\.\d+)?)\s*(?:x|×|\*)\s*"
+    r"(\d+(?:\.\d+)?)\s*(cm|mm|m|in|inch|inches)\b",
+    re.I,
+)
+_PACKAGE_DIMENSION_HINT_RE = re.compile(
+    r"\b(package|packaging|parcel|shipping|carton|box)\b",
+    re.I,
+)
+_PRODUCT_DIMENSION_HINT_RE = re.compile(
+    r"\b(finished|listed|product|item|decal|sticker|overall|assembled)\s+"
+    r"(?:product\s+)?(?:size|dimensions?)\b"
+    r"|\b(?:size|dimensions?)\s*:",
+    re.I,
+)
+_LABELED_QUANTITY_RE = re.compile(
+    r"\bquantity(?:\s+per\s+pack)?\s*[:=-]\s*(\d+)\b",
+    re.I,
+)
+_COUNTED_ITEM_RE = re.compile(
+    r"(?<!\d)(\d+)\s*(?:pieces?|pcs?|items?|units?|decals?|stickers?)\b",
+    re.I,
+)
 
 _SYSTEM = """You are a Shopee CNSC cross-border listing copywriter. Write in English ONLY.
 
@@ -262,6 +293,110 @@ def build_factual_english_description(
     return _generic_english_description(detail, model_sku, clean_title)
 
 
+def _normalized_fact_number(raw: str) -> str:
+    value = str(raw or "").strip()
+    if "." not in value:
+        return value
+    return value.rstrip("0").rstrip(".")
+
+
+def _approved_copy_required_facts(
+    english_title: str,
+    english_description: str,
+) -> dict:
+    """Extract only durable facts that localized copy must preserve.
+
+    Product dimensions are taken from the approved commercial title first, or
+    from an explicitly product-labelled description line.  Generic package,
+    parcel, carton and shipping dimensions are deliberately ignored.
+    """
+
+    title = str(english_title or "").strip()
+    description = str(english_description or "").strip()
+    source = f"{title}\n{description}"
+
+    material_tokens = list(
+        dict.fromkeys(
+            match.group(1)
+            for match in _CANONICAL_MATERIAL_RE.finditer(source)
+        )
+    )
+    if not material_tokens:
+        raise ValueError(
+            "approved English copy is missing a canonical material token"
+        )
+
+    size_match = None
+    if not _PACKAGE_DIMENSION_HINT_RE.search(title):
+        size_match = _DIMENSION_PAIR_RE.search(title)
+    if size_match is None:
+        for line in description.splitlines():
+            if _PACKAGE_DIMENSION_HINT_RE.search(line):
+                continue
+            if not _PRODUCT_DIMENSION_HINT_RE.search(line):
+                continue
+            size_match = _DIMENSION_PAIR_RE.search(line)
+            if size_match is not None:
+                break
+    if size_match is None:
+        raise ValueError(
+            "approved English copy is missing explicit finished product dimensions"
+        )
+
+    quantity_match = _LABELED_QUANTITY_RE.search(source)
+    if quantity_match is None:
+        quantity_match = _COUNTED_ITEM_RE.search(source)
+    if quantity_match is None or int(quantity_match.group(1)) <= 0:
+        raise ValueError(
+            "approved English copy is missing an explicit positive quantity"
+        )
+
+    return {
+        "material_tokens": material_tokens,
+        "finished_dimensions": [
+            _normalized_fact_number(size_match.group(1)),
+            _normalized_fact_number(size_match.group(2)),
+        ],
+        "dimension_unit": size_match.group(3).lower(),
+        "quantity": int(quantity_match.group(1)),
+    }
+
+
+def _localized_copy_preserves_required_facts(
+    title: str,
+    description: str,
+    required_facts: dict,
+) -> None:
+    combined = f"{title}\n{description}"
+    combined_casefold = combined.casefold()
+
+    for material in required_facts["material_tokens"]:
+        if material.casefold() not in combined_casefold:
+            raise RuntimeError(
+                f"Shopee localized copy lost required material {material}"
+            )
+
+    first, second = required_facts["finished_dimensions"]
+    first_pattern = re.escape(first).replace(r"\.", r"[\.,]")
+    second_pattern = re.escape(second).replace(r"\.", r"[\.,]")
+    dimension_pattern = re.compile(
+        rf"(?<!\d){first_pattern}\s*(?:x|×|\*)\s*"
+        rf"{second_pattern}(?!\d)",
+        re.I,
+    )
+    if not dimension_pattern.search(combined):
+        raise RuntimeError(
+            "Shopee localized copy lost required finished dimensions "
+            f"{first} x {second}"
+        )
+
+    quantity = required_facts["quantity"]
+    if not re.search(rf"(?<!\d){quantity}(?!\d)", combined):
+        raise RuntimeError(
+            f"Shopee localized copy lost required quantity {quantity}"
+        )
+
+
 def localize_shopee_copy(
     *,
     english_title: str,
@@ -286,12 +421,18 @@ def localize_shopee_copy(
     language = {"TH": "Thai", "VN": "Vietnamese"}.get(site)
     if not language:
         raise ValueError(f"unsupported Shopee localization region {site}")
+    required_facts = _approved_copy_required_facts(
+        english_title,
+        english_description,
+    )
     system = f"""You localize approved Shopee cross-border product copy into natural {language}.
 Preserve every supplied product fact exactly and never invent claims.
 Return ONLY JSON with keys title and description.
 Title: 60-115 characters, natural ecommerce language for {site}, searchable, no emoji.
 Description: 500-1800 characters, plain text with clear section headings and line breaks.
 Preserve all materials, dimensions, quantity, package contents and application guidance.
+Keep each source material token exactly as supplied in Latin characters somewhere
+in the description, even when the surrounding copy is localized.
 Do not add waterproof, removable, residue-free, reusable, durability, certification,
 warranty, medical, safety or performance claims. Do not include a seller SKU."""
     raw = _ai_chat(
@@ -324,12 +465,11 @@ warranty, medical, safety or performance claims. Do not include a seller SKU."""
         )
     if not language_ok:
         raise RuntimeError(f"Shopee {site} localized title failed language validation")
-    combined = f"{title}\n{description}".casefold()
-    for required in ("pvc", "34", "58"):
-        if required not in combined:
-            raise RuntimeError(
-                f"Shopee {site} localized copy lost required fact {required}"
-            )
+    _localized_copy_preserves_required_facts(
+        title,
+        description,
+        required_facts,
+    )
     return {
         "title": title,
         "description": description,

@@ -1,3 +1,4 @@
+import json
 from unittest.mock import patch
 
 import pytest
@@ -7,6 +8,7 @@ from modules.shopee.global_sku_map import (
     record_shop_item,
     upsert_global_entry,
 )
+from modules.shopee.global_copy import localize_shopee_copy
 from modules.shopee.publish import (
     _english_safe_sku,
     _logistic_info,
@@ -22,6 +24,151 @@ from modules.shopee.publish import (
 def test_numeric_seller_sku_stays_numeric_for_cross_platform_alignment():
     assert _english_safe_sku("0952") == "0952"
     assert _english_safe_sku("990952") == "990952"
+
+
+def _localized_description(prefix: str) -> str:
+    return prefix + "\n" + ("ข้อมูลสินค้าที่ตรวจสอบแล้ว " * 35)
+
+
+def test_localized_copy_preserves_dynamic_34_by_58_facts():
+    localized = {
+        "title": (
+            "สติ๊กเกอร์ติดผนังลายสุนัข PVC แบบมีกาวในตัว "
+            "ขนาด 34 x 58 ซม. จำนวน 1 ชิ้น"
+        ),
+        "description": _localized_description(
+            "รายละเอียดสินค้า PVC ขนาด 34 x 58 ซม. จำนวน 1 ชิ้น"
+        ),
+    }
+    with patch(
+        "modules.shopee.global_copy._ai_chat",
+        return_value=json.dumps(localized, ensure_ascii=False),
+    ):
+        result = localize_shopee_copy(
+            english_title="Cute Black Line-Art Dog PVC Wall Decal, 34 x 58 cm",
+            english_description=(
+                "VERIFIED DETAILS\n"
+                "- Material: PVC\n"
+                "- Finished size: 34 x 58 cm\n"
+                "- Quantity: 1 wall decal"
+            ),
+            region="TH",
+        )
+
+    assert result["title"] == localized["title"]
+
+
+def test_localized_copy_preserves_dynamic_30_by_90_two_piece_facts():
+    localized = {
+        "title": (
+            "Decal dán tường hoa bướm màu nước PVC tự dán "
+            "30 x 90 cm, 2 miếng, bán trong suốt"
+        ),
+        "description": (
+            "CHI TIẾT ĐÃ XÁC MINH\n"
+            "Chất liệu PVC. Kích thước 30 x 90 cm. Số lượng 2 miếng.\n"
+            + ("Thông tin sản phẩm đã được xác minh. " * 20)
+        ),
+    }
+    with patch(
+        "modules.shopee.global_copy._ai_chat",
+        return_value=json.dumps(localized, ensure_ascii=False),
+    ):
+        result = localize_shopee_copy(
+            english_title=(
+                "Self-Adhesive Watercolor Floral Butterfly Wall Sticker, "
+                "PVC Decal, 30 x 90 cm, 2 Pieces"
+            ),
+            english_description=(
+                "VERIFIED DETAILS\n"
+                "- Material: PVC\n"
+                "- Listed size: 30 x 90 cm\n"
+                "- Quantity: 2 pieces"
+            ),
+            region="VN",
+        )
+
+    assert result["title"] == localized["title"]
+
+
+def test_localized_copy_accepts_non_pvc_canonical_material():
+    localized = {
+        "title": (
+            "ของตกแต่งผนังผ้าฝ้ายสำหรับบ้าน ขนาด 40 x 60 ซม. "
+            "จำนวน 1 ชิ้น"
+        ),
+        "description": _localized_description(
+            "วัสดุ Cotton ขนาด 40 x 60 ซม. จำนวน 1 ชิ้น"
+        ),
+    }
+    with patch(
+        "modules.shopee.global_copy._ai_chat",
+        return_value=json.dumps(localized, ensure_ascii=False),
+    ):
+        result = localize_shopee_copy(
+            english_title="Cotton Wall Hanging, 40 x 60 cm, 1 Piece",
+            english_description=(
+                "VERIFIED DETAILS\n"
+                "- Material: Cotton\n"
+                "- Finished size: 40 x 60 cm\n"
+                "- Quantity: 1 piece"
+            ),
+            region="TH",
+        )
+
+    assert result["title"] == localized["title"]
+
+
+@pytest.mark.parametrize(
+    ("localized_facts", "message"),
+    [
+        ("PVC จำนวน 1 ชิ้น", "finished dimensions"),
+        ("PVC ขนาด 34 x 58 ซม.", "quantity 1"),
+    ],
+)
+def test_localized_copy_rejects_model_dropping_size_or_quantity(
+    localized_facts,
+    message,
+):
+    localized = {
+        "title": (
+            "สติ๊กเกอร์ติดผนังลายสุนัข PVC แบบมีกาวในตัว "
+            "สำหรับตกแต่งห้องภายในบ้าน"
+        ),
+        "description": _localized_description(localized_facts),
+    }
+    with patch(
+        "modules.shopee.global_copy._ai_chat",
+        return_value=json.dumps(localized, ensure_ascii=False),
+    ), pytest.raises(RuntimeError, match=message):
+        localize_shopee_copy(
+            english_title="Cute Black Line-Art Dog PVC Wall Decal, 34 x 58 cm",
+            english_description=(
+                "VERIFIED DETAILS\n"
+                "- Material: PVC\n"
+                "- Finished size: 34 x 58 cm\n"
+                "- Quantity: 1 wall decal"
+            ),
+            region="TH",
+        )
+
+
+def test_localization_does_not_treat_package_dimensions_as_product_size():
+    with patch("modules.shopee.global_copy._ai_chat") as ai_chat, pytest.raises(
+        ValueError,
+        match="finished product dimensions",
+    ):
+        localize_shopee_copy(
+            english_title="Floral Butterfly PVC Wall Decal, 2 Pieces",
+            english_description=(
+                "Material: PVC\n"
+                "Quantity: 2 pieces\n"
+                "Package dimensions: 30 x 3 x 3 cm"
+            ),
+            region="TH",
+        )
+
+    ai_chat.assert_not_called()
 
 
 def test_regional_listing_detail_keeps_target_price_and_uses_approved_copy():

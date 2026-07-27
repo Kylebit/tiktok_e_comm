@@ -436,7 +436,7 @@ def test_server_price_repair_requires_exact_gate_and_records_one_success(
         "payload_digest": "d" * 64,
         "preflight_digest": "p" * 64,
         "target_label": "shopee:PH",
-        "confirm": True,
+        "confirm_shopee_price_repair": True,
         "approved_by": "Kyle",
     }
 
@@ -456,6 +456,46 @@ def test_server_price_repair_requires_exact_gate_and_records_one_success(
     assert status == 409
     assert response["external_writes_performed"] == []
     assert len(store.claims) == 1
+
+
+def test_server_price_repair_rejects_generic_confirmation_without_mutation(
+    monkeypatch,
+):
+    store_calls = []
+    adapter_calls = []
+    monkeypatch.setattr(
+        "shared_platform.release_store.default_release_store",
+        lambda: store_calls.append("store") or pytest.fail(
+            "generic confirmation must not open the release store"
+        ),
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "execute_shopee_price_repair",
+        lambda *_args, **_kwargs: adapter_calls.append("post")
+        or pytest.fail("generic confirmation must not call Shopee"),
+    )
+
+    status, response = product_server._repair_existing_shopee_target_price(
+        {
+            "confirm": True,
+            "approved_by": "Kyle",
+            "offer_id": "3838616043",
+            "target_label": "shopee:PH",
+            "plan_id": "omnichannel:test",
+            "confirmation_token": "PUBLISH-TEST",
+            "expected_revision": 31,
+            "payload_digest": "d" * 64,
+            "preflight_digest": "p" * 64,
+            "publication_targets": ["shopee:PH"],
+        }
+    )
+
+    assert status == 400
+    assert "confirm_shopee_price_repair=true" in response["error"]
+    assert response["external_writes_performed"] == []
+    assert store_calls == []
+    assert adapter_calls == []
 
 
 def test_price_repair_preview_is_redacted_and_does_not_mutate_store(

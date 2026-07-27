@@ -2336,10 +2336,16 @@ def _repair_existing_shopee_target_price(data: dict) -> tuple[int, dict]:
         default_release_store,
     )
 
-    if data.get("confirm") is not True or data.get("approved_by") != "Kyle":
+    if (
+        data.get("confirm_shopee_price_repair") is not True
+        or data.get("approved_by") != "Kyle"
+    ):
         return 400, {
             "ok": False,
-            "error": "price repair requires confirm=true and approved_by=Kyle",
+            "error": (
+                "price repair requires "
+                "confirm_shopee_price_repair=true and approved_by=Kyle"
+            ),
             "external_writes_performed": [],
         }
     plan_id = str(data.get("plan_id") or "").strip()

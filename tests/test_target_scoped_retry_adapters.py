@@ -52,6 +52,20 @@ def test_official_global_copy_malformed_fails_before_any_dispatch(monkeypatch, b
         target_scoped._official_global_master(merchant_id=1, merchant_token="t", global_item_id="9", model_sku="0954", command=command)
 
 
+@pytest.mark.parametrize("urls,ids", [
+    (None, ["i"]), ([], ["i"]), (["u"], None), (["u"], []),
+    (["u"], ["i", "j"]), (["",], ["i"]), (["u", "u"], ["i", "j"]),
+    (["u"], ["i", "i"]),
+])
+def test_official_global_image_shapes_fail_before_dispatch(monkeypatch, urls, ids):
+    from modules.shopee import target_scoped
+    from shared_platform.target_scoped_release_contracts import approved_shopee_copy_digest
+    monkeypatch.setattr("modules.shopee.client.merchant_get", lambda *_args, **_kwargs: {"response": {"global_item_list": [{"global_item_id": "9", "global_item_name": "ok", "description": "ok", "image": {"image_url_list": urls, "image_id_list": ids}}]}})
+    command = {"approved_copy_digest": approved_shopee_copy_digest("ok", "ok"), "approved_image_count": 1, "approved_global_image_mapping_digest": None}
+    with pytest.raises(Exception, match="global image|official global"):
+        target_scoped._official_global_master(merchant_id=1, merchant_token="t", global_item_id="9", model_sku="0954", command=command)
+
+
 def test_scan_never_returns_after_normal_terminal_page(monkeypatch):
     from modules.shopee import target_scoped
     calls = []

@@ -1789,6 +1789,20 @@ section { scroll-margin-top: 20px; }
   background: rgba(252, 235, 193, .38);
 }
 .run-target.awaiting-readback p { color: #805b16; }
+.run-target.reconciliation-required {
+  border-color: rgba(197, 136, 38, .55);
+  background: rgba(252, 235, 193, .48);
+}
+.run-target.reconciliation-required p { color: #805b16; }
+.run-target.safe-retry {
+  border-color: rgba(53, 105, 139, .38);
+  background: rgba(216, 234, 245, .34);
+}
+.run-target.safe-retry p { color: #315d78; }
+.run-target.unsafe-failure {
+  border-color: rgba(182, 75, 60, .5);
+  background: rgba(245, 211, 202, .4);
+}
 .run-target.failed,
 .run-target.partial_failed { border-color: rgba(182, 75, 60, .35); background: rgba(245, 211, 202, .28); }
 .run-target strong { color: var(--ink); }

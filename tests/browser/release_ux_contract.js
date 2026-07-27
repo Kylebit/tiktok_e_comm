@@ -1164,7 +1164,7 @@ async function productReleaseTerminalState(browser) {
     const stages = (await page.locator("#stageRail").innerText()).trim();
     check(
       stages.includes("渠道执行")
-      && stages.includes("执行已结束")
+      && stages.includes("部分完成 · 需对账")
       && stages.includes("回读对账")
       && stages.includes("1 个待人工验收"),
       "product release: journey advances to reconciliation after submissions finish",
@@ -1173,7 +1173,8 @@ async function productReleaseTerminalState(browser) {
     const nextStep = (await page.locator("#nextStepDescription").innerText()).trim();
     check(
       nextStep.includes("2/3 个目标已完成官方回读")
-      && nextStep.includes("逐字段核对并记录人工验收"),
+      && nextStep.includes("需在平台后台逐字段人工验收")
+      && nextStep.includes("禁止重发"),
       "product release: next action explains the remaining manual verification",
       nextStep,
     );
@@ -1197,6 +1198,235 @@ async function productReleaseTerminalState(browser) {
     );
   } finally {
     await context.close();
+  }
+}
+
+async function productReleasePartialFailedLedger(browser) {
+  for (const viewport of [
+    { width: 1440, height: 900 },
+    { width: 390, height: 844 },
+  ]) {
+    const context = await browser.newContext({ viewport });
+    const page = await context.newPage();
+    const errors = [];
+    const requests = [];
+    const dashboard = JSON.parse(JSON.stringify(productDashboard));
+    const targetLabels = [
+      "miaoshou:COMMON",
+      "shopee:PH",
+      "shopee:TH",
+      "shopee:MY",
+      "shopee:VN",
+      "ozon:RU",
+      "tiktok:MX",
+      "tiktok:GB",
+    ];
+    dashboard.product.seller_sku_candidate = "0953";
+    dashboard.product.actual_product_approved = true;
+    dashboard.content = {
+      approved: true,
+      image_count: 6,
+      images: [],
+      blockers: [],
+    };
+    dashboard.actual_release_gate = { ready: true, blockers: [] };
+    dashboard.publication_scope = {
+      selected_labels: targetLabels,
+      default_labels: targetLabels,
+      available_targets: [
+        { label: "miaoshou:COMMON", channel: "miaoshou", country: "COMMON" },
+        { label: "shopee:PH", channel: "shopee", shop: "LivelyHive", country: "PH" },
+        { label: "shopee:TH", channel: "shopee", shop: "LivelyHive", country: "TH" },
+        { label: "shopee:MY", channel: "shopee", shop: "LivelyHive", country: "MY" },
+        { label: "shopee:VN", channel: "shopee", shop: "LivelyHive", country: "VN" },
+        { label: "ozon:RU", channel: "ozon", country: "RU" },
+        { label: "tiktok:MX", channel: "tiktok", shop: "LivelyHive", country: "MX" },
+        { label: "tiktok:GB", channel: "tiktok", shop: "LivelyHive", country: "GB" },
+      ],
+    };
+    const reconcileTarget = (targetLabel, externalId) => ({
+      target_label: targetLabel,
+      status: "FAILED",
+      attempts: 1,
+      external_id: externalId,
+      error: "official readback verified identity; price basis has not converged",
+      readback: {
+        evidence: {
+          source: "official-marketplace-readback",
+          verified: false,
+          checks: { identity: true, title: true, price: false },
+        },
+      },
+      latest_failure_evidence: {
+        attempt: 1,
+        evidence: {
+          external_writes_performed: [`${targetLabel}:create`],
+          readback_verified: false,
+        },
+      },
+    });
+    const safeRetryTarget = (targetLabel, reason) => ({
+      target_label: targetLabel,
+      status: "FAILED",
+      attempts: 1,
+      external_id: null,
+      error: `pre-submit validation failed: ${reason}; no external write was sent`,
+      readback: null,
+      submission: null,
+      failure_events: [],
+      latest_failure_evidence: null,
+    });
+    const manualTarget = (targetLabel, externalId) => ({
+      target_label: targetLabel,
+      status: "SUBMITTED_UNVERIFIED",
+      attempts: 1,
+      external_id: externalId,
+      error: "accepted; no authorised official readback",
+      submission: {
+        status: "SUBMITTED_UNVERIFIED",
+        external_id: externalId,
+        evidence: {
+          accepted: true,
+          pre_submit_audit: { submission_fingerprint: `audit-${targetLabel}` },
+        },
+      },
+    });
+    dashboard.release_v1 = {
+      eligible_for_plan_approval: false,
+      plan_persisted: true,
+      plan_approved: true,
+      miaoshou_prepared: true,
+      publish_ready: true,
+      blockers: [],
+      adapter_blockers: [],
+      plan: {
+        plan_id: "omnichannel:partial-failed-ledger",
+        confirmation_token: "PUBLISH-PARTIAL-FAILED",
+        targets: targetLabels,
+        payload: {
+          product_revision: 31,
+          content_package_id: "content:partial-failed",
+          targets: targetLabels,
+        },
+      },
+      run: {
+        run_id: "release-run:partial-failed-ledger",
+        status: "PARTIAL_FAILED",
+        targets: [
+          {
+            target_label: "miaoshou:COMMON",
+            status: "SUCCEEDED",
+            attempts: 1,
+            external_id: "3838616043",
+            error: null,
+          },
+          reconcileTarget("shopee:PH", "56164935203"),
+          reconcileTarget("shopee:TH", "51564925929"),
+          safeRetryTarget("shopee:MY", "missing required category mapping"),
+          safeRetryTarget("shopee:VN", "listing price preflight is blocked"),
+          safeRetryTarget("ozon:RU", "adapter input is incomplete"),
+          manualTarget("tiktok:MX", "3227308139:16265910"),
+          manualTarget("tiktok:GB", "3227304421:10204699"),
+        ],
+      },
+    };
+    page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+    page.on("console", (message) => {
+      if (message.type() === "error") errors.push(`console: ${message.text()}`);
+    });
+    await page.route("**/*", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (url.origin !== baseUrl) return route.abort("blockedbyclient");
+      if (!url.pathname.startsWith("/api/")) return route.continue();
+      requests.push({ method: request.method(), url: request.url() });
+      if (url.pathname === "/api/product-workspace/dashboard") {
+        return route.fulfill(jsonResponse(dashboard));
+      }
+      const fixture = apiFixture(
+        url,
+        request.method(),
+        { delayWeekly: false, delaySku: false, pending: {} },
+      );
+      return route.fulfill(fixture || jsonResponse({ ok: false }, 404));
+    });
+    try {
+      await page.goto(`${baseUrl}/product-workspace?offer_id=3838616043`, {
+        waitUntil: "networkidle",
+      });
+      const stages = (await page.locator("#stageRail").innerText()).trim();
+      check(
+        stages.includes("渠道执行")
+        && stages.includes("部分完成 · 需对账")
+        && stages.includes("回读对账")
+        && stages.includes("2 个结果待对账")
+        && !stages.includes("渠道执行\n待执行"),
+        `release ledger ${viewport.width}: started partial run never falls back to pending execution`,
+        stages,
+      );
+      const ledger = (await page.locator("#releaseRunLedger").innerText()).trim();
+      check(
+        await page.locator(".run-target.reconciliation-required").count() === 2
+        && ledger.includes("已创建 · 结果待对账，禁止重发")
+        && ledger.includes("56164935203")
+        && ledger.includes("51564925929")
+        && !ledger.includes("失败待重试"),
+        `release ledger ${viewport.width}: PH/TH external outcomes are reconcile-only`,
+        ledger,
+      );
+      check(
+        await page.locator(".run-target.safe-retry").count() === 3
+        && ledger.includes("失败 · 可安全重试"),
+        `release ledger ${viewport.width}: MY/VN/Ozon pre-submit failures are safe-retry only`,
+        ledger,
+      );
+      check(
+        await page.locator(".run-target.awaiting-readback").count() === 2,
+        `release ledger ${viewport.width}: MX/GB remain manual verification`,
+      );
+      const nextAction = (await page.locator("#nextStepDescription").innerText()).trim();
+      check(
+        nextAction.includes("Shopee · LivelyHive · 菲律宾")
+        && nextAction.includes("Shopee · LivelyHive · 泰国")
+        && nextAction.includes("仅回读/对账，禁止重发")
+        && nextAction.includes("Shopee · LivelyHive · 马来西亚")
+        && nextAction.includes("Shopee · LivelyHive · 越南")
+        && nextAction.includes("Ozon · 俄罗斯")
+        && nextAction.includes("修复阻塞后再安全重试")
+        && nextAction.includes("TikTok Shop · LivelyHive · 墨西哥")
+        && nextAction.includes("TikTok Shop · LivelyHive · 英国")
+        && nextAction.includes("人工验收"),
+        `release ledger ${viewport.width}: next action separates reconcile, retry and manual lanes`,
+        nextAction,
+      );
+      const publishNote = (await page.locator("#publishAllNote").innerText()).trim();
+      check(
+        await page.locator("#publishAllButton").isDisabled()
+        && await page.locator("#publishAllCheckbox").isDisabled()
+        && publishNote.includes("只能回读/对账，禁止重发")
+        && publishNote.includes("一键发布保持关闭"),
+        `release ledger ${viewport.width}: unsafe outcomes disable one-click publish with reason`,
+        publishNote,
+      );
+      const overflow = await overflowAudit(page);
+      check(
+        overflow.pageOverflow <= 2,
+        `release ledger ${viewport.width}: no horizontal overflow`,
+        overflow,
+      );
+      check(
+        unexpectedInteractionErrors(errors).length === 0,
+        `release ledger ${viewport.width}: no console/page errors`,
+        errors,
+      );
+      check(
+        requests.filter((row) => row.method === "POST").length === 0,
+        `release ledger ${viewport.width}: fixture performs zero writes`,
+        requests,
+      );
+    } finally {
+      await context.close();
+    }
   }
 }
 
@@ -1659,6 +1889,7 @@ async function legacyStateSafety(browser) {
     await productLockedStaleTitleRefresh(browser);
     await productMultiTabTitleRefreshConflict(browser);
     await productReleaseTerminalState(browser);
+    await productReleasePartialFailedLedger(browser);
     await productCommonOverwriteContract(browser);
     await aiAsyncFeedback(browser);
     await profitAsyncAndNoFalseSuccess(browser);

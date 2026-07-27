@@ -419,16 +419,36 @@
       (target) => target.target_label !== "miaoshou:COMMON",
     );
     const runCounts = releaseRunCounts(release.run);
+    const runGroups = releaseTargetGroups(release.run);
+    const runStarted = Boolean(release.run && runTargets.length);
     const channelExecutionReady = Boolean(
-      channelTargets.length
-      && channelTargets.every(
-        (target) => (
-          target.status === "SUCCEEDED"
-          || target.status === "MANUALLY_VERIFIED"
-          || awaitsOfficialReadback(target)
-        ),
-      ),
+      runStarted
+      && channelTargets.length
+      && channelTargets.every((target) => (
+        !["RUNNING", "PENDING"].includes(target.status)
+      )),
     );
+    let channelWaitText = "待执行";
+    let channelReadyText = "执行已结束";
+    if (runStarted && runGroups.running.length) {
+      channelWaitText =
+        `执行中 · ${runCounts.succeeded}/${runCounts.total} 已完成`;
+    } else if (runStarted && runGroups.pending.length) {
+      channelWaitText = "运行已创建 · 等待继续";
+    } else if (
+      runStarted
+      && (
+        runGroups.reconcileOnly.length
+        || runGroups.unsafeFailure.length
+        || runGroups.safeRetry.length
+        || runGroups.manualVerify.length
+      )
+    ) {
+      channelReadyText = "部分完成 · 需对账";
+      channelWaitText = "部分完成 · 需处置";
+    } else if (runStarted) {
+      channelWaitText = "执行已开始";
+    }
     const reconciliationReady = Boolean(
       ["SUCCEEDED", "COMPLETED_WITH_MANUAL_VERIFICATION"].includes(
         release.run?.status,
@@ -445,15 +465,29 @@
       { key: "approval", label: "商品审批", ready: approvalReady, readyText: "已锁定", waitText: "待批准" },
       { key: "plan", label: "发布计划", ready: planReady, readyText: "已批准", waitText: "待批准" },
       { key: "sync", label: "妙手待发布", ready: imageSyncReady, readyText: "回读一致", waitText: "待同步" },
-      { key: "channels", label: "渠道执行", ready: channelExecutionReady, readyText: "执行已结束", waitText: "待执行" },
+      {
+        key: "channels",
+        label: "渠道执行",
+        ready: channelExecutionReady,
+        readyText: channelReadyText,
+        waitText: channelWaitText,
+      },
       {
         key: "reconcile",
         label: "回读对账",
         ready: reconciliationReady,
         readyText: "全部一致",
-        waitText: runCounts.awaitingReadback
-          ? `${runCounts.awaitingReadback} 个待人工验收`
-          : "待对账",
+        waitText: runCounts.reconcileOnly
+          ? `${runCounts.reconcileOnly} 个结果待对账`
+          : (
+            runCounts.awaitingReadback
+              ? `${runCounts.awaitingReadback} 个待人工验收`
+              : (
+                runCounts.safeRetry
+                  ? `${runCounts.safeRetry} 个修复后可重试`
+                  : "待对账"
+              )
+          ),
       },
     ];
     const firstIncomplete = raw.findIndex((stage) => !stage.ready);
@@ -1381,9 +1415,14 @@
     const planBlockers = (data.release_v1?.blockers || []).map(translateBlocker);
     const run = data.release_v1?.run;
     const runCounts = releaseRunCounts(run);
-    const awaitingReadbackLabels = (run?.targets || [])
-      .filter(awaitsOfficialReadback)
-      .map((target) => targetDisplayName(target.target_label));
+    const runGroups = releaseTargetGroups(run);
+    const targetNames = (targets) => targets.map(
+      (target) => targetDisplayName(target.target_label),
+    );
+    const reconcileOnlyLabels = targetNames(runGroups.reconcileOnly);
+    const safeRetryLabels = targetNames(runGroups.safeRetry);
+    const unsafeFailureLabels = targetNames(runGroups.unsafeFailure);
+    const awaitingReadbackLabels = targetNames(runGroups.manualVerify);
     let allBlockers = [
       ...blockers,
       ...contentBlockers,
@@ -1403,17 +1442,51 @@
       approval: "确认候选 Seller SKU，保存商品审批并锁定当前商业字段。",
       plan: "核对精确目标、来源店铺、售价和费用，批准不可变 ReleasePlan。",
       sync: "将当前 ReleasePlan 同步到妙手待发布，并以回读结果确认完全一致。",
-      channels: "按已批准计划执行所选店铺；失败目标可独立重试。",
+      channels: "按已批准计划执行所选店铺；已有外部结果的目标只能对账，只有明确提交前失败才可重试。",
       reconcile: "核对每个目标的回读结果和外部商品身份，完成发布对账。",
     };
+    const dispositionActions = [];
+    if (reconcileOnlyLabels.length) {
+      dispositionActions.push(
+        `${reconcileOnlyLabels.join("、")}：已有外部结果，仅回读/对账，禁止重发。`,
+      );
+    }
+    if (safeRetryLabels.length) {
+      dispositionActions.push(
+        `${safeRetryLabels.join("、")}：明确在提交前失败，修复阻塞后再安全重试。`,
+      );
+    }
+    if (unsafeFailureLabels.length) {
+      dispositionActions.push(
+        `${unsafeFailureLabels.join("、")}：失败边界尚未证实，先查明外部结果，禁止重发。`,
+      );
+    }
     if (awaitingReadbackLabels.length) {
+      dispositionActions.push(
+        `${awaitingReadbackLabels.join("、")}：已提交，需在平台后台逐字段人工验收，禁止重发。`,
+      );
+    }
+    if (dispositionActions.length) {
       descriptions.reconcile =
         `${runCounts.succeeded}/${runCounts.total} 个目标已完成官方回读；`
-        + `${awaitingReadbackLabels.join("、")} 已提交且不会重复提交，`
-        + "请在对应店铺后台逐字段核对并记录人工验收。";
+        + dispositionActions.join(" ");
+    }
+    if (awaitingReadbackLabels.length) {
       allBlockers.push(
         `${awaitingReadbackLabels.join("、")} 没有可用的官方店铺 API；`
         + "账本已停止自动重试，等待 Kyle 人工核对 SKU、标题、售价、图片和物流字段。",
+      );
+    }
+    if (reconcileOnlyLabels.length) {
+      allBlockers.push(
+        `${reconcileOnlyLabels.join("、")} 已有外部 ID、提交或失败证据；`
+        + "只能继续回读与对账，不得再次发布。",
+      );
+    }
+    if (unsafeFailureLabels.length) {
+      allBlockers.push(
+        `${unsafeFailureLabels.join("、")} 的失败边界不明确；`
+        + "在确认没有外部结果前不得重试。",
       );
     }
     allBlockers = [...new Set(allBlockers)];
@@ -1422,9 +1495,14 @@
       "SUCCEEDED",
       "COMPLETED_WITH_MANUAL_VERIFICATION",
     ].includes(data.release_v1?.run?.status);
+    const releaseNeedsDisposition = Boolean(
+      run
+      && !releaseCompleted
+      && dispositionActions.length,
+    );
     $("#nextStepTitle").textContent = releaseCompleted
       ? "本次正式发布已完成"
-      : stage.label;
+      : (releaseNeedsDisposition ? "处理发布结果与对账" : stage.label);
     $("#nextStepDescription").textContent = releaseCompleted
       ? "全部已选店铺均已完成 API 回读或 Kyle 人工验收；账本保留每个目标的幂等提交证据。"
       : descriptions[stage.key];
@@ -1847,6 +1925,12 @@
     return `${channelNames[channel] || channel} · ${publicationSiteNames[site] || site}`;
   }
 
+  function targetNamesForLedger(targets) {
+    return targets
+      .map((target) => targetDisplayName(target.target_label))
+      .join("、");
+  }
+
   function awaitsOfficialReadback(target) {
     if (target?.status === "SUBMITTED_UNVERIFIED") return true;
     const error = String(target?.error || "").toLowerCase();
@@ -1863,8 +1947,80 @@
     );
   }
 
+  function targetFailureEvidence(target) {
+    return target?.latest_failure_evidence?.evidence
+      || (target?.failure_events || []).at(-1)?.evidence
+      || null;
+  }
+
+  function targetHasExternalOutcome(target) {
+    const evidence = targetFailureEvidence(target);
+    return Boolean(
+      target?.external_id
+      || target?.submission
+      || target?.readback
+      || target?.external_writes_performed?.length
+      || evidence,
+    );
+  }
+
+  function isExplicitPreSubmitFailure(target) {
+    if (target?.status !== "FAILED" || targetHasExternalOutcome(target)) {
+      return false;
+    }
+    const detail = String(target?.error || "").toLowerCase();
+    return [
+      "pre-submit",
+      "pre submit",
+      "preflight",
+      "before submission",
+      "before external",
+      "not submitted",
+      "no external write",
+      "提交前",
+      "未提交",
+      "未发生外部写入",
+    ].some((marker) => detail.includes(marker));
+  }
+
+  function releaseTargetDisposition(target) {
+    if (target?.status === "MANUALLY_VERIFIED") return "verified";
+    if (target?.status === "SUCCEEDED") return "succeeded";
+    if (target?.status === "RUNNING") return "running";
+    if (target?.status === "PENDING") return "pending";
+    if (target?.status === "FAILED") {
+      if (targetHasExternalOutcome(target)) return "reconcile_only";
+      if (isExplicitPreSubmitFailure(target)) return "safe_retry";
+      return "unsafe_failure";
+    }
+    if (awaitsOfficialReadback(target)) return "manual_verify";
+    return "unknown";
+  }
+
+  function releaseTargetGroups(run) {
+    const groups = {
+      reconcileOnly: [],
+      safeRetry: [],
+      unsafeFailure: [],
+      manualVerify: [],
+      running: [],
+      pending: [],
+    };
+    for (const target of (run?.targets || [])) {
+      const disposition = releaseTargetDisposition(target);
+      if (disposition === "reconcile_only") groups.reconcileOnly.push(target);
+      if (disposition === "safe_retry") groups.safeRetry.push(target);
+      if (disposition === "unsafe_failure") groups.unsafeFailure.push(target);
+      if (disposition === "manual_verify") groups.manualVerify.push(target);
+      if (disposition === "running") groups.running.push(target);
+      if (disposition === "pending") groups.pending.push(target);
+    }
+    return groups;
+  }
+
   function releaseRunCounts(run) {
     const targets = run?.targets || [];
+    const groups = releaseTargetGroups(run);
     return {
       total: targets.length,
       succeeded: targets.filter((target) => target.status === "SUCCEEDED").length,
@@ -1876,6 +2032,10 @@
       failed: targets.filter(
         (target) => target.status === "FAILED" && !awaitsOfficialReadback(target),
       ).length,
+      reconcileOnly: groups.reconcileOnly.length,
+      safeRetry: groups.safeRetry.length,
+      unsafeFailure: groups.unsafeFailure.length,
+      pending: groups.pending.length,
     };
   }
 
@@ -1890,27 +2050,63 @@
       return `${counts.succeeded} 已回读 · ${counts.awaitingReadback} 待人工验收`;
     }
     if (run?.status === "PARTIAL_FAILED") {
-      return `${counts.succeeded} 已回读 · ${counts.failed} 失败`;
+      const outcomes = [
+        counts.reconcileOnly ? `${counts.reconcileOnly} 待对账` : "",
+        counts.safeRetry ? `${counts.safeRetry} 修复后可重试` : "",
+        counts.unsafeFailure ? `${counts.unsafeFailure} 禁止重发` : "",
+        counts.awaitingReadback ? `${counts.awaitingReadback} 待人工验收` : "",
+      ].filter(Boolean);
+      return `${counts.succeeded} 已回读 · ${outcomes.join(" · ") || `${counts.failed} 待处置`}`;
     }
     return run?.status || "未知";
   }
 
   function releaseTargetLabel(target, statusNames) {
-    if (target?.status === "MANUALLY_VERIFIED") return "Kyle 已人工验收";
-    if (awaitsOfficialReadback(target)) return "已提交 · 待人工验收";
+    const disposition = releaseTargetDisposition(target);
+    if (disposition === "verified") return "Kyle 已人工验收";
+    if (disposition === "manual_verify") return "已提交 · 待人工验收";
+    if (disposition === "reconcile_only") {
+      return "已创建 · 结果待对账，禁止重发";
+    }
+    if (disposition === "safe_retry") return "失败 · 可安全重试";
+    if (disposition === "unsafe_failure") {
+      return "失败 · 边界未证实，禁止重发";
+    }
     return statusNames[target?.status] || target?.status || "未知";
   }
 
   function releaseTargetDetail(target) {
-    if (awaitsOfficialReadback(target)) {
+    const disposition = releaseTargetDisposition(target);
+    if (disposition === "manual_verify") {
       return "妙手已接收且提交凭证已锁定；当前店铺没有官方 API，系统不会自动重试。请在平台后台核对后记录人工验收。";
     }
-    if (target?.status === "MANUALLY_VERIFIED") {
+    if (disposition === "verified") {
       return `由 Kyle 在平台后台完成逐字段验收 · 商品 ID ${
         target?.submission?.verification_evidence?.marketplace_product_id || "—"
       }`;
     }
+    if (disposition === "reconcile_only") {
+      return "已存在外部 ID、提交、回读或失败证据。仅允许继续回读/人工对账，系统禁止再次发布。"
+        + (target?.error ? ` 原因：${target.error}` : "");
+    }
+    if (disposition === "safe_retry") {
+      return "失败明确发生在提交前，且没有外部结果证据；修复阻塞后可安全重试。"
+        + (target?.error ? ` 原因：${target.error}` : "");
+    }
+    if (disposition === "unsafe_failure") {
+      return "没有足够证据证明失败发生在提交前；查明外部结果前禁止重发。"
+        + (target?.error ? ` 原因：${target.error}` : "");
+    }
     return target?.error || "";
+  }
+
+  function releaseTargetCssClass(target) {
+    const disposition = releaseTargetDisposition(target);
+    if (disposition === "manual_verify") return "awaiting-readback";
+    if (disposition === "reconcile_only") return "reconciliation-required";
+    if (disposition === "safe_retry") return "safe-retry";
+    if (disposition === "unsafe_failure") return "unsafe-failure";
+    return String(target?.status || "").toLowerCase();
   }
 
   function updateReleaseControls(data) {
@@ -1953,16 +2149,26 @@
 
     const publishReady = Boolean(release.publish_ready);
     const runCounts = releaseRunCounts(release.run);
+    const runGroups = releaseTargetGroups(release.run);
     const onlyWaitingForManual = Boolean(
       release.run
       && runCounts.awaitingReadback
       && !runCounts.failed
       && !runCounts.running,
     );
-    $("#publishAllCheckbox").disabled = !publishReady || onlyWaitingForManual || busy;
+    const ledgerBlocksPublish = Boolean(
+      runGroups.reconcileOnly.length
+      || runGroups.unsafeFailure.length
+      || runGroups.manualVerify.length
+      || runGroups.running.length,
+    );
+    $("#publishAllCheckbox").disabled = Boolean(
+      !publishReady || onlyWaitingForManual || ledgerBlocksPublish || busy
+    );
     $("#publishAllButton").disabled = Boolean(
       !publishReady
       || onlyWaitingForManual
+      || ledgerBlocksPublish
       || !$("#publishAllCheckbox").checked
       || busy,
     );
@@ -2050,15 +2256,38 @@
     renderCommonOverwrite(release);
 
     const adapterBlockers = release.adapter_blockers || [];
-    $("#publishAllNote").textContent = release.publish_ready
-      ? `将按当前令牌执行 ${targets.length} 个已选目标；成功目标不会重复发布。`
-      : (
-        !release.miaoshou_prepared
-          ? "先完成妙手待发布写入和回读。"
-          : (adapterBlockers.length
-            ? `仍有 ${adapterBlockers.length} 项统一适配器审计未完成；正式按钮保持关闭，不会调用旧发布函数。`
-            : "等待当前计划的所有发布前条件通过。")
-      );
+    const ledgerGroups = releaseTargetGroups(release.run);
+    if (ledgerGroups.reconcileOnly.length) {
+      $("#publishAllNote").textContent =
+        `${targetNamesForLedger(ledgerGroups.reconcileOnly)} 已有外部结果，`
+        + "只能回读/对账，禁止重发；一键发布保持关闭。";
+    } else if (ledgerGroups.unsafeFailure.length) {
+      $("#publishAllNote").textContent =
+        `${targetNamesForLedger(ledgerGroups.unsafeFailure)} 的失败边界尚未证实，`
+        + "查明外部结果前禁止重发；一键发布保持关闭。";
+    } else if (ledgerGroups.manualVerify.length) {
+      $("#publishAllNote").textContent =
+        `${targetNamesForLedger(ledgerGroups.manualVerify)} 已提交并等待人工验收，`
+        + "不会自动重发；一键发布保持关闭。";
+    } else if (ledgerGroups.running.length) {
+      $("#publishAllNote").textContent =
+        `${targetNamesForLedger(ledgerGroups.running)} 正在执行或结果尚未落账；`
+        + "先完成回读/恢复处置，一键发布保持关闭。";
+    } else if (ledgerGroups.safeRetry.length) {
+      $("#publishAllNote").textContent =
+        `${targetNamesForLedger(ledgerGroups.safeRetry)} 明确在提交前失败；`
+        + "先修复阻塞，再使用原计划安全重试。";
+    } else {
+      $("#publishAllNote").textContent = release.publish_ready
+        ? `将按当前令牌执行 ${targets.length} 个已选目标；成功目标不会重复发布。`
+        : (
+          !release.miaoshou_prepared
+            ? "先完成妙手待发布写入和回读。"
+            : (adapterBlockers.length
+              ? `仍有 ${adapterBlockers.length} 项统一适配器审计未完成；正式按钮保持关闭，不会调用旧发布函数。`
+              : "等待当前计划的所有发布前条件通过。")
+        );
+    }
     $("#publishAllCheckbox").checked = false;
 
     const run = release.run;
@@ -2069,7 +2298,7 @@
       const statusNames = {
         PENDING: "等待执行",
         RUNNING: "执行中",
-        FAILED: "失败待重试",
+        FAILED: "失败 · 状态待核验",
         PARTIAL_FAILED: "部分失败",
         SUCCEEDED: "回读成功",
         SUBMITTED_UNVERIFIED: "已提交 · 待人工验收",
@@ -2085,7 +2314,7 @@
           ${(run.targets || []).map((target) => {
             const targetDetail = releaseTargetDetail(target);
             return `
-            <article class="run-target ${esc(awaitsOfficialReadback(target) ? "awaiting-readback" : String(target.status || "").toLowerCase())}">
+            <article class="run-target ${esc(releaseTargetCssClass(target))}">
               <span>${esc(targetDisplayName(target.target_label))}</span>
               <strong>${esc(releaseTargetLabel(target, statusNames))}</strong>
               <small>尝试 ${esc(String(target.attempts || 0))} 次${target.external_id ? ` · 外部 ID ${esc(target.external_id)}` : ""}</small>

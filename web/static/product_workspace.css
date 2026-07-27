@@ -817,29 +817,38 @@ section { scroll-margin-top: 20px; }
   gap: 8px;
 }
 .source-spec-option {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.source-spec-selector {
   position: relative;
   min-width: 0;
 }
-.source-spec-option > input {
+.source-spec-selector > input {
   position: absolute;
   width: 1px;
   min-height: 1px;
   opacity: 0;
 }
-.source-spec-option > span {
+.source-spec-selector > span {
   min-height: 58px;
   display: grid;
   align-content: center;
   gap: 5px;
-  padding: 10px 11px 10px 38px;
-  border: 1px solid var(--line);
-  border-radius: 11px;
-  background: var(--surface);
+  padding: 8px 9px 8px 34px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: rgba(24, 49, 46, .035);
   cursor: pointer;
 }
-.source-spec-option > span::before {
+.source-spec-selector > span::before {
   position: absolute;
-  left: 12px;
+  left: 10px;
   top: 50%;
   width: 16px;
   height: 16px;
@@ -853,20 +862,20 @@ section { scroll-margin-top: 20px; }
   font-size: 10px;
   font-weight: 900;
 }
-.source-spec-option input:checked + span {
+.source-spec-selector input:checked + span {
   border-color: rgba(35, 118, 107, .48);
   background: rgba(213, 238, 229, .45);
 }
-.source-spec-option input:checked + span::before {
+.source-spec-selector input:checked + span::before {
   border-color: var(--teal);
   color: white;
   background: var(--teal);
 }
-.source-spec-option input:focus-visible + span {
+.source-spec-selector input:focus-visible + span {
   outline: 3px solid rgba(232, 111, 67, .24);
   outline-offset: 2px;
 }
-.source-spec-option input:disabled + span {
+.source-spec-selector input:disabled + span {
   cursor: not-allowed;
   opacity: .58;
 }
@@ -881,6 +890,36 @@ section { scroll-margin-top: 20px; }
   color: var(--muted);
   font: 600 8px/1.35 ui-monospace, monospace;
   overflow-wrap: anywhere;
+}
+.source-spec-name {
+  display: grid;
+  gap: 6px;
+}
+.source-spec-name > span {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+}
+.source-spec-name > input {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  padding: 9px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  color: var(--ink);
+  background: white;
+  font: 700 12px/1.35 var(--sans);
+}
+.source-spec-name > input:focus {
+  border-color: var(--teal);
+  box-shadow: 0 0 0 3px rgba(35, 118, 107, .12);
+  outline: none;
+}
+.source-spec-name > input:disabled {
+  color: var(--muted);
+  background: rgba(24, 49, 46, .05);
+  cursor: not-allowed;
 }
 .source-spec-empty {
   grid-column: 1 / -1;

@@ -358,6 +358,14 @@ def _commercial_approval_facts(
         "package_cm": list(review.get("package_cm") or ()),
         "selected_sites": sorted(str(value) for value in (review.get("selected_sites") or ())),
         "selected_sku_keys": list(review.get("selected_sku_keys") or ()),
+        "sku_label_overrides": {
+            str(key): str(value)
+            for key, value in sorted(
+                (review.get("sku_label_overrides") or {}).items()
+                if isinstance(review.get("sku_label_overrides"), Mapping)
+                else ()
+            )
+        },
         "category": dict(category) if isinstance(category, Mapping) else category,
         "support_cod": review.get("support_cod"),
         "video_action": str(review.get("video_action") or ""),
@@ -1354,6 +1362,11 @@ def build_release_dashboard(
     )
     source_skus: list[dict[str, Any]] = []
     seen_source_sku_keys: set[str] = set()
+    sku_label_overrides = (
+        review.get("sku_label_overrides")
+        if isinstance(review.get("sku_label_overrides"), Mapping)
+        else {}
+    )
     for row in source.get("skus") or ():
         if not isinstance(row, Mapping):
             continue
@@ -1361,12 +1374,15 @@ def build_release_dashboard(
         if not key or key in seen_source_sku_keys:
             continue
         seen_source_sku_keys.add(key)
-        name = str(row.get("name") or key).strip() or key
+        source_name = str(row.get("name") or key).strip() or key
+        name = str(sku_label_overrides.get(key) or source_name).strip()
         source_skus.append(
             {
                 "key": key,
                 "label": name,
                 "name": name,
+                "source_label": source_name,
+                "label_overridden": name != source_name,
                 "price_cny": row.get("price"),
             }
         )
@@ -1400,6 +1416,10 @@ def build_release_dashboard(
             "package_cm": list(review.get("package_cm") or ()),
             "selected_sites": list(review.get("selected_sites") or ()),
             "selected_sku_keys": list(review.get("selected_sku_keys") or ()),
+            "sku_label_overrides": {
+                str(key): str(value)
+                for key, value in sku_label_overrides.items()
+            },
             "source_skus": source_skus,
             "revision": int(state.get("_revision") or 0),
             "fields_locked": bool(review.get("fields_locked")),

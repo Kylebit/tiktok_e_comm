@@ -502,6 +502,30 @@ def _miaoshou_submission_audit(
         for value in (facts.get("selected_sku_keys") or ())
         if str(value).strip()
     ]
+    selected_skus = [
+        {
+            "key": str(row.get("key") or "").strip(),
+            "label": str(row.get("label") or "").strip(),
+        }
+        for row in (facts.get("selected_skus") or ())
+        if isinstance(row, dict)
+        and str(row.get("key") or "").strip()
+        and str(row.get("label") or "").strip()
+    ]
+    raw_sku_label_overrides = facts.get("sku_label_overrides")
+    sku_label_overrides = {
+        str(key).strip(): str(value).strip()
+        for key, value in (
+            raw_sku_label_overrides.items()
+            if isinstance(raw_sku_label_overrides, dict)
+            else ()
+        )
+        if str(key).strip() and str(value).strip()
+    }
+    selected_sku_labels = {
+        row["key"]: row["label"]
+        for row in selected_skus
+    }
     category = facts.get("category") or {}
     category_name = str(
         category.get("name") if isinstance(category, dict) else category
@@ -542,7 +566,14 @@ def _miaoshou_submission_audit(
         "approved_logistics": bool(facts.get("weight_kg"))
         and len(package_cm) == 3
         and all(float(value or 0) > 0 for value in package_cm),
-        "approved_variants": bool(selected_sku_keys),
+        "approved_variants": bool(selected_sku_keys)
+        and (
+            not sku_label_overrides
+            or all(
+                selected_sku_labels.get(key) == label
+                for key, label in sku_label_overrides.items()
+            )
+        ),
         "approved_category": bool(category_name),
         "approved_video": all(url.startswith("https://") for url in video_urls),
         "exact_shop_claim": str(shop_id) in prepared_shop_ids,
@@ -572,6 +603,8 @@ def _miaoshou_submission_audit(
         "weight_kg": facts.get("weight_kg"),
         "package_cm": package_cm,
         "selected_sku_keys": selected_sku_keys,
+        "selected_skus": selected_skus,
+        "sku_label_overrides": sku_label_overrides,
         "category": category_name,
         "image_count": len(images),
         "image_urls": images,

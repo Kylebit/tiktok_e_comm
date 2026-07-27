@@ -10,7 +10,7 @@ from typing import Any, Callable
 
 from modules.sourcing.image_suite_plan import chat_completions, message_content
 
-POLICY_VERSION = "listing-copy-candidates-v3"
+POLICY_VERSION = "listing-copy-candidates-v4"
 TOAPI_TITLE_MODEL = "gpt-5.4-mini-official"
 EXPECTED_TARGETS = (
     ("tiktok", "MY", "English / Malay", 255),
@@ -59,8 +59,11 @@ Platform strategy:
   short readable sections for product overview, verified details, suitable
   spaces, application guidance, package contents, and factual cautions. It
   will be translated by Shopee when imported into local shops, so keep the
-  English clear and literal. Do not mention a claim unless it is present in
-  the verified facts.
+  English clear and literal. Do not output Chinese characters anywhere in
+  semantic_master_en or shopee_description_en. If a source brand or attribute
+  value contains Chinese, omit that value instead of copying, translating, or
+  transliterating it. Do not mention a claim unless it is present in the
+  verified facts.
 - Ozon RU: write natural Russian retail copy, not transliterated English.
 - Localize meaning and search phrasing for each site; do not merely translate
   the English master word for word.
@@ -132,6 +135,14 @@ def _clean_title(value: Any, *, limit: int) -> str:
 
 def _clean_shopee_description(value: Any) -> str:
     description = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    description = "\n".join(
+        line
+        for line in description.splitlines()
+        if not (
+            re.search(r"[\u4e00-\u9fff]", line)
+            and re.match(r"\s*(?:[-*]\s*)?(?:source\s+)?brand\s*:", line, re.I)
+        )
+    )
     description = re.sub(r"[ \t]+", " ", description)
     description = re.sub(r"\n{3,}", "\n\n", description).strip()
     if len(description) < 500:
@@ -158,40 +169,7 @@ def _validate_language(title: str, *, channel: str, site: str) -> None:
         raise ValueError(f"{channel}:{site} candidate uses the wrong writing system")
 
 
-def generate_title_candidates(
-    facts: dict[str, Any],
-    *,
-    model_call: Callable[..., str] = toapi_title_completion,
-) -> dict[str, Any]:
-    """Generate local candidates; never approve or write a marketplace."""
-
-    source_title = str(facts.get("source_title_zh") or "").strip()
-    if not source_title:
-        raise ValueError("source_title_zh is required before title generation")
-    request_facts = {
-        **facts,
-        "platform_limits": [
-            {
-                "channel": channel,
-                "site": site,
-                "language": language,
-                "max_characters": limit,
-            }
-            for channel, site, language, limit in EXPECTED_TARGETS
-        ],
-    }
-    raw = model_call(
-        [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": "Verified product facts:\n"
-                + json.dumps(request_facts, ensure_ascii=False, indent=2),
-            },
-        ],
-        temperature=0.25,
-        max_tokens=1800,
-    )
+def _validated_model_payload(raw: str) -> tuple[str, str, list[dict[str, Any]], str]:
     parsed = _json_object(raw)
     master = _clean_title(parsed.get("semantic_master_en"), limit=180)
     if not re.search(r"[A-Za-z]", master) or re.search(r"[\u4e00-\u9fff]", master):
@@ -227,18 +205,117 @@ def generate_title_candidates(
                 "policy_check": "passed",
             }
         )
+    return (
+        master,
+        shopee_description,
+        candidates,
+        str(parsed.get("notes_zh") or "").strip(),
+    )
+
+
+def generate_title_candidates(
+    facts: dict[str, Any],
+    *,
+    model_call: Callable[..., str] = toapi_title_completion,
+) -> dict[str, Any]:
+    """Generate local candidates; never approve or write a marketplace."""
+
+    source_title = str(facts.get("source_title_zh") or "").strip()
+    if not source_title:
+        raise ValueError("source_title_zh is required before title generation")
+    verified_attributes = facts.get("verified_attributes")
+    safe_verified_attributes = {
+        key: value
+        for key, value in (
+            verified_attributes.items()
+            if isinstance(verified_attributes, dict)
+            else ()
+        )
+        if "brand" not in str(key).casefold()
+        and "品牌" not in str(key)
+    }
+    request_facts = {
+        **facts,
+        "verified_attributes": safe_verified_attributes,
+        "platform_limits": [
+            {
+                "channel": channel,
+                "site": site,
+                "language": language,
+                "max_characters": limit,
+            }
+            for channel, site, language, limit in EXPECTED_TARGETS
+        ],
+    }
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": "Verified product facts:\n"
+            + json.dumps(request_facts, ensure_ascii=False, indent=2),
+        },
+    ]
+    raw = model_call(
+        messages,
+        temperature=0.25,
+        max_tokens=1800,
+    )
+    generation_attempts = 1
+    repair_performed = False
+    try:
+        master, shopee_description, candidates, notes_zh = (
+            _validated_model_payload(raw)
+        )
+    except (json.JSONDecodeError, TypeError, ValueError) as first_error:
+        repair_performed = True
+        generation_attempts = 2
+        repaired_raw = model_call(
+            [
+                {
+                    "role": "system",
+                    "content": SYSTEM_PROMPT
+                    + "\n\nThis is a validation repair pass. Return a complete "
+                    "replacement JSON object. Correct the stated validation "
+                    "failure without weakening or inventing product facts.",
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "Verified product facts:\n"
+                        + json.dumps(request_facts, ensure_ascii=False, indent=2)
+                        + "\n\nValidation failure:\n"
+                        + str(first_error)
+                        + "\n\nRejected response:\n"
+                        + str(raw)
+                    ),
+                },
+            ],
+            temperature=0.1,
+            max_tokens=2000,
+        )
+        try:
+            master, shopee_description, candidates, notes_zh = (
+                _validated_model_payload(repaired_raw)
+            )
+        except (json.JSONDecodeError, TypeError, ValueError) as second_error:
+            raise ValueError(
+                "title model output remained invalid after one repair: "
+                f"{second_error}"
+            ) from second_error
 
     return {
-        "schema_version": "listing-copy-candidates-v3",
+        "schema_version": "listing-copy-candidates-v4",
         "provider": "toapi",
         "status": "draft_pending_kyle_review",
         "semantic_master_en": master,
         "shopee_description_en": shopee_description,
         "candidates": candidates,
-        "notes_zh": str(parsed.get("notes_zh") or "").strip(),
+        "notes_zh": notes_zh,
         "input_signature": fact_signature(facts),
         "policy_version": POLICY_VERSION,
         "model": TOAPI_TITLE_MODEL,
+        "generation_attempts": generation_attempts,
+        "repair_performed": repair_performed,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "external_writes_performed": ["language_model_request"],
         "marketplace_writes_performed": [],

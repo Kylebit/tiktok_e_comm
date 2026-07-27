@@ -722,6 +722,14 @@
           ?? source.title
           ?? key,
         ).trim() || key,
+        source_label: String(
+          source.source_label
+          ?? source.name
+          ?? source.spec
+          ?? source.title
+          ?? source.label
+          ?? key,
+        ).trim() || key,
         price_cny: source.price_cny ?? source.price ?? source.cost_cny ?? null,
       });
     });
@@ -732,13 +740,19 @@
       options.push({
         key,
         label: String(row.label || key),
+        source_label: String(row.source_label || row.label || key),
         price_cny: row.price_cny ?? null,
       });
     });
     selected.forEach((key) => {
       if (seen.has(key)) return;
       seen.add(key);
-      options.push({ key, label: key, price_cny: null });
+      options.push({
+        key,
+        label: key,
+        source_label: key,
+        price_cny: null,
+      });
     });
     return options;
   }
@@ -776,14 +790,26 @@
           ? `采购价 ¥${money(price)}`
           : "来源价待核对";
         return `
-          <label class="source-spec-option">
-            <input type="checkbox" name="selected_sku_key"
-                   value="${esc(option.key)}" ${selected.has(option.key) ? "checked" : ""}>
-            <span>
-              <strong>${esc(option.label)}</strong>
-              <small>${esc(option.key)} · ${esc(priceLabel)}</small>
-            </span>
-          </label>
+          <div class="source-spec-option">
+            <label class="source-spec-selector">
+              <input type="checkbox" name="selected_sku_key"
+                     value="${esc(option.key)}" ${selected.has(option.key) ? "checked" : ""}>
+              <span>
+                <strong>${esc(option.source_label)}</strong>
+                <small>${esc(option.key)} · ${esc(priceLabel)}</small>
+              </span>
+            </label>
+            <label class="source-spec-name">
+              <span>发布规格名称</span>
+              <input class="sku-label-input" type="text" maxlength="50"
+                     data-sku-key="${esc(option.key)}"
+                     data-source-label="${esc(option.source_label)}"
+                     value="${esc(option.label)}"
+                     aria-label="${esc(`编辑规格名称：${option.source_label}`)}"
+                     ${selected.has(option.key) ? "" : "disabled"}>
+              <small>保留来源规格键和采购价，只修改各平台显示名称。</small>
+            </label>
+          </div>
         `;
       }).join("")
       : '<span class="source-spec-empty">当前来源没有可选规格，请重新采集后再保存。</span>';
@@ -889,6 +915,11 @@
       if (field.id === "factsEditSellerSku") {
         field.readOnly = true;
         field.disabled = !currentData;
+      } else if (field.classList.contains("sku-label-input")) {
+        const selectedSku = [...form.querySelectorAll(
+          'input[name="selected_sku_key"]',
+        )].find((input) => input.value === (field.dataset.skuKey || ""));
+        field.disabled = disabled || !selectedSku?.checked;
       } else {
         field.disabled = disabled;
       }
@@ -916,6 +947,19 @@
       $("#productSpecGrid").focus?.();
       return;
     }
+    const skuLabelOverrides = {};
+    for (const key of selectedSkuKeys) {
+      const input = [...form.querySelectorAll(".sku-label-input")].find(
+        (field) => field.dataset.skuKey === key,
+      );
+      const label = String(input?.value || "").trim().replace(/\s+/g, " ");
+      if (!label) {
+        $("#factsEditMessage").textContent = "发布规格名称不能为空。";
+        input?.focus();
+        return;
+      }
+      skuLabelOverrides[key] = label;
+    }
     const product = currentData.product || {};
     const key = productKey(product.offer_id);
     if (!key || key !== currentQueueKey || loadedQueueKey !== currentQueueKey) {
@@ -940,6 +984,7 @@
           Number($("#factsEditHeight").value),
         ],
         selected_sku_keys: selectedSkuKeys,
+        sku_label_overrides: skuLabelOverrides,
       });
       const data = dashboardFromPayload(payload)
         || await fetchDashboard(product.offer_id);
@@ -2289,6 +2334,13 @@
     if (!currentData || factsSubmitting) return;
     $("#factsEditMessage").textContent =
       "有尚未保存的修改；当前售价仍是上一 revision。保存后会建立新 revision，并重新计算全部国家与店铺售价。";
+  });
+  $("#productFactsForm").addEventListener("change", (event) => {
+    if (!event.target.matches('input[name="selected_sku_key"]')) return;
+    const labelInput = [...document.querySelectorAll(".sku-label-input")].find(
+      (field) => field.dataset.skuKey === event.target.value,
+    );
+    if (labelInput) labelInput.disabled = !event.target.checked;
   });
   $("#productFactsForm").addEventListener("submit", (event) => {
     event.preventDefault();

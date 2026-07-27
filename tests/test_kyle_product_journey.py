@@ -222,6 +222,9 @@ def test_facts_save_updates_one_revision_and_preserves_unrelated_state(monkeypat
             "weight_kg": 0.18,
             "package_cm": [31.0, 4.0, 3.0],
             "selected_sku_keys": ["30x90-custom"],
+            "sku_label_overrides": {
+                "30x90-custom": "30 x 90 cm, Custom Material",
+            },
         }
     )
 
@@ -236,6 +239,9 @@ def test_facts_save_updates_one_revision_and_preserves_unrelated_state(monkeypat
     assert state["review"]["weight_kg"] == 0.18
     assert state["review"]["package_cm"] == [31.0, 4.0, 3.0]
     assert state["review"]["selected_sku_keys"] == ["30x90-custom"]
+    assert state["review"]["sku_label_overrides"] == {
+        "30x90-custom": "30 x 90 cm, Custom Material",
+    }
     assert state["content_package"] == initial["content_package"]
     assert state["unrelated"] == initial["unrelated"]
     assert payload["dashboard"]["product"]["revision"] == 5
@@ -305,7 +311,12 @@ def test_title_draft_uses_model_once_and_only_persists_local_candidates(monkeypa
     initial = {
         "offer_id": OFFER_ID,
         "_revision": 4,
-        "review": copy.deepcopy(_preview()["review"]),
+        "review": {
+            **copy.deepcopy(_preview()["review"]),
+            "sku_label_overrides": {
+                "30x90-2pcs": "30 x 90 cm, 2 Pieces",
+            },
+        },
     }
     state, saves = _memory_workbench(monkeypatch, initial)
     monkeypatch.setattr(
@@ -349,6 +360,7 @@ def test_title_draft_uses_model_once_and_only_persists_local_candidates(monkeypa
     assert status == 200
     assert calls[0]["source_title_zh"] == "水彩复古花卉蝴蝶墙贴"
     assert calls[0]["selected_skus"][0]["key"] == "30x90-2pcs"
+    assert calls[0]["selected_skus"][0]["label"] == "30 x 90 cm, 2 Pieces"
     assert len(saves) == 1
     assert state["listing_copy"]["semantic_master_en"].startswith("Watercolour")
     assert payload["language_model_request_performed"] is True
@@ -473,15 +485,19 @@ def test_dashboard_opens_before_any_ai_suite_exists(tmp_path):
     assert result["product"]["source_skus"] == [
         {
             "key": "30x90-2pcs",
-            "label": "30*90cm*2pcs; translucent",
-            "name": "30*90cm*2pcs; translucent",
-            "price_cny": 8.1,
+                "label": "30*90cm*2pcs; translucent",
+                "name": "30*90cm*2pcs; translucent",
+                "source_label": "30*90cm*2pcs; translucent",
+                "label_overridden": False,
+                "price_cny": 8.1,
         },
         {
             "key": "30x90-custom",
-            "label": "30*90cm*2pcs; custom material",
-            "name": "30*90cm*2pcs; custom material",
-            "price_cny": 8.2,
+                "label": "30*90cm*2pcs; custom material",
+                "name": "30*90cm*2pcs; custom material",
+                "source_label": "30*90cm*2pcs; custom material",
+                "label_overridden": False,
+                "price_cny": 8.2,
         },
     ]
     assert isinstance(result["content"]["images"], list)
@@ -615,6 +631,8 @@ def test_formal_frontend_collects_first_and_has_an_inline_facts_editor():
     assert 'name="package_width_cm"' in html
     assert 'name="package_height_cm"' in html
     assert 'id="productSpecGrid"' in html
+    assert "sku-label-input" in script
+    assert "sku_label_overrides" in script
     assert 'id="factsEditCostSource"' in html
     assert 'id="factsEditWeightSource"' in html
     assert 'id="factsEditPackageSource"' in html

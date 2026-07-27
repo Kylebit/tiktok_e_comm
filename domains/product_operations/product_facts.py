@@ -196,6 +196,11 @@ def build_product_facts_snapshot(
     source_skus = [
         row for row in (source.get("skus") or []) if isinstance(row, Mapping)
     ]
+    sku_label_overrides = (
+        review.get("sku_label_overrides")
+        if isinstance(review.get("sku_label_overrides"), Mapping)
+        else {}
+    )
     selected_values = review.get("selected_sku_keys")
     if isinstance(selected_values, (list, tuple)):
         selected_keys = [
@@ -234,7 +239,10 @@ def build_product_facts_snapshot(
             continue
         for row in matching:
             source_key = str(row.get("key") or row.get("name") or "").strip()
-            label = str(row.get("name") or source_key).strip()
+            source_label = str(row.get("name") or source_key).strip()
+            label = str(
+                sku_label_overrides.get(source_key) or source_label
+            ).strip()
             price = _decimal(row.get("price"))
             fact = SelectedSkuPriceFact(
                 selected_key=selected_key,
@@ -244,7 +252,7 @@ def build_product_facts_snapshot(
             )
             if fact not in sku_facts:
                 sku_facts.append(fact)
-            normalized_label = f"{source_key} {label}".casefold()
+            normalized_label = f"{source_key} {source_label}".casefold()
             if any(marker.casefold() in normalized_label for marker in _PLACEHOLDER_MARKERS):
                 blockers.append(
                     f"selected SKU {selected_key!r} is a customer-service/custom placeholder and cannot establish product cost"

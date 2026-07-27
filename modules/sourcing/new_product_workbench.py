@@ -77,6 +77,7 @@ _APPROVAL_BOUND_REVIEW_FIELDS = frozenset(
         "package_cm",
         "selected_sites",
         "selected_sku_keys",
+        "sku_label_overrides",
         "support_cod",
         "fx_rates",
     }
@@ -396,10 +397,17 @@ def _english_variant_checks_pass(verified: dict[str, Any]) -> bool:
     props = verified.get("skuPropertyList") or []
     if not props:
         return True
-    values = (props[0].get("attrValueList") or [])
-    if not values:
-        return True
-    return all(_is_english_variant_value(value.get("attrValue") or "") for value in values)
+    values = [
+        value
+        for prop in props
+        if isinstance(prop, dict)
+        for value in (prop.get("attrValueList") or [])
+        if isinstance(value, dict)
+    ]
+    return not values or all(
+        _is_english_variant_value(value.get("attrValue") or "")
+        for value in values
+    )
 
 
 def _audited_english_variant_value(text: str) -> str:
@@ -433,26 +441,107 @@ def _audited_english_variant_value(text: str) -> str:
     )
 
 
-def _apply_audited_english_variant_labels(info: dict[str, Any]) -> None:
+def _apply_audited_english_variant_labels(
+    info: dict[str, Any],
+    label_overrides: dict[str, str] | None = None,
+) -> None:
     props = info.get("skuPropertyList") or []
     if not props:
+        if label_overrides:
+            raise RuntimeError(
+                "Approved specification names cannot be mapped to this channel draft"
+            )
         return
-    values = props[0].get("attrValueList") or []
-    has_dimensions = any(
-        re.search(r"\d+(?:\.\d+)?\s*[xX×]\s*\d+(?:\.\d+)?\s*cm", str(row.get("attrValue") or ""), re.I)
-        for row in values
-    )
-    props[0]["attrName"] = "Size" if has_dimensions else "Color"
     known_values = {
         "87333b5fe4": "Ivory Red",
         "a8fefa8b1f": "Ivory Pink",
     }
-    for value in values:
-        value_id = str(value.get("attrValueId") or "")
-        value["attrValue"] = known_values.get(
-            value_id,
-            _audited_english_variant_value(value.get("attrValue") or ""),
+    original_variant_values = {
+        id(value): str(value.get("attrValue") or "").strip()
+        for prop in props
+        if isinstance(prop, dict)
+        for value in (prop.get("attrValueList") or [])
+        if isinstance(value, dict)
+    }
+    for index, prop in enumerate(props):
+        values = [
+            value
+            for value in (prop.get("attrValueList") or [])
+            if isinstance(value, dict)
+        ]
+        has_dimensions = any(
+            re.search(
+                r"\d+(?:\.\d+)?\s*[xX×]\s*\d+(?:\.\d+)?\s*cm",
+                str(row.get("attrValue") or ""),
+                re.I,
+            )
+            for row in values
         )
+        prop["attrName"] = (
+            "Size" if has_dimensions else ("Color" if index == 0 else "Specification")
+        )
+        for value in values:
+            value_id = str(value.get("attrValueId") or "")
+            value["attrValue"] = known_values.get(
+                value_id,
+                _audited_english_variant_value(value.get("attrValue") or ""),
+            )
+
+    clean_overrides = {
+        str(key).strip(): " ".join(str(label).split())
+        for key, label in (label_overrides or {}).items()
+        if str(key).strip() and " ".join(str(label).split())
+    }
+    if not clean_overrides:
+        return
+    target_prop = props[-1]
+    target_values = [
+        value
+        for value in (target_prop.get("attrValueList") or [])
+        if isinstance(value, dict)
+    ]
+    if not target_values:
+        raise RuntimeError(
+            "Approved specification names cannot be mapped to the final sale property"
+        )
+    by_source_component: dict[str, str] = {}
+    for source_key, label in clean_overrides.items():
+        components = [
+            part.strip()
+            for part in source_key.strip(";").split(";")
+            if part.strip()
+        ]
+        if components:
+            by_source_component[components[-1].casefold()] = label
+    applied_labels: set[str] = set()
+    for value in target_values:
+        current_value = str(value.get("attrValue") or "").strip()
+        original_value = original_variant_values.get(id(value), "")
+        value_id = str(value.get("attrValueId") or "").strip()
+        approved_label = (
+            by_source_component.get(original_value.casefold())
+            or
+            by_source_component.get(current_value.casefold())
+            or by_source_component.get(value_id.casefold())
+        )
+        if approved_label:
+            value["attrValue"] = approved_label
+            applied_labels.add(approved_label)
+    if (
+        len(clean_overrides) == 1
+        and len(target_values) == 1
+        and not applied_labels
+    ):
+        approved_label = next(iter(clean_overrides.values()))
+        target_values[0]["attrValue"] = approved_label
+        applied_labels.add(approved_label)
+    missing_labels = set(clean_overrides.values()) - applied_labels
+    if missing_labels:
+        raise RuntimeError(
+            "Approved specification names could not be mapped: "
+            + ", ".join(sorted(missing_labels))
+        )
+    target_prop["attrName"] = "Specification"
 
 
 def _public_source_type(url: str) -> str:
@@ -4142,6 +4231,11 @@ def build_preview(offer_id_or_url: str, *, source_code: str = "") -> dict[str, A
         "overseas_image_candidates": overseas_images,
         "image_generation_requests": review.get("image_generation_requests") or [],
         "selected_sku_keys": saved_sku_keys if saved_sku_keys is not None else source_sku_keys,
+        "sku_label_overrides": dict(
+            review.get("sku_label_overrides")
+            if isinstance(review.get("sku_label_overrides"), dict)
+            else {}
+        ),
         "fields_locked": bool(review.get("fields_locked")),
         "fx_rates": fx_rates,
     }
@@ -4735,7 +4829,10 @@ def _web_collect_payload_for_targets(
     info["mainImgPlatformVideoId"] = ""
     info["isCodOpen"] = "1" if cod_enabled else "0"
     info["itemNum"] = str(draft.get("itemNum") or info.get("itemNum") or "")[-4:]
-    _apply_audited_english_variant_labels(info)
+    _apply_audited_english_variant_labels(
+        info,
+        draft.get("skuLabelOverrides") or {},
+    )
 
     sku_map = info.get("skuMap") or {}
     sku_numbers = _sequential_sku_numbers(sku_map, info["itemNum"])
@@ -5005,6 +5102,11 @@ def prepare_miaoshou_draft(offer_id_or_url: str) -> dict[str, Any]:
         "notes": description,
         "mainImgVideoUrl": source.get("video", {}).get("url") if review.get("video_action") == "keep" else "",
         "selectedSkuKeys": selected_sku_keys,
+        "skuLabelOverrides": dict(
+            review.get("sku_label_overrides")
+            if isinstance(review.get("sku_label_overrides"), dict)
+            else {}
+        ),
         "selectedSites": list(review.get("selected_sites") or []),
         "supportCod": True,
     }
@@ -5925,7 +6027,10 @@ def _prepare_shop_mode_draft(
         "productAttributes": [],
         "productCertifications": info.get("productCertifications") or [],
     })
-    _apply_audited_english_variant_labels(info)
+    _apply_audited_english_variant_labels(
+        info,
+        draft.get("skuLabelOverrides") or {},
+    )
     sku_numbers = _sequential_sku_numbers(info.get("skuMap") or {}, draft.get("itemNum") or "")
     for sku_key, sku in (info.get("skuMap") or {}).items():
         stock = int(DEFAULT_LISTING_STOCK)
@@ -6102,7 +6207,10 @@ def _prepare_site_mode_draft(
         for shop_id in shop_ids
     ]
 
-    _apply_audited_english_variant_labels(info)
+    _apply_audited_english_variant_labels(
+        info,
+        draft.get("skuLabelOverrides") or {},
+    )
 
     sku_map = info.get("skuMap") or {}
     sku_numbers = _sequential_sku_numbers(sku_map, draft.get("itemNum") or "")

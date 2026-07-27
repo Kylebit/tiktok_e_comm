@@ -99,6 +99,7 @@ _INITIAL_PRODUCT_REVIEW_FIELDS = (
     "image_actions",
     "image_order",
     "selected_sku_keys",
+    "sku_label_overrides",
     "fx_rates",
 )
 
@@ -387,6 +388,33 @@ def _save_product_workspace_facts_locally(data: dict) -> tuple[int, dict]:
             "error_code": "invalid_selected_sku_keys",
             "error": "selected_sku_keys contains an invalid source SKU key",
         }
+    raw_sku_label_overrides = data.get("sku_label_overrides", {})
+    if not isinstance(raw_sku_label_overrides, dict):
+        return 400, {
+            "ok": False,
+            "error_code": "invalid_sku_label_overrides",
+            "error": "sku_label_overrides must be an object keyed by source SKU",
+        }
+    requested_sku_labels: dict[str, str] = {}
+    for raw_key, raw_label in raw_sku_label_overrides.items():
+        key = str(raw_key or "").strip()
+        label = " ".join(str(raw_label or "").split())
+        if (
+            not key
+            or len(key) > 240
+            or not label
+            or len(label) > 50
+            or any(ord(char) < 32 for char in label)
+        ):
+            return 400, {
+                "ok": False,
+                "error_code": "invalid_sku_label_overrides",
+                "error": (
+                    "each edited specification name must contain 1-50 "
+                    "printable characters"
+                ),
+            }
+        requested_sku_labels[key] = label
 
     with _product_workbench_lock(offer_id):
         state = np_mod.load_state(offer_id)
@@ -425,12 +453,15 @@ def _save_product_workspace_facts_locally(data: dict) -> tuple[int, dict]:
             }
 
         source = np_mod._source_summary(offer_id)
-        available_sku_keys = {
-            str(row.get("key") or row.get("name") or "").strip()
+        source_label_by_key = {
+            str(row.get("key") or row.get("name") or "").strip(): str(
+                row.get("name") or row.get("key") or ""
+            ).strip()
             for row in (source.get("skus") or ())
             if isinstance(row, dict)
             and str(row.get("key") or row.get("name") or "").strip()
         }
+        available_sku_keys = set(source_label_by_key)
         unknown_sku_keys = [
             value for value in selected_sku_keys if value not in available_sku_keys
         ]
@@ -447,6 +478,43 @@ def _save_product_workspace_facts_locally(data: dict) -> tuple[int, dict]:
                 "error_code": "missing_source_sku_selection",
                 "error": "select at least one collected source SKU",
             }
+        unknown_label_keys = [
+            key for key in requested_sku_labels if key not in available_sku_keys
+        ]
+        if unknown_label_keys:
+            return 400, {
+                "ok": False,
+                "error_code": "unknown_sku_label_override",
+                "error": "sku_label_overrides contains keys not present in the source",
+                "unknown_sku_keys": unknown_label_keys,
+            }
+        unselected_label_keys = [
+            key for key in requested_sku_labels if key not in selected_sku_keys
+        ]
+        if unselected_label_keys:
+            return 400, {
+                "ok": False,
+                "error_code": "unselected_sku_label_override",
+                "error": "only selected source SKUs may have edited names",
+                "unselected_sku_keys": unselected_label_keys,
+            }
+        effective_sku_labels = [
+            requested_sku_labels.get(key) or source_label_by_key.get(key) or key
+            for key in selected_sku_keys
+        ]
+        if len({label.casefold() for label in effective_sku_labels}) != len(
+            effective_sku_labels
+        ):
+            return 400, {
+                "ok": False,
+                "error_code": "duplicate_effective_sku_label",
+                "error": "selected specification names must remain unique",
+            }
+        sku_label_overrides = {
+            key: label
+            for key, label in requested_sku_labels.items()
+            if label != source_label_by_key.get(key)
+        }
 
         next_state = dict(state)
         next_review = dict(review)
@@ -457,6 +525,7 @@ def _save_product_workspace_facts_locally(data: dict) -> tuple[int, dict]:
                 "weight_kg": weight_kg,
                 "package_cm": package_cm,
                 "selected_sku_keys": selected_sku_keys,
+                "sku_label_overrides": sku_label_overrides,
             }
         )
         next_state["review"] = next_review
@@ -527,10 +596,20 @@ def _listing_title_facts(
     source = source or np_mod._source_summary(offer_id)
     review = state.get("review") if isinstance(state.get("review"), dict) else {}
     selected = set(str(value) for value in (review.get("selected_sku_keys") or ()))
+    label_overrides = (
+        review.get("sku_label_overrides")
+        if isinstance(review.get("sku_label_overrides"), dict)
+        else {}
+    )
     selected_skus = [
         {
             "key": str(row.get("key") or row.get("name") or ""),
-            "label": str(row.get("name") or row.get("key") or ""),
+            "label": str(
+                label_overrides.get(str(row.get("key") or row.get("name") or ""))
+                or row.get("name")
+                or row.get("key")
+                or ""
+            ),
             "price_cny": row.get("price"),
         }
         for row in (source.get("skus") or ())
@@ -695,6 +774,20 @@ def _release_plan_payload_from_dashboard(dashboard: dict) -> tuple[dict, list[st
             "weight_kg": product.get("weight_kg"),
             "package_cm": list(product.get("package_cm") or ()),
             "selected_sku_keys": list(product.get("selected_sku_keys") or ()),
+            "sku_label_overrides": dict(
+                product.get("sku_label_overrides") or {}
+            ),
+            "selected_skus": [
+                {
+                    "key": str(row.get("key") or ""),
+                    "label": str(row.get("label") or ""),
+                    "price_cny": row.get("price_cny"),
+                }
+                for row in (product.get("source_skus") or ())
+                if isinstance(row, dict)
+                and str(row.get("key") or "")
+                in set(product.get("selected_sku_keys") or ())
+            ],
         },
         "listing_copy": {
             "schema_version": str(

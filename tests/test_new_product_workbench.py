@@ -13,6 +13,7 @@ from modules.sourcing.miaoshou_precollect import (
 )
 from modules.sourcing.new_product_workbench import (
     _anchor_group_key,
+    _apply_audited_english_variant_labels,
     _audited_english_variant_value,
     _expected_region_site_state,
     _distribute_total,
@@ -51,6 +52,43 @@ class NewProductWorkbenchTests(unittest.TestCase):
         self.assertEqual(
             _audited_english_variant_value("定制花色"),
             "定制花色",
+        )
+
+    def test_approved_specification_name_reaches_final_sale_property(self):
+        info = {
+            "skuPropertyList": [
+                {
+                    "attrName": "Color",
+                    "attrValueList": [
+                        {"attrValueId": "style-1", "attrValue": "HS4489Q"},
+                    ],
+                },
+                {
+                    "attrName": "Size",
+                    "attrValueList": [
+                        {
+                            "attrValueId": "size-1",
+                            "attrValue": "30*40CM*3排版",
+                        },
+                    ],
+                },
+            ],
+        }
+
+        _apply_audited_english_variant_labels(
+            info,
+            {
+                ";HS4489Q;30*40CM*3排版;": "30 x 40 cm, 3 Pieces",
+            },
+        )
+
+        self.assertEqual(
+            info["skuPropertyList"][1]["attrValueList"][0]["attrValue"],
+            "30 x 40 cm, 3 Pieces",
+        )
+        self.assertEqual(
+            info["skuPropertyList"][1]["attrName"],
+            "Specification",
         )
 
     def test_miaoshou_readback_preserves_locked_image_lineage(self):

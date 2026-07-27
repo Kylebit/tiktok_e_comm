@@ -91,7 +91,9 @@ def test_model_candidates_are_platform_specific_and_auditable():
     assert result["status"] == "draft_pending_kyle_review"
     assert result["provider"] == "toapi"
     assert result["model"] == TOAPI_TITLE_MODEL
-    assert result["schema_version"] == "listing-copy-candidates-v3"
+    assert result["schema_version"] == "listing-copy-candidates-v4"
+    assert result["generation_attempts"] == 1
+    assert result["repair_performed"] is False
     assert len(result["shopee_description_en"]) >= 500
     assert result["input_signature"] == fact_signature(_facts())
     assert len(result["candidates"]) == len(EXPECTED_TARGETS)
@@ -102,6 +104,45 @@ def test_model_candidates_are_platform_specific_and_auditable():
     assert calls and "source_title_zh" in calls[0][0][1]["content"]
     assert "not a literal translation task" in calls[0][0][0]["content"]
     assert "platform-native product titles" in calls[0][0][0]["content"]
+
+
+def test_invalid_english_description_is_repaired_once():
+    rejected = json.loads(_model_payload())
+    rejected["shopee_description_en"] = (
+        rejected["shopee_description_en"]
+        + "\n中文说明：这行不应出现在英语描述中。"
+    )
+    calls = []
+
+    def model_call(_messages, **_kwargs):
+        calls.append(True)
+        return json.dumps(
+            rejected if len(calls) == 1 else json.loads(_model_payload()),
+            ensure_ascii=False,
+        )
+
+    result = generate_title_candidates(_facts(), model_call=model_call)
+
+    assert len(calls) == 2
+    assert result["generation_attempts"] == 2
+    assert result["repair_performed"] is True
+    assert "博冉优品" not in result["shopee_description_en"]
+
+
+def test_non_english_source_brand_line_is_omitted_from_english_description():
+    payload = json.loads(_model_payload())
+    payload["shopee_description_en"] += "\n- Brand: BRUP / 博冉优品"
+
+    result = generate_title_candidates(
+        _facts(),
+        model_call=lambda *_args, **_kwargs: json.dumps(
+            payload,
+            ensure_ascii=False,
+        ),
+    )
+
+    assert "博冉优品" not in result["shopee_description_en"]
+    assert result["generation_attempts"] == 1
 
 
 def test_missing_platform_candidate_is_rejected():

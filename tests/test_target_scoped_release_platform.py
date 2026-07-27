@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -20,21 +21,27 @@ from domains.channel_operations.release_executor import (
 from modules.products import server as product_server
 from shared_platform import release_store
 from shared_platform.release_store import (
+    ImmutableReleaseError,
     ReleaseAuthorizationError,
     ReleaseStore,
     ReleaseStoreError,
 )
 from shared_platform.target_scoped_release_contracts import (
     OfficialTargetProof,
+    TargetScopedCommandUnavailable,
     TargetScopedContractError,
     TargetScopedOperationRequest,
     TargetScopedOperationResult,
+    canonical_digest,
     operation_kind_for_target,
+    planned_target_command,
+    target_preflight_digest,
 )
 
 
 def _plan(target_label: str = "shopee:MY") -> dict:
-    return {
+    currency = "VND" if target_label == "shopee:VN" else "MYR"
+    plan = {
         "plan_id": "omnichannel:target-scoped-platform",
         "product_id": "3838616043",
         "seller_sku": "0954",
@@ -43,12 +50,72 @@ def _plan(target_label: str = "shopee:MY") -> dict:
         "targets": [target_label],
         "product_revision": 41,
         "omnichannel_scope_digest": "scope-0954",
+        "product_facts": {
+            "weight_kg": 0.2,
+            "package_cm": [34, 58, 3],
+        },
+        "listing_copy": {
+            "candidates": [
+                {
+                    "channel": "shopee",
+                    "site": "CNSC",
+                    "title": "Approved English Shopee master",
+                    "policy_check": "passed",
+                }
+            ],
+            "shopee_description_en": (
+                "Approved immutable Shopee description. " * 10
+            ),
+        },
+        "images": [
+            {
+                "position": 1,
+                "image_url": "https://cdn.example/approved-1.jpg",
+                "artifact_id": "asset-1",
+                "audit_id": "audit-1",
+            },
+            {
+                "position": 2,
+                "image_url": "https://cdn.example/approved-2.jpg",
+                "artifact_id": "asset-2",
+                "audit_id": "audit-2",
+            },
+        ],
+        "pricing": {
+            "selected_targets": {
+                target_label: {
+                    "derived_preview": {
+                        "local_original_price": 45,
+                        "source_currency": currency,
+                    }
+                }
+            }
+        },
     }
+    if target_label == "ozon:RU":
+        plan["target_actions"] = {
+            "ozon:RU": {
+                "schema_version": (
+                    "ozon-existing-product-stock-command/v1"
+                ),
+                "expected_listing_digest": "listing-digest-0954",
+                "desired_stock_quantity": 50,
+                "inventory_snapshot_id": "inventory:0954:r1",
+                "inventory_snapshot_revision_or_digest": "inventory-digest",
+                "warehouse_policy": "single_active_non_kgt",
+            }
+        }
+    return plan
 
 
-def _failed_store(tmp_path, target_label: str = "shopee:MY"):
+def _failed_store(
+    tmp_path,
+    target_label: str = "shopee:MY",
+    *,
+    plan_payload: dict | None = None,
+):
     store = ReleaseStore(tmp_path / "release.db")
-    plan = store.create_plan(_plan(target_label))
+    plan = store.create_plan(plan_payload or _plan(target_label))
     store.approve_plan(
         plan["plan_id"],
         confirmation_token=plan["confirmation_token"],
@@ -89,6 +156,8 @@ def _request(store: ReleaseStore, plan: dict, target_label: str):
         operation_kind=context["operation_kind"],
         product_revision=context["product_revision"],
         payload_digest=context["payload_digest"],
+        planned_command=context["planned_command"],
+        planned_command_digest=context["planned_command_digest"],
         preflight_digest=context["preflight_digest"],
         failure_attempt=context["failure_attempt"],
         failure_digest=context["failure_digest"],
@@ -106,6 +175,7 @@ def _proof_value(request: TargetScopedOperationRequest, **overrides):
         "target_label": request.target_label,
         "product_revision": request.product_revision,
         "payload_digest": request.payload_digest,
+        "planned_command_digest": request.planned_command_digest,
         "preflight_digest": request.preflight_digest,
         "failure_attempt": request.failure_attempt,
         "failure_digest": request.failure_digest,
@@ -171,6 +241,113 @@ def test_operation_kind_is_server_derived(target_label, operation_kind):
         operation_kind_for_target("shopee:PH")
 
 
+@pytest.mark.parametrize(
+    ("target_label", "region", "currency", "excluded"),
+    [
+        ("shopee:MY", "MY", "MYR", []),
+        ("shopee:VN", "VN", "VND", [50052]),
+    ],
+)
+def test_shopee_command_is_purely_derived_from_immutable_plan(
+    target_label,
+    region,
+    currency,
+    excluded,
+):
+    payload = _plan(target_label)
+    command, digest = planned_target_command(
+        payload,
+        target_label=target_label,
+    )
+    with_untrusted_runtime_data = deepcopy(payload)
+    with_untrusted_runtime_data["browser_state"] = {
+        "local_original_price": 999999,
+        "access_token": "must-not-be-read",
+    }
+    repeated, repeated_digest = planned_target_command(
+        with_untrusted_runtime_data,
+        target_label=target_label,
+    )
+
+    assert command == repeated
+    assert digest == repeated_digest == canonical_digest(command)
+    assert command == {
+        "schema_version": "shopee-existing-global-command/v1",
+        "builder_policy_version": "target-scoped-shopee/v1",
+        "target_label": target_label,
+        "operation_kind": "shopee_safe_pre_submit_retry_v1",
+        "region": region,
+        "seller_sku": "0954",
+        "model_sku": "0954",
+        "existing_global_only": True,
+        "forbid_global_create": True,
+        "forbid_global_update": True,
+        "forbid_model_init": True,
+        "allow_token_refresh": False,
+        "item_status": "NORMAL",
+        "local_original_price": 45.0,
+        "local_currency": currency,
+        "approved_master_digest": command["approved_master_digest"],
+        "approved_image_count": 2,
+        "parcel": {
+            "weight_kg": 0.2,
+            "package_cm": [34.0, 58.0, 3.0],
+        },
+        "parcel_digest": command["parcel_digest"],
+        "logistics_policy_version": (
+            "approved-parcel-enabled-channels-exclude-50052/v1"
+            if target_label == "shopee:VN"
+            else "approved-parcel-enabled-channels/v1"
+        ),
+        "excluded_logistics_ids": excluded,
+    }
+    assert "access_token" not in json.dumps(command)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda payload: payload.pop("pricing"),
+        lambda payload: payload["listing_copy"].pop(
+            "shopee_description_en"
+        ),
+        lambda payload: payload["images"].reverse(),
+        lambda payload: payload["product_facts"].pop("weight_kg"),
+    ],
+)
+def test_incomplete_shopee_plan_cannot_build_a_command(mutation):
+    payload = _plan("shopee:MY")
+    mutation(payload)
+
+    with pytest.raises(
+        TargetScopedCommandUnavailable,
+        match="immutable",
+    ) as raised:
+        planned_target_command(payload, target_label="shopee:MY")
+
+    assert raised.value.code == "planned_command_incomplete"
+
+
+def test_ozon_requires_successor_stock_decision_but_future_schema_is_supported():
+    payload = _plan("ozon:RU")
+    successor_command, successor_digest = planned_target_command(
+        payload,
+        target_label="ozon:RU",
+    )
+    payload.pop("target_actions")
+
+    with pytest.raises(TargetScopedCommandUnavailable) as raised:
+        planned_target_command(payload, target_label="ozon:RU")
+
+    assert raised.value.code == "successor_plan_stock_decision_required"
+    assert successor_command["desired_stock_quantity"] == 50
+    assert successor_command["inventory_snapshot_id"] == "inventory:0954:r1"
+    assert successor_command["warehouse_policy"] == "single_active_non_kgt"
+    assert successor_command["forbid_import"] is True
+    assert successor_command["forbid_create"] is True
+    assert successor_digest == canonical_digest(successor_command)
+
+
 def test_verified_adapter_result_can_truthfully_record_submission_acceptance():
     result = TargetScopedOperationResult.from_value(
         AdapterExecutionResult(
@@ -210,11 +387,19 @@ def test_atomic_claim_consumes_proof_without_making_target_pending(tmp_path):
     with sqlite3.connect(store.path) as connection:
         proof_row = connection.execute(
             """
-            SELECT status, operation_digest
+            SELECT status, operation_digest, proof_json
             FROM release_target_retry_proofs
             WHERE proof_digest = ?
             """,
             (proof.proof_digest,),
+        ).fetchone()
+        operation_row = connection.execute(
+            """
+            SELECT request_json
+            FROM release_target_retry_operations
+            WHERE operation_digest = ?
+            """,
+            (claim["operation"]["operation_digest"],),
         ).fetchone()
         physical = connection.execute(
             """
@@ -225,6 +410,21 @@ def test_atomic_claim_consumes_proof_without_making_target_pending(tmp_path):
         ).fetchone()
     assert proof_row[0] == "CONSUMED"
     assert proof_row[1] == claim["operation"]["operation_digest"]
+    proof_identity = json.loads(proof_row[2])
+    operation_identity = json.loads(operation_row[0])
+    assert proof_identity["planned_command_digest"] == (
+        request.planned_command_digest
+    )
+    assert operation_identity["planned_command_digest"] == (
+        request.planned_command_digest
+    )
+    assert operation_identity["planned_command"] == dict(
+        request.planned_command
+    )
+    assert "confirmation_token" not in operation_identity
+    assert "access_token" not in json.dumps(
+        {"proof": proof_identity, "operation": operation_identity}
+    )
     assert physical[0] == "FAILED"
 
 
@@ -371,6 +571,15 @@ def test_claim_fails_closed_on_token_proof_and_failure_identity_drift(tmp_path):
     wrong_proof = _proof_value(request, failure_attempt=request.failure_attempt + 1)
     with pytest.raises(TargetScopedContractError, match="identity"):
         OfficialTargetProof.from_value(wrong_proof, request=request)
+    wrong_command_proof = _proof_value(
+        request,
+        planned_command_digest="different-command",
+    )
+    with pytest.raises(TargetScopedContractError, match="identity"):
+        OfficialTargetProof.from_value(
+            wrong_command_proof,
+            request=request,
+        )
 
     store.retry_failed_targets  # keep the store instance live for coverage
     with sqlite3.connect(store.path) as connection:
@@ -387,6 +596,53 @@ def test_claim_fails_closed_on_token_proof_and_failure_identity_drift(tmp_path):
             request=request,
             proof=_proof(request),
         )
+
+
+def test_claim_recomputes_planned_command_from_immutable_plan(tmp_path):
+    store, plan, _run = _failed_store(tmp_path)
+    request = _request(store, plan, "shopee:MY")
+    client_command = {
+        **dict(request.planned_command),
+        "local_original_price": 999999.0,
+    }
+    client_digest = canonical_digest(client_command)
+    client_preflight = target_preflight_digest(
+        plan_id=request.plan_id,
+        run_id=request.run_id,
+        target_label=request.target_label,
+        operation_kind=request.operation_kind,
+        product_revision=request.product_revision,
+        payload_digest=request.payload_digest,
+        planned_command_digest=client_digest,
+        failure_attempt=request.failure_attempt,
+        failure_digest=request.failure_digest,
+        target_idempotency_key=request.target_idempotency_key,
+    )
+    injected = TargetScopedOperationRequest(
+        **{
+            **request.__dict__,
+            "planned_command": client_command,
+            "planned_command_digest": client_digest,
+            "preflight_digest": client_preflight,
+        }
+    )
+
+    with pytest.raises(
+        ImmutableReleaseError,
+        match="failure identity",
+    ):
+        store.claim_target_scoped_operation(
+            request=injected,
+            proof=_proof(injected),
+        )
+
+    with sqlite3.connect(store.path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM release_target_retry_proofs"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM release_target_retry_operations"
+        ).fetchone()[0] == 0
 
 
 def _resolved_gate(store, plan, request):
@@ -423,11 +679,84 @@ def _post_body(request, proof):
         "expected_revision": request.product_revision,
         "failure_attempt": request.failure_attempt,
         "payload_digest": request.payload_digest,
+        "planned_command_digest": request.planned_command_digest,
         "preflight_digest": request.preflight_digest,
         "proof_digest": proof.proof_digest,
         "approved_by": "Kyle",
         "confirm_target_scoped_action": True,
     }
+
+
+@pytest.mark.parametrize(
+    ("target_label", "remove_field", "expected_code"),
+    [
+        (
+            "shopee:MY",
+            "pricing",
+            "planned_command_incomplete",
+        ),
+        (
+            "ozon:RU",
+            "target_actions",
+            "successor_plan_stock_decision_required",
+        ),
+    ],
+)
+def test_preview_blocks_incomplete_plan_before_proof_or_claim(
+    tmp_path,
+    monkeypatch,
+    target_label,
+    remove_field,
+    expected_code,
+):
+    payload = _plan(target_label)
+    payload.pop(remove_field)
+    store, plan, run = _failed_store(
+        tmp_path,
+        target_label,
+        plan_payload=payload,
+    )
+    proof_calls = []
+    gate = {
+        "dashboard": {},
+        "payload": plan["payload"],
+        "plan": plan,
+        "run": run,
+        "registry": {},
+        "target_rows": [],
+    }
+    monkeypatch.setattr(release_store, "default_release_store", lambda: store)
+    monkeypatch.setattr(
+        product_server,
+        "_release_execution_readonly_gate",
+        lambda *_args, **_kwargs: (gate, None),
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_target_scoped_adapter_module",
+        lambda: proof_calls.append("proof"),
+    )
+
+    status, response = product_server._preview_target_scoped_release_action(
+        offer_id="3838616043",
+        target_label=target_label,
+    )
+
+    assert status == 409
+    assert response["code"] == expected_code
+    assert response["available"] is False
+    assert response["external_writes_performed"] == []
+    assert proof_calls == []
+    asserted = store.get_run(run["run_id"])
+    assert asserted["targets"][0]["status"] == "FAILED"
+    assert asserted["targets"][0]["attempts"] == 1
+    with sqlite3.connect(store.path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM release_target_retry_proofs"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM release_target_retry_operations"
+        ).fetchone()[0] == 0
 
 
 def test_preview_is_readonly_redacted_and_never_refreshes(
@@ -462,6 +791,10 @@ def test_preview_is_readonly_redacted_and_never_refreshes(
     assert status == 200
     assert payload["summary"] == {"target": "shopee:MY", "status": "safe"}
     assert "confirmation_token" not in payload
+    assert "planned_command" not in payload
+    assert payload["planned_command_digest"] == (
+        request.planned_command_digest
+    )
     assert calls == [("shopee:MY", False)]
     with sqlite3.connect(store.path) as connection:
         assert connection.execute(
@@ -527,8 +860,10 @@ def test_post_exact_single_target_success_and_replay_call_nothing(
         ("expected_revision", 42),
         ("failure_attempt", 99),
         ("payload_digest", "wrong"),
+        ("planned_command_digest", "wrong"),
         ("preflight_digest", "wrong"),
         ("confirmation_token", "wrong"),
+        ("planned_command", {"local_original_price": 1}),
     ],
 )
 def test_post_drift_fails_before_adapter_or_claim(

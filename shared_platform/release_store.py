@@ -2241,6 +2241,10 @@ class ReleaseStore:
                 "operation_kind": request.operation_kind,
                 "product_revision": request.product_revision,
                 "payload_digest": request.payload_digest,
+                "planned_command": dict(request.planned_command),
+                "planned_command_digest": (
+                    request.planned_command_digest
+                ),
                 "preflight_digest": request.preflight_digest,
                 "failure_attempt": request.failure_attempt,
                 "failure_digest": request.failure_digest,
@@ -2683,6 +2687,7 @@ class ReleaseStore:
     ) -> dict[str, Any]:
         from shared_platform.target_scoped_release_contracts import (
             operation_kind_for_target,
+            planned_target_command,
             target_failure_digest,
             target_preflight_digest,
         )
@@ -2755,6 +2760,10 @@ class ReleaseStore:
             raise ReleaseAuthorizationError(
                 "immutable plan product_revision is invalid"
             )
+        planned_command, planned_command_digest = planned_target_command(
+            payload,
+            target_label=target_label,
+        )
         preflight = target_preflight_digest(
             plan_id=plan["plan_id"],
             run_id=row["run_id"],
@@ -2762,6 +2771,7 @@ class ReleaseStore:
             operation_kind=operation_kind,
             product_revision=product_revision,
             payload_digest=plan["payload_digest"],
+            planned_command_digest=planned_command_digest,
             failure_attempt=int(row["attempts"] or 0),
             failure_digest=failure_identity,
             target_idempotency_key=row["idempotency_key"],
@@ -2864,6 +2874,8 @@ class ReleaseStore:
             "operation_kind": operation_kind,
             "product_revision": product_revision,
             "payload_digest": plan["payload_digest"],
+            "planned_command": planned_command,
+            "planned_command_digest": planned_command_digest,
             "preflight_digest": preflight,
             "operation": operation,
             "eligible": not blockers,

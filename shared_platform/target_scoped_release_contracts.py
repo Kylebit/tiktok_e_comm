@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping
@@ -37,6 +38,14 @@ _SENSITIVE_KEY_PARTS = (
 
 class TargetScopedContractError(ValueError):
     """A target-scoped request, proof or result violated the stable contract."""
+
+
+class TargetScopedCommandUnavailable(TargetScopedContractError):
+    """The immutable plan cannot authorize a complete target command."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = _required_text(code, "code")
 
 
 def canonical_json(value: object) -> str:
@@ -80,6 +89,294 @@ def _required_text(value: object, field: str) -> str:
     if not text:
         raise TargetScopedContractError(f"{field} is required")
     return text
+
+
+def _strict_positive_number(value: object, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TargetScopedCommandUnavailable(
+            "planned_command_incomplete",
+            f"immutable plan requires numeric {field}",
+        )
+    number = float(value)
+    if not math.isfinite(number) or number <= 0:
+        raise TargetScopedCommandUnavailable(
+            "planned_command_incomplete",
+            f"immutable plan requires positive {field}",
+        )
+    return number
+
+
+def _normalised_seller_sku(value: object) -> tuple[str, str]:
+    seller_sku = _required_text(value, "seller_sku")
+    if not seller_sku.isdigit() or len(seller_sku) > 32:
+        raise TargetScopedCommandUnavailable(
+            "planned_command_incomplete",
+            "immutable seller_sku must contain 1-32 digits",
+        )
+    return seller_sku, seller_sku[-4:].zfill(4)
+
+
+def _approved_shopee_master_digest(payload: Mapping[str, Any]) -> tuple[str, int]:
+    listing = payload.get("listing_copy")
+    images = payload.get("images")
+    if not isinstance(listing, Mapping) or not isinstance(images, list):
+        raise TargetScopedCommandUnavailable(
+            "planned_command_incomplete",
+            "immutable plan lacks approved Shopee copy or ordered images",
+        )
+    candidates = [
+        row
+        for row in (listing.get("candidates") or ())
+        if isinstance(row, Mapping)
+        and str(row.get("channel") or "").lower() == "shopee"
+        and str(row.get("site") or "").upper() == "CNSC"
+        and str(row.get("policy_check") or "").lower() == "passed"
+        and str(row.get("title") or "").strip()
+    ]
+    if len(candidates) != 1:
+        raise TargetScopedCommandUnavailable(
+            "planned_command_incomplete",
+            "immutable plan requires one approved Shopee CNSC title",
+        )
+    description = str(listing.get("shopee_description_en") or "").strip()
+    if not description or not images:
+        raise TargetScopedCommandUnavailable(
+            "planned_command_incomplete",
+            "immutable plan requires approved Shopee description and images",
+        )
+    ordered_images: list[dict[str, Any]] = []
+    for index, row in enumerate(images, start=1):
+        if not isinstance(row, Mapping):
+            raise TargetScopedCommandUnavailable(
+                "planned_command_incomplete",
+                "immutable ordered image entry is invalid",
+            )
+        url = str(row.get("image_url") or "").strip()
+        position = row.get("position")
+        if not url or isinstance(position, bool) or not isinstance(position, int):
+            raise TargetScopedCommandUnavailable(
+                "planned_command_incomplete",
+                "immutable ordered image requires position and image_url",
+            )
+        if position != index:
+            raise TargetScopedCommandUnavailable(
+                "planned_command_incomplete",
+                "immutable images must use exact consecutive order",
+            )
+        ordered_images.append(
+            {
+                "position": position,
+                "image_url": url,
+                "artifact_id": str(row.get("artifact_id") or ""),
+                "audit_id": str(row.get("audit_id") or ""),
+            }
+        )
+    return (
+        canonical_digest(
+            {
+                "schema_version": "approved-shopee-master/v1",
+                "title": str(candidates[0]["title"]).strip(),
+                "description": description,
+                "ordered_images": ordered_images,
+            }
+        ),
+        len(ordered_images),
+    )
+
+
+def _approved_parcel(
+    payload: Mapping[str, Any],
+) -> tuple[dict[str, Any], str]:
+    facts = payload.get("product_facts")
+    if not isinstance(facts, Mapping):
+        raise TargetScopedCommandUnavailable(
+            "planned_command_incomplete",
+            "immutable plan lacks approved parcel facts",
+        )
+    weight = _strict_positive_number(facts.get("weight_kg"), "weight_kg")
+    package = facts.get("package_cm")
+    if not isinstance(package, list) or len(package) != 3:
+        raise TargetScopedCommandUnavailable(
+            "planned_command_incomplete",
+            "immutable plan requires three package dimensions",
+        )
+    dimensions = [
+        _strict_positive_number(value, f"package_cm[{index}]")
+        for index, value in enumerate(package)
+    ]
+    parcel = {
+        "weight_kg": weight,
+        "package_cm": dimensions,
+    }
+    return parcel, canonical_digest(
+        {"schema_version": "approved-parcel/v1", **parcel}
+    )
+
+
+def _planned_shopee_command(
+    payload: Mapping[str, Any],
+    *,
+    target_label: str,
+) -> dict[str, Any]:
+    region = target_label.rsplit(":", 1)[1]
+    seller_sku, model_sku = _normalised_seller_sku(
+        payload.get("seller_sku")
+    )
+    pricing = payload.get("pricing")
+    selected = (
+        pricing.get("selected_targets")
+        if isinstance(pricing, Mapping)
+        else None
+    )
+    target_pricing = (
+        selected.get(target_label)
+        if isinstance(selected, Mapping)
+        else None
+    )
+    derived = (
+        target_pricing.get("derived_preview")
+        if isinstance(target_pricing, Mapping)
+        else None
+    )
+    if not isinstance(derived, Mapping):
+        raise TargetScopedCommandUnavailable(
+            "planned_command_incomplete",
+            f"immutable plan lacks {target_label} approved pricing",
+        )
+    local_price = _strict_positive_number(
+        derived.get("local_original_price"),
+        "local_original_price",
+    )
+    currency = str(derived.get("source_currency") or "").strip().upper()
+    expected_currency = {"MY": "MYR", "VN": "VND"}[region]
+    if currency != expected_currency:
+        raise TargetScopedCommandUnavailable(
+            "planned_command_incomplete",
+            f"immutable {target_label} price must use {expected_currency}",
+        )
+    master_digest, image_count = _approved_shopee_master_digest(payload)
+    parcel, parcel_digest = _approved_parcel(payload)
+    excluded = [50052] if region == "VN" else []
+    return {
+        "schema_version": "shopee-existing-global-command/v1",
+        "builder_policy_version": "target-scoped-shopee/v1",
+        "target_label": target_label,
+        "operation_kind": SHOPEE_SAFE_PRE_SUBMIT_RETRY,
+        "region": region,
+        "seller_sku": seller_sku,
+        "model_sku": model_sku,
+        "existing_global_only": True,
+        "forbid_global_create": True,
+        "forbid_global_update": True,
+        "forbid_model_init": True,
+        "allow_token_refresh": False,
+        "item_status": "NORMAL",
+        "local_original_price": local_price,
+        "local_currency": currency,
+        "approved_master_digest": master_digest,
+        "approved_image_count": image_count,
+        "parcel": parcel,
+        "parcel_digest": parcel_digest,
+        "logistics_policy_version": (
+            "approved-parcel-enabled-channels-exclude-50052/v1"
+            if region == "VN"
+            else "approved-parcel-enabled-channels/v1"
+        ),
+        "excluded_logistics_ids": excluded,
+    }
+
+
+def _planned_ozon_command(payload: Mapping[str, Any]) -> dict[str, Any]:
+    actions = payload.get("target_actions")
+    action = (
+        actions.get("ozon:RU") if isinstance(actions, Mapping) else None
+    )
+    if not isinstance(action, Mapping):
+        raise TargetScopedCommandUnavailable(
+            "successor_plan_stock_decision_required",
+            "Ozon stock action requires a Kyle-approved successor plan",
+        )
+    seller_sku, offer_id = _normalised_seller_sku(
+        payload.get("seller_sku")
+    )
+    required_text = {
+        field: str(action.get(field) or "").strip()
+        for field in (
+            "expected_listing_digest",
+            "inventory_snapshot_id",
+            "inventory_snapshot_revision_or_digest",
+        )
+    }
+    if any(not value for value in required_text.values()):
+        raise TargetScopedCommandUnavailable(
+            "successor_plan_stock_decision_required",
+            "Ozon successor plan lacks governed listing or inventory identity",
+        )
+    stock = action.get("desired_stock_quantity")
+    if isinstance(stock, bool) or not isinstance(stock, int) or stock <= 0:
+        raise TargetScopedCommandUnavailable(
+            "successor_plan_stock_decision_required",
+            "Ozon successor plan requires a positive desired stock quantity",
+        )
+    if (
+        str(action.get("schema_version") or "")
+        != "ozon-existing-product-stock-command/v1"
+        or str(action.get("warehouse_policy") or "")
+        != "single_active_non_kgt"
+    ):
+        raise TargetScopedCommandUnavailable(
+            "successor_plan_stock_decision_required",
+            "Ozon successor plan stock schema or warehouse policy is invalid",
+        )
+    return {
+        "schema_version": "ozon-existing-product-stock-command/v1",
+        "builder_policy_version": "target-scoped-ozon-stock/v1",
+        "target_label": "ozon:RU",
+        "operation_kind": OZON_EXISTING_PRODUCT_STOCK_RECONCILIATION,
+        "seller_sku": seller_sku,
+        "offer_id": offer_id,
+        "existing_product_only": True,
+        "forbid_import": True,
+        "forbid_create": True,
+        "expected_listing_digest": required_text[
+            "expected_listing_digest"
+        ],
+        "desired_stock_quantity": stock,
+        "inventory_snapshot_id": required_text["inventory_snapshot_id"],
+        "inventory_snapshot_revision_or_digest": required_text[
+            "inventory_snapshot_revision_or_digest"
+        ],
+        "warehouse_policy": "single_active_non_kgt",
+    }
+
+
+def planned_target_command(
+    plan_payload: Mapping[str, Any],
+    *,
+    target_label: str,
+) -> tuple[dict[str, Any], str]:
+    """Purely derive one write command from an immutable ReleasePlan payload."""
+
+    if not isinstance(plan_payload, Mapping):
+        raise TargetScopedCommandUnavailable(
+            "planned_command_incomplete",
+            "immutable release payload is required",
+        )
+    label = str(target_label or "").strip()
+    operation_kind_for_target(label)
+    if label not in list(plan_payload.get("targets") or ()):
+        raise TargetScopedCommandUnavailable(
+            "planned_command_incomplete",
+            "target is absent from the immutable release plan",
+        )
+    if label in {"shopee:MY", "shopee:VN"}:
+        command = _planned_shopee_command(
+            plan_payload,
+            target_label=label,
+        )
+    else:
+        command = _planned_ozon_command(plan_payload)
+    return command, canonical_digest(command)
 
 
 def _assert_redacted(value: object, *, path: str = "evidence") -> None:
@@ -136,6 +433,7 @@ def target_preflight_digest(
     operation_kind: str,
     product_revision: int,
     payload_digest: str,
+    planned_command_digest: str,
     failure_attempt: int,
     failure_digest: str,
     target_idempotency_key: str,
@@ -157,6 +455,9 @@ def target_preflight_digest(
             ),
             "payload_digest": _required_text(
                 payload_digest, "payload_digest"
+            ),
+            "planned_command_digest": _required_text(
+                planned_command_digest, "planned_command_digest"
             ),
             "failure_attempt": _strict_non_negative_int(
                 failure_attempt, "failure_attempt"
@@ -187,6 +488,8 @@ class TargetScopedOperationRequest:
     operation_kind: str
     product_revision: int
     payload_digest: str
+    planned_command: Mapping[str, Any]
+    planned_command_digest: str
     preflight_digest: str
     failure_attempt: int
     failure_digest: str
@@ -206,6 +509,7 @@ class TargetScopedOperationRequest:
             "target_label",
             "operation_kind",
             "payload_digest",
+            "planned_command_digest",
             "preflight_digest",
             "failure_digest",
             "target_idempotency_key",
@@ -222,6 +526,25 @@ class TargetScopedOperationRequest:
             raise TargetScopedContractError(
                 "operation_kind does not match target_label"
             )
+        if not isinstance(self.planned_command, Mapping):
+            raise TargetScopedContractError(
+                "planned_command must be a mapping"
+            )
+        _assert_redacted(self.planned_command, path="planned_command")
+        if canonical_digest(dict(self.planned_command)) != (
+            self.planned_command_digest
+        ):
+            raise TargetScopedContractError(
+                "planned_command_digest does not match planned_command"
+            )
+        if (
+            self.planned_command.get("target_label") != self.target_label
+            or self.planned_command.get("operation_kind")
+            != self.operation_kind
+        ):
+            raise TargetScopedContractError(
+                "planned_command identity does not match request"
+            )
         expected_preflight = target_preflight_digest(
             plan_id=self.plan_id,
             run_id=self.run_id,
@@ -229,6 +552,7 @@ class TargetScopedOperationRequest:
             operation_kind=self.operation_kind,
             product_revision=self.product_revision,
             payload_digest=self.payload_digest,
+            planned_command_digest=self.planned_command_digest,
             failure_attempt=self.failure_attempt,
             failure_digest=self.failure_digest,
             target_idempotency_key=self.target_idempotency_key,
@@ -261,6 +585,8 @@ class TargetScopedOperationRequest:
             "operation_kind": self.operation_kind,
             "product_revision": self.product_revision,
             "payload_digest": self.payload_digest,
+            "planned_command": dict(self.planned_command),
+            "planned_command_digest": self.planned_command_digest,
             "preflight_digest": self.preflight_digest,
             "failure_attempt": self.failure_attempt,
             "failure_digest": self.failure_digest,
@@ -290,6 +616,7 @@ class OfficialTargetProof:
     target_label: str
     product_revision: int
     payload_digest: str
+    planned_command_digest: str
     preflight_digest: str
     failure_attempt: int
     failure_digest: str
@@ -350,6 +677,9 @@ class OfficialTargetProof:
                 "target_label": str(raw.get("target_label") or ""),
                 "product_revision": raw.get("product_revision"),
                 "payload_digest": str(raw.get("payload_digest") or ""),
+                "planned_command_digest": str(
+                    raw.get("planned_command_digest") or ""
+                ),
                 "preflight_digest": str(raw.get("preflight_digest") or ""),
                 "failure_attempt": raw.get("failure_attempt"),
                 "failure_digest": str(raw.get("failure_digest") or ""),
@@ -376,6 +706,9 @@ class OfficialTargetProof:
                     "product_revision",
                 ),
                 payload_digest=semantic_payload["payload_digest"],
+                planned_command_digest=semantic_payload[
+                    "planned_command_digest"
+                ],
                 preflight_digest=semantic_payload["preflight_digest"],
                 failure_attempt=_strict_non_negative_int(
                     semantic_payload["failure_attempt"],
@@ -400,6 +733,7 @@ class OfficialTargetProof:
             "target_label": request.target_label,
             "product_revision": request.product_revision,
             "payload_digest": request.payload_digest,
+            "planned_command_digest": request.planned_command_digest,
             "preflight_digest": request.preflight_digest,
             "failure_attempt": request.failure_attempt,
             "failure_digest": request.failure_digest,
@@ -449,6 +783,7 @@ class OfficialTargetProof:
             "target_label": self.target_label,
             "product_revision": self.product_revision,
             "payload_digest": self.payload_digest,
+            "planned_command_digest": self.planned_command_digest,
             "preflight_digest": self.preflight_digest,
             "failure_attempt": self.failure_attempt,
             "failure_digest": self.failure_digest,

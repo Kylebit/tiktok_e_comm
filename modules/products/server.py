@@ -1613,6 +1613,10 @@ def _target_scoped_request_from_context(
         operation_kind=str(context.get("operation_kind") or ""),
         product_revision=context.get("product_revision"),
         payload_digest=str(context.get("payload_digest") or ""),
+        planned_command=dict(context.get("planned_command") or {}),
+        planned_command_digest=str(
+            context.get("planned_command_digest") or ""
+        ),
         preflight_digest=str(context.get("preflight_digest") or ""),
         failure_attempt=context.get("failure_attempt"),
         failure_digest=str(context.get("failure_digest") or ""),
@@ -1632,6 +1636,7 @@ def _target_scoped_action_gate(
     """Resolve one exact active plan/target without mutating release state."""
 
     from shared_platform.target_scoped_release_contracts import (
+        TargetScopedCommandUnavailable,
         TargetScopedContractError,
         operation_kind_for_target,
     )
@@ -1741,6 +1746,18 @@ def _target_scoped_action_gate(
             gate=gate,
             context=context,
         )
+    except TargetScopedCommandUnavailable as error:
+        return None, (
+            409,
+            {
+                "ok": False,
+                "code": error.code,
+                "error": str(error),
+                "available": False,
+                "external_writes_performed": [],
+                "run": run,
+            },
+        )
     except (TypeError, ValueError, RuntimeError) as error:
         return None, (
             409,
@@ -1794,6 +1811,9 @@ def _target_scoped_existing_operation_response(
             "product_revision": data.get("expected_revision"),
             "failure_attempt": data.get("failure_attempt"),
             "payload_digest": str(data.get("payload_digest") or ""),
+            "planned_command_digest": str(
+                data.get("planned_command_digest") or ""
+            ),
             "preflight_digest": str(data.get("preflight_digest") or ""),
             "approved_by": str(data.get("approved_by") or ""),
             "confirmation_token_digest": hashlib.sha256(
@@ -1912,6 +1932,7 @@ def _preview_target_scoped_release_action(
         "plan_id": request.plan_id,
         "expected_revision": request.product_revision,
         "payload_digest": request.payload_digest,
+        "planned_command_digest": request.planned_command_digest,
         "preflight_digest": request.preflight_digest,
         "proof_digest": proof.proof_digest,
         "failure_attempt": request.failure_attempt,
@@ -1988,11 +2009,22 @@ def _execute_target_scoped_release_action(data: dict) -> tuple[int, dict]:
             "error": "approved_by must be Kyle",
             "external_writes_performed": [],
         }
+    if "planned_command" in data:
+        return 400, {
+            "ok": False,
+            "code": "client_command_override_forbidden",
+            "error": (
+                "client may echo planned_command_digest but cannot provide "
+                "or override the server-owned planned command"
+            ),
+            "external_writes_performed": [],
+        }
     required_text = (
         "target_label",
         "plan_id",
         "confirmation_token",
         "payload_digest",
+        "planned_command_digest",
         "preflight_digest",
         "proof_digest",
     )
@@ -2001,7 +2033,8 @@ def _execute_target_scoped_release_action(data: dict) -> tuple[int, dict]:
             "ok": False,
             "error": (
                 "target_label, plan_id, confirmation_token, payload_digest, "
-                "preflight_digest and proof_digest are required"
+                "planned_command_digest, preflight_digest and proof_digest "
+                "are required"
             ),
             "external_writes_performed": [],
         }
@@ -2055,6 +2088,8 @@ def _execute_target_scoped_release_action(data: dict) -> tuple[int, dict]:
             or failure_attempt != request.failure_attempt
             or str(data.get("payload_digest") or "")
             != request.payload_digest
+            or str(data.get("planned_command_digest") or "")
+            != request.planned_command_digest
             or str(data.get("preflight_digest") or "")
             != request.preflight_digest
             or str(data.get("plan_id") or "") != request.plan_id

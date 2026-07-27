@@ -263,9 +263,10 @@ def _official_fixture(
                 "response": {
                     "global_item_list": [
                         {
+                            "global_item_id": 40283034166,
                             "global_item_name": SOURCE_TITLE,
                             "description": SOURCE_DESCRIPTION,
-                            "image": {"image_url_list": SOURCE_IMAGES},
+                            "image": {"image_url_list": SOURCE_IMAGES, "image_id_list": [f"official-image-{index}" for index, _ in enumerate(SOURCE_IMAGES, start=1)]},
                         }
                     ]
                 }

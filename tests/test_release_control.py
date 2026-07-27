@@ -9,6 +9,7 @@ import pytest
 
 from shared_platform.release_control import (
     _catalog_sku_is_owned_by_release,
+    _default_omnichannel_targets,
     build_weekly_profit_rehearsal,
     build_release_dashboard,
     latest_weekly_profit_summary,
@@ -155,6 +156,19 @@ def test_catalogue_row_owned_by_successful_release_is_not_a_new_sku_conflict(
     )
 
 
+def test_default_targets_keep_only_product_selected_homebloom_sites():
+    targets = _default_omnichannel_targets(
+        {"selected_sites": ["lh_th", "hb_ph"]}
+    )
+
+    assert targets == {
+        "miaoshou": ("COMMON",),
+        "tiktok": ("LH_TH", "HB_PH", "MX", "GB"),
+        "shopee": ("TH", "PH"),
+        "ozon": ("RU",),
+    }
+
+
 def test_release_dashboard_is_a_complete_no_write_rehearsal(tmp_path):
     root, database = _release_fixture(tmp_path)
     before = {
@@ -228,6 +242,8 @@ def test_release_dashboard_is_a_complete_no_write_rehearsal(tmp_path):
     assert target_status == {
         ("miaoshou", "COMMON"): (True, True),
         ("tiktok", "LH_TH"): (True, True),
+        ("tiktok", "MX"): (True, True),
+        ("tiktok", "GB"): (True, True),
         ("shopee", "TH"): (True, True),
         ("ozon", "RU"): (True, True),
     }
@@ -458,7 +474,7 @@ def test_release_dashboard_normalises_sea_sites_into_shared_channel_matrix(tmp_p
     preview = result["omnichannel_preview"]
     assert preview["site_selection"] == {
         "miaoshou": ["COMMON"],
-        "tiktok": ["LH_MY", "LH_PH", "LH_TH", "LH_VN"],
+        "tiktok": ["GB", "LH_MY", "LH_PH", "LH_TH", "LH_VN", "MX"],
         "shopee": ["MY", "PH", "TH", "VN"],
         "ozon": ["RU"],
     }
@@ -484,6 +500,22 @@ def test_release_dashboard_normalises_sea_sites_into_shared_channel_matrix(tmp_p
         "tiktok:LH_MY",
         "tiktok:LH_TH",
         "tiktok:LH_VN",
+        "tiktok:MX",
+        "tiktok:GB",
+        "shopee:PH",
+        "shopee:MY",
+        "shopee:TH",
+        "shopee:VN",
+        "ozon:RU",
+    ]
+    assert result["publication_scope"]["selected_labels"] == [
+        "miaoshou:COMMON",
+        "tiktok:LH_PH",
+        "tiktok:LH_MY",
+        "tiktok:LH_TH",
+        "tiktok:LH_VN",
+        "tiktok:MX",
+        "tiktok:GB",
         "shopee:PH",
         "shopee:MY",
         "shopee:TH",
@@ -491,7 +523,7 @@ def test_release_dashboard_normalises_sea_sites_into_shared_channel_matrix(tmp_p
         "ozon:RU",
     ]
     assert not any(
-        "HB_" in label or label in {"tiktok:MX", "tiktok:GB"}
+        "HB_" in label
         for label in result["publication_scope"]["default_labels"]
     )
 
@@ -608,7 +640,7 @@ def test_release_dashboard_channel_scope_changes_plan_and_confirmation_token(tmp
     )
 
 
-def test_release_dashboard_exposes_audited_mx_gb_targets_without_defaulting_them(
+def test_release_dashboard_accepts_explicit_audited_mx_gb_scope(
     tmp_path,
 ):
     root, database = _release_fixture(tmp_path)
@@ -652,11 +684,11 @@ def test_release_dashboard_exposes_audited_mx_gb_targets_without_defaulting_them
     )
 
 
-def test_release_dashboard_never_defaults_mx_or_gb_from_workbench_site_keys(tmp_path):
+def test_release_dashboard_defaults_mx_gb_without_forcing_homebloom(tmp_path):
     root, database = _release_fixture(tmp_path)
     state_path = root / "data" / "new_product_workbench" / "3828811808.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
-    state["review"]["selected_sites"] = ["lh_th", "mx", "gb"]
+    state["review"]["selected_sites"] = ["lh_th"]
     state_path.write_text(json.dumps(state), encoding="utf-8")
 
     result = build_release_dashboard(
@@ -668,11 +700,23 @@ def test_release_dashboard_never_defaults_mx_or_gb_from_workbench_site_keys(tmp_
     assert result["publication_scope"]["default_labels"] == [
         "miaoshou:COMMON",
         "tiktok:LH_TH",
+        "tiktok:MX",
+        "tiktok:GB",
         "shopee:TH",
         "ozon:RU",
     ]
-    assert "tiktok:MX" not in result["publication_scope"]["selected_labels"]
-    assert "tiktok:GB" not in result["publication_scope"]["selected_labels"]
+    assert result["publication_scope"]["selected_labels"] == [
+        "miaoshou:COMMON",
+        "tiktok:LH_TH",
+        "tiktok:MX",
+        "tiktok:GB",
+        "shopee:TH",
+        "ozon:RU",
+    ]
+    assert not any(
+        "HB_" in label
+        for label in result["publication_scope"]["selected_labels"]
+    )
 
 
 def test_release_dashboard_blocks_shopee_without_selected_same_country_tiktok(

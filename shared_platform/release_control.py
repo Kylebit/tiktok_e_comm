@@ -480,18 +480,22 @@ def _default_omnichannel_targets(review: Mapping[str, Any]) -> dict[str, tuple[s
         for value in (review.get("selected_sites") or ())
         if str(value or "").strip()
     }
-    tiktok_sites = tuple(
+    selected_tiktok_sites = tuple(
         site
         for site, (target_key, _shop, country) in TIKTOK_STORE_TARGETS.items()
-        if target_key in selected_store_keys and country in {"PH", "MY", "TH", "VN"}
+        if target_key in selected_store_keys
+        and country in {"PH", "MY", "TH", "VN"}
     )
-    targets: dict[str, tuple[str, ...]] = {"miaoshou": ("COMMON",)}
-    if tiktok_sites:
-        targets["tiktok"] = tiktok_sites
+    tiktok_sites = tuple(dict.fromkeys((*selected_tiktok_sites, "MX", "GB")))
+    targets: dict[str, tuple[str, ...]] = {
+        "miaoshou": ("COMMON",),
+        "tiktok": tiktok_sites,
+    }
+    if selected_tiktok_sites:
         targets["shopee"] = tuple(
             dict.fromkeys(
                 country
-                for site in tiktok_sites
+                for site in selected_tiktok_sites
                 for _target_key, _shop, country in (TIKTOK_STORE_TARGETS[site],)
             )
         )

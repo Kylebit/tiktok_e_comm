@@ -224,14 +224,35 @@ section { scroll-margin-top: 18px; }
 .operation-progress .badge.warn { color: #875620; background: rgba(239,189,99,.25); }
 .operation-progress .badge.safe { color: var(--teal); background: var(--mint); }
 .operation-progress .badge.danger { color: var(--red); background: rgba(166,66,55,.1); }
-.progress-track { height: 7px; overflow: hidden; border-radius: 999px; background: rgba(23,48,45,.09); }
-.progress-track > span { width: 0; height: 100%; display: block; border-radius: inherit; background: linear-gradient(90deg,var(--teal),#50a18e); transition: width .3s ease; }
-.operation-progress.running .progress-track > span {
+.progress-track {
+  width: 100%;
+  height: 7px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  appearance: none;
+  background: rgba(23,48,45,.09);
+}
+.progress-track::-webkit-progress-bar {
+  border-radius: inherit;
+  background: rgba(23,48,45,.09);
+}
+.progress-track::-webkit-progress-value {
+  border-radius: inherit;
+  background: linear-gradient(90deg,var(--teal),#50a18e);
+  transition: width .3s ease;
+}
+.progress-track::-moz-progress-bar {
+  border-radius: inherit;
+  background: linear-gradient(90deg,var(--teal),#50a18e);
+}
+.operation-progress.running .progress-track::-webkit-progress-value {
   background: linear-gradient(90deg,var(--teal),var(--amber),var(--teal));
   background-size: 200% 100%;
   animation: progress-pulse 1.4s linear infinite;
 }
-.operation-progress.failed .progress-track > span { background: var(--red); }
+.operation-progress.failed .progress-track::-webkit-progress-value { background: var(--red); }
+.operation-progress.failed .progress-track::-moz-progress-bar { background: var(--red); }
 .operation-progress ol { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 7px; margin: 0; padding: 0; list-style: none; }
 .operation-progress li { padding: 8px 9px; border-radius: 9px; color: var(--muted); background: rgba(23,48,45,.05); font-size: 9px; }
 .operation-progress li.done { color: var(--teal); background: rgba(213,238,229,.66); }

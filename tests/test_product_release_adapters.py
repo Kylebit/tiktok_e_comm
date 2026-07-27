@@ -1,3 +1,5 @@
+import pytest
+
 from domains.channel_operations.release_executor import AdapterExecutionRequest
 from modules.products import release_adapters
 
@@ -23,6 +25,20 @@ def _context():
         "payload": {
             "targets": ["miaoshou:COMMON", "tiktok:LH_PH"],
             "product_id": "3828811808",
+            "seller_sku": "0953",
+            "product_package_id": "product:3828811808:0953",
+            "content_package_id": "content:3828811808",
+            "product_facts": {
+                "title": "Cute Black Line-Art Dog PVC Wall Decal 34 x 58 cm",
+                "weight_kg": 0.02,
+                "package_cm": [58, 34, 0.02],
+                "selected_sku_keys": ["34x58"],
+                "category": {"name": "Wall Stickers"},
+            },
+            "images": [
+                {"image_url": "https://assets.example/1.jpg"},
+                {"image_url": "https://assets.example/2.jpg"},
+            ],
             "listing_copy": {
                 "candidates": [
                     {
@@ -92,7 +108,13 @@ def test_miaoshou_publish_reads_current_region_site_result(monkeypatch):
         workbench,
         "prepare_miaoshou_site_drafts",
         lambda *_args, **_kwargs: {
-            "sites": {"PH": {"ready": True}},
+            "sites": {
+                "PH": {
+                    "ready": True,
+                    "site_collect_shop_ids": ["7676267"],
+                    "checks": {"title": True, "price": True, "logistics": True},
+                }
+            },
         },
     )
     submitted = []
@@ -110,10 +132,57 @@ def test_miaoshou_publish_reads_current_region_site_result(monkeypatch):
 
     assert external_id == "3224810860:7676267"
     assert evidence["accepted"] is True
+    assert evidence["pre_submit_audit"]["checks"] == {
+        "immutable_identity": True,
+        "approved_title": True,
+        "approved_price": True,
+        "approved_images": True,
+        "approved_logistics": True,
+        "approved_variants": True,
+        "approved_category": True,
+        "approved_video": True,
+        "exact_shop_claim": True,
+        "miaoshou_draft_ready": True,
+        "miaoshou_field_checks": True,
+    }
     assert submitted[0][1] == {
         "detailIds": [3224810860],
         "shopIds": [7676267],
     }
+
+
+def test_api_less_pre_submit_audit_blocks_incomplete_approved_scope():
+    payload = _context()["payload"]
+    payload["product_facts"]["selected_sku_keys"] = []
+    payload["listing_copy"]["candidates"][0]["site"] = "GB"
+    payload["pricing"]["selected_targets"] = {
+        "tiktok:GB": {
+            "store_prices": [
+                {
+                    "target_key": "gb",
+                    "list_price": 13,
+                    "currency": "GBP",
+                }
+            ]
+        }
+    }
+
+    with pytest.raises(
+        RuntimeError,
+        match="approved_variants",
+    ):
+        release_adapters._miaoshou_submission_audit(
+            payload,
+            site="GB",
+            target_key="gb",
+            detail_id=1,
+            shop_id=2,
+            prepared_site={
+                "ready": True,
+                "site_collect_shop_ids": ["2"],
+                "checks": {"title": True, "price": True},
+            },
+        )
 
 
 def test_verified_tiktok_readback_updates_local_catalogue(monkeypatch):
@@ -342,6 +411,7 @@ def test_mx_submission_is_not_falsely_marked_as_verified(monkeypatch):
 
     assert result.succeeded is True
     assert result.readback_verified is False
+    assert result.submission_accepted is True
     assert "no authorised official TikTok readback" in result.detail
 
 
@@ -394,8 +464,67 @@ def test_mx_retry_reuses_durable_submission_without_resubmitting(monkeypatch):
 
     assert result.succeeded is True
     assert result.readback_verified is False
+    assert result.submission_accepted is True
     assert result.external_reference == "3224868435:16265910"
     assert result.readback_evidence["prior_submission_reused"] is True
+
+
+def test_homebloom_uses_one_time_miaoshou_submission_not_livelyhive_api(
+    monkeypatch,
+):
+    context = _context()
+    context["payload"]["targets"] = ["miaoshou:COMMON", "tiktok:HB_PH"]
+    context["payload"]["pricing"]["selected_targets"] = {
+        "tiktok:HB_PH": {
+            "store_prices": [
+                {
+                    "target_key": "hb_ph",
+                    "list_price": 257,
+                    "currency": "PHP",
+                }
+            ]
+        }
+    }
+    monkeypatch.setattr(
+        release_adapters,
+        "_validated_context",
+        lambda _request: context,
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_prior_unverified_tiktok_submission",
+        lambda _request: None,
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_tiktok_readback",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("HomeBloom must not read LivelyHive's PH API shop")
+        ),
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_miaoshou_publish_target",
+        lambda *_args, **_kwargs: (
+            "detail-hb:shop-hb",
+            {
+                "source": "miaoshou_open_api",
+                "accepted": True,
+                "pre_submit_audit": {
+                    "target_key": "hb_ph",
+                    "submission_fingerprint": "audit-hb",
+                },
+            },
+        ),
+    )
+
+    result = release_adapters.execute_tiktok_target(_request("HB_PH"))
+
+    assert result.succeeded is True
+    assert result.submission_accepted is True
+    assert result.readback_verified is False
+    assert result.external_reference == "detail-hb:shop-hb"
+    assert result.readback_evidence["pre_submit_audit"]["target_key"] == "hb_ph"
 
 
 def test_shopee_readback_uses_get_endpoints_and_item_price_info(monkeypatch):

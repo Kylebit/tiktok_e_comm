@@ -542,7 +542,7 @@ async function productReleaseTerminalState(browser) {
         },
         run: {
           run_id: "release-run:offline-terminal",
-          status: "PARTIAL_FAILED",
+          status: "AWAITING_MANUAL_VERIFICATION",
           targets: [
             {
               target_label: "miaoshou:COMMON",
@@ -553,10 +553,19 @@ async function productReleaseTerminalState(browser) {
             },
             {
               target_label: "tiktok:MX",
-              status: "FAILED",
+              status: "SUBMITTED_UNVERIFIED",
               attempts: 2,
               external_id: "3224868435:16265910",
               error: "Miaoshou already accepted MX; retry did not resubmit. An authorised official TikTok readback is still unavailable.",
+              submission: {
+                status: "SUBMITTED_UNVERIFIED",
+                evidence: {
+                  accepted: true,
+                  pre_submit_audit: {
+                    submission_fingerprint: "audit-mx",
+                  },
+                },
+              },
             },
             {
               target_label: "ozon:RU",
@@ -583,13 +592,13 @@ async function productReleaseTerminalState(browser) {
     });
     const ledger = (await page.locator("#releaseRunLedger").innerText()).trim();
     check(
-      ledger.includes("2 已回读 · 1 待读回授权"),
-      "product release: terminal run separates verified targets from readback authorization",
+      ledger.includes("2 已回读 · 1 待人工验收"),
+      "product release: terminal run separates API readback from manual verification",
       ledger,
     );
     check(
-      ledger.includes("已提交 · 待读回授权")
-      && ledger.includes("系统不会伪装为成功，也不会重复提交"),
+      ledger.includes("已提交 · 待人工验收")
+      && ledger.includes("系统不会自动重试"),
       "product release: accepted-but-unverified target is not presented as a publish failure",
       ledger,
     );
@@ -607,16 +616,24 @@ async function productReleaseTerminalState(browser) {
       stages.includes("渠道执行")
       && stages.includes("执行已结束")
       && stages.includes("回读对账")
-      && stages.includes("1 个待读回授权"),
+      && stages.includes("1 个待人工验收"),
       "product release: journey advances to reconciliation after submissions finish",
       stages,
     );
     const nextStep = (await page.locator("#nextStepDescription").innerText()).trim();
     check(
       nextStep.includes("2/3 个目标已完成官方回读")
-      && nextStep.includes("连接对应 TikTok 官方读回授权"),
-      "product release: next action explains the remaining authorization task",
+      && nextStep.includes("逐字段核对并记录人工验收"),
+      "product release: next action explains the remaining manual verification",
       nextStep,
+    );
+    check(
+      await computedVisibility(page, ".manual-verification-form"),
+      "product release: API-less target exposes an in-product manual verification form",
+    );
+    check(
+      await page.locator("#publishAllButton").isDisabled(),
+      "product release: awaiting-manual-only run cannot be submitted again",
     );
     check(
       errors.length === 0,

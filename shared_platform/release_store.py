@@ -54,11 +54,15 @@ RUN_RUNNING = "RUNNING"
 RUN_PARTIAL_FAILED = "PARTIAL_FAILED"
 RUN_FAILED = "FAILED"
 RUN_SUCCEEDED = "SUCCEEDED"
+RUN_AWAITING_MANUAL_VERIFICATION = "AWAITING_MANUAL_VERIFICATION"
+RUN_COMPLETED_WITH_MANUAL_VERIFICATION = "COMPLETED_WITH_MANUAL_VERIFICATION"
 
 TARGET_PENDING = "PENDING"
 TARGET_RUNNING = "RUNNING"
 TARGET_FAILED = "FAILED"
 TARGET_SUCCEEDED = "SUCCEEDED"
+TARGET_SUBMITTED_UNVERIFIED = "SUBMITTED_UNVERIFIED"
+TARGET_MANUALLY_VERIFIED = "MANUALLY_VERIFIED"
 
 
 class ReleaseStoreError(RuntimeError):
@@ -168,6 +172,27 @@ CREATE TABLE IF NOT EXISTS release_target_readbacks (
         REFERENCES release_target_runs(run_id, target_label)
 );
 
+CREATE TABLE IF NOT EXISTS release_target_submissions (
+    run_id TEXT NOT NULL,
+    target_label TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    evidence_digest TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (
+        status IN ('SUBMITTED_UNVERIFIED', 'MANUALLY_VERIFIED')
+    ),
+    submitted_at TEXT NOT NULL,
+    verified_by TEXT,
+    verified_at TEXT,
+    verification_evidence_json TEXT,
+    verification_evidence_digest TEXT,
+    PRIMARY KEY (run_id, target_label),
+    FOREIGN KEY (run_id, target_label)
+        REFERENCES release_target_runs(run_id, target_label)
+);
+CREATE INDEX IF NOT EXISTS idx_release_target_submissions_status
+    ON release_target_submissions(run_id, status);
+
 CREATE TABLE IF NOT EXISTS release_sku_reservations (
     reservation_id TEXT PRIMARY KEY,
     plan_id TEXT NOT NULL UNIQUE,
@@ -253,6 +278,43 @@ def _canonical_json(value: object) -> str:
 
 def _sha256(value: object) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _legacy_unverified_submission(row: Mapping[str, Any]) -> dict[str, Any] | None:
+    error = _text(row.get("error")).lower()
+    external_id = _text(row.get("external_id"))
+    if not (
+        row.get("status") == TARGET_FAILED
+        and external_id
+        and "official" in error
+        and "readback" in error
+        and any(
+            marker in error
+            for marker in ("unavailable", "no authorised", "no authorized")
+        )
+    ):
+        return None
+    evidence = {
+        "source": "legacy_release_run_ledger",
+        "accepted": True,
+        "external_id": external_id,
+        "legacy_attempts": row.get("attempts"),
+        "legacy_detail": row.get("error"),
+        "migration": "accepted_without_official_readback/v1",
+    }
+    encoded = _canonical_json(evidence)
+    return {
+        "external_id": external_id,
+        "evidence": evidence,
+        "evidence_digest": hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+        "status": TARGET_SUBMITTED_UNVERIFIED,
+        "submitted_at": row.get("completed_at"),
+        "verified_by": None,
+        "verified_at": None,
+        "verification_evidence": None,
+        "verification_evidence_digest": None,
+        "legacy_inferred": True,
+    }
 
 
 def _required_text(payload: Mapping[str, Any], field: str) -> str:
@@ -386,6 +448,67 @@ class ReleaseStore:
 
     def _ensure_schema(self, connection: sqlite3.Connection) -> None:
         connection.executescript(_SCHEMA)
+        self._backfill_legacy_unverified_submissions(connection)
+
+    def _backfill_legacy_unverified_submissions(
+        self,
+        connection: sqlite3.Connection,
+    ) -> None:
+        """Classify old accepted/no-readback failures without retrying them.
+
+        Earlier releases represented a successful Miaoshou submission with no
+        authorised marketplace readback as ``FAILED``.  The publish endpoint
+        consequently retried those rows.  Preserve the physical legacy row for
+        schema compatibility, but add a durable submission receipt that makes
+        the public state terminal and non-retryable.
+        """
+
+        rows = connection.execute(
+            """
+            SELECT target.run_id, target.target_label, target.external_id,
+                   target.error, target.attempts, target.completed_at
+            FROM release_target_runs AS target
+            LEFT JOIN release_target_submissions AS submission
+              ON submission.run_id = target.run_id
+             AND submission.target_label = target.target_label
+            WHERE target.status = 'FAILED'
+              AND target.external_id IS NOT NULL
+              AND submission.run_id IS NULL
+              AND lower(COALESCE(target.error, '')) LIKE '%official%'
+              AND lower(COALESCE(target.error, '')) LIKE '%readback%'
+              AND (
+                    lower(COALESCE(target.error, '')) LIKE '%unavailable%'
+                 OR lower(COALESCE(target.error, '')) LIKE '%no authorised%'
+                 OR lower(COALESCE(target.error, '')) LIKE '%no authorized%'
+              )
+            """
+        ).fetchall()
+        for row in rows:
+            evidence = {
+                "source": "legacy_release_run_ledger",
+                "accepted": True,
+                "external_id": row["external_id"],
+                "legacy_attempts": row["attempts"],
+                "legacy_detail": row["error"],
+                "migration": "accepted_without_official_readback/v1",
+            }
+            encoded = _canonical_json(evidence)
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO release_target_submissions (
+                    run_id, target_label, external_id, evidence_json,
+                    evidence_digest, status, submitted_at
+                ) VALUES (?, ?, ?, ?, ?, 'SUBMITTED_UNVERIFIED', ?)
+                """,
+                (
+                    row["run_id"],
+                    row["target_label"],
+                    row["external_id"],
+                    encoded,
+                    hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+                    row["completed_at"] or _utc_now(),
+                ),
+            )
 
     @contextmanager
     def _transaction(self):
@@ -937,6 +1060,201 @@ class ReleaseStore:
                 ).fetchone()
             )
 
+    def record_target_submission(
+        self,
+        run_id: str,
+        target_label: str,
+        *,
+        external_id: str,
+        submission_evidence: Mapping[str, Any],
+        detail: str,
+    ) -> dict[str, Any]:
+        """Persist one accepted submission that has no authorised API readback.
+
+        This is deliberately not a failure and deliberately not a verified
+        success.  The companion receipt makes the target terminal for automatic
+        execution while retaining the legacy physical target status required
+        by existing SQLite databases.
+        """
+
+        clean_external_id = _text(external_id)
+        clean_detail = _text(detail)
+        if not clean_external_id:
+            raise ValueError("accepted submission requires an external_id")
+        if not clean_detail:
+            raise ValueError("accepted submission requires a detail")
+        evidence = dict(submission_evidence)
+        if evidence.get("accepted") is not True:
+            raise ValueError("submission evidence must record accepted=true")
+        evidence_json = _canonical_json(evidence)
+        evidence_digest = hashlib.sha256(
+            evidence_json.encode("utf-8")
+        ).hexdigest()
+        with self._transaction() as connection:
+            row = self._target_for_update(connection, run_id, target_label)
+            existing = connection.execute(
+                """
+                SELECT * FROM release_target_submissions
+                WHERE run_id = ? AND target_label = ?
+                """,
+                (row["run_id"], row["target_label"]),
+            ).fetchone()
+            if existing:
+                if (
+                    existing["external_id"] != clean_external_id
+                    or existing["evidence_digest"] != evidence_digest
+                ):
+                    raise ImmutableReleaseError(
+                        "accepted target already has different submission evidence"
+                    )
+                run = self._run_in_transaction(connection, row["run_id"])
+                return next(
+                    target
+                    for target in run["targets"]
+                    if target["target_label"] == row["target_label"]
+                )
+            self._require_active_run(connection, row["run_id"])
+            if row["status"] != TARGET_RUNNING:
+                raise ReleaseStoreError(
+                    "target must be RUNNING before accepted submission; "
+                    f"found {row['status']}"
+                )
+            now = _utc_now()
+            connection.execute(
+                """
+                INSERT INTO release_target_submissions (
+                    run_id, target_label, external_id, evidence_json,
+                    evidence_digest, status, submitted_at
+                ) VALUES (?, ?, ?, ?, ?, 'SUBMITTED_UNVERIFIED', ?)
+                """,
+                (
+                    row["run_id"],
+                    row["target_label"],
+                    clean_external_id,
+                    evidence_json,
+                    evidence_digest,
+                    now,
+                ),
+            )
+            # Old stores constrain the physical status enum.  FAILED is only a
+            # compatibility carrier; _run_in_transaction exposes the truthful
+            # SUBMITTED_UNVERIFIED state and retries exclude receipt rows.
+            connection.execute(
+                """
+                UPDATE release_target_runs
+                SET status = 'FAILED', external_id = ?, error = ?,
+                    updated_at = ?, completed_at = ?
+                WHERE run_id = ? AND target_label = ?
+                """,
+                (
+                    clean_external_id,
+                    clean_detail[:4000],
+                    now,
+                    now,
+                    row["run_id"],
+                    row["target_label"],
+                ),
+            )
+            self._refresh_run_status(connection, row["run_id"], now=now)
+            run = self._run_in_transaction(connection, row["run_id"])
+            return next(
+                target
+                for target in run["targets"]
+                if target["target_label"] == row["target_label"]
+            )
+
+    def record_manual_verification(
+        self,
+        run_id: str,
+        target_label: str,
+        *,
+        verified_by: str,
+        user_verified: bool,
+        verification_evidence: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Close an API-less target using an explicit Kyle verification."""
+
+        if verified_by != "Kyle" or user_verified is not True:
+            raise ReleaseAuthorizationError(
+                "manual target verification requires explicit Kyle confirmation"
+            )
+        evidence = dict(verification_evidence)
+        marketplace_product_id = _text(evidence.get("marketplace_product_id"))
+        if not marketplace_product_id:
+            raise ValueError(
+                "manual verification requires the marketplace product ID"
+            )
+        required_checks = (
+            "identity_matches",
+            "seller_sku_matches",
+            "single_listing_for_sku",
+            "title_matches",
+            "price_matches",
+            "images_match",
+            "logistics_match",
+        )
+        if any(evidence.get(check) is not True for check in required_checks):
+            raise ValueError(
+                "manual verification requires all listing checks to be true"
+            )
+        evidence_json = _canonical_json(evidence)
+        evidence_digest = hashlib.sha256(
+            evidence_json.encode("utf-8")
+        ).hexdigest()
+        with self._transaction() as connection:
+            row = self._target_for_update(connection, run_id, target_label)
+            self._require_active_run(connection, row["run_id"])
+            submission = connection.execute(
+                """
+                SELECT * FROM release_target_submissions
+                WHERE run_id = ? AND target_label = ?
+                """,
+                (row["run_id"], row["target_label"]),
+            ).fetchone()
+            if not submission:
+                raise ReleaseStoreError(
+                    "manual verification requires an accepted submission receipt"
+                )
+            if submission["status"] == TARGET_MANUALLY_VERIFIED:
+                if (
+                    submission["verified_by"] != verified_by
+                    or submission["verification_evidence_digest"]
+                    != evidence_digest
+                ):
+                    raise ImmutableReleaseError(
+                        "manual verification is already recorded with different evidence"
+                    )
+                run = self._run_in_transaction(connection, row["run_id"])
+                return next(
+                    target
+                    for target in run["targets"]
+                    if target["target_label"] == row["target_label"]
+                )
+            now = _utc_now()
+            connection.execute(
+                """
+                UPDATE release_target_submissions
+                SET status = 'MANUALLY_VERIFIED', verified_by = ?,
+                    verified_at = ?, verification_evidence_json = ?,
+                    verification_evidence_digest = ?
+                WHERE run_id = ? AND target_label = ?
+                """,
+                (
+                    verified_by,
+                    now,
+                    evidence_json,
+                    evidence_digest,
+                    row["run_id"],
+                    row["target_label"],
+                ),
+            )
+            run = self._run_in_transaction(connection, row["run_id"])
+            return next(
+                target
+                for target in run["targets"]
+                if target["target_label"] == row["target_label"]
+            )
+
     def retry_failed_targets(
         self,
         run_id: str,
@@ -947,9 +1265,15 @@ class ReleaseStore:
             self._require_active_run(connection, _text(run_id))
             failed_rows = connection.execute(
                 """
-                SELECT target_label FROM release_target_runs
-                WHERE run_id = ? AND status = 'FAILED'
-                ORDER BY target_label
+                SELECT target.target_label
+                FROM release_target_runs AS target
+                LEFT JOIN release_target_submissions AS submission
+                  ON submission.run_id = target.run_id
+                 AND submission.target_label = target.target_label
+                WHERE target.run_id = ?
+                  AND target.status = 'FAILED'
+                  AND submission.run_id IS NULL
+                ORDER BY target.target_label
                 """,
                 (_text(run_id),),
             ).fetchall()
@@ -1185,12 +1509,86 @@ class ReleaseStore:
             # Old stores remain readable before the next controlled write
             # creates the additive evidence table.
             readbacks = {}
+        try:
+            submission_rows = connection.execute(
+                """
+                SELECT target_label, external_id, evidence_json,
+                       evidence_digest, status, submitted_at, verified_by,
+                       verified_at, verification_evidence_json,
+                       verification_evidence_digest
+                FROM release_target_submissions
+                WHERE run_id = ?
+                """,
+                (run["run_id"],),
+            )
+            submissions = {
+                row["target_label"]: {
+                    "external_id": row["external_id"],
+                    "evidence": json.loads(row["evidence_json"]),
+                    "evidence_digest": row["evidence_digest"],
+                    "status": row["status"],
+                    "submitted_at": row["submitted_at"],
+                    "verified_by": row["verified_by"],
+                    "verified_at": row["verified_at"],
+                    "verification_evidence": (
+                        json.loads(row["verification_evidence_json"])
+                        if row["verification_evidence_json"]
+                        else None
+                    ),
+                    "verification_evidence_digest": row[
+                        "verification_evidence_digest"
+                    ],
+                }
+                for row in submission_rows
+            }
+        except sqlite3.OperationalError:
+            submissions = {}
         target_payloads: list[dict[str, Any]] = []
         for row in targets:
             payload = dict(row)
+            payload["storage_status"] = payload["status"]
             payload["readback"] = readbacks.get(row["target_label"])
+            payload["submission"] = (
+                submissions.get(row["target_label"])
+                or _legacy_unverified_submission(payload)
+            )
+            if payload["submission"]:
+                payload["status"] = payload["submission"]["status"]
             target_payloads.append(payload)
-        return {**dict(run), "targets": target_payloads}
+        result = {**dict(run), "targets": target_payloads}
+        logical_statuses = [target["status"] for target in target_payloads]
+        success_statuses = {TARGET_SUCCEEDED, TARGET_MANUALLY_VERIFIED}
+        if logical_statuses and all(
+            status in success_statuses for status in logical_statuses
+        ):
+            result["status"] = (
+                RUN_COMPLETED_WITH_MANUAL_VERIFICATION
+                if TARGET_MANUALLY_VERIFIED in logical_statuses
+                else RUN_SUCCEEDED
+            )
+            result["completed_at"] = max(
+                str(target.get("completed_at") or "")
+                for target in target_payloads
+            ) or result.get("completed_at")
+        elif (
+            TARGET_SUBMITTED_UNVERIFIED in logical_statuses
+            and not any(
+                status in {TARGET_PENDING, TARGET_RUNNING, TARGET_FAILED}
+                for status in logical_statuses
+            )
+        ):
+            result["status"] = RUN_AWAITING_MANUAL_VERIFICATION
+        elif TARGET_FAILED in logical_statuses:
+            completed = sum(
+                status in {
+                    TARGET_SUCCEEDED,
+                    TARGET_SUBMITTED_UNVERIFIED,
+                    TARGET_MANUALLY_VERIFIED,
+                }
+                for status in logical_statuses
+            )
+            result["status"] = RUN_PARTIAL_FAILED if completed else RUN_FAILED
+        return result
 
     def _refresh_run_status(
         self,

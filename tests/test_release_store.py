@@ -240,6 +240,86 @@ def test_partial_failure_retry_preserves_success_and_idempotency_key(tmp_path):
     assert completed["completed_at"]
 
 
+def test_api_less_submission_is_terminal_until_kyle_manual_verification(tmp_path):
+    store, plan, _approval = _approved_store(
+        tmp_path,
+        targets=["miaoshou:COMMON", "tiktok:GB"],
+    )
+    run = store.start_run(plan["plan_id"])
+    run_id = run["run_id"]
+    store.begin_target(run_id, "miaoshou:COMMON")
+    store.record_target_success(run_id, "miaoshou:COMMON", external_id="common")
+    store.begin_target(run_id, "tiktok:GB")
+    submitted = store.record_target_submission(
+        run_id,
+        "tiktok:GB",
+        external_id="detail-1:shop-1",
+        submission_evidence={
+            "accepted": True,
+            "source": "miaoshou_open_api",
+            "pre_submit_audit": {"submission_fingerprint": "audit-1"},
+        },
+        detail="Miaoshou accepted GB; no authorised official readback exists",
+    )
+
+    assert submitted["status"] == "SUBMITTED_UNVERIFIED"
+    waiting = store.get_run(run_id)
+    assert waiting["status"] == "AWAITING_MANUAL_VERIFICATION"
+    assert waiting["targets"][1]["storage_status"] == "FAILED"
+    assert waiting["targets"][1]["submission"]["evidence"][
+        "pre_submit_audit"
+    ]["submission_fingerprint"] == "audit-1"
+    with pytest.raises(ReleaseStoreError, match="no failed targets to retry"):
+        store.retry_failed_targets(run_id)
+
+    verified = store.record_manual_verification(
+        run_id,
+        "tiktok:GB",
+        verified_by="Kyle",
+        user_verified=True,
+        verification_evidence={
+            "marketplace_product_id": "1729881266953821106",
+            "identity_matches": True,
+            "seller_sku_matches": True,
+            "single_listing_for_sku": True,
+            "title_matches": True,
+            "price_matches": True,
+            "images_match": True,
+            "logistics_match": True,
+        },
+    )
+    assert verified["status"] == "MANUALLY_VERIFIED"
+    completed = store.get_run(run_id)
+    assert completed["status"] == "COMPLETED_WITH_MANUAL_VERIFICATION"
+    assert completed["targets"][1]["submission"]["verified_by"] == "Kyle"
+
+
+def test_legacy_accepted_no_readback_failure_is_never_retried(tmp_path):
+    store, plan, _approval = _approved_store(
+        tmp_path,
+        targets=["miaoshou:COMMON", "tiktok:MX"],
+    )
+    run = store.start_run(plan["plan_id"])
+    store.begin_target(run["run_id"], "miaoshou:COMMON")
+    store.record_target_success(run["run_id"], "miaoshou:COMMON")
+    store.begin_target(run["run_id"], "tiktok:MX")
+    store.record_target_failure(
+        run["run_id"],
+        "tiktok:MX",
+        external_id="3224868435:16265910",
+        error=(
+            "Miaoshou already accepted MX; retry did not resubmit. "
+            "An authorised official TikTok readback is still unavailable."
+        ),
+    )
+
+    inferred = store.get_run(run["run_id"])
+    assert inferred["status"] == "AWAITING_MANUAL_VERIFICATION"
+    assert inferred["targets"][1]["status"] == "SUBMITTED_UNVERIFIED"
+    with pytest.raises(ReleaseStoreError, match="no failed targets to retry"):
+        store.retry_failed_targets(run["run_id"])
+
+
 def test_verified_readback_is_immutable_and_returned_with_target(tmp_path):
     store, plan, _approval = _approved_store(
         tmp_path,

@@ -267,6 +267,39 @@ def test_unverified_readback_is_a_failed_attempt_not_success():
     assert report.adapter_calls_performed == ("miaoshou:COMMON",)
 
 
+def test_accepted_submission_without_api_readback_is_terminal_not_retryable():
+    def handler(request):
+        if request.target_label == "miaoshou:COMMON":
+            return AdapterExecutionResult(True, True, "verified common")
+        return AdapterExecutionResult(
+            succeeded=True,
+            readback_verified=False,
+            detail="accepted; target has no authorised API readback",
+            external_reference="detail-1:shop-1",
+            readback_evidence={"accepted": True},
+            submission_accepted=True,
+        )
+
+    first = execute_release_plan(_plan(), adapter_registry=_registry(handler))
+    records = _record_map(first)
+    assert records["tiktok:LH_PH"].status == "SUBMITTED_UNVERIFIED"
+    assert records["tiktok:LH_PH"].blocker is None
+
+    calls = []
+
+    def should_not_repeat(request):
+        calls.append(request.target_label)
+        return AdapterExecutionResult(True, True, "verified")
+
+    second = execute_release_plan(
+        _plan(),
+        adapter_registry=_registry(should_not_repeat),
+        prior_records=records,
+    )
+    assert "tiktok:LH_PH" not in second.adapter_calls_performed
+    assert _record_map(second)["tiktok:LH_PH"].status == "SUBMITTED_UNVERIFIED"
+
+
 def test_production_registry_blocks_all_legacy_paths_without_calling_them():
     registry = production_adapter_registry()
 

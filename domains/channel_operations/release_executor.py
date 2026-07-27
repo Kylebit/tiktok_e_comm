@@ -22,7 +22,13 @@ from domains.channel_operations.omnichannel_orchestrator import (
 )
 
 
-ExecutionStatus = Literal["PENDING", "SUCCESS", "FAILED", "BLOCKED"]
+ExecutionStatus = Literal[
+    "PENDING",
+    "SUCCESS",
+    "FAILED",
+    "BLOCKED",
+    "SUBMITTED_UNVERIFIED",
+]
 RETRYABLE_STATUSES = frozenset({"PENDING", "FAILED"})
 
 
@@ -59,6 +65,7 @@ class AdapterExecutionResult:
     detail: str
     external_reference: str | None = None
     readback_evidence: Mapping[str, Any] | None = None
+    submission_accepted: bool = False
 
 
 AdapterCallable = Callable[[AdapterExecutionRequest], AdapterExecutionResult]
@@ -274,6 +281,22 @@ def execute_release_plan(
                 ),
             )
             continue
+        if (
+            result.succeeded
+            and result.submission_accepted
+            and not result.readback_verified
+            and result.external_reference
+        ):
+            records[label] = replace(
+                record,
+                status="SUBMITTED_UNVERIFIED",
+                attempts=record.attempts + 1,
+                readback_verified=False,
+                external_reference=result.external_reference,
+                last_detail=result.detail,
+                blocker=None,
+            )
+            continue
         if not result.succeeded or not result.readback_verified:
             code = (
                 "adapter_failed"
@@ -329,7 +352,13 @@ def _initial_records(
         label = _target_label(target)
         prior = prior_records.get(label)
         if prior is not None:
-            if prior.status not in {"PENDING", "SUCCESS", "FAILED", "BLOCKED"}:
+            if prior.status not in {
+                "PENDING",
+                "SUCCESS",
+                "FAILED",
+                "BLOCKED",
+                "SUBMITTED_UNVERIFIED",
+            }:
                 raise ReleaseExecutionError(
                     f"prior status is invalid for {label}: {prior.status}"
                 )

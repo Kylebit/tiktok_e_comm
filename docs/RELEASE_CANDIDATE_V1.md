@@ -44,19 +44,46 @@ rejected before a network call or worker starts.
 Normal Treasury refreshes use `precollect:false`; refreshing a page cannot
 create a collect-box item.
 
-## Current real release gate for offer 3828811808
+## Formal product-release lifecycle
 
-The approved content contract contains the five Kyle-approved images in the
-saved order. Candidate Seller SKU `0946` is currently unique in the local
-catalog and passes the approval rehearsal. The real release remains blocked
-until all of the following are deliberately completed:
+`/product-workspace` is the formal product surface. Its immutable release
+scope binds the product revision, Seller SKU, ProductPackage, ContentPackage,
+ordered images and video, target stores, localized titles, prices, costs,
+exchange rates and fee rules to one confirmation token.
 
-1. persist the product approval fact for offer `3828811808` and Seller SKU
-   `0946` with a revision-checked transaction;
-2. lock the workbench commercial fields;
-3. explicitly synchronize the current five-image set, replacing the stale
-   historical 11-image write;
-4. approve the owning channel adapter action separately.
+Marketplace targets use two verification capabilities:
+
+- official API readback: LivelyHive PH/MY/TH/VN, Shopee PH/MY/TH/VN and
+  Ozon RU finish only after the API returns the expected listing identity and
+  fields;
+- submission receipt plus Kyle verification: HomeBloom PH/MY/TH/VN, TikTok
+  MX and TikTok GB have no authorised store API. Immediately before the single
+  Miaoshou submit, Orbit freezes an audit of the exact product identity,
+  Seller SKU, title, target/shop ID, price/currency, selected variants,
+  category, ordered images/video, weight, package dimensions and Miaoshou
+  field checks.
+
+An accepted API-less submission is persisted as `SUBMITTED_UNVERIFIED`, not
+`FAILED`. It is terminal for automatic execution and is excluded from every
+failed-target retry. The release then becomes
+`AWAITING_MANUAL_VERIFICATION`. Kyle can close the target only by recording
+the marketplace product ID and confirming that the store contains exactly one
+live listing for the Seller SKU and that identity, title, price, media and
+logistics match. That target becomes `MANUALLY_VERIFIED`; the run becomes
+`COMPLETED_WITH_MANUAL_VERIFICATION` when every other target has official
+readback.
+
+## Current real release state for offer 3828811808
+
+- Seller SKU: `0953`
+- approved content: five images in the saved order plus one reviewed video
+- official readback complete: Miaoshou COMMON, LivelyHive PH/MY/TH/VN,
+  Shopee PH/MY/TH/VN and Ozon RU
+- pending Kyle verification: TikTok MX and TikTok GB
+- automatic resubmission: disabled for both pending targets
+- known incident: TikTok GB currently shows three live `0953` listings.
+  Manual verification cannot be completed until only one canonical listing
+  remains.
 
 ## Profit semantics
 

@@ -8,6 +8,7 @@ success after an independent API read-back.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import json
 import time
@@ -37,9 +38,25 @@ SITE_TARGET_KEYS = {
     "LH_MY": "lh_my",
     "LH_TH": "lh_th",
     "LH_VN": "lh_vn",
+    "HB_PH": "hb_ph",
+    "HB_MY": "hb_my",
+    "HB_TH": "hb_th",
+    "HB_VN": "hb_vn",
     "MX": "mx",
     "GB": "gb",
 }
+SITE_COUNTRIES = {
+    **SEA_SITES,
+    "HB_PH": "PH",
+    "HB_MY": "MY",
+    "HB_TH": "TH",
+    "HB_VN": "VN",
+    "MX": "MX",
+    "GB": "GB",
+}
+SUBMISSION_ONLY_TIKTOK_SITES = frozenset(
+    {"HB_PH", "HB_MY", "HB_TH", "HB_VN", "MX", "GB"}
+)
 
 
 def production_adapter_registry() -> dict[str, AdapterRegistration]:
@@ -411,6 +428,115 @@ def _selected_tiktok_target_keys(payload: dict[str, Any]) -> list[str]:
     ]
 
 
+def _miaoshou_submission_audit(
+    payload: dict[str, Any],
+    *,
+    site: str,
+    target_key: str,
+    detail_id: int,
+    shop_id: int,
+    prepared_site: dict[str, Any],
+) -> dict[str, Any]:
+    """Freeze the exact fields reviewed immediately before an API-less submit."""
+
+    country = SITE_COUNTRIES[site]
+    facts = payload.get("product_facts") or {}
+    package_cm = list(facts.get("package_cm") or ())
+    selected_sku_keys = [
+        str(value).strip()
+        for value in (facts.get("selected_sku_keys") or ())
+        if str(value).strip()
+    ]
+    category = facts.get("category") or {}
+    category_name = str(
+        category.get("name") if isinstance(category, dict) else category
+    ).strip()
+    images = [
+        str(row.get("image_url") or "").strip()
+        for row in (payload.get("images") or ())
+        if isinstance(row, dict)
+    ]
+    video_urls = [
+        str(url).strip()
+        for url in (payload.get("video_urls") or ())
+        if str(url).strip()
+    ]
+    pricing = _store_price(payload, f"tiktok:{site}")
+    title = _candidate(payload, "tiktok", country)
+    prepared_shop_ids = {
+        str(value)
+        for value in (
+            prepared_site.get("site_collect_shop_ids")
+            or prepared_site.get("shop_ids")
+            or ()
+        )
+        if str(value or "").strip()
+    }
+    checks = {
+        "immutable_identity": bool(
+            payload.get("product_id")
+            and payload.get("seller_sku")
+            and payload.get("product_package_id")
+            and payload.get("content_package_id")
+        ),
+        "approved_title": bool(title),
+        "approved_price": pricing.get("list_price") not in (None, ""),
+        "approved_images": bool(images)
+        and len(images) == len(set(images))
+        and all(url.startswith("https://") for url in images),
+        "approved_logistics": bool(facts.get("weight_kg"))
+        and len(package_cm) == 3
+        and all(float(value or 0) > 0 for value in package_cm),
+        "approved_variants": bool(selected_sku_keys),
+        "approved_category": bool(category_name),
+        "approved_video": all(url.startswith("https://") for url in video_urls),
+        "exact_shop_claim": str(shop_id) in prepared_shop_ids,
+        "miaoshou_draft_ready": bool(
+            prepared_site.get("verified") or prepared_site.get("ready")
+        ),
+        "miaoshou_field_checks": bool(prepared_site.get("checks"))
+        and all(bool(value) for value in (prepared_site.get("checks") or {}).values()),
+    }
+    failed = [name for name, passed in checks.items() if not passed]
+    if failed:
+        raise RuntimeError(
+            f"Miaoshou {site} pre-submit audit failed: {', '.join(failed)}"
+        )
+    audit_payload = {
+        "schema_version": "miaoshou_submission_audit/v1",
+        "site": site,
+        "country": country,
+        "target_key": target_key,
+        "detail_id": detail_id,
+        "shop_id": shop_id,
+        "product_id": str(payload.get("product_id") or ""),
+        "seller_sku": str(payload.get("seller_sku") or ""),
+        "title": title,
+        "price": pricing.get("list_price"),
+        "currency": pricing.get("currency"),
+        "weight_kg": facts.get("weight_kg"),
+        "package_cm": package_cm,
+        "selected_sku_keys": selected_sku_keys,
+        "category": category_name,
+        "image_count": len(images),
+        "image_urls": images,
+        "video_count": len(video_urls),
+        "video_urls": video_urls,
+        "checks": checks,
+        "miaoshou_checks": dict(prepared_site.get("checks") or {}),
+    }
+    encoded = json.dumps(
+        audit_payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    audit_payload["submission_fingerprint"] = hashlib.sha256(
+        encoded.encode("utf-8")
+    ).hexdigest()
+    return audit_payload
+
+
 def _miaoshou_publish_target(
     payload: dict[str, Any],
     *,
@@ -442,15 +568,18 @@ def _miaoshou_publish_target(
         raise RuntimeError(f"Miaoshou claim did not resolve {site} detail/shop identity")
     region = SEA_SITES.get(site, site)
     prepared_site = (
-        (prepared.get("sites") or {}).get(region)
-        or (prepared.get("shops") or {}).get(key)
+        (prepared.get("shops") or {}).get(key)
+        or (prepared.get("sites") or {}).get(region)
         or {}
     )
-    if not (
-        prepared_site.get("verified")
-        or prepared_site.get("ready")
-    ):
-        raise RuntimeError(f"Miaoshou {site} site draft did not pass exact readback")
+    audit = _miaoshou_submission_audit(
+        payload,
+        site=site,
+        target_key=key,
+        detail_id=detail_id,
+        shop_id=shop_id,
+        prepared_site=prepared_site,
+    )
     response = post_open(
         MIAOSHOU_PUBLISH_PATH,
         {"detailIds": [detail_id], "shopIds": [shop_id]},
@@ -466,6 +595,7 @@ def _miaoshou_publish_target(
         "detail_id": detail_id,
         "shop_id": shop_id,
         "response_code": response.get("code"),
+        "pre_submit_audit": audit,
     }
 
 
@@ -490,8 +620,10 @@ def _prior_unverified_tiktok_submission(
     external_id = str((target or {}).get("external_id") or "").strip()
     if not external_id:
         return None
+    receipt = ((target or {}).get("submission") or {}).get("evidence") or {}
     detail_id, _, shop_id = external_id.partition(":")
     return external_id, {
+        **dict(receipt),
         "source": "release_run_ledger",
         "accepted": True,
         "detail_id": detail_id,
@@ -508,13 +640,13 @@ def execute_tiktok_target(
     site = request.site.upper()
     if site not in SITE_TARGET_KEYS:
         raise RuntimeError(f"unsupported governed TikTok site {site}")
-    country = SEA_SITES.get(site, site)
+    country = SITE_COUNTRIES[site]
     expected_title = _candidate(payload, "tiktok", country)
     expected_price = _store_price(payload, request.target_label).get("list_price")
     if expected_price in (None, ""):
         raise RuntimeError(f"approved TikTok price is missing for {request.target_label}")
 
-    if site not in SEA_SITES:
+    if site in SUBMISSION_ONLY_TIKTOK_SITES:
         prior_submission = _prior_unverified_tiktok_submission(request)
         if prior_submission:
             external_reference, submission = prior_submission
@@ -527,6 +659,7 @@ def execute_tiktok_target(
                 ),
                 external_reference,
                 submission,
+                True,
             )
 
     if site in SEA_SITES:
@@ -572,7 +705,7 @@ def execute_tiktok_target(
                 )
 
     external_reference, submission = _miaoshou_publish_target(payload, site=site)
-    if site not in SEA_SITES:
+    if site in SUBMISSION_ONLY_TIKTOK_SITES:
         return AdapterExecutionResult(
             True,
             False,
@@ -582,6 +715,7 @@ def execute_tiktok_target(
             ),
             external_reference,
             submission,
+            True,
         )
 
     last_evidence: dict[str, Any] = submission

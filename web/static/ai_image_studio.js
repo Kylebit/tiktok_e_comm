@@ -162,7 +162,7 @@
       failed ? "失败" : (complete ? "已完成" : (running ? "进行中" : "等待"))
     );
     $("#planningProgressBadge").className = `badge ${tone}`;
-    $("#planningProgressBar").style.width = `${progress}%`;
+    $("#planningProgressBar").value = progress;
     $("#planningProgressSteps").innerHTML = PLANNING_STEPS.map((label, index) => {
       const state = complete || index <= completedThrough
         ? "done"
@@ -275,7 +275,7 @@
         <div><strong>${esc(title)}</strong><span>${esc(feedback?.message || message)}</span></div>
         <span class="badge ${esc(tone)}">${esc(feedback?.badge || badge)}</span>
       </header>
-      <div class="progress-track" aria-hidden="true"><span style="width:${Number(progress) || 0}%"></span></div>
+      <progress class="progress-track" max="100" value="${Number(progress) || 0}" aria-label="图片生成进度"></progress>
       <ol>${stepLabels.map((label, index) => {
         const done = (
           ["completed", "completed_waiting_human_review"].includes(status)

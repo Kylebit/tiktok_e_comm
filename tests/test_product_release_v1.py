@@ -265,3 +265,120 @@ def test_publish_endpoint_executes_unified_adapter_and_persists_readback(
     assert tiktok["status"] == "SUCCEEDED"
     assert tiktok["attempts"] == 1
     assert tiktok["readback"]["evidence"]["source"] == "fake-official-api"
+
+
+def test_api_less_publish_is_submitted_once_then_manually_verified(
+    tmp_path,
+    monkeypatch,
+):
+    store = ReleaseStore(tmp_path / "release.db")
+    monkeypatch.setattr(release_store, "default_release_store", lambda: store)
+    dashboard = _dashboard()
+    monkeypatch.setattr(
+        release_control,
+        "build_release_dashboard",
+        lambda **_kwargs: dashboard,
+    )
+    monkeypatch.setattr(
+        new_product_workbench,
+        "write_miaoshou_draft",
+        lambda offer_id: {
+            "written_to_miaoshou": True,
+            "verified": True,
+            "offer_id": offer_id,
+        },
+    )
+    view = product_server._product_workspace_view(dashboard)
+    request = _request(view)
+    assert product_server._approve_release_plan_locally(
+        {**request, "approved_by": "Kyle", "user_approved": True}
+    )[0] == 200
+    assert product_server._prepare_miaoshou_release(
+        {**request, "confirm_miaoshou_write": True}
+    )[0] == 200
+    calls = []
+
+    def accepted(req):
+        calls.append(req.target_label)
+        return AdapterExecutionResult(
+            succeeded=True,
+            readback_verified=False,
+            detail="accepted; no authorised official readback",
+            external_reference="detail-mx:shop-mx",
+            readback_evidence={
+                "source": "miaoshou_open_api",
+                "accepted": True,
+                "pre_submit_audit": {
+                    "submission_fingerprint": "audit-mx",
+                },
+            },
+            submission_accepted=True,
+        )
+
+    monkeypatch.setattr(
+        release_adapters,
+        "production_adapter_registry",
+        lambda: {
+            "new_product_workbench_miaoshou_commit": AdapterRegistration(
+                adapter_name="new_product_workbench_miaoshou_commit",
+                execute=lambda _req: AdapterExecutionResult(True, True, "common"),
+                consumes_unified_plan=True,
+                validates_confirmation_token=True,
+                preserves_idempotency_key=True,
+                verifies_readback=True,
+            ),
+            "miaoshou_tiktok_publish": AdapterRegistration(
+                adapter_name="miaoshou_tiktok_publish",
+                execute=accepted,
+                consumes_unified_plan=True,
+                validates_confirmation_token=True,
+                preserves_idempotency_key=True,
+                verifies_readback=True,
+            ),
+        },
+    )
+
+    status, first = product_server._publish_selected_release(
+        {**request, "confirm_publish": True}
+    )
+    assert status == 200
+    assert calls == ["tiktok:MX"]
+    assert first["awaiting_manual_verification"] is True
+    target = next(
+        row
+        for row in first["run"]["targets"]
+        if row["target_label"] == "tiktok:MX"
+    )
+    assert target["status"] == "SUBMITTED_UNVERIFIED"
+    assert target["submission"]["evidence"]["pre_submit_audit"][
+        "submission_fingerprint"
+    ] == "audit-mx"
+
+    status, repeated = product_server._publish_selected_release(
+        {**request, "confirm_publish": True}
+    )
+    assert status == 200
+    assert calls == ["tiktok:MX"]
+    assert repeated["external_writes_performed"] == []
+
+    status, verified = product_server._manually_verify_release_target(
+        {
+            **request,
+            "target_label": "tiktok:MX",
+            "marketplace_product_id": "mx-product-123",
+            "verified_by": "Kyle",
+            "user_verified": True,
+            "checks": {
+                "identity_matches": True,
+                "seller_sku_matches": True,
+                "single_listing_for_sku": True,
+                "title_matches": True,
+                "price_matches": True,
+                "images_match": True,
+                "logistics_match": True,
+            },
+        }
+    )
+    assert status == 200
+    assert verified["external_writes_performed"] == []
+    assert verified["run"]["status"] == "COMPLETED_WITH_MANUAL_VERIFICATION"

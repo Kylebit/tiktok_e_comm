@@ -1413,7 +1413,8 @@ def _publish_selected_release(data: dict) -> tuple[int, dict]:
             label = str(durable_target.get("target_label") or "")
             if (
                 label == "miaoshou:COMMON"
-                or durable_target.get("status") == "SUCCEEDED"
+                or durable_target.get("status")
+                in {"SUCCEEDED", "SUBMITTED_UNVERIFIED", "MANUALLY_VERIFIED"}
             ):
                 continue
             channel, site = label.split(":", 1)
@@ -1482,6 +1483,20 @@ def _publish_selected_release(data: dict) -> tuple[int, dict]:
                         readback_evidence=result.readback_evidence,
                     )
                     external_writes.append(label)
+                elif (
+                    result.succeeded
+                    and result.submission_accepted
+                    and result.external_reference
+                    and result.readback_evidence
+                ):
+                    store.record_target_submission(
+                        run["run_id"],
+                        label,
+                        external_id=result.external_reference,
+                        submission_evidence=result.readback_evidence,
+                        detail=result.detail,
+                    )
+                    external_writes.append(label)
                 else:
                     store.record_target_failure(
                         run["run_id"],
@@ -1509,20 +1524,141 @@ def _publish_selected_release(data: dict) -> tuple[int, dict]:
             )
         except Exception:
             refreshed_dashboard = dashboard
-        complete = final_run.get("status") == "SUCCEEDED"
+        complete = final_run.get("status") in {
+            "SUCCEEDED",
+            "COMPLETED_WITH_MANUAL_VERIFICATION",
+        }
+        awaiting_manual = (
+            final_run.get("status") == "AWAITING_MANUAL_VERIFICATION"
+        )
         return 200, {
             "ok": True,
             "completed": complete,
-            "partial": not complete,
+            "partial": not complete and not awaiting_manual,
+            "awaiting_manual_verification": awaiting_manual,
             "message": (
                 "all selected targets succeeded with verified readback"
                 if complete
-                else "some selected targets still require retry or verified readback"
+                else (
+                    "all executable submissions finished; API-less targets await Kyle verification"
+                    if awaiting_manual
+                    else "some selected targets still require retry or verified readback"
+                )
             ),
             "external_writes_performed": external_writes,
             "run": final_run,
             "dashboard": _product_workspace_view(refreshed_dashboard),
         }
+
+
+def _manually_verify_release_target(data: dict) -> tuple[int, dict]:
+    """Record Kyle's exact platform inspection for a target without API access."""
+
+    from shared_platform.release_store import (
+        ImmutableReleaseError,
+        ReleaseAuthorizationError,
+        ReleaseStoreError,
+        default_release_store,
+    )
+
+    if data.get("user_verified") is not True:
+        return 400, {
+            "ok": False,
+            "error": "explicit user_verified=true is required",
+        }
+    if str(data.get("verified_by") or "").strip() != "Kyle":
+        return 400, {"ok": False, "error": "verified_by must be Kyle"}
+    dashboard, failure = _release_dashboard_for_request(data)
+    if failure:
+        return failure
+    assert dashboard is not None
+    plan_payload, blockers = _release_plan_payload_from_dashboard(dashboard)
+    if blockers:
+        return 409, {
+            "ok": False,
+            "error": "current release facts no longer match the approved plan",
+            "blockers": blockers,
+        }
+    store = default_release_store()
+    preview = store.preview_plan(plan_payload)
+    plan_id = str(data.get("plan_id") or "").strip()
+    token = str(data.get("confirmation_token") or "").strip()
+    plan = store.get_plan(plan_id)
+    if (
+        plan_id != preview["plan_id"]
+        or not plan
+        or not _approved_plan_matches_current_payload(plan, preview)
+        or plan.get("status") != "APPROVED"
+        or token != plan.get("confirmation_token")
+    ):
+        return 409, {
+            "ok": False,
+            "error": "approved ReleasePlan no longer matches current facts",
+        }
+    target_label = str(data.get("target_label") or "").strip()
+    allowed = {
+        "tiktok:HB_PH",
+        "tiktok:HB_MY",
+        "tiktok:HB_TH",
+        "tiktok:HB_VN",
+        "tiktok:MX",
+        "tiktok:GB",
+    }
+    if target_label not in allowed or target_label not in (plan.get("targets") or ()):
+        return 400, {
+            "ok": False,
+            "error": "target is not an approved API-less TikTok destination",
+        }
+    marketplace_product_id = str(
+        data.get("marketplace_product_id") or ""
+    ).strip()
+    if (
+        not marketplace_product_id
+        or len(marketplace_product_id) > 128
+        or any(character.isspace() for character in marketplace_product_id)
+    ):
+        return 400, {
+            "ok": False,
+            "error": "marketplace_product_id must be a non-empty ID without spaces",
+        }
+    checks = data.get("checks") if isinstance(data.get("checks"), dict) else {}
+    evidence = {
+        "source": "kyle_marketplace_console_inspection",
+        "marketplace_product_id": marketplace_product_id,
+        "identity_matches": checks.get("identity_matches") is True,
+        "seller_sku_matches": checks.get("seller_sku_matches") is True,
+        "single_listing_for_sku": checks.get("single_listing_for_sku") is True,
+        "title_matches": checks.get("title_matches") is True,
+        "price_matches": checks.get("price_matches") is True,
+        "images_match": checks.get("images_match") is True,
+        "logistics_match": checks.get("logistics_match") is True,
+    }
+    run_id = f"release-run:{plan['payload_digest'][:24]}"
+    try:
+        target = store.record_manual_verification(
+            run_id,
+            target_label,
+            verified_by="Kyle",
+            user_verified=True,
+            verification_evidence=evidence,
+        )
+    except (
+        ValueError,
+        ImmutableReleaseError,
+        ReleaseAuthorizationError,
+        ReleaseStoreError,
+    ) as error:
+        return 409, {"ok": False, "error": str(error)}
+    refreshed, refresh_failure = _release_dashboard_for_request(data)
+    if refresh_failure:
+        refreshed = dashboard
+    return 200, {
+        "ok": True,
+        "external_writes_performed": [],
+        "target": target,
+        "run": store.get_run(run_id),
+        "dashboard": _product_workspace_view(refreshed or dashboard),
+    }
 
 
 _scan_lock = threading.Lock()
@@ -4132,6 +4268,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/product-workspace/release-plan/approve",
             "/api/product-workspace/miaoshou-draft/commit",
             "/api/product-workspace/publish",
+            "/api/product-workspace/release-target/manual-verify",
         }:
             origin = (self.headers.get("Origin") or "").strip()
             if origin:
@@ -4182,6 +4319,8 @@ class Handler(BaseHTTPRequestHandler):
                 status, payload = _approve_release_plan_locally(data)
             elif path == "/api/product-workspace/miaoshou-draft/commit":
                 status, payload = _prepare_miaoshou_release(data)
+            elif path == "/api/product-workspace/release-target/manual-verify":
+                status, payload = _manually_verify_release_target(data)
             else:
                 status, payload = _publish_selected_release(data)
             return self._json(status, payload)

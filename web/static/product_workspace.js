@@ -405,13 +405,21 @@
     const channelExecutionReady = Boolean(
       channelTargets.length
       && channelTargets.every(
-        (target) => target.status === "SUCCEEDED" || awaitsOfficialReadback(target),
+        (target) => (
+          target.status === "SUCCEEDED"
+          || target.status === "MANUALLY_VERIFIED"
+          || awaitsOfficialReadback(target)
+        ),
       ),
     );
     const reconciliationReady = Boolean(
-      release.run?.status === "SUCCEEDED"
+      ["SUCCEEDED", "COMPLETED_WITH_MANUAL_VERIFICATION"].includes(
+        release.run?.status,
+      )
       && runTargets.length
-      && runTargets.every((target) => target.status === "SUCCEEDED"),
+      && runTargets.every(
+        (target) => ["SUCCEEDED", "MANUALLY_VERIFIED"].includes(target.status),
+      ),
     );
 
     const raw = [
@@ -427,7 +435,7 @@
         ready: reconciliationReady,
         readyText: "全部一致",
         waitText: runCounts.awaitingReadback
-          ? `${runCounts.awaitingReadback} 个待读回授权`
+          ? `${runCounts.awaitingReadback} 个待人工验收`
           : "待对账",
       },
     ];
@@ -1150,19 +1158,23 @@
       descriptions.reconcile =
         `${runCounts.succeeded}/${runCounts.total} 个目标已完成官方回读；`
         + `${awaitingReadbackLabels.join("、")} 已提交且不会重复提交，`
-        + "连接对应 TikTok 官方读回授权后即可完成最终对账。";
+        + "请在对应店铺后台逐字段核对并记录人工验收。";
       allBlockers.push(
-        `${awaitingReadbackLabels.join("、")} 当前只缺官方读回授权；`
-        + "这不是重复发布入口，也不影响其余目标的成功证据。",
+        `${awaitingReadbackLabels.join("、")} 没有可用的官方店铺 API；`
+        + "账本已停止自动重试，等待 Kyle 人工核对 SKU、标题、售价、图片和物流字段。",
       );
     }
     allBlockers = [...new Set(allBlockers)];
     $("#nextStepNumber").textContent = String(currentIndex + 1).padStart(2, "0");
-    $("#nextStepTitle").textContent = data.release_v1?.run?.status === "SUCCEEDED"
+    const releaseCompleted = [
+      "SUCCEEDED",
+      "COMPLETED_WITH_MANUAL_VERIFICATION",
+    ].includes(data.release_v1?.run?.status);
+    $("#nextStepTitle").textContent = releaseCompleted
       ? "本次正式发布已完成"
       : stage.label;
-    $("#nextStepDescription").textContent = data.release_v1?.run?.status === "SUCCEEDED"
-      ? "所有已选店铺均已成功发布并完成回读，账本保留每个目标的幂等记录。"
+    $("#nextStepDescription").textContent = releaseCompleted
+      ? "全部已选店铺均已完成 API 回读或 Kyle 人工验收；账本保留每个目标的幂等提交证据。"
       : descriptions[stage.key];
     $("#blockerList").innerHTML = allBlockers.length
       ? allBlockers.map((item) => `<li>${esc(item)}</li>`).join("")
@@ -1584,6 +1596,7 @@
   }
 
   function awaitsOfficialReadback(target) {
+    if (target?.status === "SUBMITTED_UNVERIFIED") return true;
     const error = String(target?.error || "").toLowerCase();
     return Boolean(
       target?.status === "FAILED"
@@ -1605,6 +1618,9 @@
       succeeded: targets.filter((target) => target.status === "SUCCEEDED").length,
       running: targets.filter((target) => target.status === "RUNNING").length,
       awaitingReadback: targets.filter(awaitsOfficialReadback).length,
+      manuallyVerified: targets.filter(
+        (target) => target.status === "MANUALLY_VERIFIED",
+      ).length,
       failed: targets.filter(
         (target) => target.status === "FAILED" && !awaitsOfficialReadback(target),
       ).length,
@@ -1614,9 +1630,12 @@
   function releaseRunLabel(run) {
     const counts = releaseRunCounts(run);
     if (run?.status === "SUCCEEDED") return `${counts.succeeded}/${counts.total} 全部回读成功`;
+    if (run?.status === "COMPLETED_WITH_MANUAL_VERIFICATION") {
+      return `${counts.succeeded} API 回读 · ${counts.manuallyVerified} 人工验收`;
+    }
     if (run?.status === "RUNNING") return `${counts.succeeded}/${counts.total} 正在执行`;
     if (counts.awaitingReadback && !counts.failed && !counts.running) {
-      return `${counts.succeeded} 已回读 · ${counts.awaitingReadback} 待读回授权`;
+      return `${counts.succeeded} 已回读 · ${counts.awaitingReadback} 待人工验收`;
     }
     if (run?.status === "PARTIAL_FAILED") {
       return `${counts.succeeded} 已回读 · ${counts.failed} 失败`;
@@ -1625,13 +1644,19 @@
   }
 
   function releaseTargetLabel(target, statusNames) {
-    if (awaitsOfficialReadback(target)) return "已提交 · 待读回授权";
+    if (target?.status === "MANUALLY_VERIFIED") return "Kyle 已人工验收";
+    if (awaitsOfficialReadback(target)) return "已提交 · 待人工验收";
     return statusNames[target?.status] || target?.status || "未知";
   }
 
   function releaseTargetDetail(target) {
     if (awaitsOfficialReadback(target)) {
-      return "平台已接收并返回外部 ID；当前账号缺少官方读回授权，系统不会伪装为成功，也不会重复提交。";
+      return "妙手已接收且提交凭证已锁定；当前店铺没有官方 API，系统不会自动重试。请在平台后台核对后记录人工验收。";
+    }
+    if (target?.status === "MANUALLY_VERIFIED") {
+      return `由 Kyle 在平台后台完成逐字段验收 · 商品 ID ${
+        target?.submission?.verification_evidence?.marketplace_product_id || "—"
+      }`;
     }
     return target?.error || "";
   }
@@ -1655,9 +1680,19 @@
     );
 
     const publishReady = Boolean(release.publish_ready);
-    $("#publishAllCheckbox").disabled = !publishReady || busy;
+    const runCounts = releaseRunCounts(release.run);
+    const onlyWaitingForManual = Boolean(
+      release.run
+      && runCounts.awaitingReadback
+      && !runCounts.failed
+      && !runCounts.running,
+    );
+    $("#publishAllCheckbox").disabled = !publishReady || onlyWaitingForManual || busy;
     $("#publishAllButton").disabled = Boolean(
-      !publishReady || !$("#publishAllCheckbox").checked || busy,
+      !publishReady
+      || onlyWaitingForManual
+      || !$("#publishAllCheckbox").checked
+      || busy,
     );
   }
 
@@ -1716,6 +1751,8 @@
         FAILED: "失败待重试",
         PARTIAL_FAILED: "部分失败",
         SUCCEEDED: "回读成功",
+        SUBMITTED_UNVERIFIED: "已提交 · 待人工验收",
+        MANUALLY_VERIFIED: "Kyle 已人工验收",
         SUPERSEDED: "已废止",
       };
       $("#releaseRunLedger").innerHTML = `
@@ -1732,6 +1769,21 @@
               <strong>${esc(releaseTargetLabel(target, statusNames))}</strong>
               <small>尝试 ${esc(String(target.attempts || 0))} 次${target.external_id ? ` · 外部 ID ${esc(target.external_id)}` : ""}</small>
               ${targetDetail ? `<p>${esc(targetDetail)}</p>` : ""}
+              ${target.status === "SUBMITTED_UNVERIFIED" ? `
+                <form class="manual-verification-form" data-target-label="${esc(target.target_label)}">
+                  <label>
+                    <span>平台商品 ID</span>
+                    <input name="marketplace_product_id" autocomplete="off" maxlength="128" required
+                      placeholder="从店铺后台复制商品 ID">
+                  </label>
+                  <label class="manual-verification-confirm">
+                    <input name="all_checks_confirmed" type="checkbox" required>
+                    <span>我已确认该店同一 Seller SKU 只保留 1 个在售商品，并核对商品身份、标题、售价、图片、重量和尺寸均与本次计划一致。</span>
+                  </label>
+                  <button class="button button-secondary" type="submit">记录 Kyle 人工验收</button>
+                  <span class="manual-verification-message" role="status"></span>
+                </form>
+              ` : ""}
             </article>`;
           }).join("")}
         </div>
@@ -1790,6 +1842,57 @@
       );
     }
     return payload;
+  }
+
+  async function submitManualTargetVerification(form) {
+    if (!currentData || releaseSubmitting) return;
+    const targetLabel = form.dataset.targetLabel || "";
+    const productId = form.elements.marketplace_product_id?.value?.trim() || "";
+    const confirmed = Boolean(form.elements.all_checks_confirmed?.checked);
+    const message = form.querySelector(".manual-verification-message");
+    const button = form.querySelector("button[type='submit']");
+    if (!productId || !confirmed) {
+      if (message) {
+        message.textContent = "请填写平台商品 ID，并完成全部字段核对。";
+      }
+      return;
+    }
+    releaseSubmitting = true;
+    if (button) button.disabled = true;
+    if (message) message.textContent = "正在把人工验收证据写入本地发布账本…";
+    updateReleaseControls(currentData);
+    try {
+      const payload = await postReleaseAction(
+        "/api/product-workspace/release-target/manual-verify",
+        currentReleaseBody({
+          target_label: targetLabel,
+          marketplace_product_id: productId,
+          verified_by: "Kyle",
+          user_verified: true,
+          checks: {
+            identity_matches: true,
+            seller_sku_matches: true,
+            single_listing_for_sku: true,
+            title_matches: true,
+            price_matches: true,
+            images_match: true,
+            logistics_match: true,
+          },
+        }),
+      );
+      adoptWorkflowDashboard(payload.dashboard);
+      $("#publishRunMessage").textContent =
+        `${targetDisplayName(targetLabel)} 已记录 Kyle 人工验收；没有再次提交商品。`;
+      showError("");
+    } catch (error) {
+      const errorMessage = friendlyError(error.message);
+      showError(errorMessage);
+      if (message) message.textContent = errorMessage;
+    } finally {
+      releaseSubmitting = false;
+      if (button?.isConnected) button.disabled = false;
+      updateReleaseControls(currentData || {});
+    }
   }
 
   async function approveReleasePlan() {
@@ -1868,10 +1971,14 @@
           } else if (run.status === "SUCCEEDED") {
             $("#publishRunMessage").textContent =
               `执行完成；${counts.succeeded}/${counts.total} 个目标均已完成官方回读。`;
+          } else if (run.status === "COMPLETED_WITH_MANUAL_VERIFICATION") {
+            $("#publishRunMessage").textContent =
+              `执行完成；${counts.succeeded} 个目标完成 API 回读，`
+              + `${counts.manuallyVerified} 个无 API 目标完成 Kyle 人工验收。`;
           } else if (counts.awaitingReadback && !counts.failed) {
             $("#publishRunMessage").textContent =
               `执行已结束；${counts.succeeded}/${counts.total} 个目标已官方回读，`
-              + `${counts.awaitingReadback} 个目标已提交但等待官方读回授权。`;
+              + `${counts.awaitingReadback} 个无 API 目标已提交且停止自动重试，等待 Kyle 人工验收。`;
           } else {
             $("#publishRunMessage").textContent =
               `执行已结束；${counts.succeeded}/${counts.total} 个目标已官方回读，`
@@ -2201,6 +2308,12 @@
     updateReleaseControls(currentData || {});
   });
   $("#publishAllButton").addEventListener("click", publishSelectedTargets);
+  $("#releaseRunLedger").addEventListener("submit", (event) => {
+    const form = event.target.closest(".manual-verification-form");
+    if (!form) return;
+    event.preventDefault();
+    submitManualTargetVerification(form);
+  });
 
   const initial = new URLSearchParams(window.location.search);
   queueItems = readQueue();

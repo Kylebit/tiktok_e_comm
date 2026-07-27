@@ -19,7 +19,7 @@ from domains.channel_operations.release_executor import (
     AdapterRegistration,
 )
 from modules.products import server as product_server
-from shared_platform import release_store
+from shared_platform import release_control, release_store
 from shared_platform import target_scoped_release_contracts as target_contracts
 from shared_platform.release_store import (
     ImmutableReleaseError,
@@ -1727,6 +1727,11 @@ def test_generic_publish_still_executes_a_first_pending_target(monkeypatch):
         product_server,
         "_release_execution_readonly_gate",
         lambda *_args, **_kwargs: (gate, None),
+    )
+    monkeypatch.setattr(
+        release_control,
+        "build_release_dashboard",
+        lambda **_kwargs: gate["dashboard"],
     )
 
     status, payload = product_server._publish_selected_release(

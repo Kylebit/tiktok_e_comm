@@ -1473,11 +1473,7 @@ def _resolve_existing_miaoshou_tiktok_detail(
         or data.get("commonCollectBoxDetailId")
         or ""
     ).strip()
-    if not returned_common_id:
-        raise RuntimeError(
-            f"Miaoshou detail {detail_id} did not return common product identity"
-        )
-    if returned_common_id != product_id:
+    if returned_common_id and returned_common_id != product_id:
         raise RuntimeError(
             f"Miaoshou detail {detail_id} belongs to common product "
             f"{returned_common_id}, expected {product_id}"
@@ -1569,6 +1565,9 @@ def _resolve_existing_miaoshou_tiktok_detail(
             f"Miaoshou {clean_site} detail identity is not unique and exact: "
             f"mapped={detail_id}, matches={sorted(matches)}"
         )
+    common_identity_provenance = "search_row"
+    if returned_common_id:
+        common_identity_provenance = "search_row_and_shop_detail"
     return {
         "site": clean_site,
         "target_key": target_key,
@@ -1578,7 +1577,12 @@ def _resolve_existing_miaoshou_tiktok_detail(
         "shop": target,
         "shop_collect_item_info": dict(info),
         "oss_md5": str(data.get("ossMd5") or ""),
-        "source": "persisted_detail_group_ids_plus_readonly_shop_lookup",
+        "common_identity": product_id,
+        "common_identity_provenance": common_identity_provenance,
+        "source": (
+            "persisted_detail_group_ids_plus_readonly_shop_lookup_plus_"
+            + common_identity_provenance
+        ),
         "external_writes_performed": [],
     }
 

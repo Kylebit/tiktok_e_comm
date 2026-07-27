@@ -277,7 +277,6 @@ def test_existing_detail_resolver_ignores_asymmetric_claim_shops(monkeypatch):
                     "detailId": 3227305525,
                     "shopId": "7676267",
                     "title": "Approved PH title",
-                    "commonCollectBoxDetailId": "3828811808",
                     "skuMap": {"34x58": {"itemNum": "0953"}},
                 },
                 "claimToShopIds": ["7676267"],
@@ -294,6 +293,8 @@ def test_existing_detail_resolver_ignores_asymmetric_claim_shops(monkeypatch):
     assert resolved["detail_id"] == 3227305525
     assert resolved["shop_id"] == 7676267
     assert resolved["detail_group"] == "lively:PH"
+    assert resolved["common_identity"] == "3828811808"
+    assert resolved["common_identity_provenance"] == "search_row"
     assert resolved["external_writes_performed"] == []
     assert requests == [
         (
@@ -430,6 +431,120 @@ def test_existing_detail_resolver_blocks_wrong_detail_shop_or_variant_sku(
                     "claimToShopIds": ["7676267"],
                 },
             },
+        )
+
+
+def test_existing_detail_resolver_blocks_explicit_wrong_common_identity(monkeypatch):
+    from modules.sourcing import new_product_workbench as workbench
+
+    monkeypatch.setattr(
+        workbench,
+        "load_miaoshou_tiktok_claim",
+        lambda _offer_id: {
+            "source_item_id": "1011111051454",
+            "detail_group_detail_ids": {
+                "lively:GB": 3227304421,
+                "lively:MY": 3227305063,
+                "lively:PH": 3227305525,
+                "lively:TH": 3227306445,
+                "lively:VN": 3227307552,
+                "lively:MX": 3227308139,
+            },
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="belongs to common product 999"):
+        release_adapters._resolve_existing_miaoshou_tiktok_detail(
+            _context()["payload"],
+            site="LH_PH",
+            post=lambda _path, _body: {
+                "result": "success",
+                "data": {
+                    "shopCollectItemInfo": {
+                        "detailId": 3227305525,
+                        "shopId": "7676267",
+                        "commonCollectBoxDetailId": "999",
+                        "skuMap": {"34x58": {"itemNum": "0953"}},
+                    },
+                    "claimToShopIds": ["7676267"],
+                },
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    ("row_common", "row_detail_id", "message"),
+    [
+        ("", 3227305525, "identity is not unique and exact"),
+        ("999", 3227305525, "identity is not unique and exact"),
+        ("3828811808", 3227300000, "does not exactly match the persisted"),
+    ],
+)
+def test_existing_detail_resolver_blocks_missing_or_wrong_search_identity(
+    monkeypatch, row_common, row_detail_id, message
+):
+    from modules.sourcing import new_product_workbench as workbench
+
+    expected_rows = [
+        (3227304421, "10204699"),
+        (3227305063, "13295169"),
+        (3227305525, "7676267"),
+        (3227306445, "13295228"),
+        (3227307552, "13295291"),
+        (3227308139, "16265910"),
+    ]
+    monkeypatch.setattr(
+        workbench,
+        "load_miaoshou_tiktok_claim",
+        lambda _offer_id: {
+            "source_item_id": "1011111051454",
+            "detail_group_detail_ids": {
+                "lively:GB": 3227304421,
+                "lively:MY": 3227305063,
+                "lively:PH": 3227305525,
+                "lively:TH": 3227306445,
+                "lively:VN": 3227307552,
+                "lively:MX": 3227308139,
+            },
+        },
+    )
+
+    def read(path, _body):
+        if path == release_adapters.MIAOSHOU_TIKTOK_DETAIL_LIST_PATH:
+            rows = []
+            for detail_id, shop_id in expected_rows:
+                rows.append(
+                    {
+                        "collectBoxDetailId": (
+                            row_detail_id
+                            if detail_id == 3227305525
+                            else detail_id
+                        ),
+                        "commonCollectBoxDetailId": (
+                            row_common
+                            if detail_id == 3227305525
+                            else "3828811808"
+                        ),
+                        "itemNum": "0953",
+                        "collectBoxDetailShopList": [{"shopId": shop_id}],
+                    }
+                )
+            return {"result": "success", "data": {"detailList": rows}}
+        return {
+            "result": "success",
+            "data": {
+                "shopCollectItemInfo": {
+                    "detailId": 3227305525,
+                    "shopId": "7676267",
+                    "skuMap": {"34x58": {"itemNum": "0953"}},
+                },
+                "claimToShopIds": ["7676267"],
+            },
+        }
+
+    with pytest.raises(RuntimeError, match=message):
+        release_adapters._resolve_existing_miaoshou_tiktok_detail(
+            _context()["payload"], site="LH_PH", post=read
         )
 
 

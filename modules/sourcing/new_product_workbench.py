@@ -4793,6 +4793,59 @@ def _sequential_sku_numbers(sku_map: dict[str, Any], base_sku: str) -> dict[str,
     }
 
 
+def _strict_selected_miaoshou_sku_map(
+    sku_map: Any,
+    draft: dict[str, Any],
+    *,
+    region: str,
+) -> dict[str, Any]:
+    """Validate selected variants by stable itemNum, never mutable ERP map keys."""
+
+    selected_keys = [
+        str(value).strip()
+        for value in (draft.get("selectedSkuKeys") or ())
+    ]
+    selected_count = len(selected_keys)
+    if selected_count < 1:
+        raise RuntimeError(f"{region} immutable plan has no selected SKU keys")
+    if not all(selected_keys) or len(set(selected_keys)) != selected_count:
+        raise RuntimeError(f"{region} immutable plan has invalid selected SKU keys")
+    base_item_num = str(draft.get("itemNum") or "").strip()
+    if not base_item_num.isdigit():
+        raise RuntimeError(f"{region} immutable plan has invalid seller SKU")
+    expected_item_nums = {
+        str((int(base_item_num) + offset) % 10000).zfill(4)
+        for offset in range(selected_count)
+    }
+    if len(expected_item_nums) != selected_count:
+        raise RuntimeError(f"{region} immutable plan has duplicate sequential SKU numbers")
+    if not isinstance(sku_map, dict) or not sku_map:
+        raise RuntimeError(f"{region} existing draft has no verifiable SKU map")
+    if len(sku_map) != selected_count:
+        raise RuntimeError(
+            f"{region} existing draft SKU entry count does not match immutable plan"
+        )
+    actual_item_nums: list[str] = []
+    retained: dict[str, Any] = {}
+    for key, value in sku_map.items():
+        if not isinstance(value, dict):
+            raise RuntimeError(f"{region} existing draft has invalid SKU entry")
+        item_num = str(value.get("itemNum") or "").strip()
+        if not re.fullmatch(r"\d{4}", item_num):
+            raise RuntimeError(
+                f"{region} existing draft SKU itemNum is missing or not four digits"
+            )
+        actual_item_nums.append(item_num)
+        retained[str(key)] = value
+    if len(set(actual_item_nums)) != len(actual_item_nums):
+        raise RuntimeError(f"{region} existing draft has duplicate SKU itemNum values")
+    if set(actual_item_nums) != expected_item_nums:
+        raise RuntimeError(
+            f"{region} existing draft SKU itemNum set does not match immutable plan"
+        )
+    return retained
+
+
 def _normalize_title(title: str) -> str:
     value = re.sub(r"\s+", " ", str(title or "")).strip()
     if not value:
@@ -6175,22 +6228,11 @@ def _prepare_shop_mode_draft(
         "productCertifications": info.get("productCertifications") or [],
     })
     if strict_selected_skus:
-        selected = {
-            str(value).strip(";")
-            for value in (draft.get("selectedSkuKeys") or ())
-            if str(value).strip(";")
-        }
-        filtered = {
-            key: value
-            for key, value in (info.get("skuMap") or {}).items()
-            if str(key).strip(";") in selected
-        }
-        if not filtered or len(filtered) != len(selected):
-            raise RuntimeError(
-                f"{region} existing draft SKU set does not match immutable plan"
-            )
-        info["skuMap"] = filtered
-        _filter_miaoshou_variant_maps(info, filtered)
+        selected_sku_map = _strict_selected_miaoshou_sku_map(
+            info.get("skuMap"), draft, region=region
+        )
+        info["skuMap"] = selected_sku_map
+        _filter_miaoshou_variant_maps(info, selected_sku_map)
     _apply_audited_english_variant_labels(
         info,
         draft.get("skuLabelOverrides") or {},
@@ -6351,22 +6393,11 @@ def _prepare_site_mode_draft(
         "deliveryOptionIds": [],
     })
     if strict_selected_skus:
-        selected = {
-            str(value).strip(";")
-            for value in (draft.get("selectedSkuKeys") or ())
-            if str(value).strip(";")
-        }
-        filtered = {
-            key: value
-            for key, value in (info.get("skuMap") or {}).items()
-            if str(key).strip(";") in selected
-        }
-        if not filtered or len(filtered) != len(selected):
-            raise RuntimeError(
-                f"{region} existing draft SKU set does not match immutable plan"
-            )
-        info["skuMap"] = filtered
-        _filter_miaoshou_variant_maps(info, filtered)
+        selected_sku_map = _strict_selected_miaoshou_sku_map(
+            info.get("skuMap"), draft, region=region
+        )
+        info["skuMap"] = selected_sku_map
+        _filter_miaoshou_variant_maps(info, selected_sku_map)
 
     existing_shop_rows = {
         str(row.get("shopId") or ""): dict(row)

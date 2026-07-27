@@ -80,61 +80,73 @@ def compatible_prepared_logistics(*, shop_id: int, access_token: str, parcel: di
     return [int(row.get("logistics_channel_id") or row.get("logistic_id")) for row in rows if row.get("enabled") and int(row.get("logistics_channel_id") or row.get("logistic_id") or 0) not in excluded and _channel_supports_parcel(row, region="VN" if 50052 in excluded else "MY", weight_kg=weight, dimensions_cm=dimensions)]
 
 
-def inspect_existing_global(*, shop_id: int, access_token: str, global_item_id: str, model_sku: str, approved_master_digest: str) -> dict:
-    """GET-only unique global/model proof; no map mutation or token refresh."""
+def _official_global_master(*, merchant_id: int, merchant_token: str, global_item_id: str, model_sku: str, command: dict) -> dict:
+    """Read one exact global item/model pair; retain copy only in memory."""
     from modules.shopee.client import merchant_get
-    from modules.shopee.auth import load_tokens
-    store = load_tokens()
-    merchant_id = int((store.get("shops", {}).get(str(shop_id), {}) or {}).get("merchant_id") or 0)
-    merchant = (store.get("merchants", {}).get(str(merchant_id), {}) or {})
-    token = str(merchant.get("access_token") or "")
-    if not merchant_id or not token:
-        raise RuntimeError("prepared merchant token is required")
-    item_response = merchant_get("/api/v2/global_product/get_global_item_info", merchant_id, token, {"global_item_id_list": str(global_item_id)})
-    if item_response.get("error"):
+    from shared_platform.target_scoped_release_contracts import (
+        approved_shopee_copy_digest,
+        evaluate_shopee_global_image_observation,
+        shopee_global_image_observation_outcome,
+    )
+    item_response = merchant_get("/api/v2/global_product/get_global_item_info", merchant_id, merchant_token, {"global_item_id_list": str(global_item_id)})
+    if not isinstance(item_response, dict) or item_response.get("error"):
         raise RuntimeError("official global item GET failed")
-    item_rows = (item_response.get("response") or {}).get("global_item_list") or []
-    if len(item_rows) != 1:
+    response = item_response.get("response")
+    item_rows = response.get("global_item_list") if isinstance(response, dict) else None
+    if not isinstance(item_rows, list) or len(item_rows) != 1 or not isinstance(item_rows[0], dict):
         raise RuntimeError("official global item must be unique")
     item = item_rows[0]
+    if str(item.get("global_item_id") or "") != str(global_item_id):
+        raise RuntimeError("official global item identity is invalid")
     title = item.get("global_item_name")
     description = item.get("description") or item.get("global_item_description")
     images = item.get("image") or {}
     urls = images.get("image_url_list") if isinstance(images, dict) else None
-    if not isinstance(urls, list):
-        raise RuntimeError("official global item images are unavailable")
-    from shared_platform.target_scoped_release_contracts import approved_shopee_channel_master_digest
-    if approved_shopee_channel_master_digest(title, description, urls) != approved_master_digest:
-        raise RuntimeError("official global master digest does not match immutable command")
-    model_response = merchant_get("/api/v2/global_product/get_global_model_list", merchant_id, token, {"global_item_id": int(global_item_id)})
-    if model_response.get("error"): raise RuntimeError("official global model GET failed")
-    rows = (model_response.get("response") or {}).get("global_model") or []
+    image_ids = images.get("image_id_list") if isinstance(images, dict) else None
+    copy_digest = approved_shopee_copy_digest(title, description)
+    if copy_digest != command["approved_copy_digest"]:
+        raise RuntimeError("official global copy digest does not match immutable command")
+    observation = evaluate_shopee_global_image_observation(
+        approved_count=command["approved_image_count"], official_image_urls=urls,
+        official_image_ids=image_ids,
+        prior_mapping_digest=command.get("approved_global_image_mapping_digest"),
+    )
+    outcome = shopee_global_image_observation_outcome(
+        global_hard_facts_exact=True, image_observation=observation,
+    )
+    if outcome["execution_allowed"] is not True:
+        raise RuntimeError("official global image evidence is not executable")
+    model_response = merchant_get("/api/v2/global_product/get_global_model_list", merchant_id, merchant_token, {"global_item_id": int(global_item_id)})
+    if not isinstance(model_response, dict) or model_response.get("error"): raise RuntimeError("official global model GET failed")
+    model_data = model_response.get("response")
+    rows = model_data.get("global_model") if isinstance(model_data, dict) else None
+    if not isinstance(rows, list): raise RuntimeError("official global model response is invalid")
     matches = [row for row in rows if str(row.get("global_model_sku") or "") == model_sku]
     if len(matches) != 1:
         raise RuntimeError("global model SKU must be unique")
-    # The digest is supplied by the immutable command; production callers can
-    # only proceed after the official master GET has returned a unique model.
-    if not approved_master_digest:
-        raise RuntimeError("approved master digest is required")
     row = matches[0]
     model_id = str(row.get("global_model_id") or "")
     tier = list(row.get("tier_index") or [])
     if not model_id.isdigit() or not tier or any(isinstance(v, bool) or not isinstance(v, int) for v in tier): raise RuntimeError("official global model identity is invalid")
-    return {"global_model_id": model_id, "tier_index": tier}
+    return {"title": title, "description": description, "urls": list(urls), "global_model_id": model_id, "tier_index": tier, "image_observation": observation, "image_outcome": outcome,
+            "summary": {"global_item_id": str(global_item_id), "copy_digest": copy_digest, "image_count": len(urls), "global_image_snapshot_digest": observation["official_image_id_snapshot_digest"], "global_image_observation_digest": observation["evidence_digest"]}}
 
 
-def runtime_global_master(*, shop_id: int, merchant_id: int, merchant_token: str, global_item_id: str, approved_master_digest: str) -> dict:
-    """Read exact source copy for in-memory evaluation; caller persists only summary."""
-    from modules.shopee.client import merchant_get
-    from shared_platform.target_scoped_release_contracts import approved_shopee_channel_master_digest
-    response = merchant_get("/api/v2/global_product/get_global_item_info", merchant_id, merchant_token, {"global_item_id_list": str(global_item_id)})
-    rows = (response.get("response") or {}).get("global_item_list") if isinstance(response, dict) else None
-    if response.get("error") or not isinstance(rows, list) or len(rows) != 1: raise RuntimeError("official global master response is invalid")
-    row = rows[0]; image = row.get("image") or {}; urls = image.get("image_url_list") if isinstance(image, dict) else None
-    title, description = row.get("global_item_name"), row.get("description") or row.get("global_item_description")
-    digest = approved_shopee_channel_master_digest(title, description, urls)
-    if digest != approved_master_digest: raise RuntimeError("official global master drift")
-    return {"title": title, "description": description, "urls": list(urls), "digest": digest, "summary": {"global_item_id": str(global_item_id), "master_digest": digest, "image_count": len(urls)}}
+def inspect_existing_global(*, shop_id: int, access_token: str, global_item_id: str, model_sku: str, command: dict) -> dict:
+    """GET-only proof.  Rehosted URLs are observation-only, never plan copy."""
+    from modules.shopee.auth import load_tokens
+    store = load_tokens(); merchant_id = int((store.get("shops", {}).get(str(shop_id), {}) or {}).get("merchant_id") or 0)
+    token = str((store.get("merchants", {}).get(str(merchant_id), {}) or {}).get("access_token") or "")
+    if not merchant_id or not token: raise RuntimeError("prepared merchant token is required")
+    return _official_global_master(merchant_id=merchant_id, merchant_token=token, global_item_id=global_item_id, model_sku=model_sku, command=command)
+
+
+def runtime_global_master(*, merchant_id: int, merchant_token: str, global_item_id: str, model_sku: str, command: dict, expected_image_snapshot_digest: str) -> dict:
+    """Re-read proof-bound official facts before dispatch; URL rehosting may vary."""
+    master = _official_global_master(merchant_id=merchant_id, merchant_token=merchant_token, global_item_id=global_item_id, model_sku=model_sku, command=command)
+    if master["summary"]["global_image_snapshot_digest"] != expected_image_snapshot_digest:
+        raise RuntimeError("official global image ID snapshot drift")
+    return master
 
 
 def _publish_existing_global_site(*, request, evidence: dict) -> dict:
@@ -146,7 +158,12 @@ def _publish_existing_global_site(*, request, evidence: dict) -> dict:
     store = load_tokens(); merchant_id = int((store.get("shops", {}).get(str(shop_id), {}) or {}).get("merchant_id") or 0)
     token = str((store.get("merchants", {}).get(str(merchant_id), {}) or {}).get("access_token") or "")
     if not merchant_id or not token: raise RuntimeError("prepared merchant token is required")
-    master = runtime_global_master(shop_id=shop_id, merchant_id=merchant_id, merchant_token=token, global_item_id=str(evidence["global_item_id"]), approved_master_digest=command["approved_master_digest"])
+    master = runtime_global_master(
+        merchant_id=merchant_id, merchant_token=token,
+        global_item_id=str(evidence["global_item_id"]),
+        model_sku=command["model_sku"], command=command,
+        expected_image_snapshot_digest=str(evidence["global_image_snapshot_digest"]),
+    )
     body = {"global_item_id": int(evidence["global_item_id"]), "shop_id": int(shop_id), "shop_region": command["region"], "item": {"item_status": command["item_status"], "original_price": command["local_original_price"], "logistic": [{"logistic_id": x, "enabled": True} for x in evidence["selected_logistics_ids"]], "model": [{"tier_index": evidence["global_tier_index"], "original_price": command["local_original_price"]}]}}
     evidence["_dispatch_invoked"] = True
     try:
@@ -190,7 +207,9 @@ def _publish_existing_global_site(*, request, evidence: dict) -> dict:
     copy = evaluate_shopee_regional_copy_observation(source_title=master["title"], source_description=master["description"], regional_title=item.get("item_name"), regional_description=item.get("description"), source_global_master_digest=command["approved_master_digest"], site=command["region"])
     image = evaluate_shopee_regional_image_observation(approved_count=command["approved_image_count"], regional_image_urls=image_urls or [], global_linkage_verified=hard_checks["global_linkage"])
     outcome = shopee_regional_observation_outcome(listing_hard_exact=hard, copy_observation=copy, image_observation=image)
-    return {"item_id": item_id, "verified": outcome.get("outcome") == "SUCCEEDED", "manual_review_required": outcome.get("manual_review_required") is True, "task_status": "success", "hard_checks": hard_checks, "enabled_logistics_count": len(enabled), "image_count": len(image_urls or []), "master_digest": master["digest"], "observation_outcome": outcome.get("outcome"), "derived_translation_status": outcome.get("derived_translation_status"), "derived_image_status": outcome.get("derived_image_status"), "matched_rule_ids": list(outcome.get("matched_rule_ids") or []), "observation_evidence_digest": outcome.get("evidence_digest"), "reconciliation_required": outcome.get("reconciliation_required") is True, "external_writes_performed": ["shopee:regional_publish"]}
+    global_outcome = master["image_outcome"]
+    verified = outcome.get("outcome") == "SUCCEEDED" and global_outcome.get("execution_allowed") is True
+    return {"item_id": item_id, "verified": verified, "manual_review_required": outcome.get("manual_review_required") is True or global_outcome.get("manual_review_required") is True, "task_status": "success", "hard_checks": hard_checks, "enabled_logistics_count": len(enabled), "image_count": len(image_urls or []), "copy_digest": master["summary"]["copy_digest"], "observation_outcome": outcome.get("outcome"), "derived_translation_status": outcome.get("derived_translation_status"), "derived_image_status": outcome.get("derived_image_status"), "global_image_status": global_outcome.get("global_image_status"), "matched_rule_ids": sorted(set(list(outcome.get("matched_rule_ids") or []) + list(global_outcome.get("matched_rule_ids") or []))), "observation_evidence_digest": outcome.get("evidence_digest"), "global_image_observation_digest": master["image_observation"].get("evidence_digest"), "reconciliation_required": not verified, "external_writes_performed": ["shopee:regional_publish"]}
 
 
 def publish_existing_global_site(*, request, evidence: dict) -> dict:

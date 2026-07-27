@@ -68,7 +68,7 @@ def _shopee_proof(request: TargetScopedOperationRequest) -> tuple[dict[str, Any]
     from modules.shopee.target_scoped import scan_prepared_shop_sku
 
     region = request.target_label.rsplit(":", 1)[1]
-    required_policy = ("regional_copy_policy_version", "regional_copy_lint_policy_version", "regional_image_verification_policy_version", "regional_observation_policy_digest")
+    required_policy = ("regional_copy_policy_version", "regional_copy_lint_policy_version", "regional_image_verification_policy_version", "regional_observation_policy_digest", "approved_copy_digest", "approved_source_image_manifest_digest", "global_image_observation_policy_version")
     if any(not request.planned_command.get(field) for field in required_policy):
         raise TargetScopedRetryError("planned_command_incomplete: regional observation policy is required")
     shop_id, token = _prepared_shopee_credentials(region)
@@ -88,7 +88,7 @@ def _shopee_proof(request: TargetScopedOperationRequest) -> tuple[dict[str, Any]
     global_facts = inspect_existing_global(
         shop_id=shop_id, access_token=token, global_item_id=global_item_id,
         model_sku=request.planned_command["model_sku"],
-        approved_master_digest=request.planned_command["approved_master_digest"],
+        command=request.planned_command,
     )
     evidence: dict[str, Any] = {
         "source": "shopee:official_get_only",
@@ -103,6 +103,10 @@ def _shopee_proof(request: TargetScopedOperationRequest) -> tuple[dict[str, Any]
         "global_model_id": global_facts["global_model_id"],
         "global_tier_index": global_facts["tier_index"],
         "approved_master_digest": request.planned_command["approved_master_digest"],
+        "approved_copy_digest": request.planned_command["approved_copy_digest"],
+        "global_image_snapshot_digest": global_facts["summary"]["global_image_snapshot_digest"],
+        "global_image_observation": global_facts["image_observation"],
+        "global_image_outcome": global_facts["image_outcome"],
     }
     checks: dict[str, bool] = {
         "prepared_token": True,
@@ -122,7 +126,7 @@ def _shopee_proof(request: TargetScopedOperationRequest) -> tuple[dict[str, Any]
         checks.update({"vn_logistics_nonempty": True, "vn_50052_absent": True})
     evidence["selected_logistics_ids"] = tuple(sorted(int(value) for value in logistics))
     evidence["selected_logistics_digest"] = canonical_digest({"ids": evidence["selected_logistics_ids"]})
-    checks.update({"global_model_unique": True, "master_digest_exact": True, "enabled_logistics_nonempty": bool(logistics)})
+    checks.update({"global_model_unique": True, "copy_digest_exact": True, "global_image_execution_allowed": True, "enabled_logistics_nonempty": bool(logistics)})
     if not logistics:
         raise TargetScopedRetryError("no enabled logistics satisfies the immutable parcel policy")
     return checks, evidence
@@ -183,7 +187,7 @@ def execute_target_scoped_operation(request: TargetScopedOperationRequest, proof
             return AdapterExecutionResult(False, False, "Shopee accepted publish requires reconciliation", error.external_reference, allowed, submission_accepted=True)
         if receipt.get("verified") is not True:
             return AdapterExecutionResult(False, False, "Shopee dispatch/readback requires reconciliation", str(receipt.get("item_id") or "") or None, {"external_writes_performed": ["shopee:regional_publish"], "reconciliation_required": True})
-        return AdapterExecutionResult(True, True, "Shopee one-site publish readback verified", str(receipt["item_id"]), {"verified": True, "external_writes_performed": ["shopee:regional_publish"], "manual_review_required": receipt.get("manual_review_required") is True, "profit_status": "unverified", "derived_translation_status": receipt.get("derived_translation_status"), "derived_image_status": receipt.get("derived_image_status"), "semantic_equivalence": "unverified", "matched_rule_ids": receipt.get("matched_rule_ids") or [], "observation_evidence_digest": receipt.get("observation_evidence_digest"), "readback": receipt})
+        return AdapterExecutionResult(True, True, "Shopee one-site publish readback verified", str(receipt["item_id"]), {"verified": True, "external_writes_performed": ["shopee:regional_publish"], "manual_review_required": receipt.get("manual_review_required") is True, "profit_status": "unverified", "derived_translation_status": receipt.get("derived_translation_status"), "derived_image_status": receipt.get("derived_image_status"), "global_image_status": receipt.get("global_image_status"), "semantic_equivalence": "unverified", "matched_rule_ids": receipt.get("matched_rule_ids") or [], "observation_evidence_digest": receipt.get("observation_evidence_digest"), "readback": receipt})
     if request.target_label == _OZON_TARGET:
         if not request.planned_command:
             raise TargetScopedRetryError("Ozon successor stock decision is required")

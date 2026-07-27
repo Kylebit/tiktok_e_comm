@@ -90,6 +90,24 @@ def test_missing_store_reads_are_side_effect_free_and_allowlist_is_exact(tmp_pat
     assert not path.exists()
 
 
+def test_persisted_approval_integer_is_decoded_as_literal_boolean(tmp_path):
+    store, plan, approval = _approved_store(tmp_path)
+
+    assert approval["user_approved"] is True
+    with sqlite3.connect(store.path) as connection:
+        persisted = connection.execute(
+            """
+            SELECT user_approved FROM release_approvals
+            WHERE plan_id = ?
+            """,
+            (plan["plan_id"],),
+        ).fetchone()[0]
+
+    assert type(persisted) is int
+    assert persisted == 1
+    assert store.get_plan(plan["plan_id"])["approval"]["user_approved"] is True
+
+
 def test_plan_payload_digest_token_and_sku_reservation_are_immutable(tmp_path):
     store = ReleaseStore(tmp_path / "release.db")
     created = store.create_plan(

@@ -477,6 +477,17 @@ def _plan_from_row(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def _approval_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    """Decode SQLite's constrained approval flag into a strict Python bool."""
+
+    approval = dict(row)
+    value = approval.get("user_approved")
+    approval["user_approved"] = value is True or (
+        type(value) is int and value == 1
+    )
+    return approval
+
+
 class ReleaseStore:
     """Transactional SQLite repository for the V1 release state machine."""
 
@@ -764,7 +775,7 @@ class ReleaseStore:
                 ).fetchone()
             except sqlite3.OperationalError:
                 return None
-        result["approval"] = dict(approval) if approval else None
+        result["approval"] = _approval_from_row(approval) if approval else None
         result["sku_reservation"] = dict(reservation) if reservation else None
         return result
 
@@ -1005,7 +1016,7 @@ class ReleaseStore:
                     raise ImmutableReleaseError(
                         "release plan already has a different approval"
                     )
-                return {**dict(existing), "created": False}
+                return {**_approval_from_row(existing), "created": False}
 
             now = _utc_now()
             approval_id = f"release-approval:{plan['payload_digest'][:24]}"
@@ -1036,7 +1047,7 @@ class ReleaseStore:
                 "SELECT * FROM release_approvals WHERE approval_id = ?",
                 (approval_id,),
             ).fetchone()
-            return {**dict(row), "created": True}
+            return {**_approval_from_row(row), "created": True}
 
     def start_run(
         self,

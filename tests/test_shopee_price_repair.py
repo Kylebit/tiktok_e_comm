@@ -1,3 +1,9 @@
+import json
+from http.server import ThreadingHTTPServer
+from threading import Thread
+import urllib.error
+import urllib.request
+
 import pytest
 
 from domains.channel_operations.release_executor import AdapterExecutionRequest
@@ -506,6 +512,216 @@ def _install_server_repair_contract(monkeypatch, store, *, execute=None):
                 },
             )
         ),
+    )
+
+
+def _real_sqlite_repair_contract(tmp_path):
+    store = ReleaseStore(tmp_path / "release.db")
+    plan = store.create_plan(
+        {
+            "plan_id": "omnichannel:persisted-approval",
+            "product_id": "3838616043",
+            "seller_sku": "0954",
+            "product_package_id": "product:3838616043:0954",
+            "content_package_id": "content:3838616043",
+            "targets": ["shopee:PH", "shopee:TH"],
+            "product_revision": 31,
+            "omnichannel_scope_digest": "scope",
+        }
+    )
+    approval = store.approve_plan(
+        plan["plan_id"],
+        approved_by="Kyle",
+        user_approved=True,
+        confirmation_token=plan["confirmation_token"],
+    )
+    run = store.start_run(plan["plan_id"])
+    store.begin_target(run["run_id"], "shopee:PH")
+    store.record_target_failure(
+        run["run_id"],
+        "shopee:PH",
+        error="official readback price mismatch",
+        external_id="56164935203",
+        failure_evidence={"price": False, "identity": True},
+    )
+    return store, plan, approval, run
+
+
+def _post_json(url, payload):
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as error:
+        return error.code, json.loads(error.read())
+
+
+def test_persisted_sqlite_approval_reaches_http_claim_and_adapter_seam(
+    tmp_path,
+    monkeypatch,
+):
+    store, plan, approval, run = _real_sqlite_repair_contract(tmp_path)
+    durable_plan = store.get_plan(plan["plan_id"])
+    durable_run = store.get_run(run["run_id"])
+    adapter_calls = []
+
+    assert approval["user_approved"] is True
+    assert durable_plan["approval"]["user_approved"] is True
+    monkeypatch.setattr(release_store, "default_release_store", lambda: store)
+    monkeypatch.setattr(
+        product_server,
+        "_release_execution_readonly_gate",
+        lambda _data, *, store: (
+            {
+                "dashboard": {"product": {"revision": 31}},
+                "plan": durable_plan,
+                "run": durable_run,
+                "payload": durable_plan["payload"],
+            },
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "preflight_shopee_price_repair",
+        lambda _request: {
+            "operation": {
+                "kind": "shopee_original_price_repair_v1",
+                "plan_id": plan["plan_id"],
+                "run_id": run["run_id"],
+                "target_label": "shopee:PH",
+                "external_id": "56164935203",
+                "preflight_digest": "p" * 64,
+            }
+        },
+    )
+
+    def execute(_request, *, expected_preflight_digest):
+        adapter_calls.append(expected_preflight_digest)
+        return AdapterExecutionResult(
+            succeeded=True,
+            readback_verified=True,
+            detail="exact",
+            external_reference="56164935203",
+            readback_evidence={
+                "verified": True,
+                "reconciliation_required": False,
+                "external_writes_performed": ["shopee:update_price"],
+            },
+        )
+
+    monkeypatch.setattr(
+        release_adapters,
+        "execute_shopee_price_repair",
+        execute,
+    )
+    server = ThreadingHTTPServer(("127.0.0.1", 0), product_server.Handler)
+    server.daemon_threads = True
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, response = _post_json(
+            (
+                f"http://127.0.0.1:{server.server_port}"
+                "/api/product-workspace/release-target/shopee-price-repair"
+            ),
+            {
+                "offer_id": "3838616043",
+                "seller_sku": "0954",
+                "publication_targets": ["shopee:PH", "shopee:TH"],
+                "plan_id": plan["plan_id"],
+                "confirmation_token": plan["confirmation_token"],
+                "expected_revision": 31,
+                "payload_digest": plan["payload_digest"],
+                "preflight_digest": "p" * 64,
+                "target_label": "shopee:PH",
+                "confirm_shopee_price_repair": True,
+                "approved_by": "Kyle",
+            },
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert status == 200
+    assert response["ok"] is True
+    assert adapter_calls == ["p" * 64]
+    repaired = store.get_run(run["run_id"])
+    target = next(
+        row
+        for row in repaired["targets"]
+        if row["target_label"] == "shopee:PH"
+    )
+    assert target["repair"]["status"] == "SUCCEEDED"
+
+
+@pytest.mark.parametrize(
+    "user_approved",
+    [False, None, 2, "1", "true"],
+)
+def test_price_repair_rejects_nonliteral_approval_values_before_claim_or_adapter(
+    monkeypatch,
+    user_approved,
+):
+    store = _ServerRepairStore()
+    adapter_calls = []
+    gate = _server_repair_gate()
+    gate["plan"]["approval"]["user_approved"] = user_approved
+    monkeypatch.setattr(
+        release_store,
+        "default_release_store",
+        lambda: store,
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_release_execution_readonly_gate",
+        lambda _data, *, store: (gate, None),
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "preflight_shopee_price_repair",
+        lambda *_args, **_kwargs: adapter_calls.append("preflight"),
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "execute_shopee_price_repair",
+        lambda *_args, **_kwargs: adapter_calls.append("post"),
+    )
+
+    status, response = product_server._repair_existing_shopee_target_price(
+        _server_repair_data()
+    )
+
+    assert status == 409
+    assert response["external_writes_performed"] == []
+    assert store.claims == []
+    assert adapter_calls == []
+
+
+def test_partial_target_list_does_not_match_full_immutable_payload(tmp_path):
+    store, plan, _approval, _run = _real_sqlite_repair_contract(tmp_path)
+    persisted = store.get_plan(plan["plan_id"])
+    partial_preview = store.preview_plan(
+        {
+            **persisted["payload"],
+            "targets": ["shopee:PH"],
+        }
+    )
+
+    assert persisted["targets"] == ["shopee:PH", "shopee:TH"]
+    assert partial_preview["targets"] == ["shopee:PH"]
+    assert (
+        product_server._approved_plan_matches_current_payload(
+            persisted,
+            partial_preview,
+        )
+        is False
     )
 
 

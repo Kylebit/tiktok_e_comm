@@ -88,6 +88,8 @@
   let appliedPublicationTargets = new Set();
   const SHOPEE_PRICE_REPAIR_TARGETS = new Set(["shopee:PH", "shopee:TH"]);
   const shopeePriceRepairStates = new Map();
+  const TARGET_SCOPED_ACTION_TARGETS = new Set(["shopee:MY", "shopee:VN", "ozon:RU"]);
+  const targetScopedActionStates = new Map();
 
   function productKey(offerId) {
     return String(offerId || "").trim();
@@ -2067,6 +2069,69 @@
     `;
   }
 
+  function targetScopedActionPanel(target) {
+    const label = String(target?.target_label || "");
+    if (!TARGET_SCOPED_ACTION_TARGETS.has(label) || target?.status !== "FAILED") return "";
+    const state = targetScopedActionStates.get(label) || {};
+    const preview = state.preview || {};
+    const eligible = preview.available === true
+      && preview.target_label === label
+      && preview.plan_id === currentData?.release_v1?.plan?.plan_id
+      && Number(preview.expected_revision) === Number(currentData?.product?.revision);
+    return `<section class="target-scoped-action-panel" data-target-scoped-target="${esc(label)}" aria-live="polite">
+      <strong>${esc(label)}：仅限当前失败目标的受控恢复</strong>
+      <p>${esc(state.message || "先执行官方只读预检；不会调用通用一键发布或其他目标。")}</p>
+      <button type="button" class="button button-secondary" data-target-scoped-action="preview" data-target-label="${esc(label)}" ${releaseSubmitting ? "disabled" : ""}>只读预检</button>
+      ${eligible ? `<label><input type="checkbox" data-target-scoped-confirm> 我确认仅执行该目标的既有对象恢复并立即回读</label>
+      <button type="button" class="button" data-target-scoped-action="submit" data-target-label="${esc(label)}" disabled>确认执行单目标恢复</button>` : ""}
+    </section>`;
+  }
+
+  async function previewTargetScopedAction(targetLabel) {
+    if (!currentData || releaseSubmitting) return;
+    targetScopedActionStates.set(targetLabel, { message: "正在执行官方只读预检…" });
+    renderReleaseV1(currentData);
+    try {
+      const query = new URLSearchParams({ offer_id: currentData.product?.offer_id || "", target_label: targetLabel });
+      const response = await fetch(`/api/product-workspace/release-target/target-scoped-action-preview?${query}`, { headers: { Accept: "application/json" } });
+      const payload = await response.json();
+      if (!response.ok || payload.ok === false || payload.available !== true) throw new Error(payload.error || "目标预检未通过");
+      targetScopedActionStates.set(targetLabel, { preview: payload, message: "预检通过；确认后只会执行该站点的一次受控操作。" });
+    } catch (error) {
+      targetScopedActionStates.set(targetLabel, { message: `${friendlyError(error.message)}；不会显示执行按钮。` });
+    }
+    if (currentData) renderReleaseV1(currentData);
+  }
+
+  async function submitTargetScopedAction(targetLabel) {
+    const state = targetScopedActionStates.get(targetLabel) || {};
+    const preview = state.preview || {};
+    const panel = document.querySelector(`[data-target-scoped-target="${CSS.escape(targetLabel)}"]`);
+    if (!panel?.querySelector("[data-target-scoped-confirm]")?.checked || preview.available !== true) return;
+    releaseSubmitting = true;
+    targetScopedActionStates.set(targetLabel, { ...state, message: "正在重新核对 proof 并执行一次受控操作…" });
+    renderReleaseV1(currentData);
+    try {
+      await postReleaseAction("/api/product-workspace/release-target/target-scoped-action", currentReleaseBody({
+        target_label: targetLabel,
+        expected_revision: preview.expected_revision,
+        payload_digest: preview.payload_digest,
+        preflight_digest: preview.preflight_digest,
+        proof_digest: preview.proof_digest,
+        failure_attempt: preview.failure_attempt,
+        confirm_target_scoped_action: true,
+        approved_by: "Kyle",
+      }));
+      targetScopedActionStates.set(targetLabel, { message: "操作已完成并由官方回读验证。" });
+    } catch (error) {
+      targetScopedActionStates.set(targetLabel, { message: `${friendlyError(error.message)}；已停止，不会自动重试。` });
+    } finally {
+      releaseSubmitting = false;
+      const item = queueItem(currentQueueKey);
+      if (item) refreshQueueProduct(item).catch(() => {});
+    }
+  }
+
   function awaitsOfficialReadback(target) {
     if (target?.status === "SUBMITTED_UNVERIFIED") return true;
     const error = String(target?.error || "").toLowerCase();
@@ -2507,6 +2572,7 @@
               <small>尝试 ${esc(String(target.attempts || 0))} 次${target.external_id ? ` · 外部 ID ${esc(target.external_id)}` : ""}</small>
               ${targetDetail ? `<p>${esc(targetDetail)}</p>` : ""}
               ${shopeePriceRepairPanel(target)}
+              ${targetScopedActionPanel(target)}
               ${target.status === "SUBMITTED_UNVERIFIED" ? `
                 <form class="manual-verification-form" data-target-label="${esc(target.target_label)}">
                   <label>
@@ -3395,6 +3461,12 @@
     submitManualTargetVerification(form);
   });
   $("#releaseRunLedger").addEventListener("change", (event) => {
+    const scoped = event.target.closest("[data-target-scoped-confirm]");
+    if (scoped) {
+      const button = scoped.closest("[data-target-scoped-target]")?.querySelector('[data-target-scoped-action="submit"]');
+      if (button) button.disabled = releaseSubmitting || !scoped.checked;
+      return;
+    }
     const checkbox = event.target.closest("[data-price-repair-confirm]");
     if (!checkbox) return;
     const panel = checkbox.closest("[data-price-repair-target]");
@@ -3404,6 +3476,12 @@
     if (button) button.disabled = releaseSubmitting || !checkbox.checked;
   });
   $("#releaseRunLedger").addEventListener("click", (event) => {
+    const scoped = event.target.closest("[data-target-scoped-action]");
+    if (scoped && !scoped.disabled) {
+      if (scoped.dataset.targetScopedAction === "preview") previewTargetScopedAction(scoped.dataset.targetLabel || "");
+      if (scoped.dataset.targetScopedAction === "submit") submitTargetScopedAction(scoped.dataset.targetLabel || "");
+      return;
+    }
     const button = event.target.closest("[data-price-repair-action]");
     if (!button || button.disabled) return;
     const targetLabel = button.dataset.targetLabel || "";

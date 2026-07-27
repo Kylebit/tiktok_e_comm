@@ -359,6 +359,28 @@ def test_shopee_price_repair_ui_is_target_scoped_and_dedicated():
     assert "operation_digest" in reconcile
 
 
+def test_remaining_channel_retry_ui_uses_only_the_target_scoped_seam():
+    source = (WEB / "static" / "product_workspace.js").read_text(
+        encoding="utf-8"
+    )
+    styles = (WEB / "static" / "product_workspace.css").read_text(
+        encoding="utf-8"
+    )
+    preview = _function_body(source, "previewTargetScopedAction")
+    submit = _function_body(source, "submitTargetScopedAction")
+
+    assert 'new Set(["shopee:MY", "shopee:VN", "ozon:RU"])' in source
+    assert "target?.status !== \"FAILED\"" in source
+    assert "target-scoped-action-preview" in preview
+    assert "target-scoped-action" in submit
+    assert "confirm_target_scoped_action: true" in submit
+    assert 'approved_by: "Kyle"' in submit
+    for field in ("proof_digest", "failure_attempt", "payload_digest", "preflight_digest"):
+        assert field in submit
+    assert "publishSelectedTargets" not in submit
+    assert "target-scoped-action-panel" in styles
+
+
 def test_formal_pages_expose_accessible_feedback_regions():
     html_contract = {
         "web/product_workspace.html": [

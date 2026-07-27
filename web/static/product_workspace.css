@@ -1869,6 +1869,16 @@ section { scroll-margin-top: 20px; }
   padding-top: 11px;
   border-top: 1px solid rgba(128, 91, 22, .22);
 }
+
+.target-scoped-action-panel {
+  border: 1px solid var(--line, #d6dce5);
+  border-radius: 10px;
+  margin-top: 10px;
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+}
+.target-scoped-action-panel label { font-size: .9rem; }
 .shopee-price-repair-panel .button {
   width: 100%;
   min-width: 0;

@@ -121,13 +121,19 @@ def publish_existing_global_site(*, request, evidence: dict) -> dict:
         result = raw_task["response"]
         if result.get("publish_status") in {"success", "failed"}: break
     item_id = str(result.get("item_id") or (result.get("success") or {}).get("item_id") or "")
-    if result.get("publish_status") != "success" or not item_id: return {"item_id": item_id, "verified": False, "task_status": str(result.get("publish_status") or "unknown")}
+    if result.get("publish_status") != "success" or not item_id:
+        return {"item_id": item_id, "verified": False, "task_status": str(result.get("publish_status") or "unknown"), "reconciliation_required": True, "external_writes_performed": ["shopee:regional_publish"]}
     # Regional identity is read through the prepared shop token, never token refresh.
     base = shop_get("/api/v2/product/get_item_base_info", shop_id, _shop_token, {"item_id_list": item_id})
     rows = (base.get("response") or {}).get("item_list") if isinstance(base, dict) else None
-    if not isinstance(rows, list) or len(rows) != 1: return {"item_id": item_id, "verified": False, "task_status": "regional_readback_unknown"}
+    if not isinstance(rows, list) or len(rows) != 1: return {"item_id": item_id, "verified": False, "task_status": "regional_readback_unknown", "reconciliation_required": True, "external_writes_performed": ["shopee:regional_publish"]}
     item = rows[0]
+    global_id = shop_get("/api/v2/global_product/get_global_item_id", shop_id, _shop_token, {"item_id": int(item_id)})
+    resolved = str((global_id.get("response") or {}).get("global_item_id") or "") if isinstance(global_id, dict) else ""
     models = shop_get("/api/v2/product/get_model_list", shop_id, _shop_token, {"item_id": int(item_id)})
     model_rows = (models.get("response") or {}).get("model") if isinstance(models, dict) else None
-    exact = (str(item.get("item_status") or "") == "NORMAL" and str(item.get("item_name") or "") == str(command["regional_title"]) and str(item.get("description") or "") == str(command["regional_description"]) and any(str(row.get("model_sku") or "") == str(command["model_sku"]) for row in (model_rows or [])))
-    return {"item_id": item_id, "verified": bool(exact), "task_status": "success"}
+    logistics = item.get("logistic_info") or []
+    enabled = {int(row.get("logistic_id")) for row in logistics if isinstance(row, dict) and row.get("enabled") and row.get("logistic_id") is not None}
+    expected = set(int(x) for x in evidence["selected_logistics_ids"])
+    exact = (resolved == str(evidence["global_item_id"]) and str(item.get("item_status") or "") == "NORMAL" and str(item.get("item_name") or "") == str(command["regional_title"]) and str(item.get("description") or "") == str(command["regional_description"]) and any(str(row.get("model_sku") or "") == str(command["model_sku"]) for row in (model_rows or [])) and enabled == expected)
+    return {"item_id": item_id, "verified": bool(exact), "task_status": "success", "global_item_id_verified": resolved == str(evidence["global_item_id"]), "enabled_logistics_count": len(enabled), "image_count": len(item.get("image") or item.get("images") or []), "reconciliation_required": not exact, "external_writes_performed": ["shopee:regional_publish"]}

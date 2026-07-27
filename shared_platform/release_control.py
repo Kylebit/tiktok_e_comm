@@ -994,6 +994,11 @@ def build_release_dashboard(
         if isinstance(state.get("content_package"), Mapping)
         else {}
     )
+    content_strategy = str(
+        content_state.get("content_strategy") or "ai_assisted"
+    ).strip()
+    if content_strategy not in {"source_only", "ai_assisted"}:
+        content_strategy = "ai_assisted"
     collect_box_id = str(content_state.get("collect_box_id") or clean_offer_id).strip()
     if not collect_box_id.isdigit():
         collect_box_id = clean_offer_id
@@ -1051,7 +1056,7 @@ def build_release_dashboard(
         copy=_content_copy(review, collect_box),
         package_id=f"content:{clean_offer_id}",
     )
-    if not review_package_available:
+    if not review_package_available and content_strategy != "source_only":
         missing_package_blocker = (
             "Image review package has not been prepared; review source images "
             "or open the AI image studio before content approval."
@@ -1481,9 +1486,7 @@ def build_release_dashboard(
         "publication_scope": publication_scope,
         "content": {
             "package_id": content_handoff.content_package.package_id,
-            "strategy": str(
-                content_state.get("content_strategy") or "ai_assisted"
-            ),
+            "strategy": content_strategy,
             "approved": content_approved,
             "approval_status": (
                 content_handoff.content_package.approval.status

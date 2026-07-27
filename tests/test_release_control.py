@@ -238,6 +238,152 @@ def test_release_dashboard_is_a_complete_no_write_rehearsal(tmp_path):
     assert shopee["pricing"]["source"]["target_key"] == "lh_th"
 
 
+def test_source_only_release_approves_exact_source_order_without_review_package(
+    tmp_path,
+):
+    root, database = _release_fixture(tmp_path)
+    state_path = (
+        root / "data" / "new_product_workbench" / "3828811808.json"
+    )
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    source_url = "https://example.com/source.jpg"
+    state["content_package"]["content_strategy"] = "source_only"
+    state["review"]["image_actions"] = [
+        {"url": source_url, "action": "keep"},
+    ]
+    state["review"]["image_order"] = [source_url]
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    (
+        root
+        / "outputs"
+        / "image_suite_from_miaoshou"
+        / "3828811808"
+        / "review_package.json"
+    ).unlink()
+
+    result = build_release_dashboard(
+        root=root,
+        database_path=database,
+        report_store_path=root / "data" / "missing-orbit.db",
+        offer_id="3828811808",
+        seller_sku="0946",
+    )
+
+    assert result["content"]["strategy"] == "source_only"
+    assert result["content"]["approved"] is True
+    assert result["content"]["approval_status"] == "approved"
+    assert result["content"]["image_count"] == 1
+    assert result["content"]["images"][0]["asset_type"] == "source"
+    assert result["content"]["blockers"] == []
+    assert result["safety"]["external_writes_performed"] == []
+
+
+def test_ai_assisted_release_without_review_package_stays_pending(tmp_path):
+    root, database = _release_fixture(tmp_path)
+    (
+        root
+        / "outputs"
+        / "image_suite_from_miaoshou"
+        / "3828811808"
+        / "review_package.json"
+    ).unlink()
+
+    result = build_release_dashboard(
+        root=root,
+        database_path=database,
+        report_store_path=root / "data" / "missing-orbit.db",
+        offer_id="3828811808",
+        seller_sku="0946",
+    )
+
+    assert result["content"]["strategy"] == "ai_assisted"
+    assert result["content"]["approved"] is False
+    assert result["content"]["approval_status"] == "pending"
+    assert (
+        "Image review package has not been prepared; review source images "
+        "or open the AI image studio before content approval."
+    ) in result["content"]["blockers"]
+
+
+def test_unknown_content_strategy_without_review_package_fails_closed_as_ai(
+    tmp_path,
+):
+    root, database = _release_fixture(tmp_path)
+    state_path = (
+        root / "data" / "new_product_workbench" / "3828811808.json"
+    )
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["content_package"]["content_strategy"] = "unrecognised"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    (
+        root
+        / "outputs"
+        / "image_suite_from_miaoshou"
+        / "3828811808"
+        / "review_package.json"
+    ).unlink()
+
+    result = build_release_dashboard(
+        root=root,
+        database_path=database,
+        report_store_path=root / "data" / "missing-orbit.db",
+        offer_id="3828811808",
+        seller_sku="0946",
+    )
+
+    assert result["content"]["strategy"] == "ai_assisted"
+    assert result["content"]["approved"] is False
+    assert result["content"]["approval_status"] == "pending"
+    assert any(
+        "Image review package has not been prepared" in blocker
+        for blocker in result["content"]["blockers"]
+    )
+
+
+def test_incomplete_source_only_release_stays_pending_without_ai_blocker(
+    tmp_path,
+):
+    root, database = _release_fixture(tmp_path)
+    state_path = (
+        root / "data" / "new_product_workbench" / "3828811808.json"
+    )
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    source_url = "https://example.com/source.jpg"
+    state["content_package"]["content_strategy"] = "source_only"
+    state["review"]["image_actions"] = [
+        {"url": source_url, "action": "keep"},
+    ]
+    state["review"]["image_order"] = []
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    (
+        root
+        / "outputs"
+        / "image_suite_from_miaoshou"
+        / "3828811808"
+        / "review_package.json"
+    ).unlink()
+
+    result = build_release_dashboard(
+        root=root,
+        database_path=database,
+        report_store_path=root / "data" / "missing-orbit.db",
+        offer_id="3828811808",
+        seller_sku="0946",
+    )
+
+    assert result["content"]["strategy"] == "source_only"
+    assert result["content"]["approved"] is False
+    assert result["content"]["approval_status"] == "pending"
+    assert (
+        "source_only requires an explicit final image_order"
+        in result["content"]["blockers"]
+    )
+    assert not any(
+        "Image review package has not been prepared" in blocker
+        for blocker in result["content"]["blockers"]
+    )
+
+
 def test_formal_candidate_is_generated_from_catalog_and_all_reservations(tmp_path):
     root, database = _release_fixture(tmp_path)
     with sqlite3.connect(database) as connection:

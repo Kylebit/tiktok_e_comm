@@ -57,6 +57,23 @@ def test_scan_never_returns_after_normal_terminal_page(monkeypatch):
     assert [status for path, status in calls if path.endswith("get_item_list")] == ["NORMAL", "UNLIST", "BANNED"]
 
 
+def test_scan_accepts_only_captured_legal_empty_item_shape(monkeypatch):
+    from modules.shopee import target_scoped
+    monkeypatch.setattr(target_scoped, "shop_get", lambda path, *_args: {"response": {"has_next_page": False, "total_count": 0}} if path.endswith("get_item_list") else {"response": {"item_list": []}})
+    assert target_scoped.scan_prepared_shop_sku(shop_id=1, access_token="x", seller_sku="0954")["complete"] is True
+
+
+@pytest.mark.parametrize("response", [
+    {"has_next_page": False, "total_count": 1}, {"has_next_page": True, "total_count": 0},
+    {"has_next_page": False}, {"has_next_page": False, "total_count": True}, {"has_next_page": False, "total_count": 0, "item": None},
+])
+def test_scan_rejects_other_missing_or_invalid_item_shapes(monkeypatch, response):
+    from modules.shopee import target_scoped
+    monkeypatch.setattr(target_scoped, "shop_get", lambda path, *_args: {"response": response} if path.endswith("get_item_list") else {"response": {"item_list": []}})
+    with pytest.raises(RuntimeError, match="item list is invalid"):
+        target_scoped.scan_prepared_shop_sku(shop_id=1, access_token="x", seller_sku="0954")
+
+
 def test_ozon_proof_requires_exact_existing_product_and_no_stock(monkeypatch):
     req = request("ozon:RU")
     monkeypatch.setattr("modules.ozon.target_scoped.read_existing_product", lambda **_kw: {"product_id": "5687436857", "checks": {key: True for key in ("created", "approved", "title", "price", "images", "stock_false")}})

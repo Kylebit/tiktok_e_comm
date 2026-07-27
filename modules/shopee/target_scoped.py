@@ -34,6 +34,12 @@ def scan_prepared_shop_sku(*, shop_id: int, access_token: str, seller_sku: str) 
             raw = shop_get("/api/v2/product/get_item_list", shop_id, access_token, {"offset": offset, "page_size": 100, "item_status": status})
             if not isinstance(raw, dict) or raw.get("error") or not isinstance(raw.get("response"), dict): raise RuntimeError(f"Shopee {status} list response is invalid")
             page = raw["response"]; entries = page.get("item")
+            if entries is None and "item" not in page:
+                total = page.get("total_count")
+                if type(total) is int and total == 0 and page.get("has_next_page") is False:
+                    entries = []
+                else:
+                    raise RuntimeError(f"Shopee {status} item list is invalid")
             if not isinstance(entries, list): raise RuntimeError(f"Shopee {status} item list is invalid")
             ids = [str(x.get("item_id") or "") for x in entries if isinstance(x, dict) and x.get("item_id")]
             if len(ids) != len(entries) or len(set(ids)) != len(ids): raise RuntimeError(f"Shopee {status} item ids are incomplete")

@@ -69,6 +69,13 @@ REPAIR_RUNNING = "RUNNING"
 REPAIR_SUCCEEDED = "SUCCEEDED"
 REPAIR_RECONCILIATION_REQUIRED = "RECONCILIATION_REQUIRED"
 
+TARGET_SCOPED_PROOF_AVAILABLE = "AVAILABLE"
+TARGET_SCOPED_PROOF_CONSUMED = "CONSUMED"
+TARGET_SCOPED_OPERATION_RUNNING = "RUNNING"
+TARGET_SCOPED_OPERATION_SUCCEEDED = "SUCCEEDED"
+TARGET_SCOPED_OPERATION_FAILED_PRE_SUBMIT = "FAILED_PRE_SUBMIT"
+TARGET_SCOPED_OPERATION_RECONCILIATION_REQUIRED = "RECONCILIATION_REQUIRED"
+
 
 class ReleaseStoreError(RuntimeError):
     """Base error for an invalid release-store operation."""
@@ -233,6 +240,71 @@ CREATE TABLE IF NOT EXISTS release_target_repairs (
 CREATE INDEX IF NOT EXISTS idx_release_target_repairs_status
     ON release_target_repairs(run_id, status);
 
+CREATE TABLE IF NOT EXISTS release_target_retry_proofs (
+    proof_digest TEXT PRIMARY KEY,
+    plan_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    target_label TEXT NOT NULL,
+    operation_kind TEXT NOT NULL CHECK (
+        operation_kind IN (
+            'shopee_safe_pre_submit_retry_v1',
+            'ozon_existing_product_stock_reconciliation_v1'
+        )
+    ),
+    product_revision INTEGER NOT NULL CHECK (product_revision >= 0),
+    payload_digest TEXT NOT NULL,
+    preflight_digest TEXT NOT NULL,
+    failure_attempt INTEGER NOT NULL CHECK (failure_attempt >= 0),
+    failure_digest TEXT NOT NULL,
+    proof_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('AVAILABLE', 'CONSUMED')),
+    created_at TEXT NOT NULL,
+    consumed_at TEXT,
+    operation_digest TEXT,
+    FOREIGN KEY (plan_id) REFERENCES release_plans(plan_id),
+    FOREIGN KEY (run_id, target_label)
+        REFERENCES release_target_runs(run_id, target_label)
+);
+CREATE INDEX IF NOT EXISTS idx_release_target_retry_proof_target
+    ON release_target_retry_proofs(run_id, target_label, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS release_target_retry_operations (
+    operation_digest TEXT PRIMARY KEY,
+    proof_digest TEXT NOT NULL UNIQUE,
+    plan_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    target_label TEXT NOT NULL,
+    operation_kind TEXT NOT NULL CHECK (
+        operation_kind IN (
+            'shopee_safe_pre_submit_retry_v1',
+            'ozon_existing_product_stock_reconciliation_v1'
+        )
+    ),
+    request_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (
+        status IN (
+            'RUNNING', 'SUCCEEDED', 'FAILED_PRE_SUBMIT',
+            'RECONCILIATION_REQUIRED'
+        )
+    ),
+    external_id TEXT,
+    result_json TEXT,
+    result_digest TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    FOREIGN KEY (proof_digest)
+        REFERENCES release_target_retry_proofs(proof_digest),
+    FOREIGN KEY (plan_id) REFERENCES release_plans(plan_id),
+    FOREIGN KEY (run_id, target_label)
+        REFERENCES release_target_runs(run_id, target_label)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_release_target_retry_running
+    ON release_target_retry_operations(run_id, target_label)
+    WHERE status = 'RUNNING';
+CREATE INDEX IF NOT EXISTS idx_release_target_retry_operation_target
+    ON release_target_retry_operations(run_id, target_label, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS release_sku_reservations (
     reservation_id TEXT PRIMARY KEY,
     plan_id TEXT NOT NULL UNIQUE,
@@ -306,6 +378,25 @@ BEFORE UPDATE OF
 ON release_target_repairs
 BEGIN
     SELECT RAISE(ABORT, 'release target repair identity is immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_release_target_retry_proof_identity_immutable
+BEFORE UPDATE OF
+    proof_digest, plan_id, run_id, target_label, operation_kind,
+    product_revision, payload_digest, preflight_digest, failure_attempt,
+    failure_digest, proof_json, created_at
+ON release_target_retry_proofs
+BEGIN
+    SELECT RAISE(ABORT, 'release target retry proof identity is immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_release_target_retry_operation_identity_immutable
+BEFORE UPDATE OF
+    operation_digest, proof_digest, plan_id, run_id, target_label,
+    operation_kind, request_json, created_at
+ON release_target_retry_operations
+BEGIN
+    SELECT RAISE(ABORT, 'release target retry operation identity is immutable');
 END;
 
 CREATE TRIGGER IF NOT EXISTS trg_release_sku_reservation_immutable
@@ -486,6 +577,29 @@ def _approval_from_row(row: sqlite3.Row) -> dict[str, Any]:
         type(value) is int and value == 1
     )
     return approval
+
+
+def _target_scoped_operation_from_row(
+    row: sqlite3.Row,
+) -> dict[str, Any]:
+    return {
+        "operation_digest": row["operation_digest"],
+        "proof_digest": row["proof_digest"],
+        "plan_id": row["plan_id"],
+        "run_id": row["run_id"],
+        "target_label": row["target_label"],
+        "operation_kind": row["operation_kind"],
+        "request": json.loads(row["request_json"]),
+        "status": row["status"],
+        "external_id": row["external_id"],
+        "result": (
+            json.loads(row["result_json"]) if row["result_json"] else None
+        ),
+        "result_digest": row["result_digest"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "completed_at": row["completed_at"],
+    }
 
 
 class ReleaseStore:
@@ -2007,14 +2121,796 @@ class ReleaseStore:
             self._refresh_run_status(connection, repair["run_id"], now=now)
             return self._run_in_transaction(connection, repair["run_id"])
 
+    def target_scoped_action_context(
+        self,
+        *,
+        plan_id: str,
+        target_label: str,
+    ) -> dict[str, Any]:
+        """Return the exact write-free identity for one governed target action."""
+
+        if not self.path.is_file():
+            raise ReleaseStoreError("release store was not found")
+        with self._connect_readonly() as connection:
+            return self._target_scoped_context_in_transaction(
+                connection,
+                plan_id=_text(plan_id),
+                target_label=_text(target_label),
+            )
+
+    def get_target_scoped_operation(
+        self,
+        *,
+        run_id: str,
+        target_label: str,
+    ) -> dict[str, Any] | None:
+        """Read the latest target-scoped operation without creating schema."""
+
+        if not self.path.is_file():
+            return None
+        with self._connect_readonly() as connection:
+            try:
+                row = connection.execute(
+                    """
+                    SELECT * FROM release_target_retry_operations
+                    WHERE run_id = ? AND target_label = ?
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (_text(run_id), _text(target_label)),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return None
+            return _target_scoped_operation_from_row(row) if row else None
+
+    def claim_target_scoped_operation(
+        self,
+        *,
+        request,
+        proof,
+    ) -> dict[str, Any]:
+        """Consume one official proof and claim one FAILED target atomically.
+
+        The physical target remains FAILED. Generic publication therefore never
+        observes a retry PENDING row; the companion operation row is the source
+        of truth while the single-target adapter is running.
+        """
+
+        from shared_platform.target_scoped_release_contracts import (
+            OfficialTargetProof,
+            TargetScopedOperationRequest,
+        )
+
+        if not isinstance(request, TargetScopedOperationRequest):
+            raise TypeError(
+                "target-scoped claim requires TargetScopedOperationRequest"
+            )
+        normalized_proof = OfficialTargetProof.from_value(
+            (
+                proof.durable_payload()
+                if isinstance(proof, OfficialTargetProof)
+                else proof
+            ),
+            request=request,
+        )
+        operation_digest = request.operation_digest(
+            normalized_proof.proof_digest
+        )
+        request_json = _canonical_json(request.durable_identity())
+        proof_json = _canonical_json(normalized_proof.durable_payload())
+
+        with self._transaction() as connection:
+            existing = connection.execute(
+                """
+                SELECT * FROM release_target_retry_operations
+                WHERE operation_digest = ?
+                """,
+                (operation_digest,),
+            ).fetchone()
+            if existing:
+                if (
+                    existing["request_json"] != request_json
+                    or existing["proof_digest"] != normalized_proof.proof_digest
+                ):
+                    raise ImmutableReleaseError(
+                        "target-scoped operation identity changed"
+                    )
+                if existing["status"] == TARGET_SCOPED_OPERATION_SUCCEEDED:
+                    return {
+                        "action": "already_succeeded",
+                        "operation": _target_scoped_operation_from_row(
+                            existing
+                        ),
+                    }
+                raise ReleaseStoreError(
+                    "target-scoped operation is already running or terminal"
+                )
+
+            context = self._target_scoped_context_in_transaction(
+                connection,
+                plan_id=request.plan_id,
+                target_label=request.target_label,
+            )
+            if not context["eligible"]:
+                raise ReleaseAuthorizationError(
+                    "target-scoped action is blocked: "
+                    + "; ".join(context["blockers"])
+                )
+            exact = {
+                "run_id": request.run_id,
+                "operation_kind": request.operation_kind,
+                "product_revision": request.product_revision,
+                "payload_digest": request.payload_digest,
+                "preflight_digest": request.preflight_digest,
+                "failure_attempt": request.failure_attempt,
+                "failure_digest": request.failure_digest,
+                "target_idempotency_key": request.target_idempotency_key,
+            }
+            actual = {field: context[field] for field in exact}
+            if actual != exact:
+                raise ImmutableReleaseError(
+                    "target-scoped failure identity changed before claim"
+                )
+            plan = context["plan"]
+            approval = context["approval"]
+            if (
+                request.confirmation_token
+                != plan.get("confirmation_token")
+                or request.confirmation_token
+                != approval.get("confirmation_token")
+                or request.confirmation_token_digest
+                != request.durable_identity()["confirmation_token_digest"]
+                or request.approval_scope_digest
+                != str(
+                    (plan.get("payload") or {}).get(
+                        "omnichannel_scope_digest"
+                    )
+                    or ""
+                )
+                or request.product_id != plan.get("product_id")
+                or request.seller_sku != plan.get("seller_sku")
+                or request.product_package_id
+                != plan.get("product_package_id")
+                or request.content_package_id
+                != plan.get("content_package_id")
+                or request.approved_by != "Kyle"
+                or approval.get("approved_by") != "Kyle"
+                or approval.get("user_approved") is not True
+            ):
+                raise ReleaseAuthorizationError(
+                    "target-scoped action authority does not match the active plan"
+                )
+
+            proof_row = connection.execute(
+                """
+                SELECT * FROM release_target_retry_proofs
+                WHERE proof_digest = ?
+                """,
+                (normalized_proof.proof_digest,),
+            ).fetchone()
+            if proof_row:
+                if proof_row["proof_json"] != proof_json:
+                    raise ImmutableReleaseError(
+                        "official target proof already has different evidence"
+                    )
+                if proof_row["status"] != TARGET_SCOPED_PROOF_AVAILABLE:
+                    raise ReleaseAuthorizationError(
+                        "official target proof was already consumed"
+                    )
+            else:
+                now = _utc_now()
+                connection.execute(
+                    """
+                    INSERT INTO release_target_retry_proofs (
+                        proof_digest, plan_id, run_id, target_label,
+                        operation_kind, product_revision, payload_digest,
+                        preflight_digest, failure_attempt, failure_digest,
+                        proof_json, status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'AVAILABLE', ?)
+                    """,
+                    (
+                        normalized_proof.proof_digest,
+                        request.plan_id,
+                        request.run_id,
+                        request.target_label,
+                        request.operation_kind,
+                        request.product_revision,
+                        request.payload_digest,
+                        request.preflight_digest,
+                        request.failure_attempt,
+                        request.failure_digest,
+                        proof_json,
+                        now,
+                    ),
+                )
+
+            now = _utc_now()
+            connection.execute(
+                """
+                INSERT INTO release_target_retry_operations (
+                    operation_digest, proof_digest, plan_id, run_id,
+                    target_label, operation_kind, request_json, status,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'RUNNING', ?, ?)
+                """,
+                (
+                    operation_digest,
+                    normalized_proof.proof_digest,
+                    request.plan_id,
+                    request.run_id,
+                    request.target_label,
+                    request.operation_kind,
+                    request_json,
+                    now,
+                    now,
+                ),
+            )
+            consumed = connection.execute(
+                """
+                UPDATE release_target_retry_proofs
+                SET status = 'CONSUMED', consumed_at = ?,
+                    operation_digest = ?
+                WHERE proof_digest = ? AND status = 'AVAILABLE'
+                """,
+                (
+                    now,
+                    operation_digest,
+                    normalized_proof.proof_digest,
+                ),
+            )
+            if consumed.rowcount != 1:
+                raise ReleaseAuthorizationError(
+                    "official target proof could not be consumed exactly once"
+                )
+            claimed = connection.execute(
+                """
+                UPDATE release_target_runs
+                SET attempts = attempts + 1, updated_at = ?
+                WHERE run_id = ? AND target_label = ? AND status = 'FAILED'
+                """,
+                (now, request.run_id, request.target_label),
+            )
+            if claimed.rowcount != 1:
+                raise ReleaseAuthorizationError(
+                    "FAILED target changed before atomic claim"
+                )
+            connection.execute(
+                """
+                UPDATE release_runs
+                SET status = 'RUNNING', updated_at = ?, completed_at = NULL
+                WHERE run_id = ?
+                """,
+                (now, request.run_id),
+            )
+            operation = connection.execute(
+                """
+                SELECT * FROM release_target_retry_operations
+                WHERE operation_digest = ?
+                """,
+                (operation_digest,),
+            ).fetchone()
+            return {
+                "action": "claimed",
+                "operation": _target_scoped_operation_from_row(operation),
+            }
+
+    def record_target_scoped_success(
+        self,
+        operation_digest: str,
+        *,
+        result,
+    ) -> dict[str, Any]:
+        """Atomically close one claimed target after exact official readback."""
+
+        from shared_platform.target_scoped_release_contracts import (
+            TargetScopedOperationResult,
+        )
+
+        normalized = TargetScopedOperationResult.from_value(result)
+        if normalized.outcome != TARGET_SCOPED_OPERATION_SUCCEEDED:
+            raise ValueError(
+                "target-scoped success requires exact verified evidence"
+            )
+        if not normalized.external_reference:
+            raise ValueError(
+                "target-scoped success requires an official external identity"
+            )
+        payload = normalized.durable_payload()
+        result_json = _canonical_json(payload)
+        result_digest = _sha256(payload)
+        with self._transaction() as connection:
+            operation = self._target_scoped_operation_for_update(
+                connection, operation_digest
+            )
+            if operation["status"] == TARGET_SCOPED_OPERATION_SUCCEEDED:
+                if operation["result_digest"] != result_digest:
+                    raise ImmutableReleaseError(
+                        "target-scoped success evidence changed"
+                    )
+                return self._run_in_transaction(
+                    connection, operation["run_id"]
+                )
+            if operation["status"] != TARGET_SCOPED_OPERATION_RUNNING:
+                raise ReleaseStoreError(
+                    "target-scoped operation is terminal and cannot succeed"
+                )
+            target = self._target_for_update(
+                connection,
+                operation["run_id"],
+                operation["target_label"],
+            )
+            if target["status"] != TARGET_FAILED:
+                raise ReleaseStoreError(
+                    "claimed target is no longer physically FAILED"
+                )
+            now = _utc_now()
+            connection.execute(
+                """
+                INSERT INTO release_target_readbacks (
+                    run_id, target_label, evidence_json,
+                    evidence_digest, verified_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    operation["run_id"],
+                    operation["target_label"],
+                    result_json,
+                    result_digest,
+                    now,
+                ),
+            )
+            updated_operation = connection.execute(
+                """
+                UPDATE release_target_retry_operations
+                SET status = 'SUCCEEDED', external_id = ?,
+                    result_json = ?, result_digest = ?,
+                    updated_at = ?, completed_at = ?
+                WHERE operation_digest = ? AND status = 'RUNNING'
+                """,
+                (
+                    normalized.external_reference,
+                    result_json,
+                    result_digest,
+                    now,
+                    now,
+                    operation["operation_digest"],
+                ),
+            )
+            updated_target = connection.execute(
+                """
+                UPDATE release_target_runs
+                SET status = 'SUCCEEDED', external_id = ?, error = NULL,
+                    updated_at = ?, completed_at = ?
+                WHERE run_id = ? AND target_label = ? AND status = 'FAILED'
+                """,
+                (
+                    normalized.external_reference,
+                    now,
+                    now,
+                    operation["run_id"],
+                    operation["target_label"],
+                ),
+            )
+            if (
+                updated_operation.rowcount != 1
+                or updated_target.rowcount != 1
+            ):
+                raise ReleaseStoreError(
+                    "target-scoped success lost its atomic state transition"
+                )
+            self._refresh_run_status(
+                connection, operation["run_id"], now=now
+            )
+            return self._run_in_transaction(
+                connection, operation["run_id"]
+            )
+
+    def record_target_scoped_pre_submit_failure(
+        self,
+        operation_digest: str,
+        *,
+        result,
+    ) -> dict[str, Any]:
+        """Record an explicit zero-write pre-submit failure without PENDING."""
+
+        from shared_platform.target_scoped_release_contracts import (
+            TargetScopedOperationResult,
+        )
+
+        normalized = TargetScopedOperationResult.from_value(result)
+        if normalized.outcome != TARGET_SCOPED_OPERATION_FAILED_PRE_SUBMIT:
+            raise ValueError(
+                "pre-submit failure requires explicit zero-write evidence"
+            )
+        return self._record_target_scoped_terminal_failure(
+            operation_digest,
+            normalized=normalized,
+            status=TARGET_SCOPED_OPERATION_FAILED_PRE_SUBMIT,
+        )
+
+    def record_target_scoped_reconciliation(
+        self,
+        operation_digest: str,
+        *,
+        result,
+    ) -> dict[str, Any]:
+        """Persist a potentially written or unknown result and forbid replay."""
+
+        from shared_platform.target_scoped_release_contracts import (
+            TargetScopedOperationResult,
+        )
+
+        normalized = TargetScopedOperationResult.from_value(result)
+        if normalized.outcome != (
+            TARGET_SCOPED_OPERATION_RECONCILIATION_REQUIRED
+        ):
+            raise ValueError(
+                "reconciliation requires an ambiguous or external outcome"
+            )
+        return self._record_target_scoped_terminal_failure(
+            operation_digest,
+            normalized=normalized,
+            status=TARGET_SCOPED_OPERATION_RECONCILIATION_REQUIRED,
+        )
+
+    def _record_target_scoped_terminal_failure(
+        self,
+        operation_digest: str,
+        *,
+        normalized,
+        status: str,
+    ) -> dict[str, Any]:
+        payload = normalized.durable_payload()
+        payload["reconciliation_required"] = (
+            status
+            == TARGET_SCOPED_OPERATION_RECONCILIATION_REQUIRED
+        )
+        result_json = _canonical_json(payload)
+        result_digest = _sha256(payload)
+        with self._transaction() as connection:
+            operation = self._target_scoped_operation_for_update(
+                connection, operation_digest
+            )
+            if operation["status"] == status:
+                if operation["result_digest"] != result_digest:
+                    raise ImmutableReleaseError(
+                        "target-scoped terminal evidence changed"
+                    )
+                return self._run_in_transaction(
+                    connection, operation["run_id"]
+                )
+            if operation["status"] != TARGET_SCOPED_OPERATION_RUNNING:
+                raise ReleaseStoreError(
+                    "target-scoped operation is already terminal"
+                )
+            target = self._target_for_update(
+                connection,
+                operation["run_id"],
+                operation["target_label"],
+            )
+            if target["status"] != TARGET_FAILED:
+                raise ReleaseStoreError(
+                    "claimed target is no longer physically FAILED"
+                )
+            now = _utc_now()
+            connection.execute(
+                """
+                INSERT INTO release_target_failure_events (
+                    run_id, target_label, attempt, evidence_json,
+                    evidence_digest, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    operation["run_id"],
+                    operation["target_label"],
+                    target["attempts"],
+                    result_json,
+                    result_digest,
+                    now,
+                ),
+            )
+            updated_operation = connection.execute(
+                """
+                UPDATE release_target_retry_operations
+                SET status = ?, external_id = ?, result_json = ?,
+                    result_digest = ?, updated_at = ?, completed_at = ?
+                WHERE operation_digest = ? AND status = 'RUNNING'
+                """,
+                (
+                    status,
+                    normalized.external_reference,
+                    result_json,
+                    result_digest,
+                    now,
+                    now,
+                    operation["operation_digest"],
+                ),
+            )
+            updated_target = connection.execute(
+                """
+                UPDATE release_target_runs
+                SET external_id = COALESCE(?, external_id), error = ?,
+                    updated_at = ?, completed_at = ?
+                WHERE run_id = ? AND target_label = ? AND status = 'FAILED'
+                """,
+                (
+                    normalized.external_reference,
+                    normalized.detail[:4000],
+                    now,
+                    now,
+                    operation["run_id"],
+                    operation["target_label"],
+                ),
+            )
+            if (
+                updated_operation.rowcount != 1
+                or updated_target.rowcount != 1
+            ):
+                raise ReleaseStoreError(
+                    "target-scoped failure lost its atomic state transition"
+                )
+            self._refresh_run_status(
+                connection, operation["run_id"], now=now
+            )
+            return self._run_in_transaction(
+                connection, operation["run_id"]
+            )
+
+    def _target_scoped_operation_for_update(
+        self,
+        connection: sqlite3.Connection,
+        operation_digest: str,
+    ) -> sqlite3.Row:
+        row = connection.execute(
+            """
+            SELECT * FROM release_target_retry_operations
+            WHERE operation_digest = ?
+            """,
+            (_text(operation_digest),),
+        ).fetchone()
+        if not row:
+            raise ReleaseStoreError(
+                "target-scoped operation was not found"
+            )
+        return row
+
+    def _target_scoped_context_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        plan_id: str,
+        target_label: str,
+    ) -> dict[str, Any]:
+        from shared_platform.target_scoped_release_contracts import (
+            operation_kind_for_target,
+            target_failure_digest,
+            target_preflight_digest,
+        )
+
+        operation_kind = operation_kind_for_target(target_label)
+        row = connection.execute(
+            """
+            SELECT
+                plan.*, approval.approval_id,
+                approval.payload_digest AS approval_payload_digest,
+                approval.confirmation_token AS approval_confirmation_token,
+                approval.approved_by, approval.user_approved,
+                approval.status AS approval_status,
+                run.run_id, run.status AS run_status,
+                target.idempotency_key, target.status AS target_status,
+                target.attempts, target.external_id AS target_external_id,
+                target.error AS target_error
+            FROM release_plans AS plan
+            JOIN release_approvals AS approval
+              ON approval.plan_id = plan.plan_id
+            JOIN release_runs AS run
+              ON run.plan_id = plan.plan_id
+             AND run.approval_id = approval.approval_id
+            JOIN release_target_runs AS target
+              ON target.run_id = run.run_id
+            WHERE plan.plan_id = ? AND target.target_label = ?
+            """,
+            (_text(plan_id), _text(target_label)),
+        ).fetchone()
+        if not row:
+            raise ReleaseStoreError(
+                "active release target context was not found"
+            )
+        if (
+            row["status"] != PLAN_APPROVED
+            or row["approval_status"] != PLAN_APPROVED
+            or row["approved_by"] != "Kyle"
+            or row["user_approved"] != 1
+            or row["run_status"] in {RUN_SUCCEEDED, SUPERSEDED}
+        ):
+            raise ReleaseAuthorizationError(
+                "target-scoped action requires the active Kyle-approved run"
+            )
+        failure_rows = connection.execute(
+            """
+            SELECT attempt, evidence_json, evidence_digest, created_at
+            FROM release_target_failure_events
+            WHERE run_id = ? AND target_label = ?
+            ORDER BY attempt
+            """,
+            (row["run_id"], _text(target_label)),
+        ).fetchall()
+        failure_digests = [
+            str(item["evidence_digest"] or "") for item in failure_rows
+        ]
+        failure_identity = target_failure_digest(
+            target_label=target_label,
+            attempts=int(row["attempts"] or 0),
+            error=row["target_error"],
+            failure_event_digests=failure_digests,
+        )
+        plan = _plan_from_row(row)
+        payload = plan.get("payload") or {}
+        product_revision = payload.get("product_revision")
+        if (
+            isinstance(product_revision, bool)
+            or not isinstance(product_revision, int)
+            or product_revision < 0
+        ):
+            raise ReleaseAuthorizationError(
+                "immutable plan product_revision is invalid"
+            )
+        preflight = target_preflight_digest(
+            plan_id=plan["plan_id"],
+            run_id=row["run_id"],
+            target_label=target_label,
+            operation_kind=operation_kind,
+            product_revision=product_revision,
+            payload_digest=plan["payload_digest"],
+            failure_attempt=int(row["attempts"] or 0),
+            failure_digest=failure_identity,
+            target_idempotency_key=row["idempotency_key"],
+        )
+        blockers: list[str] = []
+        if row["target_status"] != TARGET_FAILED:
+            blockers.append(
+                f"target must be physically FAILED; found {row['target_status']}"
+            )
+        if _text(row["target_external_id"]):
+            blockers.append("target already records an external_id")
+        terminal = connection.execute(
+            """
+            SELECT 'submission' AS kind
+            FROM release_target_submissions
+            WHERE run_id = ? AND target_label = ?
+            UNION ALL
+            SELECT 'readback' AS kind
+            FROM release_target_readbacks
+            WHERE run_id = ? AND target_label = ?
+            UNION ALL
+            SELECT 'repair' AS kind
+            FROM release_target_repairs
+            WHERE run_id = ? AND target_label = ?
+            LIMIT 1
+            """,
+            (
+                row["run_id"],
+                target_label,
+                row["run_id"],
+                target_label,
+                row["run_id"],
+                target_label,
+            ),
+        ).fetchone()
+        if terminal:
+            blockers.append(
+                f"target already records {terminal['kind']} evidence"
+            )
+        for failure in failure_rows:
+            evidence = json.loads(failure["evidence_json"])
+            if (
+                evidence.get("external_writes_performed")
+                or evidence.get("submission_accepted") is True
+                or evidence.get("accepted") is True
+                or evidence.get("durable_state_uncertain") is True
+                or _text(evidence.get("external_id"))
+                or _text(evidence.get("external_reference"))
+            ):
+                blockers.append(
+                    "prior failure evidence is not safely pre-submit"
+                )
+                break
+        try:
+            operation_row = connection.execute(
+                """
+                SELECT * FROM release_target_retry_operations
+                WHERE run_id = ? AND target_label = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (row["run_id"], target_label),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            operation_row = None
+        operation = (
+            _target_scoped_operation_from_row(operation_row)
+            if operation_row
+            else None
+        )
+        if operation:
+            blockers.append(
+                f"target already has operation status {operation['status']}"
+            )
+        approval = {
+            "approval_id": row["approval_id"],
+            "plan_id": row["plan_id"],
+            "payload_digest": row["approval_payload_digest"],
+            "confirmation_token": row["approval_confirmation_token"],
+            "approved_by": row["approved_by"],
+            "user_approved": (
+                row["user_approved"] is True
+                or (
+                    type(row["user_approved"]) is int
+                    and row["user_approved"] == 1
+                )
+            ),
+            "status": row["approval_status"],
+        }
+        return {
+            "plan": plan,
+            "approval": approval,
+            "run_id": row["run_id"],
+            "run_status": row["run_status"],
+            "target_label": target_label,
+            "target_status": row["target_status"],
+            "target_idempotency_key": row["idempotency_key"],
+            "failure_attempt": int(row["attempts"] or 0),
+            "failure_digest": failure_identity,
+            "operation_kind": operation_kind,
+            "product_revision": product_revision,
+            "payload_digest": plan["payload_digest"],
+            "preflight_digest": preflight,
+            "operation": operation,
+            "eligible": not blockers,
+            "blockers": blockers,
+        }
+
     def retry_failed_targets(
         self,
         run_id: str,
         target_labels: Iterable[str] | None = None,
     ) -> dict[str, Any]:
         """Reset only failed targets; successful external results are retained."""
+        from shared_platform.target_scoped_release_contracts import (
+            TARGET_SCOPED_OPERATION_KINDS,
+        )
+
         with self._transaction() as connection:
             self._require_active_run(connection, _text(run_id))
+            scoped_failed_rows = connection.execute(
+                """
+                SELECT target_label
+                FROM release_target_runs
+                WHERE run_id = ? AND status = 'FAILED'
+                ORDER BY target_label
+                """,
+                (_text(run_id),),
+            ).fetchall()
+            scoped_failed = {
+                row["target_label"]
+                for row in scoped_failed_rows
+                if row["target_label"] in TARGET_SCOPED_OPERATION_KINDS
+            }
+            requested = (
+                None
+                if target_labels is None
+                else {_text(label) for label in target_labels}
+            )
+            blocked = (
+                scoped_failed
+                if requested is None
+                else scoped_failed.intersection(requested)
+            )
+            if blocked:
+                raise ReleaseAuthorizationError(
+                    "target-scoped action required for FAILED targets: "
+                    + ", ".join(sorted(blocked))
+                )
             failed_rows = connection.execute(
                 """
                 SELECT target.target_label
@@ -2036,10 +2932,10 @@ class ReleaseStore:
             failed = {row["target_label"] for row in failed_rows}
             if not failed:
                 raise ReleaseStoreError("release run has no failed targets to retry")
-            if target_labels is None:
+            if requested is None:
                 selected = failed
             else:
-                selected = {_text(label) for label in target_labels}
+                selected = requested
                 if not selected or not selected.issubset(failed):
                     raise ReleaseStoreError(
                         "retry targets must be a non-empty subset of failed targets"
@@ -2500,6 +3396,23 @@ class ReleaseStore:
             }
         except sqlite3.OperationalError:
             repairs = {}
+        try:
+            operation_rows = connection.execute(
+                """
+                SELECT *
+                FROM release_target_retry_operations
+                WHERE run_id = ?
+                ORDER BY created_at
+                """,
+                (run["run_id"],),
+            )
+            target_scoped_operations: dict[str, dict[str, Any]] = {}
+            for operation_row in operation_rows:
+                target_scoped_operations[
+                    operation_row["target_label"]
+                ] = _target_scoped_operation_from_row(operation_row)
+        except sqlite3.OperationalError:
+            target_scoped_operations = {}
         target_payloads: list[dict[str, Any]] = []
         for row in targets:
             payload = dict(row)
@@ -2528,6 +3441,17 @@ class ReleaseStore:
                     payload["status"] = TARGET_RECONCILIATION_REQUIRED
                 elif payload["repair"]["status"] == REPAIR_RUNNING:
                     payload["status"] = TARGET_RUNNING
+            payload["target_scoped_operation"] = (
+                target_scoped_operations.get(row["target_label"])
+            )
+            if payload["target_scoped_operation"]:
+                operation_status = payload["target_scoped_operation"]["status"]
+                if operation_status == TARGET_SCOPED_OPERATION_RUNNING:
+                    payload["status"] = TARGET_RUNNING
+                elif operation_status == (
+                    TARGET_SCOPED_OPERATION_RECONCILIATION_REQUIRED
+                ):
+                    payload["status"] = TARGET_RECONCILIATION_REQUIRED
             target_payloads.append(payload)
         result = {**dict(run), "targets": target_payloads}
         logical_statuses = [target["status"] for target in target_payloads]

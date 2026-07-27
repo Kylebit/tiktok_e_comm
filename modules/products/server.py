@@ -1577,6 +1577,704 @@ def _release_execution_readonly_gate(
     }, None
 
 
+def _target_scoped_adapter_module():
+    """Load the channel-owned seam only when a dedicated action is requested."""
+
+    import importlib
+
+    return importlib.import_module(
+        "domains.channel_operations.target_scoped_retry_adapters"
+    )
+
+
+def _target_scoped_request_from_context(
+    *,
+    gate: dict,
+    context: dict,
+):
+    from shared_platform.target_scoped_release_contracts import (
+        TargetScopedOperationRequest,
+    )
+
+    plan = gate["plan"] or {}
+    payload = plan.get("payload") or {}
+    return TargetScopedOperationRequest(
+        plan_id=str(plan.get("plan_id") or ""),
+        confirmation_token=str(plan.get("confirmation_token") or ""),
+        approval_scope_digest=str(
+            payload.get("omnichannel_scope_digest") or ""
+        ),
+        product_id=str(plan.get("product_id") or ""),
+        seller_sku=str(plan.get("seller_sku") or ""),
+        product_package_id=str(plan.get("product_package_id") or ""),
+        content_package_id=str(plan.get("content_package_id") or ""),
+        run_id=str(context.get("run_id") or ""),
+        target_label=str(context.get("target_label") or ""),
+        operation_kind=str(context.get("operation_kind") or ""),
+        product_revision=context.get("product_revision"),
+        payload_digest=str(context.get("payload_digest") or ""),
+        preflight_digest=str(context.get("preflight_digest") or ""),
+        failure_attempt=context.get("failure_attempt"),
+        failure_digest=str(context.get("failure_digest") or ""),
+        target_idempotency_key=str(
+            context.get("target_idempotency_key") or ""
+        ),
+        approved_by="Kyle",
+    )
+
+
+def _target_scoped_action_gate(
+    data: dict,
+    *,
+    store,
+    derive_plan: bool,
+) -> tuple[dict | None, tuple[int, dict] | None]:
+    """Resolve one exact active plan/target without mutating release state."""
+
+    from shared_platform.target_scoped_release_contracts import (
+        TargetScopedContractError,
+        operation_kind_for_target,
+    )
+
+    offer_id = str(data.get("offer_id") or "").strip()
+    target_label = str(data.get("target_label") or "").strip()
+    if not offer_id.isdigit() or not 1 <= len(offer_id) <= 32:
+        return None, (
+            400,
+            {
+                "ok": False,
+                "error": "offer_id must contain 1-32 digits",
+                "external_writes_performed": [],
+            },
+        )
+    try:
+        operation_kind = operation_kind_for_target(target_label)
+    except TargetScopedContractError as error:
+        return None, (
+            409,
+            {
+                "ok": False,
+                "code": "target_scoped_action_not_supported",
+                "error": str(error),
+                "external_writes_performed": [],
+            },
+        )
+
+    gate_data = dict(data)
+    if derive_plan:
+        active = store.active_plan_for_product(offer_id)
+        approval = (active or {}).get("approval") or {}
+        if (
+            not active
+            or active.get("status") != "APPROVED"
+            or approval.get("status") != "APPROVED"
+            or approval.get("approved_by") != "Kyle"
+            or approval.get("user_approved") is not True
+        ):
+            return None, (
+                409,
+                {
+                    "ok": False,
+                    "code": "active_release_plan_required",
+                    "error": (
+                        "target-scoped action requires the active "
+                        "Kyle-approved ReleasePlan"
+                    ),
+                    "external_writes_performed": [],
+                },
+            )
+        gate_data.update(
+            {
+                "offer_id": offer_id,
+                "seller_sku": active.get("seller_sku"),
+                "publication_targets": list(active.get("targets") or ()),
+                "plan_id": active.get("plan_id"),
+                "confirmation_token": active.get("confirmation_token"),
+            }
+        )
+
+    gate, failure = _release_execution_readonly_gate(
+        gate_data,
+        store=store,
+    )
+    if failure:
+        return None, failure
+    assert gate is not None
+    plan = gate.get("plan") or {}
+    run = gate.get("run")
+    if (
+        not run
+        or target_label not in (plan.get("targets") or ())
+        or str((plan.get("payload") or {}).get("product_id") or "")
+        != offer_id
+    ):
+        return None, (
+            409,
+            {
+                "ok": False,
+                "code": "target_scoped_identity_mismatch",
+                "error": (
+                    "target-scoped action does not match the active plan run"
+                ),
+                "external_writes_performed": [],
+            },
+        )
+    existing = store.get_target_scoped_operation(
+        run_id=str(run.get("run_id") or ""),
+        target_label=target_label,
+    )
+    if existing:
+        return {
+            "gate": gate,
+            "operation_kind": operation_kind,
+            "existing_operation": existing,
+            "request": None,
+            "context": None,
+            "gate_data": gate_data,
+        }, None
+    try:
+        context = store.target_scoped_action_context(
+            plan_id=str(plan.get("plan_id") or ""),
+            target_label=target_label,
+        )
+        request = _target_scoped_request_from_context(
+            gate=gate,
+            context=context,
+        )
+    except (TypeError, ValueError, RuntimeError) as error:
+        return None, (
+            409,
+            {
+                "ok": False,
+                "code": "target_scoped_action_blocked",
+                "error": str(error),
+                "external_writes_performed": [],
+                "run": run,
+            },
+        )
+    if not context.get("eligible"):
+        return None, (
+            409,
+            {
+                "ok": False,
+                "code": "target_scoped_action_blocked",
+                "error": "target is not eligible for a scoped action",
+                "blockers": list(context.get("blockers") or ()),
+                "external_writes_performed": [],
+                "run": run,
+            },
+        )
+    return {
+        "gate": gate,
+        "operation_kind": operation_kind,
+        "existing_operation": None,
+        "request": request,
+        "context": context,
+        "gate_data": gate_data,
+    }, None
+
+
+def _target_scoped_existing_operation_response(
+    *,
+    operation: dict,
+    data: dict | None = None,
+    plan: dict | None = None,
+) -> tuple[int, dict]:
+    """Return an exact replay or a zero-call terminal response."""
+
+    import hashlib
+
+    status = str(operation.get("status") or "")
+    request = operation.get("request") or {}
+    if data is not None and plan is not None:
+        token = str(data.get("confirmation_token") or "")
+        expected = {
+            "plan_id": str(data.get("plan_id") or ""),
+            "target_label": str(data.get("target_label") or ""),
+            "product_revision": data.get("expected_revision"),
+            "failure_attempt": data.get("failure_attempt"),
+            "payload_digest": str(data.get("payload_digest") or ""),
+            "preflight_digest": str(data.get("preflight_digest") or ""),
+            "approved_by": str(data.get("approved_by") or ""),
+            "confirmation_token_digest": hashlib.sha256(
+                token.encode("utf-8")
+            ).hexdigest(),
+        }
+        actual = {field: request.get(field) for field in expected}
+        if (
+            actual != expected
+            or str(data.get("proof_digest") or "")
+            != str(operation.get("proof_digest") or "")
+            or token != str(plan.get("confirmation_token") or "")
+        ):
+            return 409, {
+                "ok": False,
+                "code": "target_scoped_replay_identity_mismatch",
+                "error": "target-scoped replay identity does not match",
+                "external_writes_performed": [],
+            }
+    if status == "SUCCEEDED":
+        return 200, {
+            "ok": True,
+            "idempotent": True,
+            "operation_kind": operation.get("operation_kind"),
+            "target_label": operation.get("target_label"),
+            "operation_status": status,
+            "external_writes_performed": [],
+        }
+    return 409, {
+        "ok": False,
+        "code": (
+            "target_scoped_action_running"
+            if status == "RUNNING"
+            else "target_scoped_action_terminal"
+        ),
+        "error": (
+            "target-scoped action is already running"
+            if status == "RUNNING"
+            else (
+                "target-scoped action is terminal; obtain a new governed "
+                "proof before any further action"
+            )
+        ),
+        "operation_status": status,
+        "target_label": operation.get("target_label"),
+        "external_writes_performed": [],
+    }
+
+
+def _preview_target_scoped_release_action(
+    *,
+    offer_id: str,
+    target_label: str,
+) -> tuple[int, dict]:
+    """Build one redacted, write-free preview with no token refresh."""
+
+    from shared_platform.release_store import default_release_store
+    from shared_platform.target_scoped_release_contracts import (
+        OfficialTargetProof,
+        TargetScopedContractError,
+    )
+
+    store = default_release_store()
+    resolved, failure = _target_scoped_action_gate(
+        {"offer_id": offer_id, "target_label": target_label},
+        store=store,
+        derive_plan=True,
+    )
+    if failure:
+        return failure
+    assert resolved is not None
+    existing = resolved.get("existing_operation")
+    if existing:
+        status, payload = _target_scoped_existing_operation_response(
+            operation=existing
+        )
+        payload.update(
+            {
+                "preview": True,
+                "available": False,
+                "external_writes_performed": [],
+            }
+        )
+        return status, payload
+    request = resolved["request"]
+    try:
+        adapter = _target_scoped_adapter_module()
+        raw_proof = adapter.build_official_target_proof(
+            request,
+            allow_refresh=False,
+        )
+        proof = OfficialTargetProof.from_value(
+            raw_proof,
+            request=request,
+        )
+    except ModuleNotFoundError:
+        return 503, {
+            "ok": False,
+            "code": "target_scoped_adapter_unavailable",
+            "error": "channel target-scoped proof provider is unavailable",
+            "external_writes_performed": [],
+        }
+    except (TargetScopedContractError, TypeError, ValueError, RuntimeError) as error:
+        return 409, {
+            "ok": False,
+            "code": "official_target_proof_failed",
+            "error": str(error),
+            "external_writes_performed": [],
+        }
+    return 200, {
+        "ok": True,
+        "preview": True,
+        "available": True,
+        "target_label": request.target_label,
+        "operation_kind": request.operation_kind,
+        "plan_id": request.plan_id,
+        "expected_revision": request.product_revision,
+        "payload_digest": request.payload_digest,
+        "preflight_digest": request.preflight_digest,
+        "proof_digest": proof.proof_digest,
+        "failure_attempt": request.failure_attempt,
+        "summary": dict(proof.redacted_summary),
+        "external_writes_performed": [],
+    }
+
+
+def _target_scoped_exception_result(error: Exception):
+    """Convert an adapter exception into truthful fail-closed evidence."""
+
+    from shared_platform.target_scoped_release_contracts import (
+        TargetScopedOperationResult,
+    )
+
+    source = getattr(error, "external_write_evidence", None)
+    evidence = dict(source) if isinstance(source, dict) else {}
+    writes = [
+        str(value)
+        for value in (evidence.get("external_writes_performed") or ())
+        if str(value)
+    ]
+    evidence.update(
+        {
+            "external_writes_performed": writes,
+            "durable_state_uncertain": (
+                evidence.get("pre_submit_failure") is not True
+            ),
+            "reconciliation_required": (
+                evidence.get("pre_submit_failure") is not True
+            ),
+        }
+    )
+    return TargetScopedOperationResult.from_value(
+        {
+            "succeeded": False,
+            "readback_verified": False,
+            "detail": str(error) or type(error).__name__,
+            "external_reference": getattr(
+                error, "external_reference", None
+            ),
+            "submission_accepted": (
+                evidence.get("submission_accepted") is True
+            ),
+            "evidence": evidence,
+        }
+    )
+
+
+def _execute_target_scoped_release_action(data: dict) -> tuple[int, dict]:
+    """Execute exactly one proof-bound target action; never loop or retry."""
+
+    from shared_platform.release_store import (
+        ImmutableReleaseError,
+        ReleaseAuthorizationError,
+        ReleaseStoreError,
+        default_release_store,
+    )
+    from shared_platform.target_scoped_release_contracts import (
+        OfficialTargetProof,
+        TargetScopedContractError,
+        TargetScopedOperationResult,
+    )
+
+    if data.get("confirm_target_scoped_action") is not True:
+        return 400, {
+            "ok": False,
+            "error": "literal confirm_target_scoped_action=true is required",
+            "external_writes_performed": [],
+        }
+    if str(data.get("approved_by") or "").strip() != "Kyle":
+        return 400, {
+            "ok": False,
+            "error": "approved_by must be Kyle",
+            "external_writes_performed": [],
+        }
+    required_text = (
+        "target_label",
+        "plan_id",
+        "confirmation_token",
+        "payload_digest",
+        "preflight_digest",
+        "proof_digest",
+    )
+    if any(not str(data.get(field) or "").strip() for field in required_text):
+        return 400, {
+            "ok": False,
+            "error": (
+                "target_label, plan_id, confirmation_token, payload_digest, "
+                "preflight_digest and proof_digest are required"
+            ),
+            "external_writes_performed": [],
+        }
+    expected_revision = data.get("expected_revision")
+    failure_attempt = data.get("failure_attempt")
+    if (
+        isinstance(expected_revision, bool)
+        or not isinstance(expected_revision, int)
+        or expected_revision < 0
+    ):
+        return 400, {
+            "ok": False,
+            "error": "expected_revision must be a non-negative integer",
+            "external_writes_performed": [],
+        }
+    if (
+        isinstance(failure_attempt, bool)
+        or not isinstance(failure_attempt, int)
+        or failure_attempt < 0
+    ):
+        return 400, {
+            "ok": False,
+            "error": "failure_attempt must be a non-negative integer",
+            "external_writes_performed": [],
+        }
+
+    store = default_release_store()
+    target_label = str(data.get("target_label") or "").strip()
+    offer_id = str(data.get("offer_id") or "").strip()
+    with _release_execution_lock, _product_workbench_lock(offer_id):
+        resolved, failure = _target_scoped_action_gate(
+            data,
+            store=store,
+            derive_plan=False,
+        )
+        if failure:
+            return failure
+        assert resolved is not None
+        gate = resolved["gate"]
+        plan = gate["plan"] or {}
+        existing = resolved.get("existing_operation")
+        if existing:
+            return _target_scoped_existing_operation_response(
+                operation=existing,
+                data=data,
+                plan=plan,
+            )
+        request = resolved["request"]
+        if (
+            expected_revision != request.product_revision
+            or failure_attempt != request.failure_attempt
+            or str(data.get("payload_digest") or "")
+            != request.payload_digest
+            or str(data.get("preflight_digest") or "")
+            != request.preflight_digest
+            or str(data.get("plan_id") or "") != request.plan_id
+            or str(data.get("confirmation_token") or "")
+            != request.confirmation_token
+        ):
+            return 409, {
+                "ok": False,
+                "code": "target_scoped_request_drift",
+                "error": (
+                    "target-scoped request no longer matches the active "
+                    "plan/failure preflight"
+                ),
+                "external_writes_performed": [],
+            }
+        try:
+            adapter = _target_scoped_adapter_module()
+            raw_proof = adapter.build_official_target_proof(
+                request,
+                allow_refresh=False,
+            )
+            proof = OfficialTargetProof.from_value(
+                raw_proof,
+                request=request,
+            )
+        except ModuleNotFoundError:
+            return 503, {
+                "ok": False,
+                "code": "target_scoped_adapter_unavailable",
+                "error": "channel target-scoped adapter is unavailable",
+                "external_writes_performed": [],
+            }
+        except (TargetScopedContractError, TypeError, ValueError, RuntimeError) as error:
+            return 409, {
+                "ok": False,
+                "code": "official_target_proof_failed",
+                "error": str(error),
+                "external_writes_performed": [],
+            }
+        if proof.proof_digest != str(data.get("proof_digest") or ""):
+            return 409, {
+                "ok": False,
+                "code": "official_target_proof_drift",
+                "error": "official target proof changed before dispatch",
+                "external_writes_performed": [],
+            }
+        try:
+            claim = store.claim_target_scoped_operation(
+                request=request,
+                proof=proof,
+            )
+        except (
+            ImmutableReleaseError,
+            ReleaseAuthorizationError,
+            ReleaseStoreError,
+            TargetScopedContractError,
+            TypeError,
+            ValueError,
+        ) as error:
+            return 409, {
+                "ok": False,
+                "code": "target_scoped_claim_rejected",
+                "error": str(error),
+                "external_writes_performed": [],
+            }
+        if claim.get("action") == "already_succeeded":
+            return _target_scoped_existing_operation_response(
+                operation=claim["operation"],
+                data=data,
+                plan=plan,
+            )
+        operation = claim["operation"]
+        operation_digest = str(operation["operation_digest"])
+        try:
+            raw_result = adapter.execute_target_scoped_operation(
+                request,
+                proof,
+            )
+            result = TargetScopedOperationResult.from_value(raw_result)
+        except Exception as error:
+            try:
+                result = _target_scoped_exception_result(error)
+            except Exception:
+                result = TargetScopedOperationResult.from_value(
+                    {
+                        "succeeded": False,
+                        "readback_verified": False,
+                        "detail": type(error).__name__,
+                        "external_reference": getattr(
+                            error, "external_reference", None
+                        ),
+                        "submission_accepted": False,
+                        "evidence": {
+                            "external_writes_performed": list(
+                                (
+                                    getattr(
+                                        error,
+                                        "external_write_evidence",
+                                        {},
+                                    )
+                                    or {}
+                                ).get(
+                                    "external_writes_performed",
+                                    [],
+                                )
+                            ),
+                            "durable_state_uncertain": True,
+                            "reconciliation_required": True,
+                        },
+                    }
+                )
+
+        try:
+            if result.outcome == "SUCCEEDED":
+                run = store.record_target_scoped_success(
+                    operation_digest,
+                    result=result,
+                )
+                status = 200
+                code = "target_scoped_action_succeeded"
+            elif result.outcome == "FAILED_PRE_SUBMIT":
+                run = store.record_target_scoped_pre_submit_failure(
+                    operation_digest,
+                    result=result,
+                )
+                status = 409
+                code = "target_scoped_pre_submit_failure"
+            else:
+                run = store.record_target_scoped_reconciliation(
+                    operation_digest,
+                    result=result,
+                )
+                status = 409
+                code = "target_scoped_reconciliation_required"
+        except Exception as receipt_error:
+            latest = store.get_target_scoped_operation(
+                run_id=request.run_id,
+                target_label=request.target_label,
+            )
+            if (latest or {}).get("status") == "SUCCEEDED":
+                return 200, {
+                    "ok": True,
+                    "idempotent": False,
+                    "code": "target_scoped_action_succeeded",
+                    "target_label": request.target_label,
+                    "operation_kind": request.operation_kind,
+                    "operation_status": "SUCCEEDED",
+                    "external_writes_performed": (
+                        result.external_writes_performed
+                    ),
+                    "durable_receipt_recovered": True,
+                    "run": store.get_run(request.run_id),
+                }
+            uncertain = TargetScopedOperationResult.from_value(
+                {
+                    "succeeded": False,
+                    "readback_verified": False,
+                    "detail": (
+                        "external outcome is durable-state uncertain after "
+                        f"receipt failure: {type(receipt_error).__name__}"
+                    ),
+                    "external_reference": result.external_reference,
+                    "submission_accepted": result.submission_accepted,
+                    "evidence": {
+                        **dict(result.evidence),
+                        "external_writes_performed": (
+                            result.external_writes_performed
+                        ),
+                        "durable_state_uncertain": True,
+                        "reconciliation_required": True,
+                    },
+                }
+            )
+            try:
+                run = store.record_target_scoped_reconciliation(
+                    operation_digest,
+                    result=uncertain,
+                )
+            except Exception as reconciliation_error:
+                return 500, {
+                    "ok": False,
+                    "code": "target_scoped_durable_receipt_uncertain",
+                    "error": (
+                        "target-scoped external outcome could not be "
+                        "durably reconciled"
+                    ),
+                    "receipt_error": type(receipt_error).__name__,
+                    "reconciliation_error": type(
+                        reconciliation_error
+                    ).__name__,
+                    "durable_state_uncertain": True,
+                    "reconciliation_required": True,
+                    "target_label": request.target_label,
+                    "external_writes_performed": (
+                        uncertain.external_writes_performed
+                    ),
+                }
+            result = uncertain
+            status = 409
+            code = "target_scoped_reconciliation_required"
+
+        return status, {
+            "ok": status == 200,
+            "idempotent": False,
+            "code": code,
+            "target_label": request.target_label,
+            "operation_kind": request.operation_kind,
+            "operation_status": result.outcome,
+            "detail": result.detail,
+            "external_writes_performed": result.external_writes_performed,
+            "durable_state_uncertain": bool(
+                result.evidence.get("durable_state_uncertain")
+            ),
+            "reconciliation_required": (
+                result.outcome == "RECONCILIATION_REQUIRED"
+            ),
+            "run": run,
+        }
+
+
 def _release_v1_view(dashboard: dict) -> dict:
     from modules.products.release_adapters import production_adapter_registry
     from shared_platform.release_store import default_release_store
@@ -3965,43 +4663,26 @@ def _publish_selected_release(data: dict) -> tuple[int, dict]:
                 run,
                 interrupted,
             )
-        externally_mutated_failures = [
+        failed_targets = [
             row
             for row in (run.get("targets") or ())
-            if row.get("status") == "FAILED"
-            and (
-                row.get("external_id")
-                or (
-                    (
-                        (
-                            row.get("latest_failure_evidence") or {}
-                        ).get("evidence")
-                        or {}
-                    ).get("external_writes_performed")
-                )
-            )
+            if row.get("status") in {"FAILED", "RECONCILIATION_REQUIRED"}
         ]
-        if externally_mutated_failures:
+        if failed_targets:
             return 409, {
                 "ok": False,
+                "code": "target_scoped_action_required",
                 "error": (
-                    "a failed target already records an external draft update; "
-                    "automatic retry is disabled"
+                    "FAILED targets require an explicit single-target action; "
+                    "generic publish cannot retry or reset them"
                 ),
                 "blocked_targets": [
                     row.get("target_label")
-                    for row in externally_mutated_failures
+                    for row in failed_targets
                 ],
                 "external_writes_performed": [],
                 "run": run,
             }
-        failed = [
-            row["target_label"]
-            for row in (run.get("targets") or ())
-            if row.get("status") == "FAILED"
-        ]
-        if failed:
-            run = store.retry_failed_targets(run["run_id"], failed)
 
         target_by_label = {
             f"{target.get('channel')}:{target.get('site')}": target
@@ -6485,6 +7166,17 @@ class Handler(BaseHTTPRequestHandler):
                 target_label=(q.get("target_label") or [""])[0],
             )
             return self._json(status, payload)
+        if (
+            path
+            == "/api/product-workspace/release-target/"
+            "target-scoped-action-preview"
+        ):
+            q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+            status, payload = _preview_target_scoped_release_action(
+                offer_id=(q.get("offer_id") or [""])[0],
+                target_label=(q.get("target_label") or [""])[0],
+            )
+            return self._json(status, payload)
         if path in ("/api/release/dashboard", "/api/product-workspace/dashboard"):
             from shared_platform.release_control import build_release_dashboard
 
@@ -7049,6 +7741,10 @@ class Handler(BaseHTTPRequestHandler):
                 "/api/product-workspace/release-target/"
                 "shopee-price-reconciliation"
             ),
+            (
+                "/api/product-workspace/release-target/"
+                "target-scoped-action"
+            ),
         }:
             origin = (self.headers.get("Origin") or "").strip()
             if origin:
@@ -7116,6 +7812,12 @@ class Handler(BaseHTTPRequestHandler):
                 status, payload = _reconcile_existing_shopee_price_repair(
                     data
                 )
+            elif (
+                path
+                == "/api/product-workspace/release-target/"
+                "target-scoped-action"
+            ):
+                status, payload = _execute_target_scoped_release_action(data)
             else:
                 status, payload = _publish_selected_release(data)
             return self._json(status, payload)

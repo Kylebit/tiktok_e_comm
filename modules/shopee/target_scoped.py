@@ -54,7 +54,7 @@ def compatible_prepared_logistics(*, shop_id: int, access_token: str, parcel: di
     rows = shop_get("/api/v2/logistics/get_channel_list", shop_id, access_token).get("response", {}).get("logistics_channel_list", ())
     from modules.shopee.publish import _channel_supports_parcel
     excluded = {int(value) for value in excluded_ids}
-    weight = float(parcel["weight_kg"]); dimensions = tuple(float(x) for x in parcel["dimensions_cm"])
+    weight = float(parcel["weight_kg"]); dimensions = tuple(float(x) for x in parcel["package_cm"])
     return [int(row.get("logistics_channel_id") or row.get("logistic_id")) for row in rows if row.get("enabled") and int(row.get("logistics_channel_id") or row.get("logistic_id") or 0) not in excluded and _channel_supports_parcel(row, region="VN" if 50052 in excluded else "MY", weight_kg=weight, dimensions_cm=dimensions)]
 
 
@@ -128,8 +128,8 @@ def publish_existing_global_site(*, request, evidence: dict) -> dict:
     rows = (base.get("response") or {}).get("item_list") if isinstance(base, dict) else None
     if not isinstance(rows, list) or len(rows) != 1: return {"item_id": item_id, "verified": False, "task_status": "regional_readback_unknown", "reconciliation_required": True, "external_writes_performed": ["shopee:regional_publish"]}
     item = rows[0]
-    global_id = shop_get("/api/v2/global_product/get_global_item_id", shop_id, _shop_token, {"item_id": int(item_id)})
-    resolved = str((global_id.get("response") or {}).get("global_item_id") or "") if isinstance(global_id, dict) else ""
+    from modules.shopee.client import resolve_global_item_id
+    resolved = str(resolve_global_item_id(shop_id, merchant_id, token, item_id) or "")
     models = shop_get("/api/v2/product/get_model_list", shop_id, _shop_token, {"item_id": int(item_id)})
     model_rows = (models.get("response") or {}).get("model") if isinstance(models, dict) else None
     logistics = item.get("logistic_info") or []

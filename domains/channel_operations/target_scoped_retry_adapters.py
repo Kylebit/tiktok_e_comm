@@ -68,9 +68,9 @@ def _shopee_proof(request: TargetScopedOperationRequest) -> tuple[dict[str, Any]
     from modules.shopee.target_scoped import scan_prepared_shop_sku
 
     region = request.target_label.rsplit(":", 1)[1]
-    required_regional = ("regional_title", "regional_description", "regional_image_urls")
-    if any(not request.planned_command.get(field) for field in required_regional):
-        raise TargetScopedRetryError("planned_command_incomplete: exact regional copy is required for bounded readback")
+    required_policy = ("regional_copy_policy_version", "regional_copy_lint_policy_version", "regional_image_verification_policy_version", "regional_observation_policy_digest")
+    if any(not request.planned_command.get(field) for field in required_policy):
+        raise TargetScopedRetryError("planned_command_incomplete: regional observation policy is required")
     shop_id, token = _prepared_shopee_credentials(region)
     seller_sku = request.seller_sku[-4:].zfill(4)
     scan = scan_prepared_shop_sku(
@@ -102,7 +102,7 @@ def _shopee_proof(request: TargetScopedOperationRequest) -> tuple[dict[str, Any]
         "authentication": "prepared_token_only",
         "global_model_id": global_facts["global_model_id"],
         "global_tier_index": global_facts["tier_index"],
-        "approved_master_digest": request.planned_command_digest,
+        "approved_master_digest": request.planned_command["approved_master_digest"],
     }
     checks: dict[str, bool] = {
         "prepared_token": True,

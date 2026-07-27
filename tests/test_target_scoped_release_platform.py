@@ -34,11 +34,16 @@ from shared_platform.target_scoped_release_contracts import (
     TargetScopedOperationRequest,
     TargetScopedOperationResult,
     approved_shopee_channel_master_digest,
+    approved_shopee_copy_digest,
+    approved_source_image_manifest_digest,
     canonical_digest,
+    evaluate_shopee_global_image_observation,
     evaluate_shopee_regional_copy_observation,
     evaluate_shopee_regional_image_observation,
     operation_kind_for_target,
     planned_target_command,
+    shopee_global_image_id_mapping_digest,
+    shopee_global_image_observation_outcome,
     shopee_regional_observation_outcome,
     target_preflight_digest,
 )
@@ -170,6 +175,43 @@ def _request(store: ReleaseStore, plan: dict, target_label: str):
     )
 
 
+def _legacy_v1_request(
+    request: TargetScopedOperationRequest,
+) -> TargetScopedOperationRequest:
+    command = dict(request.planned_command)
+    command["schema_version"] = "shopee-existing-global-command/v1"
+    command["builder_policy_version"] = "target-scoped-shopee/v1"
+    for field in (
+        "approved_copy_digest",
+        "approved_source_image_manifest_digest",
+        "global_image_observation_policy_version",
+        "global_image_order_authority",
+        "approved_global_image_mapping_digest",
+    ):
+        command.pop(field, None)
+    command_digest = canonical_digest(command)
+    preflight_digest = target_preflight_digest(
+        plan_id=request.plan_id,
+        run_id=request.run_id,
+        target_label=request.target_label,
+        operation_kind=request.operation_kind,
+        product_revision=request.product_revision,
+        payload_digest=request.payload_digest,
+        planned_command_digest=command_digest,
+        failure_attempt=request.failure_attempt,
+        failure_digest=request.failure_digest,
+        target_idempotency_key=request.target_idempotency_key,
+    )
+    return TargetScopedOperationRequest(
+        **{
+            **request.__dict__,
+            "planned_command": command,
+            "planned_command_digest": command_digest,
+            "preflight_digest": preflight_digest,
+        }
+    )
+
+
 def _proof_value(request: TargetScopedOperationRequest, **overrides):
     now = datetime.now(timezone.utc)
     value = {
@@ -274,6 +316,11 @@ def test_shopee_command_is_purely_derived_from_immutable_plan(
             "regional_copy_policy_version": "browser-override",
             "expected_language": "browser-language",
             "source_global_master_digest": "browser-master",
+            "approved_copy_digest": "browser-copy",
+            "approved_source_image_manifest_digest": "browser-images",
+            "global_image_observation_policy_version": "browser-policy",
+            "global_image_order_authority": "browser-authority",
+            "approved_global_image_mapping_digest": "browser-mapping",
         }
     )
     repeated, repeated_digest = planned_target_command(
@@ -284,8 +331,8 @@ def test_shopee_command_is_purely_derived_from_immutable_plan(
     assert command == repeated
     assert digest == repeated_digest == canonical_digest(command)
     assert command == {
-        "schema_version": "shopee-existing-global-command/v1",
-        "builder_policy_version": "target-scoped-shopee/v1",
+        "schema_version": "shopee-existing-global-command/v2",
+        "builder_policy_version": "target-scoped-shopee/v2",
         "target_label": target_label,
         "operation_kind": "shopee_safe_pre_submit_retry_v1",
         "region": region,
@@ -300,6 +347,15 @@ def test_shopee_command_is_purely_derived_from_immutable_plan(
         "local_original_price": 45.0,
         "local_currency": currency,
         "approved_master_digest": command["approved_master_digest"],
+        "approved_copy_digest": command["approved_copy_digest"],
+        "approved_source_image_manifest_digest": command[
+            "approved_source_image_manifest_digest"
+        ],
+        "global_image_observation_policy_version": (
+            "shopee-global-rehost-observation/v1"
+        ),
+        "global_image_order_authority": "unverifiable",
+        "approved_global_image_mapping_digest": None,
         "regional_copy_policy_version": (
             "shopee-platform-derived-translation/v1"
         ),
@@ -421,6 +477,294 @@ def test_official_shopee_fields_recompute_planned_master_digest():
     )
 
     assert official_digest == command["approved_master_digest"]
+
+
+def test_copy_and_source_manifest_digests_split_rehosted_official_facts():
+    payload = _plan("shopee:MY")
+    command, command_digest = planned_target_command(
+        payload,
+        target_label="shopee:MY",
+    )
+    title = payload["listing_copy"]["candidates"][0]["title"]
+    description = payload["listing_copy"]["shopee_description_en"]
+    source_urls = [row["image_url"] for row in payload["images"]]
+    rehosted_urls = [
+        "https://cf.shopee.example/rehosted-a.jpg",
+        "https://cf.shopee.example/rehosted-b.jpg",
+    ]
+
+    assert approved_shopee_copy_digest(
+        f"  {title}  ",
+        description,
+    ) == command["approved_copy_digest"]
+    assert approved_source_image_manifest_digest(source_urls) == command[
+        "approved_source_image_manifest_digest"
+    ]
+    assert approved_source_image_manifest_digest(rehosted_urls) != command[
+        "approved_source_image_manifest_digest"
+    ]
+    assert approved_shopee_channel_master_digest(
+        title,
+        description,
+        rehosted_urls,
+    ) != command["approved_master_digest"]
+    assert command["approved_master_digest"] == (
+        planned_target_command(
+            payload,
+            target_label="shopee:MY",
+        )[0]["approved_master_digest"]
+    )
+    assert command_digest == canonical_digest(command)
+
+
+def test_copy_digest_is_exact_for_description_and_nfc_trimmed_title():
+    composed = "Caf\u00e9 approved title"
+    decomposed = "  Cafe\u0301 approved title  "
+    description = "Exact description.\nSecond line."
+
+    baseline = approved_shopee_copy_digest(composed, description)
+
+    assert approved_shopee_copy_digest(
+        decomposed,
+        description,
+    ) == baseline
+    assert approved_shopee_copy_digest(
+        composed,
+        description + " ",
+    ) != baseline
+    assert approved_shopee_copy_digest(
+        composed + " changed",
+        description,
+    ) != baseline
+
+
+def test_global_rehost_observation_without_prior_mapping_is_warning():
+    urls = [
+        "https://cf.shopee.example/rehosted-a.jpg",
+        "https://cf.shopee.example/rehosted-b.jpg",
+    ]
+    image_ids = ["official-image-a", "official-image-b"]
+
+    observed = evaluate_shopee_global_image_observation(
+        approved_count=2,
+        official_image_urls=urls,
+        official_image_ids=image_ids,
+    )
+    outcome = shopee_global_image_observation_outcome(
+        global_hard_facts_exact=True,
+        image_observation=observed,
+    )
+    serialized = json.dumps(
+        {"observation": observed, "outcome": outcome}
+    )
+
+    assert observed["status"] == "warning"
+    assert observed["verification_scope"] == (
+        "linked_count_verified_order_unverifiable"
+    )
+    assert observed["url_identity_exact"] is False
+    assert observed["approved_order_exact"] is False
+    assert observed["manual_review_required"] is True
+    assert outcome["execution_allowed"] is True
+    assert outcome["manual_review_required"] is True
+    assert outcome["semantic_equivalence"] == "unverified"
+    assert all(value not in serialized for value in urls + image_ids)
+
+
+def test_global_rehost_observation_uses_only_prior_plan_mapping_for_order():
+    urls = [
+        "https://cf.shopee.example/rehosted-a.jpg",
+        "https://cf.shopee.example/rehosted-b.jpg",
+    ]
+    image_ids = ["official-image-a", "official-image-b"]
+    mapping_digest = shopee_global_image_id_mapping_digest(image_ids)
+
+    exact = evaluate_shopee_global_image_observation(
+        approved_count=2,
+        official_image_urls=urls,
+        official_image_ids=image_ids,
+        prior_mapping_digest=mapping_digest,
+    )
+    mismatch = evaluate_shopee_global_image_observation(
+        approved_count=2,
+        official_image_urls=urls,
+        official_image_ids=list(reversed(image_ids)),
+        prior_mapping_digest=mapping_digest,
+    )
+
+    assert exact["status"] == "observed"
+    assert exact["approved_order_exact"] is True
+    assert exact["verification_scope"] == "stable_ordered_ids_exact"
+    assert mismatch["status"] == "needs_review"
+    assert mismatch["approved_order_exact"] is False
+    assert "global_image:prior_mapping_mismatch" in (
+        mismatch["matched_rule_ids"]
+    )
+    assert shopee_global_image_observation_outcome(
+        global_hard_facts_exact=True,
+        image_observation=mismatch,
+    )["execution_allowed"] is False
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("source_title", "raw approved title"),
+        ("source_description", "raw approved description"),
+        ("image_url_list", ["https://private.example/image.jpg"]),
+        ("image_id_list", ["private-image-id"]),
+        ("token", "private-token"),
+        ("raw_response", {"private": True}),
+    ],
+)
+def test_global_image_observation_validation_rejects_raw_fields(
+    field,
+    value,
+):
+    observed = evaluate_shopee_global_image_observation(
+        approved_count=2,
+        official_image_urls=["rehost-a", "rehost-b"],
+        official_image_ids=["id-a", "id-b"],
+    )
+    tampered = {**observed, field: value}
+    tampered.pop("evidence_digest")
+    tampered["evidence_digest"] = canonical_digest(tampered)
+
+    with pytest.raises(TargetScopedContractError):
+        shopee_global_image_observation_outcome(
+            global_hard_facts_exact=True,
+            image_observation=tampered,
+        )
+
+
+def test_global_image_warning_cannot_forge_exact_count_shape():
+    observed = evaluate_shopee_global_image_observation(
+        approved_count=2,
+        official_image_urls=["rehost-a", "rehost-b"],
+        official_image_ids=["id-a", "id-b"],
+    )
+    tampered = {
+        **observed,
+        "official_ids_nonempty_unique": False,
+    }
+    tampered.pop("evidence_digest")
+    tampered["evidence_digest"] = canonical_digest(tampered)
+
+    with pytest.raises(
+        TargetScopedContractError,
+        match="exact count and shape",
+    ):
+        shopee_global_image_observation_outcome(
+            global_hard_facts_exact=True,
+            image_observation=tampered,
+        )
+
+
+@pytest.mark.parametrize(
+    ("urls", "image_ids", "approved_count", "rule_id"),
+    [
+        (None, ["a", "b"], 2, "global_image:shape_ambiguous"),
+        (["a", "b"], None, 2, "global_image:shape_ambiguous"),
+        (["a", "a"], ["i1", "i2"], 2, (
+            "global_image:official_urls_not_nonempty_unique"
+        )),
+        (["a", "b"], ["i1", "i1"], 2, (
+            "global_image:official_ids_not_nonempty_unique"
+        )),
+        (["a"], ["i1"], 2, "global_image:count_mismatch"),
+        (["a", "b"], ["i1", "i2"], True, (
+            "global_image:shape_ambiguous"
+        )),
+    ],
+)
+def test_global_rehost_observation_invalid_shapes_need_review(
+    urls,
+    image_ids,
+    approved_count,
+    rule_id,
+):
+    observed = evaluate_shopee_global_image_observation(
+        approved_count=approved_count,
+        official_image_urls=urls,
+        official_image_ids=image_ids,
+    )
+
+    assert observed["status"] == "needs_review"
+    assert rule_id in observed["matched_rule_ids"]
+    assert shopee_global_image_observation_outcome(
+        global_hard_facts_exact=True,
+        image_observation=observed,
+    )["execution_allowed"] is False
+
+
+def test_prior_mapping_and_global_policy_are_bound_to_command_digest(
+    monkeypatch,
+):
+    payload = _plan("shopee:MY")
+    baseline, baseline_digest = planned_target_command(
+        payload,
+        target_label="shopee:MY",
+    )
+    mapped_payload = deepcopy(payload)
+    mapped_payload["shopee_global_image_mapping"] = {
+        "schema_version": "approved-shopee-global-image-mapping/v1",
+        "image_count": 2,
+        "ordered_image_ids_digest": (
+            shopee_global_image_id_mapping_digest(["id-1", "id-2"])
+        ),
+    }
+    mapped, mapped_digest = planned_target_command(
+        mapped_payload,
+        target_label="shopee:MY",
+    )
+    monkeypatch.setattr(
+        target_contracts,
+        "SHOPEE_GLOBAL_IMAGE_OBSERVATION_POLICY_VERSION",
+        "shopee-global-rehost-observation/v2-test",
+    )
+    changed_policy, changed_policy_digest = planned_target_command(
+        payload,
+        target_label="shopee:MY",
+    )
+
+    assert baseline["global_image_order_authority"] == "unverifiable"
+    assert baseline["approved_global_image_mapping_digest"] is None
+    assert mapped["global_image_order_authority"] == (
+        "prior_plan_mapping"
+    )
+    assert mapped["approved_global_image_mapping_digest"]
+    assert mapped_digest != baseline_digest
+    assert changed_policy["global_image_observation_policy_version"].endswith(
+        "v2-test"
+    )
+    assert changed_policy_digest != baseline_digest
+
+
+@pytest.mark.parametrize(
+    "mapping",
+    [
+        {},
+        {
+            "schema_version": "approved-shopee-global-image-mapping/v1",
+            "image_count": True,
+            "ordered_image_ids_digest": "a" * 64,
+        },
+        {
+            "schema_version": "approved-shopee-global-image-mapping/v1",
+            "image_count": 2,
+            "ordered_image_ids_digest": "not-a-digest",
+        },
+    ],
+)
+def test_malformed_prior_mapping_fails_before_command(mapping):
+    payload = _plan("shopee:MY")
+    payload["shopee_global_image_mapping"] = mapping
+
+    with pytest.raises(
+        TargetScopedCommandUnavailable,
+        match="global image mapping",
+    ):
+        planned_target_command(payload, target_label="shopee:MY")
 
 
 def test_regional_policy_is_deterministic_and_bound_to_command_digest(
@@ -1084,6 +1428,140 @@ def test_claim_recomputes_planned_command_from_immutable_plan(tmp_path):
         ).fetchone()[0] == 0
 
 
+def test_legacy_v1_command_digest_cannot_persist_proof_or_claim(tmp_path):
+    store, plan, _run = _failed_store(tmp_path)
+    current = _request(store, plan, "shopee:MY")
+    legacy = _legacy_v1_request(current)
+
+    with pytest.raises(
+        ImmutableReleaseError,
+        match="failure identity",
+    ):
+        store.claim_target_scoped_operation(
+            request=legacy,
+            proof=_proof(legacy),
+        )
+
+    with sqlite3.connect(store.path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM release_target_retry_proofs"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM release_target_retry_operations"
+        ).fetchone()[0] == 0
+
+
+def test_server_rejects_persisted_legacy_contract_before_proof_or_execute(
+    tmp_path,
+    monkeypatch,
+):
+    store, plan, _run = _failed_store(tmp_path)
+    current = _request(store, plan, "shopee:MY")
+    legacy = _legacy_v1_request(current)
+    proof = _proof(legacy)
+    operation_digest = legacy.operation_digest(proof.proof_digest)
+    timestamp = datetime.now(timezone.utc).isoformat()
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(
+            """
+            INSERT INTO release_target_retry_proofs (
+                proof_digest, plan_id, run_id, target_label,
+                operation_kind, product_revision, payload_digest,
+                preflight_digest, failure_attempt, failure_digest,
+                proof_json, status, created_at, consumed_at,
+                operation_digest
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'CONSUMED', ?, ?, ?)
+            """,
+            (
+                proof.proof_digest,
+                legacy.plan_id,
+                legacy.run_id,
+                legacy.target_label,
+                legacy.operation_kind,
+                legacy.product_revision,
+                legacy.payload_digest,
+                legacy.preflight_digest,
+                legacy.failure_attempt,
+                legacy.failure_digest,
+                json.dumps(proof.durable_payload(), sort_keys=True),
+                timestamp,
+                timestamp,
+                operation_digest,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO release_target_retry_operations (
+                operation_digest, proof_digest, plan_id, run_id,
+                target_label, operation_kind, request_json, status,
+                created_at, updated_at, completed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'FAILED_PRE_SUBMIT', ?, ?, ?)
+            """,
+            (
+                operation_digest,
+                proof.proof_digest,
+                legacy.plan_id,
+                legacy.run_id,
+                legacy.target_label,
+                legacy.operation_kind,
+                json.dumps(legacy.durable_identity(), sort_keys=True),
+                timestamp,
+                timestamp,
+                timestamp,
+            ),
+        )
+        connection.commit()
+
+    calls = []
+    monkeypatch.setattr(release_store, "default_release_store", lambda: store)
+    monkeypatch.setattr(
+        product_server,
+        "_release_execution_readonly_gate",
+        lambda _data, *, store: (
+            {
+                "dashboard": {},
+                "payload": plan["payload"],
+                "plan": plan,
+                "run": store.get_run(legacy.run_id),
+                "registry": {},
+                "target_rows": [],
+            },
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_target_scoped_adapter_module",
+        lambda: SimpleNamespace(
+            build_official_target_proof=lambda *_args, **_kwargs: calls.append(
+                "proof"
+            ),
+            execute_target_scoped_operation=lambda *_args: calls.append(
+                "execute"
+            ),
+        ),
+    )
+
+    status, payload = product_server._execute_target_scoped_release_action(
+        _post_body(legacy, proof)
+    )
+
+    assert status == 409
+    assert payload["code"] == "target_scoped_contract_stale"
+    assert payload["available"] is False
+    assert payload["external_writes_performed"] == []
+    assert "run" not in payload
+    assert calls == []
+    with sqlite3.connect(store.path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM release_target_retry_proofs"
+        ).fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT COUNT(*) FROM release_target_retry_operations"
+        ).fetchone()[0] == 1
+
+
 def _resolved_gate(store, plan, request):
     run = store.get_run(request.run_id)
     operation = store.get_target_scoped_operation(
@@ -1242,6 +1720,92 @@ def test_preview_is_readonly_redacted_and_never_refreshes(
         assert connection.execute(
             "SELECT COUNT(*) FROM release_target_retry_proofs"
         ).fetchone()[0] == 0
+
+
+def test_global_rehost_observation_keeps_raw_facts_out_of_api_and_durable_json(
+    tmp_path,
+    monkeypatch,
+):
+    store, plan, _run = _failed_store(tmp_path)
+    request = _request(store, plan, "shopee:MY")
+    raw_title = "Approved raw title must remain in memory"
+    raw_description = "Approved raw description must remain in memory"
+    raw_urls = [
+        "https://cf.shopee.example/private-a.jpg",
+        "https://cf.shopee.example/private-b.jpg",
+    ]
+    raw_ids = ["raw-image-id-a", "raw-image-id-b"]
+    raw_response = '{"response":{"global_item_list":"private"}}'
+    observation = evaluate_shopee_global_image_observation(
+        approved_count=2,
+        official_image_urls=raw_urls,
+        official_image_ids=raw_ids,
+    )
+    proof = _proof(
+        request,
+        semantic_evidence={
+            "source": "shopee:official_get_only",
+            "official_copy_digest": approved_shopee_copy_digest(
+                raw_title,
+                raw_description,
+            ),
+            "global_image_observation": observation,
+        },
+        redacted_summary={
+            "target": "shopee:MY",
+            "global_image_status": observation["status"],
+            "global_image_verification_scope": observation[
+                "verification_scope"
+            ],
+            "approved_image_count": observation["approved_count"],
+            "official_image_count": observation[
+                "official_image_id_count"
+            ],
+            "manual_review_required": True,
+        },
+    )
+    adapter = SimpleNamespace(
+        build_official_target_proof=lambda *_args, **_kwargs: (
+            proof.durable_payload()
+        )
+    )
+    monkeypatch.setattr(release_store, "default_release_store", lambda: store)
+    monkeypatch.setattr(
+        product_server,
+        "_target_scoped_action_gate",
+        lambda *_args, **_kwargs: _resolved_gate(store, plan, request),
+    )
+    monkeypatch.setattr(
+        product_server, "_target_scoped_adapter_module", lambda: adapter
+    )
+
+    status, payload = product_server._preview_target_scoped_release_action(
+        offer_id=request.product_id,
+        target_label=request.target_label,
+    )
+    assert status == 200
+    assert payload["summary"]["global_image_status"] == "warning"
+    store.claim_target_scoped_operation(request=request, proof=proof)
+    with sqlite3.connect(store.path) as connection:
+        proof_json = connection.execute(
+            "SELECT proof_json FROM release_target_retry_proofs"
+        ).fetchone()[0]
+        request_json = connection.execute(
+            "SELECT request_json FROM release_target_retry_operations"
+        ).fetchone()[0]
+    serialized = json.dumps(payload) + proof_json + request_json
+
+    forbidden = [
+        raw_title,
+        raw_description,
+        *raw_urls,
+        *raw_ids,
+        raw_response,
+        request.confirmation_token,
+    ]
+    assert all(value not in serialized for value in forbidden)
+    assert "official_image_id_snapshot_digest" in proof_json
+    assert "approved_source_image_manifest_digest" in request_json
 
 
 def test_post_exact_single_target_success_and_replay_call_nothing(

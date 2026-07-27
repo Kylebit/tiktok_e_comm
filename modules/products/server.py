@@ -1639,6 +1639,7 @@ def _target_scoped_action_gate(
         TargetScopedCommandUnavailable,
         TargetScopedContractError,
         operation_kind_for_target,
+        planned_target_command,
     )
 
     offer_id = str(data.get("offer_id") or "").strip()
@@ -1729,6 +1730,46 @@ def _target_scoped_action_gate(
         target_label=target_label,
     )
     if existing:
+        try:
+            _current_command, current_command_digest = (
+                planned_target_command(
+                    plan.get("payload") or {},
+                    target_label=target_label,
+                )
+            )
+        except TargetScopedCommandUnavailable as error:
+            return None, (
+                409,
+                {
+                    "ok": False,
+                    "code": error.code,
+                    "error": str(error),
+                    "available": False,
+                    "external_writes_performed": [],
+                    "run": run,
+                },
+            )
+        stored_request = existing.get("request") or {}
+        if (
+            stored_request.get("planned_command_digest")
+            != current_command_digest
+            or stored_request.get("payload_digest")
+            != plan.get("payload_digest")
+        ):
+            return None, (
+                409,
+                {
+                    "ok": False,
+                    "code": "target_scoped_contract_stale",
+                    "error": (
+                        "stored target-scoped proof/operation identity uses "
+                        "an obsolete server-derived command contract"
+                    ),
+                    "available": False,
+                    "operation_status": existing.get("status"),
+                    "external_writes_performed": [],
+                },
+            )
         return {
             "gate": gate,
             "operation_kind": operation_kind,

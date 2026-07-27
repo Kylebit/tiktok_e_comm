@@ -2842,9 +2842,24 @@ class ReleaseStore:
             if operation_row
             else None
         )
+        operation_contract_stale = False
         if operation:
+            stored_request = operation.get("request") or {}
+            operation_contract_stale = (
+                stored_request.get("planned_command_digest")
+                != planned_command_digest
+                or stored_request.get("payload_digest")
+                != plan["payload_digest"]
+            )
             blockers.append(
-                f"target already has operation status {operation['status']}"
+                (
+                    "target already has a stale target-scoped contract"
+                    if operation_contract_stale
+                    else (
+                        "target already has operation status "
+                        f"{operation['status']}"
+                    )
+                )
             )
         approval = {
             "approval_id": row["approval_id"],
@@ -2878,6 +2893,7 @@ class ReleaseStore:
             "planned_command_digest": planned_command_digest,
             "preflight_digest": preflight,
             "operation": operation,
+            "operation_contract_stale": operation_contract_stale,
             "eligible": not blockers,
             "blockers": blockers,
         }

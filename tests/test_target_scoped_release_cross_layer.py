@@ -459,6 +459,21 @@ def test_http_warning_outcome_succeeds_and_persists_manual_review(
         target_label=target_label,
     )
     assert operation["status"] == "SUCCEEDED"
+    planned_command = operation["request"]["planned_command"]
+    assert planned_command["schema_version"] == (
+        "shopee-existing-global-command/v2"
+    )
+    assert planned_command["builder_policy_version"] == (
+        "target-scoped-shopee/v2"
+    )
+    assert planned_command["global_image_observation_policy_version"] == (
+        "shopee-global-rehost-observation/v1"
+    )
+    assert planned_command["global_image_order_authority"] == "unverifiable"
+    assert planned_command["approved_global_image_mapping_digest"] is None
+    assert preview["planned_command_digest"] == operation["request"][
+        "planned_command_digest"
+    ]
     durable_result = json.dumps(
         operation["result"],
         ensure_ascii=False,

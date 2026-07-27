@@ -36,6 +36,9 @@ SHOPEE_REGIONAL_COPY_LINT_POLICY_VERSION = (
 SHOPEE_REGIONAL_IMAGE_POLICY_VERSION = (
     "shopee-linked-image-observation/v1"
 )
+SHOPEE_GLOBAL_IMAGE_OBSERVATION_POLICY_VERSION = (
+    "shopee-global-rehost-observation/v1"
+)
 SHOPEE_REGIONAL_EXPECTED_LANGUAGES = {
     "MY": "ms-Latn",
     "VN": "vi-Latn",
@@ -54,6 +57,7 @@ _SENSITIVE_KEY_PARTS = (
 _CJK_PATTERN = re.compile(
     r"[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]"
 )
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _VIETNAMESE_SIGNAL_PATTERN = re.compile(
     r"[àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệ"
     r"ìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụ"
@@ -688,7 +692,11 @@ def approved_shopee_channel_master_digest(
     description: object,
     ordered_image_urls: object,
 ) -> str:
-    """Digest only exact channel-visible fields reproducible by official GET."""
+    """Digest the immutable approved copy and source-image lineage.
+
+    Shopee can rehost global images, so this digest is deliberately retained
+    as plan lineage and must not be recomputed from official rehosted URLs.
+    """
 
     clean_title = unicodedata.normalize(
         "NFC",
@@ -729,7 +737,413 @@ def approved_shopee_channel_master_digest(
     )
 
 
-def _approved_shopee_master_digest(payload: Mapping[str, Any]) -> tuple[str, int]:
+def approved_shopee_copy_digest(
+    title: object,
+    description: object,
+) -> str:
+    """Return the copy-only digest that an official global GET can reproduce."""
+
+    clean_title = unicodedata.normalize(
+        "NFC",
+        str(title or "").strip(),
+    )
+    exact_description = str(
+        description if description is not None else ""
+    )
+    if not clean_title or not exact_description.strip():
+        raise TargetScopedContractError(
+            "approved Shopee title and description are required"
+        )
+    return canonical_digest(
+        {
+            "schema_version": "approved-shopee-copy/v1",
+            "title": clean_title,
+            "description": exact_description,
+        }
+    )
+
+
+def approved_source_image_manifest_digest(
+    ordered_image_urls: object,
+) -> str:
+    """Return a plan-only digest for the approved ordered source images."""
+
+    if (
+        isinstance(ordered_image_urls, (str, bytes))
+        or not isinstance(ordered_image_urls, (list, tuple))
+        or not ordered_image_urls
+    ):
+        raise TargetScopedContractError(
+            "approved Shopee ordered source image URLs are required"
+        )
+    ordered = []
+    for position, value in enumerate(ordered_image_urls, start=1):
+        image_url = str(value or "").strip()
+        if not image_url:
+            raise TargetScopedContractError(
+                "approved Shopee source image URL is required"
+            )
+        ordered.append(
+            {"position": position, "image_url": image_url}
+        )
+    return canonical_digest(
+        {
+            "schema_version": (
+                "approved-shopee-source-image-manifest/v1"
+            ),
+            "ordered_images": ordered,
+        }
+    )
+
+
+def shopee_global_image_id_mapping_digest(
+    ordered_image_ids: object,
+) -> str:
+    """Digest ordered official IDs without persisting the raw identifiers."""
+
+    if (
+        isinstance(ordered_image_ids, (str, bytes))
+        or not isinstance(ordered_image_ids, (list, tuple))
+        or not ordered_image_ids
+    ):
+        raise TargetScopedContractError(
+            "ordered Shopee global image IDs are required"
+        )
+    ordered = [str(value or "").strip() for value in ordered_image_ids]
+    if not all(ordered) or len(set(ordered)) != len(ordered):
+        raise TargetScopedContractError(
+            "ordered Shopee global image IDs must be nonempty and unique"
+        )
+    return canonical_digest(
+        {
+            "schema_version": (
+                "shopee-official-global-image-id-snapshot/v1"
+            ),
+            "ordered_image_ids": ordered,
+        }
+    )
+
+
+def evaluate_shopee_global_image_observation(
+    *,
+    approved_count: object,
+    official_image_urls: object,
+    official_image_ids: object,
+    prior_mapping_digest: object = None,
+) -> dict[str, Any]:
+    """Summarize rehosted global images without claiming URL/order equality."""
+
+    approved_shape_exact = (
+        not isinstance(approved_count, bool)
+        and isinstance(approved_count, int)
+        and approved_count > 0
+    )
+    urls_shape_exact = (
+        isinstance(official_image_urls, (list, tuple))
+        and not isinstance(official_image_urls, (str, bytes))
+    )
+    ids_shape_exact = (
+        isinstance(official_image_ids, (list, tuple))
+        and not isinstance(official_image_ids, (str, bytes))
+    )
+    urls = (
+        [value.strip() for value in official_image_urls]
+        if urls_shape_exact
+        and all(isinstance(value, str) for value in official_image_urls)
+        else []
+    )
+    image_ids = (
+        [value.strip() for value in official_image_ids]
+        if ids_shape_exact
+        and all(isinstance(value, str) for value in official_image_ids)
+        else []
+    )
+    urls_nonempty_unique = bool(
+        urls_shape_exact
+        and len(urls) == len(official_image_urls)
+        and urls
+        and all(urls)
+        and len(set(urls)) == len(urls)
+    )
+    ids_nonempty_unique = bool(
+        ids_shape_exact
+        and len(image_ids) == len(official_image_ids)
+        and image_ids
+        and all(image_ids)
+        and len(set(image_ids)) == len(image_ids)
+    )
+    url_count = len(urls)
+    image_id_count = len(image_ids)
+    counts_aligned = bool(
+        approved_shape_exact
+        and url_count == approved_count
+        and image_id_count == approved_count
+    )
+    snapshot_digest = (
+        shopee_global_image_id_mapping_digest(image_ids)
+        if ids_nonempty_unique
+        else None
+    )
+    supplied_mapping = (
+        str(prior_mapping_digest or "").strip()
+        if prior_mapping_digest is not None
+        else ""
+    )
+    mapping_shape_exact = (
+        not supplied_mapping
+        or bool(_SHA256_PATTERN.fullmatch(supplied_mapping))
+    )
+    mapping_available = bool(supplied_mapping and mapping_shape_exact)
+    mapping_exact = (
+        snapshot_digest == supplied_mapping
+        if mapping_available and snapshot_digest
+        else None
+    )
+
+    needs_review_rules: set[str] = set()
+    warning_rules: set[str] = set()
+    if (
+        not approved_shape_exact
+        or not urls_shape_exact
+        or not ids_shape_exact
+        or not mapping_shape_exact
+    ):
+        needs_review_rules.add("global_image:shape_ambiguous")
+    if not urls_nonempty_unique:
+        needs_review_rules.add(
+            "global_image:official_urls_not_nonempty_unique"
+        )
+    if not ids_nonempty_unique:
+        needs_review_rules.add(
+            "global_image:official_ids_not_nonempty_unique"
+        )
+    if not counts_aligned:
+        needs_review_rules.add("global_image:count_mismatch")
+    if mapping_available and mapping_exact is not True:
+        needs_review_rules.add("global_image:prior_mapping_mismatch")
+    if not mapping_available:
+        warning_rules.add("global_image:rehosted_order_unverifiable")
+
+    if needs_review_rules:
+        status = "needs_review"
+        verification_scope = "identity_unverified"
+    elif mapping_exact is True:
+        status = "observed"
+        verification_scope = "stable_ordered_ids_exact"
+    else:
+        status = "warning"
+        verification_scope = (
+            "linked_count_verified_order_unverifiable"
+        )
+    observation = {
+        "schema_version": (
+            "platform-derived-global-image-observation/v1"
+        ),
+        "authority": "shopee_official_global_get",
+        "provider": "shopee",
+        "global_image_observation_policy_version": (
+            SHOPEE_GLOBAL_IMAGE_OBSERVATION_POLICY_VERSION
+        ),
+        "approved_count": (
+            approved_count if approved_shape_exact else None
+        ),
+        "official_image_url_count": url_count,
+        "official_image_id_count": image_id_count,
+        "official_urls_nonempty_unique": urls_nonempty_unique,
+        "official_ids_nonempty_unique": ids_nonempty_unique,
+        "counts_aligned": counts_aligned,
+        "official_image_id_snapshot_digest": snapshot_digest,
+        "prior_mapping_available": mapping_available,
+        "prior_mapping_exact": mapping_exact,
+        "url_identity_exact": False,
+        "approved_order_exact": mapping_exact is True,
+        "verification_scope": verification_scope,
+        "matched_rule_ids": sorted(
+            needs_review_rules | warning_rules
+        ),
+        "semantic_equivalence": "unverified",
+        "status": status,
+        "manual_review_required": status != "observed",
+        "summary_code": f"global_images_{status}",
+    }
+    _assert_redacted(observation, path="global_image_observation")
+    observation["evidence_digest"] = canonical_digest(observation)
+    return observation
+
+
+def _validated_global_image_observation(
+    value: object,
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise TargetScopedContractError(
+            "global image observation must be a mapping"
+        )
+    observation = dict(value)
+    supplied_digest = str(
+        observation.pop("evidence_digest", "") or ""
+    ).strip()
+    if (
+        observation.get("schema_version")
+        != "platform-derived-global-image-observation/v1"
+        or observation.get("authority")
+        != "shopee_official_global_get"
+        or observation.get(
+            "global_image_observation_policy_version"
+        )
+        != SHOPEE_GLOBAL_IMAGE_OBSERVATION_POLICY_VERSION
+    ):
+        raise TargetScopedContractError(
+            "global image observation schema or authority is invalid"
+        )
+    if not supplied_digest or supplied_digest != canonical_digest(observation):
+        raise TargetScopedContractError(
+            "global image observation evidence digest is invalid"
+        )
+    status = str(observation.get("status") or "")
+    scope = str(observation.get("verification_scope") or "")
+    order_exact = observation.get("approved_order_exact")
+    url_exact = observation.get("url_identity_exact")
+    approved_count = observation.get("approved_count")
+    url_count = observation.get("official_image_url_count")
+    image_id_count = observation.get("official_image_id_count")
+    snapshot_digest = str(
+        observation.get("official_image_id_snapshot_digest") or ""
+    )
+    if url_exact is not False or status not in {
+        "observed",
+        "warning",
+        "needs_review",
+    }:
+        raise TargetScopedContractError(
+            "global image observation status is invalid"
+        )
+    if status in {"observed", "warning"} and (
+        isinstance(approved_count, bool)
+        or not isinstance(approved_count, int)
+        or approved_count <= 0
+        or url_count != approved_count
+        or image_id_count != approved_count
+        or observation.get("official_urls_nonempty_unique") is not True
+        or observation.get("official_ids_nonempty_unique") is not True
+        or observation.get("counts_aligned") is not True
+        or not _SHA256_PATTERN.fullmatch(snapshot_digest)
+    ):
+        raise TargetScopedContractError(
+            "eligible global images require exact count and shape evidence"
+        )
+    if (
+        status == "observed"
+        and (
+            scope != "stable_ordered_ids_exact"
+            or order_exact is not True
+            or observation.get("prior_mapping_exact") is not True
+            or observation.get("prior_mapping_available") is not True
+            or observation.get("manual_review_required") is not False
+        )
+    ):
+        raise TargetScopedContractError(
+            "observed global images require exact prior mapping"
+        )
+    if (
+        status == "warning"
+        and (
+            scope
+            != "linked_count_verified_order_unverifiable"
+            or order_exact is not False
+            or observation.get("prior_mapping_available") is not False
+            or observation.get("prior_mapping_exact") is not None
+            or observation.get("manual_review_required") is not True
+        )
+    ):
+        raise TargetScopedContractError(
+            "warning global images must keep order unverifiable"
+        )
+    _assert_redacted(observation, path="global_image_observation")
+    observation["evidence_digest"] = supplied_digest
+    return observation
+
+
+def shopee_global_image_observation_outcome(
+    *,
+    global_hard_facts_exact: object,
+    image_observation: object,
+) -> dict[str, Any]:
+    """Gate execution while retaining honest rehost/manual-review semantics."""
+
+    observation = _validated_global_image_observation(
+        image_observation
+    )
+    status = str(observation["status"])
+    hard_exact = global_hard_facts_exact is True
+    execution_allowed = (
+        hard_exact and status in {"observed", "warning"}
+    )
+    rules = {
+        str(value)
+        for value in observation.get("matched_rule_ids") or ()
+        if str(value)
+    }
+    if not hard_exact:
+        rules.add("global_listing:hard_facts_failed")
+    outcome = {
+        "schema_version": (
+            "shopee-global-image-observation-outcome/v1"
+        ),
+        "execution_allowed": execution_allowed,
+        "global_hard_facts_exact": hard_exact,
+        "global_image_status": status,
+        "global_image_verification_scope": observation[
+            "verification_scope"
+        ],
+        "global_image_url_identity_exact": False,
+        "global_image_approved_order_exact": observation[
+            "approved_order_exact"
+        ],
+        "manual_review_required": (
+            status != "observed" or not hard_exact
+        ),
+        "reconciliation_required": not execution_allowed,
+        "semantic_equivalence": "unverified",
+        "matched_rule_ids": sorted(rules),
+    }
+    _assert_redacted(outcome, path="global_image_observation_outcome")
+    outcome["evidence_digest"] = canonical_digest(outcome)
+    return outcome
+
+
+def _prior_shopee_global_image_mapping_digest(
+    payload: Mapping[str, Any],
+    *,
+    approved_count: int,
+) -> str | None:
+    mapping = payload.get("shopee_global_image_mapping")
+    if mapping is None:
+        return None
+    if not isinstance(mapping, Mapping):
+        raise TargetScopedCommandUnavailable(
+            "planned_command_incomplete",
+            "immutable Shopee global image mapping must be a mapping",
+        )
+    digest = str(mapping.get("ordered_image_ids_digest") or "").strip()
+    count = mapping.get("image_count")
+    if (
+        mapping.get("schema_version")
+        != "approved-shopee-global-image-mapping/v1"
+        or not _SHA256_PATTERN.fullmatch(digest)
+        or isinstance(count, bool)
+        or not isinstance(count, int)
+        or count != approved_count
+    ):
+        raise TargetScopedCommandUnavailable(
+            "planned_command_incomplete",
+            "immutable Shopee global image mapping is invalid",
+        )
+    return digest
+
+
+def _approved_shopee_master_digest(
+    payload: Mapping[str, Any],
+) -> tuple[str, str, str, int, str | None]:
     listing = payload.get("listing_copy")
     images = payload.get("images")
     if not isinstance(listing, Mapping) or not isinstance(images, list):
@@ -777,13 +1191,23 @@ def _approved_shopee_master_digest(payload: Mapping[str, Any]) -> tuple[str, int
                 "immutable images must use exact consecutive order",
             )
         ordered_image_urls.append(url)
+    image_count = len(ordered_image_urls)
     return (
         approved_shopee_channel_master_digest(
             candidates[0]["title"],
             description,
             ordered_image_urls,
         ),
-        len(ordered_image_urls),
+        approved_shopee_copy_digest(
+            candidates[0]["title"],
+            description,
+        ),
+        approved_source_image_manifest_digest(ordered_image_urls),
+        image_count,
+        _prior_shopee_global_image_mapping_digest(
+            payload,
+            approved_count=image_count,
+        ),
     )
 
 
@@ -857,7 +1281,13 @@ def _planned_shopee_command(
             "planned_command_incomplete",
             f"immutable {target_label} price must use {expected_currency}",
         )
-    master_digest, image_count = _approved_shopee_master_digest(payload)
+    (
+        master_digest,
+        copy_digest,
+        source_image_manifest_digest,
+        image_count,
+        prior_image_mapping_digest,
+    ) = _approved_shopee_master_digest(payload)
     parcel, parcel_digest = _approved_parcel(payload)
     excluded = [50052] if region == "VN" else []
     regional_policy = shopee_regional_observation_policy(
@@ -865,8 +1295,8 @@ def _planned_shopee_command(
         source_global_master_digest=master_digest,
     )
     return {
-        "schema_version": "shopee-existing-global-command/v1",
-        "builder_policy_version": "target-scoped-shopee/v1",
+        "schema_version": "shopee-existing-global-command/v2",
+        "builder_policy_version": "target-scoped-shopee/v2",
         "target_label": target_label,
         "operation_kind": SHOPEE_SAFE_PRE_SUBMIT_RETRY,
         "region": region,
@@ -881,6 +1311,21 @@ def _planned_shopee_command(
         "local_original_price": local_price,
         "local_currency": currency,
         "approved_master_digest": master_digest,
+        "approved_copy_digest": copy_digest,
+        "approved_source_image_manifest_digest": (
+            source_image_manifest_digest
+        ),
+        "global_image_observation_policy_version": (
+            SHOPEE_GLOBAL_IMAGE_OBSERVATION_POLICY_VERSION
+        ),
+        "global_image_order_authority": (
+            "prior_plan_mapping"
+            if prior_image_mapping_digest
+            else "unverifiable"
+        ),
+        "approved_global_image_mapping_digest": (
+            prior_image_mapping_digest
+        ),
         **regional_policy,
         "regional_observation_policy_digest": canonical_digest(
             regional_policy
@@ -997,6 +1442,33 @@ def _assert_redacted(value: object, *, path: str = "evidence") -> None:
             if any(part in normalized for part in _SENSITIVE_KEY_PARTS):
                 raise TargetScopedContractError(
                     f"{path}.{key} contains a forbidden sensitive field"
+                )
+            if (
+                normalized
+                in {
+                    "title",
+                    "description",
+                    "source_title",
+                    "source_description",
+                    "regional_title",
+                    "regional_description",
+                }
+                and isinstance(item, str)
+            ):
+                raise TargetScopedContractError(
+                    f"{path}.{key} contains raw copy"
+                )
+            if (
+                (
+                    "image_url" in normalized
+                    or "image_id" in normalized
+                    or normalized == "token"
+                )
+                and not normalized.endswith("digest")
+                and isinstance(item, (str, list, tuple))
+            ):
+                raise TargetScopedContractError(
+                    f"{path}.{key} contains raw platform identity"
                 )
             _assert_redacted(item, path=f"{path}.{key}")
     elif isinstance(value, (list, tuple)):

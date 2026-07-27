@@ -2081,7 +2081,7 @@
     return `<section class="target-scoped-action-panel" data-target-scoped-target="${esc(label)}" aria-live="polite">
       <strong>${esc(label)}：仅限当前失败目标的受控恢复</strong>
       <p>${esc(state.message || "Shopee 自动翻译 · 发布后官方回读；先执行只读预检，不会调用通用一键发布或其他目标。")}</p>
-      <button type="button" class="button button-secondary" data-target-scoped-action="preview" data-target-label="${esc(label)}" ${releaseSubmitting ? "disabled" : ""}>只读预检</button>
+      <button type="button" class="button button-secondary" data-target-scoped-action="preview" data-target-label="${esc(label)}" aria-busy="${state.checking === true}" ${releaseSubmitting || state.checking === true ? "disabled" : ""}>只读预检</button>
       ${eligible ? `<label><input type="checkbox" data-target-scoped-confirm> 我确认仅执行该目标的既有对象恢复并立即回读</label>
       <button type="button" class="button" data-target-scoped-action="submit" data-target-label="${esc(label)}" disabled>确认执行单目标恢复</button>` : ""}
     </section>`;
@@ -2089,16 +2089,17 @@
 
   async function previewTargetScopedAction(targetLabel) {
     if (!currentData || releaseSubmitting) return;
-    targetScopedActionStates.set(targetLabel, { message: "正在执行官方只读预检…" });
+    if (targetScopedActionStates.get(targetLabel)?.checking) return;
+    targetScopedActionStates.set(targetLabel, { checking: true, message: "正在执行官方只读预检…" });
     renderReleaseV1(currentData);
     try {
       const query = new URLSearchParams({ offer_id: currentData.product?.offer_id || "", target_label: targetLabel });
       const response = await fetch(`/api/product-workspace/release-target/target-scoped-action-preview?${query}`, { headers: { Accept: "application/json" } });
       const payload = await response.json();
       if (!response.ok || payload.ok === false || payload.available !== true) throw new Error(payload.error || "目标预检未通过");
-      targetScopedActionStates.set(targetLabel, { preview: payload, message: "预检通过；确认后只会执行该站点的一次受控操作。" });
+      targetScopedActionStates.set(targetLabel, { checking: false, preview: payload, message: "预检通过；确认后只会执行该站点的一次受控操作。" });
     } catch (error) {
-      targetScopedActionStates.set(targetLabel, { message: `${friendlyError(error.message)}；不会显示执行按钮。` });
+      targetScopedActionStates.set(targetLabel, { checking: false, message: `${friendlyError(error.message)}；不会显示执行按钮。` });
     }
     if (currentData) renderReleaseV1(currentData);
   }

@@ -604,6 +604,88 @@ async function productLockedTitleAdoption(browser) {
   }
 }
 
+async function productPreservedTitleApprovalReload(browser) {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await context.newPage();
+  const errors = [];
+  const requests = [];
+  const englishMaster = "Cute Bear PVC Wall Sticker, 3-Piece 30 x 40 cm";
+  const preservedDashboard = JSON.parse(JSON.stringify(productDashboard));
+  preservedDashboard.product.revision = 16;
+  preservedDashboard.product.title = englishMaster;
+  preservedDashboard.product.fields_locked = true;
+  preservedDashboard.product.actual_product_approved = true;
+  preservedDashboard.content = {
+    approved: true,
+    image_count: 6,
+    images: [],
+    blockers: [],
+  };
+  preservedDashboard.listing_copy = {
+    status: "adopted_in_product_facts",
+    semantic_master_en: englishMaster,
+    candidates: [],
+    input_signature: "sha256:same-title-reaffirmed",
+    policy_version: "listing-copy-candidates-v4",
+    model: "gpt-5.4-mini-official",
+    product_approval_preserved: true,
+  };
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+  });
+  await page.route("**/*", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.origin !== baseUrl) return route.abort("blockedbyclient");
+    if (!url.pathname.startsWith("/api/")) return route.continue();
+    requests.push({ method: request.method(), url: request.url() });
+    if (url.pathname === "/api/product-workspace/dashboard") {
+      return route.fulfill(jsonResponse(preservedDashboard));
+    }
+    const fixture = apiFixture(
+      url,
+      request.method(),
+      { delayWeekly: false, delaySku: false, pending: {} },
+    );
+    return route.fulfill(fixture || jsonResponse({ ok: false }, 404));
+  });
+  try {
+    await page.goto(`${baseUrl}/product-workspace?offer_id=3828540231`, {
+      waitUntil: "networkidle",
+    });
+    const status = (await page.locator("#titleDraftStatus").innerText()).trim();
+    check(
+      status.includes("当前商品审批与事实锁仍有效")
+      && status.includes("旧 ReleasePlan 已废止")
+      && status.includes("可创建 successor ReleasePlan"),
+      "product: same-title reaffirm reload preserves approval and explains successor plan",
+      status,
+    );
+    check(
+      !status.includes("旧审批与旧发布计划已废止，等待重新核对并批准"),
+      "product: same-title reaffirm reload does not claim preserved approval was superseded",
+      status,
+    );
+    check(
+      await page.locator("#productFactsForm").getAttribute("data-locked") === "true",
+      "product: same-title reaffirm reload keeps the approved facts locked",
+    );
+    check(
+      errors.length === 0,
+      "product preserved title reload: no console/page errors",
+      errors,
+    );
+    check(
+      requests.filter((row) => row.method === "POST").length === 0,
+      "product preserved title reload: DOM fixture performs zero writes",
+      requests,
+    );
+  } finally {
+    await context.close();
+  }
+}
+
 async function productLockedStaleTitleRefresh(browser) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await context.newPage();
@@ -1088,6 +1170,7 @@ async function legacyStateSafety(browser) {
     }
     await productAsyncFeedback(browser);
     await productLockedTitleAdoption(browser);
+    await productPreservedTitleApprovalReload(browser);
     await productLockedStaleTitleRefresh(browser);
     await productReleaseTerminalState(browser);
     await aiAsyncFeedback(browser);

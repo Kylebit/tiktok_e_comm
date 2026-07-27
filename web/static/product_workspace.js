@@ -828,6 +828,8 @@
     const locked = Boolean(product.actual_product_approved || product.fields_locked);
     const stale = draft.status === "superseded_product_facts_changed";
     const adopted = draft.status === "adopted_in_product_facts";
+    const approvalPreserved =
+      adopted && locked && draft.product_approval_preserved === true;
     const button = $("#generateTitleDraftButton");
     const canRefreshLockedCandidate = locked && stale;
     button.disabled =
@@ -839,13 +841,15 @@
       $("#titleCandidateGrid").innerHTML = "";
       return;
     }
-    const status = adopted
-      ? "已采用到当前商品事实；旧审批与旧发布计划已废止，等待重新核对并批准"
+    const status = approvalPreserved
+      ? "已采用并重新确认；当前商品审批与事实锁仍有效，旧 ReleasePlan 已废止，可创建 successor ReleasePlan"
+      : (adopted
+        ? "已采用到当前商品事实；旧审批与旧发布计划已废止，等待重新核对并批准"
       : (stale
         ? "候选与当前商品事实不匹配，不能采用"
         : (locked
           ? "候选待 Kyle 显式采用；采用会废止旧审批、旧发布计划和未完成运行"
-          : "候选待 Kyle 采用"));
+          : "候选待 Kyle 采用")));
     $("#titleDraftStatus").textContent =
       `${status} · 模型 ${draft.model || "未记录"} · 规则 ${draft.policy_version || "未记录"} · 输入签名 ${(draft.input_signature || "").slice(0, 16)}`;
     const shopeeDescription = String(draft.shopee_description_en || "").trim();

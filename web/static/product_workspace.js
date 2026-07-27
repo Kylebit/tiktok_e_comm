@@ -86,6 +86,8 @@
   let loadedQueueKey = "";
   let pendingPublicationTargets = new Set();
   let appliedPublicationTargets = new Set();
+  const SHOPEE_PRICE_REPAIR_TARGETS = new Set(["shopee:PH", "shopee:TH"]);
+  const shopeePriceRepairStates = new Map();
 
   function productKey(offerId) {
     return String(offerId || "").trim();
@@ -1931,6 +1933,116 @@
       .join("、");
   }
 
+  function shopeePriceRepairKey(targetLabel) {
+    return `${currentData?.product?.offer_id || ""}:${targetLabel}`;
+  }
+
+  function shopeePriceRepairState(targetLabel) {
+    return shopeePriceRepairStates.get(shopeePriceRepairKey(targetLabel))
+      || { phase: "idle", message: "" };
+  }
+
+  function setShopeePriceRepairState(targetLabel, state) {
+    shopeePriceRepairStates.set(shopeePriceRepairKey(targetLabel), state);
+  }
+
+  function shopeePriceRepairLifecycle(target) {
+    return String(target?.repair?.status || "").toUpperCase();
+  }
+
+  function shopeePriceRepairEligible(target) {
+    return Boolean(
+      SHOPEE_PRICE_REPAIR_TARGETS.has(String(target?.target_label || ""))
+      && target?.status === "FAILED"
+      && target?.external_id
+      && !target?.repair,
+    );
+  }
+
+  function shopeePriceRepairPanel(target) {
+    if (!shopeePriceRepairEligible(target)) return "";
+    const targetLabel = String(target.target_label);
+    const state = shopeePriceRepairState(targetLabel);
+    const site = publicationSiteNames[targetLabel.split(":")[1]] || targetLabel;
+    const plan = currentData?.release_v1?.plan || {};
+    const previewCurrent = Boolean(
+      state.preview?.repair_allowed === true
+      && state.preview?.target_label === targetLabel
+      && state.preview?.plan_id === plan.plan_id
+      && state.preview?.payload_digest === plan.payload_digest
+      && Number(state.preview?.expected_revision) === Number(
+        currentData?.product?.revision,
+      )
+      && currentData?.release_v1?.plan_approved
+    );
+    const message = (
+      state.phase === "preview" && !previewCurrent
+        ? "当前计划或 revision 已变化，请重新执行只读检查。"
+        : state.message
+    ) || (
+      state.phase === "idle"
+        ? "先执行只读检查；未通过安全门前不会提供修复确认。"
+        : ""
+    );
+    if (state.phase === "terminal" || state.phase === "succeeded") {
+      return `
+        <section class="shopee-price-repair-panel is-terminal"
+          data-price-repair-target="${esc(targetLabel)}" aria-live="polite">
+          <strong>${state.phase === "succeeded" ? "价格修复已完成" : "价格修复已停止"}</strong>
+          <p class="shopee-price-repair-message" role="status">${esc(message)}</p>
+        </section>
+      `;
+    }
+    if (state.phase === "repairing") {
+      return `
+        <section class="shopee-price-repair-panel is-busy"
+          data-price-repair-target="${esc(targetLabel)}" aria-live="polite">
+          <strong>正在执行一次性原地修价</strong>
+          <button class="button button-secondary" type="button"
+            data-price-repair-action="submit"
+            data-target-label="${esc(targetLabel)}" disabled>
+            修复请求处理中…
+          </button>
+          <p class="shopee-price-repair-message" role="status">${esc(message)}</p>
+        </section>
+      `;
+    }
+    if (state.phase === "preview" && previewCurrent) {
+      return `
+        <section class="shopee-price-repair-panel is-ready"
+          data-price-repair-target="${esc(targetLabel)}" aria-live="polite">
+          <div class="shopee-price-repair-summary">
+            <strong>${esc(site)} · 当前不可变 ReleasePlan</strong>
+            <span>Kyle 已批准 · revision ${esc(state.preview.expected_revision)}</span>
+          </div>
+          <label class="shopee-price-repair-confirm">
+            <input type="checkbox" data-price-repair-confirm="${esc(targetLabel)}">
+            <span>我确认仅原地修正该站点价格，不重发商品。</span>
+          </label>
+          <button class="button button-secondary" type="button"
+            data-price-repair-action="submit"
+            data-target-label="${esc(targetLabel)}" disabled>
+            原地修正 ${esc(site)} 价格并回读
+          </button>
+          <p class="shopee-price-repair-message" role="status">${esc(message)}</p>
+        </section>
+      `;
+    }
+    const checking = state.phase === "checking";
+    return `
+      <section class="shopee-price-repair-panel"
+        data-price-repair-target="${esc(targetLabel)}" aria-live="polite">
+        <button class="button button-secondary" type="button"
+          data-price-repair-action="preview"
+          data-target-label="${esc(targetLabel)}"
+          ${checking ? "disabled" : ""}>
+          ${checking ? `正在只读检查 ${esc(site)}…` : "检查价格修复"}
+        </button>
+        <p class="shopee-price-repair-message" role="status">${esc(message)}</p>
+      </section>
+    `;
+  }
+
   function awaitsOfficialReadback(target) {
     if (target?.status === "SUBMITTED_UNVERIFIED") return true;
     const error = String(target?.error || "").toLowerCase();
@@ -1984,6 +2096,10 @@
   }
 
   function releaseTargetDisposition(target) {
+    const repairStatus = shopeePriceRepairLifecycle(target);
+    if (repairStatus === "RUNNING") return "running";
+    if (repairStatus === "RECONCILIATION_REQUIRED") return "reconcile_only";
+    if (repairStatus === "SUCCEEDED") return "succeeded";
     if (target?.status === "MANUALLY_VERIFIED") return "verified";
     if (target?.status === "SUCCEEDED") return "succeeded";
     if (target?.status === "RUNNING") return "running";
@@ -2062,6 +2178,16 @@
   }
 
   function releaseTargetLabel(target, statusNames) {
+    const repairStatus = shopeePriceRepairLifecycle(target);
+    if (repairStatus === "RUNNING") {
+      return "价格修复执行中 · 禁止重复操作";
+    }
+    if (repairStatus === "RECONCILIATION_REQUIRED") {
+      return "价格修复结果待对账 · 禁止重发";
+    }
+    if (repairStatus === "SUCCEEDED") {
+      return "价格已原地修复并回读成功";
+    }
     const disposition = releaseTargetDisposition(target);
     if (disposition === "verified") return "Kyle 已人工验收";
     if (disposition === "manual_verify") return "已提交 · 待人工验收";
@@ -2076,6 +2202,16 @@
   }
 
   function releaseTargetDetail(target) {
+    const repairStatus = shopeePriceRepairLifecycle(target);
+    if (repairStatus === "RUNNING") {
+      return "该站点的一次性原地修价已领取；正在等待官方回读和本地账本落账，系统不会再次提交。";
+    }
+    if (repairStatus === "RECONCILIATION_REQUIRED") {
+      return "原地修价存在外部结果但尚未安全收敛；只能对账，禁止再次修价或重发商品。";
+    }
+    if (repairStatus === "SUCCEEDED") {
+      return "该站点仅更新了原商品价格，并已完成官方精确回读；没有重发商品。";
+    }
     const disposition = releaseTargetDisposition(target);
     if (disposition === "manual_verify") {
       return "妙手已接收且提交凭证已锁定；当前店铺没有官方 API，系统不会自动重试。请在平台后台核对后记录人工验收。";
@@ -2101,6 +2237,12 @@
   }
 
   function releaseTargetCssClass(target) {
+    const repairStatus = shopeePriceRepairLifecycle(target);
+    if (repairStatus === "RUNNING") return "repair-running";
+    if (repairStatus === "RECONCILIATION_REQUIRED") {
+      return "repair-reconciliation reconciliation-required";
+    }
+    if (repairStatus === "SUCCEEDED") return "repair-succeeded succeeded";
     const disposition = releaseTargetDisposition(target);
     if (disposition === "manual_verify") return "awaiting-readback";
     if (disposition === "reconcile_only") return "reconciliation-required";
@@ -2172,6 +2314,23 @@
       || !$("#publishAllCheckbox").checked
       || busy,
     );
+    document.querySelectorAll("[data-price-repair-action]").forEach((button) => {
+      const panel = button.closest("[data-price-repair-target]");
+      const targetLabel = panel?.dataset.priceRepairTarget || "";
+      const repairState = shopeePriceRepairState(targetLabel);
+      const confirmed = Boolean(
+        panel?.querySelector("[data-price-repair-confirm]")?.checked,
+      );
+      button.disabled = Boolean(
+        busy
+        || repairState.phase === "checking"
+        || repairState.phase === "repairing"
+        || (
+          button.dataset.priceRepairAction === "submit"
+          && !confirmed
+        ),
+      );
+    });
   }
 
   function renderCommonOverwrite(release) {
@@ -2319,6 +2478,7 @@
               <strong>${esc(releaseTargetLabel(target, statusNames))}</strong>
               <small>尝试 ${esc(String(target.attempts || 0))} 次${target.external_id ? ` · 外部 ID ${esc(target.external_id)}` : ""}</small>
               ${targetDetail ? `<p>${esc(targetDetail)}</p>` : ""}
+              ${shopeePriceRepairPanel(target)}
               ${target.status === "SUBMITTED_UNVERIFIED" ? `
                 <form class="manual-verification-form" data-target-label="${esc(target.target_label)}">
                   <label>
@@ -2394,6 +2554,178 @@
       throw error;
     }
     return payload;
+  }
+
+  function currentReleaseTarget(targetLabel) {
+    return (currentData?.release_v1?.run?.targets || [])
+      .find((target) => target.target_label === targetLabel);
+  }
+
+  async function previewShopeePriceRepair(targetLabel) {
+    const target = currentReleaseTarget(targetLabel);
+    if (
+      releaseSubmitting
+      || !currentData
+      || !shopeePriceRepairEligible(target)
+    ) return;
+    setShopeePriceRepairState(targetLabel, {
+      phase: "checking",
+      message: "正在只读核对当前已批准计划、原商品身份和价格差异…",
+    });
+    renderReleaseV1(currentData);
+    const params = new URLSearchParams({
+      offer_id: currentData.product?.offer_id || "",
+      target_label: targetLabel,
+    });
+    try {
+      const response = await fetch(
+        `/api/product-workspace/release-target/shopee-price-repair-preview?${params}`,
+        { headers: { Accept: "application/json" } },
+      );
+      const payload = await response.json().catch(() => ({
+        ok: false,
+        error: `服务返回 HTTP ${response.status}`,
+      }));
+      if (!response.ok || payload.ok === false) {
+        const error = new Error(
+          payload.error || `服务返回 HTTP ${response.status}`,
+        );
+        error.payload = payload;
+        throw error;
+      }
+      const release = currentData?.release_v1 || {};
+      const plan = release.plan || {};
+      const currentTarget = currentReleaseTarget(targetLabel);
+      const previewExact = Boolean(
+        payload.repair_allowed === true
+        && payload.target_label === targetLabel
+        && payload.plan_id
+        && payload.plan_id === plan.plan_id
+        && payload.payload_digest === plan.payload_digest
+        && Number(payload.expected_revision) === Number(
+          currentData?.product?.revision,
+        )
+        && payload.payload_digest
+        && payload.preflight_digest
+        && release.plan_approved
+        && shopeePriceRepairEligible(currentTarget)
+      );
+      if (!previewExact) {
+        throw new Error(
+          "只读检查未返回当前已批准计划的精确修复许可。",
+        );
+      }
+      setShopeePriceRepairState(targetLabel, {
+        phase: "preview",
+        preview: payload,
+        message: "只读检查通过。确认后只会原地修正该站点价格并立即官方回读。",
+      });
+      showError("");
+    } catch (error) {
+      setShopeePriceRepairState(targetLabel, {
+        phase: "error",
+        message: `${friendlyError(error.message)} 未获得修复许可，确认与修复按钮保持隐藏。`,
+      });
+    }
+    if (currentData) renderReleaseV1(currentData);
+  }
+
+  async function submitShopeePriceRepair(targetLabel) {
+    const state = shopeePriceRepairState(targetLabel);
+    const preview = state.preview || {};
+    const panel = document.querySelector(
+      `[data-price-repair-target="${CSS.escape(targetLabel)}"]`,
+    );
+    const confirmed = Boolean(
+      panel?.querySelector("[data-price-repair-confirm]")?.checked,
+    );
+    const release = currentData?.release_v1 || {};
+    const plan = release.plan || {};
+    const target = currentReleaseTarget(targetLabel);
+    const exact = Boolean(
+      currentData
+      && !releaseSubmitting
+      && confirmed
+      && state.phase === "preview"
+      && preview.repair_allowed === true
+      && preview.target_label === targetLabel
+      && preview.plan_id === plan.plan_id
+      && preview.payload_digest === plan.payload_digest
+      && Number(preview.expected_revision) === Number(
+        currentData?.product?.revision,
+      )
+      && preview.payload_digest
+      && preview.preflight_digest
+      && release.plan_approved
+      && shopeePriceRepairEligible(target)
+    );
+    if (!exact) return;
+
+    releaseSubmitting = true;
+    setShopeePriceRepairState(targetLabel, {
+      ...state,
+      phase: "repairing",
+      message: "正在再次核对身份；通过后只发送一次原地修价，并等待官方回读…",
+    });
+    renderReleaseV1(currentData);
+
+    try {
+      await postReleaseAction(
+        "/api/product-workspace/release-target/shopee-price-repair",
+        currentReleaseBody({
+          target_label: targetLabel,
+          expected_revision: preview.expected_revision,
+          payload_digest: preview.payload_digest,
+          preflight_digest: preview.preflight_digest,
+          confirm_shopee_price_repair: true,
+          approved_by: "Kyle",
+        }),
+      );
+    } catch (error) {
+      const payload = error.payload || {};
+      const message = payload.durable_state_uncertain
+        ? "外部修价结果或本地回执仍不确定；禁止再次修复，请只做人工对账。"
+        : (
+          payload.reconciliation_required
+            ? "原地修价结果待对账；系统已停止，禁止再次修复或重发商品。"
+            : `${friendlyError(error.message)} 为避免重复写入，本目标的修复按钮保持关闭。`
+        );
+      setShopeePriceRepairState(targetLabel, {
+        phase: "terminal",
+        message,
+      });
+      releaseSubmitting = false;
+      if (currentData) renderReleaseV1(currentData);
+      showError(message);
+      return;
+    }
+
+    setShopeePriceRepairState(targetLabel, {
+      phase: "succeeded",
+      message: "该站点价格已原地修正并完成官方精确回读；正在刷新发布账本。",
+    });
+    if (currentData) renderReleaseV1(currentData);
+    try {
+      const latest = await fetchDashboard(
+        currentData.product?.offer_id,
+        currentData.publication_scope?.selected_labels || [],
+      );
+      adoptWorkflowDashboard(latest);
+      showError("");
+    } catch (error) {
+      const message = (
+        "原地修价已成功，但最新账本暂时无法刷新；禁止再次修复，请执行只读刷新。"
+      );
+      setShopeePriceRepairState(targetLabel, {
+        phase: "succeeded",
+        message,
+      });
+      if (currentData) renderReleaseV1(currentData);
+      showError(`${message} ${friendlyError(error.message)}`);
+    } finally {
+      releaseSubmitting = false;
+      updateReleaseControls(currentData || {});
+    }
   }
 
   async function submitManualTargetVerification(form) {
@@ -2927,6 +3259,27 @@
     if (!form) return;
     event.preventDefault();
     submitManualTargetVerification(form);
+  });
+  $("#releaseRunLedger").addEventListener("change", (event) => {
+    const checkbox = event.target.closest("[data-price-repair-confirm]");
+    if (!checkbox) return;
+    const panel = checkbox.closest("[data-price-repair-target]");
+    const button = panel?.querySelector(
+      '[data-price-repair-action="submit"]',
+    );
+    if (button) button.disabled = releaseSubmitting || !checkbox.checked;
+  });
+  $("#releaseRunLedger").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-price-repair-action]");
+    if (!button || button.disabled) return;
+    const targetLabel = button.dataset.targetLabel || "";
+    if (button.dataset.priceRepairAction === "preview") {
+      previewShopeePriceRepair(targetLabel);
+      return;
+    }
+    if (button.dataset.priceRepairAction === "submit") {
+      submitShopeePriceRepair(targetLabel);
+    }
   });
 
   const initial = new URLSearchParams(window.location.search);

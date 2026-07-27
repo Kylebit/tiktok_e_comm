@@ -1513,6 +1513,7 @@ section { scroll-margin-top: 20px; }
   margin: -8px 0 18px;
   color: var(--muted);
   font-size: 11px;
+  pointer-events: none;
 }
 .channel-flow span {
   padding: 8px 11px;
@@ -1805,6 +1806,14 @@ section { scroll-margin-top: 20px; }
 }
 .run-target.failed,
 .run-target.partial_failed { border-color: rgba(182, 75, 60, .35); background: rgba(245, 211, 202, .28); }
+.run-target.repair-running {
+  border-color: rgba(53, 105, 139, .46);
+  background: rgba(216, 234, 245, .4);
+}
+.run-target.repair-succeeded {
+  border-color: rgba(35, 118, 107, .45);
+  background: rgba(213, 238, 229, .4);
+}
 .run-target strong { color: var(--ink); }
 .run-target span {
   font: 700 9px/1.4 ui-monospace, monospace;
@@ -1851,6 +1860,64 @@ section { scroll-margin-top: 20px; }
   min-height: 1.4em;
   color: #805b16;
   font: 600 9px/1.4 var(--sans);
+}
+.shopee-price-repair-panel {
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+  margin-top: 5px;
+  padding-top: 11px;
+  border-top: 1px solid rgba(128, 91, 22, .22);
+}
+.shopee-price-repair-panel .button {
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  padding: 8px 11px;
+  white-space: normal;
+  font-size: 10px;
+}
+.shopee-price-repair-summary {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.shopee-price-repair-summary strong,
+.shopee-price-repair-summary span {
+  overflow-wrap: anywhere;
+}
+.shopee-price-repair-summary span {
+  color: var(--muted);
+  font: 600 9px/1.45 var(--sans);
+}
+.shopee-price-repair-confirm {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  color: var(--ink);
+  font-size: 10px;
+  line-height: 1.5;
+}
+.shopee-price-repair-confirm input {
+  margin-top: 2px;
+}
+.shopee-price-repair-confirm span {
+  font: 600 10px/1.5 var(--sans);
+  overflow-wrap: anywhere;
+}
+.shopee-price-repair-message {
+  min-height: 1.4em;
+  margin: 0;
+  color: #805b16 !important;
+  font: 600 9px/1.45 var(--sans);
+  overflow-wrap: anywhere;
+}
+.shopee-price-repair-panel.is-busy {
+  color: #315d78;
+}
+.shopee-price-repair-panel.is-terminal {
+  color: #805b16;
 }
 .safety-card {
   display: grid;

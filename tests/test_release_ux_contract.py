@@ -151,6 +151,26 @@ def test_every_formal_async_action_has_loading_success_and_failure_feedback():
                 "finally",
                 "commonOverwriteMessage",
             ],
+            "previewShopeePriceRepair": [
+                'phase: "checking"',
+                "shopee-price-repair-preview",
+                "repair_allowed === true",
+                'phase: "preview"',
+                "catch (error)",
+            ],
+            "submitShopeePriceRepair": [
+                "releaseSubmitting = true",
+                "shopee-price-repair",
+                "confirm_shopee_price_repair: true",
+                'approved_by: "Kyle"',
+                "expected_revision",
+                "payload_digest",
+                "preflight_digest",
+                "durable_state_uncertain",
+                "reconciliation_required",
+                "fetchDashboard",
+                "catch (error)",
+            ],
             "publishSelectedTargets": [
                 "releaseSubmitting = true",
                 "try {",
@@ -282,6 +302,37 @@ def test_common_overwrite_html_contract_is_explicit_and_separate():
     assert "confirm_miaoshou_overwrite" not in normal
     assert "confirm_miaoshou_overwrite: true" in overwrite
     assert 'approved_by: "Kyle"' in overwrite
+
+
+def test_shopee_price_repair_ui_is_target_scoped_and_dedicated():
+    source = (WEB / "static" / "product_workspace.js").read_text(
+        encoding="utf-8"
+    )
+    styles = (WEB / "static" / "product_workspace.css").read_text(
+        encoding="utf-8"
+    )
+    submit = _function_body(source, "submitShopeePriceRepair")
+    preview = _function_body(source, "previewShopeePriceRepair")
+
+    assert 'new Set(["shopee:PH", "shopee:TH"])' in source
+    assert "shopeePriceRepairEligible" in source
+    assert "target?.status === \"FAILED\"" in source
+    assert "target?.external_id" in source
+    assert "!target?.repair" in source
+    assert (
+        "/api/product-workspace/release-target/"
+        "shopee-price-repair-preview"
+    ) in preview
+    assert "repair_allowed === true" in preview
+    assert (
+        "/api/product-workspace/release-target/shopee-price-repair"
+    ) in submit
+    assert "confirm_shopee_price_repair: true" in submit
+    assert "confirm: true" not in submit
+    assert 'approved_by: "Kyle"' in submit
+    assert "currentReleaseBody" in submit
+    assert "shopee-price-repair-panel" in styles
+    assert "我确认仅原地修正该站点价格，不重发商品。" in source
 
 
 def test_formal_pages_expose_accessible_feedback_regions():

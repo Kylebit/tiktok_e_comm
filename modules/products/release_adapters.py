@@ -2867,24 +2867,43 @@ def execute_shopee_price_repair(
     for attempt in range(6):
         if attempt:
             time.sleep(2)
-        context = _validated_context(request)
-        payload = context["payload"]
-        expectation = _shopee_price_expectation(
-            _target_pricing(payload, request.target_label),
-            region=request.site.upper(),
-        )
-        _verified, evidence = _shopee_readback(
-            match_key=request.seller_sku[-4:].zfill(4),
-            region=request.site.upper(),
-            item_id=item_id,
-            expected_title=_candidate(payload, "shopee", "CNSC"),
-            expected_price=expectation,
-            expected_image_count=len(context["images"]),
-            expected_description=_shopee_description(payload),
-            require_model_sku=True,
-            require_all_logistics=True,
-            allow_token_refresh=False,
-        )
+        try:
+            context = _validated_context(request)
+            payload = context["payload"]
+            expectation = _shopee_price_expectation(
+                _target_pricing(payload, request.target_label),
+                region=request.site.upper(),
+            )
+            _verified, evidence = _shopee_readback(
+                match_key=request.seller_sku[-4:].zfill(4),
+                region=request.site.upper(),
+                item_id=item_id,
+                expected_title=_candidate(payload, "shopee", "CNSC"),
+                expected_price=expectation,
+                expected_image_count=len(context["images"]),
+                expected_description=_shopee_description(payload),
+                require_model_sku=True,
+                require_all_logistics=True,
+                allow_token_refresh=False,
+            )
+        except Exception as error:
+            raise ShopeePriceRepairReconciliationError(
+                (
+                    "Shopee accepted the one-shot price repair, but official "
+                    "readback is unknown; do not repeat"
+                ),
+                external_reference=item_id,
+                evidence={
+                    "verified": False,
+                    "reconciliation_required": True,
+                    "source": "official_shopee_partner_api",
+                    "region": request.site.upper(),
+                    "dispatch_outcome": "accepted_readback_unknown",
+                    "error_type": type(error).__name__,
+                    "poll_attempt": attempt + 1,
+                    "external_writes_performed": ["shopee:update_price"],
+                },
+            ) from error
         rows = [
             row for row in (evidence.get("observed_price_fields") or ())
             if (

@@ -332,6 +332,66 @@ def test_price_repair_unknown_response_is_terminal_and_never_reposts(
     )
 
 
+@pytest.mark.parametrize("failure_attempt", [1, 2])
+def test_price_repair_accepted_then_readback_error_is_truthful_and_one_post(
+    monkeypatch,
+    failure_attempt,
+):
+    from modules.shopee import client
+
+    monkeypatch.setattr(
+        release_adapters,
+        "_validated_context",
+        lambda _request: _context(status="RUNNING"),
+    )
+    calls = {"readback": 0, "post": 0, "post_readback": 0}
+
+    def readback(**_kwargs):
+        calls["readback"] += 1
+        if calls["post"]:
+            calls["post_readback"] += 1
+        # For failure_attempt=2, let one post-dispatch GET return a
+        # non-converged row before the next GET raises.
+        if calls["post_readback"] == failure_attempt:
+            raise TimeoutError("sensitive transport detail")
+        return True, _evidence()
+
+    monkeypatch.setattr(release_adapters, "_shopee_readback", readback)
+    monkeypatch.setattr(
+        release_adapters,
+        "_shopee_readback_credentials",
+        lambda *_args, **_kwargs: (123, "existing-token"),
+    )
+
+    def accepted(*_args):
+        calls["post"] += 1
+        return {"error": ""}
+
+    monkeypatch.setattr(client, "shop_post", accepted)
+    preflight = release_adapters._shopee_price_repair_preflight(
+        _request(),
+        allowed_statuses=frozenset({"RUNNING"}),
+    )
+
+    with pytest.raises(
+        release_adapters.ShopeePriceRepairReconciliationError
+    ) as captured:
+        release_adapters.execute_shopee_price_repair(
+            _request(),
+            expected_preflight_digest=preflight["operation"][
+                "preflight_digest"
+            ],
+        )
+
+    assert calls["post"] == 1
+    evidence = captured.value.external_write_evidence
+    assert evidence["reconciliation_required"] is True
+    assert evidence["dispatch_outcome"] == "accepted_readback_unknown"
+    assert evidence["error_type"] == "TimeoutError"
+    assert evidence["external_writes_performed"] == ["shopee:update_price"]
+    assert "sensitive transport detail" not in str(evidence)
+
+
 class _ServerRepairStore:
     def __init__(self):
         self.claims = []
@@ -683,6 +743,53 @@ def test_success_receipt_failure_is_truthful_and_never_leaks_raw_run(
         "0954",
     ):
         assert secret not in encoded
+    assert len(store.claims) == 1
+    assert len(store.reconciliations) == 1
+
+
+@pytest.mark.parametrize(
+    ("fail_reconciliation", "expected_status"),
+    [(False, 409), (True, 502)],
+)
+def test_accepted_readback_unknown_stays_truthful_through_durable_failure(
+    monkeypatch,
+    fail_reconciliation,
+    expected_status,
+):
+    store = _FaultingRepairStore(
+        fail_reconciliation=fail_reconciliation
+    )
+    adapter_calls = []
+
+    def accepted_then_unknown(_request, *, expected_preflight_digest):
+        adapter_calls.append(expected_preflight_digest)
+        raise release_adapters.ShopeePriceRepairReconciliationError(
+            "accepted but official readback unknown",
+            external_reference="56164935203",
+            evidence={
+                "verified": False,
+                "reconciliation_required": True,
+                "dispatch_outcome": "accepted_readback_unknown",
+                "error_type": "TimeoutError",
+                "external_writes_performed": ["shopee:update_price"],
+            },
+        )
+
+    _install_server_repair_contract(
+        monkeypatch,
+        store,
+        execute=accepted_then_unknown,
+    )
+
+    status, response = product_server._repair_existing_shopee_target_price(
+        _server_repair_data()
+    )
+
+    assert status == expected_status
+    assert adapter_calls == ["p" * 64]
+    assert response["reconciliation_required"] is True
+    assert response["durable_state_uncertain"] is True
+    assert response["external_writes_performed"] == ["shopee:update_price"]
     assert len(store.claims) == 1
     assert len(store.reconciliations) == 1
 

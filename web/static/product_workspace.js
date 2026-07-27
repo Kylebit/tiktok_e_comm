@@ -841,10 +841,27 @@
     const candidates = Array.isArray(draft.candidates) ? draft.candidates : [];
     const product = data.product || {};
     const locked = Boolean(product.actual_product_approved || product.fields_locked);
+    const approvedAndLocked = Boolean(
+      product.actual_product_approved && product.fields_locked
+    );
     const stale = draft.status === "superseded_product_facts_changed";
     const adopted = draft.status === "adopted_in_product_facts";
-    const approvalPreserved =
-      adopted && locked && draft.product_approval_preserved === true;
+    const release = data.release_v1 || {};
+    const releasePlan = release.plan || {};
+    const releasePlanRevision = Number(releasePlan.payload?.product_revision);
+    const currentPlanApproved = Boolean(
+      release.plan_approved
+      && !release.historical
+      && Number.isInteger(releasePlanRevision)
+      && releasePlanRevision === Number(product.revision)
+    );
+    const currentSignature = String(draft.current_input_signature || "").trim();
+    const candidateSignature = String(draft.input_signature || "").trim();
+    const candidateCurrent = Boolean(
+      candidateSignature
+      && currentSignature
+      && candidateSignature === currentSignature
+    );
     const button = $("#generateTitleDraftButton");
     const canRefreshLockedCandidate = locked && stale;
     button.disabled =
@@ -856,8 +873,21 @@
       $("#titleCandidateGrid").innerHTML = "";
       return;
     }
-    const status = approvalPreserved
-      ? "已采用并重新确认；当前商品审批与事实锁仍有效，旧 ReleasePlan 已废止，可创建 successor ReleasePlan"
+    const adoptedApprovedStatus = currentPlanApproved
+      ? (
+        `EN MASTER 已采用且当前商品审批 / 事实锁有效；当前 ReleasePlan `
+        + `${releasePlan.plan_id || "（未记录 ID）"} 已批准并绑定 revision ${product.revision ?? "—"}`
+      )
+      : (
+        "EN MASTER 已采用且当前商品审批 / 事实锁有效；"
+        + (
+          candidateCurrent
+            ? "候选签名与当前商品事实一致，等待建立或批准当前 ReleasePlan"
+            : "候选签名状态待复核，请在发布前重新检查当前 ReleasePlan"
+        )
+      );
+    const status = adopted && approvedAndLocked
+      ? adoptedApprovedStatus
       : (adopted
         ? "已采用到当前商品事实；旧审批与旧发布计划已废止，等待重新核对并批准"
       : (stale

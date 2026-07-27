@@ -611,7 +611,7 @@ async function productPreservedTitleApprovalReload(browser) {
   const requests = [];
   const englishMaster = "Cute Bear PVC Wall Sticker, 3-Piece 30 x 40 cm";
   const preservedDashboard = JSON.parse(JSON.stringify(productDashboard));
-  preservedDashboard.product.revision = 16;
+  preservedDashboard.product.revision = 31;
   preservedDashboard.product.title = englishMaster;
   preservedDashboard.product.fields_locked = true;
   preservedDashboard.product.actual_product_approved = true;
@@ -626,11 +626,47 @@ async function productPreservedTitleApprovalReload(browser) {
     semantic_master_en: englishMaster,
     candidates: [],
     input_signature: "sha256:same-title-reaffirmed",
+    current_input_signature: "sha256:same-title-reaffirmed",
     policy_version: "listing-copy-candidates-v4",
     model: "gpt-5.4-mini-official",
-    product_approval_preserved: true,
     superseded_release_plan_id: "omnichannel:prior-plan",
   };
+  preservedDashboard.release_v1 = {
+    eligible_for_plan_approval: false,
+    plan_persisted: true,
+    plan_approved: true,
+    historical: false,
+    miaoshou_prepared: false,
+    publish_ready: false,
+    blockers: [],
+    adapter_blockers: [],
+    run: null,
+    plan: {
+      plan_id: "omnichannel:revision-31-current",
+      status: "APPROVED",
+      payload: {
+        product_revision: 31,
+        content_package_id: "content:fixture:r31",
+      },
+    },
+  };
+  const titleChangedDashboard = JSON.parse(JSON.stringify(preservedDashboard));
+  titleChangedDashboard.product.revision = 32;
+  titleChangedDashboard.product.fields_locked = false;
+  titleChangedDashboard.product.actual_product_approved = false;
+  titleChangedDashboard.listing_copy.product_approval_preserved = false;
+  titleChangedDashboard.release_v1 = {
+    eligible_for_plan_approval: false,
+    plan_persisted: false,
+    plan_approved: false,
+    miaoshou_prepared: false,
+    publish_ready: false,
+    blockers: ["product approval required"],
+    adapter_blockers: [],
+    run: null,
+    plan: null,
+  };
+  let activeDashboard = preservedDashboard;
   page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
   page.on("console", (message) => {
     if (message.type() === "error") errors.push(`console: ${message.text()}`);
@@ -642,7 +678,7 @@ async function productPreservedTitleApprovalReload(browser) {
     if (!url.pathname.startsWith("/api/")) return route.continue();
     requests.push({ method: request.method(), url: request.url() });
     if (url.pathname === "/api/product-workspace/dashboard") {
-      return route.fulfill(jsonResponse(preservedDashboard));
+      return route.fulfill(jsonResponse(activeDashboard));
     }
     const fixture = apiFixture(
       url,
@@ -657,15 +693,16 @@ async function productPreservedTitleApprovalReload(browser) {
     });
     const status = (await page.locator("#titleDraftStatus").innerText()).trim();
     check(
-      status.includes("当前商品审批与事实锁仍有效")
-      && status.includes("旧 ReleasePlan 已废止")
-      && status.includes("可创建 successor ReleasePlan"),
-      "product: same-title reaffirm reload preserves approval and explains successor plan",
+      status.includes("EN MASTER 已采用且当前商品审批 / 事实锁有效")
+      && status.includes("omnichannel:revision-31-current 已批准")
+      && status.includes("绑定 revision 31"),
+      "product: approved adopted-title reload shows the current approval, lock and bound plan",
       status,
     );
     check(
-      !status.includes("旧审批与旧发布计划已废止，等待重新核对并批准"),
-      "product: same-title reaffirm reload does not claim preserved approval was superseded",
+      !status.includes("旧 ReleasePlan 已废止")
+      && !status.includes("旧审批与旧发布计划已废止"),
+      "product: current approved ReleasePlan is not described as superseded",
       status,
     );
     check(
@@ -676,6 +713,18 @@ async function productPreservedTitleApprovalReload(browser) {
       preservedDashboard.listing_copy.superseded_release_plan_id
         === "omnichannel:prior-plan",
       "product: same-title reaffirm keeps the superseded ReleasePlan audit link",
+    );
+    activeDashboard = titleChangedDashboard;
+    await page.reload({ waitUntil: "networkidle" });
+    const changedStatus = (
+      await page.locator("#titleDraftStatus").innerText()
+    ).trim();
+    check(
+      changedStatus.includes("旧审批与旧发布计划已废止")
+      && changedStatus.includes("等待重新核对并批准")
+      && !changedStatus.includes("当前商品审批 / 事实锁有效"),
+      "product: title-changed reload keeps the superseded approval and plan semantics",
+      changedStatus,
     );
     check(
       errors.length === 0,

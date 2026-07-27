@@ -80,6 +80,14 @@ Web 页面：`/`、`/catalog`、`/ozon`、`/settlement`、`/titles`、`/images`�
 - 长期代码或文档交付必须 commit；push 只有在 Kyle 或正式发布流程
   明确授权时才允许。派发字段与回执格式见
   [docs/pm/DISPATCH_CONVENTION.md](docs/pm/DISPATCH_CONVENTION.md)。
+- 业务授权与系统/宿主工具审批是两个独立维度。固定 `00`–`05` 线程执行
+  本地工程、测试和只读验收时默认 `host_approval_policy=never`、
+  `no_escalation=true`：不得请求宿主 escalation；可能触发审批的命令必须
+  改用非升级、非破坏的等价路径。
+- 测试使用当前独立 worktree 内的专用 `basetemp`。临时测试目录不需要为
+  提交而删除；精确暂存交付文件并忽略或保留临时目录，禁止为了“干净”
+  递归删除。`waitingOnApproval` 不是业务 `BLOCKED`，应取消或放弃该命令，
+  继续所有可安全完成的步骤。
 
 ## TikTok MX（妙手 / LivelyHiveMX）
 

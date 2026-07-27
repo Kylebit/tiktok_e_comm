@@ -34,11 +34,21 @@ CEO 可直接编码的有限例外、线程职责和状态语义见
 | `outputs` | 文件、合同、报告或可运行产物 |
 | `acceptance` | 必跑测试、浏览器场景、失败门槛和人工验收点 |
 | `external_write` | `none`、`dry-run` 或经批准的精确目标与动作 |
+| `host_approval_policy` | 固定线程本地工程/测试/只读验收默认且应写明 `never` |
+| `no_escalation` | 默认 `true`；命令触发宿主审批时放弃并采用非升级等价路径 |
 | `git_policy` | commit 要求；push 默认 `forbidden`，除非明确授权 |
 | `handoff` | 回传对象、格式、风险和下一责任人 |
 
-缺少 `owner`、`base`、`scope`、`acceptance` 或 `external_write` 时，
+缺少 `owner`、`base`、`scope`、`acceptance`、`external_write`、
+`host_approval_policy` 或 `no_escalation` 时，
 执行线程只能 ACK 后澄清或保持只读，不能自行扩大权限。
+
+`host_approval_policy`/`no_escalation` 管理宿主工具调用，不替代
+`external_write` 所表达的业务授权。即使 Kyle 已批准业务动作，固定线程
+也不得用该批准请求普通 shell、pytest、worktree、Git 或只读验收的宿主
+escalation。预计触发审批的命令必须改写为非升级、非破坏的等价路径。
+只有确实需要 Kyle 完成的外部业务授权，或无安全替代方案的高风险必要
+动作，才作为明确决策上报；不得把工具审批提示转交 Kyle 代为处理。
 
 ## ACK 与状态
 
@@ -51,13 +61,18 @@ branch: ...
 head: ...
 status: clean | existing-changes-described
 authority: read-only | code-write | external-write-exact-scope
+host_approval_policy: never
+no_escalation: true
 ```
 
 状态只由消息和证据推进：
 
 `DRAFT → DISPATCHED → ACKED → RUNNING → DELIVERED → REVIEWED → INTEGRATED → ACCEPTED`
 
-`BLOCKED` 和 `CANCELLED` 可从任一未完成状态进入。任务标题、
+`BLOCKED` 和 `CANCELLED` 可从任一未完成状态进入。`BLOCKED` 必须对应
+无法通过安全替代路径消除的业务决定或依赖；宿主命令显示
+`waitingOnApproval` 不构成业务 `BLOCKED`。执行线程应取消或放弃该命令，
+改用非升级路径并继续其余可完成步骤。任务标题、
 `active/idle/notLoaded`、分支名或静态看板文案都不能自动推进状态。
 
 ## 单 writer 与 Git
@@ -66,6 +81,9 @@ authority: read-only | code-write | external-write-exact-scope
 - 开始编辑前必须核验 Git top-level、branch、HEAD 和 status。
 - 一个 worktree/branch 同时只有一个 writer；并行任务不得编辑重叠文件。
 - 已有修改属于原作者。不得通过 reset、clean、checkout 覆盖或强行吸收。
+- 测试使用当前独立 worktree 内的 Work Order 专用 `basetemp`。临时测试
+  目录无需为提交删除；可以忽略或保留，并通过精确文件列表暂存交付。
+  禁止为了“干净”递归删除临时目录，禁止为清理请求宿主 escalation。
 - 长期代码、文档、修复和重构交付必须形成聚焦 commit，并回传 hash。
 - 只读审查、无文件变化的探针不制造空 commit。
 - `git push` 默认禁止；只有 Kyle 或正式发布流程在 Work Order 中明确

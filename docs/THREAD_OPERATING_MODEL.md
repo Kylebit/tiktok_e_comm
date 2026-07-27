@@ -37,6 +37,38 @@ requires Kyle's decision. Kyle may contact a specialist lane directly for
 discovery or visual direction, but that does not bypass the CEO's integration
 and release responsibility.
 
+## Host approval is not business approval
+
+Business authority and the host/tool approval mechanism are independent:
+
+- Business authority answers whether the Work Order permits a repository,
+  browser, database, or external-platform action.
+- Host approval answers whether one particular tool invocation may leave its
+  sandbox or use a protected capability. It does not grant business authority,
+  and existing business authority does not guarantee that an escalated command
+  will be accepted by the host.
+
+Fixed `00`-`05` lanes default to `host_approval_policy=never` and
+`no_escalation=true` for local engineering, local tests, and read-only browser
+or API acceptance. They must not request host escalation for ordinary shell,
+pytest, worktree, Git, or read-only validation. If a command would request
+approval, the executor abandons or cancels that invocation and uses a
+non-escalated, non-destructive equivalent. Examples include selecting another
+writable `basetemp`, inspecting an exact path instead of recursively cleaning
+it, and staging an explicit file list instead of cleaning a worktree.
+
+A host `waitingOnApproval` signal is command state, not Work Order `BLOCKED`.
+The executor records it only when useful for diagnosis, abandons that command,
+and continues every safely achievable acceptance and delivery step. It must
+not wait for Kyle merely to satisfy tool policy or cosmetic workspace
+cleanliness.
+
+Escalation to Kyle is reserved for external business authorization or a
+high-risk action that is both necessary and has no safe, non-escalated
+substitute. The report must name the exact action, target, risk, attempted safe
+alternatives, and the decision Kyle must make. This exception does not weaken
+the rule that external-platform writes belong only to `03`.
+
 ## Limited CEO coding exceptions
 
 The CEO may write code only when the change is:
@@ -64,7 +96,9 @@ are:
   branch, and initial status.
 - `RUNNING`: the executor has started; this is evidenced by a timestamped
   update, not inferred from a title.
-- `BLOCKED`: a named decision or dependency prevents safe progress.
+- `BLOCKED`: a named business decision or dependency prevents safe progress
+  after safe non-escalated alternatives are exhausted. A tool command in
+  `waitingOnApproval` is not by itself a business blocker.
 - `DELIVERED`: the fixed lane returned a commit and required evidence.
 - `REVIEWED`: CEO accepted the review or returned specific changes.
 - `INTEGRATED`: CEO recorded source-to-main commit mapping and integration
@@ -123,6 +157,15 @@ edit the same checkout, branch, or overlapping files. A temporary helper is
 read-only unless it receives another isolated worktree; the fixed lane still
 owns the result. Never reset, clean, overwrite, or absorb pre-existing user
 changes to make a worktree usable.
+
+Tests that need temporary files use a Work Order-specific `basetemp` inside
+the executor's independent worktree. Test artifacts are not delivery files
+and do not need to be deleted to make a commit. Leave or ignore them, verify
+the intended diff, and stage only the explicit delivery paths. Do not run a
+recursive delete, `git clean`, or an escalated cleanup merely to obtain a
+cosmetically clean status. A cleanup that is independently required must have
+an exact verified target and remain within the worktree, but cleanup is never
+a prerequisite for focused staging or delivery.
 
 Durable code and governance changes require a focused commit before delivery.
 Read-only audits and probes do not create empty commits. Push is forbidden

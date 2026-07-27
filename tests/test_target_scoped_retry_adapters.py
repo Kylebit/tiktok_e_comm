@@ -66,6 +66,14 @@ def test_official_global_image_shapes_fail_before_dispatch(monkeypatch, urls, id
         target_scoped._official_global_master(merchant_id=1, merchant_token="t", global_item_id="9", model_sku="0954", command=command)
 
 
+def test_runtime_global_image_id_snapshot_drift_is_pre_submit(monkeypatch):
+    from modules.shopee import target_scoped
+    master = {"summary": {"global_image_snapshot_digest": "b" * 64}, "global_model_id": "1", "tier_index": [0]}
+    monkeypatch.setattr(target_scoped, "_official_global_master", lambda **_kw: master)
+    with pytest.raises(RuntimeError, match="snapshot drift"):
+        target_scoped.runtime_global_master(merchant_id=1, merchant_token="t", global_item_id="9", model_sku="0954", command={}, expected_image_snapshot_digest="a" * 64)
+
+
 def test_scan_never_returns_after_normal_terminal_page(monkeypatch):
     from modules.shopee import target_scoped
     calls = []

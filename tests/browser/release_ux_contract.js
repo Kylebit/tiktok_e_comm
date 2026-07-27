@@ -2195,6 +2195,249 @@ async function productShopeePriceReconciliationContract(browser) {
   }
 }
 
+function targetScopedReleaseDashboard() {
+  const dashboard = shopeePriceRepairDashboard("shopee:MY");
+  const targetLabel = "shopee:MY";
+  dashboard.publication_scope.selected_labels = [targetLabel];
+  dashboard.publication_scope.default_labels = [targetLabel];
+  dashboard.publication_scope.available_targets = [{
+    label: targetLabel,
+    channel: "shopee",
+    shop: "LivelyHive",
+    country: "MY",
+  }];
+  dashboard.release_v1.plan.targets = [targetLabel];
+  dashboard.release_v1.plan.payload.targets = [targetLabel];
+  dashboard.release_v1.run.run_id = "release-run:target-scoped-fixture";
+  dashboard.release_v1.run.targets = [{
+    target_label: targetLabel,
+    status: "FAILED",
+    attempts: 1,
+    external_id: "",
+    error: "official pre-submit validation failed; no external write",
+    latest_failure_evidence: {
+      evidence: {
+        phase: "pre_submit",
+        pre_submit_failure: true,
+        external_writes_performed: [],
+      },
+    },
+  }];
+  return dashboard;
+}
+
+async function productTargetScopedReleaseContract(browser) {
+  for (const viewport of [
+    { width: 1440, height: 900 },
+    { width: 390, height: 844 },
+  ]) {
+    for (const outcome of ["success", "reconciliation"]) {
+      const context = await browser.newContext({ viewport });
+      const page = await context.newPage();
+      const errors = [];
+      const requests = [];
+      const externalRequests = [];
+      let dashboard = targetScopedReleaseDashboard();
+      let pendingPreview;
+      let resolvePreview;
+      const previewRequested = new Promise((resolve) => {
+        resolvePreview = resolve;
+      });
+      let pendingSubmit;
+      let resolveSubmit;
+      const submitRequested = new Promise((resolve) => {
+        resolveSubmit = resolve;
+      });
+      page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+      page.on("console", (message) => {
+        if (message.type() === "error") errors.push(`console: ${message.text()}`);
+      });
+      await page.route("**/*", async (route) => {
+        const request = route.request();
+        const url = new URL(request.url());
+        if (url.origin !== baseUrl) {
+          externalRequests.push(request.url());
+          return route.abort("blockedbyclient");
+        }
+        if (!url.pathname.startsWith("/api/")) return route.continue();
+        requests.push({
+          method: request.method(),
+          url: request.url(),
+          body: request.postDataJSON?.() || null,
+        });
+        if (url.pathname === "/api/product-workspace/dashboard") {
+          return route.fulfill(jsonResponse(dashboard));
+        }
+        if (
+          url.pathname.endsWith("/target-scoped-action-preview")
+          && request.method() === "GET"
+        ) {
+          pendingPreview = route;
+          resolvePreview();
+          return;
+        }
+        if (
+          url.pathname.endsWith("/target-scoped-action")
+          && request.method() === "POST"
+        ) {
+          pendingSubmit = route;
+          resolveSubmit();
+          return;
+        }
+        return route.fulfill(jsonResponse({ ok: false }, 404));
+      });
+      try {
+        await page.goto(
+          `${baseUrl}/product-workspace?offer_id=3838616043`,
+          { waitUntil: "networkidle" },
+        );
+        const panel = '[data-target-scoped-target="shopee:MY"]';
+        const previewButton =
+          `${panel} [data-target-scoped-action="preview"]`;
+        check(
+          await page.locator(panel).count() === 1
+          && await page.locator(
+            `${panel} [data-target-scoped-action="submit"]`,
+          ).count() === 0,
+          `target scoped ${viewport.width}/${outcome}: execute is hidden before official preview`,
+        );
+        check(
+          requests.filter((row) => row.method === "POST").length === 0,
+          `target scoped ${viewport.width}/${outcome}: initial page has zero POST`,
+          requests,
+        );
+
+        const previewStarted = Date.now();
+        await page.locator(previewButton).click();
+        await previewRequested;
+        check(
+          Date.now() - previewStarted < 500,
+          `target scoped ${viewport.width}/${outcome}: preview feedback starts within 500ms`,
+        );
+        check(
+          await page.locator(previewButton).isDisabled(),
+          `target scoped ${viewport.width}/${outcome}: preview control disables while GET is pending`,
+        );
+        const previewUrl = new URL(pendingPreview.request().url());
+        check(
+          previewUrl.searchParams.get("offer_id") === "3838616043"
+          && previewUrl.searchParams.get("target_label") === "shopee:MY",
+          `target scoped ${viewport.width}/${outcome}: preview GET is exact and single-target`,
+          pendingPreview.request().url(),
+        );
+        await pendingPreview.fulfill(jsonResponse({
+          ok: true,
+          preview: true,
+          available: true,
+          target_label: "shopee:MY",
+          operation_kind: "shopee_safe_pre_submit_retry_v1",
+          plan_id: "omnichannel:SECRET-PLAN-ID",
+          expected_revision: 31,
+          payload_digest: "SECRET-PAYLOAD-DIGEST",
+          planned_command_digest: "SECRET-COMMAND-DIGEST",
+          preflight_digest: "SECRET-PREFLIGHT-DIGEST",
+          proof_digest: "SECRET-PROOF-DIGEST",
+          failure_attempt: 1,
+          summary: { target: "shopee:MY", state: "safe" },
+          external_writes_performed: [],
+        }));
+        const confirm = page.locator(`${panel} [data-target-scoped-confirm]`);
+        await confirm.check();
+        const submit =
+          page.locator(`${panel} [data-target-scoped-action="submit"]`);
+        check(
+          await submit.isEnabled(),
+          `target scoped ${viewport.width}/${outcome}: dedicated consent enables one target only`,
+        );
+        await submit.click();
+        await submitRequested;
+        check(
+          await page.locator(
+            `${panel} [data-target-scoped-action="submit"]`,
+          ).isDisabled(),
+          `target scoped ${viewport.width}/${outcome}: execute disables while POST is pending`,
+        );
+        const actionPosts = requests.filter((row) => (
+          row.method === "POST"
+          && new URL(row.url).pathname.endsWith("/target-scoped-action")
+        ));
+        const body = pendingSubmit.request().postDataJSON();
+        check(
+          actionPosts.length === 1
+          && body.target_label === "shopee:MY"
+          && body.publication_targets.join("|") === "shopee:MY"
+          && body.confirm_target_scoped_action === true
+          && body.approved_by === "Kyle"
+          && body.expected_revision === 31
+          && body.planned_command_digest === "SECRET-COMMAND-DIGEST"
+          && body.preflight_digest === "SECRET-PREFLIGHT-DIGEST"
+          && body.proof_digest === "SECRET-PROOF-DIGEST"
+          && !Object.hasOwn(body, "planned_command")
+          && !Object.hasOwn(body, "confirm"),
+          `target scoped ${viewport.width}/${outcome}: POST is dedicated, exact and single`,
+          body,
+        );
+        if (outcome === "success") {
+          dashboard = JSON.parse(JSON.stringify(dashboard));
+          dashboard.release_v1.run.status = "SUCCEEDED";
+          dashboard.release_v1.run.targets[0].status = "SUCCEEDED";
+          await pendingSubmit.fulfill(jsonResponse({
+            ok: true,
+            code: "target_scoped_action_succeeded",
+            operation_status: "SUCCEEDED",
+            external_writes_performed: ["shopee:regional_publish"],
+          }));
+          await page.waitForFunction(() => (
+            document.querySelector(
+              '[data-target-scoped-target="shopee:MY"]',
+            ) === null
+          ));
+        } else {
+          await pendingSubmit.fulfill(jsonResponse({
+            ok: false,
+            code: "target_scoped_reconciliation_required",
+            operation_status: "RECONCILIATION_REQUIRED",
+            durable_state_uncertain: true,
+            reconciliation_required: true,
+            external_writes_performed: ["shopee:regional_publish"],
+          }, 409));
+          await page.waitForTimeout(100);
+        }
+        check(
+          requests.filter((row) => (
+            row.method === "POST"
+            && new URL(row.url).pathname.endsWith("/target-scoped-action")
+          )).length === 1,
+          `target scoped ${viewport.width}/${outcome}: terminal path adds zero repeat POST`,
+          requests,
+        );
+        check(
+          await page.locator("#publishAllButton").isDisabled(),
+          `target scoped ${viewport.width}/${outcome}: generic publish remains isolated`,
+        );
+        const overflow = await overflowAudit(page);
+        check(
+          overflow.pageOverflow <= 2,
+          `target scoped ${viewport.width}/${outcome}: no horizontal overflow`,
+          overflow,
+        );
+        check(
+          unexpectedInteractionErrors(errors).length === 0,
+          `target scoped ${viewport.width}/${outcome}: no console/page errors`,
+          errors,
+        );
+        check(
+          externalRequests.length === 0,
+          `target scoped ${viewport.width}/${outcome}: no external network`,
+          externalRequests,
+        );
+      } finally {
+        await context.close();
+      }
+    }
+  }
+}
+
 async function productCommonOverwriteContract(browser) {
   for (const viewport of [
     { width: 1440, height: 900 },
@@ -2657,6 +2900,7 @@ async function legacyStateSafety(browser) {
     await productReleasePartialFailedLedger(browser);
     await productShopeePriceRepairContract(browser);
     await productShopeePriceReconciliationContract(browser);
+    await productTargetScopedReleaseContract(browser);
     await productCommonOverwriteContract(browser);
     await aiAsyncFeedback(browser);
     await profitAsyncAndNoFalseSuccess(browser);

@@ -172,8 +172,13 @@ def execute_target_scoped_operation(request: TargetScopedOperationRequest, proof
     """Perform one exact existing-object action then bounded official readback."""
     raw = _assert_proof(request, proof)
     if request.target_label in _SHOPEE_TARGETS:
-        from modules.shopee.target_scoped import publish_existing_global_site
-        receipt = publish_existing_global_site(request=request, evidence=raw["semantic_evidence"])
+        from modules.shopee.target_scoped import publish_existing_global_site, ShopeeRegionalPublishReconciliationError
+        try:
+            receipt = publish_existing_global_site(request=request, evidence=raw["semantic_evidence"])
+        except ShopeeRegionalPublishReconciliationError as error:
+            safe = dict(error.external_write_evidence)
+            allowed = {key: safe[key] for key in ("external_writes_performed", "durable_state_uncertain", "reconciliation_required", "task_id", "item_id", "error_type", "checks") if key in safe}
+            return AdapterExecutionResult(False, False, "Shopee accepted publish requires reconciliation", error.external_reference, allowed, submission_accepted=True)
         if receipt.get("verified") is not True:
             return AdapterExecutionResult(False, False, "Shopee dispatch/readback requires reconciliation", str(receipt.get("item_id") or "") or None, {"external_writes_performed": ["shopee:regional_publish"], "reconciliation_required": True})
         return AdapterExecutionResult(True, True, "Shopee one-site publish readback verified", str(receipt["item_id"]), {"verified": True, "external_writes_performed": ["shopee:regional_publish"], "readback": receipt})

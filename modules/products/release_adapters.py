@@ -2195,6 +2195,212 @@ def _shopee_item_id_for_match_key(match_key: str, region: str) -> str:
     return str(shop_ref.get("item_id") or "")
 
 
+SHOPEE_LOCAL_CURRENCIES = {
+    "PH": "PHP",
+    "MY": "MYR",
+    "TH": "THB",
+    "VN": "VND",
+}
+
+
+def _shopee_price_expectation(
+    pricing: dict[str, Any],
+    *,
+    region: str,
+) -> dict[str, Any]:
+    """Resolve the immutable Shopee readback price contract.
+
+    CNSC publishes from a global CNY master. Shopee then derives the local
+    storefront ``current_price``/``original_price``/inflated fields. Those
+    local fields must not be compared directly with the CNY plan value. The
+    official ``sip_item_price`` field is the stable readback of the global
+    master price.
+    """
+
+    site = region.upper()
+    target_currency = SHOPEE_LOCAL_CURRENCIES.get(site)
+    if not target_currency:
+        raise RuntimeError(f"unsupported Shopee price region: {region}")
+    if str(pricing.get("target_site") or "").upper() != site:
+        raise RuntimeError("approved Shopee pricing target_site does not match region")
+
+    derived = pricing.get("derived_preview") or {}
+    expected_cny = _decimal(derived.get("global_original_price_cny"))
+    source_local = _decimal(derived.get("local_original_price"))
+    exchange_rate = _decimal(derived.get("exchange_rate_cny_per_local"))
+    source_currency = str(derived.get("source_currency") or "").upper()
+    if source_currency != target_currency:
+        raise RuntimeError(
+            "approved Shopee pricing source currency does not match target region"
+        )
+    if (
+        expected_cny is None
+        or expected_cny <= 0
+        or source_local is None
+        or source_local <= 0
+        or exchange_rate is None
+        or exchange_rate <= 0
+    ):
+        raise RuntimeError("approved Shopee pricing expectation is incomplete")
+    if not _numbers_equal(
+        round(source_local * exchange_rate, 2),
+        expected_cny,
+    ):
+        raise RuntimeError("approved Shopee CNY price derivation is inconsistent")
+
+    return {
+        "schema_version": "shopee-price-readback/v1",
+        "field": "price_info.sip_item_price",
+        "value": float(expected_cny),
+        "currency": "CNY",
+        "target_local_currency": target_currency,
+        "source_local_price": float(source_local),
+        "source_local_currency": source_currency,
+        "exchange_rate_cny_per_local": float(exchange_rate),
+        "source_field": "derived_preview.global_original_price_cny",
+    }
+
+
+def _shopee_observed_price_rows(
+    *,
+    item: dict[str, Any],
+    models: list[dict[str, Any]],
+    match_key: str,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Return the one SKU-bound price row without mixing item/model scopes."""
+
+    issues: list[str] = []
+    if item.get("has_model"):
+        matched_models = [
+            model
+            for model in models
+            if str(model.get("model_sku") or "") == match_key
+        ]
+        if len(matched_models) != 1:
+            return [], ["matching_model_price_scope_is_not_unique"]
+        source_rows = list(matched_models[0].get("price_info") or ())
+        scope = "model"
+    else:
+        source_rows = list(item.get("price_info") or ())
+        scope = "item"
+        if str(item.get("item_sku") or "") != match_key:
+            issues.append("item_sku_does_not_match_price_scope")
+
+    if not source_rows and scope == "item":
+        source_rows = [
+            {
+                "currency": item.get("currency"),
+                "original_price": item.get("original_price"),
+                "current_price": item.get("price"),
+                "sip_item_price": item.get("sip_item_price"),
+            }
+        ]
+
+    observed: list[dict[str, Any]] = []
+    for row in source_rows:
+        if not isinstance(row, dict):
+            issues.append("price_info_row_is_not_an_object")
+            continue
+        observed.append(
+            {
+                "scope": scope,
+                "currency": str(
+                    row.get("currency") or item.get("currency") or ""
+                ).upper(),
+                "original_price": row.get("original_price"),
+                "current_price": row.get("current_price"),
+                "inflated_price_of_original_price": row.get(
+                    "inflated_price_of_original_price",
+                    row.get("inflated_price"),
+                ),
+                "inflated_price_of_current_price": row.get(
+                    "inflated_price_of_current_price"
+                ),
+                "sip_item_price": row.get("sip_item_price"),
+            }
+        )
+    return observed, issues
+
+
+def _verify_shopee_price_rows(
+    observed: list[dict[str, Any]],
+    expectation: dict[str, Any],
+    *,
+    initial_issues: list[str],
+) -> tuple[bool, list[str]]:
+    issues = list(initial_issues)
+    target_currency = str(expectation.get("target_local_currency") or "")
+    eligible = [
+        row for row in observed if str(row.get("currency") or "") == target_currency
+    ]
+    if len(eligible) != 1:
+        issues.append("target_currency_price_row_is_not_unique")
+        return False, sorted(set(issues))
+
+    row = eligible[0]
+    current = _decimal(row.get("current_price"))
+    original = _decimal(row.get("original_price"))
+    inflated_current = _decimal(row.get("inflated_price_of_current_price"))
+    inflated_original = _decimal(row.get("inflated_price_of_original_price"))
+    if current is None or current <= 0:
+        issues.append("current_price_is_not_positive")
+    if original is None or original <= 0:
+        issues.append("original_price_is_not_positive")
+    if current is not None and original is not None and current > original:
+        issues.append("current_price_exceeds_original_price")
+    if (
+        row.get("inflated_price_of_current_price") not in (None, "")
+        and (inflated_current is None or inflated_current <= 0)
+    ):
+        issues.append("inflated_current_price_is_not_positive")
+    if (
+        row.get("inflated_price_of_original_price") not in (None, "")
+        and (inflated_original is None or inflated_original <= 0)
+    ):
+        issues.append("inflated_original_price_is_not_positive")
+    if (
+        inflated_current is not None
+        and inflated_original is not None
+        and inflated_current > inflated_original
+    ):
+        issues.append("inflated_current_price_exceeds_inflated_original_price")
+    if not _numbers_equal(
+        row.get("sip_item_price"),
+        expectation.get("value"),
+    ):
+        issues.append("sip_item_price_does_not_match_immutable_cny_price")
+    return not issues, sorted(set(issues))
+
+
+def _shopee_readback_credentials(
+    region: str,
+    *,
+    allow_token_refresh: bool,
+) -> tuple[int, str]:
+    if allow_token_refresh:
+        from modules.shopee.auth import ensure_shop_token
+        from modules.shopee.publish import sync_shop_ids
+
+        shop_id = int(sync_shop_ids()[region.upper()])
+        return shop_id, ensure_shop_token(shop_id)
+
+    from modules.shopee.auth import load_tokens
+
+    store = load_tokens()
+    shop_id = int((store.get("sync_shop_ids") or {}).get(region.upper()) or 0)
+    entry = (store.get("shops") or {}).get(str(shop_id)) or {}
+    token = str(entry.get("access_token") or "").strip()
+    if not shop_id or not token:
+        raise RuntimeError(
+            f"Shopee {region.upper()} read-only reconciliation token is unavailable"
+        )
+    if int(entry.get("expire_at") or 0) < int(time.time()) + 120:
+        raise RuntimeError(
+            f"Shopee {region.upper()} read-only reconciliation token is expired"
+        )
+    return shop_id, token
+
+
 def _shopee_readback(
     *,
     match_key: str,
@@ -2206,13 +2412,14 @@ def _shopee_readback(
     expected_description: str = "",
     require_model_sku: bool = True,
     require_all_logistics: bool = True,
+    allow_token_refresh: bool = True,
 ) -> tuple[bool, dict[str, Any]]:
-    from modules.shopee.auth import ensure_shop_token
     from modules.shopee.client import shop_get
-    from modules.shopee.publish import sync_shop_ids
 
-    shop_id = int(sync_shop_ids()[region.upper()])
-    token = ensure_shop_token(shop_id)
+    shop_id, token = _shopee_readback_credentials(
+        region,
+        allow_token_refresh=allow_token_refresh,
+    )
     base = shop_get(
         "/api/v2/product/get_item_base_info",
         shop_id,
@@ -2286,6 +2493,29 @@ def _shopee_readback(
         for row in logistics
         if not row.get("enabled")
     ]
+    price_expectation = (
+        dict(expected_price)
+        if isinstance(expected_price, dict)
+        and expected_price.get("schema_version") == "shopee-price-readback/v1"
+        else None
+    )
+    observed_price_fields: list[dict[str, Any]] = []
+    price_issues: list[str] = []
+    if price_expectation is not None:
+        observed_price_fields, price_issues = _shopee_observed_price_rows(
+            item=item,
+            models=list(models),
+            match_key=match_key,
+        )
+        price_verified, price_issues = _verify_shopee_price_rows(
+            observed_price_fields,
+            price_expectation,
+            initial_issues=price_issues,
+        )
+    else:
+        price_verified = any(
+            _numbers_equal(value, expected_price) for value in price_values
+        )
     checks = {
         "seller_sku": match_key in seller_skus,
         "model_sku": (
@@ -2308,7 +2538,7 @@ def _shopee_readback(
             if expected_description
             else True
         ),
-        "price": any(_numbers_equal(value, expected_price) for value in price_values),
+        "price": price_verified,
         "image_count": image_count == expected_image_count,
         "all_applicable_logistics": (
             bool(logistics) and not disabled_logistics
@@ -2320,6 +2550,11 @@ def _shopee_readback(
     evidence = {
         "verified": all(checks.values()),
         "source": "official_shopee_partner_api",
+        "authentication_mode": (
+            "existing_token_only"
+            if not allow_token_refresh
+            else "refresh_allowed"
+        ),
         "region": region,
         "shop_id": shop_id,
         "item_id": str(item_id),
@@ -2329,6 +2564,9 @@ def _shopee_readback(
         "title": item.get("item_name"),
         "description_length": len(description),
         "prices": price_values,
+        "expected_price": price_expectation,
+        "observed_price_fields": observed_price_fields,
+        "price_issues": price_issues,
         "image_count": image_count,
         "logistics": [
             {
@@ -2343,6 +2581,52 @@ def _shopee_readback(
         "checks": checks,
     }
     return bool(evidence["verified"]), evidence
+
+
+def reconcile_existing_shopee_target(
+    request: AdapterExecutionRequest,
+) -> AdapterExecutionResult:
+    """Read back a failed Shopee target without repairing or republishing it."""
+
+    context = _validated_context(request)
+    if request.channel != "shopee":
+        raise RuntimeError("Shopee reconciliation requires a Shopee target")
+    target = context["target"]
+    if str(target.get("status") or "") != "FAILED":
+        raise RuntimeError("Shopee reconciliation requires a FAILED durable target")
+    item_id = str(target.get("external_id") or "").strip()
+    if not item_id:
+        raise RuntimeError("Shopee reconciliation requires the recorded item_id")
+
+    payload = context["payload"]
+    region = request.site.upper()
+    pricing = _target_pricing(payload, request.target_label)
+    expectation = _shopee_price_expectation(pricing, region=region)
+    verified, evidence = _shopee_readback(
+        match_key=request.seller_sku[-4:].zfill(4),
+        region=region,
+        item_id=item_id,
+        expected_title=_candidate(payload, "shopee", "CNSC"),
+        expected_price=expectation,
+        expected_image_count=len(context["images"]),
+        expected_description=_shopee_description(payload),
+        require_model_sku=False,
+        require_all_logistics=False,
+        allow_token_refresh=False,
+    )
+    evidence["reconciliation_mode"] = "read_only_existing_item"
+    evidence["external_writes_performed"] = []
+    return AdapterExecutionResult(
+        succeeded=verified,
+        readback_verified=verified,
+        detail=(
+            f"Shopee {region} existing item matched immutable-plan API readback"
+            if verified
+            else f"Shopee {region} existing item did not match immutable-plan API readback"
+        ),
+        external_reference=item_id,
+        readback_evidence=evidence,
+    )
 
 
 def _discover_shopee_item_id_by_sku(
@@ -2417,9 +2701,7 @@ def execute_shopee_target(
     title = _candidate(payload, "shopee", "CNSC")
     description = _shopee_description(payload)
     pricing = _target_pricing(payload, request.target_label)
-    expected_price = (pricing.get("source") or {}).get("list_price")
-    if expected_price in (None, ""):
-        raise RuntimeError(f"approved Shopee source price is missing for {region}")
+    expected_price = _shopee_price_expectation(pricing, region=region)
 
     item_id = (
         _shopee_item_id_for_match_key(request.seller_sku, region)

@@ -1632,9 +1632,13 @@ def test_existing_shopee_mismatch_is_never_republished_as_a_duplicate(monkeypatc
     ]
     context["payload"]["pricing"]["selected_targets"] = {
         "shopee:TH": {
-            "source": {
-                "list_price": 192,
-            }
+            "target_site": "TH",
+            "derived_preview": {
+                "global_original_price_cny": 42.59,
+                "local_original_price": 192,
+                "source_currency": "THB",
+                "exchange_rate_cny_per_local": 0.2218,
+            },
         }
     }
     monkeypatch.setattr(
@@ -1701,7 +1705,15 @@ def test_existing_shopee_copy_is_repaired_in_place_without_republishing(monkeypa
         }
     ]
     context["payload"]["pricing"]["selected_targets"] = {
-        "shopee:TH": {"source": {"list_price": 192}}
+        "shopee:TH": {
+            "target_site": "TH",
+            "derived_preview": {
+                "global_original_price_cny": 42.59,
+                "local_original_price": 192,
+                "source_currency": "THB",
+                "exchange_rate_cny_per_local": 0.2218,
+            },
+        }
     }
     monkeypatch.setattr(
         release_adapters,

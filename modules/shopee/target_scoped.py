@@ -137,6 +137,7 @@ def publish_existing_global_site(*, request, evidence: dict) -> dict:
     response = merchant_post("/api/v2/global_product/create_publish_task", merchant_id, token, body)
     task_id = (response.get("response") or {}).get("publish_task_id")
     if not task_id: raise RuntimeError("create_publish_task response is ambiguous")
+    item_id = ""
     result = {}
     for _ in range(3):
         raw_task = merchant_get("/api/v2/global_product/get_publish_task_result", merchant_id, token, {"publish_task_id": int(task_id)})
@@ -144,8 +145,7 @@ def publish_existing_global_site(*, request, evidence: dict) -> dict:
         result = raw_task["response"]
         if result.get("publish_status") in {"success", "failed"}: break
     item_id = str(result.get("item_id") or (result.get("success") or {}).get("item_id") or "")
-    if result.get("publish_status") != "success" or not item_id:
-        raise ShopeeRegionalPublishReconciliationError("accepted publish task did not verify", task_id=task_id, item_id=item_id)
+    if result.get("publish_status") != "success" or not item_id: raise ShopeeRegionalPublishReconciliationError("accepted publish task did not verify", task_id=task_id, item_id=item_id)
     # Regional identity is read through the prepared shop token, never token refresh.
     base = shop_get("/api/v2/product/get_item_base_info", shop_id, _shop_token, {"item_id_list": item_id})
     rows = (base.get("response") or {}).get("item_list") if isinstance(base, dict) else None
@@ -172,4 +172,4 @@ def publish_existing_global_site(*, request, evidence: dict) -> dict:
     copy = evaluate_shopee_regional_copy_observation(source_title=master["title"], source_description=master["description"], regional_title=item.get("item_name"), regional_description=item.get("description"), source_global_master_digest=command["approved_master_digest"], site=command["region"])
     image = evaluate_shopee_regional_image_observation(approved_count=command["approved_image_count"], regional_image_urls=image_urls or [], global_linkage_verified=hard_checks["global_linkage"])
     outcome = shopee_regional_observation_outcome(listing_hard_exact=hard, copy_observation=copy, image_observation=image)
-    return {"item_id": item_id, "verified": outcome.get("succeeded") is True, "task_status": "success", "hard_checks": hard_checks, "enabled_logistics_count": len(enabled), "image_count": len(image_urls or []), "master_digest": master["digest"], "observation_status": outcome.get("status"), "reconciliation_required": outcome.get("status") == "reconciliation_required", "external_writes_performed": ["shopee:regional_publish"]}
+    return {"item_id": item_id, "verified": outcome.get("outcome") == "SUCCEEDED", "manual_review_required": outcome.get("manual_review_required") is True, "task_status": "success", "hard_checks": hard_checks, "enabled_logistics_count": len(enabled), "image_count": len(image_urls or []), "master_digest": master["digest"], "observation_outcome": outcome.get("outcome"), "reconciliation_required": outcome.get("reconciliation_required") is True, "external_writes_performed": ["shopee:regional_publish"]}

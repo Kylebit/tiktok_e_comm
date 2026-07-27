@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Iterable, Mapping
 from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -22,6 +23,16 @@ EXPECTED_TARGETS = (
     ("tiktok", "GB", "English (UK)", 255),
     ("shopee", "CNSC", "English", 120),
     ("ozon", "RU", "Russian", 200),
+)
+
+_TIMESTAMP_FIELDS = frozenset(
+    {
+        "created_at",
+        "updated_at",
+        "generated_at",
+        "adopted_at",
+        "reviewed_at",
+    }
 )
 
 SYSTEM_PROMPT = """You are a senior cross-border ecommerce listing strategist.
@@ -153,6 +164,130 @@ def model_input_signature(facts: dict[str, Any]) -> str:
         "verified_attributes": facts.get("verified_attributes") or {},
     }
     return "sha256:" + hashlib.sha256(_canonical(relevant).encode("utf-8")).hexdigest()
+
+
+def _stable_release_value(value: Any) -> Any:
+    """Remove operational timestamps while preserving commercial evidence."""
+
+    if isinstance(value, Mapping):
+        return {
+            str(key): _stable_release_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+            if str(key) not in _TIMESTAMP_FIELDS
+        }
+    if isinstance(value, (list, tuple)):
+        return [_stable_release_value(item) for item in value]
+    return value
+
+
+def _required_candidate_keys(
+    target_labels: Iterable[object],
+) -> tuple[tuple[str, str], ...]:
+    required: set[tuple[str, str]] = set()
+    for raw_label in target_labels:
+        channel, separator, raw_site = str(raw_label or "").partition(":")
+        if not separator:
+            continue
+        channel = channel.casefold()
+        site = raw_site.upper()
+        if channel == "tiktok":
+            required.add(("tiktok", site.rsplit("_", 1)[-1]))
+        elif channel == "shopee":
+            required.add(("shopee", "CNSC"))
+        elif channel == "ozon":
+            required.add(("ozon", site))
+    return tuple(sorted(required))
+
+
+def release_listing_copy_identity(
+    listing_copy: Mapping[str, Any] | None,
+    *,
+    approved_product_title: object,
+    current_input_signature: object,
+    target_labels: Iterable[object],
+) -> tuple[dict[str, Any], list[str]]:
+    """Return stable ReleasePlan copy identity plus approval blockers.
+
+    Model timestamps are deliberately excluded. Every commercial candidate
+    field remains in the identity, so a title/policy/model/description change
+    creates a different plan and confirmation token.
+    """
+
+    source = dict(listing_copy or {})
+    candidates = [
+        _stable_release_value(row)
+        for row in (source.get("candidates") or ())
+        if isinstance(row, Mapping)
+    ]
+    candidates.sort(
+        key=lambda row: (
+            str(row.get("channel") or "").casefold(),
+            str(row.get("site") or "").upper(),
+            _canonical(row),
+        )
+    )
+    description = str(source.get("shopee_description_en") or "").strip()
+    identity = {
+        "schema_version": str(source.get("schema_version") or "").strip(),
+        "status": str(source.get("status") or "").strip(),
+        "provider": str(source.get("provider") or "").strip(),
+        "policy_version": str(source.get("policy_version") or "").strip(),
+        "model": str(source.get("model") or "").strip(),
+        "input_signature": str(source.get("input_signature") or "").strip(),
+        "semantic_master_en": str(
+            source.get("semantic_master_en") or ""
+        ).strip(),
+        "shopee_description_digest": (
+            "sha256:"
+            + hashlib.sha256(description.encode("utf-8")).hexdigest()
+            if description
+            else ""
+        ),
+        "candidates": candidates,
+    }
+
+    blockers: list[str] = []
+    if identity["status"] != "adopted_in_product_facts":
+        blockers.append(
+            "listing copy must be adopted in approved product facts before release"
+        )
+    if not identity["input_signature"]:
+        blockers.append("listing copy input signature is missing")
+    elif identity["input_signature"] != str(current_input_signature or "").strip():
+        blockers.append("listing copy input signature is stale")
+    approved_title = str(approved_product_title or "").strip()
+    if not identity["semantic_master_en"]:
+        blockers.append("listing copy semantic English master is missing")
+    elif identity["semantic_master_en"] != approved_title:
+        blockers.append(
+            "listing copy semantic English master differs from approved product title"
+        )
+    if not identity["policy_version"]:
+        blockers.append("listing copy policy version is missing")
+    if not identity["model"]:
+        blockers.append("listing copy model identity is missing")
+
+    by_key = {
+        (
+            str(row.get("channel") or "").casefold(),
+            str(row.get("site") or "").upper(),
+        ): row
+        for row in candidates
+    }
+    for channel, site in _required_candidate_keys(target_labels):
+        candidate = by_key.get((channel, site))
+        if (
+            not candidate
+            or str(candidate.get("policy_check") or "") != "passed"
+            or not str(candidate.get("title") or "").strip()
+        ):
+            blockers.append(
+                f"approved listing title candidate is missing for {channel}:{site}"
+            )
+    if any(str(label).startswith("shopee:") for label in target_labels):
+        if not identity["shopee_description_digest"]:
+            blockers.append("approved Shopee global description is missing")
+    return identity, list(dict.fromkeys(blockers))
 
 
 def _json_object(raw: str) -> dict[str, Any]:

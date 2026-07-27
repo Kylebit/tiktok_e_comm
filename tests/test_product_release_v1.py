@@ -13,12 +13,15 @@ from shared_platform.release_store import ReleaseStore
 
 def _dashboard() -> dict:
     targets = ["miaoshou:COMMON", "tiktok:MX"]
+    approved_title = "Cute Dog PVC Wall Sticker 34 x 58 cm"
+    copy_signature = "sha256:copy-facts-v1"
     return {
         "ok": True,
         "product": {
             "offer_id": "3828540231",
             "seller_sku_candidate": "0952",
             "revision": 41,
+            "title": approved_title,
             "actual_product_approved": True,
             "actual_approval": {
                 "approval_id": "product-approval:v1",
@@ -88,6 +91,28 @@ def _dashboard() -> dict:
             "blockers": [],
         },
         "actual_release_gate": {"ready": True, "blockers": []},
+        "listing_copy": {
+            "schema_version": "listing-copy-candidates-v4",
+            "status": "adopted_in_product_facts",
+            "provider": "toapi",
+            "policy_version": "listing-copy-candidates-v4",
+            "model": "gpt-5.4-mini-official",
+            "input_signature": copy_signature,
+            "current_input_signature": copy_signature,
+            "semantic_master_en": approved_title,
+            "shopee_description_en": "",
+            "candidates": [
+                {
+                    "channel": "tiktok",
+                    "site": "MX",
+                    "language": "Spanish (Mexico)",
+                    "limit": 255,
+                    "title": "Pegatina de pared de perro PVC 34 x 58 cm",
+                    "policy_check": "passed",
+                    "created_at": "2026-07-27T01:00:00+00:00",
+                }
+            ],
+        },
     }
 
 

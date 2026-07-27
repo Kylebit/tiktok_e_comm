@@ -1085,6 +1085,8 @@ def _generate_product_workspace_title_draft(data: dict) -> tuple[int, dict]:
 
 def _release_plan_payload_from_dashboard(dashboard: dict) -> tuple[dict, list[str]]:
     """Build the exact immutable V1 payload without persisting it."""
+    from domains.content_operations import release_listing_copy_identity
+
     product = dashboard.get("product") or {}
     content = dashboard.get("content") or {}
     scope = dashboard.get("publication_scope") or {}
@@ -1132,6 +1134,23 @@ def _release_plan_payload_from_dashboard(dashboard: dict) -> tuple[dict, list[st
         for row in (content.get("images") or ())
     ]
     plan_id = str(omnichannel.get("plan_id") or "").strip()
+    listing_copy_source = (
+        dashboard.get("listing_copy")
+        if isinstance(dashboard.get("listing_copy"), dict)
+        else {}
+    )
+    listing_copy_identity, listing_copy_blockers = release_listing_copy_identity(
+        listing_copy_source,
+        approved_product_title=product.get("title"),
+        current_input_signature=listing_copy_source.get(
+            "current_input_signature"
+        ),
+        target_labels=targets,
+    )
+    blockers.extend(listing_copy_blockers)
+    shopee_description = str(
+        listing_copy_source.get("shopee_description_en") or ""
+    ).strip()
     payload = {
         "plan_id": plan_id,
         "product_id": str(product.get("offer_id") or "").strip(),
@@ -1169,25 +1188,8 @@ def _release_plan_payload_from_dashboard(dashboard: dict) -> tuple[dict, list[st
             ],
         },
         "listing_copy": {
-            "schema_version": str(
-                (dashboard.get("listing_copy") or {}).get("schema_version") or ""
-            ),
-            "status": str((dashboard.get("listing_copy") or {}).get("status") or ""),
-            "model": str((dashboard.get("listing_copy") or {}).get("model") or ""),
-            "input_signature": str(
-                (dashboard.get("listing_copy") or {}).get("input_signature") or ""
-            ),
-            "shopee_description_en": str(
-                (dashboard.get("listing_copy") or {}).get(
-                    "shopee_description_en"
-                )
-                or ""
-            ),
-            "candidates": [
-                dict(row)
-                for row in ((dashboard.get("listing_copy") or {}).get("candidates") or ())
-                if isinstance(row, dict)
-            ],
+            **listing_copy_identity,
+            "shopee_description_en": shopee_description,
         },
         "images": images,
         "video_urls": list(content.get("video_urls") or ()),
@@ -1211,6 +1213,46 @@ def _release_plan_payload_from_dashboard(dashboard: dict) -> tuple[dict, list[st
         ),
     }
     return payload, list(dict.fromkeys(value for value in blockers if value))
+
+
+def _immutable_listing_copy_preflight(payload: dict) -> list[str]:
+    """Validate only the approved immutable copy before any run mutation."""
+
+    from domains.content_operations import release_listing_copy_identity
+
+    listing_copy = (
+        payload.get("listing_copy")
+        if isinstance(payload.get("listing_copy"), dict)
+        else {}
+    )
+    identity, blockers = release_listing_copy_identity(
+        listing_copy,
+        approved_product_title=(payload.get("product_facts") or {}).get("title"),
+        current_input_signature=listing_copy.get("input_signature"),
+        target_labels=payload.get("targets") or (),
+    )
+    expected_digest = str(
+        listing_copy.get("shopee_description_digest") or ""
+    ).strip()
+    if expected_digest != identity.get("shopee_description_digest"):
+        blockers.append(
+            "immutable Shopee description digest does not match its approved text"
+        )
+    for field in (
+        "schema_version",
+        "status",
+        "provider",
+        "policy_version",
+        "model",
+        "input_signature",
+        "semantic_master_en",
+        "candidates",
+    ):
+        if listing_copy.get(field) != identity.get(field):
+            blockers.append(
+                f"immutable listing copy identity is not normalized: {field}"
+            )
+    return list(dict.fromkeys(blockers))
 
 
 def _approved_plan_matches_current_payload(
@@ -1709,6 +1751,14 @@ def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
             "ok": False,
             "error": "approved ReleasePlan no longer matches current facts",
         }
+    copy_blockers = _immutable_listing_copy_preflight(plan.get("payload") or {})
+    if copy_blockers:
+        return 409, {
+            "ok": False,
+            "error": "approved ReleasePlan has invalid immutable listing copy",
+            "blockers": copy_blockers,
+            "external_writes_performed": [],
+        }
     if "miaoshou:COMMON" not in (plan.get("targets") or ()):
         return 409, {
             "ok": False,
@@ -1836,6 +1886,15 @@ def _publish_selected_release(data: dict) -> tuple[int, dict]:
         return 409, {
             "ok": False,
             "error": "approved ReleasePlan no longer matches current facts",
+        }
+
+    copy_blockers = _immutable_listing_copy_preflight(plan.get("payload") or {})
+    if copy_blockers:
+        return 409, {
+            "ok": False,
+            "error": "approved ReleasePlan has invalid immutable listing copy",
+            "blockers": copy_blockers,
+            "external_writes_performed": [],
         }
 
     run = store.start_run(plan_id)

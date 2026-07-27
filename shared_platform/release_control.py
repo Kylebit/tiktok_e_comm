@@ -27,7 +27,11 @@ from domains.channel_operations import (
     build_omnichannel_publication_plan,
     build_publication_plan,
 )
-from domains.content_operations import build_workbench_content_package_handoff
+from domains.content_operations import (
+    build_workbench_content_package_handoff,
+    listing_title_fact_signature,
+    release_listing_copy_identity,
+)
 from domains.product_operations import (
     build_product_facts_snapshot,
     preview_product_approval_lock,
@@ -993,6 +997,41 @@ def build_release_dashboard(
             else {}
         )
     )
+    selected_title_sku_keys = {
+        str(value) for value in (review.get("selected_sku_keys") or ())
+    }
+    title_label_overrides = (
+        review.get("sku_label_overrides")
+        if isinstance(review.get("sku_label_overrides"), Mapping)
+        else {}
+    )
+    current_listing_copy_signature = listing_title_fact_signature(
+        {
+            "offer_id": clean_offer_id,
+            "source_title_zh": str(source.get("title_source") or "").strip(),
+            "category": dict(review.get("category") or {}),
+            "cost_cny": review.get("cost_cny"),
+            "weight_kg": review.get("weight_kg"),
+            "package_cm": list(review.get("package_cm") or ()),
+            "selected_skus": [
+                {
+                    "key": str(row.get("key") or row.get("name") or ""),
+                    "label": str(
+                        title_label_overrides.get(
+                            str(row.get("key") or row.get("name") or "")
+                        )
+                        or row.get("name")
+                        or row.get("key")
+                        or ""
+                    ),
+                }
+                for row in (source.get("skus") or ())
+                if isinstance(row, Mapping)
+                and str(row.get("key") or row.get("name") or "")
+                in selected_title_sku_keys
+            ],
+        }
+    )
     content_state = (
         state.get("content_package")
         if isinstance(state.get("content_package"), Mapping)
@@ -1230,6 +1269,22 @@ def build_release_dashboard(
         if approved_product_package is not None
         else None
     )
+    listing_copy_state = (
+        dict(state.get("listing_copy"))
+        if isinstance(state.get("listing_copy"), Mapping)
+        else {}
+    )
+    selected_target_labels = [
+        f"{channel}:{site}"
+        for channel, sites in omnichannel_selection.items()
+        for site in sites
+    ]
+    listing_copy_identity, listing_copy_blockers = release_listing_copy_identity(
+        listing_copy_state,
+        approved_product_title=review.get("title"),
+        current_input_signature=current_listing_copy_signature,
+        target_labels=selected_target_labels,
+    )
     omnichannel_preview = (
         _serialize_omnichannel_preview(
             build_omnichannel_publication_plan(
@@ -1246,6 +1301,7 @@ def build_release_dashboard(
                         "shopee_exchange_rates"
                     ],
                     "ozon_exchange_rates": release_pricing["ozon_exchange_rates"],
+                    "listing_copy": listing_copy_identity,
                     "derived_source_bindings": {
                         f"{channel}:{site}": {
                             "selected_source_target_key": (
@@ -1481,11 +1537,11 @@ def build_release_dashboard(
                 ),
             },
         },
-        "listing_copy": (
-            dict(state.get("listing_copy"))
-            if isinstance(state.get("listing_copy"), Mapping)
-            else {}
-        ),
+        "listing_copy": {
+            **listing_copy_state,
+            "current_input_signature": current_listing_copy_signature,
+            "release_blockers": listing_copy_blockers,
+        },
         "pricing_review": release_pricing,
         "publication_scope": publication_scope,
         "content": {

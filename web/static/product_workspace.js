@@ -202,6 +202,7 @@
     $("#lookupForm").classList.toggle("is-loading", loading);
     $("#refreshButton").disabled = loading;
     if ($("#factsEditSaveButton")) updateFactsEditControls();
+    if ($("#generateTitleDraftButton") && currentData) renderTitleDraft(currentData);
     if ($("#approvalButton")) updateApprovalButton(currentData || {});
     if ($("#applyPublicationScopeButton")) updatePublicationScopeControls();
     if ($("#approveReleasePlanButton")) updateReleaseControls(currentData || {});
@@ -828,7 +829,9 @@
     const stale = draft.status === "superseded_product_facts_changed";
     const adopted = draft.status === "adopted_in_product_facts";
     const button = $("#generateTitleDraftButton");
-    button.disabled = locked || titleDraftSubmitting || pageLoading;
+    const canRefreshLockedCandidate = locked && stale;
+    button.disabled =
+      (locked && !canRefreshLockedCandidate) || titleDraftSubmitting || pageLoading;
     button.classList.toggle("is-loading", titleDraftSubmitting);
     if (!draft.semantic_master_en) {
       $("#titleDraftStatus").textContent =
@@ -888,6 +891,14 @@
   async function generateTitleDraft() {
     if (!currentData || titleDraftSubmitting || pageLoading) return;
     const product = currentData.product || {};
+    const draft = currentData.listing_copy || {};
+    const locked = Boolean(product.actual_product_approved || product.fields_locked);
+    const lockedStaleRefresh =
+      locked && draft.status === "superseded_product_facts_changed";
+    if (lockedStaleRefresh && !window.confirm(
+      "当前标题候选已过期。重新生成只会调用 ToAPI 并更新本地候选，"
+      + "同时废止旧 ReleasePlan；不会修改已批准商品事实，也不会写妙手或渠道。"
+    )) return;
     titleDraftSubmitting = true;
     let failureMessage = "";
     renderTitleDraft(currentData);
@@ -897,6 +908,9 @@
       const payload = await postProductWorkspace("/api/product-workspace/title-draft", {
         offer_id: product.offer_id,
         expected_revision: product.revision,
+        refresh_stale_locked_candidate: lockedStaleRefresh,
+        user_approved: lockedStaleRefresh,
+        approved_by: lockedStaleRefresh ? "Kyle" : "",
       });
       const data = dashboardFromPayload(payload) || payload.dashboard || currentData;
       currentData = data;
@@ -926,6 +940,8 @@
     const draft = currentData.listing_copy || {};
     const locked = Boolean(product.actual_product_approved || product.fields_locked);
     const candidateTitle = String(button.dataset.title || "").trim();
+    const sameApprovedTitle =
+      candidateTitle === String(product.title || "").trim();
     if (!locked) {
       $("#factsEditTitle").value = candidateTitle;
       $("#factsEditMessage").textContent =
@@ -935,11 +951,20 @@
     }
     if (
       !window.confirm(
-        `采用当前 EN MASTER 将执行以下本地变更：\n\n`
-        + `• 把正式商品标题改为该英文候选\n`
-        + `• 废止当前商品审批与旧 ReleasePlan\n`
-        + `• 废止旧计划尚未完成的运行并解锁商品事实\n\n`
-        + `不会写妙手或任何渠道。确认由 Kyle 对 revision ${product.revision ?? "—"} 执行吗？`,
+        sameApprovedTitle
+          ? (
+            `当前 EN MASTER 已与批准标题一致。\n\n`
+            + `本次只会把刷新后的候选标记为已采用，并废止旧 ReleasePlan；`
+            + `商品审批与事实锁定保持不变，不会写妙手或任何渠道。`
+            + `确认由 Kyle 对 revision ${product.revision ?? "—"} 执行吗？`
+          )
+          : (
+            `采用当前 EN MASTER 将执行以下本地变更：\n\n`
+            + `• 把正式商品标题改为该英文候选\n`
+            + `• 废止当前商品审批与旧 ReleasePlan\n`
+            + `• 废止旧计划尚未完成的运行并解锁商品事实\n\n`
+            + `不会写妙手或任何渠道。确认由 Kyle 对 revision ${product.revision ?? "—"} 执行吗？`
+          ),
       )
     ) {
       $("#titleDraftStatus").textContent =
@@ -978,9 +1003,16 @@
       const item = queueItem(currentQueueKey);
       if (item) item.data = data;
       render(data);
-      finalMessage =
-        `已采用 EN MASTER 并建立 revision ${data.product?.revision ?? payload.revision ?? "新"}；`
-        + "旧商品审批、旧发布计划及未完成运行已废止。请复核商品事实后重新批准锁定。";
+      finalMessage = payload.product_approval_preserved
+        ? (
+          `已确认 EN MASTER 与批准标题一致并建立 revision `
+          + `${data.product?.revision ?? payload.revision ?? "新"}；`
+          + "商品审批与事实锁定保持有效，可创建新的 ReleasePlan。"
+        )
+        : (
+          `已采用 EN MASTER 并建立 revision ${data.product?.revision ?? payload.revision ?? "新"}；`
+          + "旧商品审批、旧发布计划及未完成运行已废止。请复核商品事实后重新批准锁定。"
+        );
       $("#factsEditMessage").textContent = finalMessage;
       showError("");
     } catch (error) {

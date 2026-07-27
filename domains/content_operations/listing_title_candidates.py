@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -94,12 +95,61 @@ def _canonical(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def fact_signature(facts: dict[str, Any]) -> str:
-    relevant = {
+def _canonical_decimal(value: Any) -> str | None:
+    if value in (None, "") or isinstance(value, bool):
+        return None
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return str(value)
+    if not parsed.is_finite():
+        return str(value)
+    normalized = format(parsed.normalize(), "f")
+    return "0" if normalized in {"-0", ""} else normalized
+
+
+def fact_snapshot(facts: dict[str, Any]) -> dict[str, Any]:
+    """Return the immutable product facts that govern candidate freshness.
+
+    ``verified_attributes`` are deliberately excluded. Miaoshou readback can
+    enrich that mapping after a COMMON draft write without changing the
+    product facts Kyle approved. The full model request remains fingerprinted
+    separately for audit.
+    """
+
+    selected_skus = []
+    for row in facts.get("selected_skus") or ():
+        if not isinstance(row, dict):
+            continue
+        selected_skus.append(
+            {
+                "key": str(row.get("key") or "").strip(),
+                "label": str(row.get("label") or "").strip(),
+            }
+        )
+    return {
+        "offer_id": str(facts.get("offer_id") or "").strip(),
         "source_title_zh": facts.get("source_title_zh") or "",
         "category": facts.get("category") or {},
-        "package_cm": facts.get("package_cm") or [],
-        "selected_skus": facts.get("selected_skus") or [],
+        "cost_cny": _canonical_decimal(facts.get("cost_cny")),
+        "weight_kg": _canonical_decimal(facts.get("weight_kg")),
+        "package_cm": [
+            _canonical_decimal(value)
+            for value in (facts.get("package_cm") or [])
+        ],
+        "selected_skus": selected_skus,
+    }
+
+
+def fact_signature(facts: dict[str, Any]) -> str:
+    return "sha256:" + hashlib.sha256(
+        _canonical(fact_snapshot(facts)).encode("utf-8")
+    ).hexdigest()
+
+
+def model_input_signature(facts: dict[str, Any]) -> str:
+    relevant = {
+        **fact_snapshot(facts),
         "verified_attributes": facts.get("verified_attributes") or {},
     }
     return "sha256:" + hashlib.sha256(_canonical(relevant).encode("utf-8")).hexdigest()
@@ -312,6 +362,8 @@ def generate_title_candidates(
         "candidates": candidates,
         "notes_zh": notes_zh,
         "input_signature": fact_signature(facts),
+        "fact_snapshot": fact_snapshot(facts),
+        "model_input_signature": model_input_signature(facts),
         "policy_version": POLICY_VERSION,
         "model": TOAPI_TITLE_MODEL,
         "generation_attempts": generation_attempts,

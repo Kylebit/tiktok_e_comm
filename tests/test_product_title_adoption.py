@@ -4,6 +4,7 @@ import copy
 
 import pytest
 
+from domains import content_operations
 from domains.content_operations import listing_title_fact_signature
 from modules.products import server as product_server
 from modules.sourcing import new_product_workbench
@@ -290,6 +291,208 @@ def test_title_adoption_rejects_candidate_from_superseded_facts(
 
     assert status == 409
     assert payload["error_code"] == "title_candidate_stale"
+    assert saves == []
+    assert not store.path.exists()
+
+
+def test_title_adoption_ignores_miaoshou_attribute_enrichment(
+    monkeypatch,
+    tmp_path,
+):
+    state, saves, store = _install(monkeypatch, tmp_path)
+    enriched_source = copy.deepcopy(SOURCE)
+    enriched_source["attributes"] = {
+        "\u6750\u8d28": "PVC",
+        "\u54c1\u724c": "Miaoshou readback enrichment",
+        "\u529f\u80fd": "Miaoshou readback enrichment",
+        "\u7247\u6570": "3",
+    }
+    monkeypatch.setattr(
+        new_product_workbench,
+        "_source_summary",
+        lambda *_args, **_kwargs: copy.deepcopy(enriched_source),
+    )
+
+    status, payload = product_server._adopt_product_workspace_title_candidate(
+        _request(state)
+    )
+
+    assert status == 200
+    assert payload["adopted_title"] == EN_MASTER
+    assert len(saves) == 1
+    assert state["listing_copy"]["status"] == "adopted_in_product_facts"
+    assert not store.path.exists()
+
+
+def test_same_title_adoption_preserves_product_approval_for_successor_plan(
+    monkeypatch,
+    tmp_path,
+):
+    initial = _locked_state()
+    initial["review"]["title"] = EN_MASTER
+    state, saves, store = _install(monkeypatch, tmp_path, initial=initial)
+
+    status, payload = product_server._adopt_product_workspace_title_candidate(
+        _request(state)
+    )
+
+    assert status == 200
+    assert payload["product_approval_preserved"] is True
+    assert payload["superseded_product_approval_id"] is None
+    assert payload["next_action"] == "create_successor_release_plan"
+    assert len(saves) == 1
+    assert state["review"]["fields_locked"] is True
+    assert state["product_approval"]["status"] == "approved"
+    assert state["listing_copy"]["status"] == "adopted_in_product_facts"
+    assert state["listing_copy"]["product_approval_preserved"] is True
+    assert state["commercial_supersessions"][-1]["status"] == "reaffirmed"
+    assert not store.path.exists()
+
+
+def test_adopt_then_save_same_facts_keeps_candidate_current(
+    monkeypatch,
+    tmp_path,
+):
+    state, saves, _store = _install(monkeypatch, tmp_path)
+
+    adopt_status, _adopt_payload = (
+        product_server._adopt_product_workspace_title_candidate(_request(state))
+    )
+    assert adopt_status == 200
+    enriched_source = copy.deepcopy(SOURCE)
+    enriched_source["attributes"] = {
+        "\u6750\u8d28": "PVC",
+        "\u54c1\u724c": "Operational Miaoshou enrichment",
+        "\u529f\u80fd": "Operational Miaoshou enrichment",
+    }
+    monkeypatch.setattr(
+        new_product_workbench,
+        "_source_summary",
+        lambda *_args, **_kwargs: copy.deepcopy(enriched_source),
+    )
+
+    save_status, save_payload = product_server._save_product_workspace_facts_locally(
+        {
+            "offer_id": OFFER_ID,
+            "expected_revision": 16,
+            "title": EN_MASTER,
+            "cost_cny": 6,
+            "weight_kg": 0.12,
+            "package_cm": [40, 3, 3],
+            "selected_sku_keys": [";HS4489Q;30*40CM*3排版;"],
+            "sku_label_overrides": {
+                ";HS4489Q;30*40CM*3排版;": "30 x 40 cm, 3 Pieces",
+            },
+        }
+    )
+
+    assert save_status == 200
+    assert save_payload["revision"] == 17
+    assert len(saves) == 2
+    assert state["listing_copy"]["status"] == "adopted_in_product_facts"
+    assert state["listing_copy"]["adopted_title"] == EN_MASTER
+
+
+@pytest.mark.parametrize(
+    ("field", "changed_value"),
+    [
+        ("cost_cny", 6.5),
+        ("weight_kg", 0.14),
+        ("package_cm", [41, 3, 3]),
+    ],
+)
+def test_title_adoption_rejects_true_approved_fact_changes(
+    monkeypatch,
+    tmp_path,
+    field,
+    changed_value,
+):
+    initial = _locked_state()
+    initial["review"][field] = changed_value
+    state, saves, store = _install(monkeypatch, tmp_path, initial=initial)
+
+    status, payload = product_server._adopt_product_workspace_title_candidate(
+        _request(state)
+    )
+
+    assert status == 409
+    assert payload["error_code"] == "title_candidate_stale"
+    assert saves == []
+    assert not store.path.exists()
+
+
+def test_locked_stale_candidate_can_be_refreshed_with_explicit_kyle_approval(
+    monkeypatch,
+    tmp_path,
+):
+    initial = _locked_state()
+    initial["listing_copy"]["status"] = "superseded_product_facts_changed"
+    state, saves, store = _install(monkeypatch, tmp_path, initial=initial)
+    plan, _run = _create_failed_release(store)
+    generated = {
+        "schema_version": "listing-copy-candidates-v4",
+        "status": "draft_pending_kyle_review",
+        "semantic_master_en": "Fresh English Master Title for the Approved Facts",
+        "candidates": [],
+        "policy_version": "listing-copy-candidates-v4",
+        "model": "fixture-model",
+    }
+    monkeypatch.setattr(
+        content_operations,
+        "generate_title_candidates",
+        lambda _facts: copy.deepcopy(generated),
+    )
+
+    status, payload = product_server._generate_product_workspace_title_draft(
+        {
+            "offer_id": OFFER_ID,
+            "expected_revision": 15,
+            "refresh_stale_locked_candidate": True,
+            "user_approved": True,
+            "approved_by": "Kyle",
+        }
+    )
+
+    assert status == 200
+    assert payload["locked_stale_refresh"] is True
+    assert payload["superseded_release_plan_id"] == plan["plan_id"]
+    assert payload["marketplace_writes_performed"] == []
+    assert len(saves) == 1
+    assert state["review"]["fields_locked"] is True
+    assert state["product_approval"]["status"] == "approved"
+    assert state["listing_copy"]["status"] == "draft_pending_kyle_review"
+    assert state["listing_copy"]["refreshed_while_product_locked"] is True
+    assert state["listing_copy"]["input_signature"] == listing_title_fact_signature(
+        product_server._listing_title_facts(
+            new_product_workbench,
+            OFFER_ID,
+            state,
+            source=SOURCE,
+        )
+    )
+    assert store.get_plan(plan["plan_id"])["status"] == "SUPERSEDED"
+
+
+def test_locked_stale_refresh_requires_literal_kyle_approval(
+    monkeypatch,
+    tmp_path,
+):
+    initial = _locked_state()
+    initial["listing_copy"]["status"] = "superseded_product_facts_changed"
+    state, saves, store = _install(monkeypatch, tmp_path, initial=initial)
+
+    status, payload = product_server._generate_product_workspace_title_draft(
+        {
+            "offer_id": OFFER_ID,
+            "expected_revision": 15,
+            "refresh_stale_locked_candidate": True,
+            "user_approved": False,
+            "approved_by": "Kyle",
+        }
+    )
+
+    assert status == 409
+    assert payload["error_code"] == "locked_title_refresh_requires_kyle_approval"
     assert saves == []
     assert not store.path.exists()
 

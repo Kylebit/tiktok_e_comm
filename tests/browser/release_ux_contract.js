@@ -604,6 +604,112 @@ async function productLockedTitleAdoption(browser) {
   }
 }
 
+async function productLockedStaleTitleRefresh(browser) {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await context.newPage();
+  const errors = [];
+  let refreshRequest = null;
+  let confirmation = "";
+  const staleDashboard = JSON.parse(JSON.stringify(productDashboard));
+  staleDashboard.product.revision = 20;
+  staleDashboard.product.fields_locked = true;
+  staleDashboard.product.actual_product_approved = true;
+  staleDashboard.listing_copy = {
+    status: "superseded_product_facts_changed",
+    semantic_master_en: "Stale English Master",
+    candidates: [],
+    input_signature: "sha256:legacy-mutable-source-summary",
+    policy_version: "listing-copy-candidates-v4",
+    model: "gpt-5.4-mini-official",
+  };
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+  });
+  page.on("dialog", async (dialog) => {
+    confirmation = dialog.message();
+    await dialog.accept();
+  });
+  await page.route("**/*", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.origin !== baseUrl) return route.abort("blockedbyclient");
+    if (!url.pathname.startsWith("/api/")) return route.continue();
+    if (url.pathname === "/api/product-workspace/dashboard") {
+      return route.fulfill(jsonResponse(staleDashboard));
+    }
+    if (
+      url.pathname === "/api/product-workspace/title-draft"
+      && request.method() === "POST"
+    ) {
+      refreshRequest = request.postDataJSON();
+      const updated = JSON.parse(JSON.stringify(staleDashboard));
+      updated.product.revision = 21;
+      updated.listing_copy = {
+        status: "draft_pending_kyle_review",
+        semantic_master_en: "Fresh English Master for Approved Product Facts",
+        candidates: [],
+        input_signature: "sha256:stable-approved-facts",
+        fact_snapshot: { offer_id: "3828540231" },
+        model_input_signature: "sha256:audited-model-input",
+        policy_version: "listing-copy-candidates-v4",
+        model: "gpt-5.4-mini-official",
+      };
+      return route.fulfill(jsonResponse({
+        ok: true,
+        revision: 21,
+        locked_stale_refresh: true,
+        superseded_release_plan_id: "omnichannel:old-plan",
+        marketplace_writes_performed: [],
+        dashboard: updated,
+      }));
+    }
+    const fixture = apiFixture(
+      url,
+      request.method(),
+      { delayWeekly: false, delaySku: false, pending: {} },
+    );
+    return route.fulfill(fixture || jsonResponse({ ok: false }, 404));
+  });
+  try {
+    await page.goto(`${baseUrl}/product-workspace?offer_id=3828540231`, {
+      waitUntil: "networkidle",
+    });
+    const refresh = page.locator("#generateTitleDraftButton");
+    check(
+      await refresh.isEnabled(),
+      "product: locked stale title exposes an explicit refresh action",
+    );
+    await refresh.click();
+    await page.waitForFunction(
+      () => document.querySelector(".adopt-title-candidate")?.disabled === false,
+    );
+    check(
+      confirmation.includes("废止旧 ReleasePlan")
+      && confirmation.includes("不会修改已批准商品事实")
+      && confirmation.includes("不会写妙手或渠道"),
+      "product: locked stale refresh explains local supersession and no external write",
+      confirmation,
+    );
+    check(
+      refreshRequest
+      && refreshRequest.expected_revision === 20
+      && refreshRequest.refresh_stale_locked_candidate === true
+      && refreshRequest.user_approved === true
+      && refreshRequest.approved_by === "Kyle",
+      "product: locked stale refresh submits exact revision and Kyle approval",
+      refreshRequest,
+    );
+    check(
+      errors.length === 0,
+      "product locked stale title refresh: no console/page errors",
+      errors,
+    );
+  } finally {
+    await context.close();
+  }
+}
+
 async function productReleaseTerminalState(browser) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await context.newPage();
@@ -982,6 +1088,7 @@ async function legacyStateSafety(browser) {
     }
     await productAsyncFeedback(browser);
     await productLockedTitleAdoption(browser);
+    await productLockedStaleTitleRefresh(browser);
     await productReleaseTerminalState(browser);
     await aiAsyncFeedback(browser);
     await profitAsyncAndNoFalseSuccess(browser);

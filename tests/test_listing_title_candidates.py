@@ -9,6 +9,7 @@ from domains.content_operations.listing_title_candidates import (
     TOAPI_TITLE_MODEL,
     fact_signature,
     generate_title_candidates,
+    model_input_signature,
 )
 
 
@@ -17,6 +18,8 @@ def _facts() -> dict:
         "offer_id": "3828540231",
         "source_title_zh": "水彩复古花卉蝴蝶墙贴",
         "category": {"name": "墙贴"},
+        "cost_cny": 9,
+        "weight_kg": 0.14,
         "package_cm": [30, 3, 3],
         "selected_skus": [{"key": "30x90cm", "label": "30x90cm"}],
         "verified_attributes": {"材质": "PVC"},
@@ -96,6 +99,11 @@ def test_model_candidates_are_platform_specific_and_auditable():
     assert result["repair_performed"] is False
     assert len(result["shopee_description_en"]) >= 500
     assert result["input_signature"] == fact_signature(_facts())
+    assert result["fact_snapshot"]["cost_cny"] == "9"
+    assert result["fact_snapshot"]["selected_skus"] == [
+        {"key": "30x90cm", "label": "30x90cm"}
+    ]
+    assert result["model_input_signature"] == model_input_signature(_facts())
     assert len(result["candidates"]) == len(EXPECTED_TARGETS)
     assert {(row["channel"], row["site"]) for row in result["candidates"]} == {
         (channel, site) for channel, site, _language, _limit in EXPECTED_TARGETS
@@ -143,6 +151,29 @@ def test_non_english_source_brand_line_is_omitted_from_english_description():
 
     assert "博冉优品" not in result["shopee_description_en"]
     assert result["generation_attempts"] == 1
+
+
+def test_model_prompt_excludes_chinese_and_english_brand_attributes():
+    facts = {
+        **_facts(),
+        "verified_attributes": {
+            "\u54c1\u724c": "SECRET-CHINESE-BRAND",
+            "Brand Name": "SECRET-ENGLISH-BRAND",
+            "\u6750\u8d28": "PVC",
+        },
+    }
+    calls = []
+
+    def model_call(messages, **_kwargs):
+        calls.append(messages)
+        return _model_payload()
+
+    generate_title_candidates(facts, model_call=model_call)
+
+    prompt = calls[0][1]["content"]
+    assert "SECRET-CHINESE-BRAND" not in prompt
+    assert "SECRET-ENGLISH-BRAND" not in prompt
+    assert "PVC" in prompt
 
 
 def test_missing_platform_candidate_is_rejected():
@@ -202,9 +233,36 @@ def test_wrong_platform_language_is_rejected():
         )
 
 
-def test_fact_signature_ignores_price_but_changes_with_visual_facts():
+def test_fact_signature_ignores_readback_enrichment_but_tracks_approved_facts():
     base = _facts()
-    with_price = {**base, "cost_cny": 9}
-    changed = {**base, "package_cm": [31, 3, 3]}
-    assert fact_signature(base) == fact_signature(with_price)
-    assert fact_signature(base) != fact_signature(changed)
+    enriched = {
+        **base,
+        "verified_attributes": {
+            **base["verified_attributes"],
+            "\u54c1\u724c": "Miaoshou readback enrichment",
+            "\u529f\u80fd": "Miaoshou readback enrichment",
+        },
+    }
+    source_price_changed = {
+        **base,
+        "selected_skus": [
+            {**base["selected_skus"][0], "price_cny": 999}
+        ],
+    }
+    assert fact_signature(base) == fact_signature(enriched)
+    assert fact_signature(base) == fact_signature(source_price_changed)
+    assert model_input_signature(base) != model_input_signature(enriched)
+
+    changes = [
+        {**base, "source_title_zh": "\u4e0d\u540c\u6765\u6e90\u6807\u9898"},
+        {**base, "cost_cny": 9.5},
+        {**base, "weight_kg": 0.15},
+        {**base, "package_cm": [31, 3, 3]},
+        {
+            **base,
+            "selected_skus": [
+                {"key": "another", "label": "Another specification"}
+            ],
+        },
+    ]
+    assert all(fact_signature(base) != fact_signature(changed) for changed in changes)

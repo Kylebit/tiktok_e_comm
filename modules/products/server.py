@@ -620,6 +620,8 @@ def _listing_title_facts(
         "offer_id": offer_id,
         "source_title_zh": str(source.get("title_source") or "").strip(),
         "category": dict(review.get("category") or {}),
+        "cost_cny": review.get("cost_cny"),
+        "weight_kg": review.get("weight_kg"),
         "package_cm": list(review.get("package_cm") or ()),
         "selected_skus": selected_skus,
         "verified_attributes": dict(source.get("attributes") or {}),
@@ -754,7 +756,17 @@ def _adopt_product_workspace_title_candidate(data: dict) -> tuple[int, dict]:
                 source=source,
             )
         )
-        if not stored_signature or stored_signature != current_signature:
+        stored_fact_snapshot = listing_copy.get("fact_snapshot")
+        snapshot_signature = (
+            listing_title_fact_signature(stored_fact_snapshot)
+            if isinstance(stored_fact_snapshot, dict)
+            else ""
+        )
+        candidate_is_current = bool(stored_signature) and (
+            stored_signature == current_signature
+            or snapshot_signature == current_signature
+        )
+        if not candidate_is_current:
             return 409, {
                 "ok": False,
                 "error_code": "title_candidate_stale",
@@ -781,12 +793,7 @@ def _adopt_product_workspace_title_candidate(data: dict) -> tuple[int, dict]:
                 "error_code": "invalid_semantic_master_en",
                 "error": str(error),
             }
-        if adopted_title == str(review.get("title") or "").strip():
-            return 409, {
-                "ok": False,
-                "error_code": "title_candidate_already_current",
-                "error": "semantic_master_en is already the current product title",
-            }
+        title_changed = adopted_title != str(review.get("title") or "").strip()
 
         store = default_release_store()
         active_plan = store.active_plan_for_product(offer_id)
@@ -796,8 +803,15 @@ def _adopt_product_workspace_title_candidate(data: dict) -> tuple[int, dict]:
             else ""
         )
         reason = (
-            "Kyle adopted the current semantic_master_en; product facts "
-            f"changed from revision {expected_revision}"
+            (
+                "Kyle adopted the current semantic_master_en; product facts "
+                f"changed from revision {expected_revision}"
+            )
+            if title_changed
+            else (
+                "Kyle reaffirmed a refreshed semantic_master_en that already "
+                f"matches approved product revision {expected_revision}"
+            )
         )
         if active_plan_id:
             try:
@@ -812,23 +826,24 @@ def _adopt_product_workspace_title_candidate(data: dict) -> tuple[int, dict]:
         superseded_at = datetime.now(timezone.utc).isoformat()
         prior_approval_id = str(approval.get("approval_id") or "").strip()
         next_state = dict(state)
-        next_review = dict(review)
-        next_review.update(
-            {
-                "title": adopted_title,
-                "fields_locked": False,
+        if title_changed:
+            next_review = dict(review)
+            next_review.update(
+                {
+                    "title": adopted_title,
+                    "fields_locked": False,
+                }
+            )
+            next_state["review"] = next_review
+            next_state["product_approval"] = {
+                **approval,
+                "status": "superseded",
+                "superseded_at": superseded_at,
+                "superseded_by": "product_workspace_en_master_adoption",
+                "superseded_revision": expected_revision,
+                "superseded_fields": ["title"],
+                "supersede_reason": reason,
             }
-        )
-        next_state["review"] = next_review
-        next_state["product_approval"] = {
-            **approval,
-            "status": "superseded",
-            "superseded_at": superseded_at,
-            "superseded_by": "product_workspace_en_master_adoption",
-            "superseded_revision": expected_revision,
-            "superseded_fields": ["title"],
-            "supersede_reason": reason,
-        }
         next_listing_copy = dict(listing_copy)
         next_listing_copy.update(
             {
@@ -837,8 +852,11 @@ def _adopt_product_workspace_title_candidate(data: dict) -> tuple[int, dict]:
                 "adopted_at": superseded_at,
                 "adopted_by": "Kyle",
                 "adoption_input_signature": stored_signature,
-                "superseded_product_approval_id": prior_approval_id or None,
+                "superseded_product_approval_id": (
+                    prior_approval_id or None
+                ) if title_changed else None,
                 "superseded_release_plan_id": active_plan_id or None,
+                "product_approval_preserved": not title_changed,
             }
         )
         next_state["listing_copy"] = next_listing_copy
@@ -846,12 +864,17 @@ def _adopt_product_workspace_title_candidate(data: dict) -> tuple[int, dict]:
         supersessions.append(
             {
                 "source": "product_workspace_en_master_adoption",
-                "status": "superseded",
+                "status": "superseded" if title_changed else "reaffirmed",
                 "expected_revision": expected_revision,
-                "changed_fields": ["title"],
+                "changed_fields": ["title"] if title_changed else [],
                 "reason": reason,
                 "superseded_at": superseded_at,
-                "prior_approval_id": prior_approval_id or None,
+                "prior_approval_id": (
+                    prior_approval_id or None
+                ) if title_changed else None,
+                "preserved_approval_id": (
+                    prior_approval_id or None
+                ) if not title_changed else None,
                 "prior_release_plan_id": active_plan_id or None,
                 "adopted_title": adopted_title,
                 "input_signature": stored_signature,
@@ -893,9 +916,16 @@ def _adopt_product_workspace_title_candidate(data: dict) -> tuple[int, dict]:
         "persisted": True,
         "revision": int(saved.get("_revision") or 0),
         "adopted_title": adopted_title,
-        "superseded_product_approval_id": prior_approval_id or None,
+        "superseded_product_approval_id": (
+            prior_approval_id or None
+        ) if title_changed else None,
         "superseded_release_plan_id": active_plan_id or None,
-        "next_action": "review_and_reapprove_product_facts",
+        "product_approval_preserved": not title_changed,
+        "next_action": (
+            "review_and_reapprove_product_facts"
+            if title_changed
+            else "create_successor_release_plan"
+        ),
         "local_writes_performed": local_writes,
         "external_writes_performed": [],
         "dashboard": _product_workspace_view(dashboard),
@@ -908,6 +938,10 @@ def _generate_product_workspace_title_draft(data: dict) -> tuple[int, dict]:
     from domains.content_operations import generate_title_candidates
     from modules.sourcing import new_product_workbench as np_mod
     from shared_platform import release_control
+    from shared_platform.release_store import (
+        ReleaseStoreError,
+        default_release_store,
+    )
 
     offer_id = str(data.get("offer_id") or "").strip()
     expected_revision = data.get("expected_revision")
@@ -923,7 +957,7 @@ def _generate_product_workspace_title_draft(data: dict) -> tuple[int, dict]:
             "error": "expected_revision must be a positive integer",
         }
 
-    with _product_workbench_lock(offer_id):
+    with _release_execution_lock, _product_workbench_lock(offer_id):
         state = np_mod.load_state(offer_id)
         current_revision = int(state.get("_revision") or 0)
         if current_revision != expected_revision:
@@ -935,10 +969,37 @@ def _generate_product_workspace_title_draft(data: dict) -> tuple[int, dict]:
         review = state.get("review")
         if not isinstance(review, dict):
             return 409, {"ok": False, "error": "state review must be a mapping"}
-        if bool(review.get("fields_locked")):
+        approval = state.get("product_approval")
+        locked = bool(review.get("fields_locked"))
+        listing_copy = (
+            state.get("listing_copy")
+            if isinstance(state.get("listing_copy"), dict)
+            else {}
+        )
+        locked_stale_refresh = (
+            locked
+            and str(listing_copy.get("status") or "").startswith("superseded")
+            and data.get("refresh_stale_locked_candidate") is True
+            and data.get("user_approved") is True
+            and str(data.get("approved_by") or "").strip() == "Kyle"
+        )
+        if locked and not locked_stale_refresh:
             return 409, {
                 "ok": False,
-                "error": "approved product facts are locked",
+                "error_code": "locked_title_refresh_requires_kyle_approval",
+                "error": (
+                    "approved product facts are locked; only an explicitly "
+                    "approved refresh of a stale title candidate is allowed"
+                ),
+            }
+        if locked_stale_refresh and not (
+            isinstance(approval, dict)
+            and str(approval.get("status") or "").strip().casefold() == "approved"
+        ):
+            return 409, {
+                "ok": False,
+                "error_code": "active_product_approval_required",
+                "error": "locked title refresh requires the active product approval",
             }
         facts = _listing_title_facts(np_mod, offer_id, state)
         try:
@@ -950,6 +1011,46 @@ def _generate_product_workspace_title_draft(data: dict) -> tuple[int, dict]:
                 "model_request_failed": True,
                 "marketplace_writes_performed": [],
             }
+        from domains.content_operations import (
+            listing_title_fact_signature,
+            listing_title_fact_snapshot,
+            listing_title_model_input_signature,
+        )
+
+        draft = dict(draft)
+        draft.setdefault("input_signature", listing_title_fact_signature(facts))
+        draft.setdefault("fact_snapshot", listing_title_fact_snapshot(facts))
+        draft.setdefault(
+            "model_input_signature",
+            listing_title_model_input_signature(facts),
+        )
+        superseded_plan_id = ""
+        if locked_stale_refresh:
+            store = default_release_store()
+            active_plan = store.active_plan_for_product(offer_id)
+            superseded_plan_id = (
+                str(active_plan.get("plan_id") or "").strip()
+                if isinstance(active_plan, dict)
+                else ""
+            )
+            if superseded_plan_id:
+                try:
+                    store.supersede_plan(
+                        superseded_plan_id,
+                        reason=(
+                            "Kyle refreshed a stale audited title candidate "
+                            f"from locked product revision {expected_revision}"
+                        ),
+                    )
+                except ReleaseStoreError as error:
+                    return 409, {
+                        "ok": False,
+                        "error_code": "release_plan_supersession_failed",
+                        "error": str(error),
+                    }
+            draft["refreshed_while_product_locked"] = True
+            draft["refreshed_by"] = "Kyle"
+            draft["superseded_release_plan_id"] = superseded_plan_id or None
         next_state = dict(state)
         next_state["listing_copy"] = draft
         try:
@@ -975,6 +1076,8 @@ def _generate_product_workspace_title_draft(data: dict) -> tuple[int, dict]:
         "persisted": True,
         "revision": int(saved.get("_revision") or 0),
         "language_model_request_performed": True,
+        "locked_stale_refresh": locked_stale_refresh,
+        "superseded_release_plan_id": superseded_plan_id or None,
         "marketplace_writes_performed": [],
         "dashboard": _product_workspace_view(dashboard),
     }

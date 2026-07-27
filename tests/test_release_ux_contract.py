@@ -375,8 +375,9 @@ def test_remaining_channel_retry_ui_uses_only_the_target_scoped_seam():
     assert "target-scoped-action" in submit
     assert "confirm_target_scoped_action: true" in submit
     assert 'approved_by: "Kyle"' in submit
-    for field in ("proof_digest", "failure_attempt", "payload_digest", "preflight_digest"):
+    for field in ("proof_digest", "failure_attempt", "payload_digest", "planned_command_digest", "preflight_digest"):
         assert field in submit
+    assert "planned_command:" not in submit
     assert "publishSelectedTargets" not in submit
     assert "target-scoped-action-panel" in styles
 

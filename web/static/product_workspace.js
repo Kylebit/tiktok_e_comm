@@ -2116,6 +2116,7 @@
         target_label: targetLabel,
         expected_revision: preview.expected_revision,
         payload_digest: preview.payload_digest,
+        planned_command_digest: preview.planned_command_digest,
         preflight_digest: preview.preflight_digest,
         proof_digest: preview.proof_digest,
         failure_attempt: preview.failure_attempt,

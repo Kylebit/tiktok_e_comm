@@ -36,6 +36,7 @@ def _proof_payload(request: TargetScopedOperationRequest, *, checks: Mapping[str
         "target_label": request.target_label,
         "product_revision": request.product_revision,
         "payload_digest": request.payload_digest,
+        "planned_command_digest": request.planned_command_digest,
         "preflight_digest": request.preflight_digest,
         "failure_attempt": request.failure_attempt,
         "failure_digest": request.failure_digest,
@@ -77,6 +78,12 @@ def _shopee_proof(request: TargetScopedOperationRequest) -> tuple[dict[str, Any]
     global_item_id = str(global_item_id_for_match_key(seller_sku) or "")
     if not global_item_id:
         raise TargetScopedRetryError("existing global item identity is required")
+    from modules.shopee.target_scoped import inspect_existing_global, compatible_prepared_logistics
+    global_facts = inspect_existing_global(
+        shop_id=shop_id, access_token=token, global_item_id=global_item_id,
+        model_sku=request.planned_command["model_sku"],
+        approved_master_digest=request.planned_command["approved_master_digest"],
+    )
     evidence: dict[str, Any] = {
         "source": "shopee:official_get_only",
         "region": region,
@@ -86,6 +93,9 @@ def _shopee_proof(request: TargetScopedOperationRequest) -> tuple[dict[str, Any]
         "full_pagination": True,
         "regional_match_count": 0,
         "authentication": "prepared_token_only",
+        "global_model_id": global_facts["global_model_id"],
+        "global_tier_index": global_facts["tier_index"],
+        "approved_master_digest": request.planned_command_digest,
     }
     checks: dict[str, bool] = {
         "prepared_token": True,
@@ -93,14 +103,21 @@ def _shopee_proof(request: TargetScopedOperationRequest) -> tuple[dict[str, Any]
         "existing_global_identity": True,
         "no_refresh": True,
     }
+    logistics = compatible_prepared_logistics(
+        shop_id=shop_id, access_token=token, parcel=request.planned_command["parcel"],
+        excluded_ids=request.planned_command.get("excluded_logistics_ids") or (),
+    )
     if region == "VN":
-        from modules.shopee.target_scoped import compatible_prepared_logistics
-        logistics = compatible_prepared_logistics(shop_id=shop_id, access_token=token)
         ids = tuple(sorted(int(value) for value in logistics))
         if not ids or 50052 in ids:
             raise TargetScopedRetryError("VN compatible logistics proof is not exact")
         evidence.update({"compatible_logistics_digest": canonical_digest({"ids": ids}), "compatible_logistics_count": len(ids), "unsupported_50052_absent": True})
         checks.update({"vn_logistics_nonempty": True, "vn_50052_absent": True})
+    evidence["selected_logistics_ids"] = tuple(sorted(int(value) for value in logistics))
+    evidence["selected_logistics_digest"] = canonical_digest({"ids": evidence["selected_logistics_ids"]})
+    checks.update({"global_model_unique": True, "master_digest_exact": True, "enabled_logistics_nonempty": bool(logistics)})
+    if not logistics:
+        raise TargetScopedRetryError("no enabled logistics satisfies the immutable parcel policy")
     return checks, evidence
 
 
@@ -139,7 +156,7 @@ def _assert_proof(request: TargetScopedOperationRequest, proof: Any) -> Mapping[
     raw = proof.durable_payload() if hasattr(proof, "durable_payload") else proof
     if not isinstance(raw, Mapping) or raw.get("target_label") != request.target_label:
         raise TargetScopedRetryError("proof target identity does not match request")
-    if raw.get("proof_digest") != canonical_digest({key: raw[key] for key in ("schema_version", "operation_kind", "plan_id", "run_id", "target_label", "product_revision", "payload_digest", "preflight_digest", "failure_attempt", "failure_digest", "provided_by", "allow_refresh", "checks", "semantic_evidence", "external_writes_performed")}):
+    if raw.get("planned_command_digest") != request.planned_command_digest or raw.get("proof_digest") != canonical_digest({key: raw[key] for key in ("schema_version", "operation_kind", "plan_id", "run_id", "target_label", "product_revision", "payload_digest", "planned_command_digest", "preflight_digest", "failure_attempt", "failure_digest", "provided_by", "allow_refresh", "checks", "semantic_evidence", "external_writes_performed")}):
         raise TargetScopedRetryError("proof digest is stale or invalid")
     return raw
 
@@ -154,6 +171,8 @@ def execute_target_scoped_operation(request: TargetScopedOperationRequest, proof
             return AdapterExecutionResult(False, False, "Shopee dispatch/readback requires reconciliation", str(receipt.get("item_id") or "") or None, {"external_writes_performed": ["shopee:regional_publish"], "reconciliation_required": True})
         return AdapterExecutionResult(True, True, "Shopee one-site publish readback verified", str(receipt["item_id"]), {"verified": True, "external_writes_performed": ["shopee:regional_publish"], "readback": receipt})
     if request.target_label == _OZON_TARGET:
+        if not request.planned_command:
+            raise TargetScopedRetryError("Ozon successor stock decision is required")
         from modules.ozon.target_scoped import stock_existing_product
         receipt = stock_existing_product(product_id="5687436857", offer_id=request.seller_sku[-4:].zfill(4))
         if receipt.get("verified") is not True:

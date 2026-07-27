@@ -2013,6 +2013,109 @@ def _approve_release_plan_locally(data: dict) -> tuple[int, dict]:
     }
 
 
+def _release_reconciliation_required(
+    run: dict,
+    target_labels: list[str],
+    *,
+    external_writes_performed: list[str] | None = None,
+) -> tuple[int, dict]:
+    """Fail closed when a begun target has no durable terminal receipt."""
+
+    return 409, {
+        "ok": False,
+        "code": "reconciliation_required",
+        "error": (
+            "a release target is still RUNNING; its external outcome must be "
+            "reconciled before any retry"
+        ),
+        "reconciliation_required": True,
+        "blocked_targets": list(target_labels),
+        "external_writes_performed": list(
+            external_writes_performed or ()
+        ),
+        "run": run,
+    }
+
+
+def _uncertain_adapter_receipt_response(
+    *,
+    store,
+    run: dict,
+    label: str,
+    result,
+    error: Exception,
+    prior_external_writes: list[str],
+) -> tuple[int, dict]:
+    """Persist fail-closed evidence after an external success lost its receipt."""
+
+    result_evidence = dict(result.readback_evidence or {})
+    detected_writes = [
+        str(value)
+        for value in (
+            result_evidence.get("external_writes_performed")
+            or [label]
+        )
+        if str(value)
+    ]
+    uncertain_evidence = {
+        **result_evidence,
+        "verified": bool(result.readback_verified),
+        "submission_accepted": bool(result.submission_accepted),
+        "durable_state_uncertain": True,
+        "durable_receipt_error": str(error),
+        "external_writes_performed": detected_writes,
+    }
+    failure_record_error = ""
+    try:
+        store.record_target_failure(
+            run["run_id"],
+            label,
+            error=(
+                "external action completed but durable terminal receipt "
+                f"failed: {error}"
+            ),
+            external_id=result.external_reference,
+            failure_evidence=uncertain_evidence,
+        )
+    except Exception as record_error:
+        failure_record_error = str(record_error)
+    response = {
+        "ok": False,
+        "code": "reconciliation_required",
+        "error": (
+            "external action completed but its durable terminal receipt "
+            "is uncertain"
+        ),
+        "detail": str(error),
+        "blocked_target": label,
+        "blocked_targets": [label],
+        "external_reference": result.external_reference,
+        "readback_evidence": result_evidence,
+        "durable_state_uncertain": True,
+        "reconciliation_required": True,
+        "external_writes_performed": [
+            *prior_external_writes,
+            *detected_writes,
+        ],
+        "run": store.get_run(run["run_id"]) or run,
+    }
+    if failure_record_error:
+        response["run_record_error"] = failure_record_error
+    return 409, response
+
+
+def _adapter_result_has_external_outcome(result) -> bool:
+    if result is None:
+        return False
+    evidence = dict(result.readback_evidence or {})
+    return bool(
+        result.external_reference
+        or result.submission_accepted
+        or (result.succeeded and result.readback_verified)
+        or evidence.get("external_writes_performed")
+    )
+
+
 def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
     """Execute only the approved common-draft write and verified readback."""
     from modules.products.release_adapters import (
@@ -2248,6 +2351,11 @@ def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
                     for row in run["targets"]
                     if row["target_label"] == "miaoshou:COMMON"
                 )
+                if target["status"] == "RUNNING":
+                    return _release_reconciliation_required(
+                        run,
+                        ["miaoshou:COMMON"],
+                    )
                 if target["status"] == "FAILED":
                     run = store.retry_failed_targets(
                         run["run_id"],
@@ -2290,6 +2398,11 @@ def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
                 "run": run,
                 "dashboard": _product_workspace_view(dashboard),
             }
+        if target["status"] == "RUNNING":
+            return _release_reconciliation_required(
+                run,
+                ["miaoshou:COMMON"],
+            )
         if target["status"] == "FAILED":
             failure_evidence = (
                 (target.get("latest_failure_evidence") or {}).get(
@@ -2317,6 +2430,8 @@ def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
     except (ReleaseAuthorizationError, ReleaseStoreError, StopIteration) as error:
         return 409, {"ok": False, "error": str(error)}
 
+    result = None
+    common_readback_evidence = None
     try:
         result = write_miaoshou_common_from_plan(plan.get("payload") or {})
         if not result.get("written_to_miaoshou") or not result.get("verified"):
@@ -2347,27 +2462,52 @@ def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
                     ),
                 },
             )
+        common_readback_evidence = {
+            "source": "miaoshou_open_api",
+            "verified": True,
+            "offer_id": str(
+                result.get("offer_id") or plan_payload["product_id"]
+            ),
+            "collect_box_detail_id": result.get("detail_id"),
+            "checks": dict(result.get("checks") or {}),
+            "image_count": len(
+                ((result.get("draft") or {}).get("imgUrls") or ())
+            ),
+            "external_writes_performed": list(
+                result.get("external_writes_performed")
+                or ["miaoshou:COMMON:immutable_plan_write"]
+            ),
+        }
         store.record_target_success(
             run["run_id"],
             "miaoshou:COMMON",
             external_id=str(result.get("offer_id") or plan_payload["product_id"]),
-            readback_evidence={
-                "source": "miaoshou_open_api",
-                "verified": True,
-                "offer_id": str(
-                    result.get("offer_id") or plan_payload["product_id"]
-                ),
-                "collect_box_detail_id": result.get("detail_id"),
-                "checks": dict(result.get("checks") or {}),
-                "image_count": len(
-                    ((result.get("draft") or {}).get("imgUrls") or ())
-                ),
-            },
+            readback_evidence=common_readback_evidence,
         )
     except Exception as error:
         store_record_error = ""
         failure_evidence = getattr(error, "external_write_evidence", None)
         external_reference = getattr(error, "external_reference", None)
+        if (
+            not isinstance(failure_evidence, dict)
+            and isinstance(result, dict)
+            and result.get("written_to_miaoshou")
+        ):
+            external_reference = str(
+                result.get("offer_id") or plan_payload["product_id"]
+            )
+            failure_evidence = {
+                **dict(common_readback_evidence or {}),
+                "source": "miaoshou_open_api",
+                "verified": bool(result.get("verified")),
+                "save_accepted": True,
+                "durable_state_uncertain": True,
+                "durable_receipt_error": str(error),
+                "external_writes_performed": list(
+                    result.get("external_writes_performed")
+                    or ["miaoshou:COMMON:immutable_plan_write"]
+                ),
+            }
         try:
             store.record_target_failure(
                 run["run_id"],
@@ -2382,6 +2522,23 @@ def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
             "ok": False,
             "error": str(error),
             "run": store.get_run(run["run_id"]),
+            "external_reference": external_reference,
+            "readback_evidence": (
+                dict(common_readback_evidence)
+                if isinstance(common_readback_evidence, dict)
+                else None
+            ),
+            "durable_state_uncertain": bool(
+                isinstance(failure_evidence, dict)
+                and failure_evidence.get("durable_state_uncertain")
+            ),
+            "reconciliation_required": bool(
+                isinstance(failure_evidence, dict)
+                and (
+                    failure_evidence.get("durable_state_uncertain")
+                    or failure_evidence.get("external_writes_performed")
+                )
+            ),
             "external_writes_performed": list(
                 (
                     failure_evidence.get("external_writes_performed")
@@ -2443,6 +2600,16 @@ def _publish_selected_release(data: dict) -> tuple[int, dict]:
         target_rows = gate["target_rows"]
         assert run is not None
         run = store.get_run(run["run_id"]) or run
+        interrupted = [
+            str(row.get("target_label") or "")
+            for row in (run.get("targets") or ())
+            if row.get("status") == "RUNNING"
+        ]
+        if interrupted:
+            return _release_reconciliation_required(
+                run,
+                interrupted,
+            )
         externally_mutated_failures = [
             row
             for row in (run.get("targets") or ())
@@ -2480,16 +2647,6 @@ def _publish_selected_release(data: dict) -> tuple[int, dict]:
         ]
         if failed:
             run = store.retry_failed_targets(run["run_id"], failed)
-        interrupted = [
-            row["target_label"]
-            for row in (run.get("targets") or ())
-            if row.get("status") == "RUNNING"
-        ]
-        if interrupted:
-            run = store.recover_interrupted_targets(
-                run["run_id"],
-                interrupted,
-            )
 
         target_by_label = {
             f"{target.get('channel')}:{target.get('site')}": target
@@ -2592,6 +2749,7 @@ def _publish_selected_release(data: dict) -> tuple[int, dict]:
             registration = registry.get(str(plan_target.get("adapter") or ""))
             if not registration or not registration.executable:
                 continue
+            result = None
             try:
                 store.begin_target(run["run_id"], label)
                 request = AdapterExecutionRequest(
@@ -2658,6 +2816,15 @@ def _publish_selected_release(data: dict) -> tuple[int, dict]:
                             if str(value)
                         )
             except (ReleaseAuthorizationError, ReleaseStoreError) as error:
+                if _adapter_result_has_external_outcome(result):
+                    return _uncertain_adapter_receipt_response(
+                        store=store,
+                        run=run,
+                        label=label,
+                        result=result,
+                        error=error,
+                        prior_external_writes=external_writes,
+                    )
                 return 409, {
                     "ok": False,
                     "error": "release execution stopped by durable authorization",
@@ -2667,6 +2834,15 @@ def _publish_selected_release(data: dict) -> tuple[int, dict]:
                     "run": store.get_run(run["run_id"]) or run,
                 }
             except Exception as error:
+                if _adapter_result_has_external_outcome(result):
+                    return _uncertain_adapter_receipt_response(
+                        store=store,
+                        run=run,
+                        label=label,
+                        result=result,
+                        error=error,
+                        prior_external_writes=external_writes,
+                    )
                 failure_evidence = getattr(
                     error,
                     "external_write_evidence",

@@ -77,8 +77,8 @@ SUBMISSION_ONLY_TIKTOK_SITES = frozenset(
 )
 
 
-class MiaoshouDraftVerificationError(RuntimeError):
-    """A Miaoshou update was accepted but exact readback did not verify."""
+class ReleaseAdapterWriteVerificationError(RuntimeError):
+    """A mutating adapter dispatch needs durable reconciliation."""
 
     def __init__(
         self,
@@ -90,6 +90,10 @@ class MiaoshouDraftVerificationError(RuntimeError):
         super().__init__(message)
         self.external_reference = external_reference
         self.external_write_evidence = evidence
+
+
+class MiaoshouDraftVerificationError(ReleaseAdapterWriteVerificationError):
+    """A Miaoshou update was accepted but exact readback did not verify."""
 
 
 def production_adapter_registry() -> dict[str, AdapterRegistration]:
@@ -487,23 +491,54 @@ def _repair_tiktok_title(
 
     token, shop = _tiktok_shop(region)
     cipher = str(shop.get("cipher") or shop.get("shop_cipher") or "")
-    response = tiktok_post(
-        f"/product/202309/products/{product_id}/partial_edit",
-        token,
-        {"shop_cipher": cipher},
-        {"title": approved_title},
-    )
-    if response.get("code") != 0:
-        raise RuntimeError(
-            response.get("message")
-            or f"TikTok {region} approved-title repair failed"
-        )
-    return {
+    evidence = {
+        "source": "official_tiktok_shop_api",
+        "verified": False,
         "action": "official_tiktok_partial_edit",
         "fields": ["title"],
         "product_id": product_id,
         "region": region,
-        "verified": False,
+        "approved_title": approved_title,
+        "external_writes_performed": [
+            "tiktok:official_title_partial_edit"
+        ],
+    }
+    try:
+        response = tiktok_post(
+            f"/product/202309/products/{product_id}/partial_edit",
+            token,
+            {"shop_cipher": cipher},
+            {"title": approved_title},
+        )
+    except Exception as error:
+        raise ReleaseAdapterWriteVerificationError(
+            (
+                f"TikTok {region} title repair outcome is unknown after "
+                f"dispatch: {error}"
+            ),
+            external_reference=product_id,
+            evidence={
+                **evidence,
+                "write_outcome": "unknown_after_dispatch",
+                "repair_exception": str(error),
+            },
+        ) from error
+    if response.get("code") != 0:
+        raise ReleaseAdapterWriteVerificationError(
+            (
+                response.get("message")
+                or f"TikTok {region} approved-title repair failed"
+            ),
+            external_reference=product_id,
+            evidence={
+                **evidence,
+                "write_outcome": "repair_rejected",
+                "response_code": response.get("code"),
+            },
+        )
+    return {
+        **evidence,
+        "write_outcome": "accepted",
     }
 
 
@@ -1011,14 +1046,35 @@ def write_miaoshou_common_from_plan(
         updated[field] = draft[field]
     updated["skuMap"] = updated_skus
     workbench._filter_miaoshou_variant_maps(updated, updated_skus)  # noqa: SLF001
-    save_response = post(
-        MIAOSHOU_COMMON_EDIT_PATH,
-        {
-            "commonCollectBoxDetailId": detail_id,
-            "editCommonCollectBoxDetail": updated,
-            "ossMd5": oss_md5,
-        },
-    )
+    try:
+        save_response = post(
+            MIAOSHOU_COMMON_EDIT_PATH,
+            {
+                "commonCollectBoxDetailId": detail_id,
+                "editCommonCollectBoxDetail": updated,
+                "ossMd5": oss_md5,
+            },
+        )
+    except Exception as error:
+        raise MiaoshouDraftVerificationError(
+            (
+                "Miaoshou COMMON immutable plan write outcome is unknown "
+                f"after dispatch: {error}"
+            ),
+            external_reference=str(payload["product_id"]),
+            evidence={
+                "source": "miaoshou_open_api",
+                "verified": False,
+                "save_accepted": False,
+                "offer_id": str(payload["product_id"]),
+                "detail_id": detail_id,
+                "write_outcome": "unknown_after_dispatch",
+                "save_exception": str(error),
+                "external_writes_performed": [
+                    "miaoshou:COMMON:immutable_plan_write"
+                ],
+            },
+        ) from error
     if save_response.get("result") != "success":
         raise RuntimeError(
             "Miaoshou COMMON immutable plan write was rejected: "
@@ -1082,18 +1138,31 @@ def _prepare_existing_miaoshou_target_from_plan(
     pricing = _store_price(payload, f"tiktok:{site}")
     draft = _immutable_miaoshou_plan_draft(payload, site=site)
     category_id = "600338"
-    write_state = {"accepted": False}
+    write_state = {
+        "accepted": False,
+        "dispatched": False,
+        "outcome": "not_dispatched",
+    }
 
     def tracked_post(path, body):
+        is_save = (
+            "save_site_collect_item_info" in str(path)
+            or "save_shop_collect_item_info" in str(path)
+        )
+        if is_save:
+            write_state["dispatched"] = True
+            write_state["outcome"] = "unknown_after_dispatch"
         response = post(path, body)
         if (
-            (
-                "save_site_collect_item_info" in str(path)
-                or "save_shop_collect_item_info" in str(path)
-            )
+            is_save
             and response.get("result") == "success"
         ):
             write_state["accepted"] = True
+            write_state["outcome"] = "accepted"
+        elif (
+            is_save
+        ):
+            write_state["outcome"] = "rejected"
         return response
 
     try:
@@ -1125,11 +1194,19 @@ def _prepare_existing_miaoshou_target_from_plan(
     except Exception as error:
         if getattr(error, "external_write_evidence", None):
             raise
-        if write_state["accepted"]:
+        if write_state["accepted"] or write_state["dispatched"]:
+            outcome_detail = (
+                "was accepted but verification raised"
+                if write_state["accepted"]
+                else (
+                    "was dispatched but its durable outcome is not safely "
+                    "retryable"
+                )
+            )
             raise MiaoshouDraftVerificationError(
                 (
-                    f"Miaoshou {site} immutable draft update was accepted but "
-                    f"verification raised: {error}"
+                    f"Miaoshou {site} immutable draft update "
+                    f"{outcome_detail}: {error}"
                 ),
                 external_reference=(
                     f"{int(resolved['detail_id'])}:{int(resolved['shop_id'])}"
@@ -1137,9 +1214,10 @@ def _prepare_existing_miaoshou_target_from_plan(
                 evidence={
                     "source": "miaoshou_open_api",
                     "verified": False,
-                    "save_accepted": True,
+                    "save_accepted": bool(write_state["accepted"]),
                     "detail_id": int(resolved["detail_id"]),
                     "shop_id": int(resolved["shop_id"]),
+                    "write_outcome": str(write_state["outcome"]),
                     "verification_error": str(error),
                     "external_writes_performed": [
                         "miaoshou:tiktok_detail:update"
@@ -1207,14 +1285,53 @@ def _miaoshou_publish_target(
         shop_id=shop_id,
         prepared_site=prepared_site,
     )
-    response = post_open(
-        MIAOSHOU_PUBLISH_PATH,
-        {"detailIds": [detail_id], "shopIds": [shop_id]},
-    )
+    failure_evidence = {
+        "source": "miaoshou_open_api",
+        "verified": False,
+        "save_accepted": True,
+        "verified_draft": True,
+        "detail_id": detail_id,
+        "shop_id": shop_id,
+        "pre_submit_audit": audit,
+        "publish_dispatched": True,
+        "external_writes_performed": [
+            "miaoshou:tiktok_detail:update"
+        ],
+    }
+    try:
+        response = post_open(
+            MIAOSHOU_PUBLISH_PATH,
+            {"detailIds": [detail_id], "shopIds": [shop_id]},
+        )
+    except Exception as error:
+        raise MiaoshouDraftVerificationError(
+            (
+                f"Miaoshou {site} publish dispatch outcome is unknown: "
+                f"{error}"
+            ),
+            external_reference=f"{detail_id}:{shop_id}",
+            evidence={
+                **failure_evidence,
+                "write_outcome": "unknown_after_dispatch",
+                "publish_exception": str(error),
+            },
+        ) from error
     if response.get("result") != "success":
-        raise RuntimeError(
-            f"Miaoshou {site} publish submission failed: "
-            f"{response.get('code')} {response.get('message') or ''}"
+        raise MiaoshouDraftVerificationError(
+            (
+                f"Miaoshou {site} publish submission failed: "
+                f"{response.get('code')} {response.get('message') or ''}"
+            ),
+            external_reference=f"{detail_id}:{shop_id}",
+            evidence={
+                **failure_evidence,
+                "write_outcome": "draft_saved_publish_rejected",
+                "publish_response": {
+                    "result": response.get("result"),
+                    "code": response.get("code"),
+                    "message": response.get("message"),
+                },
+            },
         )
     return f"{detail_id}:{shop_id}", {
         "source": "miaoshou_open_api",
@@ -1223,6 +1340,11 @@ def _miaoshou_publish_target(
         "shop_id": shop_id,
         "response_code": response.get("code"),
         "pre_submit_audit": audit,
+        "write_outcome": "submission_accepted",
+        "external_writes_performed": [
+            "miaoshou:tiktok_detail:update",
+            "miaoshou:tiktok_publish:submission",
+        ],
     }
 
 
@@ -1548,14 +1670,37 @@ def execute_tiktok_target(
                 approved_title=expected_title,
             )
             time.sleep(2)
-            verified, corrected = _tiktok_readback(
-                seller_sku=request.seller_sku,
-                region=country,
-                expected_title=expected_title,
-                expected_price=expected_price,
-                expected_image_count=len(context["images"]),
-                expected_category_id="600338",
-            )
+            try:
+                verified, corrected = _tiktok_readback(
+                    seller_sku=request.seller_sku,
+                    region=country,
+                    expected_title=expected_title,
+                    expected_price=expected_price,
+                    expected_image_count=len(context["images"]),
+                    expected_category_id="600338",
+                )
+            except Exception as error:
+                product_id = str(evidence.get("product_id") or "")
+                raise ReleaseAdapterWriteVerificationError(
+                    (
+                        f"TikTok {country} title repair was accepted, but "
+                        f"official readback raised: {error}"
+                    ),
+                    external_reference=product_id,
+                    evidence={
+                        **repair,
+                        "source": "official_tiktok_shop_api",
+                        "verified": False,
+                        "write_outcome": (
+                            "title_repair_accepted_readback_unknown"
+                        ),
+                        "readback_error": str(error),
+                        "external_writes_performed": list(
+                            repair.get("external_writes_performed")
+                            or ["tiktok:official_title_partial_edit"]
+                        ),
+                    },
+                ) from error
             corrected["repair"] = {**repair, "verified": verified}
             if verified:
                 return AdapterExecutionResult(
@@ -1585,14 +1730,60 @@ def execute_tiktok_target(
     for attempt in range(24):
         if attempt:
             time.sleep(10)
-        verified, evidence = _tiktok_readback(
-            seller_sku=request.seller_sku,
-            region=country,
-            expected_title=expected_title,
-            expected_price=expected_price,
-            expected_image_count=len(context["images"]),
-            expected_category_id="600338",
-        )
+        try:
+            verified, evidence = _tiktok_readback(
+                seller_sku=request.seller_sku,
+                region=country,
+                expected_title=expected_title,
+                expected_price=expected_price,
+                expected_image_count=len(context["images"]),
+                expected_category_id="600338",
+            )
+        except Exception as error:
+            writes = list(
+                dict.fromkeys(
+                    [
+                        *(
+                            submission.get("external_writes_performed")
+                            or ()
+                        ),
+                        *(
+                            (
+                                title_repair.get(
+                                    "external_writes_performed"
+                                )
+                                or ()
+                            )
+                            if title_repair
+                            else ()
+                        ),
+                        "miaoshou:tiktok_publish:submission",
+                    ]
+                )
+            )
+            raise MiaoshouDraftVerificationError(
+                (
+                    f"Miaoshou accepted {site}, but official TikTok readback "
+                    f"raised after submission: {error}"
+                ),
+                external_reference=external_reference,
+                evidence={
+                    **submission,
+                    "source": "miaoshou_open_api_then_tiktok_official_api",
+                    "verified": False,
+                    "submission_accepted": True,
+                    "write_outcome": (
+                        "submission_accepted_readback_unknown"
+                    ),
+                    "official_readback_error": str(error),
+                    "external_writes_performed": writes,
+                    **(
+                        {"repair": title_repair}
+                        if title_repair
+                        else {}
+                    ),
+                },
+            ) from error
         last_evidence = {**submission, **evidence, "poll_attempt": attempt + 1}
         if (
             title_repair is None

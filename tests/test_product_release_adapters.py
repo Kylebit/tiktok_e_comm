@@ -149,6 +149,69 @@ def test_miaoshou_publish_reads_current_region_site_result(monkeypatch):
     }
 
 
+@pytest.mark.parametrize(
+    ("remote_result", "expected_outcome"),
+    [
+        (
+            {"result": "error", "code": "REMOTE_REJECTED", "message": "no"},
+            "draft_saved_publish_rejected",
+        ),
+        (RuntimeError("publish transport unavailable"), "unknown_after_dispatch"),
+    ],
+)
+def test_miaoshou_publish_failure_preserves_verified_draft_evidence(
+    monkeypatch,
+    remote_result,
+    expected_outcome,
+):
+    from modules.miaoshou import client as miaoshou_client
+
+    monkeypatch.setattr(
+        release_adapters,
+        "_resolve_existing_miaoshou_tiktok_detail",
+        lambda *_args, **_kwargs: {
+            "target_key": "lh_ph",
+            "detail_id": 3224810860,
+            "shop_id": 7676267,
+            "shop": {"shop_id": 7676267},
+        },
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_prepare_existing_miaoshou_target_from_plan",
+        lambda *_args, **_kwargs: {
+            "ready": True,
+            "site_collect_shop_ids": ["7676267"],
+            "checks": {"title": True, "price": True, "logistics": True},
+        },
+    )
+
+    def publish(_path, _body):
+        if isinstance(remote_result, Exception):
+            raise remote_result
+        return remote_result
+
+    monkeypatch.setattr(miaoshou_client, "post_open", publish)
+
+    with pytest.raises(
+        release_adapters.MiaoshouDraftVerificationError,
+    ) as raised:
+        release_adapters._miaoshou_publish_target(
+            _context()["payload"],
+            site="LH_PH",
+        )
+
+    evidence = raised.value.external_write_evidence
+    assert raised.value.external_reference == "3224810860:7676267"
+    assert evidence["save_accepted"] is True
+    assert evidence["verified_draft"] is True
+    assert evidence["pre_submit_audit"]["checks"]["approved_title"] is True
+    assert evidence["write_outcome"] == expected_outcome
+    assert evidence["external_writes_performed"] == [
+        "miaoshou:tiktok_detail:update"
+    ]
+
+
 def test_existing_detail_resolver_ignores_asymmetric_claim_shops(monkeypatch):
     from modules.sourcing import new_product_workbench as workbench
 
@@ -644,6 +707,42 @@ def test_common_save_success_then_verify_exception_keeps_write_evidence():
     ] == ["miaoshou:COMMON:immutable_plan_write"]
 
 
+def test_common_save_dispatch_exception_is_unknown_and_not_retryable():
+    payload = _context()["payload"]
+
+    def post(path, _body):
+        if path == release_adapters.MIAOSHOU_COMMON_EDIT_PATH:
+            raise RuntimeError("socket closed after dispatch")
+        return {
+            "result": "success",
+            "data": {
+                "ossMd5": "before",
+                "editCommonCollectBoxDetail": {
+                    "title": "old",
+                    "itemNum": "0953",
+                    "skuMap": {"34x58": {"itemNum": "0953"}},
+                },
+            },
+        }
+
+    with pytest.raises(
+        release_adapters.MiaoshouDraftVerificationError,
+        match="outcome is unknown",
+    ) as raised:
+        release_adapters.write_miaoshou_common_from_plan(
+            payload,
+            post=post,
+        )
+
+    evidence = raised.value.external_write_evidence
+    assert raised.value.external_reference == "3828811808"
+    assert evidence["write_outcome"] == "unknown_after_dispatch"
+    assert evidence["save_accepted"] is False
+    assert evidence["external_writes_performed"] == [
+        "miaoshou:COMMON:immutable_plan_write"
+    ]
+
+
 def test_existing_detail_save_success_then_verify_exception_keeps_evidence(
     monkeypatch,
 ):
@@ -688,6 +787,143 @@ def test_existing_detail_save_success_then_verify_exception_keeps_evidence(
     assert evidence["verification_error"] == "verification network failed"
     assert evidence["external_writes_performed"] == [
         "miaoshou:tiktok_detail:update"
+    ]
+
+
+def test_existing_detail_save_dispatch_exception_keeps_unknown_evidence(
+    monkeypatch,
+):
+    from modules.sourcing import new_product_workbench as workbench
+
+    def prepare(post, **_kwargs):
+        post(
+            "/open/v1/product/collect_box/tiktok/collect_box/"
+            "save_site_collect_item_info",
+            {"fixture": True},
+        )
+
+    monkeypatch.setattr(workbench, "_prepare_site_mode_draft", prepare)
+
+    def post(path, _body):
+        if path == release_adapters.MIAOSHOU_WAREHOUSE_PATH:
+            return {"result": "success", "data": {}}
+        raise RuntimeError("socket closed after save dispatch")
+
+    with pytest.raises(
+        release_adapters.MiaoshouDraftVerificationError,
+        match="not safely retryable",
+    ) as raised:
+        release_adapters._prepare_existing_miaoshou_target_from_plan(
+            _context()["payload"],
+            site="LH_PH",
+            resolved={
+                "detail_id": 3227305525,
+                "shop_id": 7676267,
+                "target_key": "lh_ph",
+                "shop": {"shop_id": 7676267},
+            },
+            post=post,
+        )
+
+    evidence = raised.value.external_write_evidence
+    assert evidence["save_accepted"] is False
+    assert evidence["write_outcome"] == "unknown_after_dispatch"
+    assert evidence["external_writes_performed"] == [
+        "miaoshou:tiktok_detail:update"
+    ]
+
+
+def test_publish_accepted_then_official_readback_exception_keeps_submission(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        release_adapters,
+        "_validated_context",
+        lambda _request: _context(),
+    )
+    readbacks = {"count": 0}
+
+    def readback(**_kwargs):
+        readbacks["count"] += 1
+        if readbacks["count"] == 1:
+            return False, {
+                "verified": False,
+                "region": "PH",
+                "reason": "not_found",
+            }
+        raise RuntimeError("official readback transport unavailable")
+
+    monkeypatch.setattr(release_adapters, "_tiktok_readback", readback)
+    monkeypatch.setattr(
+        release_adapters,
+        "_miaoshou_publish_target",
+        lambda *_args, **_kwargs: (
+            "3227305525:7676267",
+            {
+                "source": "miaoshou_open_api",
+                "accepted": True,
+                "detail_id": 3227305525,
+                "shop_id": 7676267,
+                "external_writes_performed": [
+                    "miaoshou:tiktok_detail:update",
+                    "miaoshou:tiktok_publish:submission",
+                ],
+            },
+        ),
+    )
+
+    with pytest.raises(
+        release_adapters.MiaoshouDraftVerificationError,
+        match="official TikTok readback raised",
+    ) as raised:
+        release_adapters.execute_tiktok_target(_request())
+
+    evidence = raised.value.external_write_evidence
+    assert raised.value.external_reference == "3227305525:7676267"
+    assert evidence["submission_accepted"] is True
+    assert (
+        evidence["write_outcome"]
+        == "submission_accepted_readback_unknown"
+    )
+    assert evidence["detail_id"] == 3227305525
+    assert evidence["external_writes_performed"] == [
+        "miaoshou:tiktok_detail:update",
+        "miaoshou:tiktok_publish:submission",
+    ]
+
+
+def test_official_title_repair_dispatch_exception_keeps_unknown_evidence(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        release_adapters,
+        "_tiktok_shop",
+        lambda _region: ("token", {"cipher": "cipher-ph"}),
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "tiktok_post",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("partial edit transport unavailable")
+        ),
+    )
+
+    with pytest.raises(
+        release_adapters.ReleaseAdapterWriteVerificationError,
+        match="outcome is unknown",
+    ) as raised:
+        release_adapters._repair_tiktok_title(
+            region="PH",
+            product_id="tk-product-1",
+            approved_title="Approved title",
+        )
+
+    assert raised.value.external_reference == "tk-product-1"
+    evidence = raised.value.external_write_evidence
+    assert evidence["region"] == "PH"
+    assert evidence["write_outcome"] == "unknown_after_dispatch"
+    assert evidence["external_writes_performed"] == [
+        "tiktok:official_title_partial_edit"
     ]
 
 
@@ -872,6 +1108,71 @@ def test_existing_tiktok_title_only_mismatch_is_safely_repaired(monkeypatch):
         }
     ]
     assert result.readback_evidence["repair"]["verified"] is True
+
+
+def test_title_repair_success_then_readback_exception_keeps_repair_evidence(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        release_adapters,
+        "_validated_context",
+        lambda _request: _context(),
+    )
+    readbacks = {"count": 0}
+
+    def readback(**_kwargs):
+        readbacks["count"] += 1
+        if readbacks["count"] == 1:
+            return False, {
+                "verified": False,
+                "product_id": "tk-product-1",
+                "checks": {
+                    "single_exact_sku": True,
+                    "title": False,
+                    "price": True,
+                    "image_count": True,
+                    "category": True,
+                    "active": True,
+                },
+            }
+        raise RuntimeError("readback transport failed after repair")
+
+    monkeypatch.setattr(release_adapters, "_tiktok_readback", readback)
+    monkeypatch.setattr(
+        release_adapters,
+        "_repair_tiktok_title",
+        lambda **_kwargs: {
+            "action": "official_tiktok_partial_edit",
+            "fields": ["title"],
+            "product_id": "tk-product-1",
+            "region": "PH",
+            "verified": False,
+            "write_outcome": "accepted",
+            "external_writes_performed": [
+                "tiktok:official_title_partial_edit"
+            ],
+        },
+    )
+    monkeypatch.setattr(release_adapters.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(
+        release_adapters.ReleaseAdapterWriteVerificationError,
+        match="title repair was accepted",
+    ) as raised:
+        release_adapters.execute_tiktok_target(_request())
+
+    assert raised.value.external_reference == "tk-product-1"
+    evidence = raised.value.external_write_evidence
+    assert (
+        evidence["write_outcome"]
+        == "title_repair_accepted_readback_unknown"
+    )
+    assert evidence["readback_error"] == (
+        "readback transport failed after repair"
+    )
+    assert evidence["external_writes_performed"] == [
+        "tiktok:official_title_partial_edit"
+    ]
 
 
 def test_mx_submission_is_not_falsely_marked_as_verified(monkeypatch):

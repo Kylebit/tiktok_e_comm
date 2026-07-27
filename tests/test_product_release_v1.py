@@ -1263,3 +1263,381 @@ def test_failure_receipt_store_error_stops_before_next_adapter(
     )
     assert mx["status"] == "PENDING"
     assert mx["attempts"] == 0
+
+
+@pytest.mark.parametrize(
+    ("receipt_method", "result"),
+    [
+        (
+            "record_target_success",
+            AdapterExecutionResult(
+                succeeded=True,
+                readback_verified=True,
+                detail="official readback verified",
+                external_reference="mx-product-1",
+                readback_evidence={
+                    "source": "official-api",
+                    "verified": True,
+                    "external_writes_performed": [
+                        "tiktok:MX:publish"
+                    ],
+                },
+            ),
+        ),
+        (
+            "record_target_submission",
+            AdapterExecutionResult(
+                succeeded=True,
+                readback_verified=False,
+                detail="submission accepted",
+                external_reference="detail-mx:shop-mx",
+                readback_evidence={
+                    "source": "miaoshou_open_api",
+                    "accepted": True,
+                    "external_writes_performed": [
+                        "miaoshou:tiktok_publish:submission"
+                    ],
+                },
+                submission_accepted=True,
+            ),
+        ),
+    ],
+)
+def test_external_success_with_terminal_receipt_failure_requires_reconciliation(
+    tmp_path,
+    monkeypatch,
+    receipt_method,
+    result,
+):
+    store = ReleaseStore(tmp_path / "release.db")
+    monkeypatch.setattr(release_store, "default_release_store", lambda: store)
+    dashboard = _dashboard()
+    monkeypatch.setattr(
+        release_control,
+        "build_release_dashboard",
+        lambda **_kwargs: dashboard,
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "write_miaoshou_common_from_plan",
+        _verified_common_plan_write,
+    )
+    view = product_server._product_workspace_view(dashboard)
+    request = _request(view)
+    assert product_server._approve_release_plan_locally(
+        {**request, "approved_by": "Kyle", "user_approved": True}
+    )[0] == 200
+    assert product_server._prepare_miaoshou_release(
+        {**request, "confirm_miaoshou_write": True}
+    )[0] == 200
+    calls = []
+
+    def execute(req):
+        calls.append(req.target_label)
+        return result
+
+    monkeypatch.setattr(
+        release_adapters,
+        "production_adapter_registry",
+        lambda: _executable_registry(execute),
+    )
+    monkeypatch.setattr(
+        store,
+        receipt_method,
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            release_store.ReleaseStoreError("terminal receipt unavailable")
+        ),
+    )
+
+    status, uncertain = product_server._publish_selected_release(
+        {**request, "confirm_publish": True}
+    )
+
+    assert status == 409
+    assert calls == ["tiktok:MX"]
+    assert uncertain["code"] == "reconciliation_required"
+    assert uncertain["durable_state_uncertain"] is True
+    assert uncertain["external_reference"] == result.external_reference
+    assert uncertain["readback_evidence"] == dict(
+        result.readback_evidence or {}
+    )
+    assert uncertain["external_writes_performed"]
+    target = next(
+        row
+        for row in uncertain["run"]["targets"]
+        if row["target_label"] == "tiktok:MX"
+    )
+    assert target["status"] == "FAILED"
+    evidence = target["latest_failure_evidence"]["evidence"]
+    assert evidence["durable_state_uncertain"] is True
+    assert evidence["external_writes_performed"]
+
+    repeated_status, _blocked = product_server._publish_selected_release(
+        {**request, "confirm_publish": True}
+    )
+    assert repeated_status == 409
+    assert calls == ["tiktok:MX"]
+
+
+def test_partial_failure_result_with_lost_failure_receipt_stays_running(
+    tmp_path,
+    monkeypatch,
+):
+    store = ReleaseStore(tmp_path / "release.db")
+    monkeypatch.setattr(release_store, "default_release_store", lambda: store)
+    dashboard = _dashboard()
+    monkeypatch.setattr(
+        release_control,
+        "build_release_dashboard",
+        lambda **_kwargs: dashboard,
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "write_miaoshou_common_from_plan",
+        _verified_common_plan_write,
+    )
+    view = product_server._product_workspace_view(dashboard)
+    request = _request(view)
+    assert product_server._approve_release_plan_locally(
+        {**request, "approved_by": "Kyle", "user_approved": True}
+    )[0] == 200
+    assert product_server._prepare_miaoshou_release(
+        {**request, "confirm_miaoshou_write": True}
+    )[0] == 200
+    calls = []
+
+    def execute(req):
+        calls.append(req.target_label)
+        return AdapterExecutionResult(
+            succeeded=True,
+            readback_verified=False,
+            detail="publish accepted but readback did not converge",
+            external_reference="3227308139:16265910",
+            readback_evidence={
+                "source": "miaoshou_open_api",
+                "verified": False,
+                "external_writes_performed": [
+                    "miaoshou:tiktok_publish:submission"
+                ],
+            },
+        )
+
+    monkeypatch.setattr(
+        release_adapters,
+        "production_adapter_registry",
+        lambda: _executable_registry(execute),
+    )
+    monkeypatch.setattr(
+        store,
+        "record_target_failure",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            release_store.ReleaseStoreError("failure receipt unavailable")
+        ),
+    )
+
+    status, uncertain = product_server._publish_selected_release(
+        {**request, "confirm_publish": True}
+    )
+
+    assert status == 409
+    assert uncertain["code"] == "reconciliation_required"
+    assert uncertain["external_reference"] == "3227308139:16265910"
+    assert uncertain["run_record_error"] == "failure receipt unavailable"
+    target = next(
+        row
+        for row in uncertain["run"]["targets"]
+        if row["target_label"] == "tiktok:MX"
+    )
+    assert target["status"] == "RUNNING"
+
+    before = store.get_run(uncertain["run"]["run_id"])
+    repeated_status, repeated = product_server._publish_selected_release(
+        {**request, "confirm_publish": True}
+    )
+    after = store.get_run(uncertain["run"]["run_id"])
+
+    assert repeated_status == 409
+    assert repeated["code"] == "reconciliation_required"
+    assert repeated["blocked_targets"] == ["tiktok:MX"]
+    assert calls == ["tiktok:MX"]
+    assert after == before
+
+
+def test_running_target_blocks_publish_without_adapter_or_state_change(
+    tmp_path,
+    monkeypatch,
+):
+    store = ReleaseStore(tmp_path / "release.db")
+    monkeypatch.setattr(release_store, "default_release_store", lambda: store)
+    dashboard = _dashboard()
+    monkeypatch.setattr(
+        release_control,
+        "build_release_dashboard",
+        lambda **_kwargs: dashboard,
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "write_miaoshou_common_from_plan",
+        _verified_common_plan_write,
+    )
+    view = product_server._product_workspace_view(dashboard)
+    request = _request(view)
+    assert product_server._approve_release_plan_locally(
+        {**request, "approved_by": "Kyle", "user_approved": True}
+    )[0] == 200
+    prepared = product_server._prepare_miaoshou_release(
+        {**request, "confirm_miaoshou_write": True}
+    )[1]
+    run_id = prepared["run"]["run_id"]
+    store.begin_target(run_id, "tiktok:MX")
+    before = store.get_run(run_id)
+    calls = []
+    monkeypatch.setattr(
+        release_adapters,
+        "production_adapter_registry",
+        lambda: _executable_registry(
+            lambda req: calls.append(req.target_label)
+        ),
+    )
+
+    status, blocked = product_server._publish_selected_release(
+        {**request, "confirm_publish": True}
+    )
+
+    assert status == 409
+    assert blocked["code"] == "reconciliation_required"
+    assert blocked["blocked_targets"] == ["tiktok:MX"]
+    assert blocked["external_writes_performed"] == []
+    assert calls == []
+    assert store.get_run(run_id) == before
+
+
+def test_common_success_with_lost_success_receipt_requires_reconciliation(
+    tmp_path,
+    monkeypatch,
+):
+    store = ReleaseStore(tmp_path / "release.db")
+    monkeypatch.setattr(release_store, "default_release_store", lambda: store)
+    dashboard = _dashboard()
+    monkeypatch.setattr(
+        release_control,
+        "build_release_dashboard",
+        lambda **_kwargs: dashboard,
+    )
+    writes = []
+
+    def write(payload):
+        writes.append(str(payload["product_id"]))
+        return _verified_common_plan_write(payload)
+
+    monkeypatch.setattr(
+        release_adapters,
+        "write_miaoshou_common_from_plan",
+        write,
+    )
+    view = product_server._product_workspace_view(dashboard)
+    request = _request(view)
+    assert product_server._approve_release_plan_locally(
+        {**request, "approved_by": "Kyle", "user_approved": True}
+    )[0] == 200
+    monkeypatch.setattr(
+        store,
+        "record_target_success",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            release_store.ReleaseStoreError("COMMON receipt unavailable")
+        ),
+    )
+
+    status, uncertain = product_server._prepare_miaoshou_release(
+        {**request, "confirm_miaoshou_write": True}
+    )
+
+    assert status == 502
+    assert writes == ["3828540231"]
+    assert uncertain["durable_state_uncertain"] is True
+    assert uncertain["reconciliation_required"] is True
+    assert uncertain["external_reference"] == "3828540231"
+    assert uncertain["readback_evidence"]["verified"] is True
+    assert uncertain["external_writes_performed"] == [
+        "miaoshou:COMMON:immutable_plan_write"
+    ]
+    common = next(
+        row
+        for row in uncertain["run"]["targets"]
+        if row["target_label"] == "miaoshou:COMMON"
+    )
+    assert common["status"] == "FAILED"
+    assert common["latest_failure_evidence"]["evidence"][
+        "durable_state_uncertain"
+    ] is True
+
+    repeated_status, _blocked = product_server._prepare_miaoshou_release(
+        {**request, "confirm_miaoshou_write": True}
+    )
+    assert repeated_status == 409
+    assert writes == ["3828540231"]
+
+
+def test_common_unknown_after_dispatch_is_recorded_and_never_retried(
+    tmp_path,
+    monkeypatch,
+):
+    store = ReleaseStore(tmp_path / "release.db")
+    monkeypatch.setattr(release_store, "default_release_store", lambda: store)
+    dashboard = _dashboard()
+    monkeypatch.setattr(
+        release_control,
+        "build_release_dashboard",
+        lambda **_kwargs: dashboard,
+    )
+    calls = []
+
+    def unknown_after_dispatch(payload):
+        calls.append(str(payload["product_id"]))
+        raise release_adapters.MiaoshouDraftVerificationError(
+            "COMMON write response was lost",
+            external_reference=str(payload["product_id"]),
+            evidence={
+                "source": "miaoshou_open_api",
+                "verified": False,
+                "save_accepted": False,
+                "write_outcome": "unknown_after_dispatch",
+                "external_writes_performed": [
+                    "miaoshou:COMMON:immutable_plan_write"
+                ],
+            },
+        )
+
+    monkeypatch.setattr(
+        release_adapters,
+        "write_miaoshou_common_from_plan",
+        unknown_after_dispatch,
+    )
+    view = product_server._product_workspace_view(dashboard)
+    request = _request(view)
+    assert product_server._approve_release_plan_locally(
+        {**request, "approved_by": "Kyle", "user_approved": True}
+    )[0] == 200
+
+    status, uncertain = product_server._prepare_miaoshou_release(
+        {**request, "confirm_miaoshou_write": True}
+    )
+
+    assert status == 502
+    assert uncertain["reconciliation_required"] is True
+    assert uncertain["external_reference"] == "3828540231"
+    common = next(
+        row
+        for row in uncertain["run"]["targets"]
+        if row["target_label"] == "miaoshou:COMMON"
+    )
+    assert common["status"] == "FAILED"
+    assert common["latest_failure_evidence"]["evidence"][
+        "write_outcome"
+    ] == "unknown_after_dispatch"
+
+    repeated_status, _blocked = product_server._prepare_miaoshou_release(
+        {**request, "confirm_miaoshou_write": True}
+    )
+    assert repeated_status == 409
+    assert calls == ["3828540231"]

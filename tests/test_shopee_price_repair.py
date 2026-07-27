@@ -227,14 +227,133 @@ def test_price_repair_preflight_rejects_other_price_ambiguity(monkeypatch):
         release_adapters.preflight_shopee_price_repair(_request())
 
 
-def test_price_repair_posts_once_and_requires_exact_bounded_readback(monkeypatch):
+def test_regional_price_contract_separates_listing_gate_from_sip_observation():
+    expectation = release_adapters._shopee_price_expectation(
+        _payload("PH")["pricing"]["selected_targets"]["shopee:PH"],
+        region="PH",
+    )
+    row = {
+        "scope": "model",
+        "model_id": "90001",
+        "currency": "PHP",
+        "current_price": 414,
+        "original_price": 414,
+        "sip_item_price": 35.28,
+    }
+
+    verified, issues = release_adapters._verify_shopee_price_rows(
+        [row],
+        expectation,
+        initial_issues=[],
+    )
+    observation, warning = (
+        release_adapters._shopee_platform_derived_price_observation(
+            row,
+            expectation,
+        )
+    )
+
+    assert verified is True
+    assert issues == []
+    assert observation["writable"] is False
+    assert observation["authority"] == "shopee"
+    assert observation["observed"] == "35.28"
+    assert observation["reference"] == "48.85"
+    assert observation["delta"] == "-13.57"
+    assert observation["pct"] == "-27.78"
+    assert observation["source"] == "official_shopee_partner_api"
+    assert observation["observed_at"]
+    assert len(observation["evidence_digest"]) == 64
+    assert warning["code"] == "shopee_sip_platform_derived_variance"
+
+    verified, issues = release_adapters._verify_shopee_price_rows(
+        [{**row, "current_price": 413}],
+        expectation,
+        initial_issues=[],
+    )
+    assert verified is False
+    assert "current_price_does_not_match_approved_local_price" in issues
+
+
+def test_price_reconciliation_adapter_is_get_only_and_keeps_sip_warning(
+    monkeypatch,
+):
     from modules.shopee import client
 
-    states = iter([_evidence(), _evidence(), _evidence(local=414)])
+    calls = []
+    monkeypatch.setattr(
+        client,
+        "shop_post",
+        lambda *_args, **_kwargs: pytest.fail(
+            "GET-only reconciliation must never call shop_post"
+        ),
+    )
+    context = _context(status="RECONCILIATION_REQUIRED")
+    context["target"]["repair"] = {"status": "RECONCILIATION_REQUIRED"}
+    monkeypatch.setattr(
+        release_adapters,
+        "_validated_context",
+        lambda _request: context,
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_shopee_readback",
+        lambda **kwargs: calls.append(kwargs)
+        or (True, _evidence(local=414, sip=35.28)),
+    )
+    operation = {
+        "kind": "shopee_original_price_repair_v1",
+        "plan_id": "omnichannel:test",
+        "run_id": "release-run:test",
+        "target_label": "shopee:PH",
+        "external_id": "56164935203",
+        "model_id": "90001",
+        "seller_sku": "0954",
+        "expected_local_price": "414.0",
+        "currency": "PHP",
+        "expected_sip_cny": "48.85",
+    }
+
+    result = release_adapters.reconcile_shopee_price_repair(
+        _request(),
+        operation=operation,
+    )
+
+    assert result.succeeded is True
+    assert result.readback_evidence["external_writes_performed"] == []
+    assert result.readback_evidence["listing_price_verified"] is True
+    assert result.readback_evidence["derived_price_status"] == "warning"
+    assert result.readback_evidence["profit_status"] == "unverified"
+    assert calls[0]["allow_token_refresh"] is False
+    assert calls[0]["require_model_sku"] is True
+    assert calls[0]["require_all_logistics"] is True
+
+
+@pytest.mark.parametrize(
+    ("region", "final_sip"),
+    [("PH", 35.28), ("TH", 44.10)],
+)
+def test_price_repair_posts_once_and_accepts_platform_derived_sip_variance(
+    monkeypatch,
+    region,
+    final_sip,
+):
+    from modules.shopee import client
+
+    expected_local = 414 if region == "PH" else 265
+    expected_item = 56164935203 if region == "PH" else 51564925929
+    states = iter(
+        [
+            _evidence(region),
+            _evidence(region),
+            _evidence(region, local=expected_local, sip=final_sip),
+        ]
+    )
     monkeypatch.setattr(
         release_adapters,
         "_validated_context",
         lambda _request: _context(
+            region,
             status="FAILED"
             if not hasattr(_request, "_repair_running")
             else "RUNNING"
@@ -245,11 +364,13 @@ def test_price_repair_posts_once_and_requires_exact_bounded_readback(monkeypatch
         "_shopee_readback",
         lambda **_kwargs: (True, next(states)),
     )
-    preview = release_adapters.preflight_shopee_price_repair(_request())
+    preview = release_adapters.preflight_shopee_price_repair(
+        _request(region)
+    )
     monkeypatch.setattr(
         release_adapters,
         "_validated_context",
-        lambda _request: _context(status="RUNNING"),
+        lambda _request: _context(region, status="RUNNING"),
     )
     monkeypatch.setattr(
         release_adapters,
@@ -267,22 +388,36 @@ def test_price_repair_posts_once_and_requires_exact_bounded_readback(monkeypatch
     )
 
     result = release_adapters.execute_shopee_price_repair(
-        _request(),
+        _request(region),
         expected_preflight_digest=preview["operation"]["preflight_digest"],
     )
 
     assert result.succeeded is True
     assert result.readback_evidence["local_price_exact"] is True
-    assert result.readback_evidence["sip_cny_exact"] is True
+    assert result.readback_evidence["sip_cny_exact"] is False
+    assert result.readback_evidence["write_status"] == "verified"
+    assert result.readback_evidence["listing_price_verified"] is True
+    assert result.readback_evidence["derived_price_status"] == "warning"
+    assert result.readback_evidence["profit_status"] == "unverified"
+    observation = result.readback_evidence[
+        "platform_derived_observation"
+    ]
+    assert observation["writable"] is False
+    assert observation["authority"] == "shopee"
+    assert observation["observed"] == str(final_sip)
+    assert observation["evidence_digest"]
     assert posts == [
         (
             "/api/v2/product/update_price",
             123,
             "existing-token",
             {
-                "item_id": 56164935203,
+                "item_id": expected_item,
                 "price_list": [
-                    {"model_id": 90001, "original_price": 414.0}
+                    {
+                        "model_id": 90001,
+                        "original_price": float(expected_local),
+                    }
                 ],
             },
         )
@@ -547,6 +682,101 @@ def _real_sqlite_repair_contract(tmp_path):
     return store, plan, approval, run
 
 
+def _reconciliation_sqlite_contract(tmp_path):
+    store, plan, approval, run = _real_sqlite_repair_contract(tmp_path)
+    operation = {
+        "kind": "shopee_original_price_repair_v1",
+        "plan_id": plan["plan_id"],
+        "run_id": run["run_id"],
+        "target_label": "shopee:PH",
+        "external_id": "56164935203",
+        "model_id": "90001",
+        "seller_sku": "0954",
+        "expected_local_price": "414.0",
+        "currency": "PHP",
+        "expected_sip_cny": "48.85",
+        "observed_local_price_digest": "o" * 64,
+        "preflight_digest": "p" * 64,
+        "expected_revision": 31,
+        "payload_digest": plan["payload_digest"],
+    }
+    claim = store.claim_failed_target_repair(
+        plan_id=plan["plan_id"],
+        run_id=run["run_id"],
+        target_label="shopee:PH",
+        external_id="56164935203",
+        operation=operation,
+    )
+    store.record_target_repair_reconciliation(
+        claim["operation_digest"],
+        error="accepted but official readback did not converge",
+        evidence={
+            "verified": False,
+            "reconciliation_required": True,
+            "durable_state_uncertain": False,
+            "dispatch_outcome": "accepted_readback_unknown",
+            "local_price_exact": True,
+            "sip_cny_exact": False,
+            "external_writes_performed": ["shopee:update_price"],
+        },
+    )
+    return store, plan, approval, run, operation, claim["operation_digest"]
+
+
+def _reconciliation_readback(*, exact=True):
+    checks = {
+        "seller_sku": True,
+        "model_sku": True,
+        "localized_title": True,
+        "rich_localized_description": True,
+        "price": exact,
+        "image_count": True,
+        "all_applicable_logistics": True,
+        "status": True,
+    }
+    return AdapterExecutionResult(
+        succeeded=exact,
+        readback_verified=exact,
+        detail="GET-only fixture",
+        external_reference="56164935203",
+        readback_evidence={
+            "verified": exact,
+            "reconciliation_required": not exact,
+            "write_status": "verified" if exact else "unverified",
+            "listing_price_verified": exact,
+            "derived_price_status": "warning",
+            "profit_status": "unverified",
+            "financial_verification_status": (
+                "price_verified_profit_unverified"
+                if exact
+                else "price_unverified_profit_unverified"
+            ),
+            "source": "official_shopee_partner_api",
+            "checks": checks,
+            "local_price_exact": exact,
+            "sip_cny_exact": False,
+            "platform_derived_observation": {
+                "kind": "platform_derived_observation",
+                "writable": False,
+                "authority": "shopee",
+                "observed": "35.28",
+                "reference": "48.85",
+                "delta": "-13.57",
+                "pct": "-27.78",
+                "source": "official_shopee_partner_api",
+                "observed_at": "2026-07-28T00:00:00+00:00",
+                "evidence_digest": "e" * 64,
+            },
+            "variance_warning": {
+                "code": "shopee_sip_platform_derived_variance",
+                "writable": False,
+                "authority": "shopee",
+            },
+            "external_writes_performed": [],
+        },
+    )
+
+
 def _post_json(url, payload):
     request = urllib.request.Request(
         url,
@@ -723,6 +953,528 @@ def test_partial_target_list_does_not_match_full_immutable_payload(tmp_path):
         )
         is False
     )
+
+
+def test_reconciliation_get_only_closes_truthful_prior_write_and_is_idempotent(
+    tmp_path,
+    monkeypatch,
+):
+    (
+        store,
+        plan,
+        _approval,
+        run,
+        operation,
+        operation_digest,
+    ) = _reconciliation_sqlite_contract(tmp_path)
+    adapter_calls = []
+    monkeypatch.setattr(release_store, "default_release_store", lambda: store)
+
+    def gate(_data, *, store):
+        return (
+            {
+                "dashboard": {"product": {"revision": 31}},
+                "plan": store.get_plan(plan["plan_id"]),
+                "run": store.get_run(run["run_id"]),
+                "payload": store.get_plan(plan["plan_id"])["payload"],
+            },
+            None,
+        )
+
+    monkeypatch.setattr(
+        product_server,
+        "_release_execution_readonly_gate",
+        gate,
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "reconcile_shopee_price_repair",
+        lambda _request, *, operation: adapter_calls.append(operation)
+        or _reconciliation_readback(),
+    )
+    data = {
+        "offer_id": "3838616043",
+        "seller_sku": "0954",
+        "publication_targets": ["shopee:PH", "shopee:TH"],
+        "plan_id": plan["plan_id"],
+        "confirmation_token": plan["confirmation_token"],
+        "expected_revision": 31,
+        "payload_digest": plan["payload_digest"],
+        "preflight_digest": operation["preflight_digest"],
+        "operation_digest": operation_digest,
+        "target_label": "shopee:PH",
+        "confirm_shopee_price_reconciliation": True,
+        "approved_by": "Kyle",
+    }
+
+    status, response = (
+        product_server._reconcile_existing_shopee_price_repair(data)
+    )
+
+    assert status == 200
+    assert response["external_writes_performed"] == []
+    assert response["listing_price_verified"] is True
+    assert response["derived_price_status"] == "warning"
+    assert response["profit_status"] == "unverified"
+    assert len(adapter_calls) == 1
+    completed = store.get_run(run["run_id"])
+    ph = next(
+        row
+        for row in completed["targets"]
+        if row["target_label"] == "shopee:PH"
+    )
+    assert ph["status"] == "SUCCEEDED"
+    assert ph["repair"]["status"] == "SUCCEEDED"
+    assert ph["repair"]["result"]["external_writes_performed"] == [
+        "shopee:update_price"
+    ]
+    assert ph["repair"]["result"][
+        "reconciliation_external_writes_performed"
+    ] == []
+    assert ph["repair"]["result"]["derived_price_status"] == "warning"
+
+    status, response = (
+        product_server._reconcile_existing_shopee_price_repair(data)
+    )
+    assert status == 200
+    assert response["idempotent"] is True
+    assert response["external_writes_performed"] == []
+    assert len(adapter_calls) == 1
+
+
+def test_reconciliation_preview_is_readonly_and_returns_exact_durable_identity(
+    tmp_path,
+    monkeypatch,
+):
+    (
+        store,
+        plan,
+        _approval,
+        run,
+        operation,
+        operation_digest,
+    ) = _reconciliation_sqlite_contract(tmp_path)
+    before = store.path.read_bytes()
+    monkeypatch.setattr(release_store, "default_release_store", lambda: store)
+    monkeypatch.setattr(
+        product_server,
+        "_release_execution_readonly_gate",
+        lambda _data, *, store: (
+            {
+                "dashboard": {"product": {"revision": 31}},
+                "plan": store.get_plan(plan["plan_id"]),
+                "run": store.get_run(run["run_id"]),
+                "payload": store.get_plan(plan["plan_id"])["payload"],
+            },
+            None,
+        ),
+    )
+
+    status, response = (
+        product_server._preview_shopee_price_reconciliation(
+            offer_id="3838616043",
+            target_label="shopee:PH",
+        )
+    )
+
+    assert status == 200
+    assert response["reconciliation_allowed"] is True
+    assert response["mode"] == "official_get_only_durable_close"
+    assert response["preflight_digest"] == operation["preflight_digest"]
+    assert response["operation_digest"] == operation_digest
+    assert response["external_writes_performed"] == []
+    assert response["state_mutations_performed"] == []
+    assert store.path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("confirmation_token", "wrong"),
+        ("expected_revision", 30),
+        ("payload_digest", "wrong"),
+        ("preflight_digest", "wrong"),
+        ("operation_digest", "wrong"),
+        ("approved_by", "not-Kyle"),
+    ],
+)
+def test_reconciliation_identity_drift_fails_before_get_or_local_mutation(
+    tmp_path,
+    monkeypatch,
+    field,
+    value,
+):
+    (
+        store,
+        plan,
+        _approval,
+        run,
+        operation,
+        operation_digest,
+    ) = _reconciliation_sqlite_contract(tmp_path)
+    before = store.path.read_bytes()
+    calls = []
+    monkeypatch.setattr(release_store, "default_release_store", lambda: store)
+    monkeypatch.setattr(
+        product_server,
+        "_release_execution_readonly_gate",
+        lambda _data, *, store: (
+            {
+                "dashboard": {"product": {"revision": 31}},
+                "plan": store.get_plan(plan["plan_id"]),
+                "run": store.get_run(run["run_id"]),
+                "payload": store.get_plan(plan["plan_id"])["payload"],
+            },
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "reconcile_shopee_price_repair",
+        lambda *_args, **_kwargs: calls.append("get"),
+    )
+    data = {
+        "offer_id": "3838616043",
+        "seller_sku": "0954",
+        "publication_targets": ["shopee:PH", "shopee:TH"],
+        "plan_id": plan["plan_id"],
+        "confirmation_token": plan["confirmation_token"],
+        "expected_revision": 31,
+        "payload_digest": plan["payload_digest"],
+        "preflight_digest": operation["preflight_digest"],
+        "operation_digest": operation_digest,
+        "target_label": "shopee:PH",
+        "confirm_shopee_price_reconciliation": True,
+        "approved_by": "Kyle",
+        field: value,
+    }
+
+    status, response = (
+        product_server._reconcile_existing_shopee_price_repair(data)
+    )
+
+    assert status in {400, 409}
+    assert response["external_writes_performed"] == []
+    assert calls == []
+    assert store.path.read_bytes() == before
+
+
+def test_reconciliation_local_mismatch_keeps_durable_state_unchanged(
+    tmp_path,
+    monkeypatch,
+):
+    (
+        store,
+        plan,
+        _approval,
+        run,
+        operation,
+        operation_digest,
+    ) = _reconciliation_sqlite_contract(tmp_path)
+    before = store.path.read_bytes()
+    monkeypatch.setattr(release_store, "default_release_store", lambda: store)
+    monkeypatch.setattr(
+        product_server,
+        "_release_execution_readonly_gate",
+        lambda _data, *, store: (
+            {
+                "dashboard": {"product": {"revision": 31}},
+                "plan": store.get_plan(plan["plan_id"]),
+                "run": store.get_run(run["run_id"]),
+                "payload": store.get_plan(plan["plan_id"])["payload"],
+            },
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "reconcile_shopee_price_repair",
+        lambda *_args, **_kwargs: _reconciliation_readback(exact=False),
+    )
+
+    status, response = (
+        product_server._reconcile_existing_shopee_price_repair(
+            {
+                "offer_id": "3838616043",
+                "seller_sku": "0954",
+                "publication_targets": ["shopee:PH", "shopee:TH"],
+                "plan_id": plan["plan_id"],
+                "confirmation_token": plan["confirmation_token"],
+                "expected_revision": 31,
+                "payload_digest": plan["payload_digest"],
+                "preflight_digest": operation["preflight_digest"],
+                "operation_digest": operation_digest,
+                "target_label": "shopee:PH",
+                "confirm_shopee_price_reconciliation": True,
+                "approved_by": "Kyle",
+            }
+        )
+    )
+
+    assert status == 409
+    assert response["external_writes_performed"] == []
+    assert response["state_mutations_performed"] == []
+    assert store.path.read_bytes() == before
+
+
+def test_reconciliation_adapter_error_is_redacted_and_does_not_mutate(
+    tmp_path,
+    monkeypatch,
+):
+    (
+        store,
+        plan,
+        _approval,
+        run,
+        operation,
+        operation_digest,
+    ) = _reconciliation_sqlite_contract(tmp_path)
+    before = store.path.read_bytes()
+    monkeypatch.setattr(release_store, "default_release_store", lambda: store)
+    monkeypatch.setattr(
+        product_server,
+        "_release_execution_readonly_gate",
+        lambda _data, *, store: (
+            {
+                "dashboard": {"product": {"revision": 31}},
+                "plan": store.get_plan(plan["plan_id"]),
+                "run": store.get_run(run["run_id"]),
+                "payload": store.get_plan(plan["plan_id"])["payload"],
+            },
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "reconcile_shopee_price_repair",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            TimeoutError("SECRET token/item/raw-response")
+        ),
+    )
+
+    status, response = (
+        product_server._reconcile_existing_shopee_price_repair(
+            {
+                "offer_id": "3838616043",
+                "seller_sku": "0954",
+                "publication_targets": ["shopee:PH", "shopee:TH"],
+                "plan_id": plan["plan_id"],
+                "confirmation_token": plan["confirmation_token"],
+                "expected_revision": 31,
+                "payload_digest": plan["payload_digest"],
+                "preflight_digest": operation["preflight_digest"],
+                "operation_digest": operation_digest,
+                "target_label": "shopee:PH",
+                "confirm_shopee_price_reconciliation": True,
+                "approved_by": "Kyle",
+            }
+        )
+    )
+
+    assert status == 409
+    assert "TimeoutError" in response["error"]
+    assert "SECRET" not in str(response)
+    assert response["external_writes_performed"] == []
+    assert response["state_mutations_performed"] == []
+    assert store.path.read_bytes() == before
+
+
+def test_reconciliation_durable_close_failure_is_redacted_and_retryable(
+    tmp_path,
+    monkeypatch,
+):
+    (
+        store,
+        plan,
+        _approval,
+        run,
+        operation,
+        operation_digest,
+    ) = _reconciliation_sqlite_contract(tmp_path)
+    before = store.path.read_bytes()
+    monkeypatch.setattr(release_store, "default_release_store", lambda: store)
+    monkeypatch.setattr(
+        product_server,
+        "_release_execution_readonly_gate",
+        lambda _data, *, store: (
+            {
+                "dashboard": {"product": {"revision": 31}},
+                "plan": store.get_plan(plan["plan_id"]),
+                "run": store.get_run(run["run_id"]),
+                "payload": store.get_plan(plan["plan_id"])["payload"],
+            },
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "reconcile_shopee_price_repair",
+        lambda *_args, **_kwargs: _reconciliation_readback(),
+    )
+    monkeypatch.setattr(
+        store,
+        "record_target_repair_reconciled_success",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("SECRET sqlite path")
+        ),
+    )
+
+    status, response = (
+        product_server._reconcile_existing_shopee_price_repair(
+            {
+                "offer_id": "3838616043",
+                "seller_sku": "0954",
+                "publication_targets": ["shopee:PH", "shopee:TH"],
+                "plan_id": plan["plan_id"],
+                "confirmation_token": plan["confirmation_token"],
+                "expected_revision": 31,
+                "payload_digest": plan["payload_digest"],
+                "preflight_digest": operation["preflight_digest"],
+                "operation_digest": operation_digest,
+                "target_label": "shopee:PH",
+                "confirm_shopee_price_reconciliation": True,
+                "approved_by": "Kyle",
+            }
+        )
+    )
+
+    assert status == 502
+    assert "OSError" in response["error"]
+    assert "SECRET" not in str(response)
+    assert response["external_writes_performed"] == []
+    assert response["state_mutations_performed"] == []
+    assert store.path.read_bytes() == before
+
+
+@pytest.mark.parametrize("user_approved", [False, 2, "1", "true", None])
+def test_reconciliation_fake_persisted_approval_fails_before_get(
+    tmp_path,
+    monkeypatch,
+    user_approved,
+):
+    (
+        store,
+        plan,
+        _approval,
+        run,
+        operation,
+        operation_digest,
+    ) = _reconciliation_sqlite_contract(tmp_path)
+    calls = []
+    durable_plan = store.get_plan(plan["plan_id"])
+    durable_plan["approval"]["user_approved"] = user_approved
+    monkeypatch.setattr(release_store, "default_release_store", lambda: store)
+    monkeypatch.setattr(
+        product_server,
+        "_release_execution_readonly_gate",
+        lambda _data, *, store: (
+            {
+                "dashboard": {"product": {"revision": 31}},
+                "plan": durable_plan,
+                "run": store.get_run(run["run_id"]),
+                "payload": durable_plan["payload"],
+            },
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "reconcile_shopee_price_repair",
+        lambda *_args, **_kwargs: calls.append("get"),
+    )
+
+    status, response = (
+        product_server._reconcile_existing_shopee_price_repair(
+            {
+                "offer_id": "3838616043",
+                "seller_sku": "0954",
+                "publication_targets": ["shopee:PH", "shopee:TH"],
+                "plan_id": plan["plan_id"],
+                "confirmation_token": plan["confirmation_token"],
+                "expected_revision": 31,
+                "payload_digest": plan["payload_digest"],
+                "preflight_digest": operation["preflight_digest"],
+                "operation_digest": operation_digest,
+                "target_label": "shopee:PH",
+                "confirm_shopee_price_reconciliation": True,
+                "approved_by": "Kyle",
+            }
+        )
+    )
+
+    assert status == 409
+    assert response["external_writes_performed"] == []
+    assert calls == []
+
+
+def test_price_reconciliation_http_route_is_dedicated_post(
+    monkeypatch,
+):
+    calls = []
+    monkeypatch.setattr(
+        product_server,
+        "_reconcile_existing_shopee_price_repair",
+        lambda data: calls.append(data) or (
+            200,
+            {
+                "ok": True,
+                "external_writes_performed": [],
+                "state_mutations_performed": [
+                    "release_target_repair:SUCCEEDED"
+                ],
+            },
+        ),
+    )
+    server = ThreadingHTTPServer(("127.0.0.1", 0), product_server.Handler)
+    server.daemon_threads = True
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    body = {
+        "confirm_shopee_price_reconciliation": True,
+        "approved_by": "Kyle",
+    }
+    try:
+        status, response = _post_json(
+            (
+                f"http://127.0.0.1:{server.server_port}"
+                "/api/product-workspace/release-target/"
+                "shopee-price-reconciliation"
+            ),
+            body,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert status == 200
+    assert response["external_writes_performed"] == []
+    assert calls == [body]
+
+
+def test_price_reconciliation_rejects_generic_confirmation_before_store(
+    monkeypatch,
+):
+    calls = []
+    monkeypatch.setattr(
+        release_store,
+        "default_release_store",
+        lambda: calls.append("store"),
+    )
+
+    status, response = (
+        product_server._reconcile_existing_shopee_price_repair(
+            {
+                "confirm": True,
+                "approved_by": "Kyle",
+            }
+        )
+    )
+
+    assert status == 400
+    assert "confirm_shopee_price_reconciliation=true" in response["error"]
+    assert response["external_writes_performed"] == []
+    assert calls == []
 
 
 def test_server_price_repair_requires_exact_gate_and_records_one_success(

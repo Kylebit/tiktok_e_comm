@@ -1877,6 +1877,136 @@ class ReleaseStore:
             self._refresh_run_status(connection, repair["run_id"], now=now)
             return self._run_in_transaction(connection, repair["run_id"])
 
+    def record_target_repair_reconciled_success(
+        self,
+        operation_digest: str,
+        *,
+        readback_evidence: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Close a prior ambiguous write using a new GET-only exact readback."""
+
+        incoming = dict(readback_evidence)
+        checks = incoming.get("checks")
+        if (
+            incoming.get("verified") is not True
+            or incoming.get("reconciliation_required") is True
+            or incoming.get("write_status") != "verified"
+            or incoming.get("listing_price_verified") is not True
+            or incoming.get("financial_verification_status")
+            != "price_verified_profit_unverified"
+            or incoming.get("profit_status") not in {"unverified", "estimate"}
+            or incoming.get("derived_price_status") not in {"warning", "matched"}
+            or incoming.get("external_writes_performed") != []
+            or not isinstance(checks, dict)
+            or not checks
+            or any(value is not True for value in checks.values())
+        ):
+            raise ValueError(
+                "GET-only reconciliation requires exact listing evidence "
+                "and zero incoming external writes"
+            )
+        with self._transaction() as connection:
+            repair = connection.execute(
+                """
+                SELECT * FROM release_target_repairs
+                WHERE operation_digest = ?
+                """,
+                (_text(operation_digest),),
+            ).fetchone()
+            if not repair:
+                raise ReleaseStoreError("target repair was not found")
+            if repair["status"] != REPAIR_RECONCILIATION_REQUIRED:
+                raise ReleaseStoreError(
+                    "only a reconciliation-required repair may be closed"
+                )
+            prior = (
+                json.loads(repair["result_json"])
+                if repair["result_json"]
+                else {}
+            )
+            if (
+                not prior
+                or repair["result_digest"]
+                != _sha256(prior)
+                or prior.get("reconciliation_required") is not True
+                or prior.get("external_writes_performed")
+                != ["shopee:update_price"]
+            ):
+                raise ReleaseAuthorizationError(
+                    "prior repair write evidence is not exact and truthful"
+                )
+            merged = {
+                **incoming,
+                "schema_version": "shopee-price-repair-reconciled/v1",
+                "reconciliation_mode": "official_get_only_durable_close",
+                "prior_external_write_evidence_digest": repair[
+                    "result_digest"
+                ],
+                "prior_external_writes_performed": [
+                    "shopee:update_price"
+                ],
+                "reconciliation_external_writes_performed": [],
+                "external_writes_performed": ["shopee:update_price"],
+            }
+            result_json = _canonical_json(merged)
+            result_digest = hashlib.sha256(
+                result_json.encode("utf-8")
+            ).hexdigest()
+            now = _utc_now()
+            connection.execute(
+                """
+                INSERT INTO release_target_readbacks (
+                    run_id, target_label, evidence_json,
+                    evidence_digest, verified_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    repair["run_id"],
+                    repair["target_label"],
+                    result_json,
+                    result_digest,
+                    now,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE release_target_repairs
+                SET status = 'SUCCEEDED', result_json = ?, result_digest = ?,
+                    updated_at = ?, completed_at = ?
+                WHERE operation_digest = ?
+                  AND status = 'RECONCILIATION_REQUIRED'
+                """,
+                (
+                    result_json,
+                    result_digest,
+                    now,
+                    now,
+                    operation_digest,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE release_target_runs
+                SET status = 'SUCCEEDED', external_id = ?, error = NULL,
+                    updated_at = ?, completed_at = ?
+                WHERE run_id = ? AND target_label = ?
+                  AND status = 'FAILED'
+                """,
+                (
+                    repair["external_id"],
+                    now,
+                    now,
+                    repair["run_id"],
+                    repair["target_label"],
+                ),
+            )
+            if connection.total_changes < 3:
+                raise ReleaseStoreError(
+                    "reconciliation target state changed before durable close"
+                )
+            self._refresh_run_status(connection, repair["run_id"], now=now)
+            return self._run_in_transaction(connection, repair["run_id"])
+
     def retry_failed_targets(
         self,
         run_id: str,
@@ -2047,6 +2177,98 @@ class ReleaseStore:
             "matches": actual == expected,
             "status": row["status"],
             "operation_digest": row["operation_digest"],
+        }
+
+    def target_repair_reconciliation_context(
+        self,
+        *,
+        run_id: str,
+        target_label: str,
+        plan_id: str,
+        expected_revision: int,
+        payload_digest: str,
+        preflight_digest: str,
+        operation_digest: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Return exact internal repair identity for a GET-only close."""
+
+        if not self.path.is_file():
+            return None
+        with self._connect_readonly() as connection:
+            try:
+                row = connection.execute(
+                    """
+                    SELECT repair.*, target.status AS target_status,
+                           target.external_id AS target_external_id,
+                           run.plan_id AS run_plan_id,
+                           approval.status AS approval_status,
+                           approval.approved_by,
+                           approval.user_approved
+                    FROM release_target_repairs AS repair
+                    JOIN release_target_runs AS target
+                      ON target.run_id = repair.run_id
+                     AND target.target_label = repair.target_label
+                    JOIN release_runs AS run
+                      ON run.run_id = repair.run_id
+                    JOIN release_approvals AS approval
+                      ON approval.approval_id = run.approval_id
+                    WHERE repair.run_id = ? AND repair.target_label = ?
+                    """,
+                    (_text(run_id), _text(target_label)),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return None
+        if not row:
+            return None
+        operation = json.loads(row["operation_json"])
+        result = json.loads(row["result_json"]) if row["result_json"] else {}
+        requested_preflight_digest = (
+            _text(preflight_digest)
+            or _text(operation.get("preflight_digest"))
+        )
+        expected = {
+            "plan_id": _text(plan_id),
+            "run_id": _text(run_id),
+            "target_label": _text(target_label),
+            "expected_revision": int(expected_revision),
+            "payload_digest": _text(payload_digest),
+            "preflight_digest": requested_preflight_digest,
+        }
+        actual = {
+            field: (
+                int(operation.get(field) or 0)
+                if field == "expected_revision"
+                else _text(operation.get(field))
+            )
+            for field in expected
+        }
+        exact_operation_digest = _text(operation_digest)
+        if (
+            actual != expected
+            or (
+                exact_operation_digest
+                and exact_operation_digest != row["operation_digest"]
+            )
+            or row["plan_id"] != _text(plan_id)
+            or row["run_plan_id"] != _text(plan_id)
+            or row["target_status"] != TARGET_FAILED
+            or row["status"] != REPAIR_RECONCILIATION_REQUIRED
+            or _text(row["target_external_id"]) != _text(row["external_id"])
+            or row["approval_status"] != PLAN_APPROVED
+            or row["approved_by"] != "Kyle"
+            or row["user_approved"] != 1
+            or not result
+            or row["result_digest"] != _sha256(result)
+            or result.get("reconciliation_required") is not True
+            or result.get("external_writes_performed")
+            != ["shopee:update_price"]
+        ):
+            return None
+        return {
+            "operation_digest": row["operation_digest"],
+            "operation": operation,
+            "prior_result_digest": row["result_digest"],
+            "status": row["status"],
         }
 
     def supersede_plan(

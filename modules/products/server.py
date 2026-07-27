@@ -2351,6 +2351,421 @@ def _preview_existing_shopee_target_price(
         }
 
 
+def _preview_shopee_price_reconciliation(
+    *,
+    offer_id: str,
+    target_label: str,
+) -> tuple[int, dict]:
+    """Return the exact durable identity for a later GET-only close POST."""
+
+    from shared_platform.release_store import default_release_store
+
+    clean_offer_id = str(offer_id or "").strip()
+    clean_target = str(target_label or "").strip()
+    if (
+        not clean_offer_id.isdigit()
+        or not 1 <= len(clean_offer_id) <= 32
+        or clean_target not in _READONLY_SHOPEE_RECONCILE_TARGETS
+    ):
+        return 400, {
+            "ok": False,
+            "error": "valid offer_id and Shopee PH/TH target are required",
+            "external_writes_performed": [],
+            "state_mutations_performed": [],
+        }
+    store = default_release_store()
+    with _release_execution_lock:
+        plan = store.active_plan_for_product(clean_offer_id)
+        if not plan:
+            return 409, {
+                "ok": False,
+                "error": "current approved immutable ReleasePlan was not found",
+                "external_writes_performed": [],
+                "state_mutations_performed": [],
+            }
+        request_data = {
+            "offer_id": clean_offer_id,
+            "seller_sku": str(plan.get("seller_sku") or ""),
+            "publication_targets": list(plan.get("targets") or ()),
+            "plan_id": str(plan.get("plan_id") or ""),
+            "confirmation_token": str(plan.get("confirmation_token") or ""),
+        }
+        gate, failure = _release_execution_readonly_gate(
+            request_data,
+            store=store,
+        )
+        if failure:
+            return failure
+        assert gate is not None
+        dashboard = gate["dashboard"]
+        plan = gate["plan"]
+        run = gate["run"]
+        if not plan or not run:
+            return 409, {
+                "ok": False,
+                "error": "current release execution identity is incomplete",
+                "external_writes_performed": [],
+                "state_mutations_performed": [],
+            }
+        revision = int((dashboard.get("product") or {}).get("revision") or 0)
+        if (
+            revision < 1
+            or int((plan.get("payload") or {}).get("product_revision") or 0)
+            != revision
+        ):
+            return 409, {
+                "ok": False,
+                "error": "current product revision differs from immutable plan",
+                "external_writes_performed": [],
+                "state_mutations_performed": [],
+            }
+        target = next(
+            (
+                row
+                for row in (run.get("targets") or ())
+                if str(row.get("target_label") or "") == clean_target
+            ),
+            None,
+        )
+        repair = (target or {}).get("repair") or {}
+        if (
+            not target
+            or target.get("status") != "RECONCILIATION_REQUIRED"
+            or repair.get("status") != "RECONCILIATION_REQUIRED"
+        ):
+            return 409, {
+                "ok": False,
+                "error": (
+                    "GET-only close requires one exact "
+                    "RECONCILIATION_REQUIRED repair"
+                ),
+                "external_writes_performed": [],
+                "state_mutations_performed": [],
+            }
+        context = store.target_repair_reconciliation_context(
+            run_id=str(run["run_id"]),
+            target_label=clean_target,
+            plan_id=str(plan["plan_id"]),
+            expected_revision=revision,
+            payload_digest=str(plan["payload_digest"]),
+            preflight_digest="",
+        )
+        if not context:
+            return 409, {
+                "ok": False,
+                "error": (
+                    "durable repair identity or truthful prior write "
+                    "evidence is incomplete"
+                ),
+                "external_writes_performed": [],
+                "state_mutations_performed": [],
+            }
+        return 200, {
+            "ok": True,
+            "reconciliation_allowed": True,
+            "mode": "official_get_only_durable_close",
+            "plan_id": str(plan["plan_id"]),
+            "target_label": clean_target,
+            "expected_revision": revision,
+            "payload_digest": str(plan["payload_digest"]),
+            "preflight_digest": str(
+                context["operation"].get("preflight_digest") or ""
+            ),
+            "operation_digest": str(context["operation_digest"]),
+            "external_writes_performed": [],
+            "state_mutations_performed": [],
+        }
+
+
+def _reconcile_existing_shopee_price_repair(
+    data: dict,
+) -> tuple[int, dict]:
+    """GET-only official readback followed by one local durable close."""
+
+    from domains.channel_operations.release_executor import AdapterExecutionRequest
+    from modules.products.release_adapters import reconcile_shopee_price_repair
+    from shared_platform.release_store import (
+        ReleaseAuthorizationError,
+        ReleaseStoreError,
+        default_release_store,
+    )
+
+    if (
+        data.get("confirm_shopee_price_reconciliation") is not True
+        or data.get("approved_by") != "Kyle"
+    ):
+        return 400, {
+            "ok": False,
+            "error": (
+                "price reconciliation requires "
+                "confirm_shopee_price_reconciliation=true "
+                "and approved_by=Kyle"
+            ),
+            "external_writes_performed": [],
+        }
+    plan_id = str(data.get("plan_id") or "").strip()
+    token = str(data.get("confirmation_token") or "").strip()
+    payload_digest = str(data.get("payload_digest") or "").strip()
+    preflight_digest = str(data.get("preflight_digest") or "").strip()
+    operation_digest = str(data.get("operation_digest") or "").strip()
+    offer_id = str(data.get("offer_id") or "").strip()
+    target_label = str(data.get("target_label") or "").strip()
+    try:
+        expected_revision = int(data.get("expected_revision"))
+    except (TypeError, ValueError):
+        expected_revision = 0
+    if (
+        not offer_id.isdigit()
+        or not 1 <= len(offer_id) <= 32
+        or target_label not in _READONLY_SHOPEE_RECONCILE_TARGETS
+        or expected_revision < 1
+        or not all(
+            (
+                plan_id,
+                token,
+                payload_digest,
+                preflight_digest,
+                operation_digest,
+            )
+        )
+    ):
+        return 400, {
+            "ok": False,
+            "error": (
+                "exact offer, target, plan, token, revision, payload, "
+                "preflight and operation identity are required"
+            ),
+            "external_writes_performed": [],
+        }
+
+    store = default_release_store()
+    with _release_execution_lock, _product_workbench_lock(offer_id):
+        gate, failure = _release_execution_readonly_gate(data, store=store)
+        if failure:
+            status, response = failure
+            return status, {
+                "ok": False,
+                "error": str(
+                    response.get("error")
+                    or "Shopee price reconciliation gate is blocked"
+                ),
+                "blockers": list(response.get("blockers") or ()),
+                "adapter_blockers": list(
+                    response.get("adapter_blockers") or ()
+                ),
+                "external_writes_performed": [],
+            }
+        assert gate is not None
+        dashboard = gate["dashboard"]
+        plan = gate["plan"]
+        run = gate["run"]
+        payload = gate["payload"]
+        if (
+            not plan
+            or not run
+            or str(plan.get("plan_id") or "") != plan_id
+            or str(plan.get("confirmation_token") or "") != token
+            or str(plan.get("payload_digest") or "") != payload_digest
+            or int((dashboard.get("product") or {}).get("revision") or 0)
+            != expected_revision
+            or int((plan.get("payload") or {}).get("product_revision") or 0)
+            != expected_revision
+        ):
+            return 409, {
+                "ok": False,
+                "error": "price reconciliation plan/token/revision is stale",
+                "external_writes_performed": [],
+            }
+        approval = plan.get("approval") or {}
+        if (
+            approval.get("status") != "APPROVED"
+            or approval.get("approved_by") != "Kyle"
+            or approval.get("user_approved") is not True
+        ):
+            return 409, {
+                "ok": False,
+                "error": (
+                    "price reconciliation requires the active Kyle approval"
+                ),
+                "external_writes_performed": [],
+            }
+        matches = [
+            row
+            for row in (run.get("targets") or ())
+            if str(row.get("target_label") or "") == target_label
+        ]
+        if len(matches) != 1:
+            return 409, {
+                "ok": False,
+                "error": (
+                    "price reconciliation target identity is missing "
+                    "or ambiguous"
+                ),
+                "external_writes_performed": [],
+            }
+        target = matches[0]
+        repair = target.get("repair") or {}
+        confirmation = store.target_repair_confirmation_matches(
+            run_id=str(run["run_id"]),
+            target_label=target_label,
+            plan_id=plan_id,
+            expected_revision=expected_revision,
+            payload_digest=payload_digest,
+            preflight_digest=preflight_digest,
+        )
+        if (
+            not confirmation
+            or confirmation.get("matches") is not True
+            or confirmation.get("operation_digest") != operation_digest
+        ):
+            return 409, {
+                "ok": False,
+                "error": "price reconciliation confirmation identity changed",
+                "external_writes_performed": [],
+            }
+        if repair.get("status") == "SUCCEEDED":
+            return 200, {
+                "ok": True,
+                "idempotent": True,
+                "target": target_label,
+                "external_writes_performed": [],
+                "state_mutations_performed": [],
+                "repair_status": _shopee_price_repair_status_view(
+                    run,
+                    target_label=target_label,
+                ),
+            }
+        if (
+            target.get("status") != "RECONCILIATION_REQUIRED"
+            or repair.get("status") != "RECONCILIATION_REQUIRED"
+        ):
+            return 409, {
+                "ok": False,
+                "error": (
+                    "price reconciliation requires one exact "
+                    "RECONCILIATION_REQUIRED repair"
+                ),
+                "external_writes_performed": [],
+            }
+        context = store.target_repair_reconciliation_context(
+            run_id=str(run["run_id"]),
+            target_label=target_label,
+            plan_id=plan_id,
+            expected_revision=expected_revision,
+            payload_digest=payload_digest,
+            preflight_digest=preflight_digest,
+            operation_digest=operation_digest,
+        )
+        if not context:
+            return 409, {
+                "ok": False,
+                "error": (
+                    "truthful prior write or immutable operation "
+                    "identity is incomplete"
+                ),
+                "external_writes_performed": [],
+            }
+        channel, site = target_label.split(":", 1)
+        request = AdapterExecutionRequest(
+            plan_id=plan_id,
+            confirmation_token=token,
+            approval_scope_digest=str(
+                (plan.get("payload") or {}).get(
+                    "omnichannel_scope_digest"
+                )
+                or payload.get("omnichannel_scope_digest")
+                or ""
+            ),
+            product_id=str(plan["product_id"]),
+            seller_sku=str(plan["seller_sku"]),
+            product_package_id=str(plan["product_package_id"]),
+            content_package_id=str(plan["content_package_id"]),
+            channel=channel,
+            site=site,
+            target_label=target_label,
+            idempotency_key=str(target.get("idempotency_key") or ""),
+        )
+        try:
+            result = reconcile_shopee_price_repair(
+                request,
+                operation=dict(context["operation"]),
+            )
+        except Exception as error:
+            return 409, {
+                "ok": False,
+                "error": (
+                    "official GET-only price reconciliation failed; "
+                    f"durable state is unchanged ({type(error).__name__})"
+                ),
+                "external_writes_performed": [],
+                "state_mutations_performed": [],
+            }
+        evidence = dict(result.readback_evidence or {})
+        if (
+            not result.succeeded
+            or not result.readback_verified
+            or evidence.get("external_writes_performed") != []
+        ):
+            return 409, {
+                "ok": False,
+                "error": (
+                    "official GET-only readback is not exact; "
+                    "durable state remains unchanged"
+                ),
+                "external_writes_performed": [],
+                "state_mutations_performed": [],
+            }
+        try:
+            completed = store.record_target_repair_reconciled_success(
+                operation_digest,
+                readback_evidence=evidence,
+            )
+        except (
+            ReleaseAuthorizationError,
+            ReleaseStoreError,
+            ValueError,
+        ) as error:
+            return 409, {
+                "ok": False,
+                "error": str(error),
+                "external_writes_performed": [],
+                "state_mutations_performed": [],
+            }
+        except Exception as error:
+            return 502, {
+                "ok": False,
+                "error": (
+                    "official GET matched, but the local durable close "
+                    f"failed ({type(error).__name__}); retry GET-only close"
+                ),
+                "external_writes_performed": [],
+                "state_mutations_performed": [],
+            }
+        return 200, {
+            "ok": True,
+            "idempotent": False,
+            "target": target_label,
+            "write_status": "verified",
+            "listing_price_verified": True,
+            "derived_price_status": str(
+                evidence.get("derived_price_status") or "warning"
+            ),
+            "profit_status": str(
+                evidence.get("profit_status") or "unverified"
+            ),
+            "external_writes_performed": [],
+            "state_mutations_performed": [
+                "release_target_repair:SUCCEEDED",
+                "release_target:SUCCEEDED",
+                "release_run:refreshed",
+            ],
+            "repair_status": _shopee_price_repair_status_view(
+                completed,
+                target_label=target_label,
+            ),
+        }
+
+
 def _repair_existing_shopee_target_price(data: dict) -> tuple[int, dict]:
     """Run one governed PH/TH original-price repair with no retry window."""
 
@@ -6059,6 +6474,17 @@ class Handler(BaseHTTPRequestHandler):
                 target_label=(q.get("target_label") or [""])[0],
             )
             return self._json(status, payload)
+        if (
+            path
+            == "/api/product-workspace/release-target/"
+            "shopee-price-reconciliation-preview"
+        ):
+            q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+            status, payload = _preview_shopee_price_reconciliation(
+                offer_id=(q.get("offer_id") or [""])[0],
+                target_label=(q.get("target_label") or [""])[0],
+            )
+            return self._json(status, payload)
         if path in ("/api/release/dashboard", "/api/product-workspace/dashboard"):
             from shared_platform.release_control import build_release_dashboard
 
@@ -6619,6 +7045,10 @@ class Handler(BaseHTTPRequestHandler):
             "/api/product-workspace/publish",
             "/api/product-workspace/release-target/manual-verify",
             "/api/product-workspace/release-target/shopee-price-repair",
+            (
+                "/api/product-workspace/release-target/"
+                "shopee-price-reconciliation"
+            ),
         }:
             origin = (self.headers.get("Origin") or "").strip()
             if origin:
@@ -6678,6 +7108,14 @@ class Handler(BaseHTTPRequestHandler):
                 == "/api/product-workspace/release-target/shopee-price-repair"
             ):
                 status, payload = _repair_existing_shopee_target_price(data)
+            elif (
+                path
+                == "/api/product-workspace/release-target/"
+                "shopee-price-reconciliation"
+            ):
+                status, payload = _reconcile_existing_shopee_price_repair(
+                    data
+                )
             else:
                 status, payload = _publish_selected_release(data)
             return self._json(status, payload)

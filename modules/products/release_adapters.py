@@ -8,6 +8,7 @@ success after an independent API read-back.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import hashlib
 import math
 import json
@@ -2214,13 +2215,12 @@ def _shopee_price_expectation(
     *,
     region: str,
 ) -> dict[str, Any]:
-    """Resolve the immutable Shopee readback price contract.
+    """Resolve the immutable regional listing-price contract.
 
-    CNSC publishes from a global CNY master. Shopee then derives the local
-    storefront ``current_price``/``original_price``/inflated fields. Those
-    local fields must not be compared directly with the CNY plan value. The
-    official ``sip_item_price`` field is the stable readback of the global
-    master price.
+    The regional ``update_price`` endpoint owns only the local-currency model
+    ``original_price``. Shopee derives SIP independently, so SIP is retained
+    as a non-writable observation and never authorizes or rejects a regional
+    price write.
     """
 
     site = region.upper()
@@ -2255,15 +2255,19 @@ def _shopee_price_expectation(
         raise RuntimeError("approved Shopee CNY price derivation is inconsistent")
 
     return {
-        "schema_version": "shopee-price-readback/v1",
-        "field": "price_info.sip_item_price",
-        "value": float(expected_cny),
-        "currency": "CNY",
+        "schema_version": "shopee-regional-price-readback/v2",
+        "field": "price_info.original_price",
+        "value": float(source_local),
+        "currency": target_currency,
         "target_local_currency": target_currency,
         "source_local_price": float(source_local),
         "source_local_currency": source_currency,
+        "sip_reference_cny": float(expected_cny),
         "exchange_rate_cny_per_local": float(exchange_rate),
-        "source_field": "derived_preview.global_original_price_cny",
+        "source_field": "derived_preview.local_original_price",
+        "sip_reference_source_field": (
+            "derived_preview.global_original_price_cny"
+        ),
     }
 
 
@@ -2354,10 +2358,15 @@ def _verify_shopee_price_rows(
     original = _decimal(row.get("original_price"))
     inflated_current = _decimal(row.get("inflated_price_of_current_price"))
     inflated_original = _decimal(row.get("inflated_price_of_original_price"))
+    expected_local = _decimal(expectation.get("source_local_price"))
     if current is None or current <= 0:
         issues.append("current_price_is_not_positive")
+    elif not _numbers_equal(current, expected_local):
+        issues.append("current_price_does_not_match_approved_local_price")
     if original is None or original <= 0:
         issues.append("original_price_is_not_positive")
+    elif not _numbers_equal(original, expected_local):
+        issues.append("original_price_does_not_match_approved_local_price")
     if current is not None and original is not None and current > original:
         issues.append("current_price_exceeds_original_price")
     if (
@@ -2376,12 +2385,65 @@ def _verify_shopee_price_rows(
         and inflated_current > inflated_original
     ):
         issues.append("inflated_current_price_exceeds_inflated_original_price")
-    if not _numbers_equal(
-        row.get("sip_item_price"),
-        expectation.get("value"),
-    ):
-        issues.append("sip_item_price_does_not_match_immutable_cny_price")
     return not issues, sorted(set(issues))
+
+
+def _shopee_platform_derived_price_observation(
+    row: dict[str, Any],
+    expectation: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Describe Shopee-derived SIP without treating it as writable truth."""
+
+    observed = _decimal(row.get("sip_item_price"))
+    reference = _decimal(expectation.get("sip_reference_cny"))
+    matched = bool(
+        observed is not None
+        and reference is not None
+        and _numbers_equal(observed, reference)
+    )
+    delta = (
+        observed - reference
+        if observed is not None and reference is not None
+        else None
+    )
+    pct = (
+        (delta / reference) * Decimal("100")
+        if delta is not None and reference not in (None, Decimal("0"))
+        else None
+    )
+    observation = {
+        "kind": "platform_derived_observation",
+        "field": "price_info.sip_item_price",
+        "writable": False,
+        "authority": "shopee",
+        "currency": "CNY",
+        "observed": str(observed) if observed is not None else None,
+        "reference": str(reference) if reference is not None else None,
+        "delta": str(delta) if delta is not None else None,
+        "pct": str(pct.quantize(Decimal("0.01"))) if pct is not None else None,
+        "source": "official_shopee_partner_api",
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    observation["evidence_digest"] = hashlib.sha256(
+        json.dumps(
+            observation,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    warning = None
+    if not matched:
+        warning = {
+            "code": "shopee_sip_platform_derived_variance",
+            "severity": "warning",
+            "writable": False,
+            "authority": "shopee",
+            "message": (
+                "Shopee-derived SIP differs from the plan reference; "
+                "listing price remains independently verifiable"
+            ),
+        }
+    return observation, warning
 
 
 def _shopee_readback_credentials(
@@ -2508,11 +2570,14 @@ def _shopee_readback(
     price_expectation = (
         dict(expected_price)
         if isinstance(expected_price, dict)
-        and expected_price.get("schema_version") == "shopee-price-readback/v1"
+        and expected_price.get("schema_version")
+        == "shopee-regional-price-readback/v2"
         else None
     )
     observed_price_fields: list[dict[str, Any]] = []
     price_issues: list[str] = []
+    derived_observation: dict[str, Any] | None = None
+    variance_warning: dict[str, Any] | None = None
     if price_expectation is not None:
         observed_price_fields, price_issues = _shopee_observed_price_rows(
             item=item,
@@ -2524,6 +2589,20 @@ def _shopee_readback(
             price_expectation,
             initial_issues=price_issues,
         )
+        eligible_rows = [
+            row
+            for row in observed_price_fields
+            if str(row.get("currency") or "")
+            == str(price_expectation.get("target_local_currency") or "")
+        ]
+        if len(eligible_rows) == 1:
+            (
+                derived_observation,
+                variance_warning,
+            ) = _shopee_platform_derived_price_observation(
+                eligible_rows[0],
+                price_expectation,
+            )
     else:
         price_verified = any(
             _numbers_equal(value, expected_price) for value in price_values
@@ -2561,6 +2640,21 @@ def _shopee_readback(
     }
     evidence = {
         "verified": all(checks.values()),
+        "write_status": (
+            "verified" if all(checks.values()) else "unverified"
+        ),
+        "listing_price_verified": checks["price"] is True,
+        "derived_price_status": (
+            "warning"
+            if variance_warning or derived_observation is None
+            else "matched"
+        ),
+        "profit_status": "unverified",
+        "financial_verification_status": (
+            "price_verified_profit_unverified"
+            if checks["price"] is True
+            else "price_unverified_profit_unverified"
+        ),
         "source": "official_shopee_partner_api",
         "authentication_mode": (
             "existing_token_only"
@@ -2579,6 +2673,8 @@ def _shopee_readback(
         "expected_price": price_expectation,
         "observed_price_fields": observed_price_fields,
         "price_issues": price_issues,
+        "platform_derived_observation": derived_observation,
+        "variance_warning": variance_warning,
         "image_count": image_count,
         "logistics": [
             {
@@ -2701,7 +2797,11 @@ def _shopee_price_repair_preflight(
             + ", ".join(non_price_failures)
         )
     allowed_price_issues = {
-        "sip_item_price_does_not_match_immutable_cny_price"
+        "current_price_does_not_match_approved_local_price",
+        "original_price_does_not_match_approved_local_price",
+        # Legacy fixtures/readbacks may still report this observation as an
+        # issue. It is explicitly non-writable and never a repair blocker.
+        "sip_item_price_does_not_match_immutable_cny_price",
     }
     unexpected_price_issues = sorted(
         set(evidence.get("price_issues") or ()) - allowed_price_issues
@@ -2748,7 +2848,7 @@ def _shopee_price_repair_preflight(
         "seller_sku": request.seller_sku[-4:].zfill(4),
         "expected_local_price": str(expected_local),
         "currency": expectation["target_local_currency"],
-        "expected_sip_cny": str(expectation["value"]),
+        "expected_sip_cny": str(expectation["sip_reference_cny"]),
         "observed_local_price_digest": hashlib.sha256(
             json.dumps(
                 {
@@ -2924,17 +3024,57 @@ def execute_shopee_price_repair(
                 operation["expected_local_price"],
             )
         )
-        sip_exact = (
-            len(rows) == 1
-            and _numbers_equal(
-                row.get("sip_item_price"),
-                operation["expected_sip_cny"],
+        derived_observation, variance_warning = (
+            _shopee_platform_derived_price_observation(
+                row,
+                {
+                    "sip_reference_cny": operation["expected_sip_cny"],
+                },
             )
+            if len(rows) == 1
+            else (None, {
+                "code": "shopee_sip_platform_derived_variance",
+                "severity": "warning",
+                "writable": False,
+                "authority": "shopee",
+                "message": "Shopee-derived SIP observation is unavailable",
+            })
         )
-        all_checks = bool(checks) and all(checks.values())
+        nonprice_checks = {
+            name: passed for name, passed in checks.items()
+            if name != "price"
+        }
+        required_checks = {
+            "seller_sku",
+            "model_sku",
+            "localized_title",
+            "rich_localized_description",
+            "price",
+            "image_count",
+            "all_applicable_logistics",
+            "status",
+        }
+        all_nonprice_checks = set(checks) == required_checks and all(
+            value is True for value in nonprice_checks.values()
+        )
         last_evidence = {
-            "verified": bool(local_exact and sip_exact and all_checks),
+            "verified": bool(local_exact and all_nonprice_checks),
             "reconciliation_required": False,
+            "write_status": (
+                "verified"
+                if local_exact and all_nonprice_checks
+                else "unverified"
+            ),
+            "listing_price_verified": local_exact,
+            "derived_price_status": (
+                "warning" if variance_warning else "matched"
+            ),
+            "profit_status": "unverified",
+            "financial_verification_status": (
+                "price_verified_profit_unverified"
+                if local_exact
+                else "price_unverified_profit_unverified"
+            ),
             "source": "official_shopee_partner_api",
             "region": request.site.upper(),
             "item_id": item_id,
@@ -2942,7 +3082,9 @@ def execute_shopee_price_repair(
             "seller_sku": operation["seller_sku"],
             "currency": operation["currency"],
             "local_price_exact": local_exact,
-            "sip_cny_exact": sip_exact,
+            "sip_cny_exact": variance_warning is None,
+            "platform_derived_observation": derived_observation,
+            "variance_warning": variance_warning,
             "checks": checks,
             "poll_attempt": attempt + 1,
             "external_writes_performed": ["shopee:update_price"],
@@ -2966,6 +3108,142 @@ def execute_shopee_price_repair(
             "verified": False,
             "reconciliation_required": True,
         },
+    )
+
+
+def reconcile_shopee_price_repair(
+    request: AdapterExecutionRequest,
+    *,
+    operation: dict[str, Any],
+) -> AdapterExecutionResult:
+    """GET-only verification for one durably ambiguous price repair."""
+
+    context = _validated_context(request)
+    target = context["target"]
+    repair = target.get("repair") or {}
+    if request.channel != "shopee" or request.site.upper() not in {"PH", "TH"}:
+        raise RuntimeError("Shopee price reconciliation only supports PH and TH")
+    if (
+        str(target.get("status") or "") != "RECONCILIATION_REQUIRED"
+        or str(repair.get("status") or "") != "RECONCILIATION_REQUIRED"
+    ):
+        raise RuntimeError(
+            "Shopee price reconciliation requires the exact durable state"
+        )
+    expected_identity = {
+        "kind": "shopee_original_price_repair_v1",
+        "plan_id": request.plan_id,
+        "run_id": str(context["run"].get("run_id") or ""),
+        "target_label": request.target_label,
+        "external_id": str(target.get("external_id") or ""),
+        "seller_sku": request.seller_sku[-4:].zfill(4),
+    }
+    for field, expected in expected_identity.items():
+        if str(operation.get(field) or "") != str(expected):
+            raise RuntimeError(
+                f"Shopee price reconciliation operation {field} changed"
+            )
+    model_id = str(operation.get("model_id") or "").strip()
+    currency = str(operation.get("currency") or "").strip()
+    expected_local = str(operation.get("expected_local_price") or "").strip()
+    if not model_id.isdigit() or not currency or not expected_local:
+        raise RuntimeError("Shopee price reconciliation operation is incomplete")
+
+    payload = context["payload"]
+    expectation = _shopee_price_expectation(
+        _target_pricing(payload, request.target_label),
+        region=request.site.upper(),
+    )
+    verified, evidence = _shopee_readback(
+        match_key=request.seller_sku[-4:].zfill(4),
+        region=request.site.upper(),
+        item_id=expected_identity["external_id"],
+        expected_title=_candidate(payload, "shopee", "CNSC"),
+        expected_price=expectation,
+        expected_image_count=len(context["images"]),
+        expected_description=_shopee_description(payload),
+        require_model_sku=True,
+        require_all_logistics=True,
+        allow_token_refresh=False,
+    )
+    rows = [
+        row
+        for row in (evidence.get("observed_price_fields") or ())
+        if (
+            str(row.get("model_id") or "") == model_id
+            and str(row.get("currency") or "") == currency
+        )
+    ]
+    local_exact = bool(
+        len(rows) == 1
+        and _numbers_equal(rows[0].get("current_price"), expected_local)
+        and _numbers_equal(rows[0].get("original_price"), expected_local)
+    )
+    derived_observation, variance_warning = (
+        _shopee_platform_derived_price_observation(
+            rows[0],
+            {"sip_reference_cny": operation.get("expected_sip_cny")},
+        )
+        if len(rows) == 1
+        else (None, {
+            "code": "shopee_sip_platform_derived_variance",
+            "severity": "warning",
+            "writable": False,
+            "authority": "shopee",
+            "message": "Shopee-derived SIP observation is unavailable",
+        })
+    )
+    checks = dict(evidence.get("checks") or {})
+    required_checks = {
+        "seller_sku",
+        "model_sku",
+        "localized_title",
+        "rich_localized_description",
+        "price",
+        "image_count",
+        "all_applicable_logistics",
+        "status",
+    }
+    nonprice_exact = set(checks) == required_checks and all(
+        passed is True
+        for name, passed in checks.items()
+        if name != "price"
+    )
+    exact = bool(verified and local_exact and nonprice_exact)
+    evidence = {
+        **evidence,
+        "verified": exact,
+        "reconciliation_required": not exact,
+        "reconciliation_mode": "official_get_only_durable_close",
+        "write_status": "verified" if exact else "unverified",
+        "listing_price_verified": local_exact,
+        "derived_price_status": (
+            "warning" if variance_warning else "matched"
+        ),
+        "platform_derived_observation": derived_observation,
+        "variance_warning": variance_warning,
+        "profit_status": "unverified",
+        "financial_verification_status": (
+            "price_verified_profit_unverified"
+            if local_exact
+            else "price_unverified_profit_unverified"
+        ),
+        "external_writes_performed": [],
+    }
+    return AdapterExecutionResult(
+        succeeded=exact,
+        readback_verified=exact,
+        detail=(
+            f"Shopee {request.site.upper()} regional listing price verified "
+            "by GET-only readback; profit remains unverified"
+            if exact
+            else (
+                f"Shopee {request.site.upper()} GET-only price readback "
+                "did not match the immutable repair"
+            )
+        ),
+        external_reference=expected_identity["external_id"],
+        readback_evidence=evidence,
     )
 
 
@@ -3155,7 +3433,7 @@ def execute_shopee_target(
 
     local_original_price = expected_price["source_local_price"]
     local_currency = expected_price["source_local_currency"]
-    global_original_price_cny = expected_price["value"]
+    global_original_price_cny = expected_price["sip_reference_cny"]
 
     from modules.shopee.publish import publish_match_key
 

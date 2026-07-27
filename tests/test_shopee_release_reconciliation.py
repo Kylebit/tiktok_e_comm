@@ -93,8 +93,8 @@ def _install_readback(monkeypatch, *, region: str, price_info: dict):
                 "sip_item_price": 81.69,
             },
             81.69,
-            692.29,
-            0.118,
+            868,
+            0.0941129032,
         ),
         (
             "TH",
@@ -108,12 +108,12 @@ def _install_readback(monkeypatch, *, region: str, price_info: dict):
                 "sip_item_price": 75.05,
             },
             75.05,
-            338.37,
-            0.2218,
+            546,
+            0.1374542125,
         ),
     ],
 )
-def test_readback_compares_cny_sip_price_without_mixing_local_fields(
+def test_readback_gates_regional_local_price_and_observes_sip(
     monkeypatch,
     region,
     item_id,
@@ -132,7 +132,7 @@ def test_readback_compares_cny_sip_price_without_mixing_local_fields(
         expected_price=_expectation(
             region,
             cny=cny,
-            local=local,
+            local=price_info["original_price"],
             rate=rate,
         ),
         expected_image_count=2,
@@ -142,15 +142,19 @@ def test_readback_compares_cny_sip_price_without_mixing_local_fields(
     assert verified is True
     assert evidence["checks"]["price"] is True
     assert evidence["expected_price"] == {
-        "schema_version": "shopee-price-readback/v1",
-        "field": "price_info.sip_item_price",
-        "value": cny,
-        "currency": "CNY",
+        "schema_version": "shopee-regional-price-readback/v2",
+        "field": "price_info.original_price",
+        "value": price_info["original_price"],
+        "currency": price_info["currency"],
         "target_local_currency": price_info["currency"],
-        "source_local_price": local,
+        "source_local_price": price_info["original_price"],
         "source_local_currency": price_info["currency"],
+        "sip_reference_cny": cny,
         "exchange_rate_cny_per_local": rate,
-        "source_field": "derived_preview.global_original_price_cny",
+        "source_field": "derived_preview.local_original_price",
+        "sip_reference_source_field": (
+            "derived_preview.global_original_price_cny"
+        ),
     }
     assert evidence["observed_price_fields"] == [
         {
@@ -169,9 +173,14 @@ def test_readback_compares_cny_sip_price_without_mixing_local_fields(
         }
     ]
     assert evidence["price_issues"] == []
+    assert evidence["write_status"] == "verified"
+    assert evidence["listing_price_verified"] is True
+    assert evidence["derived_price_status"] == "matched"
+    assert evidence["profit_status"] == "unverified"
+    assert evidence["platform_derived_observation"]["writable"] is False
 
 
-def test_readback_fails_closed_on_sip_or_local_currency_mismatch(monkeypatch):
+def test_readback_fails_closed_on_local_currency_mismatch(monkeypatch):
     _install_readback(
         monkeypatch,
         region="PH",
@@ -226,8 +235,8 @@ def test_readback_fails_closed_on_invalid_inflated_price_semantics(monkeypatch):
         expected_price=_expectation(
             "TH",
             cny=75.05,
-            local=338.37,
-            rate=0.2218,
+            local=546,
+            rate=0.137454,
         ),
         expected_image_count=2,
     )
@@ -337,8 +346,9 @@ def test_reconcile_existing_target_is_read_only_and_uses_recorded_item(monkeypat
     assert result.readback_evidence["external_writes_performed"] == []
     assert calls[0]["item_id"] == "56164935203"
     assert calls[0]["allow_token_refresh"] is False
-    assert calls[0]["expected_price"]["currency"] == "CNY"
+    assert calls[0]["expected_price"]["currency"] == "PHP"
     assert calls[0]["expected_price"]["target_local_currency"] == "PHP"
+    assert calls[0]["expected_price"]["sip_reference_cny"] == 81.69
 
 
 def test_reconcile_existing_target_requires_failed_target_and_external_id(

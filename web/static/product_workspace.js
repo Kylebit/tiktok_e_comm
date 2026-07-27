@@ -1960,10 +1960,34 @@
   }
 
   function shopeePriceRepairPanel(target) {
-    if (!shopeePriceRepairEligible(target)) return "";
     const targetLabel = String(target.target_label);
     const state = shopeePriceRepairState(targetLabel);
     const site = publicationSiteNames[targetLabel.split(":")[1]] || targetLabel;
+    const lifecycle = shopeePriceRepairLifecycle(target);
+    if (
+      SHOPEE_PRICE_REPAIR_TARGETS.has(targetLabel)
+      && lifecycle === "RECONCILIATION_REQUIRED"
+    ) {
+      const reconciling = state.phase === "reconciling";
+      const message = state.message || (
+        "本操作只调用 Shopee 官方 GET 回读并更新本地账本；"
+        + "零平台写入，不会再次修价或重发商品。"
+      );
+      return `
+        <section class="shopee-price-repair-panel is-reconciliation"
+          data-price-repair-target="${esc(targetLabel)}" aria-live="polite">
+          <strong>挂牌价已写入，等待只读对账</strong>
+          <button class="button button-secondary" type="button"
+            data-price-repair-action="reconcile"
+            data-target-label="${esc(targetLabel)}"
+            ${reconciling ? "disabled" : ""}>
+            ${reconciling ? `正在只读回读 ${esc(site)}…` : "只读回读并结案"}
+          </button>
+          <p class="shopee-price-repair-message" role="status">${esc(message)}</p>
+        </section>
+      `;
+    }
+    if (!shopeePriceRepairEligible(target)) return "";
     const plan = currentData?.release_v1?.plan || {};
     const previewCurrent = Boolean(
       state.preview?.repair_allowed === true
@@ -2183,10 +2207,13 @@
       return "价格修复执行中 · 禁止重复操作";
     }
     if (repairStatus === "RECONCILIATION_REQUIRED") {
-      return "价格修复结果待对账 · 禁止重发";
+      return "挂牌价已写入，等待只读对账";
     }
     if (repairStatus === "SUCCEEDED") {
-      return "价格已原地修复并回读成功";
+      const derivedStatus = target?.repair?.result?.derived_price_status;
+      return derivedStatus === "warning"
+        ? "挂牌价已验证 · SIP差异待财务审查"
+        : "挂牌价已验证 · 利润仍待财务审查";
     }
     const disposition = releaseTargetDisposition(target);
     if (disposition === "verified") return "Kyle 已人工验收";
@@ -2207,10 +2234,10 @@
       return "该站点的一次性原地修价已领取；正在等待官方回读和本地账本落账，系统不会再次提交。";
     }
     if (repairStatus === "RECONCILIATION_REQUIRED") {
-      return "原地修价存在外部结果但尚未安全收敛；只能对账，禁止再次修价或重发商品。";
+      return "原地修价已有一次平台写入证据；仅允许官方 GET 回读并结案，禁止再次修价或重发商品。";
     }
     if (repairStatus === "SUCCEEDED") {
-      return "该站点仅更新了原商品价格，并已完成官方精确回读；没有重发商品。";
+      return "该站点挂牌价已完成官方精确回读；SIP 是 Shopee 派生观察，不代表已实现利润，仍待财务审查。";
     }
     const disposition = releaseTargetDisposition(target);
     if (disposition === "manual_verify") {
@@ -2325,6 +2352,7 @@
         busy
         || repairState.phase === "checking"
         || repairState.phase === "repairing"
+        || repairState.phase === "reconciling"
         || (
           button.dataset.priceRepairAction === "submit"
           && !confirmed
@@ -2722,6 +2750,112 @@
       });
       if (currentData) renderReleaseV1(currentData);
       showError(`${message} ${friendlyError(error.message)}`);
+    } finally {
+      releaseSubmitting = false;
+      updateReleaseControls(currentData || {});
+    }
+  }
+
+  async function reconcileShopeePriceRepair(targetLabel) {
+    const target = currentReleaseTarget(targetLabel);
+    if (
+      !currentData
+      || releaseSubmitting
+      || shopeePriceRepairLifecycle(target) !== "RECONCILIATION_REQUIRED"
+    ) return;
+
+    releaseSubmitting = true;
+    setShopeePriceRepairState(targetLabel, {
+      phase: "reconciling",
+      message: (
+        "正在核对不可变计划与既有一次写入证据；"
+        + "随后仅调用官方 GET 回读，零平台写入…"
+      ),
+    });
+    renderReleaseV1(currentData);
+    const params = new URLSearchParams({
+      offer_id: currentData.product?.offer_id || "",
+      target_label: targetLabel,
+    });
+    try {
+      const previewResponse = await fetch(
+        (
+          "/api/product-workspace/release-target/"
+          + `shopee-price-reconciliation-preview?${params}`
+        ),
+        { headers: { Accept: "application/json" } },
+      );
+      const preview = await previewResponse.json().catch(() => ({
+        ok: false,
+        error: `服务返回 HTTP ${previewResponse.status}`,
+      }));
+      if (!previewResponse.ok || preview.ok === false) {
+        const error = new Error(
+          preview.error || `服务返回 HTTP ${previewResponse.status}`,
+        );
+        error.payload = preview;
+        throw error;
+      }
+      const plan = currentData?.release_v1?.plan || {};
+      const exact = Boolean(
+        preview.reconciliation_allowed === true
+        && preview.mode === "official_get_only_durable_close"
+        && preview.target_label === targetLabel
+        && preview.plan_id === plan.plan_id
+        && preview.payload_digest === plan.payload_digest
+        && Number(preview.expected_revision) === Number(
+          currentData?.product?.revision,
+        )
+        && preview.preflight_digest
+        && preview.operation_digest
+        && currentData?.release_v1?.plan_approved
+        && shopeePriceRepairLifecycle(
+          currentReleaseTarget(targetLabel),
+        ) === "RECONCILIATION_REQUIRED"
+      );
+      if (!exact) {
+        throw new Error("只读对账身份已变化，请刷新后重试。");
+      }
+      await postReleaseAction(
+        (
+          "/api/product-workspace/release-target/"
+          + "shopee-price-reconciliation"
+        ),
+        currentReleaseBody({
+          target_label: targetLabel,
+          expected_revision: preview.expected_revision,
+          payload_digest: preview.payload_digest,
+          preflight_digest: preview.preflight_digest,
+          operation_digest: preview.operation_digest,
+          confirm_shopee_price_reconciliation: true,
+          approved_by: "Kyle",
+        }),
+      );
+      setShopeePriceRepairState(targetLabel, {
+        phase: "reconciled",
+        message: (
+          "挂牌价已通过官方 GET 验证并完成本地结案；"
+          + "SIP 差异保留给财务审查，未声明利润已验证。"
+        ),
+      });
+      renderReleaseV1(currentData);
+      const latest = await fetchDashboard(
+        currentData.product?.offer_id,
+        currentData.publication_scope?.selected_labels || [],
+      );
+      adoptWorkflowDashboard(latest);
+      showError("");
+    } catch (error) {
+      const message = (
+        `${friendlyError(error.message)} `
+        + "未再次修价或重发；本地账本保持待对账，可稍后重新执行只读回读。"
+      );
+      setShopeePriceRepairState(targetLabel, {
+        phase: "reconciliation-error",
+        message,
+      });
+      if (currentData) renderReleaseV1(currentData);
+      showError(message);
     } finally {
       releaseSubmitting = false;
       updateReleaseControls(currentData || {});
@@ -3279,6 +3413,10 @@
     }
     if (button.dataset.priceRepairAction === "submit") {
       submitShopeePriceRepair(targetLabel);
+      return;
+    }
+    if (button.dataset.priceRepairAction === "reconcile") {
+      reconcileShopeePriceRepair(targetLabel);
     }
   });
 

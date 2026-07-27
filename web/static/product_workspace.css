@@ -1919,6 +1919,16 @@ section { scroll-margin-top: 20px; }
 .shopee-price-repair-panel.is-terminal {
   color: #805b16;
 }
+.shopee-price-repair-panel.is-reconciliation {
+  padding: 11px;
+  border: 1px solid rgba(197, 136, 38, .38);
+  border-radius: 9px;
+  background: rgba(255, 248, 224, .68);
+}
+.shopee-price-repair-panel.is-reconciliation strong {
+  color: #805b16;
+  overflow-wrap: anywhere;
+}
 .safety-card {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;

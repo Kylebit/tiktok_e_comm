@@ -171,6 +171,19 @@ def test_every_formal_async_action_has_loading_success_and_failure_feedback():
                 "fetchDashboard",
                 "catch (error)",
             ],
+            "reconcileShopeePriceRepair": [
+                'phase: "reconciling"',
+                "shopee-price-reconciliation-preview",
+                "reconciliation_allowed === true",
+                "shopee-price-reconciliation",
+                "confirm_shopee_price_reconciliation: true",
+                'approved_by: "Kyle"',
+                "operation_digest",
+                "零平台写入",
+                "fetchDashboard",
+                "catch (error)",
+                "finally",
+            ],
             "publishSelectedTargets": [
                 "releaseSubmitting = true",
                 "try {",
@@ -313,6 +326,7 @@ def test_shopee_price_repair_ui_is_target_scoped_and_dedicated():
     )
     submit = _function_body(source, "submitShopeePriceRepair")
     preview = _function_body(source, "previewShopeePriceRepair")
+    reconcile = _function_body(source, "reconcileShopeePriceRepair")
 
     assert 'new Set(["shopee:PH", "shopee:TH"])' in source
     assert "shopeePriceRepairEligible" in source
@@ -333,6 +347,16 @@ def test_shopee_price_repair_ui_is_target_scoped_and_dedicated():
     assert "currentReleaseBody" in submit
     assert "shopee-price-repair-panel" in styles
     assert "我确认仅原地修正该站点价格，不重发商品。" in source
+    assert "挂牌价已写入，等待只读对账" in source
+    assert "只读回读并结案" in source
+    assert "零平台写入" in source
+    assert "SIP差异待财务审查" in source
+    assert "shopee-price-reconciliation-preview" in reconcile
+    assert "shopee-price-reconciliation" in reconcile
+    assert "confirm_shopee_price_reconciliation: true" in reconcile
+    assert "confirm: true" not in reconcile
+    assert 'approved_by: "Kyle"' in reconcile
+    assert "operation_digest" in reconcile
 
 
 def test_formal_pages_expose_accessible_feedback_regions():

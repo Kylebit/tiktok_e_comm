@@ -1760,7 +1760,15 @@ async function productShopeePriceRepairContract(browser) {
           dashboard = JSON.parse(JSON.stringify(dashboard));
           dashboard.release_v1.run.status = "SUCCEEDED";
           dashboard.release_v1.run.targets[0].status = "SUCCEEDED";
-          dashboard.release_v1.run.targets[0].repair = { status: "SUCCEEDED" };
+          dashboard.release_v1.run.targets[0].repair = {
+            status: "SUCCEEDED",
+            result: {
+              write_status: "verified",
+              listing_price_verified: true,
+              derived_price_status: "warning",
+              profit_status: "unverified",
+            },
+          };
           await pendingRepair.fulfill(jsonResponse({
             ok: true,
             idempotent: false,
@@ -1769,7 +1777,7 @@ async function productShopeePriceRepairContract(browser) {
           }));
           await page.waitForFunction(() => (
             document.querySelector("#releaseRunLedger")?.textContent.includes(
-              "价格已原地修复并回读成功",
+              "挂牌价已验证 · SIP差异待财务审查",
             )
           ));
         } else if (outcome === "reconciliation") {
@@ -1882,9 +1890,12 @@ async function productShopeePriceRepairContract(browser) {
       const ledger = await statePage.locator("#releaseRunLedger").innerText();
       check(
         ledger.includes("价格修复执行中 · 禁止重复操作")
-        && ledger.includes("价格修复结果待对账 · 禁止重发")
-        && await statePage.locator("[data-price-repair-action]").count() === 0,
-        `Shopee price repair ${viewport.width}: RUNNING/reconciliation ledger states are honest and non-actionable`,
+        && ledger.includes("挂牌价已写入，等待只读对账")
+        && ledger.includes("零平台写入")
+        && await statePage.locator(
+          '[data-price-repair-action="reconcile"]',
+        ).count() === 1,
+        `Shopee price repair ${viewport.width}: RUNNING/reconciliation ledger states expose only GET-close action`,
         ledger,
       );
       check(
@@ -1900,6 +1911,286 @@ async function productShopeePriceRepairContract(browser) {
       );
     } finally {
       await stateContext.close();
+    }
+  }
+}
+
+async function productShopeePriceReconciliationContract(browser) {
+  for (const viewport of [
+    { width: 1440, height: 900 },
+    { width: 390, height: 844 },
+  ]) {
+    for (const outcome of ["success", "error"]) {
+      const context = await browser.newContext({ viewport });
+      const page = await context.newPage();
+      const errors = [];
+      const requests = [];
+      const externalRequests = [];
+      let dashboard = shopeePriceRepairDashboard("shopee:PH");
+      dashboard.release_v1.run.targets[0].status =
+        "RECONCILIATION_REQUIRED";
+      dashboard.release_v1.run.targets[0].repair = {
+        status: "RECONCILIATION_REQUIRED",
+        result: {
+          reconciliation_required: true,
+          external_writes_performed: ["shopee:update_price"],
+        },
+      };
+      let pendingPreview;
+      let resolvePreview;
+      const previewRequested = new Promise((resolve) => {
+        resolvePreview = resolve;
+      });
+      let pendingClose;
+      let resolveClose;
+      const closeRequested = new Promise((resolve) => {
+        resolveClose = resolve;
+      });
+      page.on("pageerror", (error) => {
+        errors.push(`pageerror: ${error.message}`);
+      });
+      page.on("console", (message) => {
+        if (message.type() === "error") {
+          errors.push(`console: ${message.text()}`);
+        }
+      });
+      await page.route("**/*", async (route) => {
+        const request = route.request();
+        const url = new URL(request.url());
+        if (url.origin !== baseUrl) {
+          externalRequests.push(request.url());
+          return route.abort("blockedbyclient");
+        }
+        if (!url.pathname.startsWith("/api/")) return route.continue();
+        requests.push({
+          method: request.method(),
+          url: request.url(),
+          body: request.postDataJSON?.() || null,
+        });
+        if (url.pathname === "/api/product-workspace/dashboard") {
+          return route.fulfill(jsonResponse(dashboard));
+        }
+        if (
+          url.pathname === (
+            "/api/product-workspace/release-target/"
+            + "shopee-price-reconciliation-preview"
+          )
+          && request.method() === "GET"
+        ) {
+          pendingPreview = route;
+          resolvePreview();
+          return;
+        }
+        if (
+          url.pathname === (
+            "/api/product-workspace/release-target/"
+            + "shopee-price-reconciliation"
+          )
+          && request.method() === "POST"
+        ) {
+          pendingClose = route;
+          resolveClose();
+          return;
+        }
+        return route.fulfill(jsonResponse({ ok: false }, 404));
+      });
+      try {
+        await page.goto(
+          `${baseUrl}/product-workspace?offer_id=3838616043`,
+          { waitUntil: "networkidle" },
+        );
+        const targetSelector =
+          '[data-price-repair-target="shopee:PH"]';
+        const buttonSelector =
+          `${targetSelector} [data-price-repair-action="reconcile"]`;
+        const initialText = await page.locator(targetSelector).innerText();
+        check(
+          initialText.includes("挂牌价已写入，等待只读对账")
+          && initialText.includes("只读回读并结案")
+          && initialText.includes("零平台写入")
+          && ![
+            "SECRET",
+            "0954",
+            "56164935203",
+            "model",
+            "digest",
+          ].some((secret) => initialText.includes(secret)),
+          `Shopee price reconciliation ${viewport.width}/${outcome}: control is scoped and redacted`,
+          initialText,
+        );
+        check(
+          requests.filter((row) => row.method === "POST").length === 0,
+          `Shopee price reconciliation ${viewport.width}/${outcome}: initial page performs zero POST`,
+          requests,
+        );
+        const button = page.locator(buttonSelector);
+        await button.scrollIntoViewIfNeeded();
+        await button.click({ trial: true });
+        const started = Date.now();
+        await button.click();
+        await previewRequested;
+        await page.waitForFunction(
+          (selector) => document.querySelector(selector)?.textContent.includes(
+            "零平台写入",
+          ),
+          `${targetSelector} .shopee-price-repair-message`,
+          { timeout: 500 },
+        );
+        check(
+          Date.now() - started < 500,
+          `Shopee price reconciliation ${viewport.width}/${outcome}: pending feedback appears within 500ms`,
+        );
+        check(
+          await page.locator(buttonSelector).isDisabled(),
+          `Shopee price reconciliation ${viewport.width}/${outcome}: action disables while GET is pending`,
+        );
+        const previewUrl = new URL(pendingPreview.request().url());
+        check(
+          pendingPreview.request().method() === "GET"
+          && previewUrl.searchParams.get("offer_id") === "3838616043"
+          && previewUrl.searchParams.get("target_label") === "shopee:PH",
+          `Shopee price reconciliation ${viewport.width}/${outcome}: preview is exact GET`,
+          pendingPreview.request().url(),
+        );
+        await pendingPreview.fulfill(jsonResponse({
+          ok: true,
+          reconciliation_allowed: true,
+          mode: "official_get_only_durable_close",
+          plan_id: "omnichannel:SECRET-PLAN-ID",
+          target_label: "shopee:PH",
+          expected_revision: 31,
+          payload_digest: "SECRET-PAYLOAD-DIGEST",
+          preflight_digest: "SECRET-PREFLIGHT-DIGEST",
+          operation_digest: "SECRET-OPERATION-DIGEST",
+          external_writes_performed: [],
+          state_mutations_performed: [],
+        }));
+        await closeRequested;
+        const body = pendingClose.request().postDataJSON();
+        const closePosts = requests.filter((row) => (
+          row.method === "POST"
+          && new URL(row.url).pathname === (
+            "/api/product-workspace/release-target/"
+            + "shopee-price-reconciliation"
+          )
+        ));
+        check(
+          closePosts.length === 1
+          && body.offer_id === "3838616043"
+          && body.publication_targets.join("|") === "shopee:PH|shopee:TH"
+          && body.plan_id === "omnichannel:SECRET-PLAN-ID"
+          && body.confirmation_token === "PUBLISH-SECRET-TOKEN"
+          && body.expected_revision === 31
+          && body.payload_digest === "SECRET-PAYLOAD-DIGEST"
+          && body.preflight_digest === "SECRET-PREFLIGHT-DIGEST"
+          && body.operation_digest === "SECRET-OPERATION-DIGEST"
+          && body.target_label === "shopee:PH"
+          && body.confirm_shopee_price_reconciliation === true
+          && body.approved_by === "Kyle"
+          && !Object.hasOwn(body, "confirm")
+          && !Object.hasOwn(body, "confirm_shopee_price_repair"),
+          `Shopee price reconciliation ${viewport.width}/${outcome}: POST has dedicated exact identity`,
+          body,
+        );
+        if (outcome === "success") {
+          dashboard = JSON.parse(JSON.stringify(dashboard));
+          dashboard.release_v1.run.status = "SUCCEEDED";
+          dashboard.release_v1.publish_ready = true;
+          dashboard.release_v1.run.targets[0].status = "SUCCEEDED";
+          dashboard.release_v1.run.targets[0].repair = {
+            status: "SUCCEEDED",
+            result: {
+              write_status: "verified",
+              listing_price_verified: true,
+              derived_price_status: "warning",
+              profit_status: "unverified",
+              external_writes_performed: ["shopee:update_price"],
+              reconciliation_external_writes_performed: [],
+            },
+          };
+          await pendingClose.fulfill(jsonResponse({
+            ok: true,
+            idempotent: false,
+            target: "shopee:PH",
+            write_status: "verified",
+            listing_price_verified: true,
+            derived_price_status: "warning",
+            profit_status: "unverified",
+            external_writes_performed: [],
+            state_mutations_performed: [
+              "release_target_repair:SUCCEEDED",
+            ],
+          }));
+          await page.waitForFunction(() => (
+            document.querySelector("#releaseRunLedger")?.textContent.includes(
+              "挂牌价已验证 · SIP差异待财务审查",
+            )
+          ));
+          check(
+            await page.locator(buttonSelector).count() === 0,
+            `Shopee price reconciliation ${viewport.width}: success removes repeat control`,
+          );
+          check(
+            await page.locator("#publishAllCheckbox").isEnabled(),
+            `Shopee price reconciliation ${viewport.width}: durable close re-evaluates one-click publish from remaining safe state`,
+          );
+        } else {
+          await pendingClose.fulfill(jsonResponse({
+            ok: false,
+            error: "official local price is not exact",
+            external_writes_performed: [],
+            state_mutations_performed: [],
+          }, 409));
+          await page.waitForFunction(
+            (selector) => document.querySelector(selector)?.textContent.includes(
+              "未再次修价或重发",
+            ),
+            `${targetSelector} .shopee-price-repair-message`,
+          );
+          check(
+            await page.locator(buttonSelector).isEnabled(),
+            `Shopee price reconciliation ${viewport.width}: GET mismatch remains safely retryable`,
+          );
+        }
+        await page.waitForTimeout(100);
+        check(
+          requests.filter((row) => (
+            row.method === "POST"
+            && new URL(row.url).pathname === (
+              "/api/product-workspace/release-target/"
+              + "shopee-price-reconciliation"
+            )
+          )).length === 1,
+          `Shopee price reconciliation ${viewport.width}/${outcome}: terminal wait adds zero repeat POST`,
+          requests,
+        );
+        check(
+          requests.every((row) => (
+            !row.url.includes("update_price")
+            && !row.url.includes("refresh")
+          )),
+          `Shopee price reconciliation ${viewport.width}/${outcome}: browser journey invokes no update/refresh API`,
+          requests,
+        );
+        const overflow = await overflowAudit(page);
+        check(
+          overflow.pageOverflow <= 2,
+          `Shopee price reconciliation ${viewport.width}/${outcome}: no horizontal overflow`,
+          overflow,
+        );
+        check(
+          unexpectedInteractionErrors(errors).length === 0,
+          `Shopee price reconciliation ${viewport.width}/${outcome}: no console/page errors`,
+          errors,
+        );
+        check(
+          externalRequests.length === 0,
+          `Shopee price reconciliation ${viewport.width}/${outcome}: no external network`,
+          externalRequests,
+        );
+      } finally {
+        await context.close();
+      }
     }
   }
 }
@@ -2365,6 +2656,7 @@ async function legacyStateSafety(browser) {
     await productReleaseTerminalState(browser);
     await productReleasePartialFailedLedger(browser);
     await productShopeePriceRepairContract(browser);
+    await productShopeePriceReconciliationContract(browser);
     await productCommonOverwriteContract(browser);
     await aiAsyncFeedback(browser);
     await profitAsyncAndNoFalseSuccess(browser);

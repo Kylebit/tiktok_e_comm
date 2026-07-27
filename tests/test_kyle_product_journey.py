@@ -639,6 +639,9 @@ def test_formal_frontend_collects_first_and_has_an_inline_facts_editor():
     assert "保存并确认商品事实 · 刷新全部售价" in html
     assert "/api/product-workspace/collect" in script
     assert "/api/product-workspace/facts" in script
+    assert "/api/product-workspace/title-adopt" in script
+    assert "采用并废止旧审批 / 发布计划" in script
+    assert "旧商品审批、旧发布计划及未完成运行已废止" in script
     assert "expected_revision" in script
     assert "selected_sku_keys" in script
     assert "请先进入 AI 图片工作室" not in script

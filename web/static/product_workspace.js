@@ -77,6 +77,7 @@
   let approvalSubmitting = false;
   let factsSubmitting = false;
   let titleDraftSubmitting = false;
+  let titleAdoptSubmitting = false;
   let releaseSubmitting = false;
   let pageLoading = false;
   let queueRefreshing = false;
@@ -824,6 +825,8 @@
     const candidates = Array.isArray(draft.candidates) ? draft.candidates : [];
     const product = data.product || {};
     const locked = Boolean(product.actual_product_approved || product.fields_locked);
+    const stale = draft.status === "superseded_product_facts_changed";
+    const adopted = draft.status === "adopted_in_product_facts";
     const button = $("#generateTitleDraftButton");
     button.disabled = locked || titleDraftSubmitting || pageLoading;
     button.classList.toggle("is-loading", titleDraftSubmitting);
@@ -833,9 +836,13 @@
       $("#titleCandidateGrid").innerHTML = "";
       return;
     }
-    const status = draft.status === "adopted_in_product_facts"
-      ? "已采用到当前商品事实"
-      : "候选待 Kyle 采用";
+    const status = adopted
+      ? "已采用到当前商品事实；旧审批与旧发布计划已废止，等待重新核对并批准"
+      : (stale
+        ? "候选与当前商品事实不匹配，不能采用"
+        : (locked
+          ? "候选待 Kyle 显式采用；采用会废止旧审批、旧发布计划和未完成运行"
+          : "候选待 Kyle 采用"));
     $("#titleDraftStatus").textContent =
       `${status} · 模型 ${draft.model || "未记录"} · 规则 ${draft.policy_version || "未记录"} · 输入签名 ${(draft.input_signature || "").slice(0, 16)}`;
     const shopeeDescription = String(draft.shopee_description_en || "").trim();
@@ -857,7 +864,14 @@
         </div>
         <strong>${esc(row.title || "")}</strong>
         ${row.master ? `<button class="button button-secondary adopt-title-candidate"
-          type="button" data-title="${esc(row.title || "")}">采用为正式英文标题</button>` : ""}
+          type="button" data-title="${esc(row.title || "")}"
+          ${titleAdoptSubmitting || stale || adopted ? "disabled" : ""}>${
+            titleAdoptSubmitting
+              ? "正在采用并废止旧版本…"
+              : (locked
+                ? "采用并废止旧审批 / 发布计划"
+                : "采用为正式英文标题")
+          }</button>` : ""}
       </article>
     `).join("") + (shopeeDescription ? `
       <article class="title-candidate title-description-candidate">
@@ -903,6 +917,80 @@
       titleDraftSubmitting = false;
       renderTitleDraft(currentData || {});
       if (failureMessage) $("#titleDraftStatus").textContent = failureMessage;
+    }
+  }
+
+  async function adoptTitleCandidate(button) {
+    if (!currentData || titleAdoptSubmitting || pageLoading) return;
+    const product = currentData.product || {};
+    const draft = currentData.listing_copy || {};
+    const locked = Boolean(product.actual_product_approved || product.fields_locked);
+    const candidateTitle = String(button.dataset.title || "").trim();
+    if (!locked) {
+      $("#factsEditTitle").value = candidateTitle;
+      $("#factsEditMessage").textContent =
+        "已采用 ToAPI 优化的英文语义母版；核对后保存，才会建立新 revision 并刷新全部售价。";
+      $("#factsEditTitle").focus();
+      return;
+    }
+    if (
+      !window.confirm(
+        `采用当前 EN MASTER 将执行以下本地变更：\n\n`
+        + `• 把正式商品标题改为该英文候选\n`
+        + `• 废止当前商品审批与旧 ReleasePlan\n`
+        + `• 废止旧计划尚未完成的运行并解锁商品事实\n\n`
+        + `不会写妙手或任何渠道。确认由 Kyle 对 revision ${product.revision ?? "—"} 执行吗？`,
+      )
+    ) {
+      $("#titleDraftStatus").textContent =
+        "已取消采用；当前商品审批、ReleasePlan 和运行均未改变。";
+      return;
+    }
+    if (
+      loadedQueueKey !== currentQueueKey
+      || productKey(product.offer_id) !== currentQueueKey
+    ) {
+      $("#titleDraftStatus").textContent =
+        "当前商品仍在切换，不能使用上一件商品的标题候选。";
+      return;
+    }
+    titleAdoptSubmitting = true;
+    renderTitleDraft(currentData);
+    $("#titleDraftStatus").textContent =
+      "正在复核候选、事实签名和 revision，并安全废止旧审批与发布计划…";
+    let finalMessage = "";
+    try {
+      const payload = await postProductWorkspace(
+        "/api/product-workspace/title-adopt",
+        {
+          offer_id: product.offer_id,
+          expected_revision: product.revision,
+          candidate_title: candidateTitle,
+          input_signature: String(draft.input_signature || ""),
+          approved_by: "Kyle",
+          user_approved: true,
+        },
+      );
+      const data = dashboardFromPayload(payload)
+        || payload.dashboard
+        || await fetchDashboard(product.offer_id);
+      currentData = data;
+      const item = queueItem(currentQueueKey);
+      if (item) item.data = data;
+      render(data);
+      finalMessage =
+        `已采用 EN MASTER 并建立 revision ${data.product?.revision ?? payload.revision ?? "新"}；`
+        + "旧商品审批、旧发布计划及未完成运行已废止。请复核商品事实后重新批准锁定。";
+      $("#factsEditMessage").textContent = finalMessage;
+      showError("");
+    } catch (error) {
+      finalMessage =
+        `采用失败：${friendlyError(error.message)}；未建立新的商品事实审批。`;
+      showError(finalMessage);
+    } finally {
+      titleAdoptSubmitting = false;
+      renderTitleDraft(currentData || {});
+      if (finalMessage) $("#titleDraftStatus").textContent = finalMessage;
     }
   }
 
@@ -2350,10 +2438,7 @@
   $("#titleCandidateGrid").addEventListener("click", (event) => {
     const button = event.target.closest(".adopt-title-candidate");
     if (!button || button.disabled) return;
-    $("#factsEditTitle").value = button.dataset.title || "";
-    $("#factsEditMessage").textContent =
-      "已采用 ToAPI 优化的英文语义母版；核对后保存，才会建立新 revision 并刷新全部售价。";
-    $("#factsEditTitle").focus();
+    adoptTitleCandidate(button);
   });
   $("#releasePlanCheckbox").addEventListener("change", () => {
     updateReleaseControls(currentData || {});

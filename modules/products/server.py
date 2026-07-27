@@ -626,6 +626,282 @@ def _listing_title_facts(
     }
 
 
+def _semantic_master_title(value: object) -> str:
+    """Return one safe English master title or raise a reviewable error."""
+
+    title = " ".join(str(value or "").split()).strip(" \"'|")
+    if not title:
+        raise ValueError("semantic_master_en is required")
+    if len(title) > 180:
+        raise ValueError("semantic_master_en exceeds 180 characters")
+    if not any("A" <= char <= "Z" or "a" <= char <= "z" for char in title):
+        raise ValueError("semantic_master_en must contain English letters")
+    if any("\u3400" <= char <= "\u9fff" for char in title):
+        raise ValueError("semantic_master_en must not contain Chinese text")
+    if any(
+        ord(char) < 32 or 0x1F300 <= ord(char) <= 0x1FAFF
+        for char in title
+    ):
+        raise ValueError("semantic_master_en contains unsupported characters")
+    return title
+
+
+def _adopt_product_workspace_title_candidate(data: dict) -> tuple[int, dict]:
+    """Adopt the current EN master and explicitly supersede prior approvals."""
+
+    from domains.content_operations import listing_title_fact_signature
+    from modules.sourcing import new_product_workbench as np_mod
+    from shared_platform import release_control
+    from shared_platform.release_store import (
+        ReleaseStoreError,
+        default_release_store,
+    )
+
+    offer_id = str(data.get("offer_id") or "").strip()
+    expected_revision = data.get("expected_revision")
+    requested_title = str(data.get("candidate_title") or "").strip()
+    requested_signature = str(data.get("input_signature") or "").strip()
+    if not offer_id.isdigit() or not 1 <= len(offer_id) <= 32:
+        return 400, {
+            "ok": False,
+            "error_code": "invalid_offer_id",
+            "error": "offer_id must contain 1-32 digits",
+        }
+    if (
+        isinstance(expected_revision, bool)
+        or not isinstance(expected_revision, int)
+        or expected_revision < 1
+    ):
+        return 400, {
+            "ok": False,
+            "error_code": "invalid_expected_revision",
+            "error": "expected_revision must be a positive integer",
+        }
+    if data.get("user_approved") is not True:
+        return 400, {
+            "ok": False,
+            "error_code": "explicit_approval_required",
+            "error": "explicit user_approved=true is required",
+        }
+    if str(data.get("approved_by") or "").strip() != "Kyle":
+        return 400, {
+            "ok": False,
+            "error_code": "invalid_approver",
+            "error": "approved_by must be Kyle",
+        }
+    if not requested_title or not requested_signature:
+        return 400, {
+            "ok": False,
+            "error_code": "candidate_identity_required",
+            "error": "candidate_title and input_signature are required",
+        }
+
+    # Serialize with channel execution so a plan cannot begin an external
+    # target while this transition is invalidating that exact plan.
+    with _release_execution_lock, _product_workbench_lock(offer_id):
+        state = np_mod.load_state(offer_id)
+        current_revision = int(state.get("_revision") or 0)
+        if current_revision != expected_revision:
+            return 409, {
+                "ok": False,
+                "error_code": "state_revision_conflict",
+                "error": "state revision is stale",
+                "current_revision": current_revision,
+            }
+        review = state.get("review")
+        if not isinstance(review, dict):
+            return 409, {
+                "ok": False,
+                "error_code": "workbench_review_invalid",
+                "error": "state review must be a mapping",
+            }
+        approval = state.get("product_approval")
+        if not (
+            isinstance(approval, dict)
+            and str(approval.get("status") or "").strip().casefold() == "approved"
+            and bool(review.get("fields_locked"))
+        ):
+            return 409, {
+                "ok": False,
+                "error_code": "active_product_approval_required",
+                "error": (
+                    "this transition requires the current product approval "
+                    "and locked facts"
+                ),
+            }
+        listing_copy = state.get("listing_copy")
+        if not isinstance(listing_copy, dict):
+            return 409, {
+                "ok": False,
+                "error_code": "title_candidate_missing",
+                "error": "the current listing_copy candidate is missing",
+            }
+        stored_signature = str(
+            listing_copy.get("input_signature") or ""
+        ).strip()
+        if requested_signature != stored_signature:
+            return 409, {
+                "ok": False,
+                "error_code": "title_candidate_mismatch",
+                "error": "title candidate identity changed; refresh before adopting",
+            }
+        source = np_mod._source_summary(offer_id)
+        current_signature = listing_title_fact_signature(
+            _listing_title_facts(
+                np_mod,
+                offer_id,
+                state,
+                source=source,
+            )
+        )
+        if not stored_signature or stored_signature != current_signature:
+            return 409, {
+                "ok": False,
+                "error_code": "title_candidate_stale",
+                "error": (
+                    "listing_copy input_signature no longer matches the "
+                    "current product facts"
+                ),
+                "current_input_signature": current_signature,
+            }
+        stored_title = str(
+            listing_copy.get("semantic_master_en") or ""
+        ).strip()
+        if requested_title != stored_title:
+            return 409, {
+                "ok": False,
+                "error_code": "title_candidate_mismatch",
+                "error": "semantic_master_en changed; refresh before adopting",
+            }
+        try:
+            adopted_title = _semantic_master_title(stored_title)
+        except ValueError as error:
+            return 409, {
+                "ok": False,
+                "error_code": "invalid_semantic_master_en",
+                "error": str(error),
+            }
+        if adopted_title == str(review.get("title") or "").strip():
+            return 409, {
+                "ok": False,
+                "error_code": "title_candidate_already_current",
+                "error": "semantic_master_en is already the current product title",
+            }
+
+        store = default_release_store()
+        active_plan = store.active_plan_for_product(offer_id)
+        active_plan_id = (
+            str(active_plan.get("plan_id") or "").strip()
+            if isinstance(active_plan, dict)
+            else ""
+        )
+        reason = (
+            "Kyle adopted the current semantic_master_en; product facts "
+            f"changed from revision {expected_revision}"
+        )
+        if active_plan_id:
+            try:
+                store.supersede_plan(active_plan_id, reason=reason)
+            except ReleaseStoreError as error:
+                return 409, {
+                    "ok": False,
+                    "error_code": "release_plan_supersession_failed",
+                    "error": str(error),
+                }
+
+        superseded_at = datetime.now(timezone.utc).isoformat()
+        prior_approval_id = str(approval.get("approval_id") or "").strip()
+        next_state = dict(state)
+        next_review = dict(review)
+        next_review.update(
+            {
+                "title": adopted_title,
+                "fields_locked": False,
+            }
+        )
+        next_state["review"] = next_review
+        next_state["product_approval"] = {
+            **approval,
+            "status": "superseded",
+            "superseded_at": superseded_at,
+            "superseded_by": "product_workspace_en_master_adoption",
+            "superseded_revision": expected_revision,
+            "superseded_fields": ["title"],
+            "supersede_reason": reason,
+        }
+        next_listing_copy = dict(listing_copy)
+        next_listing_copy.update(
+            {
+                "status": "adopted_in_product_facts",
+                "adopted_title": adopted_title,
+                "adopted_at": superseded_at,
+                "adopted_by": "Kyle",
+                "adoption_input_signature": stored_signature,
+                "superseded_product_approval_id": prior_approval_id or None,
+                "superseded_release_plan_id": active_plan_id or None,
+            }
+        )
+        next_state["listing_copy"] = next_listing_copy
+        supersessions = list(state.get("commercial_supersessions") or ())
+        supersessions.append(
+            {
+                "source": "product_workspace_en_master_adoption",
+                "status": "superseded",
+                "expected_revision": expected_revision,
+                "changed_fields": ["title"],
+                "reason": reason,
+                "superseded_at": superseded_at,
+                "prior_approval_id": prior_approval_id or None,
+                "prior_release_plan_id": active_plan_id or None,
+                "adopted_title": adopted_title,
+                "input_signature": stored_signature,
+                "approved_by": "Kyle",
+            }
+        )
+        next_state["commercial_supersessions"] = supersessions
+        try:
+            saved = np_mod.save_state(offer_id, next_state)
+        except RuntimeError:
+            latest = np_mod.load_state(offer_id)
+            return 409, {
+                "ok": False,
+                "error_code": "state_revision_conflict",
+                "error": (
+                    "state revision changed after the old ReleasePlan was "
+                    "safely superseded; refresh before retrying"
+                ),
+                "current_revision": int(latest.get("_revision") or 0),
+                "release_plan_superseded": bool(active_plan_id),
+            }
+
+    try:
+        dashboard = release_control.build_release_dashboard(offer_id=offer_id)
+    except Exception as error:
+        return 500, {
+            "ok": False,
+            "error_code": "dashboard_refresh_failed_after_title_adoption",
+            "error": str(error),
+            "current_revision": int(saved.get("_revision") or 0),
+            "title_adoption_persisted": True,
+            "external_writes_performed": [],
+        }
+    local_writes = ["workbench_state"]
+    if active_plan_id:
+        local_writes.insert(0, "release_plan_supersession")
+    return 200, {
+        "ok": True,
+        "persisted": True,
+        "revision": int(saved.get("_revision") or 0),
+        "adopted_title": adopted_title,
+        "superseded_product_approval_id": prior_approval_id or None,
+        "superseded_release_plan_id": active_plan_id or None,
+        "next_action": "review_and_reapprove_product_facts",
+        "local_writes_performed": local_writes,
+        "external_writes_performed": [],
+        "dashboard": _product_workspace_view(dashboard),
+    }
+
+
 def _generate_product_workspace_title_draft(data: dict) -> tuple[int, dict]:
     """Generate and persist model copy candidates; perform no marketplace write."""
 
@@ -4401,6 +4677,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/product-workspace/collect",
             "/api/product-workspace/facts",
             "/api/product-workspace/title-draft",
+            "/api/product-workspace/title-adopt",
             "/api/product-workspace/approve",
             "/api/product-workspace/release-plan/approve",
             "/api/product-workspace/miaoshou-draft/commit",
@@ -4450,6 +4727,8 @@ class Handler(BaseHTTPRequestHandler):
                 status, payload = _save_product_workspace_facts_locally(data)
             elif path == "/api/product-workspace/title-draft":
                 status, payload = _generate_product_workspace_title_draft(data)
+            elif path == "/api/product-workspace/title-adopt":
+                status, payload = _adopt_product_workspace_title_candidate(data)
             elif path == "/api/product-workspace/approve":
                 status, payload = _approve_product_workspace_locally(data)
             elif path == "/api/product-workspace/release-plan/approve":

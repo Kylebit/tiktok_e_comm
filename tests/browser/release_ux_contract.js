@@ -478,6 +478,132 @@ async function productAsyncFeedback(browser) {
   }
 }
 
+async function productLockedTitleAdoption(browser) {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await context.newPage();
+  const errors = [];
+  const requests = [];
+  let adoptionRequest = null;
+  let confirmation = "";
+  const englishMaster = "Cute Bear PVC Wall Sticker, 3-Piece 30 x 40 cm";
+  const lockedDashboard = JSON.parse(JSON.stringify(productDashboard));
+  lockedDashboard.product.revision = 15;
+  lockedDashboard.product.title = "小熊躲猫猫墙贴";
+  lockedDashboard.product.fields_locked = true;
+  lockedDashboard.product.actual_product_approved = true;
+  lockedDashboard.content = {
+    approved: true,
+    image_count: 6,
+    images: [],
+    blockers: [],
+  };
+  lockedDashboard.listing_copy = {
+    status: "draft_pending_kyle_review",
+    semantic_master_en: englishMaster,
+    candidates: [],
+    input_signature: "sha256:locked-current-facts",
+    policy_version: "listing-copy-candidates-v4",
+    model: "gpt-5.4-mini-official",
+  };
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+  });
+  page.on("dialog", async (dialog) => {
+    confirmation = dialog.message();
+    await dialog.accept();
+  });
+  await page.route("**/*", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.origin !== baseUrl) return route.abort("blockedbyclient");
+    if (!url.pathname.startsWith("/api/")) return route.continue();
+    requests.push({ method: request.method(), url: request.url() });
+    if (url.pathname === "/api/product-workspace/dashboard") {
+      return route.fulfill(jsonResponse(lockedDashboard));
+    }
+    if (
+      url.pathname === "/api/product-workspace/title-adopt"
+      && request.method() === "POST"
+    ) {
+      adoptionRequest = request.postDataJSON();
+      const updated = JSON.parse(JSON.stringify(lockedDashboard));
+      updated.product.revision = 16;
+      updated.product.title = englishMaster;
+      updated.product.fields_locked = false;
+      updated.product.actual_product_approved = false;
+      updated.listing_copy.status = "adopted_in_product_facts";
+      return route.fulfill(jsonResponse({
+        ok: true,
+        revision: 16,
+        external_writes_performed: [],
+        dashboard: updated,
+      }));
+    }
+    const fixture = apiFixture(
+      url,
+      request.method(),
+      { delayWeekly: false, delaySku: false, pending: {} },
+    );
+    return route.fulfill(fixture || jsonResponse({ ok: false }, 404));
+  });
+  try {
+    await page.goto(`${baseUrl}/product-workspace?offer_id=3828540231`, {
+      waitUntil: "networkidle",
+    });
+    const adopt = page.locator(".adopt-title-candidate");
+    check(
+      await adopt.count() === 1
+      && (await adopt.innerText()).includes("废止旧审批"),
+      "product: locked EN MASTER exposes one explicit supersession action",
+    );
+    await adopt.click();
+    await page.waitForFunction(
+      () => document.querySelector("#productFactsForm")?.dataset.locked === "false",
+    );
+    check(
+      confirmation.includes("废止当前商品审批与旧 ReleasePlan")
+      && confirmation.includes("不会写妙手或任何渠道"),
+      "product: title adoption confirmation states destructive local scope and external-write boundary",
+      confirmation,
+    );
+    check(
+      adoptionRequest
+      && adoptionRequest.user_approved === true
+      && adoptionRequest.approved_by === "Kyle"
+      && adoptionRequest.expected_revision === 15
+      && adoptionRequest.candidate_title === englishMaster
+      && adoptionRequest.input_signature === "sha256:locked-current-facts",
+      "product: locked title adoption submits exact Kyle approval, revision, candidate and signature",
+      adoptionRequest,
+    );
+    check(
+      await page.locator("#factsEditTitle").inputValue() === englishMaster
+      && await page.locator("#factsEditTitle").isEnabled(),
+      "product: successful adoption shows the English title in unlocked product facts",
+    );
+    const status = (await page.locator("#titleDraftStatus").innerText()).trim();
+    check(
+      status.includes("旧商品审批、旧发布计划及未完成运行已废止")
+      && status.includes("重新批准锁定"),
+      "product: adoption success explains supersession and required re-approval",
+      status,
+    );
+    check(
+      errors.length === 0,
+      "product title adoption: no console/page errors",
+      errors,
+    );
+    check(
+      requests.filter((row) => row.method === "POST").length === 1,
+      "product title adoption: exactly one local transition POST",
+      requests,
+    );
+  } finally {
+    await context.close();
+  }
+}
+
 async function productReleaseTerminalState(browser) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await context.newPage();
@@ -855,6 +981,7 @@ async function legacyStateSafety(browser) {
       await auditPage(browser, definition, { width: 390, height: 844 });
     }
     await productAsyncFeedback(browser);
+    await productLockedTitleAdoption(browser);
     await productReleaseTerminalState(browser);
     await aiAsyncFeedback(browser);
     await profitAsyncAndNoFalseSuccess(browser);

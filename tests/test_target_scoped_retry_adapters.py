@@ -43,6 +43,15 @@ def test_existing_or_ambiguous_shop_listing_fails_before_dispatch(monkeypatch):
         adapters.build_official_target_proof(request())
 
 
+@pytest.mark.parametrize("bad_title,bad_description", [(None, "ok"), ([], "ok"), ({}, "ok"), (1, "ok"), (True, "ok"), ("", "ok"), ("ok", None), ("ok", [])])
+def test_official_global_copy_malformed_fails_before_any_dispatch(monkeypatch, bad_title, bad_description):
+    from modules.shopee import target_scoped
+    monkeypatch.setattr("modules.shopee.client.merchant_get", lambda *_args, **_kwargs: {"response": {"global_item_list": [{"global_item_id": "9", "global_item_name": bad_title, "description": bad_description, "image": {"image_url_list": ["u"], "image_id_list": ["i"]}}]}})
+    command = {"approved_copy_digest": "x", "approved_image_count": 1, "approved_global_image_mapping_digest": None}
+    with pytest.raises(RuntimeError, match="copy shape"):
+        target_scoped._official_global_master(merchant_id=1, merchant_token="t", global_item_id="9", model_sku="0954", command=command)
+
+
 def test_scan_never_returns_after_normal_terminal_page(monkeypatch):
     from modules.shopee import target_scoped
     calls = []

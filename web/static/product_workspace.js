@@ -197,6 +197,14 @@
     return text || "商品状态读取失败，请确认本地服务已启动。";
   }
 
+  function isStateRevisionConflict(error) {
+    const payload = error?.payload || {};
+    return error?.status === 409 && (
+      payload.error_code === "state_revision_conflict"
+      || String(payload.error || error?.message || "").trim() === "state revision is stale"
+    );
+  }
+
   function setLoading(loading) {
     pageLoading = loading;
     $("#lookupForm").classList.toggle("is-loading", loading);
@@ -928,8 +936,36 @@
           "已把英文语义母版放入正式标题输入框；请核对后点击“保存并确认商品事实 · 刷新全部售价”。";
       }
     } catch (error) {
-      failureMessage =
-        `标题生成失败：${friendlyError(error.message)}；商品事实没有被修改。`;
+      if (isStateRevisionConflict(error)) {
+        const reportedRevision = Number(error.payload?.current_revision);
+        const revisionHint = Number.isInteger(reportedRevision)
+          ? ` revision ${reportedRevision}`
+          : "";
+        $("#titleDraftStatus").textContent =
+          `另一窗口已更新商品${revisionHint}；旧 revision 请求已由 CAS 安全拒绝，正在自动刷新最新状态…`;
+        try {
+          const latest = await fetchDashboard(
+            product.offer_id,
+            currentData?.publication_scope?.selected_labels || null,
+          );
+          currentData = latest;
+          const item = queueItem(currentQueueKey);
+          if (item) {
+            item.data = latest;
+            item.seller_sku = latest.product?.seller_sku_candidate || "";
+          }
+          render(latest);
+          const latestRevision = latest.product?.revision ?? reportedRevision;
+          failureMessage =
+            `另一窗口已将商品更新到 revision ${latestRevision}；本窗口的旧 revision 请求已由 CAS 安全拒绝，已自动刷新最新标题状态。`;
+        } catch (_refreshError) {
+          failureMessage =
+            `另一窗口已更新商品${revisionHint}；本窗口的旧 revision 请求已由 CAS 安全拒绝。自动刷新失败，请点击页面顶部“重新检查”。`;
+        }
+      } else {
+        failureMessage =
+          `标题生成失败：${friendlyError(error.message)}；商品事实没有被修改。`;
+      }
       $("#titleDraftStatus").textContent = failureMessage;
     } finally {
       titleDraftSubmitting = false;

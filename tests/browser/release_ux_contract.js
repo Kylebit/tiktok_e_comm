@@ -629,6 +629,7 @@ async function productPreservedTitleApprovalReload(browser) {
     policy_version: "listing-copy-candidates-v4",
     model: "gpt-5.4-mini-official",
     product_approval_preserved: true,
+    superseded_release_plan_id: "omnichannel:prior-plan",
   };
   page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
   page.on("console", (message) => {
@@ -670,6 +671,11 @@ async function productPreservedTitleApprovalReload(browser) {
     check(
       await page.locator("#productFactsForm").getAttribute("data-locked") === "true",
       "product: same-title reaffirm reload keeps the approved facts locked",
+    );
+    check(
+      preservedDashboard.listing_copy.superseded_release_plan_id
+        === "omnichannel:prior-plan",
+      "product: same-title reaffirm keeps the superseded ReleasePlan audit link",
     );
     check(
       errors.length === 0,
@@ -785,6 +791,187 @@ async function productLockedStaleTitleRefresh(browser) {
     check(
       errors.length === 0,
       "product locked stale title refresh: no console/page errors",
+      errors,
+    );
+  } finally {
+    await context.close();
+  }
+}
+
+async function productMultiTabTitleRefreshConflict(browser) {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const firstTab = await context.newPage();
+  const staleTab = await context.newPage();
+  const errors = [];
+  const requests = [];
+  let pendingFirst = null;
+  let pendingStale = null;
+  let modelCalls = 0;
+  const initialDashboard = JSON.parse(JSON.stringify(productDashboard));
+  initialDashboard.product.revision = 27;
+  initialDashboard.product.fields_locked = true;
+  initialDashboard.product.actual_product_approved = true;
+  initialDashboard.listing_copy = {
+    status: "superseded_product_facts_changed",
+    semantic_master_en: "Stale English Master",
+    candidates: [],
+    input_signature: "sha256:68e84-previous",
+    policy_version: "listing-copy-candidates-v4",
+    model: "gpt-5.4-mini-official",
+  };
+  let liveDashboard = initialDashboard;
+  const latestDashboard = JSON.parse(JSON.stringify(initialDashboard));
+  latestDashboard.product.revision = 28;
+  latestDashboard.listing_copy = {
+    status: "draft_pending_kyle_review",
+    semantic_master_en: "Bear Peekaboo PVC Wall Sticker for Kids Room Decor",
+    candidates: [],
+    input_signature: "sha256:999a44-current",
+    fact_snapshot: { offer_id: "3828540231" },
+    model_input_signature: "sha256:current-model-input",
+    policy_version: "listing-copy-candidates-v4",
+    model: "gpt-5.4-mini-official",
+    refreshed_while_product_locked: true,
+    superseded_release_plan_id: "omnichannel:revision-27-plan",
+  };
+
+  const attach = async (page, tabName) => {
+    page.on("pageerror", (error) => errors.push(`${tabName} pageerror: ${error.message}`));
+    page.on("console", (message) => {
+      if (message.type() === "error") {
+        errors.push(`${tabName} console: ${message.text()}`);
+      }
+    });
+    page.on("dialog", async (dialog) => dialog.accept());
+    await page.route("**/*", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (url.origin !== baseUrl) return route.abort("blockedbyclient");
+      if (!url.pathname.startsWith("/api/")) return route.continue();
+      requests.push({ tab: tabName, method: request.method(), url: request.url() });
+      if (url.pathname === "/api/product-workspace/dashboard") {
+        return route.fulfill(jsonResponse(liveDashboard));
+      }
+      if (
+        url.pathname === "/api/product-workspace/title-draft"
+        && request.method() === "POST"
+      ) {
+        const body = request.postDataJSON();
+        if (body.expected_revision === liveDashboard.product.revision) {
+          pendingFirst = { route, body };
+        } else {
+          pendingStale = { route, body };
+        }
+        return;
+      }
+      const fixture = apiFixture(
+        url,
+        request.method(),
+        { delayWeekly: false, delaySku: false, pending: {} },
+      );
+      return route.fulfill(fixture || jsonResponse({ ok: false }, 404));
+    });
+  };
+
+  await attach(firstTab, "first");
+  await attach(staleTab, "stale");
+  try {
+    await Promise.all([
+      firstTab.goto(`${baseUrl}/product-workspace?offer_id=3828540231`, {
+        waitUntil: "networkidle",
+      }),
+      staleTab.goto(`${baseUrl}/product-workspace?offer_id=3828540231`, {
+        waitUntil: "networkidle",
+      }),
+    ]);
+
+    await firstTab.locator("#generateTitleDraftButton").click();
+    await firstTab.waitForFunction(
+      () => document.querySelector("#generateTitleDraftButton")?.classList.contains("is-loading"),
+    );
+    check(
+      (await firstTab.locator("#titleDraftStatus").innerText()).includes("ToAPI 正在"),
+      "product multi-tab: winning tab exposes pending ToAPI feedback",
+    );
+    check(
+      pendingFirst?.body.expected_revision === 27,
+      "product multi-tab: winning tab submits its current dashboard revision",
+      pendingFirst?.body,
+    );
+    modelCalls += 1;
+    liveDashboard = latestDashboard;
+    await pendingFirst.route.fulfill(jsonResponse({
+      ok: true,
+      revision: 28,
+      locked_stale_refresh: true,
+      superseded_release_plan_id: "omnichannel:revision-27-plan",
+      marketplace_writes_performed: [],
+      dashboard: latestDashboard,
+    }));
+    await firstTab.waitForFunction(
+      () => document.querySelector("#factsEditRevision")?.textContent.includes("28"),
+    );
+    check(
+      (await firstTab.locator("#titleCandidateGrid").innerText()).includes(
+        "Bear Peekaboo PVC Wall Sticker",
+      ),
+      "product multi-tab: winning tab renders the generated title",
+    );
+
+    await staleTab.locator("#generateTitleDraftButton").click();
+    await staleTab.waitForFunction(
+      () => document.querySelector("#generateTitleDraftButton")?.classList.contains("is-loading"),
+    );
+    check(
+      (await staleTab.locator("#titleDraftStatus").innerText()).includes("ToAPI 正在"),
+      "product multi-tab: stale tab exposes pending feedback before CAS response",
+    );
+    check(
+      pendingStale?.body.expected_revision === 27,
+      "product multi-tab: stale tab keeps its original revision for CAS",
+      pendingStale?.body,
+    );
+    await pendingStale.route.fulfill(jsonResponse({
+      ok: false,
+      error: "state revision is stale",
+      current_revision: 28,
+      marketplace_writes_performed: [],
+    }, 409));
+    await staleTab.waitForFunction(
+      () => document.querySelector("#titleDraftStatus")?.textContent.includes("已自动刷新最新标题状态"),
+    );
+    const staleStatus = (await staleTab.locator("#titleDraftStatus").innerText()).trim();
+    check(
+      staleStatus.includes("另一窗口已将商品更新到 revision 28")
+      && staleStatus.includes("CAS 安全拒绝")
+      && !staleStatus.includes("标题生成失败"),
+      "product multi-tab: stale CAS is explained as another-window update, not ToAPI failure",
+      staleStatus,
+    );
+    check(
+      (await staleTab.locator("#factsEditRevision").innerText()).includes("28")
+      && (await staleTab.locator("#titleCandidateGrid").innerText()).includes(
+        "Bear Peekaboo PVC Wall Sticker",
+      ),
+      "product multi-tab: stale tab automatically reloads revision 28 and its current title",
+    );
+    check(
+      await staleTab.locator("#productFactsForm").getAttribute("data-locked") === "true",
+      "product multi-tab: automatic reload preserves product approval lock",
+    );
+    check(
+      liveDashboard.listing_copy.superseded_release_plan_id
+        === "omnichannel:revision-27-plan",
+      "product multi-tab: automatic reload keeps the superseded ReleasePlan link",
+    );
+    check(
+      modelCalls === 1,
+      "product multi-tab: stale tab is rejected before a second model call",
+      modelCalls,
+    );
+    check(
+      unexpectedInteractionErrors(errors).length === 0,
+      "product multi-tab title refresh: no console/page errors",
       errors,
     );
   } finally {
@@ -1172,6 +1359,7 @@ async function legacyStateSafety(browser) {
     await productLockedTitleAdoption(browser);
     await productPreservedTitleApprovalReload(browser);
     await productLockedStaleTitleRefresh(browser);
+    await productMultiTabTitleRefreshConflict(browser);
     await productReleaseTerminalState(browser);
     await aiAsyncFeedback(browser);
     await profitAsyncAndNoFalseSuccess(browser);

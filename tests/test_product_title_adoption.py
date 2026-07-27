@@ -473,6 +473,37 @@ def test_locked_stale_candidate_can_be_refreshed_with_explicit_kyle_approval(
     assert store.get_plan(plan["plan_id"])["status"] == "SUPERSEDED"
 
 
+def test_locked_stale_refresh_rejects_stale_revision_before_model_call(
+    monkeypatch,
+    tmp_path,
+):
+    initial = _locked_state()
+    initial["listing_copy"]["status"] = "superseded_product_facts_changed"
+    state, saves, store = _install(monkeypatch, tmp_path, initial=initial)
+    monkeypatch.setattr(
+        content_operations,
+        "generate_title_candidates",
+        lambda _facts: pytest.fail("stale CAS must reject before calling ToAPI"),
+    )
+
+    status, payload = product_server._generate_product_workspace_title_draft(
+        {
+            "offer_id": OFFER_ID,
+            "expected_revision": 14,
+            "refresh_stale_locked_candidate": True,
+            "user_approved": True,
+            "approved_by": "Kyle",
+        }
+    )
+
+    assert status == 409
+    assert payload["error"] == "state revision is stale"
+    assert payload["current_revision"] == 15
+    assert state["_revision"] == 15
+    assert saves == []
+    assert not store.path.exists()
+
+
 def test_reaffirm_preserves_explicit_superseded_release_plan_identity(
     monkeypatch,
     tmp_path,

@@ -586,6 +586,44 @@ def test_formal_http_routes_collect_then_save_facts(
     ]
 
 
+def test_title_draft_http_preserves_revision_conflict_payload(
+    product_http_server,
+    monkeypatch,
+):
+    request_payload = {
+        "offer_id": OFFER_ID,
+        "expected_revision": 27,
+        "refresh_stale_locked_candidate": True,
+        "user_approved": True,
+        "approved_by": "Kyle",
+    }
+    calls = []
+
+    def generate(data: dict) -> tuple[int, dict]:
+        calls.append(data)
+        return 409, {
+            "ok": False,
+            "error": "state revision is stale",
+            "current_revision": 28,
+        }
+
+    monkeypatch.setattr(
+        product_server,
+        "_generate_product_workspace_title_draft",
+        generate,
+    )
+
+    status, payload = _post(
+        product_http_server + "/api/product-workspace/title-draft",
+        request_payload,
+    )
+
+    assert status == 409
+    assert payload["error"] == "state revision is stale"
+    assert payload["current_revision"] == 28
+    assert calls == [request_payload]
+
+
 def test_facts_http_route_is_same_origin_json_protected(
     product_http_server,
     monkeypatch,

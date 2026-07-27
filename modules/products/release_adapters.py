@@ -35,6 +35,9 @@ MIAOSHOU_PUBLISH_PATH = (
 MIAOSHOU_SHOP_DETAIL_PATH = (
     "/open/v1/product/collect_box/tiktok/collect_box/get_shop_collect_item_info"
 )
+MIAOSHOU_TIKTOK_DETAIL_LIST_PATH = (
+    "/open/v1/product/collect_box/tiktok/collect_box/search_collect_box_detail_list"
+)
 SEA_SITES = {"LH_PH": "PH", "LH_MY": "MY", "LH_TH": "TH", "LH_VN": "VN"}
 SITE_TARGET_KEYS = {
     "LH_PH": "lh_ph",
@@ -728,6 +731,13 @@ def _resolve_existing_miaoshou_tiktok_detail(
     claim = workbench.load_miaoshou_tiktok_claim(
         str(payload.get("product_id") or "")
     )
+    product_id = str(payload.get("product_id") or "").strip()
+    seller_sku = str(payload.get("seller_sku") or "").strip()
+    source_item_id = str(claim.get("source_item_id") or "").strip()
+    if not product_id or not seller_sku or not source_item_id:
+        raise RuntimeError(
+            "persisted Miaoshou claim lacks immutable product/SKU/source identity"
+        )
     detail_map = claim.get("detail_group_detail_ids")
     if not isinstance(detail_map, dict):
         raise RuntimeError(
@@ -798,6 +808,99 @@ def _resolve_existing_miaoshou_tiktok_detail(
         raise RuntimeError(
             f"Miaoshou detail {detail_id} is not bound to fixed shop "
             f"{expected_shop_id} for {clean_site}"
+        )
+    returned_common_id = str(
+        info.get("commonCollectBoxDetailId")
+        or data.get("commonCollectBoxDetailId")
+        or ""
+    ).strip()
+    if not returned_common_id:
+        raise RuntimeError(
+            f"Miaoshou detail {detail_id} did not return common product identity"
+        )
+    if returned_common_id != product_id:
+        raise RuntimeError(
+            f"Miaoshou detail {detail_id} belongs to common product "
+            f"{returned_common_id}, expected {product_id}"
+        )
+    returned_item_num = str(info.get("itemNum") or "").strip()
+    sku_map = info.get("skuMap")
+    if not returned_item_num or not isinstance(sku_map, dict) or not sku_map:
+        raise RuntimeError(
+            f"Miaoshou detail {detail_id} did not return verifiable SKU identity"
+        )
+    if returned_item_num != seller_sku:
+        raise RuntimeError(
+            f"Miaoshou detail {detail_id} seller SKU {returned_item_num} "
+            f"does not match {seller_sku}"
+        )
+    selected_count = len(
+        (payload.get("product_facts") or {}).get("selected_sku_keys") or ()
+    )
+    if selected_count < 1:
+        raise RuntimeError("immutable release plan has no selected SKU identity")
+    base_number = int(seller_sku)
+    expected_item_nums = {
+        str((base_number + offset) % 10000).zfill(4)
+        for offset in range(selected_count)
+    }
+    actual_item_nums = {
+        str(row.get("itemNum") or "").strip()
+        for row in sku_map.values()
+        if isinstance(row, dict) and str(row.get("itemNum") or "").strip()
+    }
+    if actual_item_nums != expected_item_nums:
+        raise RuntimeError(
+            f"Miaoshou detail {detail_id} variant SKU scheme "
+            f"{sorted(actual_item_nums)} does not match "
+            f"{sorted(expected_item_nums)}"
+        )
+
+    search = post(
+        MIAOSHOU_TIKTOK_DETAIL_LIST_PATH,
+        {
+            "pageNo": 1,
+            "pageSize": 100,
+            "filter": {"sourceItemIdKeyword": source_item_id},
+        },
+    )
+    if search.get("result") != "success":
+        raise RuntimeError(
+            f"Miaoshou existing detail uniqueness lookup failed for {clean_site}: "
+            f"{search.get('code')} {search.get('message') or ''}"
+        )
+    rows = (
+        (search.get("data") or {}).get("detailList")
+        or (search.get("data") or {}).get("list")
+        or ()
+    )
+    matches: list[int] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        row_common = str(row.get("commonCollectBoxDetailId") or "").strip()
+        row_item_num = str(row.get("itemNum") or "").strip()
+        row_shop_ids = {
+            str(shop_row.get("shopId") or "").strip()
+            for shop_row in (row.get("collectBoxDetailShopList") or ())
+            if isinstance(shop_row, dict)
+            and str(shop_row.get("shopId") or "").strip()
+        }
+        if (
+            row_common == product_id
+            and row_item_num == seller_sku
+            and expected_shop_id in row_shop_ids
+        ):
+            raw_detail_id = row.get("collectBoxDetailId") or row.get("detailId")
+            if not raw_detail_id:
+                raise RuntimeError(
+                    "Miaoshou uniqueness lookup returned an unverifiable detail"
+                )
+            matches.append(int(raw_detail_id))
+    if matches != [detail_id]:
+        raise RuntimeError(
+            f"Miaoshou {clean_site} detail identity is not unique and exact: "
+            f"mapped={detail_id}, matches={sorted(matches)}"
         )
     return {
         "site": clean_site,

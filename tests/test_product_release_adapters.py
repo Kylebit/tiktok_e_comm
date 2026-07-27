@@ -164,6 +164,7 @@ def test_existing_detail_resolver_ignores_asymmetric_claim_shops(monkeypatch):
         workbench,
         "load_miaoshou_tiktok_claim",
         lambda _offer_id: {
+            "source_item_id": "1011111051454",
             "shops": {
                 "mx": {
                     "shop_id": "16265910",
@@ -184,12 +185,31 @@ def test_existing_detail_resolver_ignores_asymmetric_claim_shops(monkeypatch):
 
     def read(path, body):
         requests.append((path, body))
+        if path == release_adapters.MIAOSHOU_TIKTOK_DETAIL_LIST_PATH:
+            return {
+                "result": "success",
+                "data": {
+                    "detailList": [
+                        {
+                            "commonCollectBoxDetailId": "3828811808",
+                            "collectBoxDetailId": 3227305525,
+                            "itemNum": "0953",
+                            "collectBoxDetailShopList": [
+                                {"shopId": "7676267"}
+                            ],
+                        }
+                    ]
+                },
+            }
         return {
             "result": "success",
             "data": {
                 "shopCollectItemInfo": {
                     "shopId": "7676267",
                     "title": "Approved PH title",
+                    "commonCollectBoxDetailId": "3828811808",
+                    "itemNum": "0953",
+                    "skuMap": {"34x58": {"itemNum": "0953"}},
                 },
                 "claimToShopIds": ["7676267"],
                 "ossMd5": "readonly-md5",
@@ -210,7 +230,15 @@ def test_existing_detail_resolver_ignores_asymmetric_claim_shops(monkeypatch):
         (
             release_adapters.MIAOSHOU_SHOP_DETAIL_PATH,
             {"detailId": 3227305525, "shopId": "7676267"},
-        )
+        ),
+        (
+            release_adapters.MIAOSHOU_TIKTOK_DETAIL_LIST_PATH,
+            {
+                "pageNo": 1,
+                "pageSize": 100,
+                "filter": {"sourceItemIdKeyword": "1011111051454"},
+            },
+        ),
     ]
     assert claim_calls == []
 
@@ -250,6 +278,7 @@ def test_existing_detail_resolver_blocks_missing_duplicate_or_wrong_shop(
         workbench,
         "load_miaoshou_tiktok_claim",
         lambda _offer_id: {
+            "source_item_id": "1011111051454",
             "shops": {"mx": {"shop_id": "16265910"}},
             "detail_group_detail_ids": detail_ids,
         },
@@ -267,7 +296,12 @@ def test_existing_detail_resolver_blocks_missing_duplicate_or_wrong_shop(
             post=lambda _path, _body: {
                 "result": "success",
                 "data": {
-                    "shopCollectItemInfo": {"title": "existing"},
+                    "shopCollectItemInfo": {
+                        "title": "existing",
+                        "commonCollectBoxDetailId": "3828811808",
+                        "itemNum": "0953",
+                        "skuMap": {"34x58": {"itemNum": "0953"}},
+                    },
                     "claimToShopIds": bound_shop_ids,
                 },
             },

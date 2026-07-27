@@ -473,6 +473,35 @@ def test_locked_stale_candidate_can_be_refreshed_with_explicit_kyle_approval(
     assert store.get_plan(plan["plan_id"])["status"] == "SUPERSEDED"
 
 
+def test_reaffirm_preserves_explicit_superseded_release_plan_identity(
+    monkeypatch,
+    tmp_path,
+):
+    initial = _locked_state()
+    initial["review"]["title"] = EN_MASTER
+    initial["listing_copy"][
+        "superseded_release_plan_id"
+    ] = "omnichannel:prior-explicit"
+    state, saves, store = _install(monkeypatch, tmp_path, initial=initial)
+
+    status, payload = product_server._adopt_product_workspace_title_candidate(
+        _request(state)
+    )
+
+    assert status == 200
+    assert payload["product_approval_preserved"] is True
+    assert payload["superseded_release_plan_id"] == (
+        "omnichannel:prior-explicit"
+    )
+    assert state["listing_copy"]["superseded_release_plan_id"] == (
+        "omnichannel:prior-explicit"
+    )
+    assert state["commercial_supersessions"][-1][
+        "prior_release_plan_id"
+    ] == "omnichannel:prior-explicit"
+    assert not store.path.exists()
+
+
 def test_locked_stale_refresh_requires_literal_kyle_approval(
     monkeypatch,
     tmp_path,

@@ -802,6 +802,10 @@ def _adopt_product_workspace_title_candidate(data: dict) -> tuple[int, dict]:
             if isinstance(active_plan, dict)
             else ""
         )
+        prior_superseded_plan_id = str(
+            listing_copy.get("superseded_release_plan_id") or ""
+        ).strip()
+        predecessor_plan_id = active_plan_id or prior_superseded_plan_id
         reason = (
             (
                 "Kyle adopted the current semantic_master_en; product facts "
@@ -855,7 +859,7 @@ def _adopt_product_workspace_title_candidate(data: dict) -> tuple[int, dict]:
                 "superseded_product_approval_id": (
                     prior_approval_id or None
                 ) if title_changed else None,
-                "superseded_release_plan_id": active_plan_id or None,
+                "superseded_release_plan_id": predecessor_plan_id or None,
                 "product_approval_preserved": not title_changed,
             }
         )
@@ -875,7 +879,7 @@ def _adopt_product_workspace_title_candidate(data: dict) -> tuple[int, dict]:
                 "preserved_approval_id": (
                     prior_approval_id or None
                 ) if not title_changed else None,
-                "prior_release_plan_id": active_plan_id or None,
+                "prior_release_plan_id": predecessor_plan_id or None,
                 "adopted_title": adopted_title,
                 "input_signature": stored_signature,
                 "approved_by": "Kyle",
@@ -919,7 +923,7 @@ def _adopt_product_workspace_title_candidate(data: dict) -> tuple[int, dict]:
         "superseded_product_approval_id": (
             prior_approval_id or None
         ) if title_changed else None,
-        "superseded_release_plan_id": active_plan_id or None,
+        "superseded_release_plan_id": predecessor_plan_id or None,
         "product_approval_preserved": not title_changed,
         "next_action": (
             "review_and_reapprove_product_facts"
@@ -1024,19 +1028,22 @@ def _generate_product_workspace_title_draft(data: dict) -> tuple[int, dict]:
             "model_input_signature",
             listing_title_model_input_signature(facts),
         )
-        superseded_plan_id = ""
+        superseded_plan_id = str(
+            listing_copy.get("superseded_release_plan_id") or ""
+        ).strip()
         if locked_stale_refresh:
             store = default_release_store()
             active_plan = store.active_plan_for_product(offer_id)
-            superseded_plan_id = (
+            active_plan_id = (
                 str(active_plan.get("plan_id") or "").strip()
                 if isinstance(active_plan, dict)
                 else ""
             )
-            if superseded_plan_id:
+            if active_plan_id:
+                superseded_plan_id = active_plan_id
                 try:
                     store.supersede_plan(
-                        superseded_plan_id,
+                        active_plan_id,
                         reason=(
                             "Kyle refreshed a stale audited title candidate "
                             f"from locked product revision {expected_revision}"
@@ -1273,6 +1280,288 @@ def _approved_plan_matches_current_payload(
     persisted_payload.pop("product_revision", None)
     current_payload.pop("product_revision", None)
     return persisted_payload == current_payload
+
+
+def _release_adapter_blockers(
+    dashboard: dict,
+    *,
+    selected_labels: list[str],
+    registry: dict,
+) -> list[dict[str, str]]:
+    """Validate the complete target/adapter registry without executing it."""
+
+    target_rows = (
+        (dashboard.get("omnichannel_preview") or {}).get("targets") or ()
+    )
+    rows_by_label: dict[str, list[dict]] = {}
+    for target in target_rows:
+        if not isinstance(target, dict):
+            continue
+        label = f"{target.get('channel')}:{target.get('site')}"
+        rows_by_label.setdefault(label, []).append(target)
+
+    blockers: list[dict[str, str]] = []
+    for label in selected_labels:
+        rows = rows_by_label.get(label) or []
+        if len(rows) != 1:
+            blockers.append(
+                {
+                    "target": label,
+                    "code": "target_registry_identity_mismatch",
+                    "detail": (
+                        "selected target must have exactly one immutable "
+                        "omnichannel registry row"
+                    ),
+                }
+            )
+            continue
+        target = rows[0]
+        for check in target.get("preflights") or ():
+            if (
+                check.get("code") == "audited_adapter_site"
+                and not check.get("passed")
+            ):
+                blockers.append(
+                    {
+                        "target": label,
+                        "code": "audited_adapter_site",
+                        "detail": str(
+                            check.get("detail")
+                            or "target adapter/site audit is not approved"
+                        ),
+                    }
+                )
+        adapter_name = str(target.get("adapter") or "")
+        registration = registry.get(adapter_name)
+        if not registration or not registration.executable:
+            blockers.append(
+                {
+                    "target": label,
+                    "code": (
+                        registration.blocker.code
+                        if registration and registration.blocker
+                        else "adapter_not_registered"
+                    ),
+                    "detail": (
+                        registration.blocker.detail
+                        if registration and registration.blocker
+                        else "unified V1 adapter is not registered"
+                    ),
+                }
+            )
+    return blockers
+
+
+def _verified_common_evidence_blockers(
+    run: dict | None,
+    payload: dict,
+    *,
+    store=None,
+) -> list[str]:
+    """Require exact durable COMMON provenance before any channel target."""
+
+    common = next(
+        (
+            row
+            for row in ((run or {}).get("targets") or ())
+            if row.get("target_label") == "miaoshou:COMMON"
+        ),
+        None,
+    )
+    if not common or common.get("status") != "SUCCEEDED":
+        return ["Miaoshou COMMON must succeed with verified readback first"]
+    expected_product_id = str(payload.get("product_id") or "")
+    blockers: list[str] = []
+    if str((run or {}).get("plan_id") or "") != str(
+        payload.get("plan_id") or ""
+    ):
+        blockers.append("Miaoshou COMMON run does not belong to immutable plan")
+    if str(common.get("external_id") or "") != expected_product_id:
+        blockers.append("Miaoshou COMMON external_id does not match product_id")
+    readback = (
+        common.get("readback")
+        if isinstance(common.get("readback"), dict)
+        else {}
+    )
+    evidence = (
+        readback.get("evidence")
+        if isinstance(readback.get("evidence"), dict)
+        else {}
+    )
+    if evidence.get("verified") is not True:
+        blockers.append("Miaoshou COMMON lacks verified readback evidence")
+    if (
+        not str(readback.get("evidence_digest") or "").strip()
+        or not str(readback.get("verified_at") or "").strip()
+    ):
+        blockers.append("Miaoshou COMMON durable readback receipt is incomplete")
+    elif hashlib.sha256(
+        json.dumps(
+            evidence,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest() != readback.get("evidence_digest"):
+        blockers.append("Miaoshou COMMON readback evidence digest is invalid")
+    if str(evidence.get("offer_id") or "") != expected_product_id:
+        blockers.append("Miaoshou COMMON readback offer_id does not match product_id")
+    if not str(evidence.get("source") or "").strip():
+        blockers.append("Miaoshou COMMON readback source is missing")
+    checks = evidence.get("checks")
+    if (
+        not isinstance(checks, dict)
+        or not checks
+        or any(value is not True for value in checks.values())
+    ):
+        blockers.append("Miaoshou COMMON readback checks are incomplete")
+    expected_image_count = len(payload.get("images") or ())
+    if int(evidence.get("image_count") or -1) != expected_image_count:
+        blockers.append("Miaoshou COMMON readback image count does not match plan")
+    if evidence.get("mode") == "readback_reuse_no_write":
+        predecessor = (
+            evidence.get("predecessor")
+            if isinstance(evidence.get("predecessor"), dict)
+            else {}
+        )
+        if evidence.get("external_writes_performed") != []:
+            blockers.append("COMMON reuse evidence contains an external write")
+        if (
+            not str(predecessor.get("plan_id") or "")
+            or not str(predecessor.get("run_id") or "")
+            or not str(predecessor.get("payload_digest") or "")
+            or not str(predecessor.get("common_readback_evidence_digest") or "")
+            or not str(predecessor.get("common_readback_verified_at") or "")
+            or predecessor.get("common_status") != "SUCCEEDED"
+            or str(predecessor.get("common_external_id") or "")
+            != expected_product_id
+        ):
+            blockers.append("COMMON reuse predecessor provenance is incomplete")
+        if store is not None and predecessor:
+            durable_plan = store.get_plan(str(predecessor.get("plan_id") or ""))
+            durable_run = store.get_run(str(predecessor.get("run_id") or ""))
+            durable_common = next(
+                (
+                    row
+                    for row in ((durable_run or {}).get("targets") or ())
+                    if row.get("target_label") == "miaoshou:COMMON"
+                ),
+                None,
+            )
+            durable_readback = (
+                (durable_common or {}).get("readback")
+                if isinstance((durable_common or {}).get("readback"), dict)
+                else {}
+            )
+            if (
+                not durable_plan
+                or durable_plan.get("payload_digest")
+                != predecessor.get("payload_digest")
+                or (durable_run or {}).get("plan_id")
+                != predecessor.get("plan_id")
+                or (durable_run or {}).get("run_id")
+                != predecessor.get("run_id")
+                or (durable_common or {}).get("status") != "SUCCEEDED"
+                or str((durable_common or {}).get("external_id") or "")
+                != str(predecessor.get("common_external_id") or "")
+                or durable_readback.get("evidence_digest")
+                != predecessor.get("common_readback_evidence_digest")
+                or durable_readback.get("verified_at")
+                != predecessor.get("common_readback_verified_at")
+            ):
+                blockers.append(
+                    "COMMON reuse provenance does not match durable predecessor"
+                )
+    return blockers
+
+
+def _release_execution_readonly_gate(
+    data: dict,
+    *,
+    store,
+) -> tuple[dict | None, tuple[int, dict] | None]:
+    """Rebuild and validate every immutable execution input without writes."""
+
+    from modules.products.release_adapters import production_adapter_registry
+
+    dashboard, failure = _release_dashboard_for_request(data)
+    if failure:
+        return None, failure
+    assert dashboard is not None
+    current_payload, blockers = _release_plan_payload_from_dashboard(dashboard)
+    actual_gate = dashboard.get("actual_release_gate") or {}
+    if not actual_gate.get("ready"):
+        blockers.extend(
+            str(value)
+            for value in (
+                actual_gate.get("blockers")
+                or ["actual release gate is not ready"]
+            )
+        )
+    plan_id = str(data.get("plan_id") or "").strip()
+    token = str(data.get("confirmation_token") or "").strip()
+    try:
+        preview = store.preview_plan(current_payload)
+    except (TypeError, ValueError) as error:
+        blockers.append(str(error))
+        preview = {}
+    plan = store.get_plan(plan_id)
+    if (
+        not plan
+        or plan_id != str(preview.get("plan_id") or "")
+        or plan.get("status") != "APPROVED"
+        or token != plan.get("confirmation_token")
+        or not _approved_plan_matches_current_payload(plan, preview)
+    ):
+        blockers.append(
+            "approved ReleasePlan no longer matches current immutable facts"
+        )
+    if plan:
+        blockers.extend(
+            _immutable_listing_copy_preflight(plan.get("payload") or {})
+        )
+    registry = production_adapter_registry()
+    adapter_blockers = _release_adapter_blockers(
+        dashboard,
+        selected_labels=list(current_payload.get("targets") or ()),
+        registry=registry,
+    )
+    run = (
+        store.get_run(f"release-run:{plan['payload_digest'][:24]}")
+        if plan
+        else None
+    )
+    if plan:
+        blockers.extend(
+            _verified_common_evidence_blockers(
+                run,
+                plan.get("payload") or {},
+                store=store,
+            )
+        )
+    blockers = list(dict.fromkeys(value for value in blockers if value))
+    if blockers or adapter_blockers:
+        return None, (
+            409,
+            {
+                "ok": False,
+                "error": "release execution preflight is blocked",
+                "blockers": blockers,
+                "adapter_blockers": adapter_blockers,
+                "external_writes_performed": [],
+                "run": run,
+            },
+        )
+    return {
+        "dashboard": dashboard,
+        "payload": current_payload,
+        "plan": plan,
+        "run": run,
+        "registry": registry,
+        "target_rows": (
+            (dashboard.get("omnichannel_preview") or {}).get("targets") or ()
+        ),
+    }, None
 
 
 def _release_v1_view(dashboard: dict) -> dict:
@@ -1683,11 +1972,25 @@ def _approve_release_plan_locally(data: dict) -> tuple[int, dict]:
         existing = store.get_plan(preview["plan_id"])
         active = store.active_plan_for_product(preview["product_id"])
         if existing is None:
-            predecessor = (
-                active["plan_id"]
-                if active and active["plan_id"] != preview["plan_id"]
-                else None
-            )
+            explicit_predecessor_id = str(
+                (dashboard.get("listing_copy") or {}).get(
+                    "superseded_release_plan_id"
+                )
+                or ""
+            ).strip()
+            if active and active["plan_id"] != preview["plan_id"]:
+                predecessor = active["plan_id"]
+            elif explicit_predecessor_id:
+                predecessor = explicit_predecessor_id
+            else:
+                unlinked = store.latest_unlinked_common_predecessor(
+                    product_id=preview["product_id"],
+                    seller_sku=preview["seller_sku"],
+                )
+                predecessor = (
+                    str((unlinked or {}).get("plan_id") or "").strip()
+                    or None
+                )
             store.create_plan(
                 plan_payload,
                 supersedes_plan_id=predecessor,
@@ -1712,17 +2015,27 @@ def _approve_release_plan_locally(data: dict) -> tuple[int, dict]:
 
 def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
     """Execute only the approved common-draft write and verified readback."""
-    from modules.sourcing import new_product_workbench as np_mod
+    from modules.products.release_adapters import (
+        MiaoshouDraftVerificationError,
+        readback_miaoshou_common,
+        write_miaoshou_common_from_plan,
+    )
     from shared_platform.release_store import (
         ReleaseAuthorizationError,
         ReleaseStoreError,
         default_release_store,
     )
 
-    if data.get("confirm_miaoshou_write") is not True:
+    reuse_readback = data.get("reuse_miaoshou_readback") is True
+    confirm_write = data.get("confirm_miaoshou_write") is True
+    confirm_overwrite = data.get("confirm_miaoshou_overwrite") is True
+    if not reuse_readback and not confirm_write:
         return 400, {
             "ok": False,
-            "error": "explicit confirm_miaoshou_write=true is required",
+            "error": (
+                "explicit reuse_miaoshou_readback=true or "
+                "confirm_miaoshou_write=true is required"
+            ),
         }
     dashboard, failure = _release_dashboard_for_request(data)
     if failure:
@@ -1764,6 +2077,204 @@ def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
             "ok": False,
             "error": "Miaoshou COMMON must be selected before draft preparation",
         }
+    predecessor = store.predecessor_plan_for(plan_id)
+    predecessor_run = (
+        store.get_run(f"release-run:{predecessor['payload_digest'][:24]}")
+        if predecessor
+        else None
+    )
+    predecessor_common = next(
+        (
+            row
+            for row in ((predecessor_run or {}).get("targets") or ())
+            if row.get("target_label") == "miaoshou:COMMON"
+        ),
+        None,
+    )
+    predecessor_has_common = bool(
+        predecessor_common
+        and predecessor_common.get("status") == "SUCCEEDED"
+    )
+    predecessor_blockers: list[str] = []
+    if predecessor and not predecessor_has_common:
+        predecessor_blockers.append(
+            "linked predecessor has no successful COMMON readback"
+        )
+    if predecessor_has_common:
+        predecessor_blockers.extend(
+            _verified_common_evidence_blockers(
+                predecessor_run,
+                (predecessor or {}).get("payload") or {},
+                store=store,
+            )
+        )
+        predecessor_payload = (predecessor or {}).get("payload") or {}
+        successor_payload = plan.get("payload") or {}
+        for field in ("product_id", "seller_sku"):
+            if str(predecessor_payload.get(field) or "") != str(
+                successor_payload.get(field) or ""
+            ):
+                predecessor_blockers.append(
+                    f"COMMON predecessor {field} does not match successor"
+                )
+        predecessor_facts = predecessor_payload.get("product_facts") or {}
+        successor_facts = successor_payload.get("product_facts") or {}
+        for field in ("source_offer_id", "selected_sku_keys"):
+            if predecessor_facts.get(field) != successor_facts.get(field):
+                predecessor_blockers.append(
+                    f"COMMON predecessor source binding changed: {field}"
+                )
+    if predecessor_blockers:
+        return 409, {
+            "ok": False,
+            "error": "COMMON predecessor evidence is not safe to reuse",
+            "blockers": list(dict.fromkeys(predecessor_blockers)),
+            "external_writes_performed": [],
+        }
+    if reuse_readback and not predecessor_has_common:
+        return 409, {
+            "ok": False,
+            "error": "COMMON readback reuse requires a verified predecessor success",
+            "external_writes_performed": [],
+        }
+    if predecessor_has_common:
+        # The existing UI sends confirm_miaoshou_write=true.  A successor must
+        # nevertheless prove equality by readback before any possible edit.
+        reuse_readback = True
+    if reuse_readback:
+        existing_run = store.get_run(
+            f"release-run:{plan['payload_digest'][:24]}"
+        )
+        existing_common = next(
+            (
+                row
+                for row in ((existing_run or {}).get("targets") or ())
+                if row.get("target_label") == "miaoshou:COMMON"
+            ),
+            None,
+        )
+        if existing_common and existing_common.get("status") == "SUCCEEDED":
+            existing_blockers = _verified_common_evidence_blockers(
+                existing_run,
+                plan.get("payload") or {},
+                store=store,
+            )
+            if existing_blockers:
+                return 409, {
+                    "ok": False,
+                    "error": "existing successor COMMON evidence is incomplete",
+                    "blockers": existing_blockers,
+                    "external_writes_performed": [],
+                }
+            return 200, {
+                "ok": True,
+                "idempotent": True,
+                "external_writes_performed": [],
+                "run": existing_run,
+                "dashboard": _product_workspace_view(dashboard),
+            }
+        try:
+            readback = readback_miaoshou_common(plan.get("payload") or {})
+        except Exception as error:
+            return 502, {
+                "ok": False,
+                "error": str(error),
+                "mode": "readback_reuse_no_write",
+                "external_writes_performed": [],
+            }
+        if not readback.get("verified"):
+            if confirm_overwrite and confirm_write:
+                reuse_readback = False
+            else:
+                return 409, {
+                    "ok": False,
+                    "error": (
+                        "existing Miaoshou COMMON differs from the immutable "
+                        "successor ReleasePlan"
+                    ),
+                    "mode": "readback_reuse_no_write",
+                    "field_diffs": dict(readback.get("field_diffs") or {}),
+                    "checks": dict(readback.get("checks") or {}),
+                    "external_writes_performed": [],
+                    "overwrite_requires": "confirm_miaoshou_overwrite=true",
+                }
+        if reuse_readback:
+            predecessor = store.predecessor_plan_for(plan_id)
+            predecessor_run = (
+                store.get_run(
+                    f"release-run:{predecessor['payload_digest'][:24]}"
+                )
+                if predecessor
+                else None
+            )
+            predecessor_common = next(
+                (
+                    row
+                    for row in ((predecessor_run or {}).get("targets") or ())
+                    if row.get("target_label") == "miaoshou:COMMON"
+                ),
+                None,
+            )
+            reuse_evidence = {
+                **readback,
+                "mode": "readback_reuse_no_write",
+                "predecessor": {
+                    "plan_id": (predecessor or {}).get("plan_id"),
+                    "run_id": (predecessor_run or {}).get("run_id"),
+                    "payload_digest": (predecessor or {}).get(
+                        "payload_digest"
+                    ),
+                    "common_external_id": (
+                        (predecessor_common or {}).get("external_id")
+                    ),
+                    "common_status": (predecessor_common or {}).get("status"),
+                    "common_readback_evidence_digest": (
+                        ((predecessor_common or {}).get("readback") or {}).get(
+                            "evidence_digest"
+                        )
+                    ),
+                    "common_readback_verified_at": (
+                        ((predecessor_common or {}).get("readback") or {}).get(
+                            "verified_at"
+                        )
+                    ),
+                },
+                "external_writes_performed": [],
+            }
+            try:
+                run = store.start_run(plan_id)
+                target = next(
+                    row
+                    for row in run["targets"]
+                    if row["target_label"] == "miaoshou:COMMON"
+                )
+                if target["status"] == "FAILED":
+                    run = store.retry_failed_targets(
+                        run["run_id"],
+                        ["miaoshou:COMMON"],
+                    )
+                store.begin_target(run["run_id"], "miaoshou:COMMON")
+                store.record_target_success(
+                    run["run_id"],
+                    "miaoshou:COMMON",
+                    external_id=str(plan_payload["product_id"]),
+                    readback_evidence=reuse_evidence,
+                )
+            except (ReleaseAuthorizationError, ReleaseStoreError, StopIteration) as error:
+                return 409, {
+                    "ok": False,
+                    "error": str(error),
+                    "external_writes_performed": [],
+                }
+            return 200, {
+                "ok": True,
+                "idempotent": False,
+                "mode": "readback_reuse_no_write",
+                "external_writes_performed": [],
+                "result": reuse_evidence,
+                "run": store.get_run(run["run_id"]),
+                "dashboard": _product_workspace_view(dashboard),
+            }
     try:
         run = store.start_run(plan_id)
         target = next(
@@ -1780,6 +2291,24 @@ def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
                 "dashboard": _product_workspace_view(dashboard),
             }
         if target["status"] == "FAILED":
+            failure_evidence = (
+                (target.get("latest_failure_evidence") or {}).get(
+                    "evidence"
+                )
+                or {}
+            )
+            if target.get("external_id") or failure_evidence.get(
+                "external_writes_performed"
+            ):
+                return 409, {
+                    "ok": False,
+                    "error": (
+                        "COMMON already records a failed external write; "
+                        "automatic retry is disabled"
+                    ),
+                    "external_writes_performed": [],
+                    "run": run,
+                }
             run = store.retry_failed_targets(
                 run["run_id"],
                 ["miaoshou:COMMON"],
@@ -1789,7 +2318,7 @@ def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
         return 409, {"ok": False, "error": str(error)}
 
     try:
-        result = np_mod.write_miaoshou_draft(plan_payload["product_id"])
+        result = write_miaoshou_common_from_plan(plan.get("payload") or {})
         if not result.get("written_to_miaoshou") or not result.get("verified"):
             failed_checks = [
                 str(name)
@@ -1797,9 +2326,26 @@ def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
                 if not passed
             ]
             detail = ", ".join(failed_checks) or "unknown fields"
-            raise RuntimeError(
-                "Miaoshou draft readback did not verify every approved field: "
-                + detail
+            raise MiaoshouDraftVerificationError(
+                (
+                    "Miaoshou COMMON write was accepted but readback did not "
+                    "verify every approved field: "
+                    + detail
+                ),
+                external_reference=str(
+                    result.get("offer_id") or plan_payload["product_id"]
+                ),
+                evidence={
+                    **dict(result),
+                    "verified": False,
+                    "save_accepted": bool(
+                        result.get("written_to_miaoshou")
+                    ),
+                    "external_writes_performed": list(
+                        result.get("external_writes_performed")
+                        or ["miaoshou:COMMON:immutable_plan_write"]
+                    ),
+                },
             )
         store.record_target_success(
             run["run_id"],
@@ -1820,11 +2366,15 @@ def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
         )
     except Exception as error:
         store_record_error = ""
+        failure_evidence = getattr(error, "external_write_evidence", None)
+        external_reference = getattr(error, "external_reference", None)
         try:
             store.record_target_failure(
                 run["run_id"],
                 "miaoshou:COMMON",
                 error=str(error),
+                external_id=external_reference,
+                failure_evidence=failure_evidence,
             )
         except Exception as record_error:
             store_record_error = str(record_error)
@@ -1832,6 +2382,14 @@ def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
             "ok": False,
             "error": str(error),
             "run": store.get_run(run["run_id"]),
+            "external_writes_performed": list(
+                (
+                    failure_evidence.get("external_writes_performed")
+                    if isinstance(failure_evidence, dict)
+                    else ()
+                )
+                or ()
+            ),
         }
         if store_record_error:
             payload["run_record_error"] = store_record_error
@@ -1852,103 +2410,69 @@ def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
 def _publish_selected_release(data: dict) -> tuple[int, dict]:
     """Execute the approved plan once through durable per-target adapters."""
     from domains.channel_operations.release_executor import AdapterExecutionRequest
-    from modules.products.release_adapters import production_adapter_registry
-    from shared_platform.release_store import default_release_store
+    from shared_platform.release_store import (
+        ReleaseAuthorizationError,
+        ReleaseStoreError,
+        default_release_store,
+    )
 
     if data.get("confirm_publish") is not True:
         return 400, {
             "ok": False,
             "error": "explicit confirm_publish=true is required",
         }
-    dashboard, failure = _release_dashboard_for_request(data)
-    if failure:
-        return failure
-    assert dashboard is not None
-    plan_payload, blockers = _release_plan_payload_from_dashboard(dashboard)
-    if blockers:
-        return 409, {
-            "ok": False,
-            "error": "current release facts no longer match the approved plan",
-            "blockers": blockers,
-        }
     store = default_release_store()
-    preview = store.preview_plan(plan_payload)
     plan_id = str(data.get("plan_id") or "").strip()
     token = str(data.get("confirmation_token") or "").strip()
-    plan = store.get_plan(plan_id)
-    if (
-        plan_id != preview["plan_id"]
-        or not plan
-        or not _approved_plan_matches_current_payload(plan, preview)
-        or plan.get("status") != "APPROVED"
-        or token != plan.get("confirmation_token")
-    ):
-        return 409, {
-            "ok": False,
-            "error": "approved ReleasePlan no longer matches current facts",
-        }
-
-    copy_blockers = _immutable_listing_copy_preflight(plan.get("payload") or {})
-    if copy_blockers:
-        return 409, {
-            "ok": False,
-            "error": "approved ReleasePlan has invalid immutable listing copy",
-            "blockers": copy_blockers,
-            "external_writes_performed": [],
-        }
-
-    run = store.start_run(plan_id)
-    common = next(
-        (
-            row
-            for row in (run.get("targets") or ())
-            if row.get("target_label") == "miaoshou:COMMON"
-        ),
-        None,
-    )
-    if not common or common.get("status") != "SUCCEEDED":
-        return 409, {
-            "ok": False,
-            "error": "Miaoshou COMMON must succeed with verified readback first",
-            "run": run,
-        }
-
-    registry = production_adapter_registry()
-    target_rows = (dashboard.get("omnichannel_preview") or {}).get("targets") or ()
-    adapter_blockers: list[dict[str, str]] = []
-    for target in target_rows:
-        label = f"{target.get('channel')}:{target.get('site')}"
-        if label == "miaoshou:COMMON":
-            continue
-        registration = registry.get(str(target.get("adapter") or ""))
-        if not registration or not registration.executable:
-            adapter_blockers.append(
-                {
-                    "target": label,
-                    "code": (
-                        registration.blocker.code
-                        if registration and registration.blocker
-                        else "adapter_not_registered"
-                    ),
-                    "detail": (
-                        registration.blocker.detail
-                        if registration and registration.blocker
-                        else "unified V1 adapter is not registered"
-                    ),
-                }
-            )
-    if adapter_blockers:
-        return 409, {
-            "ok": False,
-            "error": "selected targets are not yet executable through unified V1 adapters",
-            "adapter_blockers": adapter_blockers,
-            "external_writes_performed": [],
-            "run": run,
-            "dashboard": _product_workspace_view(dashboard),
-        }
+    gate, failure = _release_execution_readonly_gate(data, store=store)
+    if failure:
+        return failure
+    assert gate is not None
 
     with _release_execution_lock:
+        # Repeat the whole pure gate under the execution lock before retry,
+        # recovery, begin_target, or any adapter call can mutate durable state.
+        gate, failure = _release_execution_readonly_gate(data, store=store)
+        if failure:
+            return failure
+        assert gate is not None
+        dashboard = gate["dashboard"]
+        plan_payload = gate["payload"]
+        run = gate["run"]
+        registry = gate["registry"]
+        target_rows = gate["target_rows"]
+        assert run is not None
         run = store.get_run(run["run_id"]) or run
+        externally_mutated_failures = [
+            row
+            for row in (run.get("targets") or ())
+            if row.get("status") == "FAILED"
+            and (
+                row.get("external_id")
+                or (
+                    (
+                        (
+                            row.get("latest_failure_evidence") or {}
+                        ).get("evidence")
+                        or {}
+                    ).get("external_writes_performed")
+                )
+            )
+        ]
+        if externally_mutated_failures:
+            return 409, {
+                "ok": False,
+                "error": (
+                    "a failed target already records an external draft update; "
+                    "automatic retry is disabled"
+                ),
+                "blocked_targets": [
+                    row.get("target_label")
+                    for row in externally_mutated_failures
+                ],
+                "external_writes_performed": [],
+                "run": run,
+            }
         failed = [
             row["target_label"]
             for row in (run.get("targets") or ())
@@ -2027,6 +2551,43 @@ def _publish_selected_release(data: dict) -> tuple[int, dict]:
             ):
                 continue
 
+            # An adapter can advance an operational workbench revision, but it
+            # must never silently carry a plan across commercial/input drift or
+            # supersession. Rebuild the exact read-only gate before each begin.
+            fresh_gate, fresh_failure = _release_execution_readonly_gate(
+                data,
+                store=store,
+            )
+            if fresh_failure:
+                status, response = fresh_failure
+                blocked = dict(response)
+                blocked.update(
+                    {
+                        "blocked_target": label,
+                        "external_writes_performed": list(external_writes),
+                        "run": store.get_run(run["run_id"]) or run,
+                    }
+                )
+                return status, blocked
+            assert fresh_gate is not None
+            dashboard = fresh_gate["dashboard"]
+            plan_payload = fresh_gate["payload"]
+            registry = fresh_gate["registry"]
+            target_by_label = {
+                f"{target.get('channel')}:{target.get('site')}": target
+                for target in fresh_gate["target_rows"]
+            }
+            current_run = fresh_gate["run"] or run
+            current_target = next(
+                (
+                    row
+                    for row in (current_run.get("targets") or ())
+                    if row.get("target_label") == label
+                ),
+                None,
+            )
+            if not current_target or current_target.get("status") != "PENDING":
+                continue
             plan_target = target_by_label.get(label) or {}
             registration = registry.get(str(plan_target.get("adapter") or ""))
             if not registration or not registration.executable:
@@ -2072,21 +2633,99 @@ def _publish_selected_release(data: dict) -> tuple[int, dict]:
                     )
                     external_writes.append(label)
                 else:
+                    failure_evidence = (
+                        dict(result.readback_evidence)
+                        if isinstance(result.readback_evidence, dict)
+                        and result.readback_evidence
+                        else None
+                    )
                     store.record_target_failure(
                         run["run_id"],
                         label,
                         error=result.detail,
                         external_id=result.external_reference,
+                        failure_evidence=failure_evidence,
                     )
+                    if failure_evidence:
+                        external_writes.extend(
+                            str(value)
+                            for value in (
+                                failure_evidence.get(
+                                    "external_writes_performed"
+                                )
+                                or ()
+                            )
+                            if str(value)
+                        )
+            except (ReleaseAuthorizationError, ReleaseStoreError) as error:
+                return 409, {
+                    "ok": False,
+                    "error": "release execution stopped by durable authorization",
+                    "detail": str(error),
+                    "blocked_target": label,
+                    "external_writes_performed": list(external_writes),
+                    "run": store.get_run(run["run_id"]) or run,
+                }
             except Exception as error:
+                failure_evidence = getattr(
+                    error,
+                    "external_write_evidence",
+                    None,
+                )
+                external_reference = getattr(
+                    error,
+                    "external_reference",
+                    None,
+                )
+                detected_writes = [
+                    str(value)
+                    for value in (
+                        (
+                            failure_evidence.get(
+                                "external_writes_performed"
+                            )
+                            if isinstance(failure_evidence, dict)
+                            else ()
+                        )
+                        or ()
+                    )
+                    if str(value)
+                ]
                 try:
                     store.record_target_failure(
                         run["run_id"],
                         label,
                         error=str(error),
+                        external_id=external_reference,
+                        failure_evidence=failure_evidence,
                     )
-                except Exception:
-                    pass
+                except (ReleaseAuthorizationError, ReleaseStoreError) as record_error:
+                    return 409, {
+                        "ok": False,
+                        "error": "adapter failed and durable failure receipt was rejected",
+                        "adapter_error": str(error),
+                        "record_error": str(record_error),
+                        "blocked_target": label,
+                        "external_writes_performed": [
+                            *external_writes,
+                            *detected_writes,
+                        ],
+                        "run": store.get_run(run["run_id"]) or run,
+                    }
+                except Exception as record_error:
+                    return 500, {
+                        "ok": False,
+                        "error": "adapter failed and durable failure receipt could not be saved",
+                        "adapter_error": str(error),
+                        "record_error": str(record_error),
+                        "blocked_target": label,
+                        "external_writes_performed": [
+                            *external_writes,
+                            *detected_writes,
+                        ],
+                        "run": store.get_run(run["run_id"]) or run,
+                    }
+                external_writes.extend(detected_writes)
 
         final_run = store.get_run(run["run_id"]) or run
         try:

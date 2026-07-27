@@ -5993,6 +5993,14 @@ def claim_miaoshou_to_tiktok(
         lock.release()
 
 
+def load_miaoshou_tiktok_claim(offer_id_or_url: str) -> dict[str, Any]:
+    """Read the persisted TikTok claim receipt without creating or repairing it."""
+
+    offer_id = resolve_offer_key(offer_id_or_url)
+    value = _load_json(STATE_DIR / f"{offer_id}_tiktok_claim.json")
+    return dict(value) if isinstance(value, dict) else {}
+
+
 def start_claim_miaoshou_to_tiktok(offer_id_or_url: str) -> dict[str, Any]:
     """Start the TikTok-claim step in the background and return current state."""
     offer_id = resolve_offer_key(offer_id_or_url)

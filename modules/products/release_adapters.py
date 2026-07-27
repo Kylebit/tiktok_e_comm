@@ -32,6 +32,9 @@ TIKTOK_DETAIL_PATH = "/product/202309/products/{product_id}"
 MIAOSHOU_PUBLISH_PATH = (
     "/open/v1/product/collect_box/tiktok/collect_box/save_move_collect_task"
 )
+MIAOSHOU_SHOP_DETAIL_PATH = (
+    "/open/v1/product/collect_box/tiktok/collect_box/get_shop_collect_item_info"
+)
 SEA_SITES = {"LH_PH": "PH", "LH_MY": "MY", "LH_TH": "TH", "LH_VN": "VN"}
 SITE_TARGET_KEYS = {
     "LH_PH": "lh_ph",
@@ -684,6 +687,129 @@ def _miaoshou_publish_target(
         "shop_id": shop_id,
         "response_code": response.get("code"),
         "pre_submit_audit": audit,
+    }
+
+
+def _resolve_existing_miaoshou_tiktok_detail(
+    payload: dict[str, Any],
+    *,
+    site: str,
+    post=None,
+) -> dict[str, Any]:
+    """Resolve one already-created detail without any claim/create fallback."""
+
+    from modules.sourcing import new_product_workbench as workbench
+
+    clean_site = str(site or "").upper()
+    target_key = SITE_TARGET_KEYS.get(clean_site)
+    if not target_key:
+        raise RuntimeError(f"unsupported governed TikTok site {clean_site}")
+    target = next(
+        (
+            dict(row)
+            for row in workbench.SEA_MARKETS
+            if str(row.get("id") or "").lower() == target_key
+        ),
+        None,
+    )
+    if not target:
+        raise RuntimeError(
+            f"fixed Miaoshou target configuration is missing for {clean_site}"
+        )
+    expected_shop_id = str(target.get("shop_id") or "").strip()
+    publish_group = str(target.get("publish_group") or "").strip().lower()
+    region = str(target.get("region") or "").strip().upper()
+    detail_group = f"{publish_group}:{region}"
+    if not expected_shop_id or not publish_group or not region:
+        raise RuntimeError(
+            f"fixed Miaoshou target configuration is incomplete for {clean_site}"
+        )
+
+    claim = workbench.load_miaoshou_tiktok_claim(
+        str(payload.get("product_id") or "")
+    )
+    detail_map = claim.get("detail_group_detail_ids")
+    if not isinstance(detail_map, dict):
+        raise RuntimeError(
+            "persisted Miaoshou claim lacks detail_group_detail_ids"
+        )
+    normalized: dict[str, int] = {}
+    for key, value in detail_map.items():
+        try:
+            detail_id = int(value)
+        except (TypeError, ValueError):
+            detail_id = 0
+        if detail_id <= 0:
+            raise RuntimeError(
+                f"persisted Miaoshou detail ID is invalid for {key}"
+            )
+        normalized[str(key)] = detail_id
+    duplicated = sorted(
+        {
+            detail_id
+            for detail_id in normalized.values()
+            if list(normalized.values()).count(detail_id) > 1
+        }
+    )
+    if duplicated:
+        raise RuntimeError(
+            "persisted Miaoshou detail IDs are not unique: "
+            + ", ".join(str(value) for value in duplicated)
+        )
+    detail_id = int(normalized.get(detail_group) or 0)
+    if not detail_id:
+        raise RuntimeError(
+            f"persisted Miaoshou detail ID is missing for {detail_group}"
+        )
+
+    if post is None:
+        from modules.miaoshou.client import post_open
+
+        post = post_open
+    response = post(
+        MIAOSHOU_SHOP_DETAIL_PATH,
+        {"detailId": detail_id, "shopId": expected_shop_id},
+    )
+    if response.get("result") != "success":
+        raise RuntimeError(
+            f"Miaoshou existing detail lookup failed for {clean_site}: "
+            f"{response.get('code')} {response.get('message') or ''}"
+        )
+    data = response.get("data") or {}
+    info = data.get("shopCollectItemInfo")
+    if not isinstance(info, dict) or not info:
+        raise RuntimeError(
+            f"Miaoshou existing detail lookup returned no shop item for {clean_site}"
+        )
+    bound_shop_ids = {
+        str(value).strip()
+        for value in (data.get("claimToShopIds") or ())
+        if str(value).strip()
+    }
+    explicit_shop_id = str(info.get("shopId") or "").strip()
+    if explicit_shop_id:
+        bound_shop_ids.add(explicit_shop_id)
+    bound_shop_ids.update(
+        str(row.get("shopId") or "").strip()
+        for row in (info.get("collectBoxDetailShopList") or ())
+        if isinstance(row, dict) and str(row.get("shopId") or "").strip()
+    )
+    if expected_shop_id not in bound_shop_ids:
+        raise RuntimeError(
+            f"Miaoshou detail {detail_id} is not bound to fixed shop "
+            f"{expected_shop_id} for {clean_site}"
+        )
+    return {
+        "site": clean_site,
+        "target_key": target_key,
+        "detail_group": detail_group,
+        "detail_id": detail_id,
+        "shop_id": int(expected_shop_id),
+        "shop": target,
+        "shop_collect_item_info": dict(info),
+        "oss_md5": str(data.get("ossMd5") or ""),
+        "source": "persisted_detail_group_ids_plus_readonly_shop_lookup",
+        "external_writes_performed": [],
     }
 
 

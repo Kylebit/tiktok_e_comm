@@ -151,6 +151,129 @@ def test_miaoshou_publish_reads_current_region_site_result(monkeypatch):
     }
 
 
+def test_existing_detail_resolver_ignores_asymmetric_claim_shops(monkeypatch):
+    from modules.sourcing import new_product_workbench as workbench
+
+    claim_calls = []
+    monkeypatch.setattr(
+        workbench,
+        "claim_miaoshou_to_tiktok",
+        lambda *_args, **_kwargs: claim_calls.append((_args, _kwargs)),
+    )
+    monkeypatch.setattr(
+        workbench,
+        "load_miaoshou_tiktok_claim",
+        lambda _offer_id: {
+            "shops": {
+                "mx": {
+                    "shop_id": "16265910",
+                    "detail_group": "lively:MX",
+                }
+            },
+            "detail_group_detail_ids": {
+                "lively:GB": 3227304421,
+                "lively:MY": 3227305063,
+                "lively:PH": 3227305525,
+                "lively:TH": 3227306445,
+                "lively:VN": 3227307552,
+                "lively:MX": 3227308139,
+            },
+        },
+    )
+    requests = []
+
+    def read(path, body):
+        requests.append((path, body))
+        return {
+            "result": "success",
+            "data": {
+                "shopCollectItemInfo": {
+                    "shopId": "7676267",
+                    "title": "Approved PH title",
+                },
+                "claimToShopIds": ["7676267"],
+                "ossMd5": "readonly-md5",
+            },
+        }
+
+    resolved = release_adapters._resolve_existing_miaoshou_tiktok_detail(
+        _context()["payload"],
+        site="LH_PH",
+        post=read,
+    )
+
+    assert resolved["detail_id"] == 3227305525
+    assert resolved["shop_id"] == 7676267
+    assert resolved["detail_group"] == "lively:PH"
+    assert resolved["external_writes_performed"] == []
+    assert requests == [
+        (
+            release_adapters.MIAOSHOU_SHOP_DETAIL_PATH,
+            {"detailId": 3227305525, "shopId": "7676267"},
+        )
+    ]
+    assert claim_calls == []
+
+
+@pytest.mark.parametrize(
+    ("detail_ids", "bound_shop_ids", "message"),
+    [
+        (
+            {"lively:MX": 3227308139},
+            ["7676267"],
+            "detail ID is missing for lively:PH",
+        ),
+        (
+            {
+                "lively:PH": 3227305525,
+                "lively:MX": 3227305525,
+            },
+            ["7676267"],
+            "detail IDs are not unique",
+        ),
+        (
+            {"lively:PH": 3227305525},
+            ["16265910"],
+            "is not bound to fixed shop 7676267",
+        ),
+    ],
+)
+def test_existing_detail_resolver_blocks_missing_duplicate_or_wrong_shop(
+    monkeypatch,
+    detail_ids,
+    bound_shop_ids,
+    message,
+):
+    from modules.sourcing import new_product_workbench as workbench
+
+    monkeypatch.setattr(
+        workbench,
+        "load_miaoshou_tiktok_claim",
+        lambda _offer_id: {
+            "shops": {"mx": {"shop_id": "16265910"}},
+            "detail_group_detail_ids": detail_ids,
+        },
+    )
+    monkeypatch.setattr(
+        workbench,
+        "claim_miaoshou_to_tiktok",
+        lambda *_args, **_kwargs: pytest.fail("claim/create must not run"),
+    )
+
+    with pytest.raises(RuntimeError, match=message):
+        release_adapters._resolve_existing_miaoshou_tiktok_detail(
+            _context()["payload"],
+            site="LH_PH",
+            post=lambda _path, _body: {
+                "result": "success",
+                "data": {
+                    "shopCollectItemInfo": {"title": "existing"},
+                    "claimToShopIds": bound_shop_ids,
+                },
+            },
+        )
+
+
 def test_api_less_pre_submit_audit_blocks_incomplete_approved_scope():
     payload = _context()["payload"]
     payload["product_facts"]["selected_sku_keys"] = []

@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -26,6 +27,20 @@ TARGET_SCOPED_OPERATION_KINDS: dict[str, str] = {
     "ozon:RU": OZON_EXISTING_PRODUCT_STOCK_RECONCILIATION,
 }
 
+SHOPEE_REGIONAL_COPY_POLICY_VERSION = (
+    "shopee-platform-derived-translation/v1"
+)
+SHOPEE_REGIONAL_COPY_LINT_POLICY_VERSION = (
+    "shopee-regional-copy-lint/v1"
+)
+SHOPEE_REGIONAL_IMAGE_POLICY_VERSION = (
+    "shopee-linked-image-observation/v1"
+)
+SHOPEE_REGIONAL_EXPECTED_LANGUAGES = {
+    "MY": "ms-Latn",
+    "VN": "vi-Latn",
+}
+
 _SENSITIVE_KEY_PARTS = (
     "access_token",
     "refresh_token",
@@ -35,6 +50,68 @@ _SENSITIVE_KEY_PARTS = (
     "secret",
     "raw_response",
 )
+
+_CJK_PATTERN = re.compile(
+    r"[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]"
+)
+_VIETNAMESE_SIGNAL_PATTERN = re.compile(
+    r"[àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệ"
+    r"ìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụ"
+    r"ưừứửữựỳýỷỹỵđĐ]"
+)
+_MALAY_SIGNAL_PATTERN = re.compile(
+    r"\b(yang|untuk|dengan|adalah|kertas|dinding|pelekat|"
+    r"reka bentuk|hiasan|rumah|mudah|sesuai|warna|saiz|"
+    r"bahan|produk|kualiti|penghantaran|dan|atau)\b",
+    re.IGNORECASE,
+)
+_HIGH_RISK_CLAIM_TERMS: dict[str, tuple[str, ...]] = {
+    "claim:waterproof": (
+        "waterproof",
+        "kalis air",
+        "chống nước",
+    ),
+    "claim:removable": (
+        "removable",
+        "boleh ditanggalkan",
+        "có thể tháo rời",
+    ),
+    "claim:residue_free": (
+        "residue-free",
+        "residue free",
+        "tanpa sisa",
+        "không để lại keo",
+        "không để lại dư lượng",
+    ),
+    "claim:reusable": (
+        "reusable",
+        "boleh digunakan semula",
+        "có thể tái sử dụng",
+    ),
+    "claim:certified": (
+        "certified",
+        "certification",
+        "diperakui",
+        "chứng nhận",
+    ),
+    "claim:warranty": (
+        "warranty",
+        "waranti",
+        "bảo hành",
+    ),
+    "claim:medical": (
+        "medical claim",
+        "medical grade",
+        "tuntutan perubatan",
+        "cấp y tế",
+    ),
+    "claim:safety_performance": (
+        "guaranteed safe",
+        "safety certified",
+        "dijamin selamat",
+        "an toàn tuyệt đối",
+    ),
+}
 
 
 class TargetScopedContractError(ValueError):
@@ -115,6 +192,495 @@ def _normalised_seller_sku(value: object) -> tuple[str, str]:
             "immutable seller_sku must contain 1-32 digits",
         )
     return seller_sku, seller_sku[-4:].zfill(4)
+
+
+def shopee_regional_observation_policy(
+    *,
+    site: object,
+    source_global_master_digest: object,
+) -> dict[str, str]:
+    """Build verifier-only regional policy from immutable plan facts."""
+
+    region = str(site or "").strip().upper()
+    expected_language = SHOPEE_REGIONAL_EXPECTED_LANGUAGES.get(region)
+    if expected_language is None:
+        raise TargetScopedContractError(
+            "Shopee regional observation only supports MY and VN"
+        )
+    return {
+        "regional_copy_policy_version": (
+            SHOPEE_REGIONAL_COPY_POLICY_VERSION
+        ),
+        "source_global_master_digest": _required_text(
+            source_global_master_digest,
+            "source_global_master_digest",
+        ),
+        "expected_language": expected_language,
+        "regional_copy_lint_policy_version": (
+            SHOPEE_REGIONAL_COPY_LINT_POLICY_VERSION
+        ),
+        "regional_image_verification_policy_version": (
+            SHOPEE_REGIONAL_IMAGE_POLICY_VERSION
+        ),
+    }
+
+
+def _copy_text(value: object) -> tuple[str, bool]:
+    if not isinstance(value, str):
+        return "", False
+    return unicodedata.normalize("NFC", value).strip(), True
+
+
+def _normalised_copy_for_comparison(value: str) -> str:
+    return " ".join(value.casefold().split())
+
+
+def _copy_tokens(value: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[^\W_]+", value.casefold())
+        if len(token) > 1
+    }
+
+
+def _copy_leakage_classification(
+    *,
+    source_title: str,
+    source_description: str,
+    regional_title: str,
+    regional_description: str,
+) -> str:
+    source_title_normalised = _normalised_copy_for_comparison(source_title)
+    source_description_normalised = _normalised_copy_for_comparison(
+        source_description
+    )
+    regional_title_normalised = _normalised_copy_for_comparison(
+        regional_title
+    )
+    regional_description_normalised = _normalised_copy_for_comparison(
+        regional_description
+    )
+    if (
+        source_title_normalised
+        and source_description_normalised
+        and regional_title_normalised == source_title_normalised
+        and regional_description_normalised
+        == source_description_normalised
+    ):
+        return "full_source_copy"
+    if (
+        source_title_normalised
+        and regional_title_normalised == source_title_normalised
+    ) or (
+        source_description_normalised
+        and regional_description_normalised
+        == source_description_normalised
+    ):
+        return "partial_source_copy"
+    source_tokens = _copy_tokens(
+        f"{source_title} {source_description}"
+    )
+    regional_tokens = _copy_tokens(
+        f"{regional_title} {regional_description}"
+    )
+    if (
+        source_tokens
+        and len(source_tokens & regional_tokens) / len(source_tokens) >= 0.5
+    ):
+        return "partial_source_overlap"
+    return "none"
+
+
+def _matched_high_risk_claims(value: str) -> set[str]:
+    normalised = _normalised_copy_for_comparison(value)
+    return {
+        rule_id
+        for rule_id, terms in _HIGH_RISK_CLAIM_TERMS.items()
+        if any(
+            _normalised_copy_for_comparison(term) in normalised
+            for term in terms
+        )
+    }
+
+
+def evaluate_shopee_regional_copy_observation(
+    *,
+    source_title: object,
+    source_description: object,
+    source_global_master_digest: object,
+    regional_title: object,
+    regional_description: object,
+    site: object,
+) -> dict[str, Any]:
+    """Return redacted evidence for Shopee-owned regional translation."""
+
+    policy = shopee_regional_observation_policy(
+        site=site,
+        source_global_master_digest=source_global_master_digest,
+    )
+    region = str(site or "").strip().upper()
+    source_title_text, source_title_shape = _copy_text(source_title)
+    source_description_text, source_description_shape = _copy_text(
+        source_description
+    )
+    regional_title_text, regional_title_shape = _copy_text(regional_title)
+    regional_description_text, regional_description_shape = _copy_text(
+        regional_description
+    )
+    source_shape_exact = source_title_shape and source_description_shape
+    regional_shape_exact = (
+        regional_title_shape and regional_description_shape
+    )
+    combined = f"{regional_title_text}\n{regional_description_text}"
+    cjk_count = len(_CJK_PATTERN.findall(combined))
+    vietnamese_signal_count = len(
+        _VIETNAMESE_SIGNAL_PATTERN.findall(combined)
+    )
+    malay_signal_count = len(_MALAY_SIGNAL_PATTERN.findall(combined))
+    latin_letter_count = sum(
+        1
+        for character in combined
+        if character.isalpha() and ord(character) < 0x0250
+    )
+    language_signal_strong = (
+        vietnamese_signal_count > 0
+        if region == "VN"
+        else malay_signal_count > 0
+    )
+    leakage = _copy_leakage_classification(
+        source_title=source_title_text,
+        source_description=source_description_text,
+        regional_title=regional_title_text,
+        regional_description=regional_description_text,
+    )
+    source_claims = _matched_high_risk_claims(
+        f"{source_title_text}\n{source_description_text}"
+    )
+    regional_claims = _matched_high_risk_claims(combined)
+    added_high_risk_claims = sorted(regional_claims - source_claims)
+    title_length = len(regional_title_text)
+    description_length = len(regional_description_text)
+    obvious_truncation = (
+        0 < title_length < 3
+        or (
+            len(source_description_text) >= 80
+            and 0 < description_length
+            < max(20, len(source_description_text) // 10)
+        )
+    )
+
+    needs_review_rules: set[str] = set()
+    warning_rules: set[str] = set()
+    if not source_shape_exact or not regional_shape_exact:
+        needs_review_rules.add("copy:shape_ambiguous")
+    if not regional_title_text:
+        needs_review_rules.add("copy:title_missing")
+    if not regional_description_text:
+        needs_review_rules.add("copy:description_missing")
+    if obvious_truncation:
+        needs_review_rules.add("copy:obviously_truncated")
+    if cjk_count:
+        needs_review_rules.add("copy:cjk_present")
+    if leakage == "full_source_copy":
+        if region == "MY" or (
+            region == "VN" and not language_signal_strong
+        ):
+            needs_review_rules.add("copy:full_source_leakage")
+    elif leakage != "none":
+        warning_rules.add("copy:partial_source_overlap")
+    if added_high_risk_claims:
+        needs_review_rules.update(
+            f"copy:new_high_risk:{rule_id.split(':', 1)[1]}"
+            for rule_id in added_high_risk_claims
+        )
+    if not language_signal_strong:
+        warning_rules.add("copy:language_signal_weak")
+
+    if needs_review_rules:
+        status = "needs_review"
+    elif warning_rules:
+        status = "warning"
+    else:
+        status = "observed"
+    rule_ids = sorted(needs_review_rules | warning_rules)
+    observation = {
+        "schema_version": (
+            "platform-derived-translation-observation/v1"
+        ),
+        "authority": "shopee_official_regional_get",
+        "provider": "shopee_auto_translation",
+        "site": region,
+        "expected_language": policy["expected_language"],
+        "source_global_master_digest": policy[
+            "source_global_master_digest"
+        ],
+        "regional_copy_policy_version": policy[
+            "regional_copy_policy_version"
+        ],
+        "regional_copy_lint_policy_version": policy[
+            "regional_copy_lint_policy_version"
+        ],
+        "title": {
+            "present": bool(regional_title_text),
+            "length": title_length,
+        },
+        "description": {
+            "present": bool(regional_description_text),
+            "length": description_length,
+        },
+        "source_lengths": {
+            "title": len(source_title_text),
+            "description": len(source_description_text),
+        },
+        "unicode_signals": {
+            "cjk_count": cjk_count,
+            "vietnamese_signal_count": vietnamese_signal_count,
+            "malay_signal_count": malay_signal_count,
+            "latin_letter_count": latin_letter_count,
+        },
+        "language_signal": (
+            "strong" if language_signal_strong else "weak"
+        ),
+        "source_copy_leakage": leakage,
+        "source_claim_rule_ids": sorted(source_claims),
+        "matched_rule_ids": rule_ids,
+        "semantic_equivalence": "unverified",
+        "status": status,
+        "summary_code": f"regional_copy_{status}",
+        "regional_copy_digest": canonical_digest(
+            {
+                "title": regional_title_text,
+                "description": regional_description_text,
+                "shape_exact": regional_shape_exact,
+            }
+        ),
+    }
+    _assert_redacted(observation, path="regional_copy_observation")
+    observation["evidence_digest"] = canonical_digest(observation)
+    return observation
+
+
+def evaluate_shopee_regional_image_observation(
+    *,
+    approved_count: object,
+    regional_image_urls: object,
+    global_linkage_verified: object,
+    stable_ordered_image_ids: object = None,
+    stable_ordered_ids_exact: object = None,
+) -> dict[str, Any]:
+    """Return URL-redacted evidence for platform-rehosted regional images."""
+
+    approved_shape_exact = (
+        not isinstance(approved_count, bool)
+        and isinstance(approved_count, int)
+        and approved_count > 0
+    )
+    urls_shape_exact = (
+        isinstance(regional_image_urls, (list, tuple))
+        and not isinstance(regional_image_urls, (str, bytes))
+    )
+    urls = (
+        [
+            value.strip()
+            for value in regional_image_urls
+            if isinstance(value, str)
+        ]
+        if urls_shape_exact
+        else []
+    )
+    urls_shape_exact = bool(
+        urls_shape_exact
+        and len(urls) == len(regional_image_urls)
+        and all(urls)
+    )
+    stable_ids_available = isinstance(
+        stable_ordered_image_ids, (list, tuple)
+    ) and not isinstance(stable_ordered_image_ids, (str, bytes))
+    stable_ids = (
+        [
+            str(value or "").strip()
+            for value in stable_ordered_image_ids
+        ]
+        if stable_ids_available
+        else []
+    )
+    stable_ids_shape_exact = bool(
+        not stable_ids_available
+        or (
+            stable_ids
+            and all(stable_ids)
+            and len(stable_ids) == len(urls)
+        )
+    )
+    stable_exact_shape = (
+        stable_ordered_ids_exact is None
+        or stable_ordered_ids_exact is True
+        or stable_ordered_ids_exact is False
+    )
+    regional_count = len(urls)
+    main_image_present = bool(urls and urls[0])
+
+    needs_review_rules: set[str] = set()
+    warning_rules: set[str] = set()
+    if (
+        not approved_shape_exact
+        or not urls_shape_exact
+        or not stable_ids_shape_exact
+        or not stable_exact_shape
+    ):
+        needs_review_rules.add("image:shape_ambiguous")
+    if approved_shape_exact and regional_count != approved_count:
+        needs_review_rules.add("image:count_mismatch")
+    if not main_image_present:
+        needs_review_rules.add("image:main_missing")
+    if global_linkage_verified is not True:
+        needs_review_rules.add("image:global_linkage_unverified")
+    if stable_ordered_ids_exact is False:
+        needs_review_rules.add("image:stable_order_mismatch")
+    elif stable_ordered_ids_exact is True and not stable_ids_available:
+        needs_review_rules.add("image:stable_order_evidence_missing")
+    elif stable_ordered_ids_exact is None:
+        warning_rules.add(
+            "image:linked_count_verified_order_unverifiable"
+        )
+
+    if needs_review_rules:
+        status = "needs_review"
+        verification_scope = "identity_unverified"
+    elif stable_ordered_ids_exact is True:
+        status = "observed"
+        verification_scope = "stable_ordered_ids_exact"
+    else:
+        status = "warning"
+        verification_scope = (
+            "linked_count_verified_order_unverifiable"
+        )
+    observation = {
+        "schema_version": (
+            "platform-derived-image-observation/v1"
+        ),
+        "authority": "shopee_official_regional_get",
+        "regional_image_verification_policy_version": (
+            SHOPEE_REGIONAL_IMAGE_POLICY_VERSION
+        ),
+        "approved_count": (
+            approved_count if approved_shape_exact else None
+        ),
+        "regional_count": regional_count,
+        "main_image_present": main_image_present,
+        "global_linkage_verified": global_linkage_verified is True,
+        "stable_ordered_ids_available": stable_ids_available,
+        "stable_ordered_ids_exact": (
+            stable_ordered_ids_exact
+            if stable_exact_shape
+            else None
+        ),
+        "url_identity_exact": False,
+        "verification_scope": verification_scope,
+        "matched_rule_ids": sorted(
+            needs_review_rules | warning_rules
+        ),
+        "status": status,
+        "summary_code": f"regional_images_{status}",
+        "regional_image_observation_digest": canonical_digest(urls),
+        "stable_ordered_ids_digest": (
+            canonical_digest(stable_ids)
+            if stable_ids_available
+            else None
+        ),
+    }
+    _assert_redacted(observation, path="regional_image_observation")
+    observation["evidence_digest"] = canonical_digest(observation)
+    return observation
+
+
+def _validated_regional_observation(
+    value: object,
+    *,
+    schema_version: str,
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise TargetScopedContractError(
+            "regional observation must be a mapping"
+        )
+    observation = dict(value)
+    supplied_digest = str(
+        observation.pop("evidence_digest", "") or ""
+    ).strip()
+    if observation.get("schema_version") != schema_version:
+        raise TargetScopedContractError(
+            "regional observation schema is invalid"
+        )
+    if not supplied_digest or supplied_digest != canonical_digest(observation):
+        raise TargetScopedContractError(
+            "regional observation evidence digest is invalid"
+        )
+    _assert_redacted(observation, path="regional_observation")
+    observation["evidence_digest"] = supplied_digest
+    return observation
+
+
+def shopee_regional_observation_outcome(
+    *,
+    listing_hard_exact: object,
+    copy_observation: object,
+    image_observation: object,
+) -> dict[str, Any]:
+    """Map official hard facts and derived observations to one outcome."""
+
+    copy_observation = _validated_regional_observation(
+        copy_observation,
+        schema_version=(
+            "platform-derived-translation-observation/v1"
+        ),
+    )
+    image_observation = _validated_regional_observation(
+        image_observation,
+        schema_version="platform-derived-image-observation/v1",
+    )
+    copy_status = str(copy_observation.get("status") or "")
+    image_status = str(image_observation.get("status") or "")
+    valid_statuses = {"observed", "warning", "needs_review"}
+    if copy_status not in valid_statuses or image_status not in valid_statuses:
+        raise TargetScopedContractError(
+            "regional observation status is invalid"
+        )
+    listing_verified = listing_hard_exact is True
+    succeeded = (
+        listing_verified
+        and copy_status != "needs_review"
+        and image_status != "needs_review"
+    )
+    rule_ids = {
+        str(value)
+        for value in (
+            list(copy_observation.get("matched_rule_ids") or ())
+            + list(image_observation.get("matched_rule_ids") or ())
+        )
+        if str(value)
+    }
+    if not listing_verified:
+        rule_ids.add("listing:hard_exact_failed")
+    outcome = {
+        "schema_version": "shopee-regional-observation-outcome/v1",
+        "outcome": (
+            "SUCCEEDED" if succeeded else "RECONCILIATION_REQUIRED"
+        ),
+        "listing_identity_verified": listing_verified,
+        "derived_translation_status": copy_status,
+        "derived_image_status": image_status,
+        "semantic_equivalence": "unverified",
+        "profit_status": "unverified",
+        "manual_review_required": (
+            copy_status in {"warning", "needs_review"}
+            or image_status in {"warning", "needs_review"}
+        ),
+        "reconciliation_required": not succeeded,
+        "matched_rule_ids": sorted(rule_ids),
+    }
+    _assert_redacted(outcome, path="regional_observation_outcome")
+    outcome["evidence_digest"] = canonical_digest(outcome)
+    return outcome
 
 
 def approved_shopee_channel_master_digest(
@@ -294,6 +860,10 @@ def _planned_shopee_command(
     master_digest, image_count = _approved_shopee_master_digest(payload)
     parcel, parcel_digest = _approved_parcel(payload)
     excluded = [50052] if region == "VN" else []
+    regional_policy = shopee_regional_observation_policy(
+        site=region,
+        source_global_master_digest=master_digest,
+    )
     return {
         "schema_version": "shopee-existing-global-command/v1",
         "builder_policy_version": "target-scoped-shopee/v1",
@@ -311,6 +881,10 @@ def _planned_shopee_command(
         "local_original_price": local_price,
         "local_currency": currency,
         "approved_master_digest": master_digest,
+        **regional_policy,
+        "regional_observation_policy_digest": canonical_digest(
+            regional_policy
+        ),
         "approved_image_count": image_count,
         "parcel": parcel,
         "parcel_digest": parcel_digest,

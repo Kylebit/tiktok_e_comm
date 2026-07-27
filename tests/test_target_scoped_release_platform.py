@@ -20,6 +20,7 @@ from domains.channel_operations.release_executor import (
 )
 from modules.products import server as product_server
 from shared_platform import release_store
+from shared_platform import target_scoped_release_contracts as target_contracts
 from shared_platform.release_store import (
     ImmutableReleaseError,
     ReleaseAuthorizationError,
@@ -34,8 +35,11 @@ from shared_platform.target_scoped_release_contracts import (
     TargetScopedOperationResult,
     approved_shopee_channel_master_digest,
     canonical_digest,
+    evaluate_shopee_regional_copy_observation,
+    evaluate_shopee_regional_image_observation,
     operation_kind_for_target,
     planned_target_command,
+    shopee_regional_observation_outcome,
     target_preflight_digest,
 )
 
@@ -265,6 +269,13 @@ def test_shopee_command_is_purely_derived_from_immutable_plan(
         "local_original_price": 999999,
         "access_token": "must-not-be-read",
     }
+    with_untrusted_runtime_data.update(
+        {
+            "regional_copy_policy_version": "browser-override",
+            "expected_language": "browser-language",
+            "source_global_master_digest": "browser-master",
+        }
+    )
     repeated, repeated_digest = planned_target_command(
         with_untrusted_runtime_data,
         target_label=target_label,
@@ -289,6 +300,24 @@ def test_shopee_command_is_purely_derived_from_immutable_plan(
         "local_original_price": 45.0,
         "local_currency": currency,
         "approved_master_digest": command["approved_master_digest"],
+        "regional_copy_policy_version": (
+            "shopee-platform-derived-translation/v1"
+        ),
+        "source_global_master_digest": command[
+            "approved_master_digest"
+        ],
+        "expected_language": (
+            "vi-Latn" if target_label == "shopee:VN" else "ms-Latn"
+        ),
+        "regional_copy_lint_policy_version": (
+            "shopee-regional-copy-lint/v1"
+        ),
+        "regional_image_verification_policy_version": (
+            "shopee-linked-image-observation/v1"
+        ),
+        "regional_observation_policy_digest": command[
+            "regional_observation_policy_digest"
+        ],
         "approved_image_count": 2,
         "parcel": {
             "weight_kg": 0.2,
@@ -392,6 +421,326 @@ def test_official_shopee_fields_recompute_planned_master_digest():
     )
 
     assert official_digest == command["approved_master_digest"]
+
+
+def test_regional_policy_is_deterministic_and_bound_to_command_digest(
+    monkeypatch,
+):
+    my_payload = _plan("shopee:MY")
+    vn_payload = _plan("shopee:VN")
+    original, original_digest = planned_target_command(
+        my_payload,
+        target_label="shopee:MY",
+    )
+    repeated, repeated_digest = planned_target_command(
+        deepcopy(my_payload),
+        target_label="shopee:MY",
+    )
+    vn_command, vn_digest = planned_target_command(
+        vn_payload,
+        target_label="shopee:VN",
+    )
+    changed_master = deepcopy(my_payload)
+    changed_master["listing_copy"]["candidates"][0][
+        "title"
+    ] += " updated"
+    _changed_master_command, changed_master_digest = (
+        planned_target_command(
+            changed_master,
+            target_label="shopee:MY",
+        )
+    )
+    monkeypatch.setattr(
+        target_contracts,
+        "SHOPEE_REGIONAL_COPY_LINT_POLICY_VERSION",
+        "shopee-regional-copy-lint/v2-test",
+    )
+    changed_policy, changed_policy_digest = planned_target_command(
+        my_payload,
+        target_label="shopee:MY",
+    )
+
+    assert repeated == original
+    assert repeated_digest == original_digest
+    assert vn_command["expected_language"] == "vi-Latn"
+    assert vn_digest != original_digest
+    assert changed_master_digest != original_digest
+    assert changed_policy["regional_copy_lint_policy_version"].endswith(
+        "v2-test"
+    )
+    assert changed_policy_digest != original_digest
+
+
+def test_my_english_source_copy_requires_review_without_raw_copy():
+    source_title = "Approved English Shopee master"
+    source_description = "Approved immutable description for the product."
+
+    observed = evaluate_shopee_regional_copy_observation(
+        source_title=source_title,
+        source_description=source_description,
+        source_global_master_digest="master-digest",
+        regional_title=source_title,
+        regional_description=source_description,
+        site="MY",
+    )
+    repeated = evaluate_shopee_regional_copy_observation(
+        source_title=source_title,
+        source_description=source_description,
+        source_global_master_digest="master-digest",
+        regional_title=source_title,
+        regional_description=source_description,
+        site="MY",
+    )
+    serialized = json.dumps(observed, ensure_ascii=False)
+
+    assert observed == repeated
+    assert observed["status"] == "needs_review"
+    assert observed["source_copy_leakage"] == "full_source_copy"
+    assert "copy:full_source_leakage" in observed["matched_rule_ids"]
+    assert observed["semantic_equivalence"] == "unverified"
+    assert source_title not in serialized
+    assert source_description not in serialized
+
+
+def test_my_safe_latin_copy_without_strong_signal_is_warning():
+    observed = evaluate_shopee_regional_copy_observation(
+        source_title="Approved floral wall decoration",
+        source_description=(
+            "Approved source facts and application guidance for buyers."
+        ),
+        source_global_master_digest="master-digest",
+        regional_title="Modern Floral Decoration for Living Spaces",
+        regional_description=(
+            "Decorative wall item with clear dimensions and simple "
+            "application guidance for indoor rooms."
+        ),
+        site="MY",
+    )
+
+    assert observed["status"] == "warning"
+    assert observed["language_signal"] == "weak"
+    assert "copy:language_signal_weak" in observed["matched_rule_ids"]
+
+
+def test_vn_full_english_source_copy_without_language_signal_needs_review():
+    observed = evaluate_shopee_regional_copy_observation(
+        source_title="Approved English title",
+        source_description="Approved English description",
+        source_global_master_digest="master-digest",
+        regional_title="Approved English title",
+        regional_description="Approved English description",
+        site="VN",
+    )
+
+    assert observed["status"] == "needs_review"
+    assert observed["language_signal"] == "weak"
+    assert "copy:full_source_leakage" in observed["matched_rule_ids"]
+
+
+def test_vn_diacritic_copy_is_observed_but_semantics_remain_unverified():
+    observed = evaluate_shopee_regional_copy_observation(
+        source_title="Approved floral wall decoration",
+        source_description=(
+            "Approved source facts and application guidance for buyers."
+        ),
+        source_global_master_digest="master-digest",
+        regional_title="Trang trí tường hoa lá cho phòng khách",
+        regional_description=(
+            "Sản phẩm trang trí phù hợp cho không gian trong nhà và có "
+            "hướng dẫn sử dụng rõ ràng."
+        ),
+        site="VN",
+    )
+
+    assert observed["status"] == "observed"
+    assert observed["expected_language"] == "vi-Latn"
+    assert observed["language_signal"] == "strong"
+    assert observed["semantic_equivalence"] == "unverified"
+    assert observed["matched_rule_ids"] == []
+
+
+@pytest.mark.parametrize(
+    ("regional_title", "regional_description", "expected_rule"),
+    [
+        ("", "", "copy:title_missing"),
+        (
+            "墙贴装饰",
+            "适合家庭使用的墙面装饰。",
+            "copy:cjk_present",
+        ),
+        (
+            "Modern Wall Decoration",
+            "This waterproof decoration has an unapproved new claim.",
+            "copy:new_high_risk:waterproof",
+        ),
+        (
+            ["ambiguous"],
+            "Regional description",
+            "copy:shape_ambiguous",
+        ),
+    ],
+)
+def test_regional_copy_empty_cjk_new_claim_or_shape_needs_review(
+    regional_title,
+    regional_description,
+    expected_rule,
+):
+    observed = evaluate_shopee_regional_copy_observation(
+        source_title="Approved English title",
+        source_description=(
+            "Approved description without unverified performance claims."
+        ),
+        source_global_master_digest="master-digest",
+        regional_title=regional_title,
+        regional_description=regional_description,
+        site="MY",
+    )
+
+    assert observed["status"] == "needs_review"
+    assert expected_rule in observed["matched_rule_ids"]
+
+
+def test_regional_images_stable_ids_are_observed_without_raw_urls():
+    urls = [
+        "https://regional.example/rehosted-1.jpg",
+        "https://regional.example/rehosted-2.jpg",
+    ]
+    observed = evaluate_shopee_regional_image_observation(
+        approved_count=2,
+        regional_image_urls=urls,
+        global_linkage_verified=True,
+        stable_ordered_image_ids=["image-id-1", "image-id-2"],
+        stable_ordered_ids_exact=True,
+    )
+    serialized = json.dumps(observed)
+
+    assert observed["status"] == "observed"
+    assert observed["verification_scope"] == "stable_ordered_ids_exact"
+    assert observed["url_identity_exact"] is False
+    assert all(url not in serialized for url in urls)
+
+
+def test_rehosted_count_only_images_are_an_honest_warning():
+    observed = evaluate_shopee_regional_image_observation(
+        approved_count=2,
+        regional_image_urls=[
+            "https://regional.example/rehosted-1.jpg",
+            "https://regional.example/rehosted-2.jpg",
+        ],
+        global_linkage_verified=True,
+    )
+
+    assert observed["status"] == "warning"
+    assert observed["verification_scope"] == (
+        "linked_count_verified_order_unverifiable"
+    )
+    assert observed["url_identity_exact"] is False
+    assert "image:linked_count_verified_order_unverifiable" in (
+        observed["matched_rule_ids"]
+    )
+
+
+@pytest.mark.parametrize(
+    "regional_urls",
+    [
+        ["https://regional.example/only-one.jpg"],
+        ["", "https://regional.example/second.jpg"],
+        ["https://regional.example/main.jpg", ""],
+    ],
+)
+def test_regional_image_count_mismatch_or_empty_main_needs_review(
+    regional_urls,
+):
+    observed = evaluate_shopee_regional_image_observation(
+        approved_count=2,
+        regional_image_urls=regional_urls,
+        global_linkage_verified=True,
+    )
+
+    assert observed["status"] == "needs_review"
+
+
+@pytest.mark.parametrize(
+    ("copy_status", "image_status", "hard_exact", "expected"),
+    [
+        ("observed", "observed", True, "SUCCEEDED"),
+        ("warning", "observed", True, "SUCCEEDED"),
+        ("observed", "warning", True, "SUCCEEDED"),
+        ("needs_review", "observed", True, "RECONCILIATION_REQUIRED"),
+        ("observed", "needs_review", True, "RECONCILIATION_REQUIRED"),
+        ("observed", "observed", False, "RECONCILIATION_REQUIRED"),
+    ],
+)
+def test_regional_observation_outcome_never_fabricates_hard_facts(
+    copy_status,
+    image_status,
+    hard_exact,
+    expected,
+):
+    copy_observation = {
+        "schema_version": (
+            "platform-derived-translation-observation/v1"
+        ),
+        "status": copy_status,
+        "matched_rule_ids": [],
+        "semantic_equivalence": "unverified",
+    }
+    copy_observation["evidence_digest"] = canonical_digest(
+        copy_observation
+    )
+    image_observation = {
+        "schema_version": "platform-derived-image-observation/v1",
+        "status": image_status,
+        "matched_rule_ids": [],
+    }
+    image_observation["evidence_digest"] = canonical_digest(
+        image_observation
+    )
+    outcome = shopee_regional_observation_outcome(
+        listing_hard_exact=hard_exact,
+        copy_observation=copy_observation,
+        image_observation=image_observation,
+    )
+
+    assert outcome["outcome"] == expected
+    assert outcome["listing_identity_verified"] is hard_exact
+    assert outcome["profit_status"] == "unverified"
+    assert outcome["semantic_equivalence"] == "unverified"
+    assert outcome["reconciliation_required"] is (
+        expected == "RECONCILIATION_REQUIRED"
+    )
+    assert outcome["manual_review_required"] is (
+        copy_status != "observed" or image_status != "observed"
+    )
+
+
+def test_regional_outcome_rejects_tampered_observation_digest():
+    copy_observation = evaluate_shopee_regional_copy_observation(
+        source_title="Approved title",
+        source_description="Approved description",
+        source_global_master_digest="master-digest",
+        regional_title="Produk hiasan yang sesuai untuk rumah",
+        regional_description=(
+            "Produk ini sesuai untuk hiasan rumah dan mudah digunakan."
+        ),
+        site="MY",
+    )
+    image_observation = evaluate_shopee_regional_image_observation(
+        approved_count=1,
+        regional_image_urls=["https://regional.example/rehosted.jpg"],
+        global_linkage_verified=True,
+    )
+    copy_observation["status"] = "needs_review"
+
+    with pytest.raises(
+        TargetScopedContractError,
+        match="evidence digest",
+    ):
+        shopee_regional_observation_outcome(
+            listing_hard_exact=True,
+            copy_observation=copy_observation,
+            image_observation=image_observation,
+        )
 
 
 @pytest.mark.parametrize(

@@ -3384,6 +3384,7 @@ class Handler(BaseHTTPRequestHandler):
             "content-package/prepare",
             "content-package/vision-proposal",
             "content-package/review",
+            "content-package/source-only/review",
             "content-package/suite-images-preflight",
             "content-package/remaining-images-generate",
             "content-package/miaoshou-images/commit",

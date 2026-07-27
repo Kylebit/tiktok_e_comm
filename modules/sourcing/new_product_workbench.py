@@ -7,6 +7,7 @@ for expensive image/API work.
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
 import json
 import html
 import math
@@ -946,6 +947,31 @@ def _source_only_selection(review: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _source_only_review_signature(
+    image_actions: list[dict[str, Any]], image_order: list[str]
+) -> str:
+    payload = {
+        "image_actions": [
+            {
+                "url": str(row.get("url") or ""),
+                "action": str(row.get("action") or ""),
+                "note": str(row.get("note") or ""),
+            }
+            for row in image_actions
+        ],
+        "image_order": list(image_order),
+    }
+    digest = hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return f"sha256:{digest}"
+
+
 def _require_ai_assisted(content: dict[str, Any], action: str) -> None:
     if _content_strategy(content) != "ai_assisted":
         raise ValueError(
@@ -1158,12 +1184,7 @@ def _product_workflow_summary(
         and _completed_ai_suite_evidence(review, content, generated)
     )
     if source_only:
-        content_ready = bool(
-            content.get("package_found")
-            and content.get("fact_card_approved")
-            and content.get("planning_scope_approved")
-            and source_only_selection["ready"]
-        )
+        content_ready = bool(source_only_selection["ready"])
         image_review_ready = content_ready
     else:
         content_ready = bool(
@@ -1220,22 +1241,18 @@ def _product_workflow_summary(
         if float(review.get("cost_cny") or source.get("cost_cny") or 0) <= 0:
             blockers.append("缺少来源成本")
     elif current["id"] == "content":
-        if not content.get("package_found"):
+        if not source_only and not content.get("package_found"):
             blockers = ["先创建本地内容审核包"]
+        elif source_only:
+            blockers.extend(source_only_selection["blockers"])
         else:
             if not content.get("fact_card_approved"):
                 blockers.append("审核商品身份与事实卡")
             if not content.get("planning_scope_approved"):
-                blockers.append(
-                    "确认来源素材范围与最终顺序"
-                    if source_only
-                    else "确认图片类型、数量与本地类目约束"
-                )
-            if source_only:
-                blockers.extend(source_only_selection["blockers"])
-            elif content.get("planning_scope_approved") and not ai_plan_valid:
+                blockers.append("确认图片类型、数量与本地类目约束")
+            if content.get("planning_scope_approved") and not ai_plan_valid:
                 blockers.append("调用 AI 生成当前配方的具体分镜")
-            if not source_only and ai_plan_valid and not content.get("suite_approved"):
+            if ai_plan_valid and not content.get("suite_approved"):
                 blockers.append("逐张审核并批准 AI 分镜")
     elif current["id"] == "generation":
         blockers = [f"生成并核验本次计划的 {requested_images} 张图片"]
@@ -1368,15 +1385,17 @@ def content_package_summary(offer_id_or_url: str) -> dict[str, Any]:
         "storyboard_human_approval_required": not automatic_storyboard_recipe,
         "generated_asset_human_approval_required": True,
         "content_approved": bool(
-            package_dir is not None
-            and saved.get("fact_card_approved")
-            and saved.get("planning_scope_approved")
-            and (
-                source_only_selection["ready"]
-                if strategy == "source_only"
-                else (
-                    (model_proposal_valid and saved.get("suite_approved"))
-                    or completed_ai_suite
+            source_only_selection["ready"]
+            if strategy == "source_only"
+            else (
+                saved.get("fact_card_approved")
+                and saved.get("planning_scope_approved")
+                and (
+                    package_dir is not None
+                    and (
+                        (model_proposal_valid and saved.get("suite_approved"))
+                        or completed_ai_suite
+                    )
                 )
             )
         ),
@@ -3353,6 +3372,120 @@ def save_content_package_review(offer_id_or_url: str, review: dict[str, Any]) ->
     return content_package_summary(offer_id)
 
 
+def save_source_only_review(
+    offer_id_or_url: str, review: dict[str, Any]
+) -> dict[str, Any]:
+    """Atomically save source selections and order without creating an AI package."""
+
+    offer_id = resolve_offer_key(offer_id_or_url)
+    state = load_state(offer_id)
+    if isinstance(review.get("expected_revision"), bool):
+        expected_revision = -1
+    else:
+        try:
+            expected_revision = int(review.get("expected_revision"))
+        except (TypeError, ValueError):
+            expected_revision = -1
+    current_revision = max(0, int(state.get("_revision") or 0))
+    if expected_revision != current_revision:
+        raise ValueError(
+            "source image draft is stale; refresh before saving selection and order"
+        )
+
+    source = _source_summary(offer_id)
+    source_rows = [
+        dict(row)
+        for row in (source.get("images") or [])
+        if isinstance(row, dict) and str(row.get("url") or "").strip()
+    ]
+    allowed_by_url = {
+        str(row.get("url") or "").strip(): row for row in source_rows
+    }
+    if not allowed_by_url:
+        raise ValueError("this offer has no collected source images")
+
+    raw_actions = review.get("image_actions")
+    if not isinstance(raw_actions, list):
+        raise ValueError("image_actions must contain every collected source image")
+    submitted_by_url: dict[str, dict[str, Any]] = {}
+    for row in raw_actions:
+        if not isinstance(row, dict):
+            raise ValueError("each source image decision must be an object")
+        url = str(row.get("url") or row.get("output_url") or "").strip()
+        if url not in allowed_by_url:
+            raise ValueError(
+                "source image decisions may only reference this offer's collected images"
+            )
+        if url in submitted_by_url:
+            raise ValueError("source image decisions cannot contain duplicate URLs")
+        action = str(row.get("action") or "review").strip()
+        if action not in {"review", "keep", "remove"}:
+            raise ValueError("source image action must be review, keep, or remove")
+        if action == "keep" and not url.startswith("https://"):
+            raise ValueError("kept source images must use HTTPS")
+        submitted_by_url[url] = {
+            "url": url,
+            "kind": str(allowed_by_url[url].get("kind") or "main"),
+            "action": action,
+            "note": str(row.get("note") or "").strip()[:1200],
+        }
+    if set(submitted_by_url) != set(allowed_by_url):
+        raise ValueError(
+            "source image list changed; refresh before saving selection and order"
+        )
+
+    clean_actions = [submitted_by_url[url] for url in allowed_by_url]
+    kept_urls = [
+        row["url"] for row in clean_actions if row["action"] == "keep"
+    ]
+    raw_order = review.get("image_order")
+    if not isinstance(raw_order, list):
+        raise ValueError("image_order must be a list")
+    clean_order = [str(url).strip() for url in raw_order if str(url).strip()]
+    if len(clean_order) != len(set(clean_order)):
+        raise ValueError("source image order cannot contain duplicate URLs")
+    if set(clean_order) != set(kept_urls):
+        raise ValueError(
+            "source image order must contain every kept image exactly once"
+        )
+
+    current_review = (
+        dict(state.get("review"))
+        if isinstance(state.get("review"), dict)
+        else {}
+    )
+    current_review["image_actions"] = clean_actions
+    current_review["image_order"] = clean_order
+    video_url = str((source.get("video") or {}).get("url") or "").strip()
+    if video_url:
+        video_action = str(review.get("video_action") or "remove").strip()
+        if video_action not in {"keep", "remove"}:
+            raise ValueError("video_action must be keep or remove")
+        current_review["video_action"] = video_action
+        current_review["video_url"] = video_url
+    else:
+        current_review["video_action"] = "none"
+        current_review["video_url"] = ""
+
+    content = state.setdefault("content_package", {})
+    _invalidate_paid_image_state(content)
+    content["content_strategy"] = "source_only"
+    content.pop("force_regenerate_all", None)
+    content.pop("pending_regeneration_shot_ids", None)
+    selection = _source_only_selection(current_review)
+    content["source_only_review_status"] = (
+        "ready" if selection["ready"] else "draft"
+    )
+    content["source_only_review_signature"] = _source_only_review_signature(
+        clean_actions, clean_order
+    )
+    content["source_only_reviewed_at"] = _now()
+    content["source_only_external_writes"] = []
+    state["review"] = current_review
+    save_state(offer_id, state)
+    return build_preview(offer_id)
+
+
 def content_package_file(offer_id_or_url: str, *, artifact_id: str = "", report: bool = False) -> Path | None:
     """Resolve a safe local report/image path for the Treasury HTTP server."""
     summary = content_package_summary(offer_id_or_url)
@@ -4288,6 +4421,7 @@ def build_preview(offer_id_or_url: str, *, source_code: str = "") -> dict[str, A
         "ok": True,
         "mode": "first_review_no_model_call",
         "offer_id": offer_id,
+        "revision": max(0, int(state.get("_revision") or 0)),
         "source": source,
         "review": review_payload,
         "overseas_sources": overseas_sources,

@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#152f2c">
   <title>Orbit · AI 图片工作室</title>
-  <link rel="stylesheet" href="/static/ai_image_studio.css?v=20260726-9">
-  <script src="/static/ai_image_studio.js?v=20260726-9" defer></script>
+  <link rel="stylesheet" href="/static/ai_image_studio.css?v=20260727-2">
+  <script src="/static/ai_image_studio.js?v=20260727-2" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -19,8 +19,8 @@
     <nav aria-label="产品导航">
       <a id="productCenterLink" href="/product-workspace" target="_blank" rel="noopener">商品发布中心 ↗</a>
       <a href="#sources">来源图</a>
-      <a href="#storyboard">分镜</a>
-      <a href="#generated">生成版本</a>
+      <a id="storyboardNavLink" href="#storyboard">分镜</a>
+      <a id="generatedNavLink" href="#generated">生成版本</a>
       <a href="#final">最终排序</a>
     </nav>
     <span class="safe-pill"><i aria-hidden="true"></i> 写入默认关闭</span>
@@ -100,7 +100,7 @@
     <section id="storyboard" aria-labelledby="storyboardTitle">
       <div class="section-heading">
         <div><p class="kicker">02 · EXPERIENCE RECIPE</p><h2 id="storyboardTitle">经验配方与内容范围</h2></div>
-        <p>确认商品事实和本次图片数量后，AI 分镜作为持续优化的经验配方自动采用；最终成图仍需逐张人工审核。</p>
+        <p id="storyboardDescription">确认商品事实和本次图片数量后，AI 分镜作为持续优化的经验配方自动采用；最终成图仍需逐张人工审核。</p>
       </div>
       <article class="strategy-panel" aria-labelledby="strategyTitle">
         <div>
@@ -211,10 +211,11 @@
     <section id="final" aria-labelledby="finalTitle">
       <div class="section-heading">
         <div><p class="kicker">04 · FINAL SET</p><h2 id="finalTitle">最终图片与排序</h2></div>
-        <p>第 1 张将作为主图；排序先保存到本地，再单独决定是否同步妙手。</p>
+        <p id="finalDescription">第 1 张将作为主图；排序先保存到本地，再单独决定是否同步妙手。</p>
       </div>
       <div id="finalGrid" class="final-grid"></div>
       <div class="inline-actions">
+        <p id="sourceOnlySaveStatus" class="source-only-save-status" role="status" aria-live="polite" hidden></p>
         <button id="saveOrderButton" class="button dark" type="button">保存最终顺序</button>
       </div>
 

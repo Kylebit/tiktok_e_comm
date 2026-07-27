@@ -117,6 +117,7 @@ section { scroll-margin-top: 18px; }
 .section-heading h2 { margin: 5px 0 0; font: 650 30px/1.1 Georgia,"Songti SC",serif; }
 .section-heading > p { max-width: 520px; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.65; }
 .flow-rail { display: grid; grid-template-columns: repeat(4,1fr); overflow: hidden; border: 1px solid var(--line); border-radius: 18px; background: rgba(255,255,255,.48); }
+.flow-rail.source-only-flow { grid-template-columns: repeat(2,minmax(0,1fr)); }
 .flow-step { min-height: 100px; display: grid; align-content: center; gap: 4px; padding: 16px 18px; border-right: 1px solid var(--line); }
 .flow-step:last-child { border-right: 0; }
 .flow-step span { color: #98a39f; font: italic 500 17px/1 Georgia,serif; }
@@ -259,6 +260,13 @@ section { scroll-margin-top: 18px; }
 .operation-progress li.current { color: #875620; background: rgba(239,189,99,.22); }
 @keyframes progress-pulse { to { background-position: -200% 0; } }
 .generation-actions,.inline-actions { display: flex; gap: 9px; }
+.source-only-save-status {
+  margin: 0 auto 0 0;
+  align-self: center;
+  color: var(--teal);
+  font-size: 10px;
+  font-weight: 700;
+}
 .version-grid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 14px; }
 .version-card.rework { opacity: .64; }
 .version-card .asset-image { aspect-ratio: 1/1; }
@@ -350,6 +358,7 @@ footer { width: min(1320px,calc(100% - 40px)); min-height: 72px; display: flex; 
   .project-score { justify-items:start; padding:16px 0 0; border-left:0; border-top:1px solid rgba(255,255,255,.16); }
   .section-heading { display:grid; gap:10px; margin-top:48px; }
   .flow-rail { grid-template-columns:1fr 1fr; }
+  .flow-rail.source-only-flow { grid-template-columns:1fr 1fr; }
   .flow-step:nth-child(2) { border-right:0; }
   .flow-step:nth-child(-n+2) { border-bottom:1px solid var(--line); }
   .toolbar,.generation-toolbar { align-items:stretch; flex-direction:column; }
@@ -371,6 +380,7 @@ footer { width: min(1320px,calc(100% - 40px)); min-height: 72px; display: flex; 
 @media (max-width:430px) {
   .asset-grid,.version-grid,.storyboard-grid { grid-template-columns:1fr; }
   .generation-actions,.inline-actions { display:grid; }
+  .source-only-save-status { margin:0; }
   .sync-progress ol { grid-template-columns:1fr; }
   footer { display:grid; align-content:center; padding:16px 0; }
 }

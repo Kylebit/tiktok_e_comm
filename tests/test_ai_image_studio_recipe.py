@@ -68,7 +68,10 @@ def test_content_strategy_selector_defaults_to_ai_and_persists_explicit_choice()
 def test_source_only_disables_paid_ai_actions_and_excludes_generated_images():
     assert 'id="sourceOnlyGenerationNotice"' in HTML
     assert "const generatedItems = (sourceOnlyActive() ? [] : generatedCurrentRows())" in SCRIPT
-    assert '["aiPlanButton", "preflightButton", "paidGenerateButton", "saveVersionsButton"]' in SCRIPT
+    assert '$("#generationRecipe").hidden = sourceOnly' in SCRIPT
+    assert '$("#storyboardGrid").hidden = sourceOnly' in SCRIPT
+    assert '$("#generated").hidden = sourceOnly' in SCRIPT
+    assert '$(".approval-strip").hidden = sourceOnly' in SCRIPT
     assert 'if (sourceOnlyActive()) return;' in SCRIPT
     for message in (
         "AI 分镜已禁用",
@@ -76,6 +79,18 @@ def test_source_only_disables_paid_ai_actions_and_excludes_generated_images():
         "付费生图已禁用",
     ):
         assert message in SCRIPT
+
+
+def test_source_only_is_a_two_step_select_order_and_atomic_save_flow():
+    assert '["选择来源图", sourceTotal > 0' in SCRIPT
+    assert '["排序并保存", sourceOnlySaved ? "done" : "current"]' in SCRIPT
+    assert 'sourceOnly ? "保存来源图选择与顺序" : "保存最终顺序"' in SCRIPT
+    assert 'post("content-package/source-only/review"' in SCRIPT
+    assert "expected_revision: preview?.revision" in SCRIPT
+    assert "image_actions: review.image_actions || []" in SCRIPT
+    assert "image_order: review.image_order || []" in SCRIPT
+    assert "video_action: review.video_action || \"none\"" in SCRIPT
+    assert "仅保存本地，尚未写入妙手" in SCRIPT
 
 
 def test_legacy_source_video_review_is_preserved_in_ai_studio():

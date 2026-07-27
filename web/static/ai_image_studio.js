@@ -29,6 +29,10 @@
   let syncFeedbackOverride = null;
   let planningProgressOverride = null;
   let generationProgressOverride = null;
+  let sourceOnlyDraft = null;
+  let sourceOnlyDraftOfferId = "";
+  let sourceOnlyDraftDirty = false;
+  let sourceOnlySaveFeedback = "";
   const RECIPE_LIMITS = Object.freeze({
     scene: 6,
     selling_point: 6,
@@ -330,8 +334,26 @@
     return currentContentStrategy() === "source_only";
   }
 
+  function activeReview() {
+    if (
+      sourceOnlyActive()
+      && sourceOnlyDraft
+      && sourceOnlyDraftOfferId === currentOfferId()
+    ) {
+      return sourceOnlyDraft;
+    }
+    return preview?.review || {};
+  }
+
+  function clearSourceOnlyDraft() {
+    sourceOnlyDraft = null;
+    sourceOnlyDraftOfferId = "";
+    sourceOnlyDraftDirty = false;
+    sourceOnlySaveFeedback = "";
+  }
+
   function sourceRowsFromDom() {
-    return (preview?.review?.image_actions || []).map((row, index) => ({
+    return (activeReview().image_actions || []).map((row, index) => ({
       ...row,
       action: $(`.source-action[data-index="${index}"]`)?.value || row.action || "review",
       note: $(`.source-note[data-index="${index}"]`)?.value || "",
@@ -349,7 +371,7 @@
   function reviewPayload(overrides = {}) {
     const videoUrl = String(preview?.source?.video?.url || "").trim();
     const review = {
-      ...(preview?.review || {}),
+      ...activeReview(),
       image_actions: sourceRowsFromDom(),
       image_order: finalOrder.map((row) => row.url),
       video_action: videoUrl ? ($("#videoAction")?.value || "remove") : "none",
@@ -359,6 +381,31 @@
     delete review.overseas_image_candidates;
     delete review.image_generation_requests;
     return review;
+  }
+
+  function captureSourceOnlyDraft() {
+    if (!sourceOnlyActive()) return;
+    const rows = sourceRowsFromDom();
+    const keptUrls = rows
+      .filter((row) => row.action === "keep")
+      .map((row) => row.output_url || row.url)
+      .filter(Boolean);
+    const currentOrder = finalOrder.map((row) => row.url);
+    const imageOrder = [
+      ...currentOrder.filter((url) => keptUrls.includes(url)),
+      ...keptUrls.filter((url) => !currentOrder.includes(url)),
+    ];
+    sourceOnlyDraft = {
+      ...activeReview(),
+      image_actions: rows,
+      image_order: imageOrder,
+      video_action: String(preview?.source?.video?.url || "").trim()
+        ? ($("#videoAction")?.value || "remove")
+        : "none",
+    };
+    sourceOnlyDraftOfferId = currentOfferId();
+    sourceOnlyDraftDirty = true;
+    sourceOnlySaveFeedback = "";
   }
 
   function assetDecisionsFromDom() {
@@ -514,7 +561,8 @@
   }
 
   function buildFinalItems() {
-    const sourceItems = (preview?.review?.image_actions || [])
+    const review = activeReview();
+    const sourceItems = (review.image_actions || [])
       .filter((row) => row.action === "keep")
       .map((row, index) => ({
         url: row.output_url || row.url,
@@ -533,7 +581,7 @@
       }))
       .filter((row) => row.url);
     const byUrl = new Map([...sourceItems, ...generatedItems].map((row) => [row.url, row]));
-    const requested = preview?.review?.image_order || [];
+    const requested = review.image_order || [];
     return [
       ...requested.map((url) => byUrl.get(url)).filter(Boolean),
       ...[...byUrl.values()].filter((row) => !requested.includes(row.url)),
@@ -548,7 +596,7 @@
 
   function renderProject() {
     const workflow = preview?.workflow || {};
-    const review = preview?.review || {};
+    const review = activeReview();
     const content = preview?.content_package || {};
     const source = preview?.source || {};
     const generated = content.generated_review_images || [];
@@ -593,13 +641,24 @@
     $("#currentStage").textContent = workflow.current_label || content.stage || "等待审核";
     $("#productCenterLink").href = `/product-workspace?offer_id=${encodeURIComponent(preview.offer_id)}`;
 
-    const baseSteps = [
-      ["来源审核", sourceTotal > 0 && sourceReviewed === sourceTotal ? "done" : "current"],
-      ["经验配方", content.fact_card_approved && content.planning_scope_approved && content.suite_approved ? "done" : "pending"],
-      ["生成版本", workflow.generation_ready ? "done" : (content.remaining_images_generation?.status || "pending")],
-      ["最终排序", workflow.image_review_ready && finalOrder.length ? "done" : "pending"],
-    ];
+    const sourceOnlySaved = (
+      !sourceOnlyDraftDirty
+      && finalOrder.length > 0
+      && (review.image_order || []).length === finalOrder.length
+    );
+    const baseSteps = sourceOnlyActive()
+      ? [
+        ["选择来源图", sourceTotal > 0 && sourceReviewed === sourceTotal ? "done" : "current"],
+        ["排序并保存", sourceOnlySaved ? "done" : "current"],
+      ]
+      : [
+        ["来源审核", sourceTotal > 0 && sourceReviewed === sourceTotal ? "done" : "current"],
+        ["经验配方", content.fact_card_approved && content.planning_scope_approved && content.suite_approved ? "done" : "pending"],
+        ["生成版本", workflow.generation_ready ? "done" : (content.remaining_images_generation?.status || "pending")],
+        ["最终排序", workflow.image_review_ready && finalOrder.length ? "done" : "pending"],
+      ];
     const firstOpen = baseSteps.findIndex((row) => row[1] !== "done");
+    $("#flowRail").classList.toggle("source-only-flow", sourceOnlyActive());
     $("#flowRail").innerHTML = baseSteps.map(([label, rawStatus], index) => {
       const tone = rawStatus === "done" ? "done" : (index === firstOpen ? "current" : statusTone(rawStatus));
       const note = tone === "done" ? "已完成" : (tone === "current" ? "当前处理" : "等待前序");
@@ -607,11 +666,10 @@
     }).join("");
   }
 
-  function renderSources() {
-    const rows = preview?.review?.image_actions || [];
+  function renderSourceStats() {
+    const rows = activeReview().image_actions || [];
     const sourceSnapshot = preview?.content_package?.source_snapshot || {};
     const refs = new Set(sourceSnapshot.identity_reference_urls || []);
-    const primary = sourceSnapshot.primary_identity_image || "";
     const kept = rows.filter((row) => row.action === "keep").length;
     const removed = rows.filter((row) => row.action === "remove").length;
     const pending = rows.length - kept - removed;
@@ -622,6 +680,14 @@
       `待决定 ${pending}`,
       `身份参考 ${refs.size}`,
     ].map((text) => `<span>${text}</span>`).join("");
+  }
+
+  function renderSources() {
+    const rows = activeReview().image_actions || [];
+    const sourceSnapshot = preview?.content_package?.source_snapshot || {};
+    const refs = new Set(sourceSnapshot.identity_reference_urls || []);
+    const primary = sourceSnapshot.primary_identity_image || "";
+    renderSourceStats();
     const grid = $("#sourceGrid");
     grid.classList.remove("skeleton");
     grid.innerHTML = rows.map((row, index) => {
@@ -658,13 +724,37 @@
       const card = node.closest(".asset-card");
       card.classList.toggle("kept", node.value === "keep");
       card.classList.toggle("removed", node.value === "remove");
+      if (sourceOnlyActive()) {
+        captureSourceOnlyDraft();
+        finalOrder = buildFinalItems();
+        renderSourceStats();
+        renderFinal();
+        updateStrategyUi();
+        renderProject();
+      }
     }));
+    $$(".source-note").forEach((node) => {
+      node.addEventListener("input", () => {
+        if (!sourceOnlyActive()) return;
+        captureSourceOnlyDraft();
+        updateStrategyUi();
+        renderProject();
+      });
+    });
     $$(".identity-reference").forEach((node) => node.addEventListener("change", () => {
       if (node.checked) {
         const index = node.closest(".asset-card").querySelector(".source-action").dataset.index;
         $(`.source-action[data-index="${index}"]`).value = "keep";
         node.closest(".asset-card").classList.add("kept");
         node.closest(".asset-card").classList.remove("removed");
+        if (sourceOnlyActive()) {
+          captureSourceOnlyDraft();
+          finalOrder = buildFinalItems();
+          renderSourceStats();
+          renderFinal();
+          updateStrategyUi();
+          renderProject();
+        }
       } else if ($(".identity-primary:checked")?.dataset.url === node.dataset.url) {
         node.checked = true;
       }
@@ -685,6 +775,13 @@
       $("#videoAction").value = ["keep", "remove"].includes(savedAction)
         ? savedAction
         : "remove";
+      $("#videoAction").onchange = () => {
+        if (!sourceOnlyActive()) return;
+        captureSourceOnlyDraft();
+        renderFinal();
+        updateStrategyUi();
+        renderProject();
+      };
       $("#videoPreviewHost").innerHTML = `
         <video controls preload="none">
           <source src="${esc(videoUrl)}">
@@ -705,9 +802,11 @@
       node.onchange = () => {
         if (!node.checked) return;
         contentStrategyDraft = node.value;
+        if (sourceOnlyActive()) captureSourceOnlyDraft();
         updateStrategyUi();
         renderVersions();
         renderFinal();
+        renderProject();
       };
     });
     $("#factApproved").checked = Boolean(content.fact_card_approved);
@@ -742,9 +841,33 @@
 
   function updateStrategyUi() {
     const sourceOnly = sourceOnlyActive();
-    $("#generationRecipe").classList.toggle("is-disabled", sourceOnly);
-    $("#storyboardGrid").classList.toggle("is-disabled", sourceOnly);
+    $("#generationRecipe").hidden = sourceOnly;
+    $("#storyboardGrid").hidden = sourceOnly;
+    $("#generated").hidden = sourceOnly;
+    $(".approval-strip").hidden = sourceOnly;
     $("#sourceOnlyGenerationNotice").hidden = !sourceOnly;
+    $("#saveSourceButton").hidden = sourceOnly;
+    $("#sourceTitle").textContent = sourceOnly ? "选择要使用的来源图" : "来源图审核";
+    $("#storyboardTitle").textContent = sourceOnly ? "图片使用方式" : "经验配方与内容范围";
+    $("#storyboardDescription").textContent = sourceOnly
+      ? "当前只使用妙手已采集的来源图片，不会规划或生成更多图片。"
+      : "确认商品事实和本次图片数量后，AI 分镜作为持续优化的经验配方自动采用；最终成图仍需逐张人工审核。";
+    $("#storyboardNavLink").textContent = sourceOnly ? "图片策略" : "分镜";
+    $("#generatedNavLink").hidden = sourceOnly;
+    $("#finalTitle").textContent = sourceOnly ? "来源图片顺序" : "最终图片与排序";
+    $("#finalDescription").textContent = sourceOnly
+      ? "保留的来源图会立即出现在这里；第 1 张作为主图。调整顺序后一次保存选择与排序。"
+      : "第 1 张将作为主图；排序先保存到本地，再单独决定是否同步妙手。";
+    setButtonLabel(
+      $("#saveOrderButton"),
+      sourceOnly ? "保存来源图选择与顺序" : "保存最终顺序",
+    );
+    $("#sourceOnlySaveStatus").hidden = !sourceOnly;
+    $("#sourceOnlySaveStatus").textContent = sourceOnlySaveFeedback || (
+      sourceOnlyDraftDirty
+        ? "选择或顺序尚未保存。"
+        : `当前已保存 ${finalOrder.length} 张来源图；尚未写入妙手。`
+    );
     $("#scopeApprovalTitle").textContent = sourceOnly
       ? "来源素材范围已确认"
       : "本地生图约束已确认";
@@ -872,8 +995,19 @@
       if (target < 0 || target >= finalOrder.length) return;
       [finalOrder[index], finalOrder[target]] = [finalOrder[target], finalOrder[index]];
       const order = finalOrder.map((row) => row.url);
-      preview.review.image_order = order;
+      if (sourceOnlyActive()) {
+        if (!sourceOnlyDraft) captureSourceOnlyDraft();
+        sourceOnlyDraft.image_order = order;
+        sourceOnlyDraftDirty = true;
+        sourceOnlySaveFeedback = "";
+      } else {
+        preview.review.image_order = order;
+      }
       renderFinal();
+      if (sourceOnlyActive()) {
+        updateStrategyUi();
+        renderProject();
+      }
     }));
   }
 
@@ -992,10 +1126,20 @@
         planningProgressOverride = null;
         generationProgressOverride = null;
       }
+      const preserveSourceDraft = (
+        sourceOnlyDraftDirty
+        && sourceOnlyDraftOfferId === offerId
+      );
       preview = loadedPreview;
       if (!syncInFlight) syncFeedbackOverride = null;
       if (!quiet) contentStrategyDraft = null;
+      if (preserveSourceDraft) contentStrategyDraft = "source_only";
       if (recipeDraftOfferId && recipeDraftOfferId !== offerId) clearRecipeDraft();
+      if (sourceOnlyDraftOfferId && sourceOnlyDraftOfferId !== offerId) {
+        clearSourceOnlyDraft();
+      } else if (preserveSourceDraft) {
+        showAlert("页面已保留尚未保存的来源图选择与顺序；服务端刷新不会静默覆盖本地草稿。");
+      }
       finalOrder = buildFinalItems();
       render();
       const url = new URL(window.location.href);
@@ -1010,6 +1154,10 @@
   }
 
   async function saveSourceReview() {
+    if (sourceOnlyActive()) {
+      await saveSourceOnlyReview();
+      return;
+    }
     setLoading($("#saveSourceButton"), true);
     try {
       const sourceRows = sourceRowsFromDom();
@@ -1035,6 +1183,45 @@
       showAlert(error.message);
     } finally {
       setLoading($("#saveSourceButton"), false);
+    }
+  }
+
+  async function saveSourceOnlyReview() {
+    captureSourceOnlyDraft();
+    const review = activeReview();
+    const keptCount = (review.image_actions || []).filter(
+      (row) => row.action === "keep",
+    ).length;
+    if (!keptCount) {
+      showAlert("至少保留 1 张来源图后才能保存最终顺序。");
+      return null;
+    }
+    setLoading($("#saveOrderButton"), true);
+    showAlert("");
+    try {
+      const result = await post("content-package/source-only/review", {
+        offer_id: currentOfferId(),
+        review: {
+          expected_revision: preview?.revision,
+          image_actions: review.image_actions || [],
+          image_order: review.image_order || [],
+          video_action: review.video_action || "none",
+        },
+      });
+      preview = result;
+      sourceOnlyDraft = null;
+      sourceOnlyDraftOfferId = "";
+      sourceOnlyDraftDirty = false;
+      sourceOnlySaveFeedback = `已保存 ${keptCount} 张来源图及顺序；仅保存本地，尚未写入妙手。`;
+      finalOrder = buildFinalItems();
+      render();
+      toast(sourceOnlySaveFeedback);
+      return result;
+    } catch (error) {
+      showAlert(error.message);
+      return null;
+    } finally {
+      setLoading($("#saveOrderButton"), false);
     }
   }
 
@@ -1319,6 +1506,9 @@
   }
 
   async function saveOrder({ quiet = false } = {}) {
+    if (sourceOnlyActive()) {
+      return saveSourceOnlyReview();
+    }
     setLoading($("#saveOrderButton"), true);
     try {
       preview = await post("review", {

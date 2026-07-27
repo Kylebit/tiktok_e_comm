@@ -380,6 +380,19 @@ class NewProductHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 return self._json(400, {"ok": False, "error": str(exc)})
 
+        if path == "/api/new-product/content-package/source-only/review":
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            try:
+                return self._json(
+                    200,
+                    np_mod.save_source_only_review(
+                        raw, data.get("review") or {}
+                    ),
+                )
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+
         if path == "/api/new-product/content-package/first-image-preflight":
             if not raw:
                 return self._json(400, {"ok": False, "error": "missing offer_id"})

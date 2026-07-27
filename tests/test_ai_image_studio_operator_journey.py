@@ -59,6 +59,9 @@ function fakeNode(key) {
         remove() {},
         toggle() {},
       },
+      querySelector() {
+        return null;
+      },
       addEventListener() {},
       removeAttribute(name) {
         if (name === "href") this.href = "";
@@ -353,6 +356,86 @@ post = async function (_suffix, payload) {
 })().catch((error) => {
   process.stderr.write(String(error && error.stack || error));
   process.exit(6);
+});
+"""
+    _run_node(source)
+
+
+def test_source_only_selection_updates_order_and_saves_one_atomic_review():
+    prefix = _studio_prefix("  async function preparePackage()")
+    source = _dom_harness() + prefix + r"""
+function schedulePoll() {}
+render = function () {};
+toast = function () {};
+preview = {
+  offer_id: "3838616043",
+  revision: 8,
+  review: {
+    image_actions: [
+      {url: "https://assets.example/one.jpg", action: "review", note: ""},
+      {url: "https://assets.example/two.jpg", action: "review", note: ""},
+    ],
+    image_order: [],
+  },
+  source: {video: {}},
+  content_package: {content_strategy: "source_only"},
+};
+nodeByKey['.source-action[data-index="0"]'] = Object.assign(
+  fakeNode("source-action:0"),
+  {value: "keep"},
+);
+nodeByKey['.source-action[data-index="1"]'] = Object.assign(
+  fakeNode("source-action:1"),
+  {value: "remove"},
+);
+nodeByKey['.source-note[data-index="0"]'] = Object.assign(
+  fakeNode("source-note:0"),
+  {value: "主图"},
+);
+nodeByKey['.source-note[data-index="1"]'] = Object.assign(
+  fakeNode("source-note:1"),
+  {value: ""},
+);
+finalOrder = [];
+captureSourceOnlyDraft();
+finalOrder = buildFinalItems();
+if (finalOrder.length !== 1) process.exit(2);
+if (finalOrder[0].url !== "https://assets.example/one.jpg") process.exit(3);
+if (!sourceOnlyDraftDirty) process.exit(4);
+updateStrategyUi();
+if (
+  nodeByKey["#sourceOnlySaveStatus"].textContent
+  !== "选择或顺序尚未保存。"
+) process.exit(14);
+
+let calledSuffix = "";
+let calledPayload = null;
+post = async function (suffix, payload) {
+  calledSuffix = suffix;
+  calledPayload = payload;
+  return {
+    ...preview,
+    review: payload.review,
+    content_package: {content_strategy: "source_only"},
+  };
+};
+
+(async function () {
+  await saveSourceOnlyReview();
+  if (calledSuffix !== "content-package/source-only/review") process.exit(5);
+  if (calledPayload.offer_id !== "3838616043") process.exit(6);
+  if (calledPayload.review.expected_revision !== 8) process.exit(13);
+  if (calledPayload.review.image_actions[0].action !== "keep") process.exit(7);
+  if (calledPayload.review.image_actions[1].action !== "remove") process.exit(8);
+  if (
+    JSON.stringify(calledPayload.review.image_order)
+    !== JSON.stringify(["https://assets.example/one.jpg"])
+  ) process.exit(9);
+  if (sourceOnlyDraftDirty) process.exit(10);
+  if (!sourceOnlySaveFeedback.includes("仅保存本地，尚未写入妙手")) process.exit(11);
+})().catch((error) => {
+  process.stderr.write(String(error && error.stack || error));
+  process.exit(12);
 });
 """
     _run_node(source)

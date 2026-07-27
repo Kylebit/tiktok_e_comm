@@ -4,8 +4,9 @@ from __future__ import annotations
 from modules.shopee.client import shop_get
 
 
-def scan_prepared_shop_sku(*, shop_id: int, access_token: str, seller_sku: str) -> list[dict]:
+def scan_prepared_shop_sku(*, shop_id: int, access_token: str, seller_sku: str) -> dict:
     found = []
+    completeness = {}
     for status in ("NORMAL", "UNLIST", "BANNED"):
         offset = 0
         while True:
@@ -21,8 +22,14 @@ def scan_prepared_shop_sku(*, shop_id: int, access_token: str, seller_sku: str) 
                             if str(model.get("model_sku") or "") == seller_sku:
                                 found.append({"item_id": str(row.get("item_id") or ""), "model_id": str(model.get("model_id") or ""), "scope": "model"})
             if not page.get("has_next_page"):
-                return found
-            offset = int(page.get("next_offset") or offset + len(ids))
+                completeness[status] = {"pages": completeness.get(status, {}).get("pages", 0) + 1, "complete": True}
+                break
+            next_offset = page.get("next_offset")
+            if not isinstance(next_offset, int) or next_offset <= offset:
+                raise RuntimeError(f"Shopee {status} pagination cursor is non-terminating")
+            completeness[status] = {"pages": completeness.get(status, {}).get("pages", 0) + 1, "complete": False}
+            offset = next_offset
+    return {"matches": found, "statuses": completeness, "complete": all(row.get("complete") for row in completeness.values())}
 
 
 def compatible_prepared_logistics(*, shop_id: int, access_token: str, parcel: dict, excluded_ids=()) -> list[int]:
@@ -41,6 +48,20 @@ def inspect_existing_global(*, shop_id: int, access_token: str, global_item_id: 
     token = str(merchant.get("access_token") or "")
     if not merchant_id or not token:
         raise RuntimeError("prepared merchant token is required")
+    item_response = merchant_get("/api/v2/global_product/get_global_item_info", merchant_id, token, {"global_item_id_list": str(global_item_id)})
+    item_rows = (item_response.get("response") or {}).get("item_list") or (item_response.get("response") or {}).get("global_item_list") or []
+    if len(item_rows) != 1:
+        raise RuntimeError("official global item must be unique")
+    item = item_rows[0]
+    title = item.get("global_item_name")
+    description = item.get("description") or item.get("global_item_description")
+    images = item.get("image") or item.get("images") or item.get("image_urls")
+    if not isinstance(images, list):
+        raise RuntimeError("official global item images are unavailable")
+    urls = [row.get("image_url") if isinstance(row, dict) else row for row in images]
+    from shared_platform.target_scoped_release_contracts import approved_shopee_channel_master_digest
+    if approved_shopee_channel_master_digest(title, description, urls) != approved_master_digest:
+        raise RuntimeError("official global master digest does not match immutable command")
     rows = (merchant_get("/api/v2/global_product/get_global_model_list", merchant_id, token, {"global_item_id": int(global_item_id)}).get("response") or {}).get("model_list") or []
     matches = [row for row in rows if str(row.get("model_sku") or "") == model_sku]
     if len(matches) != 1:

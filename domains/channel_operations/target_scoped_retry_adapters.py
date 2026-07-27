@@ -70,9 +70,12 @@ def _shopee_proof(request: TargetScopedOperationRequest) -> tuple[dict[str, Any]
     region = request.target_label.rsplit(":", 1)[1]
     shop_id, token = _prepared_shopee_credentials(region)
     seller_sku = request.seller_sku[-4:].zfill(4)
-    matches = scan_prepared_shop_sku(
+    scan = scan_prepared_shop_sku(
         shop_id=shop_id, access_token=token, seller_sku=seller_sku
     )
+    matches = scan.get("matches") if isinstance(scan, Mapping) else scan
+    if not isinstance(matches, list) or not isinstance(scan, Mapping) or scan.get("complete") is not True:
+        raise TargetScopedRetryError("regional full-status scan is incomplete")
     if matches:
         raise TargetScopedRetryError("regional SKU is not exact-zero; reconciliation is required")
     global_item_id = str(global_item_id_for_match_key(seller_sku) or "")
@@ -92,6 +95,7 @@ def _shopee_proof(request: TargetScopedOperationRequest) -> tuple[dict[str, Any]
         "global_item_id": global_item_id,
         "full_pagination": True,
         "regional_match_count": 0,
+        "status_scan": dict(scan.get("statuses") or {}),
         "authentication": "prepared_token_only",
         "global_model_id": global_facts["global_model_id"],
         "global_tier_index": global_facts["tier_index"],

@@ -22,7 +22,7 @@ def request(target="shopee:MY"):
 def test_shopee_proof_is_full_scan_no_refresh_and_vn_filters_50052(monkeypatch):
     req = request("shopee:VN")
     monkeypatch.setattr(adapters, "_prepared_shopee_credentials", lambda region: (12, "prepared"))
-    monkeypatch.setattr("modules.shopee.target_scoped.scan_prepared_shop_sku", lambda **_kw: [])
+    monkeypatch.setattr("modules.shopee.target_scoped.scan_prepared_shop_sku", lambda **_kw: {"matches": [], "complete": True, "statuses": {"NORMAL": {"pages": 1, "complete": True}, "UNLIST": {"pages": 1, "complete": True}, "BANNED": {"pages": 1, "complete": True}}})
     monkeypatch.setattr("modules.shopee.target_scoped.compatible_prepared_logistics", lambda **_kw: [1, 2, 3])
     monkeypatch.setattr("modules.shopee.target_scoped.inspect_existing_global", lambda **_kw: {"global_model_id": "1", "tier_index": [0]})
     monkeypatch.setattr("modules.shopee.global_sku_map.global_item_id_for_match_key", lambda _sku: "40283034166")
@@ -38,9 +38,23 @@ def test_shopee_proof_is_full_scan_no_refresh_and_vn_filters_50052(monkeypatch):
 
 def test_existing_or_ambiguous_shop_listing_fails_before_dispatch(monkeypatch):
     monkeypatch.setattr(adapters, "_prepared_shopee_credentials", lambda _region: (12, "prepared"))
-    monkeypatch.setattr("modules.shopee.target_scoped.scan_prepared_shop_sku", lambda **_kw: [{"item_id": "one"}])
+    monkeypatch.setattr("modules.shopee.target_scoped.scan_prepared_shop_sku", lambda **_kw: {"matches": [{"item_id": "one"}], "complete": True, "statuses": {}})
     with pytest.raises(adapters.TargetScopedRetryError, match="exact-zero"):
         adapters.build_official_target_proof(request())
+
+
+def test_scan_never_returns_after_normal_terminal_page(monkeypatch):
+    from modules.shopee import target_scoped
+    calls = []
+    def get(path, _shop, _token, query):
+        calls.append((path, query.get("item_status")))
+        if path.endswith("get_item_list"):
+            return {"response": {"item": [], "has_next_page": False}}
+        return {"response": {"item_list": []}}
+    monkeypatch.setattr(target_scoped, "shop_get", get)
+    result = target_scoped.scan_prepared_shop_sku(shop_id=1, access_token="x", seller_sku="0954")
+    assert result["complete"] is True
+    assert [status for path, status in calls if path.endswith("get_item_list")] == ["NORMAL", "UNLIST", "BANNED"]
 
 
 def test_ozon_proof_requires_exact_existing_product_and_no_stock(monkeypatch):
@@ -53,7 +67,7 @@ def test_ozon_proof_requires_exact_existing_product_and_no_stock(monkeypatch):
 def test_execute_never_uses_legacy_publish_or_ozon_import(monkeypatch):
     req = request()
     monkeypatch.setattr(adapters, "_prepared_shopee_credentials", lambda _region: (12, "prepared"))
-    monkeypatch.setattr("modules.shopee.target_scoped.scan_prepared_shop_sku", lambda **_kw: [])
+    monkeypatch.setattr("modules.shopee.target_scoped.scan_prepared_shop_sku", lambda **_kw: {"matches": [], "complete": True, "statuses": {"NORMAL": {"pages": 1, "complete": True}, "UNLIST": {"pages": 1, "complete": True}, "BANNED": {"pages": 1, "complete": True}}})
     monkeypatch.setattr("modules.shopee.global_sku_map.global_item_id_for_match_key", lambda _sku: "40283034166")
     monkeypatch.setattr("modules.shopee.target_scoped.inspect_existing_global", lambda **_kw: {"global_model_id": "1", "tier_index": [0]})
     monkeypatch.setattr("modules.shopee.target_scoped.compatible_prepared_logistics", lambda **_kw: [1])

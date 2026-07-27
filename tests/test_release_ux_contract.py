@@ -380,6 +380,9 @@ def test_remaining_channel_retry_ui_uses_only_the_target_scoped_seam():
     assert "planned_command:" not in submit
     assert "publishSelectedTargets" not in submit
     assert "target-scoped-action-panel" in styles
+    assert "Shopee 自动翻译 · 发布后官方回读" in source
+    assert "区域商品身份已验证 · 平台翻译/图片待人工复核" in source
+    assert "需要对账" in source
 
 
 def test_formal_pages_expose_accessible_feedback_regions():

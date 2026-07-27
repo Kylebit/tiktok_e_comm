@@ -2080,7 +2080,7 @@
       && Number(preview.expected_revision) === Number(currentData?.product?.revision);
     return `<section class="target-scoped-action-panel" data-target-scoped-target="${esc(label)}" aria-live="polite">
       <strong>${esc(label)}：仅限当前失败目标的受控恢复</strong>
-      <p>${esc(state.message || "先执行官方只读预检；不会调用通用一键发布或其他目标。")}</p>
+      <p>${esc(state.message || "Shopee 自动翻译 · 发布后官方回读；先执行只读预检，不会调用通用一键发布或其他目标。")}</p>
       <button type="button" class="button button-secondary" data-target-scoped-action="preview" data-target-label="${esc(label)}" ${releaseSubmitting ? "disabled" : ""}>只读预检</button>
       ${eligible ? `<label><input type="checkbox" data-target-scoped-confirm> 我确认仅执行该目标的既有对象恢复并立即回读</label>
       <button type="button" class="button" data-target-scoped-action="submit" data-target-label="${esc(label)}" disabled>确认执行单目标恢复</button>` : ""}
@@ -2123,9 +2123,9 @@
         confirm_target_scoped_action: true,
         approved_by: "Kyle",
       }));
-      targetScopedActionStates.set(targetLabel, { message: "操作已完成并由官方回读验证。" });
+      targetScopedActionStates.set(targetLabel, { message: "区域商品身份已验证 · 平台翻译/图片待人工复核。" });
     } catch (error) {
-      targetScopedActionStates.set(targetLabel, { message: `${friendlyError(error.message)}；已停止，不会自动重试。` });
+      targetScopedActionStates.set(targetLabel, { message: `${friendlyError(error.message)}；需要对账，已停止且不会自动重试。` });
     } finally {
       releaseSubmitting = false;
       const item = queueItem(currentQueueKey);

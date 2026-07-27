@@ -70,6 +70,8 @@ def _failed_shopee_repair_store(tmp_path):
         "seller_sku": "0946",
         "expected_local_price": "414",
         "currency": "PHP",
+        "payload_digest": plan["payload_digest"],
+        "expected_revision": 31,
         "preflight_digest": "a" * 64,
     }
     return store, plan, run, operation
@@ -263,6 +265,24 @@ def test_failed_target_repair_claim_is_atomic_and_success_is_idempotent(
     assert running["status"] == "RUNNING"
     assert running["attempts"] == 2
     assert running["repair"]["status"] == "RUNNING"
+    exact_confirmation = store.target_repair_confirmation_matches(
+        run_id=run["run_id"],
+        target_label="shopee:PH",
+        plan_id=plan["plan_id"],
+        expected_revision=31,
+        payload_digest=plan["payload_digest"],
+        preflight_digest="a" * 64,
+    )
+    assert exact_confirmation["matches"] is True
+    stale_confirmation = store.target_repair_confirmation_matches(
+        run_id=run["run_id"],
+        target_label="shopee:PH",
+        plan_id=plan["plan_id"],
+        expected_revision=31,
+        payload_digest="wrong",
+        preflight_digest="a" * 64,
+    )
+    assert stale_confirmation["matches"] is False
     with pytest.raises(ReleaseStoreError, match="already terminal"):
         store.claim_failed_target_repair(
             plan_id=plan["plan_id"],

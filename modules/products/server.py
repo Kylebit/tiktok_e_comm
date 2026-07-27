@@ -2178,6 +2178,37 @@ def _reconcile_existing_shopee_target_readonly(
     }
 
 
+def _shopee_price_repair_status_view(
+    run: dict | None,
+    *,
+    target_label: str,
+) -> dict:
+    """Expose only non-sensitive repair lifecycle fields."""
+
+    target = next(
+        (
+            row
+            for row in ((run or {}).get("targets") or ())
+            if str(row.get("target_label") or "") == target_label
+        ),
+        {},
+    )
+    repair = (
+        target.get("repair")
+        if isinstance(target.get("repair"), dict)
+        else {}
+    )
+    return {
+        "run_status": str((run or {}).get("status") or ""),
+        "target": {
+            "target_label": target_label,
+            "status": str(target.get("status") or ""),
+            "attempts": int(target.get("attempts") or 0),
+            "repair_status": str(repair.get("status") or ""),
+        },
+    }
+
+
 def _preview_existing_shopee_target_price(
     *,
     offer_id: str,
@@ -2354,7 +2385,14 @@ def _repair_existing_shopee_target_price(data: dict) -> tuple[int, dict]:
     requested_preflight_digest = str(
         data.get("preflight_digest") or ""
     ).strip()
+    offer_id = str(data.get("offer_id") or "").strip()
     target_label = str(data.get("target_label") or "").strip()
+    if not offer_id.isdigit() or not 1 <= len(offer_id) <= 32:
+        return 400, {
+            "ok": False,
+            "error": "offer_id must contain 1-32 digits",
+            "external_writes_performed": [],
+        }
     if target_label not in _READONLY_SHOPEE_RECONCILE_TARGETS:
         return 400, {
             "ok": False,
@@ -2383,10 +2421,31 @@ def _repair_existing_shopee_target_price(data: dict) -> tuple[int, dict]:
         }
 
     store = default_release_store()
-    with _release_execution_lock:
+    with _release_execution_lock, _product_workbench_lock(offer_id):
         gate, failure = _release_execution_readonly_gate(data, store=store)
         if failure:
-            return failure
+            status, response = failure
+            return status, {
+                "ok": False,
+                "error": str(
+                    response.get("error")
+                    or "Shopee price repair execution gate is blocked"
+                ),
+                "blockers": [
+                    str(value)
+                    for value in (response.get("blockers") or ())
+                ],
+                "adapter_blockers": [
+                    {
+                        "target": str(row.get("target") or ""),
+                        "code": str(row.get("code") or ""),
+                        "detail": str(row.get("detail") or ""),
+                    }
+                    for row in (response.get("adapter_blockers") or ())
+                    if isinstance(row, dict)
+                ],
+                "external_writes_performed": [],
+            }
         assert gate is not None
         dashboard = gate["dashboard"]
         plan = gate["plan"]
@@ -2434,13 +2493,34 @@ def _repair_existing_shopee_target_price(data: dict) -> tuple[int, dict]:
         target = matches[0]
         if target.get("repair"):
             repair = target["repair"]
+            repeat = store.target_repair_confirmation_matches(
+                run_id=str(run["run_id"]),
+                target_label=target_label,
+                plan_id=plan_id,
+                expected_revision=expected_revision,
+                payload_digest=requested_payload_digest,
+                preflight_digest=requested_preflight_digest,
+            )
+            if not repeat or repeat.get("matches") is not True:
+                return 409, {
+                    "ok": False,
+                    "error": "price repair confirmation identity does not match",
+                    "external_writes_performed": [],
+                    "repair_status": _shopee_price_repair_status_view(
+                        run,
+                        target_label=target_label,
+                    ),
+                }
             if repair.get("status") == "SUCCEEDED":
                 return 200, {
                     "ok": True,
                     "idempotent": True,
                     "target": target_label,
                     "external_writes_performed": [],
-                    "run": run,
+                    "repair_status": _shopee_price_repair_status_view(
+                        run,
+                        target_label=target_label,
+                    ),
                 }
             return 409, {
                 "ok": False,
@@ -2448,7 +2528,10 @@ def _repair_existing_shopee_target_price(data: dict) -> tuple[int, dict]:
                     "price repair is already running or requires reconciliation"
                 ),
                 "external_writes_performed": [],
-                "run": run,
+                "repair_status": _shopee_price_repair_status_view(
+                    run,
+                    target_label=target_label,
+                ),
             }
         external_id = str(target.get("external_id") or "").strip()
         idempotency_key = str(target.get("idempotency_key") or "").strip()
@@ -2500,6 +2583,7 @@ def _repair_existing_shopee_target_price(data: dict) -> tuple[int, dict]:
         operation = {
             **dict(preview["operation"]),
             "expected_revision": expected_revision,
+            "payload_digest": requested_payload_digest,
         }
         try:
             claim = store.claim_failed_target_repair(
@@ -2521,14 +2605,72 @@ def _repair_existing_shopee_target_price(data: dict) -> tuple[int, dict]:
                 "external_writes_performed": [],
             }
         if claim["action"] == "already_succeeded":
+            latest = store.get_run(str(run["run_id"]))
             return 200, {
                 "ok": True,
                 "idempotent": True,
                 "target": target_label,
                 "external_writes_performed": [],
-                "run": store.get_run(str(run["run_id"])),
+                "repair_status": _shopee_price_repair_status_view(
+                    latest,
+                    target_label=target_label,
+                ),
             }
         operation_digest = str(claim["operation_digest"])
+
+        def reconciliation_response(
+            *,
+            detail: str,
+            evidence: dict,
+            durable_state_uncertain: bool,
+        ) -> tuple[int, dict]:
+            truthful_writes = list(
+                evidence.get("external_writes_performed") or ()
+            )
+            evidence = {
+                **evidence,
+                "reconciliation_required": True,
+                "durable_state_uncertain": durable_state_uncertain,
+                "external_writes_performed": truthful_writes,
+            }
+            try:
+                reconciled = store.record_target_repair_reconciliation(
+                    operation_digest,
+                    error=detail,
+                    evidence=evidence,
+                )
+            except Exception:
+                latest = None
+                try:
+                    latest = store.get_run(str(run["run_id"]))
+                except Exception:
+                    latest = None
+                return 502, {
+                    "ok": False,
+                    "error": (
+                        "price repair durable reconciliation could not be "
+                        "recorded; do not repeat the POST"
+                    ),
+                    "reconciliation_required": True,
+                    "durable_state_uncertain": True,
+                    "external_writes_performed": truthful_writes,
+                    "repair_status": _shopee_price_repair_status_view(
+                        latest,
+                        target_label=target_label,
+                    ),
+                }
+            return 409, {
+                "ok": False,
+                "error": detail,
+                "reconciliation_required": True,
+                "durable_state_uncertain": durable_state_uncertain,
+                "external_writes_performed": truthful_writes,
+                "repair_status": _shopee_price_repair_status_view(
+                    reconciled,
+                    target_label=target_label,
+                ),
+            }
+
         try:
             result = execute_shopee_price_repair(
                 request,
@@ -2538,57 +2680,53 @@ def _repair_existing_shopee_target_price(data: dict) -> tuple[int, dict]:
             )
             if not result.succeeded or not result.readback_verified:
                 raise RuntimeError("Shopee price repair readback is not exact")
-            completed = store.record_target_repair_success(
-                operation_digest,
-                readback_evidence=dict(result.readback_evidence or {}),
-            )
         except ReleaseAdapterWriteVerificationError as error:
             evidence = dict(error.external_write_evidence or {})
-            evidence["reconciliation_required"] = True
-            reconciled = store.record_target_repair_reconciliation(
-                operation_digest,
-                error=str(error),
+            return reconciliation_response(
+                detail=str(error),
                 evidence=evidence,
+                durable_state_uncertain=True,
             )
-            return 409, {
-                "ok": False,
-                "error": str(error),
-                "reconciliation_required": True,
-                "external_writes_performed": list(
-                    evidence.get("external_writes_performed") or ()
-                ),
-                "run": reconciled,
-            }
         except Exception as error:
-            reconciled = store.record_target_repair_reconciliation(
-                operation_digest,
-                error=(
+            return reconciliation_response(
+                detail=(
                     "price repair stopped after claim; manual reconciliation "
                     f"is required: {error}"
                 ),
                 evidence={
                     "verified": False,
-                    "reconciliation_required": True,
                     "error_type": type(error).__name__,
                     "external_writes_performed": [],
                 },
+                durable_state_uncertain=False,
             )
-            return 409, {
-                "ok": False,
-                "error": (
-                    "price repair stopped safely and requires reconciliation"
+        try:
+            completed = store.record_target_repair_success(
+                operation_digest,
+                readback_evidence=dict(result.readback_evidence or {}),
+            )
+        except Exception as error:
+            return reconciliation_response(
+                detail=(
+                    "Shopee update_price and exact official readback succeeded, "
+                    "but the durable success receipt failed"
                 ),
-                "reconciliation_required": True,
-                "external_writes_performed": [],
-                "run": reconciled,
-            }
+                evidence={
+                    "verified": True,
+                    "error_type": type(error).__name__,
+                    "external_writes_performed": ["shopee:update_price"],
+                },
+                durable_state_uncertain=True,
+            )
         return 200, {
             "ok": True,
             "idempotent": False,
             "target": target_label,
-            "external_id": result.external_reference,
             "external_writes_performed": ["shopee:update_price"],
-            "run": completed,
+            "repair_status": _shopee_price_repair_status_view(
+                completed,
+                target_label=target_label,
+            ),
         }
 
 

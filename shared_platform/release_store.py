@@ -1987,6 +1987,57 @@ class ReleaseStore:
             except sqlite3.OperationalError:
                 return None
 
+    def target_repair_confirmation_matches(
+        self,
+        *,
+        run_id: str,
+        target_label: str,
+        plan_id: str,
+        expected_revision: int,
+        payload_digest: str,
+        preflight_digest: str,
+    ) -> dict[str, Any] | None:
+        """Compare a repeat request with the immutable repair operation."""
+
+        if not self.path.is_file():
+            return None
+        with self._connect_readonly() as connection:
+            try:
+                row = connection.execute(
+                    """
+                    SELECT operation_digest, operation_json, status
+                    FROM release_target_repairs
+                    WHERE run_id = ? AND target_label = ?
+                    """,
+                    (_text(run_id), _text(target_label)),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return None
+        if not row:
+            return None
+        operation = json.loads(row["operation_json"])
+        expected = {
+            "plan_id": _text(plan_id),
+            "run_id": _text(run_id),
+            "target_label": _text(target_label),
+            "expected_revision": int(expected_revision),
+            "payload_digest": _text(payload_digest),
+            "preflight_digest": _text(preflight_digest),
+        }
+        actual = {
+            field: (
+                int(operation.get(field) or 0)
+                if field == "expected_revision"
+                else _text(operation.get(field))
+            )
+            for field in expected
+        }
+        return {
+            "matches": actual == expected,
+            "status": row["status"],
+            "operation_digest": row["operation_digest"],
+        }
+
     def supersede_plan(
         self,
         plan_id: str,

@@ -346,6 +346,109 @@ class _ServerRepairStore:
         return {"run_id": "release-run:test", "status": "SUCCEEDED"}
 
 
+def _server_repair_gate(*, repair=None, target_status="FAILED"):
+    plan = {
+        "plan_id": "omnichannel:test",
+        "confirmation_token": "PUBLISH-TEST",
+        "product_id": "3838616043",
+        "seller_sku": "0954",
+        "product_package_id": "product:3838616043:0954",
+        "content_package_id": "content:3838616043",
+        "payload_digest": "d" * 64,
+        "payload": {
+            "product_revision": 31,
+            "omnichannel_scope_digest": "scope",
+        },
+        "approval": {
+            "status": "APPROVED",
+            "approved_by": "Kyle",
+            "user_approved": True,
+        },
+    }
+    run = {
+        "run_id": "release-run:test",
+        "status": "PARTIAL_FAILED",
+        "targets": [
+            {
+                "target_label": "shopee:PH",
+                "status": target_status,
+                "attempts": 1,
+                "external_id": "56164935203",
+                "idempotency_key": "publish:shopee:PH:test",
+                "repair": repair,
+            }
+        ],
+    }
+    return {
+        "dashboard": {"product": {"revision": 31}},
+        "plan": plan,
+        "run": run,
+        "payload": {"omnichannel_scope_digest": "scope"},
+    }
+
+
+def _server_repair_data(**overrides):
+    data = {
+        "offer_id": "3838616043",
+        "seller_sku": "0954",
+        "publication_targets": ["shopee:PH"],
+        "plan_id": "omnichannel:test",
+        "confirmation_token": "PUBLISH-TEST",
+        "expected_revision": 31,
+        "payload_digest": "d" * 64,
+        "preflight_digest": "p" * 64,
+        "target_label": "shopee:PH",
+        "confirm_shopee_price_repair": True,
+        "approved_by": "Kyle",
+    }
+    data.update(overrides)
+    return data
+
+
+def _install_server_repair_contract(monkeypatch, store, *, execute=None):
+    monkeypatch.setattr(
+        "shared_platform.release_store.default_release_store",
+        lambda: store,
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_release_execution_readonly_gate",
+        lambda _data, *, store: (_server_repair_gate(), None),
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "preflight_shopee_price_repair",
+        lambda _request: {
+            "operation": {
+                "kind": "shopee_original_price_repair_v1",
+                "plan_id": "omnichannel:test",
+                "run_id": "release-run:test",
+                "target_label": "shopee:PH",
+                "external_id": "56164935203",
+                "preflight_digest": "p" * 64,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "execute_shopee_price_repair",
+        execute
+        or (
+            lambda _request, *, expected_preflight_digest: AdapterExecutionResult(
+                succeeded=True,
+                readback_verified=True,
+                detail="exact",
+                external_reference="56164935203",
+                readback_evidence={
+                    "verified": True,
+                    "reconciliation_required": False,
+                    "external_writes_performed": ["shopee:update_price"],
+                },
+            )
+        ),
+    )
+
+
 def test_server_price_repair_requires_exact_gate_and_records_one_success(
     monkeypatch,
 ):
@@ -496,6 +599,228 @@ def test_server_price_repair_rejects_generic_confirmation_without_mutation(
     assert response["external_writes_performed"] == []
     assert store_calls == []
     assert adapter_calls == []
+
+
+class _FaultingRepairStore(_ServerRepairStore):
+    def __init__(self, *, fail_reconciliation=False):
+        super().__init__()
+        self.fail_reconciliation = fail_reconciliation
+        self.reconciliations = []
+        self.latest = {
+            "run_id": "secret-run",
+            "status": "RUNNING",
+            "targets": [
+                {
+                    "target_label": "shopee:PH",
+                    "status": "RUNNING",
+                    "attempts": 2,
+                    "external_id": "secret-item-id",
+                    "seller_sku": "secret-sku",
+                    "repair": {
+                        "status": "RUNNING",
+                        "operation_digest": "secret-operation",
+                        "result": {"model_id": "secret-model"},
+                    },
+                }
+            ],
+        }
+
+    def record_target_repair_success(self, digest, *, readback_evidence):
+        raise OSError("durable success write failed")
+
+    def record_target_repair_reconciliation(
+        self,
+        digest,
+        *,
+        error,
+        evidence,
+    ):
+        self.reconciliations.append((digest, error, evidence))
+        if self.fail_reconciliation:
+            raise OSError("durable reconciliation write failed")
+        self.latest["status"] = "PARTIAL_FAILED"
+        self.latest["targets"][0]["status"] = "RECONCILIATION_REQUIRED"
+        self.latest["targets"][0]["repair"]["status"] = (
+            "RECONCILIATION_REQUIRED"
+        )
+        return self.latest
+
+    def get_run(self, _run_id):
+        return self.latest
+
+
+@pytest.mark.parametrize(
+    ("fail_reconciliation", "expected_status"),
+    [(False, 409), (True, 502)],
+)
+def test_success_receipt_failure_is_truthful_and_never_leaks_raw_run(
+    monkeypatch,
+    fail_reconciliation,
+    expected_status,
+):
+    store = _FaultingRepairStore(
+        fail_reconciliation=fail_reconciliation
+    )
+    _install_server_repair_contract(monkeypatch, store)
+
+    status, response = product_server._repair_existing_shopee_target_price(
+        _server_repair_data()
+    )
+
+    assert status == expected_status
+    assert response["reconciliation_required"] is True
+    assert response["durable_state_uncertain"] is True
+    assert response["external_writes_performed"] == ["shopee:update_price"]
+    assert response["repair_status"]["target"]["target_label"] == "shopee:PH"
+    encoded = str(response)
+    for secret in (
+        "secret-run",
+        "secret-item-id",
+        "secret-sku",
+        "secret-model",
+        "secret-operation",
+        "56164935203",
+        "0954",
+    ):
+        assert secret not in encoded
+    assert len(store.claims) == 1
+    assert len(store.reconciliations) == 1
+
+
+class _IdempotentRepairStore:
+    def __init__(self):
+        self.match_calls = []
+
+    def target_repair_confirmation_matches(self, **kwargs):
+        self.match_calls.append(kwargs)
+        return {
+            "matches": kwargs["preflight_digest"] == "p" * 64,
+            "status": "SUCCEEDED",
+            "operation_digest": "stored",
+        }
+
+
+def test_success_idempotency_requires_exact_stored_confirmation_identity(
+    monkeypatch,
+):
+    store = _IdempotentRepairStore()
+    adapter_calls = []
+    monkeypatch.setattr(
+        "shared_platform.release_store.default_release_store",
+        lambda: store,
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_release_execution_readonly_gate",
+        lambda _data, *, store: (
+            _server_repair_gate(
+                repair={"status": "SUCCEEDED"},
+                target_status="SUCCEEDED",
+            ),
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "preflight_shopee_price_repair",
+        lambda *_args, **_kwargs: adapter_calls.append("preflight")
+        or pytest.fail("idempotent result must not call official GET"),
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "execute_shopee_price_repair",
+        lambda *_args, **_kwargs: adapter_calls.append("post")
+        or pytest.fail("idempotent result must not POST"),
+    )
+
+    status, response = product_server._repair_existing_shopee_target_price(
+        _server_repair_data(preflight_digest="wrong")
+    )
+    assert status == 409
+    assert response["external_writes_performed"] == []
+    assert adapter_calls == []
+
+    status, response = product_server._repair_existing_shopee_target_price(
+        _server_repair_data()
+    )
+    assert status == 200
+    assert response["idempotent"] is True
+    assert response["external_writes_performed"] == []
+    assert adapter_calls == []
+
+
+class _TrackingLock:
+    def __init__(self, name, events):
+        self.name = name
+        self.events = events
+
+    def __enter__(self):
+        self.events.append(f"{self.name}:enter")
+
+    def __exit__(self, *_args):
+        self.events.append(f"{self.name}:exit")
+
+
+def test_price_repair_uses_release_then_product_lock_and_drift_posts_zero(
+    monkeypatch,
+):
+    store = _ServerRepairStore()
+    calls = []
+    events = []
+    monkeypatch.setattr(
+        "shared_platform.release_store.default_release_store",
+        lambda: store,
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_release_execution_lock",
+        _TrackingLock("release", events),
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_product_workbench_lock",
+        lambda offer_id: (
+            events.append(f"product-key:{offer_id}")
+            or _TrackingLock("product", events)
+        ),
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_release_execution_readonly_gate",
+        lambda _data, *, store: (
+            {
+                **_server_repair_gate(),
+                "dashboard": {"product": {"revision": 32}},
+            },
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "preflight_shopee_price_repair",
+        lambda *_args, **_kwargs: calls.append("preflight"),
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "execute_shopee_price_repair",
+        lambda *_args, **_kwargs: calls.append("post"),
+    )
+
+    status, response = product_server._repair_existing_shopee_target_price(
+        _server_repair_data()
+    )
+
+    assert status == 409
+    assert response["external_writes_performed"] == []
+    assert calls == []
+    assert store.claims == []
+    assert events == [
+        "release:enter",
+        "product-key:3838616043",
+        "product:enter",
+        "product:exit",
+        "release:exit",
+    ]
 
 
 def test_price_repair_preview_is_redacted_and_does_not_mutate_store(

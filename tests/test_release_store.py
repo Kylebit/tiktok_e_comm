@@ -169,6 +169,38 @@ def test_approval_and_run_creation_are_idempotent(tmp_path):
     assert all(row["attempts"] == 0 for row in first_run["targets"])
 
 
+def test_common_overwrite_review_is_durable_without_creating_run(tmp_path):
+    store, plan, _approval = _approved_store(tmp_path)
+    review = {
+        "schema_version": "miaoshou-common-overwrite-review-v1",
+        "status": "MISMATCH",
+        "plan_id": plan["plan_id"],
+        "confirmation_token": plan["confirmation_token"],
+        "payload_digest": plan["payload_digest"],
+        "expected_revision": 7,
+        "identity_exact": True,
+        "readback_non_ambiguous": True,
+        "overwrite_allowed": True,
+        "changed_fields": ["title"],
+        "blocking_fields": [],
+        "unknown_fields": [],
+        "fields": [],
+        "external_writes_performed": [],
+    }
+
+    recorded = store.record_common_overwrite_review(plan["plan_id"], review)
+
+    assert recorded["status"] == "MISMATCH"
+    assert recorded["review_digest"]
+    assert store.get_run(f"release-run:{plan['payload_digest'][:24]}") is None
+    assert store.get_common_overwrite_review(plan["plan_id"]) == recorded
+
+    store.resolve_common_overwrite_review(plan["plan_id"])
+    resolved = store.get_common_overwrite_review(plan["plan_id"])
+    assert resolved["status"] == "RESOLVED"
+    assert resolved["resolved_at"]
+
+
 def test_plan_and_run_support_the_complete_sixteen_target_matrix(tmp_path):
     store, plan, _approval = _approved_store(
         tmp_path,

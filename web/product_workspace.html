@@ -384,6 +384,27 @@
             同步到妙手待发布
           </button>
           <p id="prepareMiaoshouMessage" class="approval-message" role="status"></p>
+          <section id="commonOverwritePanel" class="common-overwrite-panel" hidden
+            aria-labelledby="commonOverwriteTitle">
+            <div>
+              <p class="kicker">IMMUTABLE PLAN DIFF</p>
+              <h4 id="commonOverwriteTitle">妙手公共草稿与当前 ReleasePlan 不一致</h4>
+              <p id="commonOverwriteRisk">
+                这里只显示脱敏摘要。身份、绑定或未知字段不一致时，系统会保持关闭。
+              </p>
+            </div>
+            <div id="commonOverwriteIdentity" class="common-overwrite-identity"></div>
+            <div id="commonOverwriteDiff" class="common-overwrite-diff"></div>
+            <label id="commonOverwriteConfirmLabel" class="approval-confirm compact" hidden>
+              <input id="commonOverwriteCheckbox" type="checkbox">
+              <span>我确认仅按当前已批准的不可变 ReleasePlan 覆盖上述允许字段，并立即执行官方回读。</span>
+            </label>
+            <button id="commonOverwriteButton" class="button button-danger"
+              type="button" hidden disabled>
+              按当前 ReleasePlan 覆盖妙手公共草稿并回读
+            </button>
+            <p id="commonOverwriteMessage" class="approval-message" role="status"></p>
+          </section>
         </article>
 
         <article class="external-action-card publish">

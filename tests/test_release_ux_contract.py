@@ -139,6 +139,18 @@ def test_every_formal_async_action_has_loading_success_and_failure_feedback():
                 "finally",
                 "prepareMiaoshouMessage",
             ],
+            "overwriteMiaoshou": [
+                "releaseSubmitting = true",
+                "confirm_miaoshou_overwrite: true",
+                'approved_by: "Kyle"',
+                "expected_revision",
+                "payload_digest",
+                "try {",
+                "catch (error)",
+                "reconciliation_required",
+                "finally",
+                "commonOverwriteMessage",
+            ],
             "publishSelectedTargets": [
                 "releaseSubmitting = true",
                 "try {",
@@ -247,6 +259,29 @@ def test_every_formal_async_action_has_loading_success_and_failure_feedback():
             assert not missing, (
                 f"{relative_path}:{function_name} misses release UX tokens {missing}"
             )
+
+
+def test_common_overwrite_html_contract_is_explicit_and_separate():
+    html = (WEB / "product_workspace.html").read_text(encoding="utf-8")
+    source = (WEB / "static" / "product_workspace.js").read_text(
+        encoding="utf-8"
+    )
+
+    for element_id in (
+        "commonOverwritePanel",
+        "commonOverwriteIdentity",
+        "commonOverwriteDiff",
+        "commonOverwriteCheckbox",
+        "commonOverwriteButton",
+        "commonOverwriteMessage",
+    ):
+        assert f'id="{element_id}"' in html
+    assert "按当前 ReleasePlan 覆盖妙手公共草稿并回读" in html
+    normal = _function_body(source, "prepareMiaoshou")
+    overwrite = _function_body(source, "overwriteMiaoshou")
+    assert "confirm_miaoshou_overwrite" not in normal
+    assert "confirm_miaoshou_overwrite: true" in overwrite
+    assert 'approved_by: "Kyle"' in overwrite
 
 
 def test_formal_pages_expose_accessible_feedback_regions():

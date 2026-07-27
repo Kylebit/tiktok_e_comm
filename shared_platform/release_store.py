@@ -225,6 +225,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_release_active_sku_key
 CREATE INDEX IF NOT EXISTS idx_release_sku_product
     ON release_sku_reservations(product_id, status);
 
+CREATE TABLE IF NOT EXISTS release_common_overwrite_reviews (
+    plan_id TEXT PRIMARY KEY,
+    review_json TEXT NOT NULL,
+    review_digest TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('MISMATCH', 'RESOLVED')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    resolved_at TEXT,
+    FOREIGN KEY (plan_id) REFERENCES release_plans(plan_id)
+);
+CREATE INDEX IF NOT EXISTS idx_release_common_overwrite_review_status
+    ON release_common_overwrite_reviews(status, updated_at DESC);
+
 CREATE TRIGGER IF NOT EXISTS trg_release_plan_immutable
 BEFORE UPDATE OF
     plan_id, product_id, seller_sku, sku_key, product_package_id,
@@ -759,6 +772,119 @@ class ReleaseStore:
                 "successor plan has multiple predecessor identities"
             )
         return self.get_plan(rows[0]["plan_id"]) if rows else None
+
+    def get_common_overwrite_review(
+        self,
+        plan_id: str,
+    ) -> dict[str, Any] | None:
+        """Return the latest redacted COMMON mismatch review without writes."""
+
+        if not self.path.is_file():
+            return None
+        with self._connect_readonly() as connection:
+            try:
+                row = connection.execute(
+                    """
+                    SELECT review_json, review_digest, status,
+                           created_at, updated_at, resolved_at
+                    FROM release_common_overwrite_reviews
+                    WHERE plan_id = ?
+                    """,
+                    (_text(plan_id),),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return None
+        if not row:
+            return None
+        review = json.loads(row["review_json"])
+        review.update(
+            {
+                "review_digest": row["review_digest"],
+                "status": row["status"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "resolved_at": row["resolved_at"],
+            }
+        )
+        return review
+
+    def record_common_overwrite_review(
+        self,
+        plan_id: str,
+        review: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Persist one redacted mismatch review without creating a release run."""
+
+        clean_plan_id = _text(plan_id)
+        candidate = dict(review)
+        if (
+            candidate.get("status") != "MISMATCH"
+            or candidate.get("external_writes_performed") != []
+            or _text(candidate.get("plan_id")) != clean_plan_id
+        ):
+            raise ReleaseStoreError("invalid COMMON overwrite review contract")
+        encoded = _canonical_json(candidate)
+        digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        now = _utc_now()
+        with self._transaction() as connection:
+            plan = connection.execute(
+                "SELECT * FROM release_plans WHERE plan_id = ?",
+                (clean_plan_id,),
+            ).fetchone()
+            if not plan:
+                raise ReleaseStoreError("release plan was not found")
+            if (
+                candidate.get("payload_digest") != plan["payload_digest"]
+                or candidate.get("confirmation_token")
+                != plan["confirmation_token"]
+            ):
+                raise ImmutableReleaseError(
+                    "COMMON overwrite review does not match the immutable plan"
+                )
+            existing = connection.execute(
+                """
+                SELECT created_at FROM release_common_overwrite_reviews
+                WHERE plan_id = ?
+                """,
+                (clean_plan_id,),
+            ).fetchone()
+            created_at = existing["created_at"] if existing else now
+            connection.execute(
+                """
+                INSERT INTO release_common_overwrite_reviews (
+                    plan_id, review_json, review_digest, status,
+                    created_at, updated_at, resolved_at
+                ) VALUES (?, ?, ?, 'MISMATCH', ?, ?, NULL)
+                ON CONFLICT(plan_id) DO UPDATE SET
+                    review_json = excluded.review_json,
+                    review_digest = excluded.review_digest,
+                    status = 'MISMATCH',
+                    updated_at = excluded.updated_at,
+                    resolved_at = NULL
+                """,
+                (
+                    clean_plan_id,
+                    encoded,
+                    digest,
+                    created_at,
+                    now,
+                ),
+            )
+        return self.get_common_overwrite_review(clean_plan_id) or candidate
+
+    def resolve_common_overwrite_review(self, plan_id: str) -> None:
+        """Mark a review resolved after verified write/readback or exact reuse."""
+
+        with self._transaction() as connection:
+            now = _utc_now()
+            connection.execute(
+                """
+                UPDATE release_common_overwrite_reviews
+                SET status = 'RESOLVED', updated_at = ?, resolved_at = ?
+                WHERE plan_id = ? AND status = 'MISMATCH'
+                """,
+                (now, now, _text(plan_id)),
+            )
 
     def latest_unlinked_common_predecessor(
         self,

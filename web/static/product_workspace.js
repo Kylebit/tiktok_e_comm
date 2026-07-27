@@ -288,6 +288,13 @@
     $("#prepareMiaoshouCheckbox").disabled = true;
     $("#prepareMiaoshouButton").disabled = true;
     $("#prepareMiaoshouMessage").textContent = "";
+    $("#commonOverwritePanel").hidden = true;
+    $("#commonOverwriteConfirmLabel").hidden = true;
+    $("#commonOverwriteButton").hidden = true;
+    $("#commonOverwriteCheckbox").checked = false;
+    $("#commonOverwriteCheckbox").disabled = true;
+    $("#commonOverwriteButton").disabled = true;
+    $("#commonOverwriteMessage").textContent = "";
     $("#publishRunMessage").textContent = "";
     $("#releaseRunLedger").textContent = "当前没有发布运行。";
     $("#workbenchLink").removeAttribute("href");
@@ -1893,6 +1900,26 @@
     $("#prepareMiaoshouButton").disabled = Boolean(
       !approved || prepared || !$("#prepareMiaoshouCheckbox").checked || busy,
     );
+    const overwrite = release.common_overwrite_review || {};
+    const overwriteVisible = overwrite.status === "MISMATCH";
+    const overwriteExact = Boolean(
+      overwrite.plan_id
+      && overwrite.plan_id === plan.plan_id
+      && overwrite.payload_digest === plan.payload_digest,
+    );
+    const overwriteReady = Boolean(
+      overwriteVisible
+      && overwrite.overwrite_allowed
+      && overwrite.identity_exact
+      && overwrite.readback_non_ambiguous
+      && approved
+      && overwriteExact
+      && !release.run,
+    );
+    $("#commonOverwriteCheckbox").disabled = !overwriteReady || busy;
+    $("#commonOverwriteButton").disabled = Boolean(
+      !overwriteReady || !$("#commonOverwriteCheckbox").checked || busy,
+    );
 
     const publishReady = Boolean(release.publish_ready);
     const runCounts = releaseRunCounts(release.run);
@@ -1909,6 +1936,54 @@
       || !$("#publishAllCheckbox").checked
       || busy,
     );
+  }
+
+  function renderCommonOverwrite(release) {
+    const review = release.common_overwrite_review || {};
+    const panel = $("#commonOverwritePanel");
+    const visible = review.status === "MISMATCH";
+    panel.hidden = !visible;
+    if (!visible) {
+      $("#commonOverwriteDiff").innerHTML = "";
+      $("#commonOverwriteConfirmLabel").hidden = true;
+      $("#commonOverwriteButton").hidden = true;
+      $("#commonOverwriteCheckbox").checked = false;
+      $("#commonOverwriteMessage").textContent = "";
+      return;
+    }
+    $("#commonOverwriteIdentity").innerHTML = `
+      <strong>现有妙手草稿 ↔ 不可变 ReleasePlan</strong>
+      <span>Plan ${esc(review.plan_id || "—")}</span>
+      <span>令牌 ${esc(maskedToken(review.confirmation_token || ""))} · payload ${esc(String(review.payload_digest || "").slice(0, 16))}… · revision ${esc(review.expected_revision ?? "—")}</span>
+    `;
+    $("#commonOverwriteDiff").innerHTML = (review.fields || []).map((row) => `
+      <div class="common-overwrite-row ${row.changed ? "changed" : ""}">
+        <strong>${esc(row.label || row.field)}${row.changed ? " · 不一致" : " · 一致"}</strong>
+        <span>现有：${esc(row.existing_summary || "unavailable")}</span>
+        <span>计划：${esc(row.immutable_plan_summary || "unavailable")}</span>
+      </div>
+    `).join("");
+    const canOverwrite = Boolean(
+      review.overwrite_allowed
+      && review.identity_exact
+      && review.readback_non_ambiguous
+      && release.plan_approved
+      && review.plan_id === release.plan?.plan_id
+      && review.payload_digest === release.plan?.payload_digest
+      && !release.run,
+    );
+    $("#commonOverwriteConfirmLabel").hidden = !canOverwrite;
+    $("#commonOverwriteButton").hidden = !canOverwrite;
+    if (!canOverwrite) {
+      $("#commonOverwriteCheckbox").checked = false;
+      const blockers = (review.blocking_fields || []).join("、");
+      $("#commonOverwriteRisk").textContent = blockers
+        ? `身份、绑定或不可识别字段不满足安全门（${blockers}），系统不会提供覆盖操作。`
+        : "当前回读不明确、计划身份已变化或已有运行账本，系统不会提供覆盖操作。";
+    } else {
+      $("#commonOverwriteRisk").textContent =
+        "普通“同步到妙手待发布”不会覆盖。只有下方独立确认会按当前已批准计划覆盖允许字段，且只发送一次编辑后立即官方回读。";
+    }
   }
 
   function renderReleaseV1(data) {
@@ -1942,6 +2017,7 @@
           ? "等待你的独立确认；此动作只准备妙手待发布商品，不会提交站点发布。"
           : "先批准当前 ReleasePlan。"
       );
+    renderCommonOverwrite(release);
 
     const adapterBlockers = release.adapter_blockers || [];
     $("#publishAllNote").textContent = release.publish_ready
@@ -2052,9 +2128,11 @@
         .slice(0, 3)
         .map((row) => `${row.target}: ${row.detail}`)
         .join("；");
-      throw new Error(
+      const error = new Error(
         `${payload.error || `服务返回 HTTP ${response.status}`}${targetDetails ? `（${targetDetails}）` : ""}`,
       );
+      error.payload = payload;
+      throw error;
     }
     return payload;
   }
@@ -2125,6 +2203,9 @@
         "当前 ReleasePlan 已由 Kyle 批准并持久化；没有发生外部写入。";
       showError("");
     } catch (error) {
+      if (error.payload?.dashboard) {
+        adoptWorkflowDashboard(error.payload.dashboard);
+      }
       const message = friendlyError(error.message);
       showError(message);
       $("#releasePlanMessage").textContent = `${message} 请刷新后重新核对计划。`;
@@ -2150,10 +2231,61 @@
         : "妙手待发布草稿已写入并回读一致；尚未发布到任何站点。";
       showError("");
     } catch (error) {
+      if (error.payload?.dashboard) {
+        adoptWorkflowDashboard(error.payload.dashboard);
+      }
       const message = friendlyError(error.message);
       showError(message);
       $("#prepareMiaoshouMessage").textContent =
-        `${message} 失败状态已写入运行账本，可在修复后重试。`;
+        error.payload?.common_overwrite_review
+          ? `${message} 已显示脱敏差异；普通同步不会自动覆盖。`
+          : `${message} 失败状态已写入运行账本，可在修复后重试。`;
+    } finally {
+      releaseSubmitting = false;
+      updateReleaseControls(currentData || {});
+    }
+  }
+
+  async function overwriteMiaoshou() {
+    const review = currentData?.release_v1?.common_overwrite_review || {};
+    if (
+      !currentData
+      || releaseSubmitting
+      || !$("#commonOverwriteCheckbox").checked
+      || review.overwrite_allowed !== true
+    ) return;
+    releaseSubmitting = true;
+    updateReleaseControls(currentData);
+    $("#commonOverwriteMessage").textContent =
+      "正在重新只读核对身份与差异；通过后只发送一次 COMMON 编辑并执行官方回读…";
+    try {
+      const payload = await postReleaseAction(
+        "/api/product-workspace/miaoshou-draft/commit",
+        currentReleaseBody({
+          confirm_miaoshou_write: true,
+          confirm_miaoshou_overwrite: true,
+          approved_by: "Kyle",
+          expected_revision: review.expected_revision,
+          payload_digest: review.payload_digest,
+          overwrite_review_digest: review.review_digest,
+        }),
+      );
+      adoptWorkflowDashboard(payload.dashboard);
+      const successMessage =
+        "妙手公共草稿已按当前不可变 ReleasePlan 覆盖，并完成逐字段官方回读；未触发认领或发布。";
+      $("#commonOverwriteMessage").textContent = successMessage;
+      $("#prepareMiaoshouMessage").textContent = successMessage;
+      showError("");
+    } catch (error) {
+      if (error.payload?.dashboard) {
+        adoptWorkflowDashboard(error.payload.dashboard);
+      }
+      const message = error.payload?.reconciliation_required
+        ? "编辑结果存在网络歧义，系统已保留 reconciliation evidence 且不会自动重试。"
+        : friendlyError(error.message);
+      showError(message);
+      $("#commonOverwriteMessage").textContent =
+        `${message} 确认控件已恢复；请先依据最新回读状态处理。`;
     } finally {
       releaseSubmitting = false;
       updateReleaseControls(currentData || {});
@@ -2523,6 +2655,10 @@
     updateReleaseControls(currentData || {});
   });
   $("#prepareMiaoshouButton").addEventListener("click", prepareMiaoshou);
+  $("#commonOverwriteCheckbox").addEventListener("change", () => {
+    updateReleaseControls(currentData || {});
+  });
+  $("#commonOverwriteButton").addEventListener("click", overwriteMiaoshou);
   $("#publishAllCheckbox").addEventListener("change", () => {
     updateReleaseControls(currentData || {});
   });

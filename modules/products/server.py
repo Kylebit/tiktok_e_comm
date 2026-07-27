@@ -1602,6 +1602,9 @@ def _release_v1_view(dashboard: dict) -> dict:
             "plan_persisted": True,
             "plan_approved": approved,
             "run": historical_run,
+            "common_overwrite_review": store.get_common_overwrite_review(
+                active["plan_id"]
+            ),
             "miaoshou_prepared": bool(
                 common and common.get("status") == "SUCCEEDED"
             ),
@@ -1670,6 +1673,11 @@ def _release_v1_view(dashboard: dict) -> dict:
     miaoshou_prepared = bool(
         miaoshou_target and miaoshou_target.get("status") == "SUCCEEDED"
     )
+    common_overwrite_review = (
+        store.get_common_overwrite_review(plan["plan_id"])
+        if persisted
+        else None
+    )
     return {
         "eligible_for_plan_approval": not blockers,
         "blockers": blockers,
@@ -1677,6 +1685,7 @@ def _release_v1_view(dashboard: dict) -> dict:
         "plan_persisted": bool(persisted),
         "plan_approved": approved,
         "run": run,
+        "common_overwrite_review": common_overwrite_review,
         "miaoshou_prepared": miaoshou_prepared,
         "adapter_blockers": list(dict.fromkeys(adapter_blockers)),
         "publish_ready": bool(
@@ -2116,10 +2125,15 @@ def _adapter_result_has_external_outcome(result) -> bool:
     )
 
 
-def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
+def _prepare_miaoshou_release(
+    data: dict,
+    *,
+    _overwrite_lock_held: bool = False,
+) -> tuple[int, dict]:
     """Execute only the approved common-draft write and verified readback."""
     from modules.products.release_adapters import (
         MiaoshouDraftVerificationError,
+        miaoshou_common_overwrite_review,
         readback_miaoshou_common,
         write_miaoshou_common_from_plan,
     )
@@ -2132,6 +2146,12 @@ def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
     reuse_readback = data.get("reuse_miaoshou_readback") is True
     confirm_write = data.get("confirm_miaoshou_write") is True
     confirm_overwrite = data.get("confirm_miaoshou_overwrite") is True
+    if confirm_overwrite and not _overwrite_lock_held:
+        with _release_execution_lock:
+            return _prepare_miaoshou_release(
+                data,
+                _overwrite_lock_held=True,
+            )
     if not reuse_readback and not confirm_write:
         return 400, {
             "ok": False,
@@ -2166,7 +2186,40 @@ def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
         return 409, {
             "ok": False,
             "error": "approved ReleasePlan no longer matches current facts",
+            "external_writes_performed": [],
         }
+    if confirm_overwrite:
+        try:
+            supplied_revision = int(data.get("expected_revision"))
+        except (TypeError, ValueError):
+            supplied_revision = -1
+        expected_revision = int(
+            (plan.get("payload") or {}).get("product_revision") or -1
+        )
+        overwrite_contract_errors = []
+        if confirm_write is not True:
+            overwrite_contract_errors.append(
+                "confirm_miaoshou_write=true is required"
+            )
+        if str(data.get("approved_by") or "").strip() != "Kyle":
+            overwrite_contract_errors.append("approved_by must be Kyle")
+        if supplied_revision != expected_revision:
+            overwrite_contract_errors.append(
+                "expected revision does not match the immutable ReleasePlan"
+            )
+        if str(data.get("payload_digest") or "").strip() != str(
+            plan.get("payload_digest") or ""
+        ):
+            overwrite_contract_errors.append(
+                "payload digest does not match the immutable ReleasePlan"
+            )
+        if overwrite_contract_errors:
+            return 409, {
+                "ok": False,
+                "error": "explicit COMMON overwrite contract was not satisfied",
+                "blockers": overwrite_contract_errors,
+                "external_writes_performed": [],
+            }
     copy_blockers = _immutable_listing_copy_preflight(plan.get("payload") or {})
     if copy_blockers:
         return 409, {
@@ -2240,6 +2293,15 @@ def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
             "error": "COMMON readback reuse requires a verified predecessor success",
             "external_writes_performed": [],
         }
+    if confirm_overwrite and not predecessor_has_common:
+        return 409, {
+            "ok": False,
+            "error": (
+                "COMMON overwrite requires a verified predecessor binding; "
+                "use the normal preparation action for a first draft"
+            ),
+            "external_writes_performed": [],
+        }
     if predecessor_has_common:
         # The existing UI sends confirm_miaoshou_write=true.  A successor must
         # nevertheless prove equality by readback before any possible edit.
@@ -2286,9 +2348,45 @@ def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
                 "external_writes_performed": [],
             }
         if not readback.get("verified"):
-            if confirm_overwrite and confirm_write:
-                reuse_readback = False
-            else:
+            review = miaoshou_common_overwrite_review(
+                plan.get("payload") or {},
+                readback,
+                plan_id=plan["plan_id"],
+                confirmation_token=plan["confirmation_token"],
+                payload_digest=plan["payload_digest"],
+                expected_revision=int(
+                    (plan.get("payload") or {}).get("product_revision") or -1
+                ),
+            )
+            try:
+                review = store.record_common_overwrite_review(
+                    plan["plan_id"],
+                    review,
+                )
+            except ReleaseStoreError as error:
+                return 409, {
+                    "ok": False,
+                    "error": str(error),
+                    "external_writes_performed": [],
+                }
+            requested_review_digest = str(
+                data.get("overwrite_review_digest") or ""
+            ).strip()
+            if (
+                requested_review_digest
+                and requested_review_digest != review.get("review_digest")
+            ):
+                return 409, {
+                    "ok": False,
+                    "error": (
+                        "COMMON overwrite review changed; inspect the latest "
+                        "redacted diff before confirming"
+                    ),
+                    "common_overwrite_review": review,
+                    "dashboard": _product_workspace_view(dashboard),
+                    "external_writes_performed": [],
+                }
+            if not confirm_overwrite:
                 return 409, {
                     "ok": False,
                     "error": (
@@ -2296,11 +2394,46 @@ def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
                         "successor ReleasePlan"
                     ),
                     "mode": "readback_reuse_no_write",
-                    "field_diffs": dict(readback.get("field_diffs") or {}),
-                    "checks": dict(readback.get("checks") or {}),
+                    "common_overwrite_review": review,
+                    "dashboard": _product_workspace_view(dashboard),
                     "external_writes_performed": [],
-                    "overwrite_requires": "confirm_miaoshou_overwrite=true",
+                    "overwrite_requires": {
+                        "confirm_miaoshou_overwrite": True,
+                        "approved_by": "Kyle",
+                        "plan_id": plan["plan_id"],
+                        "confirmation_token": plan["confirmation_token"],
+                        "expected_revision": review["expected_revision"],
+                        "payload_digest": plan["payload_digest"],
+                    },
                 }
+            if not review.get("overwrite_allowed"):
+                return 409, {
+                    "ok": False,
+                    "error": (
+                        "existing COMMON identity or field scope is not safe "
+                        "for an automated overwrite"
+                    ),
+                    "common_overwrite_review": review,
+                    "dashboard": _product_workspace_view(dashboard),
+                    "external_writes_performed": [],
+                }
+            existing_run = store.get_run(
+                f"release-run:{plan['payload_digest'][:24]}"
+            )
+            if existing_run:
+                return 409, {
+                    "ok": False,
+                    "error": (
+                        "COMMON overwrite is disabled after a release run exists"
+                    ),
+                    "common_overwrite_review": review,
+                    "run": existing_run,
+                    "external_writes_performed": [],
+                }
+            reuse_readback = False
+            overwrite_guard = review
+        else:
+            overwrite_guard = None
         if reuse_readback:
             predecessor = store.predecessor_plan_for(plan_id)
             predecessor_run = (
@@ -2368,6 +2501,7 @@ def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
                     external_id=str(plan_payload["product_id"]),
                     readback_evidence=reuse_evidence,
                 )
+                store.resolve_common_overwrite_review(plan_id)
             except (ReleaseAuthorizationError, ReleaseStoreError, StopIteration) as error:
                 return 409, {
                     "ok": False,
@@ -2383,6 +2517,8 @@ def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
                 "run": store.get_run(run["run_id"]),
                 "dashboard": _product_workspace_view(dashboard),
             }
+    else:
+        overwrite_guard = None
     try:
         run = store.start_run(plan_id)
         target = next(
@@ -2433,7 +2569,13 @@ def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
     result = None
     common_readback_evidence = None
     try:
-        result = write_miaoshou_common_from_plan(plan.get("payload") or {})
+        if overwrite_guard is None:
+            result = write_miaoshou_common_from_plan(plan.get("payload") or {})
+        else:
+            result = write_miaoshou_common_from_plan(
+                plan.get("payload") or {},
+                overwrite_guard=overwrite_guard,
+            )
         if not result.get("written_to_miaoshou") or not result.get("verified"):
             failed_checks = [
                 str(name)
@@ -2484,6 +2626,8 @@ def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
             external_id=str(result.get("offer_id") or plan_payload["product_id"]),
             readback_evidence=common_readback_evidence,
         )
+        if overwrite_guard is not None:
+            store.resolve_common_overwrite_review(plan_id)
     except Exception as error:
         store_record_error = ""
         failure_evidence = getattr(error, "external_write_evidence", None)
@@ -2547,6 +2691,7 @@ def _prepare_miaoshou_release(data: dict) -> tuple[int, dict]:
                 )
                 or ()
             ),
+            "dashboard": _product_workspace_view(dashboard),
         }
         if store_record_error:
             payload["run_record_error"] = store_record_error

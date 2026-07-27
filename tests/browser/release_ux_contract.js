@@ -1151,6 +1151,255 @@ async function productReleaseTerminalState(browser) {
   }
 }
 
+async function productCommonOverwriteContract(browser) {
+  for (const viewport of [
+    { width: 1440, height: 900 },
+    { width: 390, height: 844 },
+  ]) {
+    const context = await browser.newContext({ viewport });
+    const page = await context.newPage();
+    const errors = [];
+    const requests = [];
+    let pendingOverwrite = null;
+    let resolvePendingOverwrite;
+    const pendingOverwriteReady = new Promise((resolve) => {
+      resolvePendingOverwrite = resolve;
+    });
+    const dashboard = JSON.parse(JSON.stringify(productDashboard));
+    dashboard.product.revision = 31;
+    dashboard.product.fields_locked = true;
+    dashboard.product.actual_product_approved = true;
+    dashboard.content.approved = true;
+    dashboard.content.blockers = [];
+    dashboard.release_v1 = {
+      eligible_for_plan_approval: true,
+      plan_persisted: true,
+      plan_approved: true,
+      miaoshou_prepared: false,
+      publish_ready: false,
+      blockers: [],
+      adapter_blockers: [],
+      run: null,
+      plan: {
+        plan_id: "omnichannel:fixture-successor",
+        status: "APPROVED",
+        confirmation_token: "PUBLISH-FIXTURETOKEN",
+        payload_digest: "fixture-payload-digest",
+        targets: ["miaoshou:COMMON"],
+        payload: {
+          product_revision: 31,
+          content_package_id: "content:fixture:r31",
+          targets: ["miaoshou:COMMON"],
+        },
+      },
+      common_overwrite_review: {
+        schema_version: "miaoshou-common-overwrite-review-v1",
+        status: "MISMATCH",
+        plan_id: "omnichannel:fixture-successor",
+        confirmation_token: "PUBLISH-FIXTURETOKEN",
+        payload_digest: "fixture-payload-digest",
+        expected_revision: 31,
+        review_digest: "fixture-review-digest",
+        identity_exact: true,
+        readback_non_ambiguous: true,
+        overwrite_allowed: true,
+        changed_fields: ["title", "images"],
+        blocking_fields: [],
+        unknown_fields: [],
+        fields: [
+          {
+            field: "title",
+            label: "标题",
+            changed: true,
+            existing_summary: "18 chars · sha256:existing",
+            immutable_plan_summary: "21 chars · sha256:approved",
+          },
+          {
+            field: "seller_sku",
+            label: "Seller SKU",
+            changed: false,
+            existing_summary: "••52 · sha256:existing",
+            immutable_plan_summary: "••52 · sha256:approved",
+          },
+          {
+            field: "spec_key",
+            label: "规格 key",
+            changed: false,
+            existing_summary: "1 values · sha256:existing",
+            immutable_plan_summary: "1 values · sha256:approved",
+          },
+          {
+            field: "spec_label",
+            label: "规格标签",
+            changed: false,
+            existing_summary: "1 values · sha256:existing",
+            immutable_plan_summary: "1 values · sha256:approved",
+          },
+          {
+            field: "weight",
+            label: "重量",
+            changed: false,
+            existing_summary: "0.14 kg",
+            immutable_plan_summary: "0.14 kg",
+          },
+          {
+            field: "package",
+            label: "包装尺寸",
+            changed: false,
+            existing_summary: "30 × 3 × 3 cm",
+            immutable_plan_summary: "30 × 3 × 3 cm",
+          },
+          {
+            field: "images",
+            label: "图片数量与顺序",
+            changed: true,
+            existing_summary: "5 images · order sha256:existing",
+            immutable_plan_summary: "6 images · order sha256:approved",
+          },
+          {
+            field: "description",
+            label: "描述",
+            changed: false,
+            existing_summary: "500 chars · sha256:existing",
+            immutable_plan_summary: "500 chars · sha256:approved",
+          },
+          {
+            field: "video_action",
+            label: "视频动作",
+            changed: false,
+            existing_summary: "remove",
+            immutable_plan_summary: "remove",
+          },
+        ],
+        external_writes_performed: [],
+      },
+    };
+    page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+    page.on("console", (message) => {
+      if (message.type() === "error") errors.push(`console: ${message.text()}`);
+    });
+    await page.route("**/*", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (url.origin !== baseUrl) return route.abort("blockedbyclient");
+      if (!url.pathname.startsWith("/api/")) return route.continue();
+      requests.push({ method: request.method(), url: request.url() });
+      if (url.pathname === "/api/product-workspace/dashboard") {
+        return route.fulfill(jsonResponse(dashboard));
+      }
+      if (
+        url.pathname === "/api/product-workspace/miaoshou-draft/commit"
+        && request.method() === "POST"
+      ) {
+        pendingOverwrite = route;
+        resolvePendingOverwrite();
+        return;
+      }
+      const fixture = apiFixture(
+        url,
+        request.method(),
+        { delayWeekly: false, delaySku: false, pending: {} },
+      );
+      return route.fulfill(fixture || jsonResponse({ ok: false }, 404));
+    });
+    try {
+      await page.goto(`${baseUrl}/product-workspace?offer_id=3828540231`, {
+        waitUntil: "networkidle",
+      });
+      check(
+        await computedVisibility(page, "#commonOverwritePanel"),
+        `COMMON overwrite ${viewport.width}: redacted mismatch panel is visible`,
+      );
+      check(
+        await computedVisibility(page, "#commonOverwriteButton"),
+        `COMMON overwrite ${viewport.width}: explicit action is visible`,
+      );
+      const diffText = await page.locator("#commonOverwriteDiff").innerText();
+      check(
+        diffText.includes("标题")
+        && diffText.includes("Seller SKU")
+        && diffText.includes("规格 key")
+        && diffText.includes("规格标签")
+        && diffText.includes("重量")
+        && diffText.includes("包装尺寸")
+        && diffText.includes("图片数量与顺序")
+        && diffText.includes("描述")
+        && diffText.includes("视频动作"),
+        `COMMON overwrite ${viewport.width}: required field rows are rendered`,
+        diffText,
+      );
+      const overflow = await overflowAudit(page);
+      check(
+        overflow.pageOverflow <= 2,
+        `COMMON overwrite ${viewport.width}: no horizontal overflow`,
+        overflow,
+      );
+      check(
+        requests.filter((row) => row.method === "POST").length === 0,
+        `COMMON overwrite ${viewport.width}: initial render performs zero writes`,
+        requests,
+      );
+      if (viewport.width === 1440) {
+        await page.locator("#commonOverwriteCheckbox").check();
+        await page.locator("#commonOverwriteButton").click();
+        await pendingOverwriteReady;
+        await page.waitForFunction(() => (
+          document.querySelector("#commonOverwriteMessage")?.textContent.includes("重新只读核对")
+        ));
+        const body = pendingOverwrite.request().postDataJSON();
+        check(
+          body.confirm_miaoshou_write === true
+          && body.confirm_miaoshou_overwrite === true
+          && body.approved_by === "Kyle"
+          && body.plan_id === "omnichannel:fixture-successor"
+          && body.confirmation_token === "PUBLISH-FIXTURETOKEN"
+          && body.expected_revision === 31
+          && body.payload_digest === "fixture-payload-digest"
+          && body.overwrite_review_digest === "fixture-review-digest",
+          "COMMON overwrite desktop: POST binds every explicit immutable-plan field",
+          body,
+        );
+        check(
+          await page.locator("#commonOverwriteButton").isDisabled(),
+          "COMMON overwrite desktop: button is disabled while request is pending",
+        );
+        const ambiguousDashboard = JSON.parse(JSON.stringify(dashboard));
+        ambiguousDashboard.release_v1.run = {
+          status: "FAILED",
+          targets: [{
+            target_label: "miaoshou:COMMON",
+            status: "FAILED",
+            attempts: 1,
+            error: "unknown after dispatch",
+          }],
+        };
+        await pendingOverwrite.fulfill(jsonResponse({
+          ok: false,
+          error: "socket closed after COMMON edit dispatch",
+          reconciliation_required: true,
+          durable_state_uncertain: true,
+          external_writes_performed: ["miaoshou:COMMON:immutable_plan_write"],
+          dashboard: ambiguousDashboard,
+        }, 502));
+        await page.waitForFunction(() => (
+          document.querySelector("#commonOverwriteMessage")?.textContent.includes("reconciliation evidence")
+        ));
+        check(
+          !(await computedVisibility(page, "#commonOverwriteButton")),
+          "COMMON overwrite desktop: ambiguous run hides repeat overwrite action",
+        );
+      }
+      check(
+        unexpectedInteractionErrors(errors).length === 0,
+        `COMMON overwrite ${viewport.width}: no console/page errors`,
+        errors,
+      );
+    } finally {
+      await context.close();
+    }
+  }
+}
+
 async function aiAsyncFeedback(browser) {
   const scenario = await openScenario(
     browser,
@@ -1361,6 +1610,7 @@ async function legacyStateSafety(browser) {
     await productLockedStaleTitleRefresh(browser);
     await productMultiTabTitleRefreshConflict(browser);
     await productReleaseTerminalState(browser);
+    await productCommonOverwriteContract(browser);
     await aiAsyncFeedback(browser);
     await profitAsyncAndNoFalseSuccess(browser);
     await legacyStateSafety(browser);

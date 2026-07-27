@@ -146,6 +146,42 @@ def _verified_common_plan_write(payload: dict) -> dict:
     return _verified_common_write_result(str(payload["product_id"]))
 
 
+def _common_mismatch_readback(
+    *,
+    field: str = "title",
+    unknown_field: bool = False,
+) -> dict:
+    comparison = {
+        "title": {"expected": "approved title", "actual": "existing title"},
+        "seller_sku": {"expected": "0952", "actual": "0952"},
+        "selected_sku_keys": {"expected": ["34x58"], "actual": ["34x58"]},
+        "selected_sku_numbers": {"expected": ["0952"], "actual": ["0952"]},
+        "spec_labels": {"expected": ["34x58"], "actual": ["34x58"]},
+        "weight": {"expected": 0.02, "actual": 0.02},
+        "dimensions": {"expected": [58, 34, 0.02], "actual": [58, 34, 0.02]},
+        "images": {"expected": ["approved-image"], "actual": ["existing-image"]},
+        "description_notes": {"expected": "approved", "actual": "existing"},
+        "description_image_count": {"expected": 1, "actual": 1},
+        "video_action": {"expected": "approved-video", "actual": "existing-video"},
+    }
+    changed_field = "future_field" if unknown_field else field
+    return {
+        "verified": False,
+        "source": "miaoshou_common_readonly_detail",
+        "readback_ambiguous": False,
+        "existing_detail_digest": "sha256:existing-detail-v1",
+        "checks": {changed_field: False},
+        "field_diffs": {
+            changed_field: {
+                "expected": "approved-sensitive-value",
+                "actual": "existing-sensitive-value",
+            }
+        },
+        "_comparison": comparison,
+        "external_writes_performed": [],
+    }
+
+
 def _successor_dashboard(dashboard: dict) -> dict:
     dashboard["product"]["revision"] += 1
     dashboard["product"]["title"] = "Cute Dog PVC Wall Decal 34 x 58 cm"
@@ -157,6 +193,50 @@ def _successor_dashboard(dashboard: dict) -> dict:
     ] = "Adhesivo de pared de perro PVC 34 x 58 cm"
     dashboard["omnichannel_preview"]["plan_id"] = "omnichannel:v2-test"
     return dashboard
+
+
+def _approved_successor_context(tmp_path, monkeypatch, *, readback=None):
+    store = ReleaseStore(tmp_path / "release.db")
+    monkeypatch.setattr(release_store, "default_release_store", lambda: store)
+    dashboard = _dashboard()
+    monkeypatch.setattr(
+        release_control,
+        "build_release_dashboard",
+        lambda **_kwargs: dashboard,
+    )
+    view = product_server._product_workspace_view(dashboard)
+    request = _request(view)
+    assert product_server._approve_release_plan_locally(
+        {**request, "approved_by": "Kyle", "user_approved": True}
+    )[0] == 200
+    monkeypatch.setattr(
+        release_adapters,
+        "write_miaoshou_common_from_plan",
+        _verified_common_plan_write,
+    )
+    assert product_server._prepare_miaoshou_release(
+        {**request, "confirm_miaoshou_write": True}
+    )[0] == 200
+    predecessor_plan_id = request["plan_id"]
+    store.supersede_plan(
+        predecessor_plan_id,
+        reason="locked title refresh before successor approval",
+    )
+    dashboard["listing_copy"]["superseded_release_plan_id"] = predecessor_plan_id
+    successor_view = product_server._product_workspace_view(
+        _successor_dashboard(dashboard)
+    )
+    request = _request(successor_view)
+    assert product_server._approve_release_plan_locally(
+        {**request, "approved_by": "Kyle", "user_approved": True}
+    )[0] == 200
+    monkeypatch.setattr(
+        release_adapters,
+        "readback_miaoshou_common",
+        lambda _payload: readback or _common_mismatch_readback(),
+    )
+    plan = store.get_plan(request["plan_id"])
+    return store, dashboard, request, plan
 
 
 def _two_tiktok_dashboard() -> dict:
@@ -439,14 +519,7 @@ def test_common_readback_mismatch_creates_no_run_and_never_edits(
     monkeypatch.setattr(
         release_adapters,
         "readback_miaoshou_common",
-        lambda _payload: {
-            "verified": False,
-            "checks": {"title": False},
-            "field_diffs": {
-                "title": {"expected": "approved", "actual": "other"}
-            },
-            "external_writes_performed": [],
-        },
+        lambda _payload: _common_mismatch_readback(),
     )
     monkeypatch.setattr(
         release_adapters,
@@ -462,7 +535,14 @@ def test_common_readback_mismatch_creates_no_run_and_never_edits(
 
     assert status == 409
     assert mismatch["external_writes_performed"] == []
-    assert mismatch["field_diffs"]["title"]["actual"] == "other"
+    assert "field_diffs" not in mismatch
+    review = mismatch["common_overwrite_review"]
+    assert review["overwrite_allowed"] is True
+    assert review["changed_fields"] == ["title"]
+    assert "existing-sensitive-value" not in str(mismatch)
+    assert mismatch["dashboard"]["release_v1"][
+        "common_overwrite_review"
+    ]["review_digest"] == review["review_digest"]
     approved_plan = store.get_plan(request["plan_id"])
     assert approved_plan is not None
     assert store.get_run(
@@ -472,7 +552,9 @@ def test_common_readback_mismatch_creates_no_run_and_never_edits(
     monkeypatch.setattr(
         release_adapters,
         "write_miaoshou_common_from_plan",
-        lambda payload: immutable_writes.append(payload)
+        lambda payload, *, overwrite_guard: immutable_writes.append(
+            (payload, overwrite_guard)
+        )
         or _verified_common_plan_write(payload),
     )
 
@@ -481,18 +563,200 @@ def test_common_readback_mismatch_creates_no_run_and_never_edits(
             **request,
             "confirm_miaoshou_write": True,
             "confirm_miaoshou_overwrite": True,
+            "approved_by": "Kyle",
+            "expected_revision": approved_plan["payload"]["product_revision"],
+            "payload_digest": approved_plan["payload_digest"],
+            "overwrite_review_digest": review["review_digest"],
         }
     )
 
     assert status == 200
     assert len(immutable_writes) == 1
     assert (
-        immutable_writes[0]["product_facts"]["title"]
+        immutable_writes[0][0]["product_facts"]["title"]
         == dashboard["product"]["title"]
     )
+    assert immutable_writes[0][1]["identity_exact"] is True
     assert overwritten["external_writes_performed"] == [
         "miaoshou:COMMON:draft_write_and_readback"
     ]
+    assert store.get_common_overwrite_review(request["plan_id"])[
+        "status"
+    ] == "RESOLVED"
+
+
+@pytest.mark.parametrize(
+    "bad_field,bad_value",
+    [
+        ("confirmation_token", "wrong-token"),
+        ("approved_by", "NotKyle"),
+        ("expected_revision", -1),
+        ("payload_digest", "wrong-digest"),
+    ],
+)
+def test_common_overwrite_rejects_wrong_exact_contract_without_write(
+    tmp_path,
+    monkeypatch,
+    bad_field,
+    bad_value,
+):
+    store, _dashboard_value, request, plan = _approved_successor_context(
+        tmp_path,
+        monkeypatch,
+    )
+    status, mismatch = product_server._prepare_miaoshou_release(
+        {**request, "confirm_miaoshou_write": True}
+    )
+    assert status == 409
+    writes = []
+    monkeypatch.setattr(
+        release_adapters,
+        "write_miaoshou_common_from_plan",
+        lambda *_args, **_kwargs: writes.append("write"),
+    )
+    overwrite_request = {
+        **request,
+        "confirm_miaoshou_write": True,
+        "confirm_miaoshou_overwrite": True,
+        "approved_by": "Kyle",
+        "expected_revision": plan["payload"]["product_revision"],
+        "payload_digest": plan["payload_digest"],
+        "overwrite_review_digest": mismatch["common_overwrite_review"][
+            "review_digest"
+        ],
+        bad_field: bad_value,
+    }
+
+    status, rejected = product_server._prepare_miaoshou_release(
+        overwrite_request
+    )
+
+    assert status == 409
+    assert rejected["external_writes_performed"] == []
+    assert writes == []
+    assert store.get_run(
+        f"release-run:{plan['payload_digest'][:24]}"
+    ) is None
+
+
+@pytest.mark.parametrize(
+    "readback",
+    [
+        _common_mismatch_readback(field="seller_sku"),
+        _common_mismatch_readback(field="selected_sku_keys"),
+        _common_mismatch_readback(field="common_id"),
+        _common_mismatch_readback(field="source_identity"),
+        _common_mismatch_readback(field="detail_binding"),
+        _common_mismatch_readback(unknown_field=True),
+    ],
+)
+def test_common_overwrite_blocks_identity_or_unknown_diff_without_write(
+    tmp_path,
+    monkeypatch,
+    readback,
+):
+    store, _dashboard_value, request, plan = _approved_successor_context(
+        tmp_path,
+        monkeypatch,
+        readback=readback,
+    )
+    writes = []
+    monkeypatch.setattr(
+        release_adapters,
+        "write_miaoshou_common_from_plan",
+        lambda *_args, **_kwargs: writes.append("write"),
+    )
+
+    status, rejected = product_server._prepare_miaoshou_release(
+        {
+            **request,
+            "confirm_miaoshou_write": True,
+            "confirm_miaoshou_overwrite": True,
+            "approved_by": "Kyle",
+            "expected_revision": plan["payload"]["product_revision"],
+            "payload_digest": plan["payload_digest"],
+        }
+    )
+
+    assert status == 409
+    assert rejected["common_overwrite_review"]["overwrite_allowed"] is False
+    assert rejected["external_writes_performed"] == []
+    assert writes == []
+    assert store.get_run(
+        f"release-run:{plan['payload_digest'][:24]}"
+    ) is None
+
+
+def test_common_overwrite_network_ambiguity_keeps_reconciliation_evidence(
+    tmp_path,
+    monkeypatch,
+):
+    store, _dashboard_value, request, plan = _approved_successor_context(
+        tmp_path,
+        monkeypatch,
+    )
+    status, mismatch = product_server._prepare_miaoshou_release(
+        {**request, "confirm_miaoshou_write": True}
+    )
+    assert status == 409
+    calls = []
+
+    def ambiguous_write(_payload, *, overwrite_guard):
+        calls.append(overwrite_guard["review_digest"])
+        raise release_adapters.MiaoshouDraftVerificationError(
+            "socket closed after COMMON edit dispatch",
+            external_reference="3828540231",
+            evidence={
+                "write_outcome": "unknown_after_dispatch",
+                "durable_state_uncertain": True,
+                "external_writes_performed": [
+                    "miaoshou:COMMON:immutable_plan_write"
+                ],
+            },
+        )
+
+    monkeypatch.setattr(
+        release_adapters,
+        "write_miaoshou_common_from_plan",
+        ambiguous_write,
+    )
+
+    status, ambiguous = product_server._prepare_miaoshou_release(
+        {
+            **request,
+            "confirm_miaoshou_write": True,
+            "confirm_miaoshou_overwrite": True,
+            "approved_by": "Kyle",
+            "expected_revision": plan["payload"]["product_revision"],
+            "payload_digest": plan["payload_digest"],
+            "overwrite_review_digest": mismatch["common_overwrite_review"][
+                "review_digest"
+            ],
+        }
+    )
+
+    assert status == 502
+    assert len(calls) == 1
+    assert ambiguous["reconciliation_required"] is True
+    assert ambiguous["durable_state_uncertain"] is True
+    assert ambiguous["external_writes_performed"] == [
+        "miaoshou:COMMON:immutable_plan_write"
+    ]
+    assert ambiguous["dashboard"]["release_v1"]["run"]["status"] == "FAILED"
+    assert ambiguous["dashboard"]["release_v1"][
+        "common_overwrite_review"
+    ]["status"] == "MISMATCH"
+    common = next(
+        row
+        for row in store.get_run(
+            f"release-run:{plan['payload_digest'][:24]}"
+        )["targets"]
+        if row["target_label"] == "miaoshou:COMMON"
+    )
+    assert common["status"] == "FAILED"
+    assert common["latest_failure_evidence"]["evidence"][
+        "write_outcome"
+    ] == "unknown_after_dispatch"
 
 
 def test_publish_endpoint_executes_unified_adapter_and_persists_readback(

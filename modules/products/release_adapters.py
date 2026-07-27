@@ -774,6 +774,242 @@ def _normalize_miaoshou_notes(value: Any) -> str:
     return re.sub(r">\s+<", "><", normalized)
 
 
+def _miaoshou_value_digest(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _miaoshou_detail_digest(detail: dict[str, Any]) -> str:
+    """Fingerprint only fields that can affect a governed COMMON overwrite."""
+
+    return _miaoshou_value_digest(
+        {
+            "common_id": (
+                detail.get("commonCollectBoxDetailId")
+                or detail.get("commonCollectBoxId")
+                or detail.get("id")
+            ),
+            "source_offer_id": (
+                detail.get("sourceOfferId")
+                or detail.get("offerId")
+                or detail.get("sourceProductId")
+            ),
+            "title": detail.get("title"),
+            "item_num": detail.get("itemNum"),
+            "weight": detail.get("weight"),
+            "package": [
+                detail.get("packageLength"),
+                detail.get("packageWidth"),
+                detail.get("packageHeight"),
+            ],
+            "images": list(detail.get("imgUrls") or ()),
+            "notes": _normalize_miaoshou_notes(detail.get("notes")),
+            "video": detail.get("mainImgVideoUrl"),
+            "sku_map": detail.get("skuMap") or {},
+        }
+    )
+
+
+def _miaoshou_safe_summary(field: str, value: Any) -> str:
+    """Summarise comparison values without returning copy, URLs, or identifiers."""
+
+    digest = _miaoshou_value_digest(value)[:12]
+    if field == "seller_sku":
+        text = str(value or "")
+        suffix = text[-2:] if text else "--"
+        return f"••{suffix} · sha256:{digest}"
+    if field == "weight":
+        return f"{value if value not in (None, '') else 'unknown'} kg"
+    if field == "package":
+        values = list(value or ())
+        if len(values) == 3:
+            return " × ".join(str(item) for item in values) + " cm"
+        return f"unknown · sha256:{digest}"
+    if field == "images":
+        return f"{len(list(value or ()))} images · order sha256:{digest}"
+    if field in {"spec_key", "spec_label"}:
+        return f"{len(list(value or ()))} values · sha256:{digest}"
+    if field == "video_action":
+        return "keep" if str(value or "").strip() else "remove"
+    text = str(value or "")
+    return f"{len(text)} chars · sha256:{digest}"
+
+
+def _expected_miaoshou_sku_labels(
+    payload: dict[str, Any],
+    sku_keys: set[str],
+) -> dict[str, str]:
+    facts = payload.get("product_facts") or {}
+    selected_labels = {
+        str(row.get("key") or "").strip(";"): str(row.get("label") or "").strip()
+        for row in (facts.get("selected_skus") or ())
+        if isinstance(row, dict)
+        and str(row.get("key") or "").strip(";")
+        and str(row.get("label") or "").strip()
+    }
+    overrides = {
+        str(key).strip(";"): str(value).strip()
+        for key, value in dict(facts.get("sku_label_overrides") or {}).items()
+        if str(key).strip(";") and str(value).strip()
+    }
+    return {
+        key: overrides.get(key) or selected_labels.get(key) or key
+        for key in sku_keys
+    }
+
+
+def miaoshou_common_overwrite_review(
+    payload: dict[str, Any],
+    readback: dict[str, Any],
+    *,
+    plan_id: str,
+    confirmation_token: str,
+    payload_digest: str,
+    expected_revision: int,
+) -> dict[str, Any]:
+    """Build the redacted, fail-closed contract used by API and UI."""
+
+    comparison = dict(readback.get("_comparison") or {})
+    raw_diffs = dict(readback.get("field_diffs") or {})
+    checks = {
+        str(name): bool(passed)
+        for name, passed in dict(readback.get("checks") or {}).items()
+    }
+    known_fields = {
+        "title",
+        "seller_sku",
+        "selected_sku_keys",
+        "selected_sku_numbers",
+        "spec_labels",
+        "weight",
+        "dimensions",
+        "images",
+        "description_notes",
+        "description_image_count",
+        "video_action",
+        "common_id",
+        "source_identity",
+        "detail_binding",
+        "spec_label_binding",
+    }
+    unknown_fields = sorted(set(raw_diffs) - known_fields)
+    identity_fields = {
+        "seller_sku",
+        "selected_sku_keys",
+        "selected_sku_numbers",
+        "common_id",
+        "source_identity",
+        "detail_binding",
+        "spec_label_binding",
+    }
+    blocking_fields = sorted(
+        {
+            field
+            for field in identity_fields
+            if checks.get(field) is False or field in raw_diffs
+        }
+        | set(unknown_fields)
+    )
+
+    grouped = (
+        ("title", "标题", ("title",)),
+        ("seller_sku", "Seller SKU", ("seller_sku",)),
+        ("spec_key", "规格 key", ("selected_sku_keys", "selected_sku_numbers")),
+        ("spec_label", "规格标签", ("spec_labels",)),
+        ("weight", "重量", ("weight",)),
+        ("package", "包装尺寸", ("dimensions",)),
+        ("images", "图片数量与顺序", ("images",)),
+        (
+            "description",
+            "描述",
+            ("description_notes", "description_image_count"),
+        ),
+        ("video_action", "视频动作", ("video_action",)),
+    )
+    field_rows = []
+    for public_field, label, source_fields in grouped:
+        changed = any(
+            checks.get(source) is False or source in raw_diffs
+            for source in source_fields
+        )
+        expected_values = [
+            (comparison.get(source) or {}).get("expected")
+            for source in source_fields
+        ]
+        actual_values = [
+            (comparison.get(source) or {}).get("actual")
+            for source in source_fields
+        ]
+        expected_value = (
+            expected_values[0] if len(expected_values) == 1 else expected_values
+        )
+        actual_value = actual_values[0] if len(actual_values) == 1 else actual_values
+        summary_field = (
+            "package"
+            if public_field == "package"
+            else ("description" if public_field == "description" else public_field)
+        )
+        field_rows.append(
+            {
+                "field": public_field,
+                "label": label,
+                "changed": changed,
+                "overwriteable": not any(
+                    source in identity_fields for source in source_fields
+                ),
+                "existing_summary": _miaoshou_safe_summary(
+                    summary_field,
+                    actual_value,
+                ),
+                "immutable_plan_summary": _miaoshou_safe_summary(
+                    summary_field,
+                    expected_value,
+                ),
+            }
+        )
+
+    non_ambiguous = bool(
+        readback.get("source") == "miaoshou_common_readonly_detail"
+        and readback.get("readback_ambiguous") is not True
+        and readback.get("existing_detail_digest")
+    )
+    overwrite_allowed = bool(
+        not readback.get("verified")
+        and non_ambiguous
+        and not blocking_fields
+        and raw_diffs
+    )
+    review = {
+        "schema_version": "miaoshou-common-overwrite-review-v1",
+        "status": "MISMATCH" if not readback.get("verified") else "MATCH",
+        "plan_id": str(plan_id),
+        "confirmation_token": str(confirmation_token),
+        "payload_digest": str(payload_digest),
+        "expected_revision": int(expected_revision),
+        "existing_detail_digest": str(
+            readback.get("existing_detail_digest") or ""
+        ),
+        "identity_exact": not any(field in blocking_fields for field in identity_fields),
+        "readback_non_ambiguous": non_ambiguous,
+        "overwrite_allowed": overwrite_allowed,
+        "changed_fields": [
+            row["field"] for row in field_rows if row["changed"]
+        ],
+        "blocking_fields": blocking_fields,
+        "unknown_fields": unknown_fields,
+        "fields": field_rows,
+        "external_writes_performed": [],
+    }
+    review["review_digest"] = _miaoshou_value_digest(review)
+    return review
+
+
 def _immutable_miaoshou_common_draft(payload: dict[str, Any]) -> dict[str, Any]:
     """Build COMMON exclusively from the approved immutable ReleasePlan."""
 
@@ -820,6 +1056,7 @@ def _immutable_miaoshou_common_draft(payload: dict[str, Any]) -> dict[str, Any]:
         "notes": _miaoshou_description_notes(description, images),
         "mainImgVideoUrl": videos[0] if videos else "",
         "selectedSkuKeys": selected_sku_keys,
+        "skuLabelOverrides": dict(facts.get("sku_label_overrides") or {}),
     }
 
 
@@ -880,11 +1117,55 @@ def readback_miaoshou_common(
         expected["packageHeight"],
     ]
     actual_notes = str(detail.get("notes") or "")
+    response_detail_id = (
+        detail.get("commonCollectBoxDetailId")
+        or detail.get("commonCollectBoxId")
+        or detail.get("id")
+    )
+    expected_detail_id = int(payload["product_id"])
+    actual_source_offer_id = (
+        detail.get("sourceOfferId")
+        or detail.get("offerId")
+        or detail.get("sourceProductId")
+    )
+    expected_source_offer_id = str(
+        (payload.get("product_facts") or {}).get("source_offer_id")
+        or payload["product_id"]
+    )
+    actual_spec_labels_by_key = {
+        str(key).strip(";"): str(
+            row.get("specLabel")
+            or row.get("specName")
+            or row.get("skuName")
+            or str(key).strip(";")
+        ).strip()
+        for key, row in actual_sku_map.items()
+        if isinstance(row, dict)
+    }
+    expected_spec_labels_by_key = _expected_miaoshou_sku_labels(
+        payload,
+        expected_sku_keys,
+    )
+    actual_spec_labels = sorted(actual_spec_labels_by_key.values())
+    expected_spec_labels = sorted(expected_spec_labels_by_key.values())
+    spec_label_binding = all(
+        expected_spec_labels_by_key.get(key) == key
+        or any(
+            field in row
+            for field in ("specLabel", "specName", "skuName")
+        )
+        for raw_key, row in actual_sku_map.items()
+        if isinstance(row, dict)
+        for key in (str(raw_key).strip(";"),)
+        if key in expected_sku_keys
+    )
     checks = {
         "title": str(detail.get("title") or "") == expected["title"],
         "seller_sku": str(detail.get("itemNum") or "") == expected["itemNum"],
         "selected_sku_keys": actual_sku_keys == expected_sku_keys,
         "selected_sku_numbers": actual_sku_numbers == expected_sku_numbers,
+        "spec_labels": actual_spec_labels == expected_spec_labels,
+        "spec_label_binding": spec_label_binding,
         "weight": _numbers_equal(detail.get("weight"), expected["weight"], "0.0001"),
         "dimensions": all(
             _numbers_equal(actual, wanted, "0.0001")
@@ -900,6 +1181,21 @@ def readback_miaoshou_common(
         "video_action": (
             str(detail.get("mainImgVideoUrl") or "")
             == str(expected.get("mainImgVideoUrl") or "")
+        ),
+        "common_id": (
+            response_detail_id is None
+            or str(response_detail_id) == str(expected_detail_id)
+        ),
+        "source_identity": (
+            expected_source_offer_id == str(payload["product_id"])
+            and (
+                actual_source_offer_id is None
+                or str(actual_source_offer_id) == expected_source_offer_id
+            )
+        ),
+        "detail_binding": (
+            response_detail_id is None
+            or str(response_detail_id) == str(expected_detail_id)
         ),
     }
     comparison = {
@@ -918,6 +1214,14 @@ def readback_miaoshou_common(
         "selected_sku_numbers": {
             "expected": sorted(expected_sku_numbers),
             "actual": sorted(actual_sku_numbers),
+        },
+        "spec_labels": {
+            "expected": expected_spec_labels,
+            "actual": actual_spec_labels,
+        },
+        "spec_label_binding": {
+            "expected": True,
+            "actual": spec_label_binding,
         },
         "weight": {
             "expected": expected["weight"],
@@ -943,6 +1247,22 @@ def readback_miaoshou_common(
             "expected": str(expected.get("mainImgVideoUrl") or ""),
             "actual": str(detail.get("mainImgVideoUrl") or ""),
         },
+        "common_id": {
+            "expected": expected_detail_id,
+            "actual": response_detail_id if response_detail_id is not None else expected_detail_id,
+        },
+        "source_identity": {
+            "expected": expected_source_offer_id,
+            "actual": (
+                actual_source_offer_id
+                if actual_source_offer_id is not None
+                else expected_source_offer_id
+            ),
+        },
+        "detail_binding": {
+            "expected": expected_detail_id,
+            "actual": response_detail_id if response_detail_id is not None else expected_detail_id,
+        },
     }
     field_diffs = {
         field: comparison[field]
@@ -955,6 +1275,9 @@ def readback_miaoshou_common(
         "offer_id": str(payload["product_id"]),
         "checks": checks,
         "field_diffs": field_diffs,
+        "_comparison": comparison,
+        "existing_detail_digest": _miaoshou_detail_digest(detail),
+        "readback_ambiguous": False,
         "image_count": len(detail.get("imgUrls") or ()),
         "external_writes_performed": [],
         "source": "miaoshou_common_readonly_detail",
@@ -965,6 +1288,7 @@ def write_miaoshou_common_from_plan(
     payload: dict[str, Any],
     *,
     post=None,
+    overwrite_guard: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write one immutable COMMON draft, then exact-read it back."""
 
@@ -991,6 +1315,18 @@ def write_miaoshou_common_from_plan(
         raise RuntimeError(
             "Miaoshou COMMON immutable write lacks editable detail or ossMd5"
         )
+    if overwrite_guard is not None:
+        if (
+            overwrite_guard.get("overwrite_allowed") is not True
+            or overwrite_guard.get("identity_exact") is not True
+            or overwrite_guard.get("readback_non_ambiguous") is not True
+            or not str(overwrite_guard.get("existing_detail_digest") or "")
+            or _miaoshou_detail_digest(current)
+            != str(overwrite_guard.get("existing_detail_digest"))
+        ):
+            raise RuntimeError(
+                "Miaoshou COMMON changed after overwrite review; no edit was sent"
+            )
     current_sku_map = (
         current.get("skuMap")
         if isinstance(current.get("skuMap"), dict)
@@ -1019,6 +1355,10 @@ def write_miaoshou_common_from_plan(
         draft["itemNum"],
     )
     updated_skus: dict[str, Any] = {}
+    expected_sku_labels = _expected_miaoshou_sku_labels(
+        payload,
+        selected_sku_keys,
+    )
     for key, value in selected_skus.items():
         sku = dict(value)
         sku.update(
@@ -1030,6 +1370,21 @@ def write_miaoshou_common_from_plan(
                 "packageHeight": draft["packageHeight"],
             }
         )
+        normalized_key = str(key).strip(";")
+        expected_label = expected_sku_labels.get(normalized_key, normalized_key)
+        if expected_label != normalized_key:
+            label_fields = [
+                field
+                for field in ("specLabel", "specName", "skuName")
+                if field in sku
+            ]
+            if not label_fields:
+                raise RuntimeError(
+                    "Miaoshou COMMON has no governed field for the approved "
+                    "spec label; no edit was sent"
+                )
+            for field in label_fields:
+                sku[field] = expected_label
         updated_skus[key] = sku
     updated = dict(current)
     for field in (

@@ -664,6 +664,60 @@ def test_common_readback_reports_mismatch_without_edit_call():
     assert all("edit_common_collect_box_detail" not in path for path, _body in calls)
 
 
+def test_common_overwrite_review_is_redacted_and_fail_closed_by_identity():
+    payload = _context()["payload"]
+    readback = {
+        "verified": False,
+        "source": "miaoshou_common_readonly_detail",
+        "readback_ambiguous": False,
+        "existing_detail_digest": "detail-digest",
+        "checks": {"title": False},
+        "field_diffs": {
+            "title": {
+                "expected": "approved secret title",
+                "actual": "existing secret title",
+            }
+        },
+        "_comparison": {
+            "title": {
+                "expected": "approved secret title",
+                "actual": "existing secret title",
+            }
+        },
+    }
+
+    review = release_adapters.miaoshou_common_overwrite_review(
+        payload,
+        readback,
+        plan_id="plan-1",
+        confirmation_token="token-1",
+        payload_digest="payload-1",
+        expected_revision=7,
+    )
+
+    assert review["overwrite_allowed"] is True
+    assert review["identity_exact"] is True
+    assert review["changed_fields"] == ["title"]
+    assert "approved secret title" not in str(review)
+    assert "existing secret title" not in str(review)
+
+    readback["checks"] = {"seller_sku": False}
+    readback["field_diffs"] = {
+        "seller_sku": {"expected": "0953", "actual": "9999"}
+    }
+    blocked = release_adapters.miaoshou_common_overwrite_review(
+        payload,
+        readback,
+        plan_id="plan-1",
+        confirmation_token="token-1",
+        payload_digest="payload-1",
+        expected_revision=7,
+    )
+    assert blocked["overwrite_allowed"] is False
+    assert blocked["blocking_fields"] == ["seller_sku"]
+    assert "9999" not in str(blocked)
+
+
 def test_common_readback_rejects_changed_description_with_same_images():
     payload = _context()["payload"]
     payload["listing_copy"][
@@ -782,6 +836,40 @@ def test_common_overwrite_uses_immutable_plan_then_exact_readback():
         release_adapters.MIAOSHOU_COMMON_EDIT_PATH,
         release_adapters.MIAOSHOU_COMMON_DETAIL_PATH,
     ]
+
+
+def test_common_overwrite_guard_rejects_changed_detail_before_edit():
+    payload = _context()["payload"]
+    edit_calls = []
+
+    def post(path, _body):
+        if path == release_adapters.MIAOSHOU_COMMON_EDIT_PATH:
+            edit_calls.append(path)
+        return {
+            "result": "success",
+            "data": {
+                "ossMd5": "current",
+                "editCommonCollectBoxDetail": {
+                    "title": "changed after review",
+                    "itemNum": "0953",
+                    "skuMap": {"34x58": {"itemNum": "0953"}},
+                },
+            },
+        }
+
+    with pytest.raises(RuntimeError, match="changed after overwrite review"):
+        release_adapters.write_miaoshou_common_from_plan(
+            payload,
+            post=post,
+            overwrite_guard={
+                "overwrite_allowed": True,
+                "identity_exact": True,
+                "readback_non_ambiguous": True,
+                "existing_detail_digest": "stale-detail-digest",
+            },
+        )
+
+    assert edit_calls == []
 
 
 def test_common_save_success_then_verify_exception_keeps_write_evidence():

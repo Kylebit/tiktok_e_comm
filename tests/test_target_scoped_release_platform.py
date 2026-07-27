@@ -32,6 +32,7 @@ from shared_platform.target_scoped_release_contracts import (
     TargetScopedContractError,
     TargetScopedOperationRequest,
     TargetScopedOperationResult,
+    approved_shopee_channel_master_digest,
     canonical_digest,
     operation_kind_for_target,
     planned_target_command,
@@ -302,6 +303,95 @@ def test_shopee_command_is_purely_derived_from_immutable_plan(
         "excluded_logistics_ids": excluded,
     }
     assert "access_token" not in json.dumps(command)
+
+
+def test_shopee_channel_master_digest_ignores_internal_lineage():
+    original = _plan("shopee:MY")
+    changed_lineage = deepcopy(original)
+    changed_lineage["images"][0].update(
+        {
+            "artifact_id": "replacement-artifact",
+            "audit_id": "replacement-audit",
+            "decision_source": "different-internal-lineage",
+        }
+    )
+
+    original_command, original_digest = planned_target_command(
+        original,
+        target_label="shopee:MY",
+    )
+    changed_command, changed_digest = planned_target_command(
+        changed_lineage,
+        target_label="shopee:MY",
+    )
+
+    assert changed_command["approved_master_digest"] == (
+        original_command["approved_master_digest"]
+    )
+    assert changed_command == original_command
+    assert changed_digest == original_digest
+
+
+def test_shopee_channel_master_digest_changes_for_each_visible_field():
+    title = "Approved English Shopee master"
+    description = "Exact approved description."
+    urls = [
+        "https://cdn.example/approved-1.jpg",
+        "https://cdn.example/approved-2.jpg",
+    ]
+    baseline = approved_shopee_channel_master_digest(
+        title,
+        description,
+        urls,
+    )
+    variants = [
+        approved_shopee_channel_master_digest(
+            title + " updated",
+            description,
+            urls,
+        ),
+        approved_shopee_channel_master_digest(
+            title,
+            description + " Updated.",
+            urls,
+        ),
+        approved_shopee_channel_master_digest(
+            title,
+            description,
+            list(reversed(urls)),
+        ),
+        approved_shopee_channel_master_digest(
+            title,
+            description,
+            [urls[0], "https://cdn.example/different.jpg"],
+        ),
+    ]
+
+    assert all(value != baseline for value in variants)
+    assert len(set(variants)) == len(variants)
+
+
+def test_official_shopee_fields_recompute_planned_master_digest():
+    payload = _plan("shopee:VN")
+    command, _digest = planned_target_command(
+        payload,
+        target_label="shopee:VN",
+    )
+    official_title = payload["listing_copy"]["candidates"][0]["title"]
+    official_description = payload["listing_copy"][
+        "shopee_description_en"
+    ]
+    official_urls = [
+        row["image_url"] for row in payload["images"]
+    ]
+
+    official_digest = approved_shopee_channel_master_digest(
+        official_title,
+        official_description,
+        official_urls,
+    )
+
+    assert official_digest == command["approved_master_digest"]
 
 
 @pytest.mark.parametrize(

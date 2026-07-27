@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping
@@ -116,6 +117,52 @@ def _normalised_seller_sku(value: object) -> tuple[str, str]:
     return seller_sku, seller_sku[-4:].zfill(4)
 
 
+def approved_shopee_channel_master_digest(
+    title: object,
+    description: object,
+    ordered_image_urls: object,
+) -> str:
+    """Digest only exact channel-visible fields reproducible by official GET."""
+
+    clean_title = unicodedata.normalize(
+        "NFC",
+        str(title or "").strip(),
+    )
+    exact_description = str(
+        description if description is not None else ""
+    )
+    if not clean_title or not exact_description.strip():
+        raise TargetScopedContractError(
+            "approved Shopee title and description are required"
+        )
+    if (
+        isinstance(ordered_image_urls, (str, bytes))
+        or not isinstance(ordered_image_urls, (list, tuple))
+        or not ordered_image_urls
+    ):
+        raise TargetScopedContractError(
+            "approved Shopee ordered image URLs are required"
+        )
+    ordered = []
+    for position, value in enumerate(ordered_image_urls, start=1):
+        image_url = str(value or "").strip()
+        if not image_url:
+            raise TargetScopedContractError(
+                "approved Shopee image URL is required"
+            )
+        ordered.append(
+            {"position": position, "image_url": image_url}
+        )
+    return canonical_digest(
+        {
+            "schema_version": "approved-shopee-channel-master/v1",
+            "title": clean_title,
+            "description": exact_description,
+            "ordered_images": ordered,
+        }
+    )
+
+
 def _approved_shopee_master_digest(payload: Mapping[str, Any]) -> tuple[str, int]:
     listing = payload.get("listing_copy")
     images = payload.get("images")
@@ -138,13 +185,13 @@ def _approved_shopee_master_digest(payload: Mapping[str, Any]) -> tuple[str, int
             "planned_command_incomplete",
             "immutable plan requires one approved Shopee CNSC title",
         )
-    description = str(listing.get("shopee_description_en") or "").strip()
-    if not description or not images:
+    description = str(listing.get("shopee_description_en") or "")
+    if not description.strip() or not images:
         raise TargetScopedCommandUnavailable(
             "planned_command_incomplete",
             "immutable plan requires approved Shopee description and images",
         )
-    ordered_images: list[dict[str, Any]] = []
+    ordered_image_urls: list[str] = []
     for index, row in enumerate(images, start=1):
         if not isinstance(row, Mapping):
             raise TargetScopedCommandUnavailable(
@@ -163,24 +210,14 @@ def _approved_shopee_master_digest(payload: Mapping[str, Any]) -> tuple[str, int
                 "planned_command_incomplete",
                 "immutable images must use exact consecutive order",
             )
-        ordered_images.append(
-            {
-                "position": position,
-                "image_url": url,
-                "artifact_id": str(row.get("artifact_id") or ""),
-                "audit_id": str(row.get("audit_id") or ""),
-            }
-        )
+        ordered_image_urls.append(url)
     return (
-        canonical_digest(
-            {
-                "schema_version": "approved-shopee-master/v1",
-                "title": str(candidates[0]["title"]).strip(),
-                "description": description,
-                "ordered_images": ordered_images,
-            }
+        approved_shopee_channel_master_digest(
+            candidates[0]["title"],
+            description,
+            ordered_image_urls,
         ),
-        len(ordered_images),
+        len(ordered_image_urls),
     )
 
 

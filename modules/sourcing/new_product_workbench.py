@@ -6116,6 +6116,8 @@ def _prepare_shop_mode_draft(
     category_id: str,
     cod_enabled: bool = False,
     claim_shop_ids: Optional[list[str]] = None,
+    allow_claim_repair: bool = True,
+    strict_selected_skus: bool = False,
 ) -> dict[str, Any]:
     shop_id = str(shop["shop_id"])
     warehouse_id = _preferred_warehouse_id(shop.get("warehouses") or {})
@@ -6127,7 +6129,10 @@ def _prepare_shop_mode_draft(
     try:
         read = _miaoshou_post_retry(post, get_path, read_payload, f"读取 {region} 店铺草稿")
     except RuntimeError as e:
-        if "\u672a\u9009\u62e9\u9884\u53d1\u5e03\u5e97\u94fa" not in str(e):
+        if (
+            not allow_claim_repair
+            or "\u672a\u9009\u62e9\u9884\u53d1\u5e03\u5e97\u94fa" not in str(e)
+        ):
             raise
         _claim_detail_to_shops(
             post,
@@ -6169,6 +6174,23 @@ def _prepare_shop_mode_draft(
         "productAttributes": [],
         "productCertifications": info.get("productCertifications") or [],
     })
+    if strict_selected_skus:
+        selected = {
+            str(value).strip(";")
+            for value in (draft.get("selectedSkuKeys") or ())
+            if str(value).strip(";")
+        }
+        filtered = {
+            key: value
+            for key, value in (info.get("skuMap") or {}).items()
+            if str(key).strip(";") in selected
+        }
+        if not filtered or len(filtered) != len(selected):
+            raise RuntimeError(
+                f"{region} existing draft SKU set does not match immutable plan"
+            )
+        info["skuMap"] = filtered
+        _filter_miaoshou_variant_maps(info, filtered)
     _apply_audited_english_variant_labels(
         info,
         draft.get("skuLabelOverrides") or {},
@@ -6257,6 +6279,7 @@ def _prepare_site_mode_draft(
     draft: dict[str, Any],
     category_id: str,
     cod_enabled: bool = False,
+    strict_selected_skus: bool = False,
 ) -> dict[str, Any]:
     get_path = "/open/v1/product/collect_box/tiktok/collect_box/get_site_collect_item_info"
     save_path = "/open/v1/product/collect_box/tiktok/collect_box/save_site_collect_item_info"
@@ -6327,6 +6350,23 @@ def _prepare_site_mode_draft(
         "deliveryOptionSetType": "default",
         "deliveryOptionIds": [],
     })
+    if strict_selected_skus:
+        selected = {
+            str(value).strip(";")
+            for value in (draft.get("selectedSkuKeys") or ())
+            if str(value).strip(";")
+        }
+        filtered = {
+            key: value
+            for key, value in (info.get("skuMap") or {}).items()
+            if str(key).strip(";") in selected
+        }
+        if not filtered or len(filtered) != len(selected):
+            raise RuntimeError(
+                f"{region} existing draft SKU set does not match immutable plan"
+            )
+        info["skuMap"] = filtered
+        _filter_miaoshou_variant_maps(info, filtered)
 
     existing_shop_rows = {
         str(row.get("shopId") or ""): dict(row)

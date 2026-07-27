@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import math
 import json
+import re
 import time
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -38,6 +39,17 @@ MIAOSHOU_SHOP_DETAIL_PATH = (
 MIAOSHOU_TIKTOK_DETAIL_LIST_PATH = (
     "/open/v1/product/collect_box/tiktok/collect_box/search_collect_box_detail_list"
 )
+MIAOSHOU_WAREHOUSE_PATH = (
+    "/open/v1/product/collect_box/tiktok/collect_box/get_shop_warehouse_list"
+)
+MIAOSHOU_COMMON_DETAIL_PATH = (
+    "/open/v1/product/common_collect_box/common_collect_box/"
+    "get_common_collect_box_detail"
+)
+MIAOSHOU_COMMON_EDIT_PATH = (
+    "/open/v1/product/common_collect_box/common_collect_box/"
+    "edit_common_collect_box_detail"
+)
 SEA_SITES = {"LH_PH": "PH", "LH_MY": "MY", "LH_TH": "TH", "LH_VN": "VN"}
 SITE_TARGET_KEYS = {
     "LH_PH": "lh_ph",
@@ -63,6 +75,21 @@ SITE_COUNTRIES = {
 SUBMISSION_ONLY_TIKTOK_SITES = frozenset(
     {"HB_PH", "HB_MY", "HB_TH", "HB_VN", "MX", "GB"}
 )
+
+
+class MiaoshouDraftVerificationError(RuntimeError):
+    """A Miaoshou update was accepted but exact readback did not verify."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        external_reference: str,
+        evidence: dict[str, Any],
+    ) -> None:
+        super().__init__(message)
+        self.external_reference = external_reference
+        self.external_write_evidence = evidence
 
 
 def production_adapter_registry() -> dict[str, AdapterRegistration]:
@@ -631,41 +658,547 @@ def _miaoshou_submission_audit(
     return audit_payload
 
 
+def _immutable_miaoshou_plan_draft(
+    payload: dict[str, Any],
+    *,
+    site: str,
+) -> dict[str, Any]:
+    """Compose a draft exclusively from the approved ReleasePlan payload."""
+
+    facts = payload.get("product_facts") or {}
+    package_cm = list(facts.get("package_cm") or ())
+    images = [
+        str(row.get("image_url") or "").strip()
+        for row in (payload.get("images") or ())
+        if isinstance(row, dict) and str(row.get("image_url") or "").strip()
+    ]
+    videos = [
+        str(value).strip()
+        for value in (payload.get("video_urls") or ())
+        if str(value).strip()
+    ]
+    selected_sku_keys = [
+        str(value).strip()
+        for value in (facts.get("selected_sku_keys") or ())
+        if str(value).strip()
+    ]
+    if (
+        len(package_cm) != 3
+        or not images
+        or not selected_sku_keys
+        or not all(url.startswith("https://") for url in [*images, *videos])
+    ):
+        raise RuntimeError(
+            "immutable release plan lacks exact logistics, images, variants, or video"
+        )
+    country = SITE_COUNTRIES[site]
+    description = str(
+        (payload.get("listing_copy") or {}).get("shopee_description_en") or ""
+    ).strip()
+    notes = (
+        ("<p>" + description.replace("\n", "<br>") + "</p>")
+        if description
+        else ""
+    ) + "".join(f'<p><img src="{url}"></p>' for url in images)
+    return {
+        "commonCollectBoxDetailId": int(payload["product_id"]),
+        "title": _candidate(payload, "tiktok", country),
+        "itemNum": str(payload["seller_sku"]),
+        "weight": float(facts.get("weight_kg") or 0),
+        "packageLength": float(package_cm[0]),
+        "packageWidth": float(package_cm[1]),
+        "packageHeight": float(package_cm[2]),
+        "imgUrls": images,
+        "notes": notes,
+        "mainImgVideoUrl": videos[0] if videos else "",
+        "selectedSkuKeys": selected_sku_keys,
+        "skuLabelOverrides": dict(facts.get("sku_label_overrides") or {}),
+    }
+
+
+def _miaoshou_description_notes(
+    description: str,
+    image_urls: list[str],
+) -> str:
+    """Build the exact immutable rich-text payload shared by write/readback."""
+
+    description_html = (
+        ("<p>" + str(description).replace("\r\n", "\n").replace("\n", "<br>") + "</p>")
+        if str(description).strip()
+        else ""
+    )
+    return description_html + "".join(
+        f'<p><img src="{url}"></p>' for url in image_urls
+    )
+
+
+def _normalize_miaoshou_notes(value: Any) -> str:
+    """Ignore transport-only whitespace while preserving HTML/content exactly."""
+
+    normalized = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    return re.sub(r">\s+<", "><", normalized)
+
+
+def _immutable_miaoshou_common_draft(payload: dict[str, Any]) -> dict[str, Any]:
+    """Build COMMON exclusively from the approved immutable ReleasePlan."""
+
+    facts = payload.get("product_facts") or {}
+    package_cm = list(facts.get("package_cm") or ())
+    images = [
+        str(row.get("image_url") or "").strip()
+        for row in (payload.get("images") or ())
+        if isinstance(row, dict) and str(row.get("image_url") or "").strip()
+    ]
+    videos = [
+        str(value).strip()
+        for value in (payload.get("video_urls") or ())
+        if str(value).strip()
+    ]
+    selected_sku_keys = [
+        str(value).strip()
+        for value in (facts.get("selected_sku_keys") or ())
+        if str(value).strip()
+    ]
+    title = str(facts.get("title") or "").strip()
+    seller_sku = str(payload.get("seller_sku") or "").strip()
+    description = str(
+        (payload.get("listing_copy") or {}).get("shopee_description_en") or ""
+    ).strip()
+    if (
+        not title
+        or not seller_sku
+        or len(package_cm) != 3
+        or not images
+        or not selected_sku_keys
+        or not all(url.startswith("https://") for url in [*images, *videos])
+    ):
+        raise RuntimeError("immutable COMMON release facts are incomplete")
+    return {
+        "commonCollectBoxDetailId": int(payload["product_id"]),
+        "title": title,
+        "itemNum": seller_sku,
+        "weight": float(facts.get("weight_kg") or 0),
+        "packageLength": float(package_cm[0]),
+        "packageWidth": float(package_cm[1]),
+        "packageHeight": float(package_cm[2]),
+        "imgUrls": images,
+        "notes": _miaoshou_description_notes(description, images),
+        "mainImgVideoUrl": videos[0] if videos else "",
+        "selectedSkuKeys": selected_sku_keys,
+    }
+
+
+def readback_miaoshou_common(
+    payload: dict[str, Any],
+    *,
+    post=None,
+) -> dict[str, Any]:
+    """Read and compare COMMON without editing Miaoshou or local state."""
+
+    if post is None:
+        from modules.miaoshou.client import post_open
+
+        post = post_open
+    expected = _immutable_miaoshou_common_draft(payload)
+    response = post(
+        MIAOSHOU_COMMON_DETAIL_PATH,
+        {"commonCollectBoxDetailId": int(payload["product_id"])},
+    )
+    if response.get("result") != "success":
+        raise RuntimeError(
+            "Miaoshou COMMON readback failed: "
+            f"{response.get('code')} {response.get('message') or ''}"
+        )
+    detail = (response.get("data") or {}).get("editCommonCollectBoxDetail")
+    if not isinstance(detail, dict) or not detail:
+        raise RuntimeError("Miaoshou COMMON readback returned no editable detail")
+
+    actual_sku_map = (
+        detail.get("skuMap") if isinstance(detail.get("skuMap"), dict) else {}
+    )
+    expected_sku_keys = {
+        str(value).strip(";")
+        for value in (expected.get("selectedSkuKeys") or ())
+        if str(value).strip(";")
+    }
+    actual_sku_keys = {
+        str(value).strip(";") for value in actual_sku_map
+    }
+    base_number = int(str(payload["seller_sku"]))
+    expected_sku_numbers = {
+        str((base_number + offset) % 10000).zfill(4)
+        for offset in range(len(expected_sku_keys))
+    }
+    actual_sku_numbers = {
+        str(row.get("itemNum") or "").strip()
+        for row in actual_sku_map.values()
+        if isinstance(row, dict) and str(row.get("itemNum") or "").strip()
+    }
+    actual_dimensions = [
+        detail.get("packageLength"),
+        detail.get("packageWidth"),
+        detail.get("packageHeight"),
+    ]
+    expected_dimensions = [
+        expected["packageLength"],
+        expected["packageWidth"],
+        expected["packageHeight"],
+    ]
+    actual_notes = str(detail.get("notes") or "")
+    checks = {
+        "title": str(detail.get("title") or "") == expected["title"],
+        "seller_sku": str(detail.get("itemNum") or "") == expected["itemNum"],
+        "selected_sku_keys": actual_sku_keys == expected_sku_keys,
+        "selected_sku_numbers": actual_sku_numbers == expected_sku_numbers,
+        "weight": _numbers_equal(detail.get("weight"), expected["weight"], "0.0001"),
+        "dimensions": all(
+            _numbers_equal(actual, wanted, "0.0001")
+            for actual, wanted in zip(actual_dimensions, expected_dimensions)
+        ),
+        "images": list(detail.get("imgUrls") or []) == expected["imgUrls"],
+        "description_notes": (
+            _normalize_miaoshou_notes(actual_notes)
+            == _normalize_miaoshou_notes(expected["notes"])
+        ),
+        "description_image_count": actual_notes.count("<img")
+        == len(expected["imgUrls"]),
+        "video_action": (
+            str(detail.get("mainImgVideoUrl") or "")
+            == str(expected.get("mainImgVideoUrl") or "")
+        ),
+    }
+    comparison = {
+        "title": {
+            "expected": expected["title"],
+            "actual": str(detail.get("title") or ""),
+        },
+        "seller_sku": {
+            "expected": expected["itemNum"],
+            "actual": str(detail.get("itemNum") or ""),
+        },
+        "selected_sku_keys": {
+            "expected": sorted(expected_sku_keys),
+            "actual": sorted(actual_sku_keys),
+        },
+        "selected_sku_numbers": {
+            "expected": sorted(expected_sku_numbers),
+            "actual": sorted(actual_sku_numbers),
+        },
+        "weight": {
+            "expected": expected["weight"],
+            "actual": detail.get("weight"),
+        },
+        "dimensions": {
+            "expected": expected_dimensions,
+            "actual": actual_dimensions,
+        },
+        "images": {
+            "expected": expected["imgUrls"],
+            "actual": list(detail.get("imgUrls") or []),
+        },
+        "description_image_count": {
+            "expected": len(expected["imgUrls"]),
+            "actual": actual_notes.count("<img"),
+        },
+        "description_notes": {
+            "expected": _normalize_miaoshou_notes(expected["notes"]),
+            "actual": _normalize_miaoshou_notes(actual_notes),
+        },
+        "video_action": {
+            "expected": str(expected.get("mainImgVideoUrl") or ""),
+            "actual": str(detail.get("mainImgVideoUrl") or ""),
+        },
+    }
+    field_diffs = {
+        field: comparison[field]
+        for field, passed in checks.items()
+        if not passed
+    }
+    return {
+        "verified": all(checks.values()),
+        "mode": "readback_reuse_no_write",
+        "offer_id": str(payload["product_id"]),
+        "checks": checks,
+        "field_diffs": field_diffs,
+        "image_count": len(detail.get("imgUrls") or ()),
+        "external_writes_performed": [],
+        "source": "miaoshou_common_readonly_detail",
+    }
+
+
+def write_miaoshou_common_from_plan(
+    payload: dict[str, Any],
+    *,
+    post=None,
+) -> dict[str, Any]:
+    """Write one immutable COMMON draft, then exact-read it back."""
+
+    from modules.sourcing import new_product_workbench as workbench
+
+    if post is None:
+        from modules.miaoshou.client import post_open
+
+        post = post_open
+    draft = _immutable_miaoshou_common_draft(payload)
+    detail_id = int(draft["commonCollectBoxDetailId"])
+    current_response = post(
+        MIAOSHOU_COMMON_DETAIL_PATH,
+        {"commonCollectBoxDetailId": detail_id},
+    )
+    if current_response.get("result") != "success":
+        raise RuntimeError(
+            "Miaoshou COMMON immutable write could not read current detail"
+        )
+    data = current_response.get("data") or {}
+    current = data.get("editCommonCollectBoxDetail")
+    oss_md5 = str(data.get("ossMd5") or "")
+    if not isinstance(current, dict) or not current or not oss_md5:
+        raise RuntimeError(
+            "Miaoshou COMMON immutable write lacks editable detail or ossMd5"
+        )
+    current_sku_map = (
+        current.get("skuMap")
+        if isinstance(current.get("skuMap"), dict)
+        else {}
+    )
+    selected_sku_keys = {
+        str(value).strip(";")
+        for value in (draft.get("selectedSkuKeys") or ())
+        if str(value).strip(";")
+    }
+    selected_skus = {
+        key: value
+        for key, value in current_sku_map.items()
+        if str(key).strip(";") in selected_sku_keys
+    }
+    if (
+        not selected_skus
+        or {str(key).strip(";") for key in selected_skus}
+        != selected_sku_keys
+    ):
+        raise RuntimeError(
+            "immutable ReleasePlan variants do not exactly match Miaoshou COMMON"
+        )
+    sku_numbers = workbench._sequential_sku_numbers(  # noqa: SLF001
+        selected_skus,
+        draft["itemNum"],
+    )
+    updated_skus: dict[str, Any] = {}
+    for key, value in selected_skus.items():
+        sku = dict(value)
+        sku.update(
+            {
+                "itemNum": sku_numbers[key],
+                "weight": draft["weight"],
+                "packageLength": draft["packageLength"],
+                "packageWidth": draft["packageWidth"],
+                "packageHeight": draft["packageHeight"],
+            }
+        )
+        updated_skus[key] = sku
+    updated = dict(current)
+    for field in (
+        "title",
+        "itemNum",
+        "weight",
+        "packageLength",
+        "packageWidth",
+        "packageHeight",
+        "imgUrls",
+        "notes",
+        "mainImgVideoUrl",
+    ):
+        updated[field] = draft[field]
+    updated["skuMap"] = updated_skus
+    workbench._filter_miaoshou_variant_maps(updated, updated_skus)  # noqa: SLF001
+    save_response = post(
+        MIAOSHOU_COMMON_EDIT_PATH,
+        {
+            "commonCollectBoxDetailId": detail_id,
+            "editCommonCollectBoxDetail": updated,
+            "ossMd5": oss_md5,
+        },
+    )
+    if save_response.get("result") != "success":
+        raise RuntimeError(
+            "Miaoshou COMMON immutable plan write was rejected: "
+            f"{save_response.get('code')} {save_response.get('message') or ''}"
+        )
+    try:
+        readback = readback_miaoshou_common(payload, post=post)
+    except Exception as error:
+        raise MiaoshouDraftVerificationError(
+            (
+                "Miaoshou COMMON immutable plan write was accepted but "
+                f"verification raised: {error}"
+            ),
+            external_reference=str(payload["product_id"]),
+            evidence={
+                "source": "miaoshou_open_api",
+                "verified": False,
+                "save_accepted": True,
+                "offer_id": str(payload["product_id"]),
+                "external_writes_performed": [
+                    "miaoshou:COMMON:immutable_plan_write"
+                ],
+                "verification_error": str(error),
+            },
+        ) from error
+    return {
+        "offer_id": str(payload["product_id"]),
+        "detail_id": detail_id,
+        "written_to_miaoshou": True,
+        "verified": bool(readback.get("verified")),
+        "checks": dict(readback.get("checks") or {}),
+        "field_diffs": dict(readback.get("field_diffs") or {}),
+        "draft": draft,
+        "readback": readback,
+        "external_writes_performed": ["miaoshou:COMMON:immutable_plan_write"],
+    }
+
+
+def _prepare_existing_miaoshou_target_from_plan(
+    payload: dict[str, Any],
+    *,
+    site: str,
+    resolved: dict[str, Any],
+    post,
+) -> dict[str, Any]:
+    """Write one exact existing detail using only immutable ReleasePlan facts."""
+
+    from modules.sourcing import new_product_workbench as workbench
+
+    shop_id = str(resolved["shop_id"])
+    warehouse = post(MIAOSHOU_WAREHOUSE_PATH, {"shopIds": [shop_id]})
+    if warehouse.get("result") != "success":
+        raise RuntimeError(
+            f"Miaoshou warehouse lookup failed for {site}: "
+            f"{warehouse.get('code')} {warehouse.get('message') or ''}"
+        )
+    shop = dict(resolved["shop"])
+    shop["warehouses"] = warehouse.get("data") or {}
+    target_key = str(resolved["target_key"])
+    region = SITE_COUNTRIES[site]
+    pricing = _store_price(payload, f"tiktok:{site}")
+    draft = _immutable_miaoshou_plan_draft(payload, site=site)
+    category_id = "600338"
+    write_state = {"accepted": False}
+
+    def tracked_post(path, body):
+        response = post(path, body)
+        if (
+            (
+                "save_site_collect_item_info" in str(path)
+                or "save_shop_collect_item_info" in str(path)
+            )
+            and response.get("result") == "success"
+        ):
+            write_state["accepted"] = True
+        return response
+
+    try:
+        if site in SEA_SITES:
+            prepared = workbench._prepare_site_mode_draft(
+                tracked_post,
+                detail_id=int(resolved["detail_id"]),
+                region=region,
+                region_targets=[(target_key, shop, pricing)],
+                draft=draft,
+                category_id=category_id,
+                cod_enabled=True,
+                strict_selected_skus=True,
+            )
+        else:
+            prepared = workbench._prepare_shop_mode_draft(
+                tracked_post,
+                detail_id=int(resolved["detail_id"]),
+                region=region,
+                shop=shop,
+                pricing=pricing,
+                draft=draft,
+                category_id=category_id,
+                cod_enabled=False,
+                claim_shop_ids=[],
+                allow_claim_repair=False,
+                strict_selected_skus=True,
+            )
+    except Exception as error:
+        if getattr(error, "external_write_evidence", None):
+            raise
+        if write_state["accepted"]:
+            raise MiaoshouDraftVerificationError(
+                (
+                    f"Miaoshou {site} immutable draft update was accepted but "
+                    f"verification raised: {error}"
+                ),
+                external_reference=(
+                    f"{int(resolved['detail_id'])}:{int(resolved['shop_id'])}"
+                ),
+                evidence={
+                    "source": "miaoshou_open_api",
+                    "verified": False,
+                    "save_accepted": True,
+                    "detail_id": int(resolved["detail_id"]),
+                    "shop_id": int(resolved["shop_id"]),
+                    "verification_error": str(error),
+                    "external_writes_performed": [
+                        "miaoshou:tiktok_detail:update"
+                    ],
+                },
+            ) from error
+        raise
+    if not prepared.get("ready"):
+        failed = [
+            str(key)
+            for key, passed in (prepared.get("checks") or {}).items()
+            if not passed
+        ]
+        raise MiaoshouDraftVerificationError(
+            (
+                f"Miaoshou {site} immutable draft update was accepted but "
+                "readback did not verify: "
+                + ", ".join(failed or ["unknown fields"])
+            ),
+            external_reference=(
+                f"{int(resolved['detail_id'])}:{int(resolved['shop_id'])}"
+            ),
+            evidence={
+                "source": "miaoshou_open_api",
+                "verified": False,
+                "save_accepted": True,
+                "detail_id": int(resolved["detail_id"]),
+                "shop_id": int(resolved["shop_id"]),
+                "checks": dict(prepared.get("checks") or {}),
+                "external_writes_performed": [
+                    "miaoshou:tiktok_detail:update"
+                ],
+                "readback": dict(prepared),
+            },
+        )
+    return prepared
+
+
 def _miaoshou_publish_target(
     payload: dict[str, Any],
     *,
     site: str,
 ) -> tuple[str, dict[str, Any]]:
     from modules.miaoshou.client import post_open
-    from modules.sourcing import new_product_workbench as workbench
 
-    offer_id = str(payload["product_id"])
-    # One release target owns one Miaoshou collect-box detail.  This keeps
-    # retries isolated and avoids re-claiming sites that already passed their
-    # official marketplace read-back.
-    selected = [SITE_TARGET_KEYS[site]]
-    claim = workbench.claim_miaoshou_to_tiktok(
-        offer_id,
-        selected_target_ids=selected,
+    resolved = _resolve_existing_miaoshou_tiktok_detail(
+        payload,
+        site=site,
+        post=post_open,
     )
-    prepared = workbench.prepare_miaoshou_site_drafts(offer_id)
+    prepared_site = _prepare_existing_miaoshou_target_from_plan(
+        payload,
+        site=site,
+        resolved=resolved,
+        post=post_open,
+    )
     key = SITE_TARGET_KEYS[site]
-    shop = (claim.get("shops") or {}).get(key) or {}
-    detail_group = str(shop.get("detail_group") or "")
-    detail_id = int(
-        (claim.get("detail_group_detail_ids") or {}).get(detail_group)
-        or claim.get("tiktok_detail_id")
-        or 0
-    )
-    shop_id = int(shop.get("shop_id") or 0)
-    if not detail_id or not shop_id:
-        raise RuntimeError(f"Miaoshou claim did not resolve {site} detail/shop identity")
-    region = SEA_SITES.get(site, site)
-    prepared_site = (
-        (prepared.get("shops") or {}).get(key)
-        or (prepared.get("sites") or {}).get(region)
-        or {}
-    )
+    detail_id = int(resolved["detail_id"])
+    shop_id = int(resolved["shop_id"])
     audit = _miaoshou_submission_audit(
         payload,
         site=site,
@@ -791,20 +1324,24 @@ def _resolve_existing_miaoshou_tiktok_detail(
         raise RuntimeError(
             f"Miaoshou existing detail lookup returned no shop item for {clean_site}"
         )
-    bound_shop_ids = {
+    claim_shop_ids = {
         str(value).strip()
         for value in (data.get("claimToShopIds") or ())
         if str(value).strip()
     }
     explicit_shop_id = str(info.get("shopId") or "").strip()
-    if explicit_shop_id:
-        bound_shop_ids.add(explicit_shop_id)
-    bound_shop_ids.update(
-        str(row.get("shopId") or "").strip()
-        for row in (info.get("collectBoxDetailShopList") or ())
-        if isinstance(row, dict) and str(row.get("shopId") or "").strip()
-    )
-    if expected_shop_id not in bound_shop_ids:
+    returned_detail_id = str(info.get("detailId") or "").strip()
+    if returned_detail_id != str(detail_id):
+        raise RuntimeError(
+            f"Miaoshou detail identity {returned_detail_id or 'missing'} "
+            f"does not match mapped detail {detail_id}"
+        )
+    if explicit_shop_id != expected_shop_id:
+        raise RuntimeError(
+            f"Miaoshou detail {detail_id} shop {explicit_shop_id or 'missing'} "
+            f"does not match fixed shop {expected_shop_id}"
+        )
+    if claim_shop_ids != {expected_shop_id}:
         raise RuntimeError(
             f"Miaoshou detail {detail_id} is not bound to fixed shop "
             f"{expected_shop_id} for {clean_site}"
@@ -823,16 +1360,10 @@ def _resolve_existing_miaoshou_tiktok_detail(
             f"Miaoshou detail {detail_id} belongs to common product "
             f"{returned_common_id}, expected {product_id}"
         )
-    returned_item_num = str(info.get("itemNum") or "").strip()
     sku_map = info.get("skuMap")
-    if not returned_item_num or not isinstance(sku_map, dict) or not sku_map:
+    if not isinstance(sku_map, dict) or not sku_map:
         raise RuntimeError(
             f"Miaoshou detail {detail_id} did not return verifiable SKU identity"
-        )
-    if returned_item_num != seller_sku:
-        raise RuntimeError(
-            f"Miaoshou detail {detail_id} seller SKU {returned_item_num} "
-            f"does not match {seller_sku}"
         )
     selected_count = len(
         (payload.get("product_facts") or {}).get("selected_sku_keys") or ()
@@ -874,6 +1405,20 @@ def _resolve_existing_miaoshou_tiktok_detail(
         or (search.get("data") or {}).get("list")
         or ()
     )
+    row_detail_ids = {
+        int(row.get("collectBoxDetailId") or row.get("detailId") or 0)
+        for row in rows
+        if isinstance(row, dict)
+        and int(row.get("collectBoxDetailId") or row.get("detailId") or 0) > 0
+    }
+    if (
+        len(rows) != len(normalized)
+        or row_detail_ids != set(normalized.values())
+    ):
+        raise RuntimeError(
+            "Miaoshou source-item lookup does not exactly match the persisted "
+            "detail group identity set"
+        )
     matches: list[int] = []
     for row in rows:
         if not isinstance(row, dict):

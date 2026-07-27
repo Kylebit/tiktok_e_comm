@@ -94,27 +94,25 @@ def test_miaoshou_publish_reads_current_region_site_result(monkeypatch):
     monkeypatch.setattr(
         workbench,
         "claim_miaoshou_to_tiktok",
+        lambda *_args, **_kwargs: pytest.fail("claim/create must not run"),
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_resolve_existing_miaoshou_tiktok_detail",
         lambda *_args, **_kwargs: {
-            "shops": {
-                "lh_ph": {
-                    "shop_id": "7676267",
-                    "detail_group": "lively:PH",
-                }
-            },
-            "detail_group_detail_ids": {"lively:PH": 3224810860},
+            "target_key": "lh_ph",
+            "detail_id": 3224810860,
+            "shop_id": 7676267,
+            "shop": {"id": "lh_ph", "shop_id": 7676267, "region": "PH"},
         },
     )
     monkeypatch.setattr(
-        workbench,
-        "prepare_miaoshou_site_drafts",
+        release_adapters,
+        "_prepare_existing_miaoshou_target_from_plan",
         lambda *_args, **_kwargs: {
-            "sites": {
-                "PH": {
-                    "ready": True,
-                    "site_collect_shop_ids": ["7676267"],
-                    "checks": {"title": True, "price": True, "logistics": True},
-                }
-            },
+            "ready": True,
+            "site_collect_shop_ids": ["7676267"],
+            "checks": {"title": True, "price": True, "logistics": True},
         },
     )
     submitted = []
@@ -192,12 +190,20 @@ def test_existing_detail_resolver_ignores_asymmetric_claim_shops(monkeypatch):
                     "detailList": [
                         {
                             "commonCollectBoxDetailId": "3828811808",
-                            "collectBoxDetailId": 3227305525,
+                            "collectBoxDetailId": detail_id,
                             "itemNum": "0953",
                             "collectBoxDetailShopList": [
-                                {"shopId": "7676267"}
+                                {"shopId": shop_id}
                             ],
                         }
+                        for detail_id, shop_id in (
+                            (3227304421, "10204699"),
+                            (3227305063, "13295169"),
+                            (3227305525, "7676267"),
+                            (3227306445, "13295228"),
+                            (3227307552, "13295291"),
+                            (3227308139, "16265910"),
+                        )
                     ]
                 },
             }
@@ -205,10 +211,10 @@ def test_existing_detail_resolver_ignores_asymmetric_claim_shops(monkeypatch):
             "result": "success",
             "data": {
                 "shopCollectItemInfo": {
+                    "detailId": 3227305525,
                     "shopId": "7676267",
                     "title": "Approved PH title",
                     "commonCollectBoxDetailId": "3828811808",
-                    "itemNum": "0953",
                     "skuMap": {"34x58": {"itemNum": "0953"}},
                 },
                 "claimToShopIds": ["7676267"],
@@ -297,12 +303,68 @@ def test_existing_detail_resolver_blocks_missing_duplicate_or_wrong_shop(
                 "result": "success",
                 "data": {
                     "shopCollectItemInfo": {
+                        "detailId": 3227305525,
+                        "shopId": "7676267",
                         "title": "existing",
                         "commonCollectBoxDetailId": "3828811808",
-                        "itemNum": "0953",
                         "skuMap": {"34x58": {"itemNum": "0953"}},
                     },
                     "claimToShopIds": bound_shop_ids,
+                },
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    ("info_updates", "message"),
+    [
+        ({"detailId": 3227300000}, "does not match mapped detail"),
+        ({"shopId": "16265910"}, "does not match fixed shop"),
+        (
+            {"skuMap": {"34x58": {"itemNum": "9999"}}},
+            "variant SKU scheme",
+        ),
+    ],
+)
+def test_existing_detail_resolver_blocks_wrong_detail_shop_or_variant_sku(
+    monkeypatch,
+    info_updates,
+    message,
+):
+    from modules.sourcing import new_product_workbench as workbench
+
+    monkeypatch.setattr(
+        workbench,
+        "load_miaoshou_tiktok_claim",
+        lambda _offer_id: {
+            "source_item_id": "1011111051454",
+            "detail_group_detail_ids": {
+                "lively:GB": 3227304421,
+                "lively:MY": 3227305063,
+                "lively:PH": 3227305525,
+                "lively:TH": 3227306445,
+                "lively:VN": 3227307552,
+                "lively:MX": 3227308139,
+            },
+        },
+    )
+    info = {
+        "detailId": 3227305525,
+        "shopId": "7676267",
+        "commonCollectBoxDetailId": "3828811808",
+        "skuMap": {"34x58": {"itemNum": "0953"}},
+    }
+    info.update(info_updates)
+
+    with pytest.raises(RuntimeError, match=message):
+        release_adapters._resolve_existing_miaoshou_tiktok_detail(
+            _context()["payload"],
+            site="LH_PH",
+            post=lambda _path, _body: {
+                "result": "success",
+                "data": {
+                    "shopCollectItemInfo": info,
+                    "claimToShopIds": ["7676267"],
                 },
             },
         )
@@ -340,6 +402,293 @@ def test_api_less_pre_submit_audit_blocks_incomplete_approved_scope():
                 "checks": {"title": True, "price": True},
             },
         )
+
+
+def test_common_readback_uses_semantic_master_not_ph_candidate():
+    payload = _context()["payload"]
+    payload["product_facts"]["title"] = "Approved Semantic Master Title"
+    payload["listing_copy"]["candidates"][0][
+        "title"
+    ] = "Different TikTok PH Candidate"
+    calls = []
+
+    result = release_adapters.readback_miaoshou_common(
+        payload,
+        post=lambda path, body: calls.append((path, body))
+        or {
+            "result": "success",
+            "data": {
+                "editCommonCollectBoxDetail": {
+                    "title": "Approved Semantic Master Title",
+                    "itemNum": "0953",
+                    "weight": 0.02,
+                    "packageLength": 58,
+                    "packageWidth": 34,
+                    "packageHeight": 0.02,
+                    "imgUrls": [
+                        "https://assets.example/1.jpg",
+                        "https://assets.example/2.jpg",
+                    ],
+                    "notes": (
+                        '<p><img src="https://assets.example/1.jpg"></p>'
+                        '<p><img src="https://assets.example/2.jpg"></p>'
+                    ),
+                    "mainImgVideoUrl": "",
+                    "skuMap": {
+                        "34x58": {
+                            "itemNum": "0953",
+                        }
+                    },
+                }
+            },
+        },
+    )
+
+    assert result["verified"] is True
+    assert result["field_diffs"] == {}
+    assert calls == [
+        (
+            release_adapters.MIAOSHOU_COMMON_DETAIL_PATH,
+            {"commonCollectBoxDetailId": 3828811808},
+        )
+    ]
+
+
+def test_common_readback_reports_mismatch_without_edit_call():
+    payload = _context()["payload"]
+    calls = []
+
+    result = release_adapters.readback_miaoshou_common(
+        payload,
+        post=lambda path, body: calls.append((path, body))
+        or {
+            "result": "success",
+            "data": {
+                "editCommonCollectBoxDetail": {
+                    "title": payload["product_facts"]["title"],
+                    "itemNum": "0953",
+                    "weight": 0.02,
+                    "packageLength": 58,
+                    "packageWidth": 34,
+                    "packageHeight": 0.02,
+                    "imgUrls": ["https://assets.example/wrong.jpg"],
+                    "notes": "<img src='wrong'>",
+                    "mainImgVideoUrl": "",
+                    "skuMap": {"34x58": {"itemNum": "0953"}},
+                }
+            },
+        },
+    )
+
+    assert result["verified"] is False
+    assert "images" in result["field_diffs"]
+    assert calls[0][0] == release_adapters.MIAOSHOU_COMMON_DETAIL_PATH
+    assert all("edit_common_collect_box_detail" not in path for path, _body in calls)
+
+
+def test_common_readback_rejects_changed_description_with_same_images():
+    payload = _context()["payload"]
+    payload["listing_copy"][
+        "shopee_description_en"
+    ] = "Approved factual product description."
+    images = [
+        "https://assets.example/1.jpg",
+        "https://assets.example/2.jpg",
+    ]
+
+    result = release_adapters.readback_miaoshou_common(
+        payload,
+        post=lambda _path, _body: {
+            "result": "success",
+            "data": {
+                "editCommonCollectBoxDetail": {
+                    "title": payload["product_facts"]["title"],
+                    "itemNum": "0953",
+                    "weight": 0.02,
+                    "packageLength": 58,
+                    "packageWidth": 34,
+                    "packageHeight": 0.02,
+                    "imgUrls": images,
+                    "notes": (
+                        "<p>Different unapproved description.</p>"
+                        '<p><img src="https://assets.example/1.jpg"></p>'
+                        '<p><img src="https://assets.example/2.jpg"></p>'
+                    ),
+                    "mainImgVideoUrl": "",
+                    "skuMap": {"34x58": {"itemNum": "0953"}},
+                }
+            },
+        },
+    )
+
+    assert result["verified"] is False
+    assert result["checks"]["description_image_count"] is True
+    assert result["checks"]["description_notes"] is False
+    assert "description_notes" in result["field_diffs"]
+
+
+def test_common_overwrite_uses_immutable_plan_then_exact_readback():
+    payload = _context()["payload"]
+    payload["product_facts"]["title"] = "Approved Semantic Master Title"
+    payload["listing_copy"]["shopee_description_en"] = (
+        "Approved factual product description."
+    )
+    payload["listing_copy"]["candidates"][0][
+        "title"
+    ] = "Different TikTok PH Candidate"
+    calls = []
+    saved = {}
+
+    def post(path, body):
+        calls.append((path, body))
+        if path == release_adapters.MIAOSHOU_COMMON_EDIT_PATH:
+            saved.update(body)
+            return {"result": "success", "data": {}}
+        if saved:
+            return {
+                "result": "success",
+                "data": {
+                    "editCommonCollectBoxDetail": dict(
+                        saved["editCommonCollectBoxDetail"]
+                    ),
+                    "ossMd5": "after",
+                },
+            }
+        return {
+            "result": "success",
+            "data": {
+                "ossMd5": "before",
+                "editCommonCollectBoxDetail": {
+                    "title": "Old mutable title",
+                    "itemNum": "0953",
+                    "weight": 1,
+                    "packageLength": 1,
+                    "packageWidth": 1,
+                    "packageHeight": 1,
+                    "imgUrls": ["https://assets.example/old.jpg"],
+                    "notes": "<p>old</p>",
+                    "mainImgVideoUrl": "",
+                    "skuMap": {
+                        "34x58": {"itemNum": "old"},
+                        "other": {"itemNum": "other"},
+                    },
+                    "colorMap": {},
+                    "sizeMap": {},
+                    "saleProp3Map": {},
+                },
+            },
+        }
+
+    result = release_adapters.write_miaoshou_common_from_plan(
+        payload,
+        post=post,
+    )
+
+    updated = saved["editCommonCollectBoxDetail"]
+    assert result["verified"] is True
+    assert updated["title"] == "Approved Semantic Master Title"
+    assert updated["title"] != "Different TikTok PH Candidate"
+    assert updated["imgUrls"] == [
+        "https://assets.example/1.jpg",
+        "https://assets.example/2.jpg",
+    ]
+    assert updated["notes"] == (
+        "<p>Approved factual product description.</p>"
+        '<p><img src="https://assets.example/1.jpg"></p>'
+        '<p><img src="https://assets.example/2.jpg"></p>'
+    )
+    assert set(updated["skuMap"]) == {"34x58"}
+    assert updated["skuMap"]["34x58"]["itemNum"] == "0953"
+    assert [path for path, _body in calls] == [
+        release_adapters.MIAOSHOU_COMMON_DETAIL_PATH,
+        release_adapters.MIAOSHOU_COMMON_EDIT_PATH,
+        release_adapters.MIAOSHOU_COMMON_DETAIL_PATH,
+    ]
+
+
+def test_common_save_success_then_verify_exception_keeps_write_evidence():
+    payload = _context()["payload"]
+    detail_reads = {"count": 0}
+
+    def post(path, _body):
+        if path == release_adapters.MIAOSHOU_COMMON_EDIT_PATH:
+            return {"result": "success", "data": {}}
+        detail_reads["count"] += 1
+        if detail_reads["count"] > 1:
+            raise RuntimeError("readback transport unavailable")
+        return {
+            "result": "success",
+            "data": {
+                "ossMd5": "before",
+                "editCommonCollectBoxDetail": {
+                    "title": "old",
+                    "itemNum": "0953",
+                    "skuMap": {"34x58": {"itemNum": "0953"}},
+                },
+            },
+        }
+
+    with pytest.raises(
+        release_adapters.MiaoshouDraftVerificationError,
+        match="write was accepted",
+    ) as raised:
+        release_adapters.write_miaoshou_common_from_plan(
+            payload,
+            post=post,
+        )
+
+    assert raised.value.external_reference == "3828811808"
+    assert raised.value.external_write_evidence["save_accepted"] is True
+    assert raised.value.external_write_evidence[
+        "external_writes_performed"
+    ] == ["miaoshou:COMMON:immutable_plan_write"]
+
+
+def test_existing_detail_save_success_then_verify_exception_keeps_evidence(
+    monkeypatch,
+):
+    from modules.sourcing import new_product_workbench as workbench
+
+    def prepare(post, **_kwargs):
+        assert post(
+            "/open/v1/product/collect_box/tiktok/collect_box/"
+            "save_site_collect_item_info",
+            {"fixture": True},
+        )["result"] == "success"
+        raise RuntimeError("verification network failed")
+
+    monkeypatch.setattr(workbench, "_prepare_site_mode_draft", prepare)
+
+    with pytest.raises(
+        release_adapters.MiaoshouDraftVerificationError,
+        match="update was accepted",
+    ) as raised:
+        release_adapters._prepare_existing_miaoshou_target_from_plan(
+            _context()["payload"],
+            site="LH_PH",
+            resolved={
+                "detail_id": 3227305525,
+                "shop_id": 7676267,
+                "target_key": "lh_ph",
+                "shop": {"shop_id": 7676267},
+            },
+            post=lambda path, _body: {
+                "result": "success",
+                "data": (
+                    {"1": [{"warehouseId": "warehouse-ph"}]}
+                    if path == release_adapters.MIAOSHOU_WAREHOUSE_PATH
+                    else {}
+                ),
+            },
+        )
+
+    evidence = raised.value.external_write_evidence
+    assert raised.value.external_reference == "3227305525:7676267"
+    assert evidence["save_accepted"] is True
+    assert evidence["verification_error"] == "verification network failed"
+    assert evidence["external_writes_performed"] == [
+        "miaoshou:tiktok_detail:update"
+    ]
 
 
 def test_verified_tiktok_readback_updates_local_catalogue(monkeypatch):

@@ -34,8 +34,10 @@ def scan_prepared_shop_sku(*, shop_id: int, access_token: str, seller_sku: str) 
 
 def compatible_prepared_logistics(*, shop_id: int, access_token: str, parcel: dict, excluded_ids=()) -> list[int]:
     rows = shop_get("/api/v2/logistics/get_channel_list", shop_id, access_token).get("response", {}).get("logistics_channel_list", ())
+    from modules.shopee.publish import _channel_supports_parcel
     excluded = {int(value) for value in excluded_ids}
-    return [int(row.get("logistics_channel_id") or row.get("logistic_id")) for row in rows if row.get("enabled") and int(row.get("logistics_channel_id") or row.get("logistic_id") or 0) not in excluded]
+    weight = float(parcel["weight_kg"]); dimensions = tuple(float(x) for x in parcel["dimensions_cm"])
+    return [int(row.get("logistics_channel_id") or row.get("logistic_id")) for row in rows if row.get("enabled") and int(row.get("logistics_channel_id") or row.get("logistic_id") or 0) not in excluded and _channel_supports_parcel(row, region="VN" if 50052 in excluded else "MY", weight_kg=weight, dimensions_cm=dimensions)]
 
 
 def inspect_existing_global(*, shop_id: int, access_token: str, global_item_id: str, model_sku: str, approved_master_digest: str) -> dict:
@@ -49,21 +51,25 @@ def inspect_existing_global(*, shop_id: int, access_token: str, global_item_id: 
     if not merchant_id or not token:
         raise RuntimeError("prepared merchant token is required")
     item_response = merchant_get("/api/v2/global_product/get_global_item_info", merchant_id, token, {"global_item_id_list": str(global_item_id)})
-    item_rows = (item_response.get("response") or {}).get("item_list") or (item_response.get("response") or {}).get("global_item_list") or []
+    if item_response.get("error"):
+        raise RuntimeError("official global item GET failed")
+    item_rows = (item_response.get("response") or {}).get("global_item_list") or []
     if len(item_rows) != 1:
         raise RuntimeError("official global item must be unique")
     item = item_rows[0]
     title = item.get("global_item_name")
     description = item.get("description") or item.get("global_item_description")
-    images = item.get("image") or item.get("images") or item.get("image_urls")
-    if not isinstance(images, list):
+    images = item.get("image") or {}
+    urls = images.get("image_url_list") if isinstance(images, dict) else None
+    if not isinstance(urls, list):
         raise RuntimeError("official global item images are unavailable")
-    urls = [row.get("image_url") if isinstance(row, dict) else row for row in images]
     from shared_platform.target_scoped_release_contracts import approved_shopee_channel_master_digest
     if approved_shopee_channel_master_digest(title, description, urls) != approved_master_digest:
         raise RuntimeError("official global master digest does not match immutable command")
-    rows = (merchant_get("/api/v2/global_product/get_global_model_list", merchant_id, token, {"global_item_id": int(global_item_id)}).get("response") or {}).get("model_list") or []
-    matches = [row for row in rows if str(row.get("model_sku") or "") == model_sku]
+    model_response = merchant_get("/api/v2/global_product/get_global_model_list", merchant_id, token, {"global_item_id": int(global_item_id)})
+    if model_response.get("error"): raise RuntimeError("official global model GET failed")
+    rows = (model_response.get("response") or {}).get("global_model") or []
+    matches = [row for row in rows if str(row.get("global_model_sku") or "") == model_sku]
     if len(matches) != 1:
         raise RuntimeError("global model SKU must be unique")
     # The digest is supplied by the immutable command; production callers can
@@ -71,7 +77,10 @@ def inspect_existing_global(*, shop_id: int, access_token: str, global_item_id: 
     if not approved_master_digest:
         raise RuntimeError("approved master digest is required")
     row = matches[0]
-    return {"global_model_id": str(row.get("global_model_id") or row.get("model_id") or ""), "tier_index": list(row.get("tier_index") or [])}
+    model_id = str(row.get("global_model_id") or "")
+    tier = list(row.get("tier_index") or [])
+    if not model_id.isdigit() or not tier or any(isinstance(v, bool) or not isinstance(v, int) for v in tier): raise RuntimeError("official global model identity is invalid")
+    return {"global_model_id": model_id, "tier_index": tier}
 
 
 def publish_existing_global_site(*, request, evidence: dict) -> dict:
@@ -83,7 +92,7 @@ def publish_existing_global_site(*, request, evidence: dict) -> dict:
     store = load_tokens(); merchant_id = int((store.get("shops", {}).get(str(shop_id), {}) or {}).get("merchant_id") or 0)
     token = str((store.get("merchants", {}).get(str(merchant_id), {}) or {}).get("access_token") or "")
     if not merchant_id or not token: raise RuntimeError("prepared merchant token is required")
-    body = {"global_item_id": int(evidence["global_item_id"]), "shop_id": int(shop_id), "shop_region": command["region"], "item": {"item_status": command["item_status"], "original_price": command["local_original_price"], "logistic": [{"logistics_channel_id": x, "enabled": True} for x in evidence["selected_logistics_ids"]], "model": [{"tier_index": evidence["global_tier_index"], "original_price": command["local_original_price"]}]}}
+    body = {"global_item_id": int(evidence["global_item_id"]), "shop_id": int(shop_id), "shop_region": command["region"], "item": {"item_status": command["item_status"], "original_price": command["local_original_price"], "logistic": [{"logistic_id": x, "enabled": True} for x in evidence["selected_logistics_ids"]], "model": [{"tier_index": evidence["global_tier_index"], "original_price": command["local_original_price"]}]}}
     response = merchant_post("/api/v2/global_product/create_publish_task", merchant_id, token, body)
     task_id = (response.get("response") or {}).get("publish_task_id")
     if not task_id: raise RuntimeError("create_publish_task response is ambiguous")

@@ -395,6 +395,21 @@ def test_supersede_invalidates_approval_unfinished_run_and_reservation(tmp_path)
     )
     store.begin_target(run["run_id"], "tiktok:LH_PH")
 
+    with pytest.raises(
+        ReleaseAuthorizationError,
+        match="cannot be superseded.*RUNNING",
+    ):
+        store.supersede_plan(plan["plan_id"], reason="price changed")
+    still_running = store.get_run(run["run_id"])
+    assert next(
+        row
+        for row in still_running["targets"]
+        if row["target_label"] == "tiktok:LH_PH"
+    )["status"] == "RUNNING"
+    store.recover_interrupted_targets(
+        run["run_id"],
+        ["tiktok:LH_PH"],
+    )
     superseded = store.supersede_plan(plan["plan_id"], reason="price changed")
     stored = store.get_plan(plan["plan_id"])
     stored_run = store.get_run(run["run_id"])
@@ -414,6 +429,98 @@ def test_supersede_invalidates_approval_unfinished_run_and_reservation(tmp_path)
 
     with pytest.raises(ReleaseAuthorizationError, match="superseded"):
         store.begin_target(run["run_id"], "tiktok:LH_PH")
+
+
+def test_unlinked_superseded_common_plan_can_be_linked_once_to_successor(
+    tmp_path,
+):
+    store, predecessor, _approval = _approved_store(
+        tmp_path,
+        targets=["miaoshou:COMMON", "tiktok:LH_PH"],
+    )
+    run = store.start_run(predecessor["plan_id"])
+    store.begin_target(run["run_id"], "miaoshou:COMMON")
+    store.record_target_success(
+        run["run_id"],
+        "miaoshou:COMMON",
+        external_id=predecessor["product_id"],
+        readback_evidence={
+            "verified": True,
+            "source": "fixture",
+            "offer_id": predecessor["product_id"],
+            "checks": {"title": True},
+            "image_count": 0,
+        },
+    )
+    store.supersede_plan(
+        predecessor["plan_id"],
+        reason="title refresh happened before successor existed",
+    )
+
+    candidate = store.latest_unlinked_common_predecessor(
+        product_id=predecessor["product_id"],
+        seller_sku=predecessor["seller_sku"],
+    )
+    assert candidate["plan_id"] == predecessor["plan_id"]
+    successor_payload = _plan(plan_id="omnichannel:plan-v2")
+    successor = store.create_plan(
+        successor_payload,
+        supersedes_plan_id=predecessor["plan_id"],
+    )
+
+    assert store.predecessor_plan_for(successor["plan_id"])["plan_id"] == (
+        predecessor["plan_id"]
+    )
+    linked = store.get_plan(predecessor["plan_id"])
+    assert linked["status"] == "SUPERSEDED"
+    assert linked["superseded_by_plan_id"] == successor["plan_id"]
+    with pytest.raises(ReleaseStoreError, match="already superseded"):
+        store.create_plan(
+            _plan(plan_id="omnichannel:plan-v3"),
+            supersedes_plan_id=predecessor["plan_id"],
+        )
+
+
+def test_failure_write_evidence_survives_retry_then_verified_success(tmp_path):
+    store, plan, _approval = _approved_store(
+        tmp_path,
+        targets=["miaoshou:COMMON"],
+    )
+    run = store.start_run(plan["plan_id"])
+    first_key = run["targets"][0]["idempotency_key"]
+    store.begin_target(run["run_id"], "miaoshou:COMMON")
+    store.record_target_failure(
+        run["run_id"],
+        "miaoshou:COMMON",
+        error="save accepted but exact readback failed",
+        external_id="3828540231",
+        failure_evidence={
+            "save_accepted": True,
+            "verified": False,
+            "external_writes_performed": ["miaoshou:COMMON:update"],
+        },
+    )
+    failed = store.get_run(run["run_id"])
+    event = failed["targets"][0]["latest_failure_evidence"]
+    assert event["attempt"] == 1
+    assert event["evidence"]["save_accepted"] is True
+
+    store.retry_failed_targets(run["run_id"], ["miaoshou:COMMON"])
+    retried = store.begin_target(run["run_id"], "miaoshou:COMMON")
+    assert retried["idempotency_key"] == first_key
+    store.record_target_success(
+        run["run_id"],
+        "miaoshou:COMMON",
+        external_id="3828540231",
+        readback_evidence={"verified": True, "source": "exact-readback"},
+    )
+
+    completed = store.get_run(run["run_id"])
+    target = completed["targets"][0]
+    assert target["status"] == "SUCCEEDED"
+    assert target["attempts"] == 2
+    assert target["readback"]["evidence"]["verified"] is True
+    assert target["failure_events"][0]["evidence"]["save_accepted"] is True
 
 
 def test_successor_creation_hands_off_same_sku_atomically(tmp_path):

@@ -172,6 +172,18 @@ CREATE TABLE IF NOT EXISTS release_target_readbacks (
         REFERENCES release_target_runs(run_id, target_label)
 );
 
+CREATE TABLE IF NOT EXISTS release_target_failure_events (
+    run_id TEXT NOT NULL,
+    target_label TEXT NOT NULL,
+    attempt INTEGER NOT NULL CHECK (attempt > 0),
+    evidence_json TEXT NOT NULL,
+    evidence_digest TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, target_label, attempt),
+    FOREIGN KEY (run_id, target_label)
+        REFERENCES release_target_runs(run_id, target_label)
+);
+
 CREATE TABLE IF NOT EXISTS release_target_submissions (
     run_id TEXT NOT NULL,
     target_label TEXT NOT NULL,
@@ -580,12 +592,25 @@ class ReleaseStore:
                     ).fetchone()
                     if not predecessor:
                         raise ReleaseStoreError("superseded release plan was not found")
-                    if predecessor["status"] == SUPERSEDED:
+                    relink_unlinked_superseded = bool(
+                        predecessor["status"] == SUPERSEDED
+                        and not predecessor["superseded_by_plan_id"]
+                    )
+                    if (
+                        predecessor["status"] == SUPERSEDED
+                        and not relink_unlinked_superseded
+                    ):
                         raise ReleaseStoreError("superseded release plan is already superseded")
                     if predecessor["product_id"] != plan["product_id"]:
                         raise ReleaseStoreError(
                             "a successor plan must belong to the same product_id"
                         )
+                    if predecessor["seller_sku"] != plan["seller_sku"]:
+                        raise ReleaseStoreError(
+                            "a successor plan must keep the same seller SKU"
+                        )
+                else:
+                    relink_unlinked_superseded = False
 
                 connection.execute(
                     """
@@ -612,13 +637,29 @@ class ReleaseStore:
                     ),
                 )
                 if predecessor is not None:
-                    self._supersede_in_transaction(
-                        connection,
-                        predecessor_id,
-                        superseded_by_plan_id=plan_id,
-                        reason="replaced by a newer immutable release plan",
-                        now=now,
-                    )
+                    if relink_unlinked_superseded:
+                        updated = connection.execute(
+                            """
+                            UPDATE release_plans
+                            SET superseded_by_plan_id = ?
+                            WHERE plan_id = ?
+                              AND status = 'SUPERSEDED'
+                              AND superseded_by_plan_id IS NULL
+                            """,
+                            (plan_id, predecessor_id),
+                        )
+                        if updated.rowcount != 1:
+                            raise ReleaseStoreError(
+                                "unlinked predecessor changed before successor link"
+                            )
+                    else:
+                        self._supersede_in_transaction(
+                            connection,
+                            predecessor_id,
+                            superseded_by_plan_id=plan_id,
+                            reason="replaced by a newer immutable release plan",
+                            now=now,
+                        )
 
                 connection.execute(
                     """
@@ -695,6 +736,72 @@ class ReleaseStore:
             except sqlite3.OperationalError:
                 return None
         return self.get_plan(row["plan_id"]) if row else None
+
+    def predecessor_plan_for(self, successor_plan_id: str) -> dict[str, Any] | None:
+        """Return the exact plan atomically superseded by one successor."""
+
+        if not self.path.is_file():
+            return None
+        with self._connect_readonly() as connection:
+            try:
+                rows = connection.execute(
+                    """
+                    SELECT plan_id FROM release_plans
+                    WHERE superseded_by_plan_id = ?
+                    ORDER BY superseded_at DESC, plan_id DESC
+                    """,
+                    (_text(successor_plan_id),),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return None
+        if len(rows) > 1:
+            raise ImmutableReleaseError(
+                "successor plan has multiple predecessor identities"
+            )
+        return self.get_plan(rows[0]["plan_id"]) if rows else None
+
+    def latest_unlinked_common_predecessor(
+        self,
+        *,
+        product_id: str,
+        seller_sku: str,
+    ) -> dict[str, Any] | None:
+        """Return the sole unlinked superseded plan with COMMON proof."""
+
+        if not self.path.is_file():
+            return None
+        with self._connect_readonly() as connection:
+            try:
+                rows = connection.execute(
+                    """
+                    SELECT plan.plan_id
+                    FROM release_plans AS plan
+                    JOIN release_runs AS run
+                      ON run.plan_id = plan.plan_id
+                    JOIN release_target_runs AS target
+                      ON target.run_id = run.run_id
+                     AND target.target_label = 'miaoshou:COMMON'
+                     AND target.status = 'SUCCEEDED'
+                    JOIN release_target_readbacks AS readback
+                      ON readback.run_id = run.run_id
+                     AND readback.target_label = target.target_label
+                    WHERE plan.product_id = ?
+                      AND plan.seller_sku = ?
+                      AND plan.status = 'SUPERSEDED'
+                      AND plan.superseded_by_plan_id IS NULL
+                    ORDER BY plan.superseded_at DESC,
+                             plan.created_at DESC,
+                             plan.plan_id DESC
+                    """,
+                    (_text(product_id), _text(seller_sku)),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return None
+        if len(rows) > 1:
+            raise ImmutableReleaseError(
+                "multiple unlinked COMMON predecessors require explicit identity"
+            )
+        return self.get_plan(rows[0]["plan_id"]) if rows else None
 
     def approve_plan(
         self,
@@ -1009,12 +1116,23 @@ class ReleaseStore:
         *,
         error: str,
         external_id: str | None = None,
+        failure_evidence: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Record one failed attempt without changing its idempotency key."""
         clean_error = _text(error)
         if not clean_error:
             raise ValueError("target failure requires an error")
         clean_error = clean_error[:4000]
+        evidence_json = (
+            _canonical_json(dict(failure_evidence))
+            if failure_evidence is not None
+            else None
+        )
+        evidence_digest = (
+            hashlib.sha256(evidence_json.encode("utf-8")).hexdigest()
+            if evidence_json is not None
+            else None
+        )
         with self._transaction() as connection:
             row = self._target_for_update(connection, run_id, target_label)
             clean_external_id = _text(external_id) or None
@@ -1033,6 +1151,23 @@ class ReleaseStore:
                     f"target must be RUNNING before failure; found {row['status']}"
                 )
             now = _utc_now()
+            if evidence_json is not None:
+                connection.execute(
+                    """
+                    INSERT INTO release_target_failure_events (
+                        run_id, target_label, attempt, evidence_json,
+                        evidence_digest, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row["run_id"],
+                        row["target_label"],
+                        row["attempts"],
+                        evidence_json,
+                        evidence_digest,
+                        now,
+                    ),
+                )
             connection.execute(
                 """
                 UPDATE release_target_runs
@@ -1510,6 +1645,29 @@ class ReleaseStore:
             # creates the additive evidence table.
             readbacks = {}
         try:
+            failure_rows = connection.execute(
+                """
+                SELECT target_label, attempt, evidence_json,
+                       evidence_digest, created_at
+                FROM release_target_failure_events
+                WHERE run_id = ?
+                ORDER BY target_label, attempt
+                """,
+                (run["run_id"],),
+            )
+            failure_events: dict[str, list[dict[str, Any]]] = {}
+            for row in failure_rows:
+                failure_events.setdefault(row["target_label"], []).append(
+                    {
+                        "attempt": row["attempt"],
+                        "evidence": json.loads(row["evidence_json"]),
+                        "evidence_digest": row["evidence_digest"],
+                        "created_at": row["created_at"],
+                    }
+                )
+        except sqlite3.OperationalError:
+            failure_events = {}
+        try:
             submission_rows = connection.execute(
                 """
                 SELECT target_label, external_id, evidence_json,
@@ -1548,6 +1706,14 @@ class ReleaseStore:
             payload = dict(row)
             payload["storage_status"] = payload["status"]
             payload["readback"] = readbacks.get(row["target_label"])
+            payload["failure_events"] = list(
+                failure_events.get(row["target_label"]) or ()
+            )
+            payload["latest_failure_evidence"] = (
+                payload["failure_events"][-1]
+                if payload["failure_events"]
+                else None
+            )
             payload["submission"] = (
                 submissions.get(row["target_label"])
                 or _legacy_unverified_submission(payload)
@@ -1652,6 +1818,23 @@ class ReleaseStore:
                 return
             raise ImmutableReleaseError(
                 "release plan was already superseded by another successor"
+            )
+        running_target = connection.execute(
+            """
+            SELECT target.target_label
+            FROM release_runs AS run
+            JOIN release_target_runs AS target
+              ON target.run_id = run.run_id
+            WHERE run.plan_id = ?
+              AND target.status = 'RUNNING'
+            LIMIT 1
+            """,
+            (plan_id,),
+        ).fetchone()
+        if running_target:
+            raise ReleaseAuthorizationError(
+                "release plan cannot be superseded while target "
+                f"{running_target['target_label']} is RUNNING"
             )
         connection.execute(
             """

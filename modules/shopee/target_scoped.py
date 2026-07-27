@@ -164,6 +164,9 @@ def _publish_existing_global_site(*, request, evidence: dict) -> dict:
         model_sku=command["model_sku"], command=command,
         expected_image_snapshot_digest=str(evidence["global_image_snapshot_digest"]),
     )
+    if (master["global_model_id"] != str(evidence["global_model_id"])
+            or list(master["tier_index"]) != list(evidence["global_tier_index"])):
+        raise RuntimeError("official global model identity drift")
     body = {"global_item_id": int(evidence["global_item_id"]), "shop_id": int(shop_id), "shop_region": command["region"], "item": {"item_status": command["item_status"], "original_price": command["local_original_price"], "logistic": [{"logistic_id": x, "enabled": True} for x in evidence["selected_logistics_ids"]], "model": [{"tier_index": evidence["global_tier_index"], "original_price": command["local_original_price"]}]}}
     evidence["_dispatch_invoked"] = True
     try:
@@ -209,7 +212,7 @@ def _publish_existing_global_site(*, request, evidence: dict) -> dict:
     outcome = shopee_regional_observation_outcome(listing_hard_exact=hard, copy_observation=copy, image_observation=image)
     global_outcome = master["image_outcome"]
     verified = outcome.get("outcome") == "SUCCEEDED" and global_outcome.get("execution_allowed") is True
-    return {"item_id": item_id, "verified": verified, "manual_review_required": outcome.get("manual_review_required") is True or global_outcome.get("manual_review_required") is True, "task_status": "success", "hard_checks": hard_checks, "enabled_logistics_count": len(enabled), "image_count": len(image_urls or []), "copy_digest": master["summary"]["copy_digest"], "observation_outcome": outcome.get("outcome"), "derived_translation_status": outcome.get("derived_translation_status"), "derived_image_status": outcome.get("derived_image_status"), "global_image_status": global_outcome.get("global_image_status"), "matched_rule_ids": sorted(set(list(outcome.get("matched_rule_ids") or []) + list(global_outcome.get("matched_rule_ids") or []))), "observation_evidence_digest": outcome.get("evidence_digest"), "global_image_observation_digest": master["image_observation"].get("evidence_digest"), "reconciliation_required": not verified, "external_writes_performed": ["shopee:regional_publish"]}
+    return {"item_id": item_id, "verified": verified, "manual_review_required": outcome.get("manual_review_required") is True or global_outcome.get("manual_review_required") is True, "task_status": "success", "hard_checks": hard_checks, "enabled_logistics_count": len(enabled), "image_count": len(image_urls or []), "copy_digest": master["summary"]["copy_digest"], "observation_outcome": outcome.get("outcome"), "derived_translation_status": outcome.get("derived_translation_status"), "derived_image_status": outcome.get("derived_image_status"), "global_image_status": global_outcome.get("global_image_status"), "global_image_verification_scope": global_outcome.get("global_image_verification_scope"), "global_image_url_identity_exact": False, "global_image_approved_order_exact": global_outcome.get("global_image_approved_order_exact") is True, "matched_rule_ids": sorted(set(list(outcome.get("matched_rule_ids") or []) + list(global_outcome.get("matched_rule_ids") or []))), "observation_evidence_digest": outcome.get("evidence_digest"), "global_image_observation_digest": master["image_observation"].get("evidence_digest"), "reconciliation_required": not verified, "external_writes_performed": ["shopee:regional_publish"]}
 
 
 def publish_existing_global_site(*, request, evidence: dict) -> dict:

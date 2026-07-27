@@ -4,6 +4,14 @@ from __future__ import annotations
 from modules.shopee.client import shop_get
 
 
+class ShopeeRegionalPublishReconciliationError(RuntimeError):
+    external_write_evidence = {"external_writes_performed": ["shopee:regional_publish"], "durable_state_uncertain": True, "reconciliation_required": True}
+
+    def __init__(self, message, *, task_id="", item_id="", checks=None):
+        super().__init__(message); self.external_reference = str(item_id or "") or None
+        self.external_write_evidence = {**self.external_write_evidence, "task_id": str(task_id), "item_id": str(item_id), "error_type": type(self).__name__, "checks": dict(checks or {})}
+
+
 def scan_prepared_shop_sku(*, shop_id: int, access_token: str, seller_sku: str) -> dict:
     found = []
     completeness = {}
@@ -132,16 +140,16 @@ def publish_existing_global_site(*, request, evidence: dict) -> dict:
     result = {}
     for _ in range(3):
         raw_task = merchant_get("/api/v2/global_product/get_publish_task_result", merchant_id, token, {"publish_task_id": int(task_id)})
-        if not isinstance(raw_task, dict) or raw_task.get("error") or not isinstance(raw_task.get("response"), dict): raise RuntimeError("accepted publish task readback is unknown")
+        if not isinstance(raw_task, dict) or raw_task.get("error") or not isinstance(raw_task.get("response"), dict): raise ShopeeRegionalPublishReconciliationError("accepted publish task readback is unknown", task_id=task_id)
         result = raw_task["response"]
         if result.get("publish_status") in {"success", "failed"}: break
     item_id = str(result.get("item_id") or (result.get("success") or {}).get("item_id") or "")
     if result.get("publish_status") != "success" or not item_id:
-        return {"item_id": item_id, "verified": False, "task_status": str(result.get("publish_status") or "unknown"), "reconciliation_required": True, "external_writes_performed": ["shopee:regional_publish"]}
+        raise ShopeeRegionalPublishReconciliationError("accepted publish task did not verify", task_id=task_id, item_id=item_id)
     # Regional identity is read through the prepared shop token, never token refresh.
     base = shop_get("/api/v2/product/get_item_base_info", shop_id, _shop_token, {"item_id_list": item_id})
     rows = (base.get("response") or {}).get("item_list") if isinstance(base, dict) else None
-    if not isinstance(rows, list) or len(rows) != 1: return {"item_id": item_id, "verified": False, "task_status": "regional_readback_unknown", "reconciliation_required": True, "external_writes_performed": ["shopee:regional_publish"]}
+    if not isinstance(rows, list) or len(rows) != 1: raise ShopeeRegionalPublishReconciliationError("regional readback unknown", task_id=task_id, item_id=item_id)
     item = rows[0]
     from modules.shopee.client import resolve_global_item_id
     resolved = str(resolve_global_item_id(shop_id, merchant_id, token, item_id) or "")
@@ -151,7 +159,13 @@ def publish_existing_global_site(*, request, evidence: dict) -> dict:
     enabled = {int(row.get("logistic_id")) for row in logistics if isinstance(row, dict) and row.get("enabled") and row.get("logistic_id") is not None}
     expected = set(int(x) for x in evidence["selected_logistics_ids"])
     image_urls = ((item.get("image") or {}).get("image_url_list") if isinstance(item.get("image"), dict) else None)
-    hard_checks = {"global_linkage": resolved == str(evidence["global_item_id"]), "normal_status": str(item.get("item_status") or "") == "NORMAL", "unique_model_sku": isinstance(model_rows, list) and len([row for row in model_rows if str(row.get("model_sku") or "") == str(command["model_sku"])]) == 1, "logistics_exact": enabled == expected, "images_present": isinstance(image_urls, list) and len(image_urls) == int(command["approved_image_count"]) and bool(image_urls and image_urls[0])}
+    planned_models = [row for row in (model_rows or []) if str(row.get("model_sku") or "") == str(command["model_sku"])]
+    price_rows = (planned_models[0].get("price_info") or []) if len(planned_models) == 1 else []
+    currency_rows = [row for row in price_rows if str(row.get("currency") or "").upper() == str(command["local_currency"]).upper()]
+    from decimal import Decimal, InvalidOperation
+    try: price_exact = len(currency_rows) == 1 and Decimal(str(currency_rows[0].get("original_price"))) == Decimal(str(command["local_original_price"]))
+    except (InvalidOperation, ValueError): price_exact = False
+    hard_checks = {"global_linkage": resolved == str(evidence["global_item_id"]), "normal_status": str(item.get("item_status") or "") == "NORMAL", "unique_model_sku": len(planned_models) == 1 and str(planned_models[0].get("model_id") or "").isdigit(), "price_currency_exact": price_exact, "logistics_exact": enabled == expected, "images_present": isinstance(image_urls, list) and len(image_urls) == int(command["approved_image_count"]) and bool(image_urls and image_urls[0])}
     hard = all(hard_checks.values())
     from shared_platform.target_scoped_release_contracts import evaluate_shopee_regional_copy_observation, evaluate_shopee_regional_image_observation, shopee_regional_observation_outcome
     # Source master is re-read by the verifier boundary; never persist text/URLs.

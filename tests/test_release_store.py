@@ -46,6 +46,35 @@ def _approved_store(tmp_path, *, targets=None):
     return store, plan, approval
 
 
+def _failed_shopee_repair_store(tmp_path):
+    store, plan, _approval = _approved_store(
+        tmp_path,
+        targets=["shopee:PH"],
+    )
+    run = store.start_run(plan["plan_id"])
+    store.begin_target(run["run_id"], "shopee:PH")
+    store.record_target_failure(
+        run["run_id"],
+        "shopee:PH",
+        error="official readback price mismatch",
+        external_id="56164935203",
+        failure_evidence={"price": False, "seller_sku": True},
+    )
+    operation = {
+        "kind": "shopee_original_price_repair_v1",
+        "plan_id": plan["plan_id"],
+        "run_id": run["run_id"],
+        "target_label": "shopee:PH",
+        "external_id": "56164935203",
+        "model_id": "90001",
+        "seller_sku": "0946",
+        "expected_local_price": "414",
+        "currency": "PHP",
+        "preflight_digest": "a" * 64,
+    }
+    return store, plan, run, operation
+
+
 def test_missing_store_reads_are_side_effect_free_and_allowlist_is_exact(tmp_path):
     path = tmp_path / "missing" / "release.db"
     store = ReleaseStore(path)
@@ -214,6 +243,98 @@ def test_plan_and_run_support_the_complete_sixteen_target_matrix(tmp_path):
         RELEASE_TARGET_LABELS
     )
     assert len({row["idempotency_key"] for row in run["targets"]}) == 16
+
+
+def test_failed_target_repair_claim_is_atomic_and_success_is_idempotent(
+    tmp_path,
+):
+    store, plan, run, operation = _failed_shopee_repair_store(tmp_path)
+
+    claimed = store.claim_failed_target_repair(
+        plan_id=plan["plan_id"],
+        run_id=run["run_id"],
+        target_label="shopee:PH",
+        external_id="56164935203",
+        operation=operation,
+    )
+
+    assert claimed["action"] == "claimed"
+    running = store.get_run(run["run_id"])["targets"][0]
+    assert running["status"] == "RUNNING"
+    assert running["attempts"] == 2
+    assert running["repair"]["status"] == "RUNNING"
+    with pytest.raises(ReleaseStoreError, match="already terminal"):
+        store.claim_failed_target_repair(
+            plan_id=plan["plan_id"],
+            run_id=run["run_id"],
+            target_label="shopee:PH",
+            external_id="56164935203",
+            operation=operation,
+        )
+    with pytest.raises(ReleaseStoreError, match="no interrupted"):
+        store.recover_interrupted_targets(run["run_id"])
+
+    evidence = {
+        "verified": True,
+        "reconciliation_required": False,
+        "external_writes_performed": ["shopee:update_price"],
+        "checks": {"price": True},
+    }
+    succeeded = store.record_target_repair_success(
+        claimed["operation_digest"],
+        readback_evidence=evidence,
+    )
+    repeated = store.record_target_repair_success(
+        claimed["operation_digest"],
+        readback_evidence=evidence,
+    )
+
+    assert succeeded["targets"][0]["status"] == "SUCCEEDED"
+    assert succeeded["targets"][0]["external_id"] == "56164935203"
+    assert repeated["targets"][0]["repair"]["status"] == "SUCCEEDED"
+    replay = store.claim_failed_target_repair(
+        plan_id=plan["plan_id"],
+        run_id=run["run_id"],
+        target_label="shopee:PH",
+        external_id="56164935203",
+        operation=operation,
+    )
+    assert replay["action"] == "already_succeeded"
+
+
+def test_target_repair_ambiguity_is_terminal_and_excluded_from_retry(tmp_path):
+    store, plan, run, operation = _failed_shopee_repair_store(tmp_path)
+    claimed = store.claim_failed_target_repair(
+        plan_id=plan["plan_id"],
+        run_id=run["run_id"],
+        target_label="shopee:PH",
+        external_id="56164935203",
+        operation=operation,
+    )
+
+    reconciled = store.record_target_repair_reconciliation(
+        claimed["operation_digest"],
+        error="update response was ambiguous",
+        evidence={
+            "reconciliation_required": True,
+            "external_writes_performed": ["shopee:update_price"],
+        },
+    )
+
+    target = reconciled["targets"][0]
+    assert target["storage_status"] == "FAILED"
+    assert target["status"] == "RECONCILIATION_REQUIRED"
+    assert target["repair"]["status"] == "RECONCILIATION_REQUIRED"
+    with pytest.raises(ReleaseStoreError, match="no failed targets"):
+        store.retry_failed_targets(run["run_id"])
+    with pytest.raises(ReleaseStoreError, match="already terminal"):
+        store.claim_failed_target_repair(
+            plan_id=plan["plan_id"],
+            run_id=run["run_id"],
+            target_label="shopee:PH",
+            external_id="56164935203",
+            operation=operation,
+        )
 
 
 def test_partial_failure_retry_preserves_success_and_idempotency_key(tmp_path):

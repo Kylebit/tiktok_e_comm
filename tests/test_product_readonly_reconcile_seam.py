@@ -447,3 +447,52 @@ def test_get_route_is_readonly_and_post_is_not_registered(
 
     assert status == 404
     assert len(calls) == 1
+
+
+def test_shopee_price_repair_preview_is_get_only(
+    product_http_server,
+    monkeypatch,
+):
+    calls = []
+
+    def preview(**kwargs):
+        calls.append(kwargs)
+        return 200, {
+            "ok": True,
+            "repair_allowed": True,
+            "plan_id": "omnichannel:preview",
+            "target_label": kwargs["target_label"],
+            "expected_revision": 31,
+            "payload_digest": "d" * 64,
+            "preflight_digest": "p" * 64,
+            "external_writes_performed": [],
+            "state_mutations_performed": [],
+        }
+
+    monkeypatch.setattr(
+        product_server,
+        "_preview_existing_shopee_target_price",
+        preview,
+    )
+    url = (
+        product_http_server
+        + "/api/product-workspace/release-target/"
+        "shopee-price-repair-preview"
+    )
+    status, body = _request(
+        url + "?offer_id=3838616043&target_label=shopee%3APH"
+    )
+    payload = json.loads(body)
+
+    assert status == 200
+    assert payload["repair_allowed"] is True
+    assert payload["external_writes_performed"] == []
+    assert payload["state_mutations_performed"] == []
+    assert calls == [
+        {"offer_id": "3838616043", "target_label": "shopee:PH"}
+    ]
+
+    status, _body = _request(url, method="POST", body=b"{}")
+
+    assert status == 404
+    assert len(calls) == 1

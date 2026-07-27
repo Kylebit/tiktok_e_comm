@@ -69,6 +69,7 @@ def _install_readback(monkeypatch, *, region: str, price_info: dict):
             "response": {
                 "model": [
                     {
+                        "model_id": 90001,
                         "model_sku": "0954",
                         "price_info": [price_info],
                     }
@@ -154,6 +155,7 @@ def test_readback_compares_cny_sip_price_without_mixing_local_fields(
     assert evidence["observed_price_fields"] == [
         {
             "scope": "model",
+            "model_id": "90001",
             "currency": price_info["currency"],
             "original_price": price_info["original_price"],
             "current_price": price_info["current_price"],

@@ -63,6 +63,11 @@ TARGET_FAILED = "FAILED"
 TARGET_SUCCEEDED = "SUCCEEDED"
 TARGET_SUBMITTED_UNVERIFIED = "SUBMITTED_UNVERIFIED"
 TARGET_MANUALLY_VERIFIED = "MANUALLY_VERIFIED"
+TARGET_RECONCILIATION_REQUIRED = "RECONCILIATION_REQUIRED"
+
+REPAIR_RUNNING = "RUNNING"
+REPAIR_SUCCEEDED = "SUCCEEDED"
+REPAIR_RECONCILIATION_REQUIRED = "RECONCILIATION_REQUIRED"
 
 
 class ReleaseStoreError(RuntimeError):
@@ -205,6 +210,29 @@ CREATE TABLE IF NOT EXISTS release_target_submissions (
 CREATE INDEX IF NOT EXISTS idx_release_target_submissions_status
     ON release_target_submissions(run_id, status);
 
+CREATE TABLE IF NOT EXISTS release_target_repairs (
+    run_id TEXT NOT NULL,
+    target_label TEXT NOT NULL,
+    plan_id TEXT NOT NULL,
+    operation_digest TEXT NOT NULL UNIQUE,
+    operation_json TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (
+        status IN ('RUNNING', 'SUCCEEDED', 'RECONCILIATION_REQUIRED')
+    ),
+    result_json TEXT,
+    result_digest TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    PRIMARY KEY (run_id, target_label),
+    FOREIGN KEY (run_id, target_label)
+        REFERENCES release_target_runs(run_id, target_label),
+    FOREIGN KEY (plan_id) REFERENCES release_plans(plan_id)
+);
+CREATE INDEX IF NOT EXISTS idx_release_target_repairs_status
+    ON release_target_repairs(run_id, status);
+
 CREATE TABLE IF NOT EXISTS release_sku_reservations (
     reservation_id TEXT PRIMARY KEY,
     plan_id TEXT NOT NULL UNIQUE,
@@ -269,6 +297,15 @@ BEFORE UPDATE OF run_id, target_label, idempotency_key, created_at
 ON release_target_runs
 BEGIN
     SELECT RAISE(ABORT, 'release target identity is immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_release_target_repair_identity_immutable
+BEFORE UPDATE OF
+    run_id, target_label, plan_id, operation_digest, operation_json,
+    external_id, created_at
+ON release_target_repairs
+BEGIN
+    SELECT RAISE(ABORT, 'release target repair identity is immutable');
 END;
 
 CREATE TRIGGER IF NOT EXISTS trg_release_sku_reservation_immutable
@@ -1516,6 +1553,319 @@ class ReleaseStore:
                 if target["target_label"] == row["target_label"]
             )
 
+    def claim_failed_target_repair(
+        self,
+        *,
+        plan_id: str,
+        run_id: str,
+        target_label: str,
+        external_id: str,
+        operation: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Atomically claim one exact failed target for a governed repair."""
+
+        clean_plan_id = _text(plan_id)
+        clean_run_id = _text(run_id)
+        clean_target = _text(target_label)
+        clean_external_id = _text(external_id)
+        if not all(
+            (clean_plan_id, clean_run_id, clean_target, clean_external_id)
+        ):
+            raise ValueError("target repair identity must be complete")
+        operation_payload = dict(operation)
+        if operation_payload.get("kind") != "shopee_original_price_repair_v1":
+            raise ValueError("unsupported target repair operation")
+        if _text(operation_payload.get("plan_id")) != clean_plan_id:
+            raise ValueError("target repair plan_id does not match")
+        if _text(operation_payload.get("run_id")) != clean_run_id:
+            raise ValueError("target repair run_id does not match")
+        if _text(operation_payload.get("target_label")) != clean_target:
+            raise ValueError("target repair target does not match")
+        if _text(operation_payload.get("external_id")) != clean_external_id:
+            raise ValueError("target repair external_id does not match")
+        operation_json = _canonical_json(operation_payload)
+        operation_digest = hashlib.sha256(
+            operation_json.encode("utf-8")
+        ).hexdigest()
+        with self._transaction() as connection:
+            existing = connection.execute(
+                """
+                SELECT * FROM release_target_repairs
+                WHERE run_id = ? AND target_label = ?
+                """,
+                (clean_run_id, clean_target),
+            ).fetchone()
+            if existing:
+                if existing["operation_digest"] != operation_digest:
+                    raise ImmutableReleaseError(
+                        "target repair already has a different operation"
+                    )
+                if existing["status"] == REPAIR_SUCCEEDED:
+                    return {
+                        "action": "already_succeeded",
+                        "operation_digest": operation_digest,
+                        "repair": dict(existing),
+                    }
+                raise ReleaseStoreError(
+                    "target repair is already terminal or awaiting reconciliation"
+                )
+            plan = connection.execute(
+                """
+                SELECT plan.status AS plan_status, approval.approval_id,
+                       approval.status AS approval_status,
+                       approval.approved_by, approval.user_approved
+                FROM release_plans AS plan
+                JOIN release_approvals AS approval
+                  ON approval.plan_id = plan.plan_id
+                WHERE plan.plan_id = ?
+                """,
+                (clean_plan_id,),
+            ).fetchone()
+            if not plan or (
+                plan["plan_status"] != PLAN_APPROVED
+                or plan["approval_status"] != PLAN_APPROVED
+                or plan["approved_by"] != "Kyle"
+                or plan["user_approved"] != 1
+            ):
+                raise ReleaseAuthorizationError(
+                    "target repair requires the active Kyle-approved plan"
+                )
+            run = connection.execute(
+                """
+                SELECT * FROM release_runs
+                WHERE run_id = ? AND plan_id = ? AND approval_id = ?
+                """,
+                (clean_run_id, clean_plan_id, plan["approval_id"]),
+            ).fetchone()
+            if not run or run["status"] in {RUN_SUCCEEDED, SUPERSEDED}:
+                raise ReleaseAuthorizationError(
+                    "target repair requires the active plan run"
+                )
+            target = self._target_for_update(
+                connection, clean_run_id, clean_target
+            )
+            if target["status"] != TARGET_FAILED:
+                raise ReleaseStoreError(
+                    "target repair requires an exact FAILED target"
+                )
+            if _text(target["external_id"]) != clean_external_id:
+                raise ImmutableReleaseError(
+                    "target repair external_id does not match the failed target"
+                )
+            ambiguous_receipt = connection.execute(
+                """
+                SELECT 1 FROM release_target_submissions
+                WHERE run_id = ? AND target_label = ?
+                UNION ALL
+                SELECT 1 FROM release_target_readbacks
+                WHERE run_id = ? AND target_label = ?
+                LIMIT 1
+                """,
+                (clean_run_id, clean_target, clean_run_id, clean_target),
+            ).fetchone()
+            if ambiguous_receipt:
+                raise ReleaseAuthorizationError(
+                    "target repair cannot overwrite an existing terminal receipt"
+                )
+            now = _utc_now()
+            connection.execute(
+                """
+                INSERT INTO release_target_repairs (
+                    run_id, target_label, plan_id, operation_digest,
+                    operation_json, external_id, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'RUNNING', ?, ?)
+                """,
+                (
+                    clean_run_id,
+                    clean_target,
+                    clean_plan_id,
+                    operation_digest,
+                    operation_json,
+                    clean_external_id,
+                    now,
+                    now,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE release_target_runs
+                SET status = 'RUNNING', attempts = attempts + 1,
+                    error = NULL, completed_at = NULL, updated_at = ?
+                WHERE run_id = ? AND target_label = ?
+                """,
+                (now, clean_run_id, clean_target),
+            )
+            connection.execute(
+                """
+                UPDATE release_runs
+                SET status = 'RUNNING', updated_at = ?, completed_at = NULL
+                WHERE run_id = ?
+                """,
+                (now, clean_run_id),
+            )
+            return {
+                "action": "claimed",
+                "operation_digest": operation_digest,
+                "repair": dict(
+                    connection.execute(
+                        """
+                        SELECT * FROM release_target_repairs
+                        WHERE run_id = ? AND target_label = ?
+                        """,
+                        (clean_run_id, clean_target),
+                    ).fetchone()
+                ),
+            }
+
+    def record_target_repair_success(
+        self,
+        operation_digest: str,
+        *,
+        readback_evidence: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Close one claimed repair after an exact official readback."""
+
+        evidence = dict(readback_evidence)
+        if (
+            evidence.get("verified") is not True
+            or evidence.get("reconciliation_required") is True
+            or evidence.get("external_writes_performed")
+            != ["shopee:update_price"]
+        ):
+            raise ValueError("repair success requires exact verified evidence")
+        result_json = _canonical_json(evidence)
+        result_digest = hashlib.sha256(result_json.encode("utf-8")).hexdigest()
+        with self._transaction() as connection:
+            repair = connection.execute(
+                """
+                SELECT * FROM release_target_repairs
+                WHERE operation_digest = ?
+                """,
+                (_text(operation_digest),),
+            ).fetchone()
+            if not repair:
+                raise ReleaseStoreError("target repair was not found")
+            if repair["status"] == REPAIR_SUCCEEDED:
+                if repair["result_digest"] != result_digest:
+                    raise ImmutableReleaseError(
+                        "target repair already has different success evidence"
+                    )
+                return self._run_in_transaction(connection, repair["run_id"])
+            if repair["status"] != REPAIR_RUNNING:
+                raise ReleaseStoreError(
+                    "target repair requires reconciliation and cannot succeed"
+                )
+            target = self._target_for_update(
+                connection, repair["run_id"], repair["target_label"]
+            )
+            if target["status"] != TARGET_RUNNING:
+                raise ReleaseStoreError("claimed repair target is not RUNNING")
+            now = _utc_now()
+            connection.execute(
+                """
+                INSERT INTO release_target_readbacks (
+                    run_id, target_label, evidence_json,
+                    evidence_digest, verified_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    repair["run_id"],
+                    repair["target_label"],
+                    result_json,
+                    result_digest,
+                    now,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE release_target_repairs
+                SET status = 'SUCCEEDED', result_json = ?, result_digest = ?,
+                    updated_at = ?, completed_at = ?
+                WHERE operation_digest = ?
+                """,
+                (result_json, result_digest, now, now, operation_digest),
+            )
+            connection.execute(
+                """
+                UPDATE release_target_runs
+                SET status = 'SUCCEEDED', external_id = ?, error = NULL,
+                    updated_at = ?, completed_at = ?
+                WHERE run_id = ? AND target_label = ?
+                """,
+                (
+                    repair["external_id"],
+                    now,
+                    now,
+                    repair["run_id"],
+                    repair["target_label"],
+                ),
+            )
+            self._refresh_run_status(connection, repair["run_id"], now=now)
+            return self._run_in_transaction(connection, repair["run_id"])
+
+    def record_target_repair_reconciliation(
+        self,
+        operation_digest: str,
+        *,
+        error: str,
+        evidence: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Make an ambiguous repair permanently ineligible for auto retry."""
+
+        clean_error = _text(error)[:4000]
+        result = dict(evidence)
+        if not clean_error or result.get("reconciliation_required") is not True:
+            raise ValueError("reconciliation requires an error and evidence")
+        result_json = _canonical_json(result)
+        result_digest = hashlib.sha256(result_json.encode("utf-8")).hexdigest()
+        with self._transaction() as connection:
+            repair = connection.execute(
+                """
+                SELECT * FROM release_target_repairs
+                WHERE operation_digest = ?
+                """,
+                (_text(operation_digest),),
+            ).fetchone()
+            if not repair:
+                raise ReleaseStoreError("target repair was not found")
+            if repair["status"] == REPAIR_RECONCILIATION_REQUIRED:
+                if repair["result_digest"] != result_digest:
+                    raise ImmutableReleaseError(
+                        "target repair already has different reconciliation evidence"
+                    )
+                return self._run_in_transaction(connection, repair["run_id"])
+            if repair["status"] != REPAIR_RUNNING:
+                raise ReleaseStoreError("successful target repair is immutable")
+            now = _utc_now()
+            connection.execute(
+                """
+                UPDATE release_target_repairs
+                SET status = 'RECONCILIATION_REQUIRED',
+                    result_json = ?, result_digest = ?,
+                    updated_at = ?, completed_at = ?
+                WHERE operation_digest = ?
+                """,
+                (result_json, result_digest, now, now, operation_digest),
+            )
+            connection.execute(
+                """
+                UPDATE release_target_runs
+                SET status = 'FAILED', external_id = ?, error = ?,
+                    updated_at = ?, completed_at = ?
+                WHERE run_id = ? AND target_label = ?
+                """,
+                (
+                    repair["external_id"],
+                    clean_error,
+                    now,
+                    now,
+                    repair["run_id"],
+                    repair["target_label"],
+                ),
+            )
+            self._refresh_run_status(connection, repair["run_id"], now=now)
+            return self._run_in_transaction(connection, repair["run_id"])
+
     def retry_failed_targets(
         self,
         run_id: str,
@@ -1531,9 +1881,13 @@ class ReleaseStore:
                 LEFT JOIN release_target_submissions AS submission
                   ON submission.run_id = target.run_id
                  AND submission.target_label = target.target_label
+                LEFT JOIN release_target_repairs AS repair
+                  ON repair.run_id = target.run_id
+                 AND repair.target_label = target.target_label
                 WHERE target.run_id = ?
                   AND target.status = 'FAILED'
                   AND submission.run_id IS NULL
+                  AND repair.run_id IS NULL
                 ORDER BY target.target_label
                 """,
                 (_text(run_id),),
@@ -1579,9 +1933,14 @@ class ReleaseStore:
             self._require_active_run(connection, _text(run_id))
             running_rows = connection.execute(
                 """
-                SELECT target_label FROM release_target_runs
-                WHERE run_id = ? AND status = 'RUNNING'
-                ORDER BY target_label
+                SELECT target.target_label
+                FROM release_target_runs AS target
+                LEFT JOIN release_target_repairs AS repair
+                  ON repair.run_id = target.run_id
+                 AND repair.target_label = target.target_label
+                WHERE target.run_id = ? AND target.status = 'RUNNING'
+                  AND repair.run_id IS NULL
+                ORDER BY target.target_label
                 """,
                 (_text(run_id),),
             ).fetchall()
@@ -1827,6 +2186,36 @@ class ReleaseStore:
             }
         except sqlite3.OperationalError:
             submissions = {}
+        try:
+            repair_rows = connection.execute(
+                """
+                SELECT target_label, operation_digest, external_id, status,
+                       result_json, result_digest, created_at, updated_at,
+                       completed_at
+                FROM release_target_repairs
+                WHERE run_id = ?
+                """,
+                (run["run_id"],),
+            )
+            repairs = {
+                row["target_label"]: {
+                    "operation_digest": row["operation_digest"],
+                    "external_id": row["external_id"],
+                    "status": row["status"],
+                    "result": (
+                        json.loads(row["result_json"])
+                        if row["result_json"]
+                        else None
+                    ),
+                    "result_digest": row["result_digest"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                    "completed_at": row["completed_at"],
+                }
+                for row in repair_rows
+            }
+        except sqlite3.OperationalError:
+            repairs = {}
         target_payloads: list[dict[str, Any]] = []
         for row in targets:
             payload = dict(row)
@@ -1846,6 +2235,15 @@ class ReleaseStore:
             )
             if payload["submission"]:
                 payload["status"] = payload["submission"]["status"]
+            payload["repair"] = repairs.get(row["target_label"])
+            if payload["repair"]:
+                if (
+                    payload["repair"]["status"]
+                    == REPAIR_RECONCILIATION_REQUIRED
+                ):
+                    payload["status"] = TARGET_RECONCILIATION_REQUIRED
+                elif payload["repair"]["status"] == REPAIR_RUNNING:
+                    payload["status"] = TARGET_RUNNING
             target_payloads.append(payload)
         result = {**dict(run), "targets": target_payloads}
         logical_statuses = [target["status"] for target in target_payloads]
@@ -1870,7 +2268,10 @@ class ReleaseStore:
             )
         ):
             result["status"] = RUN_AWAITING_MANUAL_VERIFICATION
-        elif TARGET_FAILED in logical_statuses:
+        elif (
+            TARGET_FAILED in logical_statuses
+            or TARGET_RECONCILIATION_REQUIRED in logical_statuses
+        ):
             completed = sum(
                 status in {
                     TARGET_SUCCEEDED,

@@ -96,6 +96,12 @@ class MiaoshouDraftVerificationError(ReleaseAdapterWriteVerificationError):
     """A Miaoshou update was accepted but exact readback did not verify."""
 
 
+class ShopeePriceRepairReconciliationError(
+    ReleaseAdapterWriteVerificationError
+):
+    """A one-shot Shopee price repair cannot be safely repeated."""
+
+
 def production_adapter_registry() -> dict[str, AdapterRegistration]:
     """Return the real, token-bound adapter registry used by the product UI."""
 
@@ -2278,11 +2284,16 @@ def _shopee_observed_price_rows(
         ]
         if len(matched_models) != 1:
             return [], ["matching_model_price_scope_is_not_unique"]
-        source_rows = list(matched_models[0].get("price_info") or ())
+        matched_model = matched_models[0]
+        model_id = str(matched_model.get("model_id") or "").strip()
+        if not model_id.isdigit():
+            return [], ["matching_model_id_is_not_exact"]
+        source_rows = list(matched_model.get("price_info") or ())
         scope = "model"
     else:
         source_rows = list(item.get("price_info") or ())
         scope = "item"
+        model_id = ""
         if str(item.get("item_sku") or "") != match_key:
             issues.append("item_sku_does_not_match_price_scope")
 
@@ -2304,6 +2315,7 @@ def _shopee_observed_price_rows(
         observed.append(
             {
                 "scope": scope,
+                "model_id": model_id,
                 "currency": str(
                     row.get("currency") or item.get("currency") or ""
                 ).upper(),
@@ -2626,6 +2638,315 @@ def reconcile_existing_shopee_target(
         ),
         external_reference=item_id,
         readback_evidence=evidence,
+    )
+
+
+def _shopee_price_repair_preflight(
+    request: AdapterExecutionRequest,
+    *,
+    allowed_statuses: frozenset[str] = frozenset({"FAILED"}),
+) -> dict[str, Any]:
+    """Prove one existing PH/TH item differs only in its local price."""
+
+    context = _validated_context(request)
+    if request.channel != "shopee" or request.site.upper() not in {"PH", "TH"}:
+        raise RuntimeError("Shopee price repair only supports PH and TH")
+    target = context["target"]
+    if str(target.get("status") or "") not in allowed_statuses:
+        raise RuntimeError(
+            "Shopee price repair requires the exact governed target state"
+        )
+    item_id = str(target.get("external_id") or "").strip()
+    if not item_id.isdigit():
+        raise RuntimeError("Shopee price repair requires the recorded item_id")
+
+    payload = context["payload"]
+    region = request.site.upper()
+    expectation = _shopee_price_expectation(
+        _target_pricing(payload, request.target_label),
+        region=region,
+    )
+    _verified, evidence = _shopee_readback(
+        match_key=request.seller_sku[-4:].zfill(4),
+        region=region,
+        item_id=item_id,
+        expected_title=_candidate(payload, "shopee", "CNSC"),
+        expected_price=expectation,
+        expected_image_count=len(context["images"]),
+        expected_description=_shopee_description(payload),
+        require_model_sku=True,
+        require_all_logistics=True,
+        allow_token_refresh=False,
+    )
+    checks = dict(evidence.get("checks") or {})
+    required_checks = {
+        "seller_sku",
+        "model_sku",
+        "localized_title",
+        "rich_localized_description",
+        "price",
+        "image_count",
+        "all_applicable_logistics",
+        "status",
+    }
+    if set(checks) != required_checks:
+        raise RuntimeError("Shopee repair readback checks are incomplete")
+    non_price_failures = sorted(
+        name for name, passed in checks.items()
+        if name != "price" and passed is not True
+    )
+    if non_price_failures:
+        raise RuntimeError(
+            "Shopee repair is blocked by non-price drift: "
+            + ", ".join(non_price_failures)
+        )
+    allowed_price_issues = {
+        "sip_item_price_does_not_match_immutable_cny_price"
+    }
+    unexpected_price_issues = sorted(
+        set(evidence.get("price_issues") or ()) - allowed_price_issues
+    )
+    if unexpected_price_issues:
+        raise RuntimeError(
+            "Shopee repair is blocked by ambiguous price semantics: "
+            + ", ".join(unexpected_price_issues)
+        )
+    rows = list(evidence.get("observed_price_fields") or ())
+    eligible = [
+        row
+        for row in rows
+        if (
+            str(row.get("scope") or "") == "model"
+            and str(row.get("currency") or "")
+            == str(expectation["target_local_currency"])
+        )
+    ]
+    if len(eligible) != 1:
+        raise RuntimeError(
+            "Shopee repair requires one unique SKU-bound local price row"
+        )
+    row = eligible[0]
+    model_id = str(row.get("model_id") or "").strip()
+    if not model_id.isdigit():
+        raise RuntimeError("Shopee repair requires one exact model_id")
+    expected_local = _decimal(expectation.get("source_local_price"))
+    if expected_local is None or expected_local <= 0:
+        raise RuntimeError("Shopee repair expected local price is invalid")
+    local_exact = (
+        _numbers_equal(row.get("current_price"), expected_local)
+        and _numbers_equal(row.get("original_price"), expected_local)
+    )
+    if local_exact:
+        raise RuntimeError("Shopee local price already matches the immutable plan")
+    operation = {
+        "kind": "shopee_original_price_repair_v1",
+        "plan_id": request.plan_id,
+        "run_id": str(context["run"].get("run_id") or ""),
+        "target_label": request.target_label,
+        "external_id": item_id,
+        "model_id": model_id,
+        "seller_sku": request.seller_sku[-4:].zfill(4),
+        "expected_local_price": str(expected_local),
+        "currency": expectation["target_local_currency"],
+        "expected_sip_cny": str(expectation["value"]),
+        "observed_local_price_digest": hashlib.sha256(
+            json.dumps(
+                {
+                    "current": row.get("current_price"),
+                    "original": row.get("original_price"),
+                    "sip": row.get("sip_item_price"),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
+    }
+    operation["preflight_digest"] = hashlib.sha256(
+        json.dumps(
+            operation,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return {
+        "operation": operation,
+        "evidence": {
+            "verified_identity": True,
+            "region": region,
+            "item_id": item_id,
+            "model_id": model_id,
+            "seller_sku": operation["seller_sku"],
+            "currency": operation["currency"],
+            "checks": checks,
+            "price_issues": list(evidence.get("price_issues") or ()),
+            "external_writes_performed": [],
+        },
+    }
+
+
+def preflight_shopee_price_repair(
+    request: AdapterExecutionRequest,
+) -> dict[str, Any]:
+    """Public no-write preflight for the controlled repair endpoint."""
+
+    return _shopee_price_repair_preflight(request)
+
+
+def execute_shopee_price_repair(
+    request: AdapterExecutionRequest,
+    *,
+    expected_preflight_digest: str,
+) -> AdapterExecutionResult:
+    """Perform exactly one official update_price and bounded exact readback."""
+
+    from modules.shopee.client import shop_post
+
+    preflight = _shopee_price_repair_preflight(
+        request,
+        allowed_statuses=frozenset({"RUNNING"}),
+    )
+    operation = preflight["operation"]
+    if operation["preflight_digest"] != str(expected_preflight_digest or ""):
+        raise RuntimeError("Shopee price repair inputs changed before dispatch")
+    item_id = operation["external_id"]
+    shop_id, token = _shopee_readback_credentials(
+        request.site.upper(),
+        allow_token_refresh=False,
+    )
+    body = {
+        "item_id": int(item_id),
+        "price_list": [
+            {
+                "model_id": int(operation["model_id"]),
+                "original_price": float(
+                    Decimal(operation["expected_local_price"])
+                ),
+            }
+        ],
+    }
+    try:
+        response = shop_post(
+            "/api/v2/product/update_price",
+            shop_id,
+            token,
+            body,
+        )
+    except Exception as error:
+        raise ShopeePriceRepairReconciliationError(
+            "Shopee price repair response is unknown; do not repeat",
+            external_reference=item_id,
+            evidence={
+                "verified": False,
+                "reconciliation_required": True,
+                "region": request.site.upper(),
+                "item_id": item_id,
+                "model_id": operation["model_id"],
+                "dispatch_outcome": "response_unknown",
+                "error_type": type(error).__name__,
+                "external_writes_performed": ["shopee:update_price"],
+            },
+        ) from error
+    api_error = str(response.get("error") or "").strip()
+    if api_error and api_error != "-":
+        raise ShopeePriceRepairReconciliationError(
+            "Shopee rejected the one-shot price repair; do not auto retry",
+            external_reference=item_id,
+            evidence={
+                "verified": False,
+                "reconciliation_required": True,
+                "region": request.site.upper(),
+                "item_id": item_id,
+                "model_id": operation["model_id"],
+                "dispatch_outcome": "api_rejected",
+                "response_error": api_error[:120],
+                "external_writes_performed": ["shopee:update_price"],
+            },
+        )
+
+    last_evidence: dict[str, Any] = {}
+    for attempt in range(6):
+        if attempt:
+            time.sleep(2)
+        context = _validated_context(request)
+        payload = context["payload"]
+        expectation = _shopee_price_expectation(
+            _target_pricing(payload, request.target_label),
+            region=request.site.upper(),
+        )
+        _verified, evidence = _shopee_readback(
+            match_key=request.seller_sku[-4:].zfill(4),
+            region=request.site.upper(),
+            item_id=item_id,
+            expected_title=_candidate(payload, "shopee", "CNSC"),
+            expected_price=expectation,
+            expected_image_count=len(context["images"]),
+            expected_description=_shopee_description(payload),
+            require_model_sku=True,
+            require_all_logistics=True,
+            allow_token_refresh=False,
+        )
+        rows = [
+            row for row in (evidence.get("observed_price_fields") or ())
+            if (
+                str(row.get("model_id") or "") == operation["model_id"]
+                and str(row.get("currency") or "") == operation["currency"]
+            )
+        ]
+        checks = dict(evidence.get("checks") or {})
+        row = rows[0] if len(rows) == 1 else {}
+        local_exact = (
+            len(rows) == 1
+            and _numbers_equal(
+                row.get("current_price"),
+                operation["expected_local_price"],
+            )
+            and _numbers_equal(
+                row.get("original_price"),
+                operation["expected_local_price"],
+            )
+        )
+        sip_exact = (
+            len(rows) == 1
+            and _numbers_equal(
+                row.get("sip_item_price"),
+                operation["expected_sip_cny"],
+            )
+        )
+        all_checks = bool(checks) and all(checks.values())
+        last_evidence = {
+            "verified": bool(local_exact and sip_exact and all_checks),
+            "reconciliation_required": False,
+            "source": "official_shopee_partner_api",
+            "region": request.site.upper(),
+            "item_id": item_id,
+            "model_id": operation["model_id"],
+            "seller_sku": operation["seller_sku"],
+            "currency": operation["currency"],
+            "local_price_exact": local_exact,
+            "sip_cny_exact": sip_exact,
+            "checks": checks,
+            "poll_attempt": attempt + 1,
+            "external_writes_performed": ["shopee:update_price"],
+        }
+        if last_evidence["verified"]:
+            return AdapterExecutionResult(
+                succeeded=True,
+                readback_verified=True,
+                detail=(
+                    f"Shopee {request.site.upper()} original price repaired "
+                    "and exact official readback matched"
+                ),
+                external_reference=item_id,
+                readback_evidence=last_evidence,
+            )
+    raise ShopeePriceRepairReconciliationError(
+        "Shopee price repair was sent but exact readback did not converge",
+        external_reference=item_id,
+        evidence={
+            **last_evidence,
+            "verified": False,
+            "reconciliation_required": True,
+        },
     )
 
 

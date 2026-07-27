@@ -1,4 +1,4 @@
-"""CNSC 全球商品英文标题/描述：优先菲律宾 TK，无 PH 则 AI 翻译并写满。"""
+"""CNSC global English copy with a factual, reviewable fallback."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import re
 GLOBAL_TITLE_MAX = 120
 GLOBAL_DESC_MAX = 3000
 GLOBAL_DESC_TARGET = 2400
+TOAPI_COPY_MODEL = "gpt-5.4-mini-official"
 
 # 铺货时优先用 PH 英文作为母版（TH/VN 仅作最后回退）
 TK_SOURCE_ORDER = ("PH", "MY", "TH", "VN")
@@ -111,7 +112,9 @@ def _clamp_title(title: str, model_sku: str) -> str:
 
 
 def _clamp_description(desc: str, model_sku: str) -> str:
-    d = re.sub(r"\s+", " ", (desc or "").strip())
+    d = str(desc or "").replace("\r\n", "\n").replace("\r", "\n")
+    d = "\n".join(re.sub(r"[ \t]+", " ", line).strip() for line in d.split("\n"))
+    d = re.sub(r"\n{3,}", "\n\n", d).strip()
     if len(d) < 120:
         d = (
             d
@@ -144,16 +147,19 @@ def _extra_specs(detail: dict) -> str:
 
 
 def _ai_chat(system: str, user: str, *, max_tokens: int = 120) -> str:
-    from core.llm import ai_config, chat_completion
+    from modules.sourcing.image_suite_plan import chat_completions, message_content
 
-    cfg = ai_config()
-    if not cfg.get("api_key"):
-        return ""
-    return (chat_completion(
-        [{"role": "system", "content": system}, {"role": "user", "content": user}],
-        max_tokens=max_tokens,
-        temperature=0.2,
-    ) or "").strip()
+    return message_content(
+        chat_completions(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            model=TOAPI_COPY_MODEL,
+            max_tokens=max_tokens,
+            temperature=0.2,
+        )
+    ).strip()
 
 
 def _guess_material(title_src: str, detail: dict) -> str:
@@ -192,15 +198,145 @@ def _generic_english_title(detail: dict, model_sku: str, title_src: str) -> str:
 
 def _generic_english_description(detail: dict, model_sku: str, title: str) -> str:
     specs = _extra_specs(detail)
-    body = (
-        f"{title}. Suitable for home decoration, shelf styling and desktop display. "
-        f"Designed for bedroom, living room, office and gift scenes. "
-        f"Please review product photos and size information before publishing."
-    )
-    if specs:
-        body += f" {specs}."
-    body += f" Seller SKU: {model_sku}."
+    source = f"{title} {strip_html(detail.get('description') or '')}".lower()
+    if any(token in source for token in ("wall sticker", "wall decal", "wall decor")):
+        body = (
+            "PRODUCT OVERVIEW\n"
+            f"{title}. Add a clear decorative accent to a suitable wall or flat "
+            "surface while keeping the product design easy to coordinate with "
+            "the surrounding room.\n\n"
+            "VERIFIED PRODUCT DETAILS\n"
+            "Product type: decorative wall sticker / wall decal.\n"
+            f"{('Material: PVC. ' if 'pvc' in source else '')}"
+            "Use the product photos as the visual reference for the printed "
+            "design and colour.\n"
+        )
+        if specs:
+            body += specs + ".\n"
+        body += (
+            "\nSUGGESTED SPACES\n"
+            "Suitable as a decorative accent for a living room, bedroom, study, "
+            "entryway or another space with an appropriate application surface.\n\n"
+            "APPLICATION GUIDANCE\n"
+            "Plan the position before application. Apply carefully to a clean, "
+            "dry and smooth surface, then press from the centre toward the edges. "
+            "Surface texture and condition can affect the finished result.\n\n"
+            "PLEASE NOTE\n"
+            "Check the product images and dimensions before ordering. Screen "
+            "settings can make colours look slightly different. Waterproof, "
+            "removable and residue-free performance is not promised unless it "
+            "is separately verified in the approved product facts.\n\n"
+            f"Seller SKU: {model_sku}."
+        )
+    else:
+        body = (
+            "PRODUCT OVERVIEW\n"
+            f"{title}. This listing is prepared from the verified source product "
+            "facts and images.\n\n"
+            "VERIFIED DETAILS\n"
+            f"{specs or 'Review the product images for the confirmed design and contents.'}\n\n"
+            "USE AND CARE\n"
+            "Use the product only for its intended purpose. Review the dimensions, "
+            "selected option and product images before ordering.\n\n"
+            "PLEASE NOTE\n"
+            "Screen settings can make colours look slightly different. No "
+            "performance claim is made unless it is present in the verified "
+            "product facts.\n\n"
+            f"Seller SKU: {model_sku}."
+        )
     return _clamp_description(body, model_sku)
+
+
+def build_factual_english_description(
+    detail: dict,
+    model_sku: str,
+    *,
+    title: str = "",
+) -> str:
+    """Return a deterministic buyer-facing fallback without marketplace writes."""
+
+    clean_title = _clamp_title(
+        title or strip_html(detail.get("title") or ""),
+        model_sku,
+    )
+    return _generic_english_description(detail, model_sku, clean_title)
+
+
+def localize_shopee_copy(
+    *,
+    english_title: str,
+    english_description: str,
+    region: str,
+) -> dict:
+    """Repair a local CNSC item when Shopee auto-translation did not run.
+
+    Normal publication still sends only the English global master. This helper
+    only updates an existing item and never creates or publishes another one.
+    """
+
+    site = str(region or "").upper()
+    if site in {"PH", "MY"}:
+        return {
+            "title": str(english_title or "").strip(),
+            "description": str(english_description or "").strip(),
+            "region": site,
+            "provider": "english_global_master",
+            "model": None,
+        }
+    language = {"TH": "Thai", "VN": "Vietnamese"}.get(site)
+    if not language:
+        raise ValueError(f"unsupported Shopee localization region {site}")
+    system = f"""You localize approved Shopee cross-border product copy into natural {language}.
+Preserve every supplied product fact exactly and never invent claims.
+Return ONLY JSON with keys title and description.
+Title: 60-115 characters, natural ecommerce language for {site}, searchable, no emoji.
+Description: 500-1800 characters, plain text with clear section headings and line breaks.
+Preserve all materials, dimensions, quantity, package contents and application guidance.
+Do not add waterproof, removable, residue-free, reusable, durability, certification,
+warranty, medical, safety or performance claims. Do not include a seller SKU."""
+    raw = _ai_chat(
+        system,
+        (
+            f"Approved English title:\n{str(english_title or '').strip()}\n\n"
+            "Approved English description:\n"
+            f"{str(english_description or '').strip()}"
+        ),
+        max_tokens=1400,
+    )
+    parsed = _parse_ai_json(raw)
+    title = re.sub(r"\s+", " ", str(parsed.get("title") or "")).strip()
+    description = str(parsed.get("description") or "").strip()
+    if not (60 <= len(title) <= GLOBAL_TITLE_MAX):
+        raise RuntimeError(
+            f"Shopee {site} localized title length is invalid: {len(title)}"
+        )
+    if not (500 <= len(description) <= GLOBAL_DESC_MAX):
+        raise RuntimeError(
+            f"Shopee {site} localized description length is invalid: "
+            f"{len(description)}"
+        )
+    if site == "TH":
+        language_ok = any("\u0e00" <= char <= "\u0e7f" for char in title)
+    else:
+        language_ok = any(
+            "\u00c0" <= char <= "\u024f" or "\u1ea0" <= char <= "\u1ef9"
+            for char in title
+        )
+    if not language_ok:
+        raise RuntimeError(f"Shopee {site} localized title failed language validation")
+    combined = f"{title}\n{description}".casefold()
+    for required in ("pvc", "34", "58"):
+        if required not in combined:
+            raise RuntimeError(
+                f"Shopee {site} localized copy lost required fact {required}"
+            )
+    return {
+        "title": title,
+        "description": description,
+        "region": site,
+        "provider": "toapi",
+        "model": TOAPI_COPY_MODEL,
+    }
 
 
 def english_variant_label(raw: str, fallback: str = "") -> str:
@@ -234,44 +370,29 @@ def build_global_copy(
     description = ""
 
     try:
-        from core.config import load_settings
-        from core.llm import ai_config, chat_completion
-
-        cfg = ai_config()
-        if cfg.get("api_key"):
-            listing_tokens = int((load_settings().get("ai") or {}).get("listing_max_tokens") or 1200)
-            if len(desc_src) < 300:
-                listing_tokens = max(listing_tokens, 2000)
-            user = (
-                f"Seller SKU / match code: {model_sku}\n"
-                f"TikTok source region: {source_region or 'unknown'}\n"
-                f"Source already English (PH): {'yes' if ph_english else 'no'}\n"
-                f"IMPORTANT: Output English only. Never copy Thai/Vietnamese/Malay text.\n\n"
-                f"Source title:\n{title_src[:500]}\n\n"
-                f"Source description:\n{desc_src[:3500] or '(empty — expand from title and specs)'}\n\n"
-                f"Extra product specs:\n{_extra_specs(detail) or '(none)'}\n"
-            )
-            raw = chat_completion(
-                [
-                    {"role": "system", "content": _SYSTEM},
-                    {"role": "user", "content": user},
-                ],
-                max_tokens=listing_tokens,
-                temperature=0.35,
-            )
-            parsed = _parse_ai_json(raw)
-            title = str(parsed.get("title") or "").strip()
-            description = str(parsed.get("description") or "").strip()
-            if title and not is_english_listing_text(title):
-                title = ""
-            if description and not is_english_listing_text(description):
-                description = ""
+        user = (
+            f"Seller SKU / match code: {model_sku}\n"
+            f"TikTok source region: {source_region or 'unknown'}\n"
+            f"Source already English (PH): {'yes' if ph_english else 'no'}\n"
+            "IMPORTANT: Output English only. Never copy Thai/Vietnamese/Malay text.\n\n"
+            f"Source title:\n{title_src[:500]}\n\n"
+            f"Source description:\n{desc_src[:3500] or '(empty — expand from title and specs)'}\n\n"
+            f"Extra product specs:\n{_extra_specs(detail) or '(none)'}\n"
+        )
+        raw = _ai_chat(_SYSTEM, user, max_tokens=2200)
+        parsed = _parse_ai_json(raw)
+        title = str(parsed.get("title") or "").strip()
+        description = str(parsed.get("description") or "").strip()
+        if title and not is_english_listing_text(title):
+            title = ""
+        if description and not is_english_listing_text(description):
+            description = ""
     except Exception:
         pass
 
     if ph_english and not title:
         title = title_src
-    if ph_english and len(description) < 400:
+    if ph_english and len(description) < 500:
         description = ""
 
     if not title:
@@ -279,8 +400,12 @@ def build_global_copy(
             title = title_src
         else:
             title = _generic_english_title(detail, model_sku, title_src)
-    if not description or len(description) < 150:
-        if ph_english and is_english_listing_text(desc_src):
+    if not description or len(description) < 500:
+        if (
+            ph_english
+            and len(desc_src) >= 500
+            and is_english_listing_text(desc_src)
+        ):
             description = desc_src
         else:
             description = _generic_english_description(detail, model_sku, title)

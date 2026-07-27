@@ -196,6 +196,61 @@ def _candidate(payload: dict[str, Any], channel: str, site: str) -> str:
     raise RuntimeError(f"approved listing title candidate is missing for {channel}:{site}")
 
 
+def _shopee_description(payload: dict[str, Any]) -> str:
+    listing_copy = payload.get("listing_copy") or {}
+    approved = str(listing_copy.get("shopee_description_en") or "").strip()
+    if approved:
+        if len(approved) < 500:
+            raise RuntimeError("approved Shopee global description is too short")
+        return approved[:3000]
+
+    from modules.shopee.global_copy import build_factual_english_description
+
+    facts = payload.get("product_facts") or {}
+    package = list(facts.get("package_cm") or ())
+    detail = {
+        "title": str(facts.get("title") or ""),
+        "description": "",
+        "package_dimensions": {
+            "length": package[0] if len(package) > 0 else None,
+            "width": package[1] if len(package) > 1 else None,
+            "height": package[2] if len(package) > 2 else None,
+        },
+    }
+    return build_factual_english_description(
+        detail,
+        str(payload.get("seller_sku") or ""),
+        title=str(facts.get("title") or ""),
+    )
+
+
+def _local_title_matches_region(
+    title: str,
+    *,
+    region: str,
+    english_master: str,
+) -> bool:
+    clean = str(title or "").strip()
+    site = region.upper()
+    if not clean:
+        return False
+    if site == "TH":
+        return bool(any("\u0e00" <= char <= "\u0e7f" for char in clean))
+    if site == "VN":
+        vietnamese = set(
+            "àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệ"
+            "ìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụ"
+            "ưừứửữựỳýỷỹỵđĐ"
+        )
+        return bool(vietnamese.intersection(clean))
+    if site in {"PH", "MY"}:
+        return bool(
+            any(char.isascii() and char.isalpha() for char in clean)
+            and not any("\u4e00" <= char <= "\u9fff" for char in clean)
+        )
+    return clean == english_master
+
+
 def _target_pricing(payload: dict[str, Any], label: str) -> dict[str, Any]:
     pricing = (
         ((payload.get("pricing") or {}).get("selected_targets") or {}).get(label)
@@ -791,6 +846,9 @@ def _shopee_readback(
     expected_title: str,
     expected_price: object,
     expected_image_count: int,
+    expected_description: str = "",
+    require_model_sku: bool = True,
+    require_all_logistics: bool = True,
 ) -> tuple[bool, dict[str, Any]]:
     from modules.shopee.auth import ensure_shop_token
     from modules.shopee.client import shop_get
@@ -821,6 +879,11 @@ def _shopee_readback(
         {"item_id": int(item_id)},
     )
     models = (models_response.get("response") or {}).get("model") or ()
+    model_skus = {
+        str(model.get("model_sku") or "")
+        for model in models
+        if model.get("model_sku") not in (None, "")
+    }
     seller_skus = {
         str(value)
         for value in [
@@ -856,11 +919,45 @@ def _shopee_readback(
             if value not in (None, "")
         ]
     image_count = len((item.get("image") or {}).get("image_url_list") or ())
+    description = str(item.get("description") or "")
+    logistics = list(item.get("logistic_info") or ())
+    disabled_logistics = [
+        {
+            "logistic_id": row.get("logistic_id"),
+            "logistic_name": row.get("logistic_name"),
+        }
+        for row in logistics
+        if not row.get("enabled")
+    ]
     checks = {
         "seller_sku": match_key in seller_skus,
-        "title": str(item.get("item_name") or "") == expected_title,
+        "model_sku": (
+            match_key in model_skus and bool(item.get("has_model"))
+            if require_model_sku
+            else True
+        ),
+        "localized_title": _local_title_matches_region(
+            str(item.get("item_name") or ""),
+            region=region,
+            english_master=expected_title,
+        ),
+        "rich_localized_description": (
+            len(description) >= 500
+            and _local_title_matches_region(
+                description,
+                region=region,
+                english_master=expected_description,
+            )
+            if expected_description
+            else True
+        ),
         "price": any(_numbers_equal(value, expected_price) for value in price_values),
         "image_count": image_count == expected_image_count,
+        "all_applicable_logistics": (
+            bool(logistics) and not disabled_logistics
+            if require_all_logistics
+            else bool(logistics)
+        ),
         "status": str(item.get("item_status") or "").upper() in {"NORMAL", "UNLIST"},
     }
     evidence = {
@@ -870,9 +967,21 @@ def _shopee_readback(
         "shop_id": shop_id,
         "item_id": str(item_id),
         "seller_skus": sorted(seller_skus),
+        "model_skus": sorted(model_skus),
+        "has_model": bool(item.get("has_model")),
         "title": item.get("item_name"),
+        "description_length": len(description),
         "prices": price_values,
         "image_count": image_count,
+        "logistics": [
+            {
+                "logistic_id": row.get("logistic_id"),
+                "logistic_name": row.get("logistic_name"),
+                "enabled": bool(row.get("enabled")),
+            }
+            for row in logistics
+        ],
+        "disabled_logistics": disabled_logistics,
         "status": item.get("item_status"),
         "checks": checks,
     }
@@ -949,6 +1058,7 @@ def execute_shopee_target(
     payload = context["payload"]
     region = request.site.upper()
     title = _candidate(payload, "shopee", "CNSC")
+    description = _shopee_description(payload)
     pricing = _target_pricing(payload, request.target_label)
     expected_price = (pricing.get("source") or {}).get("list_price")
     if expected_price in (None, ""):
@@ -969,6 +1079,9 @@ def execute_shopee_target(
             expected_title=title,
             expected_price=expected_price,
             expected_image_count=len(context["images"]),
+            expected_description=description,
+            require_model_sku=False,
+            require_all_logistics=False,
         )
         if verified:
             from modules.shopee.global_sku_map import (
@@ -992,6 +1105,75 @@ def execute_shopee_target(
                 item_id,
                 evidence,
             )
+        repairable_checks = {
+            "localized_title",
+            "rich_localized_description",
+            "all_applicable_logistics",
+        }
+        failed_checks = {
+            name
+            for name, passed in (evidence.get("checks") or {}).items()
+            if not passed
+        }
+        if failed_checks and failed_checks.issubset(repairable_checks):
+            from modules.shopee.auth import ensure_shop_token
+            from modules.shopee.global_copy import localize_shopee_copy
+            from modules.shopee.publish import (
+                sync_shop_ids,
+                update_local_listing_copy,
+            )
+
+            localized = localize_shopee_copy(
+                english_title=title,
+                english_description=description,
+                region=region,
+            )
+            shop_id = int(sync_shop_ids()[region])
+            repair = update_local_listing_copy(
+                shop_id=shop_id,
+                token=ensure_shop_token(shop_id),
+                item_id=int(item_id),
+                title=localized["title"],
+                description=localized["description"],
+            )
+            corrected, corrected_evidence = _shopee_readback(
+                match_key=request.seller_sku[-4:].zfill(4),
+                region=region,
+                item_id=item_id,
+                expected_title=title,
+                expected_price=expected_price,
+                expected_image_count=len(context["images"]),
+                expected_description=description,
+                require_model_sku=False,
+                require_all_logistics=False,
+            )
+            corrected_evidence["repair"] = {
+                **repair,
+                "localization_provider": localized["provider"],
+                "localization_model": localized["model"],
+            }
+            if corrected:
+                return AdapterExecutionResult(
+                    True,
+                    True,
+                    (
+                        f"existing Shopee {region} listing was repaired in place "
+                        "and matched official API readback"
+                    ),
+                    item_id,
+                    corrected_evidence,
+                )
+            evidence = corrected_evidence
+        return AdapterExecutionResult(
+            False,
+            False,
+            (
+                f"existing Shopee {region} item still requires in-place repair; "
+                "a second publish was blocked to prevent a duplicate SKU"
+            ),
+            item_id,
+            evidence,
+        )
 
     from modules.shopee.publish import publish_match_key
 
@@ -1003,6 +1185,7 @@ def execute_shopee_target(
         publish_shops=True,
         item_status="NORMAL",
         title_override=title,
+        description_override=description,
     )
     item_id = str(result.get("item_id") or _shopee_item_id_for_match_key(
         request.seller_sku,
@@ -1026,6 +1209,7 @@ def execute_shopee_target(
             expected_title=title,
             expected_price=expected_price,
             expected_image_count=len(context["images"]),
+            expected_description=description,
         )
         evidence["poll_attempt"] = attempt + 1
         if verified:

@@ -10,7 +10,7 @@ from typing import Any, Callable
 
 from modules.sourcing.image_suite_plan import chat_completions, message_content
 
-POLICY_VERSION = "listing-title-candidates-v2"
+POLICY_VERSION = "listing-copy-candidates-v3"
 TOAPI_TITLE_MODEL = "gpt-5.4-mini-official"
 EXPECTED_TARGETS = (
     ("tiktok", "MY", "English / Malay", 255),
@@ -37,6 +37,7 @@ not keyword lists or translated source-platform noise.
 Return strict JSON only:
 {
   "semantic_master_en": "fact-grounded English product title, <=180 chars",
+  "shopee_description_en": "fact-grounded English Shopee global description, 700-1800 chars",
   "candidates": [
     {"channel":"tiktok","site":"MY","language":"English / Malay","title":"..."},
     {"channel":"tiktok","site":"PH","language":"English","title":"..."},
@@ -54,6 +55,12 @@ Platform strategy:
 - TikTok Shop: lead with the recognizable product type and strongest verified
   visual/use-context phrase; keep the title scannable on mobile.
 - Shopee CNSC: use concise English search phrases without repetition.
+- Shopee description: write a useful English global-master description with
+  short readable sections for product overview, verified details, suitable
+  spaces, application guidance, package contents, and factual cautions. It
+  will be translated by Shopee when imported into local shops, so keep the
+  English clear and literal. Do not mention a claim unless it is present in
+  the verified facts.
 - Ozon RU: write natural Russian retail copy, not transliterated English.
 - Localize meaning and search phrasing for each site; do not merely translate
   the English master word for word.
@@ -123,6 +130,21 @@ def _clean_title(value: Any, *, limit: int) -> str:
     return title
 
 
+def _clean_shopee_description(value: Any) -> str:
+    description = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    description = re.sub(r"[ \t]+", " ", description)
+    description = re.sub(r"\n{3,}", "\n\n", description).strip()
+    if len(description) < 500:
+        raise ValueError("Shopee global description is too short")
+    if len(description) > 3000:
+        raise ValueError("Shopee global description exceeds 3000 characters")
+    if re.search(r"[\u4e00-\u9fff\u0e00-\u0e7f]", description):
+        raise ValueError("Shopee global description must be English")
+    if not re.search(r"[A-Za-z]", description):
+        raise ValueError("Shopee global description must contain English text")
+    return description
+
+
 def _validate_language(title: str, *, channel: str, site: str) -> None:
     if site == "TH" and not re.search(r"[\u0e00-\u0e7f]", title):
         raise ValueError(f"{channel}:{site} candidate is not Thai")
@@ -174,6 +196,9 @@ def generate_title_candidates(
     master = _clean_title(parsed.get("semantic_master_en"), limit=180)
     if not re.search(r"[A-Za-z]", master) or re.search(r"[\u4e00-\u9fff]", master):
         raise ValueError("semantic_master_en must be English without Chinese text")
+    shopee_description = _clean_shopee_description(
+        parsed.get("shopee_description_en")
+    )
 
     received: dict[tuple[str, str], dict[str, Any]] = {}
     for row in parsed.get("candidates") or []:
@@ -204,10 +229,11 @@ def generate_title_candidates(
         )
 
     return {
-        "schema_version": "listing-title-candidates-v2",
+        "schema_version": "listing-copy-candidates-v3",
         "provider": "toapi",
         "status": "draft_pending_kyle_review",
         "semantic_master_en": master,
+        "shopee_description_en": shopee_description,
         "candidates": candidates,
         "notes_zh": str(parsed.get("notes_zh") or "").strip(),
         "input_signature": fact_signature(facts),

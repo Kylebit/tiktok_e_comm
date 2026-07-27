@@ -812,6 +812,7 @@
       : "候选待 Kyle 采用";
     $("#titleDraftStatus").textContent =
       `${status} · 模型 ${draft.model || "未记录"} · 规则 ${draft.policy_version || "未记录"} · 输入签名 ${(draft.input_signature || "").slice(0, 16)}`;
+    const shopeeDescription = String(draft.shopee_description_en || "").trim();
     const rows = [
       {
         channel: "商品主数据",
@@ -832,7 +833,16 @@
         ${row.master ? `<button class="button button-secondary adopt-title-candidate"
           type="button" data-title="${esc(row.title || "")}">采用为正式英文标题</button>` : ""}
       </article>
-    `).join("");
+    `).join("") + (shopeeDescription ? `
+      <article class="title-candidate title-description-candidate">
+        <div>
+          <span>Shopee · CNSC 英语母版描述</span>
+          <small>${esc(shopeeDescription.length)} / 3000</small>
+        </div>
+        <p>${esc(shopeeDescription)}</p>
+        <small>各国家店由 Shopee 从此英语母版导入并本地化；发布前会校验长度、事实和禁用承诺。</small>
+      </article>
+    ` : "");
   }
 
   async function generateTitleDraft() {

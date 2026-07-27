@@ -542,9 +542,19 @@ def test_shopee_readback_uses_get_endpoints_and_item_price_info(monkeypatch):
                     "item_list": [
                         {
                             "item_name": "Approved Shopee title",
-                            "item_sku": "0953",
+                            "item_sku": "",
                             "item_status": "NORMAL",
-                            "has_model": False,
+                            "has_model": True,
+                            "description": (
+                                "A detailed English product description. " * 30
+                            ),
+                            "logistic_info": [
+                                {
+                                    "logistic_id": 48002,
+                                    "logistic_name": "Standard International",
+                                    "enabled": True,
+                                }
+                            ],
                             "price_info": [
                                 {
                                     "original_price": 257,
@@ -561,7 +571,21 @@ def test_shopee_readback_uses_get_endpoints_and_item_price_info(monkeypatch):
                     ]
                 }
             }
-        return {"response": {"model": []}}
+        return {
+            "response": {
+                "model": [
+                    {
+                        "model_sku": "0953",
+                        "price_info": [
+                            {
+                                "original_price": 257,
+                                "current_price": 257,
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
 
     monkeypatch.setattr(client, "shop_get", fake_get)
 
@@ -572,14 +596,199 @@ def test_shopee_readback_uses_get_endpoints_and_item_price_info(monkeypatch):
         expected_title="Approved Shopee title",
         expected_price=257,
         expected_image_count=2,
+        expected_description="A detailed English master description. " * 30,
     )
 
     assert verified is True
-    assert evidence["prices"] == [257, 257]
+    assert evidence["prices"] == [257, 257, 257, 257]
+    assert evidence["model_skus"] == ["0953"]
+    assert evidence["checks"]["all_applicable_logistics"] is True
     assert [path for path, _params in calls] == [
         "/api/v2/product/get_item_base_info",
         "/api/v2/product/get_model_list",
     ]
+
+
+def test_existing_shopee_mismatch_is_never_republished_as_a_duplicate(monkeypatch):
+    context = _context()
+    context["payload"]["targets"] = ["shopee:TH"]
+    context["payload"]["listing_copy"]["candidates"] = [
+        {
+            "channel": "shopee",
+            "site": "CNSC",
+            "title": "Approved English Shopee master",
+            "policy_check": "passed",
+        }
+    ]
+    context["payload"]["pricing"]["selected_targets"] = {
+        "shopee:TH": {
+            "source": {
+                "list_price": 192,
+            }
+        }
+    }
+    monkeypatch.setattr(
+        release_adapters,
+        "_validated_context",
+        lambda _request: context,
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_shopee_item_id_for_match_key",
+        lambda *_args, **_kwargs: "48964906224",
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_shopee_readback",
+        lambda **_kwargs: (
+            False,
+            {
+                "verified": False,
+                "checks": {
+                    "localized_title": False,
+                    "price": False,
+                },
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        "modules.shopee.publish.publish_match_key",
+        lambda *_args, **_kwargs: pytest.fail(
+            "existing SKU must never enter the create/publish path"
+        ),
+    )
+
+    result = release_adapters.execute_shopee_target(
+        AdapterExecutionRequest(
+            plan_id="omnichannel:test",
+            confirmation_token="PUBLISH-TEST",
+            approval_scope_digest="scope",
+            product_id="3828811808",
+            seller_sku="0953",
+            product_package_id="product:3828811808:0953",
+            content_package_id="content:3828811808",
+            channel="shopee",
+            site="TH",
+            target_label="shopee:TH",
+            idempotency_key="publish:shopee:TH:test",
+        )
+    )
+
+    assert result.succeeded is False
+    assert result.external_reference == "48964906224"
+    assert "second publish was blocked" in result.detail
+
+
+def test_existing_shopee_copy_is_repaired_in_place_without_republishing(monkeypatch):
+    context = _context()
+    context["payload"]["targets"] = ["shopee:TH"]
+    context["payload"]["listing_copy"]["candidates"] = [
+        {
+            "channel": "shopee",
+            "site": "CNSC",
+            "title": "Approved English Shopee master",
+            "policy_check": "passed",
+        }
+    ]
+    context["payload"]["pricing"]["selected_targets"] = {
+        "shopee:TH": {"source": {"list_price": 192}}
+    }
+    monkeypatch.setattr(
+        release_adapters,
+        "_validated_context",
+        lambda _request: context,
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_shopee_item_id_for_match_key",
+        lambda *_args, **_kwargs: "48964906224",
+    )
+    readbacks = iter(
+        [
+            (
+                False,
+                {
+                    "verified": False,
+                    "checks": {
+                        "seller_sku": True,
+                        "model_sku": True,
+                        "localized_title": False,
+                        "rich_localized_description": False,
+                        "price": True,
+                        "image_count": True,
+                        "all_applicable_logistics": True,
+                        "status": True,
+                    },
+                },
+            ),
+            (
+                True,
+                {
+                    "verified": True,
+                    "checks": {
+                        "localized_title": True,
+                        "rich_localized_description": True,
+                    },
+                },
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_shopee_readback",
+        lambda **_kwargs: next(readbacks),
+    )
+    monkeypatch.setattr(
+        "modules.shopee.global_copy.localize_shopee_copy",
+        lambda **_kwargs: {
+            "title": "ชื่อภาษาไทยสำหรับสินค้าที่ผ่านการอนุมัติและพร้อมลงขายในร้านค้า",
+            "description": "รายละเอียดภาษาไทย " * 50,
+            "provider": "toapi",
+            "model": "gpt-5.4-mini-official",
+        },
+    )
+    repaired = []
+    monkeypatch.setattr(
+        "modules.shopee.publish.update_local_listing_copy",
+        lambda **kwargs: repaired.append(kwargs)
+        or {"verified": True, "item_id": str(kwargs["item_id"])},
+    )
+    monkeypatch.setattr(
+        "modules.shopee.publish.sync_shop_ids",
+        lambda: {"TH": 123},
+    )
+    monkeypatch.setattr(
+        "modules.shopee.auth.ensure_shop_token",
+        lambda _shop_id: "token",
+    )
+    monkeypatch.setattr(
+        "modules.shopee.publish.publish_match_key",
+        lambda *_args, **_kwargs: pytest.fail(
+            "in-place repair must not enter the create/publish path"
+        ),
+    )
+
+    result = release_adapters.execute_shopee_target(
+        AdapterExecutionRequest(
+            plan_id="omnichannel:test",
+            confirmation_token="PUBLISH-TEST",
+            approval_scope_digest="scope",
+            product_id="3828811808",
+            seller_sku="0953",
+            product_package_id="product:3828811808:0953",
+            content_package_id="content:3828811808",
+            channel="shopee",
+            site="TH",
+            target_label="shopee:TH",
+            idempotency_key="publish:shopee:TH:test",
+        )
+    )
+
+    assert result.succeeded is True
+    assert result.readback_verified is True
+    assert result.external_reference == "48964906224"
+    assert repaired[0]["item_id"] == 48964906224
+    assert "repaired in place" in result.detail
 
 
 def test_ozon_release_uses_verified_tiktok_images_without_third_party_rehosting(

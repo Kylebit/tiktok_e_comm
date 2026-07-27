@@ -191,41 +191,33 @@ def _reference_item(region: str, shop_id: int, token: str) -> dict | None:
     return items[0] if items else None
 
 
-_LOGISTICS_WITHOUT_PACKAGE_MEASUREMENTS = {
-    # MY self-collection lockers / points reject audited package measurements.
-    20087,
-    20097,
-    28056,
-    28079,
-    # VN smart-box / locker channels have the same limitation.
-    50039,
-    50052,
-    # TH instant / express channels do not accept package measurements.
-    7002,
-    70126,
-}
-
-
 def _logistic_info(shop_id: int, token: str, ref: dict | None) -> list[dict]:
-    exclude_logistic = _LOGISTICS_WITHOUT_PACKAGE_MEASUREMENTS
+    """Include every reference channel without overriding its eligibility.
+
+    A previous implementation silently dropped locker/express channels and
+    capped the fallback at two rows. After publication, each disabled channel
+    is tried separately by :func:`enable_all_applicable_logistics`.
+    """
+
+    seen: set[int] = set()
     if ref and ref.get("logistic_info"):
         out = []
         for lg in ref["logistic_info"]:
             lid = lg.get("logistic_id")
-            if lid is None or int(lid) in exclude_logistic:
+            if lid is None or int(lid) in seen:
                 continue
+            seen.add(int(lid))
             out.append(
                 {
                     "logistic_id": lid,
-                    "enabled": bool(lg.get("enabled", True)),
+                    "enabled": bool(lg.get("enabled")),
                     "shipping_fee": lg.get("shipping_fee", 0),
                     "size_id": lg.get("size_id", 0),
                     "is_free": bool(lg.get("is_free", False)),
                 }
             )
-        enabled = [x for x in out if x["enabled"]]
-        if enabled:
-            return enabled
+        if out:
+            return out
     resp = shop_get("/api/v2/logistics/get_channel_list", shop_id, token)
     channels = (resp.get("response") or {}).get("logistics_channel_list") or []
     out = []
@@ -233,8 +225,9 @@ def _logistic_info(shop_id: int, token: str, ref: dict | None) -> list[dict]:
         if not ch.get("enabled"):
             continue
         lid = ch.get("logistics_channel_id") or ch.get("logistic_id")
-        if lid is None:
+        if lid is None or int(lid) in seen:
             continue
+        seen.add(int(lid))
         out.append(
             {
                 "logistic_id": lid,
@@ -244,11 +237,124 @@ def _logistic_info(shop_id: int, token: str, ref: dict | None) -> list[dict]:
                 "is_free": False,
             }
         )
-        if len(out) >= 2:
-            break
     if not out:
         raise RuntimeError("无可用物流渠道")
     return out
+
+
+def _item_base_info(shop_id: int, token: str, item_id: int | str) -> dict:
+    response = shop_get(
+        "/api/v2/product/get_item_base_info",
+        shop_id,
+        token,
+        {"item_id_list": str(item_id)},
+    )
+    items = (response.get("response") or {}).get("item_list") or []
+    return dict(items[0]) if len(items) == 1 else {}
+
+
+def enable_all_applicable_logistics(
+    shop_id: int,
+    token: str,
+    item_id: int | str,
+) -> dict:
+    """Enable every item channel accepted by Shopee for the current parcel facts.
+
+    Disabled rows are tried one at a time.  A channel rejected by Shopee for
+    weight, dimensions, route or shop eligibility is preserved as an audited
+    rejection instead of failing the whole listing update.
+    """
+
+    item = _item_base_info(shop_id, token, item_id)
+    current = item.get("logistic_info") or []
+    if not current:
+        raise RuntimeError(f"Shopee item {item_id} has no applicable logistics")
+
+    def payload_rows(rows: list[dict], enable_id: int) -> list[dict]:
+        return [
+            {
+                "logistic_id": int(row["logistic_id"]),
+                "enabled": bool(row.get("enabled"))
+                or int(row["logistic_id"]) == enable_id,
+                "shipping_fee": row.get("shipping_fee", 0),
+                "size_id": row.get("size_id", 0),
+                "is_free": bool(row.get("is_free", False)),
+            }
+            for row in rows
+            if row.get("logistic_id") is not None
+        ]
+
+    enabled_now = {
+        int(row["logistic_id"])
+        for row in current
+        if row.get("logistic_id") is not None and row.get("enabled")
+    }
+    newly_enabled: list[int] = []
+    rejected: list[dict] = []
+    for candidate in current:
+        logistic_id = candidate.get("logistic_id")
+        if logistic_id is None or int(logistic_id) in enabled_now:
+            continue
+        response = shop_post(
+            "/api/v2/product/update_item",
+            shop_id,
+            token,
+            {
+                "item_id": int(item_id),
+                "logistic_info": payload_rows(current, int(logistic_id)),
+            },
+        )
+        error = str(response.get("error") or "").strip()
+        if error and error != "-":
+            rejected.append(
+                {
+                    "logistic_id": int(logistic_id),
+                    "logistic_name": candidate.get("logistic_name"),
+                    "reason": str(response.get("message") or error),
+                }
+            )
+            continue
+        verified_candidate = _item_base_info(shop_id, token, item_id)
+        current = list(verified_candidate.get("logistic_info") or current)
+        if any(
+            int(row.get("logistic_id") or -1) == int(logistic_id)
+            and row.get("enabled")
+            for row in current
+        ):
+            enabled_now.add(int(logistic_id))
+            newly_enabled.append(int(logistic_id))
+        else:
+            rejected.append(
+                {
+                    "logistic_id": int(logistic_id),
+                    "logistic_name": candidate.get("logistic_name"),
+                    "reason": "Shopee accepted the request but kept the channel disabled",
+                }
+            )
+
+    verified = _item_base_info(shop_id, token, item_id)
+    rows = verified.get("logistic_info") or []
+    disabled = [
+        {
+            "logistic_id": row.get("logistic_id"),
+            "logistic_name": row.get("logistic_name"),
+        }
+        for row in rows
+        if not row.get("enabled")
+    ]
+    return {
+        "source": "official_shopee_partner_api",
+        "item_id": str(item_id),
+        "enabled_logistic_ids": sorted(
+            int(row.get("logistic_id"))
+            for row in rows
+            if row.get("logistic_id") is not None and row.get("enabled")
+        ),
+        "newly_enabled_logistic_ids": sorted(newly_enabled),
+        "disabled_logistics": disabled,
+        "rejected_logistics": rejected,
+        "verified": True,
+    }
 
 
 def _attribute_list(shop_id: int, token: str, category_id: int, ref: dict | None) -> list[dict]:
@@ -416,12 +522,64 @@ def _shop_meta(shop_id: int, token: str) -> dict:
     return info.get("response") or info
 
 
-def _global_attribute_list(merchant_id: int, token: str, category_id: int, ref: dict | None) -> list[dict]:
+def _global_attribute_list(
+    merchant_id: int,
+    token: str,
+    category_id: int,
+    ref: dict | None,
+    *,
+    detail: dict | None = None,
+) -> list[dict]:
+    """Copy only attributes supported by the current product facts.
+
+    Reference products remain useful for category IDs and accepted attribute
+    IDs, but their values must not leak into a different product.  In
+    particular, an older floral/waterproof wall sticker must not make a dog
+    decal floral or waterproof.
+    """
+
+    source = " ".join(
+        (
+            str((detail or {}).get("title") or ""),
+            _strip_html(str((detail or {}).get("description") or "")),
+        )
+    ).lower()
+    material = "PVC" if "pvc" in source else ""
+    pattern = (
+        "Dog"
+        if "dog" in source
+        else "Floral and Butterfly"
+        if any(token in source for token in ("floral", "flower", "butterfly"))
+        else ""
+    )
     if ref and ref.get("attribute_list"):
         attrs = []
         for a in ref["attribute_list"]:
+            name = str(a.get("original_attribute_name") or "").strip()
+            normalised_name = name.casefold()
             vals = a.get("attribute_value_list") or []
             if not vals:
+                continue
+            if normalised_name == "material" and material:
+                vals = [{"value_id": 0, "original_value_name": material}]
+            elif normalised_name == "pattern" and pattern:
+                vals = [{"value_id": 0, "original_value_name": pattern}]
+            elif normalised_name == "seasonal decoration":
+                if not any(
+                    str(value.get("original_value_name") or "").casefold() == "no"
+                    for value in vals
+                ):
+                    continue
+            elif normalised_name == "quantity per pack":
+                if not any(
+                    str(value.get("original_value_name") or "").strip() == "1"
+                    for value in vals
+                ):
+                    continue
+            else:
+                # Unsupported performance claims and reference-only values are
+                # deliberately omitted.  A marketplace-required attribute must
+                # be resolved from explicit facts instead of guessed.
                 continue
             attrs.append(
                 {
@@ -551,6 +709,7 @@ def _run_publish_task(
     model_sku: str,
     ref: dict | None,
     item_status: str = "UNLIST",
+    create_model_when_missing: bool = True,
 ) -> dict:
     clean_status = str(item_status or "").strip().upper()
     if clean_status not in {"UNLIST", "NORMAL"}:
@@ -561,19 +720,31 @@ def _run_publish_task(
         raise RuntimeError("店铺无 merchant_id，无法走 CNSC 全球商品流程")
     mtoken = _merchant_token(shop_id, token)
 
-    title, local_desc, price = _local_item_fields(
+    _title, _local_desc, price = _local_item_fields(
         detail, shop_id=shop_id, token=token, model_sku=model_sku, ref=ref
+    )
+    sku = (detail.get("skus") or [{}])[0]
+    stock = (
+        sum(int(row.get("quantity") or 0) for row in sku.get("inventory") or [])
+        or 50
+    )
+    global_model = ensure_single_global_model(
+        global_item_id=int(global_item_id),
+        merchant_id=merchant_id,
+        merchant_token=mtoken,
+        detail=detail,
+        model_sku=model_sku,
+        original_price=float(tk_local_to_cny(price, region=region)),
+        stock=stock,
+        create_when_missing=create_model_when_missing,
     )
     pub_body = {
         "global_item_id": int(global_item_id),
         "shop_id": int(shop_id),
         "shop_region": region.upper(),
         "item": {
-            "item_name": title,
-            "description": local_desc,
             "item_status": clean_status,
             "original_price": price,
-            "item_sku": _english_safe_sku(model_sku),
             "logistic": _logistic_info(shop_id, token, ref),
         },
     }
@@ -606,12 +777,29 @@ def _run_publish_task(
             failed = res.get("failed") or {}
             reason = failed.get("failed_reason") or st
             raise RuntimeError(f"发布失败: {reason}")
+    logistics = {}
+    if item_id:
+        for attempt in range(6):
+            try:
+                logistics = enable_all_applicable_logistics(
+                    shop_id,
+                    token,
+                    item_id,
+                )
+                break
+            except RuntimeError:
+                if attempt == 5:
+                    raise
+                time.sleep(2)
     return {
         "ok": bool(item_id),
         "global_item_id": global_item_id,
         "publish_task_id": task_id,
         "item_id": item_id,
         "publish_status": last_status,
+        "copy_mode": "shopee_global_master_auto_translation",
+        "global_model": global_model,
+        "logistics": logistics,
         "raw_publish": p_resp,
     }
 
@@ -636,6 +824,7 @@ def _publish_existing_global(
         model_sku=model_sku,
         ref=ref,
         item_status=item_status,
+        create_model_when_missing=False,
     )
     if result.get("item_id"):
         record_shop_item(
@@ -645,6 +834,254 @@ def _publish_existing_global(
             item_id=result["item_id"],
         )
     return {**result, "flow": "publish_existing_global"}
+
+
+def _single_variant_label(detail: dict) -> str:
+    sku = (detail.get("skus") or [{}])[0]
+    for attribute in sku.get("sales_attributes") or []:
+        value = str(attribute.get("value_name") or attribute.get("name") or "").strip()
+        if value:
+            return value[:50]
+    dimension = sku.get("sku_dimensions") or detail.get("package_dimensions") or {}
+    length = dimension.get("length")
+    width = dimension.get("width")
+    if length and width:
+        values = sorted((float(length), float(width)))
+        rendered = [
+            str(int(value)) if value.is_integer() else f"{value:g}"
+            for value in values
+        ]
+        return f"{rendered[0]} x {rendered[1]} cm"
+    return "Standard"
+
+
+def ensure_single_global_model(
+    *,
+    global_item_id: int,
+    merchant_id: int,
+    merchant_token: str,
+    detail: dict,
+    model_sku: str,
+    original_price: float,
+    stock: int,
+    create_when_missing: bool = True,
+) -> dict:
+    """Ensure even a one-option global product has an auditable Model SKU."""
+
+    existing = merchant_get(
+        "/api/v2/global_product/get_global_model_list",
+        merchant_id,
+        merchant_token,
+        {"global_item_id": int(global_item_id)},
+    )
+    models = (existing.get("response") or {}).get("global_model") or []
+    if models:
+        model_skus = {
+            str(model.get("global_model_sku") or "").strip()
+            for model in models
+        }
+        if model_sku not in model_skus:
+            raise RuntimeError(
+                f"global item {global_item_id} model SKU mismatch: {sorted(model_skus)}"
+            )
+        return {
+            "created": False,
+            "global_item_id": int(global_item_id),
+            "model_skus": sorted(model_skus),
+            "variant_label": _single_variant_label(detail),
+            "legacy_item_sku": False,
+        }
+
+    label = _single_variant_label(detail)
+    if not create_when_missing:
+        return {
+            "created": False,
+            "global_item_id": int(global_item_id),
+            "model_skus": [],
+            "variant_label": label,
+            "legacy_item_sku": True,
+        }
+    response = merchant_post(
+        "/api/v2/global_product/init_tier_variation",
+        merchant_id,
+        merchant_token,
+        {
+            "global_item_id": int(global_item_id),
+            "tier_variation": [
+                {
+                    "name": "Size",
+                    "option_list": [{"option": label}],
+                }
+            ],
+            "global_model": [
+                {
+                    "tier_index": [0],
+                    "global_model_sku": _english_safe_sku(model_sku),
+                    "original_price": float(original_price),
+                    "seller_stock": [
+                        {
+                            "location_id": "CNZ",
+                            "stock": int(stock),
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    error = str(response.get("error") or "").strip()
+    if error and error != "-":
+        raise RuntimeError(response.get("message") or error)
+    verified = merchant_get(
+        "/api/v2/global_product/get_global_model_list",
+        merchant_id,
+        merchant_token,
+        {"global_item_id": int(global_item_id)},
+    )
+    models = (verified.get("response") or {}).get("global_model") or []
+    model_skus = {
+        str(model.get("global_model_sku") or "").strip()
+        for model in models
+    }
+    if model_sku not in model_skus:
+        raise RuntimeError(
+            f"global item {global_item_id} did not expose Model SKU {model_sku}"
+        )
+    return {
+        "created": True,
+        "global_item_id": int(global_item_id),
+        "model_skus": sorted(model_skus),
+        "variant_label": label,
+        "legacy_item_sku": False,
+    }
+
+
+def update_global_master(
+    *,
+    global_item_id: int,
+    merchant_id: int,
+    merchant_token: str,
+    detail: dict,
+    title: str,
+    description: str,
+    ref: dict | None,
+) -> dict:
+    """Update the English master and remove reference-product fact leakage."""
+
+    category_id = int(
+        (ref or {}).get("category_id")
+        or DEFAULT_CATEGORY.get("TH")
+        or 101157
+    )
+    body = {
+        "global_item_id": int(global_item_id),
+        "global_item_name": _shopee_title(title, "", max_len=120),
+        "description": str(description or "").strip()[:3000],
+        "attribute_list": _global_attribute_list(
+            merchant_id,
+            merchant_token,
+            category_id,
+            ref,
+            detail=detail,
+        ),
+    }
+    if len(body["description"]) < 500:
+        raise ValueError("Shopee global master description must be at least 500 characters")
+    response = merchant_post(
+        "/api/v2/global_product/update_global_item",
+        merchant_id,
+        merchant_token,
+        body,
+    )
+    error = str(response.get("error") or "").strip()
+    if error and error != "-":
+        raise RuntimeError(response.get("message") or error)
+    readback = merchant_get(
+        "/api/v2/global_product/get_global_item_info",
+        merchant_id,
+        merchant_token,
+        {"global_item_id_list": str(global_item_id)},
+    )
+    items = (readback.get("response") or {}).get("global_item_list") or []
+    if len(items) != 1:
+        raise RuntimeError(f"global item {global_item_id} readback did not converge")
+    item = items[0]
+    verified = (
+        str(item.get("global_item_name") or "") == body["global_item_name"]
+        and str(item.get("description") or "") == body["description"]
+    )
+    if not verified:
+        raise RuntimeError(f"global item {global_item_id} copy readback mismatch")
+    attributes = [
+        {
+            "name": row.get("original_attribute_name"),
+            "values": [
+                value.get("original_value_name")
+                for value in row.get("attribute_value_list") or []
+            ],
+        }
+        for row in item.get("attribute_list") or []
+    ]
+    return {
+        "source": "official_shopee_partner_api",
+        "global_item_id": int(global_item_id),
+        "title": item.get("global_item_name"),
+        "description_length": len(str(item.get("description") or "")),
+        "attributes": attributes,
+        "verified": True,
+    }
+
+
+def update_local_listing_copy(
+    *,
+    shop_id: int,
+    token: str,
+    item_id: int,
+    title: str,
+    description: str,
+) -> dict:
+    """Repair one already-published local listing without creating a duplicate."""
+
+    clean_title = str(title or "").strip()
+    clean_description = str(description or "").strip()
+    if not clean_title:
+        raise ValueError("Shopee local title is required")
+    if len(clean_description) < 500:
+        raise ValueError("Shopee local description must be at least 500 characters")
+    response = shop_post(
+        "/api/v2/product/update_item",
+        shop_id,
+        token,
+        {
+            "item_id": int(item_id),
+            "item_name": clean_title,
+            "description": clean_description[:3000],
+        },
+    )
+    error = str(response.get("error") or "").strip()
+    if error and error != "-":
+        raise RuntimeError(response.get("message") or error)
+    logistics = enable_all_applicable_logistics(shop_id, token, item_id)
+    readback = _item_base_info(shop_id, token, item_id)
+    verified = (
+        str(readback.get("item_name") or "") == clean_title
+        and str(readback.get("description") or "") == clean_description[:3000]
+    )
+    if not verified:
+        raise RuntimeError(f"Shopee item {item_id} local repair readback mismatch")
+    return {
+        "source": "official_shopee_partner_api",
+        "item_id": str(item_id),
+        "title": readback.get("item_name"),
+        "description_length": len(str(readback.get("description") or "")),
+        "logistics_enabled": sum(
+            1
+            for row in readback.get("logistic_info") or []
+            if row.get("enabled")
+        ),
+        "logistics": logistics,
+        "has_model": bool(readback.get("has_model")),
+        "verified": True,
+    }
 
 
 def _create_global_item(
@@ -657,6 +1094,8 @@ def _create_global_item(
     image_ids: list[str],
     ref: dict | None,
     tk_source_region: str = "",
+    title_override: str = "",
+    description_override: str = "",
 ) -> dict:
     """仅创建 CNSC 全球商品，不发布到国家店（由卖家在后台手动发布）。"""
     meta = _shop_meta(shop_id, token)
@@ -679,15 +1118,30 @@ def _create_global_item(
     width = int(float(dim.get("width") or 20))
     height = int(float(dim.get("height") or 2))
 
-    global_copy = build_global_copy(detail, model_sku, source_region=tk_source_region)
-    global_title = global_copy["title"]
-    global_desc = global_copy["description"]
+    global_copy = (
+        {
+            "title": str(title_override).strip(),
+            "description": str(description_override).strip(),
+            "source_region": tk_source_region,
+            "used_ph_english": True,
+        }
+        if str(title_override).strip() and str(description_override).strip()
+        else build_global_copy(detail, model_sku, source_region=tk_source_region)
+    )
+    global_title = _shopee_title(
+        title_override or global_copy["title"],
+        model_sku,
+        max_len=120,
+    )
+    global_desc = (
+        str(description_override or "").strip()
+        or global_copy["description"]
+    )[:3000]
 
     global_body = {
         "category_id": int(category_id),
         "global_item_name": global_title,
         "description": global_desc,
-        "global_item_sku": _english_safe_sku(model_sku),
         "original_price": price,
         "weight": max(weight, 0.01),
         "dimension": {
@@ -696,7 +1150,13 @@ def _create_global_item(
             "package_height": max(height, 1),
         },
         "image": {"image_id_list": image_ids[:9]},
-        "attribute_list": _global_attribute_list(merchant_id, mtoken, int(category_id), ref),
+        "attribute_list": _global_attribute_list(
+            merchant_id,
+            mtoken,
+            int(category_id),
+            ref,
+            detail=detail,
+        ),
         "brand": (ref or {}).get("brand") or {"brand_id": 0, "original_brand_name": "NoBrand"},
         "condition": "NEW",
         "seller_stock": [{"location_id": "CNZ", "stock": stock}],
@@ -708,6 +1168,15 @@ def _create_global_item(
     global_item_id = (g_resp.get("response") or {}).get("global_item_id")
     if not global_item_id:
         raise RuntimeError(f"add_global_item 无 global_item_id: {g_resp}")
+    global_model = ensure_single_global_model(
+        global_item_id=int(global_item_id),
+        merchant_id=merchant_id,
+        merchant_token=mtoken,
+        detail=detail,
+        model_sku=model_sku,
+        original_price=price,
+        stock=stock,
+    )
     return {
         "ok": True,
         "flow": "global_only",
@@ -715,6 +1184,7 @@ def _create_global_item(
         "model_sku": model_sku,
         "global_title": global_title,
         "global_description_len": len(global_desc),
+        "global_model": global_model,
         "tk_source_region": tk_source_region,
         "used_ph_english": global_copy.get("used_ph_english"),
     }
@@ -732,6 +1202,8 @@ def _publish_global(
     ref: dict | None,
     tk_source_region: str = "",
     item_status: str = "UNLIST",
+    title_override: str = "",
+    description_override: str = "",
 ) -> dict:
     created = _create_global_item(
         detail,
@@ -742,6 +1214,8 @@ def _publish_global(
         image_ids=image_ids,
         ref=ref,
         tk_source_region=tk_source_region,
+        title_override=title_override,
+        description_override=description_override,
     )
     global_item_id = int(created["global_item_id"])
     result = _run_publish_task(
@@ -766,6 +1240,7 @@ def publish_match_key(
     publish_shops: bool = False,
     item_status: str = "UNLIST",
     title_override: str = "",
+    description_override: str = "",
 ) -> dict:
     """将 TK 商品发布到 Shopee。默认仅建全球商品，不自动发国家店。"""
     if publish_shops:
@@ -783,6 +1258,8 @@ def publish_match_key(
     detail = dict(tk_detail)
     if str(title_override or "").strip():
         detail["title"] = str(title_override).strip()
+    if str(description_override or "").strip():
+        detail["description"] = str(description_override).strip()
     local_detail = _regional_listing_detail(
         regional_detail,
         detail,
@@ -795,7 +1272,16 @@ def publish_match_key(
     token = ensure_shop_token(shop_id)
 
     existing_gid = global_item_id_for_match_key(key)
-    global_preview = build_global_copy(detail, model_sku, source_region=tk_source)
+    global_preview = (
+        {
+            "title": str(title_override).strip(),
+            "description": str(description_override).strip(),
+            "source_region": tk_source,
+            "used_ph_english": True,
+        }
+        if str(title_override).strip() and str(description_override).strip()
+        else build_global_copy(detail, model_sku, source_region=tk_source)
+    )
     if dry_run:
         out = {
             "dry_run": True,
@@ -824,6 +1310,17 @@ def publish_match_key(
     meta = _shop_meta(shop_id, token)
     if meta.get("is_cb") or meta.get("is_upgraded_cbsc"):
         if existing_gid and not global_only:
+            if str(title_override).strip() and str(description_override).strip():
+                merchant_id = int(meta.get("merchant_id") or 0)
+                update_global_master(
+                    global_item_id=int(existing_gid),
+                    merchant_id=merchant_id,
+                    merchant_token=_merchant_token(shop_id, token),
+                    detail=detail,
+                    title=title_override,
+                    description=description_override,
+                    ref=ref,
+                )
             result = _publish_existing_global(
                 int(existing_gid),
                 local_detail,
@@ -857,6 +1354,8 @@ def publish_match_key(
                     image_ids=image_ids,
                     ref=ref,
                     tk_source_region=tk_source,
+                    title_override=title_override,
+                    description_override=description_override,
                 )
                 upsert_global_entry(
                     str(result["global_item_id"]),
@@ -876,6 +1375,8 @@ def publish_match_key(
                     ref=ref,
                     tk_source_region=tk_source,
                     item_status=item_status,
+                    title_override=title_override,
+                    description_override=description_override,
                 )
                 if result.get("global_item_id"):
                     upsert_global_entry(

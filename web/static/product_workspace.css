@@ -708,6 +708,18 @@ section { scroll-margin-top: 20px; }
   grid-column: 1 / -1;
   border-color: rgba(35, 118, 107, .35);
 }
+.title-description-candidate {
+  grid-column: 1 / -1;
+}
+.title-description-candidate p {
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
+  color: var(--ink);
+  font-size: 10px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
 .title-candidate > div {
   display: flex;
   justify-content: space-between;

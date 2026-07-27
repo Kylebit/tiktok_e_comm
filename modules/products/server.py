@@ -40,9 +40,43 @@ HTTP_DOMAIN_REGISTRY = http_registry()
 
 def _product_workspace_view(payload: dict) -> dict:
     """Present governed evidence and durable V1 state as the formal workspace."""
+    view_payload = dict(payload)
+    product = payload.get("product") if isinstance(payload.get("product"), dict) else {}
+    listing_copy = (
+        dict(payload.get("listing_copy"))
+        if isinstance(payload.get("listing_copy"), dict)
+        else {}
+    )
+    if (
+        not str(listing_copy.get("shopee_description_en") or "").strip()
+        and str(product.get("title") or "").strip()
+        and str(product.get("seller_sku_candidate") or "").strip()
+    ):
+        from modules.shopee.global_copy import build_factual_english_description
+
+        package = list(product.get("package_cm") or ())
+        listing_copy["shopee_description_en"] = build_factual_english_description(
+            {
+                "title": str(product.get("title") or ""),
+                "description": "",
+                "package_dimensions": {
+                    "length": package[0] if len(package) > 0 else None,
+                    "width": package[1] if len(package) > 1 else None,
+                    "height": package[2] if len(package) > 2 else None,
+                },
+            },
+            str(product.get("seller_sku_candidate") or ""),
+            title=str(product.get("title") or ""),
+        )
+        listing_copy["shopee_description_source"] = (
+            "deterministic_verified_facts_fallback"
+        )
+        view_payload["listing_copy"] = listing_copy
+    # The fallback is a presentation aid for legacy v2 drafts. It must not
+    # alter the digest of an already-approved immutable ReleasePlan.
     release_v1 = _release_v1_view(payload)
     return {
-        **payload,
+        **view_payload,
         "schema_version": "product-workspace-v1",
         "mode": "formal_v1",
         "workspace_mode": "formal_v1",
@@ -663,10 +697,19 @@ def _release_plan_payload_from_dashboard(dashboard: dict) -> tuple[dict, list[st
             "selected_sku_keys": list(product.get("selected_sku_keys") or ()),
         },
         "listing_copy": {
+            "schema_version": str(
+                (dashboard.get("listing_copy") or {}).get("schema_version") or ""
+            ),
             "status": str((dashboard.get("listing_copy") or {}).get("status") or ""),
             "model": str((dashboard.get("listing_copy") or {}).get("model") or ""),
-            "facts_signature": str(
-                (dashboard.get("listing_copy") or {}).get("facts_signature") or ""
+            "input_signature": str(
+                (dashboard.get("listing_copy") or {}).get("input_signature") or ""
+            ),
+            "shopee_description_en": str(
+                (dashboard.get("listing_copy") or {}).get(
+                    "shopee_description_en"
+                )
+                or ""
             ),
             "candidates": [
                 dict(row)

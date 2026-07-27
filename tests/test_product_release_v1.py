@@ -122,6 +122,31 @@ def test_formal_v1_preview_is_write_free_and_reports_executable_registry(
     assert not store.path.exists()
 
 
+def test_formal_view_backfills_a_reviewable_shopee_description_for_v2_drafts():
+    dashboard = _dashboard()
+    dashboard["product"].update(
+        {
+            "title": "Cute Dog PVC Self-Adhesive Wall Sticker 34 x 58 cm",
+            "package_cm": [58, 34, 0.02],
+        }
+    )
+    dashboard["listing_copy"] = {
+        "schema_version": "listing-title-candidates-v2",
+        "candidates": [],
+    }
+
+    view = product_server._product_workspace_view(dashboard)
+
+    description = view["listing_copy"]["shopee_description_en"]
+    assert len(description) >= 500
+    assert "PVC" in description
+    assert "58" in description
+    assert (
+        view["listing_copy"]["shopee_description_source"]
+        == "deterministic_verified_facts_fallback"
+    )
+
+
 def test_release_plan_approval_and_miaoshou_prepare_are_exact_and_durable(
     tmp_path,
     monkeypatch,

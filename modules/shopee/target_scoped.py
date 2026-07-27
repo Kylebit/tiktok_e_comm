@@ -12,6 +12,14 @@ class ShopeeRegionalPublishReconciliationError(RuntimeError):
         self.external_write_evidence = {**self.external_write_evidence, "task_id": str(task_id), "item_id": str(item_id), "error_type": type(self).__name__, "checks": dict(checks or {})}
 
 
+class ShopeeRegionalPreSubmitError(RuntimeError):
+    external_write_evidence = {"external_writes_performed": [], "pre_submit_failure": True}
+
+
+class ShopeeRegionalDispatchUnknownError(ShopeeRegionalPublishReconciliationError):
+    pass
+
+
 def scan_prepared_shop_sku(*, shop_id: int, access_token: str, seller_sku: str) -> dict:
     found = []
     completeness = {}
@@ -123,7 +131,7 @@ def runtime_global_master(*, shop_id: int, merchant_id: int, merchant_token: str
     return {"title": title, "description": description, "urls": list(urls), "digest": digest, "summary": {"global_item_id": str(global_item_id), "master_digest": digest, "image_count": len(urls)}}
 
 
-def publish_existing_global_site(*, request, evidence: dict) -> dict:
+def _publish_existing_global_site(*, request, evidence: dict) -> dict:
     """One create_publish_task from the immutable command; bounded/explicit."""
     from modules.shopee.client import merchant_get, merchant_post
     from modules.shopee.auth import load_tokens
@@ -134,7 +142,11 @@ def publish_existing_global_site(*, request, evidence: dict) -> dict:
     if not merchant_id or not token: raise RuntimeError("prepared merchant token is required")
     master = runtime_global_master(shop_id=shop_id, merchant_id=merchant_id, merchant_token=token, global_item_id=str(evidence["global_item_id"]), approved_master_digest=command["approved_master_digest"])
     body = {"global_item_id": int(evidence["global_item_id"]), "shop_id": int(shop_id), "shop_region": command["region"], "item": {"item_status": command["item_status"], "original_price": command["local_original_price"], "logistic": [{"logistic_id": x, "enabled": True} for x in evidence["selected_logistics_ids"]], "model": [{"tier_index": evidence["global_tier_index"], "original_price": command["local_original_price"]}]}}
-    response = merchant_post("/api/v2/global_product/create_publish_task", merchant_id, token, body)
+    evidence["_dispatch_invoked"] = True
+    try:
+        response = merchant_post("/api/v2/global_product/create_publish_task", merchant_id, token, body)
+    except Exception as error:
+        raise ShopeeRegionalDispatchUnknownError(type(error).__name__) from error
     task_id = (response.get("response") or {}).get("publish_task_id")
     if not task_id: raise RuntimeError("create_publish_task response is ambiguous")
     item_id = ""
@@ -173,3 +185,15 @@ def publish_existing_global_site(*, request, evidence: dict) -> dict:
     image = evaluate_shopee_regional_image_observation(approved_count=command["approved_image_count"], regional_image_urls=image_urls or [], global_linkage_verified=hard_checks["global_linkage"])
     outcome = shopee_regional_observation_outcome(listing_hard_exact=hard, copy_observation=copy, image_observation=image)
     return {"item_id": item_id, "verified": outcome.get("outcome") == "SUCCEEDED", "manual_review_required": outcome.get("manual_review_required") is True, "task_status": "success", "hard_checks": hard_checks, "enabled_logistics_count": len(enabled), "image_count": len(image_urls or []), "master_digest": master["digest"], "observation_outcome": outcome.get("outcome"), "derived_translation_status": outcome.get("derived_translation_status"), "derived_image_status": outcome.get("derived_image_status"), "matched_rule_ids": list(outcome.get("matched_rule_ids") or []), "observation_evidence_digest": outcome.get("evidence_digest"), "reconciliation_required": outcome.get("reconciliation_required") is True, "external_writes_performed": ["shopee:regional_publish"]}
+
+
+def publish_existing_global_site(*, request, evidence: dict) -> dict:
+    """Classify failures at the single merchant POST dispatch boundary."""
+    try:
+        return _publish_existing_global_site(request=request, evidence=evidence)
+    except (ShopeeRegionalPublishReconciliationError, ShopeeRegionalPreSubmitError):
+        raise
+    except Exception as error:
+        if evidence.get("_dispatch_invoked"):
+            raise ShopeeRegionalPublishReconciliationError(type(error).__name__) from error
+        raise ShopeeRegionalPreSubmitError(type(error).__name__) from error

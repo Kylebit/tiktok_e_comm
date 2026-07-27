@@ -172,15 +172,15 @@ def execute_target_scoped_operation(request: TargetScopedOperationRequest, proof
     """Perform one exact existing-object action then bounded official readback."""
     raw = _assert_proof(request, proof)
     if request.target_label in _SHOPEE_TARGETS:
-        from modules.shopee.target_scoped import publish_existing_global_site, ShopeeRegionalPublishReconciliationError
+        from modules.shopee.target_scoped import publish_existing_global_site, ShopeeRegionalPublishReconciliationError, ShopeeRegionalPreSubmitError
         try:
             receipt = publish_existing_global_site(request=request, evidence=raw["semantic_evidence"])
+        except ShopeeRegionalPreSubmitError as error:
+            return AdapterExecutionResult(False, False, "Shopee pre-submit validation failed", None, {"external_writes_performed": [], "pre_submit_failure": True, "error_type": type(error).__name__}, submission_accepted=False)
         except ShopeeRegionalPublishReconciliationError as error:
             safe = dict(error.external_write_evidence)
             allowed = {key: safe[key] for key in ("external_writes_performed", "durable_state_uncertain", "reconciliation_required", "task_id", "item_id", "error_type", "checks") if key in safe}
             return AdapterExecutionResult(False, False, "Shopee accepted publish requires reconciliation", error.external_reference, allowed, submission_accepted=True)
-        except Exception as error:
-            return AdapterExecutionResult(False, False, "Shopee accepted publish requires reconciliation", None, {"external_writes_performed": ["shopee:regional_publish"], "durable_state_uncertain": True, "reconciliation_required": True, "error_type": type(error).__name__}, submission_accepted=True)
         if receipt.get("verified") is not True:
             return AdapterExecutionResult(False, False, "Shopee dispatch/readback requires reconciliation", str(receipt.get("item_id") or "") or None, {"external_writes_performed": ["shopee:regional_publish"], "reconciliation_required": True})
         return AdapterExecutionResult(True, True, "Shopee one-site publish readback verified", str(receipt["item_id"]), {"verified": True, "external_writes_performed": ["shopee:regional_publish"], "manual_review_required": receipt.get("manual_review_required") is True, "profit_status": "unverified", "derived_translation_status": receipt.get("derived_translation_status"), "derived_image_status": receipt.get("derived_image_status"), "semantic_equivalence": "unverified", "matched_rule_ids": receipt.get("matched_rule_ids") or [], "observation_evidence_digest": receipt.get("observation_evidence_digest"), "readback": receipt})

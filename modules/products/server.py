@@ -28,6 +28,19 @@ WEB_DIR = ROOT / "web"
 DEFAULT_PORT = 8765
 IMAGE_CACHE_DIR = ROOT / "data" / "web_image_cache"
 PRODUCT_APPROVAL_BODY_LIMIT = 64 * 1024
+_READONLY_SHOPEE_RECONCILE_TARGETS = frozenset({"shopee:PH", "shopee:TH"})
+_READONLY_SHOPEE_RECONCILE_CHECKS = frozenset(
+    {
+        "seller_sku",
+        "model_sku",
+        "localized_title",
+        "rich_localized_description",
+        "price",
+        "image_count",
+        "all_applicable_logistics",
+        "status",
+    }
+)
 _product_approval_lock = threading.Lock()
 _release_execution_lock = threading.Lock()
 _product_workbench_locks_guard = threading.Lock()
@@ -1933,6 +1946,236 @@ def _release_dashboard_for_request(data: dict) -> tuple[dict | None, tuple[int, 
             },
         )
     return dashboard, None
+
+
+def _reconcile_existing_shopee_target_readonly(
+    *,
+    offer_id: str,
+    target_label: str,
+) -> tuple[int, dict]:
+    """Prove one existing Shopee result without exposing release authority.
+
+    The client supplies only public target identity. The server resolves every
+    authorization field from the current approved immutable plan and durable
+    run, while the adapter repeats the same validation before official GET
+    readback. No run or target result is recorded by this endpoint.
+    """
+
+    from domains.channel_operations.release_executor import AdapterExecutionRequest
+    from modules.products.release_adapters import (
+        reconcile_existing_shopee_target,
+    )
+    from shared_platform.release_store import default_release_store
+
+    clean_offer_id = str(offer_id or "").strip()
+    clean_target = str(target_label or "").strip()
+    if not clean_offer_id.isdigit() or not 1 <= len(clean_offer_id) <= 32:
+        return 400, {
+            "ok": False,
+            "error": "offer_id must contain 1-32 digits",
+            "external_writes_performed": [],
+            "state_mutations_performed": [],
+        }
+    if clean_target not in _READONLY_SHOPEE_RECONCILE_TARGETS:
+        return 400, {
+            "ok": False,
+            "error": "read-only reconciliation target is not allowed",
+            "allowed_targets": sorted(_READONLY_SHOPEE_RECONCILE_TARGETS),
+            "external_writes_performed": [],
+            "state_mutations_performed": [],
+        }
+
+    store = default_release_store()
+    plan = store.active_plan_for_product(clean_offer_id)
+    approval = (plan or {}).get("approval") or {}
+    payload = (plan or {}).get("payload") or {}
+    plan_targets = list((plan or {}).get("targets") or ())
+    payload_targets = list(payload.get("targets") or ())
+    scope_digest = str(payload.get("omnichannel_scope_digest") or "").strip()
+    plan_is_current_and_approved = bool(
+        plan
+        and plan.get("status") == "APPROVED"
+        and str(plan.get("product_id") or "") == clean_offer_id
+        and str(payload.get("product_id") or "") == clean_offer_id
+        and str(payload.get("plan_id") or "") == str(plan.get("plan_id") or "")
+        and clean_target in plan_targets
+        and clean_target in payload_targets
+        and approval.get("status") == "APPROVED"
+        and str(approval.get("approved_by") or "") == "Kyle"
+        and bool(approval.get("user_approved"))
+        and str(approval.get("plan_id") or "") == str(plan.get("plan_id") or "")
+        and str(approval.get("payload_digest") or "")
+        == str(plan.get("payload_digest") or "")
+        and str(approval.get("confirmation_token") or "")
+        == str(plan.get("confirmation_token") or "")
+        and scope_digest
+    )
+    if not plan_is_current_and_approved:
+        return 409, {
+            "ok": False,
+            "error": (
+                "current approved immutable ReleasePlan does not authorize "
+                "this read-only reconciliation"
+            ),
+            "external_writes_performed": [],
+            "state_mutations_performed": [],
+        }
+
+    assert plan is not None
+    run_id = f"release-run:{str(plan['payload_digest'])[:24]}"
+    run = store.get_run(run_id)
+    if (
+        not run
+        or str(run.get("run_id") or "") != run_id
+        or str(run.get("plan_id") or "") != str(plan.get("plan_id") or "")
+        or str(run.get("approval_id") or "") != str(approval.get("approval_id") or "")
+    ):
+        return 409, {
+            "ok": False,
+            "error": "durable release run does not match the approved plan",
+            "external_writes_performed": [],
+            "state_mutations_performed": [],
+        }
+    matching_targets = [
+        row
+        for row in (run.get("targets") or ())
+        if str(row.get("target_label") or "") == clean_target
+    ]
+    if len(matching_targets) != 1:
+        return 409, {
+            "ok": False,
+            "error": "durable release target identity is missing or ambiguous",
+            "external_writes_performed": [],
+            "state_mutations_performed": [],
+        }
+    target = matching_targets[0]
+    if str(target.get("status") or "") != "FAILED":
+        return 409, {
+            "ok": False,
+            "error": "read-only reconciliation requires a FAILED durable target",
+            "external_writes_performed": [],
+            "state_mutations_performed": [],
+        }
+    external_id = str(target.get("external_id") or "").strip()
+    failure_evidence_present = bool(
+        target.get("latest_failure_evidence")
+        or target.get("failure_events")
+    )
+    if not external_id:
+        return 409, {
+            "ok": False,
+            "error": "read-only reconciliation requires the recorded external_id",
+            "failure_evidence_present": failure_evidence_present,
+            "external_writes_performed": [],
+            "state_mutations_performed": [],
+        }
+    idempotency_key = str(target.get("idempotency_key") or "").strip()
+    if not idempotency_key:
+        return 409, {
+            "ok": False,
+            "error": "durable release target idempotency identity is missing",
+            "external_writes_performed": [],
+            "state_mutations_performed": [],
+        }
+
+    channel, site = clean_target.split(":", 1)
+    request = AdapterExecutionRequest(
+        plan_id=str(plan["plan_id"]),
+        confirmation_token=str(plan["confirmation_token"]),
+        approval_scope_digest=scope_digest,
+        product_id=str(plan["product_id"]),
+        seller_sku=str(plan["seller_sku"]),
+        product_package_id=str(plan["product_package_id"]),
+        content_package_id=str(plan["content_package_id"]),
+        channel=channel,
+        site=site,
+        target_label=clean_target,
+        idempotency_key=idempotency_key,
+    )
+    try:
+        result = reconcile_existing_shopee_target(request)
+    except RuntimeError:
+        return 409, {
+            "ok": False,
+            "error": "official read-only Shopee reconciliation is unavailable",
+            "external_writes_performed": [],
+            "state_mutations_performed": [],
+        }
+    except Exception:
+        return 502, {
+            "ok": False,
+            "error": "official read-only Shopee reconciliation failed",
+            "external_writes_performed": [],
+            "state_mutations_performed": [],
+        }
+
+    evidence = (
+        dict(result.readback_evidence)
+        if isinstance(result.readback_evidence, dict)
+        else {}
+    )
+    checks = evidence.get("checks")
+    exact_checks = bool(
+        isinstance(checks, dict)
+        and set(checks) == _READONLY_SHOPEE_RECONCILE_CHECKS
+        and all(isinstance(value, bool) for value in checks.values())
+    )
+    evidence_verified = bool(evidence.get("verified"))
+    computed_verified = bool(exact_checks and all(checks.values()))
+    evidence_is_exact = bool(
+        exact_checks
+        and evidence.get("source") == "official_shopee_partner_api"
+        and evidence.get("authentication_mode") == "existing_token_only"
+        and evidence.get("reconciliation_mode") == "read_only_existing_item"
+        and str(evidence.get("region") or "") == site
+        and str(evidence.get("item_id") or "") == external_id
+        and list(evidence.get("external_writes_performed") or ()) == []
+        and str(result.external_reference or "") == external_id
+        and evidence_verified == computed_verified
+        and bool(result.succeeded) == computed_verified
+        and bool(result.readback_verified) == computed_verified
+    )
+    if not evidence_is_exact:
+        return 502, {
+            "ok": False,
+            "error": "official readback evidence did not satisfy the exact contract",
+            "external_writes_performed": [],
+            "state_mutations_performed": [],
+        }
+
+    logistics = list(evidence.get("logistics") or ())
+    disabled_logistics = list(evidence.get("disabled_logistics") or ())
+    return 200, {
+        "ok": True,
+        "mode": "read_only_existing_target",
+        "verified": computed_verified,
+        "plan_id": str(plan["plan_id"]),
+        "run_id": run_id,
+        "target_label": clean_target,
+        "external_id": external_id,
+        "failure_evidence_present": failure_evidence_present,
+        "detail": str(result.detail or ""),
+        "evidence": {
+            "source": evidence["source"],
+            "authentication_mode": evidence["authentication_mode"],
+            "reconciliation_mode": evidence["reconciliation_mode"],
+            "region": site,
+            "item_id": external_id,
+            "checks": dict(checks),
+            "description_length": int(evidence.get("description_length") or 0),
+            "image_count": int(evidence.get("image_count") or 0),
+            "logistics_count": len(logistics),
+            "disabled_logistics_count": len(disabled_logistics),
+            "listing_status": str(evidence.get("status") or ""),
+            "price_issues": [
+                str(value)
+                for value in (evidence.get("price_issues") or ())
+                if str(value)
+            ],
+        },
+        "external_writes_performed": [],
+        "state_mutations_performed": [],
+    }
 
 
 def _approve_release_plan_locally(data: dict) -> tuple[int, dict]:
@@ -5246,6 +5489,13 @@ class Handler(BaseHTTPRequestHandler):
             from shared_platform.orbit_registry import navigation_payload
 
             return self._json(200, {"ok": True, **navigation_payload()})
+        if path == "/api/product-workspace/reconcile-target":
+            q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+            status, payload = _reconcile_existing_shopee_target_readonly(
+                offer_id=(q.get("offer_id") or [""])[0],
+                target_label=(q.get("target_label") or [""])[0],
+            )
+            return self._json(status, payload)
         if path in ("/api/release/dashboard", "/api/product-workspace/dashboard"):
             from shared_platform.release_control import build_release_dashboard
 

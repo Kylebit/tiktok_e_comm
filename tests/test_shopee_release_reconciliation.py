@@ -237,6 +237,8 @@ def test_readback_fails_closed_on_invalid_inflated_price_semantics(monkeypatch):
 
 
 def test_reconcile_existing_target_is_read_only_and_uses_recorded_item(monkeypatch):
+    from modules.shopee import client
+
     request = AdapterExecutionRequest(
         plan_id="omnichannel:test",
         confirmation_token="PUBLISH-TEST",
@@ -314,6 +316,13 @@ def test_reconcile_existing_target_is_read_only_and_uses_recorded_item(monkeypat
         "modules.shopee.publish.update_local_listing_copy",
         lambda *_args, **_kwargs: pytest.fail("reconciliation must not repair"),
     )
+    monkeypatch.setattr(
+        client,
+        "shop_post",
+        lambda *_args, **_kwargs: pytest.fail(
+            "reconciliation must not call Shopee POST"
+        ),
+    )
 
     result = release_adapters.reconcile_existing_shopee_target(request)
 
@@ -325,6 +334,7 @@ def test_reconcile_existing_target_is_read_only_and_uses_recorded_item(monkeypat
     )
     assert result.readback_evidence["external_writes_performed"] == []
     assert calls[0]["item_id"] == "56164935203"
+    assert calls[0]["allow_token_refresh"] is False
     assert calls[0]["expected_price"]["currency"] == "CNY"
     assert calls[0]["expected_price"]["target_local_currency"] == "PHP"
 

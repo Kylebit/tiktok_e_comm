@@ -65,6 +65,11 @@ approval, cross-domain dependency resolution, and final integration testing.
 No domain may change another domain's tables or public CLI/HTTP entry points
 without an approved adapter and an integrator review.
 
+The fixed thread assignments, Work Order lifecycle, single-writer rule, UI
+acceptance split, and external-write authority are normative in
+[`THREAD_OPERATING_MODEL.md`](THREAD_OPERATING_MODEL.md) and
+[`pm/DISPATCH_CONVENTION.md`](pm/DISPATCH_CONVENTION.md).
+
 The legacy A2A, EigenFlux, and multi-agent systems are retained as code for
 compatibility but are disabled by default for this architecture. They are not
 required to start a domain workflow and must not become a cross-domain runtime

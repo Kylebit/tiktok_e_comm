@@ -2442,6 +2442,7 @@ def _reconciliation_case(
         if target_label == "shopee:MY"
         else [50001, 50007, 50010]
     )
+    global_item_id = "103040506070809"
     proof = _proof(
         request,
         semantic_evidence={
@@ -2452,6 +2453,7 @@ def _reconciliation_case(
             "selected_logistics_digest": canonical_digest(
                 {"ids": selected_logistics_ids}
             ),
+            "global_item_id": global_item_id,
         },
     )
     claim = store.claim_target_scoped_operation(
@@ -2513,6 +2515,9 @@ def _reconciliation_proof_value(
         "original_proof_evidence_digest": (
             request.original_proof_evidence_digest
         ),
+        "global_item_identity_digest": (
+            request.global_item_identity_digest
+        ),
         "provided_by": "03",
         "allow_refresh": False,
         "observed_at": (now - timedelta(seconds=1)).isoformat(),
@@ -2531,6 +2536,9 @@ def _reconciliation_proof_value(
             "authority": "shopee_official_get",
             "target_label": request.operation_request.target_label,
             "external_identity_digest": request.external_identity_digest,
+            "resolved_global_item_identity_digest": (
+                request.global_item_identity_digest
+            ),
             "listing_identity_verified": True,
             "image_count": 6,
             "logistics_count": 12,
@@ -2652,6 +2660,9 @@ def _reconciliation_post_body(
         "original_proof_evidence_digest": (
             request.original_proof_evidence_digest
         ),
+        "global_item_identity_digest": (
+            request.global_item_identity_digest
+        ),
         "reconciliation_request_digest": request.request_digest,
         "reconciliation_proof_digest": preview[
             "reconciliation_proof_digest"
@@ -2687,6 +2698,43 @@ def _drift_original_selected_logistics(
         evidence["selected_logistics_digest"] = canonical_digest(
             {"ids": changed_ids}
         )
+        connection.execute(
+            """
+            UPDATE release_target_retry_proofs
+            SET proof_json = ?
+            WHERE proof_digest = ?
+            """,
+            (
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                request.operation_proof_digest,
+            ),
+        )
+        connection.commit()
+
+
+def _drift_original_global_item_id(
+    store: ReleaseStore,
+    request: TargetScopedReconciliationRequest,
+) -> None:
+    with sqlite3.connect(store.path) as connection:
+        connection.execute(
+            "DROP TRIGGER trg_release_target_retry_proof_identity_immutable"
+        )
+        row = connection.execute(
+            """
+            SELECT proof_json
+            FROM release_target_retry_proofs
+            WHERE proof_digest = ?
+            """,
+            (request.operation_proof_digest,),
+        ).fetchone()
+        payload = json.loads(row[0])
+        payload["semantic_evidence"]["global_item_id"] = "different-global"
         connection.execute(
             """
             UPDATE release_target_retry_proofs
@@ -2883,6 +2931,9 @@ def test_reconciliation_proof_rejects_raw_or_drifted_evidence(tmp_path):
             semantic_evidence={
                 "title": "raw official title",
                 "status": "exact",
+                "resolved_global_item_identity_digest": (
+                    request.global_item_identity_digest
+                ),
             },
         )
     with pytest.raises(
@@ -2902,6 +2953,17 @@ def test_reconciliation_proof_rejects_raw_or_drifted_evidence(tmp_path):
             redacted_summary={
                 "status": "exact",
                 "selected_logistics_ids": [19010],
+            },
+        )
+    with pytest.raises(
+        TargetScopedContractError,
+        match="internal global item ID",
+    ):
+        _reconciliation_proof(
+            request,
+            redacted_summary={
+                "status": "exact",
+                "global_item_id": "must-not-be-exposed",
             },
         )
 
@@ -2927,6 +2989,7 @@ def test_preview_is_db_byte_stable_redacted_and_getonly(
                         "selected_logistics_ids"
                     ]
                 ),
+                req.original_proof_evidence["global_item_id"],
                 allow_refresh,
             )
         )
@@ -2964,7 +3027,11 @@ def test_preview_is_db_byte_stable_redacted_and_getonly(
         request.original_proof_evidence_digest
     )
     assert payload["selected_logistics_count"] == 3
+    assert payload["global_item_identity_digest"] == (
+        request.global_item_identity_digest
+    )
     assert "selected_logistics_ids" not in payload
+    assert "global_item_id" not in payload
     assert payload["run_id"] == request.operation_request.run_id
     assert store.path.read_bytes() == before
     assert calls == [
@@ -2978,6 +3045,7 @@ def test_preview_is_db_byte_stable_redacted_and_getonly(
                     "selected_logistics_ids"
                 ]
             ),
+            request.original_proof_evidence["global_item_id"],
             False,
         )
     ]
@@ -2985,6 +3053,7 @@ def test_preview_is_db_byte_stable_redacted_and_getonly(
     for raw in (
         request.operation_request.confirmation_token,
         request.external_id,
+        request.original_proof_evidence["global_item_id"],
         "raw official title",
         "https://",
     ):
@@ -3020,6 +3089,104 @@ def test_original_proof_logistics_drift_blocks_preview_before_adapter(
     assert payload["code"] == "target_scoped_reconciliation_blocked"
     assert calls == []
     assert store.path.read_bytes() == before_call
+    assert store.get_target_scoped_operation(
+        run_id=request.operation_request.run_id,
+        target_label=request.operation_request.target_label,
+    )["status"] == "RECONCILIATION_REQUIRED"
+
+
+def test_original_proof_global_item_drift_blocks_preview_before_adapter(
+    tmp_path,
+    monkeypatch,
+):
+    store, plan, _base, context = _reconciliation_case(tmp_path)
+    request = context["reconciliation_request"]
+    calls = []
+    _patch_reconciliation_gate(monkeypatch, store, plan, request)
+    monkeypatch.setattr(
+        product_server,
+        "_target_scoped_adapter_module",
+        lambda: SimpleNamespace(
+            build_official_target_reconciliation_proof=(
+                lambda *_args, **_kwargs: calls.append("proof")
+            )
+        ),
+    )
+    _drift_original_global_item_id(store, request)
+    before_call = store.path.read_bytes()
+
+    status, payload = product_server._preview_target_scoped_reconciliation(
+        offer_id=request.operation_request.product_id,
+        target_label=request.operation_request.target_label,
+    )
+
+    assert status == 409
+    assert payload["code"] == "target_scoped_reconciliation_blocked"
+    assert calls == []
+    assert store.path.read_bytes() == before_call
+    assert store.get_target_scoped_operation(
+        run_id=request.operation_request.run_id,
+        target_label=request.operation_request.target_label,
+    )["status"] == "RECONCILIATION_REQUIRED"
+
+
+def test_wrong_official_global_linkage_proof_is_unavailable_and_closes_zero(
+    tmp_path,
+    monkeypatch,
+):
+    store, plan, _base, context = _reconciliation_case(tmp_path)
+    request = context["reconciliation_request"]
+    wrong_digest = canonical_digest(
+        {
+            "provider": "shopee",
+            "global_item_id": "different-global",
+        }
+    )
+    raw_proof = _reconciliation_proof_value(request)
+    raw_proof["global_item_identity_digest"] = wrong_digest
+    raw_proof["semantic_evidence"] = {
+        **raw_proof["semantic_evidence"],
+        "resolved_global_item_identity_digest": wrong_digest,
+    }
+    calls = []
+    _patch_reconciliation_gate(monkeypatch, store, plan, request)
+    monkeypatch.setattr(
+        product_server,
+        "_target_scoped_adapter_module",
+        lambda: SimpleNamespace(
+            build_official_target_reconciliation_proof=(
+                lambda req, *, allow_refresh: (
+                    calls.append(
+                        (
+                            req.original_proof_evidence["global_item_id"],
+                            allow_refresh,
+                        )
+                    )
+                    or raw_proof
+                )
+            ),
+            reconcile_target_scoped_operation=lambda *_args: (
+                calls.append("reconcile")
+            ),
+        ),
+    )
+    before = store.get_run(request.operation_request.run_id)
+
+    status, payload = product_server._preview_target_scoped_reconciliation(
+        offer_id=request.operation_request.product_id,
+        target_label=request.operation_request.target_label,
+    )
+
+    assert status == 409
+    assert payload["code"] == "official_reconciliation_proof_failed"
+    assert payload["external_writes_performed"] == []
+    assert calls == [
+        (
+            request.original_proof_evidence["global_item_id"],
+            False,
+        )
+    ]
+    assert store.get_run(request.operation_request.run_id) == before
     assert store.get_target_scoped_operation(
         run_id=request.operation_request.run_id,
         target_label=request.operation_request.target_label,
@@ -3175,6 +3342,7 @@ def test_http_getonly_close_success_repeat_zero_adapter_calls(
         ("prior_result_digest", "wrong"),
         ("external_identity_digest", "wrong"),
         ("original_proof_evidence_digest", "wrong"),
+        ("global_item_identity_digest", "wrong"),
         ("reconciliation_request_digest", "wrong"),
     ],
 )

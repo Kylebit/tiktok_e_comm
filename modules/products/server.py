@@ -2624,6 +2624,9 @@ def _preview_target_scoped_reconciliation(
                     "selected_logistics_count"
                 ]
             ),
+            "global_item_identity_digest": (
+                request.global_item_identity_digest
+            ),
             "reconciliation_request_digest": request.request_digest,
             "reconciliation_proof_digest": proof.proof_digest,
             "publication_targets": list(request.publication_targets),
@@ -2689,6 +2692,7 @@ def _execute_target_scoped_reconciliation(
         "prior_result_digest",
         "external_identity_digest",
         "original_proof_evidence_digest",
+        "global_item_identity_digest",
         "reconciliation_request_digest",
         "reconciliation_proof_digest",
     )
@@ -2730,6 +2734,9 @@ def _execute_target_scoped_reconciliation(
             ),
             "original_proof_evidence_digest": (
                 request.original_proof_evidence_digest
+            ),
+            "global_item_identity_digest": (
+                request.global_item_identity_digest
             ),
             "reconciliation_request_digest": request.request_digest,
             "publication_targets": list(request.publication_targets),

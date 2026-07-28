@@ -1966,6 +1966,10 @@ def original_target_proof_evidence(
         semantic.get("selected_logistics_digest"),
         "selected_logistics_digest",
     )
+    global_item_id = _required_text(
+        semantic.get("global_item_id"),
+        "original proof global_item_id",
+    )
     normalized_ids = list(selected_ids)
     if canonical_digest({"ids": normalized_ids}) != selected_digest:
         raise TargetScopedContractError(
@@ -1976,6 +1980,13 @@ def original_target_proof_evidence(
         "selected_logistics_ids": tuple(normalized_ids),
         "selected_logistics_count": len(normalized_ids),
         "selected_logistics_digest": selected_digest,
+        "global_item_id": global_item_id,
+        "global_item_identity_digest": canonical_digest(
+            {
+                "provider": "shopee",
+                "global_item_id": global_item_id,
+            }
+        ),
         "source_semantic_evidence_digest": canonical_digest(dict(semantic)),
     }
 
@@ -1995,6 +2006,10 @@ def _assert_no_internal_logistics_ids(
             }:
                 raise TargetScopedContractError(
                     f"{path}.{key} contains internal logistics IDs"
+                )
+            if normalized == "global_item_id":
+                raise TargetScopedContractError(
+                    f"{path}.{key} contains internal global item ID"
                 )
             _assert_no_internal_logistics_ids(
                 item,
@@ -2084,6 +2099,19 @@ class TargetScopedReconciliationRequest:
             evidence.get("source_semantic_evidence_digest"),
             "source_semantic_evidence_digest",
         )
+        global_item_id = _required_text(
+            evidence.get("global_item_id"),
+            "original proof global_item_id",
+        )
+        if evidence.get("global_item_identity_digest") != canonical_digest(
+            {
+                "provider": "shopee",
+                "global_item_id": global_item_id,
+            }
+        ):
+            raise TargetScopedContractError(
+                "reconciliation original global item identity is invalid"
+            )
         _assert_redacted(
             evidence,
             path="original_proof_evidence",
@@ -2118,6 +2146,14 @@ class TargetScopedReconciliationRequest:
     def original_proof_evidence_digest(self) -> str:
         return canonical_digest(dict(self.original_proof_evidence))
 
+    @property
+    def global_item_identity_digest(self) -> str:
+        return str(
+            self.original_proof_evidence[
+                "global_item_identity_digest"
+            ]
+        )
+
     def durable_identity(self) -> dict[str, Any]:
         return {
             "schema_version": "target-scoped-reconciliation-request/v1",
@@ -2135,6 +2171,9 @@ class TargetScopedReconciliationRequest:
             "selected_logistics_count": self.original_proof_evidence[
                 "selected_logistics_count"
             ],
+            "global_item_identity_digest": (
+                self.global_item_identity_digest
+            ),
             "publication_targets": list(self.publication_targets),
         }
 
@@ -2158,6 +2197,7 @@ class OfficialTargetReconciliationProof:
     prior_result_digest: str
     external_identity_digest: str
     original_proof_evidence_digest: str
+    global_item_identity_digest: str
     provided_by: str
     allow_refresh: bool
     observed_at: str
@@ -2230,6 +2270,9 @@ class OfficialTargetReconciliationProof:
             "original_proof_evidence_digest": str(
                 raw.get("original_proof_evidence_digest") or ""
             ),
+            "global_item_identity_digest": str(
+                raw.get("global_item_identity_digest") or ""
+            ),
             "provided_by": str(raw.get("provided_by") or ""),
             "allow_refresh": raw.get("allow_refresh"),
             "checks": dict(checks),
@@ -2267,6 +2310,9 @@ class OfficialTargetReconciliationProof:
             original_proof_evidence_digest=semantic_payload[
                 "original_proof_evidence_digest"
             ],
+            global_item_identity_digest=semantic_payload[
+                "global_item_identity_digest"
+            ],
             provided_by=semantic_payload["provided_by"],
             allow_refresh=semantic_payload["allow_refresh"] is True,
             observed_at=str(raw.get("observed_at") or ""),
@@ -2295,6 +2341,9 @@ class OfficialTargetReconciliationProof:
             "original_proof_evidence_digest": (
                 request.original_proof_evidence_digest
             ),
+            "global_item_identity_digest": (
+                request.global_item_identity_digest
+            ),
         }
         actual = {field: getattr(proof, field) for field in expected}
         if actual != expected:
@@ -2322,6 +2371,16 @@ class OfficialTargetReconciliationProof:
         if any(value is not True for value in proof.checks.values()):
             raise TargetScopedContractError(
                 "official reconciliation proof is not hard exact"
+            )
+        if proof.checks.get("global_linkage_exact") is not True:
+            raise TargetScopedContractError(
+                "official reconciliation proof lacks exact global linkage"
+            )
+        if proof.semantic_evidence.get(
+            "resolved_global_item_identity_digest"
+        ) != request.global_item_identity_digest:
+            raise TargetScopedContractError(
+                "official reconciliation global item identity differs"
             )
         _assert_redacted(
             proof.semantic_evidence,
@@ -2366,6 +2425,9 @@ class OfficialTargetReconciliationProof:
             "external_identity_digest": self.external_identity_digest,
             "original_proof_evidence_digest": (
                 self.original_proof_evidence_digest
+            ),
+            "global_item_identity_digest": (
+                self.global_item_identity_digest
             ),
             "provided_by": self.provided_by,
             "allow_refresh": self.allow_refresh,

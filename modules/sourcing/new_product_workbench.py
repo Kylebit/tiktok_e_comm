@@ -3219,6 +3219,16 @@ def save_content_package_review(offer_id_or_url: str, review: dict[str, Any]) ->
     """Persist explicit human content approvals; it never starts generation or writes Miaoshou."""
     offer_id = resolve_offer_key(offer_id_or_url)
     state = load_state(offer_id)
+    if "expected_revision" in review:
+        if isinstance(review.get("expected_revision"), bool):
+            expected_revision = -1
+        else:
+            try:
+                expected_revision = int(review.get("expected_revision"))
+            except (TypeError, ValueError):
+                expected_revision = -1
+        if expected_revision != max(0, int(state.get("_revision") or 0)):
+            raise ValueError("content review is stale; refresh before saving source decisions")
     content = state.setdefault("content_package", {})
     previous_recipe = _content_recipe_signature(content)
     previous_planning_recipe = _planning_recipe_signature(content)
@@ -3324,6 +3334,42 @@ def save_content_package_review(offer_id_or_url: str, review: dict[str, Any]) ->
         content["identity_reference_urls"] = refs
         requested_primary = str(review.get("primary_identity_url") or "").strip()
         content["primary_identity_url"] = requested_primary if requested_primary in refs else (refs[0] if refs else "")
+    if "image_actions" in review:
+        source = _source_summary(offer_id)
+        allowed_rows = {
+            str(row.get("url") or "").strip(): row
+            for row in (source.get("images") or [])
+            if isinstance(row, dict) and str(row.get("url") or "").strip()
+        }
+        requested_actions = review.get("image_actions")
+        if not isinstance(requested_actions, list):
+            raise ValueError("image_actions must be a list")
+        actions_by_url = {}
+        for row in requested_actions:
+            if not isinstance(row, dict):
+                continue
+            url = str(row.get("output_url") or row.get("url") or "").strip()
+            action = str(row.get("action") or "review").strip()
+            if url not in allowed_rows or action not in {"keep", "review", "remove"}:
+                raise ValueError("source image decisions must use current source images")
+            actions_by_url[url] = {
+                **allowed_rows[url],
+                "url": url,
+                "action": action,
+                "note": str(row.get("note") or "").strip()[:1200],
+            }
+        if set(actions_by_url) != set(allowed_rows):
+            raise ValueError("source image decisions must include every current source image")
+        state["review"] = {
+            **(state.get("review") if isinstance(state.get("review"), dict) else {}),
+            "image_actions": [actions_by_url[url] for url in allowed_rows],
+        }
+        kept_urls = [url for url, row in actions_by_url.items() if row["action"] == "keep"]
+        requested_order = [
+            str(url).strip() for url in (review.get("image_order") or [])
+            if str(url).strip() in kept_urls
+        ]
+        state["review"]["image_order"] = list(dict.fromkeys(requested_order + kept_urls))
     raw_decisions = review.get("asset_decisions")
     if isinstance(raw_decisions, dict):
         decisions = content.setdefault("asset_decisions", {})

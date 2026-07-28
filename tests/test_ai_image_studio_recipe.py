@@ -47,6 +47,9 @@ def test_saved_identity_references_are_restored_from_summary_contract():
     assert "content_package?.source_snapshot || {}" in SCRIPT
     assert "sourceSnapshot.identity_reference_urls" in SCRIPT
     assert "sourceSnapshot.primary_identity_image" in SCRIPT
+    assert 'post("content-package/review"' in SCRIPT
+    assert "expected_revision: preview?.revision" in SCRIPT
+    assert "planningErrorMessage(error)" in SCRIPT
 
 
 def test_completed_paid_batch_cannot_be_started_again_from_the_ui():

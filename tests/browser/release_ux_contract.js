@@ -2736,7 +2736,7 @@ async function aiAsyncFeedback(browser) {
     await page.waitForFunction(() => document.querySelector("#toast")?.hidden, null, {
       timeout: 8000,
     });
-    await page.route("**/api/product-flow/review", (route) => {
+    await page.route("**/api/product-flow/content-package/review", (route) => {
       state.pending.sourceReview = route;
     });
     await page.locator("#saveSourceButton").click();
@@ -2771,6 +2771,7 @@ async function aiPlanningBlockerFeedback(browser, viewport) {
   const blockedPreview = JSON.parse(JSON.stringify(aiPreview));
   const sourceUrl = "https://fixture.invalid/source-identity.jpg";
   blockedPreview.offer_id = "3838614276";
+  blockedPreview.revision = 8;
   blockedPreview.source.offer_id = "3838614276";
   blockedPreview.source.images = [sourceUrl];
   blockedPreview.review.image_actions = [{ url: sourceUrl, action: "review" }];
@@ -2827,6 +2828,31 @@ async function aiPlanningBlockerFeedback(browser, viewport) {
     check(
       !(await page.locator("#planningProgress").innerText()).includes("身份参考图"),
       `AI planner blocker ${viewport.width}: selecting a reference clears the stale blocker`,
+    );
+    let savedReview = null;
+    await page.route("**/api/product-flow/content-package/review", async (route) => {
+      savedReview = route.request().postDataJSON().review;
+      blockedPreview.revision = 9;
+      blockedPreview.review.image_actions = savedReview.image_actions;
+      blockedPreview.review.image_order = savedReview.image_order;
+      blockedPreview.content_package.source_snapshot.identity_reference_urls = savedReview.identity_reference_urls;
+      blockedPreview.content_package.source_snapshot.primary_identity_image = savedReview.primary_identity_url;
+      await route.fulfill(jsonResponse({ ok: true, content_package: blockedPreview.content_package }));
+    });
+    await page.locator("#saveSourceButton").click();
+    await page.waitForFunction(() => !document.querySelector("#saveSourceButton")?.classList.contains("is-loading"));
+    check(
+      savedReview?.expected_revision === 8
+      && savedReview.identity_reference_urls?.length === 1
+      && savedReview.primary_identity_url === sourceUrl
+      && savedReview.image_actions?.[0]?.action === "keep",
+      `AI identity save ${viewport.width}: one CAS payload atomically carries source and identity decisions`,
+      savedReview,
+    );
+    check(
+      await page.locator(".identity-reference").isChecked()
+      && await page.locator(".identity-primary").isChecked(),
+      `AI identity save ${viewport.width}: saved identity and primary choices survive reload`,
     );
     const overflow = await overflowAudit(page);
     check(

@@ -394,6 +394,14 @@
     if (action === "identity-reference") focusIdentityReferenceArea();
   }
 
+  function planningErrorMessage(error) {
+    const raw = String(error?.message || "");
+    if (raw.includes("save at least one approved identity reference")) {
+      return "请先在来源图区保留并保存至少一张身份参考图，再请求 AI 分镜。";
+    }
+    return raw;
+  }
+
   function clearPlanningBlocker(blocker) {
     if (planningProgressOverride?.blocker !== blocker) return;
     renderPlanningProgress(null);
@@ -1217,14 +1225,17 @@
         ...savedOrder.filter((url) => keptUrls.includes(url)),
         ...keptUrls.filter((url) => !savedOrder.includes(url)),
       ];
-      preview = await post("review", {
+      const result = await post("content-package/review", {
         offer_id: currentOfferId(),
-        review: reviewPayload({
+        review: {
+          ...contentReviewPayload(),
+          expected_revision: preview?.revision,
           image_actions: sourceRows,
-          ...(sourceOnlyActive() ? { image_order: sourceOrder } : {}),
-        }),
+          image_order: sourceOrder,
+        },
       });
-      render();
+      preview.content_package = result.content_package;
+      await load({ quiet: true });
       toast("来源图决定、备注和当前排序已保存到本地。");
     } catch (error) {
       showAlert(error.message);
@@ -1328,10 +1339,10 @@
         step: 0,
         completedThrough: -1,
         title: "本地内容审核包创建失败",
-        error: error.message,
+        error: planningErrorMessage(error),
         badge: "失败",
       });
-      showAlert(error.message);
+      showAlert(planningErrorMessage(error));
     } finally {
       setLoading($("#preparePackageButton"), false);
     }
@@ -1443,17 +1454,17 @@
         step: currentStep,
         completedThrough: currentStep - 1,
         title: `${PLANNING_STEPS[currentStep] || "AI 分镜"}失败`,
-        error: error.message,
+        error: planningErrorMessage(error),
         badge: "失败",
       });
       if (currentStep === 3) {
         renderGenerationProgress({
           status: "error",
           step: 1,
-          error: error.message,
+          error: planningErrorMessage(error),
         });
       }
-      showAlert(error.message);
+      showAlert(planningErrorMessage(error));
     } finally {
       setLoading($("#aiPlanButton"), false);
     }

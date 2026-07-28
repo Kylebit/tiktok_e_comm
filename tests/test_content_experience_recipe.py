@@ -113,6 +113,53 @@ def test_saving_ai_content_adopts_current_storyboard_without_per_shot_review(
     assert len(saved_states) == 1
 
 
+def test_source_decisions_and_identity_references_save_atomically_with_revision(
+    tmp_path, monkeypatch
+):
+    first = "https://assets.example/source.jpg"
+    second = "https://assets.example/alternate.jpg"
+    state = {
+        "offer_id": "3828540231",
+        "_revision": 8,
+        "review": {"image_actions": []},
+        "content_package": {
+            "content_strategy": "ai_assisted",
+            "collect_box_id": "3828540231",
+            "fact_card_approved": True,
+            "planning_scope_approved": True,
+        },
+    }
+    package = _review_package(state["content_package"])
+    package["collect_box"]["image_urls"] = [first, second]
+    (tmp_path / "review_package.json").write_text(json.dumps(package), encoding="utf-8")
+    saves = []
+    monkeypatch.setattr(workbench, "resolve_offer_key", lambda _value: "3828540231")
+    monkeypatch.setattr(workbench, "load_state", lambda _offer: state)
+    monkeypatch.setattr(workbench, "_content_package_dir", lambda _id: tmp_path)
+    monkeypatch.setattr(workbench, "_source_summary", lambda _offer: {"images": [
+        {"url": first, "kind": "main"}, {"url": second, "kind": "detail"},
+    ]})
+    monkeypatch.setattr(workbench, "save_state", lambda _offer, value: saves.append(copy.deepcopy(value)) or value)
+    monkeypatch.setattr(workbench, "content_package_summary", lambda _offer: {"ok": True})
+
+    workbench.save_content_package_review("3828540231", {
+        "expected_revision": 8,
+        "identity_reference_urls": [first, second],
+        "primary_identity_url": second,
+        "image_actions": [
+            {"url": first, "action": "keep"}, {"url": second, "action": "keep"},
+        ],
+        "image_order": [second, first],
+    })
+
+    assert state["content_package"]["identity_reference_urls"] == [first, second]
+    assert state["content_package"]["primary_identity_url"] == second
+    assert state["review"]["image_order"] == [second, first]
+    assert len(saves) == 1
+    with pytest.raises(ValueError, match="stale"):
+        workbench.save_content_package_review("3828540231", {"expected_revision": 7})
+
+
 def test_auto_adopted_storyboard_does_not_approve_generated_image():
     image_url = "https://assets.example/generated.png"
     state = {

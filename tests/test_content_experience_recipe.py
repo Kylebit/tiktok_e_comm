@@ -159,6 +159,28 @@ def test_source_decisions_and_identity_references_save_atomically_with_revision(
     with pytest.raises(ValueError, match="stale"):
         workbench.save_content_package_review("3828540231", {"expected_revision": 7})
 
+    invalid_reviews = [
+        {"expected_revision": 8.9},
+        {"expected_revision": "8"},
+        {"expected_revision": True},
+        {"expected_revision": 8, "image_actions": [
+            {"url": first, "action": "keep"}, {"url": first, "action": "remove"},
+        ]},
+        {"expected_revision": 8, "identity_reference_urls": [first],
+         "primary_identity_url": first, "image_actions": [
+             {"url": first, "action": "remove"}, {"url": second, "action": "keep"},
+         ]},
+        {"expected_revision": 8, "identity_reference_urls": [first],
+         "primary_identity_url": second, "image_actions": [
+             {"url": first, "action": "keep"}, {"url": second, "action": "keep"},
+         ]},
+    ]
+    for invalid in invalid_reviews:
+        before_saves = len(saves)
+        with pytest.raises(ValueError):
+            workbench.save_content_package_review("3828540231", invalid)
+        assert len(saves) == before_saves
+
 
 def test_auto_adopted_storyboard_does_not_approve_generated_image():
     image_url = "https://assets.example/generated.png"

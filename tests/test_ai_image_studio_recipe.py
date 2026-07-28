@@ -52,6 +52,18 @@ def test_saved_identity_references_are_restored_from_summary_contract():
     assert "planningErrorMessage(error)" in SCRIPT
 
 
+def test_missing_local_package_blocks_ai_with_actionable_local_feedback():
+    planning_function = SCRIPT.split("async function requestAiPlan()", 1)[1].split(
+        "async function prepareGeneration()", 1
+    )[0]
+    assert "!preview?.content_package?.package_found" in planning_function
+    assert 'action: "prepare-package"' in planning_function
+    assert "本次没有调用 AI，也没有产生生图费用" in planning_function
+    assert "runPlanningProgressAction" in SCRIPT
+    assert 'action === "prepare-package"' in SCRIPT
+    assert "await preparePackage()" in SCRIPT
+
+
 def test_completed_paid_batch_cannot_be_started_again_from_the_ui():
     assert (
         '["completed_waiting_human_review", "completed_with_errors"].includes(generation.status)'

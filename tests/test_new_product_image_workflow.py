@@ -13,6 +13,7 @@ from modules.sourcing.new_product_workbench import (
     _generated_review_images,
     _product_workflow_summary,
     _safe_image_execution_plan,
+    prepare_content_package,
     prepare_suite_image_generations,
     propose_content_package_with_vision,
     save_generated_image_decision,
@@ -33,6 +34,60 @@ class NewProductImageWorkflowTests(unittest.TestCase):
             _content_strategy({"content_strategy": "source_only"}),
             "source_only",
         )
+
+    def test_prepare_package_preserves_valid_current_identity_references(self):
+        reference = "https://img.example/current-reference.png"
+        removed = "https://img.example/removed-reference.png"
+        state = {
+            "content_package": {
+                "identity_reference_urls": [reference, removed],
+                "primary_identity_url": reference,
+                "fact_card_approved": True,
+                "planning_scope_approved": True,
+            },
+            "review": {
+                "image_actions": [
+                    {"url": reference, "action": "keep"},
+                    {"url": removed, "action": "remove"},
+                ],
+            },
+        }
+        with patch(
+            "modules.sourcing.new_product_workbench.resolve_offer_key",
+            return_value="123",
+        ), patch(
+            "modules.sourcing.new_product_workbench.load_state",
+            return_value=state,
+        ), patch(
+            "modules.sourcing.new_product_workbench._source_summary",
+            return_value={
+                "images": [
+                    {"url": reference, "kind": "main"},
+                    {"url": removed, "kind": "detail"},
+                ],
+                "precollect": {},
+            },
+        ), patch(
+            "modules.sourcing.image_review_package.create_package_from_miaoshou",
+            return_value={"ok": True},
+        ), patch(
+            "modules.sourcing.new_product_workbench.save_state",
+        ), patch(
+            "modules.sourcing.new_product_workbench.content_package_summary",
+            side_effect=lambda _offer: dict(state["content_package"]),
+        ):
+            result = prepare_content_package("123", collect_box_id="123")
+
+        self.assertEqual(
+            result["content_package"]["identity_reference_urls"],
+            [reference],
+        )
+        self.assertEqual(
+            result["content_package"]["primary_identity_url"],
+            reference,
+        )
+        self.assertFalse(result["content_package"]["fact_card_approved"])
+        self.assertFalse(result["content_package"]["planning_scope_approved"])
 
     def test_source_only_workflow_completes_without_ai_plan_or_generation(self):
         source_url = "https://img.example/source.jpg"

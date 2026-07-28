@@ -167,9 +167,14 @@
     );
     $("#planningProgressBadge").className = `badge ${tone}`;
     const action = $("#planningProgressAction");
-    const hasIdentityAction = feedback.action === "identity-reference";
-    action.hidden = !hasIdentityAction;
-    action.textContent = hasIdentityAction ? "前往选择身份参考图" : "";
+    const actionType = String(feedback.action || "");
+    const actionLabels = {
+      "identity-reference": "前往选择身份参考图",
+      "prepare-package": "先创建本地内容审核包",
+    };
+    action.hidden = !actionLabels[actionType];
+    action.textContent = actionLabels[actionType] || "";
+    action.dataset.action = actionLabels[actionType] ? actionType : "";
     $("#planningProgressBar").value = progress;
     $("#planningProgressSteps").innerHTML = PLANNING_STEPS.map((label, index) => {
       const state = complete || index <= completedThrough
@@ -380,6 +385,15 @@
     }
   }
 
+  async function runPlanningProgressAction() {
+    const action = $("#planningProgressAction")?.dataset.action || "";
+    if (action === "prepare-package") {
+      await preparePackage();
+      return;
+    }
+    if (action === "identity-reference") focusIdentityReferenceArea();
+  }
+
   function reportPlanningBlocker({ title, message, action = "" }) {
     renderPlanningProgress({
       status: "failed",
@@ -396,6 +410,9 @@
 
   function planningErrorMessage(error) {
     const raw = String(error?.message || "");
+    if (raw.includes("create a local content review package")) {
+      return "还没有创建本地内容审核包。请先点击“读取妙手并创建本地包”，再重新确认商品事实和本次配方；本次没有调用 AI，也没有产生生图费用。";
+    }
     if (raw.includes("save at least one approved identity reference")) {
       return "请先在来源图区保留并保存至少一张身份参考图，再请求 AI 分镜。";
     }
@@ -1357,6 +1374,14 @@
       });
       return;
     }
+    if (!preview?.content_package?.package_found) {
+      reportPlanningBlocker({
+        title: "AI 分镜尚未开始",
+        message: "还没有创建本地内容审核包。先读取妙手素材并建立本地审核包，再重新确认商品事实和本次配方；本次没有调用 AI，也没有产生生图费用。",
+        action: "prepare-package",
+      });
+      return;
+    }
     const refs = selectedIdentityReferences();
     if (!refs.length) {
       reportPlanningBlocker({
@@ -1449,6 +1474,7 @@
       toast("AI 分镜与生成前检查已完成；尚未创建付费任务，等待 Kyle 确认。");
     } catch (error) {
       const currentStep = Number(planningProgressOverride?.step ?? 0);
+      const rawError = String(error?.message || "");
       renderPlanningProgress({
         status: "failed",
         step: currentStep,
@@ -1456,6 +1482,9 @@
         title: `${PLANNING_STEPS[currentStep] || "AI 分镜"}失败`,
         error: planningErrorMessage(error),
         badge: "失败",
+        action: rawError.includes("create a local content review package")
+          ? "prepare-package"
+          : "",
       });
       if (currentStep === 3) {
         renderGenerationProgress({
@@ -1692,7 +1721,7 @@
   $("#savePlanButton").addEventListener("click", () => saveContentReview());
   $("#preparePackageButton").addEventListener("click", preparePackage);
   $("#aiPlanButton").addEventListener("click", requestAiPlan);
-  $("#planningProgressAction").addEventListener("click", focusIdentityReferenceArea);
+  $("#planningProgressAction").addEventListener("click", runPlanningProgressAction);
   $("#preflightButton").addEventListener("click", prepareGeneration);
   $("#paidGenerateButton").addEventListener("click", startPaidGeneration);
   $("#saveVersionsButton").addEventListener("click", saveVersionReview);

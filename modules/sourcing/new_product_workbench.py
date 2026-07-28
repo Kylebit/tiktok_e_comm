@@ -1670,6 +1670,26 @@ def prepare_content_package(offer_id_or_url: str, *, collect_box_id: str = "") -
 
     result = create_package_from_miaoshou(int(clean_id), IMAGE_SUITE_OUTPUTS_DIR / clean_id)
     content = state.setdefault("content_package", {})
+    current_source_urls = set(_identity_reference_image_urls(source, {}))
+    review = state.get("review") if isinstance(state.get("review"), dict) else {}
+    reviewed_actions = {
+        str(row.get("url") or "").strip(): str(row.get("action") or "")
+        for row in (review.get("image_actions") or [])
+        if isinstance(row, dict) and isinstance(row.get("url"), str)
+    }
+    preserved_refs = [
+        url
+        for url in _dedupe_urls(
+            content.get("identity_reference_urls")
+            if isinstance(content.get("identity_reference_urls"), list)
+            else []
+        )
+        if (
+            url in current_source_urls
+            and reviewed_actions.get(url, "keep") == "keep"
+        )
+    ]
+    saved_primary = str(content.get("primary_identity_url") or "").strip()
     content.setdefault("content_strategy", "ai_assisted")
     content["collect_box_id"] = clean_id
     content["prepared_at"] = _now()
@@ -1680,8 +1700,12 @@ def prepare_content_package(offer_id_or_url: str, *, collect_box_id: str = "") -
     content["suite_approved"] = False
     content["storyboard_reviews"] = {}
     content.pop("asset_decisions", None)
-    content.pop("identity_reference_urls", None)
-    content.pop("primary_identity_url", None)
+    content["identity_reference_urls"] = preserved_refs
+    content["primary_identity_url"] = (
+        saved_primary
+        if saved_primary in preserved_refs
+        else (preserved_refs[0] if preserved_refs else "")
+    )
     save_state(offer_id, state)
     return {"preparation": result, "content_package": content_package_summary(offer_id)}
 

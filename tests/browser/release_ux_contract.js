@@ -2870,6 +2870,71 @@ async function aiPlanningBlockerFeedback(browser, viewport) {
   }
 }
 
+async function aiMissingPackageFeedback(browser, viewport) {
+  const blockedPreview = JSON.parse(JSON.stringify(aiPreview));
+  const sourceUrl = "https://fixture.invalid/source-identity.jpg";
+  blockedPreview.offer_id = "3838614276";
+  blockedPreview.revision = 8;
+  blockedPreview.source.offer_id = "3838614276";
+  blockedPreview.source.images = [sourceUrl];
+  blockedPreview.review.image_actions = [{ url: sourceUrl, action: "keep" }];
+  blockedPreview.content_package.package_found = false;
+  blockedPreview.content_package.collect_box_id = "3838614276";
+  blockedPreview.content_package.source_snapshot = {
+    image_urls: [sourceUrl],
+    identity_reference_urls: [sourceUrl],
+    primary_identity_image: sourceUrl,
+  };
+  blockedPreview.content_package.remaining_images_preflight = {
+    status: "not_started",
+    total: 0,
+  };
+  const scenario = await openScenario(
+    browser,
+    "/ai-image-studio?offer_id=3838614276",
+    viewport,
+    { aiPreview: blockedPreview },
+  );
+  const { page, context, errors, requests } = scenario;
+  try {
+    await page.locator("#aiPlanButton").click();
+    await page.waitForFunction(() => (
+      !document.querySelector("#planningProgress")?.hidden
+      && document.querySelector("#planningProgress")?.classList.contains("failed")
+    ));
+    const planningText = (await page.locator("#planningProgress").innerText()).trim();
+    check(
+      planningText.includes("还没有创建本地内容审核包")
+      && planningText.includes("没有调用 AI")
+      && planningText.includes("没有产生生图费用"),
+      `AI package blocker ${viewport.width}: explains the missing local step and zero-cost outcome`,
+      planningText,
+    );
+    check(
+      (await page.locator("#planningProgressAction").innerText()).includes("先创建本地内容审核包"),
+      `AI package blocker ${viewport.width}: provides the exact next action`,
+    );
+    check(
+      requests.filter((row) => row.method === "POST").length === 0,
+      `AI package blocker ${viewport.width}: sends zero POST requests`,
+      requests,
+    );
+    const overflow = await overflowAudit(page);
+    check(
+      overflow.pageOverflow <= 2,
+      `AI package blocker ${viewport.width}: no horizontal overflow`,
+      overflow,
+    );
+    check(
+      unexpectedInteractionErrors(errors).length === 0,
+      `AI package blocker ${viewport.width}: no console/page errors`,
+      errors,
+    );
+  } finally {
+    await context.close();
+  }
+}
+
 async function profitAsyncAndNoFalseSuccess(browser) {
   const scenario = await openScenario(browser, "/profit", { width: 1440, height: 900 });
   const { page, context, errors, state } = scenario;
@@ -3013,6 +3078,8 @@ async function legacyStateSafety(browser) {
     await aiAsyncFeedback(browser);
     await aiPlanningBlockerFeedback(browser, { width: 1440, height: 900 });
     await aiPlanningBlockerFeedback(browser, { width: 390, height: 844 });
+    await aiMissingPackageFeedback(browser, { width: 1440, height: 900 });
+    await aiMissingPackageFeedback(browser, { width: 390, height: 844 });
     await profitAsyncAndNoFalseSuccess(browser);
     await legacyStateSafety(browser);
   } finally {

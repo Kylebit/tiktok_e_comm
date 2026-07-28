@@ -807,6 +807,30 @@ def _content_package_dir(collect_box_id: str) -> Path | None:
     return path if path.is_dir() else None
 
 
+def _identity_reference_image_urls(
+    source: dict[str, Any],
+    collect_box: dict[str, Any],
+) -> list[str]:
+    """Return the image identities exposed by the current source review."""
+
+    source_urls = _dedupe_urls(
+        [
+            str(row.get("url") or "").strip()
+            for row in (source.get("images") or [])
+            if isinstance(row, dict) and isinstance(row.get("url"), str)
+        ]
+    )
+    if source_urls:
+        return source_urls
+    return _dedupe_urls(
+        [
+            str(url).strip()
+            for url in (collect_box.get("image_urls") or [])
+            if isinstance(url, str)
+        ]
+    )
+
+
 def _content_artifacts(package_dir: Path | None, decisions: dict[str, Any]) -> list[dict[str, Any]]:
     if package_dir is None:
         return []
@@ -1360,15 +1384,17 @@ def content_package_summary(offer_id_or_url: str) -> dict[str, Any]:
         if isinstance(saved.get("miaoshou_generated_images_write"), dict)
         else {}
     )
-    available_identity_images = [
-        str(url).strip()
-        for url in (collect_box.get("image_urls") or [])
-        if isinstance(url, str) and str(url).strip()
-    ]
+    available_identity_images = _identity_reference_image_urls(
+        source,
+        collect_box,
+    )
     default_primary = str(collect_box.get("primary_identity_image") or "").strip()
     saved_refs = saved.get("identity_reference_urls") if isinstance(saved.get("identity_reference_urls"), list) else []
     identity_reference_urls = [str(url) for url in saved_refs if str(url) in available_identity_images]
-    if not identity_reference_urls and default_primary:
+    if (
+        not identity_reference_urls
+        and default_primary in available_identity_images
+    ):
         identity_reference_urls = [default_primary]
     saved_primary = str(saved.get("primary_identity_url") or "").strip()
     primary_identity_url = saved_primary if saved_primary in identity_reference_urls else (identity_reference_urls[0] if identity_reference_urls else "")
@@ -3316,30 +3342,50 @@ def save_content_package_review(offer_id_or_url: str, review: dict[str, Any]) ->
             )
         )
     collect_box = review_package.get("collect_box") if isinstance(review_package.get("collect_box"), dict) else {}
-    allowed_refs = {
-        str(url).strip()
-        for url in (collect_box.get("image_urls") or [])
-        if isinstance(url, str) and str(url).strip()
+    source = (
+        _source_summary(offer_id)
+        if "identity_reference_urls" in review or "image_actions" in review
+        else {}
+    )
+    allowed_rows = {
+        str(row.get("url") or "").strip(): row
+        for row in (source.get("images") or [])
+        if (
+            isinstance(row, dict)
+            and isinstance(row.get("url"), str)
+            and str(row.get("url") or "").strip()
+        )
     }
-    raw_refs = review.get("identity_reference_urls")
-    if isinstance(raw_refs, list):
+    allowed_refs = set(_identity_reference_image_urls(source, collect_box))
+    refs: list[str] | None = None
+    requested_primary = ""
+    if "identity_reference_urls" in review:
+        raw_refs = review.get("identity_reference_urls")
+        if type(raw_refs) is not list:
+            raise ValueError("identity_reference_urls must be a list")
         refs = []
         for url in raw_refs:
-            clean_url = str(url).strip()
-            if clean_url in allowed_refs and clean_url not in refs:
-                refs.append(clean_url)
-        content["identity_reference_urls"] = refs
-        requested_primary = str(review.get("primary_identity_url") or "").strip()
-        content["primary_identity_url"] = requested_primary if requested_primary in refs else (refs[0] if refs else "")
+            if type(url) is not str:
+                raise ValueError("identity references must be current source image URLs")
+            clean_url = url.strip()
+            if (
+                not clean_url
+                or clean_url not in allowed_refs
+                or clean_url in refs
+            ):
+                raise ValueError("identity references must be unique current source images")
+            refs.append(clean_url)
+        raw_primary = review.get("primary_identity_url", "")
+        if type(raw_primary) is not str:
+            raise ValueError("primary identity reference must be a source image URL")
+        requested_primary = raw_primary.strip()
+        if requested_primary and requested_primary not in refs:
+            raise ValueError("primary identity reference must belong to identity references")
+    elif "primary_identity_url" in review:
+        raise ValueError("primary identity reference requires identity references")
     if "image_actions" in review:
-        source = _source_summary(offer_id)
-        allowed_rows = {
-            str(row.get("url") or "").strip(): row
-            for row in (source.get("images") or [])
-            if isinstance(row, dict) and str(row.get("url") or "").strip()
-        }
         requested_actions = review.get("image_actions")
-        if not isinstance(requested_actions, list):
+        if type(requested_actions) is not list:
             raise ValueError("image_actions must be a list")
         if len(requested_actions) != len(allowed_rows):
             raise ValueError("source image decisions must include every current source image exactly once")
@@ -3368,17 +3414,21 @@ def save_content_package_review(offer_id_or_url: str, review: dict[str, Any]) ->
             "image_actions": [actions_by_url[url] for url in allowed_rows],
         }
         kept_urls = [url for url, row in actions_by_url.items() if row["action"] == "keep"]
-        if isinstance(raw_refs, list):
+        if refs is not None:
             if any(url not in kept_urls for url in refs):
                 raise ValueError("identity references must be explicitly kept source images")
-            requested_primary = str(review.get("primary_identity_url") or "").strip()
-            if requested_primary and requested_primary not in refs:
-                raise ValueError("primary identity reference must belong to identity references")
         requested_order = [
             str(url).strip() for url in (review.get("image_order") or [])
             if str(url).strip() in kept_urls
         ]
         state["review"]["image_order"] = list(dict.fromkeys(requested_order + kept_urls))
+    if refs is not None:
+        content["identity_reference_urls"] = refs
+        content["primary_identity_url"] = (
+            requested_primary
+            if requested_primary
+            else (refs[0] if refs else "")
+        )
     raw_decisions = review.get("asset_decisions")
     if isinstance(raw_decisions, dict):
         decisions = content.setdefault("asset_decisions", {})

@@ -130,7 +130,10 @@ def test_source_decisions_and_identity_references_save_atomically_with_revision(
         },
     }
     package = _review_package(state["content_package"])
-    package["collect_box"]["image_urls"] = [first, second]
+    # The live source review can exist before an AI package has copied its
+    # images into collect_box. Identity persistence must use the current
+    # source rows, not silently drop the references in this state.
+    package["collect_box"]["image_urls"] = []
     (tmp_path / "review_package.json").write_text(json.dumps(package), encoding="utf-8")
     saves = []
     monkeypatch.setattr(workbench, "resolve_offer_key", lambda _value: "3828540231")
@@ -163,6 +166,12 @@ def test_source_decisions_and_identity_references_save_atomically_with_revision(
         {"expected_revision": 8.9},
         {"expected_revision": "8"},
         {"expected_revision": True},
+        {"expected_revision": 8, "identity_reference_urls": first},
+        {"expected_revision": 8, "identity_reference_urls": [1]},
+        {"expected_revision": 8, "identity_reference_urls": [first, first]},
+        {"expected_revision": 8, "identity_reference_urls": [
+            "https://assets.example/not-current.jpg",
+        ]},
         {"expected_revision": 8, "image_actions": [
             {"url": first, "action": "keep"}, {"url": first, "action": "remove"},
         ]},
@@ -180,6 +189,65 @@ def test_source_decisions_and_identity_references_save_atomically_with_revision(
         with pytest.raises(ValueError):
             workbench.save_content_package_review("3828540231", invalid)
         assert len(saves) == before_saves
+
+
+def test_content_summary_restores_identity_from_current_source_without_package_images(
+    monkeypatch,
+):
+    current = "https://assets.example/current-source.jpg"
+    stale_package = "https://assets.example/stale-package.jpg"
+    state = {
+        "offer_id": "3828540231",
+        "_revision": 9,
+        "review": {
+            "image_actions": [
+                {"url": current, "kind": "main", "action": "keep", "note": ""},
+            ],
+        },
+        "content_package": {
+            "content_strategy": "ai_assisted",
+            "collect_box_id": "3828540231",
+            "identity_reference_urls": [current],
+            "primary_identity_url": current,
+        },
+    }
+    monkeypatch.setattr(workbench, "resolve_offer_key", lambda _value: "3828540231")
+    monkeypatch.setattr(workbench, "load_state", lambda _offer: state)
+    monkeypatch.setattr(
+        workbench,
+        "_source_summary",
+        lambda _offer: {
+            "images": [{"url": current, "kind": "main"}],
+            "precollect": {},
+        },
+    )
+    monkeypatch.setattr(
+        workbench,
+        "_content_package_dir",
+        lambda _id: Path("unused-package"),
+    )
+    monkeypatch.setattr(
+        workbench,
+        "_load_json",
+        lambda _path: {
+            "collect_box": {
+                "image_urls": [stale_package],
+                "primary_identity_image": stale_package,
+            },
+        },
+    )
+    monkeypatch.setattr(workbench, "_content_artifacts", lambda *_args: [])
+    monkeypatch.setattr(
+        workbench,
+        "_generated_review_images",
+        lambda *_args: [],
+    )
+
+    summary = workbench.content_package_summary("3828540231")
+
+    assert summary["source_snapshot"]["image_urls"] == [current]
+    assert summary["source_snapshot"]["identity_reference_urls"] == [current]
+    assert summary["source_snapshot"]["primary_identity_image"] == current
 
 
 def test_auto_adopted_storyboard_does_not_approve_generated_image():

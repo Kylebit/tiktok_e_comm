@@ -594,7 +594,12 @@ def test_http_getonly_reconciliation_closes_ambiguous_my_without_new_write(
 
 @pytest.mark.parametrize(
     "malformed_kind",
-    ["model_nonmapping", "price_nonmapping", "logistics_nonboolean"],
+    [
+        "model_nonmapping",
+        "price_nonmapping",
+        "price_nonfinite",
+        "logistics_nonboolean",
+    ],
 )
 def test_getonly_reconciliation_mixed_official_shape_never_closes(
     tmp_path,
@@ -659,6 +664,16 @@ def test_getonly_reconciliation_mixed_official_shape_never_closes(
         ):
             response["response"]["model"][0]["price_info"].append(
                 "malformed"
+            )
+        elif (
+            malformed_kind == "price_nonfinite"
+            and path.endswith("/get_model_list")
+        ):
+            response["response"]["model"][0]["price_info"].append(
+                {
+                    "currency": "USD",
+                    "original_price": "Infinity",
+                }
             )
         elif (
             malformed_kind == "logistics_nonboolean"

@@ -168,17 +168,31 @@ def reconcile_existing_global_site(*, request) -> dict:
         and isinstance(matches[0].get("price_info"), list)
         else []
     )
-    price_rows_shape_exact = bool(
-        prices
-        and all(
-            isinstance(row, dict)
-            and isinstance(row.get("currency"), str)
-            and bool(row["currency"].strip())
-            and row.get("original_price") is not None
-            and not isinstance(row.get("original_price"), bool)
-            for row in prices
-        )
-    )
+    price_rows_shape_exact = bool(prices)
+    if price_rows_shape_exact:
+        for row in prices:
+            if (
+                not isinstance(row, dict)
+                or not isinstance(row.get("currency"), str)
+                or not row["currency"].strip()
+                or row.get("original_price") is None
+                or isinstance(row.get("original_price"), bool)
+            ):
+                price_rows_shape_exact = False
+                break
+            try:
+                official_price = Decimal(
+                    str(row["original_price"])
+                )
+            except (InvalidOperation, TypeError, ValueError):
+                price_rows_shape_exact = False
+                break
+            if (
+                not official_price.is_finite()
+                or official_price <= Decimal("0")
+            ):
+                price_rows_shape_exact = False
+                break
     price_rows = [
         row
         for row in prices

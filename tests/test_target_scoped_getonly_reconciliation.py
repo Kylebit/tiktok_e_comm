@@ -157,6 +157,26 @@ def _install_official_fixture(
                 rows.append("malformed")
             if drift == "price_malformed":
                 rows[0]["price_info"].append("malformed")
+            if drift in {
+                "price_nan",
+                "price_dict",
+                "price_infinite",
+                "price_zero",
+                "price_negative",
+            }:
+                invalid = {
+                    "price_nan": "not-a-number",
+                    "price_dict": {"value": 1},
+                    "price_infinite": "Infinity",
+                    "price_zero": 0,
+                    "price_negative": -1,
+                }[drift]
+                rows[0]["price_info"].append(
+                    {
+                        "currency": "USD",
+                        "original_price": invalid,
+                    }
+                )
             return {"response": {"model": rows}}
         raise AssertionError(f"unexpected official GET {path}")
 
@@ -238,6 +258,11 @@ def test_getonly_reconciliation_is_exact_redacted_and_zero_write(monkeypatch):
         "logistics",
         "model_malformed",
         "price_malformed",
+        "price_nan",
+        "price_dict",
+        "price_infinite",
+        "price_zero",
+        "price_negative",
         "logistics_malformed",
         "logistics_enabled_int",
         "copy",

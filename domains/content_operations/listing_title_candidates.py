@@ -12,7 +12,7 @@ from typing import Any, Callable
 
 from modules.sourcing.image_suite_plan import chat_completions, message_content
 
-POLICY_VERSION = "listing-copy-candidates-v4"
+POLICY_VERSION = "listing-copy-candidates-v5"
 TOAPI_TITLE_MODEL = "gpt-5.4-mini-official"
 EXPECTED_TARGETS = (
     ("tiktok", "MY", "English / Malay", 255),
@@ -341,6 +341,81 @@ def _clean_shopee_description(value: Any) -> str:
     return description
 
 
+def _deterministic_shopee_description(
+    facts: Mapping[str, Any],
+    *,
+    semantic_master_en: str,
+) -> str:
+    """Build a conservative English fallback from verified local facts."""
+
+    title = _clean_title(semantic_master_en, limit=180)
+    selected_labels = [
+        re.sub(r"\s+", " ", str(row.get("label") or "")).strip()
+        for row in (facts.get("selected_skus") or ())
+        if isinstance(row, Mapping)
+    ]
+    selected_labels = [
+        label
+        for label in selected_labels
+        if label
+        and re.search(r"[A-Za-z]", label)
+        and not re.search(r"[\u4e00-\u9fff\u0e00-\u0e7f]", label)
+    ]
+    weight = _canonical_decimal(facts.get("weight_kg"))
+    package = [
+        _canonical_decimal(value)
+        for value in (facts.get("package_cm") or ())
+    ]
+    shipping_lines: list[str] = []
+    if weight not in (None, ""):
+        shipping_lines.append(
+            f"Recorded parcel weight for shipping review: {weight} kg."
+        )
+    if len(package) == 3 and all(value not in (None, "") for value in package):
+        shipping_lines.append(
+            "Recorded parcel dimensions for shipping review: "
+            + " x ".join(str(value) for value in package)
+            + " cm."
+        )
+    variant_line = (
+        "Selected listing option: " + ", ".join(selected_labels) + "."
+        if selected_labels
+        else (
+            "Use the selected option shown in the listing and product images "
+            "as the order reference."
+        )
+    )
+    description = (
+        "PRODUCT OVERVIEW\n"
+        f"{title}. This global listing description is based only on the "
+        "verified product identity, selected option and current source images. "
+        "It is written as a reviewable English master for regional storefronts.\n\n"
+        "VERIFIED LISTING DETAILS\n"
+        f"Product identity: {title}.\n"
+        f"{variant_line}\n"
+        + ("\n".join(shipping_lines) + "\n" if shipping_lines else "")
+        + "\nPRODUCT APPEARANCE\n"
+        "Use the ordered product images as the exact visual reference for the "
+        "design, colour, shape and included visible elements. Screen settings "
+        "may make colours appear slightly different. No unverified brand, "
+        "material, size, quantity or performance claim has been added.\n\n"
+        "SELECTION AND USE\n"
+        "Confirm the selected option and review every image before ordering. "
+        "Choose a suitable placement and use the product only for the purpose "
+        "shown by the approved product facts and images. Follow any instructions "
+        "included with the received product.\n\n"
+        "SHIPPING AND ORDER REVIEW\n"
+        "Parcel measurements are logistics records and are not presented as "
+        "finished product dimensions. Check the storefront option, price and "
+        "delivery information before confirming the order.\n\n"
+        "FACTUAL CAUTIONS\n"
+        "This description does not promise waterproof, removable, reusable, "
+        "residue-free, certified, medical, safety or durability performance "
+        "unless that fact is separately verified and approved."
+    )
+    return _clean_shopee_description(description)
+
+
 def _validate_language(title: str, *, channel: str, site: str) -> None:
     if site == "TH" and not re.search(r"[\u0e00-\u0e7f]", title):
         raise ValueError(f"{channel}:{site} candidate is not Thai")
@@ -447,6 +522,7 @@ def generate_title_candidates(
     )
     generation_attempts = 1
     repair_performed = False
+    description_fallback_used = False
     try:
         master, shopee_description, candidates, notes_zh = (
             _validated_model_payload(raw)
@@ -483,13 +559,41 @@ def generate_title_candidates(
                 _validated_model_payload(repaired_raw)
             )
         except (json.JSONDecodeError, TypeError, ValueError) as second_error:
-            raise ValueError(
-                "title model output remained invalid after one repair: "
-                f"{second_error}"
-            ) from second_error
+            if str(second_error) in {
+                "Shopee global description must be English",
+                "Shopee global description must contain English text",
+            }:
+                repaired_payload = _json_object(repaired_raw)
+                repaired_master = _clean_title(
+                    repaired_payload.get("semantic_master_en"),
+                    limit=180,
+                )
+                if (
+                    not re.search(r"[A-Za-z]", repaired_master)
+                    or re.search(r"[\u4e00-\u9fff]", repaired_master)
+                ):
+                    raise ValueError(
+                        "title model output remained invalid after one repair: "
+                        f"{second_error}"
+                    ) from second_error
+                repaired_payload["shopee_description_en"] = (
+                    _deterministic_shopee_description(
+                        facts,
+                        semantic_master_en=repaired_master,
+                    )
+                )
+                master, shopee_description, candidates, notes_zh = (
+                    _validated_model_payload(_canonical(repaired_payload))
+                )
+                description_fallback_used = True
+            else:
+                raise ValueError(
+                    "title model output remained invalid after one repair: "
+                    f"{second_error}"
+                ) from second_error
 
     return {
-        "schema_version": "listing-copy-candidates-v4",
+        "schema_version": "listing-copy-candidates-v5",
         "provider": "toapi",
         "status": "draft_pending_kyle_review",
         "semantic_master_en": master,
@@ -503,6 +607,7 @@ def generate_title_candidates(
         "model": TOAPI_TITLE_MODEL,
         "generation_attempts": generation_attempts,
         "repair_performed": repair_performed,
+        "description_fallback_used": description_fallback_used,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "external_writes_performed": ["language_model_request"],
         "marketplace_writes_performed": [],

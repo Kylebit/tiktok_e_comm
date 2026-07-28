@@ -361,10 +361,14 @@
     sourceOnlySaveFeedback = "";
   }
 
+  function sourceAction(row) {
+    return row?.action === "remove" ? "remove" : "keep";
+  }
+
   function sourceRowsFromDom() {
     return (activeReview().image_actions || []).map((row, index) => ({
       ...row,
-      action: $(`.source-action[data-index="${index}"]`)?.value || row.action || "review",
+      action: $(`.source-action[data-index="${index}"]`)?.value || sourceAction(row),
       note: $(`.source-note[data-index="${index}"]`)?.value || "",
     }));
   }
@@ -623,7 +627,7 @@
   function buildFinalItems() {
     const review = activeReview();
     const sourceItems = (review.image_actions || [])
-      .filter((row) => row.action === "keep")
+      .filter((row) => sourceAction(row) === "keep")
       .map((row, index) => ({
         url: row.output_url || row.url,
         label: row.kind === "detail" ? "来源详情图" : "来源主图",
@@ -660,7 +664,9 @@
     const content = preview?.content_package || {};
     const source = preview?.source || {};
     const generated = content.generated_review_images || [];
-    const sourceReviewed = (review.image_actions || []).filter((row) => ["keep", "remove"].includes(row.action)).length;
+    const sourceReviewed = (review.image_actions || []).filter(
+      (row) => ["keep", "remove"].includes(sourceAction(row)),
+    ).length;
     const sourceTotal = (review.image_actions || []).length;
     const completedParts = [
       Boolean(content.fact_card_approved),
@@ -729,9 +735,19 @@
   function renderSourceStats() {
     const rows = activeReview().image_actions || [];
     const sourceSnapshot = preview?.content_package?.source_snapshot || {};
-    const refs = new Set(sourceSnapshot.identity_reference_urls || []);
-    const kept = rows.filter((row) => row.action === "keep").length;
-    const removed = rows.filter((row) => row.action === "remove").length;
+    const removedUrls = new Set(
+      rows
+        .filter((row) => sourceAction(row) === "remove")
+        .map((row) => row.output_url || row.url)
+        .filter(Boolean),
+    );
+    const refs = new Set(
+      (sourceSnapshot.identity_reference_urls || []).filter(
+        (url) => !removedUrls.has(url),
+      ),
+    );
+    const kept = rows.filter((row) => sourceAction(row) === "keep").length;
+    const removed = rows.filter((row) => sourceAction(row) === "remove").length;
     const pending = rows.length - kept - removed;
     $("#sourceStats").innerHTML = [
       `全部 ${rows.length}`,
@@ -752,23 +768,24 @@
     grid.classList.remove("skeleton");
     grid.innerHTML = rows.map((row, index) => {
       const url = row.output_url || row.url || "";
-      const action = row.action || "review";
+      const action = sourceAction(row);
+      if (action === "remove") return "";
       return `
         <article class="asset-card ${action === "keep" ? "kept" : (action === "remove" ? "removed" : "")}">
           <div class="asset-image" data-preview-url="${esc(proxyImage(url))}" data-preview-label="来源图 ${index + 1}">
             <img src="${esc(proxyImage(url))}" alt="来源图 ${index + 1}" loading="lazy">
             <span class="asset-index">${String(index + 1).padStart(2, "0")}</span>
+            <button type="button" class="source-remove" data-index="${index}"
+              aria-label="删除来源图 ${index + 1}" title="删除这张来源图">×</button>
           </div>
           <div class="asset-body">
             <header><strong>${row.kind === "detail" ? "详情图" : "主图"}</strong><small>${esc(action)}</small></header>
             <div class="decision-row">
-              <label>图片决定
-                <select class="source-action" data-index="${index}">
-                  <option value="review" ${action === "review" ? "selected" : ""}>待决定</option>
-                  <option value="keep" ${action === "keep" ? "selected" : ""}>保留</option>
-                  <option value="remove" ${action === "remove" ? "selected" : ""}>移除</option>
-                </select>
-              </label>
+              <div class="source-decision-summary">
+                <span>图片决定</span>
+                <strong>默认保留</strong>
+                <input class="source-action" data-index="${index}" type="hidden" value="keep">
+              </div>
               <div>
                 <label class="identity-check"><input class="identity-reference" type="checkbox" data-url="${esc(url)}" ${refs.has(url) ? "checked" : ""}>身份参考</label>
                 <label class="identity-check"><input class="identity-primary" name="primaryIdentity" type="radio" data-url="${esc(url)}" ${primary === url ? "checked" : ""}>主参考图</label>
@@ -780,18 +797,28 @@
       `;
     }).join("");
 
-    $$(".source-action").forEach((node) => node.addEventListener("change", () => {
-      const card = node.closest(".asset-card");
-      card.classList.toggle("kept", node.value === "keep");
-      card.classList.toggle("removed", node.value === "remove");
+    $$(".source-remove").forEach((button) => button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const index = Number(button.dataset.index);
+      const row = (activeReview().image_actions || [])[index];
+      if (!row) return;
+      const card = button.closest(".asset-card");
+      const actionNode = $(`.source-action[data-index="${index}"]`);
+      if (actionNode) actionNode.value = "remove";
+      const identityReference = card?.querySelector(".identity-reference");
+      const identityPrimary = card?.querySelector(".identity-primary");
+      if (identityReference) identityReference.checked = false;
+      if (identityPrimary) identityPrimary.checked = false;
+      row.action = "remove";
       if (sourceOnlyActive()) {
         captureSourceOnlyDraft();
-        finalOrder = buildFinalItems();
-        renderSourceStats();
-        renderFinal();
-        updateStrategyUi();
-        renderProject();
       }
+      finalOrder = buildFinalItems();
+      renderSources();
+      renderFinal();
+      updateStrategyUi();
+      renderProject();
     }));
     $$(".source-note").forEach((node) => {
       node.addEventListener("input", () => {

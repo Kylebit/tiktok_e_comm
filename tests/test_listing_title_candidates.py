@@ -94,7 +94,7 @@ def test_model_candidates_are_platform_specific_and_auditable():
     assert result["status"] == "draft_pending_kyle_review"
     assert result["provider"] == "toapi"
     assert result["model"] == TOAPI_TITLE_MODEL
-    assert result["schema_version"] == "listing-copy-candidates-v4"
+    assert result["schema_version"] == "listing-copy-candidates-v5"
     assert result["generation_attempts"] == 1
     assert result["repair_performed"] is False
     assert len(result["shopee_description_en"]) >= 500
@@ -135,6 +135,29 @@ def test_invalid_english_description_is_repaired_once():
     assert result["generation_attempts"] == 2
     assert result["repair_performed"] is True
     assert "博冉优品" not in result["shopee_description_en"]
+
+
+def test_second_non_english_description_uses_fact_bound_english_fallback():
+    rejected = json.loads(_model_payload())
+    rejected["shopee_description_en"] = (
+        rejected["shopee_description_en"] + "\n中文内容不允许进入全球描述"
+    )
+    calls = []
+
+    def model_call(_messages, **_kwargs):
+        calls.append(True)
+        return json.dumps(rejected, ensure_ascii=False)
+
+    result = generate_title_candidates(_facts(), model_call=model_call)
+
+    assert len(calls) == 2
+    assert result["generation_attempts"] == 2
+    assert result["repair_performed"] is True
+    assert result["description_fallback_used"] is True
+    assert len(result["shopee_description_en"]) >= 500
+    assert "中文内容" not in result["shopee_description_en"]
+    assert result["shopee_description_en"].startswith("PRODUCT OVERVIEW")
+    assert len(result["candidates"]) == len(EXPECTED_TARGETS)
 
 
 def test_non_english_source_brand_line_is_omitted_from_english_description():
@@ -205,14 +228,15 @@ def test_short_or_non_english_shopee_description_is_rejected():
     non_english["shopee_description_en"] = "中文" + (
         non_english["shopee_description_en"]
     )
-    with pytest.raises(ValueError, match="must be English"):
-        generate_title_candidates(
-            _facts(),
-            model_call=lambda *_args, **_kwargs: json.dumps(
-                non_english,
-                ensure_ascii=False,
-            ),
+    repaired = generate_title_candidates(
+        _facts(),
+        model_call=lambda *_args, **_kwargs: json.dumps(
+            non_english,
+            ensure_ascii=False,
         )
+    )
+    assert repaired["description_fallback_used"] is True
+    assert "中文" not in repaired["shopee_description_en"]
 
 
 def test_wrong_platform_language_is_rejected():

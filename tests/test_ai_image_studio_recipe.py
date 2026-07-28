@@ -119,6 +119,18 @@ def test_legacy_source_video_review_is_preserved_in_ai_studio():
     assert 'target="_blank" rel="noopener">在新标签页打开来源视频' in SCRIPT
 
 
+def test_source_images_default_to_keep_and_use_a_direct_remove_control():
+    assert 'function sourceAction(row)' in SCRIPT
+    assert 'row?.action === "remove" ? "remove" : "keep"' in SCRIPT
+    assert 'class="source-remove"' in SCRIPT
+    assert 'aria-label="删除来源图 ${index + 1}"' in SCRIPT
+    assert 'type="hidden" value="keep"' in SCRIPT
+    assert 'row.action = "remove"' in SCRIPT
+    assert "identityReference.checked = false" in SCRIPT
+    assert "identityPrimary.checked = false" in SCRIPT
+    assert "来源图默认保留" in HTML
+
+
 def test_release_center_and_studio_can_remain_open_in_parallel_tabs():
     assert (
         'id="productCenterLink" href="/product-workspace" target="_blank" rel="noopener"'

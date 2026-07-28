@@ -145,12 +145,17 @@ section { scroll-margin-top: 18px; }
 .asset-image { aspect-ratio: 1/1; position: relative; overflow: hidden; background: #e8ebe6; cursor: zoom-in; }
 .asset-image img { width: 100%; height: 100%; display: block; object-fit: cover; }
 .asset-index { position: absolute; top: 9px; left: 9px; width: 27px; height: 27px; display: grid; place-items: center; border-radius: 50%; color: white; background: rgba(21,47,44,.86); font: 700 10px/1 ui-monospace,monospace; }
+.source-remove { position: absolute; top: 9px; right: 9px; z-index: 2; width: 30px; min-height: 30px; padding: 0; display: grid; place-items: center; border: 1px solid rgba(185,61,46,.28); border-radius: 50%; color: #a53124; background: rgba(255,255,255,.94); font: 700 20px/1 sans-serif; cursor: pointer; box-shadow: 0 2px 8px rgba(25,45,41,.14); }
+.source-remove:hover,.source-remove:focus-visible { color: white; background: #b64636; border-color: #b64636; outline: 2px solid rgba(182,70,54,.22); outline-offset: 2px; }
 .asset-body { display: grid; gap: 10px; padding: 13px; }
 .asset-body header { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
 .asset-body strong { font-size: 12px; }
 .asset-body small { color: var(--muted); font-size: 9px; }
 .decision-row { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
 .decision-row label { display: grid; gap: 5px; }
+.source-decision-summary { display: grid; align-content: start; gap: 5px; }
+.source-decision-summary span { color: var(--muted); font-size: 10px; font-weight: 700; }
+.source-decision-summary strong { width: fit-content; padding: 8px 10px; border-radius: 9px; color: #176b5e; background: rgba(35,119,108,.1); font-size: 11px; }
 .identity-check { display: flex; align-items: center; gap: 6px; }
 .identity-check input,.check-row input,.confirm-row input { min-height: auto; }
 .strategy-panel,.recipe-panel { display: grid; gap: 17px; margin-bottom: 14px; padding: 20px; border: 1px solid var(--line); border-radius: 17px; background: linear-gradient(135deg,rgba(255,253,247,.92),rgba(239,246,241,.78)); }

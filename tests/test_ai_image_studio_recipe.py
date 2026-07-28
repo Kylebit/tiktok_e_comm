@@ -64,6 +64,13 @@ def test_missing_local_package_blocks_ai_with_actionable_local_feedback():
     assert "await preparePackage()" in SCRIPT
 
 
+def test_proxy_tls_disconnect_is_explained_without_automatic_retry():
+    assert "UNEXPECTED_EOF_WHILE_READING" in SCRIPT
+    assert "本次配方和身份参考已经保存在本地" in SCRIPT
+    assert "没有创建图片生成任务" in SCRIPT
+    assert "系统不会自动重试" in SCRIPT
+
+
 def test_completed_paid_batch_cannot_be_started_again_from_the_ui():
     assert (
         '["completed_waiting_human_review", "completed_with_errors"].includes(generation.status)'

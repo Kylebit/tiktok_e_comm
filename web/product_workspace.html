@@ -162,7 +162,7 @@
               <div>
                 <p class="kicker">AI LISTING COPY</p>
                 <h3 id="titleAssistantTitle">中文事实 → 平台标题候选</h3>
-                <p>ToAPI 文本模型读取当前商品事实，按平台搜索习惯、词序、语言与长度分别重写 TikTok、Shopee 和 Ozon 标题；不是逐字翻译。只生成本地候选，不写妙手或平台。</p>
+                <p>一次生成各平台标题候选和 Shopee 英文全球描述：先严格校验，失败时只修复一次；若修复后仅英文描述仍混入非英文字符，系统会用已核实商品事实生成保守的本地英文描述兜底。不会修改商品事实，也不会写妙手或平台。</p>
               </div>
               <button id="generateTitleDraftButton" class="button button-secondary" type="button">
                 <span class="title-draft-label">AI 生成平台标题</span>

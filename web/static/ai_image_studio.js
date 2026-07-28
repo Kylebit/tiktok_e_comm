@@ -414,6 +414,19 @@
 
   function planningErrorMessage(error) {
     const raw = String(error?.message || "");
+    if (
+      raw.includes("ToAPIs chat network error")
+      && (
+        raw.includes("UNEXPECTED_EOF_WHILE_READING")
+        || raw.includes("EOF occurred in violation of protocol")
+      )
+    ) {
+      return (
+        "AI 分镜请求经过本机网络代理时连接被提前断开。"
+        + "本次配方和身份参考已经保存在本地，但没有收到分镜结果、没有自动采用，也没有创建图片生成任务。"
+        + "为避免重复产生模型费用，系统不会自动重试；确认网络恢复后可由你手动重新规划一次。"
+      );
+    }
     if (raw.includes("create a local content review package")) {
       return "还没有创建本地内容审核包。请先点击“读取妙手并创建本地包”，再重新确认商品事实和本次配方；本次没有调用 AI，也没有产生生图费用。";
     }

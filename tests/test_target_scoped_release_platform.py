@@ -29,10 +29,12 @@ from shared_platform.release_store import (
 )
 from shared_platform.target_scoped_release_contracts import (
     OfficialTargetProof,
+    OfficialTargetReconciliationProof,
     TargetScopedCommandUnavailable,
     TargetScopedContractError,
     TargetScopedOperationRequest,
     TargetScopedOperationResult,
+    TargetScopedReconciliationRequest,
     approved_shopee_channel_master_digest,
     approved_shopee_copy_digest,
     approved_source_image_manifest_digest,
@@ -2424,4 +2426,951 @@ def test_http_routes_are_exact_single_target_and_json_only(
     assert calls == [
         ("preview", "3838616043", "shopee:MY"),
         ("execute", post_body),
+    ]
+
+
+def _reconciliation_case(
+    tmp_path,
+    target_label: str = "shopee:MY",
+    *,
+    prior_writes: list[str] | None = None,
+):
+    store, plan, _run = _failed_store(tmp_path, target_label)
+    request = _request(store, plan, target_label)
+    proof = _proof(request)
+    claim = store.claim_target_scoped_operation(
+        request=request,
+        proof=proof,
+    )
+    external_id = (
+        "53914952703"
+        if target_label == "shopee:MY"
+        else "51564925929"
+    )
+    prior = TargetScopedOperationResult.from_value(
+        {
+            "succeeded": False,
+            "readback_verified": False,
+            "detail": (
+                "regional publish accepted; official readback was unknown"
+            ),
+            "external_reference": external_id,
+            "submission_accepted": True,
+            "evidence": {
+                "durable_state_uncertain": True,
+                "reconciliation_required": True,
+                "external_writes_performed": (
+                    ["shopee:regional_publish"]
+                    if prior_writes is None
+                    else prior_writes
+                ),
+            },
+        }
+    )
+    store.record_target_scoped_reconciliation(
+        claim["operation"]["operation_digest"],
+        result=prior,
+    )
+    context = store.target_scoped_reconciliation_context(
+        plan_id=plan["plan_id"],
+        target_label=target_label,
+    )
+    return store, plan, request, context
+
+
+def _reconciliation_proof_value(
+    request: TargetScopedReconciliationRequest,
+    **overrides,
+):
+    now = datetime.now(timezone.utc)
+    value = {
+        "schema_version": "official-target-reconciliation-proof/v1",
+        "reconciliation_mode": request.reconciliation_mode,
+        "reconciliation_request_digest": request.request_digest,
+        "plan_id": request.operation_request.plan_id,
+        "run_id": request.operation_request.run_id,
+        "target_label": request.operation_request.target_label,
+        "operation_digest": request.operation_digest,
+        "operation_proof_digest": request.operation_proof_digest,
+        "prior_result_digest": request.prior_result_digest,
+        "external_identity_digest": request.external_identity_digest,
+        "provided_by": "03",
+        "allow_refresh": False,
+        "observed_at": (now - timedelta(seconds=1)).isoformat(),
+        "expires_at": (now + timedelta(minutes=5)).isoformat(),
+        "checks": {
+            "existing_item_unique": True,
+            "existing_model_unique": True,
+            "global_linkage_exact": True,
+            "normal_status": True,
+            "local_price_currency_exact": True,
+            "image_count_primary_exact": True,
+            "selected_logistics_exact": True,
+        },
+        "semantic_evidence": {
+            "schema_version": "shopee-regional-readback-redacted/v1",
+            "authority": "shopee_official_get",
+            "target_label": request.operation_request.target_label,
+            "external_identity_digest": request.external_identity_digest,
+            "listing_identity_verified": True,
+            "image_count": 6,
+            "logistics_count": 12,
+            "status": "exact",
+        },
+        "redacted_summary": {
+            "target_label": request.operation_request.target_label,
+            "status": "exact_official_readback",
+            "listing_identity_verified": True,
+            "image_count": 6,
+            "logistics_count": 12,
+        },
+        "external_writes_performed": [],
+    }
+    value.update(overrides)
+    return value
+
+
+def _reconciliation_proof(
+    request: TargetScopedReconciliationRequest,
+    **overrides,
+):
+    return OfficialTargetReconciliationProof.from_value(
+        _reconciliation_proof_value(request, **overrides),
+        request=request,
+    )
+
+
+def _reconciliation_result(
+    request: TargetScopedReconciliationRequest,
+    **evidence_overrides,
+):
+    evidence = {
+        "verified": True,
+        "reconciliation_mode": "official_get_only_durable_close",
+        "checks": {
+            "existing_item_unique": True,
+            "existing_model_unique": True,
+            "global_linkage_exact": True,
+            "normal_status": True,
+            "local_price_currency_exact": True,
+            "image_count_primary_exact": True,
+            "selected_logistics_exact": True,
+        },
+        "manual_review_required": True,
+        "profit_status": "unverified",
+        "external_writes_performed": [],
+    }
+    evidence.update(evidence_overrides)
+    return TargetScopedOperationResult.from_value(
+        {
+            "succeeded": True,
+            "readback_verified": True,
+            "detail": "official GET-only regional readback is exact",
+            "external_reference": request.external_id,
+            "submission_accepted": True,
+            "evidence": evidence,
+        }
+    )
+
+
+def _patch_reconciliation_gate(
+    monkeypatch,
+    store: ReleaseStore,
+    plan: dict,
+    request: TargetScopedReconciliationRequest,
+):
+    monkeypatch.setattr(
+        release_store,
+        "default_release_store",
+        lambda: store,
+    )
+
+    def gate(_data, *, store):
+        return {
+            "dashboard": {
+                "product": {
+                    "revision": (
+                        request.operation_request.product_revision
+                    )
+                }
+            },
+            "payload": plan["payload"],
+            "plan": plan,
+            "run": store.get_run(request.operation_request.run_id),
+            "registry": {},
+            "target_rows": [],
+        }, None
+
+    monkeypatch.setattr(
+        product_server,
+        "_release_execution_readonly_gate",
+        gate,
+    )
+
+
+def _reconciliation_post_body(
+    preview: dict,
+    request: TargetScopedReconciliationRequest,
+) -> dict:
+    base = request.operation_request
+    return {
+        "offer_id": base.product_id,
+        "seller_sku": base.seller_sku,
+        "publication_targets": list(request.publication_targets),
+        "target_label": base.target_label,
+        "plan_id": base.plan_id,
+        "run_id": base.run_id,
+        "confirmation_token": base.confirmation_token,
+        "expected_revision": base.product_revision,
+        "failure_attempt": base.failure_attempt,
+        "payload_digest": base.payload_digest,
+        "planned_command_digest": base.planned_command_digest,
+        "preflight_digest": base.preflight_digest,
+        "operation_digest": request.operation_digest,
+        "operation_proof_digest": request.operation_proof_digest,
+        "prior_result_digest": request.prior_result_digest,
+        "external_identity_digest": request.external_identity_digest,
+        "reconciliation_request_digest": request.request_digest,
+        "reconciliation_proof_digest": preview[
+            "reconciliation_proof_digest"
+        ],
+        "approved_by": "Kyle",
+        "confirm_target_scoped_reconciliation": True,
+    }
+
+
+@pytest.mark.parametrize("target_label", ["shopee:MY", "shopee:VN"])
+def test_store_getonly_close_is_atomic_and_preserves_prior_write(
+    tmp_path,
+    target_label,
+):
+    store, _plan_value, _base, context = _reconciliation_case(
+        tmp_path,
+        target_label,
+    )
+    assert context["eligible"] is True
+    request = context["reconciliation_request"]
+    proof = _reconciliation_proof(request)
+    result = _reconciliation_result(request)
+    before = store.get_run(request.operation_request.run_id)
+    attempts = next(
+        row["attempts"]
+        for row in before["targets"]
+        if row["target_label"] == target_label
+    )
+    with pytest.raises(ReleaseAuthorizationError, match="target-scoped"):
+        store.retry_failed_targets(
+            request.operation_request.run_id,
+            [target_label],
+        )
+
+    completed = store.record_target_scoped_reconciled_success(
+        request=request,
+        proof=proof,
+        result=result,
+    )
+
+    target = next(
+        row
+        for row in completed["targets"]
+        if row["target_label"] == target_label
+    )
+    operation = target["target_scoped_operation"]
+    assert target["status"] == "SUCCEEDED"
+    assert target["storage_status"] == "SUCCEEDED"
+    assert target["attempts"] == attempts
+    assert operation["status"] == "SUCCEEDED"
+    assert operation["result"]["prior_result_digest"] == (
+        request.prior_result_digest
+    )
+    assert operation["result"]["prior_external_writes_performed"] == [
+        "shopee:regional_publish"
+    ]
+    assert operation["result"][
+        "reconciliation_external_writes_performed"
+    ] == []
+    assert operation["result"]["external_writes_performed"] == [
+        "shopee:regional_publish"
+    ]
+    repeated = store.record_target_scoped_reconciled_success(
+        request=request,
+        proof=proof,
+        result=result,
+    )
+    assert repeated["targets"][0]["attempts"] == attempts
+    with sqlite3.connect(store.path) as connection:
+        assert connection.execute(
+            """
+            SELECT COUNT(*) FROM release_target_retry_operations
+            WHERE run_id = ? AND target_label = ?
+            """,
+            (
+                request.operation_request.run_id,
+                target_label,
+            ),
+        ).fetchone()[0] == 1
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["missing_external_id", "wrong_storage_status", "wrong_prior_write"],
+)
+def test_reconciliation_context_fails_closed_on_durable_drift(
+    tmp_path,
+    mutation,
+):
+    if mutation == "wrong_prior_write":
+        store, plan, _request_value, context = _reconciliation_case(
+            tmp_path,
+            prior_writes=["unexpected:write"],
+        )
+        assert context["eligible"] is False
+        assert any(
+            "prior Shopee publish evidence" in blocker
+            for blocker in context["blockers"]
+        )
+        return
+    store, plan, request, _context = _reconciliation_case(tmp_path)
+    with sqlite3.connect(store.path) as connection:
+        if mutation == "missing_external_id":
+            connection.execute(
+                """
+                UPDATE release_target_runs SET external_id = NULL
+                WHERE run_id = ? AND target_label = ?
+                """,
+                (request.run_id, request.target_label),
+            )
+        else:
+            connection.execute(
+                """
+                UPDATE release_target_runs SET status = 'SUCCEEDED'
+                WHERE run_id = ? AND target_label = ?
+                """,
+                (request.run_id, request.target_label),
+            )
+        connection.commit()
+    context = store.target_scoped_reconciliation_context(
+        plan_id=plan["plan_id"],
+        target_label=request.target_label,
+    )
+    assert context["eligible"] is False
+
+
+@pytest.mark.parametrize(
+    ("table", "assignment"),
+    [
+        ("release_plans", "status = 'PENDING_APPROVAL'"),
+        ("release_approvals", "status = 'SUPERSEDED'"),
+        (
+            "release_target_retry_operations",
+            "status = 'FAILED_PRE_SUBMIT'",
+        ),
+    ],
+)
+def test_reconciliation_context_requires_exact_authority_and_status(
+    tmp_path,
+    table,
+    assignment,
+):
+    store, plan, request, _context = _reconciliation_case(tmp_path)
+    with sqlite3.connect(store.path) as connection:
+        if table in {"release_plans", "release_approvals"}:
+            connection.execute(
+                f"UPDATE {table} SET {assignment} WHERE plan_id = ?",
+                (plan["plan_id"],),
+            )
+        else:
+            connection.execute(
+                f"UPDATE {table} SET {assignment} "
+                "WHERE run_id = ? AND target_label = ?",
+                (request.run_id, request.target_label),
+            )
+        connection.commit()
+    context = store.target_scoped_reconciliation_context(
+        plan_id=plan["plan_id"],
+        target_label=request.target_label,
+    )
+    assert context["eligible"] is False
+
+
+def test_reconciliation_allowlist_excludes_ozon(tmp_path):
+    store, plan, _request_value, _context = _reconciliation_case(
+        tmp_path,
+        "ozon:RU",
+        prior_writes=["ozon:stock:update"],
+    )
+    context = store.target_scoped_reconciliation_context(
+        plan_id=plan["plan_id"],
+        target_label="ozon:RU",
+    )
+    assert context["eligible"] is False
+    assert any("allowlisted" in value for value in context["blockers"])
+
+
+def test_reconciliation_proof_rejects_raw_or_drifted_evidence(tmp_path):
+    _store, _plan_value, _base, context = _reconciliation_case(tmp_path)
+    request = context["reconciliation_request"]
+    with pytest.raises(TargetScopedContractError, match="raw copy"):
+        _reconciliation_proof(
+            request,
+            semantic_evidence={
+                "title": "raw official title",
+                "status": "exact",
+            },
+        )
+    with pytest.raises(
+        TargetScopedContractError,
+        match="identity does not match",
+    ):
+        _reconciliation_proof(
+            request,
+            prior_result_digest="f" * 64,
+        )
+
+
+def test_preview_is_db_byte_stable_redacted_and_getonly(
+    tmp_path,
+    monkeypatch,
+):
+    store, plan, _base, context = _reconciliation_case(tmp_path)
+    request = context["reconciliation_request"]
+    proof = _reconciliation_proof(request)
+    calls = []
+    adapter = SimpleNamespace(
+        build_official_target_reconciliation_proof=(
+            lambda req, *, allow_refresh: (
+                calls.append(("proof", req.request_digest, allow_refresh))
+                or proof.durable_payload()
+            )
+        )
+    )
+    _patch_reconciliation_gate(monkeypatch, store, plan, request)
+    monkeypatch.setattr(
+        product_server,
+        "_target_scoped_adapter_module",
+        lambda: adapter,
+    )
+    before = store.path.read_bytes()
+
+    status, payload = (
+        product_server._preview_target_scoped_reconciliation(
+            offer_id=request.operation_request.product_id,
+            target_label=request.operation_request.target_label,
+        )
+    )
+
+    assert status == 200
+    assert payload["available"] is True
+    assert payload["external_writes_performed"] == []
+    assert payload["state_mutations_performed"] == []
+    assert "confirmation_token" not in payload
+    assert "external_id" not in payload
+    assert "planned_command" not in payload
+    assert payload["external_identity_digest"] == (
+        request.external_identity_digest
+    )
+    assert payload["run_id"] == request.operation_request.run_id
+    assert store.path.read_bytes() == before
+    assert calls == [("proof", request.request_digest, False)]
+    encoded = json.dumps(payload, sort_keys=True)
+    for raw in (
+        request.operation_request.confirmation_token,
+        request.external_id,
+        "raw official title",
+        "https://",
+    ):
+        assert raw not in encoded
+
+
+def test_http_getonly_close_success_repeat_zero_adapter_calls(
+    tmp_path,
+    monkeypatch,
+):
+    store, plan, _base, context = _reconciliation_case(tmp_path)
+    request = context["reconciliation_request"]
+    proof = _reconciliation_proof(request)
+    result = _reconciliation_result(request)
+    calls = []
+    adapter = SimpleNamespace(
+        build_official_target_reconciliation_proof=(
+            lambda req, *, allow_refresh: (
+                calls.append(("proof", allow_refresh))
+                or proof.durable_payload()
+            )
+        ),
+        reconcile_target_scoped_operation=lambda req, supplied: (
+            calls.append(("reconcile", supplied.proof_digest))
+            or result
+        ),
+    )
+    _patch_reconciliation_gate(monkeypatch, store, plan, request)
+    monkeypatch.setattr(
+        product_server,
+        "_target_scoped_adapter_module",
+        lambda: adapter,
+    )
+    preview_status, preview = (
+        product_server._preview_target_scoped_reconciliation(
+            offer_id=request.operation_request.product_id,
+            target_label=request.operation_request.target_label,
+        )
+    )
+    body = _reconciliation_post_body(preview, request)
+
+    status, payload = (
+        product_server._execute_target_scoped_reconciliation(body)
+    )
+    before_replay = list(calls)
+    replay_status, replay = (
+        product_server._execute_target_scoped_reconciliation(body)
+    )
+
+    assert preview_status == 200
+    assert status == 200
+    assert payload["operation_status"] == "SUCCEEDED"
+    assert payload["external_writes_performed"] == []
+    assert replay_status == 200
+    assert replay["idempotent"] is True
+    assert replay["external_writes_performed"] == []
+    assert calls == before_replay == [
+        ("proof", False),
+        ("proof", False),
+        ("reconcile", proof.proof_digest),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("seller_sku", "9999"),
+        ("publication_targets", ["shopee:VN"]),
+        ("plan_id", "other-plan"),
+        ("run_id", "other-run"),
+        ("confirmation_token", "wrong-token"),
+        ("expected_revision", 99),
+        ("failure_attempt", 99),
+        ("payload_digest", "wrong"),
+        ("planned_command_digest", "wrong"),
+        ("preflight_digest", "wrong"),
+        ("operation_digest", "wrong"),
+        ("operation_proof_digest", "wrong"),
+        ("prior_result_digest", "wrong"),
+        ("external_identity_digest", "wrong"),
+        ("reconciliation_request_digest", "wrong"),
+    ],
+)
+def test_post_identity_drift_calls_no_reconcile_or_close(
+    tmp_path,
+    monkeypatch,
+    field,
+    value,
+):
+    store, plan, _base, context = _reconciliation_case(tmp_path)
+    request = context["reconciliation_request"]
+    proof = _reconciliation_proof(request)
+    calls = []
+    adapter = SimpleNamespace(
+        build_official_target_reconciliation_proof=(
+            lambda *_args, **_kwargs: calls.append("proof")
+            or proof.durable_payload()
+        ),
+        reconcile_target_scoped_operation=lambda *_args: (
+            calls.append("reconcile")
+        ),
+    )
+    _patch_reconciliation_gate(monkeypatch, store, plan, request)
+    monkeypatch.setattr(
+        product_server,
+        "_target_scoped_adapter_module",
+        lambda: adapter,
+    )
+    _, preview = product_server._preview_target_scoped_reconciliation(
+        offer_id=request.operation_request.product_id,
+        target_label=request.operation_request.target_label,
+    )
+    body = _reconciliation_post_body(preview, request)
+    body[field] = value
+
+    status, payload = (
+        product_server._execute_target_scoped_reconciliation(body)
+    )
+
+    assert status == 409
+    assert payload["external_writes_performed"] == []
+    assert calls == ["proof"]
+    operation = store.get_target_scoped_operation(
+        run_id=request.operation_request.run_id,
+        target_label=request.operation_request.target_label,
+    )
+    assert operation["status"] == "RECONCILIATION_REQUIRED"
+
+
+@pytest.mark.parametrize(
+    "body_change",
+    [
+        {"confirm_target_scoped_reconciliation": False},
+        {"confirm_target_scoped_reconciliation": None},
+        {"approved_by": "NotKyle"},
+    ],
+)
+def test_post_requires_dedicated_literal_consent_and_kyle(
+    tmp_path,
+    monkeypatch,
+    body_change,
+):
+    store, plan, _base, context = _reconciliation_case(tmp_path)
+    request = context["reconciliation_request"]
+    proof = _reconciliation_proof(request)
+    _patch_reconciliation_gate(monkeypatch, store, plan, request)
+    monkeypatch.setattr(
+        product_server,
+        "_target_scoped_adapter_module",
+        lambda: SimpleNamespace(
+            build_official_target_reconciliation_proof=(
+                lambda *_args, **_kwargs: proof.durable_payload()
+            )
+        ),
+    )
+    _, preview = product_server._preview_target_scoped_reconciliation(
+        offer_id=request.operation_request.product_id,
+        target_label=request.operation_request.target_label,
+    )
+    body = _reconciliation_post_body(preview, request)
+    body.update(body_change)
+
+    status, payload = (
+        product_server._execute_target_scoped_reconciliation(body)
+    )
+
+    assert status == 400
+    assert payload["external_writes_performed"] == []
+    assert store.get_target_scoped_operation(
+        run_id=request.operation_request.run_id,
+        target_label=request.operation_request.target_label,
+    )["status"] == "RECONCILIATION_REQUIRED"
+
+
+def test_proof_drift_or_adapter_failure_leaves_durable_state_unchanged(
+    tmp_path,
+    monkeypatch,
+):
+    store, plan, _base, context = _reconciliation_case(tmp_path)
+    request = context["reconciliation_request"]
+    preview_proof = _reconciliation_proof(request)
+    changed_proof = _reconciliation_proof(
+        request,
+        semantic_evidence={
+            **dict(preview_proof.semantic_evidence),
+            "status": "exact-but-changed",
+        },
+    )
+    calls = []
+    proofs = iter(
+        [
+            preview_proof.durable_payload(),
+            changed_proof.durable_payload(),
+        ]
+    )
+    adapter = SimpleNamespace(
+        build_official_target_reconciliation_proof=(
+            lambda *_args, **_kwargs: next(proofs)
+        ),
+        reconcile_target_scoped_operation=lambda *_args: (
+            calls.append("reconcile")
+        ),
+    )
+    _patch_reconciliation_gate(monkeypatch, store, plan, request)
+    monkeypatch.setattr(
+        product_server,
+        "_target_scoped_adapter_module",
+        lambda: adapter,
+    )
+    _, preview = product_server._preview_target_scoped_reconciliation(
+        offer_id=request.operation_request.product_id,
+        target_label=request.operation_request.target_label,
+    )
+    body = _reconciliation_post_body(preview, request)
+
+    status, payload = (
+        product_server._execute_target_scoped_reconciliation(body)
+    )
+
+    assert status == 409
+    assert payload["code"] == "official_reconciliation_proof_drift"
+    assert payload["external_writes_performed"] == []
+    assert calls == []
+    assert store.get_target_scoped_operation(
+        run_id=request.operation_request.run_id,
+        target_label=request.operation_request.target_label,
+    )["status"] == "RECONCILIATION_REQUIRED"
+
+
+@pytest.mark.parametrize("failure", ["timeout", "mismatch"])
+def test_getonly_reconcile_failure_performs_no_local_close(
+    tmp_path,
+    monkeypatch,
+    failure,
+):
+    store, plan, _base, context = _reconciliation_case(tmp_path)
+    request = context["reconciliation_request"]
+    proof = _reconciliation_proof(request)
+
+    def reconcile(*_args):
+        if failure == "timeout":
+            raise TimeoutError("official GET timed out")
+        return TargetScopedOperationResult.from_value(
+            {
+                "succeeded": False,
+                "readback_verified": False,
+                "detail": "official identity mismatch",
+                "external_reference": request.external_id,
+                "submission_accepted": True,
+                "evidence": {
+                    "verified": False,
+                    "external_writes_performed": [],
+                },
+            }
+        )
+
+    adapter = SimpleNamespace(
+        build_official_target_reconciliation_proof=(
+            lambda *_args, **_kwargs: proof.durable_payload()
+        ),
+        reconcile_target_scoped_operation=reconcile,
+    )
+    _patch_reconciliation_gate(monkeypatch, store, plan, request)
+    monkeypatch.setattr(
+        product_server,
+        "_target_scoped_adapter_module",
+        lambda: adapter,
+    )
+    _, preview = product_server._preview_target_scoped_reconciliation(
+        offer_id=request.operation_request.product_id,
+        target_label=request.operation_request.target_label,
+    )
+    body = _reconciliation_post_body(preview, request)
+
+    status, payload = (
+        product_server._execute_target_scoped_reconciliation(body)
+    )
+
+    assert status == 409
+    assert payload["external_writes_performed"] == []
+    assert payload["state_mutations_performed"] == []
+    assert store.get_target_scoped_operation(
+        run_id=request.operation_request.run_id,
+        target_label=request.operation_request.target_label,
+    )["status"] == "RECONCILIATION_REQUIRED"
+
+
+def test_local_close_failure_before_commit_is_zero_mutation(
+    tmp_path,
+    monkeypatch,
+):
+    store, plan, _base, context = _reconciliation_case(tmp_path)
+    request = context["reconciliation_request"]
+    proof = _reconciliation_proof(request)
+    result = _reconciliation_result(request)
+    adapter = SimpleNamespace(
+        build_official_target_reconciliation_proof=(
+            lambda *_args, **_kwargs: proof.durable_payload()
+        ),
+        reconcile_target_scoped_operation=lambda *_args: result,
+    )
+    _patch_reconciliation_gate(monkeypatch, store, plan, request)
+    monkeypatch.setattr(
+        product_server,
+        "_target_scoped_adapter_module",
+        lambda: adapter,
+    )
+    _, preview = product_server._preview_target_scoped_reconciliation(
+        offer_id=request.operation_request.product_id,
+        target_label=request.operation_request.target_label,
+    )
+    body = _reconciliation_post_body(preview, request)
+    monkeypatch.setattr(
+        store,
+        "record_target_scoped_reconciled_success",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            ReleaseStoreError("simulated transaction rollback")
+        ),
+    )
+
+    status, payload = (
+        product_server._execute_target_scoped_reconciliation(body)
+    )
+
+    assert status == 502
+    assert payload["external_writes_performed"] == []
+    assert payload["state_mutations_performed"] == []
+    operation = store.get_target_scoped_operation(
+        run_id=request.operation_request.run_id,
+        target_label=request.operation_request.target_label,
+    )
+    assert operation["status"] == "RECONCILIATION_REQUIRED"
+
+
+def test_local_receipt_failure_recovers_or_fails_closed_truthfully(
+    tmp_path,
+    monkeypatch,
+):
+    store, plan, _base, context = _reconciliation_case(tmp_path)
+    request = context["reconciliation_request"]
+    proof = _reconciliation_proof(request)
+    result = _reconciliation_result(request)
+    adapter = SimpleNamespace(
+        build_official_target_reconciliation_proof=(
+            lambda *_args, **_kwargs: proof.durable_payload()
+        ),
+        reconcile_target_scoped_operation=lambda *_args: result,
+    )
+    _patch_reconciliation_gate(monkeypatch, store, plan, request)
+    monkeypatch.setattr(
+        product_server,
+        "_target_scoped_adapter_module",
+        lambda: adapter,
+    )
+    _, preview = product_server._preview_target_scoped_reconciliation(
+        offer_id=request.operation_request.product_id,
+        target_label=request.operation_request.target_label,
+    )
+    body = _reconciliation_post_body(preview, request)
+    original = store.record_target_scoped_reconciled_success
+
+    def committed_then_failed(**kwargs):
+        original(**kwargs)
+        raise RuntimeError("response lost after commit")
+
+    monkeypatch.setattr(
+        store,
+        "record_target_scoped_reconciled_success",
+        committed_then_failed,
+    )
+    status, payload = (
+        product_server._execute_target_scoped_reconciliation(body)
+    )
+    assert status == 200
+    assert payload["durable_receipt_recovered"] is True
+    assert payload["external_writes_performed"] == []
+
+    store2, plan2, _base2, context2 = _reconciliation_case(
+        tmp_path / "double"
+    )
+    request2 = context2["reconciliation_request"]
+    proof2 = _reconciliation_proof(request2)
+    result2 = _reconciliation_result(request2)
+    _patch_reconciliation_gate(monkeypatch, store2, plan2, request2)
+    monkeypatch.setattr(
+        product_server,
+        "_target_scoped_adapter_module",
+        lambda: SimpleNamespace(
+            build_official_target_reconciliation_proof=(
+                lambda *_args, **_kwargs: proof2.durable_payload()
+            ),
+            reconcile_target_scoped_operation=lambda *_args: result2,
+        ),
+    )
+    _, preview2 = product_server._preview_target_scoped_reconciliation(
+        offer_id=request2.operation_request.product_id,
+        target_label=request2.operation_request.target_label,
+    )
+    body2 = _reconciliation_post_body(preview2, request2)
+    monkeypatch.setattr(
+        store2,
+        "record_target_scoped_reconciled_success",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("close failed")
+        ),
+    )
+    monkeypatch.setattr(
+        store2,
+        "get_target_scoped_operation",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("recovery failed")
+        ),
+    )
+
+    status2, payload2 = (
+        product_server._execute_target_scoped_reconciliation(body2)
+    )
+
+    assert status2 == 500
+    assert payload2["durable_state_uncertain"] is True
+    assert payload2["external_writes_performed"] == []
+    assert payload2["state_mutations_performed"] == [
+        "unknown:local_durable_close"
+    ]
+
+
+def test_http_routes_expose_dedicated_reconciliation_seam(
+    target_scoped_http_server,
+    monkeypatch,
+):
+    calls = []
+    monkeypatch.setattr(
+        product_server,
+        "_preview_target_scoped_reconciliation",
+        lambda *, offer_id, target_label: (
+            calls.append(("preview", offer_id, target_label))
+            or (
+                200,
+                {
+                    "ok": True,
+                    "available": True,
+                    "external_writes_performed": [],
+                },
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_execute_target_scoped_reconciliation",
+        lambda data: (
+            calls.append(("close", dict(data)))
+            or (
+                200,
+                {
+                    "ok": True,
+                    "operation_status": "SUCCEEDED",
+                    "external_writes_performed": [],
+                },
+            )
+        ),
+    )
+    query = urllib.parse.urlencode(
+        {"offer_id": "3838616043", "target_label": "shopee:MY"}
+    )
+    status, preview = _http_json(
+        target_scoped_http_server
+        + "/api/product-workspace/release-target/"
+        + "target-scoped-reconciliation-preview?"
+        + query
+    )
+    post_body = {
+        "target_label": "shopee:MY",
+        "confirm_target_scoped_reconciliation": True,
+    }
+    post_status, payload = _http_json(
+        target_scoped_http_server
+        + "/api/product-workspace/release-target/"
+        + "target-scoped-reconciliation",
+        method="POST",
+        payload=post_body,
+    )
+    media_status, _media = _http_json(
+        target_scoped_http_server
+        + "/api/product-workspace/release-target/"
+        + "target-scoped-reconciliation",
+        method="POST",
+        payload=post_body,
+        content_type="text/plain",
+    )
+    assert status == 200
+    assert preview["external_writes_performed"] == []
+    assert post_status == 200
+    assert payload["external_writes_performed"] == []
+    assert media_status == 415
+    assert calls == [
+        ("preview", "3838616043", "shopee:MY"),
+        ("close", post_body),
     ]

@@ -2121,6 +2121,590 @@ class ReleaseStore:
             self._refresh_run_status(connection, repair["run_id"], now=now)
             return self._run_in_transaction(connection, repair["run_id"])
 
+    def target_scoped_reconciliation_context(
+        self,
+        *,
+        plan_id: str,
+        target_label: str,
+    ) -> dict[str, Any]:
+        """Return one exact existing-operation GET-only close identity."""
+
+        from shared_platform.target_scoped_release_contracts import (
+            TargetScopedOperationRequest,
+            TargetScopedReconciliationRequest,
+            planned_target_command,
+        )
+
+        if not self.path.is_file():
+            raise ReleaseStoreError("release store was not found")
+        with self._connect_readonly() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    plan.*, approval.approval_id,
+                    approval.payload_digest AS approval_payload_digest,
+                    approval.confirmation_token AS approval_confirmation_token,
+                    approval.approved_by, approval.user_approved,
+                    approval.status AS approval_status,
+                    run.run_id, run.status AS run_status,
+                    target.idempotency_key,
+                    target.status AS target_status,
+                    target.attempts,
+                    target.external_id AS target_external_id,
+                    target.error AS target_error
+                FROM release_plans AS plan
+                JOIN release_approvals AS approval
+                  ON approval.plan_id = plan.plan_id
+                JOIN release_runs AS run
+                  ON run.plan_id = plan.plan_id
+                 AND run.approval_id = approval.approval_id
+                JOIN release_target_runs AS target
+                  ON target.run_id = run.run_id
+                WHERE plan.plan_id = ? AND target.target_label = ?
+                """,
+                (_text(plan_id), _text(target_label)),
+            ).fetchone()
+            if not row:
+                raise ReleaseStoreError(
+                    "target-scoped reconciliation context was not found"
+                )
+            operation_row = connection.execute(
+                """
+                SELECT * FROM release_target_retry_operations
+                WHERE run_id = ? AND target_label = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (row["run_id"], _text(target_label)),
+            ).fetchone()
+            if not operation_row:
+                raise ReleaseStoreError(
+                    "target-scoped reconciliation operation was not found"
+                )
+            operation = _target_scoped_operation_from_row(operation_row)
+            proof_row = connection.execute(
+                """
+                SELECT proof_digest, proof_json, status, operation_digest
+                FROM release_target_retry_proofs
+                WHERE proof_digest = ?
+                """,
+                (operation["proof_digest"],),
+            ).fetchone()
+            plan = _plan_from_row(row)
+            payload = plan.get("payload") or {}
+            blockers: list[str] = []
+            if (
+                row["status"] != PLAN_APPROVED
+                or row["approval_status"] != PLAN_APPROVED
+                or row["approved_by"] != "Kyle"
+                or not (
+                    row["user_approved"] is True
+                    or (
+                        type(row["user_approved"]) is int
+                        and row["user_approved"] == 1
+                    )
+                )
+                or row["run_status"] == SUPERSEDED
+            ):
+                blockers.append(
+                    "reconciliation requires the active Kyle-approved plan"
+                )
+            if target_label not in {"shopee:MY", "shopee:VN"}:
+                blockers.append(
+                    "GET-only reconciliation target is not allowlisted"
+                )
+            external_id = _text(row["target_external_id"])
+            if not external_id:
+                blockers.append(
+                    "reconciliation target requires an external_id"
+                )
+            if operation.get("external_id") != external_id:
+                blockers.append(
+                    "operation and target external identity differ"
+                )
+            if operation.get("operation_kind") != (
+                "shopee_safe_pre_submit_retry_v1"
+            ):
+                blockers.append(
+                    "operation kind is not a Shopee scoped publish"
+                )
+            stored_request = operation.get("request") or {}
+            if (
+                stored_request.get("product_revision")
+                != payload.get("product_revision")
+            ):
+                blockers.append(
+                    "stored operation revision differs from immutable plan"
+                )
+            if not proof_row:
+                blockers.append("stored operation proof was not found")
+            else:
+                try:
+                    proof_payload = json.loads(proof_row["proof_json"])
+                except (TypeError, ValueError):
+                    proof_payload = {}
+                if (
+                    proof_row["status"] != TARGET_SCOPED_PROOF_CONSUMED
+                    or proof_row["operation_digest"]
+                    != operation["operation_digest"]
+                    or proof_payload.get("proof_digest")
+                    != operation["proof_digest"]
+                    or proof_payload.get("plan_id") != plan["plan_id"]
+                    or proof_payload.get("run_id") != row["run_id"]
+                    or proof_payload.get("target_label") != target_label
+                    or proof_payload.get("preflight_digest")
+                    != stored_request.get("preflight_digest")
+                ):
+                    blockers.append(
+                        "stored operation proof identity is invalid"
+                    )
+            try:
+                current_command, current_command_digest = (
+                    planned_target_command(
+                        payload,
+                        target_label=target_label,
+                    )
+                )
+                base_request = TargetScopedOperationRequest(
+                    plan_id=str(plan.get("plan_id") or ""),
+                    confirmation_token=str(
+                        plan.get("confirmation_token") or ""
+                    ),
+                    approval_scope_digest=str(
+                        payload.get("omnichannel_scope_digest") or ""
+                    ),
+                    product_id=str(plan.get("product_id") or ""),
+                    seller_sku=str(plan.get("seller_sku") or ""),
+                    product_package_id=str(
+                        plan.get("product_package_id") or ""
+                    ),
+                    content_package_id=str(
+                        plan.get("content_package_id") or ""
+                    ),
+                    run_id=str(row["run_id"] or ""),
+                    target_label=str(target_label),
+                    operation_kind=str(
+                        operation.get("operation_kind") or ""
+                    ),
+                    product_revision=stored_request.get(
+                        "product_revision"
+                    ),
+                    payload_digest=str(
+                        plan.get("payload_digest") or ""
+                    ),
+                    planned_command=current_command,
+                    planned_command_digest=current_command_digest,
+                    preflight_digest=str(
+                        stored_request.get("preflight_digest") or ""
+                    ),
+                    failure_attempt=stored_request.get(
+                        "failure_attempt"
+                    ),
+                    failure_digest=str(
+                        stored_request.get("failure_digest") or ""
+                    ),
+                    target_idempotency_key=str(
+                        row["idempotency_key"] or ""
+                    ),
+                    approved_by="Kyle",
+                )
+                if base_request.durable_identity() != stored_request:
+                    blockers.append(
+                        "stored operation no longer matches immutable plan"
+                    )
+                if (
+                    base_request.operation_digest(
+                        str(operation.get("proof_digest") or "")
+                    )
+                    != operation.get("operation_digest")
+                ):
+                    blockers.append(
+                        "stored operation digest is invalid"
+                    )
+            except (TypeError, ValueError) as error:
+                base_request = None
+                blockers.append(str(error))
+            result = operation.get("result")
+            if (
+                not isinstance(result, dict)
+                or not operation.get("result_digest")
+                or _sha256(result) != operation.get("result_digest")
+            ):
+                blockers.append(
+                    "operation result evidence digest is invalid"
+                )
+                result = {}
+            already_succeeded = (
+                operation.get("status")
+                == TARGET_SCOPED_OPERATION_SUCCEEDED
+            )
+            if already_succeeded:
+                if (
+                    row["target_status"] != TARGET_SUCCEEDED
+                    or result.get("schema_version")
+                    != "target-scoped-reconciled-result/v1"
+                    or result.get("reconciliation_mode")
+                    != "official_get_only_durable_close"
+                    or result.get("prior_external_writes_performed")
+                    != ["shopee:regional_publish"]
+                    or result.get(
+                        "reconciliation_external_writes_performed"
+                    )
+                    != []
+                ):
+                    blockers.append(
+                        "stored reconciled success evidence is incomplete"
+                    )
+                prior_result_digest = _text(
+                    result.get("prior_result_digest")
+                )
+            else:
+                if operation.get("status") != (
+                    TARGET_SCOPED_OPERATION_RECONCILIATION_REQUIRED
+                ):
+                    blockers.append(
+                        "operation must require reconciliation"
+                    )
+                if row["target_status"] != TARGET_FAILED:
+                    blockers.append(
+                        "physical target must remain FAILED before close"
+                    )
+                if (
+                    result.get("outcome")
+                    != TARGET_SCOPED_OPERATION_RECONCILIATION_REQUIRED
+                    or result.get("reconciliation_required") is not True
+                    or result.get("external_writes_performed")
+                    != ["shopee:regional_publish"]
+                    or (
+                        (result.get("evidence") or {}).get(
+                            "external_writes_performed"
+                        )
+                        != ["shopee:regional_publish"]
+                    )
+                    or _text(result.get("external_reference"))
+                    != external_id
+                ):
+                    blockers.append(
+                        "truthful prior Shopee publish evidence is incomplete"
+                    )
+                prior_result_digest = _text(
+                    operation.get("result_digest")
+                )
+            reconciliation_request = None
+            if base_request is not None and prior_result_digest:
+                try:
+                    reconciliation_request = (
+                        TargetScopedReconciliationRequest(
+                            operation_request=base_request,
+                            operation_digest=str(
+                                operation.get("operation_digest") or ""
+                            ),
+                            operation_proof_digest=str(
+                                operation.get("proof_digest") or ""
+                            ),
+                            prior_result_digest=prior_result_digest,
+                            external_id=external_id,
+                            publication_targets=tuple(
+                                plan.get("targets") or ()
+                            ),
+                        )
+                    )
+                except (TypeError, ValueError) as error:
+                    blockers.append(str(error))
+            return {
+                "eligible": not blockers,
+                "blockers": blockers,
+                "plan": plan,
+                "approval": {
+                    "approval_id": row["approval_id"],
+                    "status": row["approval_status"],
+                    "approved_by": row["approved_by"],
+                    "user_approved": (
+                        row["user_approved"] is True
+                        or (
+                            type(row["user_approved"]) is int
+                            and row["user_approved"] == 1
+                        )
+                    ),
+                },
+                "run_id": row["run_id"],
+                "run_status": row["run_status"],
+                "target_label": target_label,
+                "target_status": row["target_status"],
+                "target_attempts": int(row["attempts"] or 0),
+                "target_external_id": external_id,
+                "operation": operation,
+                "reconciliation_request": reconciliation_request,
+                "already_succeeded": already_succeeded,
+            }
+
+    def record_target_scoped_reconciled_success(
+        self,
+        *,
+        request,
+        proof,
+        result,
+    ) -> dict[str, Any]:
+        """Atomically close an ambiguous scoped write after exact GET-only proof."""
+
+        from shared_platform.target_scoped_release_contracts import (
+            OfficialTargetReconciliationProof,
+            TargetScopedOperationResult,
+            TargetScopedReconciliationRequest,
+        )
+
+        if not isinstance(request, TargetScopedReconciliationRequest):
+            raise TypeError(
+                "target-scoped reconciliation request is required"
+            )
+        normalized_proof = (
+            OfficialTargetReconciliationProof.from_value(
+                (
+                    proof.durable_payload()
+                    if isinstance(
+                        proof, OfficialTargetReconciliationProof
+                    )
+                    else proof
+                ),
+                request=request,
+            )
+        )
+        normalized_result = TargetScopedOperationResult.from_value(result)
+        checks = normalized_result.evidence.get("checks")
+        if (
+            normalized_result.outcome != TARGET_SCOPED_OPERATION_SUCCEEDED
+            or normalized_result.external_reference != request.external_id
+            or normalized_result.external_writes_performed != []
+            or normalized_result.evidence.get("verified") is not True
+            or normalized_result.evidence.get("reconciliation_mode")
+            != "official_get_only_durable_close"
+            or not isinstance(checks, dict)
+            or not checks
+            or any(value is not True for value in checks.values())
+        ):
+            raise ValueError(
+                "GET-only reconciliation requires exact zero-write readback"
+            )
+        with self._transaction() as connection:
+            operation = self._target_scoped_operation_for_update(
+                connection, request.operation_digest
+            )
+            if operation["status"] == TARGET_SCOPED_OPERATION_SUCCEEDED:
+                stored = (
+                    json.loads(operation["result_json"])
+                    if operation["result_json"]
+                    else {}
+                )
+                if (
+                    stored.get("schema_version")
+                    != "target-scoped-reconciled-result/v1"
+                    or stored.get("reconciliation_proof_digest")
+                    != normalized_proof.proof_digest
+                    or stored.get("prior_result_digest")
+                    != request.prior_result_digest
+                ):
+                    raise ImmutableReleaseError(
+                        "reconciled target already has different evidence"
+                    )
+                return self._run_in_transaction(
+                    connection, operation["run_id"]
+                )
+            if operation["status"] != (
+                TARGET_SCOPED_OPERATION_RECONCILIATION_REQUIRED
+            ):
+                raise ReleaseStoreError(
+                    "only a reconciliation-required operation may close"
+                )
+            if (
+                operation["proof_digest"]
+                != request.operation_proof_digest
+                or operation["result_digest"]
+                != request.prior_result_digest
+                or operation["external_id"] != request.external_id
+                or operation["request_json"]
+                != _canonical_json(
+                    request.operation_request.durable_identity()
+                )
+            ):
+                raise ImmutableReleaseError(
+                    "target-scoped reconciliation identity changed"
+                )
+            proof_row = connection.execute(
+                """
+                SELECT proof_json, status, operation_digest
+                FROM release_target_retry_proofs
+                WHERE proof_digest = ?
+                """,
+                (request.operation_proof_digest,),
+            ).fetchone()
+            if not proof_row:
+                raise ReleaseAuthorizationError(
+                    "original target-scoped proof was not found"
+                )
+            try:
+                original_proof = json.loads(proof_row["proof_json"])
+            except (TypeError, ValueError) as error:
+                raise ReleaseAuthorizationError(
+                    "original target-scoped proof is invalid"
+                ) from error
+            if (
+                proof_row["status"] != TARGET_SCOPED_PROOF_CONSUMED
+                or proof_row["operation_digest"]
+                != request.operation_digest
+                or original_proof.get("proof_digest")
+                != request.operation_proof_digest
+                or original_proof.get("preflight_digest")
+                != request.operation_request.preflight_digest
+            ):
+                raise ReleaseAuthorizationError(
+                    "original target-scoped proof identity changed"
+                )
+            prior = (
+                json.loads(operation["result_json"])
+                if operation["result_json"]
+                else {}
+            )
+            if (
+                not prior
+                or _sha256(prior) != operation["result_digest"]
+                or prior.get("outcome")
+                != TARGET_SCOPED_OPERATION_RECONCILIATION_REQUIRED
+                or prior.get("reconciliation_required") is not True
+                or prior.get("external_writes_performed")
+                != ["shopee:regional_publish"]
+                or (
+                    (prior.get("evidence") or {}).get(
+                        "external_writes_performed"
+                    )
+                    != ["shopee:regional_publish"]
+                )
+                or _text(prior.get("external_reference"))
+                != request.external_id
+            ):
+                raise ReleaseAuthorizationError(
+                    "prior scoped publish evidence is not exact and truthful"
+                )
+            target = self._target_for_update(
+                connection,
+                operation["run_id"],
+                operation["target_label"],
+            )
+            if (
+                target["status"] != TARGET_FAILED
+                or _text(target["external_id"]) != request.external_id
+            ):
+                raise ReleaseStoreError(
+                    "physical target changed before GET-only close"
+                )
+            merged_evidence = {
+                **dict(normalized_result.evidence),
+                "reconciliation_mode": (
+                    "official_get_only_durable_close"
+                ),
+                "reconciliation_proof_digest": (
+                    normalized_proof.proof_digest
+                ),
+                "prior_external_write_evidence_digest": (
+                    request.prior_result_digest
+                ),
+                "prior_external_writes_performed": [
+                    "shopee:regional_publish"
+                ],
+                "reconciliation_external_writes_performed": [],
+                "external_writes_performed": [
+                    "shopee:regional_publish"
+                ],
+            }
+            merged = {
+                "schema_version": "target-scoped-reconciled-result/v1",
+                "reconciliation_mode": (
+                    "official_get_only_durable_close"
+                ),
+                "succeeded": True,
+                "readback_verified": True,
+                "detail": normalized_result.detail,
+                "external_reference": request.external_id,
+                "submission_accepted": (
+                    prior.get("submission_accepted") is True
+                ),
+                "evidence": merged_evidence,
+                "external_writes_performed": [
+                    "shopee:regional_publish"
+                ],
+                "prior_external_writes_performed": [
+                    "shopee:regional_publish"
+                ],
+                "reconciliation_external_writes_performed": [],
+                "prior_result_digest": request.prior_result_digest,
+                "reconciliation_proof_digest": (
+                    normalized_proof.proof_digest
+                ),
+                "outcome": TARGET_SCOPED_OPERATION_SUCCEEDED,
+            }
+            result_json = _canonical_json(merged)
+            result_digest = _sha256(merged)
+            now = _utc_now()
+            connection.execute(
+                """
+                INSERT INTO release_target_readbacks (
+                    run_id, target_label, evidence_json,
+                    evidence_digest, verified_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    operation["run_id"],
+                    operation["target_label"],
+                    result_json,
+                    result_digest,
+                    now,
+                ),
+            )
+            updated_operation = connection.execute(
+                """
+                UPDATE release_target_retry_operations
+                SET status = 'SUCCEEDED', result_json = ?,
+                    result_digest = ?, updated_at = ?, completed_at = ?
+                WHERE operation_digest = ?
+                  AND status = 'RECONCILIATION_REQUIRED'
+                """,
+                (
+                    result_json,
+                    result_digest,
+                    now,
+                    now,
+                    request.operation_digest,
+                ),
+            )
+            updated_target = connection.execute(
+                """
+                UPDATE release_target_runs
+                SET status = 'SUCCEEDED', error = NULL,
+                    updated_at = ?, completed_at = ?
+                WHERE run_id = ? AND target_label = ?
+                  AND status = 'FAILED' AND external_id = ?
+                """,
+                (
+                    now,
+                    now,
+                    operation["run_id"],
+                    operation["target_label"],
+                    request.external_id,
+                ),
+            )
+            if (
+                updated_operation.rowcount != 1
+                or updated_target.rowcount != 1
+            ):
+                raise ReleaseStoreError(
+                    "target-scoped reconciliation lost atomic transition"
+                )
+            self._refresh_run_status(
+                connection, operation["run_id"], now=now
+            )
+            return self._run_in_transaction(
+                connection, operation["run_id"]
+            )
+
     def target_scoped_action_context(
         self,
         *,

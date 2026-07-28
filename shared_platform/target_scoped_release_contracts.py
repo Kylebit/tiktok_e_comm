@@ -1885,6 +1885,315 @@ class OfficialTargetProof:
 
 
 @dataclass(frozen=True)
+class TargetScopedReconciliationRequest:
+    """Server-owned identity for closing one ambiguous scoped operation.
+
+    The embedded operation request retains the immutable plan/failure command
+    identity.  The additional fields bind the exact terminal operation,
+    truthful prior write receipt, external listing and full plan target scope.
+    Only ``external_id`` and ``confirmation_token`` remain runtime-only.
+    """
+
+    operation_request: TargetScopedOperationRequest
+    operation_digest: str
+    operation_proof_digest: str
+    prior_result_digest: str
+    external_id: str
+    publication_targets: tuple[str, ...]
+    reconciliation_mode: str = "official_get_only_durable_close"
+
+    def __post_init__(self) -> None:
+        if not isinstance(
+            self.operation_request, TargetScopedOperationRequest
+        ):
+            raise TargetScopedContractError(
+                "reconciliation requires a target-scoped operation request"
+            )
+        if self.operation_request.target_label not in {
+            "shopee:MY",
+            "shopee:VN",
+        }:
+            raise TargetScopedContractError(
+                "GET-only reconciliation only supports Shopee MY/VN"
+            )
+        for field in (
+            "operation_digest",
+            "operation_proof_digest",
+            "prior_result_digest",
+            "external_id",
+        ):
+            _required_text(getattr(self, field), field)
+        if self.reconciliation_mode != "official_get_only_durable_close":
+            raise TargetScopedContractError(
+                "target-scoped reconciliation mode is invalid"
+            )
+        if (
+            not isinstance(self.publication_targets, tuple)
+            or not self.publication_targets
+            or any(
+                not isinstance(value, str) or not value.strip()
+                for value in self.publication_targets
+            )
+            or len(set(self.publication_targets))
+            != len(self.publication_targets)
+            or self.operation_request.target_label
+            not in self.publication_targets
+        ):
+            raise TargetScopedContractError(
+                "reconciliation requires the full immutable target scope"
+            )
+
+    @property
+    def external_identity_digest(self) -> str:
+        return canonical_digest(
+            {
+                "provider": "shopee",
+                "target_label": self.operation_request.target_label,
+                "external_id": self.external_id,
+            }
+        )
+
+    def durable_identity(self) -> dict[str, Any]:
+        return {
+            "schema_version": "target-scoped-reconciliation-request/v1",
+            "reconciliation_mode": self.reconciliation_mode,
+            "operation_request": (
+                self.operation_request.durable_identity()
+            ),
+            "operation_digest": self.operation_digest,
+            "operation_proof_digest": self.operation_proof_digest,
+            "prior_result_digest": self.prior_result_digest,
+            "external_identity_digest": self.external_identity_digest,
+            "publication_targets": list(self.publication_targets),
+        }
+
+    @property
+    def request_digest(self) -> str:
+        return canonical_digest(self.durable_identity())
+
+
+@dataclass(frozen=True)
+class OfficialTargetReconciliationProof:
+    """Redacted GET-only proof bound to one ambiguous durable operation."""
+
+    schema_version: str
+    reconciliation_mode: str
+    reconciliation_request_digest: str
+    plan_id: str
+    run_id: str
+    target_label: str
+    operation_digest: str
+    operation_proof_digest: str
+    prior_result_digest: str
+    external_identity_digest: str
+    provided_by: str
+    allow_refresh: bool
+    observed_at: str
+    expires_at: str
+    checks: Mapping[str, bool]
+    semantic_evidence: Mapping[str, Any]
+    redacted_summary: Mapping[str, Any]
+    external_writes_performed: tuple[str, ...]
+    proof_digest: str
+
+    @classmethod
+    def from_value(
+        cls,
+        value: object,
+        *,
+        request: TargetScopedReconciliationRequest,
+        now: datetime | None = None,
+    ) -> "OfficialTargetReconciliationProof":
+        if isinstance(value, cls):
+            value = value.durable_payload()
+        if not isinstance(value, Mapping):
+            raise TargetScopedContractError(
+                "official reconciliation proof must be a mapping"
+            )
+        raw = dict(value)
+        checks = raw.get("checks")
+        semantic = raw.get("semantic_evidence")
+        summary = raw.get("redacted_summary") or {}
+        writes = raw.get("external_writes_performed")
+        if not isinstance(checks, Mapping) or not checks:
+            raise TargetScopedContractError(
+                "official reconciliation proof requires named checks"
+            )
+        if not isinstance(semantic, Mapping) or not semantic:
+            raise TargetScopedContractError(
+                "official reconciliation proof requires semantic evidence"
+            )
+        if not isinstance(summary, Mapping):
+            raise TargetScopedContractError(
+                "reconciliation redacted_summary must be a mapping"
+            )
+        if not isinstance(writes, (list, tuple)):
+            raise TargetScopedContractError(
+                "reconciliation external writes must be a list"
+            )
+        semantic_payload = {
+            "schema_version": str(
+                raw.get("schema_version")
+                or "official-target-reconciliation-proof/v1"
+            ),
+            "reconciliation_mode": str(
+                raw.get("reconciliation_mode") or ""
+            ),
+            "reconciliation_request_digest": str(
+                raw.get("reconciliation_request_digest") or ""
+            ),
+            "plan_id": str(raw.get("plan_id") or ""),
+            "run_id": str(raw.get("run_id") or ""),
+            "target_label": str(raw.get("target_label") or ""),
+            "operation_digest": str(raw.get("operation_digest") or ""),
+            "operation_proof_digest": str(
+                raw.get("operation_proof_digest") or ""
+            ),
+            "prior_result_digest": str(
+                raw.get("prior_result_digest") or ""
+            ),
+            "external_identity_digest": str(
+                raw.get("external_identity_digest") or ""
+            ),
+            "provided_by": str(raw.get("provided_by") or ""),
+            "allow_refresh": raw.get("allow_refresh"),
+            "checks": dict(checks),
+            "semantic_evidence": dict(semantic),
+            "redacted_summary": dict(summary),
+            "external_writes_performed": list(writes),
+        }
+        computed_digest = canonical_digest(semantic_payload)
+        supplied_digest = str(raw.get("proof_digest") or "").strip()
+        if supplied_digest and supplied_digest != computed_digest:
+            raise TargetScopedContractError(
+                "reconciliation proof digest does not match evidence"
+            )
+        proof = cls(
+            schema_version=semantic_payload["schema_version"],
+            reconciliation_mode=semantic_payload[
+                "reconciliation_mode"
+            ],
+            reconciliation_request_digest=semantic_payload[
+                "reconciliation_request_digest"
+            ],
+            plan_id=semantic_payload["plan_id"],
+            run_id=semantic_payload["run_id"],
+            target_label=semantic_payload["target_label"],
+            operation_digest=semantic_payload["operation_digest"],
+            operation_proof_digest=semantic_payload[
+                "operation_proof_digest"
+            ],
+            prior_result_digest=semantic_payload[
+                "prior_result_digest"
+            ],
+            external_identity_digest=semantic_payload[
+                "external_identity_digest"
+            ],
+            provided_by=semantic_payload["provided_by"],
+            allow_refresh=semantic_payload["allow_refresh"] is True,
+            observed_at=str(raw.get("observed_at") or ""),
+            expires_at=str(raw.get("expires_at") or ""),
+            checks=dict(checks),
+            semantic_evidence=dict(semantic),
+            redacted_summary=dict(summary),
+            external_writes_performed=tuple(
+                str(item) for item in writes
+            ),
+            proof_digest=computed_digest,
+        )
+        operation = request.operation_request
+        expected = {
+            "reconciliation_mode": request.reconciliation_mode,
+            "reconciliation_request_digest": request.request_digest,
+            "plan_id": operation.plan_id,
+            "run_id": operation.run_id,
+            "target_label": operation.target_label,
+            "operation_digest": request.operation_digest,
+            "operation_proof_digest": request.operation_proof_digest,
+            "prior_result_digest": request.prior_result_digest,
+            "external_identity_digest": (
+                request.external_identity_digest
+            ),
+        }
+        actual = {field: getattr(proof, field) for field in expected}
+        if actual != expected:
+            raise TargetScopedContractError(
+                "official reconciliation proof identity does not match"
+            )
+        if proof.schema_version != (
+            "official-target-reconciliation-proof/v1"
+        ):
+            raise TargetScopedContractError(
+                "official reconciliation proof schema is invalid"
+            )
+        if proof.provided_by != "03":
+            raise TargetScopedContractError(
+                "reconciliation proof must be provided by channel operations"
+            )
+        if proof.allow_refresh:
+            raise TargetScopedContractError(
+                "reconciliation proof must use allow_refresh=false"
+            )
+        if proof.external_writes_performed:
+            raise TargetScopedContractError(
+                "GET-only reconciliation proof performed an external write"
+            )
+        if any(value is not True for value in proof.checks.values()):
+            raise TargetScopedContractError(
+                "official reconciliation proof is not hard exact"
+            )
+        _assert_redacted(
+            proof.semantic_evidence,
+            path="reconciliation_semantic_evidence",
+        )
+        _assert_redacted(
+            proof.redacted_summary,
+            path="reconciliation_redacted_summary",
+        )
+        observed = _parse_utc(proof.observed_at, "observed_at")
+        expires = _parse_utc(proof.expires_at, "expires_at")
+        current = (now or datetime.now(timezone.utc)).astimezone(
+            timezone.utc
+        )
+        if observed > current:
+            raise TargetScopedContractError(
+                "reconciliation observed_at is in the future"
+            )
+        if expires <= current or expires <= observed:
+            raise TargetScopedContractError(
+                "official reconciliation proof is expired"
+            )
+        return proof
+
+    def durable_payload(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "reconciliation_mode": self.reconciliation_mode,
+            "reconciliation_request_digest": (
+                self.reconciliation_request_digest
+            ),
+            "plan_id": self.plan_id,
+            "run_id": self.run_id,
+            "target_label": self.target_label,
+            "operation_digest": self.operation_digest,
+            "operation_proof_digest": self.operation_proof_digest,
+            "prior_result_digest": self.prior_result_digest,
+            "external_identity_digest": self.external_identity_digest,
+            "provided_by": self.provided_by,
+            "allow_refresh": self.allow_refresh,
+            "observed_at": self.observed_at,
+            "expires_at": self.expires_at,
+            "checks": dict(self.checks),
+            "semantic_evidence": dict(self.semantic_evidence),
+            "redacted_summary": dict(self.redacted_summary),
+            "external_writes_performed": list(
+                self.external_writes_performed
+            ),
+            "proof_digest": self.proof_digest,
+        }
+
+
+@dataclass(frozen=True)
 class TargetScopedOperationResult:
     """Normalized, redacted outcome from one channel operation call."""
 

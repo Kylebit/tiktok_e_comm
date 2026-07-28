@@ -2351,6 +2351,579 @@ def _execute_target_scoped_release_action(data: dict) -> tuple[int, dict]:
         }
 
 
+_TARGET_SCOPED_RECONCILIATION_TARGETS = frozenset(
+    {"shopee:MY", "shopee:VN"}
+)
+
+
+def _target_scoped_reconciliation_gate(
+    data: dict,
+    *,
+    store,
+    derive_plan: bool,
+) -> tuple[dict | None, tuple[int, dict] | None]:
+    """Resolve one existing ambiguous operation without changing state."""
+
+    offer_id = str(data.get("offer_id") or "").strip()
+    target_label = str(data.get("target_label") or "").strip()
+    if (
+        not offer_id.isdigit()
+        or not 1 <= len(offer_id) <= 32
+        or target_label not in _TARGET_SCOPED_RECONCILIATION_TARGETS
+    ):
+        return None, (
+            400,
+            {
+                "ok": False,
+                "code": "target_scoped_reconciliation_not_supported",
+                "error": (
+                    "valid offer_id and Shopee MY/VN target are required"
+                ),
+                "external_writes_performed": [],
+                "state_mutations_performed": [],
+            },
+        )
+    gate_data = dict(data)
+    if derive_plan:
+        active = store.active_plan_for_product(offer_id)
+        approval = (active or {}).get("approval") or {}
+        if (
+            not active
+            or active.get("status") != "APPROVED"
+            or approval.get("status") != "APPROVED"
+            or approval.get("approved_by") != "Kyle"
+            or approval.get("user_approved") is not True
+        ):
+            return None, (
+                409,
+                {
+                    "ok": False,
+                    "code": "active_release_plan_required",
+                    "error": (
+                        "GET-only close requires the active "
+                        "Kyle-approved ReleasePlan"
+                    ),
+                    "external_writes_performed": [],
+                    "state_mutations_performed": [],
+                },
+            )
+        gate_data.update(
+            {
+                "offer_id": offer_id,
+                "seller_sku": active.get("seller_sku"),
+                "publication_targets": list(active.get("targets") or ()),
+                "plan_id": active.get("plan_id"),
+                "confirmation_token": active.get("confirmation_token"),
+            }
+        )
+    gate, failure = _release_execution_readonly_gate(
+        gate_data,
+        store=store,
+    )
+    if failure:
+        status, response = failure
+        return None, (
+            status,
+            {
+                "ok": False,
+                "code": "target_scoped_reconciliation_gate_blocked",
+                "error": str(
+                    response.get("error")
+                    or "GET-only reconciliation gate is blocked"
+                ),
+                "blockers": list(response.get("blockers") or ()),
+                "adapter_blockers": list(
+                    response.get("adapter_blockers") or ()
+                ),
+                "external_writes_performed": [],
+                "state_mutations_performed": [],
+            },
+        )
+    assert gate is not None
+    dashboard = gate["dashboard"]
+    plan = gate.get("plan") or {}
+    run = gate.get("run") or {}
+    revision = (dashboard.get("product") or {}).get("revision")
+    if (
+        isinstance(revision, bool)
+        or not isinstance(revision, int)
+        or revision < 1
+        or (plan.get("payload") or {}).get("product_revision")
+        != revision
+        or str(plan.get("product_id") or "") != offer_id
+        or target_label not in list(plan.get("targets") or ())
+        or str(run.get("plan_id") or "")
+        != str(plan.get("plan_id") or "")
+    ):
+        return None, (
+            409,
+            {
+                "ok": False,
+                "code": "target_scoped_reconciliation_identity_mismatch",
+                "error": (
+                    "active plan/run/revision does not match the target"
+                ),
+                "external_writes_performed": [],
+                "state_mutations_performed": [],
+            },
+        )
+    try:
+        context = store.target_scoped_reconciliation_context(
+            plan_id=str(plan.get("plan_id") or ""),
+            target_label=target_label,
+        )
+    except (TypeError, ValueError, RuntimeError) as error:
+        return None, (
+            409,
+            {
+                "ok": False,
+                "code": "target_scoped_reconciliation_blocked",
+                "error": str(error),
+                "external_writes_performed": [],
+                "state_mutations_performed": [],
+            },
+        )
+    if not context.get("eligible"):
+        return None, (
+            409,
+            {
+                "ok": False,
+                "code": "target_scoped_reconciliation_blocked",
+                "error": (
+                    "existing target-scoped operation is not eligible "
+                    "for GET-only close"
+                ),
+                "blockers": list(context.get("blockers") or ()),
+                "operation_status": (
+                    (context.get("operation") or {}).get("status")
+                ),
+                "external_writes_performed": [],
+                "state_mutations_performed": [],
+            },
+        )
+    return {
+        "gate": gate,
+        "gate_data": gate_data,
+        "plan": plan,
+        "run": run,
+        "revision": revision,
+        "context": context,
+        "request": context["reconciliation_request"],
+    }, None
+
+
+def _preview_target_scoped_reconciliation(
+    *,
+    offer_id: str,
+    target_label: str,
+) -> tuple[int, dict]:
+    """Build a redacted official GET-only proof without persistence."""
+
+    from shared_platform.release_store import default_release_store
+    from shared_platform.target_scoped_release_contracts import (
+        OfficialTargetReconciliationProof,
+        TargetScopedContractError,
+    )
+
+    store = default_release_store()
+    with _release_execution_lock:
+        resolved, failure = _target_scoped_reconciliation_gate(
+            {"offer_id": offer_id, "target_label": target_label},
+            store=store,
+            derive_plan=True,
+        )
+        if failure:
+            return failure
+        assert resolved is not None
+        context = resolved["context"]
+        request = resolved["request"]
+        operation = context["operation"]
+        if context.get("already_succeeded"):
+            result = operation.get("result") or {}
+            return 200, {
+                "ok": True,
+                "preview": True,
+                "available": False,
+                "idempotent": True,
+                "mode": "official_get_only_durable_close",
+                "target_label": request.operation_request.target_label,
+                "operation_status": "SUCCEEDED",
+                "operation_digest": request.operation_digest,
+                "reconciliation_proof_digest": result.get(
+                    "reconciliation_proof_digest"
+                ),
+                "external_writes_performed": [],
+                "state_mutations_performed": [],
+            }
+        try:
+            adapter = _target_scoped_adapter_module()
+            raw_proof = (
+                adapter.build_official_target_reconciliation_proof(
+                    request,
+                    allow_refresh=False,
+                )
+            )
+            proof = OfficialTargetReconciliationProof.from_value(
+                raw_proof,
+                request=request,
+            )
+        except (AttributeError, ModuleNotFoundError):
+            return 503, {
+                "ok": False,
+                "code": "target_scoped_reconciliation_adapter_unavailable",
+                "error": (
+                    "channel GET-only reconciliation provider is unavailable"
+                ),
+                "external_writes_performed": [],
+                "state_mutations_performed": [],
+            }
+        except (
+            TargetScopedContractError,
+            TypeError,
+            ValueError,
+            RuntimeError,
+        ) as error:
+            return 409, {
+                "ok": False,
+                "code": "official_reconciliation_proof_failed",
+                "error": str(error),
+                "operation_status": operation.get("status"),
+                "external_writes_performed": [],
+                "state_mutations_performed": [],
+            }
+        base = request.operation_request
+        return 200, {
+            "ok": True,
+            "preview": True,
+            "available": True,
+            "mode": request.reconciliation_mode,
+            "target_label": base.target_label,
+            "operation_kind": base.operation_kind,
+            "operation_status": operation.get("status"),
+            "plan_id": base.plan_id,
+            "run_id": base.run_id,
+            "confirmation_token_digest": (
+                base.confirmation_token_digest
+            ),
+            "expected_revision": base.product_revision,
+            "payload_digest": base.payload_digest,
+            "planned_command_digest": base.planned_command_digest,
+            "preflight_digest": base.preflight_digest,
+            "failure_attempt": base.failure_attempt,
+            "operation_digest": request.operation_digest,
+            "operation_proof_digest": request.operation_proof_digest,
+            "prior_result_digest": request.prior_result_digest,
+            "external_identity_digest": (
+                request.external_identity_digest
+            ),
+            "reconciliation_request_digest": request.request_digest,
+            "reconciliation_proof_digest": proof.proof_digest,
+            "publication_targets": list(request.publication_targets),
+            "summary": dict(proof.redacted_summary),
+            "external_writes_performed": [],
+            "state_mutations_performed": [],
+        }
+
+
+def _execute_target_scoped_reconciliation(
+    data: dict,
+) -> tuple[int, dict]:
+    """Re-read official facts and atomically close one ambiguous operation."""
+
+    from shared_platform.release_store import default_release_store
+    from shared_platform.target_scoped_release_contracts import (
+        OfficialTargetReconciliationProof,
+        TargetScopedContractError,
+        TargetScopedOperationResult,
+    )
+
+    if (
+        data.get("confirm_target_scoped_reconciliation") is not True
+        or data.get("approved_by") != "Kyle"
+    ):
+        return 400, {
+            "ok": False,
+            "code": "target_scoped_reconciliation_consent_required",
+            "error": (
+                "literal confirm_target_scoped_reconciliation=true "
+                "and approved_by=Kyle are required"
+            ),
+            "external_writes_performed": [],
+            "state_mutations_performed": [],
+        }
+    offer_id = str(data.get("offer_id") or "").strip()
+    target_label = str(data.get("target_label") or "").strip()
+    if (
+        isinstance(data.get("expected_revision"), bool)
+        or not isinstance(data.get("expected_revision"), int)
+        or not isinstance(data.get("publication_targets"), list)
+    ):
+        return 400, {
+            "ok": False,
+            "code": "target_scoped_reconciliation_identity_required",
+            "error": (
+                "integer expected_revision and full publication_targets "
+                "are required"
+            ),
+            "external_writes_performed": [],
+            "state_mutations_performed": [],
+        }
+    required_text = (
+        "seller_sku",
+        "plan_id",
+        "run_id",
+        "confirmation_token",
+        "payload_digest",
+        "planned_command_digest",
+        "preflight_digest",
+        "operation_digest",
+        "operation_proof_digest",
+        "prior_result_digest",
+        "external_identity_digest",
+        "reconciliation_request_digest",
+        "reconciliation_proof_digest",
+    )
+    if any(not str(data.get(field) or "").strip() for field in required_text):
+        return 400, {
+            "ok": False,
+            "code": "target_scoped_reconciliation_identity_required",
+            "error": "complete immutable reconciliation identity is required",
+            "external_writes_performed": [],
+            "state_mutations_performed": [],
+        }
+    store = default_release_store()
+    with _release_execution_lock, _product_workbench_lock(offer_id):
+        resolved, failure = _target_scoped_reconciliation_gate(
+            data,
+            store=store,
+            derive_plan=False,
+        )
+        if failure:
+            return failure
+        assert resolved is not None
+        request = resolved["request"]
+        base = request.operation_request
+        expected = {
+            "seller_sku": base.seller_sku,
+            "plan_id": base.plan_id,
+            "run_id": base.run_id,
+            "confirmation_token": base.confirmation_token,
+            "expected_revision": base.product_revision,
+            "payload_digest": base.payload_digest,
+            "planned_command_digest": base.planned_command_digest,
+            "preflight_digest": base.preflight_digest,
+            "failure_attempt": base.failure_attempt,
+            "operation_digest": request.operation_digest,
+            "operation_proof_digest": request.operation_proof_digest,
+            "prior_result_digest": request.prior_result_digest,
+            "external_identity_digest": (
+                request.external_identity_digest
+            ),
+            "reconciliation_request_digest": request.request_digest,
+            "publication_targets": list(request.publication_targets),
+        }
+        actual = {field: data.get(field) for field in expected}
+        if actual != expected:
+            return 409, {
+                "ok": False,
+                "code": "target_scoped_reconciliation_request_drift",
+                "error": (
+                    "reconciliation request no longer matches the active "
+                    "plan/operation identity"
+                ),
+                "external_writes_performed": [],
+                "state_mutations_performed": [],
+            }
+        context = resolved["context"]
+        operation = context["operation"]
+        if context.get("already_succeeded"):
+            stored = operation.get("result") or {}
+            if (
+                data.get("reconciliation_proof_digest")
+                != stored.get("reconciliation_proof_digest")
+            ):
+                return 409, {
+                    "ok": False,
+                    "code": "target_scoped_reconciliation_replay_drift",
+                    "error": "stored reconciliation proof identity differs",
+                    "external_writes_performed": [],
+                    "state_mutations_performed": [],
+                }
+            return 200, {
+                "ok": True,
+                "idempotent": True,
+                "code": "target_scoped_reconciliation_succeeded",
+                "mode": request.reconciliation_mode,
+                "target_label": base.target_label,
+                "operation_status": "SUCCEEDED",
+                "external_writes_performed": [],
+                "state_mutations_performed": [],
+                "run": resolved["run"],
+            }
+        try:
+            adapter = _target_scoped_adapter_module()
+            raw_proof = (
+                adapter.build_official_target_reconciliation_proof(
+                    request,
+                    allow_refresh=False,
+                )
+            )
+            proof = OfficialTargetReconciliationProof.from_value(
+                raw_proof,
+                request=request,
+            )
+        except (AttributeError, ModuleNotFoundError):
+            return 503, {
+                "ok": False,
+                "code": "target_scoped_reconciliation_adapter_unavailable",
+                "error": (
+                    "channel GET-only reconciliation provider is unavailable"
+                ),
+                "external_writes_performed": [],
+                "state_mutations_performed": [],
+            }
+        except (
+            TargetScopedContractError,
+            TypeError,
+            ValueError,
+            RuntimeError,
+        ) as error:
+            return 409, {
+                "ok": False,
+                "code": "official_reconciliation_proof_failed",
+                "error": str(error),
+                "external_writes_performed": [],
+                "state_mutations_performed": [],
+            }
+        if proof.proof_digest != data.get(
+            "reconciliation_proof_digest"
+        ):
+            return 409, {
+                "ok": False,
+                "code": "official_reconciliation_proof_drift",
+                "error": (
+                    "official GET-only reconciliation proof changed"
+                ),
+                "external_writes_performed": [],
+                "state_mutations_performed": [],
+            }
+        try:
+            raw_result = adapter.reconcile_target_scoped_operation(
+                request,
+                proof,
+            )
+            result = TargetScopedOperationResult.from_value(raw_result)
+        except (AttributeError, ModuleNotFoundError):
+            return 503, {
+                "ok": False,
+                "code": "target_scoped_reconciliation_adapter_unavailable",
+                "error": "channel GET-only reconcile seam is unavailable",
+                "external_writes_performed": [],
+                "state_mutations_performed": [],
+            }
+        except Exception as error:
+            return 409, {
+                "ok": False,
+                "code": "official_reconciliation_failed",
+                "error": (
+                    "official GET-only reconciliation failed; "
+                    f"durable state is unchanged ({type(error).__name__})"
+                ),
+                "external_writes_performed": [],
+                "state_mutations_performed": [],
+            }
+        if (
+            result.outcome != "SUCCEEDED"
+            or result.external_reference != request.external_id
+            or result.external_writes_performed != []
+            or result.evidence.get("reconciliation_mode")
+            != "official_get_only_durable_close"
+        ):
+            return 409, {
+                "ok": False,
+                "code": "official_reconciliation_not_exact",
+                "error": (
+                    "official GET-only evidence is not exact; "
+                    "durable state remains unchanged"
+                ),
+                "external_writes_performed": [],
+                "state_mutations_performed": [],
+            }
+        try:
+            completed = store.record_target_scoped_reconciled_success(
+                request=request,
+                proof=proof,
+                result=result,
+            )
+        except Exception as receipt_error:
+            try:
+                latest = store.get_target_scoped_operation(
+                    run_id=base.run_id,
+                    target_label=base.target_label,
+                )
+            except Exception as recovery_error:
+                return 500, {
+                    "ok": False,
+                    "code": (
+                        "target_scoped_reconciliation_durable_state_uncertain"
+                    ),
+                    "error": (
+                        "local durable close and recovery read both failed"
+                    ),
+                    "receipt_error": type(receipt_error).__name__,
+                    "recovery_error": type(recovery_error).__name__,
+                    "durable_state_uncertain": True,
+                    "external_writes_performed": [],
+                    "state_mutations_performed": [
+                        "unknown:local_durable_close"
+                    ],
+                }
+            if (latest or {}).get("status") == "SUCCEEDED":
+                return 200, {
+                    "ok": True,
+                    "idempotent": False,
+                    "code": "target_scoped_reconciliation_succeeded",
+                    "mode": request.reconciliation_mode,
+                    "target_label": base.target_label,
+                    "operation_status": "SUCCEEDED",
+                    "durable_receipt_recovered": True,
+                    "external_writes_performed": [],
+                    "state_mutations_performed": [
+                        "release_target_scoped_operation:SUCCEEDED",
+                        "release_target:SUCCEEDED",
+                        "release_run:refreshed",
+                    ],
+                    "run": store.get_run(base.run_id),
+                }
+            return 502, {
+                "ok": False,
+                "code": "target_scoped_reconciliation_close_failed",
+                "error": (
+                    "official GET matched, but local durable close failed; "
+                    "retry the GET-only close"
+                ),
+                "receipt_error": type(receipt_error).__name__,
+                "external_writes_performed": [],
+                "state_mutations_performed": [],
+            }
+        return 200, {
+            "ok": True,
+            "idempotent": False,
+            "code": "target_scoped_reconciliation_succeeded",
+            "mode": request.reconciliation_mode,
+            "target_label": base.target_label,
+            "operation_status": "SUCCEEDED",
+            "summary": dict(proof.redacted_summary),
+            "external_writes_performed": [],
+            "state_mutations_performed": [
+                "release_target_scoped_operation:SUCCEEDED",
+                "release_target:SUCCEEDED",
+                "release_run:refreshed",
+            ],
+            "run": completed,
+        }
+
+
 def _release_v1_view(dashboard: dict) -> dict:
     from modules.products.release_adapters import production_adapter_registry
     from shared_platform.release_store import default_release_store
@@ -7253,6 +7826,17 @@ class Handler(BaseHTTPRequestHandler):
                 target_label=(q.get("target_label") or [""])[0],
             )
             return self._json(status, payload)
+        if (
+            path
+            == "/api/product-workspace/release-target/"
+            "target-scoped-reconciliation-preview"
+        ):
+            q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+            status, payload = _preview_target_scoped_reconciliation(
+                offer_id=(q.get("offer_id") or [""])[0],
+                target_label=(q.get("target_label") or [""])[0],
+            )
+            return self._json(status, payload)
         if path in ("/api/release/dashboard", "/api/product-workspace/dashboard"):
             from shared_platform.release_control import build_release_dashboard
 
@@ -7821,6 +8405,10 @@ class Handler(BaseHTTPRequestHandler):
                 "/api/product-workspace/release-target/"
                 "target-scoped-action"
             ),
+            (
+                "/api/product-workspace/release-target/"
+                "target-scoped-reconciliation"
+            ),
         }:
             origin = (self.headers.get("Origin") or "").strip()
             if origin:
@@ -7894,6 +8482,12 @@ class Handler(BaseHTTPRequestHandler):
                 "target-scoped-action"
             ):
                 status, payload = _execute_target_scoped_release_action(data)
+            elif (
+                path
+                == "/api/product-workspace/release-target/"
+                "target-scoped-reconciliation"
+            ):
+                status, payload = _execute_target_scoped_reconciliation(data)
             else:
                 status, payload = _publish_selected_release(data)
             return self._json(status, payload)

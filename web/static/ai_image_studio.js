@@ -87,10 +87,6 @@
     }
     const host = $("#planningProgress");
     if (!host) return;
-    if (sourceOnlyActive()) {
-      host.hidden = true;
-      return;
-    }
     const content = preview?.content_package || {};
     const preflightReady = (
       content.remaining_images_preflight?.status
@@ -142,6 +138,10 @@
             badge: "未开始",
           }
     );
+    if (sourceOnlyActive() && !planningProgressOverride) {
+      host.hidden = true;
+      return;
+    }
     const status = feedback.status || "idle";
     const completedThrough = Number(feedback.completedThrough ?? -1);
     const currentStep = Number(feedback.step ?? Math.min(completedThrough + 1, 3));
@@ -166,6 +166,10 @@
       failed ? "失败" : (complete ? "已完成" : (running ? "进行中" : "等待"))
     );
     $("#planningProgressBadge").className = `badge ${tone}`;
+    const action = $("#planningProgressAction");
+    const hasIdentityAction = feedback.action === "identity-reference";
+    action.hidden = !hasIdentityAction;
+    action.textContent = hasIdentityAction ? "前往选择身份参考图" : "";
     $("#planningProgressBar").value = progress;
     $("#planningProgressSteps").innerHTML = PLANNING_STEPS.map((label, index) => {
       const state = complete || index <= completedThrough
@@ -362,6 +366,37 @@
 
   function selectedIdentityReferences() {
     return $$(".identity-reference:checked").map((node) => node.dataset.url);
+  }
+
+  function focusIdentityReferenceArea() {
+    const sourceArea = $("#sources");
+    const firstReference = $(".identity-reference");
+    if (sourceArea) sourceArea.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (firstReference) {
+      firstReference.focus({ preventScroll: true });
+    } else if (sourceArea) {
+      sourceArea.setAttribute("tabindex", "-1");
+      sourceArea.focus({ preventScroll: true });
+    }
+  }
+
+  function reportPlanningBlocker({ title, message, action = "" }) {
+    renderPlanningProgress({
+      status: "failed",
+      step: 0,
+      completedThrough: -1,
+      title,
+      message,
+      badge: "需要处理",
+      action,
+      blocker: action || message,
+    });
+    if (action === "identity-reference") focusIdentityReferenceArea();
+  }
+
+  function clearPlanningBlocker(blocker) {
+    if (planningProgressOverride?.blocker !== blocker) return;
+    renderPlanningProgress(null);
   }
 
   function selectedPrimaryReference() {
@@ -758,6 +793,9 @@
       } else if ($(".identity-primary:checked")?.dataset.url === node.dataset.url) {
         node.checked = true;
       }
+      if (selectedIdentityReferences().length) {
+        clearPlanningBlocker("identity-reference");
+      }
     }));
     $$(".identity-primary").forEach((node) => node.addEventListener("change", () => {
       if (!node.checked) return;
@@ -881,6 +919,15 @@
       .forEach((node) => { node.disabled = sourceOnly; });
     ["aiPlanButton", "preflightButton", "paidGenerateButton", "saveVersionsButton"]
       .forEach((id) => { $(`#${id}`).disabled = sourceOnly; });
+    if (sourceOnly) {
+      reportPlanningBlocker({
+        title: "AI 分镜当前不可用",
+        message: "当前为仅来源图策略，AI 分镜已禁用；切换到 AI 辅助套图后才能规划分镜，且不会创建任何 AI 或付费任务。",
+        action: "source-only",
+      });
+    } else {
+      clearPlanningBlocker("source-only");
+    }
   }
 
   function versionImageUrl(artifact) {
@@ -1292,21 +1339,37 @@
 
   async function requestAiPlan() {
     if (sourceOnlyActive()) {
-      showAlert("当前为仅来源图策略，AI 分镜已禁用。");
+      reportPlanningBlocker({
+        title: "AI 分镜当前不可用",
+        message: "当前为仅来源图策略，AI 分镜已禁用；切换到 AI 辅助套图后才能规划分镜。",
+        action: "source-only",
+      });
       return;
     }
     const refs = selectedIdentityReferences();
     if (!refs.length) {
-      showAlert("请先选择至少一张身份参考图。");
+      reportPlanningBlocker({
+        title: "AI 分镜尚未开始",
+        message: "请先选择至少一张身份参考图；本次点击未发送 AI 规划请求。",
+        action: "identity-reference",
+      });
       return;
     }
     if (!$("#factApproved").checked || !$("#scopeApproved").checked) {
-      showAlert("请先确认商品事实和本地生图约束。");
+      reportPlanningBlocker({
+        title: "AI 分镜尚未开始",
+        message: "请先确认商品事实和本地生图约束；本次点击未发送 AI 规划请求。",
+        action: "approval",
+      });
       return;
     }
     const recipeCheck = validateRecipe();
     if (!recipeCheck.valid) {
-      showAlert(recipeCheck.message);
+      reportPlanningBlocker({
+        title: "AI 分镜尚未开始",
+        message: `${recipeCheck.message} 本次点击未发送 AI 规划请求。`,
+        action: "recipe",
+      });
       return;
     }
     const recipe = collectRecipeFromDom();
@@ -1618,6 +1681,7 @@
   $("#savePlanButton").addEventListener("click", () => saveContentReview());
   $("#preparePackageButton").addEventListener("click", preparePackage);
   $("#aiPlanButton").addEventListener("click", requestAiPlan);
+  $("#planningProgressAction").addEventListener("click", focusIdentityReferenceArea);
   $("#preflightButton").addEventListener("click", prepareGeneration);
   $("#paidGenerateButton").addEventListener("click", startPaidGeneration);
   $("#saveVersionsButton").addEventListener("click", saveVersionReview);

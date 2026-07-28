@@ -229,6 +229,7 @@ def test_every_formal_async_action_has_loading_success_and_failure_feedback():
                 "finally",
             ],
             "requestAiPlan": [
+                "reportPlanningBlocker",
                 "setLoading",
                 "renderPlanningProgress",
                 "toast(",

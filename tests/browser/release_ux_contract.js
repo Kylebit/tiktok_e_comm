@@ -241,7 +241,7 @@ function apiFixture(url, method, state) {
   if (path === "/api/product-workspace/dashboard") {
     return jsonResponse(productDashboard);
   }
-  if (path === "/api/product-flow/preview") return jsonResponse(aiPreview);
+  if (path === "/api/product-flow/preview") return jsonResponse(state.aiPreview || aiPreview);
   if (path === "/api/profit-center/weekly") {
     if (state.delayWeekly) return null;
     return jsonResponse({
@@ -333,12 +333,17 @@ async function installApiRoutes(page, state, requests) {
   });
 }
 
-async function openScenario(browser, path, viewport) {
+async function openScenario(browser, path, viewport, options = {}) {
   const context = await browser.newContext({ viewport });
   const page = await context.newPage();
   const errors = [];
   const requests = [];
-  const state = { delayWeekly: false, delaySku: false, pending: {} };
+  const state = {
+    delayWeekly: false,
+    delaySku: false,
+    pending: {},
+    aiPreview: options.aiPreview || null,
+  };
   page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
   page.on("console", (message) => {
     if (message.type() === "error") errors.push(`console: ${message.text()}`);
@@ -2762,6 +2767,83 @@ async function aiAsyncFeedback(browser) {
   }
 }
 
+async function aiPlanningBlockerFeedback(browser, viewport) {
+  const blockedPreview = JSON.parse(JSON.stringify(aiPreview));
+  const sourceUrl = "https://fixture.invalid/source-identity.jpg";
+  blockedPreview.offer_id = "3838614276";
+  blockedPreview.source.offer_id = "3838614276";
+  blockedPreview.source.images = [sourceUrl];
+  blockedPreview.review.image_actions = [{ url: sourceUrl, action: "review" }];
+  blockedPreview.content_package.collect_box_id = "3838614276";
+  blockedPreview.content_package.source_snapshot = {
+    image_urls: [sourceUrl],
+    identity_reference_urls: [],
+    primary_identity_image: "",
+  };
+  blockedPreview.content_package.remaining_images_preflight = { status: "not_started", total: 0 };
+  const scenario = await openScenario(
+    browser,
+    "/ai-image-studio?offer_id=3838614276",
+    viewport,
+    { aiPreview: blockedPreview },
+  );
+  const { page, context, errors, requests } = scenario;
+  try {
+    const started = Date.now();
+    await page.locator("#aiPlanButton").click();
+    await page.waitForFunction(() => (
+      !document.querySelector("#planningProgress")?.hidden
+      && document.querySelector("#planningProgress")?.classList.contains("failed")
+    ));
+    const feedbackMs = Date.now() - started;
+    const planningText = (await page.locator("#planningProgress").innerText()).trim();
+    check(
+      feedbackMs < 500,
+      `AI planner blocker ${viewport.width}: local feedback is visible within 500ms`,
+      feedbackMs,
+    );
+    check(
+      planningText.includes("身份参考图") && planningText.includes("未发送 AI 规划请求"),
+      `AI planner blocker ${viewport.width}: missing identity reason is beside the action`,
+      planningText,
+    );
+    check(
+      await computedVisibility(page, "#planningProgressAction"),
+      `AI planner blocker ${viewport.width}: identity guidance action is visible`,
+    );
+    check(
+      await page.locator(".identity-reference").evaluate((node) => document.activeElement === node),
+      `AI planner blocker ${viewport.width}: focus moves to identity-reference control`,
+    );
+    check(
+      requests.filter((row) => row.method === "POST").length === 0,
+      `AI planner blocker ${viewport.width}: blocker sends zero POST requests`,
+      requests,
+    );
+    await page.locator(".identity-reference").check();
+    await page.waitForFunction(() => (
+      !document.querySelector("#planningProgress")?.classList.contains("failed")
+    ));
+    check(
+      !(await page.locator("#planningProgress").innerText()).includes("身份参考图"),
+      `AI planner blocker ${viewport.width}: selecting a reference clears the stale blocker`,
+    );
+    const overflow = await overflowAudit(page);
+    check(
+      overflow.pageOverflow <= 2,
+      `AI planner blocker ${viewport.width}: no horizontal overflow`,
+      overflow,
+    );
+    check(
+      unexpectedInteractionErrors(errors).length === 0,
+      `AI planner blocker ${viewport.width}: no console/page errors`,
+      errors,
+    );
+  } finally {
+    await context.close();
+  }
+}
+
 async function profitAsyncAndNoFalseSuccess(browser) {
   const scenario = await openScenario(browser, "/profit", { width: 1440, height: 900 });
   const { page, context, errors, state } = scenario;
@@ -2903,6 +2985,8 @@ async function legacyStateSafety(browser) {
     await productTargetScopedReleaseContract(browser);
     await productCommonOverwriteContract(browser);
     await aiAsyncFeedback(browser);
+    await aiPlanningBlockerFeedback(browser, { width: 1440, height: 900 });
+    await aiPlanningBlockerFeedback(browser, { width: 390, height: 844 });
     await profitAsyncAndNoFalseSuccess(browser);
     await legacyStateSafety(browser);
   } finally {

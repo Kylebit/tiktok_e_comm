@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#152f2c">
   <title>Orbit · AI 图片工作室</title>
-  <link rel="stylesheet" href="/static/ai_image_studio.css?v=20260727-2">
-  <script src="/static/ai_image_studio.js?v=20260727-2" defer></script>
+  <link rel="stylesheet" href="/static/ai_image_studio.css?v=20260728-1">
+  <script src="/static/ai_image_studio.js?v=20260728-1" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -182,6 +182,7 @@
           <div><strong id="planningProgressTitle">准备 AI 分镜</strong><span id="planningProgressMessage">等待开始</span></div>
           <span id="planningProgressBadge" class="badge neutral">未开始</span>
         </header>
+        <button id="planningProgressAction" class="button secondary planning-progress-action" type="button" hidden></button>
         <progress id="planningProgressBar" class="progress-track" max="100" value="0" aria-label="AI 分镜进度"></progress>
         <ol id="planningProgressSteps"></ol>
       </article>

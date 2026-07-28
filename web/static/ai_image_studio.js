@@ -33,6 +33,7 @@
   let sourceOnlyDraftOfferId = "";
   let sourceOnlyDraftDirty = false;
   let sourceOnlySaveFeedback = "";
+  let sourceReviewSubmitting = false;
   const RECIPE_LIMITS = Object.freeze({
     scene: 6,
     selling_point: 6,
@@ -810,12 +811,14 @@
       `;
     }).join("");
 
-    $$(".source-remove").forEach((button) => button.addEventListener("click", (event) => {
+    $$(".source-remove").forEach((button) => button.addEventListener("click", async (event) => {
       event.preventDefault();
       event.stopPropagation();
+      if (sourceReviewSubmitting) return;
       const index = Number(button.dataset.index);
       const row = (activeReview().image_actions || [])[index];
       if (!row) return;
+      const previousAction = row.action;
       const card = button.closest(".asset-card");
       const actionNode = $(`.source-action[data-index="${index}"]`);
       if (actionNode) actionNode.value = "remove";
@@ -832,6 +835,17 @@
       renderFinal();
       updateStrategyUi();
       renderProject();
+      const saved = await saveSourceReview({
+        successMessage: `来源图 ${index + 1} 已删除并保存到本地。`,
+      });
+      if (!saved) {
+        row.action = previousAction;
+        finalOrder = buildFinalItems();
+        renderSources();
+        renderFinal();
+        updateStrategyUi();
+        renderProject();
+      }
     }));
     $$(".source-note").forEach((node) => {
       node.addEventListener("input", () => {
@@ -1265,10 +1279,19 @@
     }
   }
 
-  async function saveSourceReview() {
+  async function saveSourceReview({
+    successMessage = "来源图决定、备注和当前排序已保存到本地。",
+  } = {}) {
+    if (sourceReviewSubmitting) return null;
+    sourceReviewSubmitting = true;
+    $$(".source-remove").forEach((button) => { button.disabled = true; });
     if (sourceOnlyActive()) {
-      await saveSourceOnlyReview();
-      return;
+      try {
+        return await saveSourceOnlyReview();
+      } finally {
+        sourceReviewSubmitting = false;
+        $$(".source-remove").forEach((button) => { button.disabled = false; });
+      }
     }
     setLoading($("#saveSourceButton"), true);
     try {
@@ -1293,11 +1316,15 @@
       });
       preview.content_package = result.content_package;
       await load({ quiet: true });
-      toast("来源图决定、备注和当前排序已保存到本地。");
+      toast(successMessage);
+      return result;
     } catch (error) {
       showAlert(error.message);
+      return null;
     } finally {
+      sourceReviewSubmitting = false;
       setLoading($("#saveSourceButton"), false);
+      $$(".source-remove").forEach((button) => { button.disabled = false; });
     }
   }
 

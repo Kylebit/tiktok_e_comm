@@ -71,6 +71,17 @@ def test_proxy_tls_disconnect_is_explained_without_automatic_retry():
     assert "系统不会自动重试" in SCRIPT
 
 
+def test_source_remove_is_persisted_immediately_and_rolls_back_on_failure():
+    source_render = SCRIPT.split("function renderSources()", 1)[1].split(
+        "function renderGenerated()", 1
+    )[0]
+    assert 'button.addEventListener("click", async (event)' in source_render
+    assert "await saveSourceReview({" in source_render
+    assert "已删除并保存到本地" in source_render
+    assert "row.action = previousAction" in source_render
+    assert "if (sourceReviewSubmitting) return" in source_render
+
+
 def test_completed_paid_batch_cannot_be_started_again_from_the_ui():
     assert (
         '["completed_waiting_human_review", "completed_with_errors"].includes(generation.status)'

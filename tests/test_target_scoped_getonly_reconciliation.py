@@ -118,6 +118,10 @@ def _install_official_fixture(
             ]
             if drift == "logistics":
                 logistics[1]["logistic_id"] = 3
+            if drift == "logistics_malformed":
+                logistics.append("malformed")
+            if drift == "logistics_enabled_int":
+                logistics.append({"logistic_id": 3, "enabled": 1})
             return {
                 "response": {
                     "item_list": [
@@ -149,6 +153,10 @@ def _install_official_fixture(
             ]
             if drift == "model":
                 rows.append(dict(rows[0], model_id=12))
+            if drift == "model_malformed":
+                rows.append("malformed")
+            if drift == "price_malformed":
+                rows[0]["price_info"].append("malformed")
             return {"response": {"model": rows}}
         raise AssertionError(f"unexpected official GET {path}")
 
@@ -228,6 +236,10 @@ def test_getonly_reconciliation_is_exact_redacted_and_zero_write(monkeypatch):
         "image_count",
         "primary",
         "logistics",
+        "model_malformed",
+        "price_malformed",
+        "logistics_malformed",
+        "logistics_enabled_int",
         "copy",
     ],
 )

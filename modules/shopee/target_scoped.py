@@ -100,6 +100,26 @@ def reconcile_existing_global_site(*, request) -> dict:
     model_rows = models["response"].get("model")
     if not isinstance(model_rows, list):
         raise RuntimeError("official regional model list is invalid")
+    model_rows_shape_exact = bool(
+        model_rows
+        and all(
+            isinstance(row, dict)
+            and isinstance(row.get("model_sku"), str)
+            and bool(row["model_sku"].strip())
+            and str(row.get("model_id") or "").isdigit()
+            for row in model_rows
+        )
+    )
+    model_skus = (
+        [row["model_sku"].strip() for row in model_rows]
+        if model_rows_shape_exact
+        else []
+    )
+    model_set_exact = bool(
+        model_rows_shape_exact
+        and len(model_skus) == len(set(model_skus))
+        and set(model_skus) == {str(command["model_sku"])}
+    )
     matches = [
         row
         for row in model_rows
@@ -138,7 +158,8 @@ def reconcile_existing_global_site(*, request) -> dict:
     )
 
     unique_model = bool(
-        len(matches) == 1
+        model_set_exact
+        and len(matches) == 1
         and str(matches[0].get("model_id") or "").isdigit()
     )
     prices = (
@@ -146,6 +167,17 @@ def reconcile_existing_global_site(*, request) -> dict:
         if unique_model
         and isinstance(matches[0].get("price_info"), list)
         else []
+    )
+    price_rows_shape_exact = bool(
+        prices
+        and all(
+            isinstance(row, dict)
+            and isinstance(row.get("currency"), str)
+            and bool(row["currency"].strip())
+            and row.get("original_price") is not None
+            and not isinstance(row.get("original_price"), bool)
+            for row in prices
+        )
     )
     price_rows = [
         row
@@ -156,7 +188,8 @@ def reconcile_existing_global_site(*, request) -> dict:
     ]
     try:
         price_exact = bool(
-            len(price_rows) == 1
+            price_rows_shape_exact
+            and len(price_rows) == 1
             and Decimal(str(price_rows[0].get("original_price")))
             == Decimal(str(command["local_original_price"]))
         )
@@ -182,20 +215,18 @@ def reconcile_existing_global_site(*, request) -> dict:
     enabled_ids: list[int] = []
     if logistics_shape_exact:
         for row in logistic_rows:
-            if not isinstance(row, dict):
-                logistics_shape_exact = False
-                break
-            if row.get("enabled") is not True:
-                continue
-            logistic_id = row.get("logistic_id")
             if (
-                isinstance(logistic_id, bool)
-                or not isinstance(logistic_id, int)
-                or logistic_id < 1
+                not isinstance(row, dict)
+                or type(row.get("enabled")) is not bool
+                or isinstance(row.get("logistic_id"), bool)
+                or not isinstance(row.get("logistic_id"), int)
+                or row["logistic_id"] < 1
             ):
                 logistics_shape_exact = False
                 break
-            enabled_ids.append(logistic_id)
+            if row["enabled"] is not True:
+                continue
+            enabled_ids.append(row["logistic_id"])
     enabled_ids = sorted(enabled_ids)
     selected_logistics_exact = bool(
         logistics_shape_exact

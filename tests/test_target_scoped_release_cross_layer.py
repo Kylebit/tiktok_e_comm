@@ -592,6 +592,117 @@ def test_http_getonly_reconciliation_closes_ambiguous_my_without_new_write(
     assert calls == before_replay
 
 
+@pytest.mark.parametrize(
+    "malformed_kind",
+    ["model_nonmapping", "price_nonmapping", "logistics_nonboolean"],
+)
+def test_getonly_reconciliation_mixed_official_shape_never_closes(
+    tmp_path,
+    monkeypatch,
+    target_scoped_http_server,
+    malformed_kind,
+):
+    target_label = "shopee:MY"
+    store, plan, run = _failed_store(tmp_path, target_label)
+    _gate(monkeypatch, store, plan, run["run_id"])
+    _freeze_proof_clock(monkeypatch)
+
+    _official_fixture(
+        monkeypatch,
+        target_label=target_label,
+        failure="copy_needs_review",
+    )
+    _, action_preview = _http_json(
+        _preview_url(target_scoped_http_server, target_label)
+    )
+    action_status, _action_payload = _http_json(
+        _post_url(target_scoped_http_server),
+        method="POST",
+        payload=_post_body(plan, target_label, action_preview),
+    )
+    assert action_status == 409
+
+    _official_fixture(monkeypatch, target_label=target_label)
+    reconcile_calls = []
+    original_reconcile = adapters.reconcile_target_scoped_operation
+
+    def counted_reconcile(request, proof):
+        reconcile_calls.append(request.operation_digest)
+        return original_reconcile(request, proof)
+
+    monkeypatch.setattr(
+        adapters,
+        "reconcile_target_scoped_operation",
+        counted_reconcile,
+    )
+    exact_status, exact_preview = _http_json(
+        _reconciliation_preview_url(
+            target_scoped_http_server,
+            target_label,
+        )
+    )
+    assert exact_status == 200, exact_preview
+    exact_body = _reconciliation_post_body(plan, exact_preview)
+
+    exact_shop_get = shopee_target.shop_get
+
+    def malformed_shop_get(path, shop_id, token, query=None):
+        response = exact_shop_get(path, shop_id, token, query)
+        if (
+            malformed_kind == "model_nonmapping"
+            and path.endswith("/get_model_list")
+        ):
+            response["response"]["model"].append("malformed")
+        elif (
+            malformed_kind == "price_nonmapping"
+            and path.endswith("/get_model_list")
+        ):
+            response["response"]["model"][0]["price_info"].append(
+                "malformed"
+            )
+        elif (
+            malformed_kind == "logistics_nonboolean"
+            and path.endswith("/get_item_base_info")
+        ):
+            response["response"]["item_list"][0][
+                "logistic_info"
+            ].append({"logistic_id": 999, "enabled": 1})
+        return response
+
+    monkeypatch.setattr(
+        shopee_target,
+        "shop_get",
+        malformed_shop_get,
+    )
+    preview_status, preview = _http_json(
+        _reconciliation_preview_url(
+            target_scoped_http_server,
+            target_label,
+        )
+    )
+    assert preview_status == 409
+    assert preview["code"] == "official_reconciliation_proof_failed"
+    assert preview["external_writes_performed"] == []
+
+    post_status, post = _http_json(
+        _reconciliation_post_url(target_scoped_http_server),
+        method="POST",
+        payload=exact_body,
+    )
+    assert post_status == 409
+    assert post["code"] == "official_reconciliation_proof_failed"
+    assert post["external_writes_performed"] == []
+    assert reconcile_calls == []
+    operation = store.get_target_scoped_operation(
+        run_id=run["run_id"],
+        target_label=target_label,
+    )
+    assert operation["status"] == "RECONCILIATION_REQUIRED"
+    assert store.get_run(run["run_id"])["targets"][0]["status"] == (
+        "RECONCILIATION_REQUIRED"
+    )
+
+
 @pytest.mark.parametrize("target_label", ["shopee:MY", "shopee:VN"])
 def test_http_warning_outcome_succeeds_and_persists_manual_review(
     tmp_path,

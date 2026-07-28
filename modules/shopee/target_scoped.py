@@ -20,6 +20,26 @@ class ShopeeRegionalDispatchUnknownError(ShopeeRegionalPublishReconciliationErro
     pass
 
 
+def reconcile_existing_global_site(*, request) -> dict:
+    """Official GET-only readback for a durable regional item; no refresh/write."""
+    from domains.channel_operations.target_scoped_retry_adapters import _prepared_shopee_credentials
+    from modules.shopee.auth import load_tokens
+    from modules.shopee.client import resolve_global_item_id
+    from datetime import datetime, timedelta, timezone
+    shop_id, token = _prepared_shopee_credentials(request.target_label.rsplit(":", 1)[1])
+    item_id = str(request.external_id or "")
+    if not item_id.isdigit(): raise RuntimeError("durable external item identity is required")
+    store = load_tokens(); merchant_id = int((store.get("shops", {}).get(str(shop_id), {}) or {}).get("merchant_id") or 0); merchant_token = str((store.get("merchants", {}).get(str(merchant_id), {}) or {}).get("access_token") or "")
+    base = shop_get("/api/v2/product/get_item_base_info", shop_id, token, {"item_id_list": item_id}); rows = (base.get("response") or {}).get("item_list") if isinstance(base, dict) else None
+    models = shop_get("/api/v2/product/get_model_list", shop_id, token, {"item_id": int(item_id)}); model_rows = (models.get("response") or {}).get("model") if isinstance(models, dict) else None
+    item = rows[0] if isinstance(rows, list) and len(rows) == 1 else {}; matches = [x for x in (model_rows or []) if str(x.get("model_sku") or "") == str(request.seller_sku)[-4:].zfill(4)]
+    prices=(matches[0].get("price_info") or []) if len(matches)==1 else []; price=[x for x in prices if str(x.get("currency") or "").upper()=="MYR"]
+    images=((item.get("image") or {}).get("image_url_list") or []); enabled={int(x.get("logistic_id")) for x in (item.get("logistic_info") or []) if isinstance(x,dict) and x.get("enabled") and x.get("logistic_id") is not None}
+    checks={"unique_item": isinstance(rows,list) and len(rows)==1 and str(item.get("item_id") or "")==item_id,"unique_model_sku":len(matches)==1 and str(matches[0].get("model_id") or "").isdigit() if len(matches)==1 else False,"global_linkage":bool(resolve_global_item_id(shop_id,merchant_id,merchant_token,item_id)),"normal_status":str(item.get("item_status") or "")=="NORMAL","local_price_myr_33":len(price)==1 and str(price[0].get("original_price")) in {"33","33.0","33.00"},"images_exact":isinstance(images,list) and len(images)==6 and bool(images and images[0]),"logistics_nonempty":bool(enabled)}
+    now=datetime.now(timezone.utc); evidence={"item_id":item_id,"derived_status":"warning","manual_review_required":True,"profit_status":"unverified","image_count":len(images),"enabled_logistics_count":len(enabled),"matched_rule_ids":["global_image:rehosted_order_unverifiable"]}
+    return {"checks":checks,"evidence":evidence,"summary":{"state":"official_get_only","manual_review_required":True},"observed_at":now.isoformat(),"expires_at":(now+timedelta(minutes=5)).isoformat()}
+
+
 def scan_prepared_shop_sku(*, shop_id: int, access_token: str, seller_sku: str) -> dict:
     found = []
     completeness = {}

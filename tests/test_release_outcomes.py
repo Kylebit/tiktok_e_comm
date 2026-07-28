@@ -5,6 +5,7 @@ import pytest
 
 from domains.data_operations.release_outcomes import (
     FACT_SCHEMA_VERSION,
+    SUBMITTED_UNVERIFIED,
     ReleaseOutcomeContractError,
     adapt_release_outcome_receipt,
     adapt_release_outcome_receipts,
@@ -114,6 +115,65 @@ def test_unknown_semantics_remain_unknown_instead_of_being_guessed():
         "missing_reconciliation_status",
         "missing_error_category",
     } <= set(fact.quality_issues)
+
+
+def test_platform_accepted_unverified_is_not_human_acceptance_or_success():
+    receipt = _receipt(
+        outcome={
+            "class": "MANUAL_ACCEPTED",
+            "platform_status": "ACCEPTED_UNVERIFIED",
+        },
+        manual={"status": "ACCEPTED"},
+        reconciliation={"status": "NOT_REQUIRED"},
+    )
+
+    fact = adapt_release_outcome_receipt(receipt)
+    evaluation = evaluate_release_outcomes([fact])
+
+    assert fact.outcome_class == SUBMITTED_UNVERIFIED
+    assert fact.manual_status == "PENDING"
+    assert fact.reconciliation_status == "NOT_REQUIRED"
+    assert {
+        "outcome_class_overridden_by_platform_status",
+        "manual_status_normalized_for_submitted_unverified",
+    } <= set(fact.quality_issues)
+    overall = evaluation["overall"]
+    assert overall["success_count"] == 0
+    assert overall["success_rate"] == 0.0
+    assert overall["manual_acceptance_count"] == 0
+    assert overall["manual_decision_count"] == 0
+    assert overall["manual_acceptance_rate"] is None
+    assert overall["outcome_distribution"][SUBMITTED_UNVERIFIED] == 1
+
+
+def test_submitted_unverified_preserves_separate_reconciliation_requirement():
+    receipt = _receipt(
+        outcome={"class": SUBMITTED_UNVERIFIED},
+        manual={"status": "PENDING"},
+        reconciliation={"status": "REQUIRED"},
+    )
+
+    fact = adapt_release_outcome_receipt(receipt)
+
+    assert fact.outcome_class == SUBMITTED_UNVERIFIED
+    assert fact.manual_status == "PENDING"
+    assert fact.reconciliation_status == "REQUIRED"
+    assert fact.quality_issues == ()
+
+
+def test_legacy_accepted_unverified_class_normalizes_without_claiming_a_person():
+    fact = adapt_release_outcome_receipt(
+        _receipt(
+            outcome={"class": "ACCEPTED_UNVERIFIED"},
+            manual={"status": "ACCEPTED"},
+            reconciliation={},
+        )
+    )
+
+    assert fact.outcome_class == SUBMITTED_UNVERIFIED
+    assert fact.manual_status == "PENDING"
+    assert fact.reconciliation_status == "NOT_REQUIRED"
+    assert "legacy_accepted_unverified_class_normalized" in fact.quality_issues
 
 
 def test_replay_fixture_dataset_and_evaluation_are_stable_across_input_order():

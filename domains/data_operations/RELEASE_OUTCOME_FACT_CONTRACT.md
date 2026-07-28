@@ -31,6 +31,13 @@ The fact records:
 - latency, attempts, dispatch/readback/manual/reconciliation counts;
 - duplicate-prevention status and evidence digests.
 
+`SUBMITTED_UNVERIFIED` means the marketplace accepted the submission but no
+official readback or person has accepted the result. The adapter also accepts
+the platform spelling `ACCEPTED_UNVERIFIED` and normalizes it to this public
+class. Its manual status is always `PENDING`; reconciliation is
+`NOT_REQUIRED` unless a separate receipt explicitly says `REQUIRED` or
+`RESOLVED`. It is not a success and does not contribute to manual acceptance.
+
 The fact digest excludes itself and covers every other field. Replaying the
 same receipt therefore produces the same digest.
 

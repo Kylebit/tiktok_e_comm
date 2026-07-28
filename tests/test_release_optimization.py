@@ -5,6 +5,7 @@ import pytest
 
 from domains.data_operations import (
     OptimizationThresholds,
+    SUBMITTED_UNVERIFIED,
     adapt_release_outcome_receipts,
     build_release_optimization_candidates,
     evaluate_release_outcomes,
@@ -139,6 +140,39 @@ def test_unknown_write_rate_is_not_optimistic_and_boundary_is_explicit():
         "unknown_write_rate_above_maximum",
         "quality_clear_coverage_below_minimum",
     } <= set(high["quality_blockers"])
+
+
+def test_submitted_unverified_is_known_but_not_success_or_manual_acceptance():
+    receipts = []
+    for index in range(5):
+        receipt = json.loads(json.dumps(_base_receipt()))
+        receipt["identity"] = {
+            "plan_digest": f"{index + 1:064x}",
+            "run_digest": f"{index + 101:064x}",
+            "target_digest": f"{index + 201:064x}",
+        }
+        receipt["outcome"] = {"class": SUBMITTED_UNVERIFIED}
+        receipt["manual"] = {"status": "PENDING"}
+        receipt["reconciliation"] = {"status": "NOT_REQUIRED"}
+        receipts.append(receipt)
+    facts = adapt_release_outcome_receipts(receipts)
+    dataset = release_outcome_dataset(facts)
+    evaluation = evaluate_release_outcomes(facts)
+
+    artifact = build_release_optimization_candidates(dataset, evaluation)
+    candidate = artifact["candidates"][0]
+
+    assert evaluation["overall"]["success_count"] == 0
+    assert evaluation["overall"]["manual_acceptance_count"] == 0
+    assert evaluation["overall"]["manual_acceptance_rate"] is None
+    assert (
+        evaluation["overall"]["outcome_distribution"][SUBMITTED_UNVERIFIED]
+        == 5
+    )
+    assert candidate["coverage"]["outcome_known_rate"] == 1.0
+    assert candidate["rates"]["manual_acceptance_rate"] is None
+    assert candidate["quality_blockers"] == []
+    assert candidate["recommended_action_code"] == "REVIEW_POLICY"
 
 
 @pytest.mark.parametrize(

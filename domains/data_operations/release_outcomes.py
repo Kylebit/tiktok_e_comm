@@ -23,12 +23,16 @@ DATASET_SCHEMA_VERSION = "release-outcome-dataset/v1"
 EVALUATION_SCHEMA_VERSION = "release-outcome-evaluation/v1"
 
 UNKNOWN = "UNKNOWN"
+SUBMITTED_UNVERIFIED = "SUBMITTED_UNVERIFIED"
+PLATFORM_ACCEPTED_UNVERIFIED = "ACCEPTED_UNVERIFIED"
+SUCCESS_OUTCOME_CLASSES = frozenset({"SUCCESS", "MANUAL_ACCEPTED"})
 
 OUTCOME_CLASSES = frozenset(
     {
         "SUCCESS",
         "FAILURE",
         "MANUAL_ACCEPTED",
+        SUBMITTED_UNVERIFIED,
         "RECONCILIATION_REQUIRED",
         "DUPLICATE_PREVENTED",
         UNKNOWN,
@@ -195,12 +199,7 @@ def adapt_release_outcome_receipt(
     policy_version = _version(versions.get("policy"), "policy_version", issues)
 
     outcome = _optional_mapping(source.get("outcome"))
-    outcome_class = _status(
-        outcome.get("class"),
-        OUTCOME_CLASSES,
-        "outcome_class",
-        issues,
-    )
+    outcome_class = _outcome_class(outcome, issues)
     dispatch = _optional_mapping(source.get("dispatch"))
     dispatch_boundary = _status(
         dispatch.get("boundary"),
@@ -227,18 +226,12 @@ def adapt_release_outcome_receipt(
         issues,
     )
     manual = _optional_mapping(source.get("manual"))
-    manual_status = _status(
-        manual.get("status"),
-        MANUAL_STATUSES,
-        "manual_status",
-        issues,
-    )
     reconciliation = _optional_mapping(source.get("reconciliation"))
-    reconciliation_status = _status(
-        reconciliation.get("status"),
-        RECONCILIATION_STATUSES,
-        "reconciliation_status",
-        issues,
+    manual_status, reconciliation_status = _review_statuses(
+        outcome_class=outcome_class,
+        manual=manual,
+        reconciliation=reconciliation,
+        issues=issues,
     )
 
     error = _optional_mapping(source.get("error"))
@@ -418,7 +411,7 @@ def evaluate_release_outcomes(
 def _metrics(facts: Sequence[ReleaseOutcomeFact]) -> dict[str, Any]:
     total = len(facts)
     successes = sum(
-        fact.outcome_class in {"SUCCESS", "MANUAL_ACCEPTED"} for fact in facts
+        fact.outcome_class in SUCCESS_OUTCOME_CLASSES for fact in facts
     )
     official_readbacks = sum(
         fact.readback_status == "VERIFIED" for fact in facts
@@ -559,6 +552,66 @@ def _status(
         issues.append(f"unknown_{field}")
         return UNKNOWN
     return text
+
+
+def _outcome_class(
+    outcome: Mapping[str, object],
+    issues: list[str],
+) -> str:
+    raw = str(outcome.get("class") or "").strip().upper()
+    platform_status = str(outcome.get("platform_status") or "").strip().upper()
+    if platform_status == PLATFORM_ACCEPTED_UNVERIFIED:
+        if raw not in {
+            "",
+            PLATFORM_ACCEPTED_UNVERIFIED,
+            SUBMITTED_UNVERIFIED,
+        }:
+            issues.append("outcome_class_overridden_by_platform_status")
+        return SUBMITTED_UNVERIFIED
+    if raw == PLATFORM_ACCEPTED_UNVERIFIED:
+        issues.append("legacy_accepted_unverified_class_normalized")
+        return SUBMITTED_UNVERIFIED
+    return _status(raw, OUTCOME_CLASSES, "outcome_class", issues)
+
+
+def _review_statuses(
+    *,
+    outcome_class: str,
+    manual: Mapping[str, object],
+    reconciliation: Mapping[str, object],
+    issues: list[str],
+) -> tuple[str, str]:
+    if outcome_class != SUBMITTED_UNVERIFIED:
+        return (
+            _status(
+                manual.get("status"),
+                MANUAL_STATUSES,
+                "manual_status",
+                issues,
+            ),
+            _status(
+                reconciliation.get("status"),
+                RECONCILIATION_STATUSES,
+                "reconciliation_status",
+                issues,
+            ),
+        )
+
+    supplied_manual = str(manual.get("status") or "").strip().upper()
+    if supplied_manual and supplied_manual != "PENDING":
+        issues.append("manual_status_normalized_for_submitted_unverified")
+    supplied_reconciliation = str(
+        reconciliation.get("status") or ""
+    ).strip().upper()
+    if supplied_reconciliation in {"REQUIRED", "RESOLVED"}:
+        reconciliation_status = supplied_reconciliation
+    else:
+        if supplied_reconciliation not in {"", "NOT_REQUIRED", UNKNOWN}:
+            issues.append(
+                "reconciliation_status_normalized_for_submitted_unverified"
+            )
+        reconciliation_status = "NOT_REQUIRED"
+    return "PENDING", reconciliation_status
 
 
 def _optional_count(

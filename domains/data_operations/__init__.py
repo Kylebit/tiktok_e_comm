@@ -15,6 +15,8 @@ from domains.data_operations.local_snapshot_adapter import (
     discover_local_profit_snapshots,
 )
 from domains.data_operations.release_outcomes import (
+    SUBMITTED_UNVERIFIED,
+    SUCCESS_OUTCOME_CLASSES,
     ReleaseOutcomeContractError,
     ReleaseOutcomeFact,
     adapt_release_outcome_receipt,
@@ -41,6 +43,8 @@ __all__ = [
     "discover_local_profit_snapshots",
     "ReleaseOutcomeContractError",
     "ReleaseOutcomeFact",
+    "SUBMITTED_UNVERIFIED",
+    "SUCCESS_OUTCOME_CLASSES",
     "adapt_release_outcome_receipt",
     "adapt_release_outcome_receipts",
     "release_outcome_dataset",

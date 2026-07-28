@@ -16,6 +16,10 @@ Each candidate is grouped by channel, region, and policy version and contains:
 - one advisory action code, a confidence band, and
   `requires_human_approval=true`.
 
+`SUBMITTED_UNVERIFIED` is known outcome coverage, but it is neither success nor
+manual acceptance. Optimization therefore observes it without converting a
+platform-accepted submission into evidence of human acceptance.
+
 The only action codes are `COLLECT_MORE_EVIDENCE`, `REVIEW_AUTH`,
 `REVIEW_INVENTORY`, `REVIEW_CONTENT`, `REVIEW_LOGISTICS`, and
 `REVIEW_POLICY`. There is no execute, retry, dispatch, or production-policy

@@ -21,6 +21,7 @@ from domains.data_operations.release_outcomes import (
     EVALUATION_SCHEMA_VERSION,
     FACT_SCHEMA_VERSION,
     OUTCOME_CLASSES,
+    SUCCESS_OUTCOME_CLASSES,
     UNKNOWN,
 )
 
@@ -490,8 +491,7 @@ def _validated_evaluation(
 def _metrics(facts: Sequence[Mapping[str, object]]) -> dict[str, Any]:
     total = len(facts)
     successes = sum(
-        fact.get("outcome_class") in {"SUCCESS", "MANUAL_ACCEPTED"}
-        for fact in facts
+        fact.get("outcome_class") in SUCCESS_OUTCOME_CLASSES for fact in facts
     )
     official_readbacks = sum(
         fact.get("readback_status") == "VERIFIED" for fact in facts

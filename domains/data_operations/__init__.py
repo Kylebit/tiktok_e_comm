@@ -14,6 +14,14 @@ from domains.data_operations.local_snapshot_adapter import (
     adapt_profit_snapshot_text,
     discover_local_profit_snapshots,
 )
+from domains.data_operations.release_outcomes import (
+    ReleaseOutcomeContractError,
+    ReleaseOutcomeFact,
+    adapt_release_outcome_receipt,
+    adapt_release_outcome_receipts,
+    evaluate_release_outcomes,
+    release_outcome_dataset,
+)
 
 __all__ = [
     "DataQualityIssue",
@@ -27,4 +35,10 @@ __all__ = [
     "adapt_local_profit_snapshots",
     "adapt_profit_snapshot_text",
     "discover_local_profit_snapshots",
+    "ReleaseOutcomeContractError",
+    "ReleaseOutcomeFact",
+    "adapt_release_outcome_receipt",
+    "adapt_release_outcome_receipts",
+    "release_outcome_dataset",
+    "evaluate_release_outcomes",
 ]

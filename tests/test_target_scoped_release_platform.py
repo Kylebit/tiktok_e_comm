@@ -2437,7 +2437,23 @@ def _reconciliation_case(
 ):
     store, plan, _run = _failed_store(tmp_path, target_label)
     request = _request(store, plan, target_label)
-    proof = _proof(request)
+    selected_logistics_ids = (
+        [19010, 19011, 19012]
+        if target_label == "shopee:MY"
+        else [50001, 50007, 50010]
+    )
+    proof = _proof(
+        request,
+        semantic_evidence={
+            "source": "official_platform_read",
+            "target": request.target_label,
+            "result": "safe",
+            "selected_logistics_ids": selected_logistics_ids,
+            "selected_logistics_digest": canonical_digest(
+                {"ids": selected_logistics_ids}
+            ),
+        },
+    )
     claim = store.claim_target_scoped_operation(
         request=request,
         proof=proof,
@@ -2494,6 +2510,9 @@ def _reconciliation_proof_value(
         "operation_proof_digest": request.operation_proof_digest,
         "prior_result_digest": request.prior_result_digest,
         "external_identity_digest": request.external_identity_digest,
+        "original_proof_evidence_digest": (
+            request.original_proof_evidence_digest
+        ),
         "provided_by": "03",
         "allow_refresh": False,
         "observed_at": (now - timedelta(seconds=1)).isoformat(),
@@ -2630,6 +2649,9 @@ def _reconciliation_post_body(
         "operation_proof_digest": request.operation_proof_digest,
         "prior_result_digest": request.prior_result_digest,
         "external_identity_digest": request.external_identity_digest,
+        "original_proof_evidence_digest": (
+            request.original_proof_evidence_digest
+        ),
         "reconciliation_request_digest": request.request_digest,
         "reconciliation_proof_digest": preview[
             "reconciliation_proof_digest"
@@ -2637,6 +2659,51 @@ def _reconciliation_post_body(
         "approved_by": "Kyle",
         "confirm_target_scoped_reconciliation": True,
     }
+
+
+def _drift_original_selected_logistics(
+    store: ReleaseStore,
+    request: TargetScopedReconciliationRequest,
+) -> None:
+    with sqlite3.connect(store.path) as connection:
+        # Simulate corruption that bypassed the normal SQLite immutability
+        # trigger, so the read-path and close-path defenses are independently
+        # exercised.
+        connection.execute(
+            "DROP TRIGGER trg_release_target_retry_proof_identity_immutable"
+        )
+        row = connection.execute(
+            """
+            SELECT proof_json
+            FROM release_target_retry_proofs
+            WHERE proof_digest = ?
+            """,
+            (request.operation_proof_digest,),
+        ).fetchone()
+        payload = json.loads(row[0])
+        evidence = payload["semantic_evidence"]
+        changed_ids = [*evidence["selected_logistics_ids"], 59999]
+        evidence["selected_logistics_ids"] = changed_ids
+        evidence["selected_logistics_digest"] = canonical_digest(
+            {"ids": changed_ids}
+        )
+        connection.execute(
+            """
+            UPDATE release_target_retry_proofs
+            SET proof_json = ?
+            WHERE proof_digest = ?
+            """,
+            (
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                request.operation_proof_digest,
+            ),
+        )
+        connection.commit()
 
 
 @pytest.mark.parametrize("target_label", ["shopee:MY", "shopee:VN"])
@@ -2826,6 +2893,17 @@ def test_reconciliation_proof_rejects_raw_or_drifted_evidence(tmp_path):
             request,
             prior_result_digest="f" * 64,
         )
+    with pytest.raises(
+        TargetScopedContractError,
+        match="internal logistics IDs",
+    ):
+        _reconciliation_proof(
+            request,
+            redacted_summary={
+                "status": "exact",
+                "selected_logistics_ids": [19010],
+            },
+        )
 
 
 def test_preview_is_db_byte_stable_redacted_and_getonly(
@@ -2836,13 +2914,26 @@ def test_preview_is_db_byte_stable_redacted_and_getonly(
     request = context["reconciliation_request"]
     proof = _reconciliation_proof(request)
     calls = []
-    adapter = SimpleNamespace(
-        build_official_target_reconciliation_proof=(
-            lambda req, *, allow_refresh: (
-                calls.append(("proof", req.request_digest, allow_refresh))
-                or proof.durable_payload()
+
+    def build_proof(req, *, allow_refresh):
+        calls.append(
+            (
+                "proof",
+                req.operation_request.plan_id,
+                req.operation_request.run_id,
+                req.operation_request.target_label,
+                tuple(
+                    req.original_proof_evidence[
+                        "selected_logistics_ids"
+                    ]
+                ),
+                allow_refresh,
             )
         )
+        return proof.durable_payload()
+
+    adapter = SimpleNamespace(
+        build_official_target_reconciliation_proof=build_proof
     )
     _patch_reconciliation_gate(monkeypatch, store, plan, request)
     monkeypatch.setattr(
@@ -2869,9 +2960,27 @@ def test_preview_is_db_byte_stable_redacted_and_getonly(
     assert payload["external_identity_digest"] == (
         request.external_identity_digest
     )
+    assert payload["original_proof_evidence_digest"] == (
+        request.original_proof_evidence_digest
+    )
+    assert payload["selected_logistics_count"] == 3
+    assert "selected_logistics_ids" not in payload
     assert payload["run_id"] == request.operation_request.run_id
     assert store.path.read_bytes() == before
-    assert calls == [("proof", request.request_digest, False)]
+    assert calls == [
+        (
+            "proof",
+            request.operation_request.plan_id,
+            request.operation_request.run_id,
+            request.operation_request.target_label,
+            tuple(
+                request.original_proof_evidence[
+                    "selected_logistics_ids"
+                ]
+            ),
+            False,
+        )
+    ]
     encoded = json.dumps(payload, sort_keys=True)
     for raw in (
         request.operation_request.confirmation_token,
@@ -2880,6 +2989,115 @@ def test_preview_is_db_byte_stable_redacted_and_getonly(
         "https://",
     ):
         assert raw not in encoded
+
+
+def test_original_proof_logistics_drift_blocks_preview_before_adapter(
+    tmp_path,
+    monkeypatch,
+):
+    store, plan, _base, context = _reconciliation_case(tmp_path)
+    request = context["reconciliation_request"]
+    calls = []
+    _patch_reconciliation_gate(monkeypatch, store, plan, request)
+    monkeypatch.setattr(
+        product_server,
+        "_target_scoped_adapter_module",
+        lambda: SimpleNamespace(
+            build_official_target_reconciliation_proof=(
+                lambda *_args, **_kwargs: calls.append("proof")
+            )
+        ),
+    )
+    _drift_original_selected_logistics(store, request)
+    before_call = store.path.read_bytes()
+
+    status, payload = product_server._preview_target_scoped_reconciliation(
+        offer_id=request.operation_request.product_id,
+        target_label=request.operation_request.target_label,
+    )
+
+    assert status == 409
+    assert payload["code"] == "target_scoped_reconciliation_blocked"
+    assert calls == []
+    assert store.path.read_bytes() == before_call
+    assert store.get_target_scoped_operation(
+        run_id=request.operation_request.run_id,
+        target_label=request.operation_request.target_label,
+    )["status"] == "RECONCILIATION_REQUIRED"
+
+
+def test_original_proof_logistics_drift_after_preview_blocks_post_close(
+    tmp_path,
+    monkeypatch,
+):
+    store, plan, _base, context = _reconciliation_case(tmp_path)
+    request = context["reconciliation_request"]
+    proof = _reconciliation_proof(request)
+    calls = []
+    _patch_reconciliation_gate(monkeypatch, store, plan, request)
+    monkeypatch.setattr(
+        product_server,
+        "_target_scoped_adapter_module",
+        lambda: SimpleNamespace(
+            build_official_target_reconciliation_proof=(
+                lambda *_args, **_kwargs: (
+                    calls.append("proof")
+                    or proof.durable_payload()
+                )
+            ),
+            reconcile_target_scoped_operation=lambda *_args: (
+                calls.append("reconcile")
+            ),
+        ),
+    )
+    _, preview = product_server._preview_target_scoped_reconciliation(
+        offer_id=request.operation_request.product_id,
+        target_label=request.operation_request.target_label,
+    )
+    body = _reconciliation_post_body(preview, request)
+    _drift_original_selected_logistics(store, request)
+    before_call = store.path.read_bytes()
+
+    status, payload = product_server._execute_target_scoped_reconciliation(
+        body
+    )
+
+    assert status == 409
+    assert payload["external_writes_performed"] == []
+    assert calls == ["proof"]
+    assert store.path.read_bytes() == before_call
+    assert store.get_target_scoped_operation(
+        run_id=request.operation_request.run_id,
+        target_label=request.operation_request.target_label,
+    )["status"] == "RECONCILIATION_REQUIRED"
+
+
+def test_store_revalidates_original_proof_evidence_before_local_close(
+    tmp_path,
+):
+    store, _plan, _base, context = _reconciliation_case(tmp_path)
+    request = context["reconciliation_request"]
+    proof = _reconciliation_proof(request)
+    result = _reconciliation_result(request)
+    before = store.get_run(request.operation_request.run_id)
+    _drift_original_selected_logistics(store, request)
+
+    with pytest.raises(
+        ReleaseAuthorizationError,
+        match="original target-scoped proof evidence is invalid",
+    ):
+        store.record_target_scoped_reconciled_success(
+            request=request,
+            proof=proof,
+            result=result,
+        )
+
+    after = store.get_run(request.operation_request.run_id)
+    assert after == before
+    assert store.get_target_scoped_operation(
+        run_id=request.operation_request.run_id,
+        target_label=request.operation_request.target_label,
+    )["status"] == "RECONCILIATION_REQUIRED"
 
 
 def test_http_getonly_close_success_repeat_zero_adapter_calls(
@@ -2956,6 +3174,7 @@ def test_http_getonly_close_success_repeat_zero_adapter_calls(
         ("operation_proof_digest", "wrong"),
         ("prior_result_digest", "wrong"),
         ("external_identity_digest", "wrong"),
+        ("original_proof_evidence_digest", "wrong"),
         ("reconciliation_request_digest", "wrong"),
     ],
 )

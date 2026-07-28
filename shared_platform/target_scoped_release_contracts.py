@@ -1884,6 +1884,130 @@ class OfficialTargetProof:
         }
 
 
+def original_target_proof_evidence(
+    proof_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Extract the proof-bound logistics identity for GET-only close.
+
+    The original proof may be old enough that its observation TTL has elapsed,
+    so this validates the immutable semantic digest and redaction without
+    treating it as a fresh marketplace observation.
+    """
+
+    if not isinstance(proof_payload, Mapping):
+        raise TargetScopedContractError(
+            "original target-scoped proof must be a mapping"
+        )
+    raw = dict(proof_payload)
+    checks = raw.get("checks")
+    semantic = raw.get("semantic_evidence")
+    writes = raw.get("external_writes_performed")
+    if not isinstance(checks, Mapping) or not checks:
+        raise TargetScopedContractError(
+            "original target-scoped proof requires named checks"
+        )
+    if not isinstance(semantic, Mapping) or not semantic:
+        raise TargetScopedContractError(
+            "original target-scoped proof requires semantic evidence"
+        )
+    if not isinstance(writes, (list, tuple)):
+        raise TargetScopedContractError(
+            "original target-scoped proof writes must be a list"
+        )
+    semantic_payload = {
+        "schema_version": str(
+            raw.get("schema_version") or "official-target-proof/v1"
+        ),
+        "operation_kind": str(raw.get("operation_kind") or ""),
+        "plan_id": str(raw.get("plan_id") or ""),
+        "run_id": str(raw.get("run_id") or ""),
+        "target_label": str(raw.get("target_label") or ""),
+        "product_revision": raw.get("product_revision"),
+        "payload_digest": str(raw.get("payload_digest") or ""),
+        "planned_command_digest": str(
+            raw.get("planned_command_digest") or ""
+        ),
+        "preflight_digest": str(raw.get("preflight_digest") or ""),
+        "failure_attempt": raw.get("failure_attempt"),
+        "failure_digest": str(raw.get("failure_digest") or ""),
+        "provided_by": str(raw.get("provided_by") or ""),
+        "allow_refresh": raw.get("allow_refresh"),
+        "checks": dict(checks),
+        "semantic_evidence": dict(semantic),
+        "external_writes_performed": list(writes),
+    }
+    supplied_digest = _required_text(
+        raw.get("proof_digest"), "original proof_digest"
+    )
+    if canonical_digest(semantic_payload) != supplied_digest:
+        raise TargetScopedContractError(
+            "original target-scoped proof digest does not match evidence"
+        )
+    _assert_redacted(
+        semantic,
+        path="original_target_proof_semantic_evidence",
+    )
+    selected_ids = semantic.get("selected_logistics_ids")
+    if (
+        not isinstance(selected_ids, (list, tuple))
+        or not selected_ids
+        or any(
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < 1
+            for value in selected_ids
+        )
+        or list(selected_ids) != sorted(set(selected_ids))
+    ):
+        raise TargetScopedContractError(
+            "original proof selected logistics identity is invalid"
+        )
+    selected_digest = _required_text(
+        semantic.get("selected_logistics_digest"),
+        "selected_logistics_digest",
+    )
+    normalized_ids = list(selected_ids)
+    if canonical_digest({"ids": normalized_ids}) != selected_digest:
+        raise TargetScopedContractError(
+            "original proof selected logistics digest does not match"
+        )
+    return {
+        "schema_version": "target-scoped-original-proof-evidence/v1",
+        "selected_logistics_ids": tuple(normalized_ids),
+        "selected_logistics_count": len(normalized_ids),
+        "selected_logistics_digest": selected_digest,
+        "source_semantic_evidence_digest": canonical_digest(dict(semantic)),
+    }
+
+
+def _assert_no_internal_logistics_ids(
+    value: object,
+    *,
+    path: str,
+) -> None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            normalized = str(key).strip().lower()
+            if normalized in {
+                "selected_logistics_ids",
+                "enabled_logistics_ids",
+                "compatible_logistics_ids",
+            }:
+                raise TargetScopedContractError(
+                    f"{path}.{key} contains internal logistics IDs"
+                )
+            _assert_no_internal_logistics_ids(
+                item,
+                path=f"{path}.{key}",
+            )
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _assert_no_internal_logistics_ids(
+                item,
+                path=f"{path}[{index}]",
+            )
+
+
 @dataclass(frozen=True)
 class TargetScopedReconciliationRequest:
     """Server-owned identity for closing one ambiguous scoped operation.
@@ -1900,6 +2024,7 @@ class TargetScopedReconciliationRequest:
     prior_result_digest: str
     external_id: str
     publication_targets: tuple[str, ...]
+    original_proof_evidence: Mapping[str, Any]
     reconciliation_mode: str = "official_get_only_durable_close"
 
     def __post_init__(self) -> None:
@@ -1927,6 +2052,42 @@ class TargetScopedReconciliationRequest:
             raise TargetScopedContractError(
                 "target-scoped reconciliation mode is invalid"
             )
+        evidence = self.original_proof_evidence
+        if (
+            not isinstance(evidence, Mapping)
+            or evidence.get("schema_version")
+            != "target-scoped-original-proof-evidence/v1"
+        ):
+            raise TargetScopedContractError(
+                "reconciliation requires original proof evidence"
+            )
+        selected_ids = evidence.get("selected_logistics_ids")
+        if (
+            not isinstance(selected_ids, (list, tuple))
+            or not selected_ids
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 1
+                for value in selected_ids
+            )
+            or list(selected_ids) != sorted(set(selected_ids))
+            or evidence.get("selected_logistics_count")
+            != len(selected_ids)
+            or evidence.get("selected_logistics_digest")
+            != canonical_digest({"ids": list(selected_ids)})
+        ):
+            raise TargetScopedContractError(
+                "reconciliation original logistics evidence is invalid"
+            )
+        _required_text(
+            evidence.get("source_semantic_evidence_digest"),
+            "source_semantic_evidence_digest",
+        )
+        _assert_redacted(
+            evidence,
+            path="original_proof_evidence",
+        )
         if (
             not isinstance(self.publication_targets, tuple)
             or not self.publication_targets
@@ -1953,6 +2114,10 @@ class TargetScopedReconciliationRequest:
             }
         )
 
+    @property
+    def original_proof_evidence_digest(self) -> str:
+        return canonical_digest(dict(self.original_proof_evidence))
+
     def durable_identity(self) -> dict[str, Any]:
         return {
             "schema_version": "target-scoped-reconciliation-request/v1",
@@ -1964,6 +2129,12 @@ class TargetScopedReconciliationRequest:
             "operation_proof_digest": self.operation_proof_digest,
             "prior_result_digest": self.prior_result_digest,
             "external_identity_digest": self.external_identity_digest,
+            "original_proof_evidence_digest": (
+                self.original_proof_evidence_digest
+            ),
+            "selected_logistics_count": self.original_proof_evidence[
+                "selected_logistics_count"
+            ],
             "publication_targets": list(self.publication_targets),
         }
 
@@ -1986,6 +2157,7 @@ class OfficialTargetReconciliationProof:
     operation_proof_digest: str
     prior_result_digest: str
     external_identity_digest: str
+    original_proof_evidence_digest: str
     provided_by: str
     allow_refresh: bool
     observed_at: str
@@ -2055,6 +2227,9 @@ class OfficialTargetReconciliationProof:
             "external_identity_digest": str(
                 raw.get("external_identity_digest") or ""
             ),
+            "original_proof_evidence_digest": str(
+                raw.get("original_proof_evidence_digest") or ""
+            ),
             "provided_by": str(raw.get("provided_by") or ""),
             "allow_refresh": raw.get("allow_refresh"),
             "checks": dict(checks),
@@ -2089,6 +2264,9 @@ class OfficialTargetReconciliationProof:
             external_identity_digest=semantic_payload[
                 "external_identity_digest"
             ],
+            original_proof_evidence_digest=semantic_payload[
+                "original_proof_evidence_digest"
+            ],
             provided_by=semantic_payload["provided_by"],
             allow_refresh=semantic_payload["allow_refresh"] is True,
             observed_at=str(raw.get("observed_at") or ""),
@@ -2113,6 +2291,9 @@ class OfficialTargetReconciliationProof:
             "prior_result_digest": request.prior_result_digest,
             "external_identity_digest": (
                 request.external_identity_digest
+            ),
+            "original_proof_evidence_digest": (
+                request.original_proof_evidence_digest
             ),
         }
         actual = {field: getattr(proof, field) for field in expected}
@@ -2150,6 +2331,10 @@ class OfficialTargetReconciliationProof:
             proof.redacted_summary,
             path="reconciliation_redacted_summary",
         )
+        _assert_no_internal_logistics_ids(
+            proof.redacted_summary,
+            path="reconciliation_redacted_summary",
+        )
         observed = _parse_utc(proof.observed_at, "observed_at")
         expires = _parse_utc(proof.expires_at, "expires_at")
         current = (now or datetime.now(timezone.utc)).astimezone(
@@ -2179,6 +2364,9 @@ class OfficialTargetReconciliationProof:
             "operation_proof_digest": self.operation_proof_digest,
             "prior_result_digest": self.prior_result_digest,
             "external_identity_digest": self.external_identity_digest,
+            "original_proof_evidence_digest": (
+                self.original_proof_evidence_digest
+            ),
             "provided_by": self.provided_by,
             "allow_refresh": self.allow_refresh,
             "observed_at": self.observed_at,

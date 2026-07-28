@@ -2132,6 +2132,7 @@ class ReleaseStore:
         from shared_platform.target_scoped_release_contracts import (
             TargetScopedOperationRequest,
             TargetScopedReconciliationRequest,
+            original_target_proof_evidence,
             planned_target_command,
         )
 
@@ -2236,6 +2237,7 @@ class ReleaseStore:
                 blockers.append(
                     "stored operation revision differs from immutable plan"
                 )
+            proof_evidence = None
             if not proof_row:
                 blockers.append("stored operation proof was not found")
             else:
@@ -2258,6 +2260,13 @@ class ReleaseStore:
                     blockers.append(
                         "stored operation proof identity is invalid"
                     )
+                else:
+                    try:
+                        proof_evidence = original_target_proof_evidence(
+                            proof_payload
+                        )
+                    except (TypeError, ValueError) as error:
+                        blockers.append(str(error))
             try:
                 current_command, current_command_digest = (
                     planned_target_command(
@@ -2391,7 +2400,11 @@ class ReleaseStore:
                     operation.get("result_digest")
                 )
             reconciliation_request = None
-            if base_request is not None and prior_result_digest:
+            if (
+                base_request is not None
+                and prior_result_digest
+                and proof_evidence is not None
+            ):
                 try:
                     reconciliation_request = (
                         TargetScopedReconciliationRequest(
@@ -2407,6 +2420,7 @@ class ReleaseStore:
                             publication_targets=tuple(
                                 plan.get("targets") or ()
                             ),
+                            original_proof_evidence=proof_evidence,
                         )
                     )
                 except (TypeError, ValueError) as error:
@@ -2451,6 +2465,7 @@ class ReleaseStore:
             OfficialTargetReconciliationProof,
             TargetScopedOperationResult,
             TargetScopedReconciliationRequest,
+            original_target_proof_evidence,
         )
 
         if not isinstance(request, TargetScopedReconciliationRequest):
@@ -2558,6 +2573,23 @@ class ReleaseStore:
             ):
                 raise ReleaseAuthorizationError(
                     "original target-scoped proof identity changed"
+                )
+            try:
+                current_proof_evidence = (
+                    original_target_proof_evidence(original_proof)
+                )
+            except (TypeError, ValueError) as error:
+                raise ReleaseAuthorizationError(
+                    "original target-scoped proof evidence is invalid"
+                ) from error
+            if (
+                current_proof_evidence
+                != dict(request.original_proof_evidence)
+                or request.original_proof_evidence_digest
+                != _sha256(current_proof_evidence)
+            ):
+                raise ReleaseAuthorizationError(
+                    "original target-scoped proof evidence changed"
                 )
             prior = (
                 json.loads(operation["result_json"])

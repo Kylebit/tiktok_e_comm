@@ -2616,6 +2616,14 @@ def _preview_target_scoped_reconciliation(
             "external_identity_digest": (
                 request.external_identity_digest
             ),
+            "original_proof_evidence_digest": (
+                request.original_proof_evidence_digest
+            ),
+            "selected_logistics_count": (
+                request.original_proof_evidence[
+                    "selected_logistics_count"
+                ]
+            ),
             "reconciliation_request_digest": request.request_digest,
             "reconciliation_proof_digest": proof.proof_digest,
             "publication_targets": list(request.publication_targets),
@@ -2680,6 +2688,7 @@ def _execute_target_scoped_reconciliation(
         "operation_proof_digest",
         "prior_result_digest",
         "external_identity_digest",
+        "original_proof_evidence_digest",
         "reconciliation_request_digest",
         "reconciliation_proof_digest",
     )
@@ -2718,6 +2727,9 @@ def _execute_target_scoped_reconciliation(
             "prior_result_digest": request.prior_result_digest,
             "external_identity_digest": (
                 request.external_identity_digest
+            ),
+            "original_proof_evidence_digest": (
+                request.original_proof_evidence_digest
             ),
             "reconciliation_request_digest": request.request_digest,
             "publication_targets": list(request.publication_targets),

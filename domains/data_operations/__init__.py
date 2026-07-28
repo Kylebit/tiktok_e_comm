@@ -22,6 +22,10 @@ from domains.data_operations.release_outcomes import (
     evaluate_release_outcomes,
     release_outcome_dataset,
 )
+from domains.data_operations.release_optimization import (
+    OptimizationThresholds,
+    build_release_optimization_candidates,
+)
 
 __all__ = [
     "DataQualityIssue",
@@ -41,4 +45,6 @@ __all__ = [
     "adapt_release_outcome_receipts",
     "release_outcome_dataset",
     "evaluate_release_outcomes",
+    "OptimizationThresholds",
+    "build_release_optimization_candidates",
 ]

@@ -22,22 +22,287 @@ class ShopeeRegionalDispatchUnknownError(ShopeeRegionalPublishReconciliationErro
 
 def reconcile_existing_global_site(*, request) -> dict:
     """Official GET-only readback for a durable regional item; no refresh/write."""
+    from datetime import datetime, timedelta, timezone
+    from decimal import Decimal, InvalidOperation
+
     from domains.channel_operations.target_scoped_retry_adapters import _prepared_shopee_credentials
     from modules.shopee.auth import load_tokens
     from modules.shopee.client import resolve_global_item_id
-    from datetime import datetime, timedelta, timezone
-    shop_id, token = _prepared_shopee_credentials(request.target_label.rsplit(":", 1)[1])
+    from shared_platform.target_scoped_release_contracts import (
+        canonical_digest,
+        evaluate_shopee_regional_copy_observation,
+        evaluate_shopee_regional_image_observation,
+        shopee_regional_observation_outcome,
+    )
+
+    operation = request.operation_request
+    command = operation.planned_command
+    original = request.original_proof_evidence
     item_id = str(request.external_id or "")
-    if not item_id.isdigit(): raise RuntimeError("durable external item identity is required")
-    store = load_tokens(); merchant_id = int((store.get("shops", {}).get(str(shop_id), {}) or {}).get("merchant_id") or 0); merchant_token = str((store.get("merchants", {}).get(str(merchant_id), {}) or {}).get("access_token") or "")
-    base = shop_get("/api/v2/product/get_item_base_info", shop_id, token, {"item_id_list": item_id}); rows = (base.get("response") or {}).get("item_list") if isinstance(base, dict) else None
-    models = shop_get("/api/v2/product/get_model_list", shop_id, token, {"item_id": int(item_id)}); model_rows = (models.get("response") or {}).get("model") if isinstance(models, dict) else None
-    item = rows[0] if isinstance(rows, list) and len(rows) == 1 else {}; matches = [x for x in (model_rows or []) if str(x.get("model_sku") or "") == str(request.seller_sku)[-4:].zfill(4)]
-    prices=(matches[0].get("price_info") or []) if len(matches)==1 else []; price=[x for x in prices if str(x.get("currency") or "").upper()=="MYR"]
-    images=((item.get("image") or {}).get("image_url_list") or []); enabled={int(x.get("logistic_id")) for x in (item.get("logistic_info") or []) if isinstance(x,dict) and x.get("enabled") and x.get("logistic_id") is not None}
-    checks={"unique_item": isinstance(rows,list) and len(rows)==1 and str(item.get("item_id") or "")==item_id,"unique_model_sku":len(matches)==1 and str(matches[0].get("model_id") or "").isdigit() if len(matches)==1 else False,"global_linkage":bool(resolve_global_item_id(shop_id,merchant_id,merchant_token,item_id)),"normal_status":str(item.get("item_status") or "")=="NORMAL","local_price_myr_33":len(price)==1 and str(price[0].get("original_price")) in {"33","33.0","33.00"},"images_exact":isinstance(images,list) and len(images)==6 and bool(images and images[0]),"logistics_nonempty":bool(enabled)}
-    now=datetime.now(timezone.utc); evidence={"item_id":item_id,"derived_status":"warning","manual_review_required":True,"profit_status":"unverified","image_count":len(images),"enabled_logistics_count":len(enabled),"matched_rule_ids":["global_image:rehosted_order_unverifiable"]}
-    return {"checks":checks,"evidence":evidence,"summary":{"state":"official_get_only","manual_review_required":True},"observed_at":now.isoformat(),"expires_at":(now+timedelta(minutes=5)).isoformat()}
+    if not item_id.isdigit():
+        raise RuntimeError("durable external item identity is required")
+
+    expected_global_item_id = str(original.get("global_item_id") or "")
+    expected_logistics = original.get("selected_logistics_ids")
+    if (
+        not expected_global_item_id.isdigit()
+        or not isinstance(expected_logistics, (list, tuple))
+        or not expected_logistics
+    ):
+        raise RuntimeError("original proof identity is incomplete")
+
+    shop_id, token = _prepared_shopee_credentials(command["region"])
+    token_store = load_tokens()
+    shop_auth = (
+        token_store.get("shops", {}).get(str(shop_id), {}) or {}
+    )
+    merchant_id = int(shop_auth.get("merchant_id") or 0)
+    merchant_auth = (
+        token_store.get("merchants", {}).get(str(merchant_id), {}) or {}
+    )
+    merchant_token = str(merchant_auth.get("access_token") or "")
+    if not merchant_id or not merchant_token:
+        raise RuntimeError("prepared merchant token is required")
+
+    base = shop_get(
+        "/api/v2/product/get_item_base_info",
+        shop_id,
+        token,
+        {"item_id_list": item_id},
+    )
+    if (
+        not isinstance(base, dict)
+        or base.get("error")
+        or not isinstance(base.get("response"), dict)
+    ):
+        raise RuntimeError("official regional item response is invalid")
+    rows = base["response"].get("item_list")
+    if (
+        not isinstance(rows, list)
+        or len(rows) != 1
+        or not isinstance(rows[0], dict)
+    ):
+        raise RuntimeError("official regional item must be unique")
+    item = rows[0]
+
+    models = shop_get(
+        "/api/v2/product/get_model_list",
+        shop_id,
+        token,
+        {"item_id": int(item_id)},
+    )
+    if (
+        not isinstance(models, dict)
+        or models.get("error")
+        or not isinstance(models.get("response"), dict)
+    ):
+        raise RuntimeError("official regional model response is invalid")
+    model_rows = models["response"].get("model")
+    if not isinstance(model_rows, list):
+        raise RuntimeError("official regional model list is invalid")
+    matches = [
+        row
+        for row in model_rows
+        if isinstance(row, dict)
+        and str(row.get("model_sku") or "") == str(command["model_sku"])
+    ]
+
+    resolved_global_item_id = str(
+        resolve_global_item_id(
+            shop_id,
+            merchant_id,
+            merchant_token,
+            item_id,
+        )
+        or ""
+    )
+    resolved_global_digest = canonical_digest(
+        {
+            "provider": "shopee",
+            "global_item_id": resolved_global_item_id,
+        }
+    )
+    global_linkage_exact = bool(
+        resolved_global_item_id
+        and resolved_global_item_id == expected_global_item_id
+        and resolved_global_digest
+        == request.global_item_identity_digest
+    )
+
+    runtime_master = _official_global_master(
+        merchant_id=merchant_id,
+        merchant_token=merchant_token,
+        global_item_id=expected_global_item_id,
+        model_sku=str(command["model_sku"]),
+        command=dict(command),
+    )
+
+    unique_model = bool(
+        len(matches) == 1
+        and str(matches[0].get("model_id") or "").isdigit()
+    )
+    prices = (
+        matches[0].get("price_info")
+        if unique_model
+        and isinstance(matches[0].get("price_info"), list)
+        else []
+    )
+    price_rows = [
+        row
+        for row in prices
+        if isinstance(row, dict)
+        and str(row.get("currency") or "").upper()
+        == str(command["local_currency"]).upper()
+    ]
+    try:
+        price_exact = bool(
+            len(price_rows) == 1
+            and Decimal(str(price_rows[0].get("original_price")))
+            == Decimal(str(command["local_original_price"]))
+        )
+    except (InvalidOperation, TypeError, ValueError):
+        price_exact = False
+
+    image = item.get("image")
+    image_urls = (
+        image.get("image_url_list")
+        if isinstance(image, dict)
+        else None
+    )
+    image_count_primary_exact = bool(
+        isinstance(image_urls, list)
+        and len(image_urls) == int(command["approved_image_count"])
+        and image_urls
+        and isinstance(image_urls[0], str)
+        and bool(image_urls[0].strip())
+    )
+
+    logistic_rows = item.get("logistic_info")
+    logistics_shape_exact = isinstance(logistic_rows, list)
+    enabled_ids: list[int] = []
+    if logistics_shape_exact:
+        for row in logistic_rows:
+            if not isinstance(row, dict):
+                logistics_shape_exact = False
+                break
+            if row.get("enabled") is not True:
+                continue
+            logistic_id = row.get("logistic_id")
+            if (
+                isinstance(logistic_id, bool)
+                or not isinstance(logistic_id, int)
+                or logistic_id < 1
+            ):
+                logistics_shape_exact = False
+                break
+            enabled_ids.append(logistic_id)
+    enabled_ids = sorted(enabled_ids)
+    selected_logistics_exact = bool(
+        logistics_shape_exact
+        and len(enabled_ids) == len(set(enabled_ids))
+        and enabled_ids == list(expected_logistics)
+        and canonical_digest({"ids": enabled_ids})
+        == original.get("selected_logistics_digest")
+    )
+
+    hard_checks = {
+        "existing_item_unique": (
+            str(item.get("item_id") or "") == item_id
+        ),
+        "existing_model_unique": unique_model,
+        "global_linkage_exact": global_linkage_exact,
+        "planned_status_exact": (
+            str(item.get("item_status") or "")
+            == str(command["item_status"])
+        ),
+        "local_price_currency_exact": price_exact,
+        "image_count_primary_exact": image_count_primary_exact,
+        "selected_logistics_exact": selected_logistics_exact,
+    }
+    hard_exact = all(hard_checks.values())
+    copy_observation = evaluate_shopee_regional_copy_observation(
+        source_title=runtime_master["title"],
+        source_description=runtime_master["description"],
+        source_global_master_digest=command["approved_master_digest"],
+        regional_title=item.get("item_name"),
+        regional_description=item.get("description"),
+        site=command["region"],
+    )
+    image_observation = evaluate_shopee_regional_image_observation(
+        approved_count=command["approved_image_count"],
+        regional_image_urls=image_urls,
+        global_linkage_verified=global_linkage_exact,
+    )
+    observation_outcome = shopee_regional_observation_outcome(
+        listing_hard_exact=hard_exact,
+        copy_observation=copy_observation,
+        image_observation=image_observation,
+    )
+    observation_acceptable = (
+        observation_outcome.get("outcome") == "SUCCEEDED"
+    )
+    checks = {
+        **hard_checks,
+        "derived_observation_acceptable": observation_acceptable,
+    }
+    now = datetime.now(timezone.utc)
+    evidence = {
+        "schema_version": "shopee-regional-readback-redacted/v1",
+        "authority": "shopee_official_get",
+        "target_label": operation.target_label,
+        "external_identity_digest": request.external_identity_digest,
+        "resolved_global_item_identity_digest": resolved_global_digest,
+        "listing_identity_verified": hard_exact,
+        "derived_translation_status": observation_outcome.get(
+            "derived_translation_status"
+        ),
+        "derived_image_status": observation_outcome.get(
+            "derived_image_status"
+        ),
+        "manual_review_required": (
+            observation_outcome.get("manual_review_required") is True
+        ),
+        "semantic_equivalence": "unverified",
+        "profit_status": "unverified",
+        "matched_rule_ids": list(
+            observation_outcome.get("matched_rule_ids") or ()
+        ),
+        "observation_evidence_digest": observation_outcome.get(
+            "evidence_digest"
+        ),
+        "image_observation_evidence_digest": image_observation.get(
+            "evidence_digest"
+        ),
+        "image_count": len(image_urls) if isinstance(image_urls, list) else 0,
+        "enabled_logistics_count": len(enabled_ids),
+        "status": (
+            "exact_with_manual_review"
+            if observation_acceptable
+            else "needs_reconciliation"
+        ),
+    }
+    return {
+        "checks": checks,
+        "evidence": evidence,
+        "summary": {
+            "target_label": operation.target_label,
+            "status": evidence["status"],
+            "listing_identity_verified": hard_exact,
+            "derived_translation_status": evidence[
+                "derived_translation_status"
+            ],
+            "derived_image_status": evidence["derived_image_status"],
+            "manual_review_required": evidence[
+                "manual_review_required"
+            ],
+            "image_count": evidence["image_count"],
+            "enabled_logistics_count": evidence[
+                "enabled_logistics_count"
+            ],
+        },
+        "observed_at": now.isoformat(),
+        "expires_at": (now + timedelta(minutes=5)).isoformat(),
+    }
 
 
 def scan_prepared_shop_sku(*, shop_id: int, access_token: str, seller_sku: str) -> dict:

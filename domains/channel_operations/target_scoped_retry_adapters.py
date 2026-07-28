@@ -28,12 +28,36 @@ class TargetScopedRetryError(RuntimeError):
 
 def build_official_target_reconciliation_proof(request, allow_refresh: bool = False) -> dict:
     """GET-only proof for an already durable target-scoped operation."""
-    if allow_refresh or request.target_label not in _SHOPEE_TARGETS:
+    operation = request.operation_request
+    if allow_refresh or operation.target_label not in _SHOPEE_TARGETS:
         raise TargetScopedRetryError("GET-only reconciliation forbids refresh or unsupported targets")
     from modules.shopee.target_scoped import reconcile_existing_global_site
     receipt = reconcile_existing_global_site(request=request)
     checks = dict(receipt["checks"])
-    payload = {"schema_version":"official-target-reconciliation-proof/v1","reconciliation_mode":"official_get_only","reconciliation_request_digest":request.request_digest(),"plan_id":request.plan_id,"run_id":request.run_id,"target_label":request.target_label,"operation_digest":request.operation_digest,"operation_proof_digest":request.operation_proof_digest,"prior_result_digest":request.prior_result_digest,"external_identity_digest":request.external_identity_digest,"provided_by":"03","allow_refresh":False,"checks":checks,"semantic_evidence":dict(receipt["evidence"]),"redacted_summary":dict(receipt["summary"]),"external_writes_performed":[]}
+    payload = {
+        "schema_version": "official-target-reconciliation-proof/v1",
+        "reconciliation_mode": request.reconciliation_mode,
+        "reconciliation_request_digest": request.request_digest,
+        "plan_id": operation.plan_id,
+        "run_id": operation.run_id,
+        "target_label": operation.target_label,
+        "operation_digest": request.operation_digest,
+        "operation_proof_digest": request.operation_proof_digest,
+        "prior_result_digest": request.prior_result_digest,
+        "external_identity_digest": request.external_identity_digest,
+        "original_proof_evidence_digest": (
+            request.original_proof_evidence_digest
+        ),
+        "global_item_identity_digest": (
+            request.global_item_identity_digest
+        ),
+        "provided_by": "03",
+        "allow_refresh": False,
+        "checks": checks,
+        "semantic_evidence": dict(receipt["evidence"]),
+        "redacted_summary": dict(receipt["summary"]),
+        "external_writes_performed": [],
+    }
     return {**payload, "observed_at": receipt["observed_at"], "expires_at": receipt["expires_at"], "proof_digest": canonical_digest(payload)}
 
 
@@ -43,8 +67,64 @@ def reconcile_target_scoped_operation(request, proof) -> AdapterExecutionResult:
     if not isinstance(raw, Mapping) or raw.get("allow_refresh") is not False:
         raise TargetScopedRetryError("GET-only reconciliation proof is invalid")
     evidence = raw.get("semantic_evidence") or {}
-    verified = all((raw.get("checks") or {}).values()) and evidence.get("derived_status") in {"observed", "warning"}
-    return AdapterExecutionResult(verified, verified, "Shopee official GET-only reconciliation" if verified else "Shopee reconciliation requires review", evidence.get("item_id"), {"external_writes_performed": [], "verified": verified, "manual_review_required": evidence.get("manual_review_required") is True, "profit_status":"unverified", "readback": evidence})
+    operation = request.operation_request
+    verified = bool(
+        all((raw.get("checks") or {}).values())
+        and evidence.get("listing_identity_verified") is True
+        and evidence.get("resolved_global_item_identity_digest")
+        == request.global_item_identity_digest
+        and evidence.get("derived_translation_status")
+        in {"observed", "warning"}
+        and evidence.get("derived_image_status")
+        in {"observed", "warning"}
+        and evidence.get("profit_status") == "unverified"
+        and raw.get("original_proof_evidence_digest")
+        == request.original_proof_evidence_digest
+        and raw.get("global_item_identity_digest")
+        == request.global_item_identity_digest
+        and raw.get("target_label") == operation.target_label
+    )
+    result_evidence = {
+        "external_writes_performed": [],
+        "verified": verified,
+        "reconciliation_mode": request.reconciliation_mode,
+        "checks": dict(raw.get("checks") or {}),
+        "manual_review_required": (
+            evidence.get("manual_review_required") is True
+        ),
+        "semantic_equivalence": "unverified",
+        "profit_status": "unverified",
+        "derived_translation_status": evidence.get(
+            "derived_translation_status"
+        ),
+        "derived_image_status": evidence.get("derived_image_status"),
+        "matched_rule_ids": list(evidence.get("matched_rule_ids") or ()),
+        "observation_evidence_digest": evidence.get(
+            "observation_evidence_digest"
+        ),
+        "image_observation_evidence_digest": evidence.get(
+            "image_observation_evidence_digest"
+        ),
+        "resolved_global_item_identity_digest": evidence.get(
+            "resolved_global_item_identity_digest"
+        ),
+        "image_count": evidence.get("image_count"),
+        "enabled_logistics_count": evidence.get(
+            "enabled_logistics_count"
+        ),
+    }
+    return AdapterExecutionResult(
+        verified,
+        verified,
+        (
+            "Shopee official GET-only reconciliation"
+            if verified
+            else "Shopee reconciliation requires review"
+        ),
+        request.external_id,
+        result_evidence,
+        submission_accepted=True,
+    )
 
 
 def _proof_payload(request: TargetScopedOperationRequest, *, checks: Mapping[str, bool], semantic_evidence: Mapping[str, Any], summary: Mapping[str, Any]) -> dict[str, Any]:

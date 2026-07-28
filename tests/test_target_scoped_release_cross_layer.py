@@ -157,7 +157,11 @@ def _gate(monkeypatch, store: ReleaseStore, plan: dict, run_id: str) -> None:
 
     def readonly_gate(_data, *, store):
         return {
-            "dashboard": {},
+            "dashboard": {
+                "product": {
+                    "revision": plan["payload"]["product_revision"],
+                }
+            },
             "payload": plan["payload"],
             "plan": plan,
             "run": store.get_run(run_id),
@@ -423,6 +427,169 @@ def _post_url(base_url: str) -> str:
         base_url
         + "/api/product-workspace/release-target/target-scoped-action"
     )
+
+
+def _reconciliation_preview_url(
+    base_url: str,
+    target_label: str,
+) -> str:
+    query = urllib.parse.urlencode(
+        {"offer_id": "3838616043", "target_label": target_label}
+    )
+    return (
+        base_url
+        + "/api/product-workspace/release-target/"
+        + "target-scoped-reconciliation-preview?"
+        + query
+    )
+
+
+def _reconciliation_post_url(base_url: str) -> str:
+    return (
+        base_url
+        + "/api/product-workspace/release-target/"
+        + "target-scoped-reconciliation"
+    )
+
+
+def _reconciliation_post_body(
+    plan: dict,
+    preview: dict,
+) -> dict:
+    return {
+        "offer_id": "3838616043",
+        "seller_sku": "0954",
+        "publication_targets": list(preview["publication_targets"]),
+        "target_label": preview["target_label"],
+        "plan_id": plan["plan_id"],
+        "run_id": preview["run_id"],
+        "confirmation_token": plan["confirmation_token"],
+        "expected_revision": preview["expected_revision"],
+        "failure_attempt": preview["failure_attempt"],
+        "payload_digest": preview["payload_digest"],
+        "planned_command_digest": preview["planned_command_digest"],
+        "preflight_digest": preview["preflight_digest"],
+        "operation_digest": preview["operation_digest"],
+        "operation_proof_digest": preview["operation_proof_digest"],
+        "prior_result_digest": preview["prior_result_digest"],
+        "external_identity_digest": preview["external_identity_digest"],
+        "original_proof_evidence_digest": preview[
+            "original_proof_evidence_digest"
+        ],
+        "global_item_identity_digest": preview[
+            "global_item_identity_digest"
+        ],
+        "reconciliation_request_digest": preview[
+            "reconciliation_request_digest"
+        ],
+        "reconciliation_proof_digest": preview[
+            "reconciliation_proof_digest"
+        ],
+        "approved_by": "Kyle",
+        "confirm_target_scoped_reconciliation": True,
+    }
+
+
+def test_http_getonly_reconciliation_closes_ambiguous_my_without_new_write(
+    tmp_path,
+    monkeypatch,
+    target_scoped_http_server,
+):
+    target_label = "shopee:MY"
+    store, plan, run = _failed_store(tmp_path, target_label)
+    _gate(monkeypatch, store, plan, run["run_id"])
+    _freeze_proof_clock(monkeypatch)
+
+    _official_fixture(
+        monkeypatch,
+        target_label=target_label,
+        failure="copy_needs_review",
+    )
+    _, action_preview = _http_json(
+        _preview_url(target_scoped_http_server, target_label)
+    )
+    action_status, action_payload = _http_json(
+        _post_url(target_scoped_http_server),
+        method="POST",
+        payload=_post_body(plan, target_label, action_preview),
+    )
+    assert action_status == 409
+    assert action_payload["operation_status"] == (
+        "RECONCILIATION_REQUIRED"
+    )
+    before_close = store.get_run(run["run_id"])
+    attempts = before_close["targets"][0]["attempts"]
+
+    _official_fixture(monkeypatch, target_label=target_label)
+    calls = {"proof": 0, "reconcile": 0}
+    original_proof = (
+        adapters.build_official_target_reconciliation_proof
+    )
+    original_reconcile = adapters.reconcile_target_scoped_operation
+
+    def counted_proof(request, allow_refresh=False):
+        calls["proof"] += 1
+        return original_proof(request, allow_refresh=allow_refresh)
+
+    def counted_reconcile(request, proof):
+        calls["reconcile"] += 1
+        return original_reconcile(request, proof)
+
+    monkeypatch.setattr(
+        adapters,
+        "build_official_target_reconciliation_proof",
+        counted_proof,
+    )
+    monkeypatch.setattr(
+        adapters,
+        "reconcile_target_scoped_operation",
+        counted_reconcile,
+    )
+
+    preview_status, preview = _http_json(
+        _reconciliation_preview_url(
+            target_scoped_http_server,
+            target_label,
+        )
+    )
+    assert preview_status == 200, preview
+    assert preview["selected_logistics_count"] == 2
+    assert "selected_logistics_ids" not in json.dumps(preview)
+    close_body = _reconciliation_post_body(plan, preview)
+    close_status, close_payload = _http_json(
+        _reconciliation_post_url(target_scoped_http_server),
+        method="POST",
+        payload=close_body,
+    )
+
+    assert close_status == 200, close_payload
+    assert close_payload["external_writes_performed"] == []
+    assert calls == {"proof": 2, "reconcile": 1}
+    completed = store.get_run(run["run_id"])
+    assert completed["targets"][0]["status"] == "SUCCEEDED"
+    assert completed["targets"][0]["attempts"] == attempts
+    operation = store.get_target_scoped_operation(
+        run_id=run["run_id"],
+        target_label=target_label,
+    )
+    assert operation["status"] == "SUCCEEDED"
+    assert operation["result"]["prior_external_writes_performed"] == [
+        "shopee:regional_publish"
+    ]
+    assert operation["result"][
+        "reconciliation_external_writes_performed"
+    ] == []
+
+    before_replay = dict(calls)
+    replay_status, replay = _http_json(
+        _reconciliation_post_url(target_scoped_http_server),
+        method="POST",
+        payload=close_body,
+    )
+    assert replay_status == 200
+    assert replay["idempotent"] is True
+    assert replay["external_writes_performed"] == []
+    assert calls == before_replay
 
 
 @pytest.mark.parametrize("target_label", ["shopee:MY", "shopee:VN"])

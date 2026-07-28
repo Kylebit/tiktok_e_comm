@@ -1086,6 +1086,14 @@ section { scroll-margin-top: 20px; }
   cursor: not-allowed;
   opacity: .62;
 }
+.disabled-control-reason {
+  grid-column: 2;
+  display: block;
+  margin-top: 2px;
+  color: #8a3f32;
+  font-weight: 700;
+  line-height: 1.45;
+}
 .approval-actions {
   display: flex;
   align-items: center;

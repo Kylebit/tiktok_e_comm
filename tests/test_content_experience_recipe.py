@@ -139,9 +139,14 @@ def test_source_decisions_and_identity_references_save_atomically_with_revision(
     monkeypatch.setattr(workbench, "resolve_offer_key", lambda _value: "3828540231")
     monkeypatch.setattr(workbench, "load_state", lambda _offer: state)
     monkeypatch.setattr(workbench, "_content_package_dir", lambda _id: tmp_path)
-    monkeypatch.setattr(workbench, "_source_summary", lambda _offer: {"images": [
-        {"url": first, "kind": "main"}, {"url": second, "kind": "detail"},
-    ]})
+    video = "https://assets.example/source.mp4"
+    monkeypatch.setattr(workbench, "_source_summary", lambda _offer: {
+        "images": [
+            {"url": first, "kind": "main"},
+            {"url": second, "kind": "detail"},
+        ],
+        "video": {"url": video, "action": "keep"},
+    })
     monkeypatch.setattr(workbench, "save_state", lambda _offer, value: saves.append(copy.deepcopy(value)) or value)
     monkeypatch.setattr(workbench, "content_package_summary", lambda _offer: {"ok": True})
 
@@ -153,11 +158,15 @@ def test_source_decisions_and_identity_references_save_atomically_with_revision(
             {"url": first, "action": "keep"}, {"url": second, "action": "keep"},
         ],
         "image_order": [second, first],
+        "video_action": "remove",
+        "video_url": video,
     })
 
     assert state["content_package"]["identity_reference_urls"] == [first, second]
     assert state["content_package"]["primary_identity_url"] == second
     assert state["review"]["image_order"] == [second, first]
+    assert state["review"]["video_action"] == "remove"
+    assert state["review"]["video_url"] == video
     assert len(saves) == 1
     with pytest.raises(ValueError, match="stale"):
         workbench.save_content_package_review("3828540231", {"expected_revision": 7})
@@ -183,6 +192,9 @@ def test_source_decisions_and_identity_references_save_atomically_with_revision(
          "primary_identity_url": second, "image_actions": [
              {"url": first, "action": "keep"}, {"url": second, "action": "keep"},
          ]},
+        {"expected_revision": 8, "video_action": True, "video_url": video},
+        {"expected_revision": 8, "video_action": "keep",
+         "video_url": "https://assets.example/not-current.mp4"},
     ]
     for invalid in invalid_reviews:
         before_saves = len(saves)

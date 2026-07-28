@@ -158,6 +158,13 @@ section { scroll-margin-top: 18px; }
 .source-decision-summary strong { width: fit-content; padding: 8px 10px; border-radius: 9px; color: #176b5e; background: rgba(35,119,108,.1); font-size: 11px; }
 .identity-check { display: flex; align-items: center; gap: 6px; }
 .identity-check input,.check-row input,.confirm-row input { min-height: auto; }
+.disabled-control-reason {
+  display: block;
+  margin-top: 4px;
+  color: #8a3f32;
+  font-weight: 700;
+  line-height: 1.45;
+}
 .strategy-panel,.recipe-panel { display: grid; gap: 17px; margin-bottom: 14px; padding: 20px; border: 1px solid var(--line); border-radius: 17px; background: linear-gradient(135deg,rgba(255,253,247,.92),rgba(239,246,241,.78)); }
 .strategy-panel h3 { margin: 3px 0 5px; font: 650 23px/1.15 Georgia,serif; }
 .strategy-panel p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.55; }

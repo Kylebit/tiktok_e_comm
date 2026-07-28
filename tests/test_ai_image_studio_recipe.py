@@ -132,6 +132,7 @@ def test_legacy_source_video_review_is_preserved_in_ai_studio():
     assert '<option value="keep">' in HTML
     assert '<option value="remove">' in HTML
     assert 'video_action: videoUrl ? ($("#videoAction")?.value || "remove") : "none"' in SCRIPT
+    assert "video_url: videoUrl" in SCRIPT
     assert "preview?.review?.video_action || sourceVideo.action || \"keep\"" in SCRIPT
     assert '<video controls preload="none">' in SCRIPT
     assert 'target="_blank" rel="noopener">在新标签页打开来源视频' in SCRIPT

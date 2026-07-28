@@ -621,6 +621,7 @@
 
   function contentReviewPayload() {
     const refs = selectedIdentityReferences();
+    const videoUrl = String(preview?.source?.video?.url || "").trim();
     return {
       content_strategy: currentContentStrategy(),
       fact_card_approved: $("#factApproved").checked,
@@ -629,6 +630,8 @@
       primary_identity_url: refs.includes(selectedPrimaryReference())
         ? selectedPrimaryReference()
         : (refs[0] || ""),
+      video_action: videoUrl ? ($("#videoAction")?.value || "remove") : "none",
+      video_url: videoUrl,
       suite_customization: collectRecipeFromDom(),
       asset_decisions: assetDecisionsFromDom(),
     };

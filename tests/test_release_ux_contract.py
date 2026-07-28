@@ -420,6 +420,33 @@ def test_formal_pages_expose_accessible_feedback_regions():
         assert not missing, f"{relative_path} misses feedback contracts {missing}"
 
 
+def test_disabled_release_checkboxes_expose_visible_reasons():
+    html = (ROOT / "web/product_workspace.html").read_text(encoding="utf-8")
+    studio_html = (ROOT / "web/ai_image_studio.html").read_text(encoding="utf-8")
+    script = (ROOT / "web/static/disabled_control_hints.js").read_text(
+        encoding="utf-8"
+    )
+    style = (ROOT / "web/static/product_workspace.css").read_text(encoding="utf-8")
+    studio_style = (ROOT / "web/static/ai_image_studio.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert "disabled_control_hints.js?v=20260729-v1" in html
+    assert "disabled_control_hints.js?v=20260729-v1" in studio_html
+    for control_id in (
+        "releasePlanCheckbox",
+        "prepareMiaoshouCheckbox",
+        "commonOverwriteCheckbox",
+        "publishAllCheckbox",
+    ):
+        assert control_id in script
+    assert "暂不可选：" in script
+    assert 'control.setAttribute("aria-describedby", hint.id)' in script
+    assert 'document.querySelectorAll(\'input[type="checkbox"]\')' in script
+    assert ".disabled-control-reason" in style
+    assert ".disabled-control-reason" in studio_style
+
+
 def test_release_pages_in_real_chromium():
     runtime = _browser_runtime()
     if runtime is None:

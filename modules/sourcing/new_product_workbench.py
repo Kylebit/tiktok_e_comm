@@ -3368,7 +3368,12 @@ def save_content_package_review(offer_id_or_url: str, review: dict[str, Any]) ->
     collect_box = review_package.get("collect_box") if isinstance(review_package.get("collect_box"), dict) else {}
     source = (
         _source_summary(offer_id)
-        if "identity_reference_urls" in review or "image_actions" in review
+        if (
+            "identity_reference_urls" in review
+            or "image_actions" in review
+            or "video_action" in review
+            or "video_url" in review
+        )
         else {}
     )
     allowed_rows = {
@@ -3446,6 +3451,43 @@ def save_content_package_review(offer_id_or_url: str, review: dict[str, Any]) ->
             if str(url).strip() in kept_urls
         ]
         state["review"]["image_order"] = list(dict.fromkeys(requested_order + kept_urls))
+    if "video_action" in review or "video_url" in review:
+        raw_video_action = review.get("video_action")
+        if type(raw_video_action) is not str:
+            raise ValueError("video_action must be keep, remove, or none")
+        video_action = raw_video_action.strip()
+        source_video_url = str(
+            (source.get("video") or {}).get("url") or ""
+        ).strip()
+        if source_video_url:
+            if video_action not in {"keep", "remove"}:
+                raise ValueError("video_action must be keep or remove")
+            if "video_url" in review:
+                raw_video_url = review.get("video_url")
+                if (
+                    type(raw_video_url) is not str
+                    or raw_video_url.strip() != source_video_url
+                ):
+                    raise ValueError(
+                        "video_url must match the current collected source video"
+                    )
+        else:
+            if video_action != "none":
+                raise ValueError(
+                    "video_action must be none when no source video exists"
+                )
+            if review.get("video_url") not in (None, ""):
+                raise ValueError(
+                    "video_url must be empty when no source video exists"
+                )
+        state_review = (
+            state.get("review")
+            if isinstance(state.get("review"), dict)
+            else {}
+        )
+        state_review["video_action"] = video_action
+        state_review["video_url"] = source_video_url
+        state["review"] = state_review
     if refs is not None:
         content["identity_reference_urls"] = refs
         content["primary_identity_url"] = (

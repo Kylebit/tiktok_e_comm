@@ -3690,6 +3690,7 @@ async function blockedCapabilityNextActionContract(browser, viewport) {
 function oneClickDashboard({
   offerId = "3828540231",
   terminal = false,
+  warningAccepted = false,
 } = {}) {
   const dashboard = JSON.parse(JSON.stringify(productDashboard));
   const payloadDigest = "a".repeat(64);
@@ -3732,18 +3733,26 @@ function oneClickDashboard({
     oneclick_controlplane: terminal
       ? oneClickProjection(
         "oneclick-release-status/v1",
-        "terminal",
+        warningAccepted ? "accepted" : "terminal",
         "WAITING_MANUAL_ACCEPTANCE",
       )
       : null,
     canonical_next_action: terminal
-      ? {
-        target_label: "tiktok:GB",
-        target_focus: "tiktok:GB",
-        canonical_status: "SUBMITTED_UNVERIFIED",
-        action: "verify_submission_in_marketplace",
-        runnable: false,
-      }
+      ? warningAccepted
+        ? {
+          target_label: "tiktok:GB",
+          target_focus: "tiktok:GB",
+          canonical_status: "SUBMITTED_UNVERIFIED",
+          action: "verify_submission_in_marketplace",
+          runnable: false,
+        }
+        : {
+          target_label: "shopee:MY",
+          target_focus: "shopee:MY",
+          canonical_status: "SUCCEEDED_MANUAL_REVIEW",
+          action: "review_verified_observation_warning",
+          runnable: false,
+        }
       : {
         target_label: "shopee:MY",
         target_focus: "shopee:MY",
@@ -3777,6 +3786,8 @@ function oneClickTargets(stage) {
       status: "SUCCEEDED",
       classification: "EXACT_READY_AUTOMATIC",
       runnable_now: false,
+      manual_after_submit: false,
+      requires_human: false,
       dependency: independentDependency,
       next_action: null,
       next_action_target: "miaoshou:COMMON",
@@ -3791,12 +3802,17 @@ function oneClickTargets(stage) {
     {
       target_label: "shopee:MY",
       storefront: true,
-      status: stage === "terminal" ? "SUCCEEDED"
+      status: stage === "terminal" ? "SUCCEEDED_MANUAL_REVIEW"
+        : stage === "accepted" ? "SUCCEEDED"
         : stage === "running" ? "DISPATCHING" : "READY",
       classification: "EXACT_READY_AUTOMATIC",
       runnable_now: stage === "preview",
+      manual_after_submit: stage === "terminal",
+      requires_human: stage === "terminal",
       dependency: independentDependency,
-      next_action: stage === "terminal" ? null
+      next_action: stage === "terminal"
+        ? "review_verified_observation_warning"
+        : stage === "accepted" ? null
         : stage === "running"
           ? "wait_for_dispatch_receipt"
           : "wait_for_worker",
@@ -3808,15 +3824,51 @@ function oneClickTargets(stage) {
         adapter_policy: "3".repeat(64),
       },
       dispatch_ledger: {},
+      result: stage === "terminal" ? {
+        canonical_status: "SUCCEEDED_MANUAL_REVIEW",
+        reason_category: "CAPABILITY",
+        reason_scope: "TARGET",
+        reason_code: "shopee_observation_warning",
+        external_write_count: 2,
+        external_write_classes: [
+          "shopee:global_publish",
+          "shopee:regional_publish",
+        ],
+        cumulative_external_write_count: 2,
+        cumulative_external_write_classes: [
+          "shopee:global_publish",
+          "shopee:regional_publish",
+        ],
+        submission_accepted: true,
+        readback_verified: true,
+        dispatch_outcome_unknown: false,
+        evidence_digest: "a".repeat(64),
+        manual_review: true,
+        rule_ids: [
+          "copy:language_signal_weak",
+          "global_image:rehosted_order_unverifiable",
+        ],
+        observation_digests: [
+          "b".repeat(64),
+          "c".repeat(64),
+        ],
+      } : stage === "accepted" ? {
+        canonical_status: "SUCCEEDED",
+        manual_review: true,
+        manual_review_status: "ACCEPTED",
+      } : null,
     },
     {
       target_label: "tiktok:GB",
       storefront: true,
-      status: stage === "terminal" ? "SUBMITTED_UNVERIFIED" : "READY",
+      status: ["terminal", "accepted"].includes(stage)
+        ? "SUBMITTED_UNVERIFIED" : "READY",
       classification: "READY_SUBMIT_MANUAL",
       runnable_now: stage === "preview" || stage === "running",
+      manual_after_submit: true,
+      requires_human: ["terminal", "accepted"].includes(stage),
       dependency: tiktokDependency,
-      next_action: stage === "terminal"
+      next_action: ["terminal", "accepted"].includes(stage)
         ? "verify_submission_in_marketplace" : "wait_for_worker",
       next_action_target: "tiktok:GB",
       reason: null,
@@ -3833,6 +3885,8 @@ function oneClickTargets(stage) {
       status: "BLOCKED_CAPABILITY",
       classification: "BLOCKED_CAPABILITY",
       runnable_now: false,
+      manual_after_submit: false,
+      requires_human: false,
       dependency: independentDependency,
       next_action: "review_approved_content_facts",
       next_action_target: "shopee:VN",
@@ -3856,6 +3910,8 @@ function oneClickTargets(stage) {
       status: "BLOCKED_INVENTORY",
       classification: "BLOCKED_INVENTORY",
       runnable_now: false,
+      manual_after_submit: false,
+      requires_human: false,
       dependency: independentDependency,
       next_action: "approve_sellable_inventory",
       next_action_target: "ozon:RU",
@@ -3899,9 +3955,12 @@ function oneClickProjection(schemaVersion, stage, phase = null) {
     summary: {
       will_dispatch: stage === "preview" ? ["shopee:MY"] : [],
       manual_after_submit: ["preview", "running"].includes(stage)
-        ? ["tiktok:GB"] : [],
+        ? ["tiktok:GB"]
+        : stage === "terminal"
+          ? ["shopee:MY", "tiktok:GB"]
+          : stage === "accepted" ? ["tiktok:GB"] : [],
       blocked: ["shopee:VN", "ozon:RU"],
-      already_terminal: stage === "terminal"
+      already_terminal: ["terminal", "accepted"].includes(stage)
         ? ["shopee:MY", "tiktok:GB"] : [],
     },
     dispatch_capability: {
@@ -3913,12 +3972,20 @@ function oneClickProjection(schemaVersion, stage, phase = null) {
     },
     canonical_next_action: stage === "terminal"
       ? {
-        target_label: "tiktok:GB",
-        target_focus: "tiktok:GB",
-        canonical_status: "SUBMITTED_UNVERIFIED",
-        action: "verify_submission_in_marketplace",
+        target_label: "shopee:MY",
+        target_focus: "shopee:MY",
+        canonical_status: "SUCCEEDED_MANUAL_REVIEW",
+        action: "review_verified_observation_warning",
         runnable: false,
       }
+      : stage === "accepted"
+        ? {
+          target_label: "tiktok:GB",
+          target_focus: "tiktok:GB",
+          canonical_status: "SUBMITTED_UNVERIFIED",
+          action: "verify_submission_in_marketplace",
+          runnable: false,
+        }
       : stage === "running"
         ? {
           target_label: "tiktok:GB",
@@ -3959,6 +4026,8 @@ function oneClickPendingJobProjection() {
     status: "PENDING",
     classification: null,
     runnable_now: false,
+    manual_after_submit: false,
+    requires_human: false,
     dependency: target.target_label.startsWith("tiktok:")
       ? {
         policy_version: "oneclick-target-dependency/v1",
@@ -4002,6 +4071,8 @@ async function oneClickAsyncControlPlaneContract(browser, viewport) {
   let previewReads = 0;
   let publishPosts = 0;
   let statusReads = 0;
+  let manualAcceptancePosts = 0;
+  let manualAcceptanceBody = null;
   let terminal = false;
   page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
   page.on("console", (message) => {
@@ -4081,6 +4152,23 @@ async function oneClickAsyncControlPlaneContract(browser, viewport) {
         ),
       }));
     }
+    if (
+      url.pathname === "/api/product-workspace/release-target/manual-verify"
+      && request.method() === "POST"
+    ) {
+      manualAcceptancePosts += 1;
+      manualAcceptanceBody = request.postDataJSON();
+      const dashboard = oneClickDashboard({
+        terminal: true,
+        warningAccepted: true,
+      });
+      return route.fulfill(jsonResponse({
+        ok: true,
+        external_writes_performed: [],
+        job: dashboard.release_v1.oneclick_controlplane,
+        dashboard,
+      }));
+    }
     const fixture = apiFixture(
       url,
       request.method(),
@@ -4129,7 +4217,7 @@ async function oneClickAsyncControlPlaneContract(browser, viewport) {
     await page.waitForFunction(() => {
       if (
         document.querySelector("#oneClickNextActionButton")
-          ?.dataset.oneclickAction === "verify_submission_in_marketplace"
+          ?.dataset.oneclickAction === "review_verified_observation_warning"
       ) return true;
       const text = document.querySelector("#oneClickExecutionMessage")?.textContent || "";
       return text.includes("人工") || text.includes("验收") || text.includes("楠屾敹");
@@ -4161,20 +4249,105 @@ async function oneClickAsyncControlPlaneContract(browser, viewport) {
     const nextActionButton = page.locator("#oneClickNextActionButton");
     check(
       await nextActionButton.getAttribute("data-oneclick-action")
-        === "verify_submission_in_marketplace",
-      `one-click ${viewport.width}: status canonical action survives stale/failing dashboard refresh`,
+        === "review_verified_observation_warning",
+      `one-click ${viewport.width}: verified warning is the canonical controlled action`,
       await nextActionButton.getAttribute("data-oneclick-action"),
     );
-    await nextActionButton.click();
-    check(
-      await manualCard.evaluate((element) => document.activeElement === element),
-      `one-click ${viewport.width}: canonical manual action focuses exact target`,
+    const warningForm = page.locator(
+      '[data-oneclick-observation-review="shopee:MY"]',
     );
+    check(
+      await warningForm.isVisible(),
+      `one-click ${viewport.width}: Shopee warning has a dedicated acceptance form`,
+    );
+    const warningText = await warningForm.innerText();
+    check(
+      warningText.includes("官方硬事实已验证")
+        && warningText.includes("存在平台派生翻译/图片观察警告，等待Kyle人工验收")
+        && warningText.includes("copy:language_signal_weak")
+        && warningText.includes("global_image:rehosted_order_unverifiable"),
+      `one-click ${viewport.width}: warning form exposes only controlled redacted evidence`,
+      warningText,
+    );
+    check(
+      await warningForm.locator('[name="marketplace_product_id"]').count() === 0
+        && await warningForm.locator("[name^='check_']").count() === 0,
+      `one-click ${viewport.width}: warning form has no raw item identity or API-less checklist`,
+    );
+    await nextActionButton.click();
+    const warningCheckbox = warningForm.locator(
+      '[name="manual_review_accepted"]',
+    );
+    check(
+      await warningCheckbox.evaluate(
+        (element) => document.activeElement === element,
+      ),
+      `one-click ${viewport.width}: canonical warning action focuses its controlled acceptance`,
+    );
+    await warningCheckbox.check();
+    await warningForm.evaluate((form) => {
+      form.requestSubmit();
+      form.requestSubmit();
+    });
+    await page.waitForFunction(() => (
+      !document.querySelector("[data-oneclick-observation-review='shopee:MY']")
+      && document.querySelector("#oneClickNextActionButton")
+        ?.dataset.oneclickAction === "verify_submission_in_marketplace"
+    ));
+    check(
+      manualAcceptancePosts === 1,
+      `one-click ${viewport.width}: warning acceptance is posted exactly once`,
+      { manualAcceptancePosts, manualAcceptanceBody, requests },
+    );
+    check(
+      manualAcceptanceBody?.target_label === "shopee:MY"
+        && manualAcceptanceBody?.verified_by === "Kyle"
+        && manualAcceptanceBody?.user_verified === true
+        && manualAcceptanceBody?.manual_review_accepted === true
+        && /^[a-f0-9]{64}$/.test(
+          manualAcceptanceBody?.observation_evidence_digest || "",
+        )
+        && !Object.hasOwn(
+          manualAcceptanceBody || {},
+          "marketplace_product_id",
+        )
+        && !Object.hasOwn(manualAcceptanceBody || {}, "checks"),
+      `one-click ${viewport.width}: warning acceptance body is minimal and digest-bound`,
+      manualAcceptanceBody,
+    );
+    check(
+      await nextActionButton.getAttribute("data-oneclick-action")
+        === "verify_submission_in_marketplace",
+      `one-click ${viewport.width}: accepted warning advances to the independent API-less form`,
+      await nextActionButton.getAttribute("data-oneclick-action"),
+    );
+    const shopeeCard = page.locator(
+      '[data-oneclick-target="shopee:MY"]',
+    );
+    check(
+      (await shopeeCard.innerText()).includes("已完成官方回读"),
+      `one-click ${viewport.width}: accepted warning becomes canonical SUCCEEDED`,
+      await shopeeCard.innerText(),
+    );
+    check(
+      await manualCard.isVisible()
+        && (await manualCard.innerText()).includes("已提交，等待人工验收"),
+      `one-click ${viewport.width}: independent API-less acceptance remains pending`,
+    );
+    const statusReadsAfterAcceptance = statusReads;
     await page.waitForTimeout(1200);
     check(
-      publishPosts === 1,
-      `one-click ${viewport.width}: terminal polling never re-POSTs`,
-      { publishPosts, statusReads, dashboardReads },
+      publishPosts === 1
+        && manualAcceptancePosts === 1
+        && statusReads === statusReadsAfterAcceptance,
+      `one-click ${viewport.width}: acceptance is terminal and never republishes, retries, or resumes polling`,
+      {
+        publishPosts,
+        manualAcceptancePosts,
+        statusReads,
+        statusReadsAfterAcceptance,
+        dashboardReads,
+      },
     );
     check(
       dashboardReads === 2,
@@ -4214,6 +4387,11 @@ async function oneClickContentRecoveryContract(browser, viewport) {
     classification: target.target_label === "shopee:MY"
       ? "BLOCKED_CAPABILITY" : target.classification,
     runnable_now: false,
+    manual_after_submit: target.target_label === "shopee:MY"
+      ? false : target.manual_after_submit,
+    requires_human: target.target_label === "shopee:MY"
+      ? false : target.requires_human,
+    result: target.target_label === "shopee:MY" ? null : target.result,
     next_action: target.target_label === "shopee:MY"
       ? "review_approved_content_facts" : target.next_action,
     next_action_target: target.target_label === "shopee:MY"
@@ -4264,7 +4442,7 @@ async function oneClickContentRecoveryContract(browser, viewport) {
         - preview.storefront_count;
       preview.runnable_target_count = 0;
       preview.summary.will_dispatch = [];
-      preview.summary.manual_after_submit = [];
+      preview.summary.manual_after_submit = ["tiktok:GB"];
       preview.summary.blocked = [
         "shopee:MY",
         "shopee:VN",
@@ -4526,6 +4704,15 @@ async function oneClickStrictFailureContract(browser, mode) {
           (row) => row.target_label === "tiktok:GB",
         );
         target.dependency.prerequisite_status = "READY";
+      }
+      if (mode === "unknown-target-status") {
+        const target = job.targets.find(
+          (row) => row.target_label === "shopee:MY",
+        );
+        target.status = "UNKNOWN_TARGET_STATUS";
+      }
+      if (mode === "unknown-canonical-action") {
+        job.canonical_next_action.action = "unknown_action";
       }
       return route.fulfill(jsonResponse({
         ok: true,
@@ -4869,6 +5056,8 @@ async function legacyStateSafety(browser) {
     await oneClickStrictFailureContract(browser, "target-proof-missing");
     await oneClickStrictFailureContract(browser, "missing-target");
     await oneClickStrictFailureContract(browser, "dependency-drift");
+    await oneClickStrictFailureContract(browser, "unknown-target-status");
+    await oneClickStrictFailureContract(browser, "unknown-canonical-action");
     await oneClickFeatureDisabledContract(browser);
     await profitAsyncAndNoFalseSuccess(browser);
     await legacyStateSafety(browser);

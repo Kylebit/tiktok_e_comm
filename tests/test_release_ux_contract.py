@@ -561,6 +561,50 @@ def test_oneclick_release_ui_uses_only_the_async_server_controlplane():
     assert ".oneclick-target-card:focus-visible" in style
 
 
+def test_oneclick_manual_review_forms_keep_warning_and_apiless_contracts_separate():
+    html = (ROOT / "web/product_workspace.html").read_text(encoding="utf-8")
+    script = (ROOT / "web/static/product_workspace.js").read_text(
+        encoding="utf-8"
+    )
+    warning_submit = _function_body(
+        script,
+        "submitOneClickObservationAcceptance",
+    )
+    apiless_submit = _function_body(script, "submitManualTargetVerification")
+
+    assert "product_workspace.js?v=20260730-v15" in html
+    assert '"SUCCEEDED_MANUAL_REVIEW"' in script
+    assert '"review_verified_observation_warning"' in script
+    assert "oneclick-observation-review-form" in script
+    assert "官方硬事实已验证" in script
+    assert "存在平台派生翻译/图片观察警告，等待Kyle人工验收" in script
+    assert 'name="manual_review_accepted"' in script
+    assert "observation_evidence_digest" in warning_submit
+    assert "manual_review_accepted: true" in warning_submit
+    assert 'targetLabel.startsWith("shopee:")' in warning_submit
+    assert '"/api/product-workspace/release-target/manual-verify"' in warning_submit
+    assert "{ expectedStatus: 200 }" in warning_submit
+    assert "marketplace_product_id" not in warning_submit
+    assert "checks:" not in warning_submit
+    assert "oneClickExecution.job = acceptedJob" in warning_submit
+    assert 'acceptedTarget?.status !== "SUCCEEDED"' in warning_submit
+
+    assert "marketplace_product_id: productId" in apiless_submit
+    assert "checks:" in apiless_submit
+    for check_name in (
+        "identity_matches",
+        "seller_sku_matches",
+        "single_listing_for_sku",
+        "title_matches",
+        "price_matches",
+        "images_match",
+        "logistics_match",
+    ):
+        assert f"{check_name}: true" in apiless_submit
+    assert "manual_review_accepted" not in apiless_submit
+    assert "observation_evidence_digest" not in apiless_submit
+
+
 def test_release_pages_in_real_chromium():
     runtime = _browser_runtime()
     if runtime is None:

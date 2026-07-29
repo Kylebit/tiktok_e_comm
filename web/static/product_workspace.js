@@ -117,6 +117,7 @@
     "READY",
     "DISPATCHING",
     "SUCCEEDED",
+    "SUCCEEDED_MANUAL_REVIEW",
     "SUBMITTED_UNVERIFIED",
     "FAILED_PRE_SUBMIT",
     "RECONCILIATION_REQUIRED",
@@ -144,6 +145,7 @@
     "wait_for_dependency",
     "resolve_prerequisite_target",
     "verify_submission_in_marketplace",
+    "review_verified_observation_warning",
     "retry_exact_zero_write_action",
     "reconcile_before_any_retry",
     "restore_channel_authorization",
@@ -538,6 +540,57 @@
     return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
   }
 
+  function oneClickRuleId(value) {
+    return (
+      typeof value === "string"
+      && value.length > 0
+      && value.length <= 120
+      && value === value.trim()
+      && /^[A-Za-z0-9_.:-]+$/.test(value)
+    );
+  }
+
+  function validateOneClickObservationWarning(target) {
+    const result = target?.result;
+    if (
+      !target?.target_label?.startsWith("shopee:")
+      || target.status !== "SUCCEEDED_MANUAL_REVIEW"
+      || target.next_action !== "review_verified_observation_warning"
+      || target.next_action_target !== target.target_label
+      || target.requires_human !== true
+      || target.manual_after_submit !== true
+      || !result
+      || typeof result !== "object"
+      || Array.isArray(result)
+      || result.canonical_status !== "SUCCEEDED_MANUAL_REVIEW"
+      || result.manual_review !== true
+      || result.readback_verified !== true
+      || result.submission_accepted !== true
+      || result.dispatch_outcome_unknown !== false
+      || !Number.isInteger(result.external_write_count)
+      || result.external_write_count < 1
+      || !Array.isArray(result.external_write_classes)
+      || result.external_write_classes.length !== result.external_write_count
+      || result.external_write_classes.some((value) => (
+        typeof value !== "string" || !value || value !== value.trim()
+      ))
+      || !oneClickDigest(result.evidence_digest)
+      || !Array.isArray(result.rule_ids)
+      || result.rule_ids.length < 1
+      || result.rule_ids.some((value) => !oneClickRuleId(value))
+      || new Set(result.rule_ids).size !== result.rule_ids.length
+      || !Array.isArray(result.observation_digests)
+      || result.observation_digests.length < 1
+      || result.observation_digests.some((value) => !oneClickDigest(value))
+      || new Set(result.observation_digests).size
+        !== result.observation_digests.length
+    ) {
+      throw oneClickContractError(
+        "Shopee 观察警告验收证据不完整，已停止人工结案。",
+      );
+    }
+  }
+
   function sameSortedValues(left, right) {
     const leftValues = [...left].sort();
     const rightValues = [...right].sort();
@@ -621,6 +674,17 @@
             : !ONECLICK_CLASSIFICATIONS.has(target.classification)
         )
         || typeof target.runnable_now !== "boolean"
+        || typeof target.manual_after_submit !== "boolean"
+        || typeof target.requires_human !== "boolean"
+        || target.requires_human !== [
+          "SUCCEEDED_MANUAL_REVIEW",
+          "SUBMITTED_UNVERIFIED",
+        ].includes(target.status)
+        || (
+          ["SUCCEEDED_MANUAL_REVIEW", "SUBMITTED_UNVERIFIED"]
+            .includes(target.status)
+          && target.manual_after_submit !== true
+        )
         || typeof target.storefront !== "boolean"
         || (
           target.target_label === "miaoshou:COMMON"
@@ -702,6 +766,16 @@
       ) {
         throw oneClickContractError(
           "统一发布控制面店铺状态不完整，已停止提交。",
+        );
+      }
+      if (target.status === "SUCCEEDED_MANUAL_REVIEW") {
+        validateOneClickObservationWarning(target);
+      } else if (
+        target.next_action === "review_verified_observation_warning"
+        || target.result?.canonical_status === "SUCCEEDED_MANUAL_REVIEW"
+      ) {
+        throw oneClickContractError(
+          "Shopee 观察警告状态与验收动作不一致，已停止人工结案。",
         );
       }
       labels.add(target.target_label);
@@ -843,8 +917,15 @@
     const expectedAutomatic = runnable
       .filter((target) => target.classification === "EXACT_READY_AUTOMATIC")
       .map((target) => target.target_label);
-    const expectedManual = runnable
-      .filter((target) => target.classification === "READY_SUBMIT_MANUAL")
+    const expectedManual = storefronts
+      .filter((target) => (
+        (
+          target.runnable_now === true
+          && target.classification === "READY_SUBMIT_MANUAL"
+        )
+        || ["SUCCEEDED_MANUAL_REVIEW", "SUBMITTED_UNVERIFIED"]
+          .includes(target.status)
+      ))
       .map((target) => target.target_label);
     const blockedStatuses = new Set([
       "FAILED_PRE_SUBMIT",
@@ -863,7 +944,11 @@
       .map((target) => target.target_label);
     const expectedTerminal = storefronts
       .filter((target) => (
-        ["SUCCEEDED", "SUBMITTED_UNVERIFIED"].includes(target.status)
+        [
+          "SUCCEEDED",
+          "SUCCEEDED_MANUAL_REVIEW",
+          "SUBMITTED_UNVERIFIED",
+        ].includes(target.status)
       ))
       .map((target) => target.target_label);
     if (
@@ -915,6 +1000,7 @@
       wait_for_dependency: "等待前置目标完成",
       resolve_prerequisite_target: "处理前置目标",
       verify_submission_in_marketplace: "前往人工验收",
+      review_verified_observation_warning: "验收 Shopee 观察警告",
       retry_exact_zero_write_action: "修复后安全重试",
       reconcile_before_any_retry: "先完成只读对账",
       restore_channel_authorization: "恢复渠道授权",
@@ -939,6 +1025,7 @@
       READY: "可执行",
       DISPATCHING: "提交中",
       SUCCEEDED: "已完成官方回读",
+      SUCCEEDED_MANUAL_REVIEW: "官方硬事实已验证 · 等待观察警告验收",
       SUBMITTED_UNVERIFIED: "已提交，等待人工验收",
       FAILED_PRE_SUBMIT: "提交前安全失败",
       RECONCILIATION_REQUIRED: "需要对账，禁止重发",
@@ -973,6 +1060,7 @@
     const classification = String(target?.classification || "");
     const dependency = String(target?.dependency?.state || "");
     if (status === "SUCCEEDED") return "terminal";
+    if (status === "SUCCEEDED_MANUAL_REVIEW") return "manual";
     if (status === "SUBMITTED_UNVERIFIED") return "manual";
     if (status === "RECONCILIATION_REQUIRED") return "reconciliation";
     if (status === "FAILED_PRE_SUBMIT" || classification === "SAFE_ACTION_REQUIRED") {
@@ -1001,6 +1089,30 @@
     return action && typeof action === "object" && !Array.isArray(action)
       ? action
       : null;
+  }
+
+  function oneClickObservationWarningForm(target) {
+    if (target?.status !== "SUCCEEDED_MANUAL_REVIEW") return "";
+    const result = target.result;
+    const observationDigest = [...result.observation_digests].sort()[0];
+    const ruleIds = [...result.rule_ids].sort();
+    return `
+      <form class="manual-verification-form oneclick-observation-review-form"
+        data-oneclick-observation-review="${esc(target.target_label)}"
+        data-observation-evidence-digest="${esc(observationDigest)}">
+        <p><strong>官方硬事实已验证</strong></p>
+        <p>存在平台派生翻译/图片观察警告，等待Kyle人工验收。</p>
+        <p>脱敏警告规则：${ruleIds.map((ruleId) => esc(ruleId)).join("、")}</p>
+        <label class="manual-verification-confirm">
+          <input name="manual_review_accepted" type="checkbox" required>
+          <span>我已查看上述平台派生观察警告，并确认接受本次官方回读结果；此操作只结案，不会重新发布或重试。</span>
+        </label>
+        <button class="button button-secondary" type="submit">
+          记录 Kyle 观察警告验收
+        </button>
+        <span class="manual-verification-message" role="status" aria-live="polite"></span>
+      </form>
+    `;
   }
 
   function renderOneClickExecution(data) {
@@ -1035,17 +1147,20 @@
       .filter(([, targets]) => targets.length)
       .map(([bucket, targets]) => `
         <section class="oneclick-execution-group oneclick-${esc(bucket)}">
-          <h5>${esc(headings[bucket])}</h5>
-          <div class="oneclick-target-list">
-            ${targets.map((target) => `
-              <button type="button" class="oneclick-target-card"
-                data-oneclick-target="${esc(target.target_label)}">
-                <strong>${esc(targetDisplayName(target.target_label))}</strong>
-                <span>${esc(oneClickStatusText(target.status))}</span>
-                <small>${esc(oneClickReasonText(target))}</small>
-              </button>
-            `).join("")}
-          </div>
+           <h5>${esc(headings[bucket])}</h5>
+           <div class="oneclick-target-list">
+             ${targets.map((target) => `
+               <div class="oneclick-target-control">
+                 <button type="button" class="oneclick-target-card"
+                   data-oneclick-target="${esc(target.target_label)}">
+                   <strong>${esc(targetDisplayName(target.target_label))}</strong>
+                   <span>${esc(oneClickStatusText(target.status))}</span>
+                   <small>${esc(oneClickReasonText(target))}</small>
+                 </button>
+                 ${oneClickObservationWarningForm(target)}
+               </div>
+             `).join("")}
+           </div>
         </section>
       `).join("") || "<p>尚无服务端店铺状态。</p>";
 
@@ -1137,7 +1252,11 @@
     let target = null;
     if (label) {
       const escaped = CSS.escape(label);
-      target = document.querySelector(`[data-oneclick-target="${escaped}"]`)
+      target = document.querySelector(
+        `[data-oneclick-observation-review="${escaped}"] `
+        + "[name='manual_review_accepted']",
+      )
+        || document.querySelector(`[data-oneclick-target="${escaped}"]`)
         || document.querySelector(`.run-target[data-target-label="${escaped}"]`);
     }
     target ||= $("#oneClickExecutionPreview");
@@ -4560,6 +4679,111 @@
     }
   }
 
+  async function submitOneClickObservationAcceptance(form) {
+    if (!currentData || releaseSubmitting) return;
+    const targetLabel = String(
+      form.dataset.oneclickObservationReview || "",
+    );
+    const observationDigest = String(
+      form.dataset.observationEvidenceDigest || "",
+    );
+    const confirmed = (
+      form.elements.manual_review_accepted?.checked === true
+    );
+    const message = form.querySelector(".manual-verification-message");
+    const button = form.querySelector("button[type='submit']");
+    const identity = oneClickExecution.identity;
+    const reference = oneClickExecution.job;
+    const target = reference?.targets?.find(
+      (row) => row.target_label === targetLabel,
+    );
+    if (
+      !identity
+      || !reference
+      || target?.status !== "SUCCEEDED_MANUAL_REVIEW"
+      || !targetLabel.startsWith("shopee:")
+      || !confirmed
+      || !oneClickDigest(observationDigest)
+      || !target.result?.observation_digests?.includes(observationDigest)
+    ) {
+      if (message) {
+        message.textContent =
+          "请确认已查看平台派生观察警告；证据状态变化时请先刷新页面。";
+      }
+      return;
+    }
+    releaseSubmitting = true;
+    if (button) button.disabled = true;
+    if (message) {
+      message.textContent =
+        "正在记录 Kyle 对已验证官方回读中观察警告的验收；不会重新发布。";
+    }
+    updateReleaseControls(currentData);
+    try {
+      const payload = await postReleaseAction(
+        "/api/product-workspace/release-target/manual-verify",
+        currentReleaseBody({
+          target_label: targetLabel,
+          verified_by: "Kyle",
+          user_verified: true,
+          manual_review_accepted: true,
+          observation_evidence_digest: observationDigest,
+        }),
+        { expectedStatus: 200 },
+      );
+      if (
+        !Array.isArray(payload.external_writes_performed)
+        || payload.external_writes_performed.length
+      ) {
+        throw oneClickContractError(
+          "观察警告验收返回了外部写入证据，已停止本地结案。",
+        );
+      }
+      const returnedJob = payload.job
+        || payload.dashboard?.release_v1?.oneclick_controlplane;
+      const acceptedJob = validateOneClickProjection(
+        returnedJob,
+        identity,
+        ONECLICK_STATUS_SCHEMA,
+        reference,
+      );
+      const acceptedTarget = acceptedJob.targets.find(
+        (row) => row.target_label === targetLabel,
+      );
+      if (
+        acceptedTarget?.status !== "SUCCEEDED"
+        || acceptedTarget.requires_human !== false
+        || acceptedTarget.next_action === "review_verified_observation_warning"
+      ) {
+        throw oneClickContractError(
+          "观察警告验收后目标未进入 SUCCEEDED，已停止刷新结案状态。",
+        );
+      }
+      oneClickExecution.job = acceptedJob;
+      oneClickExecution.statusWarning = "";
+      if (payload.dashboard) {
+        adoptWorkflowDashboard(payload.dashboard);
+      } else {
+        renderOneClickExecution(currentData);
+        updateReleaseControls(currentData);
+      }
+      $("#publishRunMessage").textContent =
+        `${targetDisplayName(targetLabel)} 已记录 Kyle 观察警告验收并进入 SUCCEEDED；没有重新发布商品。`;
+      showError("");
+    } catch (error) {
+      const errorMessage = friendlyError(error.message);
+      showError(errorMessage);
+      if (message) {
+        message.textContent =
+          `${errorMessage} 未自动重发，也未再次提交验收。`;
+      }
+    } finally {
+      releaseSubmitting = false;
+      if (button?.isConnected) button.disabled = false;
+      updateReleaseControls(currentData || {});
+    }
+  }
+
   async function approveReleasePlan() {
     if (!currentData || releaseSubmitting || !$("#releasePlanCheckbox").checked) return;
     releaseSubmitting = true;
@@ -5060,6 +5284,12 @@
   $("#publishAllButton").addEventListener("click", publishSelectedTargets);
   $("#oneClickNextActionButton").addEventListener("click", (event) => {
     focusOneClickTarget(event.currentTarget.dataset.oneclickTargetFocus || "");
+  });
+  $("#oneClickExecutionGroups").addEventListener("submit", (event) => {
+    const form = event.target.closest(".oneclick-observation-review-form");
+    if (!form) return;
+    event.preventDefault();
+    submitOneClickObservationAcceptance(form);
   });
   $("#oneClickExecutionGroups").addEventListener("click", (event) => {
     const target = event.target.closest("[data-oneclick-target]");

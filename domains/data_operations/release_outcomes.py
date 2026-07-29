@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 import re
@@ -19,6 +19,12 @@ from typing import Any
 
 RECEIPT_SCHEMA_VERSION = "release-outcome-receipt/v1"
 FACT_SCHEMA_VERSION = "release-outcome-fact/v1"
+MANUAL_ACCEPTANCE_RESOLUTION_SCHEMA_VERSION = (
+    "release-outcome-manual-acceptance/v1"
+)
+MANUAL_ACCEPTANCE_FACT_SCHEMA_VERSION = (
+    "release-outcome-manual-acceptance-fact/v1"
+)
 DATASET_SCHEMA_VERSION = "release-outcome-dataset/v1"
 EVALUATION_SCHEMA_VERSION = "release-outcome-evaluation/v1"
 
@@ -65,6 +71,8 @@ _PROHIBITED_KEYS = frozenset(
         "image",
         "image_id",
         "item_id",
+        "marketplace_id",
+        "marketplace_product_id",
         "model_id",
         "password",
         "plan_id",
@@ -161,6 +169,40 @@ class ReleaseOutcomeFact:
             "duplicate_prevented": self.duplicate_prevented,
             "evidence_digests": list(self.evidence_digests),
             "quality_issues": list(self.quality_issues),
+        }
+
+
+@dataclass(frozen=True)
+class ReleaseOutcomeManualAcceptanceFact:
+    """Redacted, append-only human resolution of one existing outcome fact."""
+
+    fact_digest: str
+    source_resolution_digest: str
+    source_outcome_receipt_digest: str
+    target_attempt_identity_digest: str
+    acceptance_evidence_digest: str
+    manual_status: str
+    reviewer_role: str
+    schema_version: str = MANUAL_ACCEPTANCE_FACT_SCHEMA_VERSION
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "fact_digest": self.fact_digest,
+            "source_resolution_digest": self.source_resolution_digest,
+            "source_outcome_receipt_digest": (
+                self.source_outcome_receipt_digest
+            ),
+            "target_attempt_identity_digest": (
+                self.target_attempt_identity_digest
+            ),
+            "acceptance_evidence_digest": self.acceptance_evidence_digest,
+            "manual": {
+                "status": self.manual_status,
+                "reviewer_role": self.reviewer_role,
+            },
+            "external_write_count": 0,
+            "external_write_classes": [],
         }
 
 
@@ -344,6 +386,181 @@ def adapt_release_outcome_receipt(
     )
 
 
+def adapt_release_outcome_manual_acceptance(
+    resolution: Mapping[str, object],
+) -> ReleaseOutcomeManualAcceptanceFact:
+    """Validate one append-only manual acceptance resolution.
+
+    The resolution is not a second release outcome.  It only carries enough
+    redacted identity to resolve the already adapted source receipt.
+    """
+
+    if not isinstance(resolution, Mapping):
+        raise ReleaseOutcomeContractError(
+            "manual acceptance resolution must be a mapping"
+        )
+    source = dict(resolution)
+    _reject_sensitive_content(source, "manual_acceptance_resolution")
+    expected_keys = {
+        "schema_version",
+        "source_outcome_receipt_digest",
+        "target_attempt_identity_digest",
+        "acceptance_evidence_digest",
+        "manual",
+        "external_writes_performed",
+    }
+    if set(source) != expected_keys:
+        raise ReleaseOutcomeContractError(
+            "manual acceptance resolution fields are invalid"
+        )
+    if (
+        source.get("schema_version")
+        != MANUAL_ACCEPTANCE_RESOLUTION_SCHEMA_VERSION
+    ):
+        raise ReleaseOutcomeContractError(
+            "unsupported manual acceptance resolution schema"
+        )
+    source_receipt_digest = _strict_digest(
+        source.get("source_outcome_receipt_digest"),
+        "source_outcome_receipt_digest",
+    )
+    target_attempt_digest = _strict_digest(
+        source.get("target_attempt_identity_digest"),
+        "target_attempt_identity_digest",
+    )
+    acceptance_evidence_digest = _strict_digest(
+        source.get("acceptance_evidence_digest"),
+        "acceptance_evidence_digest",
+    )
+    manual = _mapping(source.get("manual"), "manual")
+    if set(manual) != {"status", "reviewer_role"}:
+        raise ReleaseOutcomeContractError(
+            "manual acceptance fields are invalid"
+        )
+    if (
+        type(manual.get("status")) is not str
+        or manual.get("status") != "ACCEPTED"
+    ):
+        raise ReleaseOutcomeContractError(
+            "manual acceptance status must be ACCEPTED"
+        )
+    if (
+        type(manual.get("reviewer_role")) is not str
+        or manual.get("reviewer_role") != "approved_release_actor"
+    ):
+        raise ReleaseOutcomeContractError(
+            "manual acceptance reviewer role is invalid"
+        )
+    if (
+        type(source.get("external_writes_performed")) is not list
+        or source.get("external_writes_performed") != []
+    ):
+        raise ReleaseOutcomeContractError(
+            "manual acceptance must perform zero external writes"
+        )
+
+    source_resolution_digest = _digest(source)
+    body = {
+        "schema_version": MANUAL_ACCEPTANCE_FACT_SCHEMA_VERSION,
+        "source_resolution_digest": source_resolution_digest,
+        "source_outcome_receipt_digest": source_receipt_digest,
+        "target_attempt_identity_digest": target_attempt_digest,
+        "acceptance_evidence_digest": acceptance_evidence_digest,
+        "manual": {
+            "status": "ACCEPTED",
+            "reviewer_role": "approved_release_actor",
+        },
+        "external_write_count": 0,
+        "external_write_classes": [],
+    }
+    return ReleaseOutcomeManualAcceptanceFact(
+        fact_digest=_digest(body),
+        source_resolution_digest=source_resolution_digest,
+        source_outcome_receipt_digest=source_receipt_digest,
+        target_attempt_identity_digest=target_attempt_digest,
+        acceptance_evidence_digest=acceptance_evidence_digest,
+        manual_status="ACCEPTED",
+        reviewer_role="approved_release_actor",
+    )
+
+
+def merge_release_outcome_manual_acceptances(
+    facts: Iterable[ReleaseOutcomeFact],
+    resolutions: Iterable[ReleaseOutcomeManualAcceptanceFact],
+) -> tuple[ReleaseOutcomeFact, ...]:
+    """Merge resolutions into their source facts without adding samples.
+
+    Dispatch, outcome, readback, error, count, and write evidence remain the
+    original attempt facts.  Only the manual decision and its redacted digest
+    lineage are appended.
+    """
+
+    materialized_facts = tuple(_validated_fact(fact) for fact in facts)
+    facts_by_receipt: dict[str, ReleaseOutcomeFact] = {}
+    for fact in materialized_facts:
+        if fact.source_receipt_digest in facts_by_receipt:
+            raise ReleaseOutcomeContractError(
+                "duplicate source outcome receipt fact"
+            )
+        facts_by_receipt[fact.source_receipt_digest] = fact
+
+    resolutions_by_receipt: dict[
+        str, ReleaseOutcomeManualAcceptanceFact
+    ] = {}
+    for resolution in resolutions:
+        validated = _validated_manual_acceptance_fact(resolution)
+        source_digest = validated.source_outcome_receipt_digest
+        if source_digest in resolutions_by_receipt:
+            raise ReleaseOutcomeContractError(
+                "duplicate manual acceptance resolution"
+            )
+        if source_digest not in facts_by_receipt:
+            raise ReleaseOutcomeContractError(
+                "manual acceptance source outcome receipt is unavailable"
+            )
+        source_fact = facts_by_receipt[source_digest]
+        if source_fact.manual_status != "PENDING":
+            raise ReleaseOutcomeContractError(
+                "manual acceptance source is not pending"
+            )
+        if source_fact.outcome_class not in {
+            "SUCCESS",
+            SUBMITTED_UNVERIFIED,
+        }:
+            raise ReleaseOutcomeContractError(
+                "manual acceptance source outcome is ineligible"
+            )
+        resolutions_by_receipt[source_digest] = validated
+
+    merged: list[ReleaseOutcomeFact] = []
+    for fact in materialized_facts:
+        resolution = resolutions_by_receipt.get(
+            fact.source_receipt_digest
+        )
+        if resolution is None:
+            merged.append(fact)
+            continue
+        evidence_digests = tuple(
+            sorted(
+                {
+                    *fact.evidence_digests,
+                    resolution.acceptance_evidence_digest,
+                    resolution.fact_digest,
+                }
+            )
+        )
+        pending = replace(
+            fact,
+            fact_digest="",
+            manual_status="ACCEPTED",
+            evidence_digests=evidence_digests,
+        )
+        body = pending.payload()
+        body.pop("fact_digest")
+        merged.append(replace(pending, fact_digest=_digest(body)))
+    return tuple(sorted(merged, key=lambda fact: fact.fact_digest))
+
+
 def adapt_release_outcome_receipts(
     receipts: Iterable[Mapping[str, object]],
 ) -> tuple[ReleaseOutcomeFact, ...]:
@@ -486,6 +703,26 @@ def _validated_fact(fact: ReleaseOutcomeFact) -> ReleaseOutcomeFact:
     return fact
 
 
+def _validated_manual_acceptance_fact(
+    fact: ReleaseOutcomeManualAcceptanceFact,
+) -> ReleaseOutcomeManualAcceptanceFact:
+    if not isinstance(fact, ReleaseOutcomeManualAcceptanceFact):
+        raise TypeError(
+            "resolutions must be ReleaseOutcomeManualAcceptanceFact instances"
+        )
+    if fact.schema_version != MANUAL_ACCEPTANCE_FACT_SCHEMA_VERSION:
+        raise ReleaseOutcomeContractError(
+            "unsupported manual acceptance fact schema"
+        )
+    expected = dict(fact.payload())
+    supplied_digest = expected.pop("fact_digest")
+    if _digest(expected) != supplied_digest:
+        raise ReleaseOutcomeContractError(
+            "manual acceptance fact digest does not match payload"
+        )
+    return fact
+
+
 def _mapping(value: object, field: str) -> dict[str, object]:
     if not isinstance(value, Mapping):
         raise ReleaseOutcomeContractError(f"{field} must be a mapping")
@@ -505,6 +742,14 @@ def _required_digest(value: object, field: str) -> str:
     if not _DIGEST_RE.fullmatch(text):
         raise ReleaseOutcomeContractError(f"{field} must be a sha256 digest")
     return text
+
+
+def _strict_digest(value: object, field: str) -> str:
+    if type(value) is not str or not _DIGEST_RE.fullmatch(value):
+        raise ReleaseOutcomeContractError(
+            f"{field} must be a lowercase sha256 digest"
+        )
+    return value
 
 
 def _dimension(

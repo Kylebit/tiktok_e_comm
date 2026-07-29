@@ -5,6 +5,12 @@ contract. It consumes only `release-outcome-dataset/v1` and its matching
 `release-outcome-evaluation/v1`. It never reads ReleaseStore, a production
 database, credentials, or a channel API.
 
+Append-only `release-outcome-manual-acceptance/v1` resolutions must be merged
+into their exact source facts before building the dataset. The merge changes
+the source fact's manual decision only; it does not append a second release
+fact. Candidate sample counts, dispatch/write totals, and outcome distribution
+therefore continue to count the original release attempt exactly once.
+
 Each candidate is grouped by channel, region, and policy version and contains:
 
 - sample count and outcome/write/readback/quality coverage;

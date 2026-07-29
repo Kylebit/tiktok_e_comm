@@ -1,15 +1,19 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from domains.data_operations.release_outcomes import (
     FACT_SCHEMA_VERSION,
+    MANUAL_ACCEPTANCE_FACT_SCHEMA_VERSION,
     SUBMITTED_UNVERIFIED,
     ReleaseOutcomeContractError,
+    adapt_release_outcome_manual_acceptance,
     adapt_release_outcome_receipt,
     adapt_release_outcome_receipts,
     evaluate_release_outcomes,
+    merge_release_outcome_manual_acceptances,
     release_outcome_dataset,
 )
 
@@ -23,6 +27,22 @@ def _receipt(**overrides):
     source = json.loads(FIXTURE.read_text(encoding="utf-8"))["receipts"][0]
     source.update(overrides)
     return source
+
+
+def _manual_acceptance(source_receipt_digest, **overrides):
+    resolution = {
+        "schema_version": "release-outcome-manual-acceptance/v1",
+        "source_outcome_receipt_digest": source_receipt_digest,
+        "target_attempt_identity_digest": "6" * 64,
+        "acceptance_evidence_digest": "7" * 64,
+        "manual": {
+            "status": "ACCEPTED",
+            "reviewer_role": "approved_release_actor",
+        },
+        "external_writes_performed": [],
+    }
+    resolution.update(overrides)
+    return resolution
 
 
 def test_release_outcome_fact_is_redacted_json_ready_and_idempotent():
@@ -242,3 +262,252 @@ def test_grouping_supports_channel_region_and_policy_version_only():
     ]
     with pytest.raises(ValueError, match="supports"):
         evaluate_release_outcomes(facts, group_by=("adapter_version",))
+
+
+def test_manual_acceptance_resolution_is_redacted_stable_and_json_ready():
+    source = adapt_release_outcome_receipt(
+        _receipt(
+            outcome={"class": SUBMITTED_UNVERIFIED},
+            readback={"status": "UNAVAILABLE"},
+            manual={"status": "PENDING"},
+        )
+    )
+    raw = _manual_acceptance(source.source_receipt_digest)
+
+    first = adapt_release_outcome_manual_acceptance(raw)
+    second = adapt_release_outcome_manual_acceptance(
+        json.loads(json.dumps(raw))
+    )
+
+    assert first == second
+    assert first.schema_version == MANUAL_ACCEPTANCE_FACT_SCHEMA_VERSION
+    assert first.manual_status == "ACCEPTED"
+    assert first.source_outcome_receipt_digest == (
+        source.source_receipt_digest
+    )
+    payload = first.payload()
+    assert payload["external_write_count"] == 0
+    assert payload["external_write_classes"] == []
+    rendered = json.dumps(payload).lower()
+    for prohibited in (
+        "token",
+        "seller_sku",
+        "marketplace_product_id",
+        "raw_response",
+        "http://",
+    ):
+        assert prohibited not in rendered
+
+
+def test_api_less_acceptance_merges_into_one_sample_without_rewriting_dispatch():
+    source = adapt_release_outcome_receipt(
+        _receipt(
+            channel="tiktok",
+            region="MX",
+            outcome={"class": SUBMITTED_UNVERIFIED},
+            dispatch={
+                "boundary": "ACCEPTED",
+                "external_write_count": 2,
+                "external_write_classes": [
+                    "miaoshou:tiktok_detail:update",
+                    "miaoshou:tiktok_publish",
+                ],
+            },
+            readback={"status": "UNAVAILABLE"},
+            manual={"status": "PENDING"},
+            reconciliation={"status": "NOT_REQUIRED"},
+        )
+    )
+    resolution = adapt_release_outcome_manual_acceptance(
+        _manual_acceptance(source.source_receipt_digest)
+    )
+
+    merged = merge_release_outcome_manual_acceptances(
+        [source], [resolution]
+    )
+
+    assert len(merged) == 1
+    resolved = merged[0]
+    assert resolved.source_receipt_digest == source.source_receipt_digest
+    assert resolved.outcome_class == SUBMITTED_UNVERIFIED
+    assert resolved.manual_status == "ACCEPTED"
+    assert resolved.dispatch_boundary == source.dispatch_boundary
+    assert resolved.external_write_count == source.external_write_count == 2
+    assert resolved.external_write_classes == source.external_write_classes
+    assert resolved.readback_status == source.readback_status
+    assert resolved.reconciliation_status == source.reconciliation_status
+    assert resolved.attempt_count == source.attempt_count
+    assert resolution.acceptance_evidence_digest in resolved.evidence_digests
+    assert resolution.fact_digest in resolved.evidence_digests
+    assert source.manual_status == "PENDING"
+    dataset = release_outcome_dataset(merged)
+    assert dataset["fact_count"] == 1
+    metrics = evaluate_release_outcomes(merged)["overall"]
+    assert metrics["fact_count"] == 1
+    assert metrics["success_count"] == 0
+    assert metrics["manual_acceptance_count"] == 1
+    assert metrics["manual_decision_count"] == 1
+    assert metrics["manual_acceptance_rate"] == 1.0
+    assert metrics["external_write_total"] == 2
+
+
+def test_verified_warning_acceptance_keeps_success_and_readback_facts():
+    source = adapt_release_outcome_receipt(
+        _receipt(
+            channel="shopee",
+            region="VN",
+            outcome={"class": "SUCCESS"},
+            readback={"status": "VERIFIED", "evidence_digest": "8" * 64},
+            manual={"status": "PENDING", "evidence_digest": "9" * 64},
+            reconciliation={"status": "NOT_REQUIRED"},
+        )
+    )
+    resolution = adapt_release_outcome_manual_acceptance(
+        _manual_acceptance(
+            source.source_receipt_digest,
+            target_attempt_identity_digest="a" * 64,
+            acceptance_evidence_digest="b" * 64,
+        )
+    )
+
+    (resolved,) = merge_release_outcome_manual_acceptances(
+        [source], [resolution]
+    )
+
+    assert resolved.outcome_class == "SUCCESS"
+    assert resolved.readback_status == "VERIFIED"
+    assert resolved.manual_status == "ACCEPTED"
+    assert resolved.external_write_count == source.external_write_count
+    assert resolved.external_write_classes == source.external_write_classes
+    metrics = evaluate_release_outcomes([resolved])["overall"]
+    assert metrics["fact_count"] == 1
+    assert metrics["success_count"] == 1
+    assert metrics["manual_acceptance_count"] == 1
+
+
+@pytest.mark.parametrize(
+    "mutation, match",
+    [
+        (
+            lambda value: {
+                **value,
+                "schema_version": "release-outcome-manual-acceptance/v2",
+            },
+            "unsupported",
+        ),
+        (
+            lambda value: {
+                **value,
+                "source_outcome_receipt_digest": "A" * 64,
+            },
+            "lowercase sha256",
+        ),
+        (
+            lambda value: {
+                **value,
+                "manual": {
+                    "status": "REJECTED",
+                    "reviewer_role": "approved_release_actor",
+                },
+            },
+            "must be ACCEPTED",
+        ),
+        (
+            lambda value: {
+                **value,
+                "manual": {
+                    "status": "ACCEPTED",
+                    "reviewer_role": "unapproved_actor",
+                },
+            },
+            "reviewer role",
+        ),
+        (
+            lambda value: {
+                **value,
+                "external_writes_performed": ["marketplace:write"],
+            },
+            "zero external writes",
+        ),
+        (
+            lambda value: {
+                **value,
+                "external_writes_performed": (),
+            },
+            "zero external writes",
+        ),
+        (
+            lambda value: {**value, "marketplace_product_id": "raw-id"},
+            "prohibited",
+        ),
+    ],
+)
+def test_manual_acceptance_resolution_shape_and_redaction_fail_closed(
+    mutation,
+    match,
+):
+    raw = _manual_acceptance("c" * 64)
+    with pytest.raises(ReleaseOutcomeContractError, match=match):
+        adapt_release_outcome_manual_acceptance(mutation(raw))
+
+
+def test_manual_acceptance_merge_rejects_duplicate_mismatch_and_tamper():
+    source = adapt_release_outcome_receipt(
+        _receipt(
+            outcome={"class": SUBMITTED_UNVERIFIED},
+            readback={"status": "UNAVAILABLE"},
+            manual={"status": "PENDING"},
+        )
+    )
+    resolution = adapt_release_outcome_manual_acceptance(
+        _manual_acceptance(source.source_receipt_digest)
+    )
+    mismatch = adapt_release_outcome_manual_acceptance(
+        _manual_acceptance("d" * 64)
+    )
+
+    with pytest.raises(ReleaseOutcomeContractError, match="duplicate source"):
+        merge_release_outcome_manual_acceptances(
+            [source, source], [resolution]
+        )
+    with pytest.raises(ReleaseOutcomeContractError, match="duplicate manual"):
+        merge_release_outcome_manual_acceptances(
+            [source], [resolution, resolution]
+        )
+    with pytest.raises(ReleaseOutcomeContractError, match="unavailable"):
+        merge_release_outcome_manual_acceptances([source], [mismatch])
+    with pytest.raises(ReleaseOutcomeContractError, match="digest"):
+        merge_release_outcome_manual_acceptances(
+            [source],
+            [replace(resolution, fact_digest="e" * 64)],
+        )
+
+
+def test_manual_acceptance_merge_rejects_nonpending_or_ineligible_source():
+    already_accepted = adapt_release_outcome_receipt(
+        _receipt(
+            outcome={"class": "SUCCESS"},
+            manual={"status": "ACCEPTED"},
+        )
+    )
+    accepted_resolution = adapt_release_outcome_manual_acceptance(
+        _manual_acceptance(already_accepted.source_receipt_digest)
+    )
+    with pytest.raises(ReleaseOutcomeContractError, match="not pending"):
+        merge_release_outcome_manual_acceptances(
+            [already_accepted], [accepted_resolution]
+        )
+
+    failed = adapt_release_outcome_receipt(
+        _receipt(
+            outcome={"class": "FAILURE"},
+            manual={"status": "PENDING"},
+        )
+    )
+    failure_resolution = adapt_release_outcome_manual_acceptance(
+        _manual_acceptance(failed.source_receipt_digest)
+    )
+    with pytest.raises(ReleaseOutcomeContractError, match="ineligible"):
+        merge_release_outcome_manual_acceptances(
+            [failed], [failure_resolution]
+        )

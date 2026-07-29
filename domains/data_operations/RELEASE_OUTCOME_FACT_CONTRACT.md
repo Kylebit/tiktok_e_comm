@@ -41,6 +41,46 @@ class. Its manual status is always `PENDING`; reconciliation is
 The fact digest excludes itself and covers every other field. Replaying the
 same receipt therefore produces the same digest.
 
+## Append-only manual acceptance resolution
+
+Manual acceptance happens after the original release attempt has already
+produced its immutable `release-outcome-receipt/v1`. Shared Platform exports a
+separate redacted `release-outcome-manual-acceptance/v1` resolution. It is not
+a second release sample and must never be passed to
+`adapt_release_outcome_receipt`.
+
+`adapt_release_outcome_manual_acceptance` accepts only the exact platform
+shape:
+
+- the original outcome receipt digest;
+- a redacted target-attempt identity digest;
+- a redacted acceptance-evidence digest;
+- `manual.status=ACCEPTED`;
+- `manual.reviewer_role=approved_release_actor`; and
+- an exact empty `external_writes_performed` list.
+
+It returns a deterministic
+`release-outcome-manual-acceptance-fact/v1`. Unsupported schemas, extra
+fields, raw marketplace identities, tokens, URLs, responses, non-lowercase
+digests, non-approved actors, rejection statuses, and any claimed external
+write fail closed.
+
+`merge_release_outcome_manual_acceptances` resolves each acceptance by the
+exact source receipt digest and updates that one existing fact to
+`manual_status=ACCEPTED`. The original outcome class, dispatch boundary,
+external-write count/classes, readback, reconciliation, error, attempt/count,
+and source-receipt facts remain unchanged. The acceptance evidence and
+resolution-fact digests are appended to the redacted evidence digest set and
+the merged fact digest is recomputed.
+
+The merge returns the same number of release facts it received. This is
+important for API-less TikTok submissions and verified Shopee MY/VN warning
+acceptance: a later human decision changes manual-decision metrics but never
+double-counts a publication, a dispatch, or an external write. Duplicate
+source facts, duplicate resolutions, missing/mismatched source receipts,
+tampered fact digests, non-pending manual status, and ineligible source
+outcomes all fail closed.
+
 The offline evaluator reports success, official readback, manual acceptance,
 reconciliation, duplicate prevention, explicit external writes, unknown-write
 coverage, and auth/inventory/content/logistics/other error distributions.
@@ -58,9 +98,18 @@ Data Operations can then run:
 
 ```python
 facts = adapt_release_outcome_receipts(public_receipts)
+resolutions = tuple(
+    adapt_release_outcome_manual_acceptance(item)
+    for item in public_manual_acceptance_resolutions
+)
+facts = merge_release_outcome_manual_acceptances(facts, resolutions)
 dataset = release_outcome_dataset(facts)
 evaluation = evaluate_release_outcomes(facts)
 ```
+
+Shared Platform may persist the resolution fact digest as observational
+consumer metadata. It must keep the original outcome receipt immutable and
+must not enqueue the resolution as another outcome sample.
 
 The Orbit/autopilot dashboard may consume `dataset` and `evaluation`; neither
 payload authorizes a retry or changes production policy.

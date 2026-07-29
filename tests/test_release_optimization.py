@@ -6,9 +6,11 @@ import pytest
 from domains.data_operations import (
     OptimizationThresholds,
     SUBMITTED_UNVERIFIED,
+    adapt_release_outcome_manual_acceptance,
     adapt_release_outcome_receipts,
     build_release_optimization_candidates,
     evaluate_release_outcomes,
+    merge_release_outcome_manual_acceptances,
     release_outcome_dataset,
 )
 
@@ -172,6 +174,51 @@ def test_submitted_unverified_is_known_but_not_success_or_manual_acceptance():
     assert candidate["coverage"]["outcome_known_rate"] == 1.0
     assert candidate["rates"]["manual_acceptance_rate"] is None
     assert candidate["quality_blockers"] == []
+    assert candidate["recommended_action_code"] == "REVIEW_POLICY"
+
+
+def test_manual_acceptance_resolution_does_not_add_optimization_sample():
+    receipts = []
+    for index in range(5):
+        receipt = json.loads(json.dumps(_base_receipt()))
+        receipt["identity"] = {
+            "plan_digest": f"{index + 1:064x}",
+            "run_digest": f"{index + 101:064x}",
+            "target_digest": f"{index + 201:064x}",
+        }
+        receipt["outcome"] = {"class": SUBMITTED_UNVERIFIED}
+        receipt["manual"] = {"status": "PENDING"}
+        receipt["reconciliation"] = {"status": "NOT_REQUIRED"}
+        receipts.append(receipt)
+    facts = adapt_release_outcome_receipts(receipts)
+    resolution = adapt_release_outcome_manual_acceptance(
+        {
+            "schema_version": "release-outcome-manual-acceptance/v1",
+            "source_outcome_receipt_digest": facts[0].source_receipt_digest,
+            "target_attempt_identity_digest": "a" * 64,
+            "acceptance_evidence_digest": "b" * 64,
+            "manual": {
+                "status": "ACCEPTED",
+                "reviewer_role": "approved_release_actor",
+            },
+            "external_writes_performed": [],
+        }
+    )
+    merged = merge_release_outcome_manual_acceptances(
+        facts, [resolution]
+    )
+    dataset = release_outcome_dataset(merged)
+    evaluation = evaluate_release_outcomes(merged)
+
+    artifact = build_release_optimization_candidates(dataset, evaluation)
+    candidate = artifact["candidates"][0]
+
+    assert dataset["fact_count"] == 5
+    assert evaluation["overall"]["fact_count"] == 5
+    assert evaluation["overall"]["manual_acceptance_count"] == 1
+    assert evaluation["overall"]["manual_decision_count"] == 1
+    assert candidate["sample_count"] == 5
+    assert candidate["rates"]["manual_acceptance_rate"] == 1.0
     assert candidate["recommended_action_code"] == "REVIEW_POLICY"
 
 

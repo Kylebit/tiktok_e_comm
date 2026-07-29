@@ -27,6 +27,9 @@ from shared_platform.target_scoped_release_contracts import (
 
 CANDIDATE_SCHEMA_VERSION = "shopee-global-plan-candidate/v1"
 APPROVED_PLAN_SCHEMA_VERSION = "approved-shopee-global-plan/v1"
+APPROVED_PLAN_RECORD_SCHEMA_VERSION = (
+    "approved-shopee-global-plan-record/v1"
+)
 OFFICIAL_OBSERVATION_SCHEMA_VERSION = (
     "shopee-official-global-plan-observation/v1"
 )
@@ -106,6 +109,7 @@ class _Category:
         return {
             "category_id": self.category_id,
             "path": [row.payload() for row in self.path],
+            "path_complete": True,
             "evidence_digest": self.evidence_digest,
         }
 
@@ -543,6 +547,13 @@ class ApprovedShopeeGlobalPlan:
             raise ShopeeGlobalPlanContractError("approved plan payload is invalid")
         if self._plan.mode != self.mode:
             raise ShopeeGlobalPlanContractError("approved mode drifted")
+        if (
+            self.candidate_digest
+            != _ready_candidate_from_plan(self._plan).candidate_digest
+        ):
+            raise ShopeeGlobalPlanContractError(
+                "approved candidate digest does not match the raw plan"
+            )
         if not _is_digest(self.approved_plan_digest):
             raise ShopeeGlobalPlanContractError(
                 "approved plan digest is invalid"
@@ -582,6 +593,123 @@ class ApprovedShopeeGlobalPlan:
             "approved_plan_digest": self.approved_plan_digest,
             "plan": self._plan.payload(),
         }
+
+
+def serialize_approved_shopee_global_plan(
+    approved: ApprovedShopeeGlobalPlan,
+) -> str:
+    """Return the one canonical, server-internal JSON persistence record."""
+
+    if type(approved) is not ApprovedShopeeGlobalPlan:
+        raise ShopeeGlobalPlanContractError(
+            "approved Shopee global plan contract is invalid"
+        )
+    # Reconstructing is deliberately part of serialization.  A caller cannot
+    # persist an object manufactured with __new__ or mutated outside dataclass
+    # construction.
+    record = {
+        "record_schema_version": APPROVED_PLAN_RECORD_SCHEMA_VERSION,
+        "approved_plan": {
+            "schema_version": approved.schema_version,
+            "approved_by": approved.approved_by,
+            "confirm_approved_shopee_global_plan": (
+                approved.confirm_approved_shopee_global_plan
+            ),
+            "candidate_digest": approved.candidate_digest,
+            "mode": approved.mode,
+            "approved_plan_digest": approved.approved_plan_digest,
+            "plan": approved._plan.payload(),
+        },
+    }
+    serialized = _canonical_json(record)
+    rehydrated = rehydrate_approved_shopee_global_plan(serialized)
+    if (
+        rehydrated.candidate_digest != approved.candidate_digest
+        or rehydrated.approved_plan_digest != approved.approved_plan_digest
+        or rehydrated._plan != approved._plan
+    ):
+        raise ShopeeGlobalPlanContractError(
+            "approved Shopee global plan cannot be persisted safely"
+        )
+    return serialized
+
+
+def rehydrate_approved_shopee_global_plan(
+    serialized: object,
+) -> ApprovedShopeeGlobalPlan:
+    """Restore and fully revalidate one canonical internal approval record."""
+
+    if type(serialized) is not str or not serialized:
+        raise ShopeeGlobalPlanContractError(
+            "approved Shopee global plan record must be canonical JSON"
+        )
+    try:
+        record = json.loads(
+            serialized,
+            object_pairs_hook=_reject_duplicate_json_keys,
+            parse_constant=_reject_json_constant,
+        )
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ShopeeGlobalPlanContractError(
+            "approved Shopee global plan record is invalid JSON"
+        ) from error
+    if _canonical_json(record) != serialized:
+        raise ShopeeGlobalPlanContractError(
+            "approved Shopee global plan record is not canonical JSON"
+        )
+    record = _exact_mapping(
+        record,
+        required={"record_schema_version", "approved_plan"},
+        optional=set(),
+        code="approved_plan_record_invalid",
+    )
+    if record["record_schema_version"] != APPROVED_PLAN_RECORD_SCHEMA_VERSION:
+        raise ShopeeGlobalPlanContractError(
+            "approved Shopee global plan record schema is invalid"
+        )
+    stored = _exact_mapping(
+        record["approved_plan"],
+        required={
+            "schema_version",
+            "approved_by",
+            "confirm_approved_shopee_global_plan",
+            "candidate_digest",
+            "mode",
+            "approved_plan_digest",
+            "plan",
+        },
+        optional=set(),
+        code="approved_plan_record_invalid",
+    )
+    try:
+        plan = _plan_from_payload(stored["plan"])
+    except _Violation as error:
+        raise ShopeeGlobalPlanContractError(
+            f"approved Shopee global plan record failed {error.code}"
+        ) from error
+    candidate = _ready_candidate_from_plan(plan)
+    if stored["candidate_digest"] != candidate.candidate_digest:
+        raise ShopeeGlobalPlanContractError(
+            "persisted candidate digest does not match the raw plan"
+        )
+    try:
+        return ApprovedShopeeGlobalPlan(
+            schema_version=stored["schema_version"],
+            approved_by=stored["approved_by"],
+            confirm_approved_shopee_global_plan=stored[
+                "confirm_approved_shopee_global_plan"
+            ],
+            candidate_digest=stored["candidate_digest"],
+            mode=stored["mode"],
+            approved_plan_digest=stored["approved_plan_digest"],
+            _plan=plan,
+        )
+    except ShopeeGlobalPlanContractError:
+        raise
+    except (TypeError, ValueError) as error:
+        raise ShopeeGlobalPlanContractError(
+            "approved Shopee global plan record identity is invalid"
+        ) from error
 
 
 def build_shopee_global_plan_candidate(
@@ -723,23 +851,7 @@ def build_shopee_global_plan_candidate(
             code="candidate_shape_invalid",
         )
 
-    provisional = ShopeeGlobalPlanCandidate.__new__(ShopeeGlobalPlanCandidate)
-    values = {
-        "schema_version": CANDIDATE_SCHEMA_VERSION,
-        "status": READY,
-        "planning_allowed": True,
-        "mode": plan.mode,
-        "observation_authority": OFFICIAL_AUTHORITY,
-        "observation_schema_version": OFFICIAL_OBSERVATION_SCHEMA_VERSION,
-        "observation_evidence_digest": plan.observation_evidence_digest,
-        "blocker_codes": (),
-        "candidate_digest": "0" * 64,
-        "_plan": plan,
-    }
-    for name, value in values.items():
-        object.__setattr__(provisional, name, value)
-    values["candidate_digest"] = _candidate_digest(provisional)
-    return ShopeeGlobalPlanCandidate(**values)
+    return _ready_candidate_from_plan(plan)
 
 
 def approve_shopee_global_plan(
@@ -805,6 +917,166 @@ def validate_approved_shopee_global_plan(
         raise ShopeeGlobalPlanDriftError(
             "approved Shopee global plan no longer matches current facts"
         )
+
+
+def _ready_candidate_from_plan(plan: _Plan) -> ShopeeGlobalPlanCandidate:
+    if type(plan) is not _Plan:
+        raise ShopeeGlobalPlanContractError(
+            "Shopee global plan payload is invalid"
+        )
+    provisional = ShopeeGlobalPlanCandidate.__new__(ShopeeGlobalPlanCandidate)
+    values = {
+        "schema_version": CANDIDATE_SCHEMA_VERSION,
+        "status": READY,
+        "planning_allowed": True,
+        "mode": plan.mode,
+        "observation_authority": OFFICIAL_AUTHORITY,
+        "observation_schema_version": OFFICIAL_OBSERVATION_SCHEMA_VERSION,
+        "observation_evidence_digest": plan.observation_evidence_digest,
+        "blocker_codes": (),
+        "candidate_digest": "0" * 64,
+        "_plan": plan,
+    }
+    for name, value in values.items():
+        object.__setattr__(provisional, name, value)
+    values["candidate_digest"] = _candidate_digest(provisional)
+    return ShopeeGlobalPlanCandidate(**values)
+
+
+def _plan_from_payload(value: object) -> _Plan:
+    payload = _exact_mapping(
+        value,
+        required={
+            "mode",
+            "observation_evidence_digest",
+            "bindings",
+            "copy",
+            "approved_images",
+            "approved_source_image_manifest_digest",
+            "selected_image_positions",
+            "selected_image_urls",
+            "selected_source_image_manifest_digest",
+            "parcel",
+            "pricing",
+            "policy_digest",
+            "category",
+            "attribute_list",
+            "attribute_tree_digest",
+            "attributes_complete",
+            "brand",
+            "seller_stock",
+            "location",
+            "condition",
+            "preorder",
+            "tier_variation",
+            "global_model",
+            "variations_complete",
+            "existing_global_item_id",
+            "existing_global_identity_evidence_digest",
+        },
+        optional=set(),
+        code="serialized_plan_shape_invalid",
+    )
+    bindings = _exact_mapping(
+        payload["bindings"],
+        required={
+            "source_identity_schema_version",
+            "source_identity_digest",
+            "sku_lineage_schema_version",
+            "sku_lineage_digest",
+            "content_package_digest",
+            "approved_copy_digest",
+            "approved_source_image_manifest_digest",
+            "parcel_contract_digest",
+            "target_pricing_digest",
+            "policy_digest",
+            "attribute_tree_digest",
+        },
+        optional=set(),
+        code="serialized_plan_bindings_invalid",
+    )
+    copy = _exact_mapping(
+        payload["copy"],
+        required={"title", "description", "approved_copy_digest"},
+        optional=set(),
+        code="serialized_plan_copy_invalid",
+    )
+    parcel = _exact_mapping(
+        payload["parcel"],
+        required={"weight_kg", "package_cm", "contract_digest"},
+        optional=set(),
+        code="serialized_plan_parcel_invalid",
+    )
+    package_cm = _exact_mapping(
+        parcel["package_cm"],
+        required={"length", "width", "height"},
+        optional=set(),
+        code="serialized_plan_parcel_invalid",
+    )
+    pricing = _exact_mapping(
+        payload["pricing"],
+        required={
+            "currency",
+            "global_original_price",
+            "target_pricing_digest",
+        },
+        optional=set(),
+        code="serialized_plan_pricing_invalid",
+    )
+    plan = _normalize_plan(
+        mode=payload["mode"],
+        observation_evidence_digest=payload["observation_evidence_digest"],
+        source_identity_schema_version=bindings[
+            "source_identity_schema_version"
+        ],
+        source_identity_digest=bindings["source_identity_digest"],
+        sku_lineage_schema_version=bindings["sku_lineage_schema_version"],
+        sku_lineage_digest=bindings["sku_lineage_digest"],
+        content_package_digest=bindings["content_package_digest"],
+        title=copy["title"],
+        description=copy["description"],
+        approved_copy_digest_value=copy["approved_copy_digest"],
+        ordered_approved_images=payload["approved_images"],
+        approved_source_image_manifest_digest_value=payload[
+            "approved_source_image_manifest_digest"
+        ],
+        selected_image_positions=payload["selected_image_positions"],
+        parcel={
+            "weight_kg": parcel["weight_kg"],
+            "length_cm": package_cm["length"],
+            "width_cm": package_cm["width"],
+            "height_cm": package_cm["height"],
+            "contract_digest": parcel["contract_digest"],
+        },
+        target_pricing={
+            "currency": pricing["currency"],
+            "global_original_price": pricing["global_original_price"],
+            "contract_digest": pricing["target_pricing_digest"],
+        },
+        policy_digest=payload["policy_digest"],
+        category=payload["category"],
+        attributes=payload["attribute_list"],
+        attributes_complete=payload["attributes_complete"],
+        attribute_tree_digest=payload["attribute_tree_digest"],
+        brand=payload["brand"],
+        seller_stock=payload["seller_stock"],
+        location=payload["location"],
+        condition=payload["condition"],
+        preorder=payload["preorder"],
+        variations=payload["tier_variation"],
+        variations_complete=payload["variations_complete"],
+        models=payload["global_model"],
+        existing_global_item_id=payload["existing_global_item_id"],
+        existing_global_identity_evidence_digest=payload[
+            "existing_global_identity_evidence_digest"
+        ],
+    )
+    # Every duplicated binding/derived field in the record must agree exactly,
+    # including JSON types.  Python's ``True == 1`` must never validate a
+    # persisted identity.
+    if _canonical_json(plan.payload()) != _canonical_json(payload):
+        raise _Violation("serialized_plan_derived_field_mismatch")
+    return plan
 
 
 def _normalize_plan(**raw: Any) -> _Plan:
@@ -1462,19 +1734,38 @@ def _is_code(value: object) -> bool:
     return type(value) is str and _CODE_RE.fullmatch(value) is not None
 
 
+def _reject_duplicate_json_keys(
+    pairs: Sequence[tuple[str, Any]],
+) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate JSON key")
+        value[key] = item
+    return value
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"invalid JSON constant {value}")
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
 def _digest(value: object) -> str:
-    return hashlib.sha256(
-        json.dumps(
-            value,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
+    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
 
 
 __all__ = [
     "APPROVED_PLAN_SCHEMA_VERSION",
+    "APPROVED_PLAN_RECORD_SCHEMA_VERSION",
     "ApprovedShopeeGlobalPlan",
     "BLOCKED_CAPABILITY",
     "CANDIDATE_SCHEMA_VERSION",
@@ -1494,5 +1785,7 @@ __all__ = [
     "ShopeeGlobalPlanDriftError",
     "approve_shopee_global_plan",
     "build_shopee_global_plan_candidate",
+    "rehydrate_approved_shopee_global_plan",
+    "serialize_approved_shopee_global_plan",
     "validate_approved_shopee_global_plan",
 ]

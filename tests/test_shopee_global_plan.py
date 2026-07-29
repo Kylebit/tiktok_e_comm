@@ -9,6 +9,7 @@ import json
 import pytest
 
 from shared_platform.shopee_global_plan import (
+    APPROVED_PLAN_RECORD_SCHEMA_VERSION,
     BLOCKED_CAPABILITY,
     COMMUNITY_AUTHORITY,
     EXISTING_GLOBAL,
@@ -23,6 +24,8 @@ from shared_platform.shopee_global_plan import (
     ShopeeGlobalPlanDriftError,
     approve_shopee_global_plan,
     build_shopee_global_plan_candidate,
+    rehydrate_approved_shopee_global_plan,
+    serialize_approved_shopee_global_plan,
     validate_approved_shopee_global_plan,
 )
 from shared_platform.target_scoped_release_contracts import (
@@ -896,3 +899,287 @@ def test_decimal_canonicalization_is_stable_and_does_not_accept_float_shortcuts(
             "global_original_price": 56.05,
         }
     ).status == BLOCKED_CAPABILITY
+
+
+def _canonical_json(value) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
+def _serialized_record(candidate=None) -> str:
+    return serialize_approved_shopee_global_plan(_approve(candidate))
+
+
+def _tamper_serialized(mutator) -> str:
+    record = json.loads(_serialized_record())
+    mutator(record)
+    return _canonical_json(record)
+
+
+def test_canonical_server_internal_record_roundtrips_deterministically():
+    candidate = _candidate()
+    approved = _approve(candidate)
+    serialized = serialize_approved_shopee_global_plan(approved)
+    restored = rehydrate_approved_shopee_global_plan(serialized)
+
+    assert serialized == _canonical_json(json.loads(serialized))
+    assert (
+        json.loads(serialized)["record_schema_version"]
+        == APPROVED_PLAN_RECORD_SCHEMA_VERSION
+    )
+    assert restored.candidate_digest == approved.candidate_digest
+    assert restored.approved_plan_digest == approved.approved_plan_digest
+    assert restored.public_projection() == approved.public_projection()
+    assert serialize_approved_shopee_global_plan(restored) == serialized
+    assert (
+        restored.server_owned_execution_payload(candidate)
+        == approved.server_owned_execution_payload(candidate)
+    )
+
+
+def test_existing_global_record_roundtrips_without_public_identity_leakage():
+    candidate = _candidate(
+        mode=EXISTING_GLOBAL,
+        existing_global_item_id=57115039489,
+        existing_global_identity_evidence_digest=_digest("existing-id"),
+    )
+    restored = rehydrate_approved_shopee_global_plan(
+        _serialized_record(candidate)
+    )
+
+    public = json.dumps(restored.public_projection(), sort_keys=True)
+    assert "57115039489" not in public
+    assert (
+        restored.server_owned_execution_payload(candidate)["plan"][
+            "existing_global_item_id"
+        ]
+        == 57115039489
+    )
+
+
+def test_rehydrated_approval_still_requires_the_current_official_candidate():
+    original = _candidate()
+    restored = rehydrate_approved_shopee_global_plan(
+        _serialized_record(original)
+    )
+    drifted = _candidate(policy_digest=_digest("policy-after-restart"))
+    blocked = _candidate(observation_authority=GENERATED_SDK_AUTHORITY)
+
+    with pytest.raises(ShopeeGlobalPlanDriftError):
+        restored.server_owned_execution_payload(drifted)
+    with pytest.raises(ShopeeGlobalPlanDriftError):
+        restored.server_owned_execution_payload(blocked)
+    assert restored.server_owned_execution_payload(original)["plan"][
+        "policy_digest"
+    ] == _base_args()["policy_digest"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        (),
+        ("approved_plan",),
+        ("approved_plan", "plan"),
+        ("approved_plan", "plan", "bindings"),
+        ("approved_plan", "plan", "copy"),
+        ("approved_plan", "plan", "approved_images", 0),
+        ("approved_plan", "plan", "parcel"),
+        ("approved_plan", "plan", "parcel", "package_cm"),
+        ("approved_plan", "plan", "pricing"),
+        ("approved_plan", "plan", "category"),
+        ("approved_plan", "plan", "category", "path", 0),
+        ("approved_plan", "plan", "attribute_list", 0),
+        (
+            "approved_plan",
+            "plan",
+            "attribute_list",
+            0,
+            "attribute_value_list",
+            0,
+        ),
+        ("approved_plan", "plan", "brand"),
+        ("approved_plan", "plan", "seller_stock"),
+        ("approved_plan", "plan", "location"),
+        ("approved_plan", "plan", "preorder"),
+        ("approved_plan", "plan", "tier_variation", 0),
+        (
+            "approved_plan",
+            "plan",
+            "tier_variation",
+            0,
+            "option_list",
+            0,
+        ),
+        ("approved_plan", "plan", "global_model", 0),
+    ],
+)
+def test_rehydration_rejects_unknown_fields_at_every_persisted_layer(path):
+    def add_extra(record):
+        target = record
+        for key in path:
+            target = target[key]
+        target["unexpected"] = "must fail closed"
+
+    with pytest.raises(ShopeeGlobalPlanContractError):
+        rehydrate_approved_shopee_global_plan(_tamper_serialized(add_extra))
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("approved_plan", "confirm_approved_shopee_global_plan"), 1),
+        (("approved_plan", "candidate_digest"), 123),
+        (("approved_plan", "mode"), True),
+        (("approved_plan", "plan", "attributes_complete"), 1),
+        (("approved_plan", "plan", "variations_complete"), 1),
+        (
+            (
+                "approved_plan",
+                "plan",
+                "category",
+                "path_complete",
+            ),
+            1,
+        ),
+        (
+            (
+                "approved_plan",
+                "plan",
+                "selected_image_positions",
+                0,
+            ),
+            True,
+        ),
+        (
+            (
+                "approved_plan",
+                "plan",
+                "pricing",
+                "global_original_price",
+            ),
+            56.05,
+        ),
+        (
+            (
+                "approved_plan",
+                "plan",
+                "seller_stock",
+                "quantity",
+            ),
+            200.0,
+        ),
+        (
+            (
+                "approved_plan",
+                "plan",
+                "global_model",
+                0,
+                "seller_stock_quantity",
+            ),
+            True,
+        ),
+    ],
+)
+def test_rehydration_rejects_json_type_drift(path, value):
+    def change_type(record):
+        target = record
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = value
+
+    with pytest.raises(ShopeeGlobalPlanContractError):
+        rehydrate_approved_shopee_global_plan(_tamper_serialized(change_type))
+
+
+@pytest.mark.parametrize(
+    "mutator",
+    [
+        lambda record: record["approved_plan"].__setitem__(
+            "candidate_digest", _digest("forged-candidate")
+        ),
+        lambda record: record["approved_plan"].__setitem__(
+            "approved_plan_digest", _digest("forged-plan")
+        ),
+        lambda record: record["approved_plan"]["plan"]["copy"].__setitem__(
+            "title", "Tampered title"
+        ),
+        lambda record: record["approved_plan"]["plan"][
+            "approved_images"
+        ][0].__setitem__(
+            "source_url", "https://approved.example/tampered.png"
+        ),
+        lambda record: record["approved_plan"]["plan"].__setitem__(
+            "selected_image_urls",
+            ["https://approved.example/tampered.png"],
+        ),
+        lambda record: record["approved_plan"]["plan"]["bindings"].__setitem__(
+            "policy_digest", _digest("binding-only-policy")
+        ),
+        lambda record: record["approved_plan"]["plan"].__setitem__(
+            "selected_source_image_manifest_digest",
+            _digest("selected-manifest-tamper"),
+        ),
+        lambda record: record["approved_plan"]["plan"]["category"].__setitem__(
+            "evidence_digest", _digest("category-tamper")
+        ),
+        lambda record: record["approved_plan"]["plan"]["global_model"][
+            0
+        ].__setitem__("global_model_sku", "TAMPERED"),
+    ],
+)
+def test_rehydration_recomputes_raw_shapes_and_all_identity_digests(mutator):
+    with pytest.raises(ShopeeGlobalPlanContractError):
+        rehydrate_approved_shopee_global_plan(_tamper_serialized(mutator))
+
+
+@pytest.mark.parametrize("value", [None, {}, b"{}", 1, True])
+def test_rehydration_accepts_only_a_canonical_json_string(value):
+    with pytest.raises(ShopeeGlobalPlanContractError):
+        rehydrate_approved_shopee_global_plan(value)
+
+
+def test_rehydration_rejects_noncanonical_json_duplicate_keys_and_constants():
+    canonical = _serialized_record()
+    with pytest.raises(ShopeeGlobalPlanContractError):
+        rehydrate_approved_shopee_global_plan(
+            json.dumps(json.loads(canonical), ensure_ascii=False, indent=2)
+        )
+    with pytest.raises(ShopeeGlobalPlanContractError):
+        rehydrate_approved_shopee_global_plan(
+            '{"record_schema_version":"a","record_schema_version":"b",'
+            '"approved_plan":{}}'
+        )
+    with pytest.raises(ShopeeGlobalPlanContractError):
+        rehydrate_approved_shopee_global_plan(
+            canonical.replace('"mode":"NEW_GLOBAL"', '"mode":NaN')
+        )
+
+
+def test_record_schema_and_approval_identity_are_strict():
+    wrong_schema = _tamper_serialized(
+        lambda record: record.__setitem__("record_schema_version", "legacy/v0")
+    )
+    wrong_actor = _tamper_serialized(
+        lambda record: record["approved_plan"].__setitem__(
+            "approved_by", "kyle"
+        )
+    )
+    with pytest.raises(ShopeeGlobalPlanContractError):
+        rehydrate_approved_shopee_global_plan(wrong_schema)
+    with pytest.raises(ShopeeGlobalPlanContractError):
+        rehydrate_approved_shopee_global_plan(wrong_actor)
+
+
+def test_serializer_revalidates_even_a_low_level_mutated_frozen_object():
+    approved = _approve()
+    object.__setattr__(
+        approved, "candidate_digest", _digest("low-level-memory-tamper")
+    )
+
+    with pytest.raises(ShopeeGlobalPlanContractError):
+        serialize_approved_shopee_global_plan(approved)

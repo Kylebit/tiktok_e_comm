@@ -124,14 +124,58 @@ The full approved payload is stored inside the immutable Python object with
 after exact drift validation. A future Store must persist it as
 server-internal evidence and expose only `public_projection()`.
 
+## Canonical persistence and restart
+
+The server-internal persistence API is:
+
+```python
+serialized = serialize_approved_shopee_global_plan(approved)
+restored = rehydrate_approved_shopee_global_plan(serialized)
+execution = restored.server_owned_execution_payload(current_candidate)
+```
+
+`serialized` is the sole canonical JSON representation of
+`approved-shopee-global-plan-record/v1`. Its exact envelope is:
+
+```text
+record_schema_version
+approved_plan:
+  schema_version
+  approved_by
+  confirm_approved_shopee_global_plan
+  candidate_digest
+  mode
+  approved_plan_digest
+  plan
+```
+
+`plan` is the complete raw server-owned payload described above. Rehydration
+requires canonical JSON, rejects duplicate JSON keys, non-finite constants,
+unknown fields, and JSON type drift, then reconstructs every category,
+attribute, image, parcel, pricing, brand, stock, location, preorder,
+variation, model, and existing-global shape. It recomputes:
+
+- the copy and full/selected image manifest digests;
+- duplicated binding and derived fields;
+- the authoritative ready-candidate digest; and
+- the approved-plan digest.
+
+Rehydration never returns the raw payload itself. It returns the immutable
+approval object, whose `repr` and `public_projection()` remain redacted.
+After restart, raw execution facts still require
+`server_owned_execution_payload(current_candidate)`. That method exact-matches
+the newly rebuilt official candidate, so a valid old record cannot authorize
+execution after source, SKU, content, policy, evidence, or execution-fact
+drift.
+
 ## Integration requirements
 
 Future `00` integration must:
 
 1. build the candidate from the audited `03` official observer;
 2. expose only the redacted projection for Kyle's decision;
-3. persist the approved object or an exactly reconstructable canonical
-   equivalent;
+3. persist only `serialize_approved_shopee_global_plan(approved)` and restore
+   only through `rehydrate_approved_shopee_global_plan(...)`;
 4. bind candidate and approval digests into the immutable `ReleasePlan`;
 5. rebuild the current candidate before execution and reject drift;
 6. pass only the validated server-owned approved payload to the synthetic

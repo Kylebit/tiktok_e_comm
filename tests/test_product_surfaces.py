@@ -201,7 +201,7 @@ def test_product_workspace_is_the_user_surface_and_fails_without_stale_results()
     assert "中文事实 → 平台标题候选" in html
     assert "/api/product-workspace/title-draft" in script
     assert "AI 生成平台标题" in html
-    assert "只生成本地候选，不写妙手或平台" in html
+    assert "不会修改商品事实，也不会写妙手或平台" in html
 
 
 def test_profit_center_keeps_realized_and_estimate_semantics_separate():

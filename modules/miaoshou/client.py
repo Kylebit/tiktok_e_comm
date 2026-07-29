@@ -25,6 +25,15 @@ CONFIG_CANDIDATES = (
 )
 
 
+class MiaoshouBusinessRejectedError(RuntimeError):
+    """The API returned a parsed business rejection, so transport is not unknown."""
+
+    def __init__(self, message: str, *, code: object = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.business_rejected = True
+
+
 def _load_config() -> dict[str, Any]:
     for path in CONFIG_CANDIDATES:
         if path.is_file():
@@ -106,7 +115,14 @@ def post_open(
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Miaoshou network error: {exc}") from exc
     if str(result.get("result") or "").lower() != "success":
-        raise RuntimeError(str(result.get("message") or result.get("code") or "Miaoshou request failed"))
+        raise MiaoshouBusinessRejectedError(
+            str(
+                result.get("message")
+                or result.get("code")
+                or "Miaoshou request failed"
+            ),
+            code=result.get("code"),
+        )
     return result
 
 

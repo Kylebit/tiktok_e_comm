@@ -15,6 +15,8 @@ from modules.sourcing.new_product_workbench import (
     _anchor_group_key,
     _apply_audited_english_variant_labels,
     _audited_english_variant_value,
+    _canonical_variant_manifest,
+    _english_variant_checks_pass,
     _expected_region_site_state,
     _distribute_total,
     _normalize_title,
@@ -24,6 +26,7 @@ from modules.sourcing.new_product_workbench import (
     _miaoshou_post_retry,
     _ordered_selected_images,
     _pick_default_warehouse_id,
+    _prepare_site_mode_draft,
     _product_workflow_summary,
     _site_state_matches_expected,
     build_preview,
@@ -44,6 +47,124 @@ from modules.sourcing.new_product_workbench import (
 
 
 class NewProductWorkbenchTests(unittest.TestCase):
+    def test_picture_color_and_approved_specification_form_exact_manifest(self):
+        info = {
+            "skuPropertyList": [
+                {
+                    "attrName": "颜色",
+                    "attrValueList": [
+                        {"attrValueId": "color-1", "attrValue": "图片色"},
+                    ],
+                },
+                {
+                    "attrName": "尺寸",
+                    "attrValueList": [
+                        {"attrValueId": "size-1", "attrValue": "特大"},
+                    ],
+                },
+            ],
+        }
+
+        _apply_audited_english_variant_labels(
+            info,
+            {";图片色;特大;": "Flower sticker"},
+        )
+
+        self.assertEqual(
+            info["skuPropertyList"][0]["attrValueList"][0]["attrValue"],
+            "As Shown",
+        )
+        self.assertEqual(
+            info["skuPropertyList"][1]["attrValueList"][0]["attrValue"],
+            "Flower sticker",
+        )
+        self.assertTrue(_canonical_variant_manifest(info))
+        self.assertTrue(_english_variant_checks_pass(info, info))
+
+        drifted = json.loads(json.dumps(info))
+        drifted["skuPropertyList"][1]["attrValueList"][0]["attrValue"] = (
+            "Different English label"
+        )
+        self.assertFalse(_english_variant_checks_pass(drifted, info))
+
+    def test_unmapped_non_english_variant_is_rejected_before_site_save(self):
+        saved = []
+        base = {
+            "title": "Old title",
+            "skuPropertyList": [
+                {
+                    "attrName": "颜色",
+                    "attrValueList": [
+                        {"attrValueId": "unknown-1", "attrValue": "未审核花色"},
+                    ],
+                }
+            ],
+            "skuMap": {";unknown-1;": {}},
+            "collectBoxDetailShopList": [],
+        }
+
+        def fake_post(path, body=None):
+            if path.endswith("get_site_collect_item_info"):
+                return {
+                    "result": "success",
+                    "data": {
+                        "siteCollectItemInfo": json.loads(json.dumps(base)),
+                        "ossMd5": "revision-1",
+                    },
+                }
+            if path.endswith("save_site_collect_item_info"):
+                saved.append(body)
+                return {"result": "success"}
+            raise AssertionError(path)
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "has no approved English mapping",
+        ):
+            _prepare_site_mode_draft(
+                fake_post,
+                detail_id=123,
+                region="PH",
+                region_targets=[
+                    (
+                        "lh_ph",
+                        {
+                            "shop_id": 1001,
+                            "shop": "Test shop",
+                            "warehouses": {
+                                "shopWarehouseList": [
+                                    {
+                                        "warehouseList": [
+                                            {
+                                                "warehouseId": "warehouse-1",
+                                                "warehouseEffectStatus": "1",
+                                            }
+                                        ]
+                                    }
+                                ]
+                            },
+                        },
+                        {
+                            "list_price": 100,
+                            "currency": "PHP",
+                        },
+                    )
+                ],
+                draft={
+                    "title": "Approved title",
+                    "notes": "",
+                    "imgUrls": [],
+                    "weight": 0.1,
+                    "packageLength": 10,
+                    "packageWidth": 10,
+                    "packageHeight": 1,
+                    "itemNum": "0001",
+                },
+                category_id="600338",
+            )
+
+        self.assertEqual(saved, [])
+
     def test_audited_variant_translation_uses_verified_size_only(self):
         self.assertEqual(
             _audited_english_variant_value("大号（34x58cm）"),

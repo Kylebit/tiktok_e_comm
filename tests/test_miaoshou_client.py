@@ -4,7 +4,12 @@ import unittest
 from typing import Optional
 from unittest.mock import patch
 
-from modules.miaoshou.client import request_web, web_claim_to_shop
+from modules.miaoshou.client import (
+    MiaoshouBusinessRejectedError,
+    post_open,
+    request_web,
+    web_claim_to_shop,
+)
 
 
 class _FakeResponse:
@@ -24,6 +29,28 @@ class _FakeResponse:
 
 
 class MiaoshouClientTests(unittest.TestCase):
+    def test_open_business_rejection_is_distinct_from_transport_unknown(self):
+        def fake_urlopen(_req, timeout=0):
+            return _FakeResponse(
+                {
+                    "result": "fail",
+                    "code": "optimistic_lock_conflict",
+                    "message": "product data changed",
+                }
+            )
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            with self.assertRaises(MiaoshouBusinessRejectedError) as ctx:
+                post_open(
+                    "/open/v1/test",
+                    {"detailId": 123},
+                    cfg={"app_id": "app", "app_secret": "secret"},
+                )
+
+        self.assertEqual(ctx.exception.code, "optimistic_lock_conflict")
+        self.assertTrue(ctx.exception.business_rejected)
+        self.assertIn("product data changed", str(ctx.exception))
+
     def test_request_web_posts_form_urlencoded(self):
         seen = {}
 

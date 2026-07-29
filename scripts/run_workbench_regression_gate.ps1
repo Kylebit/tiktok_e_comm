@@ -44,7 +44,9 @@ try {
         "tests/test_product_release_v1.py::test_release_plan_rejection_returns_fresh_dashboard_and_exact_blocker",
         "tests/test_ai_image_studio_recipe.py::test_legacy_source_video_review_is_preserved_in_ai_studio",
         "tests/test_release_ux_contract.py::test_disabled_release_checkboxes_expose_visible_reasons",
-        "tests/test_release_ux_contract.py::test_release_plan_failure_refreshes_the_current_gate_and_explains_reapproval"
+        "tests/test_release_ux_contract.py::test_release_plan_failure_refreshes_the_current_gate_and_explains_reapproval",
+        "tests/test_miaoshou_client.py::MiaoshouClientTests::test_open_business_rejection_is_distinct_from_transport_unknown",
+        "tests/test_miaoshou_variant_contract.py"
     )
     & $python -m pytest @focused -q -p no:cacheprovider `
         --basetemp ".pytest-workbench-regression-focused"

@@ -394,27 +394,84 @@ def _is_english_variant_value(text: str) -> bool:
     return ascii_letters / len(letters) >= 0.85
 
 
-def _english_variant_checks_pass(verified: dict[str, Any]) -> bool:
-    props = verified.get("skuPropertyList") or []
-    if not props:
-        return True
-    values = [
-        value
-        for prop in props
-        if isinstance(prop, dict)
-        for value in (prop.get("attrValueList") or [])
-        if isinstance(value, dict)
-    ]
-    return not values or all(
-        _is_english_variant_value(value.get("attrValue") or "")
-        for value in values
-    )
+def _canonical_variant_manifest(info: dict[str, Any]) -> tuple[tuple[Any, ...], ...]:
+    """Return the exact English variant contract sent to and read from Miaoshou."""
+
+    props = info.get("skuPropertyList")
+    if props in (None, []):
+        return ()
+    if not isinstance(props, list):
+        raise ValueError("TikTok specification properties must be a list")
+    manifest: list[tuple[Any, ...]] = []
+    for property_index, prop in enumerate(props, start=1):
+        if not isinstance(prop, dict):
+            raise ValueError(
+                f"TikTok specification property {property_index} is malformed"
+            )
+        attr_name = " ".join(str(prop.get("attrName") or "").split())
+        if not _is_english_variant_value(attr_name):
+            raise ValueError(
+                f"TikTok specification property {property_index} has no "
+                "approved English name"
+            )
+        values = prop.get("attrValueList")
+        if not isinstance(values, list):
+            raise ValueError(
+                f"TikTok specification property {property_index} values are malformed"
+            )
+        canonical_values: list[tuple[str, str]] = []
+        for value_index, value in enumerate(values, start=1):
+            if not isinstance(value, dict):
+                raise ValueError(
+                    f"TikTok specification property {property_index} value "
+                    f"{value_index} is malformed"
+                )
+            value_id_raw = value.get("attrValueId")
+            if isinstance(value_id_raw, bool):
+                value_id = ""
+            else:
+                value_id = str(value_id_raw or "").strip()
+            attr_value = " ".join(str(value.get("attrValue") or "").split())
+            if not value_id:
+                raise ValueError(
+                    f"TikTok specification property {property_index} value "
+                    f"{value_index} has no stable identity"
+                )
+            if not _is_english_variant_value(attr_value):
+                raise ValueError(
+                    f"TikTok specification property {property_index} value "
+                    f"{value_index} has no approved English mapping"
+                )
+            canonical_values.append((value_id, attr_value))
+        manifest.append((attr_name, tuple(canonical_values)))
+    return tuple(manifest)
+
+
+def _english_variant_checks_pass(
+    verified: dict[str, Any],
+    expected: dict[str, Any] | None = None,
+) -> bool:
+    try:
+        actual_manifest = _canonical_variant_manifest(verified)
+        expected_manifest = (
+            _canonical_variant_manifest(expected)
+            if isinstance(expected, dict)
+            else actual_manifest
+        )
+    except (TypeError, ValueError):
+        return False
+    return actual_manifest == expected_manifest
 
 
 def _audited_english_variant_value(text: str) -> str:
     """Translate only recognized size facts; unknown variants remain blocked."""
 
     value = str(text or "").strip()
+    exact_labels = {
+        "图片色": "As Shown",
+    }
+    if value in exact_labels:
+        return exact_labels[value]
     if _is_english_variant_value(value):
         return value
     size_name = ""
@@ -494,6 +551,10 @@ def _apply_audited_english_variant_labels(
         if str(key).strip() and " ".join(str(label).split())
     }
     if not clean_overrides:
+        try:
+            _canonical_variant_manifest(info)
+        except ValueError as error:
+            raise RuntimeError(str(error)) from error
         return
     target_prop = props[-1]
     target_values = [
@@ -543,6 +604,10 @@ def _apply_audited_english_variant_labels(
             + ", ".join(sorted(missing_labels))
         )
     target_prop["attrName"] = "Specification"
+    try:
+        _canonical_variant_manifest(info)
+    except ValueError as error:
+        raise RuntimeError(str(error)) from error
 
 
 def _public_source_type(url: str) -> str:
@@ -5643,11 +5708,25 @@ def write_miaoshou_draft(offer_id_or_url: str, *, post=None) -> dict[str, Any]:
 
 
 def _miaoshou_post_retry(post, path: str, payload: dict[str, Any], action: str) -> dict[str, Any]:
+    from modules.miaoshou.client import MiaoshouBusinessRejectedError
+
     response: dict[str, Any] = {}
     last_error = ""
     for attempt in range(5):
         try:
             response = post(path, payload)
+        except MiaoshouBusinessRejectedError as exc:
+            last_error = str(exc)
+            rate_limited = str(exc.code or "").casefold() == (
+                "platformqpsratelimit"
+            ).casefold()
+            if not rate_limited or attempt == 4:
+                raise MiaoshouBusinessRejectedError(
+                    f"{action}失败: {last_error}",
+                    code=exc.code,
+                ) from exc
+            time.sleep(2 + attempt * 2)
+            continue
         except RuntimeError as exc:
             last_error = str(exc)
             rate_limited = any(
@@ -6454,7 +6533,7 @@ def _prepare_shop_mode_draft(
         "warehouse_stock": bool(verified_skus) and all(
             shop_id in (sku.get("shopIdToWarehouseIdAndStockMap") or {}) for sku in verified_skus
         ),
-        "english_variants": _english_variant_checks_pass(verified),
+        "english_variants": _english_variant_checks_pass(verified, info),
     }
     return {
         "currency": pricing.get("currency"),
@@ -6656,7 +6735,7 @@ def _prepare_site_mode_draft(
             for sku in verified_skus
         ),
         "site_shop_config": sorted(str(row.get("shopId") or "") for row in verified_shop_rows) == expected_shop_ids,
-        "english_variants": _english_variant_checks_pass(verified),
+        "english_variants": _english_variant_checks_pass(verified, info),
     }
     return {
         "target_ids": [target_id for target_id, _shop, _pricing in region_targets],

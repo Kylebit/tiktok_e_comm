@@ -10,11 +10,144 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
+import json
 from typing import Any, Mapping
 
 from shared_platform.contracts import ApprovalRecord, ContentPackage
 
 EXPERIENCE_RECIPE_REVIEW_MODE = "experience_recipe_auto_v1"
+SOURCE_ONLY_FINAL_APPROVAL_SCHEMA = "source-only-final-content-approval/v1"
+
+
+def source_only_review_signature(
+    image_actions: list[Mapping[str, Any]], image_order: list[str]
+) -> str:
+    """Bind one exact source-image decision set and its approved order."""
+
+    payload = {
+        "image_actions": [
+            {
+                "url": str(row.get("url") or ""),
+                "action": str(row.get("action") or ""),
+                "note": str(row.get("note") or ""),
+            }
+            for row in image_actions
+        ],
+        "image_order": list(image_order),
+    }
+    digest = hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return f"sha256:{digest}"
+
+
+def _source_only_video_identity_digest(video_url: str) -> str:
+    digest = hashlib.sha256(str(video_url or "").strip().encode("utf-8")).hexdigest()
+    return f"sha256:{digest}"
+
+
+def source_only_final_approval_digest(
+    *,
+    review_signature: str,
+    video_action: str,
+    video_url: str,
+    approved_by: str = "Kyle",
+) -> str:
+    """Return the immutable identity of a source-only final approval."""
+
+    payload = {
+        "schema_version": SOURCE_ONLY_FINAL_APPROVAL_SCHEMA,
+        "status": "approved",
+        "approved_by": str(approved_by or "").strip(),
+        "source_only_review_signature": str(review_signature or "").strip(),
+        "video_action": str(video_action or "").strip(),
+        "video_identity_digest": _source_only_video_identity_digest(video_url),
+    }
+    digest = hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return f"sha256:{digest}"
+
+
+def source_only_final_approval_valid(
+    content: Mapping[str, Any], review: Mapping[str, Any]
+) -> bool:
+    """Validate that final approval still binds the current source-only draft."""
+
+    if str(content.get("content_strategy") or "") != "source_only":
+        return False
+    if content.get("fact_card_approved") is not True:
+        return False
+    if content.get("planning_scope_approved") is not True:
+        return False
+    actions = review.get("image_actions")
+    order = review.get("image_order")
+    if not isinstance(actions, list) or not actions:
+        return False
+    if not all(isinstance(row, Mapping) for row in actions):
+        return False
+    if not isinstance(order, list) or not all(isinstance(url, str) for url in order):
+        return False
+    decision_urls = [
+        str(row.get("url") or row.get("output_url") or "").strip()
+        for row in actions
+    ]
+    kept_urls = [
+        str(row.get("url") or row.get("output_url") or "").strip()
+        for row in actions
+        if str(row.get("action") or "") == "keep"
+    ]
+    if (
+        not kept_urls
+        or any(not url for url in decision_urls)
+        or len(decision_urls) != len(set(decision_urls))
+        or any(str(row.get("action") or "") not in {"keep", "remove"} for row in actions)
+        or any(not url.startswith("https://") for url in kept_urls)
+        or len(kept_urls) != len(set(kept_urls))
+        or len(order) != len(set(order))
+        or set(order) != set(kept_urls)
+    ):
+        return False
+    current_signature = source_only_review_signature(actions, order)
+    if str(content.get("source_only_review_signature") or "") != current_signature:
+        return False
+    approval = content.get("source_only_final_approval")
+    if not isinstance(approval, Mapping):
+        return False
+    video_url = str(review.get("video_url") or "").strip()
+    video_action = str(review.get("video_action") or "").strip()
+    if video_url:
+        if video_action not in {"keep", "remove"}:
+            return False
+    elif video_action not in {"none", "remove"}:
+        return False
+    expected_digest = source_only_final_approval_digest(
+        review_signature=current_signature,
+        video_action=video_action,
+        video_url=video_url,
+        approved_by="Kyle",
+    )
+    return bool(
+        approval.get("schema_version") == SOURCE_ONLY_FINAL_APPROVAL_SCHEMA
+        and approval.get("status") == "approved"
+        and approval.get("approved_by") == "Kyle"
+        and approval.get("source_only_review_signature") == current_signature
+        and approval.get("video_action") == video_action
+        and approval.get("video_identity_digest")
+        == _source_only_video_identity_digest(video_url)
+        and approval.get("approval_digest") == expected_digest
+    )
 
 
 @dataclass(frozen=True)
@@ -186,12 +319,9 @@ def build_workbench_content_package_handoff(
     if subject and subject != clean_product_id:
         blockers.append("content approval subject does not match product_id")
     if strategy == "source_only":
-        if not all(
-            bool(content.get(key))
-            for key in ("fact_card_approved", "planning_scope_approved")
-        ):
+        if not source_only_final_approval_valid(content, review):
             blockers.append(
-                "content fact-card and source planning scope approvals are required"
+                "source-only final content approval is missing or stale"
             )
         lineage, order_blockers = _source_only_order_lineage(
             source_lineage, review.get("image_order")

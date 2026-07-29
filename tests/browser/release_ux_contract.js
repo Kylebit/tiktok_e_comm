@@ -2988,6 +2988,138 @@ async function aiAsyncFeedback(browser) {
   }
 }
 
+async function sourceOnlyFinalApprovalContract(browser, viewport) {
+  const sourcePreview = JSON.parse(JSON.stringify(aiPreview));
+  const sourceA = "https://fixture.invalid/source-a.jpg";
+  const sourceB = "https://fixture.invalid/source-b.jpg";
+  sourcePreview.offer_id = "3845131687";
+  sourcePreview.revision = 31;
+  sourcePreview.source.offer_id = "3845131687";
+  sourcePreview.source.images = [
+    { url: sourceA, kind: "main" },
+    { url: sourceB, kind: "detail" },
+  ];
+  sourcePreview.source.video = { url: "", action: "none" };
+  sourcePreview.review.image_actions = [
+    { url: sourceA, action: "keep", note: "" },
+    { url: sourceB, action: "keep", note: "" },
+  ];
+  sourcePreview.review.image_order = [sourceA, sourceB];
+  sourcePreview.review.video_action = "none";
+  sourcePreview.content_package.content_strategy = "source_only";
+  sourcePreview.content_package.fact_card_approved = false;
+  sourcePreview.content_package.planning_scope_approved = false;
+  sourcePreview.content_package.source_only_ready = true;
+  sourcePreview.content_package.source_only_final_approved = false;
+  sourcePreview.content_package.content_approved = false;
+  sourcePreview.workflow.current_label = "最终内容批准";
+  sourcePreview.workflow.content_ready = false;
+  sourcePreview.workflow.image_review_ready = true;
+
+  const scenario = await openScenario(
+    browser,
+    "/ai-image-studio?offer_id=3845131687",
+    viewport,
+    { aiPreview: sourcePreview },
+  );
+  const { page, context, errors, requests, state } = scenario;
+  const savedPayloads = [];
+  try {
+    await page.route(
+      "**/api/product-flow/content-package/source-only/review",
+      async (route) => {
+        const payload = route.request().postDataJSON();
+        savedPayloads.push(payload);
+        const approved = payload.review.confirm_final_content_approval === true;
+        state.aiPreview = {
+          ...state.aiPreview,
+          revision: Number(state.aiPreview.revision || 0) + 1,
+          review: {
+            ...state.aiPreview.review,
+            ...payload.review,
+            video_url: "",
+          },
+          content_package: {
+            ...state.aiPreview.content_package,
+            fact_card_approved: approved,
+            planning_scope_approved: approved,
+            source_only_final_approved: approved,
+            content_approved: approved,
+          },
+          workflow: {
+            ...state.aiPreview.workflow,
+            current_label: approved ? "价格与发布信息" : "最终内容批准",
+            content_ready: approved,
+          },
+        };
+        await route.fulfill(jsonResponse(state.aiPreview));
+      },
+    );
+
+    check(
+      (await page.locator("#saveOrderButton").innerText()).includes("保存并批准最终内容"),
+      `source-only approval ${viewport.width}: exact final action is visible`,
+    );
+    check(
+      (await page.locator("#flowRail").innerText()).includes("最终内容批准")
+      && (await page.locator("#sourceOnlySaveStatus").innerText()).includes("请点击"),
+      `source-only approval ${viewport.width}: pending gate explains the next action`,
+    );
+
+    await page.locator("#saveOrderButton").click();
+    await page.waitForFunction(() => (
+      !document.querySelector("#saveOrderButton")?.classList.contains("is-loading")
+    ));
+    check(
+      savedPayloads.length === 1
+      && savedPayloads[0].review.confirm_final_content_approval === true
+      && savedPayloads[0].review.approved_by === "Kyle",
+      `source-only approval ${viewport.width}: explicit action sends one governed approval`,
+      savedPayloads,
+    );
+    check(
+      (await page.locator("#sourceOnlySaveStatus").innerText()).includes("已保存并批准最终内容")
+      && (await page.locator("#flowRail").innerText()).includes("最终内容批准"),
+      `source-only approval ${viewport.width}: approved state is rendered`,
+    );
+
+    await page.locator(".source-remove").nth(1).click();
+    await page.waitForFunction(() => (
+      document.querySelectorAll("#sourceGrid .asset-card").length === 1
+      && !document.querySelector("#saveOrderButton")?.classList.contains("is-loading")
+    ));
+    check(
+      savedPayloads.length === 2
+      && savedPayloads[1].review.confirm_final_content_approval === false
+      && !("approved_by" in savedPayloads[1].review),
+      `source-only approval ${viewport.width}: automatic draft save never silently approves`,
+      savedPayloads,
+    );
+    check(
+      (await page.locator("#sourceOnlySaveStatus").innerText()).includes("最终内容尚未批准"),
+      `source-only approval ${viewport.width}: source drift visibly invalidates approval`,
+    );
+    check(
+      savedPayloads.length === 2,
+      `source-only approval ${viewport.width}: one approval and one draft save only`,
+      savedPayloads,
+    );
+    const overflow = await overflowAudit(page);
+    check(
+      overflow.pageOverflow <= 2,
+      `source-only approval ${viewport.width}: no horizontal overflow`,
+      overflow,
+    );
+    check(
+      unexpectedInteractionErrors(errors).length === 0,
+      `source-only approval ${viewport.width}: no console/page errors`,
+      errors,
+    );
+  } finally {
+    await context.close();
+  }
+}
+
 async function aiPlanningBlockerFeedback(browser, viewport) {
   const blockedPreview = JSON.parse(JSON.stringify(aiPreview));
   const sourceUrl = "https://fixture.invalid/source-identity.jpg";
@@ -3697,6 +3829,8 @@ async function legacyStateSafety(browser) {
     await productTargetScopedReleaseContract(browser);
     await productCommonOverwriteContract(browser);
     await aiAsyncFeedback(browser);
+    await sourceOnlyFinalApprovalContract(browser, { width: 1440, height: 900 });
+    await sourceOnlyFinalApprovalContract(browser, { width: 390, height: 844 });
     await aiPlanningBlockerFeedback(browser, { width: 1440, height: 900 });
     await aiPlanningBlockerFeedback(browser, { width: 390, height: 844 });
     await aiMissingPackageFeedback(browser, { width: 1440, height: 900 });

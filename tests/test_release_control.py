@@ -7,6 +7,11 @@ import sqlite3
 
 import pytest
 
+from domains.content_operations.content_package_adapter import (
+    SOURCE_ONLY_FINAL_APPROVAL_SCHEMA,
+    source_only_final_approval_digest,
+    source_only_review_signature,
+)
 from shared_platform.release_control import (
     _catalog_sku_is_owned_by_release,
     _default_omnichannel_targets,
@@ -268,6 +273,31 @@ def test_source_only_release_approves_exact_source_order_without_review_package(
         {"url": source_url, "action": "keep"},
     ]
     state["review"]["image_order"] = [source_url]
+    state["review"]["video_action"] = "none"
+    state["review"]["video_url"] = ""
+    review_signature = source_only_review_signature(
+        state["review"]["image_actions"], state["review"]["image_order"]
+    )
+    state["content_package"]["fact_card_approved"] = True
+    state["content_package"]["planning_scope_approved"] = True
+    state["content_package"]["source_only_review_signature"] = review_signature
+    state["content_package"]["source_only_final_approval"] = {
+        "schema_version": SOURCE_ONLY_FINAL_APPROVAL_SCHEMA,
+        "status": "approved",
+        "approved_by": "Kyle",
+        "source_only_review_signature": review_signature,
+        "video_action": "none",
+        "video_identity_digest": (
+            "sha256:e3b0c44298fc1c149afbf4c8996fb924"
+            "27ae41e4649b934ca495991b7852b855"
+        ),
+        "approval_digest": source_only_final_approval_digest(
+            review_signature=review_signature,
+            video_action="none",
+            video_url="",
+        ),
+        "approved_at": "2026-07-29T00:00:00+00:00",
+    }
     state_path.write_text(json.dumps(state), encoding="utf-8")
     (
         root

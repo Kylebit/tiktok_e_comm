@@ -405,7 +405,7 @@ if (!sourceOnlyDraftDirty) process.exit(4);
 updateStrategyUi();
 if (
   nodeByKey["#sourceOnlySaveStatus"].textContent
-  !== "选择或顺序尚未保存。"
+  !== "选择或顺序尚未保存；最终内容批准已失效。"
 ) process.exit(14);
 
 let calledSuffix = "";
@@ -422,9 +422,16 @@ post = async function (suffix, payload) {
 
 (async function () {
   await saveSourceOnlyReview();
+  if (calledPayload.review.confirm_final_content_approval !== false) process.exit(17);
+  if ("approved_by" in calledPayload.review) process.exit(18);
+  if (!sourceOnlySaveFeedback.includes("最终内容尚未批准")) process.exit(19);
+
+  await saveSourceOnlyReview({approveFinal: true});
   if (calledSuffix !== "content-package/source-only/review") process.exit(5);
   if (calledPayload.offer_id !== "3838616043") process.exit(6);
   if (calledPayload.review.expected_revision !== 8) process.exit(13);
+  if (calledPayload.review.confirm_final_content_approval !== true) process.exit(15);
+  if (calledPayload.review.approved_by !== "Kyle") process.exit(16);
   if (calledPayload.review.image_actions[0].action !== "keep") process.exit(7);
   if (calledPayload.review.image_actions[1].action !== "remove") process.exit(8);
   if (
@@ -432,7 +439,7 @@ post = async function (suffix, payload) {
     !== JSON.stringify(["https://assets.example/one.jpg"])
   ) process.exit(9);
   if (sourceOnlyDraftDirty) process.exit(10);
-  if (!sourceOnlySaveFeedback.includes("仅保存本地，尚未写入妙手")) process.exit(11);
+  if (!sourceOnlySaveFeedback.includes("已保存并批准最终内容")) process.exit(11);
 })().catch((error) => {
   process.stderr.write(String(error && error.stack || error));
   process.exit(12);

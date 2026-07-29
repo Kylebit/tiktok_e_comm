@@ -114,16 +114,20 @@ def test_source_only_disables_paid_ai_actions_and_excludes_generated_images():
         assert message in SCRIPT
 
 
-def test_source_only_is_a_two_step_select_order_and_atomic_save_flow():
+def test_source_only_has_one_explicit_final_approval_action():
     assert '["选择来源图", sourceTotal > 0' in SCRIPT
     assert '["排序并保存", sourceOnlySaved ? "done" : "current"]' in SCRIPT
-    assert 'sourceOnly ? "保存来源图选择与顺序" : "保存最终顺序"' in SCRIPT
+    assert '["最终内容批准", sourceOnlyFinalApproved() ? "done" : "pending"]' in SCRIPT
+    assert 'sourceOnly ? "保存并批准最终内容" : "保存最终顺序"' in SCRIPT
     assert 'post("content-package/source-only/review"' in SCRIPT
     assert "expected_revision: preview?.revision" in SCRIPT
     assert "image_actions: review.image_actions || []" in SCRIPT
     assert "image_order: review.image_order || []" in SCRIPT
     assert "video_action: review.video_action || \"none\"" in SCRIPT
-    assert "仅保存本地，尚未写入妙手" in SCRIPT
+    assert "confirm_final_content_approval: approveFinal" in SCRIPT
+    assert 'approved_by: "Kyle"' in SCRIPT
+    assert "保存并批准最终内容" in SCRIPT
+    assert "最终内容尚未批准" in SCRIPT
 
 
 def test_legacy_source_video_review_is_preserved_in_ai_studio():

@@ -344,6 +344,14 @@
     return currentContentStrategy() === "source_only";
   }
 
+  function sourceOnlyFinalApproved() {
+    return Boolean(
+      sourceOnlyActive()
+      && !sourceOnlyDraftDirty
+      && preview?.content_package?.source_only_final_approved,
+    );
+  }
+
   function activeReview() {
     if (
       sourceOnlyActive()
@@ -733,6 +741,7 @@
       ? [
         ["选择来源图", sourceTotal > 0 && sourceReviewed === sourceTotal ? "done" : "current"],
         ["排序并保存", sourceOnlySaved ? "done" : "current"],
+        ["最终内容批准", sourceOnlyFinalApproved() ? "done" : "pending"],
       ]
       : [
         ["来源审核", sourceTotal > 0 && sourceReviewed === sourceTotal ? "done" : "current"],
@@ -980,13 +989,15 @@
       : "第 1 张将作为主图；排序先保存到本地，再单独决定是否同步妙手。";
     setButtonLabel(
       $("#saveOrderButton"),
-      sourceOnly ? "保存来源图选择与顺序" : "保存最终顺序",
+      sourceOnly ? "保存并批准最终内容" : "保存最终顺序",
     );
     $("#sourceOnlySaveStatus").hidden = !sourceOnly;
     $("#sourceOnlySaveStatus").textContent = sourceOnlySaveFeedback || (
       sourceOnlyDraftDirty
-        ? "选择或顺序尚未保存。"
-        : `当前已保存 ${finalOrder.length} 张来源图；尚未写入妙手。`
+        ? "选择或顺序尚未保存；最终内容批准已失效。"
+        : sourceOnlyFinalApproved()
+          ? `最终内容已批准：${finalOrder.length} 张来源图及当前视频决定已锁定；尚未写入妙手。`
+          : `当前已保存 ${finalOrder.length} 张来源图；请点击“保存并批准最终内容”。`
     );
     $("#scopeApprovalTitle").textContent = sourceOnly
       ? "来源素材范围已确认"
@@ -1290,7 +1301,7 @@
     $$(".source-remove").forEach((button) => { button.disabled = true; });
     if (sourceOnlyActive()) {
       try {
-        return await saveSourceOnlyReview();
+        return await saveSourceOnlyReview({ approveFinal: false });
       } finally {
         sourceReviewSubmitting = false;
         $$(".source-remove").forEach((button) => { button.disabled = false; });
@@ -1331,7 +1342,7 @@
     }
   }
 
-  async function saveSourceOnlyReview() {
+  async function saveSourceOnlyReview({ approveFinal = false } = {}) {
     captureSourceOnlyDraft();
     const review = activeReview();
     const keptCount = (review.image_actions || []).filter(
@@ -1351,13 +1362,17 @@
           image_actions: review.image_actions || [],
           image_order: review.image_order || [],
           video_action: review.video_action || "none",
+          confirm_final_content_approval: approveFinal,
+          ...(approveFinal ? { approved_by: "Kyle" } : {}),
         },
       });
       preview = result;
       sourceOnlyDraft = null;
       sourceOnlyDraftOfferId = "";
       sourceOnlyDraftDirty = false;
-      sourceOnlySaveFeedback = `已保存 ${keptCount} 张来源图及顺序；仅保存本地，尚未写入妙手。`;
+      sourceOnlySaveFeedback = approveFinal
+        ? `已保存并批准最终内容：${keptCount} 张来源图、顺序和视频决定已锁定；尚未写入妙手。`
+        : `已保存 ${keptCount} 张来源图草稿；最终内容尚未批准，也尚未写入妙手。`;
       finalOrder = buildFinalItems();
       render();
       toast(sourceOnlySaveFeedback);
@@ -1680,7 +1695,7 @@
 
   async function saveOrder({ quiet = false } = {}) {
     if (sourceOnlyActive()) {
-      return saveSourceOnlyReview();
+      return saveSourceOnlyReview({ approveFinal: true });
     }
     setLoading($("#saveOrderButton"), true);
     try {
@@ -1701,6 +1716,10 @@
 
   async function syncMiaoshou() {
     if (!$("#miaoshouConfirm").checked) return;
+    if (sourceOnlyActive() && !sourceOnlyFinalApproved()) {
+      showAlert("请先点击“保存并批准最终内容”，再同步到妙手。");
+      return;
+    }
     if (!finalOrder.length) {
       showAlert("最终图片为空，不能同步妙手。");
       return;

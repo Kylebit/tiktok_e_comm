@@ -1,13 +1,18 @@
+import hashlib
+
 import pytest
 
 from domains.content_operations.content_package_adapter import (
+    SOURCE_ONLY_FINAL_APPROVAL_SCHEMA,
     build_content_package_handoff,
     build_workbench_content_package_handoff,
+    source_only_final_approval_digest,
+    source_only_review_signature,
 )
 
 
 def _source_only_state(*, video_action, video_url=""):
-    return {
+    state = {
         "content_package": {
             "product_id": "product-1",
             "content_strategy": "source_only",
@@ -26,6 +31,28 @@ def _source_only_state(*, video_action, video_url=""):
             "video_url": video_url,
         },
     }
+    signature = source_only_review_signature(
+        state["review"]["image_actions"], state["review"]["image_order"]
+    )
+    state["content_package"]["source_only_review_signature"] = signature
+    state["content_package"]["source_only_final_approval"] = {
+        "schema_version": SOURCE_ONLY_FINAL_APPROVAL_SCHEMA,
+        "status": "approved",
+        "approved_by": "Kyle",
+        "source_only_review_signature": signature,
+        "video_action": video_action,
+        "video_identity_digest": (
+            "sha256:"
+            + hashlib.sha256(video_url.encode("utf-8")).hexdigest()
+        ),
+        "approval_digest": source_only_final_approval_digest(
+            review_signature=signature,
+            video_action=video_action,
+            video_url=video_url,
+        ),
+        "approved_at": "2026-07-29T00:00:00+00:00",
+    }
+    return state
 
 
 def test_workbench_content_package_carries_explicitly_kept_https_video():

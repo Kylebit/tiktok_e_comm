@@ -1,8 +1,11 @@
 import pytest
 
 from domains.content_operations.content_package_adapter import (
+    SOURCE_ONLY_FINAL_APPROVAL_SCHEMA,
     build_content_package_handoff,
     build_workbench_content_package_handoff,
+    source_only_final_approval_digest,
+    source_only_review_signature,
 )
 
 
@@ -166,6 +169,42 @@ def test_workbench_handoff_does_not_block_explicitly_rejected_removed_shot():
         "sc1_r4": {"decision": "approved"},
         "sz1_r6_1784961073473": {"decision": "rejected"},
     }
+
+
+def _approve_source_only_state(state):
+    content = state["content_package"]
+    review = state["review"]
+    signature = source_only_review_signature(
+        review["image_actions"], review["image_order"]
+    )
+    video_action = str(review.get("video_action") or "none")
+    video_url = str(review.get("video_url") or "")
+    content.update(
+        {
+            "fact_card_approved": True,
+            "planning_scope_approved": True,
+            "source_only_review_signature": signature,
+            "source_only_final_approval": {
+                "schema_version": SOURCE_ONLY_FINAL_APPROVAL_SCHEMA,
+                "status": "approved",
+                "approved_by": "Kyle",
+                "source_only_review_signature": signature,
+                "video_action": video_action,
+                "video_identity_digest": (
+                    "sha256:e3b0c44298fc1c149afbf4c8996fb924"
+                    "27ae41e4649b934ca495991b7852b855"
+                ),
+                "approval_digest": source_only_final_approval_digest(
+                    review_signature=signature,
+                    video_action=video_action,
+                    video_url=video_url,
+                    approved_by="Kyle",
+                ),
+                "approved_at": "2026-07-29T00:00:00+00:00",
+            },
+        }
+    )
+    return state
     content["generated_image_miaoshou_decisions"][
         "sz1_r6_1784961073473"
     ] = {
@@ -203,12 +242,10 @@ def test_source_only_handoff_uses_exact_source_order_and_ignores_generated_histo
     source_a = "https://assets.example/source-a.jpg"
     source_b = "https://assets.example/source-b.jpg"
     generated = "https://assets.example/generated.png"
-    state = {
+    state = _approve_source_only_state({
         "content_package": {
             "product_id": "source-product",
             "content_strategy": "source_only",
-            "fact_card_approved": True,
-            "planning_scope_approved": True,
             "suite_approved": False,
             "miaoshou_ordered_images_write": {
                 "status": "verified",
@@ -222,8 +259,10 @@ def test_source_only_handoff_uses_exact_source_order_and_ignores_generated_histo
                 {"action": "keep", "url": source_b},
             ],
             "image_order": [source_b, source_a],
+            "video_action": "none",
+            "video_url": "",
         },
-    }
+    })
 
     handoff = build_workbench_content_package_handoff(
         product_id="source-product",
@@ -285,6 +324,37 @@ def test_source_only_handoff_rejects_incomplete_review_or_non_source_order(
 
     assert handoff.content_package.approval.status == "pending"
     assert handoff.blockers
+
+
+def test_source_only_handoff_rejects_stale_approval_after_order_or_video_drift():
+    source_a = "https://assets.example/source-a.jpg"
+    source_b = "https://assets.example/source-b.jpg"
+    state = _approve_source_only_state(
+        {
+            "content_package": {"content_strategy": "source_only"},
+            "review": {
+                "image_actions": [
+                    {"action": "keep", "url": source_a},
+                    {"action": "keep", "url": source_b},
+                ],
+                "image_order": [source_a, source_b],
+                "video_action": "none",
+                "video_url": "",
+            },
+        }
+    )
+    state["review"]["image_order"] = [source_b, source_a]
+
+    handoff = build_workbench_content_package_handoff(
+        product_id="source-product",
+        state=state,
+        suite_plan={},
+        generation_audits={},
+        copy={"en": "Source-approved copy"},
+    )
+
+    assert handoff.content_package.approval.status == "pending"
+    assert "source-only final content approval is missing or stale" in handoff.blockers
 
 
 def test_overlay_artifact_resolves_its_non_sz1_shot_from_the_audit():

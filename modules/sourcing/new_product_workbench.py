@@ -27,6 +27,12 @@ from pathlib import Path
 from typing import Any, Optional
 
 from core.config import ROOT
+from domains.content_operations.content_package_adapter import (
+    SOURCE_ONLY_FINAL_APPROVAL_SCHEMA,
+    source_only_final_approval_digest,
+    source_only_final_approval_valid,
+    source_only_review_signature,
+)
 
 from modules.sourcing.pipeline import load_scrape
 
@@ -1039,26 +1045,7 @@ def _source_only_selection(review: dict[str, Any]) -> dict[str, Any]:
 def _source_only_review_signature(
     image_actions: list[dict[str, Any]], image_order: list[str]
 ) -> str:
-    payload = {
-        "image_actions": [
-            {
-                "url": str(row.get("url") or ""),
-                "action": str(row.get("action") or ""),
-                "note": str(row.get("note") or ""),
-            }
-            for row in image_actions
-        ],
-        "image_order": list(image_order),
-    }
-    digest = hashlib.sha256(
-        json.dumps(
-            payload,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
-    return f"sha256:{digest}"
+    return source_only_review_signature(image_actions, image_order)
 
 
 def _require_ai_assisted(content: dict[str, Any], action: str) -> None:
@@ -1249,6 +1236,9 @@ def _product_workflow_summary(
     strategy = _content_strategy(content)
     source_only = strategy == "source_only"
     source_only_selection = _source_only_selection(review)
+    source_only_final_approved = (
+        source_only and source_only_final_approval_valid(content, review)
+    )
     requested_images = _requested_image_count(content)
     generated = list(content.get("generated_review_images") or [])
     generation = content.get("remaining_images_generation") or {}
@@ -1273,8 +1263,10 @@ def _product_workflow_summary(
         and _completed_ai_suite_evidence(review, content, generated)
     )
     if source_only:
-        content_ready = bool(source_only_selection["ready"])
-        image_review_ready = content_ready
+        content_ready = bool(
+            source_only_selection["ready"] and source_only_final_approved
+        )
+        image_review_ready = bool(source_only_selection["ready"])
     else:
         content_ready = bool(
             content.get("package_found")
@@ -1334,6 +1326,13 @@ def _product_workflow_summary(
             blockers = ["先创建本地内容审核包"]
         elif source_only:
             blockers.extend(source_only_selection["blockers"])
+            if (
+                source_only_selection["ready"]
+                and not source_only_final_approved
+            ):
+                blockers.append(
+                    "点击“保存并批准最终内容”完成来源图、顺序和视频决定的最终确认"
+                )
         else:
             if not content.get("fact_card_approved"):
                 blockers.append("审核商品身份与事实卡")
@@ -1382,6 +1381,10 @@ def content_package_summary(offer_id_or_url: str) -> dict[str, Any]:
     strategy = _content_strategy(saved)
     state_review = state.get("review") if isinstance(state.get("review"), dict) else {}
     source_only_selection = _source_only_selection(state_review)
+    source_only_final_approved = (
+        strategy == "source_only"
+        and source_only_final_approval_valid(saved, state_review)
+    )
     collect_box_id = _content_collect_box_id(offer_id, state, source)
     package_dir = _content_package_dir(collect_box_id)
     decisions = saved.get("asset_decisions") if isinstance(saved.get("asset_decisions"), dict) else {}
@@ -1476,7 +1479,7 @@ def content_package_summary(offer_id_or_url: str) -> dict[str, Any]:
         "storyboard_human_approval_required": not automatic_storyboard_recipe,
         "generated_asset_human_approval_required": True,
         "content_approved": bool(
-            source_only_selection["ready"]
+            source_only_final_approved
             if strategy == "source_only"
             else (
                 saved.get("fact_card_approved")
@@ -1493,6 +1496,21 @@ def content_package_summary(offer_id_or_url: str) -> dict[str, Any]:
         "completed_ai_suite_evidence": completed_ai_suite,
         "source_only_ready": bool(
             strategy == "source_only" and source_only_selection["ready"]
+        ),
+        "source_only_final_approved": bool(source_only_final_approved),
+        "source_only_final_approval_digest": (
+            str(
+                (
+                    saved.get("source_only_final_approval")
+                    if isinstance(
+                        saved.get("source_only_final_approval"), dict
+                    )
+                    else {}
+                ).get("approval_digest")
+                or ""
+            )
+            if source_only_final_approved
+            else ""
         ),
         "source_only_blockers": (
             list(source_only_selection["blockers"])
@@ -3611,21 +3629,33 @@ def save_content_package_review(offer_id_or_url: str, review: dict[str, Any]) ->
 def save_source_only_review(
     offer_id_or_url: str, review: dict[str, Any]
 ) -> dict[str, Any]:
-    """Atomically save source selections and order without creating an AI package."""
+    """Save a source-only draft or explicitly approve its exact final content."""
 
     offer_id = resolve_offer_key(offer_id_or_url)
     state = load_state(offer_id)
-    if isinstance(review.get("expected_revision"), bool):
-        expected_revision = -1
-    else:
-        try:
-            expected_revision = int(review.get("expected_revision"))
-        except (TypeError, ValueError):
-            expected_revision = -1
+    expected_revision_raw = review.get("expected_revision")
+    expected_revision = (
+        expected_revision_raw
+        if type(expected_revision_raw) is int
+        else -1
+    )
     current_revision = max(0, int(state.get("_revision") or 0))
     if expected_revision != current_revision:
         raise ValueError(
             "source image draft is stale; refresh before saving selection and order"
+        )
+    confirm_value = review.get("confirm_final_content_approval")
+    if confirm_value is not None and type(confirm_value) is not bool:
+        raise ValueError(
+            "confirm_final_content_approval must be a literal boolean"
+        )
+    approve_final = confirm_value is True
+    approved_by = str(review.get("approved_by") or "").strip()
+    if approve_final and approved_by != "Kyle":
+        raise ValueError("final source-only content approval must be approved by Kyle")
+    if not approve_final and approved_by:
+        raise ValueError(
+            "approved_by is only allowed with explicit final content approval"
         )
 
     source = _source_summary(offer_id)
@@ -3710,13 +3740,46 @@ def save_source_only_review(
     content.pop("pending_regeneration_shot_ids", None)
     selection = _source_only_selection(current_review)
     content["source_only_review_status"] = (
-        "ready" if selection["ready"] else "draft"
+        "ready_for_final_approval" if selection["ready"] else "draft"
     )
     content["source_only_review_signature"] = _source_only_review_signature(
         clean_actions, clean_order
     )
     content["source_only_reviewed_at"] = _now()
     content["source_only_external_writes"] = []
+    if approve_final:
+        if not selection["ready"]:
+            raise ValueError(
+                "source-only final content cannot be approved until every source "
+                "image, order, and video decision is complete"
+            )
+        review_signature = str(content["source_only_review_signature"])
+        approval_digest = source_only_final_approval_digest(
+            review_signature=review_signature,
+            video_action=str(current_review.get("video_action") or ""),
+            video_url=str(current_review.get("video_url") or ""),
+            approved_by=approved_by,
+        )
+        video_identity_digest = hashlib.sha256(
+            str(current_review.get("video_url") or "").strip().encode("utf-8")
+        ).hexdigest()
+        content["fact_card_approved"] = True
+        content["planning_scope_approved"] = True
+        content["source_only_review_status"] = "approved"
+        content["source_only_final_approval"] = {
+            "schema_version": SOURCE_ONLY_FINAL_APPROVAL_SCHEMA,
+            "status": "approved",
+            "approved_by": approved_by,
+            "source_only_review_signature": review_signature,
+            "video_action": str(current_review.get("video_action") or ""),
+            "video_identity_digest": f"sha256:{video_identity_digest}",
+            "approval_digest": approval_digest,
+            "approved_at": _now(),
+        }
+    else:
+        content["fact_card_approved"] = False
+        content["planning_scope_approved"] = False
+        content.pop("source_only_final_approval", None)
     state["review"] = current_review
     save_state(offer_id, state)
     return build_preview(offer_id)

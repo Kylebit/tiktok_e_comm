@@ -117,7 +117,7 @@ section { scroll-margin-top: 18px; }
 .section-heading h2 { margin: 5px 0 0; font: 650 30px/1.1 Georgia,"Songti SC",serif; }
 .section-heading > p { max-width: 520px; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.65; }
 .flow-rail { display: grid; grid-template-columns: repeat(4,1fr); overflow: hidden; border: 1px solid var(--line); border-radius: 18px; background: rgba(255,255,255,.48); }
-.flow-rail.source-only-flow { grid-template-columns: repeat(2,minmax(0,1fr)); }
+.flow-rail.source-only-flow { grid-template-columns: repeat(3,minmax(0,1fr)); }
 .flow-step { min-height: 100px; display: grid; align-content: center; gap: 4px; padding: 16px 18px; border-right: 1px solid var(--line); }
 .flow-step:last-child { border-right: 0; }
 .flow-step span { color: #98a39f; font: italic 500 17px/1 Georgia,serif; }

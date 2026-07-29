@@ -6,6 +6,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from domains.content_operations.content_package_adapter import (
+    SOURCE_ONLY_FINAL_APPROVAL_SCHEMA,
+    source_only_final_approval_digest,
+    source_only_review_signature,
+)
 from modules.sourcing.image_review_package import create_model_suite_proposal
 from modules.sourcing.new_product_workbench import (
     _apply_suite_customization,
@@ -91,22 +96,46 @@ class NewProductImageWorkflowTests(unittest.TestCase):
 
     def test_source_only_workflow_completes_without_ai_plan_or_generation(self):
         source_url = "https://img.example/source.jpg"
+        source_review = {
+            "title": "English product title",
+            "cost_cny": 5,
+            "image_actions": [{"action": "keep", "url": source_url}],
+            "image_order": [source_url],
+            "video_action": "none",
+            "video_url": "",
+            "weight_kg": 0.1,
+            "package_cm": [1, 2, 3],
+            "selected_sites": ["TH"],
+        }
+        signature = source_only_review_signature(
+            source_review["image_actions"], source_review["image_order"]
+        )
         workflow = _product_workflow_summary(
             source={"title_source": "Product", "cost_cny": 5, "images": [source_url]},
-            review={
-                "title": "English product title",
-                "cost_cny": 5,
-                "image_actions": [{"action": "keep", "url": source_url}],
-                "image_order": [source_url],
-                "weight_kg": 0.1,
-                "package_cm": [1, 2, 3],
-                "selected_sites": ["TH"],
-            },
+            review=source_review,
             content={
                 "content_strategy": "source_only",
                 "package_found": True,
                 "fact_card_approved": True,
                 "planning_scope_approved": True,
+                "source_only_review_signature": signature,
+                "source_only_final_approval": {
+                    "schema_version": SOURCE_ONLY_FINAL_APPROVAL_SCHEMA,
+                    "status": "approved",
+                    "approved_by": "Kyle",
+                    "source_only_review_signature": signature,
+                    "video_action": "none",
+                    "video_identity_digest": (
+                        "sha256:e3b0c44298fc1c149afbf4c8996fb924"
+                        "27ae41e4649b934ca495991b7852b855"
+                    ),
+                    "approval_digest": source_only_final_approval_digest(
+                        review_signature=signature,
+                        video_action="none",
+                        video_url="",
+                    ),
+                    "approved_at": "2026-07-29T00:00:00+00:00",
+                },
                 "generated_review_images": [
                     {"miaoshou_action": "keep", "url": "https://img.example/ai.jpg"}
                 ],

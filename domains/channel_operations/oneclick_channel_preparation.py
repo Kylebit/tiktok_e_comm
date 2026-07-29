@@ -94,12 +94,40 @@ def prepare_tiktok_source_query(
             f"{SYSTEMIC_IDENTITY}: {BLOCKED_SOURCE_IDENTITY}"
         )
     identity = resolution.identity
+    return prepare_tiktok_source_query_from_canonical_identity(identity.payload())
+
+
+def prepare_tiktok_source_query_from_canonical_identity(
+    identity: Mapping[str, object],
+) -> dict[str, object]:
+    """Build a Miaoshou source query from 00's immutable 01 identity.
+
+    ``source_item_code`` is intentionally ignored: it is display/merchant
+    data, never a valid ``sourceItemIdKeyword`` identity.
+    """
+    if not isinstance(identity, Mapping):
+        raise OneClickPreparationError(
+            f"{SYSTEMIC_IDENTITY}: {BLOCKED_SOURCE_IDENTITY}"
+        )
+    source_offer_id = identity.get("source_offer_id")
+    source_digest = identity.get("identity_digest")
+    if (
+        type(source_offer_id) is not str
+        or not source_offer_id.isascii()
+        or not source_offer_id.isdecimal()
+        or int(source_offer_id) <= 0
+        or type(source_digest) is not str
+        or not _source_identity_digest(source_digest)
+    ):
+        raise OneClickPreparationError(
+            f"{SYSTEMIC_IDENTITY}: {BLOCKED_SOURCE_IDENTITY}"
+        )
     payload = {
         "schema_version": "tiktok-miaoshou-source-query/v2",
         "source_identity_class": "CANONICAL_SOURCE_OFFER",
-        "source_offer_id": identity.source_offer_id,
-        "filter": {"sourceItemIdKeyword": identity.source_offer_id},
-        "source_identity_digest": identity.identity_digest,
+        "source_offer_id": source_offer_id,
+        "filter": {"sourceItemIdKeyword": source_offer_id},
+        "source_identity_digest": source_digest,
         "external_writes_performed": [],
     }
     return {**payload, "prepared_digest": _digest(payload)}
@@ -133,11 +161,17 @@ def prepare_shopee_plan_native_first_attempt(command: Mapping[str, object]) -> d
     if not title or not description.strip():
         raise OneClickPreparationError("shopee_plan_native_command_incomplete")
     from shared_platform.target_scoped_release_contracts import (
+        approved_shopee_channel_master_digest,
         approved_shopee_copy_digest,
+        approved_source_image_manifest_digest,
     )
     copy_digest = approved_shopee_copy_digest(title, description)
     images = command.get("images")
-    if not isinstance(images, list) or not images:
+    if (
+        not isinstance(images, list)
+        or not images
+        or len(images) > 9
+    ):
         raise OneClickPreparationError("shopee_images_invalid")
     normalized_images: list[dict[str, object]] = []
     for index, image in enumerate(images, start=1):
@@ -153,6 +187,12 @@ def prepare_shopee_plan_native_first_attempt(command: Mapping[str, object]) -> d
     urls = [str(image["image_url"]) for image in normalized_images]
     if len(urls) != len(set(urls)):
         raise OneClickPreparationError("shopee_images_invalid")
+    approved_master_digest = approved_shopee_channel_master_digest(
+        title, description, urls
+    )
+    source_image_manifest_digest = approved_source_image_manifest_digest(
+        urls
+    )
     parcel = command.get("parcel")
     if not isinstance(parcel, Mapping):
         raise OneClickPreparationError("shopee_parcel_invalid")
@@ -179,12 +219,33 @@ def prepare_shopee_plan_native_first_attempt(command: Mapping[str, object]) -> d
         "target_label": target,
         "seller_sku": seller_sku.strip(),
         "model_sku": model_sku.strip(),
-        "listing_copy": {"title": title, "description": description, "approved_copy_digest": copy_digest},
+        "listing_copy": {
+            "title": title,
+            "description": description,
+            "approved_copy_digest": copy_digest,
+            "approved_master_digest": approved_master_digest,
+        },
         "ordered_images": normalized_images,
+        "approved_source_image_manifest_digest": (
+            source_image_manifest_digest
+        ),
         "parcel": {"weight_kg": str(weight), "package_cm": [str(value) for value in dimensions]},
         "target_pricing": {"local_original_price": str(price), "currency": currency},
         "policy": {"schema_version": policy["schema_version"].strip(), "policy_digest": policy["policy_digest"]},
     }
+    global_create = command.get("global_create")
+    if global_create is not None:
+        if (
+            len(title) > 120
+            or len(description) < 500
+            or len(description) > 3000
+        ):
+            raise OneClickPreparationError(
+                "shopee_global_create_copy_invalid"
+            )
+        approved["global_create"] = _normalize_shopee_global_create(
+            global_create
+        )
     payload = {
         "schema_version": "shopee-plan-native-first-attempt/v2",
         "approved": approved,
@@ -193,6 +254,113 @@ def prepare_shopee_plan_native_first_attempt(command: Mapping[str, object]) -> d
         "external_writes_performed": [],
     }
     return {**payload, "prepared_digest": _digest(payload)}
+
+
+def _normalize_shopee_global_create(value: object) -> dict[str, object]:
+    """Validate every field written by the plan-native global-create call."""
+    if not isinstance(value, Mapping):
+        raise OneClickPreparationError("shopee_global_create_facts_invalid")
+    category_id = value.get("category_id")
+    attributes = value.get("attribute_list")
+    brand = value.get("brand")
+    stock = value.get("seller_stock")
+    price = _positive_decimal(value.get("original_price_cny"))
+    condition = value.get("condition")
+    pre_order = value.get("pre_order")
+    if (
+        type(category_id) is not int
+        or category_id <= 0
+        or not isinstance(attributes, list)
+        or not attributes
+        or any(not isinstance(row, Mapping) for row in attributes)
+        or not isinstance(brand, Mapping)
+        or not isinstance(stock, Mapping)
+        or condition != "NEW"
+        or not isinstance(pre_order, Mapping)
+    ):
+        raise OneClickPreparationError("shopee_global_create_facts_invalid")
+    normalized_attributes: list[dict[str, object]] = []
+    seen_attribute_ids: set[int] = set()
+    for row in attributes:
+        attribute_id = row.get("attribute_id")
+        values = row.get("attribute_value_list")
+        if (
+            type(attribute_id) is not int
+            or attribute_id <= 0
+            or attribute_id in seen_attribute_ids
+            or not isinstance(values, list)
+            or not values
+            or any(not isinstance(item, Mapping) for item in values)
+        ):
+            raise OneClickPreparationError(
+                "shopee_global_create_attributes_invalid"
+            )
+        normalized_values: list[dict[str, object]] = []
+        for item in values:
+            value_id = item.get("value_id")
+            original_name = item.get("original_value_name")
+            if not (
+                (type(value_id) is int and value_id > 0)
+                or (type(original_name) is str and bool(original_name.strip()))
+            ):
+                raise OneClickPreparationError(
+                    "shopee_global_create_attributes_invalid"
+                )
+            normalized_values.append(dict(item))
+        seen_attribute_ids.add(attribute_id)
+        normalized_attributes.append(
+            {
+                **dict(row),
+                "attribute_id": attribute_id,
+                "attribute_value_list": normalized_values,
+            }
+        )
+    brand_id = brand.get("brand_id")
+    brand_name = brand.get("original_brand_name")
+    if (
+        type(brand_id) is not int
+        or brand_id < 0
+        or type(brand_name) is not str
+        or not brand_name.strip()
+    ):
+        raise OneClickPreparationError("shopee_global_create_brand_invalid")
+    location_id = stock.get("location_id")
+    stock_count = stock.get("stock")
+    if (
+        type(location_id) is not str
+        or not location_id.strip()
+        or type(stock_count) is not int
+        or stock_count <= 0
+    ):
+        raise OneClickPreparationError("shopee_global_create_stock_invalid")
+    days_to_ship = pre_order.get("days_to_ship")
+    if type(days_to_ship) is not int or days_to_ship <= 0:
+        raise OneClickPreparationError(
+            "shopee_global_create_preorder_invalid"
+        )
+    normalized = {
+        "category_id": category_id,
+        "attribute_list": normalized_attributes,
+        "brand": {
+            "brand_id": brand_id,
+            "original_brand_name": brand_name.strip(),
+        },
+        "seller_stock": {
+            "location_id": location_id.strip(),
+            "stock": stock_count,
+        },
+        "original_price_cny": str(price),
+        "condition": "NEW",
+        "pre_order": {"days_to_ship": days_to_ship},
+    }
+    try:
+        return json.loads(
+            json.dumps(normalized, ensure_ascii=False, sort_keys=True)
+        )
+    except (TypeError, ValueError) as error:
+        raise OneClickPreparationError(
+            "shopee_global_create_facts_invalid"
+        ) from error
 
 
 def _positive_decimal(value: object) -> Decimal:
@@ -209,6 +377,13 @@ def _positive_decimal(value: object) -> Decimal:
 
 def _sha256(value: object) -> bool:
     return type(value) is str and len(value) == 64 and all(char in "0123456789abcdef" for char in value)
+
+
+def _source_identity_digest(value: str) -> bool:
+    """Accept the 01 contract's prefixed digest, never a loose display value."""
+    return _sha256(value) or (
+        value.startswith("sha256:") and _sha256(value.removeprefix("sha256:"))
+    )
 
 
 def classify_shopee_dispatch_boundary(

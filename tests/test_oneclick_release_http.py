@@ -387,6 +387,76 @@ def test_no_runnable_target_chooses_stable_focused_recovery(
     }
 
 
+@pytest.mark.parametrize(
+    "ordered_targets",
+    [
+        list(rows)
+        for rows in permutations(
+            (
+                {
+                    "target_label": "shopee:MY",
+                    "status": "BLOCKED_CAPABILITY",
+                    "next_action": "review_approved_content_facts",
+                    "runnable_now": False,
+                },
+                {
+                    "target_label": "shopee:VN",
+                    "status": "BLOCKED_CAPABILITY",
+                    "next_action": "review_logistics_policy",
+                    "runnable_now": False,
+                },
+                {
+                    "target_label": "ozon:RU",
+                    "status": "BLOCKED_CAPABILITY",
+                    "next_action": "wait_for_channel_capability",
+                    "runnable_now": False,
+                },
+            )
+        )
+    ],
+)
+def test_content_and_logistics_recovery_priority_is_order_independent(
+    monkeypatch,
+    ordered_targets,
+):
+    class FactBlockedControlStore:
+        @staticmethod
+        def get_job(**_kwargs):
+            return {
+                "phase": "BLOCKED",
+                "runnable_target_count": 0,
+                "summary": {
+                    "will_dispatch": [],
+                    "manual_after_submit": [],
+                    "blocked": [
+                        "shopee:MY",
+                        "shopee:VN",
+                        "ozon:RU",
+                    ],
+                },
+                "targets": ordered_targets,
+            }
+
+    monkeypatch.delenv("ORBIT_ONECLICK_EXTERNAL_DISPATCH", raising=False)
+    monkeypatch.setattr(
+        product_server,
+        "_oneclick_control_store",
+        lambda: FactBlockedControlStore(),
+    )
+    projected = product_server._apply_oneclick_release_authority(
+        {"plan": {"plan_id": "omnichannel:test"}}
+    )
+
+    assert projected["publish_ready"] is False
+    assert projected["canonical_next_action"] == {
+        "target_label": "shopee:MY",
+        "target_focus": "shopee:MY",
+        "canonical_status": "BLOCKED_CAPABILITY",
+        "action": "review_approved_content_facts",
+        "runnable": False,
+    }
+
+
 def test_dispatch_capability_defaults_enabled_and_explicit_disable_is_clear(
     monkeypatch,
 ):

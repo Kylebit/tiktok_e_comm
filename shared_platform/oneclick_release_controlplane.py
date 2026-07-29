@@ -2861,6 +2861,7 @@ def build_batch_preview(
                 result["classification"],
                 dependency_state=dependency["state"],
                 reason_code=result.get("reason_code"),
+                reason_category=result.get("reason_category"),
             ),
             "next_action_target": (
                 None
@@ -4022,6 +4023,7 @@ def _public_target(
             row["capability"],
             dependency_state=dependency["state"],
             reason_code=row.get("reason_code"),
+            reason_category=row.get("reason_category"),
         ),
         "next_action_target": (
             None
@@ -4041,6 +4043,7 @@ def _next_action(
     *,
     dependency_state: str,
     reason_code: str | None = None,
+    reason_category: str | None = None,
 ) -> str | None:
     if reason_code == "oneclick_dispatch_disabled":
         return "enable_oneclick_dispatch"
@@ -4067,6 +4070,10 @@ def _next_action(
     if status == BLOCKED_INVENTORY:
         return "approve_sellable_inventory"
     if status == BLOCKED_CAPABILITY:
+        if reason_category == "CONTENT":
+            return "review_approved_content_facts"
+        if reason_category == "LOGISTICS":
+            return "review_logistics_policy"
         return "wait_for_channel_capability"
     if status == BLOCKED_SOURCE_IDENTITY:
         return "resolve_source_product_identity"

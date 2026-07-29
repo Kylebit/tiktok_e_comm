@@ -194,6 +194,8 @@ _ONECLICK_RECOVERY_ACTION_PRIORITY = {
     "verify_submission_in_marketplace": 20,
     "retry_exact_zero_write_action": 30,
     "restore_channel_authorization": 40,
+    "review_approved_content_facts": 45,
+    "review_logistics_policy": 46,
     "approve_sellable_inventory": 50,
     "perform_governed_safe_action": 60,
     "resolve_source_product_identity": 70,

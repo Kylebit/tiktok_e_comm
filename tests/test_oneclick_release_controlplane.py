@@ -620,6 +620,55 @@ def test_common_blocker_makes_tiktok_non_runnable_and_job_blocked(tmp_path):
     assert release.get_run(run["run_id"])["targets"][0]["attempts"] == 0
 
 
+@pytest.mark.parametrize(
+    ("reason_category", "expected_action"),
+    [
+        ("CONTENT", "review_approved_content_facts"),
+        ("LOGISTICS", "review_logistics_policy"),
+        ("CAPABILITY", "wait_for_channel_capability"),
+        ("SYSTEMIC_CONTRACT", "wait_for_channel_capability"),
+    ],
+)
+def test_blocked_capability_next_action_uses_reason_category(
+    tmp_path,
+    reason_category,
+    expected_action,
+):
+    targets = ["shopee:MY"]
+    release, plan, run = _approved_context(tmp_path, targets=targets)
+
+    def prepare(request):
+        return PrepareTargetResult(
+            classification=BLOCKED_CAPABILITY,
+            reason_category=reason_category,
+            reason_scope="TARGET",
+            reason_code="blocked_prepare_fixture",
+            reason_detail="blocked by a governed preparation fact",
+        )
+
+    registry = _registry(targets, prepare_override=prepare)
+    preview = build_batch_preview(
+        plan=plan,
+        run=preview_run_for_plan(plan),
+        product_revision=31,
+        registry=registry,
+    )
+    assert preview["targets"][0]["next_action"] == expected_action
+    assert preview["targets"][0]["next_action_target"] == "shopee:MY"
+
+    control = OneClickReleaseStore(release.path)
+    job = control.ensure_job(
+        plan=plan,
+        run=run,
+        product_revision=31,
+        registry=registry,
+    )
+    projected = control.prepare_job(job["job_id"], registry)
+    assert projected["targets"][0]["next_action"] == expected_action
+    assert projected["targets"][0]["next_action_target"] == "shopee:MY"
+    assert control.claim_next_dispatch(job["job_id"], registry) is None
+
+
 def test_tiktok_without_common_is_systemic_dependency_block_zero_claim(tmp_path):
     targets = ["tiktok:MX"]
     release, plan, run = _approved_context(tmp_path, targets=targets)

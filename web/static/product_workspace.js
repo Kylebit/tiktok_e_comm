@@ -630,8 +630,23 @@
         || !dependency
         || typeof dependency !== "object"
         || Array.isArray(dependency)
+        || dependency.policy_version !== "oneclick-target-dependency/v1"
         || !["SATISFIED", "WAITING", "BLOCKED"].includes(dependency.state)
         || typeof dependency.satisfied !== "boolean"
+        || (
+          dependency.prerequisite_target !== null
+          && (
+            typeof dependency.prerequisite_target !== "string"
+            || !dependency.prerequisite_target
+          )
+        )
+        || (
+          dependency.prerequisite_status !== null
+          && (
+            typeof dependency.prerequisite_status !== "string"
+            || !dependency.prerequisite_status
+          )
+        )
         || (
           dependency.state === "SATISFIED"
             ? dependency.satisfied !== true
@@ -698,6 +713,11 @@
           target,
         ]),
       );
+      if (previousTargets.size !== projection.targets.length) {
+        throw oneClickContractError(
+          "统一发布控制面的目标集合已漂移，已停止提交。",
+        );
+      }
       for (const target of projection.targets) {
         const previous = previousTargets.get(target.target_label);
         if (
@@ -720,10 +740,61 @@
         }
       }
     }
+    const common = projection.targets.find(
+      (target) => target.target_label === "miaoshou:COMMON",
+    );
     for (const target of projection.targets) {
+      const dependency = target.dependency;
+      const isTikTok = target.target_label.startsWith("tiktok:");
+      const dependencyExact = isTikTok
+        ? (
+          dependency.prerequisite_target === "miaoshou:COMMON"
+          && (
+            common
+              ? dependency.prerequisite_status === common.status
+                && (
+                  common.status === "SUCCEEDED"
+                    ? (
+                      dependency.state === "SATISFIED"
+                      && dependency.satisfied === true
+                    )
+                    : ["PENDING", "PREPARING", "READY", "DISPATCHING"]
+                      .includes(common.status)
+                      ? (
+                        dependency.state === "WAITING"
+                        && dependency.satisfied === false
+                      )
+                      : (
+                        dependency.state === "BLOCKED"
+                        && dependency.satisfied === false
+                      )
+                )
+              : (
+                dependency.prerequisite_status === "MISSING"
+                && dependency.state === "BLOCKED"
+                && dependency.satisfied === false
+              )
+          )
+        )
+        : (
+          dependency.state === "SATISFIED"
+          && dependency.satisfied === true
+          && dependency.prerequisite_target === null
+          && dependency.prerequisite_status === null
+        );
+      if (!dependencyExact) {
+        throw oneClickContractError(
+          "统一发布控制面的店铺依赖证据不一致，已停止提交。",
+        );
+      }
       if (
         target.next_action_target
         && !labels.has(target.next_action_target)
+        && !(
+          isTikTok
+          && !common
+          && target.next_action_target === "miaoshou:COMMON"
+        )
       ) {
         throw oneClickContractError(
           "统一发布控制面的下一步目标无效，已停止提交。",

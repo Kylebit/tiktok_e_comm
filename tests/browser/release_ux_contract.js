@@ -3756,12 +3756,38 @@ function oneClickDashboard({
 }
 
 function oneClickTargets(stage) {
-  const dependency = {
+  const independentDependency = {
+    policy_version: "oneclick-target-dependency/v1",
     state: "SATISFIED",
     satisfied: true,
     prerequisite_target: null,
+    prerequisite_status: null,
+  };
+  const tiktokDependency = {
+    policy_version: "oneclick-target-dependency/v1",
+    state: "SATISFIED",
+    satisfied: true,
+    prerequisite_target: "miaoshou:COMMON",
+    prerequisite_status: "SUCCEEDED",
   };
   return [
+    {
+      target_label: "miaoshou:COMMON",
+      storefront: false,
+      status: "SUCCEEDED",
+      classification: "EXACT_READY_AUTOMATIC",
+      runnable_now: false,
+      dependency: independentDependency,
+      next_action: null,
+      next_action_target: "miaoshou:COMMON",
+      reason: null,
+      digests: {
+        prepared_command: "9".repeat(64),
+        proof: "0".repeat(64),
+        adapter_policy: "a".repeat(64),
+      },
+      dispatch_ledger: {},
+    },
     {
       target_label: "shopee:MY",
       storefront: true,
@@ -3769,7 +3795,7 @@ function oneClickTargets(stage) {
         : stage === "running" ? "DISPATCHING" : "READY",
       classification: "EXACT_READY_AUTOMATIC",
       runnable_now: stage === "preview",
-      dependency,
+      dependency: independentDependency,
       next_action: stage === "terminal" ? null
         : stage === "running"
           ? "wait_for_dispatch_receipt"
@@ -3789,7 +3815,7 @@ function oneClickTargets(stage) {
       status: stage === "terminal" ? "SUBMITTED_UNVERIFIED" : "READY",
       classification: "READY_SUBMIT_MANUAL",
       runnable_now: stage === "preview" || stage === "running",
-      dependency,
+      dependency: tiktokDependency,
       next_action: stage === "terminal"
         ? "verify_submission_in_marketplace" : "wait_for_worker",
       next_action_target: "tiktok:GB",
@@ -3807,7 +3833,7 @@ function oneClickTargets(stage) {
       status: "BLOCKED_CAPABILITY",
       classification: "BLOCKED_CAPABILITY",
       runnable_now: false,
-      dependency,
+      dependency: independentDependency,
       next_action: "review_approved_content_facts",
       next_action_target: "shopee:VN",
       reason: {
@@ -3830,7 +3856,7 @@ function oneClickTargets(stage) {
       status: "BLOCKED_INVENTORY",
       classification: "BLOCKED_INVENTORY",
       runnable_now: false,
-      dependency,
+      dependency: independentDependency,
       next_action: "approve_sellable_inventory",
       next_action_target: "ozon:RU",
       reason: {
@@ -3867,7 +3893,7 @@ function oneClickProjection(schemaVersion, stage, phase = null) {
     },
     targets: oneClickTargets(stage),
     storefront_count: 4,
-    control_row_count: 0,
+    control_row_count: 1,
     runnable_target_count: stage === "preview" ? 2
       : stage === "running" ? 1 : 0,
     summary: {
@@ -3933,6 +3959,15 @@ function oneClickPendingJobProjection() {
     status: "PENDING",
     classification: null,
     runnable_now: false,
+    dependency: target.target_label.startsWith("tiktok:")
+      ? {
+        policy_version: "oneclick-target-dependency/v1",
+        state: "WAITING",
+        satisfied: false,
+        prerequisite_target: "miaoshou:COMMON",
+        prerequisite_status: "PENDING",
+      }
+      : target.dependency,
     next_action: "prepare_batch",
     reason: null,
     digests: {
@@ -3949,8 +3984,8 @@ function oneClickPendingJobProjection() {
     already_terminal: [],
   };
   projection.canonical_next_action = {
-    target_label: "shopee:MY",
-    target_focus: "shopee:MY",
+    target_label: "miaoshou:COMMON",
+    target_focus: "miaoshou:COMMON",
     canonical_status: "PENDING",
     action: "prepare_batch",
     runnable: false,
@@ -4222,7 +4257,11 @@ async function oneClickContentRecoveryContract(browser, viewport) {
         "terminal",
       );
       preview.targets = blockedTargets;
-      preview.storefront_count = blockedTargets.length;
+      preview.storefront_count = blockedTargets.filter(
+        (target) => target.storefront,
+      ).length;
+      preview.control_row_count = blockedTargets.length
+        - preview.storefront_count;
       preview.runnable_target_count = 0;
       preview.summary.will_dispatch = [];
       preview.summary.manual_after_submit = [];
@@ -4325,22 +4364,35 @@ async function oneClickOfferSwitchCancelsStalePreviewContract(browser) {
       preview.targets = preview.targets.filter((target) => (
         offerId === firstOffer
           ? target.target_label === "shopee:MY"
-          : target.target_label === "tiktok:GB"
+          : ["miaoshou:COMMON", "tiktok:GB"].includes(
+            target.target_label,
+          )
       ));
-      preview.storefront_count = preview.targets.length;
+      preview.storefront_count = preview.targets.filter(
+        (target) => target.storefront,
+      ).length;
+      preview.control_row_count = preview.targets.length
+        - preview.storefront_count;
       preview.runnable_target_count = 1;
       preview.summary.will_dispatch = preview.targets
         .filter((target) => (
-          target.classification === "EXACT_READY_AUTOMATIC"
+          target.storefront
+          && target.runnable_now
+          && target.classification === "EXACT_READY_AUTOMATIC"
         ))
         .map((target) => target.target_label);
       preview.summary.manual_after_submit = preview.targets
-        .filter((target) => target.classification === "READY_SUBMIT_MANUAL")
+        .filter((target) => (
+          target.storefront
+          && target.runnable_now
+          && target.classification === "READY_SUBMIT_MANUAL"
+        ))
         .map((target) => target.target_label);
       preview.summary.blocked = [];
+      const storefront = preview.targets.find((target) => target.storefront);
       preview.canonical_next_action = {
-        target_label: preview.targets[0].target_label,
-        target_focus: preview.targets[0].target_label,
+        target_label: storefront.target_label,
+        target_focus: storefront.target_label,
         canonical_status: "READY",
         action: "wait_for_worker",
         runnable: true,
@@ -4459,6 +4511,21 @@ async function oneClickStrictFailureContract(browser, mode) {
       }
       if (mode === "target-proof-missing") {
         delete job.targets[0].digests.proof;
+      }
+      if (mode === "missing-target") {
+        job.targets = job.targets.filter(
+          (target) => target.target_label !== "shopee:VN",
+        );
+        job.storefront_count -= 1;
+        job.summary.blocked = job.summary.blocked.filter(
+          (label) => label !== "shopee:VN",
+        );
+      }
+      if (mode === "dependency-drift") {
+        const target = job.targets.find(
+          (row) => row.target_label === "tiktok:GB",
+        );
+        target.dependency.prerequisite_status = "READY";
       }
       return route.fulfill(jsonResponse({
         ok: true,
@@ -4800,6 +4867,8 @@ async function legacyStateSafety(browser) {
     await oneClickStrictFailureContract(browser, "malformed-status");
     await oneClickStrictFailureContract(browser, "digest-drift");
     await oneClickStrictFailureContract(browser, "target-proof-missing");
+    await oneClickStrictFailureContract(browser, "missing-target");
+    await oneClickStrictFailureContract(browser, "dependency-drift");
     await oneClickFeatureDisabledContract(browser);
     await profitAsyncAndNoFalseSuccess(browser);
     await legacyStateSafety(browser);

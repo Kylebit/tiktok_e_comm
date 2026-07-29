@@ -551,6 +551,9 @@ def test_oneclick_release_ui_uses_only_the_async_server_controlplane():
     assert "ONECLICK_DIGEST_KEYS.every" in script
     assert "ONECLICK_TARGET_DIGEST_KEYS.every" in script
     assert "oneClickDigest(reason.detail_digest)" in script
+    assert 'dependency.policy_version !== "oneclick-target-dependency/v1"' in script
+    assert 'dependency.prerequisite_target === "miaoshou:COMMON"' in script
+    assert "previousTargets.size !== projection.targets.length" in script
     assert "sameSortedValues(summary.will_dispatch" in script
     assert "dashboardFromPayload" not in publish
     assert "while (" not in publish

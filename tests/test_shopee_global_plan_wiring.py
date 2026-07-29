@@ -23,7 +23,9 @@ from shared_platform.release_store import (
     ReleaseStore,
 )
 from shared_platform.shopee_global_plan import (
+    EXISTING_GLOBAL,
     ShopeeGlobalPlanObservationError,
+    build_shopee_official_existing_global_seller_stock,
     build_shopee_global_plan_candidate,
 )
 from tests.test_oneclick_release_controlplane import (
@@ -46,7 +48,11 @@ def _dashboard() -> dict:
     return dashboard
 
 
-def _observer(*, category_name: str = "Wall Stickers"):
+def _observer(
+    *,
+    category_name: str = "Wall Stickers",
+    existing_global: bool = False,
+):
     def observe(request):
         assert request["schema_version"] == (
             "shopee-global-plan-observer-request/v1"
@@ -90,6 +96,31 @@ def _observer(*, category_name: str = "Wall Stickers"):
                 "seller_stock_quantity": quantity,
             }
         ]
+        if existing_global:
+            args.update(
+                {
+                    "mode": EXISTING_GLOBAL,
+                    "existing_global_item_id": 57115039489,
+                    "existing_global_identity_evidence_digest": "8" * 64,
+                }
+            )
+            args.update(
+                build_shopee_official_existing_global_seller_stock(
+                    observation_evidence_digest=args[
+                        "observation_evidence_digest"
+                    ],
+                    existing_global_item_id=args["existing_global_item_id"],
+                    existing_global_identity_evidence_digest=args[
+                        "existing_global_identity_evidence_digest"
+                    ],
+                    seller_stock_rows=[
+                        {
+                            "location_id": args["location"]["location_id"],
+                            "stock": quantity,
+                        }
+                    ],
+                )
+            )
         return build_shopee_global_plan_candidate(**args)
 
     return observe
@@ -296,6 +327,73 @@ def test_release_plan_requires_current_exact_approval(governed_context):
     }
     assert type(after["_approved_shopee_global_plan_record"]) is str
     assert _approved_selected_image_count(after) == 1
+
+
+def test_existing_global_official_current_facts_can_be_approved_and_bound(
+    governed_context, monkeypatch
+):
+    dashboard, store = governed_context
+
+    def observe_payload(payload):
+        seed = product_server._shopee_global_plan_seed(payload)
+        return _observer(existing_global=True)(
+            {
+                "schema_version": (
+                    "shopee-global-plan-observer-request/v1"
+                ),
+                "offer_id": payload["product_id"],
+                "product_revision": payload["product_revision"],
+                "targets": list(seed.pop("targets")),
+                "source_identity": payload["source_product_identity"],
+                "sku_lineage": payload["sku_lineage"],
+                "candidate_seed": seed,
+            }
+        )
+
+    monkeypatch.setattr(
+        product_server,
+        "_observe_shopee_global_plan_candidate",
+        observe_payload,
+    )
+    status, preview = product_server._preview_shopee_global_plan(
+        dashboard["product"]["offer_id"]
+    )
+    assert status == 200
+    assert preview["candidate"]["status"] == "READY"
+    assert preview["candidate"]["mode"] == EXISTING_GLOBAL
+    encoded_preview = json.dumps(preview, ensure_ascii=False)
+    for forbidden in (
+        "57115039489",
+        "CN-WAREHOUSE-APPROVED",
+        "shopee-official-existing-global-seller-stock/v1",
+    ):
+        assert forbidden not in encoded_preview
+
+    status, response = product_server._approve_shopee_global_plan_locally(
+        _approve_body(
+            dashboard,
+            preview["candidate"]["digests"]["candidate_digest"],
+        )
+    )
+    assert status == 200
+    payload, blockers = product_server._release_plan_payload_from_dashboard(
+        dashboard
+    )
+    assert blockers == []
+    assert payload["approved_shopee_global_plan"]["mode"] == EXISTING_GLOBAL
+    stored = store.shopee_global_plan_approval(
+        product_id=payload["product_id"],
+        product_revision=payload["product_revision"],
+        candidate_digest=response["approval"]["digests"]["candidate_digest"],
+    )
+    assert stored is not None
+    internal = stored["approved"].server_owned_execution_payload(
+        observe_payload(payload)
+    )["plan"]
+    assert internal["seller_stock"]["source"] == (
+        "shopee-official-existing-global-seller-stock/v1"
+    )
+    assert internal["seller_stock"]["quantity"] == 200
 
 
 def test_dashboard_plan_binding_never_calls_official_observer(

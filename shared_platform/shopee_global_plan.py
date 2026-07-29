@@ -59,10 +59,14 @@ SKU_LINEAGE_SCHEMA_VERSIONS = frozenset(
         "new-source-sku-reservation/v1",
     }
 )
+OFFICIAL_EXISTING_GLOBAL_SELLER_STOCK_SOURCE = (
+    "shopee-official-existing-global-seller-stock/v1"
+)
 SELLER_STOCK_SOURCES = frozenset(
     {
         "approved-sellable-inventory-decision/v1",
         "kyle-explicit-seller-stock/v1",
+        OFFICIAL_EXISTING_GLOBAL_SELLER_STOCK_SOURCE,
     }
 )
 CONDITIONS = frozenset({"NEW", "USED"})
@@ -885,6 +889,39 @@ def build_shopee_global_plan_candidate(
     return _ready_candidate_from_plan(plan)
 
 
+def build_shopee_official_existing_global_seller_stock(
+    *,
+    observation_evidence_digest: object,
+    existing_global_item_id: object,
+    existing_global_identity_evidence_digest: object,
+    seller_stock_rows: object,
+) -> dict[str, Any]:
+    """Build the official-current stock/location binding accepted by the plan.
+
+    This is a preservation fact for an already-existing Shopee global item.
+    It is not a physical inventory decision and it never authorizes a stock
+    mutation.  The returned digest binds the official observation, item
+    identity, and item-level seller-stock row so a caller cannot relabel an
+    arbitrary quantity as an official-current fact.  The v1 plan can represent
+    exactly one official seller location; multiple official rows fail closed
+    rather than being merged or selected implicitly.
+    """
+
+    try:
+        return _official_existing_global_seller_stock_binding(
+            observation_evidence_digest=observation_evidence_digest,
+            existing_global_item_id=existing_global_item_id,
+            existing_global_identity_evidence_digest=(
+                existing_global_identity_evidence_digest
+            ),
+            seller_stock_rows=seller_stock_rows,
+        )
+    except _Violation as error:
+        raise ShopeeGlobalPlanContractError(
+            f"official existing-global seller stock failed {error.code}"
+        ) from error
+
+
 def approve_shopee_global_plan(
     candidate: ShopeeGlobalPlanCandidate,
     *,
@@ -1216,6 +1253,16 @@ def _normalize_plan(**raw: Any) -> _Plan:
         normalized_existing_evidence = _required_digest(
             existing_evidence, "existing_global_identity_invalid"
         )
+    _validate_seller_stock_source(
+        mode=mode,
+        observation_evidence_digest=observation_evidence_digest,
+        stock=stock,
+        location=location,
+        existing_global_item_id=normalized_existing_id,
+        existing_global_identity_evidence_digest=(
+            normalized_existing_evidence
+        ),
+    )
 
     return _Plan(
         mode=mode,
@@ -1470,6 +1517,116 @@ def _normalize_stock(value: object) -> _SellerStock:
         _positive_int(row["quantity"], "seller_stock_invalid"),
         _required_string(row["approval_reference"], "seller_stock_invalid"),
     )
+
+
+def _official_existing_global_seller_stock_binding(
+    *,
+    observation_evidence_digest: object,
+    existing_global_item_id: object,
+    existing_global_identity_evidence_digest: object,
+    seller_stock_rows: object,
+) -> dict[str, Any]:
+    observation_digest = _required_digest(
+        observation_evidence_digest, "seller_stock_invalid"
+    )
+    item_id = _positive_int(
+        existing_global_item_id, "seller_stock_invalid"
+    )
+    identity_digest = _required_digest(
+        existing_global_identity_evidence_digest, "seller_stock_invalid"
+    )
+    rows = _required_list(seller_stock_rows, "seller_stock_invalid")
+    if len(rows) != 1:
+        raise _Violation("seller_stock_invalid")
+    row = _exact_mapping(
+        rows[0],
+        required={"location_id", "stock"},
+        optional=set(),
+        code="seller_stock_invalid",
+    )
+    location_id = _required_string(
+        row["location_id"], "seller_stock_invalid"
+    )
+    normalized_quantity = _positive_int(
+        row["stock"], "seller_stock_invalid"
+    )
+    normalized_stock_rows = [
+        {"location_id": location_id, "stock": normalized_quantity}
+    ]
+    source_digest = _digest(
+        {
+            "schema_version": (
+                OFFICIAL_EXISTING_GLOBAL_SELLER_STOCK_SOURCE
+            ),
+            "authority": OFFICIAL_AUTHORITY,
+            "observation_schema_version": (
+                OFFICIAL_OBSERVATION_SCHEMA_VERSION
+            ),
+            "observation_evidence_digest": observation_digest,
+            "existing_global_item_id": item_id,
+            "existing_global_identity_evidence_digest": identity_digest,
+            "seller_stock": normalized_stock_rows,
+        }
+    )
+    location_evidence_digest = _digest(
+        {
+            "schema_version": "shopee-official-existing-location/v1",
+            "authority": OFFICIAL_AUTHORITY,
+            "observation_evidence_digest": observation_digest,
+            "existing_global_item_id": item_id,
+            "existing_global_identity_evidence_digest": identity_digest,
+            "location_id": location_id,
+        }
+    )
+    return {
+        "seller_stock": {
+            "source": OFFICIAL_EXISTING_GLOBAL_SELLER_STOCK_SOURCE,
+            "source_digest": source_digest,
+            "quantity": normalized_quantity,
+            "approval_reference": observation_digest,
+        },
+        "location": {
+            "location_id": location_id,
+            "evidence_digest": location_evidence_digest,
+        },
+    }
+
+
+def _validate_seller_stock_source(
+    *,
+    mode: str,
+    observation_evidence_digest: str,
+    stock: _SellerStock,
+    location: _Location,
+    existing_global_item_id: int | None,
+    existing_global_identity_evidence_digest: str | None,
+) -> None:
+    if stock.source != OFFICIAL_EXISTING_GLOBAL_SELLER_STOCK_SOURCE:
+        return
+    if (
+        mode != EXISTING_GLOBAL
+        or existing_global_item_id is None
+        or existing_global_identity_evidence_digest is None
+    ):
+        raise _Violation("official_existing_seller_stock_mode_invalid")
+    expected = _official_existing_global_seller_stock_binding(
+        observation_evidence_digest=observation_evidence_digest,
+        existing_global_item_id=existing_global_item_id,
+        existing_global_identity_evidence_digest=(
+            existing_global_identity_evidence_digest
+        ),
+        seller_stock_rows=[
+            {
+                "location_id": location.location_id,
+                "stock": stock.quantity,
+            }
+        ],
+    )
+    if (
+        stock.payload() != expected["seller_stock"]
+        or location.payload() != expected["location"]
+    ):
+        raise _Violation("official_existing_seller_stock_digest_mismatch")
 
 
 def _normalize_location(value: object) -> _Location:
@@ -1808,6 +1965,7 @@ __all__ = [
     "NEW_GLOBAL",
     "OBSERVATION_AUTHORITIES",
     "OFFICIAL_AUTHORITY",
+    "OFFICIAL_EXISTING_GLOBAL_SELLER_STOCK_SOURCE",
     "OFFICIAL_OBSERVATION_SCHEMA_VERSION",
     "READY",
     "ShopeeGlobalPlanApprovalError",
@@ -1816,6 +1974,7 @@ __all__ = [
     "ShopeeGlobalPlanDriftError",
     "ShopeeGlobalPlanObservationError",
     "approve_shopee_global_plan",
+    "build_shopee_official_existing_global_seller_stock",
     "build_shopee_global_plan_candidate",
     "rehydrate_approved_shopee_global_plan",
     "serialize_approved_shopee_global_plan",

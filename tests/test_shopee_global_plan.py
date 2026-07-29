@@ -17,12 +17,14 @@ from shared_platform.shopee_global_plan import (
     INJECTED_UNVERIFIED_AUTHORITY,
     NEW_GLOBAL,
     OFFICIAL_AUTHORITY,
+    OFFICIAL_EXISTING_GLOBAL_SELLER_STOCK_SOURCE,
     OFFICIAL_OBSERVATION_SCHEMA_VERSION,
     READY,
     ShopeeGlobalPlanApprovalError,
     ShopeeGlobalPlanContractError,
     ShopeeGlobalPlanDriftError,
     approve_shopee_global_plan,
+    build_shopee_official_existing_global_seller_stock,
     build_shopee_global_plan_candidate,
     rehydrate_approved_shopee_global_plan,
     serialize_approved_shopee_global_plan,
@@ -188,6 +190,42 @@ def _candidate(**changes):
                 )
             )
     return build_shopee_global_plan_candidate(**args)
+
+
+def _official_existing_args() -> dict:
+    args = deepcopy(_base_args())
+    args.update(
+        {
+            "mode": EXISTING_GLOBAL,
+            "existing_global_item_id": 57115039489,
+            "existing_global_identity_evidence_digest": _digest(
+                "existing-global-identity"
+            ),
+        }
+    )
+    _bind_official_existing_stock(args)
+    return args
+
+
+def _bind_official_existing_stock(args: dict) -> None:
+    quantity = args["models"][0]["seller_stock_quantity"]
+    assert all(
+        row["seller_stock_quantity"] == quantity for row in args["models"]
+    )
+    binding = build_shopee_official_existing_global_seller_stock(
+        observation_evidence_digest=args["observation_evidence_digest"],
+        existing_global_item_id=args["existing_global_item_id"],
+        existing_global_identity_evidence_digest=args[
+            "existing_global_identity_evidence_digest"
+        ],
+        seller_stock_rows=[
+            {
+                "location_id": args["location"]["location_id"],
+                "stock": quantity,
+            }
+        ],
+    )
+    args.update(binding)
 
 
 def _approve(candidate=None):
@@ -752,6 +790,146 @@ def test_existing_mode_requires_exact_internal_global_identity_evidence():
     assert "57115039489" not in public
     internal = _approve(ready).server_owned_execution_payload(ready)["plan"]
     assert internal["existing_global_item_id"] == 57115039489
+
+
+def test_official_existing_stock_is_preserve_only_and_digest_bound():
+    args = _official_existing_args()
+    stock = args["seller_stock"]
+    assert stock == {
+        "source": OFFICIAL_EXISTING_GLOBAL_SELLER_STOCK_SOURCE,
+        "source_digest": stock["source_digest"],
+        "quantity": 200,
+        "approval_reference": args["observation_evidence_digest"],
+    }
+    assert len(stock["source_digest"]) == 64
+
+    candidate = build_shopee_global_plan_candidate(**args)
+    assert candidate.status == READY
+    approval = _approve(candidate)
+    restored = rehydrate_approved_shopee_global_plan(
+        serialize_approved_shopee_global_plan(approval)
+    )
+    assert restored.approved_plan_digest == approval.approved_plan_digest
+    public = json.dumps(approval.public_projection(), sort_keys=True)
+    assert "57115039489" not in public
+    assert args["location"]["location_id"] not in public
+    assert args["models"][0]["global_model_sku"] not in public
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["source_digest", "approval_reference"],
+)
+def test_official_existing_stock_rejects_unbound_source_fields(field):
+    args = _official_existing_args()
+    args["seller_stock"][field] = _digest(f"tampered-{field}")
+    candidate = build_shopee_global_plan_candidate(**args)
+    assert candidate.blocker_codes == (
+        "official_existing_seller_stock_digest_mismatch",
+    )
+
+
+def test_official_existing_stock_source_is_forbidden_for_new_global():
+    args = _official_existing_args()
+    args["mode"] = NEW_GLOBAL
+    args["existing_global_item_id"] = None
+    args["existing_global_identity_evidence_digest"] = None
+    candidate = build_shopee_global_plan_candidate(**args)
+    assert candidate.blocker_codes == (
+        "official_existing_seller_stock_mode_invalid",
+    )
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [],
+        [
+            {"location_id": "CN-A", "stock": 200},
+            {"location_id": "CN-B", "stock": 200},
+        ],
+        [{"location_id": "CN-A", "stock": True}],
+        [{"location_id": "CN-A", "stock": 0}],
+        [{"location_id": "CN-A", "stock": 200, "extra": "unbound"}],
+        [{"location_id": 123, "stock": 200}],
+    ],
+)
+def test_official_existing_stock_projection_rejects_ambiguous_rows(rows):
+    args = _official_existing_args()
+    with pytest.raises(ShopeeGlobalPlanContractError):
+        build_shopee_official_existing_global_seller_stock(
+            observation_evidence_digest=args[
+                "observation_evidence_digest"
+            ],
+            existing_global_item_id=args["existing_global_item_id"],
+            existing_global_identity_evidence_digest=args[
+                "existing_global_identity_evidence_digest"
+            ],
+            seller_stock_rows=rows,
+        )
+
+
+def test_official_existing_current_facts_are_all_approval_bound():
+    approved_candidate = build_shopee_global_plan_candidate(
+        **_official_existing_args()
+    )
+    approved = _approve(approved_candidate)
+
+    def changed_category(args):
+        args["category"]["path"][-1]["name"] = "Decorative Wall Decals"
+
+    def changed_attribute(args):
+        args["attributes"][0]["attribute_value_list"][0][
+            "original_value_name"
+        ] = "Vinyl"
+
+    def changed_brand(args):
+        args["brand"]["original_brand_name"] = "Unbranded"
+
+    def changed_location(args):
+        args["location"]["location_id"] = "CN-SECOND-LOCATION"
+
+    def changed_condition(args):
+        args["condition"] = "USED"
+
+    def changed_preorder(args):
+        args["preorder"] = {"is_pre_order": True, "days_to_ship": 3}
+
+    def changed_tier(args):
+        args["variations"][0]["option_list"][0]["option"] = "Small"
+
+    def changed_item(args):
+        args["existing_global_item_id"] += 1
+
+    def changed_model(args):
+        args["models"][0]["global_model_sku"] = "ALT0956"
+
+    def changed_stock(args):
+        for model in args["models"]:
+            model["seller_stock_quantity"] = 199
+
+    cases = (
+        (changed_category, False),
+        (changed_attribute, False),
+        (changed_brand, False),
+        (changed_location, True),
+        (changed_condition, False),
+        (changed_preorder, False),
+        (changed_tier, False),
+        (changed_item, True),
+        (changed_model, True),
+        (changed_stock, True),
+    )
+    for mutate, refresh_stock in cases:
+        args = _official_existing_args()
+        mutate(args)
+        if refresh_stock:
+            _bind_official_existing_stock(args)
+        current = build_shopee_global_plan_candidate(**args)
+        assert current.status == READY
+        assert current.candidate_digest != approved_candidate.candidate_digest
+        with pytest.raises(ShopeeGlobalPlanDriftError):
+            validate_approved_shopee_global_plan(approved, current)
 
 
 def test_new_mode_rejects_any_existing_identity_instead_of_ignoring_it():

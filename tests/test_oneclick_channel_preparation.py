@@ -118,6 +118,37 @@ def test_shopee_prepared_digest_changes_for_each_approved_write_field():
         assert subject.prepare_shopee_plan_native_first_attempt(command)["prepared_digest"] != baseline["prepared_digest"]
 
 
+def test_shopee_description_is_exact_but_title_is_nfc_trimmed():
+    command = _shopee_command()
+    command["listing_copy"] = {
+        "title": "  Cafe\u0301 decal  ",
+        "description": "\n Exact approved description; do not trim. \n",
+    }
+    prepared = subject.prepare_shopee_plan_native_first_attempt(command)
+    copy = prepared["approved"]["listing_copy"]
+    assert copy["title"] == "Café decal"
+    assert copy["description"] == "\n Exact approved description; do not trim. \n"
+    from shared_platform.target_scoped_release_contracts import approved_shopee_copy_digest
+    assert copy["approved_copy_digest"] == approved_shopee_copy_digest(
+        "Café decal", "\n Exact approved description; do not trim. \n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("target", "currency"),
+    [
+        ("shopee:PH", "MYR"), ("shopee:MY", "PHP"),
+        ("shopee:TH", "VND"), ("shopee:VN", "THB"),
+    ],
+)
+def test_shopee_currency_is_exact_for_target(target, currency):
+    command = _shopee_command()
+    command["target_label"] = target
+    command["target_pricing"]["currency"] = currency
+    with pytest.raises(subject.OneClickPreparationError, match="pricing"):
+        subject.prepare_shopee_plan_native_first_attempt(command)
+
+
 @pytest.mark.parametrize(
     ("global_state", "regional_state", "writes", "outcome"),
     [

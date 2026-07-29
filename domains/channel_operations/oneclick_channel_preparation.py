@@ -12,6 +12,7 @@ from collections.abc import Mapping, Sequence
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
+import unicodedata
 
 from domains.product_operations.source_identity import (
     BLOCKED_SOURCE_IDENTITY,
@@ -120,13 +121,21 @@ def prepare_shopee_plan_native_first_attempt(command: Mapping[str, object]) -> d
         type(seller_sku) is not str or not seller_sku.strip()
         or type(model_sku) is not str or not model_sku.strip()
         or not isinstance(copy, Mapping)
-        or type(copy.get("title")) is not str or not copy["title"].strip()
-        or type(copy.get("description")) is not str or not copy["description"].strip()
+        or type(copy.get("title")) is not str
+        or type(copy.get("description")) is not str
         or not isinstance(policy, Mapping)
         or type(policy.get("schema_version")) is not str or not policy["schema_version"].strip()
         or not _sha256(policy.get("policy_digest"))
     ):
         raise OneClickPreparationError("shopee_plan_native_command_incomplete")
+    title = unicodedata.normalize("NFC", copy["title"].strip())
+    description = copy["description"]
+    if not title or not description.strip():
+        raise OneClickPreparationError("shopee_plan_native_command_incomplete")
+    from shared_platform.target_scoped_release_contracts import (
+        approved_shopee_copy_digest,
+    )
+    copy_digest = approved_shopee_copy_digest(title, description)
     images = command.get("images")
     if not isinstance(images, list) or not images:
         raise OneClickPreparationError("shopee_images_invalid")
@@ -157,16 +166,23 @@ def prepare_shopee_plan_native_first_attempt(command: Mapping[str, object]) -> d
         raise OneClickPreparationError("shopee_pricing_invalid")
     price = _positive_decimal(pricing.get("local_original_price"))
     currency = pricing.get("currency")
-    if type(currency) is not str or not currency.strip().isalpha() or len(currency.strip()) != 3:
+    expected_currency = {
+        "shopee:PH": "PHP", "shopee:MY": "MYR",
+        "shopee:TH": "THB", "shopee:VN": "VND",
+    }[target]
+    if (
+        type(currency) is not str
+        or currency != expected_currency
+    ):
         raise OneClickPreparationError("shopee_pricing_invalid")
     approved = {
         "target_label": target,
         "seller_sku": seller_sku.strip(),
         "model_sku": model_sku.strip(),
-        "listing_copy": {"title": copy["title"].strip(), "description": copy["description"].strip()},
+        "listing_copy": {"title": title, "description": description, "approved_copy_digest": copy_digest},
         "ordered_images": normalized_images,
         "parcel": {"weight_kg": str(weight), "package_cm": [str(value) for value in dimensions]},
-        "target_pricing": {"local_original_price": str(price), "currency": currency.strip().upper()},
+        "target_pricing": {"local_original_price": str(price), "currency": currency},
         "policy": {"schema_version": policy["schema_version"].strip(), "policy_digest": policy["policy_digest"]},
     }
     payload = {

@@ -1573,8 +1573,13 @@ def test_blocked_capability_next_action_uses_reason_category(
         product_revision=31,
         registry=registry,
     )
-    assert preview["targets"][0]["next_action"] == "prepare_batch"
-    assert preview["targets"][0]["next_action_target"] == "shopee:GLOBAL"
+    regional_preview = next(
+        row
+        for row in preview["targets"]
+        if row["target_label"] == "shopee:MY"
+    )
+    assert regional_preview["next_action"] == "prepare_batch"
+    assert regional_preview["next_action_target"] == "shopee:GLOBAL"
 
     control = OneClickReleaseStore(release.path)
     job = control.ensure_job(
@@ -1584,8 +1589,13 @@ def test_blocked_capability_next_action_uses_reason_category(
         registry=registry,
     )
     projected = control.prepare_job(job["job_id"], registry)
-    assert projected["targets"][0]["next_action"] == expected_action
-    assert projected["targets"][0]["next_action_target"] == "shopee:MY"
+    regional_projected = next(
+        row
+        for row in projected["targets"]
+        if row["target_label"] == "shopee:MY"
+    )
+    assert regional_projected["next_action"] == expected_action
+    assert regional_projected["next_action_target"] == "shopee:MY"
     assert control.claim_next_dispatch(job["job_id"], registry) is None
 
 

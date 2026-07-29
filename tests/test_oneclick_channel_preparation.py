@@ -5,10 +5,8 @@ from domains.channel_operations import oneclick_channel_preparation as subject
 
 def test_tiktok_source_query_uses_offer_id_not_human_item_code():
     prepared = subject.prepare_tiktok_source_query(
-        {
-            "source_offer_id": "986159122616",
-            "source_item_code": "JD5047（38*45cm）",
-        }
+        collect_box={"source_item_id": "986159122616"},
+        source_record={"source_id": "986159122616", "source_item_code": "JD5047（38*45cm）"},
     )
     assert prepared["filter"] == {"sourceItemIdKeyword": "986159122616"}
     assert "JD5047" not in repr(prepared)
@@ -16,17 +14,17 @@ def test_tiktok_source_query_uses_offer_id_not_human_item_code():
 
 
 @pytest.mark.parametrize(
-    "facts",
+    "kwargs",
     [
         {},
-        {"source_offer_id": "JD5047（38*45cm）"},
-        {"source_offer_id": 986159122616},
-        {"source_offer_id": "986159122616", "source_digest": "bad"},
+        {"collect_box": {"source_item_id": "JD5047（38*45cm）"}},
+        {"collect_box": {"source_item_id": True}},
+        {"collect_box": {"source_item_id": "986159122616"}, "source_record": {"source_id": "986159122617"}},
     ],
 )
-def test_invalid_source_identity_is_systemic_and_zero_write(facts):
+def test_invalid_source_identity_is_systemic_and_zero_write(kwargs):
     with pytest.raises(subject.OneClickPreparationError, match="SYSTEMIC_IDENTITY"):
-        subject.prepare_tiktok_source_query(facts)
+        subject.prepare_tiktok_source_query(**kwargs)
 
 
 def test_source_pages_require_complete_nonlooping_shape():

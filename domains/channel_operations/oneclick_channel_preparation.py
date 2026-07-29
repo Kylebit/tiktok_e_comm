@@ -9,9 +9,13 @@ before any claim/create operation can be considered.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 import hashlib
 import json
+
+from domains.product_operations.source_identity import (
+    BLOCKED_SOURCE_IDENTITY,
+    resolve_source_product_identity,
+)
 
 
 class OneClickPreparationError(ValueError):
@@ -26,29 +30,6 @@ def _digest(value: object) -> str:
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
-
-
-@dataclass(frozen=True)
-class CanonicalSourceIdentity:
-    source_offer_id: str
-    source_digest: str
-
-    @classmethod
-    def from_facts(cls, facts: Mapping[str, object]) -> "CanonicalSourceIdentity":
-        offer_id = facts.get("source_offer_id")
-        if type(offer_id) is not str or not offer_id.strip().isdigit():
-            raise OneClickPreparationError("SYSTEMIC_IDENTITY: source_offer_id_invalid")
-        supplied_digest = facts.get("source_digest")
-        canonical = _digest(
-            {"schema_version": "canonical-source-identity/v1", "source_offer_id": offer_id.strip()}
-        )
-        if supplied_digest not in (None, "") and supplied_digest != canonical:
-            raise OneClickPreparationError("SYSTEMIC_IDENTITY: source_digest_mismatch")
-        return cls(offer_id.strip(), canonical)
-
-    def source_query_filter(self) -> dict[str, str]:
-        """The only legal Miaoshou source query; never uses source_item_code."""
-        return {"sourceItemIdKeyword": self.source_offer_id}
 
 
 def validate_complete_source_pages(pages: Sequence[Mapping[str, object]]) -> dict[str, object]:
@@ -92,15 +73,29 @@ def validate_complete_source_pages(pages: Sequence[Mapping[str, object]]) -> dic
     }
 
 
-def prepare_tiktok_source_query(product_facts: Mapping[str, object]) -> dict[str, object]:
-    """Return a digest-bound, source-offer-only read command."""
-    identity = CanonicalSourceIdentity.from_facts(product_facts)
+def prepare_tiktok_source_query(
+    *,
+    collect_box: Mapping[str, object] | None = None,
+    precollect: Mapping[str, object] | None = None,
+    source_record: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """Return a source-offer-only query from 01's canonical identity seam."""
+    resolution = resolve_source_product_identity(
+        collect_box=collect_box,
+        precollect=precollect,
+        source_record=source_record,
+    )
+    if not resolution.ready or resolution.identity is None:
+        raise OneClickPreparationError(
+            f"{SYSTEMIC_IDENTITY}: {BLOCKED_SOURCE_IDENTITY}"
+        )
+    identity = resolution.identity
     payload = {
-        "schema_version": "tiktok-miaoshou-source-query/v1",
+        "schema_version": "tiktok-miaoshou-source-query/v2",
         "source_identity_class": "CANONICAL_SOURCE_OFFER",
         "source_offer_id": identity.source_offer_id,
-        "filter": identity.source_query_filter(),
-        "source_digest": identity.source_digest,
+        "filter": {"sourceItemIdKeyword": identity.source_offer_id},
+        "source_identity_digest": identity.identity_digest,
         "external_writes_performed": [],
     }
     return {**payload, "prepared_digest": _digest(payload)}

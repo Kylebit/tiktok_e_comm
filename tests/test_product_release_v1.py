@@ -1704,6 +1704,46 @@ def test_api_less_publish_is_submitted_once_then_manually_verified(
     assert calls == ["tiktok:MX"]
     assert repeated["external_writes_performed"] == []
 
+    from shared_platform.oneclick_release_controlplane import (
+        OneClickReleaseStore,
+    )
+
+    close_calls = []
+    job_reads = []
+
+    def oneclick_job_once(_self, **_kwargs):
+        job_reads.append(True)
+        return (
+            {"job_id": "oneclick-job:test"}
+            if len(job_reads) == 1
+            else None
+        )
+
+    monkeypatch.setattr(
+        OneClickReleaseStore,
+        "get_job",
+        oneclick_job_once,
+    )
+
+    def close_oneclick(_self, **kwargs):
+        close_calls.append(kwargs)
+        store.record_manual_verification(
+            kwargs["run_id"],
+            kwargs["target_label"],
+            verified_by=kwargs["verified_by"],
+            user_verified=kwargs["user_verified"],
+            verification_evidence=kwargs["verification_evidence"],
+        )
+        return {
+            "idempotent": False,
+            "external_writes_performed": [],
+        }
+
+    monkeypatch.setattr(
+        OneClickReleaseStore,
+        "record_manual_acceptance",
+        close_oneclick,
+    )
     status, verified = product_server._manually_verify_release_target(
         {
             **request,
@@ -1725,6 +1765,9 @@ def test_api_less_publish_is_submitted_once_then_manually_verified(
     assert status == 200
     assert verified["external_writes_performed"] == []
     assert verified["run"]["status"] == "COMPLETED_WITH_MANUAL_VERIFICATION"
+    assert len(close_calls) == 1
+    assert close_calls[0]["target_label"] == "tiktok:MX"
+    assert close_calls[0]["verified_by"] == "Kyle"
 
 
 def test_publish_common_blocker_creates_no_run(tmp_path, monkeypatch):

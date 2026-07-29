@@ -6949,6 +6949,11 @@ def _manually_verify_release_target(data: dict) -> tuple[int, dict]:
         ReleaseStoreError,
         default_release_store,
     )
+    from shared_platform.oneclick_release_controlplane import (
+        AdapterContractError,
+        OneClickReleaseStore,
+        SystemicIdentityError,
+    )
 
     if data.get("user_verified") is not True:
         return 400, {
@@ -7024,18 +7029,48 @@ def _manually_verify_release_target(data: dict) -> tuple[int, dict]:
     }
     run_id = f"release-run:{plan['payload_digest'][:24]}"
     try:
-        target = store.record_manual_verification(
-            run_id,
-            target_label,
-            verified_by="Kyle",
-            user_verified=True,
-            verification_evidence=evidence,
-        )
+        oneclick = OneClickReleaseStore(store.path)
+        oneclick_job = oneclick.get_job(plan_id=plan_id)
+        if oneclick_job:
+            oneclick.record_manual_acceptance(
+                run_id=run_id,
+                target_label=target_label,
+                verified_by="Kyle",
+                user_verified=True,
+                verification_evidence=evidence,
+            )
+            current_run = store.get_run(run_id)
+            if not current_run:
+                raise ReleaseStoreError(
+                    "manual verification run disappeared after commit"
+                )
+            target = next(
+                (
+                    row
+                    for row in current_run["targets"]
+                    if row["target_label"] == target_label
+                ),
+                None,
+            )
+            if not target:
+                raise ReleaseStoreError(
+                    "manual verification target disappeared after commit"
+                )
+        else:
+            target = store.record_manual_verification(
+                run_id,
+                target_label,
+                verified_by="Kyle",
+                user_verified=True,
+                verification_evidence=evidence,
+            )
     except (
+        AdapterContractError,
         ValueError,
         ImmutableReleaseError,
         ReleaseAuthorizationError,
         ReleaseStoreError,
+        SystemicIdentityError,
     ) as error:
         return 409, {"ok": False, "error": str(error)}
     refreshed, refresh_failure = _release_dashboard_for_request(data)

@@ -63,6 +63,7 @@ PREPARING = "PREPARING"
 READY = "READY"
 DISPATCHING = "DISPATCHING"
 SUCCEEDED = "SUCCEEDED"
+SUCCEEDED_MANUAL_REVIEW = "SUCCEEDED_MANUAL_REVIEW"
 SUBMITTED_UNVERIFIED = "SUBMITTED_UNVERIFIED"
 FAILED_PRE_SUBMIT = "FAILED_PRE_SUBMIT"
 RECONCILIATION_REQUIRED = "RECONCILIATION_REQUIRED"
@@ -73,6 +74,7 @@ PUBLIC_CANONICAL_STATUSES = frozenset(
         READY,
         DISPATCHING,
         SUCCEEDED,
+        SUCCEEDED_MANUAL_REVIEW,
         SUBMITTED_UNVERIFIED,
         FAILED_PRE_SUBMIT,
         RECONCILIATION_REQUIRED,
@@ -106,6 +108,7 @@ REASON_CATEGORIES = frozenset(
 _TERMINAL_TARGET_STATUSES = frozenset(
     {
         SUCCEEDED,
+        SUCCEEDED_MANUAL_REVIEW,
         SUBMITTED_UNVERIFIED,
         FAILED_PRE_SUBMIT,
         RECONCILIATION_REQUIRED,
@@ -404,6 +407,7 @@ class DispatchTargetResult:
             raise AdapterContractError("dispatch must return DispatchTargetResult")
         if result.canonical_status not in {
             SUCCEEDED,
+            SUCCEEDED_MANUAL_REVIEW,
             SUBMITTED_UNVERIFIED,
             FAILED_PRE_SUBMIT,
             RECONCILIATION_REQUIRED,
@@ -439,7 +443,10 @@ class DispatchTargetResult:
             raise AdapterContractError(
                 "dispatch external_id must be a non-empty built-in str"
             )
-        if result.canonical_status == SUCCEEDED:
+        if result.canonical_status in {
+            SUCCEEDED,
+            SUCCEEDED_MANUAL_REVIEW,
+        }:
             if not result.readback_verified or not result.external_id:
                 raise AdapterContractError(
                     "success requires external identity and exact readback"
@@ -458,6 +465,19 @@ class DispatchTargetResult:
             if not result.external_writes and result.submission_accepted:
                 raise AdapterContractError(
                     "existing no-write success must not invent submission"
+                )
+            if result.canonical_status == SUCCEEDED_MANUAL_REVIEW:
+                if not result.external_writes or not result.submission_accepted:
+                    raise AdapterContractError(
+                        "manual-review success requires an accepted write"
+                    )
+                _manual_review_metadata(result.evidence)
+            elif (
+                isinstance(result.evidence, Mapping)
+                and result.evidence.get("manual_review") is True
+            ):
+                raise AdapterContractError(
+                    "warning-bearing success requires manual-review status"
                 )
         elif result.canonical_status == SUBMITTED_UNVERIFIED:
             if (
@@ -608,6 +628,16 @@ CREATE TABLE IF NOT EXISTS oneclick_release_events (
     created_at TEXT NOT NULL,
     FOREIGN KEY (job_id) REFERENCES oneclick_release_jobs(job_id)
 );
+CREATE TRIGGER IF NOT EXISTS trg_oneclick_event_append_only_update
+BEFORE UPDATE ON oneclick_release_events
+BEGIN
+    SELECT RAISE(ABORT, 'one-click events are append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_oneclick_event_append_only_delete
+BEFORE DELETE ON oneclick_release_events
+BEGIN
+    SELECT RAISE(ABORT, 'one-click events are append-only');
+END;
 CREATE TABLE IF NOT EXISTS oneclick_release_outcomes (
     job_id TEXT NOT NULL,
     target_label TEXT NOT NULL,
@@ -1094,7 +1124,8 @@ class OneClickReleaseStore:
                     UPDATE oneclick_release_targets
                     SET status = CASE
                             WHEN status IN (
-                                'SUCCEEDED', 'SUBMITTED_UNVERIFIED',
+                                'SUCCEEDED', 'SUCCEEDED_MANUAL_REVIEW',
+                                'SUBMITTED_UNVERIFIED',
                                 'RECONCILIATION_REQUIRED'
                             ) THEN status
                             ELSE 'BLOCKED_CAPABILITY'
@@ -1558,7 +1589,10 @@ class OneClickReleaseStore:
                 result.reason_code,
                 result.reason_detail,
             )
-            if result.canonical_status == SUCCEEDED:
+            if result.canonical_status in {
+                SUCCEEDED,
+                SUCCEEDED_MANUAL_REVIEW,
+            }:
                 connection.execute(
                     """
                     INSERT INTO release_target_readbacks (
@@ -1677,6 +1711,15 @@ class OneClickReleaseStore:
                     request.target_label,
                 ),
             )
+            if result.canonical_status == SUCCEEDED_MANUAL_REVIEW:
+                connection.execute(
+                    """
+                    UPDATE oneclick_release_targets
+                    SET manual_after_submit = 1
+                    WHERE job_id = ? AND target_label = ?
+                    """,
+                    (request.job_id, request.target_label),
+                )
             _insert_outcome_receipt(
                 connection,
                 job=job,
@@ -1707,6 +1750,302 @@ class OneClickReleaseStore:
                 connection,
                 request.job_id,
             )
+
+    def record_manual_acceptance(
+        self,
+        *,
+        run_id: str,
+        target_label: str,
+        verified_by: str,
+        user_verified: bool,
+        verification_evidence: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Atomically close canonical and one-click manual-review ledgers."""
+
+        if verified_by != "Kyle" or user_verified is not True:
+            raise AdapterContractError(
+                "manual acceptance requires explicit Kyle confirmation"
+            )
+        clean_run_id = _exact_text(run_id, "manual acceptance run_id")
+        clean_target = _exact_text(
+            target_label,
+            "manual acceptance target_label",
+        )
+        if not isinstance(verification_evidence, Mapping):
+            raise AdapterContractError(
+                "manual acceptance evidence must be a mapping"
+            )
+        evidence = dict(verification_evidence)
+        evidence_json = _canonical_json(evidence)
+        evidence_digest = hashlib.sha256(
+            evidence_json.encode("utf-8")
+        ).hexdigest()
+        now = _utc_now()
+
+        with self._transaction() as connection:
+            row = connection.execute(
+                """
+                SELECT target.*, job.run_id
+                FROM oneclick_release_targets AS target
+                JOIN oneclick_release_jobs AS job
+                  ON job.job_id = target.job_id
+                WHERE job.run_id = ? AND target.target_label = ?
+                """,
+                (clean_run_id, clean_target),
+            ).fetchone()
+            if not row:
+                raise SystemicIdentityError(
+                    "manual acceptance target was not found"
+                )
+            authority = connection.execute(
+                """
+                SELECT job.plan_id, job.run_id, job.payload_digest,
+                       job.targets_digest, job.status AS job_status,
+                       plan.status AS plan_status,
+                       plan.payload_digest AS plan_payload_digest,
+                       plan.target_labels_json,
+                       approval.status AS approval_status,
+                       approval.approved_by, approval.user_approved,
+                       approval.payload_digest AS approval_payload_digest,
+                       run.plan_id AS run_plan_id,
+                       run.status AS run_status
+                FROM oneclick_release_jobs AS job
+                JOIN release_plans AS plan ON plan.plan_id = job.plan_id
+                JOIN release_approvals AS approval
+                  ON approval.plan_id = plan.plan_id
+                JOIN release_runs AS run ON run.run_id = job.run_id
+                WHERE job.job_id = ?
+                """,
+                (row["job_id"],),
+            ).fetchone()
+            if (
+                not authority
+                or authority["run_id"] != clean_run_id
+                or authority["run_plan_id"] != authority["plan_id"]
+                or authority["plan_status"] != "APPROVED"
+                or authority["approval_status"] != "APPROVED"
+                or authority["approved_by"] != "Kyle"
+                or authority["user_approved"] != 1
+                or authority["payload_digest"]
+                != authority["plan_payload_digest"]
+                or authority["payload_digest"]
+                != authority["approval_payload_digest"]
+                or authority["job_status"]
+                not in {
+                    "WAITING_MANUAL_ACCEPTANCE",
+                    "BLOCKED",
+                    "SUCCEEDED",
+                }
+                or authority["targets_digest"]
+                != _digest_json(
+                    json.loads(authority["target_labels_json"])
+                )
+                or clean_target
+                not in json.loads(authority["target_labels_json"])
+                or authority["run_status"] == "SUPERSEDED"
+            ):
+                raise SystemicIdentityError(
+                    "manual acceptance authority identity drifted"
+                )
+            result = (
+                json.loads(row["result_json"])
+                if row["result_json"]
+                else {}
+            )
+            if row["status"] == SUCCEEDED:
+                if (
+                    result.get("manual_acceptance_evidence_digest")
+                    != evidence_digest
+                    or result.get("manual_review_status") != "ACCEPTED"
+                ):
+                    raise SystemicIdentityError(
+                        "manual acceptance is already terminal with different evidence"
+                    )
+                return {
+                    "idempotent": True,
+                    "external_writes_performed": [],
+                    "job": self._project_job_in_transaction(
+                        connection,
+                        row["job_id"],
+                    ),
+                }
+            if row["status"] not in {
+                SUCCEEDED_MANUAL_REVIEW,
+                SUBMITTED_UNVERIFIED,
+            }:
+                raise SystemicIdentityError(
+                    "one-click target is not awaiting manual acceptance"
+                )
+
+            canonical = connection.execute(
+                """
+                SELECT * FROM release_target_runs
+                WHERE run_id = ? AND target_label = ?
+                """,
+                (clean_run_id, clean_target),
+            ).fetchone()
+            if not canonical:
+                raise SystemicIdentityError(
+                    "canonical manual-acceptance target was not found"
+                )
+            if (
+                canonical["attempts"] != row["dispatch_count"]
+                or canonical["attempts"] < 1
+                or result.get("canonical_status") != row["status"]
+                or not _is_digest(result.get("evidence_digest"))
+            ):
+                raise SystemicIdentityError(
+                    "manual acceptance dispatch receipt identity drifted"
+                )
+            outcome = connection.execute(
+                """
+                SELECT receipt_json, receipt_digest
+                FROM oneclick_release_outcomes
+                WHERE job_id = ? AND target_label = ? AND attempt = ?
+                """,
+                (
+                    row["job_id"],
+                    clean_target,
+                    row["dispatch_count"],
+                ),
+            ).fetchone()
+            if (
+                not outcome
+                or hashlib.sha256(
+                    outcome["receipt_json"].encode("utf-8")
+                ).hexdigest()
+                != outcome["receipt_digest"]
+            ):
+                raise SystemicIdentityError(
+                    "manual acceptance outcome receipt identity drifted"
+                )
+            outcome_receipt = json.loads(outcome["receipt_json"])
+            expected_outcome = (
+                "SUBMITTED_UNVERIFIED"
+                if row["status"] == SUBMITTED_UNVERIFIED
+                else "SUCCESS"
+            )
+            if (
+                outcome_receipt.get("outcome", {}).get("class")
+                != expected_outcome
+                or outcome_receipt.get("manual", {}).get("status")
+                != "PENDING"
+            ):
+                raise SystemicIdentityError(
+                    "manual acceptance outcome receipt is not pending"
+                )
+
+            if row["status"] == SUBMITTED_UNVERIFIED:
+                _validate_marketplace_manual_acceptance_evidence(evidence)
+                submission = connection.execute(
+                    """
+                    SELECT * FROM release_target_submissions
+                    WHERE run_id = ? AND target_label = ?
+                    """,
+                    (clean_run_id, clean_target),
+                ).fetchone()
+                if (
+                    not submission
+                    or submission["status"] != "SUBMITTED_UNVERIFIED"
+                    or submission["evidence_digest"]
+                    != result["evidence_digest"]
+                ):
+                    raise SystemicIdentityError(
+                        "accepted submission receipt is unavailable"
+                    )
+                connection.execute(
+                    """
+                    UPDATE release_target_submissions
+                    SET status = 'MANUALLY_VERIFIED', verified_by = ?,
+                        verified_at = ?, verification_evidence_json = ?,
+                        verification_evidence_digest = ?
+                    WHERE run_id = ? AND target_label = ?
+                      AND status = 'SUBMITTED_UNVERIFIED'
+                    """,
+                    (
+                        verified_by,
+                        now,
+                        evidence_json,
+                        evidence_digest,
+                        clean_run_id,
+                        clean_target,
+                    ),
+                )
+            else:
+                _validate_observation_manual_acceptance_evidence(
+                    evidence,
+                    result,
+                )
+                readback = connection.execute(
+                    """
+                    SELECT evidence_digest FROM release_target_readbacks
+                    WHERE run_id = ? AND target_label = ?
+                    """,
+                    (clean_run_id, clean_target),
+                ).fetchone()
+                if (
+                    canonical["status"] != "SUCCEEDED"
+                    or not readback
+                    or readback["evidence_digest"]
+                    != result["evidence_digest"]
+                ):
+                    raise SystemicIdentityError(
+                        "verified success readback is unavailable"
+                    )
+
+            accepted_result = {
+                **result,
+                "canonical_status": SUCCEEDED,
+                "manual_review": True,
+                "manual_review_status": "ACCEPTED",
+                "manual_acceptance_evidence_digest": evidence_digest,
+            }
+            durable_reason = _durable_reason_detail(
+                "CAPABILITY",
+                "manual_acceptance_recorded",
+                "Kyle accepted the verified manual-review evidence",
+            )
+            connection.execute(
+                """
+                UPDATE oneclick_release_targets
+                SET status = 'SUCCEEDED', manual_after_submit = 0,
+                    reason_category = 'CAPABILITY',
+                    reason_scope = 'TARGET',
+                    reason_code = 'manual_acceptance_recorded',
+                    reason_detail = ?, result_json = ?,
+                    updated_at = ?, completed_at = ?
+                WHERE job_id = ? AND target_label = ?
+                """,
+                (
+                    durable_reason,
+                    _canonical_json(accepted_result),
+                    now,
+                    now,
+                    row["job_id"],
+                    clean_target,
+                ),
+            )
+            self._event(
+                connection,
+                row["job_id"],
+                clean_target,
+                "TARGET_MANUAL_ACCEPTANCE",
+                {
+                    "verified_by": verified_by,
+                    "verification_evidence_digest": evidence_digest,
+                    "prior_status": row["status"],
+                },
+                now,
+            )
+            self._refresh_job(connection, row["job_id"])
+            return {
+                "idempotent": False,
+                "external_writes_performed": [],
+                "job": self._project_job_in_transaction(
+                    connection,
+                    row["job_id"],
+                ),
+            }
 
     def recover_interrupted_dispatches(self) -> int:
         """Fail closed after process interruption without redispatch."""
@@ -1936,6 +2275,7 @@ class OneClickReleaseStore:
         current_status = str(row["status"])
         if current_status in {
             SUCCEEDED,
+            SUCCEEDED_MANUAL_REVIEW,
             SUBMITTED_UNVERIFIED,
             RECONCILIATION_REQUIRED,
         }:
@@ -2316,7 +2656,13 @@ class OneClickReleaseStore:
         elif any(status == RECONCILIATION_REQUIRED for status in statuses):
             status = "BLOCKED"
             completed_at = _utc_now()
-        elif any(status == SUBMITTED_UNVERIFIED for status in statuses):
+        elif any(
+            status in {
+                SUCCEEDED_MANUAL_REVIEW,
+                SUBMITTED_UNVERIFIED,
+            }
+            for status in statuses
+        ):
             status = "WAITING_MANUAL_ACCEPTANCE"
             completed_at = _utc_now()
         elif any(status == READY for status in statuses):
@@ -2329,6 +2675,7 @@ class OneClickReleaseStore:
             value
             in {
                 SUCCEEDED,
+                SUCCEEDED_MANUAL_REVIEW,
                 BLOCKED_AUTH,
                 BLOCKED_INVENTORY,
                 BLOCKED_CAPABILITY,
@@ -2466,8 +2813,12 @@ class OneClickReleaseStore:
         manual_after_submit = [
             row["target_label"]
             for row in storefronts
-            if row["runnable_now"] is True
-            and row["classification"] == READY_SUBMIT_MANUAL
+            if (
+                row["runnable_now"] is True
+                and row["classification"] == READY_SUBMIT_MANUAL
+            )
+            or row["status"]
+            in {SUCCEEDED_MANUAL_REVIEW, SUBMITTED_UNVERIFIED}
         ]
         blocked = [
             row["target_label"]
@@ -2487,7 +2838,12 @@ class OneClickReleaseStore:
         already_terminal = [
             row["target_label"]
             for row in storefronts
-            if row["status"] in {SUCCEEDED, SUBMITTED_UNVERIFIED}
+            if row["status"]
+            in {
+                SUCCEEDED,
+                SUCCEEDED_MANUAL_REVIEW,
+                SUBMITTED_UNVERIFIED,
+            }
         ]
         return {
             "schema_version": PUBLIC_STATUS_SCHEMA,
@@ -2495,6 +2851,7 @@ class OneClickReleaseStore:
             "plan_id": job["plan_id"],
             "run_id": job["run_id"],
             "phase": job["status"],
+            "requires_human": job["status"] == "WAITING_MANUAL_ACCEPTANCE",
             "product_revision": job["product_revision"],
             "source_item_code": source_identity.get("source_item_code"),
             "digests": {
@@ -2843,6 +3200,8 @@ def build_batch_preview(
                 detail=result["reason_detail"],
             ),
             "manual_after_submit": result.get("manual_after_submit") is True,
+            "requires_human": result["status"]
+            in {SUCCEEDED_MANUAL_REVIEW, SUBMITTED_UNVERIFIED},
             "dependency": dependency,
             "runnable_now": (
                 result["status"] == READY
@@ -2930,7 +3289,12 @@ def build_batch_preview(
         "already_terminal": [
             row["target_label"]
             for row in storefronts
-            if row["status"] in {SUCCEEDED, SUBMITTED_UNVERIFIED}
+            if row["status"]
+            in {
+                SUCCEEDED,
+                SUCCEEDED_MANUAL_REVIEW,
+                SUBMITTED_UNVERIFIED,
+            }
         ],
         "targets": prepared,
     }
@@ -3474,7 +3838,10 @@ def _prepared_terminal_row(label: str, status: str) -> dict[str, Any]:
         "target_label": label,
         "classification": (
             READY_SUBMIT_MANUAL
-            if status == SUBMITTED_UNVERIFIED
+            if status in {
+                SUCCEEDED_MANUAL_REVIEW,
+                SUBMITTED_UNVERIFIED,
+            }
             else EXACT_READY_AUTOMATIC
         ),
         "status": status,
@@ -3482,7 +3849,8 @@ def _prepared_terminal_row(label: str, status: str) -> dict[str, Any]:
         "reason_scope": TARGET_REASON_SCOPE,
         "reason_code": "already_terminal",
         "reason_detail": "target already has a durable terminal receipt",
-        "manual_after_submit": status == SUBMITTED_UNVERIFIED,
+        "manual_after_submit": status
+        in {SUCCEEDED_MANUAL_REVIEW, SUBMITTED_UNVERIFIED},
     }
 
 
@@ -3552,10 +3920,215 @@ def _merge_write_classes(
     return tuple(merged)
 
 
+def _manual_review_metadata(
+    evidence: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(evidence, Mapping):
+        raise AdapterContractError(
+            "manual-review success requires redacted evidence"
+        )
+    if evidence.get("manual_review") is not True:
+        raise AdapterContractError(
+            "manual-review success requires manual_review=true"
+        )
+    _reject_sensitive_manual_review_evidence(evidence)
+    raw_rules = evidence.get("rule_ids")
+    if type(raw_rules) not in (list, tuple) or not raw_rules:
+        raise AdapterContractError(
+            "manual-review success requires non-empty rule_ids"
+        )
+    rules = tuple(raw_rules)
+    if (
+        any(
+            type(value) is not str
+            or not value
+            or value != value.strip()
+            or len(value) > 120
+            or any(
+                character
+                not in (
+                    "abcdefghijklmnopqrstuvwxyz"
+                    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                    "0123456789_.:-"
+                )
+                for character in value
+            )
+            for value in rules
+        )
+        or len(rules) != len(set(rules))
+    ):
+        raise AdapterContractError("manual-review rule_ids are invalid")
+
+    observation_digests: list[str] = []
+    explicit = evidence.get("observation_digests")
+    if explicit is not None:
+        if not isinstance(explicit, Mapping) or not explicit:
+            raise AdapterContractError(
+                "manual-review observation_digests are invalid"
+            )
+        for key, value in explicit.items():
+            if (
+                type(key) is not str
+                or not key
+                or key != key.strip()
+                or not _is_digest(value)
+            ):
+                raise AdapterContractError(
+                    "manual-review observation_digests are invalid"
+                )
+            observation_digests.append(value)
+    for key, value in evidence.items():
+        if (
+            type(key) is str
+            and key.endswith("_digest")
+            and (
+                "observation" in key
+                or key.endswith("_outcome_digest")
+            )
+        ):
+            if not _is_digest(value):
+                raise AdapterContractError(
+                    "manual-review observation digest is invalid"
+                )
+            observation_digests.append(value)
+    if not observation_digests:
+        raise AdapterContractError(
+            "manual-review success requires observation evidence digest"
+        )
+    return {
+        "manual_review": True,
+        "rule_ids": sorted(rules),
+        "observation_digests": sorted(set(observation_digests)),
+    }
+
+
+def _validate_marketplace_manual_acceptance_evidence(
+    evidence: Mapping[str, Any],
+) -> None:
+    marketplace_product_id = evidence.get("marketplace_product_id")
+    if (
+        type(marketplace_product_id) is not str
+        or not marketplace_product_id
+        or marketplace_product_id != marketplace_product_id.strip()
+        or len(marketplace_product_id) > 128
+        or any(character.isspace() for character in marketplace_product_id)
+    ):
+        raise AdapterContractError(
+            "manual acceptance requires marketplace product identity"
+        )
+    for check in (
+        "identity_matches",
+        "seller_sku_matches",
+        "single_listing_for_sku",
+        "title_matches",
+        "price_matches",
+        "images_match",
+        "logistics_match",
+    ):
+        if evidence.get(check) is not True:
+            raise AdapterContractError(
+                "manual acceptance requires all listing checks"
+            )
+
+
+def _validate_observation_manual_acceptance_evidence(
+    evidence: Mapping[str, Any],
+    result: Mapping[str, Any],
+) -> None:
+    if evidence.get("manual_review_accepted") is not True:
+        raise AdapterContractError(
+            "observation acceptance requires manual_review_accepted=true"
+        )
+    digest = evidence.get("observation_evidence_digest")
+    expected = result.get("observation_digests")
+    if (
+        not _is_digest(digest)
+        or type(expected) is not list
+        or digest not in expected
+    ):
+        raise AdapterContractError(
+            "observation acceptance evidence does not match readback"
+        )
+
+
+def _reject_sensitive_manual_review_evidence(
+    value: object,
+    path: str = "evidence",
+) -> None:
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            if type(key) is not str:
+                raise AdapterContractError(
+                    "manual-review evidence keys must be built-in str"
+                )
+            lowered = key.strip().casefold()
+            if (
+                lowered
+                in {
+                    "authorization",
+                    "cookie",
+                    "copy",
+                    "description",
+                    "external_id",
+                    "image_id",
+                    "image_ids",
+                    "image_url",
+                    "image_urls",
+                    "item_id",
+                    "model_id",
+                    "password",
+                    "raw_copy",
+                    "raw_response",
+                    "response",
+                    "response_body",
+                    "secret",
+                    "seller_sku",
+                    "title",
+                    "token",
+                    "url",
+                    "urls",
+                }
+                or lowered.endswith("_token")
+                or lowered.endswith("_url")
+            ):
+                raise AdapterContractError(
+                    f"manual-review evidence contains sensitive field at {path}"
+                )
+            _reject_sensitive_manual_review_evidence(
+                child,
+                f"{path}.{key}",
+            )
+    elif isinstance(value, (list, tuple)):
+        for index, child in enumerate(value):
+            _reject_sensitive_manual_review_evidence(
+                child,
+                f"{path}[{index}]",
+            )
+    elif isinstance(value, str):
+        lowered = value.casefold()
+        if (
+            "://" in value
+            or "bearer " in lowered
+            or lowered.startswith("sk-")
+        ):
+            raise AdapterContractError(
+                f"manual-review evidence contains sensitive value at {path}"
+            )
+
+
 def _canonical_evidence(
     request: DispatchTargetRequest,
     result: DispatchTargetResult,
 ) -> dict[str, Any]:
+    manual_review = (
+        _manual_review_metadata(result.evidence)
+        if result.canonical_status == SUCCEEDED_MANUAL_REVIEW
+        else {
+            "manual_review": False,
+            "rule_ids": [],
+            "observation_digests": [],
+        }
+    )
     evidence = {
         "schema_version": PREPARED_COMMAND_SCHEMA,
         "target_label": request.target_label,
@@ -3577,6 +4150,7 @@ def _canonical_evidence(
         "readback_verified": result.readback_verified,
         "dispatch_outcome_unknown": result.dispatch_outcome_unknown,
         "evidence_digest": _digest_json(dict(result.evidence or {})),
+        **manual_review,
     }
     return evidence
 
@@ -3589,6 +4163,15 @@ def _public_result(
         None
         if _UNKNOWN_WRITE_CLASS in result.external_writes
         else len(result.external_writes)
+    )
+    manual_review = (
+        _manual_review_metadata(result.evidence)
+        if result.canonical_status == SUCCEEDED_MANUAL_REVIEW
+        else {
+            "manual_review": False,
+            "rule_ids": [],
+            "observation_digests": [],
+        }
     )
     return {
         "canonical_status": result.canonical_status,
@@ -3603,6 +4186,7 @@ def _public_result(
         "readback_verified": result.readback_verified,
         "dispatch_outcome_unknown": result.dispatch_outcome_unknown,
         "evidence_digest": evidence_digest,
+        **manual_review,
     }
 
 
@@ -3623,6 +4207,7 @@ def _release_outcome_receipt(
     )
     outcome_class = {
         SUCCEEDED: "SUCCESS",
+        SUCCEEDED_MANUAL_REVIEW: "SUCCESS",
         SUBMITTED_UNVERIFIED: "SUBMITTED_UNVERIFIED",
         FAILED_PRE_SUBMIT: "FAILURE",
         RECONCILIATION_REQUIRED: "RECONCILIATION_REQUIRED",
@@ -3630,7 +4215,10 @@ def _release_outcome_receipt(
         BLOCKED_INVENTORY: "FAILURE",
         BLOCKED_CAPABILITY: "FAILURE",
     }[result.canonical_status]
-    if result.canonical_status == SUCCEEDED:
+    if result.canonical_status in {
+        SUCCEEDED,
+        SUCCEEDED_MANUAL_REVIEW,
+    }:
         dispatch_boundary = (
             "ACCEPTED" if result.external_writes else "NOT_REACHED"
         )
@@ -3650,7 +4238,8 @@ def _release_outcome_receipt(
         readback_status = "FAILED"
     manual_status = (
         "PENDING"
-        if result.canonical_status == SUBMITTED_UNVERIFIED
+        if result.canonical_status
+        in {SUCCEEDED_MANUAL_REVIEW, SUBMITTED_UNVERIFIED}
         else "NOT_REQUIRED"
     )
     reconciliation_status = (
@@ -3660,7 +4249,8 @@ def _release_outcome_receipt(
     )
     error_category = (
         "NONE"
-        if result.canonical_status == SUCCEEDED
+        if result.canonical_status
+        in {SUCCEEDED, SUCCEEDED_MANUAL_REVIEW}
         else (
             result.reason_category
             if result.reason_category
@@ -3705,13 +4295,21 @@ def _release_outcome_receipt(
             "external_write_classes": list(result.external_writes),
         },
         "readback": {"status": readback_status},
-        "manual": {"status": manual_status},
+        "manual": {
+            "status": manual_status,
+            "evidence_digest": (
+                evidence_digest
+                if result.canonical_status == SUCCEEDED_MANUAL_REVIEW
+                else None
+            ),
+        },
         "reconciliation": {"status": reconciliation_status},
         "error": {
             "category": error_category,
             "code": (
                 None
-                if result.canonical_status == SUCCEEDED
+                if result.canonical_status
+                in {SUCCEEDED, SUCCEEDED_MANUAL_REVIEW}
                 else (
                     result.reason_code
                     if len(result.reason_code) <= 80
@@ -3729,7 +4327,8 @@ def _release_outcome_receipt(
             ),
             "manual_reviews": (
                 1
-                if result.canonical_status == SUBMITTED_UNVERIFIED
+                if result.canonical_status
+                in {SUCCEEDED_MANUAL_REVIEW, SUBMITTED_UNVERIFIED}
                 else 0
             ),
             "reconciliations": (
@@ -3739,7 +4338,8 @@ def _release_outcome_receipt(
             ),
         },
         "duplicate_prevented": (
-            result.canonical_status == SUCCEEDED
+            result.canonical_status
+            in {SUCCEEDED, SUCCEEDED_MANUAL_REVIEW}
             and not result.external_writes
         ),
         "evidence_digests": [
@@ -3998,6 +4598,8 @@ def _public_target(
             else None
         ),
         "manual_after_submit": bool(row["manual_after_submit"]),
+        "requires_human": status
+        in {SUCCEEDED_MANUAL_REVIEW, SUBMITTED_UNVERIFIED},
         "dependency": dict(dependency),
         "runnable_now": (
             status == READY and dependency["satisfied"] is True
@@ -4061,6 +4663,8 @@ def _next_action(
         return "wait_for_dispatch_receipt"
     if status == SUBMITTED_UNVERIFIED:
         return "verify_submission_in_marketplace"
+    if status == SUCCEEDED_MANUAL_REVIEW:
+        return "review_verified_observation_warning"
     if status == FAILED_PRE_SUBMIT:
         return "retry_exact_zero_write_action"
     if status == RECONCILIATION_REQUIRED:

@@ -20,6 +20,7 @@ from shared_platform.oneclick_release_controlplane import (
     RECONCILIATION_REQUIRED,
     SUBMITTED_UNVERIFIED,
     SUCCEEDED,
+    SUCCEEDED_MANUAL_REVIEW,
     AdapterRegistration,
     AdapterContractError,
     DispatchInvocationError,
@@ -1015,6 +1016,444 @@ def test_submitted_unverified_outcome_is_truthful_05_shape(tmp_path):
     assert submitted["outcome"]["class"] == "SUBMITTED_UNVERIFIED"
     assert submitted["manual"]["status"] == "PENDING"
     assert submitted["reconciliation"]["status"] == "NOT_REQUIRED"
+
+
+def test_verified_warning_is_success_with_pending_manual_review_and_no_replay(
+    tmp_path,
+):
+    from domains.data_operations import adapt_release_outcome_receipt
+
+    targets = ["shopee:MY"]
+    release, plan, run = _approved_context(tmp_path, targets=targets)
+    dispatch_calls = []
+    observation_digest = _digest("regional-observation")
+
+    def dispatch(request):
+        dispatch_calls.append(request.target_label)
+        return DispatchTargetResult(
+            canonical_status=SUCCEEDED_MANUAL_REVIEW,
+            reason_category="POST_WRITE",
+            reason_scope="TARGET",
+            reason_code="official_readback_verified_with_warning",
+            reason_detail="official readback verified with observation warning",
+            external_writes=("shopee:regional_publish",),
+            external_id="internal-shopee-my",
+            submission_accepted=True,
+            readback_verified=True,
+            evidence={
+                "manual_review": True,
+                "rule_ids": [
+                    "copy:language_signal_weak",
+                    "global_image:rehosted_order_unverifiable",
+                ],
+                "observation_evidence_digest": observation_digest,
+            },
+        )
+
+    registry = _registry(targets, dispatch_override=dispatch)
+    control = OneClickReleaseStore(release.path)
+    job = control.ensure_job(
+        plan=plan, run=run, product_revision=31, registry=registry
+    )
+    worker = OneClickReleaseWorker(
+        control, lambda: registry, dispatch_enabled=lambda: True
+    )
+
+    assert worker.advance_once(job["job_id"]) is True
+    assert worker.advance_once(job["job_id"]) is True
+    assert worker.advance_once(job["job_id"]) is False
+    assert worker.advance_once(job["job_id"]) is False
+    assert dispatch_calls == ["shopee:MY"]
+
+    projected = control.get_job(job_id=job["job_id"])
+    target = projected["targets"][0]
+    assert projected["phase"] == "WAITING_MANUAL_ACCEPTANCE"
+    assert projected["requires_human"] is True
+    assert projected["summary"]["manual_after_submit"] == ["shopee:MY"]
+    assert target["status"] == SUCCEEDED_MANUAL_REVIEW
+    assert target["requires_human"] is True
+    assert target["manual_after_submit"] is True
+    assert target["next_action"] == "review_verified_observation_warning"
+    assert target["result"]["manual_review"] is True
+    assert target["result"]["rule_ids"] == [
+        "copy:language_signal_weak",
+        "global_image:rehosted_order_unverifiable",
+    ]
+    assert target["result"]["observation_digests"] == [
+        observation_digest
+    ]
+
+    physical = release.get_run(run["run_id"])["targets"][0]
+    assert physical["status"] == "SUCCEEDED"
+    assert physical["attempts"] == 1
+    readback_evidence = physical["readback"]["evidence"]
+    assert readback_evidence["readback_verified"] is True
+    assert readback_evidence["canonical_status"] == (
+        SUCCEEDED_MANUAL_REVIEW
+    )
+    assert readback_evidence["manual_review"] is True
+    assert readback_evidence["rule_ids"] == target["result"]["rule_ids"]
+    assert readback_evidence["observation_digests"] == [
+        observation_digest
+    ]
+
+    pending = control.pending_outcome_receipts()
+    assert len(pending) == 1
+    receipt = pending[0]["receipt"]
+    assert receipt["outcome"]["class"] == "SUCCESS"
+    assert receipt["readback"]["status"] == "VERIFIED"
+    assert receipt["manual"]["status"] == "PENDING"
+    assert receipt["manual"]["evidence_digest"]
+    assert receipt["reconciliation"]["status"] == "NOT_REQUIRED"
+    assert receipt["counts"]["manual_reviews"] == 1
+    fact = adapt_release_outcome_receipt(receipt)
+    assert fact.outcome_class == "SUCCESS"
+    assert fact.manual_status == "PENDING"
+    assert fact.readback_status == "VERIFIED"
+
+    acceptance_evidence = {
+        "manual_review_accepted": True,
+        "observation_evidence_digest": observation_digest,
+    }
+    accepted = control.record_manual_acceptance(
+        run_id=run["run_id"],
+        target_label="shopee:MY",
+        verified_by="Kyle",
+        user_verified=True,
+        verification_evidence=acceptance_evidence,
+    )
+    assert accepted["idempotent"] is False
+    assert accepted["job"]["phase"] == "SUCCEEDED"
+    assert accepted["job"]["requires_human"] is False
+    assert accepted["job"]["targets"][0]["status"] == SUCCEEDED
+    assert accepted["job"]["targets"][0]["result"][
+        "manual_review_status"
+    ] == "ACCEPTED"
+    assert release.get_run(run["run_id"])["targets"][0]["status"] == (
+        "SUCCEEDED"
+    )
+    assert worker.advance_once(job["job_id"]) is False
+    assert dispatch_calls == ["shopee:MY"]
+    replay = control.record_manual_acceptance(
+        run_id=run["run_id"],
+        target_label="shopee:MY",
+        verified_by="Kyle",
+        user_verified=True,
+        verification_evidence=acceptance_evidence,
+    )
+    assert replay["idempotent"] is True
+
+    durable = release.path.read_bytes()
+    assert b"raw_response" not in durable
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        None,
+        {},
+        {"manual_review": False},
+        {
+            "manual_review": True,
+            "rule_ids": [],
+            "observation_evidence_digest": "a" * 64,
+        },
+        {
+            "manual_review": True,
+            "rule_ids": ["copy:warning"],
+        },
+        {
+            "manual_review": True,
+            "rule_ids": ["copy:warning"],
+            "observation_evidence_digest": "not-a-digest",
+        },
+        {
+            "manual_review": True,
+            "rule_ids": ["copy:warning", "copy:warning"],
+            "observation_evidence_digest": "a" * 64,
+        },
+        {
+            "manual_review": True,
+            "rule_ids": ["copy:warning"],
+            "observation_evidence_digest": "a" * 64,
+            "raw_response": {"title": "sensitive"},
+        },
+    ],
+)
+def test_manual_review_success_rejects_incomplete_redacted_evidence(evidence):
+    with pytest.raises(AdapterContractError):
+        DispatchTargetResult.from_value(
+            {
+                "canonical_status": SUCCEEDED_MANUAL_REVIEW,
+                "reason_category": "POST_WRITE",
+                "reason_scope": "TARGET",
+                "reason_code": "verified_warning",
+                "reason_detail": "verified warning",
+                "external_writes": ["shopee:regional_publish"],
+                "external_id": "internal-id",
+                "submission_accepted": True,
+                "readback_verified": True,
+                "dispatch_outcome_unknown": False,
+                "evidence": evidence,
+            }
+        )
+
+
+def test_manual_acceptance_closes_api_less_dual_ledgers_and_replays_zero(
+    tmp_path,
+):
+    targets = ["miaoshou:COMMON", "tiktok:MX"]
+    release, plan, run = _approved_context(tmp_path, targets=targets)
+    dispatch_calls = []
+
+    def dispatch(request):
+        dispatch_calls.append(request.target_label)
+        if request.target_label == "miaoshou:COMMON":
+            return DispatchTargetResult(
+                canonical_status=SUCCEEDED,
+                reason_category="CAPABILITY",
+                reason_scope="TARGET",
+                reason_code="common_exact",
+                reason_detail="COMMON exact",
+                external_writes=(),
+                external_id="common-internal",
+                readback_verified=True,
+            )
+        return DispatchTargetResult(
+            canonical_status=SUBMITTED_UNVERIFIED,
+            reason_category="POST_WRITE",
+            reason_scope="TARGET",
+            reason_code="platform_submission_accepted",
+            reason_detail="platform submission accepted",
+            external_writes=("miaoshou:tiktok_publish",),
+            external_id="tiktok-internal",
+            submission_accepted=True,
+        )
+
+    registry = _registry(
+        targets,
+        dispatch_override=dispatch,
+        manual_labels=("tiktok:MX",),
+    )
+    control = OneClickReleaseStore(release.path)
+    job = control.ensure_job(
+        plan=plan, run=run, product_revision=31, registry=registry
+    )
+    worker = OneClickReleaseWorker(
+        control, lambda: registry, dispatch_enabled=lambda: True
+    )
+    while worker.advance_once(job["job_id"]):
+        pass
+    assert dispatch_calls == ["miaoshou:COMMON", "tiktok:MX"]
+    assert control.get_job(job_id=job["job_id"])["phase"] == (
+        "WAITING_MANUAL_ACCEPTANCE"
+    )
+
+    evidence = {
+        "source": "kyle_marketplace_console_inspection",
+        "marketplace_product_id": "platform-product-123",
+        "identity_matches": True,
+        "seller_sku_matches": True,
+        "single_listing_for_sku": True,
+        "title_matches": True,
+        "price_matches": True,
+        "images_match": True,
+        "logistics_match": True,
+    }
+    invalid = {**evidence, "images_match": False}
+    for verified_by, user_verified in (
+        ("Other", True),
+        ("Kyle", False),
+    ):
+        with pytest.raises(AdapterContractError):
+            control.record_manual_acceptance(
+                run_id=run["run_id"],
+                target_label="tiktok:MX",
+                verified_by=verified_by,
+                user_verified=user_verified,
+                verification_evidence=evidence,
+            )
+    with pytest.raises(AdapterContractError):
+        control.record_manual_acceptance(
+            run_id=run["run_id"],
+            target_label="tiktok:MX",
+            verified_by="Kyle",
+            user_verified=True,
+            verification_evidence=invalid,
+        )
+    before = control.get_job(job_id=job["job_id"])
+    assert before["targets"][1]["status"] == SUBMITTED_UNVERIFIED
+    assert release.get_run(run["run_id"])["targets"][1]["attempts"] == 1
+
+    closed = control.record_manual_acceptance(
+        run_id=run["run_id"],
+        target_label="tiktok:MX",
+        verified_by="Kyle",
+        user_verified=True,
+        verification_evidence=evidence,
+    )
+    assert closed["idempotent"] is False
+    assert closed["external_writes_performed"] == []
+    assert closed["job"]["phase"] == "SUCCEEDED"
+    assert closed["job"]["requires_human"] is False
+    closed_target = closed["job"]["targets"][1]
+    assert closed_target["status"] == SUCCEEDED
+    assert closed_target["requires_human"] is False
+    assert closed_target["result"]["manual_review_status"] == "ACCEPTED"
+
+    physical = release.get_run(run["run_id"])["targets"][1]
+    assert physical["status"] == "MANUALLY_VERIFIED"
+    assert physical["storage_status"] == "FAILED"
+    assert physical["attempts"] == 1
+    assert dispatch_calls == ["miaoshou:COMMON", "tiktok:MX"]
+    assert worker.advance_once(job["job_id"]) is False
+
+    replay = control.record_manual_acceptance(
+        run_id=run["run_id"],
+        target_label="tiktok:MX",
+        verified_by="Kyle",
+        user_verified=True,
+        verification_evidence=evidence,
+    )
+    assert replay["idempotent"] is True
+    assert replay["external_writes_performed"] == []
+    assert replay["job"]["phase"] == "SUCCEEDED"
+    with pytest.raises(SystemicIdentityError):
+        control.record_manual_acceptance(
+            run_id=run["run_id"],
+            target_label="tiktok:MX",
+            verified_by="Kyle",
+            user_verified=True,
+            verification_evidence={
+                **evidence,
+                "marketplace_product_id": "different-product",
+            },
+        )
+    with sqlite3.connect(release.path) as connection:
+        event_count = connection.execute(
+            """
+            SELECT COUNT(*) FROM oneclick_release_events
+            WHERE job_id = ? AND target_label = ?
+              AND event_type = 'TARGET_MANUAL_ACCEPTANCE'
+            """,
+            (job["job_id"], "tiktok:MX"),
+        ).fetchone()[0]
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                UPDATE oneclick_release_events
+                SET event_type = 'TAMPERED'
+                WHERE job_id = ? AND target_label = ?
+                  AND event_type = 'TARGET_MANUAL_ACCEPTANCE'
+                """,
+                (job["job_id"], "tiktok:MX"),
+            )
+    assert event_count == 1
+
+
+def test_manual_acceptance_rejects_receipt_drift_and_reconciliation(tmp_path):
+    targets = ["shopee:MY"]
+    release, plan, run = _approved_context(tmp_path, targets=targets)
+    registry = _registry(targets)
+    control = OneClickReleaseStore(release.path)
+    job = control.ensure_job(
+        plan=plan, run=run, product_revision=31, registry=registry
+    )
+    control.prepare_job(job["job_id"], registry)
+    request = control.claim_next_dispatch(job["job_id"], registry)
+    control.record_dispatch_result(
+        request,
+        DispatchTargetResult(
+            canonical_status=RECONCILIATION_REQUIRED,
+            reason_category="POST_WRITE",
+            reason_scope="TARGET",
+            reason_code="readback_failed",
+            reason_detail="readback failed",
+            external_writes=("shopee:regional_publish",),
+            dispatch_outcome_unknown=True,
+        ),
+    )
+    with pytest.raises(SystemicIdentityError):
+        control.record_manual_acceptance(
+            run_id=run["run_id"],
+            target_label="shopee:MY",
+            verified_by="Kyle",
+            user_verified=True,
+            verification_evidence={
+                "manual_review_accepted": True,
+                "observation_evidence_digest": "a" * 64,
+            },
+        )
+
+    targets2 = ["tiktok:MX", "miaoshou:COMMON"]
+    targets2 = ["miaoshou:COMMON", "tiktok:MX"]
+    release2, plan2, run2 = _approved_context(
+        tmp_path / "drift",
+        targets=targets2,
+    )
+    registry2 = _registry(targets2, manual_labels=("tiktok:MX",))
+    control2 = OneClickReleaseStore(release2.path)
+    job2 = control2.ensure_job(
+        plan=plan2, run=run2, product_revision=31, registry=registry2
+    )
+    control2.prepare_job(job2["job_id"], registry2)
+    common = control2.claim_next_dispatch(job2["job_id"], registry2)
+    control2.record_dispatch_result(
+        common,
+        DispatchTargetResult(
+            canonical_status=SUCCEEDED,
+            reason_category="CAPABILITY",
+            reason_scope="TARGET",
+            reason_code="common_exact",
+            reason_detail="COMMON exact",
+            external_writes=(),
+            external_id="common-id",
+            readback_verified=True,
+        ),
+    )
+    mx = control2.claim_next_dispatch(job2["job_id"], registry2)
+    control2.record_dispatch_result(
+        mx,
+        DispatchTargetResult(
+            canonical_status=SUBMITTED_UNVERIFIED,
+            reason_category="POST_WRITE",
+            reason_scope="TARGET",
+            reason_code="accepted",
+            reason_detail="accepted",
+            external_writes=("miaoshou:tiktok_publish",),
+            external_id="mx-id",
+            submission_accepted=True,
+        ),
+    )
+    with sqlite3.connect(release2.path) as connection:
+        connection.execute(
+            """
+            UPDATE release_target_submissions
+            SET evidence_digest = ?
+            WHERE run_id = ? AND target_label = ?
+            """,
+            ("f" * 64, run2["run_id"], "tiktok:MX"),
+        )
+    with pytest.raises(SystemicIdentityError):
+        control2.record_manual_acceptance(
+            run_id=run2["run_id"],
+            target_label="tiktok:MX",
+            verified_by="Kyle",
+            user_verified=True,
+            verification_evidence={
+                "marketplace_product_id": "mx-product",
+                "identity_matches": True,
+                "seller_sku_matches": True,
+                "single_listing_for_sku": True,
+                "title_matches": True,
+                "price_matches": True,
+                "images_match": True,
+                "logistics_match": True,
+            },
+        )
+    assert control2.get_job(job_id=job2["job_id"])["targets"][1][
+        "status"
+    ] == SUBMITTED_UNVERIFIED
 
 
 def test_dispatch_disabled_is_durable_block_not_ready_spin(tmp_path):

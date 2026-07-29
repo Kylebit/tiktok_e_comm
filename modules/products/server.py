@@ -1419,6 +1419,11 @@ def _shopee_global_plan_seed(payload: dict) -> dict:
     ]
     if len(set(image_digests)) != len(image_digests):
         raise ValueError("Shopee approved image identities must be unique")
+    if len(source_images) > 9:
+        raise ValueError(
+            "Shopee global image selection requires explicit approval"
+        )
+    selected_image_positions = list(range(1, len(source_images) + 1))
     video_urls = payload.get("video_urls")
     if type(video_urls) is not list or any(
         type(value) is not str for value in video_urls
@@ -1524,6 +1529,7 @@ def _shopee_global_plan_seed(payload: dict) -> dict:
         "approved_copy_digest": copy_digest,
         "ordered_approved_images": source_images,
         "approved_source_image_manifest_digest": image_manifest_digest,
+        "selected_image_positions": selected_image_positions,
         "parcel": parcel,
         "target_pricing": target_pricing,
         "policy_digest": policy_digest,
@@ -1659,6 +1665,8 @@ def _shopee_global_plan_matches_local_payload(
             current.get("bindings") == expected_bindings
             and current.get("copy") == expected_copy
             and current.get("approved_images") == expected_images
+            and current.get("selected_image_positions")
+            == expected["selected_image_positions"]
             and current.get("parcel")
             == {
                 "weight_kg": _canonical_decimal_text(

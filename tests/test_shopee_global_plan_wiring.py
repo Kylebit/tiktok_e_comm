@@ -341,6 +341,97 @@ def test_dashboard_with_local_approval_never_calls_official_observer(
     assert "_approved_shopee_global_plan_record" in payload
 
 
+def test_server_seed_selects_every_approved_image_when_within_shopee_limit(
+    governed_context,
+):
+    dashboard, _store = governed_context
+    first = dashboard["content"]["images"][0]
+    dashboard["content"]["images"] = [
+        {
+            **first,
+            "position": position,
+            "image_url": f"https://assets.example/global-{position}.jpg",
+            "artifact_id": f"source-{position}",
+            "audit_id": f"review-{position}",
+        }
+        for position in range(1, 4)
+    ]
+    payload, blockers = product_server._release_plan_payload_from_dashboard(
+        dashboard,
+        bind_shopee_global_plan=False,
+    )
+
+    assert blockers == []
+    seed = product_server._shopee_global_plan_seed(payload)
+    assert seed["selected_image_positions"] == [1, 2, 3]
+
+
+def test_local_binding_rejects_observer_selected_image_subset(
+    governed_context,
+):
+    dashboard, _store = governed_context
+    first = dashboard["content"]["images"][0]
+    dashboard["content"]["images"] = [
+        {
+            **first,
+            "position": position,
+            "image_url": f"https://assets.example/global-{position}.jpg",
+            "artifact_id": f"source-{position}",
+            "audit_id": f"review-{position}",
+        }
+        for position in range(1, 3)
+    ]
+    payload, blockers = product_server._release_plan_payload_from_dashboard(
+        dashboard,
+        bind_shopee_global_plan=False,
+    )
+    assert blockers == []
+    seed = product_server._shopee_global_plan_seed(payload)
+    seed.pop("targets")
+    candidate = _observer()(
+        {
+            "schema_version": "shopee-global-plan-observer-request/v1",
+            "candidate_seed": seed,
+            "sku_lineage": payload["sku_lineage"],
+        }
+    )
+    observed = candidate._plan.payload()
+    observed["selected_image_positions"] = [1]
+
+    assert not product_server._shopee_global_plan_matches_local_payload(
+        payload,
+        observed,
+    )
+
+
+def test_server_seed_requires_explicit_selection_above_shopee_limit(
+    governed_context,
+):
+    dashboard, _store = governed_context
+    first = dashboard["content"]["images"][0]
+    dashboard["content"]["images"] = [
+        {
+            **first,
+            "position": position,
+            "image_url": f"https://assets.example/global-{position}.jpg",
+            "artifact_id": f"source-{position}",
+            "audit_id": f"review-{position}",
+        }
+        for position in range(1, 11)
+    ]
+    payload, blockers = product_server._release_plan_payload_from_dashboard(
+        dashboard,
+        bind_shopee_global_plan=False,
+    )
+
+    assert blockers == []
+    with pytest.raises(
+        ValueError,
+        match="image selection requires explicit approval",
+    ):
+        product_server._shopee_global_plan_seed(payload)
+
+
 def test_candidate_or_revision_drift_cannot_reuse_approval(
     governed_context, monkeypatch
 ):

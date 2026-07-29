@@ -3,6 +3,7 @@ import sqlite3
 
 import pytest
 
+from core import database_maintenance
 from core.database_maintenance import backup_database, inspect_database
 from core.db import connect_readonly
 from domains.product_operations.catalog_database_audit import audit_catalog_database
@@ -93,6 +94,38 @@ def test_backup_never_overwrites_an_existing_file(tmp_path):
         backup_database(destination, source=source)
 
     assert destination.read_bytes() == b"keep-me"
+
+
+def test_backup_temporary_name_stays_bounded_for_windows_sqlite_journals(
+    tmp_path,
+    monkeypatch,
+):
+    source = tmp_path / "source.db"
+    destination = tmp_path / "descriptive-catalog-snapshot.db"
+    _database(source).close()
+    connected_paths = []
+    real_connect = database_maintenance.sqlite3.connect
+
+    def recording_connect(database, *args, **kwargs):
+        connected_paths.append(str(database))
+        return real_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(
+        database_maintenance.sqlite3,
+        "connect",
+        recording_connect,
+    )
+
+    backup_database(destination, source=source)
+
+    temporary_names = [
+        Path(value).name
+        for value in connected_paths
+        if str(value).endswith(".tmp")
+    ]
+    assert len(temporary_names) == 1
+    assert len(temporary_names[0]) <= 32
+    assert destination.is_file()
 
 
 def test_catalog_quality_audit_reports_identity_cost_and_derived_orphans(tmp_path):

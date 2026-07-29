@@ -101,6 +101,76 @@
     "SYSTEMIC_STOPPED",
   ]);
   const ONECLICK_POLL_INTERVAL_MS = 750;
+  const ONECLICK_JOB_PHASES = new Set([
+    "PENDING",
+    "PREPARING",
+    "READY",
+    "RUNNING",
+    "SUCCEEDED",
+    "WAITING_MANUAL_ACCEPTANCE",
+    "BLOCKED",
+    "SYSTEMIC_STOPPED",
+  ]);
+  const ONECLICK_TARGET_STATUSES = new Set([
+    "PENDING",
+    "PREPARING",
+    "READY",
+    "DISPATCHING",
+    "SUCCEEDED",
+    "SUBMITTED_UNVERIFIED",
+    "FAILED_PRE_SUBMIT",
+    "RECONCILIATION_REQUIRED",
+    "BLOCKED_AUTH",
+    "BLOCKED_INVENTORY",
+    "BLOCKED_CAPABILITY",
+    "BLOCKED_SOURCE_IDENTITY",
+    "BLOCKED_SKU_LINEAGE",
+  ]);
+  const ONECLICK_CLASSIFICATIONS = new Set([
+    "EXACT_READY_AUTOMATIC",
+    "READY_SUBMIT_MANUAL",
+    "BLOCKED_AUTH",
+    "BLOCKED_INVENTORY",
+    "BLOCKED_CAPABILITY",
+    "BLOCKED_SOURCE_IDENTITY",
+    "BLOCKED_SKU_LINEAGE",
+    "SAFE_ACTION_REQUIRED",
+  ]);
+  const ONECLICK_ACTIONS = new Set([
+    "prepare_batch",
+    "wait_for_preparation",
+    "wait_for_worker",
+    "wait_for_dispatch_receipt",
+    "wait_for_dependency",
+    "resolve_prerequisite_target",
+    "verify_submission_in_marketplace",
+    "retry_exact_zero_write_action",
+    "reconcile_before_any_retry",
+    "restore_channel_authorization",
+    "approve_sellable_inventory",
+    "review_approved_content_facts",
+    "review_logistics_policy",
+    "wait_for_channel_capability",
+    "resolve_source_product_identity",
+    "resolve_predecessor_sku_lineage",
+    "perform_governed_safe_action",
+    "enable_oneclick_dispatch",
+    "refresh_release_state",
+    "resolve_plan_or_source_identity",
+  ]);
+  const ONECLICK_REASON_CATEGORIES = new Set([
+    "AUTH",
+    "INVENTORY",
+    "CAPABILITY",
+    "CONTENT",
+    "LOGISTICS",
+    "SAFE_ACTION",
+    "PRE_SUBMIT",
+    "POST_WRITE",
+    "DEPENDENCY",
+    "SYSTEMIC_IDENTITY",
+    "SYSTEMIC_CONTRACT",
+  ]);
   const oneClickExecution = {
     generation: 0,
     contextKey: "",
@@ -444,25 +514,60 @@
     if (wasPosting) releaseSubmitting = false;
   }
 
+  function oneClickContractError(message) {
+    const error = new Error(message);
+    error.oneClickContractError = true;
+    return error;
+  }
+
+  function oneClickDigest(value, { optional = false } = {}) {
+    if (optional && (value === null || value === undefined)) return true;
+    return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+  }
+
+  function sameSortedValues(left, right) {
+    const leftValues = [...left].sort();
+    const rightValues = [...right].sort();
+    return (
+      leftValues.length === rightValues.length
+      && leftValues.every((value, index) => value === rightValues[index])
+    );
+  }
+
   function validateOneClickProjection(projection, identity, schema, reference = null) {
     if (!projection || typeof projection !== "object" || Array.isArray(projection)) {
-      throw new Error("统一发布控制面返回了无效状态。");
+      throw oneClickContractError("统一发布控制面返回了无效状态。");
     }
     if (projection.schema_version !== schema) {
-      throw new Error("统一发布控制面版本不匹配，请刷新后重试。");
+      throw oneClickContractError("统一发布控制面版本不匹配，请刷新后重试。");
     }
+    const isStatus = schema === ONECLICK_STATUS_SCHEMA;
     if (
       projection.plan_id !== identity.planId
       || projection.product_revision !== identity.revision
       || typeof projection.run_id !== "string"
       || !projection.run_id
       || !Array.isArray(projection.targets)
+      || (
+        isStatus
+        && (
+          typeof projection.job_id !== "string"
+          || !projection.job_id
+          || !ONECLICK_JOB_PHASES.has(projection.phase)
+        )
+      )
     ) {
-      throw new Error("统一发布控制面身份已漂移，已停止提交。");
+      throw oneClickContractError("统一发布控制面身份已漂移，已停止提交。");
     }
     const digests = projection.digests;
-    if (!digests || typeof digests !== "object" || Array.isArray(digests)) {
-      throw new Error("统一发布控制面缺少不可变摘要，已停止提交。");
+    if (
+      !digests
+      || typeof digests !== "object"
+      || Array.isArray(digests)
+      || !oneClickDigest(digests.payload)
+      || !oneClickDigest(digests.targets)
+    ) {
+      throw oneClickContractError("统一发布控制面缺少不可变摘要，已停止提交。");
     }
     if (
       (identity.payloadDigest && digests.payload !== identity.payloadDigest)
@@ -476,20 +581,180 @@
         )
       )
     ) {
-      throw new Error("统一发布控制面摘要已漂移，已停止提交。");
+      throw oneClickContractError("统一发布控制面摘要已漂移，已停止提交。");
     }
+    const labels = new Set();
     for (const target of projection.targets) {
+      const targetDigests = target?.digests;
+      const dependency = target?.dependency;
+      const reason = target?.reason;
       if (
         !target
         || typeof target !== "object"
         || Array.isArray(target)
         || typeof target.target_label !== "string"
-        || typeof target.status !== "string"
+        || !target.target_label
+        || labels.has(target.target_label)
+        || !ONECLICK_TARGET_STATUSES.has(target.status)
+        || !ONECLICK_CLASSIFICATIONS.has(target.classification)
         || typeof target.runnable_now !== "boolean"
         || typeof target.storefront !== "boolean"
+        || (
+          target.target_label === "miaoshou:COMMON"
+            ? target.storefront !== false
+            : target.storefront !== true
+        )
+        || !dependency
+        || typeof dependency !== "object"
+        || Array.isArray(dependency)
+        || !["SATISFIED", "WAITING", "BLOCKED"].includes(dependency.state)
+        || typeof dependency.satisfied !== "boolean"
+        || (
+          target.next_action !== null
+          && !ONECLICK_ACTIONS.has(target.next_action)
+        )
+        || (
+          target.next_action_target !== null
+          && typeof target.next_action_target !== "string"
+        )
+        || !targetDigests
+        || typeof targetDigests !== "object"
+        || Array.isArray(targetDigests)
+        || !oneClickDigest(targetDigests.prepared_command, { optional: true })
+        || !oneClickDigest(targetDigests.proof, { optional: true })
+        || !oneClickDigest(targetDigests.adapter_policy, { optional: true })
+        || (
+          reason !== null
+          && (
+            !reason
+            || typeof reason !== "object"
+            || Array.isArray(reason)
+            || !ONECLICK_REASON_CATEGORIES.has(reason.category)
+            || !["TARGET", "SYSTEMIC_IDENTITY"].includes(reason.scope)
+            || typeof reason.code !== "string"
+            || !reason.code
+            || typeof reason.summary_code !== "string"
+            || !reason.summary_code
+          )
+        )
       ) {
-        throw new Error("统一发布控制面店铺状态不完整，已停止提交。");
+        throw oneClickContractError(
+          "统一发布控制面店铺状态不完整，已停止提交。",
+        );
       }
+      labels.add(target.target_label);
+    }
+    for (const target of projection.targets) {
+      if (
+        target.next_action_target
+        && !labels.has(target.next_action_target)
+      ) {
+        throw oneClickContractError(
+          "统一发布控制面的下一步目标无效，已停止提交。",
+        );
+      }
+    }
+    const storefronts = projection.targets.filter((target) => target.storefront);
+    const runnable = storefronts.filter((target) => target.runnable_now);
+    const summary = projection.summary;
+    const capability = projection.dispatch_capability;
+    if (
+      !Number.isInteger(projection.storefront_count)
+      || projection.storefront_count !== storefronts.length
+      || !Number.isInteger(projection.control_row_count)
+      || projection.control_row_count
+        !== projection.targets.length - storefronts.length
+      || !Number.isInteger(projection.runnable_target_count)
+      || projection.runnable_target_count !== runnable.length
+      || !summary
+      || typeof summary !== "object"
+      || Array.isArray(summary)
+      || !["will_dispatch", "manual_after_submit", "blocked", "already_terminal"]
+        .every((key) => (
+          Array.isArray(summary[key])
+          && summary[key].every((label) => labels.has(label))
+          && new Set(summary[key]).size === summary[key].length
+        ))
+      || !capability
+      || typeof capability !== "object"
+      || Array.isArray(capability)
+      || capability.schema_version !== "oneclick-dispatch-capability/v1"
+      || typeof capability.enabled !== "boolean"
+      || typeof capability.source !== "string"
+      || !capability.source
+      || typeof capability.reason_code !== "string"
+      || !capability.reason_code
+      || (
+        capability.next_action !== null
+        && capability.next_action !== "enable_oneclick_dispatch"
+      )
+    ) {
+      throw oneClickContractError(
+        "统一发布控制面摘要或计数不一致，已安全停止。",
+      );
+    }
+    const expectedAutomatic = runnable
+      .filter((target) => target.classification === "EXACT_READY_AUTOMATIC")
+      .map((target) => target.target_label);
+    const expectedManual = runnable
+      .filter((target) => target.classification === "READY_SUBMIT_MANUAL")
+      .map((target) => target.target_label);
+    const blockedStatuses = new Set([
+      "FAILED_PRE_SUBMIT",
+      "RECONCILIATION_REQUIRED",
+      "BLOCKED_AUTH",
+      "BLOCKED_INVENTORY",
+      "BLOCKED_CAPABILITY",
+      "BLOCKED_SOURCE_IDENTITY",
+      "BLOCKED_SKU_LINEAGE",
+    ]);
+    const expectedBlocked = storefronts
+      .filter((target) => (
+        blockedStatuses.has(target.status)
+        || target.dependency.state === "BLOCKED"
+      ))
+      .map((target) => target.target_label);
+    const expectedTerminal = storefronts
+      .filter((target) => (
+        ["SUCCEEDED", "SUBMITTED_UNVERIFIED"].includes(target.status)
+      ))
+      .map((target) => target.target_label);
+    if (
+      !sameSortedValues(summary.will_dispatch, expectedAutomatic)
+      || !sameSortedValues(summary.manual_after_submit, expectedManual)
+      || !sameSortedValues(summary.blocked, expectedBlocked)
+      || !sameSortedValues(summary.already_terminal, expectedTerminal)
+    ) {
+      throw oneClickContractError(
+        "统一发布控制面的分类摘要与店铺状态不一致，已停止提交。",
+      );
+    }
+    const canonical = projection.canonical_next_action;
+    if (
+      !Object.hasOwn(projection, "canonical_next_action")
+      || (
+        canonical !== null
+        && (
+          !canonical
+          || typeof canonical !== "object"
+          || Array.isArray(canonical)
+          || (
+            canonical.target_label !== null
+            && !labels.has(canonical.target_label)
+          )
+          || (
+            canonical.target_focus !== null
+            && !labels.has(canonical.target_focus)
+          )
+          || !ONECLICK_TARGET_STATUSES.has(canonical.canonical_status)
+          || !ONECLICK_ACTIONS.has(canonical.action)
+          || typeof canonical.runnable !== "boolean"
+        )
+      )
+    ) {
+      throw oneClickContractError(
+        "统一发布控制面缺少服务端唯一下一步，已停止提交。",
+      );
     }
     return projection;
   }
@@ -586,7 +851,10 @@
       oneClickExecution.job
       && release.oneclick_controlplane?.job_id !== oneClickExecution.job.job_id
     ) return oneClickExecution.failureAction;
-    const action = oneClickExecution.failureAction || release.canonical_next_action;
+    const projection = oneClickProjection();
+    const action = oneClickExecution.failureAction
+      || projection?.canonical_next_action
+      || release.canonical_next_action;
     return action && typeof action === "object" && !Array.isArray(action)
       ? action
       : null;
@@ -812,7 +1080,9 @@
         reference,
       );
       if (job.job_id !== reference.job_id) {
-        throw new Error("统一发布任务身份已漂移，已停止轮询。");
+        throw oneClickContractError(
+          "统一发布任务身份已漂移，已停止轮询。",
+        );
       }
       if (generation !== oneClickExecution.generation) return;
       oneClickExecution.job = job;
@@ -826,6 +1096,19 @@
       }
     } catch (error) {
       if (error.name === "AbortError" || generation !== oneClickExecution.generation) {
+        return;
+      }
+      if (error.oneClickContractError === true) {
+        cancelOneClickTimer();
+        oneClickExecution.error = friendlyError(error.message);
+        oneClickExecution.statusWarning = "";
+        oneClickExecution.failureAction = {
+          action: "refresh_release_state",
+          target_focus: null,
+          runnable: false,
+        };
+        renderOneClickExecution(currentData);
+        updateReleaseControls(currentData || {});
         return;
       }
       oneClickExecution.statusWarning =
@@ -3771,7 +4054,7 @@
     renderQueue();
   }
 
-  async function postReleaseAction(path, body) {
+  async function postReleaseAction(path, body, { expectedStatus = null } = {}) {
     const response = await fetch(path, {
       method: "POST",
       headers: {
@@ -3784,6 +4067,13 @@
       ok: false,
       error: `服务返回 HTTP ${response.status}`,
     }));
+    if (expectedStatus !== null && response.status !== expectedStatus) {
+      const error = new Error(
+        `服务返回 HTTP ${response.status}，但本操作要求 HTTP ${expectedStatus}`,
+      );
+      error.payload = payload;
+      throw error;
+    }
     if (!response.ok || payload.ok === false) {
       const targetDetails = (payload.adapter_blockers || [])
         .slice(0, 3)
@@ -4274,6 +4564,7 @@
       const payload = await postReleaseAction(
         "/api/product-workspace/publish",
         body,
+        { expectedStatus: 202 },
       );
       if (
         payload.accepted !== true

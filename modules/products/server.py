@@ -147,18 +147,9 @@ def _apply_oneclick_release_authority(release_v1: dict) -> dict:
             job["phase"] == "READY"
             and result["runnable_target_count"] > 0
         )
-        if (job.get("dispatch_capability") or {}).get("enabled") is False:
-            result["canonical_next_action"] = {
-                "target_label": None,
-                "target_focus": None,
-                "canonical_status": "BLOCKED_CAPABILITY",
-                "action": "enable_oneclick_dispatch",
-                "runnable": False,
-            }
-        else:
-            result["canonical_next_action"] = (
-                _select_canonical_oneclick_action(actions)
-            )
+        result["canonical_next_action"] = job.get(
+            "canonical_next_action"
+        )
         return result
 
     actions = []
@@ -6162,7 +6153,7 @@ def _project_oneclick_dispatch_capability(job: dict) -> dict:
     capability = _oneclick_dispatch_capability()
     projected["dispatch_capability"] = capability
     if capability["enabled"] is True:
-        return projected
+        return _attach_oneclick_canonical_action(projected)
     targets = []
     for target_value in projected.get("targets") or ():
         target = dict(target_value)
@@ -6200,7 +6191,39 @@ def _project_oneclick_dispatch_capability(job: dict) -> dict:
         dict.fromkeys([*(summary.get("blocked") or ()), *newly_blocked])
     )
     projected["summary"] = summary
-    return projected
+    return _attach_oneclick_canonical_action(projected)
+
+
+def _attach_oneclick_canonical_action(projected: dict) -> dict:
+    """Attach the sole server-owned next action to every public projection."""
+
+    result = dict(projected)
+    capability = result.get("dispatch_capability") or {}
+    if capability.get("enabled") is False:
+        result["canonical_next_action"] = {
+            "target_label": None,
+            "target_focus": None,
+            "canonical_status": "BLOCKED_CAPABILITY",
+            "action": "enable_oneclick_dispatch",
+            "runnable": False,
+        }
+        return result
+    actions = [
+        {
+            "target_label": target["target_label"],
+            "target_focus": target.get("next_action_target")
+            or target["target_label"],
+            "canonical_status": target["status"],
+            "action": target["next_action"],
+            "runnable": target.get("runnable_now") is True,
+        }
+        for target in result.get("targets") or ()
+        if isinstance(target, dict) and target.get("next_action")
+    ]
+    result["canonical_next_action"] = _select_canonical_oneclick_action(
+        actions
+    )
+    return result
 
 
 def _oneclick_worker_loop() -> None:

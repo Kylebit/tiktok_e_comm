@@ -469,12 +469,46 @@ def test_dispatch_capability_defaults_enabled_and_explicit_disable_is_clear(
         "reason_code": "oneclick_dispatch_enabled_by_default",
         "next_action": None,
     }
+    enabled = product_server._project_oneclick_dispatch_capability(
+        {
+            "phase": "READY",
+            "runnable_target_count": 1,
+            "storefront_count": 1,
+            "control_row_count": 0,
+            "summary": {
+                "will_dispatch": ["shopee:PH"],
+                "manual_after_submit": [],
+                "blocked": [],
+                "already_terminal": [],
+            },
+            "targets": [
+                {
+                    "target_label": "shopee:PH",
+                    "storefront": True,
+                    "classification": "EXACT_READY_AUTOMATIC",
+                    "status": "READY",
+                    "runnable_now": True,
+                    "next_action": "wait_for_worker",
+                    "next_action_target": "shopee:PH",
+                }
+            ],
+        }
+    )
+    assert enabled["canonical_next_action"] == {
+        "target_label": "shopee:PH",
+        "target_focus": "shopee:PH",
+        "canonical_status": "READY",
+        "action": "wait_for_worker",
+        "runnable": True,
+    }
 
     monkeypatch.setenv("ORBIT_ONECLICK_EXTERNAL_DISPATCH", "false")
     projected = product_server._project_oneclick_dispatch_capability(
         {
             "phase": "READY",
             "runnable_target_count": 1,
+            "storefront_count": 1,
+            "control_row_count": 0,
             "summary": {
                 "will_dispatch": ["shopee:PH"],
                 "manual_after_submit": [],
@@ -483,14 +517,25 @@ def test_dispatch_capability_defaults_enabled_and_explicit_disable_is_clear(
             "targets": [
                 {
                     "target_label": "shopee:PH",
+                    "storefront": True,
+                    "classification": "EXACT_READY_AUTOMATIC",
                     "status": "READY",
                     "runnable_now": True,
+                    "next_action": "wait_for_worker",
+                    "next_action_target": "shopee:PH",
                 }
             ],
         }
     )
     assert projected["phase"] == "BLOCKED"
     assert projected["runnable_target_count"] == 0
+    assert projected["canonical_next_action"] == {
+        "target_label": None,
+        "target_focus": None,
+        "canonical_status": "BLOCKED_CAPABILITY",
+        "action": "enable_oneclick_dispatch",
+        "runnable": False,
+    }
     assert projected["targets"][0]["next_action"] == (
         "enable_oneclick_dispatch"
     )

@@ -533,6 +533,8 @@ def test_oneclick_release_ui_uses_only_the_async_server_controlplane():
     assert 'ONECLICK_STATUS_SCHEMA = "oneclick-release-status/v1"' in script
     assert "payload.persisted !== false" in preview
     assert "payload.accepted !== true" in publish
+    assert "{ expectedStatus: 202 }" in publish
+    assert "response.status !== expectedStatus" in script
     assert "oneClickExecution.postAttempted = true" in publish
     assert "oneClickExecution.job" in publish
     assert "scheduleOneClickStatusPoll(generation, 0)" in publish
@@ -541,6 +543,12 @@ def test_oneclick_release_ui_uses_only_the_async_server_controlplane():
     assert "generation !== oneClickExecution.generation" in preview
     assert "generation !== oneClickExecution.generation" in status
     assert "if (approvalSubmitting || releaseSubmitting) return;" in script
+    assert "projection?.canonical_next_action" in script
+    assert "error.oneClickContractError === true" in status
+    assert "ONECLICK_JOB_PHASES.has(projection.phase)" in script
+    assert "ONECLICK_TARGET_STATUSES.has(target.status)" in script
+    assert "ONECLICK_CLASSIFICATIONS.has(target.classification)" in script
+    assert "sameSortedValues(summary.will_dispatch" in script
     assert "dashboardFromPayload" not in publish
     assert "while (" not in publish
     assert ".oneclick-execution-group" in style

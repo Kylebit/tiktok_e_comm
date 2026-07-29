@@ -3776,7 +3776,11 @@ function oneClickTargets(stage) {
           : "wait_for_worker",
       next_action_target: "shopee:MY",
       reason: null,
-      digests: {},
+      digests: {
+        prepared_command: "1".repeat(64),
+        proof: "2".repeat(64),
+        adapter_policy: "3".repeat(64),
+      },
       dispatch_ledger: {},
     },
     {
@@ -3790,7 +3794,11 @@ function oneClickTargets(stage) {
         ? "verify_submission_in_marketplace" : "wait_for_worker",
       next_action_target: "tiktok:GB",
       reason: null,
-      digests: {},
+      digests: {
+        prepared_command: "4".repeat(64),
+        proof: "5".repeat(64),
+        adapter_policy: "6".repeat(64),
+      },
       dispatch_ledger: {},
     },
     {
@@ -3809,7 +3817,11 @@ function oneClickTargets(stage) {
         summary_code: "approved_shopee_category_missing",
         detail_digest: "c".repeat(64),
       },
-      digests: {},
+      digests: {
+        prepared_command: null,
+        proof: null,
+        adapter_policy: "7".repeat(64),
+      },
       dispatch_ledger: {},
     },
     {
@@ -3828,7 +3840,11 @@ function oneClickTargets(stage) {
         summary_code: "approved_inventory_missing",
         detail_digest: "d".repeat(64),
       },
-      digests: {},
+      digests: {
+        prepared_command: null,
+        proof: null,
+        adapter_policy: "8".repeat(64),
+      },
       dispatch_ledger: {},
     },
   ];
@@ -3843,6 +3859,11 @@ function oneClickProjection(schemaVersion, stage, phase = null) {
     digests: {
       payload: "a".repeat(64),
       targets: "b".repeat(64),
+      source_identity: "c".repeat(64),
+      source_identity_payload: "d".repeat(64),
+      sku_lineage: "e".repeat(64),
+      sku_lineage_payload: "f".repeat(64),
+      adapter_policy: "0".repeat(64),
     },
     targets: oneClickTargets(stage),
     storefront_count: 4,
@@ -3901,6 +3922,42 @@ function oneClickProjection(schemaVersion, stage, phase = null) {
   return projection;
 }
 
+function oneClickPendingJobProjection() {
+  const projection = oneClickProjection(
+    "oneclick-release-status/v1",
+    "preview",
+    "PENDING",
+  );
+  projection.targets = projection.targets.map((target) => ({
+    ...target,
+    status: "PENDING",
+    classification: null,
+    runnable_now: false,
+    next_action: "prepare_batch",
+    reason: null,
+    digests: {
+      prepared_command: null,
+      proof: null,
+      adapter_policy: target.digests.adapter_policy,
+    },
+  }));
+  projection.runnable_target_count = 0;
+  projection.summary = {
+    will_dispatch: [],
+    manual_after_submit: [],
+    blocked: [],
+    already_terminal: [],
+  };
+  projection.canonical_next_action = {
+    target_label: "shopee:MY",
+    target_focus: "shopee:MY",
+    canonical_status: "PENDING",
+    action: "prepare_batch",
+    runnable: false,
+  };
+  return projection;
+}
+
 async function oneClickAsyncControlPlaneContract(browser, viewport) {
   const context = await browser.newContext({ viewport });
   const page = await context.newPage();
@@ -3926,6 +3983,12 @@ async function oneClickAsyncControlPlaneContract(browser, viewport) {
     requests.push({ method: request.method(), url: request.url(), external: false });
     if (url.pathname === "/api/product-workspace/dashboard") {
       dashboardReads += 1;
+      if (terminal && dashboardReads > 1 && viewport.width === 390) {
+        return route.fulfill(jsonResponse({
+          ok: false,
+          error: "temporary final dashboard failure",
+        }, 503));
+      }
       return route.fulfill(jsonResponse(oneClickDashboard({ terminal })));
     }
     if (url.pathname === "/api/product-workspace/publish-preview") {
@@ -3950,11 +4013,7 @@ async function oneClickAsyncControlPlaneContract(browser, viewport) {
         ok: true,
         accepted: true,
         external_writes_performed: [],
-        job: oneClickProjection(
-          "oneclick-release-status/v1",
-          "running",
-          "PENDING",
-        ),
+        job: oneClickPendingJobProjection(),
       }, 202));
     }
     if (url.pathname === "/api/product-workspace/publish-status") {
@@ -4033,6 +4092,10 @@ async function oneClickAsyncControlPlaneContract(browser, viewport) {
     );
     await page.locator("#offerId").fill("3828540231");
     await page.waitForFunction(() => {
+      if (
+        document.querySelector("#oneClickNextActionButton")
+          ?.dataset.oneclickAction === "verify_submission_in_marketplace"
+      ) return true;
       const text = document.querySelector("#oneClickExecutionMessage")?.textContent || "";
       return text.includes("人工") || text.includes("验收") || text.includes("楠屾敹");
     }, null, { timeout: 8000 });
@@ -4060,7 +4123,14 @@ async function oneClickAsyncControlPlaneContract(browser, viewport) {
         && !(await page.locator("#publishAllButton").isEnabled()),
       `one-click ${viewport.width}: terminal job cannot be submitted again`,
     );
-    await page.locator("#oneClickNextActionButton").click();
+    const nextActionButton = page.locator("#oneClickNextActionButton");
+    check(
+      await nextActionButton.getAttribute("data-oneclick-action")
+        === "verify_submission_in_marketplace",
+      `one-click ${viewport.width}: status canonical action survives stale/failing dashboard refresh`,
+      await nextActionButton.getAttribute("data-oneclick-action"),
+    );
+    await nextActionButton.click();
     check(
       await manualCard.evaluate((element) => document.activeElement === element),
       `one-click ${viewport.width}: canonical manual action focuses exact target`,
@@ -4370,11 +4440,7 @@ async function oneClickStrictFailureContract(browser, mode) {
         ok: true,
         accepted: true,
         external_writes_performed: [],
-        job: oneClickProjection(
-          "oneclick-release-status/v1",
-          "preview",
-          "PENDING",
-        ),
+        job: oneClickPendingJobProjection(),
       };
       return route.fulfill(jsonResponse(
         payload,
@@ -4383,14 +4449,21 @@ async function oneClickStrictFailureContract(browser, mode) {
     }
     if (url.pathname === "/api/product-workspace/publish-status") {
       statusReads += 1;
+      const job = oneClickProjection(
+        "oneclick-release-status/v1",
+        "running",
+        mode === "malformed-status" ? "UNKNOWN_PHASE" : "RUNNING",
+      );
+      if (mode === "digest-drift") {
+        job.digests.source_identity = "9".repeat(64);
+      }
+      if (mode === "target-proof-missing") {
+        delete job.targets[0].digests.proof;
+      }
       return route.fulfill(jsonResponse({
         ok: true,
         persisted: true,
-        job: oneClickProjection(
-          "oneclick-release-status/v1",
-          "running",
-          "UNKNOWN_PHASE",
-        ),
+        job,
       }));
     }
     const fixture = apiFixture(
@@ -4495,6 +4568,7 @@ async function oneClickFeatureDisabledContract(browser) {
               scope: "TARGET",
               code: "oneclick_dispatch_disabled",
               summary_code: "channel_capability_status",
+              detail_digest: "9".repeat(64),
             },
           }
       ));
@@ -4724,6 +4798,8 @@ async function legacyStateSafety(browser) {
     await oneClickOfferSwitchCancelsStalePreviewContract(browser);
     await oneClickStrictFailureContract(browser, "wrong-post-status");
     await oneClickStrictFailureContract(browser, "malformed-status");
+    await oneClickStrictFailureContract(browser, "digest-drift");
+    await oneClickStrictFailureContract(browser, "target-proof-missing");
     await oneClickFeatureDisabledContract(browser);
     await profitAsyncAndNoFalseSuccess(browser);
     await legacyStateSafety(browser);

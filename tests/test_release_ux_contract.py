@@ -548,6 +548,9 @@ def test_oneclick_release_ui_uses_only_the_async_server_controlplane():
     assert "ONECLICK_JOB_PHASES.has(projection.phase)" in script
     assert "ONECLICK_TARGET_STATUSES.has(target.status)" in script
     assert "ONECLICK_CLASSIFICATIONS.has(target.classification)" in script
+    assert "ONECLICK_DIGEST_KEYS.every" in script
+    assert "ONECLICK_TARGET_DIGEST_KEYS.every" in script
+    assert "oneClickDigest(reason.detail_digest)" in script
     assert "sameSortedValues(summary.will_dispatch" in script
     assert "dashboardFromPayload" not in publish
     assert "while (" not in publish

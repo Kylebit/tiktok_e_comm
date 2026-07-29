@@ -6170,6 +6170,9 @@ def _project_oneclick_dispatch_capability(job: dict) -> dict:
                         "scope": "TARGET",
                         "code": "oneclick_dispatch_disabled",
                         "summary_code": "channel_capability_status",
+                        "detail_digest": hashlib.sha256(
+                            b"oneclick_dispatch_disabled"
+                        ).hexdigest(),
                     },
                 }
             )

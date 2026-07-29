@@ -171,6 +171,20 @@
     "SYSTEMIC_IDENTITY",
     "SYSTEMIC_CONTRACT",
   ]);
+  const ONECLICK_DIGEST_KEYS = Object.freeze([
+    "payload",
+    "targets",
+    "source_identity",
+    "source_identity_payload",
+    "sku_lineage",
+    "sku_lineage_payload",
+    "adapter_policy",
+  ]);
+  const ONECLICK_TARGET_DIGEST_KEYS = Object.freeze([
+    "prepared_command",
+    "proof",
+    "adapter_policy",
+  ]);
   const oneClickExecution = {
     generation: 0,
     contextKey: "",
@@ -520,8 +534,7 @@
     return error;
   }
 
-  function oneClickDigest(value, { optional = false } = {}) {
-    if (optional && (value === null || value === undefined)) return true;
+  function oneClickDigest(value) {
     return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
   }
 
@@ -542,6 +555,10 @@
       throw oneClickContractError("统一发布控制面版本不匹配，请刷新后重试。");
     }
     const isStatus = schema === ONECLICK_STATUS_SCHEMA;
+    const isUnpreparedStatus = (
+      isStatus
+      && ["PENDING", "PREPARING"].includes(projection.phase)
+    );
     if (
       projection.plan_id !== identity.planId
       || projection.product_revision !== identity.revision
@@ -564,8 +581,9 @@
       !digests
       || typeof digests !== "object"
       || Array.isArray(digests)
-      || !oneClickDigest(digests.payload)
-      || !oneClickDigest(digests.targets)
+      || !ONECLICK_DIGEST_KEYS.every((key) => (
+        Object.hasOwn(digests, key) && oneClickDigest(digests[key])
+      ))
     ) {
       throw oneClickContractError("统一发布控制面缺少不可变摘要，已停止提交。");
     }
@@ -576,8 +594,9 @@
         reference
         && (
           projection.run_id !== reference.run_id
-          || digests.payload !== reference.digests?.payload
-          || digests.targets !== reference.digests?.targets
+          || !ONECLICK_DIGEST_KEYS.every((key) => (
+            digests[key] === reference.digests?.[key]
+          ))
         )
       )
     ) {
@@ -596,7 +615,11 @@
         || !target.target_label
         || labels.has(target.target_label)
         || !ONECLICK_TARGET_STATUSES.has(target.status)
-        || !ONECLICK_CLASSIFICATIONS.has(target.classification)
+        || (
+          isUnpreparedStatus
+            ? target.classification !== null
+            : !ONECLICK_CLASSIFICATIONS.has(target.classification)
+        )
         || typeof target.runnable_now !== "boolean"
         || typeof target.storefront !== "boolean"
         || (
@@ -610,6 +633,11 @@
         || !["SATISFIED", "WAITING", "BLOCKED"].includes(dependency.state)
         || typeof dependency.satisfied !== "boolean"
         || (
+          dependency.state === "SATISFIED"
+            ? dependency.satisfied !== true
+            : dependency.satisfied !== false
+        )
+        || (
           target.next_action !== null
           && !ONECLICK_ACTIONS.has(target.next_action)
         )
@@ -620,9 +648,27 @@
         || !targetDigests
         || typeof targetDigests !== "object"
         || Array.isArray(targetDigests)
-        || !oneClickDigest(targetDigests.prepared_command, { optional: true })
-        || !oneClickDigest(targetDigests.proof, { optional: true })
-        || !oneClickDigest(targetDigests.adapter_policy, { optional: true })
+        || !ONECLICK_TARGET_DIGEST_KEYS.every((key) => (
+          Object.hasOwn(targetDigests, key)
+        ))
+        || !oneClickDigest(targetDigests.adapter_policy)
+        || !(
+          (
+            targetDigests.prepared_command === null
+            && targetDigests.proof === null
+          )
+          || (
+            oneClickDigest(targetDigests.prepared_command)
+            && oneClickDigest(targetDigests.proof)
+          )
+        )
+        || (
+          isUnpreparedStatus
+          && (
+            targetDigests.prepared_command !== null
+            || targetDigests.proof !== null
+          )
+        )
         || (
           reason !== null
           && (
@@ -635,6 +681,7 @@
             || !reason.code
             || typeof reason.summary_code !== "string"
             || !reason.summary_code
+            || !oneClickDigest(reason.detail_digest)
           )
         )
       ) {
@@ -643,6 +690,35 @@
         );
       }
       labels.add(target.target_label);
+    }
+    if (reference) {
+      const previousTargets = new Map(
+        (reference.targets || []).map((target) => [
+          target.target_label,
+          target,
+        ]),
+      );
+      for (const target of projection.targets) {
+        const previous = previousTargets.get(target.target_label);
+        if (
+          !previous
+          || previous.digests?.adapter_policy
+            !== target.digests.adapter_policy
+          || (
+            reference.schema_version === ONECLICK_STATUS_SCHEMA
+            && previous.digests?.prepared_command !== null
+            && (
+              previous.digests.prepared_command
+                !== target.digests.prepared_command
+              || previous.digests.proof !== target.digests.proof
+            )
+          )
+        ) {
+          throw oneClickContractError(
+            "统一发布控制面的目标证明已漂移，已停止提交。",
+          );
+        }
+      }
     }
     for (const target of projection.targets) {
       if (
@@ -847,10 +923,6 @@
 
   function currentOneClickNextAction(data) {
     const release = data?.release_v1 || {};
-    if (
-      oneClickExecution.job
-      && release.oneclick_controlplane?.job_id !== oneClickExecution.job.job_id
-    ) return oneClickExecution.failureAction;
     const projection = oneClickProjection();
     const action = oneClickExecution.failureAction
       || projection?.canonical_next_action

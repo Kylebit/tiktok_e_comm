@@ -3915,6 +3915,7 @@ async function oneClickAsyncControlPlaneContract(browser, viewport) {
       && request.method() === "POST"
     ) {
       publishPosts += 1;
+      await page.waitForTimeout(300);
       return route.fulfill(jsonResponse({
         ok: true,
         accepted: true,
@@ -3991,6 +3992,15 @@ async function oneClickAsyncControlPlaneContract(browser, viewport) {
       button.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
       button.dispatchEvent(new KeyboardEvent("keydown", { key: " " }));
     });
+    await page.locator("#offerId").fill("3828540232");
+    await page.locator("#lookupForm").evaluate((form) => form.requestSubmit());
+    await page.waitForTimeout(100);
+    check(
+      page.url().includes("offer_id=3828540231"),
+      `one-click ${viewport.width}: offer switch is blocked until the 202 job identity returns`,
+      page.url(),
+    );
+    await page.locator("#offerId").fill("3828540231");
     await page.waitForFunction(() => {
       const text = document.querySelector("#oneClickExecutionMessage")?.textContent || "";
       return text.includes("人工") || text.includes("验收") || text.includes("楠屾敹");

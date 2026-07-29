@@ -4432,10 +4432,11 @@
   }
 
   async function selectQueueProduct(key, { collectIfMissing = true } = {}) {
-    if (
-      approvalSubmitting
-      || (releaseSubmitting && !oneClickExecution.posting)
-    ) return;
+    // A short one-click POST has an unknown outcome until the server returns
+    // the durable job identity.  Do not let offer switching discard that
+    // context.  Once the 202 receipt is stored locally, releaseSubmitting is
+    // cleared and switching only cancels this page's read-only polling.
+    if (approvalSubmitting || releaseSubmitting) return;
     const item = queueItem(key);
     if (!item) return;
     currentQueueKey = key;

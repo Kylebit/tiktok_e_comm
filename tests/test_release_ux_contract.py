@@ -540,6 +540,7 @@ def test_oneclick_release_ui_uses_only_the_async_server_controlplane():
     assert "AbortController" in status
     assert "generation !== oneClickExecution.generation" in preview
     assert "generation !== oneClickExecution.generation" in status
+    assert "if (approvalSubmitting || releaseSubmitting) return;" in script
     assert "dashboardFromPayload" not in publish
     assert "while (" not in publish
     assert ".oneclick-execution-group" in style

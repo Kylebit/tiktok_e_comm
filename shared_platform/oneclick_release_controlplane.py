@@ -28,11 +28,25 @@ from typing import Any
 from shared_platform.release_store import ReleaseStore
 
 
-PREPARED_COMMAND_SCHEMA = "release-target-prepared-command/v1"
-BATCH_PREPARATION_SCHEMA = "release-batch-preparation/v1"
-PUBLIC_STATUS_SCHEMA = "oneclick-release-status/v1"
+PREPARED_COMMAND_SCHEMA = "release-target-prepared-command/v2"
+BATCH_PREPARATION_SCHEMA = "release-batch-preparation/v2"
+PUBLIC_STATUS_SCHEMA = "oneclick-release-status/v2"
 REGISTRY_SCHEMA = "release-adapter-registry/v1"
 DEPENDENCY_POLICY_VERSION = "oneclick-target-dependency/v1"
+SHARED_RESOURCE_SCHEMA = "oneclick-shared-resource/v1"
+MANUAL_ACCEPTANCE_RESOLUTION_SCHEMA = (
+    "release-outcome-manual-acceptance/v1"
+)
+SHOPEE_GLOBAL_MASTER_POLICY = "shopee-global-master/v1"
+SHOPEE_GLOBAL_TARGET = "shopee:GLOBAL"
+SHOPEE_IMAGE_UPLOAD_WRITE = "shopee:image:upload"
+SHOPEE_GLOBAL_WRITE = "shopee:global_master:create"
+SHOPEE_GLOBAL_MODEL_WRITE = "shopee:global_model:init"
+SHOPEE_GLOBAL_WRITE_CLASSES = (
+    SHOPEE_IMAGE_UPLOAD_WRITE,
+    SHOPEE_GLOBAL_WRITE,
+    SHOPEE_GLOBAL_MODEL_WRITE,
+)
 
 EXACT_READY_AUTOMATIC = "EXACT_READY_AUTOMATIC"
 READY_SUBMIT_MANUAL = "READY_SUBMIT_MANUAL"
@@ -166,6 +180,9 @@ class DispatchInvocationError(OneClickControlPlaneError):
         external_writes: tuple[str, ...] = (),
         dispatch_outcome_unknown: bool = False,
         external_id: str | None = None,
+        external_write_count: int | None = None,
+        confirmed_external_write_count_lower_bound: int = 0,
+        possible_external_write_count_upper_bound: int | None = None,
     ) -> None:
         clean_detail = _exact_text(detail, "dispatch invocation detail")
         writes = _validated_write_classes(external_writes)
@@ -185,6 +202,16 @@ class DispatchInvocationError(OneClickControlPlaneError):
         self.external_writes = writes
         self.dispatch_outcome_unknown = dispatch_outcome_unknown
         self.external_id = external_id
+        (
+            self.external_write_count,
+            self.confirmed_external_write_count_lower_bound,
+            self.possible_external_write_count_upper_bound,
+        ) = _validated_write_count_bounds(
+            writes,
+            external_write_count,
+            confirmed_external_write_count_lower_bound,
+            possible_external_write_count_upper_bound,
+        )
 
 
 class PreDispatchInvocationError(OneClickControlPlaneError):
@@ -224,6 +251,7 @@ class PrepareTargetResult:
     reason_detail: str
     command: Mapping[str, Any] | None = None
     proof: Mapping[str, Any] | None = None
+    shared_resource: Mapping[str, Any] | None = None
     manual_after_submit: bool = False
 
     @classmethod
@@ -236,7 +264,7 @@ class PrepareTargetResult:
                 raise AdapterContractError(
                     "prepare manual_after_submit must be a literal bool"
                 )
-            for field in ("command", "proof"):
+            for field in ("command", "proof", "shared_resource"):
                 if value.get(field) is not None and not isinstance(
                     value.get(field),
                     Mapping,
@@ -270,6 +298,11 @@ class PrepareTargetResult:
                     if isinstance(value.get("proof"), Mapping)
                     else None
                 ),
+                shared_resource=(
+                    dict(value["shared_resource"])
+                    if isinstance(value.get("shared_resource"), Mapping)
+                    else None
+                ),
                 manual_after_submit=manual_after_submit,
             )
         else:
@@ -294,7 +327,11 @@ class PrepareTargetResult:
                 raise AdapterContractError(
                     "manual_after_submit does not match classification"
                 )
-        elif result.command is not None or result.proof is not None:
+        elif (
+            result.command is not None
+            or result.proof is not None
+            or result.shared_resource is not None
+        ):
             raise AdapterContractError(
                 "blocked preparation must not provide executable payload"
             )
@@ -323,10 +360,8 @@ class DispatchTargetRequest:
     proof_digest: str
     command: Mapping[str, Any]
     proof: Mapping[str, Any]
-    progress_recorder: Callable[
-        ["DispatchTargetRequest", tuple[str, ...], str, Mapping[str, Any]],
-        None,
-    ] | None = None
+    shared_resource_context: Mapping[str, Any] | None = None
+    progress_recorder: Callable[..., None] | None = None
 
 
 @dataclass(frozen=True)
@@ -337,6 +372,9 @@ class DispatchTargetResult:
     reason_code: str
     reason_detail: str
     external_writes: tuple[str, ...]
+    external_write_count: int | None = None
+    confirmed_external_write_count_lower_bound: int = 0
+    possible_external_write_count_upper_bound: int | None = None
     external_id: str | None = None
     submission_accepted: bool = False
     readback_verified: bool = False
@@ -391,6 +429,14 @@ class DispatchTargetResult:
                     value.get("reason_detail"), "dispatch reason_detail"
                 ),
                 external_writes=_validated_write_classes(writes),
+                external_write_count=value.get("external_write_count"),
+                confirmed_external_write_count_lower_bound=value.get(
+                    "confirmed_external_write_count_lower_bound",
+                    0,
+                ),
+                possible_external_write_count_upper_bound=value.get(
+                    "possible_external_write_count_upper_bound"
+                ),
                 external_id=external_id,
                 submission_accepted=value.get("submission_accepted", False),
                 readback_verified=value.get("readback_verified", False),
@@ -424,6 +470,15 @@ class DispatchTargetResult:
             result.external_writes
         ):
             raise AdapterContractError("dispatch write classes are invalid")
+        _validated_write_count_bounds(
+            result.external_writes,
+            result.external_write_count,
+            result.confirmed_external_write_count_lower_bound,
+            result.possible_external_write_count_upper_bound,
+            infer_legacy_exact=(
+                result.dispatch_outcome_unknown is not True
+            ),
+        )
         if any(
             type(value) is not bool
             for value in (
@@ -589,6 +644,8 @@ CREATE TABLE IF NOT EXISTS oneclick_release_targets (
     target_label TEXT NOT NULL,
     ordinal INTEGER NOT NULL,
     storefront INTEGER NOT NULL CHECK (storefront IN (0, 1)),
+    control_target INTEGER NOT NULL DEFAULT 0
+        CHECK (control_target IN (0, 1)),
     capability TEXT,
     status TEXT NOT NULL,
     reason_category TEXT,
@@ -601,14 +658,23 @@ CREATE TABLE IF NOT EXISTS oneclick_release_targets (
     command_digest TEXT,
     proof_json TEXT,
     proof_digest TEXT,
+    shared_resource_json TEXT,
+    shared_resource_digest TEXT,
+    shared_resource_context_json TEXT,
+    shared_resource_context_digest TEXT,
     manual_after_submit INTEGER NOT NULL DEFAULT 0
         CHECK (manual_after_submit IN (0, 1)),
     dispatch_count INTEGER NOT NULL DEFAULT 0,
     cumulative_external_writes_json TEXT NOT NULL DEFAULT '[]',
     cumulative_external_writes_digest TEXT NOT NULL DEFAULT
         '4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945',
+    cumulative_external_write_count INTEGER DEFAULT 0,
+    cumulative_external_write_lower_bound INTEGER NOT NULL DEFAULT 0,
+    cumulative_external_write_upper_bound INTEGER DEFAULT 0,
     dispatch_stage TEXT,
     dispatch_stage_evidence_digest TEXT,
+    pending_write_intent_json TEXT,
+    pending_write_intent_digest TEXT,
     result_json TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -660,6 +726,86 @@ BEFORE UPDATE OF
 ON oneclick_release_outcomes
 BEGIN
     SELECT RAISE(ABORT, 'one-click outcome identity is immutable');
+END;
+CREATE TABLE IF NOT EXISTS oneclick_release_manual_acceptances (
+    job_id TEXT NOT NULL,
+    target_label TEXT NOT NULL,
+    attempt INTEGER NOT NULL CHECK (attempt > 0),
+    resolution_json TEXT NOT NULL,
+    resolution_digest TEXT NOT NULL,
+    consumer_status TEXT NOT NULL DEFAULT 'PENDING'
+        CHECK (consumer_status IN ('PENDING', 'SUCCEEDED', 'FAILED')),
+    fact_digest TEXT,
+    error_code TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (job_id, target_label, attempt),
+    FOREIGN KEY (job_id, target_label, attempt)
+        REFERENCES oneclick_release_outcomes(job_id, target_label, attempt)
+);
+CREATE TRIGGER IF NOT EXISTS
+trg_oneclick_manual_acceptance_identity_immutable
+BEFORE UPDATE OF
+    job_id, target_label, attempt, resolution_json, resolution_digest,
+    created_at
+ON oneclick_release_manual_acceptances
+BEGIN
+    SELECT RAISE(
+        ABORT,
+        'one-click manual acceptance identity is immutable'
+    );
+END;
+CREATE TRIGGER IF NOT EXISTS
+trg_oneclick_manual_acceptance_append_only_delete
+BEFORE DELETE ON oneclick_release_manual_acceptances
+BEGIN
+    SELECT RAISE(
+        ABORT,
+        'one-click manual acceptances are append-only'
+    );
+END;
+CREATE TABLE IF NOT EXISTS oneclick_release_write_occurrences (
+    job_id TEXT NOT NULL,
+    target_label TEXT NOT NULL,
+    attempt INTEGER NOT NULL CHECK (attempt > 0),
+    occurrence_id TEXT NOT NULL,
+    intended_classes_json TEXT NOT NULL,
+    intended_classes_digest TEXT NOT NULL,
+    prior_classes_json TEXT NOT NULL,
+    prior_classes_digest TEXT NOT NULL,
+    confirmed_lower_bound INTEGER NOT NULL,
+    possible_upper_bound INTEGER NOT NULL,
+    status TEXT NOT NULL
+        CHECK (status IN ('OPEN', 'CONFIRMED', 'REJECTED')),
+    resolution_count INTEGER,
+    created_at TEXT NOT NULL,
+    resolved_at TEXT,
+    PRIMARY KEY (job_id, target_label, attempt, occurrence_id),
+    FOREIGN KEY (job_id, target_label)
+        REFERENCES oneclick_release_targets(job_id, target_label)
+);
+CREATE TRIGGER IF NOT EXISTS
+trg_oneclick_write_occurrence_identity_immutable
+BEFORE UPDATE OF
+    job_id, target_label, attempt, occurrence_id,
+    intended_classes_json, intended_classes_digest,
+    prior_classes_json, prior_classes_digest,
+    confirmed_lower_bound, possible_upper_bound, created_at
+ON oneclick_release_write_occurrences
+BEGIN
+    SELECT RAISE(
+        ABORT,
+        'one-click write occurrence identity is immutable'
+    );
+END;
+CREATE TRIGGER IF NOT EXISTS
+trg_oneclick_write_occurrence_append_only_delete
+BEFORE DELETE ON oneclick_release_write_occurrences
+BEGIN
+    SELECT RAISE(
+        ABORT,
+        'one-click write occurrences are append-only'
+    );
 END;
 """
 
@@ -725,27 +871,36 @@ class OneClickReleaseStore:
                 ),
             )
             targets = _target_labels(plan)
+            execution_targets = _execution_target_labels(targets)
             rows = _run_targets(run)
             connection.executemany(
                 """
                 INSERT INTO oneclick_release_targets (
-                    job_id, target_label, ordinal, storefront, status,
+                    job_id, target_label, ordinal, storefront, control_target,
+                    status,
                     adapter_name, adapter_policy_digest, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
                         identity["job_id"],
                         label,
                         ordinal,
-                        int(label != _COMMON_LABEL),
-                        _initial_public_status(rows[label]),
+                        int(
+                            label not in {_COMMON_LABEL, SHOPEE_GLOBAL_TARGET}
+                        ),
+                        int(label == SHOPEE_GLOBAL_TARGET),
+                        (
+                            PENDING
+                            if label == SHOPEE_GLOBAL_TARGET
+                            else _initial_public_status(rows[label])
+                        ),
                         _adapter_name_for_target(label),
                         _policy_digest_for_target(label, registry),
                         now,
                         now,
                     )
-                    for ordinal, label in enumerate(targets)
+                    for ordinal, label in enumerate(execution_targets)
                 ],
             )
             self._event(
@@ -936,6 +1091,120 @@ class OneClickReleaseStore:
                     target_label,
                     attempt,
                     receipt_digest,
+                ),
+            )
+
+    def pending_manual_acceptance_resolutions(
+        self,
+        *,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Return acceptance resolutions without creating outcome samples."""
+
+        if type(limit) is not int or limit < 1 or limit > 500:
+            raise OneClickControlPlaneError(
+                "manual acceptance resolution limit is invalid"
+            )
+        if not self.path.is_file():
+            return []
+        connection = self._connect()
+        try:
+            try:
+                rows = connection.execute(
+                    """
+                    SELECT job_id, target_label, attempt,
+                           resolution_json, resolution_digest
+                    FROM oneclick_release_manual_acceptances
+                    WHERE consumer_status = 'PENDING'
+                    ORDER BY created_at, job_id, target_label, attempt
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return []
+            return [
+                {
+                    "job_id": row["job_id"],
+                    "target_label": row["target_label"],
+                    "attempt": row["attempt"],
+                    "resolution": json.loads(row["resolution_json"]),
+                    "resolution_digest": row["resolution_digest"],
+                }
+                for row in rows
+            ]
+        finally:
+            connection.close()
+
+    def record_manual_acceptance_consumer_result(
+        self,
+        *,
+        job_id: str,
+        target_label: str,
+        attempt: int,
+        resolution_digest: str,
+        fact_digest: str | None,
+        error_code: str | None,
+    ) -> None:
+        """Record only resolution-consumer metadata; never alter release."""
+
+        if type(attempt) is not int or attempt < 1:
+            raise OneClickControlPlaneError(
+                "manual acceptance resolution attempt is invalid"
+            )
+        if not _is_digest(resolution_digest):
+            raise OneClickControlPlaneError(
+                "manual acceptance resolution digest is invalid"
+            )
+        if (fact_digest is None) == (error_code is None):
+            raise OneClickControlPlaneError(
+                "manual acceptance consumer requires exactly one result"
+            )
+        if fact_digest is not None and not _is_digest(fact_digest):
+            raise OneClickControlPlaneError(
+                "manual acceptance fact digest is invalid"
+            )
+        clean_error = (
+            _clean_code(
+                error_code,
+                "manual_acceptance_consumer_failed",
+            )
+            if error_code is not None
+            else None
+        )
+        with self._transaction() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM oneclick_release_manual_acceptances
+                WHERE job_id = ? AND target_label = ? AND attempt = ?
+                """,
+                (job_id, target_label, attempt),
+            ).fetchone()
+            if (
+                not row
+                or row["resolution_digest"] != resolution_digest
+                or row["consumer_status"] != "PENDING"
+            ):
+                raise OneClickControlPlaneError(
+                    "manual acceptance consumer identity is unavailable"
+                )
+            connection.execute(
+                """
+                UPDATE oneclick_release_manual_acceptances
+                SET consumer_status = ?, fact_digest = ?, error_code = ?,
+                    updated_at = ?
+                WHERE job_id = ? AND target_label = ? AND attempt = ?
+                  AND resolution_digest = ? AND consumer_status = 'PENDING'
+                """,
+                (
+                    "SUCCEEDED" if fact_digest is not None else "FAILED",
+                    fact_digest,
+                    clean_error,
+                    _utc_now(),
+                    job_id,
+                    target_label,
+                    attempt,
+                    resolution_digest,
                 ),
             )
 
@@ -1161,6 +1430,8 @@ class OneClickReleaseStore:
                 return self._project_job_in_transaction(connection, job_id)
 
             for prepared in prepared_rows:
+                if prepared["reason_code"] == "already_terminal":
+                    continue
                 durable_detail = _durable_reason_detail(
                     prepared["reason_category"],
                     prepared["reason_code"],
@@ -1173,7 +1444,13 @@ class OneClickReleaseStore:
                         reason_scope = ?, reason_code = ?, reason_detail = ?,
                         command_json = ?, command_digest = ?,
                         proof_json = ?, proof_digest = ?,
-                        manual_after_submit = ?, updated_at = ?
+                        shared_resource_json = ?,
+                        shared_resource_digest = ?,
+                        shared_resource_context_json = ?,
+                        shared_resource_context_digest = ?,
+                        result_json = ?,
+                        manual_after_submit = ?, updated_at = ?,
+                        completed_at = ?
                     WHERE job_id = ? AND target_label = ?
                     """,
                     (
@@ -1187,15 +1464,69 @@ class OneClickReleaseStore:
                         prepared.get("command_digest"),
                         prepared.get("proof_json"),
                         prepared.get("proof_digest"),
+                        prepared.get("shared_resource_json"),
+                        prepared.get("shared_resource_digest"),
+                        prepared.get("shared_resource_context_json"),
+                        prepared.get("shared_resource_context_digest"),
+                        prepared.get("result_json"),
                         int(prepared.get("manual_after_submit") is True),
                         now,
+                        (
+                            now
+                            if prepared["status"] == SUCCEEDED
+                            else None
+                        ),
                         job_id,
                         prepared["target_label"],
                     ),
                 )
+            global_prepared = next(
+                (
+                    row
+                    for row in prepared_rows
+                    if row["target_label"] == SHOPEE_GLOBAL_TARGET
+                    and row["status"] == SUCCEEDED
+                    and row.get("shared_resource_context_json")
+                ),
+                None,
+            )
+            if global_prepared is None:
+                stored_global = connection.execute(
+                    """
+                    SELECT *
+                    FROM oneclick_release_targets
+                    WHERE job_id = ? AND target_label = ?
+                    """,
+                    (job_id, SHOPEE_GLOBAL_TARGET),
+                ).fetchone()
+                if (
+                    stored_global
+                    and stored_global["status"] == SUCCEEDED
+                    and stored_global["shared_resource_context_json"]
+                ):
+                    global_prepared = dict(stored_global)
+            if global_prepared:
+                connection.execute(
+                    """
+                    UPDATE oneclick_release_targets
+                    SET shared_resource_context_json = ?,
+                        shared_resource_context_digest = ?,
+                        updated_at = ?
+                    WHERE job_id = ?
+                      AND target_label LIKE 'shopee:%'
+                      AND target_label != ?
+                    """,
+                    (
+                        global_prepared["shared_resource_context_json"],
+                        global_prepared["shared_resource_context_digest"],
+                        now,
+                        job_id,
+                        SHOPEE_GLOBAL_TARGET,
+                    ),
+                )
             ready_count = connection.execute(
                 """
-                SELECT target_label, status
+                SELECT *
                 FROM oneclick_release_targets
                 WHERE job_id = ?
                 """,
@@ -1278,67 +1609,95 @@ class OneClickReleaseStore:
                 self._refresh_job(connection, job_id)
                 return None
 
-            canonical = connection.execute(
-                """
-                SELECT target.*, run.plan_id
-                FROM release_target_runs AS target
-                JOIN release_runs AS run ON run.run_id = target.run_id
-                WHERE target.run_id = ? AND target.target_label = ?
-                """,
-                (context["job"]["run_id"], selected["target_label"]),
-            ).fetchone()
+            try:
+                stored_command = json.loads(selected["command_json"])
+                stored_proof = json.loads(selected["proof_json"])
+            except (TypeError, ValueError) as error:
+                raise SystemicIdentityError(
+                    "prepared command/proof is not valid JSON"
+                ) from error
             if (
-                not canonical
-                or canonical["plan_id"] != context["job"]["plan_id"]
-                or canonical["status"] != "PENDING"
-                or type(canonical["attempts"]) is not int
-                or canonical["attempts"] != selected["dispatch_count"]
-                or canonical["external_id"] is not None
-                or canonical["error"] is not None
+                not isinstance(stored_command, dict)
+                or not isinstance(stored_proof, dict)
+                or stored_command.get("schema_version")
+                != PREPARED_COMMAND_SCHEMA
+                or stored_proof.get("schema_version")
+                != PREPARED_COMMAND_SCHEMA
+                or stored_command.get("target_label")
+                != selected["target_label"]
+                or stored_proof.get("target_label")
+                != selected["target_label"]
+                or _digest_json(stored_command) != selected["command_digest"]
+                or _digest_json(stored_proof) != selected["proof_digest"]
             ):
-                self._stop_systemic_in_transaction(
-                    connection,
-                    job_id,
-                    "canonical_target_identity_drift",
-                    "canonical target is no longer pristine PENDING",
+                raise SystemicIdentityError(
+                    "prepared command/proof schema or identity is stale"
                 )
-                return None
-            if connection.execute(
-                """
-                SELECT 1 FROM release_target_submissions
-                WHERE run_id = ? AND target_label = ?
-                UNION ALL
-                SELECT 1 FROM release_target_readbacks
-                WHERE run_id = ? AND target_label = ?
-                LIMIT 1
-                """,
-                (context["job"]["run_id"], selected["target_label"]) * 2,
-            ).fetchone():
-                self._stop_systemic_in_transaction(
-                    connection,
-                    job_id,
-                    "canonical_target_evidence_drift",
-                    "canonical target gained durable evidence after preparation",
-                )
-                return None
-            failure_rows = connection.execute(
-                """
-                SELECT evidence_json FROM release_target_failure_events
-                WHERE run_id = ? AND target_label = ?
-                ORDER BY attempt
-                """,
-                (context["job"]["run_id"], selected["target_label"]),
-            ).fetchall()
-            if failure_rows and not _failure_rows_are_safe_zero_write(
-                failure_rows
-            ):
-                self._stop_systemic_in_transaction(
-                    connection,
-                    job_id,
-                    "canonical_target_failure_evidence_drift",
-                    "canonical target has unsafe historical write evidence",
-                )
-                return None
+
+            is_control = bool(selected["control_target"])
+            canonical = None
+            if not is_control:
+                canonical = connection.execute(
+                    """
+                    SELECT target.*, run.plan_id
+                    FROM release_target_runs AS target
+                    JOIN release_runs AS run ON run.run_id = target.run_id
+                    WHERE target.run_id = ? AND target.target_label = ?
+                    """,
+                    (context["job"]["run_id"], selected["target_label"]),
+                ).fetchone()
+                if (
+                    not canonical
+                    or canonical["plan_id"] != context["job"]["plan_id"]
+                    or canonical["status"] != "PENDING"
+                    or type(canonical["attempts"]) is not int
+                    or canonical["attempts"] != selected["dispatch_count"]
+                    or canonical["external_id"] is not None
+                    or canonical["error"] is not None
+                ):
+                    self._stop_systemic_in_transaction(
+                        connection,
+                        job_id,
+                        "canonical_target_identity_drift",
+                        "canonical target is no longer pristine PENDING",
+                    )
+                    return None
+                if connection.execute(
+                    """
+                    SELECT 1 FROM release_target_submissions
+                    WHERE run_id = ? AND target_label = ?
+                    UNION ALL
+                    SELECT 1 FROM release_target_readbacks
+                    WHERE run_id = ? AND target_label = ?
+                    LIMIT 1
+                    """,
+                    (context["job"]["run_id"], selected["target_label"]) * 2,
+                ).fetchone():
+                    self._stop_systemic_in_transaction(
+                        connection,
+                        job_id,
+                        "canonical_target_evidence_drift",
+                        "canonical target gained durable evidence after preparation",
+                    )
+                    return None
+                failure_rows = connection.execute(
+                    """
+                    SELECT evidence_json FROM release_target_failure_events
+                    WHERE run_id = ? AND target_label = ?
+                    ORDER BY attempt
+                    """,
+                    (context["job"]["run_id"], selected["target_label"]),
+                ).fetchall()
+                if failure_rows and not _failure_rows_are_safe_zero_write(
+                    failure_rows
+                ):
+                    self._stop_systemic_in_transaction(
+                        connection,
+                        job_id,
+                        "canonical_target_failure_evidence_drift",
+                        "canonical target has unsafe historical write evidence",
+                    )
+                    return None
             now = _utc_now()
             claimed = connection.execute(
                 """
@@ -1350,32 +1709,38 @@ class OneClickReleaseStore:
                 """,
                 (now, job_id, selected["target_label"]),
             )
-            canonical_claimed = connection.execute(
-                """
-                UPDATE release_target_runs
-                SET status = 'RUNNING', attempts = attempts + 1,
-                    error = NULL, completed_at = NULL, updated_at = ?
-                WHERE run_id = ? AND target_label = ?
-                  AND status = 'PENDING' AND attempts = ?
-                  AND external_id IS NULL AND error IS NULL
-                """,
-                (
-                    now,
-                    context["job"]["run_id"],
-                    selected["target_label"],
-                    selected["dispatch_count"],
-                ),
-            )
-            if claimed.rowcount != 1 or canonical_claimed.rowcount != 1:
+            canonical_claimed = None
+            if not is_control:
+                canonical_claimed = connection.execute(
+                    """
+                    UPDATE release_target_runs
+                    SET status = 'RUNNING', attempts = attempts + 1,
+                        error = NULL, completed_at = NULL, updated_at = ?
+                    WHERE run_id = ? AND target_label = ?
+                      AND status = 'PENDING' AND attempts = ?
+                      AND external_id IS NULL AND error IS NULL
+                    """,
+                    (
+                        now,
+                        context["job"]["run_id"],
+                        selected["target_label"],
+                        selected["dispatch_count"],
+                    ),
+                )
+            if claimed.rowcount != 1 or (
+                canonical_claimed is not None
+                and canonical_claimed.rowcount != 1
+            ):
                 raise SystemicIdentityError("atomic target claim lost a race")
-            connection.execute(
-                """
-                UPDATE release_runs
-                SET status = 'RUNNING', updated_at = ?, completed_at = NULL
-                WHERE run_id = ?
-                """,
-                (now, context["job"]["run_id"]),
-            )
+            if not is_control:
+                connection.execute(
+                    """
+                    UPDATE release_runs
+                    SET status = 'RUNNING', updated_at = ?, completed_at = NULL
+                    WHERE run_id = ?
+                    """,
+                    (now, context["job"]["run_id"]),
+                )
             connection.execute(
                 """
                 UPDATE oneclick_release_jobs
@@ -1401,7 +1766,11 @@ class OneClickReleaseStore:
                 plan_id=context["job"]["plan_id"],
                 run_id=context["job"]["run_id"],
                 target_label=selected["target_label"],
-                idempotency_key=canonical["idempotency_key"],
+                idempotency_key=(
+                    _shopee_global_idempotency_key(context["job"])
+                    if is_control
+                    else canonical["idempotency_key"]
+                ),
                 product_revision=context["job"]["product_revision"],
                 payload_digest=context["job"]["payload_digest"],
                 confirmation_token_digest=context["job"][
@@ -1420,8 +1789,13 @@ class OneClickReleaseStore:
                 adapter_policy_digest=selected["adapter_policy_digest"],
                 prepared_command_digest=selected["command_digest"],
                 proof_digest=selected["proof_digest"],
-                command=json.loads(selected["command_json"]),
-                proof=json.loads(selected["proof_json"]),
+                command=stored_command,
+                proof=stored_proof,
+                shared_resource_context=(
+                    _stored_shared_resource(selected, context=False)
+                    if is_control
+                    else _stored_shared_resource(selected, context=True)
+                ),
             )
 
     def record_dispatch_progress(
@@ -1430,6 +1804,10 @@ class OneClickReleaseStore:
         external_writes: tuple[str, ...],
         stage: str,
         evidence: Mapping[str, Any],
+        external_write_count: int | None = None,
+        confirmed_external_write_count_lower_bound: int = 0,
+        possible_external_write_count_upper_bound: int | None = None,
+        write_boundary: str | None = None,
     ) -> None:
         """Durably accumulate confirmed write classes during a composite dispatch.
 
@@ -1439,8 +1817,14 @@ class OneClickReleaseStore:
         """
 
         additions = _validated_write_classes(external_writes)
-        if not additions:
-            raise AdapterContractError("dispatch progress requires a write class")
+        addition_exact, addition_lower, addition_upper = (
+            _validated_write_count_bounds(
+                additions,
+                external_write_count,
+                confirmed_external_write_count_lower_bound,
+                possible_external_write_count_upper_bound,
+            )
+        )
         stage_value = _clean_code(stage, "dispatch_progress")
         evidence_digest = _digest_json(dict(evidence))
         now = _utc_now()
@@ -1468,31 +1852,346 @@ class OneClickReleaseStore:
             ).fetchone()
             if (
                 target["status"] != DISPATCHING
-                or not canonical
-                or canonical["status"] != "RUNNING"
-                or canonical["attempts"] != target["dispatch_count"]
+                or (
+                    target["control_target"] != 1
+                    and (
+                        not canonical
+                        or canonical["status"] != "RUNNING"
+                        or canonical["attempts"] != target["dispatch_count"]
+                    )
+                )
             ):
                 raise SystemicIdentityError(
                     "dispatch progress does not match the active atomic claim"
                 )
-            cumulative = _merge_write_classes(
-                _stored_write_classes(target), additions
+            if target["control_target"] == 1 and any(
+                item not in SHOPEE_GLOBAL_WRITE_CLASSES
+                and item != _UNKNOWN_WRITE_CLASS
+                for item in additions
+            ):
+                raise AdapterContractError(
+                    "Shopee GLOBAL progress reported an unrelated write class"
+                )
+            if target["control_target"] == 1:
+                addition_exact, addition_lower, addition_upper = (
+                    _validated_write_count_bounds(
+                        additions,
+                        external_write_count,
+                        confirmed_external_write_count_lower_bound,
+                        possible_external_write_count_upper_bound,
+                    )
+                )
+                if (
+                    addition_exact is None
+                    and addition_upper is None
+                ):
+                    raise AdapterContractError(
+                        "Shopee GLOBAL uncertain progress requires a possible write upper bound"
+                    )
+                if write_boundary not in {
+                    "PRE_INVOCATION_INTENT",
+                    "POST_RESPONSE_CONFIRMED",
+                    "POST_RESPONSE_REJECTED",
+                }:
+                    raise AdapterContractError(
+                        "Shopee GLOBAL progress requires an exact write boundary"
+                    )
+                if (
+                    write_boundary == "PRE_INVOCATION_INTENT"
+                    and (
+                        addition_exact is not None
+                        or addition_upper != addition_lower + 1
+                    )
+                ) or (
+                    write_boundary == "POST_RESPONSE_CONFIRMED"
+                    and (
+                        addition_exact is None
+                        or addition_exact != addition_lower
+                        or addition_exact != addition_upper
+                    )
+                ) or (
+                    write_boundary == "POST_RESPONSE_REJECTED"
+                    and (
+                        addition_exact is None
+                        or addition_exact != addition_lower
+                        or addition_exact != addition_upper
+                    )
+                ):
+                    raise AdapterContractError(
+                        "Shopee GLOBAL progress bounds do not match its write boundary"
+                    )
+            if (
+                target["control_target"] != 1
+                and any(
+                    item in SHOPEE_GLOBAL_WRITE_CLASSES
+                    for item in additions
+                )
+            ):
+                raise AdapterContractError(
+                    "storefront dispatch cannot report the Shopee global write"
+                )
+            if target["control_target"] != 1:
+                addition_exact, addition_lower, addition_upper = (
+                    _validated_write_count_bounds(
+                        additions,
+                        external_write_count,
+                        confirmed_external_write_count_lower_bound,
+                        possible_external_write_count_upper_bound,
+                        infer_legacy_exact=True,
+                    )
+                )
+            if target["control_target"] != 1 and not additions:
+                raise AdapterContractError(
+                    "dispatch progress requires a write class"
+                )
+            stored_classes = _stored_write_classes(target)
+            stored_exact, stored_lower, stored_upper = (
+                _stored_write_count_bounds(target)
             )
+            pending_intent = _stored_pending_write_intent(target)
+            next_pending = None
+            if target["control_target"] == 1:
+                occurrence = connection.execute(
+                    """
+                    SELECT * FROM oneclick_release_write_occurrences
+                    WHERE job_id = ? AND target_label = ?
+                      AND attempt = ? AND occurrence_id = ?
+                    """,
+                    (
+                        request.job_id,
+                        request.target_label,
+                        target["dispatch_count"],
+                        stage_value,
+                    ),
+                ).fetchone()
+                if write_boundary == "PRE_INVOCATION_INTENT":
+                    if occurrence is not None:
+                        raise AdapterContractError(
+                            "Shopee GLOBAL write occurrence was already opened"
+                        )
+                    declaration = _stored_shared_resource(
+                        target,
+                        context=False,
+                    )
+                    if not declaration:
+                        raise SystemicIdentityError(
+                            "Shopee GLOBAL write sequence declaration is unavailable"
+                        )
+                    image_count = declaration[
+                        "approved_selected_image_count"
+                    ]
+                    if addition_lower < image_count:
+                        expected_occurrence = (
+                            f"image_upload-{addition_lower + 1}"
+                        )
+                        expected_classes = (
+                            SHOPEE_IMAGE_UPLOAD_WRITE,
+                        )
+                    elif addition_lower == image_count:
+                        expected_occurrence = "global_create-1"
+                        expected_classes = (
+                            SHOPEE_IMAGE_UPLOAD_WRITE,
+                            SHOPEE_GLOBAL_WRITE,
+                        )
+                    elif addition_lower == image_count + 1:
+                        expected_occurrence = "model_init-1"
+                        expected_classes = SHOPEE_GLOBAL_WRITE_CLASSES
+                    else:
+                        raise AdapterContractError(
+                            "Shopee GLOBAL write sequence exceeded its approved plan"
+                        )
+                    if (
+                        stage_value != expected_occurrence
+                        or additions != expected_classes
+                    ):
+                        raise AdapterContractError(
+                            "Shopee GLOBAL write occurrence is out of order"
+                        )
+                    if (
+                        pending_intent is not None
+                        or stored_exact != addition_lower
+                        or stored_lower != addition_lower
+                        or stored_upper != addition_lower
+                        or any(
+                            item not in additions for item in stored_classes
+                        )
+                    ):
+                        raise AdapterContractError(
+                            "Shopee GLOBAL write intent did not follow the confirmed ledger"
+                        )
+                    next_pending = {
+                        "stage": stage_value,
+                        "prior_classes": list(stored_classes),
+                        "intended_classes": list(additions),
+                        "confirmed_lower_bound": addition_lower,
+                        "possible_upper_bound": addition_upper,
+                    }
+                else:
+                    expected_occurrence_status = (
+                        "CONFIRMED"
+                        if write_boundary == "POST_RESPONSE_CONFIRMED"
+                        else "REJECTED"
+                    )
+                    if occurrence is None:
+                        raise AdapterContractError(
+                            "Shopee GLOBAL write resolution has no occurrence"
+                        )
+                    if occurrence["status"] != "OPEN":
+                        if (
+                            occurrence["status"]
+                            == expected_occurrence_status
+                            and occurrence["resolution_count"]
+                            == addition_exact
+                            and additions == stored_classes
+                            and addition_exact == stored_exact
+                            and addition_lower == stored_lower
+                            and addition_upper == stored_upper
+                        ):
+                            return
+                        raise AdapterContractError(
+                            "Shopee GLOBAL write occurrence was already resolved"
+                        )
+                    if (
+                        pending_intent is None
+                        or pending_intent["stage"] != stage_value
+                    ):
+                        raise AdapterContractError(
+                            "Shopee GLOBAL write resolution has no matching intent"
+                        )
+                    if write_boundary == "POST_RESPONSE_CONFIRMED":
+                        expected_classes = tuple(
+                            pending_intent["intended_classes"]
+                        )
+                        expected_count = pending_intent[
+                            "possible_upper_bound"
+                        ]
+                    else:
+                        expected_classes = tuple(
+                            pending_intent["prior_classes"]
+                        )
+                        expected_count = pending_intent[
+                            "confirmed_lower_bound"
+                        ]
+                    if (
+                        additions != expected_classes
+                        or addition_exact != expected_count
+                        or addition_lower != expected_count
+                        or addition_upper != expected_count
+                    ):
+                        raise AdapterContractError(
+                            "Shopee GLOBAL write resolution drifted from its intent"
+                        )
+                cumulative = additions
+            else:
+                cumulative = _merge_write_classes(
+                    stored_classes,
+                    additions,
+                )
+            cumulative_exact = addition_exact
+            cumulative_lower = addition_lower
+            cumulative_upper = addition_upper
+            if (
+                target["control_target"] != 1
+                and (
+                    cumulative_lower < stored_lower or (
+                        stored_exact is not None
+                        and cumulative_exact is not None
+                        and cumulative_exact < stored_exact
+                    ) or (
+                        stored_upper is not None
+                        and cumulative_upper is not None
+                        and cumulative_upper < stored_upper
+                    )
+                )
+            ):
+                raise AdapterContractError(
+                    "dispatch progress write-count bounds regressed"
+                )
+            if (
+                target["control_target"] == 1
+                and write_boundary == "PRE_INVOCATION_INTENT"
+            ):
+                connection.execute(
+                    """
+                    INSERT INTO oneclick_release_write_occurrences (
+                        job_id, target_label, attempt, occurrence_id,
+                        intended_classes_json, intended_classes_digest,
+                        prior_classes_json, prior_classes_digest,
+                        confirmed_lower_bound, possible_upper_bound,
+                        status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
+                    """,
+                    (
+                        request.job_id,
+                        request.target_label,
+                        target["dispatch_count"],
+                        stage_value,
+                        _canonical_json(list(additions)),
+                        _digest_json(list(additions)),
+                        _canonical_json(list(stored_classes)),
+                        _digest_json(list(stored_classes)),
+                        addition_lower,
+                        addition_upper,
+                        now,
+                    ),
+                )
+            elif target["control_target"] == 1:
+                connection.execute(
+                    """
+                    UPDATE oneclick_release_write_occurrences
+                    SET status = ?, resolution_count = ?, resolved_at = ?
+                    WHERE job_id = ? AND target_label = ?
+                      AND attempt = ? AND occurrence_id = ?
+                      AND status = 'OPEN'
+                    """,
+                    (
+                        (
+                            "CONFIRMED"
+                            if write_boundary
+                            == "POST_RESPONSE_CONFIRMED"
+                            else "REJECTED"
+                        ),
+                        addition_exact,
+                        now,
+                        request.job_id,
+                        request.target_label,
+                        target["dispatch_count"],
+                        stage_value,
+                    ),
+                )
             connection.execute(
                 """
                 UPDATE oneclick_release_targets
                 SET cumulative_external_writes_json = ?,
                     cumulative_external_writes_digest = ?,
+                    cumulative_external_write_count = ?,
+                    cumulative_external_write_lower_bound = ?,
+                    cumulative_external_write_upper_bound = ?,
                     dispatch_stage = ?,
                     dispatch_stage_evidence_digest = ?,
+                    pending_write_intent_json = ?,
+                    pending_write_intent_digest = ?,
                     updated_at = ?
                 WHERE job_id = ? AND target_label = ?
                 """,
                 (
                     _canonical_json(list(cumulative)),
                     _digest_json(list(cumulative)),
+                    cumulative_exact,
+                    cumulative_lower,
+                    cumulative_upper,
                     stage_value,
                     evidence_digest,
+                    (
+                        _canonical_json(next_pending)
+                        if next_pending
+                        else None
+                    ),
+                    (
+                        _digest_json(next_pending)
+                        if next_pending
+                        else None
+                    ),
                     now,
                     request.job_id,
                     request.target_label,
@@ -1506,7 +2205,14 @@ class OneClickReleaseStore:
                 {
                     "stage": stage_value,
                     "cumulative_external_write_classes": list(cumulative),
-                    "cumulative_external_write_count": len(cumulative),
+                    "cumulative_external_write_count": cumulative_exact,
+                    "confirmed_external_write_count_lower_bound": (
+                        cumulative_lower
+                    ),
+                    "possible_external_write_count_upper_bound": (
+                        cumulative_upper
+                    ),
+                    "write_boundary": write_boundary,
                     "evidence_digest": evidence_digest,
                 },
                 now,
@@ -1538,6 +2244,58 @@ class OneClickReleaseStore:
         finally:
             connection.close()
 
+    def cumulative_external_write_bounds(
+        self,
+        request: DispatchTargetRequest,
+    ) -> tuple[int | None, int, int | None]:
+        connection = self._connect()
+        try:
+            job = connection.execute(
+                "SELECT * FROM oneclick_release_jobs WHERE job_id = ?",
+                (request.job_id,),
+            ).fetchone()
+            target = connection.execute(
+                """
+                SELECT * FROM oneclick_release_targets
+                WHERE job_id = ? AND target_label = ?
+                """,
+                (request.job_id, request.target_label),
+            ).fetchone()
+            if not job or not target:
+                raise SystemicIdentityError(
+                    "dispatch write-count ledger target was not found"
+                )
+            _require_dispatch_identity(job, target, request)
+            return _stored_write_count_bounds(target)
+        finally:
+            connection.close()
+
+    def has_pending_write_intent(
+        self,
+        request: DispatchTargetRequest,
+    ) -> bool:
+        connection = self._connect()
+        try:
+            job = connection.execute(
+                "SELECT * FROM oneclick_release_jobs WHERE job_id = ?",
+                (request.job_id,),
+            ).fetchone()
+            target = connection.execute(
+                """
+                SELECT * FROM oneclick_release_targets
+                WHERE job_id = ? AND target_label = ?
+                """,
+                (request.job_id, request.target_label),
+            ).fetchone()
+            if not job or not target:
+                raise SystemicIdentityError(
+                    "pending write-intent target was not found"
+                )
+            _require_dispatch_identity(job, target, request)
+            return _stored_pending_write_intent(target) is not None
+        finally:
+            connection.close()
+
     def record_dispatch_result(
         self,
         request: DispatchTargetRequest,
@@ -1560,6 +2318,22 @@ class OneClickReleaseStore:
             if not job or not target:
                 raise SystemicIdentityError("dispatch job target was not found")
             _require_dispatch_identity(job, target, request)
+            if target["control_target"] == 1:
+                return self._record_shared_control_result_in_transaction(
+                    connection,
+                    job=job,
+                    target=target,
+                    request=request,
+                    result=result,
+                    now=now,
+                )
+            if any(
+                item in SHOPEE_GLOBAL_WRITE_CLASSES
+                for item in result.external_writes
+            ):
+                raise AdapterContractError(
+                    "storefront dispatch cannot perform the Shopee global write"
+                )
             canonical = connection.execute(
                 """
                 SELECT * FROM release_target_runs
@@ -1580,6 +2354,18 @@ class OneClickReleaseStore:
             if any(item not in result.external_writes for item in cumulative):
                 raise AdapterContractError(
                     "dispatch receipt omitted a previously confirmed write"
+                )
+            result_exact, result_lower, result_upper = (
+                _result_write_count_bounds(result)
+            )
+            _, stored_lower, stored_upper = _stored_write_count_bounds(target)
+            if result_lower < stored_lower or (
+                stored_upper is not None
+                and result_upper is not None
+                and result_upper < stored_upper
+            ):
+                raise AdapterContractError(
+                    "dispatch receipt omitted confirmed write-count evidence"
                 )
             evidence = _canonical_evidence(request, result)
             encoded = _canonical_json(evidence)
@@ -1750,6 +2536,195 @@ class OneClickReleaseStore:
                 connection,
                 request.job_id,
             )
+
+    def _record_shared_control_result_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        job: Mapping[str, Any],
+        target: Mapping[str, Any],
+        request: DispatchTargetRequest,
+        result: DispatchTargetResult,
+        now: str,
+    ) -> dict[str, Any]:
+        if (
+            target["target_label"] != SHOPEE_GLOBAL_TARGET
+            or target["status"] != DISPATCHING
+            or target["dispatch_count"] < 1
+        ):
+            raise SystemicIdentityError(
+                "Shopee GLOBAL receipt does not match the active control claim"
+            )
+        declaration = _stored_shared_resource(target, context=False)
+        if (
+            not declaration
+            or declaration.get("mode") != "ENSURE_NEW"
+            or request.shared_resource_context != declaration
+        ):
+            raise SystemicIdentityError(
+                "Shopee GLOBAL dispatch declaration drifted"
+            )
+        cumulative = _stored_write_classes(target)
+        if any(item not in result.external_writes for item in cumulative):
+            raise AdapterContractError(
+                "Shopee GLOBAL receipt omitted a confirmed write"
+            )
+        result_exact, result_lower, result_upper = (
+            _result_write_count_bounds(result, infer_legacy_exact=False)
+        )
+        _, stored_lower, stored_upper = _stored_write_count_bounds(target)
+        pending_intent = _stored_pending_write_intent(target)
+        if pending_intent is not None and not (
+            result.canonical_status == RECONCILIATION_REQUIRED
+            and result.dispatch_outcome_unknown is True
+            and result_exact is None
+            and result_lower == stored_lower
+            and result_upper == stored_upper
+        ):
+            raise AdapterContractError(
+                "Shopee GLOBAL terminal receipt left an unresolved write intent"
+            )
+        if result_lower < stored_lower or (
+            stored_upper is not None
+            and result_upper is not None
+            and result_upper < stored_upper
+        ):
+            raise AdapterContractError(
+                "Shopee GLOBAL receipt omitted confirmed write-count evidence"
+            )
+        context_payload = None
+        if result.canonical_status in {
+            SUCCEEDED,
+            SUCCEEDED_MANUAL_REVIEW,
+            SUBMITTED_UNVERIFIED,
+        }:
+            if (
+                result.canonical_status != SUCCEEDED
+                or result.external_writes != SHOPEE_GLOBAL_WRITE_CLASSES
+                or result_exact is None
+                or result_exact
+                != declaration["expected_external_write_count"]
+                or result_lower != result_exact
+                or result_upper != result_exact
+                or result.submission_accepted is not True
+                or result.readback_verified is not True
+            ):
+                raise AdapterContractError(
+                    "Shopee GLOBAL can terminate successfully only after exact readback"
+                )
+            context_payload = _validated_shared_resource_result(
+                result.evidence,
+                declaration,
+            )
+            if result.external_id != (
+                "sha256:" + context_payload["global_identity_digest"]
+            ):
+                raise AdapterContractError(
+                    "Shopee GLOBAL external identity must be a redacted digest"
+                )
+        elif result.canonical_status == RECONCILIATION_REQUIRED:
+            known = tuple(
+                item
+                for item in result.external_writes
+                if item != _UNKNOWN_WRITE_CLASS
+            )
+            if (
+                any(item not in SHOPEE_GLOBAL_WRITE_CLASSES for item in known)
+                or tuple(
+                    item
+                    for item in SHOPEE_GLOBAL_WRITE_CLASSES
+                    if item in known
+                )
+                != known
+                or (
+                    result_exact is None
+                    and result_upper is None
+                )
+            ):
+                raise AdapterContractError(
+                    "Shopee GLOBAL reconciliation write ledger is invalid"
+                )
+        elif result.external_writes:
+            raise AdapterContractError(
+                "Shopee GLOBAL non-success cannot carry an unclassified write"
+            )
+        evidence = _canonical_evidence(request, result)
+        evidence_digest = _digest_json(evidence)
+        durable_detail = _durable_reason_detail(
+            result.reason_category,
+            result.reason_code,
+            result.reason_detail,
+        )
+        public_result = _public_result(result, evidence_digest)
+        if context_payload:
+            context_digest = _digest_json(context_payload)
+            public_result = {
+                **public_result,
+                "shared_resource_status": "VERIFIED_CREATED",
+                "shared_resource_context_digest": context_digest,
+            }
+            connection.execute(
+                """
+                UPDATE oneclick_release_targets
+                SET shared_resource_context_json = ?,
+                    shared_resource_context_digest = ?,
+                    updated_at = ?
+                WHERE job_id = ? AND target_label LIKE 'shopee:%'
+                """,
+                (
+                    _canonical_json(context_payload),
+                    context_digest,
+                    now,
+                    request.job_id,
+                ),
+            )
+        connection.execute(
+            """
+            UPDATE oneclick_release_targets
+            SET status = ?, reason_category = ?, reason_scope = ?,
+                reason_code = ?, reason_detail = ?, result_json = ?,
+                cumulative_external_writes_json = ?,
+                cumulative_external_writes_digest = ?,
+                cumulative_external_write_count = ?,
+                cumulative_external_write_lower_bound = ?,
+                cumulative_external_write_upper_bound = ?,
+                updated_at = ?, completed_at = ?
+            WHERE job_id = ? AND target_label = ? AND status = 'DISPATCHING'
+            """,
+            (
+                result.canonical_status,
+                result.reason_category,
+                result.reason_scope,
+                result.reason_code,
+                durable_detail,
+                _canonical_json(public_result),
+                _canonical_json(list(result.external_writes)),
+                _digest_json(list(result.external_writes)),
+                result_exact,
+                result_lower,
+                result_upper,
+                now,
+                now,
+                request.job_id,
+                request.target_label,
+            ),
+        )
+        self._refresh_job(connection, request.job_id)
+        self._event(
+            connection,
+            request.job_id,
+            request.target_label,
+            "SHARED_CONTROL_TERMINAL",
+            {
+                **public_result,
+                "storefront": False,
+            },
+            now,
+        )
+        return self._project_job_in_transaction(
+            connection,
+            request.job_id,
+        )
 
     def record_manual_acceptance(
         self,
@@ -1976,6 +2951,17 @@ class OneClickReleaseStore:
                     evidence,
                     result,
                 )
+                if (
+                    evidence.get("job_identity_digest")
+                    != hashlib.sha256(
+                        row["job_id"].encode("utf-8")
+                    ).hexdigest()
+                    or evidence.get("outcome_receipt_digest")
+                    != outcome["receipt_digest"]
+                ):
+                    raise SystemicIdentityError(
+                        "verified observation acceptance identity drifted"
+                    )
                 readback = connection.execute(
                     """
                     SELECT evidence_digest FROM release_target_readbacks
@@ -1988,11 +2974,68 @@ class OneClickReleaseStore:
                     or not readback
                     or readback["evidence_digest"]
                     != result["evidence_digest"]
+                    or evidence.get("readback_evidence_digest")
+                    != readback["evidence_digest"]
                 ):
                     raise SystemicIdentityError(
                         "verified success readback is unavailable"
                     )
 
+            resolution = {
+                "schema_version": MANUAL_ACCEPTANCE_RESOLUTION_SCHEMA,
+                "source_outcome_receipt_digest": outcome["receipt_digest"],
+                "target_attempt_identity_digest": _digest_json(
+                    {
+                        "job_id": row["job_id"],
+                        "target_label": clean_target,
+                        "attempt": row["dispatch_count"],
+                    }
+                ),
+                "acceptance_evidence_digest": evidence_digest,
+                "manual": {
+                    "status": "ACCEPTED",
+                    "reviewer_role": "approved_release_actor",
+                },
+                "external_writes_performed": [],
+            }
+            resolution_json = _canonical_json(resolution)
+            resolution_digest = hashlib.sha256(
+                resolution_json.encode("utf-8")
+            ).hexdigest()
+            existing_resolution = connection.execute(
+                """
+                SELECT resolution_digest
+                FROM oneclick_release_manual_acceptances
+                WHERE job_id = ? AND target_label = ? AND attempt = ?
+                """,
+                (
+                    row["job_id"],
+                    clean_target,
+                    row["dispatch_count"],
+                ),
+            ).fetchone()
+            if existing_resolution:
+                raise SystemicIdentityError(
+                    "manual acceptance resolution already exists"
+                )
+            connection.execute(
+                """
+                INSERT INTO oneclick_release_manual_acceptances (
+                    job_id, target_label, attempt,
+                    resolution_json, resolution_digest,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["job_id"],
+                    clean_target,
+                    row["dispatch_count"],
+                    resolution_json,
+                    resolution_digest,
+                    now,
+                    now,
+                ),
+            )
             accepted_result = {
                 **result,
                 "canonical_status": SUCCEEDED,
@@ -2066,6 +3109,18 @@ class OneClickReleaseStore:
             ).fetchall()
             for row in rows:
                 known_writes = _stored_write_classes(row)
+                _, confirmed_lower, possible_upper = (
+                    _stored_write_count_bounds(row)
+                )
+                interrupted_upper = (
+                    possible_upper
+                    if row["control_target"] == 1
+                    else (
+                        possible_upper + 1
+                        if possible_upper is not None
+                        else None
+                    )
+                )
                 cumulative_writes = _merge_write_classes(
                     known_writes,
                     (_UNKNOWN_WRITE_CLASS,),
@@ -2078,8 +3133,12 @@ class OneClickReleaseStore:
                     "external_writes_performed": list(cumulative_writes),
                     "cumulative_external_write_count": (
                         None
-                        if _UNKNOWN_WRITE_CLASS in cumulative_writes
-                        else len(cumulative_writes)
+                    ),
+                    "confirmed_external_write_count_lower_bound": (
+                        confirmed_lower
+                    ),
+                    "possible_external_write_count_upper_bound": (
+                        interrupted_upper
                     ),
                     "dispatch_outcome_unknown": True,
                     "durable_state_uncertain": True,
@@ -2148,6 +3207,9 @@ class OneClickReleaseStore:
                         reason_detail = ?,
                         cumulative_external_writes_json = ?,
                         cumulative_external_writes_digest = ?,
+                        cumulative_external_write_count = NULL,
+                        cumulative_external_write_lower_bound = ?,
+                        cumulative_external_write_upper_bound = ?,
                         result_json = ?, updated_at = ?, completed_at = ?
                     WHERE job_id = ? AND target_label = ?
                     """,
@@ -2155,6 +3217,8 @@ class OneClickReleaseStore:
                         durable_detail,
                         _canonical_json(list(cumulative_writes)),
                         _digest_json(list(cumulative_writes)),
+                        confirmed_lower,
+                        interrupted_upper,
                         _canonical_json(
                             {
                                 "external_write_count": None,
@@ -2164,6 +3228,12 @@ class OneClickReleaseStore:
                                 "cumulative_external_write_count": None,
                                 "cumulative_external_write_classes": list(
                                     cumulative_writes
+                                ),
+                                "confirmed_external_write_count_lower_bound": (
+                                    confirmed_lower
+                                ),
+                                "possible_external_write_count_upper_bound": (
+                                    interrupted_upper
                                 ),
                                 "dispatch_outcome_unknown": True,
                                 "evidence_digest": digest,
@@ -2182,21 +3252,33 @@ class OneClickReleaseStore:
                     reason_code="worker_interrupted_dispatch_unknown",
                     reason_detail="worker interrupted after atomic claim",
                     external_writes=cumulative_writes,
+                    external_write_count=None,
+                    confirmed_external_write_count_lower_bound=(
+                        confirmed_lower
+                    ),
+                    possible_external_write_count_upper_bound=(
+                        interrupted_upper
+                    ),
                     external_id=(
                         canonical["external_id"] if canonical else None
                     ),
                     dispatch_outcome_unknown=True,
                     evidence={"durable_state_uncertain": True},
                 )
-                _insert_outcome_receipt(
-                    connection,
-                    job=row,
-                    target=row,
-                    result=recovered_result,
-                    evidence_digest=digest,
-                    now=now,
-                )
-                self._refresh_canonical_run(connection, row["run_id"], now)
+                if row["control_target"] != 1:
+                    _insert_outcome_receipt(
+                        connection,
+                        job=row,
+                        target=row,
+                        result=recovered_result,
+                        evidence_digest=digest,
+                        now=now,
+                    )
+                    self._refresh_canonical_run(
+                        connection,
+                        row["run_id"],
+                        now,
+                    )
                 self._refresh_job(connection, row["job_id"])
                 recovered += 1
         return recovered
@@ -2230,6 +3312,12 @@ class OneClickReleaseStore:
                     SET status = 'PENDING', capability = NULL,
                         command_json = NULL, command_digest = NULL,
                         proof_json = NULL, proof_digest = NULL,
+                        cumulative_external_writes_json = '[]',
+                        cumulative_external_writes_digest =
+                            '4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945',
+                        cumulative_external_write_count = 0,
+                        cumulative_external_write_lower_bound = 0,
+                        cumulative_external_write_upper_bound = 0,
                         dispatch_stage = NULL,
                         dispatch_stage_evidence_digest = NULL,
                         result_json = NULL, completed_at = NULL,
@@ -2238,6 +3326,30 @@ class OneClickReleaseStore:
                     """,
                     (now, job_id, row["target_label"]),
                 )
+                if row["control_target"] == 1:
+                    connection.execute(
+                        """
+                        UPDATE oneclick_release_targets
+                        SET shared_resource_json = CASE
+                                WHEN target_label = ? THEN NULL
+                                ELSE shared_resource_json
+                            END,
+                            shared_resource_digest = CASE
+                                WHEN target_label = ? THEN NULL
+                                ELSE shared_resource_digest
+                            END,
+                            shared_resource_context_json = NULL,
+                            shared_resource_context_digest = NULL,
+                            updated_at = ?
+                        WHERE job_id = ? AND target_label LIKE 'shopee:%'
+                        """,
+                        (
+                            SHOPEE_GLOBAL_TARGET,
+                            SHOPEE_GLOBAL_TARGET,
+                            now,
+                            job_id,
+                        ),
+                    )
                 # Compatibility reset is safe only because the durable event
                 # proves the previous attempt performed zero external writes.
                 job = connection.execute(
@@ -2385,6 +3497,21 @@ class OneClickReleaseStore:
                 result.reason_detail,
                 scope=result.reason_scope,
             )
+        try:
+            shared_resource = _validated_shared_resource_declaration(
+                request,
+                result.shared_resource,
+            )
+        except AdapterContractError as error:
+            return _prepared_blocked_row(
+                label,
+                BLOCKED_CAPABILITY,
+                BLOCKED_CAPABILITY,
+                "SYSTEMIC_CONTRACT",
+                "shared_resource_contract_invalid",
+                str(error),
+                scope=SYSTEMIC_IDENTITY_SCOPE,
+            )
         command = {
             "schema_version": PREPARED_COMMAND_SCHEMA,
             "target_label": label,
@@ -2397,6 +3524,7 @@ class OneClickReleaseStore:
             "sku_lineage_payload_digest": context["job"][
                 "sku_lineage_payload_digest"
             ],
+            "shared_resource": shared_resource,
             "payload": dict(result.command or {}),
         }
         proof = {
@@ -2413,10 +3541,15 @@ class OneClickReleaseStore:
             ],
             "payload": dict(result.proof or {}),
         }
-        return {
+        prepared = {
             "target_label": label,
             "classification": result.classification,
-            "status": READY,
+            "status": (
+                SUCCEEDED
+                if shared_resource
+                and shared_resource["mode"] == "EXISTING_GLOBAL"
+                else READY
+            ),
             "reason_category": result.reason_category,
             "reason_scope": result.reason_scope,
             "reason_code": result.reason_code,
@@ -2426,7 +3559,39 @@ class OneClickReleaseStore:
             "proof_json": _canonical_json(proof),
             "proof_digest": _digest_json(proof),
             "manual_after_submit": result.manual_after_submit,
+            "shared_resource_json": (
+                _canonical_json(shared_resource) if shared_resource else None
+            ),
+            "shared_resource_digest": (
+                _digest_json(shared_resource) if shared_resource else None
+            ),
         }
+        if (
+            shared_resource
+            and shared_resource["mode"] == "EXISTING_GLOBAL"
+        ):
+            context_payload = _verified_shared_resource_context(
+                shared_resource
+            )
+            prepared["shared_resource_context_json"] = _canonical_json(
+                context_payload
+            )
+            prepared["shared_resource_context_digest"] = _digest_json(
+                context_payload
+            )
+            prepared["result_json"] = _canonical_json(
+                {
+                    "canonical_status": SUCCEEDED,
+                    "shared_resource_status": "VERIFIED_EXISTING_NO_WRITE",
+                    "external_write_count": 0,
+                    "external_write_classes": [],
+                    "dispatch_outcome_unknown": False,
+                    "shared_resource_context_digest": _digest_json(
+                        context_payload
+                    ),
+                }
+            )
+        return prepared
 
     def _load_exact_context(
         self,
@@ -2450,6 +3615,19 @@ class OneClickReleaseStore:
         _require_job_identity(job, identity)
         targets = _run_targets(run)
         source_identity = _resolve_plan_source_identity(plan["payload"])
+        raw_targets = self._raw_targets(job_id)
+        expected_labels = _execution_target_labels(_target_labels(plan))
+        if (
+            [row["target_label"] for row in raw_targets] != expected_labels
+            or sum(
+                row["target_label"] == SHOPEE_GLOBAL_TARGET
+                for row in raw_targets
+            )
+            > 1
+        ):
+            raise SystemicIdentityError(
+                "one-click control target identity drifted"
+            )
         return {
             "job": job,
             "plan": plan,
@@ -2458,11 +3636,13 @@ class OneClickReleaseStore:
             "targets": [
                 {
                     **dict(row),
-                    "idempotency_key": targets[row["target_label"]][
-                        "idempotency_key"
-                    ],
+                    "idempotency_key": (
+                        _shopee_global_idempotency_key(job)
+                        if row["target_label"] == SHOPEE_GLOBAL_TARGET
+                        else targets[row["target_label"]]["idempotency_key"]
+                    ),
                 }
-                for row in self._raw_targets(job_id)
+                for row in raw_targets
             ],
         }
 
@@ -2573,7 +3753,9 @@ class OneClickReleaseStore:
             or _digest_json(transaction_lineage)
             != job["sku_lineage_payload_digest"]
             or _registry_digest(
-                json.loads(plan["target_labels_json"]),
+                _execution_target_labels(
+                    json.loads(plan["target_labels_json"])
+                ),
                 registry,
             )
             != job["adapter_policy_digest"]
@@ -2590,12 +3772,13 @@ class OneClickReleaseStore:
     ) -> bool:
         rows = connection.execute(
             """
-            SELECT target_label, status
+            SELECT *
             FROM oneclick_release_targets
             WHERE job_id = ?
             """,
             (job["job_id"],),
         ).fetchall()
+        _validate_job_shared_resource_rows(rows)
         statuses = {
             row["target_label"]: row["status"]
             for row in rows
@@ -2640,7 +3823,7 @@ class OneClickReleaseStore:
     def _refresh_job(self, connection: sqlite3.Connection, job_id: str) -> None:
         rows = connection.execute(
             """
-            SELECT target_label, status FROM oneclick_release_targets
+            SELECT * FROM oneclick_release_targets
             WHERE job_id = ? ORDER BY ordinal
             """,
             (job_id,),
@@ -2762,11 +3945,12 @@ class OneClickReleaseStore:
             """,
             (job_id,),
         ).fetchall()
+        _validate_job_shared_resource_rows(rows)
         status_by_label = {
             row["target_label"]: row["status"]
             for row in rows
         }
-        targets = [
+        all_targets = [
             _public_target(
                 dict(row),
                 dependency=_dependency_state(
@@ -2776,6 +3960,7 @@ class OneClickReleaseStore:
             )
             for row in rows
         ]
+        _attach_shared_control_dependency_summaries(all_targets)
         outcomes = {
             row["target_label"]: row
             for row in connection.execute(
@@ -2789,8 +3974,24 @@ class OneClickReleaseStore:
                 (job_id,),
             )
         }
-        for target in targets:
+        manual_resolutions = {
+            row["target_label"]: row
+            for row in connection.execute(
+                """
+                SELECT target_label, attempt, resolution_digest,
+                       consumer_status, fact_digest, error_code
+                FROM oneclick_release_manual_acceptances
+                WHERE job_id = ?
+                ORDER BY target_label, attempt
+                """,
+                (job_id,),
+            )
+        }
+        for target in all_targets:
             outcome = outcomes.get(target["target_label"])
+            resolution = manual_resolutions.get(
+                target["target_label"]
+            )
             target["outcome_receipt"] = (
                 {
                     "schema_version": "release-outcome-receipt/v1",
@@ -2799,10 +4000,34 @@ class OneClickReleaseStore:
                     "consumer_status": outcome["consumer_status"],
                     "fact_digest": outcome["fact_digest"],
                     "error_code": outcome["error_code"],
+                    "manual_resolution": (
+                        {
+                            "schema_version": (
+                                MANUAL_ACCEPTANCE_RESOLUTION_SCHEMA
+                            ),
+                            "attempt": resolution["attempt"],
+                            "resolution_digest": resolution[
+                                "resolution_digest"
+                            ],
+                            "consumer_status": resolution[
+                                "consumer_status"
+                            ],
+                            "fact_digest": resolution["fact_digest"],
+                            "error_code": resolution["error_code"],
+                        }
+                        if resolution
+                        else None
+                    ),
                 }
                 if outcome
                 else None
             )
+        shared_controls = [
+            row for row in all_targets if row["control_target"]
+        ]
+        targets = [
+            row for row in all_targets if not row["control_target"]
+        ]
         storefronts = [row for row in targets if row["storefront"]]
         will_dispatch = [
             row["target_label"]
@@ -2871,7 +4096,7 @@ class OneClickReleaseStore:
                 job["systemic_reason_json"]
             ),
             "storefront_count": len(storefronts),
-            "control_row_count": len(targets) - len(storefronts),
+            "control_row_count": len(all_targets) - len(storefronts),
             "runnable_target_count": sum(
                 target["runnable_now"] is True
                 for target in storefronts
@@ -2883,6 +4108,7 @@ class OneClickReleaseStore:
                 "already_terminal": already_terminal,
             },
             "targets": targets,
+            "shared_controls": shared_controls,
             "created_at": job["created_at"],
             "updated_at": job["updated_at"],
             "completed_at": job["completed_at"],
@@ -3035,11 +4261,21 @@ class OneClickReleaseWorker:
                 )
                 cumulative = self.store.cumulative_external_writes(request)
                 if any(item not in result.external_writes for item in cumulative):
+                    stored_exact, stored_lower, stored_upper = (
+                        self.store.cumulative_external_write_bounds(request)
+                    )
                     raise DispatchInvocationError(
                         "adapter receipt omitted a confirmed composite write",
                         external_writes=cumulative,
                         dispatch_outcome_unknown=True,
                         external_id=result.external_id,
+                        external_write_count=None,
+                        confirmed_external_write_count_lower_bound=(
+                            stored_lower
+                        ),
+                        possible_external_write_count_upper_bound=(
+                            stored_upper
+                        ),
                     )
             except PreDispatchInvocationError as error:
                 result = DispatchTargetResult(
@@ -3053,11 +4289,42 @@ class OneClickReleaseWorker:
                     evidence={"durable_state_uncertain": False},
                 )
             except DispatchInvocationError as error:
+                stored_exact, stored_lower, stored_upper = (
+                    self.store.cumulative_external_write_bounds(request)
+                )
                 cumulative = _merge_write_classes(
                     self.store.cumulative_external_writes(request),
                     error.external_writes,
                 )
-                if error.dispatch_outcome_unknown or not cumulative:
+                lower_bound = max(
+                    stored_lower,
+                    error.confirmed_external_write_count_lower_bound,
+                )
+                upper_candidates = (
+                    stored_upper,
+                    error.possible_external_write_count_upper_bound,
+                )
+                upper_bound = (
+                    max(value for value in upper_candidates if value is not None)
+                    if all(value is not None for value in upper_candidates)
+                    else None
+                )
+                exact_count = (
+                    error.external_write_count
+                    if (
+                        error.dispatch_outcome_unknown is False
+                        and error.external_write_count is not None
+                        and error.external_write_count >= stored_lower
+                    )
+                    else None
+                )
+                if exact_count is not None:
+                    lower_bound = exact_count
+                    upper_bound = exact_count
+                outcome_unknown = (
+                    error.dispatch_outcome_unknown or exact_count is None
+                )
+                if outcome_unknown:
                     cumulative = _merge_write_classes(
                         cumulative,
                         (_UNKNOWN_WRITE_CLASS,),
@@ -3069,18 +4336,31 @@ class OneClickReleaseWorker:
                     reason_code="dispatch_invocation_requires_reconciliation",
                     reason_detail=str(error),
                     external_writes=cumulative,
+                    external_write_count=exact_count,
+                    confirmed_external_write_count_lower_bound=lower_bound,
+                    possible_external_write_count_upper_bound=upper_bound,
                     external_id=error.external_id,
-                    dispatch_outcome_unknown=True,
+                    dispatch_outcome_unknown=outcome_unknown,
                     evidence={
                         "durable_state_uncertain": True,
                         "cumulative_external_write_count": (
-                            None
-                            if _UNKNOWN_WRITE_CLASS in cumulative
-                            else len(cumulative)
+                            exact_count
+                        ),
+                        "confirmed_external_write_count_lower_bound": (
+                            lower_bound
+                        ),
+                        "possible_external_write_count_upper_bound": (
+                            upper_bound
                         ),
                     },
                 )
             except Exception as error:
+                _, stored_lower, stored_upper = (
+                    self.store.cumulative_external_write_bounds(request)
+                )
+                pending_intent = self.store.has_pending_write_intent(
+                    request
+                )
                 cumulative = _merge_write_classes(
                     self.store.cumulative_external_writes(request),
                     (_UNKNOWN_WRITE_CLASS,),
@@ -3092,6 +4372,20 @@ class OneClickReleaseWorker:
                     reason_code="dispatch_invocation_outcome_unknown",
                     reason_detail=str(error),
                     external_writes=cumulative,
+                    external_write_count=None,
+                    confirmed_external_write_count_lower_bound=stored_lower,
+                    possible_external_write_count_upper_bound=(
+                        stored_upper
+                        if (
+                            request.target_label == SHOPEE_GLOBAL_TARGET
+                            and pending_intent
+                        )
+                        else (
+                            stored_upper + 1
+                            if stored_upper is not None
+                            else None
+                        )
+                    ),
                     dispatch_outcome_unknown=True,
                     evidence={"durable_state_uncertain": True},
                 )
@@ -3165,13 +4459,21 @@ def build_batch_preview(
     }
     prepared_rows = []
     systemic = None
-    for label in _target_labels(plan):
+    for label in _execution_target_labels(_target_labels(plan)):
         result = pseudo._prepare_one(  # type: ignore[attr-defined]
             context,
             {
                 "target_label": label,
-                "status": _initial_public_status(rows[label]),
-                "idempotency_key": rows[label]["idempotency_key"],
+                "status": (
+                    PENDING
+                    if label == SHOPEE_GLOBAL_TARGET
+                    else _initial_public_status(rows[label])
+                ),
+                "idempotency_key": (
+                    _shopee_global_idempotency_key(identity)
+                    if label == SHOPEE_GLOBAL_TARGET
+                    else rows[label]["idempotency_key"]
+                ),
             },
             registry,
         )
@@ -3190,7 +4492,11 @@ def build_batch_preview(
         )
         public = {
             "target_label": result["target_label"],
-            "storefront": result["target_label"] != _COMMON_LABEL,
+            "storefront": result["target_label"]
+            not in {_COMMON_LABEL, SHOPEE_GLOBAL_TARGET},
+            "control_target": (
+                result["target_label"] == SHOPEE_GLOBAL_TARGET
+            ),
             "classification": result["classification"],
             "status": result["status"],
             "reason": _public_reason(
@@ -3214,6 +4520,10 @@ def build_batch_preview(
                     result["target_label"],
                     registry,
                 ),
+                "shared_resource": result.get("shared_resource_digest"),
+                "shared_resource_context": result.get(
+                    "shared_resource_context_digest"
+                ),
             },
             "next_action": _next_action(
                 result["status"],
@@ -3228,7 +4538,7 @@ def build_batch_preview(
                 == "oneclick_dispatch_disabled"
                 else (
                     dependency["prerequisite_target"]
-                    if dependency["state"] == "BLOCKED"
+                    if dependency["state"] in {"BLOCKED", "WAITING"}
                     else result["target_label"]
                 )
             ),
@@ -3237,7 +4547,14 @@ def build_batch_preview(
         if result["reason_scope"] == SYSTEMIC_IDENTITY_SCOPE:
             systemic = public["reason"]
             break
-    storefronts = [row for row in prepared if row["storefront"]]
+    _attach_shared_control_dependency_summaries(prepared)
+    shared_controls = [
+        row for row in prepared if row["control_target"]
+    ]
+    visible_targets = [
+        row for row in prepared if not row["control_target"]
+    ]
+    storefronts = [row for row in visible_targets if row["storefront"]]
     return {
         "schema_version": BATCH_PREPARATION_SCHEMA,
         "plan_id": identity["plan_id"],
@@ -3296,7 +4613,8 @@ def build_batch_preview(
                 SUBMITTED_UNVERIFIED,
             }
         ],
-        "targets": prepared,
+        "targets": visible_targets,
+        "shared_controls": shared_controls,
     }
 
 
@@ -3338,7 +4656,10 @@ def _batch_identity(
     )
     sku_lineage_digest = _sku_lineage_identity_digest(sku_lineage)
     sku_lineage_payload_digest = _digest_json(sku_lineage)
-    registry_digest = _registry_digest(targets, registry)
+    registry_digest = _registry_digest(
+        _execution_target_labels(targets),
+        registry,
+    )
     identity = {
         "schema_version": BATCH_PREPARATION_SCHEMA,
         "plan_id": str(plan.get("plan_id") or ""),
@@ -3409,6 +4730,7 @@ def _require_dispatch_identity(
     request: DispatchTargetRequest,
 ) -> None:
     checks = {
+        "schema": request.schema_version == PREPARED_COMMAND_SCHEMA,
         "job_id": job["job_id"] == request.job_id,
         "plan_id": job["plan_id"] == request.plan_id,
         "run_id": job["run_id"] == request.run_id,
@@ -3442,8 +4764,37 @@ def _require_dispatch_identity(
         "proof": target["proof_digest"] == request.proof_digest,
         "command_content": (
             _digest_json(request.command) == request.prepared_command_digest
+            and request.command.get("schema_version")
+            == PREPARED_COMMAND_SCHEMA
+            and request.command.get("target_label")
+            == request.target_label
         ),
-        "proof_content": _digest_json(request.proof) == request.proof_digest,
+        "proof_content": (
+            _digest_json(request.proof) == request.proof_digest
+            and request.proof.get("schema_version")
+            == PREPARED_COMMAND_SCHEMA
+            and request.proof.get("target_label")
+            == request.target_label
+        ),
+        "shared_resource_context": (
+            (
+                request.shared_resource_context is None
+                and target["shared_resource_context_digest"] is None
+                and (
+                    target["shared_resource_digest"] is None
+                    or target["control_target"] != 1
+                )
+            )
+            or (
+                isinstance(request.shared_resource_context, Mapping)
+                and _digest_json(request.shared_resource_context)
+                == (
+                    target["shared_resource_digest"]
+                    if target["control_target"] == 1
+                    else target["shared_resource_context_digest"]
+                )
+            )
+        ),
     }
     if not all(checks.values()):
         raise SystemicIdentityError(
@@ -3463,6 +4814,58 @@ def _target_labels(plan: Mapping[str, Any]) -> list[str]:
     if len(clean) != len(set(clean)) or any(not label for label in clean):
         raise SystemicIdentityError("immutable plan targets are ambiguous")
     return clean
+
+
+def _execution_target_labels(targets: list[str]) -> list[str]:
+    """Add server-owned controls without changing approved storefront identity."""
+
+    result = list(targets)
+    if any(label.startswith("shopee:") for label in result):
+        if SHOPEE_GLOBAL_TARGET in result:
+            raise SystemicIdentityError(
+                "server-owned Shopee GLOBAL cannot be a storefront target"
+            )
+        result.insert(0, SHOPEE_GLOBAL_TARGET)
+    return result
+
+
+def shopee_shared_resource_owner_key(
+    request: PrepareTargetRequest,
+    master_lineage_digest: str,
+) -> str:
+    """Return the server-recomputable owner for one approved global master."""
+
+    if (
+        not isinstance(request, PrepareTargetRequest)
+        or request.target_label != SHOPEE_GLOBAL_TARGET
+        or not _is_digest(master_lineage_digest)
+    ):
+        raise AdapterContractError(
+            "Shopee shared-resource owner inputs are invalid"
+        )
+    return _digest_json(
+        {
+            "policy_version": SHOPEE_GLOBAL_MASTER_POLICY,
+            "plan_id": request.plan_id,
+            "payload_digest": request.payload_digest,
+            "source_identity_digest": request.source_identity_digest,
+            "sku_lineage_digest": request.sku_lineage_digest,
+            "master_lineage_digest": master_lineage_digest,
+        }
+    )
+
+
+def _shopee_global_idempotency_key(job: Mapping[str, Any]) -> str:
+    return "oneclick-shopee-global:" + _digest_json(
+        {
+            "policy_version": SHOPEE_GLOBAL_MASTER_POLICY,
+            "job_id": job["job_id"],
+            "plan_id": job["plan_id"],
+            "payload_digest": job["payload_digest"],
+            "source_identity_digest": job["source_identity_digest"],
+            "sku_lineage_digest": job["sku_lineage_digest"],
+        }
+    )[:32]
 
 
 def _run_targets(run: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
@@ -3811,6 +5214,312 @@ def _status_for_classification(classification: str) -> str:
     }.get(classification, READY)
 
 
+def _validated_shared_resource_declaration(
+    request: PrepareTargetRequest,
+    value: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    if request.target_label != SHOPEE_GLOBAL_TARGET:
+        if value is not None:
+            raise AdapterContractError(
+                "only the server-owned Shopee GLOBAL target may declare a shared resource"
+            )
+        return None
+    if not isinstance(value, Mapping):
+        raise AdapterContractError(
+            "Shopee GLOBAL preparation requires shared_resource"
+        )
+    declaration = dict(value)
+    mode = declaration.get("mode")
+    common_keys = {
+        "schema_version",
+        "policy_version",
+        "mode",
+        "owner_key",
+        "master_lineage_digest",
+        "approved_selected_image_count",
+        "expected_external_write_count",
+    }
+    expected_keys = (
+        common_keys
+        if mode == "ENSURE_NEW"
+        else common_keys
+        | {"global_identity_digest", "master_evidence_digest"}
+    )
+    if (
+        mode not in {"ENSURE_NEW", "EXISTING_GLOBAL"}
+        or set(declaration) != expected_keys
+        or declaration.get("schema_version") != SHARED_RESOURCE_SCHEMA
+        or declaration.get("policy_version")
+        != SHOPEE_GLOBAL_MASTER_POLICY
+        or not _is_digest(declaration.get("master_lineage_digest"))
+        or not _is_digest(declaration.get("owner_key"))
+        or declaration["owner_key"]
+        != shopee_shared_resource_owner_key(
+            request,
+            declaration["master_lineage_digest"],
+        )
+        or declaration.get("approved_selected_image_count")
+        != _approved_selected_image_count(request.immutable_plan_payload)
+        or declaration.get("expected_external_write_count")
+        != (
+            0
+            if mode == "EXISTING_GLOBAL"
+            else declaration["approved_selected_image_count"] + 2
+        )
+    ):
+        raise AdapterContractError(
+            "Shopee shared-resource declaration is invalid"
+        )
+    if mode == "EXISTING_GLOBAL" and (
+        not _is_digest(declaration.get("global_identity_digest"))
+        or not _is_digest(declaration.get("master_evidence_digest"))
+    ):
+        raise AdapterContractError(
+            "existing Shopee global proof digests are invalid"
+        )
+    return declaration
+
+
+def _approved_selected_image_count(
+    payload: Mapping[str, Any],
+) -> int:
+    approved_global = payload.get("approved_shopee_global_plan")
+    if (
+        not isinstance(approved_global, Mapping)
+        or set(approved_global)
+        != {"schema_version", "selected_image_positions"}
+        or approved_global.get("schema_version")
+        != "approved-shopee-global-plan/v1"
+    ):
+        raise AdapterContractError(
+            "immutable plan lacks an approved Shopee global image selection"
+        )
+    selected = approved_global.get("selected_image_positions")
+    if (
+        not isinstance(selected, list)
+        or not selected
+        or len(selected) > 9
+        or any(type(value) is not int or value < 1 for value in selected)
+        or len(set(selected)) != len(selected)
+    ):
+        raise AdapterContractError(
+            "approved Shopee global image selection is invalid"
+        )
+    images = payload.get("images")
+    if not isinstance(images, list) or not images:
+        raise AdapterContractError(
+            "immutable plan requires approved ordered images"
+        )
+    for position, row in enumerate(images, start=1):
+        if (
+            not isinstance(row, Mapping)
+            or type(row.get("position")) is not int
+            or row.get("position") != position
+            or type(row.get("image_url")) is not str
+            or not row["image_url"].strip()
+        ):
+            raise AdapterContractError(
+                "immutable approved image sequence is invalid"
+            )
+    positions = {row["position"] for row in images}
+    if any(position not in positions for position in selected):
+        raise AdapterContractError(
+            "approved Shopee image selection references an unknown image"
+        )
+    return len(selected)
+
+
+def _verified_shared_resource_context(
+    value: Mapping[str, Any],
+) -> dict[str, Any]:
+    context = {
+        "schema_version": SHARED_RESOURCE_SCHEMA,
+        "policy_version": SHOPEE_GLOBAL_MASTER_POLICY,
+        "owner_key": value.get("owner_key"),
+        "master_lineage_digest": value.get("master_lineage_digest"),
+        "global_identity_digest": value.get("global_identity_digest"),
+        "master_evidence_digest": value.get("master_evidence_digest"),
+    }
+    if (
+        context["schema_version"] != SHARED_RESOURCE_SCHEMA
+        or context["policy_version"] != SHOPEE_GLOBAL_MASTER_POLICY
+        or any(
+            not _is_digest(context[key])
+            for key in (
+                "owner_key",
+                "master_lineage_digest",
+                "global_identity_digest",
+                "master_evidence_digest",
+            )
+        )
+    ):
+        raise AdapterContractError(
+            "verified Shopee shared-resource context is invalid"
+        )
+    return context
+
+
+def _validated_shared_resource_result(
+    evidence: Mapping[str, Any] | None,
+    declaration: Mapping[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(evidence, Mapping) or set(evidence) != {
+        "shared_resource"
+    }:
+        raise AdapterContractError(
+            "Shopee GLOBAL success requires only redacted shared-resource evidence"
+        )
+    shared = evidence.get("shared_resource")
+    if not isinstance(shared, Mapping) or set(shared) != {
+        "schema_version",
+        "policy_version",
+        "mode",
+        "owner_key",
+        "master_lineage_digest",
+        "global_identity_digest",
+        "master_evidence_digest",
+    }:
+        raise AdapterContractError(
+            "Shopee GLOBAL success evidence shape is invalid"
+        )
+    if (
+        shared.get("mode") != "ENSURE_NEW"
+        or shared.get("owner_key") != declaration.get("owner_key")
+        or shared.get("master_lineage_digest")
+        != declaration.get("master_lineage_digest")
+    ):
+        raise AdapterContractError(
+            "Shopee GLOBAL success evidence does not match preparation"
+        )
+    return _verified_shared_resource_context(shared)
+
+
+def _stored_shared_resource(
+    row: Mapping[str, Any],
+    *,
+    context: bool,
+) -> dict[str, Any] | None:
+    json_key = (
+        "shared_resource_context_json"
+        if context
+        else "shared_resource_json"
+    )
+    digest_key = (
+        "shared_resource_context_digest"
+        if context
+        else "shared_resource_digest"
+    )
+    encoded = row[json_key]
+    digest = row[digest_key]
+    if encoded is None and digest is None:
+        return None
+    if type(encoded) is not str or not _is_digest(digest):
+        raise SystemicIdentityError(
+            "stored Shopee shared-resource identity is incomplete"
+        )
+    try:
+        decoded = json.loads(encoded)
+    except (TypeError, ValueError) as error:
+        raise SystemicIdentityError(
+            "stored Shopee shared-resource JSON is invalid"
+        ) from error
+    if not isinstance(decoded, Mapping) or _digest_json(decoded) != digest:
+        raise SystemicIdentityError(
+            "stored Shopee shared-resource digest drifted"
+        )
+    return dict(decoded)
+
+
+def _validate_job_shared_resource_rows(rows: object) -> None:
+    materialized = list(rows)
+    globals_ = [
+        row for row in materialized
+        if row["target_label"] == SHOPEE_GLOBAL_TARGET
+    ]
+    regions = [
+        row
+        for row in materialized
+        if str(row["target_label"]).startswith("shopee:")
+        and row["target_label"] != SHOPEE_GLOBAL_TARGET
+    ]
+    if regions and len(globals_) != 1:
+        raise SystemicIdentityError(
+            "Shopee regions require exactly one server-owned GLOBAL target"
+        )
+    if not regions and globals_:
+        raise SystemicIdentityError(
+            "Shopee GLOBAL exists without approved regional targets"
+        )
+    for row in materialized:
+        is_global = row["target_label"] == SHOPEE_GLOBAL_TARGET
+        if bool(row["control_target"]) is not is_global:
+            raise SystemicIdentityError(
+                "one-click control-target marker drifted"
+            )
+        if is_global and bool(row["storefront"]):
+            raise SystemicIdentityError(
+                "Shopee GLOBAL must not be counted as a storefront"
+            )
+        if not is_global and _stored_shared_resource(row, context=False):
+            raise SystemicIdentityError(
+                "storefront target cannot own a shared resource"
+            )
+    if not globals_:
+        return
+    global_row = globals_[0]
+    declaration = _stored_shared_resource(global_row, context=False)
+    global_context = _stored_shared_resource(global_row, context=True)
+    if global_row["status"] in {READY, DISPATCHING, SUCCEEDED}:
+        if not declaration:
+            raise SystemicIdentityError(
+                "prepared Shopee GLOBAL declaration is unavailable"
+            )
+        if (
+            declaration.get("schema_version") != SHARED_RESOURCE_SCHEMA
+            or declaration.get("policy_version")
+            != SHOPEE_GLOBAL_MASTER_POLICY
+            or declaration.get("mode")
+            not in {"ENSURE_NEW", "EXISTING_GLOBAL"}
+            or not _is_digest(declaration.get("owner_key"))
+            or not _is_digest(declaration.get("master_lineage_digest"))
+        ):
+            raise SystemicIdentityError(
+                "stored Shopee GLOBAL declaration is invalid"
+            )
+    if global_row["status"] == SUCCEEDED:
+        if not global_context:
+            raise SystemicIdentityError(
+                "verified Shopee GLOBAL context is unavailable"
+            )
+        verified = _verified_shared_resource_context(global_context)
+        if (
+            declaration is None
+            or verified["owner_key"] != declaration["owner_key"]
+            or verified["master_lineage_digest"]
+            != declaration["master_lineage_digest"]
+        ):
+            raise SystemicIdentityError(
+                "verified Shopee GLOBAL context drifted from preparation"
+            )
+        expected_digest = _digest_json(verified)
+        for region in regions:
+            context = _stored_shared_resource(region, context=True)
+            if context != verified or region[
+                "shared_resource_context_digest"
+            ] != expected_digest:
+                raise SystemicIdentityError(
+                    "Shopee region shared-resource context drifted"
+                )
+    else:
+        if global_context is not None or any(
+            _stored_shared_resource(region, context=True) is not None
+            for region in regions
+        ):
+            raise SystemicIdentityError(
+                "unverified Shopee GLOBAL cannot authorize regional dispatch"
+            )
+
+
 def _prepared_blocked_row(
     label: str,
     classification: str,
@@ -3884,6 +5593,89 @@ def _validated_write_classes(values: object) -> tuple[str, ...]:
     return result
 
 
+def _validated_write_count_bounds(
+    writes: tuple[str, ...],
+    exact_count: object,
+    confirmed_lower_bound: object,
+    possible_upper_bound: object,
+    *,
+    infer_legacy_exact: bool = False,
+) -> tuple[int | None, int, int | None]:
+    classes = _validated_write_classes(writes)
+    if exact_count is None and infer_legacy_exact and (
+        _UNKNOWN_WRITE_CLASS not in classes
+    ):
+        exact_count = len(classes)
+    if exact_count is not None and (
+        type(exact_count) is not int or exact_count < 0
+    ):
+        raise AdapterContractError(
+            "external_write_count must be a non-negative built-in int or null"
+        )
+    if (
+        type(confirmed_lower_bound) is not int
+        or confirmed_lower_bound < 0
+    ):
+        raise AdapterContractError(
+            "confirmed write lower bound must be a non-negative built-in int"
+        )
+    if possible_upper_bound is not None and (
+        type(possible_upper_bound) is not int
+        or possible_upper_bound < 0
+    ):
+        raise AdapterContractError(
+            "possible write upper bound must be a non-negative built-in int or null"
+        )
+    unique_known = len(
+        [item for item in classes if item != _UNKNOWN_WRITE_CLASS]
+    )
+    if exact_count is not None:
+        if _UNKNOWN_WRITE_CLASS in classes:
+            raise AdapterContractError(
+                "unknown write class cannot carry an exact write count"
+            )
+        if exact_count < unique_known:
+            raise AdapterContractError(
+                "exact write count is below its unique write classes"
+            )
+        if confirmed_lower_bound not in {0, exact_count}:
+            raise AdapterContractError(
+                "exact write count must equal its confirmed lower bound"
+            )
+        confirmed_lower_bound = exact_count
+        if possible_upper_bound not in {None, exact_count}:
+            raise AdapterContractError(
+                "exact write count must equal its possible upper bound"
+            )
+        possible_upper_bound = exact_count
+    else:
+        if (
+            possible_upper_bound is not None
+            and possible_upper_bound < confirmed_lower_bound
+        ):
+            raise AdapterContractError(
+                "possible write upper bound is below the confirmed lower bound"
+            )
+    return exact_count, confirmed_lower_bound, possible_upper_bound
+
+
+def _result_write_count_bounds(
+    result: DispatchTargetResult,
+    *,
+    infer_legacy_exact: bool = True,
+) -> tuple[int | None, int, int | None]:
+    return _validated_write_count_bounds(
+        result.external_writes,
+        result.external_write_count,
+        result.confirmed_external_write_count_lower_bound,
+        result.possible_external_write_count_upper_bound,
+        infer_legacy_exact=(
+            infer_legacy_exact
+            and result.dispatch_outcome_unknown is not True
+        ),
+    )
+
+
 def _stored_write_classes(row: Mapping[str, Any]) -> tuple[str, ...]:
     if not hasattr(row, "get"):
         row = dict(row)
@@ -3907,6 +5699,71 @@ def _stored_write_classes(row: Mapping[str, Any]) -> tuple[str, ...]:
             "durable dispatch write ledger digest drifted"
         )
     return result
+
+
+def _stored_write_count_bounds(
+    row: Mapping[str, Any],
+) -> tuple[int | None, int, int | None]:
+    if not hasattr(row, "get"):
+        row = dict(row)
+    classes = _stored_write_classes(row)
+    try:
+        return _validated_write_count_bounds(
+            classes,
+            row.get("cumulative_external_write_count"),
+            row.get("cumulative_external_write_lower_bound", 0),
+            row.get("cumulative_external_write_upper_bound"),
+        )
+    except AdapterContractError as error:
+        raise SystemicIdentityError(
+            "durable dispatch write-count ledger is invalid"
+        ) from error
+
+
+def _stored_pending_write_intent(
+    row: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    if not hasattr(row, "get"):
+        row = dict(row)
+    encoded = row.get("pending_write_intent_json")
+    digest = row.get("pending_write_intent_digest")
+    if encoded in (None, "") and digest in (None, ""):
+        return None
+    if type(encoded) is not str or not _is_digest(digest):
+        raise SystemicIdentityError(
+            "durable pending write intent is invalid"
+        )
+    try:
+        value = json.loads(encoded)
+    except (TypeError, ValueError) as error:
+        raise SystemicIdentityError(
+            "durable pending write intent is invalid"
+        ) from error
+    if (
+        not isinstance(value, dict)
+        or digest != _digest_json(value)
+        or set(value)
+        != {
+            "stage",
+            "prior_classes",
+            "intended_classes",
+            "confirmed_lower_bound",
+            "possible_upper_bound",
+        }
+        or type(value.get("stage")) is not str
+        or _validated_write_classes(value.get("prior_classes"))
+        != tuple(value["prior_classes"])
+        or _validated_write_classes(value.get("intended_classes"))
+        != tuple(value["intended_classes"])
+        or type(value.get("confirmed_lower_bound")) is not int
+        or type(value.get("possible_upper_bound")) is not int
+        or value["possible_upper_bound"]
+        != value["confirmed_lower_bound"] + 1
+    ):
+        raise SystemicIdentityError(
+            "durable pending write intent is invalid"
+        )
+    return value
 
 
 def _merge_write_classes(
@@ -4035,16 +5892,41 @@ def _validate_observation_manual_acceptance_evidence(
     evidence: Mapping[str, Any],
     result: Mapping[str, Any],
 ) -> None:
-    if evidence.get("manual_review_accepted") is not True:
+    expected_keys = {
+        "source",
+        "manual_review_accepted",
+        "observation_evidence_digest",
+        "job_identity_digest",
+        "result_evidence_digest",
+        "readback_evidence_digest",
+        "outcome_receipt_digest",
+        "observation_evidence_digests",
+    }
+    if (
+        set(evidence) != expected_keys
+        or evidence.get("source")
+        != "kyle_verified_shopee_observation_review"
+        or evidence.get("manual_review_accepted") is not True
+    ):
         raise AdapterContractError(
-            "observation acceptance requires manual_review_accepted=true"
+            "observation acceptance requires the exact receipt-bound review"
         )
-    digest = evidence.get("observation_evidence_digest")
+    digests = evidence.get("observation_evidence_digests")
     expected = result.get("observation_digests")
     if (
-        not _is_digest(digest)
+        type(digests) is not list
+        or not digests
+        or any(not _is_digest(value) for value in digests)
         or type(expected) is not list
-        or digest not in expected
+        or digests != expected
+        or evidence.get("observation_evidence_digest")
+        != sorted(expected)[0]
+        or evidence.get("result_evidence_digest")
+        != result.get("evidence_digest")
+        or evidence.get("readback_evidence_digest")
+        != result.get("evidence_digest")
+        or not _is_digest(evidence.get("job_identity_digest"))
+        or not _is_digest(evidence.get("outcome_receipt_digest"))
     ):
         raise AdapterContractError(
             "observation acceptance evidence does not match readback"
@@ -4129,6 +6011,7 @@ def _canonical_evidence(
             "observation_digests": [],
         }
     )
+    write_count, write_lower, write_upper = _result_write_count_bounds(result)
     evidence = {
         "schema_version": PREPARED_COMMAND_SCHEMA,
         "target_label": request.target_label,
@@ -4141,11 +6024,19 @@ def _canonical_evidence(
         "sku_lineage_digest": request.sku_lineage_digest,
         "sku_lineage_payload_digest": request.sku_lineage_payload_digest,
         "adapter_policy_digest": request.adapter_policy_digest,
+        "shared_resource_context_digest": (
+            _digest_json(request.shared_resource_context)
+            if isinstance(request.shared_resource_context, Mapping)
+            else None
+        ),
         "canonical_status": result.canonical_status,
         "reason_category": result.reason_category,
         "reason_scope": result.reason_scope,
         "reason_code": result.reason_code,
         "external_writes_performed": list(result.external_writes),
+        "external_write_count": write_count,
+        "confirmed_external_write_count_lower_bound": write_lower,
+        "possible_external_write_count_upper_bound": write_upper,
         "submission_accepted": result.submission_accepted,
         "readback_verified": result.readback_verified,
         "dispatch_outcome_unknown": result.dispatch_outcome_unknown,
@@ -4159,11 +6050,7 @@ def _public_result(
     result: DispatchTargetResult,
     evidence_digest: str,
 ) -> dict[str, Any]:
-    count = (
-        None
-        if _UNKNOWN_WRITE_CLASS in result.external_writes
-        else len(result.external_writes)
-    )
+    count, lower_bound, upper_bound = _result_write_count_bounds(result)
     manual_review = (
         _manual_review_metadata(result.evidence)
         if result.canonical_status == SUCCEEDED_MANUAL_REVIEW
@@ -4182,6 +6069,8 @@ def _public_result(
         "external_write_classes": list(result.external_writes),
         "cumulative_external_write_count": count,
         "cumulative_external_write_classes": list(result.external_writes),
+        "confirmed_external_write_count_lower_bound": lower_bound,
+        "possible_external_write_count_upper_bound": upper_bound,
         "submission_accepted": result.submission_accepted,
         "readback_verified": result.readback_verified,
         "dispatch_outcome_unknown": result.dispatch_outcome_unknown,
@@ -4200,11 +6089,7 @@ def _release_outcome_receipt(
     label_parts = target["target_label"].split(":", 1)
     channel = label_parts[0].casefold()
     region = label_parts[1].upper() if len(label_parts) == 2 else "UNKNOWN"
-    write_count = (
-        None
-        if _UNKNOWN_WRITE_CLASS in result.external_writes
-        else len(result.external_writes)
-    )
+    write_count, write_lower, _write_upper = _result_write_count_bounds(result)
     outcome_class = {
         SUCCEEDED: "SUCCESS",
         SUCCEEDED_MANUAL_REVIEW: "SUCCESS",
@@ -4293,6 +6178,7 @@ def _release_outcome_receipt(
             "boundary": dispatch_boundary,
             "external_write_count": write_count,
             "external_write_classes": list(result.external_writes),
+            "confirmed_external_write_count_lower_bound": write_lower,
         },
         "readback": {"status": readback_status},
         "manual": {
@@ -4517,6 +6403,39 @@ def _dependency_state(
     statuses: Mapping[str, str],
 ) -> dict[str, Any]:
     label = _exact_text(target_label, "dependency target_label")
+    if label == SHOPEE_GLOBAL_TARGET:
+        return {
+            "policy_version": DEPENDENCY_POLICY_VERSION,
+            "state": "SATISFIED",
+            "satisfied": True,
+            "prerequisite_target": None,
+            "prerequisite_status": None,
+        }
+    if label.startswith("shopee:"):
+        if SHOPEE_GLOBAL_TARGET not in statuses:
+            return {
+                "policy_version": DEPENDENCY_POLICY_VERSION,
+                "state": "BLOCKED",
+                "satisfied": False,
+                "prerequisite_target": SHOPEE_GLOBAL_TARGET,
+                "prerequisite_status": "MISSING",
+                "reason_category": "SYSTEMIC_CONTRACT",
+                "reason_code": "required_shopee_global_control_missing",
+            }
+        global_status = statuses[SHOPEE_GLOBAL_TARGET]
+        if global_status == SUCCEEDED:
+            state, satisfied = "SATISFIED", True
+        elif global_status in {PENDING, PREPARING, READY, DISPATCHING}:
+            state, satisfied = "WAITING", False
+        else:
+            state, satisfied = "BLOCKED", False
+        return {
+            "policy_version": DEPENDENCY_POLICY_VERSION,
+            "state": state,
+            "satisfied": satisfied,
+            "prerequisite_target": SHOPEE_GLOBAL_TARGET,
+            "prerequisite_status": global_status,
+        }
     if not label.startswith("tiktok:"):
         return {
             "policy_version": DEPENDENCY_POLICY_VERSION,
@@ -4551,9 +6470,48 @@ def _dependency_state(
     }
 
 
+def _attach_shared_control_dependency_summaries(
+    targets: list[dict[str, Any]],
+) -> None:
+    controls = {
+        row["target_label"]: row
+        for row in targets
+        if row.get("control_target") is True
+    }
+    for row in targets:
+        dependency = row.get("dependency")
+        if not isinstance(dependency, dict):
+            continue
+        prerequisite_label = dependency.get("prerequisite_target")
+        control = controls.get(prerequisite_label)
+        if not control:
+            continue
+        dependency["prerequisite"] = {
+            "target_label": control["target_label"],
+            "status": control["status"],
+            "reason": control.get("reason"),
+            "next_action": control.get("next_action"),
+            "digests": {
+                "prepared_command": (
+                    control.get("digests") or {}
+                ).get("prepared_command"),
+                "proof": (
+                    control.get("digests") or {}
+                ).get("proof"),
+                "shared_resource": (
+                    control.get("digests") or {}
+                ).get("shared_resource"),
+                "shared_resource_context": (
+                    control.get("digests") or {}
+                ).get("shared_resource_context"),
+            },
+        }
+
+
 def _runnable_ready_count(rows: object) -> int:
     if not isinstance(rows, (list, tuple)):
         rows = list(rows)
+    _validate_job_shared_resource_rows(rows)
     status_by_label = {
         row["target_label"]: row["status"]
         for row in rows
@@ -4577,14 +6535,13 @@ def _public_target(
     status = row["status"]
     result = json.loads(row["result_json"]) if row.get("result_json") else None
     cumulative_writes = _stored_write_classes(row)
-    cumulative_count = (
-        None
-        if _UNKNOWN_WRITE_CLASS in cumulative_writes
-        else len(cumulative_writes)
+    cumulative_count, cumulative_lower, cumulative_upper = (
+        _stored_write_count_bounds(row)
     )
     return {
         "target_label": row["target_label"],
         "storefront": bool(row["storefront"]),
+        "control_target": bool(row.get("control_target")),
         "classification": row["capability"],
         "status": status,
         "reason": (
@@ -4605,19 +6562,30 @@ def _public_target(
             status == READY and dependency["satisfied"] is True
         ),
         "dispatch_count": row["dispatch_count"],
-        "dispatch_ledger": {
+            "dispatch_ledger": {
             "stage": row.get("dispatch_stage"),
             "cumulative_external_write_count": cumulative_count,
             "cumulative_external_write_classes": list(cumulative_writes),
+            "confirmed_external_write_count_lower_bound": (
+                cumulative_lower
+            ),
+            "possible_external_write_count_upper_bound": cumulative_upper,
             "digest": row.get("cumulative_external_writes_digest"),
             "stage_evidence_digest": row.get(
                 "dispatch_stage_evidence_digest"
+            ),
+            "pending_write_intent_digest": row.get(
+                "pending_write_intent_digest"
             ),
         },
         "digests": {
             "prepared_command": row["command_digest"],
             "proof": row["proof_digest"],
             "adapter_policy": row["adapter_policy_digest"],
+            "shared_resource": row.get("shared_resource_digest"),
+            "shared_resource_context": row.get(
+                "shared_resource_context_digest"
+            ),
         },
         "result": result,
         "next_action": _next_action(
@@ -4632,7 +6600,7 @@ def _public_target(
             if row.get("reason_code") == "oneclick_dispatch_disabled"
             else (
                 dependency["prerequisite_target"]
-                if dependency["state"] == "BLOCKED"
+                if dependency["state"] in {"BLOCKED", "WAITING"}
                 else row["target_label"]
             )
         ),
@@ -4748,6 +6716,7 @@ def _ensure_oneclick_schema(connection: sqlite3.Connection) -> None:
         )
     }
     additions = {
+        "control_target": "INTEGER NOT NULL DEFAULT 0",
         "cumulative_external_writes_json": (
             "TEXT NOT NULL DEFAULT '[]'"
         ),
@@ -4755,8 +6724,19 @@ def _ensure_oneclick_schema(connection: sqlite3.Connection) -> None:
             "TEXT NOT NULL DEFAULT "
             "'4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945'"
         ),
+        "cumulative_external_write_count": "INTEGER DEFAULT 0",
+        "cumulative_external_write_lower_bound": (
+            "INTEGER NOT NULL DEFAULT 0"
+        ),
+        "cumulative_external_write_upper_bound": "INTEGER DEFAULT 0",
         "dispatch_stage": "TEXT",
         "dispatch_stage_evidence_digest": "TEXT",
+        "pending_write_intent_json": "TEXT",
+        "pending_write_intent_digest": "TEXT",
+        "shared_resource_json": "TEXT",
+        "shared_resource_digest": "TEXT",
+        "shared_resource_context_json": "TEXT",
+        "shared_resource_context_digest": "TEXT",
     }
     for name, declaration in additions.items():
         if name not in columns:

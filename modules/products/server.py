@@ -29,6 +29,9 @@ DEFAULT_PORT = 8765
 IMAGE_CACHE_DIR = ROOT / "data" / "web_image_cache"
 PRODUCT_APPROVAL_BODY_LIMIT = 64 * 1024
 _READONLY_SHOPEE_RECONCILE_TARGETS = frozenset({"shopee:PH", "shopee:TH"})
+_ONECLICK_SHOPEE_MANUAL_REVIEW_TARGETS = frozenset(
+    {"shopee:PH", "shopee:MY", "shopee:TH", "shopee:VN"}
+)
 _READONLY_SHOPEE_RECONCILE_CHECKS = frozenset(
     {
         "seller_sku",
@@ -130,7 +133,10 @@ def _apply_oneclick_release_authority(release_v1: dict) -> dict:
                 "action": target["next_action"],
                 "runnable": target.get("runnable_now") is True,
             }
-            for target in job["targets"]
+            for target in [
+                *(job.get("targets") or ()),
+                *(job.get("shared_controls") or ()),
+            ]
             if target.get("next_action")
         ]
         runnable = [
@@ -6154,29 +6160,36 @@ def _project_oneclick_dispatch_capability(job: dict) -> dict:
     projected["dispatch_capability"] = capability
     if capability["enabled"] is True:
         return _attach_oneclick_canonical_action(projected)
-    targets = []
-    for target_value in projected.get("targets") or ():
-        target = dict(target_value)
-        if target.get("runnable_now") is True:
-            target.update(
-                {
-                    "classification": "BLOCKED_CAPABILITY",
-                    "status": "BLOCKED_CAPABILITY",
-                    "runnable_now": False,
-                    "next_action": "enable_oneclick_dispatch",
-                    "next_action_target": None,
-                    "reason": {
-                        "category": "CAPABILITY",
-                        "scope": "TARGET",
-                        "code": "oneclick_dispatch_disabled",
-                        "summary_code": "channel_capability_status",
-                        "detail_digest": hashlib.sha256(
-                            b"oneclick_dispatch_disabled"
-                        ).hexdigest(),
-                    },
-                }
-            )
-        targets.append(target)
+    def disable_runnable(values):
+        disabled = []
+        for target_value in values or ():
+            target = dict(target_value)
+            if target.get("runnable_now") is True:
+                target.update(
+                    {
+                        "classification": "BLOCKED_CAPABILITY",
+                        "status": "BLOCKED_CAPABILITY",
+                        "runnable_now": False,
+                        "next_action": "enable_oneclick_dispatch",
+                        "next_action_target": None,
+                        "reason": {
+                            "category": "CAPABILITY",
+                            "scope": "TARGET",
+                            "code": "oneclick_dispatch_disabled",
+                            "summary_code": "channel_capability_status",
+                            "detail_digest": hashlib.sha256(
+                                b"oneclick_dispatch_disabled"
+                            ).hexdigest(),
+                        },
+                    }
+                )
+            disabled.append(target)
+        return disabled
+
+    targets = disable_runnable(projected.get("targets"))
+    projected["shared_controls"] = disable_runnable(
+        projected.get("shared_controls")
+    )
     projected["targets"] = targets
     projected["phase"] = (
         "BLOCKED" if projected.get("phase") == "READY" else projected.get("phase")
@@ -6220,7 +6233,10 @@ def _attach_oneclick_canonical_action(projected: dict) -> dict:
             "action": target["next_action"],
             "runnable": target.get("runnable_now") is True,
         }
-        for target in result.get("targets") or ()
+        for target in [
+            *(result.get("targets") or ()),
+            *(result.get("shared_controls") or ()),
+        ]
         if isinstance(target, dict) and target.get("next_action")
     ]
     result["canonical_next_action"] = _select_canonical_oneclick_action(
@@ -6317,6 +6333,46 @@ def _consume_oneclick_outcome_receipts(store) -> None:
             except Exception:
                 # Consumer persistence is observational only.  The canonical
                 # release target and one-click terminal state remain final.
+                pass
+    resolution_adapter = getattr(
+        module,
+        "adapt_release_outcome_manual_acceptance",
+        None,
+    )
+    if not callable(resolution_adapter):
+        # 05 must merge this append-only resolution with the original
+        # receipt.  It must never be sent through the ordinary outcome
+        # adapter as a second publication sample.
+        return
+    for pending in store.pending_manual_acceptance_resolutions(limit=50):
+        try:
+            fact = resolution_adapter(pending["resolution"])
+            payload = fact.payload()
+            store.record_manual_acceptance_consumer_result(
+                job_id=pending["job_id"],
+                target_label=pending["target_label"],
+                attempt=pending["attempt"],
+                resolution_digest=pending["resolution_digest"],
+                fact_digest=payload.get("fact_digest"),
+                error_code=None,
+            )
+        except Exception as error:
+            code = (
+                "release_outcome_manual_acceptance_contract_rejected"
+                if isinstance(contract_error, type)
+                and isinstance(error, contract_error)
+                else "release_outcome_manual_acceptance_consumer_failed"
+            )
+            try:
+                store.record_manual_acceptance_consumer_result(
+                    job_id=pending["job_id"],
+                    target_label=pending["target_label"],
+                    attempt=pending["attempt"],
+                    resolution_digest=pending["resolution_digest"],
+                    fact_digest=None,
+                    error_code=code,
+                )
+            except Exception:
                 pass
 
 
@@ -6941,7 +6997,7 @@ def _publish_selected_release(data: dict) -> tuple[int, dict]:
 
 
 def _manually_verify_release_target(data: dict) -> tuple[int, dict]:
-    """Record Kyle's exact platform inspection for a target without API access."""
+    """Close the exact pending manual contract for a one-click target."""
 
     from shared_platform.release_store import (
         ImmutableReleaseError,
@@ -6990,7 +7046,7 @@ def _manually_verify_release_target(data: dict) -> tuple[int, dict]:
             "error": "approved ReleasePlan no longer matches current facts",
         }
     target_label = str(data.get("target_label") or "").strip()
-    allowed = {
+    api_less_targets = {
         "tiktok:HB_PH",
         "tiktok:HB_MY",
         "tiktok:HB_TH",
@@ -6998,40 +7054,152 @@ def _manually_verify_release_target(data: dict) -> tuple[int, dict]:
         "tiktok:MX",
         "tiktok:GB",
     }
-    if target_label not in allowed or target_label not in (plan.get("targets") or ()):
+    if target_label not in (plan.get("targets") or ()):
         return 400, {
             "ok": False,
-            "error": "target is not an approved API-less TikTok destination",
+            "error": "target is not an approved ReleasePlan destination",
         }
-    marketplace_product_id = str(
-        data.get("marketplace_product_id") or ""
-    ).strip()
-    if (
-        not marketplace_product_id
-        or len(marketplace_product_id) > 128
-        or any(character.isspace() for character in marketplace_product_id)
-    ):
-        return 400, {
-            "ok": False,
-            "error": "marketplace_product_id must be a non-empty ID without spaces",
-        }
-    checks = data.get("checks") if isinstance(data.get("checks"), dict) else {}
-    evidence = {
-        "source": "kyle_marketplace_console_inspection",
-        "marketplace_product_id": marketplace_product_id,
-        "identity_matches": checks.get("identity_matches") is True,
-        "seller_sku_matches": checks.get("seller_sku_matches") is True,
-        "single_listing_for_sku": checks.get("single_listing_for_sku") is True,
-        "title_matches": checks.get("title_matches") is True,
-        "price_matches": checks.get("price_matches") is True,
-        "images_match": checks.get("images_match") is True,
-        "logistics_match": checks.get("logistics_match") is True,
-    }
     run_id = f"release-run:{plan['payload_digest'][:24]}"
     try:
         oneclick = OneClickReleaseStore(store.path)
         oneclick_job = oneclick.get_job(plan_id=plan_id)
         if oneclick_job:
+            oneclick_target = next(
+                (
+                    row
+                    for row in oneclick_job.get("targets", ())
+                    if row.get("target_label") == target_label
+                ),
+                None,
+            )
+            if not isinstance(oneclick_target, dict):
+                raise SystemicIdentityError(
+                    "one-click manual acceptance target was not found"
+                )
+            checks = (
+                data.get("checks")
+                if isinstance(data.get("checks"), dict)
+                else {}
+            )
+            if oneclick_target.get("status") == "SUBMITTED_UNVERIFIED":
+                if target_label not in api_less_targets:
+                    raise SystemicIdentityError(
+                        "submitted-unverified target is not an approved API-less destination"
+                    )
+                marketplace_product_id = str(
+                    data.get("marketplace_product_id") or ""
+                ).strip()
+                if (
+                    not marketplace_product_id
+                    or len(marketplace_product_id) > 128
+                    or any(
+                        character.isspace()
+                        for character in marketplace_product_id
+                    )
+                ):
+                    return 400, {
+                        "ok": False,
+                        "error": (
+                            "marketplace_product_id must be a non-empty ID "
+                            "without spaces"
+                        ),
+                    }
+                evidence = {
+                    "source": "kyle_marketplace_console_inspection",
+                    "marketplace_product_id": marketplace_product_id,
+                    "identity_matches": checks.get("identity_matches") is True,
+                    "seller_sku_matches": (
+                        checks.get("seller_sku_matches") is True
+                    ),
+                    "single_listing_for_sku": (
+                        checks.get("single_listing_for_sku") is True
+                    ),
+                    "title_matches": checks.get("title_matches") is True,
+                    "price_matches": checks.get("price_matches") is True,
+                    "images_match": checks.get("images_match") is True,
+                    "logistics_match": checks.get("logistics_match") is True,
+                }
+            elif oneclick_target.get("status") == "SUCCEEDED_MANUAL_REVIEW":
+                if target_label not in _ONECLICK_SHOPEE_MANUAL_REVIEW_TARGETS:
+                    raise SystemicIdentityError(
+                        "verified-warning acceptance is limited to Shopee targets"
+                    )
+                if "marketplace_product_id" in data:
+                    return 400, {
+                        "ok": False,
+                        "error": (
+                            "verified Shopee warning acceptance must not "
+                            "provide marketplace_product_id"
+                        ),
+                    }
+                if (
+                    data.get("manual_review_accepted") is not True
+                    or "checks" in data
+                ):
+                    return 400, {
+                        "ok": False,
+                        "error": (
+                            "verified Shopee warning acceptance requires "
+                            "manual_review_accepted=true without API-less checks"
+                        ),
+                    }
+                result = oneclick_target.get("result")
+                outcome = oneclick_target.get("outcome_receipt")
+                if (
+                    not isinstance(result, dict)
+                    or not isinstance(outcome, dict)
+                    or not isinstance(result.get("observation_digests"), list)
+                    or not result["observation_digests"]
+                ):
+                    raise SystemicIdentityError(
+                        "verified Shopee warning evidence is unavailable"
+                    )
+                observation_digests = sorted(
+                    result["observation_digests"]
+                )
+                observation_echo = data.get(
+                    "observation_evidence_digest"
+                )
+                if (
+                    type(observation_echo) is not str
+                    or observation_echo != observation_digests[0]
+                ):
+                    return 409, {
+                        "ok": False,
+                        "error": (
+                            "verified Shopee observation evidence no longer "
+                            "matches the current receipt"
+                        ),
+                    }
+                job_id = str(oneclick_job.get("job_id") or "")
+                result_digest = result.get("evidence_digest")
+                outcome_digest = outcome.get("receipt_digest")
+                if (
+                    len(job_id) == 0
+                    or not isinstance(result_digest, str)
+                    or len(result_digest) != 64
+                    or not isinstance(outcome_digest, str)
+                    or len(outcome_digest) != 64
+                ):
+                    raise SystemicIdentityError(
+                        "verified Shopee warning identity is invalid"
+                    )
+                evidence = {
+                    "source": "kyle_verified_shopee_observation_review",
+                    "manual_review_accepted": True,
+                    "observation_evidence_digest": observation_echo,
+                    "job_identity_digest": hashlib.sha256(
+                        job_id.encode("utf-8")
+                    ).hexdigest(),
+                    "result_evidence_digest": result_digest,
+                    "readback_evidence_digest": result_digest,
+                    "outcome_receipt_digest": outcome_digest,
+                    "observation_evidence_digests": observation_digests,
+                }
+            else:
+                raise SystemicIdentityError(
+                    "one-click target is not awaiting a supported manual acceptance"
+                )
             oneclick.record_manual_acceptance(
                 run_id=run_id,
                 target_label=target_label,
@@ -7057,6 +7225,50 @@ def _manually_verify_release_target(data: dict) -> tuple[int, dict]:
                     "manual verification target disappeared after commit"
                 )
         else:
+            if target_label not in api_less_targets:
+                return 400, {
+                    "ok": False,
+                    "error": (
+                        "legacy manual verification is limited to approved "
+                        "API-less TikTok destinations"
+                    ),
+                }
+            marketplace_product_id = str(
+                data.get("marketplace_product_id") or ""
+            ).strip()
+            if (
+                not marketplace_product_id
+                or len(marketplace_product_id) > 128
+                or any(
+                    character.isspace()
+                    for character in marketplace_product_id
+                )
+            ):
+                return 400, {
+                    "ok": False,
+                    "error": (
+                        "marketplace_product_id must be a non-empty ID "
+                        "without spaces"
+                    ),
+                }
+            checks = (
+                data.get("checks")
+                if isinstance(data.get("checks"), dict)
+                else {}
+            )
+            evidence = {
+                "source": "kyle_marketplace_console_inspection",
+                "marketplace_product_id": marketplace_product_id,
+                "identity_matches": checks.get("identity_matches") is True,
+                "seller_sku_matches": checks.get("seller_sku_matches") is True,
+                "single_listing_for_sku": (
+                    checks.get("single_listing_for_sku") is True
+                ),
+                "title_matches": checks.get("title_matches") is True,
+                "price_matches": checks.get("price_matches") is True,
+                "images_match": checks.get("images_match") is True,
+                "logistics_match": checks.get("logistics_match") is True,
+            }
             target = store.record_manual_verification(
                 run_id,
                 target_label,

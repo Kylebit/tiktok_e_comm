@@ -88,6 +88,65 @@ def test_publish_http_is_short_202_job_start_not_legacy_loop(
     assert len(calls) == 1
 
 
+def test_shared_control_v2_is_canonical_action_without_storefront_count(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        product_server,
+        "_oneclick_dispatch_capability",
+        lambda: {
+            "schema_version": "oneclick-dispatch-capability/v1",
+            "enabled": True,
+            "source": "test",
+            "reason_code": "enabled",
+            "next_action": None,
+        },
+    )
+    projected = product_server._project_oneclick_dispatch_capability(
+        {
+            "schema_version": "oneclick-release-status/v2",
+            "phase": "BLOCKED",
+            "storefront_count": 1,
+            "runnable_target_count": 0,
+            "summary": {
+                "will_dispatch": [],
+                "manual_after_submit": [],
+                "blocked": ["shopee:MY"],
+                "already_terminal": [],
+            },
+            "targets": [
+                {
+                    "target_label": "shopee:MY",
+                    "status": "BLOCKED_CAPABILITY",
+                    "runnable_now": False,
+                    "next_action": "resolve_prerequisite_target",
+                    "next_action_target": "shopee:GLOBAL",
+                }
+            ],
+            "shared_controls": [
+                {
+                    "target_label": "shopee:GLOBAL",
+                    "status": "RECONCILIATION_REQUIRED",
+                    "runnable_now": False,
+                    "next_action": "reconcile_before_any_retry",
+                    "next_action_target": "shopee:GLOBAL",
+                }
+            ],
+        }
+    )
+    assert projected["schema_version"] == "oneclick-release-status/v2"
+    assert projected["storefront_count"] == 1
+    assert len(projected["targets"]) == 1
+    assert len(projected["shared_controls"]) == 1
+    assert projected["canonical_next_action"] == {
+        "target_label": "shopee:GLOBAL",
+        "target_focus": "shopee:GLOBAL",
+        "canonical_status": "RECONCILIATION_REQUIRED",
+        "action": "reconcile_before_any_retry",
+        "runnable": False,
+    }
+
+
 def test_preview_and_status_get_routes_return_server_projection_only(
     monkeypatch, product_http_server
 ):
@@ -644,3 +703,66 @@ def test_outcome_consumer_classifies_errors_without_reopening_release(
     assert Store.calls[0]["error_code"] == expected_code
     assert Store.calls[0]["fact_digest"] is None
     assert Store.terminal_state == "SUCCEEDED"
+
+
+def test_manual_acceptance_resolution_uses_distinct_05_merge_seam(
+    monkeypatch,
+):
+    class Fact:
+        @staticmethod
+        def payload():
+            return {"fact_digest": "f" * 64}
+
+    fake_module = SimpleNamespace(
+        ReleaseOutcomeContractError=ValueError,
+        adapt_release_outcome_receipt=lambda _receipt: pytest.fail(
+            "resolution must not become a second release sample"
+        ),
+        adapt_release_outcome_manual_acceptance=lambda _value: Fact(),
+    )
+    monkeypatch.setattr(
+        importlib,
+        "import_module",
+        lambda _name: fake_module,
+    )
+
+    class Store:
+        calls = []
+
+        @staticmethod
+        def pending_outcome_receipts(*, limit):
+            assert limit == 50
+            return []
+
+        @staticmethod
+        def pending_manual_acceptance_resolutions(*, limit):
+            assert limit == 50
+            return [
+                {
+                    "job_id": "job:1",
+                    "target_label": "shopee:MY",
+                    "attempt": 1,
+                    "resolution_digest": "a" * 64,
+                    "resolution": {
+                        "schema_version": (
+                            "release-outcome-manual-acceptance/v1"
+                        ),
+                    },
+                }
+            ]
+
+        @classmethod
+        def record_manual_acceptance_consumer_result(cls, **value):
+            cls.calls.append(value)
+
+    product_server._consume_oneclick_outcome_receipts(Store())
+    assert Store.calls == [
+        {
+            "job_id": "job:1",
+            "target_label": "shopee:MY",
+            "attempt": 1,
+            "resolution_digest": "a" * 64,
+            "fact_digest": "f" * 64,
+            "error_code": None,
+        }
+    ]

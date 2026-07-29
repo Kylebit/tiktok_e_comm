@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
 import sqlite3
 
 import pytest
@@ -1714,7 +1715,15 @@ def test_api_less_publish_is_submitted_once_then_manually_verified(
     def oneclick_job_once(_self, **_kwargs):
         job_reads.append(True)
         return (
-            {"job_id": "oneclick-job:test"}
+            {
+                "job_id": "oneclick-job:test",
+                "targets": [
+                    {
+                        "target_label": "tiktok:MX",
+                        "status": "SUBMITTED_UNVERIFIED",
+                    }
+                ],
+            }
             if len(job_reads) == 1
             else None
         )
@@ -1768,6 +1777,118 @@ def test_api_less_publish_is_submitted_once_then_manually_verified(
     assert len(close_calls) == 1
     assert close_calls[0]["target_label"] == "tiktok:MX"
     assert close_calls[0]["verified_by"] == "Kyle"
+
+
+def test_shopee_verified_warning_manual_body_is_distinct_and_digest_bound(
+    tmp_path,
+    monkeypatch,
+):
+    from shared_platform.oneclick_release_controlplane import (
+        OneClickReleaseStore,
+    )
+
+    store = ReleaseStore(tmp_path / "release.db")
+    monkeypatch.setattr(release_store, "default_release_store", lambda: store)
+    dashboard = _single_shopee_dashboard()
+    monkeypatch.setattr(
+        release_control,
+        "build_release_dashboard",
+        lambda **_kwargs: dashboard,
+    )
+    view = product_server._product_workspace_view(dashboard)
+    request = {
+        **_request(view),
+        "publication_targets": [
+            "miaoshou:COMMON",
+            "shopee:PH",
+        ],
+    }
+    assert product_server._approve_release_plan_locally(
+        {
+            **request,
+            "approved_by": "Kyle",
+            "user_approved": True,
+        }
+    )[0] == 200
+    plan = store.get_plan(request["plan_id"])
+    store.start_run(plan["plan_id"])
+    observation_digest = "a" * 64
+    result_digest = "b" * 64
+    outcome_digest = "c" * 64
+    calls = []
+
+    monkeypatch.setattr(
+        OneClickReleaseStore,
+        "get_job",
+        lambda _self, **_kwargs: {
+            "job_id": "oneclick-job:shopee-warning",
+            "phase": "WAITING_MANUAL_ACCEPTANCE",
+            "runnable_target_count": 0,
+            "shared_controls": [],
+            "targets": [
+                {
+                    "target_label": "shopee:PH",
+                    "status": "SUCCEEDED_MANUAL_REVIEW",
+                    "result": {
+                        "evidence_digest": result_digest,
+                        "observation_digests": [observation_digest],
+                    },
+                    "outcome_receipt": {
+                        "receipt_digest": outcome_digest,
+                    },
+                }
+            ],
+        },
+    )
+
+    def accept(_self, **kwargs):
+        calls.append(kwargs)
+        return {
+            "idempotent": len(calls) > 1,
+            "external_writes_performed": [],
+        }
+
+    monkeypatch.setattr(
+        OneClickReleaseStore,
+        "record_manual_acceptance",
+        accept,
+    )
+    body = {
+        **request,
+        "target_label": "shopee:PH",
+        "verified_by": "Kyle",
+        "user_verified": True,
+        "manual_review_accepted": True,
+        "observation_evidence_digest": observation_digest,
+    }
+    status, response = product_server._manually_verify_release_target(body)
+    assert status == 200
+    assert response["external_writes_performed"] == []
+    assert calls[0]["verification_evidence"] == {
+        "source": "kyle_verified_shopee_observation_review",
+        "manual_review_accepted": True,
+        "observation_evidence_digest": observation_digest,
+        "job_identity_digest": hashlib.sha256(
+            b"oneclick-job:shopee-warning"
+        ).hexdigest(),
+        "result_evidence_digest": result_digest,
+        "readback_evidence_digest": result_digest,
+        "outcome_receipt_digest": outcome_digest,
+        "observation_evidence_digests": [observation_digest],
+    }
+    status, _response = product_server._manually_verify_release_target(
+        {**body, "observation_evidence_digest": "d" * 64}
+    )
+    assert status == 409
+    status, _response = product_server._manually_verify_release_target(
+        {**body, "marketplace_product_id": "must-not-be-used"}
+    )
+    assert status == 400
+    status, _response = product_server._manually_verify_release_target(
+        {**body, "checks": {"identity_matches": True}}
+    )
+    assert status == 400
+    assert len(calls) == 1
 
 
 def test_publish_common_blocker_creates_no_run(tmp_path, monkeypatch):

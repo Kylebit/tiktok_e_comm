@@ -21,6 +21,13 @@ from shared_platform.oneclick_release_controlplane import (
     SUBMITTED_UNVERIFIED,
     SUCCEEDED,
     SUCCEEDED_MANUAL_REVIEW,
+    SHARED_RESOURCE_SCHEMA,
+    SHOPEE_GLOBAL_MODEL_WRITE,
+    SHOPEE_GLOBAL_MASTER_POLICY,
+    SHOPEE_GLOBAL_TARGET,
+    SHOPEE_GLOBAL_WRITE,
+    SHOPEE_GLOBAL_WRITE_CLASSES,
+    SHOPEE_IMAGE_UPLOAD_WRITE,
     AdapterRegistration,
     AdapterContractError,
     DispatchInvocationError,
@@ -32,6 +39,7 @@ from shared_platform.oneclick_release_controlplane import (
     SystemicIdentityError,
     build_batch_preview,
     preview_run_for_plan,
+    shopee_shared_resource_owner_key,
 )
 from shared_platform.release_store import ReleaseStore
 
@@ -116,6 +124,17 @@ def _plan_payload(*, targets, identity=None, inventory_ready=False):
             "blockers": [],
         },
         "commercial_scope": {"policy": "test-only"},
+        "images": [
+            {
+                "position": position,
+                "image_url": f"https://img.example/{position}.jpg",
+            }
+            for position in range(1, 7)
+        ],
+        "approved_shopee_global_plan": {
+            "schema_version": "approved-shopee-global-plan/v1",
+            "selected_image_positions": [1, 2, 3, 4, 5, 6],
+        },
     }
     if inventory_ready:
         payload["approved_inventory_decisions"] = {
@@ -152,6 +171,7 @@ def _registry(
     prepare_override=None,
     dispatch_override=None,
     manual_labels=(),
+    global_prepare_override=None,
 ):
     prepare_calls = prepare_calls if prepare_calls is not None else []
     dispatch_calls = dispatch_calls if dispatch_calls is not None else []
@@ -165,10 +185,49 @@ def _registry(
             "ozon": "ozon_product_publish",
         }[channel]
         by_adapter.setdefault(adapter_name, []).append(label)
+    if "shopee_cnsc_publish" in by_adapter:
+        by_adapter["shopee_cnsc_publish"].insert(0, SHOPEE_GLOBAL_TARGET)
 
     result = {}
     for adapter_name, labels in by_adapter.items():
         def prepare(request, _labels=tuple(labels)):
+            if request.target_label == SHOPEE_GLOBAL_TARGET:
+                if global_prepare_override:
+                    return global_prepare_override(request)
+                master_lineage = _digest("fixture-approved-shopee-master")
+                return PrepareTargetResult(
+                    classification=EXACT_READY_AUTOMATIC,
+                    reason_category="CAPABILITY",
+                    reason_scope="TARGET",
+                    reason_code="official_global_existing_exact",
+                    reason_detail="official global master is exact",
+                    command={
+                        "kind": "EXISTING_GLOBAL",
+                        "target": SHOPEE_GLOBAL_TARGET,
+                    },
+                    proof={
+                        "kind": "existing-global-proof",
+                        "target": SHOPEE_GLOBAL_TARGET,
+                    },
+                    shared_resource={
+                        "schema_version": SHARED_RESOURCE_SCHEMA,
+                        "policy_version": SHOPEE_GLOBAL_MASTER_POLICY,
+                        "mode": "EXISTING_GLOBAL",
+                        "owner_key": shopee_shared_resource_owner_key(
+                            request,
+                            master_lineage,
+                        ),
+                        "master_lineage_digest": master_lineage,
+                        "approved_selected_image_count": 6,
+                        "expected_external_write_count": 0,
+                        "global_identity_digest": _digest(
+                            "fixture-global-item"
+                        ),
+                        "master_evidence_digest": _digest(
+                            "fixture-global-master-evidence"
+                        ),
+                    },
+                )
             prepare_calls.append(request.target_label)
             if prepare_override:
                 return prepare_override(request)
@@ -217,6 +276,133 @@ def _registry(
     return result
 
 
+def _ensure_new_global_prepare(request):
+    master_lineage = _digest("fixture-approved-new-shopee-master")
+    return PrepareTargetResult(
+        classification=EXACT_READY_AUTOMATIC,
+        reason_category="CAPABILITY",
+        reason_scope="TARGET",
+        reason_code="official_global_absent_create_required",
+        reason_detail="one approved global master must be created",
+        command={"kind": "ENSURE_NEW_GLOBAL"},
+        proof={"kind": "global-absence-proof"},
+        shared_resource={
+            "schema_version": SHARED_RESOURCE_SCHEMA,
+            "policy_version": SHOPEE_GLOBAL_MASTER_POLICY,
+            "mode": "ENSURE_NEW",
+            "owner_key": shopee_shared_resource_owner_key(
+                request,
+                master_lineage,
+            ),
+            "master_lineage_digest": master_lineage,
+            "approved_selected_image_count": 6,
+            "expected_external_write_count": 8,
+        },
+    )
+
+
+def _verified_global_result(request, *, image_count=6):
+    declaration = request.shared_resource_context
+    identity_digest = _digest("created-global-identity")
+    return DispatchTargetResult(
+        canonical_status=SUCCEEDED,
+        reason_category="POST_WRITE",
+        reason_scope="TARGET",
+        reason_code="global_master_created_and_verified",
+        reason_detail="global master and model readback are exact",
+        external_writes=SHOPEE_GLOBAL_WRITE_CLASSES,
+        external_write_count=image_count + 2,
+        confirmed_external_write_count_lower_bound=image_count + 2,
+        possible_external_write_count_upper_bound=image_count + 2,
+        external_id="sha256:" + identity_digest,
+        submission_accepted=True,
+        readback_verified=True,
+        evidence={
+            "shared_resource": {
+                "schema_version": SHARED_RESOURCE_SCHEMA,
+                "policy_version": SHOPEE_GLOBAL_MASTER_POLICY,
+                "mode": "ENSURE_NEW",
+                "owner_key": declaration["owner_key"],
+                "master_lineage_digest": declaration[
+                    "master_lineage_digest"
+                ],
+                "global_identity_digest": identity_digest,
+                "master_evidence_digest": _digest(
+                    "created-global-master-readback"
+                ),
+            }
+        },
+    )
+
+
+def _record_confirmed_global_writes(request, *, image_count=6):
+    classes = (SHOPEE_IMAGE_UPLOAD_WRITE,)
+    for count in range(1, image_count + 1):
+        request.progress_recorder(
+            request,
+            classes,
+            f"image_upload-{count}",
+            {"count": count},
+            None,
+            count - 1,
+            count,
+            "PRE_INVOCATION_INTENT",
+        )
+        request.progress_recorder(
+            request,
+            classes,
+            f"image_upload-{count}",
+            {"count": count},
+            count,
+            count,
+            count,
+            "POST_RESPONSE_CONFIRMED",
+        )
+    count = image_count + 1
+    classes = (SHOPEE_IMAGE_UPLOAD_WRITE, SHOPEE_GLOBAL_WRITE)
+    request.progress_recorder(
+        request,
+        classes,
+        "global_create-1",
+        {"count": count},
+        None,
+        count - 1,
+        count,
+        "PRE_INVOCATION_INTENT",
+    )
+    request.progress_recorder(
+        request,
+        classes,
+        "global_create-1",
+        {"count": count},
+        count,
+        count,
+        count,
+        "POST_RESPONSE_CONFIRMED",
+    )
+    count += 1
+    request.progress_recorder(
+        request,
+        SHOPEE_GLOBAL_WRITE_CLASSES,
+        "model_init-1",
+        {"count": count},
+        None,
+        count - 1,
+        count,
+        "PRE_INVOCATION_INTENT",
+    )
+    request.progress_recorder(
+        request,
+        SHOPEE_GLOBAL_WRITE_CLASSES,
+        "model_init-1",
+        {"count": count},
+        count,
+        count,
+        count,
+        "POST_RESPONSE_CONFIRMED",
+    )
+
+
 def test_all_targets_prepare_before_first_atomic_claim(tmp_path):
     targets = ["shopee:PH", "shopee:MY"]
     _release, plan, run = _approved_context(tmp_path, targets=targets)
@@ -233,6 +419,702 @@ def test_all_targets_prepare_before_first_atomic_claim(tmp_path):
     request = control.claim_next_dispatch(job["job_id"], registry)
     assert request.target_label == "shopee:PH"
     assert calls == targets
+
+
+def test_shopee_global_uses_explicit_approved_image_selection_not_all_images(
+    tmp_path,
+):
+    payload = _plan_payload(targets=["shopee:MY"])
+    payload["images"].extend(
+        {
+            "position": position,
+            "image_url": f"https://img.example/{position}.jpg",
+        }
+        for position in range(7, 15)
+    )
+    release = ReleaseStore(tmp_path / "release.db")
+    created = release.create_plan(payload)
+    release.approve_plan(
+        created["plan_id"],
+        approved_by="Kyle",
+        user_approved=True,
+        confirmation_token=created["confirmation_token"],
+    )
+    plan = release.get_plan(created["plan_id"])
+    run = release.start_run(created["plan_id"])
+    registry = _registry(
+        ["shopee:MY"],
+        global_prepare_override=_ensure_new_global_prepare,
+    )
+    control = OneClickReleaseStore(release.path)
+    job = control.ensure_job(
+        plan=plan, run=run, product_revision=31, registry=registry
+    )
+    prepared = control.prepare_job(job["job_id"], registry)
+    assert prepared["shared_controls"][0]["status"] == "READY"
+    request = control.claim_next_dispatch(job["job_id"], registry)
+    declaration = request.shared_resource_context
+    assert declaration["approved_selected_image_count"] == 6
+    assert declaration["expected_external_write_count"] == 8
+    assert len(payload["images"]) == 14
+
+    missing_payload = _plan_payload(targets=["shopee:MY"])
+    missing_payload.pop("approved_shopee_global_plan")
+    release2 = ReleaseStore(tmp_path / "missing.db")
+    created2 = release2.create_plan(missing_payload)
+    release2.approve_plan(
+        created2["plan_id"],
+        approved_by="Kyle",
+        user_approved=True,
+        confirmation_token=created2["confirmation_token"],
+    )
+    plan2 = release2.get_plan(created2["plan_id"])
+    run2 = release2.start_run(created2["plan_id"])
+    control2 = OneClickReleaseStore(release2.path)
+    job2 = control2.ensure_job(
+        plan=plan2, run=run2, product_revision=31, registry=registry
+    )
+    blocked = control2.prepare_job(job2["job_id"], registry)
+    assert blocked["shared_controls"][0]["status"] == BLOCKED_CAPABILITY
+    assert blocked["shared_controls"][0]["reason"][
+        "category"
+    ] == "SYSTEMIC_CONTRACT"
+    assert control2.claim_next_dispatch(job2["job_id"], registry) is None
+    assert release2.get_run(run2["run_id"])["targets"][0][
+        "attempts"
+    ] == 0
+
+
+def test_shopee_global_control_dispatches_once_before_regions_with_exact_counts(
+    tmp_path,
+):
+    targets = ["shopee:PH", "shopee:MY"]
+    release, plan, run = _approved_context(tmp_path, targets=targets)
+    dispatch_calls = []
+    region_contexts = []
+
+    def dispatch(request):
+        dispatch_calls.append(request.target_label)
+        if request.target_label == SHOPEE_GLOBAL_TARGET:
+            _record_confirmed_global_writes(request)
+            return _verified_global_result(request)
+        region_contexts.append(dict(request.shared_resource_context))
+        return DispatchTargetResult(
+            canonical_status=SUCCEEDED,
+            reason_category="POST_WRITE",
+            reason_scope="TARGET",
+            reason_code="regional_readback_exact",
+            reason_detail="regional official readback is exact",
+            external_writes=("shopee:regional_publish",),
+            external_id=f"internal-{request.target_label}",
+            submission_accepted=True,
+            readback_verified=True,
+        )
+
+    registry = _registry(
+        targets,
+        global_prepare_override=_ensure_new_global_prepare,
+        dispatch_override=dispatch,
+    )
+    control = OneClickReleaseStore(release.path)
+    job = control.ensure_job(
+        plan=plan, run=run, product_revision=31, registry=registry
+    )
+    worker = OneClickReleaseWorker(
+        control,
+        lambda: registry,
+        dispatch_enabled=lambda: True,
+    )
+    assert worker.advance_once(job["job_id"]) is True
+    prepared = control.get_job(job_id=job["job_id"])
+    assert prepared["schema_version"] == "oneclick-release-status/v2"
+    assert prepared["storefront_count"] == 2
+    assert len(prepared["shared_controls"]) == 1
+    assert prepared["shared_controls"][0]["target_label"] == (
+        SHOPEE_GLOBAL_TARGET
+    )
+    assert prepared["targets"][0]["dependency"]["prerequisite"][
+        "target_label"
+    ] == SHOPEE_GLOBAL_TARGET
+
+    assert worker.advance_once(job["job_id"]) is True
+    after_global = control.get_job(job_id=job["job_id"])
+    shared = after_global["shared_controls"][0]
+    assert shared["status"] == SUCCEEDED
+    assert shared["dispatch_ledger"][
+        "cumulative_external_write_count"
+    ] == 8
+    assert shared["dispatch_ledger"][
+        "confirmed_external_write_count_lower_bound"
+    ] == 8
+    assert shared["dispatch_ledger"][
+        "possible_external_write_count_upper_bound"
+    ] == 8
+    assert release.get_run(run["run_id"])["targets"][0]["attempts"] == 0
+    assert worker.advance_once(job["job_id"]) is True
+    assert worker.advance_once(job["job_id"]) is True
+    assert worker.advance_once(job["job_id"]) is False
+    assert dispatch_calls == [
+        SHOPEE_GLOBAL_TARGET,
+        "shopee:PH",
+        "shopee:MY",
+    ]
+    assert len(region_contexts) == 2
+    assert region_contexts[0] == region_contexts[1]
+    assert set(region_contexts[0]) == {
+        "schema_version",
+        "policy_version",
+        "owner_key",
+        "master_lineage_digest",
+        "global_identity_digest",
+        "master_evidence_digest",
+    }
+    physical = release.get_run(run["run_id"])["targets"]
+    assert [row["target_label"] for row in physical] == targets
+    assert [row["attempts"] for row in physical] == [1, 1]
+    assert control.pending_outcome_receipts() != []
+    assert all(
+        row["target_label"] != SHOPEE_GLOBAL_TARGET
+        for row in control.pending_outcome_receipts()
+    )
+
+
+def test_shopee_global_pending_write_intent_recovers_without_region_claim(
+    tmp_path,
+):
+    targets = ["shopee:VN"]
+    release, plan, run = _approved_context(tmp_path, targets=targets)
+    registry = _registry(
+        targets,
+        global_prepare_override=_ensure_new_global_prepare,
+    )
+    control = OneClickReleaseStore(release.path)
+    job = control.ensure_job(
+        plan=plan, run=run, product_revision=31, registry=registry
+    )
+    control.prepare_job(job["job_id"], registry)
+    request = control.claim_next_dispatch(job["job_id"], registry)
+    assert request.target_label == SHOPEE_GLOBAL_TARGET
+    control.record_dispatch_progress(
+        request,
+        (SHOPEE_IMAGE_UPLOAD_WRITE,),
+        "image_upload-1",
+        {"count": 1},
+        None,
+        0,
+        1,
+        "PRE_INVOCATION_INTENT",
+    )
+    assert control.recover_interrupted_dispatches() == 1
+    projected = control.get_job(job_id=job["job_id"])
+    shared = projected["shared_controls"][0]
+    assert shared["status"] == RECONCILIATION_REQUIRED
+    assert shared["dispatch_ledger"][
+        "cumulative_external_write_count"
+    ] is None
+    assert shared["dispatch_ledger"][
+        "confirmed_external_write_count_lower_bound"
+    ] == 0
+    assert shared["dispatch_ledger"][
+        "possible_external_write_count_upper_bound"
+    ] == 1
+    assert projected["targets"][0]["dependency"]["state"] == "BLOCKED"
+    assert projected["targets"][0]["dependency"]["prerequisite"][
+        "reason"
+    ]["code"] == "worker_interrupted_dispatch_unknown"
+    assert control.claim_next_dispatch(job["job_id"], registry) is None
+    physical = release.get_run(run["run_id"])["targets"][0]
+    assert physical["status"] == "PENDING"
+    assert physical["attempts"] == 0
+    assert control.pending_outcome_receipts() == []
+
+
+@pytest.mark.parametrize("confirmed_before_reject", [0, 1])
+def test_shopee_global_explicit_rejection_resolves_matching_write_intent(
+    tmp_path,
+    confirmed_before_reject,
+):
+    targets = ["shopee:TH"]
+    release, plan, run = _approved_context(tmp_path, targets=targets)
+    registry = _registry(
+        targets,
+        global_prepare_override=_ensure_new_global_prepare,
+    )
+    control = OneClickReleaseStore(release.path)
+    job = control.ensure_job(
+        plan=plan, run=run, product_revision=31, registry=registry
+    )
+    control.prepare_job(job["job_id"], registry)
+    request = control.claim_next_dispatch(job["job_id"], registry)
+    if confirmed_before_reject:
+        control.record_dispatch_progress(
+            request,
+            (SHOPEE_IMAGE_UPLOAD_WRITE,),
+            "image_upload-1",
+            {"count": 1},
+            None,
+            0,
+            1,
+            "PRE_INVOCATION_INTENT",
+        )
+        control.record_dispatch_progress(
+            request,
+            (SHOPEE_IMAGE_UPLOAD_WRITE,),
+            "image_upload-1",
+            {"count": 1},
+            1,
+            1,
+            1,
+            "POST_RESPONSE_CONFIRMED",
+        )
+    prior_classes = (
+        (SHOPEE_IMAGE_UPLOAD_WRITE,)
+        if confirmed_before_reject
+        else ()
+    )
+    next_count = confirmed_before_reject + 1
+    intended_classes = (SHOPEE_IMAGE_UPLOAD_WRITE,)
+    control.record_dispatch_progress(
+        request,
+        intended_classes,
+        f"image_upload-{next_count}",
+        {"count": next_count},
+        None,
+        confirmed_before_reject,
+        next_count,
+        "PRE_INVOCATION_INTENT",
+    )
+    control.record_dispatch_progress(
+        request,
+        prior_classes,
+        f"image_upload-{next_count}",
+        {"count": next_count, "rejected": True},
+        confirmed_before_reject,
+        confirmed_before_reject,
+        confirmed_before_reject,
+        "POST_RESPONSE_REJECTED",
+    )
+    result = (
+        DispatchTargetResult(
+            canonical_status=FAILED_PRE_SUBMIT,
+            reason_category="PRE_SUBMIT",
+            reason_scope="TARGET",
+            reason_code="global_first_write_rejected",
+            reason_detail="official API rejected without creating anything",
+            external_writes=(),
+            external_write_count=0,
+        )
+        if confirmed_before_reject == 0
+        else DispatchTargetResult(
+            canonical_status=RECONCILIATION_REQUIRED,
+            reason_category="POST_WRITE",
+            reason_scope="TARGET",
+            reason_code="later_global_write_rejected",
+            reason_detail="one prior upload exists and later write was rejected",
+            external_writes=prior_classes,
+            external_write_count=1,
+            confirmed_external_write_count_lower_bound=1,
+            possible_external_write_count_upper_bound=1,
+            dispatch_outcome_unknown=False,
+        )
+    )
+    projected = control.record_dispatch_result(request, result)
+    shared = projected["shared_controls"][0]
+    assert shared["result"]["external_write_count"] == (
+        confirmed_before_reject
+    )
+    assert shared["dispatch_ledger"][
+        "cumulative_external_write_count"
+    ] == confirmed_before_reject
+    assert projected["targets"][0]["dependency"]["state"] == "BLOCKED"
+    assert release.get_run(run["run_id"])["targets"][0]["attempts"] == 0
+    assert control.claim_next_dispatch(job["job_id"], registry) is None
+
+
+def test_shopee_global_known_writes_then_readback_mismatch_preserves_exact_count(
+    tmp_path,
+):
+    targets = ["shopee:MY"]
+    release, plan, run = _approved_context(tmp_path, targets=targets)
+
+    def dispatch(request):
+        assert request.target_label == SHOPEE_GLOBAL_TARGET
+        _record_confirmed_global_writes(request)
+        raise DispatchInvocationError(
+            "official global readback did not converge",
+            external_writes=SHOPEE_GLOBAL_WRITE_CLASSES,
+            dispatch_outcome_unknown=False,
+            external_write_count=8,
+            confirmed_external_write_count_lower_bound=8,
+            possible_external_write_count_upper_bound=8,
+        )
+
+    registry = _registry(
+        targets,
+        global_prepare_override=_ensure_new_global_prepare,
+        dispatch_override=dispatch,
+    )
+    control = OneClickReleaseStore(release.path)
+    job = control.ensure_job(
+        plan=plan, run=run, product_revision=31, registry=registry
+    )
+    worker = OneClickReleaseWorker(
+        control,
+        lambda: registry,
+        dispatch_enabled=lambda: True,
+    )
+    assert worker.advance_once(job["job_id"]) is True
+    assert worker.advance_once(job["job_id"]) is True
+    projected = control.get_job(job_id=job["job_id"])
+    shared = projected["shared_controls"][0]
+    assert shared["status"] == RECONCILIATION_REQUIRED
+    assert shared["result"]["external_write_count"] == 8
+    assert shared["result"][
+        "confirmed_external_write_count_lower_bound"
+    ] == 8
+    assert shared["result"][
+        "possible_external_write_count_upper_bound"
+    ] == 8
+    assert shared["result"]["dispatch_outcome_unknown"] is False
+    assert projected["targets"][0]["dependency"]["state"] == "BLOCKED"
+
+
+def test_shopee_global_untrusted_exception_without_open_intent_is_unknown_one(
+    tmp_path,
+):
+    targets = ["shopee:MY"]
+    release, plan, run = _approved_context(tmp_path, targets=targets)
+
+    def dispatch(request):
+        assert request.target_label == SHOPEE_GLOBAL_TARGET
+        raise RuntimeError("untrusted adapter failed before recording intent")
+
+    registry = _registry(
+        targets,
+        global_prepare_override=_ensure_new_global_prepare,
+        dispatch_override=dispatch,
+    )
+    control = OneClickReleaseStore(release.path)
+    job = control.ensure_job(
+        plan=plan, run=run, product_revision=31, registry=registry
+    )
+    worker = OneClickReleaseWorker(
+        control,
+        lambda: registry,
+        dispatch_enabled=lambda: True,
+    )
+    assert worker.advance_once(job["job_id"]) is True
+    assert worker.advance_once(job["job_id"]) is True
+    shared = control.get_job(job_id=job["job_id"])[
+        "shared_controls"
+    ][0]
+    assert shared["status"] == RECONCILIATION_REQUIRED
+    assert shared["dispatch_ledger"][
+        "confirmed_external_write_count_lower_bound"
+    ] == 0
+    assert shared["dispatch_ledger"][
+        "possible_external_write_count_upper_bound"
+    ] == 1
+    assert "UNKNOWN" in shared["dispatch_ledger"][
+        "cumulative_external_write_classes"
+    ]
+    assert release.get_run(run["run_id"])["targets"][0]["attempts"] == 0
+
+
+def test_shopee_global_open_then_exception_preserves_same_unknown_interval(
+    tmp_path,
+):
+    targets = ["shopee:MY"]
+    release, plan, _run = _approved_context(tmp_path, targets=targets)
+
+    def dispatch(request):
+        request.progress_recorder(
+            request,
+            (SHOPEE_IMAGE_UPLOAD_WRITE,),
+            "image_upload-1",
+            {"count": 1},
+            None,
+            0,
+            1,
+            "PRE_INVOCATION_INTENT",
+        )
+        raise RuntimeError("transport ended after invocation")
+
+    registry = _registry(
+        targets,
+        global_prepare_override=_ensure_new_global_prepare,
+        dispatch_override=dispatch,
+    )
+    control = OneClickReleaseStore(release.path)
+    job = control.ensure_job(
+        plan=plan, run=_run, product_revision=31, registry=registry
+    )
+    worker = OneClickReleaseWorker(
+        control,
+        lambda: registry,
+        dispatch_enabled=lambda: True,
+    )
+    assert worker.advance_once(job["job_id"]) is True
+    assert worker.advance_once(job["job_id"]) is True
+    shared = control.get_job(job_id=job["job_id"])[
+        "shared_controls"
+    ][0]
+    assert shared["status"] == RECONCILIATION_REQUIRED
+    assert shared["dispatch_ledger"][
+        "cumulative_external_write_count"
+    ] is None
+    assert shared["dispatch_ledger"][
+        "confirmed_external_write_count_lower_bound"
+    ] == 0
+    assert shared["dispatch_ledger"][
+        "possible_external_write_count_upper_bound"
+    ] == 1
+    assert control.recover_interrupted_dispatches() == 0
+    assert worker.advance_once(job["job_id"]) is False
+
+
+def test_shopee_global_open_recorder_failure_prevents_network_invocation(
+    tmp_path,
+    monkeypatch,
+):
+    targets = ["shopee:VN"]
+    release, plan, _run = _approved_context(tmp_path, targets=targets)
+    network_calls = []
+
+    def dispatch(request):
+        request.progress_recorder(
+            request,
+            (SHOPEE_IMAGE_UPLOAD_WRITE,),
+            "image_upload-1",
+            {"count": 1},
+            None,
+            0,
+            1,
+            "PRE_INVOCATION_INTENT",
+        )
+        network_calls.append(True)
+        raise AssertionError("network must not be reached")
+
+    registry = _registry(
+        targets,
+        global_prepare_override=_ensure_new_global_prepare,
+        dispatch_override=dispatch,
+    )
+    control = OneClickReleaseStore(release.path)
+    job = control.ensure_job(
+        plan=plan, run=_run, product_revision=31, registry=registry
+    )
+    worker = OneClickReleaseWorker(
+        control,
+        lambda: registry,
+        dispatch_enabled=lambda: True,
+    )
+    assert worker.advance_once(job["job_id"]) is True
+
+    def fail_recorder(*_args, **_kwargs):
+        raise sqlite3.OperationalError("durable intent write failed")
+
+    monkeypatch.setattr(control, "record_dispatch_progress", fail_recorder)
+    assert worker.advance_once(job["job_id"]) is True
+    assert network_calls == []
+    shared = control.get_job(job_id=job["job_id"])[
+        "shared_controls"
+    ][0]
+    assert shared["status"] == RECONCILIATION_REQUIRED
+    assert shared["dispatch_ledger"][
+        "possible_external_write_count_upper_bound"
+    ] == 1
+
+
+def test_shopee_global_occurrence_is_unique_and_resolution_is_idempotent(
+    tmp_path,
+):
+    targets = ["shopee:TH"]
+    release, plan, run = _approved_context(tmp_path, targets=targets)
+    registry = _registry(
+        targets,
+        global_prepare_override=_ensure_new_global_prepare,
+    )
+    control = OneClickReleaseStore(release.path)
+    job = control.ensure_job(
+        plan=plan, run=run, product_revision=31, registry=registry
+    )
+    control.prepare_job(job["job_id"], registry)
+    request = control.claim_next_dispatch(job["job_id"], registry)
+    args = (
+        request,
+        (SHOPEE_IMAGE_UPLOAD_WRITE,),
+        "image_upload-1",
+        {"count": 1},
+        None,
+        0,
+        1,
+        "PRE_INVOCATION_INTENT",
+    )
+    control.record_dispatch_progress(*args)
+    with pytest.raises(AdapterContractError):
+        control.record_dispatch_progress(*args)
+    resolution = (
+        request,
+        (SHOPEE_IMAGE_UPLOAD_WRITE,),
+        "image_upload-1",
+        {"count": 1},
+        1,
+        1,
+        1,
+        "POST_RESPONSE_CONFIRMED",
+    )
+    control.record_dispatch_progress(*resolution)
+    control.record_dispatch_progress(*resolution)
+    with pytest.raises(AdapterContractError):
+        control.record_dispatch_progress(
+            request,
+            (SHOPEE_IMAGE_UPLOAD_WRITE,),
+            "image_upload-1",
+            {"count": 1},
+            0,
+            0,
+            0,
+            "POST_RESPONSE_REJECTED",
+        )
+    with pytest.raises(AdapterContractError):
+        control.record_dispatch_progress(*args)
+    with sqlite3.connect(release.path) as connection:
+        occurrence = connection.execute(
+            """
+            SELECT status, resolution_count
+            FROM oneclick_release_write_occurrences
+            WHERE job_id = ? AND target_label = ?
+            """,
+            (job["job_id"], SHOPEE_GLOBAL_TARGET),
+        ).fetchall()
+        progress_events = connection.execute(
+            """
+            SELECT COUNT(*) FROM oneclick_release_events
+            WHERE job_id = ? AND target_label = ?
+              AND event_type = 'DISPATCH_PROGRESS'
+            """,
+            (job["job_id"], SHOPEE_GLOBAL_TARGET),
+        ).fetchone()[0]
+    assert occurrence == [("CONFIRMED", 1)]
+    assert progress_events == 2
+
+
+def test_shopee_global_rejects_count_and_sequence_drift(tmp_path):
+    targets = ["shopee:PH"]
+    release, plan, run = _approved_context(tmp_path, targets=targets)
+    registry = _registry(
+        targets,
+        global_prepare_override=_ensure_new_global_prepare,
+    )
+    control = OneClickReleaseStore(release.path)
+    job = control.ensure_job(
+        plan=plan, run=run, product_revision=31, registry=registry
+    )
+    control.prepare_job(job["job_id"], registry)
+    request = control.claim_next_dispatch(job["job_id"], registry)
+    with pytest.raises(AdapterContractError):
+        control.record_dispatch_progress(
+            request,
+            (SHOPEE_GLOBAL_WRITE,),
+            "global_create-1",
+            {"count": 1},
+            None,
+            0,
+            1,
+            "PRE_INVOCATION_INTENT",
+        )
+    request = request.__class__(
+        **{
+            **request.__dict__,
+            "progress_recorder": control.record_dispatch_progress,
+        }
+    )
+    _record_confirmed_global_writes(request, image_count=6)
+    with pytest.raises(AdapterContractError):
+        control.record_dispatch_result(
+            request,
+            _verified_global_result(request, image_count=5),
+        )
+    assert release.get_run(run["run_id"])["targets"][0]["attempts"] == 0
+
+
+def test_shopee_global_claim_is_concurrent_once_without_physical_target(
+    tmp_path,
+):
+    targets = ["shopee:TH", "shopee:VN"]
+    release, plan, run = _approved_context(tmp_path, targets=targets)
+    registry = _registry(
+        targets,
+        global_prepare_override=_ensure_new_global_prepare,
+    )
+    control = OneClickReleaseStore(release.path)
+    job = control.ensure_job(
+        plan=plan, run=run, product_revision=31, registry=registry
+    )
+    control.prepare_job(job["job_id"], registry)
+    claimed = []
+
+    def claim():
+        claimed.append(control.claim_next_dispatch(job["job_id"], registry))
+
+    threads = [threading.Thread(target=claim) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    requests = [value for value in claimed if value is not None]
+    assert len(requests) == 1
+    assert requests[0].target_label == SHOPEE_GLOBAL_TARGET
+    assert all(
+        row["attempts"] == 0
+        for row in release.get_run(run["run_id"])["targets"]
+    )
+
+
+def test_v1_prepared_command_cannot_claim_after_v2_upgrade(tmp_path):
+    targets = ["shopee:PH"]
+    release, plan, run = _approved_context(tmp_path, targets=targets)
+    registry = _registry(targets)
+    control = OneClickReleaseStore(release.path)
+    job = control.ensure_job(
+        plan=plan, run=run, product_revision=31, registry=registry
+    )
+    control.prepare_job(job["job_id"], registry)
+    with sqlite3.connect(release.path) as connection:
+        row = connection.execute(
+            """
+            SELECT command_json
+            FROM oneclick_release_targets
+            WHERE job_id = ? AND target_label = ?
+            """,
+            (job["job_id"], "shopee:PH"),
+        ).fetchone()
+        command = json.loads(row[0])
+        command["schema_version"] = "release-target-prepared-command/v1"
+        encoded = json.dumps(
+            command,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        connection.execute(
+            """
+            UPDATE oneclick_release_targets
+            SET command_json = ?, command_digest = ?
+            WHERE job_id = ? AND target_label = ?
+            """,
+            (encoded, digest, job["job_id"], "shopee:PH"),
+        )
+    with pytest.raises(
+        SystemicIdentityError,
+        match="schema or identity is stale",
+    ):
+        control.claim_next_dispatch(job["job_id"], registry)
+    physical = release.get_run(run["run_id"])["targets"][0]
+    assert physical["status"] == "PENDING"
+    assert physical["attempts"] == 0
 
 
 def test_systemic_prepare_error_stops_whole_batch_before_claim(tmp_path):
@@ -384,12 +1266,6 @@ def test_composite_shopee_write_ledger_survives_later_exception_and_restart(
     def dispatch(request):
         request.progress_recorder(
             request,
-            ("shopee:global_master:update",),
-            "global_master_confirmed",
-            {"verified": True},
-        )
-        request.progress_recorder(
-            request,
             ("shopee:regional_publish",),
             "regional_publish_invoked",
             {"accepted": True},
@@ -410,7 +1286,6 @@ def test_composite_shopee_write_ledger_survives_later_exception_and_restart(
     target = control.get_job(job_id=job["job_id"])["targets"][0]
     assert target["status"] == RECONCILIATION_REQUIRED
     assert target["result"]["cumulative_external_write_classes"] == [
-        "shopee:global_master:update",
         "shopee:regional_publish",
         "UNKNOWN",
     ]
@@ -431,8 +1306,8 @@ def test_worker_restart_recovers_claim_without_redispatch(tmp_path):
     request = request.__class__(**{**request.__dict__, "progress_recorder": control.record_dispatch_progress})
     control.record_dispatch_progress(
         request,
-        ("shopee:global_master:update",),
-        "global_master_confirmed",
+        ("shopee:regional_publish",),
+        "regional_publish_confirmed",
         {"verified": True},
     )
 
@@ -445,7 +1320,7 @@ def test_worker_restart_recovers_claim_without_redispatch(tmp_path):
     target = control.get_job(job_id=job["job_id"])["targets"][0]
     assert target["status"] == RECONCILIATION_REQUIRED
     assert target["dispatch_ledger"]["cumulative_external_write_classes"] == [
-        "shopee:global_master:update",
+        "shopee:regional_publish",
         "UNKNOWN",
     ]
 
@@ -495,7 +1370,7 @@ def test_eleven_storefront_matrix_excludes_common_control_row(tmp_path):
     )
 
     assert preview["storefront_count"] == 11
-    assert preview["control_row_count"] == 1
+    assert preview["control_row_count"] == 2
     assert preview["blocked"] == ["ozon:RU"]
     assert preview["runnable_target_count"] == 4
     assert preview["will_dispatch"] == [
@@ -897,8 +1772,8 @@ def test_known_write_plus_unknown_reports_null_count_in_all_receipts(tmp_path):
     def dispatch(request):
         request.progress_recorder(
             request,
-            ("shopee:global_master:update",),
-            "global_master_confirmed",
+            ("shopee:regional_publish",),
+            "regional_publish_confirmed",
             {"verified": True},
         )
         raise RuntimeError("later regional invocation is ambiguous")
@@ -916,14 +1791,14 @@ def test_known_write_plus_unknown_reports_null_count_in_all_receipts(tmp_path):
     target = control.get_job(job_id=job["job_id"])["targets"][0]
     assert target["result"]["external_write_count"] is None
     assert target["result"]["external_write_classes"] == [
-        "shopee:global_master:update",
+        "shopee:regional_publish",
         "UNKNOWN",
     ]
     pending = control.pending_outcome_receipts()
     assert pending[0]["receipt"]["dispatch"]["external_write_count"] is None
     assert pending[0]["receipt"]["dispatch"][
         "external_write_classes"
-    ] == ["shopee:global_master:update", "UNKNOWN"]
+    ] == ["shopee:regional_publish", "UNKNOWN"]
 
 
 @pytest.mark.parametrize("with_write", [True, False])
@@ -1111,9 +1986,24 @@ def test_verified_warning_is_success_with_pending_manual_review_and_no_replay(
     assert fact.manual_status == "PENDING"
     assert fact.readback_status == "VERIFIED"
 
+    pending_target = control.get_job(job_id=job["job_id"])["targets"][0]
     acceptance_evidence = {
+        "source": "kyle_verified_shopee_observation_review",
         "manual_review_accepted": True,
         "observation_evidence_digest": observation_digest,
+        "job_identity_digest": hashlib.sha256(
+            job["job_id"].encode("utf-8")
+        ).hexdigest(),
+        "result_evidence_digest": pending_target["result"][
+            "evidence_digest"
+        ],
+        "readback_evidence_digest": pending_target["result"][
+            "evidence_digest"
+        ],
+        "outcome_receipt_digest": pending_target["outcome_receipt"][
+            "receipt_digest"
+        ],
+        "observation_evidence_digests": [observation_digest],
     }
     accepted = control.record_manual_acceptance(
         run_id=run["run_id"],
@@ -1284,6 +2174,9 @@ def test_manual_acceptance_closes_api_less_dual_ledgers_and_replays_zero(
     before = control.get_job(job_id=job["job_id"])
     assert before["targets"][1]["status"] == SUBMITTED_UNVERIFIED
     assert release.get_run(run["run_id"])["targets"][1]["attempts"] == 1
+    original_outcome_sample_count = len(
+        control.pending_outcome_receipts()
+    )
 
     closed = control.record_manual_acceptance(
         run_id=run["run_id"],
@@ -1300,6 +2193,32 @@ def test_manual_acceptance_closes_api_less_dual_ledgers_and_replays_zero(
     assert closed_target["status"] == SUCCEEDED
     assert closed_target["requires_human"] is False
     assert closed_target["result"]["manual_review_status"] == "ACCEPTED"
+    manual_resolution = closed_target["outcome_receipt"][
+        "manual_resolution"
+    ]
+    assert manual_resolution["schema_version"] == (
+        "release-outcome-manual-acceptance/v1"
+    )
+    assert manual_resolution["consumer_status"] == "PENDING"
+    pending_resolutions = (
+        control.pending_manual_acceptance_resolutions()
+    )
+    assert len(pending_resolutions) == 1
+    resolution = pending_resolutions[0]
+    assert resolution["resolution_digest"] == manual_resolution[
+        "resolution_digest"
+    ]
+    assert resolution["resolution"]["manual"] == {
+        "status": "ACCEPTED",
+        "reviewer_role": "approved_release_actor",
+    }
+    assert resolution["resolution"]["external_writes_performed"] == []
+    assert "marketplace_product_id" not in json.dumps(
+        resolution["resolution"]
+    )
+    assert len(control.pending_outcome_receipts()) == (
+        original_outcome_sample_count
+    )
 
     physical = release.get_run(run["run_id"])["targets"][1]
     assert physical["status"] == "MANUALLY_VERIFIED"
@@ -1318,6 +2237,27 @@ def test_manual_acceptance_closes_api_less_dual_ledgers_and_replays_zero(
     assert replay["idempotent"] is True
     assert replay["external_writes_performed"] == []
     assert replay["job"]["phase"] == "SUCCEEDED"
+    assert len(control.pending_manual_acceptance_resolutions()) == 1
+    assert len(control.pending_outcome_receipts()) == (
+        original_outcome_sample_count
+    )
+    control.record_manual_acceptance_consumer_result(
+        job_id=resolution["job_id"],
+        target_label=resolution["target_label"],
+        attempt=resolution["attempt"],
+        resolution_digest=resolution["resolution_digest"],
+        fact_digest="e" * 64,
+        error_code=None,
+    )
+    assert control.pending_manual_acceptance_resolutions() == []
+    projected_resolution = control.get_job(
+        job_id=job["job_id"]
+    )["targets"][1]["outcome_receipt"]["manual_resolution"]
+    assert projected_resolution["consumer_status"] == "SUCCEEDED"
+    assert projected_resolution["fact_digest"] == "e" * 64
+    assert len(control.pending_outcome_receipts()) == (
+        original_outcome_sample_count
+    )
     with pytest.raises(SystemicIdentityError):
         control.record_manual_acceptance(
             run_id=run["run_id"],
@@ -1347,6 +2287,15 @@ def test_manual_acceptance_closes_api_less_dual_ledgers_and_replays_zero(
                   AND event_type = 'TARGET_MANUAL_ACCEPTANCE'
                 """,
                 (job["job_id"], "tiktok:MX"),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                UPDATE oneclick_release_manual_acceptances
+                SET resolution_digest = ?
+                WHERE job_id = ? AND target_label = ?
+                """,
+                ("f" * 64, job["job_id"], "tiktok:MX"),
             )
     assert event_count == 1
 

@@ -173,6 +173,33 @@ def test_projection_is_pure_and_does_not_mutate_dashboard():
     assert view == before
 
 
+def test_unapproved_plan_preview_cannot_hide_missing_content_action():
+    view = _ready_view()
+    view["content"]["approved"] = False
+    view["content"]["blockers"] = [
+        "source-only final content approval is missing or stale"
+    ]
+    view["release_v1"].update(
+        {
+            "plan_approved": False,
+            "eligible_for_plan_approval": False,
+            "recovery_actions": [
+                {
+                    "code": "refresh_release_state",
+                    "label": "重新检查并定位未完成步骤",
+                }
+            ],
+        }
+    )
+
+    action = project_product_workflow_next_action(view)
+
+    assert action["code"] == "complete_content_review"
+    assert action["kind"] == "link"
+    assert action["href"] == "/ai-image-studio?offer_id=3845133620"
+    assert_no_dead_end(action)
+
+
 def test_mixed_release_results_keep_independent_first_attempt_actionable():
     view = _ready_view()
     view["release_v1"]["publish_ready"] = True

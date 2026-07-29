@@ -113,9 +113,12 @@ def project_product_workflow_next_action(view: dict[str, Any]) -> dict[str, Any]
     )
     plan = release.get("plan") if isinstance(release.get("plan"), dict) else {}
     durable_plan_exists = bool(plan.get("plan_id"))
+    governed_plan_approved = bool(
+        durable_plan_exists and release.get("plan_approved")
+    )
     offer_id = str(product.get("offer_id") or "").strip()
 
-    if not durable_plan_exists and not _product_facts_ready(product):
+    if not governed_plan_approved and not _product_facts_ready(product):
         return _action(
             "complete_product_facts",
             "product",
@@ -125,7 +128,7 @@ def project_product_workflow_next_action(view: dict[str, Any]) -> dict[str, Any]
             reason_codes=("product_facts_incomplete",),
         )
 
-    if not durable_plan_exists and not _content_ready(content):
+    if not governed_plan_approved and not _content_ready(content):
         return _action(
             "complete_content_review",
             "content",

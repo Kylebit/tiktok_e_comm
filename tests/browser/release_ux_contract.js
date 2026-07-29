@@ -3687,6 +3687,575 @@ async function blockedCapabilityNextActionContract(browser, viewport) {
   }
 }
 
+function oneClickDashboard({
+  offerId = "3828540231",
+  terminal = false,
+} = {}) {
+  const dashboard = JSON.parse(JSON.stringify(productDashboard));
+  const payloadDigest = "a".repeat(64);
+  const targetsDigest = "b".repeat(64);
+  dashboard.product.offer_id = offerId;
+  dashboard.product.revision = 31;
+  dashboard.product.fields_locked = true;
+  dashboard.product.actual_product_approved = true;
+  dashboard.content = {
+    approved: true,
+    image_count: 6,
+    images: [],
+    blockers: [],
+  };
+  dashboard.actual_release_gate = { ready: true, blockers: [] };
+  dashboard.publication_scope = {
+    selected_labels: [
+      "shopee:MY",
+      "tiktok:GB",
+      "shopee:VN",
+      "ozon:RU",
+    ],
+    default_labels: [],
+    available_targets: [],
+  };
+  dashboard.release_v1 = {
+    eligible_for_plan_approval: false,
+    plan_approved: true,
+    miaoshou_prepared: true,
+    publish_ready: !terminal,
+    blockers: [],
+    plan: {
+      plan_id: "omnichannel:oneclick-ui",
+      confirmation_token: "browser-echo-only",
+      payload_digest: payloadDigest,
+      targets_digest: targetsDigest,
+    },
+    run: null,
+    target_recovery_actions: [],
+    oneclick_controlplane: terminal
+      ? oneClickProjection(
+        "oneclick-release-status/v1",
+        "terminal",
+        "WAITING_MANUAL_ACCEPTANCE",
+      )
+      : null,
+    canonical_next_action: terminal
+      ? {
+        target_label: "tiktok:GB",
+        target_focus: "tiktok:GB",
+        canonical_status: "SUBMITTED_UNVERIFIED",
+        action: "verify_submission_in_marketplace",
+        runnable: false,
+      }
+      : {
+        target_label: "shopee:MY",
+        target_focus: "shopee:MY",
+        canonical_status: "READY",
+        action: "wait_for_worker",
+        runnable: true,
+      },
+  };
+  return dashboard;
+}
+
+function oneClickTargets(stage) {
+  const dependency = {
+    state: "SATISFIED",
+    satisfied: true,
+    prerequisite_target: null,
+  };
+  return [
+    {
+      target_label: "shopee:MY",
+      storefront: true,
+      status: stage === "terminal" ? "SUCCEEDED"
+        : stage === "running" ? "DISPATCHING" : "READY",
+      classification: "READY_AUTOMATIC",
+      runnable_now: stage === "preview",
+      dependency,
+      next_action: stage === "terminal" ? null : "wait_for_worker",
+      next_action_target: "shopee:MY",
+      reason: null,
+      digests: {},
+      dispatch_ledger: {},
+    },
+    {
+      target_label: "tiktok:GB",
+      storefront: true,
+      status: stage === "terminal" ? "SUBMITTED_UNVERIFIED" : "READY",
+      classification: "READY_SUBMIT_MANUAL",
+      runnable_now: stage === "preview",
+      dependency,
+      next_action: stage === "terminal"
+        ? "verify_submission_in_marketplace" : "wait_for_worker",
+      next_action_target: "tiktok:GB",
+      reason: null,
+      digests: {},
+      dispatch_ledger: {},
+    },
+    {
+      target_label: "shopee:VN",
+      storefront: true,
+      status: "BLOCKED_CAPABILITY",
+      classification: "BLOCKED",
+      runnable_now: false,
+      dependency,
+      next_action: "review_approved_content_facts",
+      next_action_target: "shopee:VN",
+      reason: {
+        category: "CONTENT",
+        scope: "TARGET",
+        code: "approved_shopee_category_missing",
+        summary_code: "approved_shopee_category_missing",
+        detail_digest: "c".repeat(64),
+      },
+      digests: {},
+      dispatch_ledger: {},
+    },
+    {
+      target_label: "ozon:RU",
+      storefront: true,
+      status: "BLOCKED_INVENTORY",
+      classification: "BLOCKED",
+      runnable_now: false,
+      dependency,
+      next_action: "approve_sellable_inventory",
+      next_action_target: "ozon:RU",
+      reason: {
+        category: "INVENTORY",
+        scope: "TARGET",
+        code: "approved_inventory_missing",
+        summary_code: "approved_inventory_missing",
+        detail_digest: "d".repeat(64),
+      },
+      digests: {},
+      dispatch_ledger: {},
+    },
+  ];
+}
+
+function oneClickProjection(schemaVersion, stage, phase = null) {
+  const projection = {
+    schema_version: schemaVersion,
+    plan_id: "omnichannel:oneclick-ui",
+    run_id: "release-run:oneclick-ui",
+    product_revision: 31,
+    digests: {
+      payload: "a".repeat(64),
+      targets: "b".repeat(64),
+    },
+    targets: oneClickTargets(stage),
+    runnable_target_count: stage === "preview" ? 2 : 0,
+    summary: {
+      will_dispatch: stage === "preview"
+        ? ["shopee:MY", "tiktok:GB"] : [],
+      manual_after_submit: ["tiktok:GB"],
+      blocked: ["shopee:VN", "ozon:RU"],
+      already_terminal: stage === "terminal" ? ["shopee:MY"] : [],
+    },
+    dispatch_capability: {
+      schema_version: "oneclick-dispatch-capability/v1",
+      enabled: true,
+      source: "server_default",
+      reason_code: "oneclick_dispatch_enabled_by_default",
+      next_action: null,
+    },
+  };
+  if (phase) {
+    projection.job_id = "oneclick-job:ui";
+    projection.phase = phase;
+    projection.terminal = [
+      "SUCCEEDED",
+      "WAITING_MANUAL_ACCEPTANCE",
+      "BLOCKED",
+      "SYSTEMIC_STOPPED",
+    ].includes(phase);
+  }
+  return projection;
+}
+
+async function oneClickAsyncControlPlaneContract(browser, viewport) {
+  const context = await browser.newContext({ viewport });
+  const page = await context.newPage();
+  const errors = [];
+  const requests = [];
+  let dashboardReads = 0;
+  let previewReads = 0;
+  let publishPosts = 0;
+  let statusReads = 0;
+  let terminal = false;
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+  });
+  await page.route("**/*", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.origin !== baseUrl) {
+      requests.push({ method: request.method(), url: request.url(), external: true });
+      return route.abort("blockedbyclient");
+    }
+    if (!url.pathname.startsWith("/api/")) return route.continue();
+    requests.push({ method: request.method(), url: request.url(), external: false });
+    if (url.pathname === "/api/product-workspace/dashboard") {
+      dashboardReads += 1;
+      return route.fulfill(jsonResponse(oneClickDashboard({ terminal })));
+    }
+    if (url.pathname === "/api/product-workspace/publish-preview") {
+      previewReads += 1;
+      return route.fulfill(jsonResponse({
+        ok: true,
+        persisted: false,
+        external_writes_performed: [],
+        preview: oneClickProjection(
+          "release-batch-preparation/v1",
+          "preview",
+        ),
+      }));
+    }
+    if (
+      url.pathname === "/api/product-workspace/publish"
+      && request.method() === "POST"
+    ) {
+      publishPosts += 1;
+      return route.fulfill(jsonResponse({
+        ok: true,
+        accepted: true,
+        external_writes_performed: [],
+        job: oneClickProjection(
+          "oneclick-release-status/v1",
+          "running",
+          "PENDING",
+        ),
+      }, 202));
+    }
+    if (url.pathname === "/api/product-workspace/publish-status") {
+      statusReads += 1;
+      if (statusReads === 1) {
+        return route.fulfill(jsonResponse({
+          ok: false,
+          error: "temporary status transport failure",
+        }, 503));
+      }
+      if (statusReads === 2) {
+        return route.fulfill(jsonResponse({
+          ok: true,
+          persisted: true,
+          job: oneClickProjection(
+            "oneclick-release-status/v1",
+            "running",
+            "RUNNING",
+          ),
+        }));
+      }
+      terminal = true;
+      return route.fulfill(jsonResponse({
+        ok: true,
+        persisted: true,
+        job: oneClickProjection(
+          "oneclick-release-status/v1",
+          "terminal",
+          "WAITING_MANUAL_ACCEPTANCE",
+        ),
+      }));
+    }
+    const fixture = apiFixture(
+      url,
+      request.method(),
+      { delayWeekly: false, delaySku: false, pending: {} },
+    );
+    return route.fulfill(fixture || jsonResponse({ ok: false }, 404));
+  });
+  try {
+    await page.goto(`${baseUrl}/product-workspace?offer_id=3828540231`, {
+      waitUntil: "networkidle",
+    });
+    await page.waitForFunction(() => {
+      const checkbox = document.querySelector("#publishAllCheckbox");
+      return checkbox && !checkbox.disabled;
+    });
+    check(
+      previewReads === 1,
+      `one-click ${viewport.width}: preview is read exactly once`,
+      { previewReads, requests },
+    );
+    const groupText = await page.locator("#oneClickExecutionGroups").innerText();
+    check(
+      groupText.includes("Shopee")
+        && groupText.includes("TikTok")
+        && groupText.includes("Ozon"),
+      `one-click ${viewport.width}: mixed server-owned groups are visible`,
+      groupText,
+    );
+    await page.locator("#publishAllCheckbox").check();
+    await page.locator("#publishAllButton").evaluate((button) => {
+      button.click();
+      button.click();
+      button.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+      button.dispatchEvent(new KeyboardEvent("keydown", { key: " " }));
+    });
+    await page.waitForFunction(() => {
+      const text = document.querySelector("#oneClickExecutionMessage")?.textContent || "";
+      return text.includes("人工") || text.includes("验收") || text.includes("楠屾敹");
+    }, null, { timeout: 8000 });
+    check(
+      publishPosts === 1,
+      `one-click ${viewport.width}: double click and keyboard do not duplicate POST`,
+      { publishPosts, requests },
+    );
+    check(
+      statusReads >= 3,
+      `one-click ${viewport.width}: status failure retries GET-only then reaches terminal`,
+      { statusReads, requests },
+    );
+    const manualCard = page.locator(
+      '[data-oneclick-target="tiktok:GB"]',
+    );
+    check(
+      await manualCard.isVisible()
+        && (await manualCard.innerText()).includes("TikTok"),
+      `one-click ${viewport.width}: submitted-unverified target is retained`,
+      await manualCard.innerText(),
+    );
+    check(
+      !(await page.locator("#publishAllCheckbox").isEnabled())
+        && !(await page.locator("#publishAllButton").isEnabled()),
+      `one-click ${viewport.width}: terminal job cannot be submitted again`,
+    );
+    await page.locator("#oneClickNextActionButton").click();
+    check(
+      await manualCard.evaluate((element) => document.activeElement === element),
+      `one-click ${viewport.width}: canonical manual action focuses exact target`,
+    );
+    await page.waitForTimeout(1200);
+    check(
+      publishPosts === 1,
+      `one-click ${viewport.width}: terminal polling never re-POSTs`,
+      { publishPosts, statusReads, dashboardReads },
+    );
+    check(
+      dashboardReads === 2,
+      `one-click ${viewport.width}: terminal job triggers one final dashboard read`,
+      { dashboardReads, requests },
+    );
+    const overflow = await overflowAudit(page);
+    check(
+      overflow.pageOverflow <= 2,
+      `one-click ${viewport.width}: no horizontal overflow`,
+      overflow,
+    );
+    check(
+      unexpectedInteractionErrors(errors).length === 0,
+      `one-click ${viewport.width}: no console/page errors`,
+      errors,
+    );
+    check(
+      requests.filter((row) => row.external).length === 0,
+      `one-click ${viewport.width}: external network budget is zero`,
+      requests,
+    );
+  } finally {
+    await context.close();
+  }
+}
+
+async function oneClickContentRecoveryContract(browser, viewport) {
+  const context = await browser.newContext({ viewport });
+  const page = await context.newPage();
+  const errors = [];
+  const requests = [];
+  const blockedTargets = oneClickTargets("terminal").map((target) => ({
+    ...target,
+    status: target.target_label === "shopee:MY"
+      ? "BLOCKED_CAPABILITY" : target.status,
+    runnable_now: false,
+    next_action: target.target_label === "shopee:MY"
+      ? "review_approved_content_facts" : target.next_action,
+    next_action_target: target.target_label === "shopee:MY"
+      ? "shopee:MY" : target.next_action_target,
+    reason: target.target_label === "shopee:MY"
+      ? {
+        category: "CONTENT",
+        scope: "TARGET",
+        code: "approved_shopee_category_missing",
+        summary_code: "approved_shopee_category_missing",
+        detail_digest: "e".repeat(64),
+      } : target.reason,
+  }));
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+  });
+  await page.route("**/*", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.origin !== baseUrl) {
+      requests.push({ method: request.method(), url: request.url(), external: true });
+      return route.abort("blockedbyclient");
+    }
+    if (!url.pathname.startsWith("/api/")) return route.continue();
+    requests.push({ method: request.method(), url: request.url(), external: false });
+    if (url.pathname === "/api/product-workspace/dashboard") {
+      const dashboard = oneClickDashboard();
+      dashboard.release_v1.canonical_next_action = {
+        target_label: "shopee:MY",
+        target_focus: "shopee:MY",
+        canonical_status: "BLOCKED_CAPABILITY",
+        action: "review_approved_content_facts",
+        runnable: false,
+      };
+      return route.fulfill(jsonResponse(dashboard));
+    }
+    if (url.pathname === "/api/product-workspace/publish-preview") {
+      const preview = oneClickProjection(
+        "release-batch-preparation/v1",
+        "terminal",
+      );
+      preview.targets = blockedTargets;
+      preview.runnable_target_count = 0;
+      preview.summary.will_dispatch = [];
+      return route.fulfill(jsonResponse({
+        ok: true,
+        persisted: false,
+        external_writes_performed: [],
+        preview,
+      }));
+    }
+    const fixture = apiFixture(
+      url,
+      request.method(),
+      { delayWeekly: false, delaySku: false, pending: {} },
+    );
+    return route.fulfill(fixture || jsonResponse({ ok: false }, 404));
+  });
+  try {
+    await page.goto(`${baseUrl}/product-workspace?offer_id=3828540231`, {
+      waitUntil: "networkidle",
+    });
+    const nextButton = page.locator("#oneClickNextActionButton");
+    await nextButton.waitFor({ state: "visible" });
+    check(
+      !(await page.locator("#publishAllCheckbox").isEnabled()),
+      `one-click blocker ${viewport.width}: zero runnable target cannot publish`,
+    );
+    check(
+      (await nextButton.innerText()).trim().length > 0,
+      `one-click blocker ${viewport.width}: content blocker has actionable label`,
+      await nextButton.innerText(),
+    );
+    await nextButton.click();
+    const target = page.locator('[data-oneclick-target="shopee:MY"]');
+    check(
+      await target.evaluate((element) => document.activeElement === element),
+      `one-click blocker ${viewport.width}: content action focuses exact target`,
+    );
+    check(
+      requests.filter((row) => row.method === "POST").length === 0,
+      `one-click blocker ${viewport.width}: recovery navigation performs zero writes`,
+      requests,
+    );
+    check(
+      unexpectedInteractionErrors(errors).length === 0,
+      `one-click blocker ${viewport.width}: no console/page errors`,
+      errors,
+    );
+  } finally {
+    await context.close();
+  }
+}
+
+async function oneClickOfferSwitchCancelsStalePreviewContract(browser) {
+  const context = await browser.newContext({
+    viewport: { width: 1440, height: 900 },
+  });
+  const page = await context.newPage();
+  const errors = [];
+  const requests = [];
+  const firstOffer = "3828540231";
+  const secondOffer = "3828540232";
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+  });
+  await page.route("**/*", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.origin !== baseUrl) {
+      requests.push({ method: request.method(), url: request.url(), external: true });
+      return route.abort("blockedbyclient");
+    }
+    if (!url.pathname.startsWith("/api/")) return route.continue();
+    requests.push({ method: request.method(), url: request.url(), external: false });
+    if (url.pathname === "/api/product-workspace/dashboard") {
+      const offerId = url.searchParams.get("offer_id") || firstOffer;
+      return route.fulfill(jsonResponse(oneClickDashboard({ offerId })));
+    }
+    if (url.pathname === "/api/product-workspace/publish-preview") {
+      const offerId = url.searchParams.get("offer_id") || firstOffer;
+      if (offerId === firstOffer) await page.waitForTimeout(600);
+      const preview = oneClickProjection(
+        "release-batch-preparation/v1",
+        "preview",
+      );
+      preview.targets = preview.targets.filter((target) => (
+        offerId === firstOffer
+          ? target.target_label === "shopee:MY"
+          : target.target_label === "tiktok:GB"
+      ));
+      preview.runnable_target_count = 1;
+      preview.summary.will_dispatch = preview.targets.map(
+        (target) => target.target_label,
+      );
+      return route.fulfill(jsonResponse({
+        ok: true,
+        persisted: false,
+        external_writes_performed: [],
+        preview,
+      })).catch(() => {});
+    }
+    const fixture = apiFixture(
+      url,
+      request.method(),
+      { delayWeekly: false, delaySku: false, pending: {} },
+    );
+    return route.fulfill(fixture || jsonResponse({ ok: false }, 404));
+  });
+  try {
+    await page.goto(`${baseUrl}/product-workspace?offer_id=${firstOffer}`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.locator("#offerId").fill(secondOffer);
+    await page.locator("#lookupForm").evaluate((form) => form.requestSubmit());
+    const secondCard = page.locator(
+      '[data-oneclick-target="tiktok:GB"]',
+    );
+    await secondCard.waitFor({ state: "visible", timeout: 5000 });
+    await page.waitForTimeout(900);
+    check(
+      await secondCard.isVisible()
+        && await page.locator(
+          '[data-oneclick-target="shopee:MY"]',
+        ).count() === 0,
+      "one-click offer switch: late preview from old offer is ignored",
+      await page.locator("#oneClickExecutionGroups").innerText(),
+    );
+    check(
+      page.url().includes(`offer_id=${secondOffer}`),
+      "one-click offer switch: current URL retains the new offer",
+      page.url(),
+    );
+    check(
+      requests.filter((row) => row.method === "POST").length === 0,
+      "one-click offer switch: stale preview cancellation performs zero writes",
+      requests,
+    );
+    check(
+      unexpectedInteractionErrors(errors).length === 0,
+      "one-click offer switch: no console/page errors",
+      errors,
+    );
+  } finally {
+    await context.close();
+  }
+}
+
 async function profitAsyncAndNoFalseSuccess(browser) {
   const scenario = await openScenario(browser, "/profit", { width: 1440, height: 900 });
   const { page, context, errors, state } = scenario;
@@ -3841,6 +4410,11 @@ async function legacyStateSafety(browser) {
     await mixedReleaseDispositionContract(browser, { width: 390, height: 844 });
     await blockedCapabilityNextActionContract(browser, { width: 1440, height: 900 });
     await blockedCapabilityNextActionContract(browser, { width: 390, height: 844 });
+    await oneClickAsyncControlPlaneContract(browser, { width: 1440, height: 900 });
+    await oneClickAsyncControlPlaneContract(browser, { width: 390, height: 844 });
+    await oneClickContentRecoveryContract(browser, { width: 1440, height: 900 });
+    await oneClickContentRecoveryContract(browser, { width: 390, height: 844 });
+    await oneClickOfferSwitchCancelsStalePreviewContract(browser);
     await profitAsyncAndNoFalseSuccess(browser);
     await legacyStateSafety(browser);
   } finally {

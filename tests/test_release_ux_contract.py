@@ -507,6 +507,45 @@ def test_release_plan_failure_refreshes_the_current_gate_and_explains_reapproval
     assert '"dashboard": current_dashboard' in server
 
 
+def test_oneclick_release_ui_uses_only_the_async_server_controlplane():
+    html = (ROOT / "web/product_workspace.html").read_text(encoding="utf-8")
+    script = (ROOT / "web/static/product_workspace.js").read_text(
+        encoding="utf-8"
+    )
+    style = (ROOT / "web/static/product_workspace.css").read_text(
+        encoding="utf-8"
+    )
+    publish = _function_body(script, "publishSelectedTargets")
+    preview = _function_body(script, "requestOneClickPreview")
+    status = _function_body(script, "pollOneClickStatus")
+
+    for control_id in (
+        "oneClickExecutionPreview",
+        "oneClickExecutionGroups",
+        "oneClickExecutionMessage",
+        "oneClickNextActionButton",
+    ):
+        assert f'id="{control_id}"' in html
+    assert "/api/product-workspace/publish-preview?" in preview
+    assert "/api/product-workspace/publish-status?" in status
+    assert '"/api/product-workspace/publish"' in publish
+    assert 'ONECLICK_PREVIEW_SCHEMA = "release-batch-preparation/v1"' in script
+    assert 'ONECLICK_STATUS_SCHEMA = "oneclick-release-status/v1"' in script
+    assert "payload.persisted !== false" in preview
+    assert "payload.accepted !== true" in publish
+    assert "oneClickExecution.postAttempted = true" in publish
+    assert "oneClickExecution.job" in publish
+    assert "scheduleOneClickStatusPoll(generation, 0)" in publish
+    assert "AbortController" in preview
+    assert "AbortController" in status
+    assert "generation !== oneClickExecution.generation" in preview
+    assert "generation !== oneClickExecution.generation" in status
+    assert "dashboardFromPayload" not in publish
+    assert "while (" not in publish
+    assert ".oneclick-execution-group" in style
+    assert ".oneclick-target-card:focus-visible" in style
+
+
 def test_release_pages_in_real_chromium():
     runtime = _browser_runtime()
     if runtime is None:

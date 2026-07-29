@@ -2051,6 +2051,57 @@ section { scroll-margin-top: 20px; }
   animation: shimmer 1.5s linear infinite;
 }
 @keyframes shimmer { to { background-position: -220% 0; } }
+.oneclick-execution-preview {
+  border-top: 1px solid var(--line, #d8e1e8);
+  margin-top: 16px;
+  padding-top: 16px;
+}
+.oneclick-execution-preview h4 { margin: 0 0 6px; }
+.oneclick-execution-preview > p { margin: 0 0 12px; }
+.oneclick-execution-preview > .button {
+  width: 100%;
+  margin: 0 0 12px;
+}
+.oneclick-execution-groups { display: grid; gap: 10px; }
+.oneclick-execution-group {
+  border: 1px solid var(--line, #d8e1e8);
+  border-radius: 10px;
+  padding: 10px;
+}
+.oneclick-execution-group h5 { margin: 0 0 6px; font-size: .92rem; }
+.oneclick-target-list { display: grid; gap: 7px; }
+.oneclick-target-card {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  border: 1px solid rgba(35, 118, 107, .18);
+  border-radius: 9px;
+  color: var(--ink);
+  background: rgba(255, 255, 255, .72);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.oneclick-target-card:hover,
+.oneclick-target-card:focus-visible {
+  border-color: var(--teal);
+  outline: 3px solid rgba(35, 118, 107, .12);
+  outline-offset: 1px;
+}
+.oneclick-target-card strong,
+.oneclick-target-card span,
+.oneclick-target-card small { min-width: 0; overflow-wrap: anywhere; }
+.oneclick-target-card span { color: #385f58; font-size: 10px; font-weight: 800; }
+.oneclick-target-card small { color: var(--muted); font-size: 9px; line-height: 1.45; }
+.oneclick-manual { border-color: rgba(211, 157, 52, .34); background: rgba(240, 189, 98, .08); }
+.oneclick-dependency { border-color: rgba(90, 114, 142, .3); background: rgba(90, 114, 142, .06); }
+.oneclick-preSubmit { border-color: rgba(232, 111, 67, .32); background: rgba(232, 111, 67, .06); }
+.oneclick-reconciliation { border-color: rgba(161, 72, 56, .35); background: rgba(161, 72, 56, .07); }
+.oneclick-blocked { border-color: rgba(113, 102, 91, .28); background: rgba(113, 102, 91, .06); }
+.oneclick-terminal { border-color: rgba(35, 118, 107, .3); background: rgba(213, 238, 229, .26); }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
 }

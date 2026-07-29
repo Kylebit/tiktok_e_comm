@@ -6633,7 +6633,10 @@ def _next_action(
         return "verify_submission_in_marketplace"
     if status == SUCCEEDED_MANUAL_REVIEW:
         return "review_verified_observation_warning"
-    if capability == SAFE_ACTION_REQUIRED:
+    if (
+        status == FAILED_PRE_SUBMIT
+        and capability == SAFE_ACTION_REQUIRED
+    ):
         return "perform_governed_safe_action"
     if status == FAILED_PRE_SUBMIT:
         return "retry_exact_zero_write_action"

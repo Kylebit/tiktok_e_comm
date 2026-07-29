@@ -1,6 +1,6 @@
 # 商品工作流状态机与回归测试标准
 
-版本：`product-workflow-testing-standard/v1`  
+版本：`product-workflow-testing-standard/v1`
 适用范围：商品事实、内容审核、发布计划、妙手 COMMON、渠道发布、回读与人工验收。
 
 ## 1. 核心原则

@@ -18,6 +18,16 @@ from pathlib import Path
 from typing import Any
 
 from core.config import ROOT
+from domains.product_operations import (
+    NEW_SOURCE_SKU_RESERVATION_SCHEMA_VERSION,
+    SKU_LINEAGE_SCHEMA_VERSION,
+    ModelSkuAssignment,
+    NewSourceSkuReservation,
+    SourceIdentityEvidence,
+    SourceProductIdentity,
+    SkuAssignment,
+    SkuLineageReservation,
+)
 
 
 DEFAULT_RELEASE_STORE_PATH = ROOT / "data" / "orbit_platform.db"
@@ -325,6 +335,49 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_release_active_sku_key
 CREATE INDEX IF NOT EXISTS idx_release_sku_product
     ON release_sku_reservations(product_id, status);
 
+CREATE TABLE IF NOT EXISTS release_source_sku_reservations (
+    reservation_digest TEXT PRIMARY KEY,
+    source_identity_digest TEXT NOT NULL,
+    source_offer_id TEXT NOT NULL,
+    source_authority TEXT NOT NULL,
+    lineage_mode TEXT NOT NULL CHECK (
+        lineage_mode IN ('INHERITED_PREDECESSOR', 'NEW_SOURCE')
+    ),
+    predecessor_id TEXT,
+    predecessor_revision INTEGER,
+    predecessor_digest TEXT,
+    assignment_json TEXT NOT NULL,
+    reservation_keys_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'SUPERSEDED')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_release_source_sku_identity
+    ON release_source_sku_reservations(
+        source_identity_digest, status, created_at
+    );
+CREATE TABLE IF NOT EXISTS release_source_sku_reservation_keys (
+    reservation_digest TEXT NOT NULL,
+    sku_key TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'SUPERSEDED')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (reservation_digest, sku_key),
+    FOREIGN KEY (reservation_digest)
+        REFERENCES release_source_sku_reservations(reservation_digest)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_release_source_sku_active_key
+    ON release_source_sku_reservation_keys(sku_key)
+    WHERE status = 'ACTIVE';
+CREATE TABLE IF NOT EXISTS release_source_sku_plan_links (
+    plan_id TEXT PRIMARY KEY,
+    reservation_digest TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (plan_id) REFERENCES release_plans(plan_id),
+    FOREIGN KEY (reservation_digest)
+        REFERENCES release_source_sku_reservations(reservation_digest)
+);
+
 CREATE TABLE IF NOT EXISTS release_common_overwrite_reviews (
     plan_id TEXT PRIMARY KEY,
     review_json TEXT NOT NULL,
@@ -512,6 +565,46 @@ def _validated_plan(payload: Mapping[str, Any]) -> dict[str, Any]:
         plan[field] = _required_text(plan, field)
     _sku_key(plan["seller_sku"])
     plan["targets"] = list(_target_labels(plan.get("targets")))
+    identity = plan.get("source_product_identity")
+    lineage = plan.get("sku_lineage")
+    if (identity is None) != (lineage is None):
+        raise ValueError(
+            "source identity and SKU lineage must be provided together"
+        )
+    if identity is not None:
+        source_contract = _source_identity_contract(identity)
+        if source_contract.payload() != dict(identity):
+            raise ValueError("source identity payload is not canonical")
+        if not isinstance(lineage, Mapping):
+            raise ValueError("SKU lineage payload is invalid")
+        assignment = _sku_assignment_contract(lineage.get("assignment"))
+        reservation = lineage.get("reservation")
+        if not isinstance(reservation, Mapping):
+            raise ValueError("SKU lineage reservation is invalid")
+        reservation_contract = _sku_reservation_contract(
+            lineage=lineage,
+            reservation=reservation,
+            assignment=assignment,
+        )
+        if (
+            lineage.get("schema_version") != SKU_LINEAGE_SCHEMA_VERSION
+            or lineage.get("status") != "READY"
+            or lineage.get("ready") is not True
+            or lineage.get("source_identity_digest")
+            != source_contract.identity_digest
+            or lineage.get("assignment") != assignment.payload()
+            or reservation_contract.source_identity_digest
+            != source_contract.identity_digest
+        ):
+            raise ValueError("SKU lineage payload is not canonical")
+        revision = plan.get("product_revision")
+        if (
+            type(revision) is not int
+            or revision < 0
+        ):
+            raise ValueError(
+                "product_revision must be a non-negative built-in int"
+            )
     return plan
 
 
@@ -577,6 +670,317 @@ def _approval_from_row(row: sqlite3.Row) -> dict[str, Any]:
         type(value) is int and value == 1
     )
     return approval
+
+
+def _source_sku_reservation_from_row(
+    row: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "schema_version": (
+            NEW_SOURCE_SKU_RESERVATION_SCHEMA_VERSION
+            if row["lineage_mode"] == "NEW_SOURCE"
+            else SKU_LINEAGE_SCHEMA_VERSION
+        ),
+        "reservation_digest": row["reservation_digest"],
+        "source_identity_digest": row["source_identity_digest"],
+        "source_offer_id": row["source_offer_id"],
+        "source_authority": row["source_authority"],
+        "lineage_mode": row["lineage_mode"],
+        "predecessor_id": row["predecessor_id"],
+        "predecessor_revision": row["predecessor_revision"],
+        "predecessor_digest": row["predecessor_digest"],
+        "assignment": json.loads(row["assignment_json"]),
+        "reservation_keys": json.loads(row["reservation_keys_json"]),
+        "status": row["status"],
+    }
+
+
+def _source_identity_contract(value: object) -> SourceProductIdentity:
+    if not isinstance(value, Mapping) or set(value) != {
+        "schema_version",
+        "source_offer_id",
+        "source_item_code",
+        "source_authority",
+        "provenance",
+        "identity_digest",
+    }:
+        raise ValueError("source identity fields are invalid")
+    provenance_rows = value.get("provenance")
+    if type(provenance_rows) is not list:
+        raise ValueError("source identity provenance must be a list")
+    provenance: list[SourceIdentityEvidence] = []
+    for row in provenance_rows:
+        if not isinstance(row, Mapping) or set(row) != {
+            "path",
+            "source_offer_id",
+        }:
+            raise ValueError("source identity provenance fields are invalid")
+        provenance.append(
+            SourceIdentityEvidence(
+                path=row.get("path"),
+                source_offer_id=row.get("source_offer_id"),
+            )
+        )
+    return SourceProductIdentity(
+        schema_version=value.get("schema_version"),
+        source_offer_id=value.get("source_offer_id"),
+        source_item_code=value.get("source_item_code"),
+        source_authority=value.get("source_authority"),
+        provenance=tuple(provenance),
+        identity_digest=value.get("identity_digest"),
+    )
+
+
+def _sku_assignment_contract(value: object) -> SkuAssignment:
+    if not isinstance(value, Mapping):
+        raise ValueError("assignment must be a mapping")
+    if set(value) != {"seller_sku", "model_skus"}:
+        raise ValueError("assignment fields are invalid")
+    model_rows = value.get("model_skus")
+    if type(model_rows) is not list:
+        raise ValueError("model_skus must be a list")
+    models: list[ModelSkuAssignment] = []
+    for row in model_rows:
+        if not isinstance(row, Mapping) or set(row) != {
+            "variant_key",
+            "model_sku",
+        }:
+            raise ValueError("model SKU assignment fields are invalid")
+        models.append(
+            ModelSkuAssignment(
+                variant_key=row.get("variant_key"),
+                model_sku=row.get("model_sku"),
+            )
+        )
+    return SkuAssignment(
+        seller_sku=value.get("seller_sku"),
+        model_skus=tuple(models),
+    )
+
+
+def _sku_reservation_contract(
+    *,
+    lineage: Mapping[str, Any],
+    reservation: Mapping[str, Any],
+    assignment: SkuAssignment,
+) -> NewSourceSkuReservation | SkuLineageReservation:
+    keys = reservation.get("reservation_keys")
+    if type(keys) is not list or any(type(value) is not str for value in keys):
+        raise ValueError("reservation_keys must be built-in strings")
+    idempotent = reservation.get("idempotent")
+    if type(idempotent) is not bool:
+        raise ValueError("reservation idempotent must be a literal bool")
+    mode = lineage.get("lineage_mode")
+    if mode == "NEW_SOURCE":
+        if set(reservation) != {
+            "schema_version",
+            "source_identity_digest",
+            "assignment",
+            "reservation_digest",
+            "reservation_keys",
+            "idempotent",
+        }:
+            raise ValueError("new-source reservation fields are invalid")
+        return NewSourceSkuReservation(
+            schema_version=reservation.get("schema_version"),
+            source_identity_digest=reservation.get(
+                "source_identity_digest"
+            ),
+            assignment=assignment,
+            reservation_digest=reservation.get("reservation_digest"),
+            reservation_keys=tuple(keys),
+            idempotent=idempotent,
+        )
+    if mode != "INHERITED_PREDECESSOR":
+        raise ValueError("lineage_mode is invalid")
+    if set(reservation) != {
+        "schema_version",
+        "source_identity_digest",
+        "predecessor_id",
+        "predecessor_revision",
+        "predecessor_digest",
+        "assignment",
+        "reservation_digest",
+        "reservation_keys",
+        "idempotent",
+    }:
+        raise ValueError("inherited reservation fields are invalid")
+    contract = SkuLineageReservation(
+        schema_version=reservation.get("schema_version"),
+        source_identity_digest=reservation.get("source_identity_digest"),
+        predecessor_id=reservation.get("predecessor_id"),
+        predecessor_revision=reservation.get("predecessor_revision"),
+        predecessor_digest=reservation.get("predecessor_digest"),
+        assignment=assignment,
+        reservation_digest=reservation.get("reservation_digest"),
+        reservation_keys=tuple(keys),
+        idempotent=idempotent,
+    )
+    if (
+        lineage.get("predecessor_id") != contract.predecessor_id
+        or lineage.get("predecessor_revision")
+        != contract.predecessor_revision
+        or lineage.get("predecessor_digest") != contract.predecessor_digest
+    ):
+        raise ValueError("lineage predecessor does not match reservation")
+    return contract
+
+
+def _insert_source_sku_lineage_in_transaction(
+    connection: sqlite3.Connection,
+    plan: Mapping[str, Any],
+    *,
+    now: str,
+) -> dict[str, bool]:
+    identity = plan.get("source_product_identity")
+    lineage = plan.get("sku_lineage")
+    if identity is None and lineage is None:
+        return {"inherited_existing_source": False}
+    if not isinstance(identity, Mapping) or not isinstance(lineage, Mapping):
+        raise SkuReservationConflict(
+            "source identity and SKU lineage reservation are required"
+        )
+    assignment = lineage.get("assignment")
+    reservation = lineage.get("reservation")
+    if (
+        lineage.get("schema_version") != "sku-lineage-reservation/v1"
+        or lineage.get("status") != "READY"
+        or lineage.get("ready") is not True
+        or not isinstance(assignment, Mapping)
+        or not isinstance(reservation, Mapping)
+        or assignment.get("seller_sku") != plan.get("seller_sku")
+    ):
+        raise SkuReservationConflict("SKU lineage reservation is invalid")
+    try:
+        source_contract = _source_identity_contract(identity)
+        if source_contract.payload() != dict(identity):
+            raise ValueError("source identity is not canonical")
+        source_digest = source_contract.identity_digest
+        source_offer_id = source_contract.source_offer_id
+        source_authority = source_contract.source_authority
+        assignment_contract = _sku_assignment_contract(assignment)
+        reservation_contract = _sku_reservation_contract(
+            lineage=lineage,
+            reservation=reservation,
+            assignment=assignment_contract,
+        )
+    except (TypeError, ValueError) as error:
+        raise SkuReservationConflict(
+            "SKU lineage reservation shape is invalid"
+        ) from error
+    reservation_payload = reservation_contract.payload()
+    reservation_digest = reservation_payload["reservation_digest"]
+    reservation_keys = reservation_payload["reservation_keys"]
+    if (
+        reservation_contract.source_identity_digest != source_digest
+        or assignment_contract.payload() != dict(assignment)
+        or reservation_payload != dict(reservation)
+    ):
+        raise SkuReservationConflict(
+            "SKU lineage reservation does not match its typed contract"
+        )
+    existing = connection.execute(
+        """
+        SELECT * FROM release_source_sku_reservations
+        WHERE reservation_digest = ?
+        """,
+        (reservation_digest,),
+    ).fetchone()
+    inherited_existing_source = False
+    if existing:
+        if (
+            existing["source_identity_digest"] != source_digest
+            or json.loads(existing["assignment_json"]) != dict(assignment)
+            or json.loads(existing["reservation_keys_json"]) != reservation_keys
+        ):
+            raise SkuReservationConflict(
+                "reservation digest belongs to different SKU lineage"
+            )
+        inherited_existing_source = True
+    else:
+        placeholders = ",".join("?" for _ in reservation_keys)
+        conflicts = connection.execute(
+            f"""
+            SELECT key.sku_key, reservation.*
+            FROM release_source_sku_reservation_keys AS key
+            JOIN release_source_sku_reservations AS reservation
+              ON reservation.reservation_digest = key.reservation_digest
+            WHERE key.status = 'ACTIVE'
+              AND key.sku_key IN ({placeholders})
+            """,
+            tuple(reservation_keys),
+        ).fetchall()
+        if conflicts and any(
+            row["source_identity_digest"] != source_digest
+            for row in conflicts
+        ):
+            raise SkuReservationConflict(
+                "SKU lineage keys are reserved by another canonical source"
+            )
+        inherited_existing_source = bool(conflicts)
+        for old_digest in {
+            row["reservation_digest"] for row in conflicts
+        }:
+            connection.execute(
+                """
+                UPDATE release_source_sku_reservations
+                SET status = 'SUPERSEDED', updated_at = ?
+                WHERE reservation_digest = ? AND status = 'ACTIVE'
+                """,
+                (now, old_digest),
+            )
+            connection.execute(
+                """
+                UPDATE release_source_sku_reservation_keys
+                SET status = 'SUPERSEDED', updated_at = ?
+                WHERE reservation_digest = ? AND status = 'ACTIVE'
+                """,
+                (now, old_digest),
+            )
+        connection.execute(
+            """
+            INSERT INTO release_source_sku_reservations (
+                reservation_digest, source_identity_digest, source_offer_id,
+                source_authority, lineage_mode, predecessor_id,
+                predecessor_revision, predecessor_digest, assignment_json,
+                reservation_keys_json, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?)
+            """,
+            (
+                reservation_digest,
+                source_digest,
+                source_offer_id,
+                source_authority,
+                lineage.get("lineage_mode"),
+                getattr(reservation_contract, "predecessor_id", None),
+                getattr(reservation_contract, "predecessor_revision", None),
+                getattr(reservation_contract, "predecessor_digest", None),
+                _canonical_json(assignment_contract.payload()),
+                _canonical_json(reservation_keys),
+                now,
+                now,
+            ),
+        )
+        connection.executemany(
+            """
+            INSERT INTO release_source_sku_reservation_keys (
+                reservation_digest, sku_key, status, created_at, updated_at
+            ) VALUES (?, ?, 'ACTIVE', ?, ?)
+            """,
+            [
+                (reservation_digest, key, now, now)
+                for key in reservation_keys
+            ],
+        )
+    connection.execute(
+        """
+        INSERT INTO release_source_sku_plan_links (
+            plan_id, reservation_digest, created_at
+        ) VALUES (?, ?, ?)
+        """,
+        (plan["plan_id"], reservation_digest, now),
+    )
+    return {"inherited_existing_source": inherited_existing_source}
 
 
 def _target_scoped_operation_from_row(
@@ -836,23 +1240,40 @@ class ReleaseStore:
                             now=now,
                         )
 
-                connection.execute(
-                    """
-                    INSERT INTO release_sku_reservations (
-                        reservation_id, plan_id, product_id, seller_sku,
-                        sku_key, status, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, ?)
-                    """,
-                    (
-                        f"sku-reservation:{plan_id}",
-                        plan_id,
-                        plan["product_id"],
-                        plan["seller_sku"],
-                        sku_key,
-                        now,
-                        now,
-                    ),
+                source_lineage = _insert_source_sku_lineage_in_transaction(
+                    connection,
+                    plan,
+                    now=now,
                 )
+                active_legacy = connection.execute(
+                    """
+                    SELECT * FROM release_sku_reservations
+                    WHERE sku_key = ? AND status = 'ACTIVE'
+                    """,
+                    (sku_key,),
+                ).fetchone()
+                if not active_legacy:
+                    connection.execute(
+                        """
+                        INSERT INTO release_sku_reservations (
+                            reservation_id, plan_id, product_id, seller_sku,
+                            sku_key, status, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, 'ACTIVE', ?, ?)
+                        """,
+                        (
+                            f"sku-reservation:{plan_id}",
+                            plan_id,
+                            plan["product_id"],
+                            plan["seller_sku"],
+                            sku_key,
+                            now,
+                            now,
+                        ),
+                    )
+                elif not source_lineage["inherited_existing_source"]:
+                    raise SkuReservationConflict(
+                        f"seller SKU key {sku_key} is already reserved"
+                    )
                 row = connection.execute(
                     "SELECT * FROM release_plans WHERE plan_id = ?",
                     (plan_id,),
@@ -887,10 +1308,25 @@ class ReleaseStore:
                     "SELECT * FROM release_sku_reservations WHERE plan_id = ?",
                     (_text(plan_id),),
                 ).fetchone()
+                source_reservation = connection.execute(
+                    """
+                    SELECT reservation.*
+                    FROM release_source_sku_plan_links AS link
+                    JOIN release_source_sku_reservations AS reservation
+                      ON reservation.reservation_digest = link.reservation_digest
+                    WHERE link.plan_id = ?
+                    """,
+                    (_text(plan_id),),
+                ).fetchone()
             except sqlite3.OperationalError:
                 return None
         result["approval"] = _approval_from_row(approval) if approval else None
         result["sku_reservation"] = dict(reservation) if reservation else None
+        result["source_sku_reservation"] = (
+            _source_sku_reservation_from_row(source_reservation)
+            if source_reservation
+            else None
+        )
         return result
 
     def active_plan_for_product(self, product_id: str) -> dict[str, Any] | None:
@@ -911,6 +1347,115 @@ class ReleaseStore:
             except sqlite3.OperationalError:
                 return None
         return self.get_plan(row["plan_id"]) if row else None
+
+    def source_sku_lineage_context(
+        self,
+        *,
+        source_offer_id: str,
+        source_authority: str,
+        source_identity_digest: str,
+        exclude_product_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Load immutable predecessor/reservation facts for SKU lineage."""
+
+        if not self.path.is_file():
+            return {"predecessor_records": [], "existing_reservations": []}
+        predecessors: list[dict[str, Any]] = []
+        reservations: list[dict[str, Any]] = []
+        with self._connect_readonly() as connection:
+            try:
+                plan_rows = connection.execute(
+                    """
+                    SELECT * FROM release_plans
+                    WHERE status IN ('APPROVED', 'SUPERSEDED')
+                    ORDER BY created_at, plan_id
+                    """
+                ).fetchall()
+                reservation_rows = connection.execute(
+                    """
+                    SELECT * FROM release_source_sku_reservations
+                    WHERE source_identity_digest = ? AND status = 'ACTIVE'
+                    ORDER BY created_at, reservation_digest
+                    """,
+                    (_text(source_identity_digest),),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return {
+                    "predecessor_records": [],
+                    "existing_reservations": [],
+                }
+        for row in plan_rows:
+            if (
+                exclude_product_id
+                and row["product_id"] == _text(exclude_product_id)
+            ):
+                continue
+            payload = json.loads(row["payload_json"])
+            identity = payload.get("source_product_identity")
+            lineage = payload.get("sku_lineage")
+            assignment = (
+                lineage.get("assignment")
+                if isinstance(lineage, Mapping)
+                else None
+            )
+            if not isinstance(identity, Mapping):
+                continue
+            if (
+                identity.get("source_offer_id") != source_offer_id
+                or identity.get("source_authority") != source_authority
+            ):
+                continue
+            try:
+                source_contract = _source_identity_contract(identity)
+            except (TypeError, ValueError) as error:
+                raise ImmutableReleaseError(
+                    "stored source identity contract is invalid"
+                ) from error
+            revision = payload.get("product_revision")
+            if type(revision) is not int or revision < 0:
+                raise ImmutableReleaseError(
+                    "stored predecessor revision is invalid"
+                )
+            if (
+                source_contract.payload() != dict(identity)
+                or not isinstance(assignment, Mapping)
+            ):
+                raise ImmutableReleaseError(
+                    "stored predecessor lineage is invalid"
+                )
+            predecessors.append(
+                {
+                    "predecessor_id": row["plan_id"],
+                    "revision": revision,
+                    "status": (
+                        "APPROVED"
+                        if row["status"] == "APPROVED"
+                        else "RELEASED"
+                    ),
+                    "source_identity": {
+                        "source_offer_id": source_offer_id,
+                        "source_authority": source_authority,
+                        "identity_digest": source_contract.identity_digest,
+                    },
+                    "seller_sku": assignment.get("seller_sku"),
+                    "model_skus": list(assignment.get("model_skus") or ()),
+                    "predecessor_digest": lineage.get(
+                        "predecessor_digest"
+                    ),
+                }
+            )
+        for row in reservation_rows:
+            value = _source_sku_reservation_from_row(row)
+            # A NEW_SOURCE ownership row is superseded atomically by the first
+            # inherited reservation. Passing it to the 01 resolver would
+            # incorrectly treat its different predecessor identity as an
+            # overlapping conflict.
+            if value["lineage_mode"] == "INHERITED_PREDECESSOR":
+                reservations.append(value)
+        return {
+            "predecessor_records": predecessors,
+            "existing_reservations": reservations,
+        }
 
     def predecessor_plan_for(self, successor_plan_id: str) -> dict[str, Any] | None:
         """Return the exact plan atomically superseded by one successor."""

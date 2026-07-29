@@ -1,7 +1,15 @@
 import sqlite3
+import threading
 
 import pytest
 
+from domains.product_operations import (
+    ModelSkuAssignment,
+    SkuAssignment,
+    finalize_new_source_sku_reservation,
+    resolve_sku_lineage_reservation,
+    resolve_source_product_identity,
+)
 from shared_platform.release_store import (
     RELEASE_TARGET_LABELS,
     ImmutableReleaseError,
@@ -44,6 +52,44 @@ def _approved_store(tmp_path, *, targets=None):
         confirmation_token=plan["confirmation_token"],
     )
     return store, plan, approval
+
+
+def _plan_with_source_lineage(**overrides):
+    source = resolve_source_product_identity(
+        collect_box={"source_item_id": "168812345"},
+        precollect={"source_id": "168812345"},
+        source_authority="1688",
+    )
+    assert source.ready and source.identity is not None
+    assignment = SkuAssignment(
+        seller_sku="0946",
+        model_skus=(
+            ModelSkuAssignment(
+                variant_key="default",
+                model_sku="0946",
+            ),
+        ),
+    )
+    unresolved = resolve_sku_lineage_reservation(
+        source_identity=source.identity,
+        predecessor_records=[],
+    )
+    finalized = finalize_new_source_sku_reservation(
+        source_identity=source.identity,
+        assignment=assignment,
+    )
+    assert unresolved.ready and finalized.ready
+    payload = _plan(
+        product_revision=31,
+        source_product_identity=source.identity.payload(),
+        sku_lineage={
+            **unresolved.payload(),
+            "assignment": assignment.payload(),
+            "reservation": finalized.reservation.payload(),
+        },
+    )
+    payload.update(overrides)
+    return payload
 
 
 def _failed_shopee_repair_store(tmp_path):
@@ -791,3 +837,90 @@ def test_retry_scope_must_only_contain_failed_targets(tmp_path):
             run["run_id"],
             ["tiktok:LH_PH"],
         )
+
+
+@pytest.mark.parametrize("tamper", ["digest", "provenance"])
+def test_store_rejects_tampered_source_identity_before_reservation(
+    tmp_path,
+    tamper,
+):
+    payload = _plan_with_source_lineage()
+    identity = dict(payload["source_product_identity"])
+    if tamper == "digest":
+        identity["identity_digest"] = "sha256:" + "0" * 64
+    else:
+        provenance = [dict(row) for row in identity["provenance"]]
+        provenance[0]["source_offer_id"] = "999999"
+        identity["provenance"] = provenance
+    payload["source_product_identity"] = identity
+    store = ReleaseStore(tmp_path / "release.db")
+
+    with pytest.raises(ValueError, match="identity|provenance"):
+        store.create_plan(payload)
+
+    assert store.get_plan(payload["plan_id"]) is None
+    assert store.active_sku_reservations() == []
+
+
+@pytest.mark.parametrize("revision", [True, "31"])
+def test_store_rejects_non_builtin_predecessor_revision(
+    tmp_path,
+    revision,
+):
+    payload = _plan_with_source_lineage(product_revision=revision)
+    store = ReleaseStore(tmp_path / "release.db")
+
+    with pytest.raises(ValueError, match="product_revision"):
+        store.create_plan(payload)
+
+    assert store.get_plan(payload["plan_id"]) is None
+    assert store.active_sku_reservations() == []
+
+
+def test_concurrent_same_source_reservation_has_one_durable_owner(tmp_path):
+    path = tmp_path / "release.db"
+    first = _plan_with_source_lineage()
+    second = {
+        **_plan_with_source_lineage(),
+        "plan_id": "omnichannel:plan-v2-same-source",
+        "product_id": "same-source-product-v2",
+        "product_package_id": "product:same-source-v2:0946",
+        "content_package_id": "content:same-source-v2:r1",
+    }
+    outcomes = []
+
+    def create(payload):
+        outcomes.append(ReleaseStore(path).create_plan(payload)["plan_id"])
+
+    threads = [
+        threading.Thread(target=create, args=(payload,))
+        for payload in (first, second)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert sorted(outcomes) == sorted(
+        [first["plan_id"], second["plan_id"]]
+    )
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM release_source_sku_reservations"
+        ).fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT COUNT(*) FROM release_source_sku_reservation_keys"
+        ).fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT COUNT(*) FROM release_source_sku_plan_links"
+        ).fetchone()[0] == 2
+
+    restarted = ReleaseStore(path)
+    context = restarted.source_sku_lineage_context(
+        source_offer_id="168812345",
+        source_authority="1688",
+        source_identity_digest=first[
+            "source_product_identity"
+        ]["identity_digest"],
+    )
+    assert len(context["existing_reservations"]) <= 1

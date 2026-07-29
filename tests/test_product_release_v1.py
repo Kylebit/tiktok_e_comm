@@ -11,6 +11,13 @@ from domains.channel_operations.release_executor import (
     AdapterExecutionResult,
     AdapterRegistration,
 )
+from domains.product_operations import (
+    ModelSkuAssignment,
+    SkuAssignment,
+    finalize_new_source_sku_reservation,
+    resolve_sku_lineage_reservation,
+    resolve_source_product_identity,
+)
 from shared_platform import release_control, release_store
 from shared_platform.release_store import ReleaseStore
 
@@ -19,8 +26,66 @@ def _dashboard() -> dict:
     targets = ["miaoshou:COMMON", "tiktok:MX"]
     approved_title = "Cute Dog PVC Wall Sticker 34 x 58 cm"
     copy_signature = "sha256:copy-facts-v1"
+    source_inputs = {
+        "collect_box": {
+            "source_item_id": "986159122616",
+            "source_item_code": "DOG-WALL-34X58",
+        },
+        "precollect": {
+            "records": [{"source_id": "986159122616"}],
+        },
+        "source_record": {"source_id": "986159122616"},
+        "source_authority": "1688",
+    }
+    source_resolution = resolve_source_product_identity(**source_inputs)
+    assert source_resolution.ready is True
+    assert source_resolution.identity is not None
+    lineage_resolution = resolve_sku_lineage_reservation(
+        source_identity=source_resolution.identity,
+        predecessor_records=(),
+    )
+    assignment = SkuAssignment(
+        seller_sku="0952",
+        model_skus=(
+            ModelSkuAssignment(
+                variant_key="default",
+                model_sku="0952",
+            ),
+        ),
+    )
+    finalized = finalize_new_source_sku_reservation(
+        source_identity=source_resolution.identity,
+        assignment=assignment,
+    )
+    assert finalized.ready is True
+    assert finalized.reservation is not None
+    lineage_payload = {
+        **lineage_resolution.payload(),
+        "assignment": assignment.payload(),
+        "reservation": finalized.reservation.payload(),
+    }
     return {
         "ok": True,
+        "_source_identity_inputs": source_inputs,
+        "_source_product_identity": source_resolution.payload(),
+        "_sku_lineage": lineage_payload,
+        "source_product_identity": {
+            "schema_version": source_resolution.payload()["schema_version"],
+            "status": source_resolution.status,
+            "ready": source_resolution.ready,
+            "blockers": [],
+            "identity_digest": source_resolution.identity.identity_digest,
+            "source_item_code": source_resolution.identity.source_item_code,
+        },
+        "sku_lineage": {
+            "schema_version": lineage_payload["schema_version"],
+            "status": lineage_payload["status"],
+            "ready": lineage_payload["ready"],
+            "lineage_mode": lineage_payload["lineage_mode"],
+            "assignment": lineage_payload["assignment"],
+            "reservation_digest": finalized.reservation.reservation_digest,
+            "blockers": [],
+        },
         "product": {
             "offer_id": "3828540231",
             "seller_sku_candidate": "0952",

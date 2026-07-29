@@ -33,9 +33,14 @@ from domains.content_operations import (
     release_listing_copy_identity,
 )
 from domains.product_operations import (
+    ModelSkuAssignment,
+    SkuAssignment,
     build_product_facts_snapshot,
+    finalize_new_source_sku_reservation,
     preview_product_approval_lock,
     reservations_from_documents,
+    resolve_sku_lineage_reservation,
+    resolve_source_product_identity,
 )
 from modules.finance.profit_engine import exchange_rate_for
 from modules.ozon.price_convert import exchange_rates as ozon_exchange_rates
@@ -1130,6 +1135,187 @@ def build_release_dashboard(
         and str(collect_box.get("detail_id") or "").strip() != collect_box_id
     ):
         raise ValueError("review package collect-box identity does not match its evidence directory")
+    source_identity_inputs = {
+        "collect_box": dict(collect_box),
+        "precollect": (
+            dict(source.get("precollect"))
+            if isinstance(source.get("precollect"), Mapping)
+            else {}
+        ),
+        "source_record": (
+            dict(source.get("source_record"))
+            if isinstance(source.get("source_record"), Mapping)
+            else {}
+        ),
+        "source_authority": str(
+            source.get("source_authority") or "1688"
+        ),
+    }
+    source_identity_resolution = resolve_source_product_identity(
+        **source_identity_inputs
+    )
+    source_identity_payload = source_identity_resolution.payload()
+    source_identity_public = {
+        "schema_version": source_identity_payload["schema_version"],
+        "status": source_identity_payload["status"],
+        "ready": source_identity_payload["ready"],
+        "blockers": list(source_identity_payload["blockers"]),
+        "identity_digest": (
+            source_identity_payload["identity"].get("identity_digest")
+            if isinstance(source_identity_payload.get("identity"), Mapping)
+            else None
+        ),
+        "source_item_code": (
+            source_identity_payload["identity"].get("source_item_code")
+            if isinstance(source_identity_payload.get("identity"), Mapping)
+            else None
+        ),
+    }
+    lineage_context = (
+        release_store.source_sku_lineage_context(
+            source_offer_id=source_identity_resolution.identity.source_offer_id,
+            source_authority=source_identity_resolution.identity.source_authority,
+            source_identity_digest=(
+                source_identity_resolution.identity.identity_digest
+            ),
+            exclude_product_id=clean_offer_id,
+        )
+        if source_identity_resolution.ready
+        and source_identity_resolution.identity is not None
+        else {"predecessor_records": [], "existing_reservations": []}
+    )
+    current_lineage_payload = (
+        ((lineage_plan or {}).get("payload") or {}).get("sku_lineage")
+        if isinstance((lineage_plan or {}).get("payload"), Mapping)
+        else None
+    )
+    current_lineage_identity = (
+        ((lineage_plan or {}).get("payload") or {}).get(
+            "source_product_identity"
+        )
+        if isinstance((lineage_plan or {}).get("payload"), Mapping)
+        else None
+    )
+    reused_lineage_payload: dict[str, Any] | None = None
+    if (
+        source_identity_resolution.ready
+        and source_identity_resolution.identity is not None
+        and isinstance(current_lineage_payload, Mapping)
+        and isinstance(current_lineage_identity, Mapping)
+        and current_lineage_identity.get("identity_digest")
+        == source_identity_resolution.identity.identity_digest
+    ):
+        sku_lineage_resolution = None
+        reused_lineage_payload = dict(current_lineage_payload)
+    elif (
+        source_identity_resolution.identity is not None
+        and source_identity_resolution.ready
+    ):
+        sku_lineage_resolution = resolve_sku_lineage_reservation(
+            source_identity=source_identity_resolution.identity,
+            predecessor_records=lineage_context["predecessor_records"],
+            existing_reservations=lineage_context[
+                "existing_reservations"
+            ],
+        )
+    else:
+        sku_lineage_resolution = None
+    sku_lineage_payload = (
+        reused_lineage_payload
+        or (
+            sku_lineage_resolution.payload()
+            if sku_lineage_resolution is not None
+            else {
+                "schema_version": "sku-lineage-reservation/v1",
+                "status": "BLOCKED_SKU_LINEAGE",
+                "ready": False,
+                "lineage_mode": "BLOCKED",
+                "blockers": list(source_identity_resolution.blockers),
+            }
+        )
+    )
+    if (
+        sku_lineage_resolution is not None
+        and sku_lineage_resolution.ready
+        and sku_lineage_resolution.lineage_mode == "NEW_SOURCE"
+    ):
+        variant_keys = list(
+            review.get("selected_sku_keys") or ("default",)
+        )
+        model_values = list(next_seller_skus[: len(variant_keys)])
+        if len(model_values) < len(variant_keys):
+            base = int(clean_seller_sku)
+            model_values = [
+                f"{base + index:04d}"
+                for index in range(len(variant_keys))
+            ]
+        try:
+            assignment = SkuAssignment(
+                seller_sku=clean_seller_sku,
+                model_skus=tuple(
+                    ModelSkuAssignment(
+                        variant_key=key,
+                        model_sku=model_sku,
+                    )
+                    for key, model_sku in zip(
+                        variant_keys,
+                        model_values,
+                    )
+                ),
+            )
+        except (TypeError, ValueError) as error:
+            sku_lineage_payload = {
+                **sku_lineage_payload,
+                "status": "BLOCKED_SKU_LINEAGE",
+                "ready": False,
+                "assignment": None,
+                "reservation": None,
+                "blockers": [
+                    f"BLOCKED_SKU_LINEAGE: {error}",
+                ],
+            }
+        else:
+            finalized = finalize_new_source_sku_reservation(
+                source_identity=source_identity_resolution.identity,
+                assignment=assignment,
+                existing_reservations=lineage_context[
+                    "existing_reservations"
+                ],
+            )
+            if finalized.ready and finalized.reservation is not None:
+                sku_lineage_payload = {
+                    **sku_lineage_payload,
+                    "assignment": assignment.payload(),
+                    "reservation": finalized.reservation.payload(),
+                }
+            else:
+                sku_lineage_payload = {
+                    **sku_lineage_payload,
+                    "status": "BLOCKED_SKU_LINEAGE",
+                    "ready": False,
+                    "assignment": None,
+                    "reservation": None,
+                    "blockers": list(finalized.blockers),
+                }
+    sku_lineage_blockers = list(
+        sku_lineage_payload.get("blockers") or ()
+    )
+    if (
+        sku_lineage_resolution is not None
+        and sku_lineage_resolution.ready
+        and sku_lineage_resolution.lineage_mode == "INHERITED_PREDECESSOR"
+        and sku_lineage_resolution.assignment is not None
+    ):
+        clean_seller_sku = sku_lineage_resolution.assignment.seller_sku
+        seller_sku_source = "source_lineage_inheritance"
+        lineage_owns_seller_sku = True
+        approval_known_skus = tuple(
+            value for value in known_skus if value != clean_seller_sku
+        )
+        displayed_sku_range = tuple(
+            row.model_sku
+            for row in sku_lineage_resolution.assignment.model_skus
+        )
     suite_plan = (
         review_package.get("plan")
         if isinstance(review_package.get("plan"), Mapping)
@@ -1301,6 +1487,7 @@ def build_release_dashboard(
             [
                 *approval_preview.blockers,
                 *seller_sku_blockers,
+                *sku_lineage_blockers,
                 *commercial_blockers,
                 *product_facts.blockers,
             ]
@@ -1456,6 +1643,8 @@ def build_release_dashboard(
         and bool(current_image_urls)
     )
     actual_blockers: list[str] = []
+    actual_blockers.extend(source_identity_resolution.blockers)
+    actual_blockers.extend(sku_lineage_blockers)
     actual_blockers.extend(commercial_blockers)
     actual_blockers.extend(seller_sku_blockers)
     actual_blockers.extend(product_facts.blockers)
@@ -1484,6 +1673,15 @@ def build_release_dashboard(
     )
     source_skus: list[dict[str, Any]] = []
     seen_source_sku_keys: set[str] = set()
+    inherited_model_skus = {
+        str(row.get("variant_key") or ""): str(row.get("model_sku") or "")
+        for row in (
+            (sku_lineage_payload.get("assignment") or {}).get("model_skus")
+            if isinstance(sku_lineage_payload.get("assignment"), Mapping)
+            else ()
+        )
+        if isinstance(row, Mapping)
+    }
     sku_label_overrides = (
         review.get("sku_label_overrides")
         if isinstance(review.get("sku_label_overrides"), Mapping)
@@ -1498,16 +1696,17 @@ def build_release_dashboard(
         seen_source_sku_keys.add(key)
         source_name = str(row.get("name") or key).strip() or key
         name = str(sku_label_overrides.get(key) or source_name).strip()
-        source_skus.append(
-            {
-                "key": key,
-                "label": name,
-                "name": name,
-                "source_label": source_name,
-                "label_overridden": name != source_name,
-                "price_cny": row.get("price"),
-            }
-        )
+        source_sku = {
+            "key": key,
+            "label": name,
+            "name": name,
+            "source_label": source_name,
+            "label_overridden": name != source_name,
+            "price_cny": row.get("price"),
+        }
+        if inherited_model_skus.get(key):
+            source_sku["model_sku"] = inherited_model_skus[key]
+        source_skus.append(source_sku)
     return {
         "ok": True,
         "schema_version": "release-candidate-v1",
@@ -1518,13 +1717,34 @@ def build_release_dashboard(
             "external_writes_performed": [],
             "message": "No workbench, database, marketplace, or channel write was performed.",
         },
+        "_source_product_identity": source_identity_payload,
+        "_source_identity_inputs": source_identity_inputs,
+        "_sku_lineage": sku_lineage_payload,
+        "source_product_identity": source_identity_public,
+        "sku_lineage": {
+            "schema_version": sku_lineage_payload.get("schema_version"),
+            "status": sku_lineage_payload.get("status"),
+            "ready": sku_lineage_payload.get("ready"),
+            "lineage_mode": sku_lineage_payload.get("lineage_mode"),
+            "assignment": sku_lineage_payload.get("assignment"),
+            "reservation_digest": (
+                (sku_lineage_payload.get("reservation") or {}).get(
+                    "reservation_digest"
+                )
+                if isinstance(
+                    sku_lineage_payload.get("reservation"), Mapping
+                )
+                else None
+            ),
+            "blockers": list(sku_lineage_payload.get("blockers") or ()),
+        },
         "product": {
             "offer_id": clean_offer_id,
-            "source_offer_id": str(
-                collect_box.get("source_item_id")
-                or source.get("source_item_code")
+            "source_item_code": str(
+                source.get("source_item_code")
+                or source.get("itemNum")
                 or ""
-            ),
+            ).strip(),
             "seller_sku_candidate": clean_seller_sku,
             "title": product_row["title"],
             "source_title_zh": str(

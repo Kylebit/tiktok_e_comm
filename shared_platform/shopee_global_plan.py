@@ -84,6 +84,37 @@ class ShopeeGlobalPlanDriftError(ShopeeGlobalPlanContractError):
     """An approved decision no longer matches the current candidate."""
 
 
+class ShopeeGlobalPlanObservationError(ShopeeGlobalPlanContractError):
+    """Redacted failure from the channel-owned read-only observation seam."""
+
+    def __init__(self, *, category: str, code: str) -> None:
+        if category not in {"AUTH", "CAPABILITY"}:
+            raise ShopeeGlobalPlanContractError(
+                "observation failure category is invalid"
+            )
+        if not _CODE_RE.fullmatch(code):
+            raise ShopeeGlobalPlanContractError(
+                "observation failure code is invalid"
+            )
+        super().__init__(code)
+        self.category = category
+        self.code = code
+
+    def public_projection(self) -> dict[str, Any]:
+        return {
+            "schema_version": CANDIDATE_SCHEMA_VERSION,
+            "status": (
+                "BLOCKED_AUTH"
+                if self.category == "AUTH"
+                else BLOCKED_CAPABILITY
+            ),
+            "planning_allowed": False,
+            "reason_category": self.category,
+            "reason_code": self.code,
+            "blocker_codes": [self.code],
+        }
+
+
 class _Violation(ShopeeGlobalPlanContractError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
@@ -1783,6 +1814,7 @@ __all__ = [
     "ShopeeGlobalPlanCandidate",
     "ShopeeGlobalPlanContractError",
     "ShopeeGlobalPlanDriftError",
+    "ShopeeGlobalPlanObservationError",
     "approve_shopee_global_plan",
     "build_shopee_global_plan_candidate",
     "rehydrate_approved_shopee_global_plan",

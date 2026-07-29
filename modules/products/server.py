@@ -11,8 +11,10 @@ import time
 import hashlib
 import math
 import os
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import date, datetime, timezone
+from decimal import Decimal, InvalidOperation
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -31,6 +33,16 @@ PRODUCT_APPROVAL_BODY_LIMIT = 64 * 1024
 _READONLY_SHOPEE_RECONCILE_TARGETS = frozenset({"shopee:PH", "shopee:TH"})
 _ONECLICK_SHOPEE_MANUAL_REVIEW_TARGETS = frozenset(
     {"shopee:PH", "shopee:MY", "shopee:TH", "shopee:VN"}
+)
+_SHOPEE_GLOBAL_PLAN_PREVIEW_SCHEMA = "shopee-global-plan-preview/v1"
+_SHOPEE_GLOBAL_PLAN_APPROVAL_RESPONSE_SCHEMA = (
+    "shopee-global-plan-approval-response/v1"
+)
+_SHOPEE_GLOBAL_PLAN_OBSERVER_REQUEST_SCHEMA = (
+    "shopee-global-plan-observer-request/v1"
+)
+_SHOPEE_GLOBAL_PLAN_POLICY_SCHEMA = (
+    "shopee-global-plan-platform-policy/v1"
 )
 _READONLY_SHOPEE_RECONCILE_CHECKS = frozenset(
     {
@@ -1273,7 +1285,478 @@ def _generate_product_workspace_title_draft(data: dict) -> tuple[int, dict]:
     }
 
 
-def _release_plan_payload_from_dashboard(dashboard: dict) -> tuple[dict, list[str]]:
+def _server_canonical_digest(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _is_lower_sha256(value: object) -> bool:
+    return bool(
+        type(value) is str
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _canonical_sha256(value: object) -> str:
+    if type(value) is str and value.startswith("sha256:"):
+        value = value[7:]
+    if not _is_lower_sha256(value):
+        raise ValueError("value is not a SHA-256 digest")
+    return value
+
+
+def _canonical_decimal_text(value: object) -> str:
+    if isinstance(value, bool):
+        raise ValueError("boolean is not a decimal")
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError) as error:
+        raise ValueError("value is not a decimal") from error
+    if not number.is_finite():
+        raise ValueError("decimal must be finite")
+    text = format(number.normalize(), "f")
+    return "0" if text in {"-0", ""} else text
+
+
+def _positive_decimal_text(value: object) -> str:
+    text = _canonical_decimal_text(value)
+    if Decimal(text) <= 0:
+        raise ValueError("decimal must be positive")
+    return text
+
+
+def _shopee_global_plan_seed(payload: dict) -> dict:
+    """Derive every non-official candidate fact from server-owned state."""
+
+    from shared_platform.target_scoped_release_contracts import (
+        approved_shopee_copy_digest,
+        approved_source_image_manifest_digest,
+    )
+
+    source_identity = payload.get("source_product_identity")
+    sku_lineage = payload.get("sku_lineage")
+    reservation = (
+        sku_lineage.get("reservation")
+        if isinstance(sku_lineage, dict)
+        else None
+    )
+    if (
+        not isinstance(source_identity, dict)
+        or not isinstance(sku_lineage, dict)
+        or not isinstance(reservation, dict)
+    ):
+        raise ValueError("Shopee global plan lineage evidence is unavailable")
+    source_digest = _canonical_sha256(
+        source_identity.get("identity_digest")
+    )
+    lineage_digest = _canonical_sha256(
+        reservation.get("reservation_digest")
+    )
+    lineage_schema = reservation.get("schema_version")
+    if type(lineage_schema) is not str or not lineage_schema:
+        raise ValueError("Shopee global plan lineage schema is unavailable")
+
+    listing_copy = payload.get("listing_copy")
+    product_facts = payload.get("product_facts")
+    if not isinstance(listing_copy, dict) or not isinstance(
+        product_facts, dict
+    ):
+        raise ValueError("Shopee global plan copy facts are unavailable")
+    title = product_facts.get("title")
+    description = listing_copy.get("shopee_description_en")
+    if (
+        type(title) is not str
+        or not title.strip()
+        or type(description) is not str
+        or not description.strip()
+    ):
+        raise ValueError("Shopee global description is unavailable")
+    copy_digest = approved_shopee_copy_digest(title, description)
+
+    raw_images = payload.get("images")
+    if type(raw_images) is not list or not raw_images:
+        raise ValueError("Shopee global plan requires approved images")
+    source_images: list[dict] = []
+    source_urls: list[str] = []
+    for expected_position, row in enumerate(
+        raw_images, start=1
+    ):
+        if (
+            not isinstance(row, dict)
+            or type(row.get("position")) is not int
+            or row.get("position") != expected_position
+            or type(row.get("image_url")) is not str
+            or not row["image_url"].startswith("https://")
+        ):
+            raise ValueError("Shopee approved image sequence is invalid")
+        source_urls.append(row["image_url"])
+        source_images.append(
+            {
+                "source_url": row["image_url"],
+                "source_image_digest": _server_canonical_digest(
+                    {
+                        "schema_version": "approved-content-image/v1",
+                        "position": expected_position,
+                        "artifact_id": row.get("artifact_id"),
+                        "audit_id": row.get("audit_id"),
+                        "asset_type": row.get("asset_type"),
+                        "decision_source": row.get("decision_source"),
+                    }
+                ),
+            }
+        )
+    if len(set(source_urls)) != len(source_urls):
+        raise ValueError("Shopee approved image URLs must be unique")
+    image_digests = [
+        row["source_image_digest"] for row in source_images
+    ]
+    if len(set(image_digests)) != len(image_digests):
+        raise ValueError("Shopee approved image identities must be unique")
+    video_urls = payload.get("video_urls")
+    if type(video_urls) is not list or any(
+        type(value) is not str for value in video_urls
+    ):
+        raise ValueError("approved content video shape is invalid")
+    image_manifest_digest = approved_source_image_manifest_digest(
+        source_urls
+    )
+    content_package_digest = _server_canonical_digest(
+        {
+            "schema_version": "approved-content-package-binding/v1",
+            "content_package_id": payload.get("content_package_id"),
+            "content_approval_status": payload.get(
+                "content_approval_status"
+            ),
+            "content_strategy": payload.get("content_strategy"),
+            "images": source_images,
+            "video_urls": video_urls,
+        }
+    )
+
+    package = product_facts.get("package_cm")
+    weight = product_facts.get("weight_kg")
+    if (
+        type(package) is not list
+        or len(package) != 3
+    ):
+        raise ValueError("Shopee global parcel facts are unavailable")
+    normalized_weight = _positive_decimal_text(weight)
+    normalized_package = [
+        _positive_decimal_text(value) for value in package
+    ]
+    parcel_contract_digest = _server_canonical_digest(
+        {
+            "schema_version": "approved-parcel-binding/v1",
+            "weight_kg": normalized_weight,
+            "package_cm": normalized_package,
+            "product_fingerprint": payload.get("product_fingerprint"),
+        }
+    )
+    parcel = {
+        "weight_kg": normalized_weight,
+        "length_cm": normalized_package[0],
+        "width_cm": normalized_package[1],
+        "height_cm": normalized_package[2],
+        "contract_digest": parcel_contract_digest,
+    }
+
+    raw_targets = payload.get("targets")
+    if type(raw_targets) is not list:
+        raise ValueError("Shopee target identity is invalid")
+    targets = [
+        label
+        for label in raw_targets
+        if type(label) is str and label.startswith("shopee:")
+    ]
+    selected_pricing = (
+        (payload.get("pricing") or {}).get("selected_targets")
+        if isinstance(payload.get("pricing"), dict)
+        else None
+    )
+    if not targets or not isinstance(selected_pricing, dict):
+        raise ValueError("Shopee target pricing is unavailable")
+    prices: list[str] = []
+    bound_target_pricing: dict[str, object] = {}
+    for label in targets:
+        row = selected_pricing.get(label)
+        derived = row.get("derived_preview") if isinstance(row, dict) else None
+        price = (
+            derived.get("global_original_price_cny")
+            if isinstance(derived, dict)
+            else None
+        )
+        prices.append(_positive_decimal_text(price))
+        bound_target_pricing[label] = row
+    normalized_prices = set(prices)
+    if len(normalized_prices) != 1:
+        raise ValueError("Shopee global CNY prices are not exact")
+    pricing_digest = _server_canonical_digest(
+        {
+            "schema_version": "approved-shopee-target-pricing-binding/v1",
+            "targets": bound_target_pricing,
+        }
+    )
+    target_pricing = {
+        "currency": "CNY",
+        "global_original_price": next(iter(normalized_prices)),
+        "contract_digest": pricing_digest,
+    }
+    policy_digest = _server_canonical_digest(
+        {"schema_version": _SHOPEE_GLOBAL_PLAN_POLICY_SCHEMA}
+    )
+    return {
+        "source_identity_schema_version": source_identity.get(
+            "schema_version"
+        ),
+        "source_identity_digest": source_digest,
+        "sku_lineage_schema_version": lineage_schema,
+        "sku_lineage_digest": lineage_digest,
+        "content_package_digest": content_package_digest,
+        "title": title,
+        "description": description,
+        "approved_copy_digest": copy_digest,
+        "ordered_approved_images": source_images,
+        "approved_source_image_manifest_digest": image_manifest_digest,
+        "parcel": parcel,
+        "target_pricing": target_pricing,
+        "policy_digest": policy_digest,
+        "targets": targets,
+    }
+
+
+_SHOPEE_GLOBAL_CANDIDATE_FIELDS = frozenset(
+    {
+        "mode",
+        "observation_authority",
+        "observation_schema_version",
+        "observation_evidence_digest",
+        "source_identity_schema_version",
+        "source_identity_digest",
+        "sku_lineage_schema_version",
+        "sku_lineage_digest",
+        "content_package_digest",
+        "title",
+        "description",
+        "approved_copy_digest",
+        "ordered_approved_images",
+        "approved_source_image_manifest_digest",
+        "selected_image_positions",
+        "parcel",
+        "target_pricing",
+        "policy_digest",
+        "category",
+        "attributes",
+        "attributes_complete",
+        "attribute_tree_digest",
+        "brand",
+        "seller_stock",
+        "location",
+        "condition",
+        "preorder",
+        "variations",
+        "variations_complete",
+        "models",
+        "existing_global_item_id",
+        "existing_global_identity_evidence_digest",
+    }
+)
+
+
+def _blocked_shopee_global_plan_candidate():
+    from shared_platform.shopee_global_plan import (
+        build_shopee_global_plan_candidate,
+    )
+
+    return build_shopee_global_plan_candidate(
+        **{field: None for field in _SHOPEE_GLOBAL_CANDIDATE_FIELDS}
+    )
+
+
+def _shopee_global_plan_matches_local_payload(
+    payload: dict,
+    current: object,
+) -> bool:
+    """Verify approved/observed raw facts against local immutable plan facts."""
+
+    if not isinstance(current, dict):
+        return False
+    try:
+        expected = _shopee_global_plan_seed(payload)
+        expected_bindings = {
+            "source_identity_schema_version": expected[
+                "source_identity_schema_version"
+            ],
+            "source_identity_digest": expected["source_identity_digest"],
+            "sku_lineage_schema_version": expected[
+                "sku_lineage_schema_version"
+            ],
+            "sku_lineage_digest": expected["sku_lineage_digest"],
+            "content_package_digest": expected["content_package_digest"],
+            "approved_copy_digest": expected["approved_copy_digest"],
+            "approved_source_image_manifest_digest": expected[
+                "approved_source_image_manifest_digest"
+            ],
+            "parcel_contract_digest": expected["parcel"]["contract_digest"],
+            "target_pricing_digest": expected["target_pricing"][
+                "contract_digest"
+            ],
+            "policy_digest": expected["policy_digest"],
+            "attribute_tree_digest": current["attribute_tree_digest"],
+        }
+        expected_copy = {
+            "title": unicodedata.normalize("NFC", expected["title"].strip()),
+            "description": expected["description"],
+            "approved_copy_digest": expected["approved_copy_digest"],
+        }
+        expected_images = [
+            {
+                "source_url": row["source_url"],
+                "source_image_digest": row["source_image_digest"],
+            }
+            for row in expected["ordered_approved_images"]
+        ]
+        assignment = (
+            (payload.get("sku_lineage") or {}).get("assignment")
+            if isinstance(payload.get("sku_lineage"), dict)
+            else None
+        )
+        model_assignments = (
+            assignment.get("model_skus")
+            if isinstance(assignment, dict)
+            else None
+        )
+        expected_model_skus = (
+            sorted(
+                row["model_sku"]
+                for row in model_assignments
+                if isinstance(row, dict)
+                and type(row.get("model_sku")) is str
+                and row["model_sku"]
+            )
+            if type(model_assignments) is list
+            else []
+        )
+        observed_models = current.get("global_model")
+        observed_model_skus = (
+            sorted(
+                row["global_model_sku"]
+                for row in observed_models
+                if isinstance(row, dict)
+                and type(row.get("global_model_sku")) is str
+                and row["global_model_sku"]
+            )
+            if type(observed_models) is list
+            else []
+        )
+        return bool(
+            current.get("bindings") == expected_bindings
+            and current.get("copy") == expected_copy
+            and current.get("approved_images") == expected_images
+            and current.get("parcel")
+            == {
+                "weight_kg": _canonical_decimal_text(
+                    expected["parcel"]["weight_kg"]
+                ),
+                "package_cm": {
+                    "length": _canonical_decimal_text(
+                        expected["parcel"]["length_cm"]
+                    ),
+                    "width": _canonical_decimal_text(
+                        expected["parcel"]["width_cm"]
+                    ),
+                    "height": _canonical_decimal_text(
+                        expected["parcel"]["height_cm"]
+                    ),
+                },
+                "contract_digest": expected["parcel"]["contract_digest"],
+            }
+            and current.get("pricing")
+            == {
+                "currency": "CNY",
+                "global_original_price": _canonical_decimal_text(
+                    expected["target_pricing"]["global_original_price"]
+                ),
+                "target_pricing_digest": expected["target_pricing"][
+                    "contract_digest"
+                ],
+            }
+            and current.get("policy_digest") == expected["policy_digest"]
+            and bool(expected_model_skus)
+            and observed_model_skus == expected_model_skus
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _observe_shopee_global_plan_candidate(payload: dict):
+    """Call the channel-owned read-only seam and verify server bindings."""
+
+    import importlib
+
+    from shared_platform.shopee_global_plan import (
+        ShopeeGlobalPlanObservationError,
+        ShopeeGlobalPlanCandidate,
+        build_shopee_global_plan_candidate,
+    )
+
+    try:
+        seed = _shopee_global_plan_seed(payload)
+    except (TypeError, ValueError):
+        return _blocked_shopee_global_plan_candidate()
+    request = {
+        "schema_version": _SHOPEE_GLOBAL_PLAN_OBSERVER_REQUEST_SCHEMA,
+        "offer_id": payload.get("product_id"),
+        "product_revision": payload.get("product_revision"),
+        "targets": list(seed["targets"]),
+        "source_identity": payload.get("source_product_identity"),
+        "sku_lineage": payload.get("sku_lineage"),
+        "candidate_seed": {
+            key: value for key, value in seed.items() if key != "targets"
+        },
+    }
+    try:
+        module = importlib.import_module(
+            "domains.channel_operations.oneclick_release_adapters"
+        )
+        observer = getattr(
+            module, "observe_shopee_global_plan_candidate", None
+        )
+        if not callable(observer):
+            return _blocked_shopee_global_plan_candidate()
+        observed = observer(request)
+        if type(observed) is ShopeeGlobalPlanCandidate:
+            candidate = observed
+        elif isinstance(observed, dict) and set(observed) == set(
+            _SHOPEE_GLOBAL_CANDIDATE_FIELDS
+        ):
+            candidate = build_shopee_global_plan_candidate(**observed)
+        else:
+            return _blocked_shopee_global_plan_candidate()
+    except ShopeeGlobalPlanObservationError:
+        raise
+    except Exception:
+        return _blocked_shopee_global_plan_candidate()
+    if candidate.status != "READY" or candidate._plan is None:
+        return candidate
+    if not _shopee_global_plan_matches_local_payload(
+        payload, candidate._plan.payload()
+    ):
+        return _blocked_shopee_global_plan_candidate()
+    return candidate
+
+
+def _release_plan_payload_from_dashboard(
+    dashboard: dict,
+    *,
+    bind_shopee_global_plan: bool = True,
+) -> tuple[dict, list[str]]:
     """Build the exact immutable V1 payload without persisting it."""
     from domains.content_operations import release_listing_copy_identity
     from domains.product_operations import resolve_source_product_identity
@@ -1439,7 +1922,7 @@ def _release_plan_payload_from_dashboard(dashboard: dict) -> tuple[dict, list[st
         "content_approval_status": str(content.get("approval_status") or ""),
         "content_strategy": str(content.get("strategy") or ""),
         "product_facts": {
-            "title": str(product.get("title") or ""),
+            "title": product.get("title"),
             "source_title_zh": str(product.get("source_title_zh") or ""),
             "category": dict(product.get("category") or {}),
             "cost_cny": product.get("cost_cny"),
@@ -1487,7 +1970,397 @@ def _release_plan_payload_from_dashboard(dashboard: dict) -> tuple[dict, list[st
             )
         ),
     }
+    has_shopee_target = any(
+        type(label) is str and label.startswith("shopee:")
+        for label in targets
+    )
+    if (
+        bind_shopee_global_plan
+        and has_shopee_target
+        and not blockers
+    ):
+        from shared_platform.release_store import (
+            ImmutableReleaseError,
+            default_release_store,
+        )
+        from shared_platform.shopee_global_plan import (
+            ShopeeGlobalPlanContractError,
+        )
+
+        try:
+            stored = default_release_store().shopee_global_plan_approval(
+                product_id=payload["product_id"],
+                product_revision=payload["product_revision"],
+            )
+            if not stored:
+                raise ShopeeGlobalPlanContractError(
+                    "current approved Shopee global plan was not found"
+                )
+            approved = stored["approved"]
+            raw_plan = approved._plan.payload()
+            if not _shopee_global_plan_matches_local_payload(
+                payload, raw_plan
+            ):
+                raise ShopeeGlobalPlanContractError(
+                    "approved Shopee global plan drifted from local facts"
+                )
+            compact = {
+                "schema_version": approved.schema_version,
+                "mode": approved.mode,
+                "candidate_digest": approved.candidate_digest,
+                "approved_plan_digest": approved.approved_plan_digest,
+                "selected_image_positions": list(
+                    raw_plan["selected_image_positions"]
+                ),
+                "selected_source_image_manifest_digest": raw_plan[
+                    "selected_source_image_manifest_digest"
+                ],
+                "record_digest": stored["record_digest"],
+            }
+            if (
+                set(compact)
+                != {
+                    "schema_version",
+                    "mode",
+                    "candidate_digest",
+                    "approved_plan_digest",
+                    "selected_image_positions",
+                    "selected_source_image_manifest_digest",
+                    "record_digest",
+                }
+                or any(
+                    not _is_lower_sha256(compact[field])
+                    for field in (
+                        "candidate_digest",
+                        "approved_plan_digest",
+                        "selected_source_image_manifest_digest",
+                        "record_digest",
+                    )
+                )
+            ):
+                raise ShopeeGlobalPlanContractError(
+                    "approved Shopee global plan projection is invalid"
+                )
+            payload["approved_shopee_global_plan"] = compact
+            payload["_approved_shopee_global_plan_record"] = stored[
+                "record_json"
+            ]
+        except (
+            ImmutableReleaseError,
+            ShopeeGlobalPlanContractError,
+            TypeError,
+            ValueError,
+        ):
+            blockers.append(
+                "review_shopee_global_plan: current exact Shopee global "
+                "plan approval is required"
+            )
     return payload, list(dict.fromkeys(value for value in blockers if value))
+
+
+def _shopee_global_plan_preview_for_dashboard(
+    dashboard: dict,
+) -> tuple[dict, dict, object, dict | None]:
+    """Return the current base payload, candidate, and exact approval."""
+
+    from shared_platform.release_store import (
+        ImmutableReleaseError,
+        default_release_store,
+    )
+    from shared_platform.shopee_global_plan import (
+        ShopeeGlobalPlanContractError,
+        ShopeeGlobalPlanObservationError,
+        validate_approved_shopee_global_plan,
+    )
+
+    payload, blockers = _release_plan_payload_from_dashboard(
+        dashboard,
+        bind_shopee_global_plan=False,
+    )
+    if not any(
+        type(label) is str and label.startswith("shopee:")
+        for label in (payload.get("targets") or ())
+    ):
+        raise ValueError("current release scope has no Shopee target")
+    store = default_release_store()
+    try:
+        candidate = _observe_shopee_global_plan_candidate(payload)
+    except ShopeeGlobalPlanObservationError as failure:
+        latest = None
+        try:
+            latest = store.shopee_global_plan_approval(
+                product_id=payload["product_id"],
+            )
+        except (ImmutableReleaseError, TypeError, ValueError):
+            pass
+        return payload, {"blockers": blockers}, failure, latest
+    current: dict | None = None
+    if candidate.status == "READY" and not blockers:
+        try:
+            current = store.shopee_global_plan_approval(
+                product_id=payload["product_id"],
+                product_revision=payload["product_revision"],
+                candidate_digest=candidate.candidate_digest,
+            )
+            if current:
+                validate_approved_shopee_global_plan(
+                    current["approved"], candidate
+                )
+        except (
+            ImmutableReleaseError,
+            ShopeeGlobalPlanContractError,
+            TypeError,
+            ValueError,
+        ):
+            current = None
+    latest = None
+    try:
+        latest = store.shopee_global_plan_approval(
+            product_id=payload["product_id"],
+        )
+    except (ImmutableReleaseError, TypeError, ValueError):
+        latest = None
+    return payload, {"blockers": blockers}, candidate, current or latest
+
+
+def _preview_shopee_global_plan(
+    offer_id: object,
+) -> tuple[int, dict]:
+    """Build one pure/read-only redacted Shopee global plan preview."""
+
+    from shared_platform import release_control
+    from shared_platform.shopee_global_plan import (
+        ShopeeGlobalPlanContractError,
+        ShopeeGlobalPlanObservationError,
+        validate_approved_shopee_global_plan,
+    )
+
+    clean_offer_id = str(offer_id or "").strip()
+    if not clean_offer_id.isdigit() or not 1 <= len(clean_offer_id) <= 32:
+        return 400, {
+            "ok": False,
+            "error": "offer_id must contain 1-32 digits",
+            "external_writes_performed": [],
+        }
+    try:
+        dashboard = release_control.build_release_dashboard(
+            offer_id=clean_offer_id,
+        )
+        payload, state, candidate, approval_row = (
+            _shopee_global_plan_preview_for_dashboard(dashboard)
+        )
+    except FileNotFoundError as error:
+        return 404, {
+            "ok": False,
+            "error": str(error),
+            "external_writes_performed": [],
+        }
+    except (TypeError, ValueError) as error:
+        return 409, {
+            "ok": False,
+            "error": str(error),
+            "external_writes_performed": [],
+        }
+    approval = approval_row["approved"] if approval_row else None
+    if isinstance(candidate, ShopeeGlobalPlanObservationError):
+        return 200, {
+            "ok": True,
+            "schema_version": _SHOPEE_GLOBAL_PLAN_PREVIEW_SCHEMA,
+            "offer_id": payload["product_id"],
+            "product_revision": payload["product_revision"],
+            "candidate": candidate.public_projection(),
+            "approval": (
+                approval.public_projection() if approval is not None else None
+            ),
+            "approval_current": False,
+            "external_writes_performed": [],
+        }
+    approval_current = False
+    if approval is not None and not state["blockers"]:
+        try:
+            validate_approved_shopee_global_plan(approval, candidate)
+            approval_current = bool(
+                approval_row["product_revision"]
+                == payload["product_revision"]
+            )
+        except ShopeeGlobalPlanContractError:
+            approval_current = False
+    return 200, {
+        "ok": True,
+        "schema_version": _SHOPEE_GLOBAL_PLAN_PREVIEW_SCHEMA,
+        "offer_id": payload["product_id"],
+        "product_revision": payload["product_revision"],
+        "candidate": candidate.public_projection(),
+        "approval": (
+            approval.public_projection() if approval is not None else None
+        ),
+        "approval_current": approval_current,
+        "external_writes_performed": [],
+    }
+
+
+def _approve_shopee_global_plan_locally(
+    data: dict,
+) -> tuple[int, dict]:
+    """Persist Kyle's current candidate approval without marketplace writes."""
+
+    from shared_platform import release_control
+    from shared_platform.release_store import (
+        ImmutableReleaseError,
+        ReleaseStoreError,
+        default_release_store,
+    )
+    from shared_platform.shopee_global_plan import (
+        ShopeeGlobalPlanApprovalError,
+        ShopeeGlobalPlanContractError,
+        ShopeeGlobalPlanObservationError,
+        approve_shopee_global_plan,
+        serialize_approved_shopee_global_plan,
+    )
+
+    expected_fields = {
+        "offer_id",
+        "expected_product_revision",
+        "expected_candidate_digest",
+        "approved_by",
+        "confirm_approved_shopee_global_plan",
+    }
+    if set(data) != expected_fields:
+        return 400, {
+            "ok": False,
+            "error": "Shopee global plan approval fields are invalid",
+            "external_writes_performed": [],
+        }
+    clean_offer_id = data.get("offer_id")
+    if (
+        type(clean_offer_id) is not str
+        or not clean_offer_id.isdigit()
+        or not 1 <= len(clean_offer_id) <= 32
+    ):
+        return 400, {
+            "ok": False,
+            "error": "offer_id must contain 1-32 digits",
+            "external_writes_performed": [],
+        }
+    expected_revision = data.get("expected_product_revision")
+    if type(expected_revision) is not int or expected_revision < 0:
+        return 400, {
+            "ok": False,
+            "error": "expected_product_revision must be a non-negative int",
+            "external_writes_performed": [],
+        }
+    if data.get("approved_by") != "Kyle":
+        return 400, {
+            "ok": False,
+            "error": "approved_by must be Kyle",
+            "external_writes_performed": [],
+        }
+    if data.get("confirm_approved_shopee_global_plan") is not True:
+        return 400, {
+            "ok": False,
+            "error": (
+                "literal confirm_approved_shopee_global_plan=true is required"
+            ),
+            "external_writes_performed": [],
+        }
+    try:
+        dashboard = release_control.build_release_dashboard(
+            offer_id=clean_offer_id,
+        )
+        payload, state, candidate, _approval_row = (
+            _shopee_global_plan_preview_for_dashboard(dashboard)
+        )
+    except FileNotFoundError as error:
+        return 404, {
+            "ok": False,
+            "error": str(error),
+            "external_writes_performed": [],
+        }
+    except (TypeError, ValueError) as error:
+        return 409, {
+            "ok": False,
+            "error": str(error),
+            "external_writes_performed": [],
+        }
+    if expected_revision != payload["product_revision"]:
+        return 409, {
+            "ok": False,
+            "error": "product revision changed; refresh the candidate",
+            "external_writes_performed": [],
+        }
+    if isinstance(candidate, ShopeeGlobalPlanObservationError):
+        return 409, {
+            "ok": False,
+            "error": candidate.code,
+            "reason": {
+                "category": candidate.category,
+                "code": candidate.code,
+            },
+            "canonical_next_action": {
+                "action": (
+                    "restore_channel_authorization"
+                    if candidate.category == "AUTH"
+                    else "wait_for_channel_capability"
+                ),
+                "target_focus": "shopee:GLOBAL",
+            },
+            "external_writes_performed": [],
+        }
+    if state["blockers"]:
+        return 409, {
+            "ok": False,
+            "error": state["blockers"][0],
+            "blockers": state["blockers"],
+            "external_writes_performed": [],
+        }
+    if (
+        type(data.get("expected_candidate_digest")) is not str
+        or data["expected_candidate_digest"] != candidate.candidate_digest
+    ):
+        return 409, {
+            "ok": False,
+            "error": "Shopee global plan candidate changed; refresh first",
+            "external_writes_performed": [],
+        }
+    try:
+        approved = approve_shopee_global_plan(
+            candidate,
+            approved_by="Kyle",
+            confirm_approved_shopee_global_plan=True,
+            expected_candidate_digest=data["expected_candidate_digest"],
+        )
+        serialized = serialize_approved_shopee_global_plan(approved)
+        seed = _shopee_global_plan_seed(payload)
+        stored = default_release_store().persist_shopee_global_plan_approval(
+            product_id=payload["product_id"],
+            product_revision=payload["product_revision"],
+            source_identity_digest=seed["source_identity_digest"],
+            sku_lineage_digest=seed["sku_lineage_digest"],
+            serialized_record=serialized,
+        )
+    except (
+        ImmutableReleaseError,
+        ReleaseStoreError,
+        ShopeeGlobalPlanApprovalError,
+        ShopeeGlobalPlanContractError,
+        TypeError,
+        ValueError,
+    ) as error:
+        return 409, {
+            "ok": False,
+            "error": str(error),
+            "external_writes_performed": [],
+        }
+    return 200, {
+        "ok": True,
+        "persisted": True,
+        "schema_version": _SHOPEE_GLOBAL_PLAN_APPROVAL_RESPONSE_SCHEMA,
+        "offer_id": payload["product_id"],
+        "product_revision": payload["product_revision"],
+        "approval": approved.public_projection(),
+        "record_digest": stored["record_digest"],
+        "external_writes_performed": [],
+    }
 
 
 def _immutable_listing_copy_preflight(payload: dict) -> list[str]:
@@ -3320,6 +4193,19 @@ def _release_plan_recovery_actions(
         else {}
     )
     normalized = [str(value or "").casefold() for value in blockers]
+    if any("review_shopee_global_plan:" in value for value in normalized):
+        return [
+            {
+                "code": "review_shopee_global_plan",
+                "label": "核对并批准 Shopee 全球商品方案",
+                "detail": (
+                    "系统将重新读取当前官方候选；只有 Kyle 对当前精确"
+                    "候选完成批准后，ReleasePlan 才会开放。"
+                ),
+                "next_codes": ["review_shopee_global_plan"],
+                "marketplace_writes_performed": [],
+            }
+        ]
     stale_copy = (
         listing_copy.get("status") == "superseded_product_facts_changed"
         or any("listing copy input signature is stale" in value for value in normalized)
@@ -3365,6 +4251,30 @@ def _release_plan_recovery_actions(
             "marketplace_writes_performed": [],
         }
     ]
+
+
+def _public_release_plan_projection(plan: object) -> object:
+    """Remove server-internal execution facts from a public plan projection."""
+
+    if not isinstance(plan, dict):
+        return plan
+    public = {
+        key: value
+        for key, value in plan.items()
+        if key not in {"seller_sku", "sku_key", "payload"}
+    }
+    payload = plan.get("payload")
+    if isinstance(payload, dict):
+        safe_payload = {
+            "product_revision": payload.get("product_revision"),
+            "content_package_id": payload.get("content_package_id"),
+            "targets": list(payload.get("targets") or ()),
+        }
+        approved = payload.get("approved_shopee_global_plan")
+        if isinstance(approved, dict):
+            safe_payload["approved_shopee_global_plan"] = dict(approved)
+        public["payload"] = safe_payload
+    return public
 
 
 def _release_v1_view(dashboard: dict) -> dict:
@@ -3419,7 +4329,7 @@ def _release_v1_view(dashboard: dict) -> dict:
                 dashboard,
                 blockers,
             ),
-            "plan": active,
+            "plan": _public_release_plan_projection(active),
             "plan_persisted": True,
             "plan_approved": approved,
             "run": historical_run,
@@ -3546,7 +4456,7 @@ def _release_v1_view(dashboard: dict) -> dict:
             dashboard,
             blockers,
         ),
-        "plan": plan,
+        "plan": _public_release_plan_projection(plan),
         "plan_persisted": bool(persisted),
         "plan_approved": approved,
         "run": run,
@@ -6164,7 +7074,10 @@ def _project_oneclick_dispatch_capability(job: dict) -> dict:
         disabled = []
         for target_value in values or ():
             target = dict(target_value)
-            if target.get("runnable_now") is True:
+            if (
+                target.get("runnable_now") is True
+                or target.get("classification") == "PREPARE_PENDING"
+            ):
                 target.update(
                     {
                         "classification": "BLOCKED_CAPABILITY",
@@ -6195,6 +7108,9 @@ def _project_oneclick_dispatch_capability(job: dict) -> dict:
         "BLOCKED" if projected.get("phase") == "READY" else projected.get("phase")
     )
     projected["runnable_target_count"] = 0
+    projected["preparation_pending_count"] = 0
+    projected["prepare_pending"] = []
+    projected["start_allowed"] = False
     summary = dict(projected.get("summary") or {})
     newly_blocked = [
         target["target_label"]
@@ -9368,6 +10284,19 @@ class Handler(BaseHTTPRequestHandler):
                 }
             )
             return self._json(status, payload)
+        if path == "/api/product-workspace/shopee-global-plan-preview":
+            q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+            if set(q) != {"offer_id"} or len(q["offer_id"]) != 1:
+                return self._json(
+                    400,
+                    {
+                        "ok": False,
+                        "error": "exactly one offer_id is required",
+                        "external_writes_performed": [],
+                    },
+                )
+            status, payload = _preview_shopee_global_plan(q["offer_id"][0])
+            return self._json(status, payload)
         if path == "/api/product-workspace/reconcile-target":
             q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
             status, payload = _reconcile_existing_shopee_target_readonly(
@@ -10007,6 +10936,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/product-workspace/title-adopt",
             "/api/product-workspace/approve",
             "/api/product-workspace/release-plan/approve",
+            "/api/product-workspace/shopee-global-plan-approval",
             "/api/product-workspace/miaoshou-draft/commit",
             "/api/product-workspace/publish",
             "/api/product-workspace/release-target/manual-verify",
@@ -10073,6 +11003,8 @@ class Handler(BaseHTTPRequestHandler):
                 status, payload = _approve_product_workspace_locally(data)
             elif path == "/api/product-workspace/release-plan/approve":
                 status, payload = _approve_release_plan_locally(data)
+            elif path == "/api/product-workspace/shopee-global-plan-approval":
+                status, payload = _approve_shopee_global_plan_locally(data)
             elif path == "/api/product-workspace/miaoshou-draft/commit":
                 status, payload = _prepare_miaoshou_release(data)
             elif path == "/api/product-workspace/release-target/manual-verify":

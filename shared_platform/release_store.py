@@ -391,6 +391,25 @@ CREATE TABLE IF NOT EXISTS release_common_overwrite_reviews (
 CREATE INDEX IF NOT EXISTS idx_release_common_overwrite_review_status
     ON release_common_overwrite_reviews(status, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS release_shopee_global_plan_approvals (
+    approval_record_id TEXT PRIMARY KEY,
+    product_id TEXT NOT NULL,
+    product_revision INTEGER NOT NULL CHECK (product_revision >= 0),
+    source_identity_digest TEXT NOT NULL,
+    sku_lineage_digest TEXT NOT NULL,
+    candidate_digest TEXT NOT NULL,
+    approved_plan_digest TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    record_digest TEXT NOT NULL,
+    approved_by TEXT NOT NULL CHECK (approved_by = 'Kyle'),
+    created_at TEXT NOT NULL,
+    UNIQUE (product_id, product_revision, candidate_digest)
+);
+CREATE INDEX IF NOT EXISTS idx_release_shopee_global_plan_product
+    ON release_shopee_global_plan_approvals(
+        product_id, product_revision DESC, created_at DESC
+    );
+
 CREATE TRIGGER IF NOT EXISTS trg_release_plan_immutable
 BEFORE UPDATE OF
     plan_id, product_id, seller_sku, sku_key, product_package_id,
@@ -459,11 +478,34 @@ ON release_sku_reservations
 BEGIN
     SELECT RAISE(ABORT, 'release SKU reservation identity is immutable');
 END;
+
+CREATE TRIGGER IF NOT EXISTS trg_release_shopee_global_plan_immutable
+BEFORE UPDATE ON release_shopee_global_plan_approvals
+BEGIN
+    SELECT RAISE(ABORT, 'approved Shopee global plan record is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_release_shopee_global_plan_append_only_delete
+BEFORE DELETE ON release_shopee_global_plan_approvals
+BEGIN
+    SELECT RAISE(ABORT, 'approved Shopee global plan records are append-only');
+END;
 """
 
 
 def _text(value: object) -> str:
     return str(value or "").strip()
+
+
+def _sha256_text(value: object, *, field: str) -> str:
+    if type(value) is str and value.startswith("sha256:"):
+        value = value[7:]
+    if (
+        type(value) is not str
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValueError(f"{field} must be a lowercase SHA-256 digest")
+    return value
 
 
 def _utc_now() -> str:
@@ -1123,6 +1165,224 @@ class ReleaseStore:
     def preview_plan(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         """Build the exact write-free preview consumed by the formal UI."""
         return preview_release_plan(payload)
+
+    def persist_shopee_global_plan_approval(
+        self,
+        *,
+        product_id: object,
+        product_revision: object,
+        source_identity_digest: object,
+        sku_lineage_digest: object,
+        serialized_record: object,
+    ) -> dict[str, Any]:
+        """Persist one canonical, immutable Kyle-approved Shopee plan.
+
+        The raw record is server-internal.  Its public identity is the exact
+        product/revision/candidate tuple plus digests recomputed from the
+        canonical contract.  Repeating that tuple is idempotent; presenting a
+        different record for the tuple is an immutable-identity violation.
+        """
+
+        from shared_platform.shopee_global_plan import (
+            APPROVED_PLAN_RECORD_SCHEMA_VERSION,
+            rehydrate_approved_shopee_global_plan,
+            serialize_approved_shopee_global_plan,
+        )
+
+        clean_product_id = _text(product_id)
+        if not clean_product_id:
+            raise ValueError("Shopee global plan approval requires product_id")
+        if type(product_revision) is not int or product_revision < 0:
+            raise ValueError(
+                "Shopee global plan approval requires an exact product revision"
+            )
+        clean_source_digest = _sha256_text(
+            source_identity_digest,
+            field="source_identity_digest",
+        )
+        clean_lineage_digest = _sha256_text(
+            sku_lineage_digest,
+            field="sku_lineage_digest",
+        )
+        if type(serialized_record) is not str:
+            raise ValueError(
+                "approved Shopee global plan record must be canonical JSON"
+            )
+        approved = rehydrate_approved_shopee_global_plan(serialized_record)
+        if serialize_approved_shopee_global_plan(approved) != serialized_record:
+            raise ImmutableReleaseError(
+                "approved Shopee global plan record is not canonical"
+            )
+        execution = approved._plan.payload()
+        bindings = execution.get("bindings")
+        if (
+            not isinstance(bindings, Mapping)
+            or bindings.get("source_identity_digest") != clean_source_digest
+            or bindings.get("sku_lineage_digest") != clean_lineage_digest
+        ):
+            raise ImmutableReleaseError(
+                "approved Shopee global plan identity does not match the product"
+            )
+        record_digest = hashlib.sha256(
+            serialized_record.encode("utf-8")
+        ).hexdigest()
+        identity_digest = _sha256(
+            {
+                "schema_version": APPROVED_PLAN_RECORD_SCHEMA_VERSION,
+                "product_id": clean_product_id,
+                "product_revision": product_revision,
+                "candidate_digest": approved.candidate_digest,
+            }
+        )
+        approval_record_id = (
+            f"shopee-global-plan-approval:{identity_digest[:24]}"
+        )
+        now = _utc_now()
+        with self._transaction() as connection:
+            existing = connection.execute(
+                """
+                SELECT * FROM release_shopee_global_plan_approvals
+                WHERE product_id = ?
+                  AND product_revision = ?
+                  AND candidate_digest = ?
+                """,
+                (
+                    clean_product_id,
+                    product_revision,
+                    approved.candidate_digest,
+                ),
+            ).fetchone()
+            if existing:
+                if (
+                    existing["approval_record_id"] != approval_record_id
+                    or existing["approved_plan_digest"]
+                    != approved.approved_plan_digest
+                    or existing["record_digest"] != record_digest
+                    or existing["record_json"] != serialized_record
+                    or existing["source_identity_digest"]
+                    != clean_source_digest
+                    or existing["sku_lineage_digest"]
+                    != clean_lineage_digest
+                ):
+                    raise ImmutableReleaseError(
+                        "Shopee global plan approval identity is immutable"
+                    )
+                result = dict(existing)
+                result["created"] = False
+                return result
+            connection.execute(
+                """
+                INSERT INTO release_shopee_global_plan_approvals (
+                    approval_record_id, product_id, product_revision,
+                    source_identity_digest, sku_lineage_digest,
+                    candidate_digest, approved_plan_digest, record_json,
+                    record_digest, approved_by, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Kyle', ?)
+                """,
+                (
+                    approval_record_id,
+                    clean_product_id,
+                    product_revision,
+                    clean_source_digest,
+                    clean_lineage_digest,
+                    approved.candidate_digest,
+                    approved.approved_plan_digest,
+                    serialized_record,
+                    record_digest,
+                    now,
+                ),
+            )
+            row = connection.execute(
+                """
+                SELECT * FROM release_shopee_global_plan_approvals
+                WHERE approval_record_id = ?
+                """,
+                (approval_record_id,),
+            ).fetchone()
+            result = dict(row)
+            result["created"] = True
+            return result
+
+    def shopee_global_plan_approval(
+        self,
+        *,
+        product_id: object,
+        product_revision: object | None = None,
+        candidate_digest: object | None = None,
+    ) -> dict[str, Any] | None:
+        """Load and revalidate one append-only approval record.
+
+        Callers that authorize a ReleasePlan must supply ``product_revision``.
+        A no-revision lookup is display-only and must never authorize.
+        """
+
+        from shared_platform.shopee_global_plan import (
+            rehydrate_approved_shopee_global_plan,
+            serialize_approved_shopee_global_plan,
+        )
+
+        clean_product_id = _text(product_id)
+        if not clean_product_id or not self.path.is_file():
+            return None
+        clauses = ["approval.product_id = ?"]
+        params: list[object] = [clean_product_id]
+        if product_revision is not None:
+            if type(product_revision) is not int or product_revision < 0:
+                raise ValueError("product_revision must be a non-negative int")
+            clauses.append("approval.product_revision = ?")
+            params.append(product_revision)
+        if candidate_digest is not None:
+            clauses.append("approval.candidate_digest = ?")
+            params.append(
+                _sha256_text(candidate_digest, field="candidate_digest")
+            )
+        with self._connect_readonly() as connection:
+            try:
+                row = connection.execute(
+                    f"""
+                    SELECT approval.*
+                    FROM release_shopee_global_plan_approvals AS approval
+                    WHERE {' AND '.join(clauses)}
+                    ORDER BY approval.rowid DESC
+                    LIMIT 1
+                    """,
+                    tuple(params),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return None
+        if not row:
+            return None
+        result = dict(row)
+        approved = rehydrate_approved_shopee_global_plan(
+            result["record_json"]
+        )
+        if (
+            serialize_approved_shopee_global_plan(approved)
+            != result["record_json"]
+            or hashlib.sha256(
+                result["record_json"].encode("utf-8")
+            ).hexdigest()
+            != result["record_digest"]
+            or approved.candidate_digest != result["candidate_digest"]
+            or approved.approved_plan_digest
+            != result["approved_plan_digest"]
+            or approved.approved_by != result["approved_by"]
+        ):
+            raise ImmutableReleaseError(
+                "stored Shopee global plan approval is invalid"
+            )
+        bindings = approved._plan.payload().get("bindings") or {}
+        if (
+            bindings.get("source_identity_digest")
+            != result["source_identity_digest"]
+            or bindings.get("sku_lineage_digest")
+            != result["sku_lineage_digest"]
+        ):
+            raise ImmutableReleaseError(
+                "stored Shopee global plan lineage binding is invalid"
+            )
+        result["approved"] = approved
+        return result
 
     def create_plan(
         self,

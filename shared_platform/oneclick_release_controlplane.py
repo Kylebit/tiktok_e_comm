@@ -55,6 +55,7 @@ BLOCKED_INVENTORY = "BLOCKED_INVENTORY"
 BLOCKED_CAPABILITY = "BLOCKED_CAPABILITY"
 BLOCKED_SOURCE_IDENTITY = "BLOCKED_SOURCE_IDENTITY"
 BLOCKED_SKU_LINEAGE = "BLOCKED_SKU_LINEAGE"
+PREPARE_PENDING = "PREPARE_PENDING"
 SAFE_ACTION_REQUIRED = "SAFE_ACTION_REQUIRED"
 CAPABILITY_CLASSIFICATIONS = frozenset(
     {
@@ -4449,33 +4450,22 @@ def build_batch_preview(
         registry=registry,
     )
     rows = _run_targets(run)
-    # Reuse the same classification rules without durable writes.
-    pseudo = object.__new__(OneClickReleaseStore)
-    context = {
-        "job": identity,
-        "plan": plan,
-        "run": run,
-        "source_identity": _resolve_plan_source_identity(plan["payload"]),
-    }
+    # GET preview is intentionally local-only.  Official/channel preparation
+    # starts only after the accepted POST has created a durable job and the
+    # background worker calls ``prepare_job``.
     prepared_rows = []
     systemic = None
     for label in _execution_target_labels(_target_labels(plan)):
-        result = pseudo._prepare_one(  # type: ignore[attr-defined]
-            context,
-            {
-                "target_label": label,
-                "status": (
-                    PENDING
-                    if label == SHOPEE_GLOBAL_TARGET
-                    else _initial_public_status(rows[label])
-                ),
-                "idempotency_key": (
-                    _shopee_global_idempotency_key(identity)
-                    if label == SHOPEE_GLOBAL_TARGET
-                    else rows[label]["idempotency_key"]
-                ),
-            },
-            registry,
+        current_status = (
+            PENDING
+            if label == SHOPEE_GLOBAL_TARGET
+            else _initial_public_status(rows[label])
+        )
+        result = _local_preview_preparation(
+            label=label,
+            current_status=current_status,
+            plan_payload=plan["payload"],
+            registry=registry,
         )
         prepared_rows.append(result)
         if result["reason_scope"] == SYSTEMIC_IDENTITY_SCOPE:
@@ -4499,11 +4489,15 @@ def build_batch_preview(
             ),
             "classification": result["classification"],
             "status": result["status"],
-            "reason": _public_reason(
-                category=result["reason_category"],
-                scope=result["reason_scope"],
-                code=result["reason_code"],
-                detail=result["reason_detail"],
+            "reason": (
+                _public_reason(
+                    category=result["reason_category"],
+                    scope=result["reason_scope"],
+                    code=result["reason_code"],
+                    detail=result["reason_detail"],
+                )
+                if result.get("reason_code")
+                else None
             ),
             "manual_after_submit": result.get("manual_after_submit") is True,
             "requires_human": result["status"]
@@ -4555,6 +4549,12 @@ def build_batch_preview(
         row for row in prepared if not row["control_target"]
     ]
     storefronts = [row for row in visible_targets if row["storefront"]]
+    prepare_pending = [
+        row["target_label"]
+        for row in storefronts
+        if row["classification"] == PREPARE_PENDING
+        and row["dependency"]["state"] != "BLOCKED"
+    ]
     return {
         "schema_version": BATCH_PREPARATION_SCHEMA,
         "plan_id": identity["plan_id"],
@@ -4574,9 +4574,10 @@ def build_batch_preview(
         "systemic_reason": systemic,
         "storefront_count": len(storefronts),
         "control_row_count": len(prepared) - len(storefronts),
-        "runnable_target_count": sum(
-            row["runnable_now"] is True for row in storefronts
-        ),
+        "runnable_target_count": 0,
+        "preparation_pending_count": len(prepare_pending),
+        "prepare_pending": prepare_pending,
+        "start_allowed": bool(prepare_pending and systemic is None),
         "will_dispatch": [
             row["target_label"]
             for row in storefronts
@@ -4615,6 +4616,82 @@ def build_batch_preview(
         ],
         "targets": visible_targets,
         "shared_controls": shared_controls,
+    }
+
+
+def _local_preview_preparation(
+    *,
+    label: str,
+    current_status: str,
+    plan_payload: Mapping[str, Any],
+    registry: Mapping[str, AdapterRegistration],
+) -> dict[str, Any]:
+    """Project local eligibility without calling an adapter prepare seam."""
+
+    if current_status in {
+        SUCCEEDED,
+        SUCCEEDED_MANUAL_REVIEW,
+        SUBMITTED_UNVERIFIED,
+        RECONCILIATION_REQUIRED,
+    }:
+        return _prepared_terminal_row(label, current_status)
+    if current_status == FAILED_PRE_SUBMIT:
+        return _prepared_blocked_row(
+            label,
+            SAFE_ACTION_REQUIRED,
+            FAILED_PRE_SUBMIT,
+            "SAFE_ACTION",
+            "exact_zero_write_retry_requires_explicit_resume",
+            "exact zero-write failure requires explicit retry",
+        )
+    if current_status != PENDING:
+        return _prepared_blocked_row(
+            label,
+            BLOCKED_CAPABILITY,
+            BLOCKED_CAPABILITY,
+            "CAPABILITY",
+            "canonical_target_not_pristine",
+            "target is not a pristine first attempt",
+        )
+    if label == "ozon:RU":
+        inventory_reason = _ozon_inventory_blocker(plan_payload)
+        if inventory_reason:
+            return _prepared_blocked_row(
+                label,
+                BLOCKED_INVENTORY,
+                BLOCKED_INVENTORY,
+                "INVENTORY",
+                inventory_reason,
+                "approved READY Ozon inventory decision is unavailable",
+            )
+    registration = registry.get(_adapter_name_for_target(label))
+    if (
+        not registration
+        or label not in registration.target_labels
+        or not registration.preparation_available
+        or not registration.dispatch_available
+    ):
+        return _prepared_blocked_row(
+            label,
+            BLOCKED_CAPABILITY,
+            BLOCKED_CAPABILITY,
+            "CAPABILITY",
+            "prepare_or_dispatch_seam_unavailable",
+            "adapter requires read-only prepare and governed dispatch seams",
+        )
+    return {
+        "target_label": label,
+        "classification": PREPARE_PENDING,
+        "status": PENDING,
+        "reason_category": "CAPABILITY",
+        "reason_scope": "TARGET",
+        "reason_code": None,
+        "reason_detail": "",
+        "command_digest": None,
+        "proof_digest": None,
+        "manual_after_submit": False,
+        "shared_resource_digest": None,
+        "shared_resource_context_digest": None,
     }
 
 
@@ -5283,13 +5360,40 @@ def _validated_shared_resource_declaration(
 def _approved_selected_image_count(
     payload: Mapping[str, Any],
 ) -> int:
+    from shared_platform.shopee_global_plan import (
+        ShopeeGlobalPlanContractError,
+        rehydrate_approved_shopee_global_plan,
+        serialize_approved_shopee_global_plan,
+    )
+
     approved_global = payload.get("approved_shopee_global_plan")
     if (
         not isinstance(approved_global, Mapping)
         or set(approved_global)
-        != {"schema_version", "selected_image_positions"}
+        != {
+            "schema_version",
+            "mode",
+            "candidate_digest",
+            "approved_plan_digest",
+            "selected_image_positions",
+            "selected_source_image_manifest_digest",
+            "record_digest",
+        }
         or approved_global.get("schema_version")
         != "approved-shopee-global-plan/v1"
+        or approved_global.get("mode") not in {
+            "NEW_GLOBAL",
+            "EXISTING_GLOBAL",
+        }
+        or any(
+            not _is_digest(approved_global.get(field))
+            for field in (
+                "candidate_digest",
+                "approved_plan_digest",
+                "selected_source_image_manifest_digest",
+                "record_digest",
+            )
+        )
     ):
         raise AdapterContractError(
             "immutable plan lacks an approved Shopee global image selection"
@@ -5301,6 +5405,7 @@ def _approved_selected_image_count(
         or len(selected) > 9
         or any(type(value) is not int or value < 1 for value in selected)
         or len(set(selected)) != len(selected)
+        or selected != sorted(selected)
     ):
         raise AdapterContractError(
             "approved Shopee global image selection is invalid"
@@ -5325,6 +5430,35 @@ def _approved_selected_image_count(
     if any(position not in positions for position in selected):
         raise AdapterContractError(
             "approved Shopee image selection references an unknown image"
+        )
+    serialized = payload.get("_approved_shopee_global_plan_record")
+    if (
+        type(serialized) is not str
+        or hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        != approved_global["record_digest"]
+    ):
+        raise AdapterContractError(
+            "approved Shopee global plan record identity is invalid"
+        )
+    try:
+        approved = rehydrate_approved_shopee_global_plan(serialized)
+    except (ShopeeGlobalPlanContractError, TypeError, ValueError) as error:
+        raise AdapterContractError(
+            "approved Shopee global plan record is invalid"
+        ) from error
+    raw_plan = approved._plan.payload()
+    if (
+        serialize_approved_shopee_global_plan(approved) != serialized
+        or approved.mode != approved_global["mode"]
+        or approved.candidate_digest != approved_global["candidate_digest"]
+        or approved.approved_plan_digest
+        != approved_global["approved_plan_digest"]
+        or raw_plan.get("selected_image_positions") != selected
+        or raw_plan.get("selected_source_image_manifest_digest")
+        != approved_global["selected_source_image_manifest_digest"]
+    ):
+        raise AdapterContractError(
+            "approved Shopee global plan compact binding drifted"
         )
     return len(selected)
 

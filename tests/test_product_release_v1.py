@@ -390,6 +390,7 @@ def test_existing_unsafe_tiktok_failure_does_not_block_pristine_targets(
         },
     )
 
+    _approve_shopee_global_fixture(dashboard, monkeypatch)
     view = product_server._product_workspace_view(dashboard)
     request = _request(view, publication_targets=targets)
     assert product_server._approve_release_plan_locally(
@@ -632,6 +633,69 @@ def _single_shopee_dashboard() -> dict:
         }
     ]
     return dashboard
+
+
+def _approve_shopee_global_fixture(dashboard, monkeypatch):
+    from shared_platform.shopee_global_plan import (
+        build_shopee_global_plan_candidate,
+    )
+    from tests.test_shopee_global_plan import _base_args
+
+    dashboard["product"].setdefault("weight_kg", 0.02)
+    dashboard["product"].setdefault("package_cm", [58, 34, 0.02])
+    payload, _blockers = product_server._release_plan_payload_from_dashboard(
+        dashboard,
+        bind_shopee_global_plan=False,
+    )
+    seed = product_server._shopee_global_plan_seed(payload)
+    args = _base_args()
+    args.update(
+        {key: value for key, value in seed.items() if key != "targets"}
+    )
+    args["selected_image_positions"] = list(
+        range(1, len(seed["ordered_approved_images"]) + 1)
+    )
+    model_sku = payload["sku_lineage"]["assignment"]["model_skus"][0][
+        "model_sku"
+    ]
+    args["variations"] = [
+        {
+            "name": "Model",
+            "option_list": [
+                {
+                    "option": "Default",
+                    "approved_image_position": 1,
+                }
+            ],
+        }
+    ]
+    args["models"] = [
+        {
+            "global_model_sku": model_sku,
+            "tier_index": [0],
+            "original_price_cny": seed["target_pricing"][
+                "global_original_price"
+            ],
+            "seller_stock_quantity": args["seller_stock"]["quantity"],
+        }
+    ]
+    candidate = build_shopee_global_plan_candidate(**args)
+    assert candidate.status == "READY", candidate.blocker_codes
+    monkeypatch.setattr(
+        product_server,
+        "_observe_shopee_global_plan_candidate",
+        lambda _payload: candidate,
+    )
+    status, _response = product_server._approve_shopee_global_plan_locally(
+        {
+            "offer_id": payload["product_id"],
+            "expected_product_revision": payload["product_revision"],
+            "expected_candidate_digest": candidate.candidate_digest,
+            "approved_by": "Kyle",
+            "confirm_approved_shopee_global_plan": True,
+        }
+    )
+    assert status == 200
 
 
 def _executable_registry(execute):
@@ -1004,6 +1068,7 @@ def test_successor_one_click_uses_only_governed_shopee_recovery(
         lambda: _shopee_recovery_registry(execute),
     )
     targets = ["miaoshou:COMMON", "shopee:PH"]
+    _approve_shopee_global_fixture(dashboard, monkeypatch)
     predecessor_view = product_server._product_workspace_view(dashboard)
     predecessor_request = _request(
         predecessor_view,
@@ -1036,6 +1101,7 @@ def test_successor_one_click_uses_only_governed_shopee_recovery(
     dashboard["listing_copy"]["candidates"][0]["title"] = dashboard[
         "product"
     ]["title"]
+    _approve_shopee_global_fixture(dashboard, monkeypatch)
     successor_view = product_server._product_workspace_view(dashboard)
     successor_request = _request(
         successor_view,
@@ -1795,6 +1861,7 @@ def test_shopee_verified_warning_manual_body_is_distinct_and_digest_bound(
         "build_release_dashboard",
         lambda **_kwargs: dashboard,
     )
+    _approve_shopee_global_fixture(dashboard, monkeypatch)
     view = product_server._product_workspace_view(dashboard)
     request = {
         **_request(view),

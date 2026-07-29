@@ -101,6 +101,42 @@ def _plan_payload(*, targets, identity=None, inventory_ready=False):
     )
     assert finalized.ready and finalized.reservation is not None
     assignment = assignment_contract.payload()
+    from shared_platform.shopee_global_plan import (
+        approve_shopee_global_plan,
+        build_shopee_global_plan_candidate,
+        serialize_approved_shopee_global_plan,
+    )
+    from tests.test_shopee_global_plan import _base_args
+
+    global_args = _base_args()
+    global_args["ordered_approved_images"] = [
+        {
+            "source_url": f"https://img.example/{position}.jpg",
+            "source_image_digest": f"{position}" * 64,
+        }
+        for position in range(1, 7)
+    ]
+    from shared_platform.target_scoped_release_contracts import (
+        approved_source_image_manifest_digest,
+    )
+    global_args["approved_source_image_manifest_digest"] = (
+        approved_source_image_manifest_digest(
+            [
+                row["source_url"]
+                for row in global_args["ordered_approved_images"]
+            ]
+        )
+    )
+    global_args["selected_image_positions"] = list(range(1, 7))
+    global_candidate = build_shopee_global_plan_candidate(**global_args)
+    global_approval = approve_shopee_global_plan(
+        global_candidate,
+        approved_by="Kyle",
+        confirm_approved_shopee_global_plan=True,
+        expected_candidate_digest=global_candidate.candidate_digest,
+    )
+    global_record = serialize_approved_shopee_global_plan(global_approval)
+    global_raw = global_approval._plan.payload()
     payload = {
         "plan_id": "omnichannel:oneclick-test",
         "product_id": "3838616043",
@@ -133,8 +169,18 @@ def _plan_payload(*, targets, identity=None, inventory_ready=False):
         ],
         "approved_shopee_global_plan": {
             "schema_version": "approved-shopee-global-plan/v1",
+            "mode": global_approval.mode,
+            "candidate_digest": global_approval.candidate_digest,
+            "approved_plan_digest": global_approval.approved_plan_digest,
             "selected_image_positions": [1, 2, 3, 4, 5, 6],
+            "selected_source_image_manifest_digest": global_raw[
+                "selected_source_image_manifest_digest"
+            ],
+            "record_digest": hashlib.sha256(
+                global_record.encode("utf-8")
+            ).hexdigest(),
         },
+        "_approved_shopee_global_plan_record": global_record,
     }
     if inventory_ready:
         payload["approved_inventory_decisions"] = {
@@ -1372,13 +1418,10 @@ def test_eleven_storefront_matrix_excludes_common_control_row(tmp_path):
     assert preview["storefront_count"] == 11
     assert preview["control_row_count"] == 2
     assert preview["blocked"] == ["ozon:RU"]
-    assert preview["runnable_target_count"] == 4
-    assert preview["will_dispatch"] == [
-        "shopee:PH",
-        "shopee:MY",
-        "shopee:TH",
-        "shopee:VN",
-    ]
+    assert preview["runnable_target_count"] == 0
+    assert preview["preparation_pending_count"] == 10
+    assert preview["will_dispatch"] == []
+    assert preview["start_allowed"] is True
 
 
 def test_source_identity_and_sku_reservation_drift_block_before_claim(tmp_path):
@@ -1478,7 +1521,8 @@ def test_common_blocker_makes_tiktok_non_runnable_and_job_blocked(tmp_path):
         row for row in preview["targets"]
         if row["target_label"] == "tiktok:MX"
     )
-    assert tiktok_preview["dependency"]["state"] == "BLOCKED"
+    assert preview["preparation_pending_count"] == 1
+    assert tiktok_preview["dependency"]["state"] == "WAITING"
     assert tiktok_preview["next_action_target"] == "miaoshou:COMMON"
 
     control = OneClickReleaseStore(release.path)
@@ -1529,8 +1573,8 @@ def test_blocked_capability_next_action_uses_reason_category(
         product_revision=31,
         registry=registry,
     )
-    assert preview["targets"][0]["next_action"] == expected_action
-    assert preview["targets"][0]["next_action_target"] == "shopee:MY"
+    assert preview["targets"][0]["next_action"] == "prepare_batch"
+    assert preview["targets"][0]["next_action_target"] == "shopee:GLOBAL"
 
     control = OneClickReleaseStore(release.path)
     job = control.ensure_job(

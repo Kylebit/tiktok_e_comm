@@ -4,6 +4,11 @@ import pytest
 
 from domains.product_operations import (
     BLOCKED_SKU_LINEAGE,
+    NEW_SOURCE_SKU_RESERVATION_SCHEMA_VERSION,
+    ModelSkuAssignment,
+    SkuAssignment,
+    finalize_new_source_sku_reservation,
+    new_source_sku_reservation_digest,
     resolve_sku_lineage_reservation,
     resolve_source_product_identity,
 )
@@ -297,3 +302,174 @@ def test_wrong_source_identity_contract_type_fails_closed():
 
     assert result.status == BLOCKED_SKU_LINEAGE
     assert "exact SourceProductIdentity" in result.blockers[0]
+
+
+def _new_assignment():
+    return SkuAssignment(
+        seller_sku="0958",
+        model_skus=(
+            ModelSkuAssignment(variant_key="38x45-natural", model_sku="0958"),
+            ModelSkuAssignment(variant_key="38x45-white", model_sku="0959"),
+        ),
+    )
+
+
+def test_new_source_assignment_is_finalized_with_a_dedicated_typed_contract():
+    identity = _identity()
+    preflight = resolve_sku_lineage_reservation(
+        source_identity=identity,
+        predecessor_records=(),
+    )
+    assert preflight.lineage_mode == "NEW_SOURCE"
+
+    result = finalize_new_source_sku_reservation(
+        source_identity=identity,
+        assignment=_new_assignment(),
+    )
+
+    assert result.ready is True
+    assert result.reservation is not None
+    payload = result.reservation.payload()
+    assert payload["schema_version"] == NEW_SOURCE_SKU_RESERVATION_SCHEMA_VERSION
+    assert payload["reservation_keys"] == ["0958", "0959"]
+    assert "predecessor_id" not in payload
+    assert "predecessor_revision" not in payload
+    assert payload["reservation_digest"] == new_source_sku_reservation_digest(
+        source_identity_digest=identity.identity_digest,
+        assignment=_new_assignment(),
+    )
+
+
+def test_new_source_exact_replay_is_idempotent_and_store_verifiable():
+    identity = _identity()
+    first = finalize_new_source_sku_reservation(
+        source_identity=identity,
+        assignment=_new_assignment(),
+    )
+    assert first.reservation is not None
+    stored = {**first.reservation.payload(), "status": "ACTIVE"}
+
+    replay = finalize_new_source_sku_reservation(
+        source_identity=identity,
+        assignment=_new_assignment(),
+        existing_reservations=(stored,),
+    )
+
+    assert replay.ready is True
+    assert replay.reservation is not None
+    assert replay.reservation.idempotent is True
+    assert replay.reservation.reservation_digest == (
+        new_source_sku_reservation_digest(
+            source_identity_digest=identity.identity_digest,
+            assignment=replay.reservation.assignment,
+        )
+    )
+
+
+def test_new_source_cross_source_overlap_is_blocked_concurrency_shape():
+    identity = _identity()
+    other_identity = _identity("986159122617")
+    other = finalize_new_source_sku_reservation(
+        source_identity=other_identity,
+        assignment=_new_assignment(),
+    )
+    assert other.reservation is not None
+
+    result = finalize_new_source_sku_reservation(
+        source_identity=identity,
+        assignment=_new_assignment(),
+        existing_reservations=(
+            {**other.reservation.payload(), "status": "RESERVED"},
+        ),
+    )
+
+    assert result.status == BLOCKED_SKU_LINEAGE
+    assert "belongs to another source or assignment" in result.blockers[0]
+
+
+def test_new_source_overlap_with_inherited_reservation_is_blocked():
+    identity = _identity()
+    inherited = resolve_sku_lineage_reservation(
+        source_identity=identity,
+        predecessor_records=(
+            _predecessor(
+                identity,
+                seller_sku="0958",
+                model_skus=[
+                    {"variant_key": "38x45-natural", "model_sku": "0958"},
+                    {"variant_key": "38x45-white", "model_sku": "0959"},
+                ],
+            ),
+        ),
+    )
+    assert inherited.reservation is not None
+
+    result = finalize_new_source_sku_reservation(
+        source_identity=identity,
+        assignment=_new_assignment(),
+        existing_reservations=(
+            {**inherited.reservation.payload(), "status": "ACTIVE"},
+        ),
+    )
+
+    assert result.status == BLOCKED_SKU_LINEAGE
+    assert "belongs to another source or assignment" in result.blockers[0]
+
+
+def test_duplicate_new_source_replays_are_blocked_as_concurrent_ambiguity():
+    identity = _identity()
+    first = finalize_new_source_sku_reservation(
+        source_identity=identity,
+        assignment=_new_assignment(),
+    )
+    assert first.reservation is not None
+    stored = {**first.reservation.payload(), "status": "ACTIVE"}
+
+    result = finalize_new_source_sku_reservation(
+        source_identity=identity,
+        assignment=_new_assignment(),
+        existing_reservations=(stored, deepcopy(stored)),
+    )
+
+    assert result.status == BLOCKED_SKU_LINEAGE
+    assert "multiple active reservations" in result.blockers[0]
+
+
+@pytest.mark.parametrize(
+    "existing_change",
+    [
+        {"schema_version": "invented/v1"},
+        {"reservation_digest": "sha256:" + "8" * 64},
+        {"reservation_keys": ["0958"]},
+        {"assignment": {"seller_sku": "0958", "model_skus": []}},
+        {"status": True},
+    ],
+)
+def test_malformed_new_source_reservations_fail_closed(existing_change):
+    identity = _identity()
+    first = finalize_new_source_sku_reservation(
+        source_identity=identity,
+        assignment=_new_assignment(),
+    )
+    assert first.reservation is not None
+    stored = {**first.reservation.payload(), "status": "ACTIVE"}
+    stored.update(existing_change)
+
+    result = finalize_new_source_sku_reservation(
+        source_identity=identity,
+        assignment=_new_assignment(),
+        existing_reservations=(stored,),
+    )
+
+    assert result.status == BLOCKED_SKU_LINEAGE
+
+
+@pytest.mark.parametrize("assignment", [{"seller_sku": "0958"}, True, None])
+def test_new_source_assignment_must_be_the_exact_typed_contract(assignment):
+    result = finalize_new_source_sku_reservation(
+        source_identity=_identity(),
+        assignment=assignment,
+    )
+
+    assert result.status == BLOCKED_SKU_LINEAGE
+    assert "exact SkuAssignment" in result.blockers[0]

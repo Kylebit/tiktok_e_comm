@@ -31,9 +31,40 @@ with another source, predecessor, revision, or digest is
 `BLOCKED_SKU_LINEAGE`.
 
 For `NEW_SOURCE`, the resolver found no approved/released predecessor for the
-canonical source. Only then may 00 call the existing allocation scan. The
-result of that later allocation needs its own reservation before plan
-approval.
+canonical source. Only then may 00 call the existing allocation scan. Its
+typed finalization seam is:
+
+```python
+finalized = finalize_new_source_sku_reservation(
+    source_identity=source_identity,
+    assignment=SkuAssignment(
+        seller_sku="0958",
+        model_skus=(
+            ModelSkuAssignment(
+                variant_key="38x45-natural",
+                model_sku="0958",
+            ),
+            ModelSkuAssignment(
+                variant_key="38x45-white",
+                model_sku="0959",
+            ),
+        ),
+    ),
+    existing_reservations=loaded_reservation_records,
+)
+```
+
+The returned `new-source-sku-reservation/v1` is a dedicated contract. It has
+no predecessor fields and must not be represented by a fabricated
+`SkuLineageReservation`. It binds the source identity digest, exact
+Seller/Model assignment, normalized reservation keys, and a deterministic
+digest. Exact same-source replay is idempotent. Overlapping keys from another
+source or assignment, duplicate concurrent claims, unsupported schemas, and
+malformed active rows all fail closed as `BLOCKED_SKU_LINEAGE`.
+
+Before insert or compare-and-set, Store recomputes the digest with
+`new_source_sku_reservation_digest(source_identity_digest=..., assignment=...)`
+and verifies the stored keys equal the returned reservation keys.
 
 ## Required predecessor record shape
 
@@ -66,7 +97,10 @@ canonical digest.
 4. Stop on `BLOCKED_SKU_LINEAGE`.
 5. For inherited lineage, copy the exact assignment into plan memory and
    insert/confirm the deterministic reservation before plan approval.
-6. Allocate a new SKU range only for `NEW_SOURCE`, then reserve it before
-   exposing READY.
-7. Recheck source identity, predecessor, revision and reservation digests at
-   approval and execution.
+6. Allocate a new SKU range only for `NEW_SOURCE`.
+7. Convert the allocator result into exact `SkuAssignment`, call
+   `finalize_new_source_sku_reservation`, and stop unless it is READY.
+8. Insert/confirm the returned `new-source-sku-reservation/v1` with Store CAS;
+   on a concurrent winner, reload reservations and rerun the finalizer.
+9. Recheck source identity, predecessor/revision where applicable, and the
+   public reservation digest at approval and execution.

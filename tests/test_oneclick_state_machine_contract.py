@@ -101,4 +101,3 @@ def test_safe_action_classification_never_becomes_a_generic_retry() -> None:
         reason_category="SAFE_ACTION",
     )
     assert action == "perform_governed_safe_action"
-

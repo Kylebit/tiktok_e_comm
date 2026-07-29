@@ -92,8 +92,16 @@
   const TARGET_SCOPED_ACTION_TARGETS = new Set(["shopee:MY", "shopee:VN", "ozon:RU"]);
   const targetScopedActionStates = new Map();
   const targetRecoveryActions = new Map();
-  const ONECLICK_PREVIEW_SCHEMA = "release-batch-preparation/v1";
-  const ONECLICK_STATUS_SCHEMA = "oneclick-release-status/v1";
+  const ONECLICK_PREVIEW_SCHEMA = "release-batch-preparation/v2";
+  const ONECLICK_STATUS_SCHEMA = "oneclick-release-status/v2";
+  const SHOPEE_GLOBAL_CONTROL_TARGET = "shopee:GLOBAL";
+  const SHOPEE_GLOBAL_PLAN_PREVIEW_SCHEMA = "shopee-global-plan-preview/v1";
+  const SHOPEE_GLOBAL_PLAN_CANDIDATE_SCHEMA =
+    "shopee-global-plan-candidate/v1";
+  const SHOPEE_GLOBAL_PLAN_APPROVAL_SCHEMA =
+    "shopee-global-plan-approval-response/v1";
+  const APPROVED_SHOPEE_GLOBAL_PLAN_SCHEMA =
+    "approved-shopee-global-plan/v1";
   const ONECLICK_TERMINAL_PHASES = new Set([
     "SUCCEEDED",
     "WAITING_MANUAL_ACCEPTANCE",
@@ -101,6 +109,9 @@
     "SYSTEMIC_STOPPED",
   ]);
   const ONECLICK_POLL_INTERVAL_MS = 750;
+  const ONECLICK_LOCAL_READ_TIMEOUT_MS = 15000;
+  const ONECLICK_LOCAL_POST_TIMEOUT_MS = 15000;
+  const SHOPEE_GLOBAL_READ_TIMEOUT_MS = 125000;
   const ONECLICK_JOB_PHASES = new Set([
     "PENDING",
     "PREPARING",
@@ -128,6 +139,7 @@
     "BLOCKED_SKU_LINEAGE",
   ]);
   const ONECLICK_CLASSIFICATIONS = new Set([
+    "PREPARE_PENDING",
     "EXACT_READY_AUTOMATIC",
     "READY_SUBMIT_MANUAL",
     "BLOCKED_AUTH",
@@ -152,6 +164,7 @@
     "approve_sellable_inventory",
     "review_approved_content_facts",
     "review_logistics_policy",
+    "review_shopee_global_plan",
     "wait_for_channel_capability",
     "resolve_source_product_identity",
     "resolve_predecessor_sku_lineage",
@@ -186,6 +199,35 @@
     "prepared_command",
     "proof",
     "adapter_policy",
+    "shared_resource",
+    "shared_resource_context",
+  ]);
+  const SHOPEE_GLOBAL_PLAN_COUNT_KEYS = Object.freeze([
+    "category_path_depth",
+    "attribute_count",
+    "approved_image_count",
+    "selected_image_count",
+    "variation_tier_count",
+    "model_count",
+  ]);
+  const SHOPEE_GLOBAL_PLAN_DIGEST_KEYS = Object.freeze([
+    "observation_evidence_digest",
+    "source_identity_digest",
+    "sku_lineage_digest",
+    "content_package_digest",
+    "approved_copy_digest",
+    "approved_source_image_manifest_digest",
+    "selected_source_image_manifest_digest",
+    "parcel_contract_digest",
+    "target_pricing_digest",
+    "policy_digest",
+    "category_evidence_digest",
+    "attribute_tree_digest",
+    "brand_evidence_digest",
+    "seller_stock_source_digest",
+    "location_evidence_digest",
+    "existing_global_identity_digest",
+    "candidate_digest",
   ]);
   const oneClickExecution = {
     generation: 0,
@@ -197,13 +239,29 @@
     previewBusy: false,
     posting: false,
     postAttempted: false,
+    resumePostAttempted: false,
     statusBusy: false,
+    acceptanceCheckBusy: false,
     error: "",
     statusWarning: "",
     failureAction: null,
     timer: null,
     controller: null,
     finalDashboardRefreshed: false,
+  };
+  const shopeeGlobalPlanReview = {
+    generation: 0,
+    contextKey: "",
+    candidate: null,
+    approval: null,
+    approvalCurrent: false,
+    previewAttempted: false,
+    previewBusy: false,
+    submitting: false,
+    approvalPostAttempted: false,
+    reconciliationBusy: false,
+    error: "",
+    controller: null,
   };
 
   function productKey(offerId) {
@@ -521,13 +579,34 @@
     oneClickExecution.previewBusy = false;
     oneClickExecution.posting = false;
     oneClickExecution.postAttempted = false;
+    oneClickExecution.resumePostAttempted = false;
     oneClickExecution.statusBusy = false;
+    oneClickExecution.acceptanceCheckBusy = false;
     oneClickExecution.error = "";
     oneClickExecution.statusWarning = "";
     oneClickExecution.failureAction = null;
     oneClickExecution.controller = null;
     oneClickExecution.finalDashboardRefreshed = false;
     if (wasPosting) releaseSubmitting = false;
+    resetShopeeGlobalPlanReview();
+  }
+
+  function resetShopeeGlobalPlanReview() {
+    shopeeGlobalPlanReview.generation += 1;
+    if (shopeeGlobalPlanReview.controller) {
+      shopeeGlobalPlanReview.controller.abort();
+    }
+    shopeeGlobalPlanReview.contextKey = "";
+    shopeeGlobalPlanReview.candidate = null;
+    shopeeGlobalPlanReview.approval = null;
+    shopeeGlobalPlanReview.approvalCurrent = false;
+    shopeeGlobalPlanReview.previewAttempted = false;
+    shopeeGlobalPlanReview.previewBusy = false;
+    shopeeGlobalPlanReview.submitting = false;
+    shopeeGlobalPlanReview.approvalPostAttempted = false;
+    shopeeGlobalPlanReview.reconciliationBusy = false;
+    shopeeGlobalPlanReview.error = "";
+    shopeeGlobalPlanReview.controller = null;
   }
 
   function oneClickContractError(message) {
@@ -538,6 +617,78 @@
 
   function oneClickDigest(value) {
     return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+  }
+
+  function exactObjectKeys(value, keys) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const actual = Object.keys(value).sort();
+    const expected = [...keys].sort();
+    return actual.length === expected.length
+      && actual.every((key, index) => key === expected[index]);
+  }
+
+  function nullableDigest(value) {
+    return value === null || oneClickDigest(value);
+  }
+
+  async function boundedJsonFetch(
+    path,
+    options,
+    timeoutMs,
+    operationLabel,
+  ) {
+    const {
+      controller = new AbortController(),
+      ...fetchOptions
+    } = options || {};
+    let timedOut = false;
+    const timer = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+    try {
+      const response = await fetch(path, {
+        ...fetchOptions,
+        signal: controller.signal,
+      });
+      let payload;
+      try {
+        payload = await response.json();
+      } catch (_error) {
+        const error = new Error(
+          `${operationLabel}返回内容无法解析；${fetchOptions.method === "POST"
+            ? "请求可能已被服务端受理"
+            : "未取得可用只读结果"}`,
+        );
+        error.responseOutcomeUnknown = fetchOptions.method === "POST";
+        error.status = response.status;
+        throw error;
+      }
+      return { response, payload, controller };
+    } catch (error) {
+      if (timedOut) {
+        const timeoutError = new Error(
+          `${operationLabel}超过 ${Math.round(timeoutMs / 1000)} 秒；${
+            fetchOptions.method === "POST"
+              ? "请求结果未知，将只读核对，绝不自动重发"
+              : "可明确重试只读请求"
+          }`,
+        );
+        timeoutError.requestTimedOut = true;
+        timeoutError.responseOutcomeUnknown = fetchOptions.method === "POST";
+        throw timeoutError;
+      }
+      if (
+        error.name !== "AbortError"
+        && fetchOptions.method === "POST"
+        && !Object.hasOwn(error, "responseOutcomeUnknown")
+      ) {
+        error.responseOutcomeUnknown = true;
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timer);
+    }
   }
 
   function oneClickRuleId(value) {
@@ -600,6 +751,73 @@
     );
   }
 
+  function validateOneClickDispatchLedger(target, isStatus) {
+    if (!isStatus) {
+      if (
+        Object.hasOwn(target, "dispatch_ledger")
+        || Object.hasOwn(target, "dispatch_count")
+      ) {
+        throw oneClickContractError(
+          "只读预览不应携带持久执行账本，已停止提交。",
+        );
+      }
+      return;
+    }
+    const ledger = target.dispatch_ledger;
+    const classes = ledger?.cumulative_external_write_classes;
+    const exact = ledger?.cumulative_external_write_count;
+    const lower = ledger?.confirmed_external_write_count_lower_bound;
+    const upper = ledger?.possible_external_write_count_upper_bound;
+    if (
+      !Number.isInteger(target.dispatch_count)
+      || target.dispatch_count < 0
+      || !exactObjectKeys(ledger, [
+        "stage",
+        "cumulative_external_write_count",
+        "cumulative_external_write_classes",
+        "confirmed_external_write_count_lower_bound",
+        "possible_external_write_count_upper_bound",
+        "digest",
+        "stage_evidence_digest",
+        "pending_write_intent_digest",
+      ])
+      || (
+        ledger.stage !== null
+        && (
+          typeof ledger.stage !== "string"
+          || !ledger.stage
+          || ledger.stage !== ledger.stage.trim()
+        )
+      )
+      || !Array.isArray(classes)
+      || classes.some((value) => (
+        typeof value !== "string" || !value || value !== value.trim()
+      ))
+      || new Set(classes).size !== classes.length
+      || !(exact === null || (Number.isInteger(exact) && exact >= 0))
+      || !Number.isInteger(lower)
+      || lower < 0
+      || !(upper === null || (Number.isInteger(upper) && upper >= lower))
+      || (exact !== null && (exact !== lower || exact !== upper))
+      || !nullableDigest(ledger.digest)
+      || !nullableDigest(ledger.stage_evidence_digest)
+      || !nullableDigest(ledger.pending_write_intent_digest)
+      || (
+        classes.includes("UNKNOWN")
+          ? exact !== null
+          : (
+            exact === null
+            && target.status !== "DISPATCHING"
+            && target.status !== "RECONCILIATION_REQUIRED"
+          )
+      )
+    ) {
+      throw oneClickContractError(
+        "统一发布写入次数账本不完整，已停止提交。",
+      );
+    }
+  }
+
   function validateOneClickProjection(projection, identity, schema, reference = null) {
     if (!projection || typeof projection !== "object" || Array.isArray(projection)) {
       throw oneClickContractError("统一发布控制面返回了无效状态。");
@@ -608,6 +826,7 @@
       throw oneClickContractError("统一发布控制面版本不匹配，请刷新后重试。");
     }
     const isStatus = schema === ONECLICK_STATUS_SCHEMA;
+    const isPreview = schema === ONECLICK_PREVIEW_SCHEMA;
     const isUnpreparedStatus = (
       isStatus
       && ["PENDING", "PREPARING"].includes(projection.phase)
@@ -618,6 +837,7 @@
       || typeof projection.run_id !== "string"
       || !projection.run_id
       || !Array.isArray(projection.targets)
+      || !Array.isArray(projection.shared_controls)
       || (
         isStatus
         && (
@@ -656,7 +876,19 @@
       throw oneClickContractError("统一发布控制面摘要已漂移，已停止提交。");
     }
     const labels = new Set();
-    for (const target of projection.targets) {
+    const targetLabels = new Set();
+    const sharedControlLabels = new Set();
+    const projectedRows = [
+      ...projection.targets.map((target) => ({
+        target,
+        sharedControl: false,
+      })),
+      ...projection.shared_controls.map((target) => ({
+        target,
+        sharedControl: true,
+      })),
+    ];
+    for (const { target, sharedControl } of projectedRows) {
       const targetDigests = target?.digests;
       const dependency = target?.dependency;
       const reason = target?.reason;
@@ -667,6 +899,8 @@
         || typeof target.target_label !== "string"
         || !target.target_label
         || labels.has(target.target_label)
+        || typeof target.control_target !== "boolean"
+        || target.control_target !== sharedControl
         || !ONECLICK_TARGET_STATUSES.has(target.status)
         || (
           isUnpreparedStatus
@@ -687,9 +921,16 @@
         )
         || typeof target.storefront !== "boolean"
         || (
-          target.target_label === "miaoshou:COMMON"
-            ? target.storefront !== false
-            : target.storefront !== true
+          sharedControl
+            ? (
+              target.target_label !== SHOPEE_GLOBAL_CONTROL_TARGET
+              || target.storefront !== false
+            )
+            : (
+              target.target_label === "miaoshou:COMMON"
+                ? target.storefront !== false
+                : target.storefront !== true
+            )
         )
         || !dependency
         || typeof dependency !== "object"
@@ -731,6 +972,8 @@
           Object.hasOwn(targetDigests, key)
         ))
         || !oneClickDigest(targetDigests.adapter_policy)
+        || !nullableDigest(targetDigests.shared_resource)
+        || !nullableDigest(targetDigests.shared_resource_context)
         || !(
           (
             targetDigests.prepared_command === null
@@ -778,21 +1021,43 @@
           "Shopee 观察警告状态与验收动作不一致，已停止人工结案。",
         );
       }
+      validateOneClickDispatchLedger(target, isStatus);
       labels.add(target.target_label);
+      (sharedControl ? sharedControlLabels : targetLabels).add(
+        target.target_label,
+      );
+    }
+    if (
+      sharedControlLabels.size !== projection.shared_controls.length
+      || targetLabels.size !== projection.targets.length
+      || (
+        projection.shared_controls.length > 0
+        && (
+          projection.shared_controls.length !== 1
+          || !sharedControlLabels.has(SHOPEE_GLOBAL_CONTROL_TARGET)
+        )
+      )
+    ) {
+      throw oneClickContractError(
+        "Shopee Global 共享控制身份不完整，已停止提交。",
+      );
     }
     if (reference) {
       const previousTargets = new Map(
-        (reference.targets || []).map((target) => [
+        [
+          ...(reference.targets || []),
+          ...(reference.shared_controls || []),
+        ].map((target) => [
           target.target_label,
           target,
         ]),
       );
-      if (previousTargets.size !== projection.targets.length) {
+      if (previousTargets.size !== projectedRows.length) {
         throw oneClickContractError(
           "统一发布控制面的目标集合已漂移，已停止提交。",
         );
       }
-      for (const target of projection.targets) {
+      for (const { target } of projectedRows) {
         const previous = previousTargets.get(target.target_label);
         if (
           !previous
@@ -817,23 +1082,40 @@
     const common = projection.targets.find(
       (target) => target.target_label === "miaoshou:COMMON",
     );
-    for (const target of projection.targets) {
+    const shopeeGlobal = projection.shared_controls.find(
+      (target) => target.target_label === SHOPEE_GLOBAL_CONTROL_TARGET,
+    );
+    for (const { target } of projectedRows) {
       const dependency = target.dependency;
       const isTikTok = target.target_label.startsWith("tiktok:");
-      const dependencyExact = isTikTok
+      const isShopeeRegion = (
+        target.target_label.startsWith("shopee:")
+        && target.target_label !== SHOPEE_GLOBAL_CONTROL_TARGET
+      );
+      const prerequisite = isTikTok
+        ? common
+        : isShopeeRegion
+          ? shopeeGlobal
+          : null;
+      const prerequisiteLabel = isTikTok
+        ? "miaoshou:COMMON"
+        : isShopeeRegion
+          ? SHOPEE_GLOBAL_CONTROL_TARGET
+          : null;
+      const dependencyExact = (isTikTok || isShopeeRegion)
         ? (
-          dependency.prerequisite_target === "miaoshou:COMMON"
+          dependency.prerequisite_target === prerequisiteLabel
           && (
-            common
-              ? dependency.prerequisite_status === common.status
+            prerequisite
+              ? dependency.prerequisite_status === prerequisite.status
                 && (
-                  common.status === "SUCCEEDED"
+                  prerequisite.status === "SUCCEEDED"
                     ? (
                       dependency.state === "SATISFIED"
                       && dependency.satisfied === true
                     )
                     : ["PENDING", "PREPARING", "READY", "DISPATCHING"]
-                      .includes(common.status)
+                      .includes(prerequisite.status)
                       ? (
                         dependency.state === "WAITING"
                         && dependency.satisfied === false
@@ -856,9 +1138,46 @@
           && dependency.prerequisite_target === null
           && dependency.prerequisite_status === null
         );
+      const prerequisiteSummary = dependency.prerequisite;
+      const prerequisiteSummaryExact = isShopeeRegion
+        ? (
+          prerequisite
+          && exactObjectKeys(prerequisiteSummary, [
+            "target_label",
+            "status",
+            "reason",
+            "next_action",
+            "digests",
+          ])
+          && prerequisiteSummary.target_label === prerequisite.target_label
+          && prerequisiteSummary.status === prerequisite.status
+          && JSON.stringify(prerequisiteSummary.reason)
+            === JSON.stringify(prerequisite.reason)
+          && prerequisiteSummary.next_action === prerequisite.next_action
+          && exactObjectKeys(prerequisiteSummary.digests, [
+            "prepared_command",
+            "proof",
+            "shared_resource",
+            "shared_resource_context",
+          ])
+          && [
+            "prepared_command",
+            "proof",
+            "shared_resource",
+            "shared_resource_context",
+          ].every((key) => (
+            prerequisiteSummary.digests[key] === prerequisite.digests[key]
+          ))
+        )
+        : prerequisiteSummary === undefined;
       if (!dependencyExact) {
         throw oneClickContractError(
           "统一发布控制面的店铺依赖证据不一致，已停止提交。",
+        );
+      }
+      if (!prerequisiteSummaryExact) {
+        throw oneClickContractError(
+          "Shopee Global 前置摘要不一致，已停止提交。",
         );
       }
       if (
@@ -869,6 +1188,11 @@
           && !common
           && target.next_action_target === "miaoshou:COMMON"
         )
+        && !(
+          isShopeeRegion
+          && !shopeeGlobal
+          && target.next_action_target === SHOPEE_GLOBAL_CONTROL_TARGET
+        )
       ) {
         throw oneClickContractError(
           "统一发布控制面的下一步目标无效，已停止提交。",
@@ -877,6 +1201,15 @@
     }
     const storefronts = projection.targets.filter((target) => target.storefront);
     const runnable = storefronts.filter((target) => target.runnable_now);
+    const preparePending = storefronts
+      .filter((target) => target.classification === "PREPARE_PENDING");
+    const controlRows = [
+      ...projection.targets.filter((target) => !target.storefront),
+      ...projection.shared_controls,
+    ];
+    const storefrontLabels = new Set(
+      storefronts.map((target) => target.target_label),
+    );
     const summary = projection.summary;
     const capability = projection.dispatch_capability;
     if (
@@ -884,16 +1217,39 @@
       || projection.storefront_count !== storefronts.length
       || !Number.isInteger(projection.control_row_count)
       || projection.control_row_count
-        !== projection.targets.length - storefronts.length
+        !== controlRows.length
       || !Number.isInteger(projection.runnable_target_count)
       || projection.runnable_target_count !== runnable.length
+      || (
+        isPreview
+        && (
+          !Number.isInteger(projection.preparation_pending_count)
+          || projection.preparation_pending_count !== preparePending.length
+          || !Array.isArray(projection.prepare_pending)
+          || !sameSortedValues(
+            projection.prepare_pending,
+            preparePending.map((target) => target.target_label),
+          )
+          || typeof projection.start_allowed !== "boolean"
+          || projection.start_allowed !== (
+            preparePending.length > 0
+            && projection.dispatch_capability?.enabled === true
+          )
+          || runnable.length !== 0
+          || preparePending.some((target) => (
+            target.status !== "PENDING"
+            || target.runnable_now !== false
+            || target.next_action !== "prepare_batch"
+          ))
+        )
+      )
       || !summary
       || typeof summary !== "object"
       || Array.isArray(summary)
       || !["will_dispatch", "manual_after_submit", "blocked", "already_terminal"]
         .every((key) => (
           Array.isArray(summary[key])
-          && summary[key].every((label) => labels.has(label))
+          && summary[key].every((label) => storefrontLabels.has(label))
           && new Set(summary[key]).size === summary[key].length
         ))
       || !capability
@@ -988,6 +1344,19 @@
         "统一发布控制面缺少服务端唯一下一步，已停止提交。",
       );
     }
+    if (
+      isPreview
+      && projection.start_allowed
+      && (
+        canonical?.action !== "prepare_batch"
+        || canonical.canonical_status !== "PENDING"
+        || canonical.runnable !== false
+      )
+    ) {
+      throw oneClickContractError(
+        "统一发布准备入口与服务端唯一下一步不一致，已停止提交。",
+      );
+    }
     return projection;
   }
 
@@ -1007,6 +1376,7 @@
       approve_sellable_inventory: "批准可售库存",
       review_approved_content_facts: "复核已批准的内容与类目事实",
       review_logistics_policy: "复核物流策略",
+      review_shopee_global_plan: "审核 Shopee Global 计划",
       wait_for_channel_capability: "等待渠道能力开放",
       resolve_source_product_identity: "修复来源商品身份",
       resolve_predecessor_sku_lineage: "修复 Seller SKU 血缘",
@@ -1036,6 +1406,25 @@
       BLOCKED_SKU_LINEAGE: "Seller SKU 血缘阻断",
     };
     return labels[String(status || "")] || "状态由服务端核定";
+  }
+
+  function shopeeGlobalWriteCountText(control) {
+    const ledger = control?.dispatch_ledger;
+    if (!ledger) return "尚未进入持久执行";
+    const exact = ledger.cumulative_external_write_count;
+    const lower = ledger.confirmed_external_write_count_lower_bound;
+    const upper = ledger.possible_external_write_count_upper_bound;
+    if (Number.isInteger(exact)) {
+      return `已确认 ${exact} 次外部写入`;
+    }
+    const upperText = Number.isInteger(upper) ? String(upper) : "未知";
+    return `结果未知 · 已确认至少 ${lower} 次，最多 ${upperText} 次`;
+  }
+
+  function compactDigest(value) {
+    return oneClickDigest(value)
+      ? `${value.slice(0, 10)}…${value.slice(-8)}`
+      : "不可用";
   }
 
   function oneClickReasonText(target) {
@@ -1115,13 +1504,606 @@
     `;
   }
 
+  function validateShopeeGlobalPlanCandidate(candidate) {
+    const observerFailureKeys = [
+      "schema_version",
+      "status",
+      "planning_allowed",
+      "reason_category",
+      "reason_code",
+      "blocker_codes",
+    ];
+    if (
+      exactObjectKeys(candidate, observerFailureKeys)
+      && candidate.schema_version === SHOPEE_GLOBAL_PLAN_CANDIDATE_SCHEMA
+      && ["BLOCKED_AUTH", "BLOCKED_CAPABILITY"].includes(candidate.status)
+      && candidate.planning_allowed === false
+      && (
+        (
+          candidate.status === "BLOCKED_AUTH"
+          && candidate.reason_category === "AUTH"
+        )
+        || (
+          candidate.status === "BLOCKED_CAPABILITY"
+          && candidate.reason_category === "CAPABILITY"
+        )
+      )
+      && oneClickRuleId(candidate.reason_code)
+      && Array.isArray(candidate.blocker_codes)
+      && candidate.blocker_codes.length === 1
+      && candidate.blocker_codes[0] === candidate.reason_code
+    ) {
+      return candidate;
+    }
+    const candidateKeys = [
+      "schema_version",
+      "status",
+      "planning_allowed",
+      "mode",
+      "observation_authority",
+      "observation_schema_version",
+      "checks",
+      "counts",
+      "digests",
+      "blocker_codes",
+    ];
+    const checkKeys = [
+      "official_authority_exact",
+      "audited_schema_exact",
+      "attributes_complete",
+      "variations_complete",
+      "no_default_execution_fact",
+    ];
+    if (
+      !exactObjectKeys(candidate, candidateKeys)
+      || candidate.schema_version !== SHOPEE_GLOBAL_PLAN_CANDIDATE_SCHEMA
+      || !["READY", "BLOCKED_CAPABILITY"].includes(candidate.status)
+      || typeof candidate.planning_allowed !== "boolean"
+      || !(candidate.mode === null || ["NEW_GLOBAL", "EXISTING_GLOBAL"]
+        .includes(candidate.mode))
+      || typeof candidate.observation_authority !== "string"
+      || !candidate.observation_authority
+      || typeof candidate.observation_schema_version !== "string"
+      || !candidate.observation_schema_version
+      || !exactObjectKeys(candidate.checks, checkKeys)
+      || checkKeys.some((key) => typeof candidate.checks[key] !== "boolean")
+      || !Array.isArray(candidate.blocker_codes)
+      || candidate.blocker_codes.some((code) => !oneClickRuleId(code))
+      || new Set(candidate.blocker_codes).size !== candidate.blocker_codes.length
+      || candidate.blocker_codes.some((code, index) => (
+        index > 0 && candidate.blocker_codes[index - 1] >= code
+      ))
+    ) {
+      throw oneClickContractError(
+        "Shopee Global 候选合同不完整，已停止审批。",
+      );
+    }
+    const ready = candidate.status === "READY";
+    const expectedDigestKeys = ready
+      ? SHOPEE_GLOBAL_PLAN_DIGEST_KEYS
+      : ["observation_evidence_digest", "candidate_digest"];
+    if (
+      !exactObjectKeys(
+        candidate.counts,
+        ready ? SHOPEE_GLOBAL_PLAN_COUNT_KEYS : [],
+      )
+      || Object.values(candidate.counts).some((count) => (
+        !Number.isInteger(count) || count < 0
+      ))
+      || !exactObjectKeys(candidate.digests, expectedDigestKeys)
+      || !oneClickDigest(candidate.digests.candidate_digest)
+      || !nullableDigest(candidate.digests.observation_evidence_digest)
+      || Object.entries(candidate.digests).some(([key, value]) => (
+        !["observation_evidence_digest", "existing_global_identity_digest"]
+          .includes(key)
+        && !oneClickDigest(value)
+      ))
+      || (
+        ready
+        && !nullableDigest(candidate.digests.existing_global_identity_digest)
+      )
+      || (
+        ready
+          ? (
+            candidate.planning_allowed !== true
+            || !["NEW_GLOBAL", "EXISTING_GLOBAL"].includes(candidate.mode)
+            || candidate.observation_authority !== "shopee_official_open_api"
+            || candidate.observation_schema_version
+              !== "shopee-official-global-plan-observation/v1"
+            || candidate.blocker_codes.length
+            || Object.values(candidate.checks).some((value) => value !== true)
+          )
+          : (
+            candidate.planning_allowed !== false
+            || candidate.blocker_codes.length < 1
+          )
+      )
+    ) {
+      throw oneClickContractError(
+        "Shopee Global 候选证据不一致，已停止审批。",
+      );
+    }
+    return candidate;
+  }
+
+  function validateApprovedShopeeGlobalPlan(approval) {
+    if (approval === null) return null;
+    const keys = [
+      "schema_version",
+      "approved_by",
+      "literal_consent_recorded",
+      "mode",
+      "status",
+      "counts",
+      "digests",
+    ];
+    const digestKeys = [
+      ...SHOPEE_GLOBAL_PLAN_DIGEST_KEYS.filter(
+        (key) => key !== "candidate_digest",
+      ),
+      "candidate_digest",
+      "approved_plan_digest",
+    ];
+    if (
+      !exactObjectKeys(approval, keys)
+      || approval.schema_version !== APPROVED_SHOPEE_GLOBAL_PLAN_SCHEMA
+      || approval.approved_by !== "Kyle"
+      || approval.literal_consent_recorded !== true
+      || !["NEW_GLOBAL", "EXISTING_GLOBAL"].includes(approval.mode)
+      || approval.status !== "APPROVED"
+      || !exactObjectKeys(approval.counts, SHOPEE_GLOBAL_PLAN_COUNT_KEYS)
+      || Object.values(approval.counts).some((count) => (
+        !Number.isInteger(count) || count < 0
+      ))
+      || !exactObjectKeys(approval.digests, digestKeys)
+      || Object.entries(approval.digests).some(([key, value]) => (
+        key === "existing_global_identity_digest"
+          ? !nullableDigest(value)
+          : !oneClickDigest(value)
+      ))
+    ) {
+      throw oneClickContractError(
+        "Shopee Global 已批准计划合同不完整，已停止使用。",
+      );
+    }
+    return approval;
+  }
+
+  function validateShopeeGlobalPlanPreview(payload, identity) {
+    if (
+      !exactObjectKeys(payload, [
+        "ok",
+        "schema_version",
+        "offer_id",
+        "product_revision",
+        "candidate",
+        "approval",
+        "approval_current",
+        "external_writes_performed",
+      ])
+      || payload.ok !== true
+      || payload.schema_version !== SHOPEE_GLOBAL_PLAN_PREVIEW_SCHEMA
+      || String(payload.offer_id) !== identity.offerId
+      || payload.product_revision !== identity.revision
+      || typeof payload.approval_current !== "boolean"
+      || !Array.isArray(payload.external_writes_performed)
+      || payload.external_writes_performed.length
+    ) {
+      throw oneClickContractError(
+        "Shopee Global 只读预览身份不一致，已停止审批。",
+      );
+    }
+    const candidate = validateShopeeGlobalPlanCandidate(payload.candidate);
+    const approval = validateApprovedShopeeGlobalPlan(payload.approval);
+    const observerFailure = ["BLOCKED_AUTH", "BLOCKED_CAPABILITY"]
+      .includes(candidate.status) && !Object.hasOwn(candidate, "digests");
+    if (
+      observerFailure
+      && (approval !== null || payload.approval_current !== false)
+    ) {
+      throw oneClickContractError(
+        "Shopee Global 官方观察阻断时不得投影现行批准，已停止使用。",
+      );
+    }
+    if (
+      payload.approval_current === true
+      && (
+        approval === null
+        || observerFailure
+        || approval.mode !== candidate.mode
+        || approval.digests.candidate_digest
+          !== candidate.digests.candidate_digest
+      )
+    ) {
+      throw oneClickContractError(
+        "Shopee Global 已批准计划与当前候选不一致，已停止使用。",
+      );
+    }
+    return {
+      candidate,
+      approval,
+      approvalCurrent: payload.approval_current,
+    };
+  }
+
+  function validateShopeeGlobalPlanApprovalResponse(
+    payload,
+    identity,
+    candidate,
+  ) {
+    if (
+      !exactObjectKeys(payload, [
+        "ok",
+        "persisted",
+        "schema_version",
+        "offer_id",
+        "product_revision",
+        "approval",
+        "record_digest",
+        "external_writes_performed",
+      ])
+      || payload.ok !== true
+      || payload.persisted !== true
+      || payload.schema_version !== SHOPEE_GLOBAL_PLAN_APPROVAL_SCHEMA
+      || String(payload.offer_id) !== identity.offerId
+      || payload.product_revision !== identity.revision
+      || !oneClickDigest(payload.record_digest)
+      || !Array.isArray(payload.external_writes_performed)
+      || payload.external_writes_performed.length
+    ) {
+      throw oneClickContractError(
+        "Shopee Global 审批回执身份不一致，已停止刷新。",
+      );
+    }
+    const approval = validateApprovedShopeeGlobalPlan(payload.approval);
+    if (
+      approval === null
+      || approval.mode !== candidate.mode
+      || approval.digests.candidate_digest
+        !== candidate.digests.candidate_digest
+    ) {
+      throw oneClickContractError(
+        "Shopee Global 审批回执与当前候选不一致，已停止刷新。",
+      );
+    }
+    return approval;
+  }
+
+  function shopeeGlobalPlanRequired(projection) {
+    const control = projection?.shared_controls?.find(
+      (row) => row.target_label === SHOPEE_GLOBAL_CONTROL_TARGET,
+    );
+    return control?.next_action === "review_shopee_global_plan"
+      || projection?.canonical_next_action?.action
+        === "review_shopee_global_plan";
+  }
+
+  async function requestShopeeGlobalPlanPreview(identity) {
+    const generation = shopeeGlobalPlanReview.generation;
+    if (
+      !identity
+      || shopeeGlobalPlanReview.previewAttempted
+      || shopeeGlobalPlanReview.previewBusy
+    ) return;
+    shopeeGlobalPlanReview.previewAttempted = true;
+    shopeeGlobalPlanReview.previewBusy = true;
+    shopeeGlobalPlanReview.error = "";
+    const controller = new AbortController();
+    shopeeGlobalPlanReview.controller = controller;
+    renderOneClickExecution(currentData);
+    try {
+      const params = new URLSearchParams({ offer_id: identity.offerId });
+      const { response, payload } = await boundedJsonFetch(
+        `/api/product-workspace/shopee-global-plan-preview?${params}`,
+        {
+          headers: { Accept: "application/json" },
+          controller,
+        },
+        SHOPEE_GLOBAL_READ_TIMEOUT_MS,
+        "Shopee Global 官方计划只读预览",
+      );
+      if (!response.ok || payload.ok === false) {
+        throw new Error(payload.error || `服务返回 HTTP ${response.status}`);
+      }
+      const validated = validateShopeeGlobalPlanPreview(payload, identity);
+      if (generation !== shopeeGlobalPlanReview.generation) return;
+      shopeeGlobalPlanReview.candidate = validated.candidate;
+      shopeeGlobalPlanReview.approval = validated.approval;
+      shopeeGlobalPlanReview.approvalCurrent = validated.approvalCurrent;
+      shopeeGlobalPlanReview.error = "";
+    } catch (error) {
+      if (
+        error.name === "AbortError"
+        || generation !== shopeeGlobalPlanReview.generation
+      ) return;
+      shopeeGlobalPlanReview.error = friendlyError(error.message);
+    } finally {
+      if (generation === shopeeGlobalPlanReview.generation) {
+        shopeeGlobalPlanReview.previewBusy = false;
+        if (shopeeGlobalPlanReview.controller === controller) {
+          shopeeGlobalPlanReview.controller = null;
+        }
+        renderOneClickExecution(currentData);
+      }
+    }
+  }
+
+  function ensureShopeeGlobalPlanReview(identity, projection) {
+    if (!identity || !shopeeGlobalPlanRequired(projection)) {
+      if (shopeeGlobalPlanReview.contextKey) resetShopeeGlobalPlanReview();
+      return;
+    }
+    if (shopeeGlobalPlanReview.contextKey !== identity.key) {
+      resetShopeeGlobalPlanReview();
+      shopeeGlobalPlanReview.contextKey = identity.key;
+    }
+    requestShopeeGlobalPlanPreview(identity);
+  }
+
+  function shopeeGlobalPlanBlockerText(code) {
+    const labels = {
+      official_authority_unavailable: "缺少官方 Open API 权威观察",
+      audited_schema_unavailable: "官方响应结构尚未完成审计",
+      category_evidence_unavailable: "缺少官方类目证据",
+      attributes_incomplete: "类目属性尚未完整核准",
+      variations_incomplete: "规格与模型组合尚未完整核准",
+      seller_stock_unavailable: "卖家库存事实尚未完成批准",
+      location_unavailable: "发货位置事实尚未核准",
+    };
+    return labels[code] || `等待服务端解除阻断：${code}`;
+  }
+
+  function shopeeGlobalPlanPanel() {
+    if (shopeeGlobalPlanReview.previewBusy) {
+      return `
+        <div class="shopee-global-plan-review" aria-busy="true">
+          <strong>Shopee Global 计划审核</strong>
+          <p>正在读取官方只读候选；不会创建、修改或发布商品。</p>
+        </div>
+      `;
+    }
+    if (shopeeGlobalPlanReview.error) {
+      return `
+        <div class="shopee-global-plan-review is-blocked" role="alert">
+          <strong>Shopee Global 计划暂不可审核</strong>
+          <p>${esc(shopeeGlobalPlanReview.error)}</p>
+          <p>未批准、未提交、未执行任何渠道写入。可只读重试，不会触发发布。</p>
+          <button class="button button-secondary shopee-global-plan-preview-retry"
+            type="button">重新读取 Shopee Global 计划</button>
+        </div>
+      `;
+    }
+    const candidate = shopeeGlobalPlanReview.candidate;
+    if (!candidate) {
+      return `
+        <div class="shopee-global-plan-review">
+          <strong>Shopee Global 计划审核</strong>
+          <p>等待官方只读候选。</p>
+        </div>
+      `;
+    }
+    const observerFailure = !Object.hasOwn(candidate, "digests");
+    if (observerFailure) {
+      const authBlocked = candidate.status === "BLOCKED_AUTH";
+      return `
+        <div class="shopee-global-plan-review is-blocked">
+          <strong>${authBlocked
+            ? "Shopee Global 官方授权不可用"
+            : "Shopee Global 官方计划能力不可用"}</strong>
+          <p>${esc(shopeeGlobalPlanBlockerText(candidate.reason_code))}</p>
+          <p>未取得可批准候选，不会显示批准按钮，也不会以默认类目、属性或身份继续。</p>
+          ${authBlocked
+            ? `<button class="button button-secondary shopee-global-auth-restore"
+                type="button">前往恢复 Shopee 授权</button>`
+            : `<button class="button button-secondary shopee-global-plan-preview-retry"
+                type="button">重新读取官方能力</button>`}
+        </div>
+      `;
+    }
+    const modeText = candidate.mode === "NEW_GLOBAL"
+      ? "新建 Global 商品"
+      : candidate.mode === "EXISTING_GLOBAL"
+        ? "复用既有 Global 商品"
+        : "模式尚未核准";
+    const checks = Object.entries(candidate.checks)
+      .map(([key, value]) => `
+        <li><span>${esc(key)}</span><strong>${value ? "通过" : "未通过"}</strong></li>
+      `).join("");
+    const counts = Object.entries(candidate.counts)
+      .map(([key, value]) => `
+        <li><span>${esc(key)}</span><strong>${esc(value)}</strong></li>
+      `).join("");
+    const digest = candidate.digests.candidate_digest;
+    if (candidate.status === "BLOCKED_CAPABILITY") {
+      return `
+        <div class="shopee-global-plan-review is-blocked">
+          <strong>Shopee Global 计划尚不可批准</strong>
+          <p>${esc(modeText)}；系统不会以默认类目、属性、库存或位置继续。</p>
+          <ul class="shopee-global-plan-blockers">
+            ${candidate.blocker_codes.map((code) => `
+              <li>${esc(shopeeGlobalPlanBlockerText(code))}</li>
+            `).join("")}
+          </ul>
+          <p>候选摘要 ${esc(compactDigest(digest))}</p>
+        </div>
+      `;
+    }
+    if (shopeeGlobalPlanReview.approvalCurrent) {
+      return `
+        <div class="shopee-global-plan-review is-approved">
+          <strong>Shopee Global 计划已由 Kyle 批准</strong>
+          <p>${esc(modeText)} · 当前候选摘要 ${esc(compactDigest(digest))}</p>
+          <ul class="shopee-global-plan-checks">${checks}${counts}</ul>
+        </div>
+      `;
+    }
+    return `
+      <form class="shopee-global-plan-review shopee-global-plan-approval-form"
+        data-candidate-digest="${esc(digest)}">
+        <strong>Shopee Global 计划等待 Kyle 批准</strong>
+        <p>${esc(modeText)}。这里只显示官方检查、计数和摘要；不提供默认值或字段编辑。</p>
+        <ul class="shopee-global-plan-checks">${checks}${counts}</ul>
+        <p>候选摘要 ${esc(compactDigest(digest))}</p>
+        <label class="manual-verification-confirm">
+          <input name="confirm_approved_shopee_global_plan"
+            type="checkbox" required>
+          <span>我 Kyle 已核对上述官方候选，并明确批准当前 Shopee Global 计划。</span>
+        </label>
+        <button class="button button-secondary" type="submit">
+          批准 Shopee Global 计划
+        </button>
+        <span class="manual-verification-message" role="status"
+          aria-live="polite"></span>
+      </form>
+    `;
+  }
+
+  function shopeeGlobalControlCard(control) {
+    const ledger = control.dispatch_ledger;
+    return `
+      <section class="oneclick-shared-control"
+        data-oneclick-shared-control="${esc(control.target_label)}">
+        <div class="oneclick-shared-control-heading">
+          <div>
+            <p class="kicker">SHARED CONTROL · NOT A STOREFRONT</p>
+            <h5>Shopee Global 准备</h5>
+          </div>
+          <span class="badge">${esc(oneClickStatusText(control.status))}</span>
+        </div>
+        <p>${esc(oneClickReasonText(control))}</p>
+        <dl class="oneclick-shared-control-facts">
+          <div><dt>唯一下一步</dt><dd>${esc(oneClickActionText(control.next_action))}</dd></div>
+          <div><dt>阻断/状态原因</dt><dd>${esc(
+            control.reason
+              ? `${control.reason.category} · ${control.reason.summary_code}`
+              : "无阻断",
+          )}</dd></div>
+          <div><dt>准备命令</dt><dd>${esc(compactDigest(control.digests.prepared_command))}</dd></div>
+          <div><dt>官方证明</dt><dd>${esc(compactDigest(control.digests.proof))}</dd></div>
+          <div><dt>共享资源</dt><dd>${esc(compactDigest(control.digests.shared_resource))}</dd></div>
+          <div><dt>写入次数</dt><dd>${esc(shopeeGlobalWriteCountText(control))}</dd></div>
+          ${ledger ? `
+            <div><dt>当前阶段</dt><dd>${esc(ledger.stage || "尚未调用")}</dd></div>
+          ` : ""}
+        </dl>
+        ${shopeeGlobalPlanRequired(oneClickProjection())
+          ? shopeeGlobalPlanPanel()
+          : ""}
+      </section>
+    `;
+  }
+
+  async function submitShopeeGlobalPlanApproval(form) {
+    if (
+      shopeeGlobalPlanReview.submitting
+      || shopeeGlobalPlanReview.approvalPostAttempted
+      || releaseSubmitting
+    ) return;
+    const identity = oneClickExecution.identity;
+    const candidate = shopeeGlobalPlanReview.candidate;
+    const digest = String(form.dataset.candidateDigest || "");
+    const confirmed = (
+      form.elements.confirm_approved_shopee_global_plan?.checked === true
+    );
+    const message = form.querySelector(".manual-verification-message");
+    const button = form.querySelector("button[type='submit']");
+    if (
+      !identity
+      || candidate?.status !== "READY"
+      || shopeeGlobalPlanReview.approvalCurrent
+      || digest !== candidate.digests.candidate_digest
+      || !oneClickDigest(digest)
+      || !confirmed
+    ) {
+      if (message) {
+        message.textContent =
+          "候选状态已变化或尚未明确勾选；请刷新并重新核对官方候选。";
+      }
+      return;
+    }
+    shopeeGlobalPlanReview.submitting = true;
+    shopeeGlobalPlanReview.approvalPostAttempted = true;
+    releaseSubmitting = true;
+    if (button) button.disabled = true;
+    if (message) message.textContent = "正在保存 Kyle 对当前候选的不可变批准…";
+    updateReleaseControls(currentData || {});
+    try {
+      const { response, payload } = await boundedJsonFetch(
+        "/api/product-workspace/shopee-global-plan-approval",
+        {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            offer_id: identity.offerId,
+            expected_product_revision: identity.revision,
+            expected_candidate_digest: digest,
+            approved_by: "Kyle",
+            confirm_approved_shopee_global_plan: true,
+          }),
+        },
+        ONECLICK_LOCAL_POST_TIMEOUT_MS,
+        "Shopee Global 计划批准",
+      );
+      if (!response.ok || payload.ok === false) {
+        const error = new Error(
+          payload.error || `服务返回 HTTP ${response.status}`,
+        );
+        error.status = response.status;
+        error.payload = payload;
+        error.responseOutcomeUnknown = response.status >= 500;
+        throw error;
+      }
+      shopeeGlobalPlanReview.approval =
+        validateShopeeGlobalPlanApprovalResponse(
+          payload,
+          identity,
+          candidate,
+        );
+      shopeeGlobalPlanReview.approvalCurrent = true;
+      if (message) message.textContent = "批准已保存，正在重新读取发布状态…";
+      window.location.reload();
+    } catch (error) {
+      if (error.responseOutcomeUnknown === true) {
+        shopeeGlobalPlanReview.reconciliationBusy = true;
+        shopeeGlobalPlanReview.previewAttempted = false;
+        shopeeGlobalPlanReview.error =
+          "批准响应未收到，正在只读核对批准是否已经保存；不会再次提交批准。";
+        if (message) message.textContent = shopeeGlobalPlanReview.error;
+        await requestShopeeGlobalPlanPreview(identity);
+        shopeeGlobalPlanReview.reconciliationBusy = false;
+        if (shopeeGlobalPlanReview.approvalCurrent) {
+          window.location.reload();
+          return;
+        }
+        shopeeGlobalPlanReview.error =
+          "批准结果仍未确认。禁止再次提交；请仅重新读取 Shopee Global 计划。";
+      } else {
+        shopeeGlobalPlanReview.error = friendlyError(error.message);
+        if (message) {
+          message.textContent =
+            `${shopeeGlobalPlanReview.error} 未执行任何渠道写入。`;
+        }
+      }
+    } finally {
+      shopeeGlobalPlanReview.submitting = false;
+      releaseSubmitting = false;
+      if (button?.isConnected) button.disabled = false;
+      updateReleaseControls(currentData || {});
+    }
+  }
+
   function renderOneClickExecution(data) {
     const container = $("#oneClickExecutionGroups");
     const message = $("#oneClickExecutionMessage");
     const nextButton = $("#oneClickNextActionButton");
-    if (!container || !message || !nextButton) return;
+    const readRetryButton = $("#oneClickReadRetryButton");
+    if (!container || !message || !nextButton || !readRetryButton) return;
     const identity = oneClickIdentity(data);
     const projection = oneClickProjection();
+    ensureShopeeGlobalPlanReview(identity, projection);
     const headings = {
       automatic: "本轮自动执行",
       manual: "提交后人工验收",
@@ -1143,7 +2125,11 @@
     for (const target of (projection?.targets || [])) {
       groups[oneClickTargetBucket(target)].push(target);
     }
-    container.innerHTML = Object.entries(groups)
+    const sharedControls = projection?.shared_controls || [];
+    const sharedMarkup = sharedControls.map((control) => (
+      shopeeGlobalControlCard(control)
+    )).join("");
+    container.innerHTML = sharedMarkup + Object.entries(groups)
       .filter(([, targets]) => targets.length)
       .map(([bucket, targets]) => `
         <section class="oneclick-execution-group oneclick-${esc(bucket)}">
@@ -1165,7 +2151,16 @@
       `).join("") || "<p>尚无服务端店铺状态。</p>";
 
     const nextAction = currentOneClickNextAction(data);
-    if (nextAction?.action) {
+    const passiveActions = new Set([
+      "prepare_batch",
+      "wait_for_preparation",
+      "wait_for_worker",
+      "wait_for_dispatch_receipt",
+      "wait_for_dependency",
+      "wait_for_channel_capability",
+      "enable_oneclick_dispatch",
+    ]);
+    if (nextAction?.action && !passiveActions.has(nextAction.action)) {
       nextButton.hidden = false;
       nextButton.disabled = false;
       nextButton.dataset.oneclickAction = String(nextAction.action);
@@ -1177,6 +2172,31 @@
       delete nextButton.dataset.oneclickAction;
       delete nextButton.dataset.oneclickTargetFocus;
     }
+    const retryReadOnly = Boolean(
+      !oneClickExecution.previewBusy
+      && !oneClickExecution.statusBusy
+      && !oneClickExecution.acceptanceCheckBusy
+      && (
+        (
+          !oneClickExecution.postAttempted
+          && !oneClickExecution.job
+          && oneClickExecution.error
+        )
+        || (
+          oneClickExecution.postAttempted
+          && !oneClickExecution.job
+        )
+        || oneClickExecution.statusWarning
+      )
+    );
+    readRetryButton.hidden = !retryReadOnly;
+    readRetryButton.disabled = !retryReadOnly;
+    readRetryButton.textContent = oneClickExecution.postAttempted
+      && !oneClickExecution.job
+      ? "重新核对任务是否受理"
+      : oneClickExecution.job
+        ? "重新读取任务状态"
+        : "重新读取发布条件";
 
     if (!identity) {
       message.textContent = "批准不可变发布计划后，系统会读取服务端批次预览。";
@@ -1204,10 +2224,12 @@
       message.textContent = phaseLabels[oneClickExecution.job.phase]
         || "任务状态已由服务端更新。";
     } else if (oneClickExecution.preview) {
-      const count = Number(oneClickExecution.preview.runnable_target_count || 0);
+      const count = Number(
+        oneClickExecution.preview.preparation_pending_count || 0,
+      );
       const manual = (oneClickExecution.preview.summary?.manual_after_submit || []).length;
       message.textContent =
-        `服务端预览完成：${count} 个店铺可执行，${manual} 个提交后等待人工验收。`;
+        `服务端预览完成：${count} 个目标等待后台正式准备，${manual} 个提交后等待人工验收。`;
     } else {
       message.textContent = "等待服务端只读批次预览。";
     }
@@ -1231,9 +2253,11 @@
         $("#publishAllNote").textContent =
           "统一发布执行能力当前关闭；所有店铺保持原状态。";
       } else {
-        const count = Number(oneClickExecution.preview.runnable_target_count || 0);
-        $("#publishAllNote").textContent = count > 0
-          ? `本次只提交服务端标记为可执行的 ${count} 个店铺；其他店铺保持原状态。`
+        const count = Number(
+          oneClickExecution.preview.preparation_pending_count || 0,
+        );
+        $("#publishAllNote").textContent = oneClickExecution.preview.start_allowed
+          ? `将启动 ${count} 个目标的后台正式准备；准备完成后才会逐目标执行，其他店铺保持原状态。`
           : "当前没有可执行店铺；请按服务端唯一下一步处理。";
       }
     }
@@ -1257,11 +2281,270 @@
         + "[name='manual_review_accepted']",
       )
         || document.querySelector(`[data-oneclick-target="${escaped}"]`)
+        || document.querySelector(
+          `[data-oneclick-shared-control="${escaped}"]`,
+        )
         || document.querySelector(`.run-target[data-target-label="${escaped}"]`);
     }
     target ||= $("#oneClickExecutionPreview");
     target.scrollIntoView({ behavior: "smooth", block: "center" });
     target.focus({ preventScroll: true });
+  }
+
+  async function refreshOneClickDashboard() {
+    const identity = oneClickExecution.identity;
+    const generation = oneClickExecution.generation;
+    if (!identity || oneClickExecution.statusBusy) return;
+    oneClickExecution.statusBusy = true;
+    renderOneClickExecution(currentData);
+    try {
+      const latest = await fetchDashboard(
+        identity.offerId,
+        identity.publicationTargets,
+      );
+      if (
+        generation === oneClickExecution.generation
+        && productKey(latest?.product?.offer_id) === identity.offerId
+      ) {
+        oneClickExecution.resumePostAttempted = false;
+        oneClickExecution.failureAction = null;
+        adoptWorkflowDashboard(latest);
+      }
+    } catch (error) {
+      if (generation === oneClickExecution.generation) {
+        oneClickExecution.statusWarning =
+          `重新读取发布状态失败（${friendlyError(error.message)}）；未提交任何发布请求。`;
+      }
+    } finally {
+      if (generation === oneClickExecution.generation) {
+        oneClickExecution.statusBusy = false;
+        renderOneClickExecution(currentData);
+      }
+    }
+  }
+
+  function focusFirstControl(selectors) {
+    for (const selector of selectors) {
+      const target = document.querySelector(selector);
+      if (!target) continue;
+      if (
+        !target.matches(
+          "button,input,select,textarea,a[href],[tabindex]",
+        )
+      ) {
+        target.setAttribute("tabindex", "-1");
+      }
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+      target.focus({ preventScroll: true });
+      return true;
+    }
+    return false;
+  }
+
+  async function routeOneClickNextAction(button) {
+    const action = String(button.dataset.oneclickAction || "");
+    const targetLabel = String(button.dataset.oneclickTargetFocus || "");
+    if (!ONECLICK_ACTIONS.has(action)) {
+      oneClickExecution.error =
+        "服务端返回了未知下一步，系统已停止操作；请重新读取发布状态。";
+      renderOneClickExecution(currentData);
+      return;
+    }
+    if (action === "refresh_release_state") {
+      await refreshOneClickDashboard();
+      return;
+    }
+    if (action === "review_shopee_global_plan") {
+      focusOneClickTarget(SHOPEE_GLOBAL_CONTROL_TARGET);
+      focusFirstControl([
+        ".shopee-global-plan-approval-form input[name='confirm_approved_shopee_global_plan']",
+        ".shopee-global-plan-preview-retry",
+        ".shopee-global-auth-restore",
+      ]);
+      ensureShopeeGlobalPlanReview(
+        oneClickExecution.identity,
+        oneClickProjection(),
+      );
+      return;
+    }
+    if (
+      [
+        "retry_exact_zero_write_action",
+        "perform_governed_safe_action",
+      ].includes(action)
+    ) {
+      await resumeExactZeroWriteFailures();
+      return;
+    }
+    if (action === "verify_submission_in_marketplace") {
+      if (!focusFirstControl([
+        `.run-target[data-target-label="${CSS.escape(targetLabel)}"] `
+          + ".manual-verification-form input[name='marketplace_product_id']",
+      ])) {
+        oneClickExecution.statusWarning =
+          "该目标等待人工验收，但当前页面没有可填写的验收表单；请重新读取发布状态。";
+        focusOneClickTarget(targetLabel);
+        renderOneClickExecution(currentData);
+      }
+      return;
+    }
+    if (action === "review_verified_observation_warning") {
+      if (!focusFirstControl([
+        `[data-oneclick-observation-review="${CSS.escape(targetLabel)}"] `
+          + "input[name='manual_review_accepted']",
+      ])) {
+        oneClickExecution.statusWarning =
+          "Shopee 观察警告验收控件尚未就绪；请重新读取任务状态。";
+        focusOneClickTarget(targetLabel);
+        renderOneClickExecution(currentData);
+      }
+      return;
+    }
+    if (action === "reconcile_before_any_retry") {
+      const escaped = CSS.escape(targetLabel);
+      if (!focusFirstControl([
+        `[data-target-scoped-target="${escaped}"] `
+          + "[data-target-scoped-action='preview']",
+      ])) {
+        oneClickExecution.statusWarning =
+          "该目标当前没有可用的只读对账入口；系统不会重发，请先刷新状态或等待受治理对账能力。";
+        focusOneClickTarget(targetLabel);
+        renderOneClickExecution(currentData);
+      }
+      return;
+    }
+    if (action === "restore_channel_authorization") {
+      if (targetLabel.startsWith("shopee:")) {
+        const focused = focusFirstControl([
+          ".shopee-global-auth-restore",
+          ".shopee-global-plan-preview-retry",
+        ]);
+        if (!focused) focusOneClickTarget(SHOPEE_GLOBAL_CONTROL_TARGET);
+        oneClickExecution.statusWarning =
+          "请在 Shopee 授权管理入口恢复当前店铺与 Global 官方读取授权，完成后只点“重新读取发布条件”；这里不会刷新凭据或提交发布。";
+      } else {
+        focusOneClickTarget(targetLabel);
+        oneClickExecution.statusWarning =
+          `${targetDisplayName(targetLabel)} 需要在对应平台的授权管理入口恢复授权；完成后只点“重新读取发布条件”，这里不会刷新凭据或提交发布。`;
+      }
+      renderOneClickExecution(currentData);
+      return;
+    }
+    const contentSelectors = {
+      review_approved_content_facts: [
+        "#listingCopyAssistant",
+        "#content",
+        "#productFactsPanel",
+      ],
+      review_logistics_policy: ["#productFactsPanel"],
+      resolve_source_product_identity: ["#productFactsPanel"],
+      resolve_predecessor_sku_lineage: ["#productFactsPanel"],
+      resolve_plan_or_source_identity: ["#releasePlan", "#productFactsPanel"],
+      approve_sellable_inventory: ["#releasePlan", "#productFactsPanel"],
+    };
+    if (contentSelectors[action]) {
+      if (!focusFirstControl(contentSelectors[action])) {
+        focusOneClickTarget(targetLabel);
+      }
+      return;
+    }
+    focusOneClickTarget(targetLabel);
+  }
+
+  async function resumeExactZeroWriteFailures() {
+    const identity = oneClickExecution.identity;
+    const reference = oneClickExecution.job;
+    if (
+      !identity
+      || !reference
+      || releaseSubmitting
+      || oneClickExecution.resumePostAttempted
+    ) return;
+    const generation = oneClickExecution.generation;
+    oneClickExecution.resumePostAttempted = true;
+    releaseSubmitting = true;
+    oneClickExecution.posting = true;
+    oneClickExecution.error = "";
+    renderOneClickExecution(currentData);
+    updateReleaseControls(currentData || {});
+    try {
+      const { response, payload } = await boundedJsonFetch(
+        "/api/product-workspace/publish",
+        {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(currentReleaseBody({
+            confirm_publish: true,
+            resume_exact_zero_write_failures: true,
+          })),
+        },
+        ONECLICK_LOCAL_POST_TIMEOUT_MS,
+        "零写入失败安全恢复",
+      );
+      if (response.status !== 202 || !response.ok || payload.ok === false) {
+        const error = new Error(
+          payload.error || `服务返回 HTTP ${response.status}`,
+        );
+        error.responseOutcomeUnknown = response.status >= 500;
+        throw error;
+      }
+      const job = validateOneClickProjection(
+        payload.job,
+        identity,
+        ONECLICK_STATUS_SCHEMA,
+        reference,
+      );
+      if (generation !== oneClickExecution.generation) return;
+      oneClickExecution.job = job;
+      oneClickExecution.statusWarning =
+        "受治理的零写入恢复已受理；正在只读轮询同一持久任务。";
+      scheduleOneClickStatusPoll(generation, 0);
+    } catch (error) {
+      if (generation !== oneClickExecution.generation) return;
+      if (error.responseOutcomeUnknown === true) {
+        oneClickExecution.statusWarning =
+          "安全恢复响应未收到；正在只读核对同一任务，绝不再次提交。";
+        await pollOneClickStatus(generation);
+      } else {
+        oneClickExecution.error = friendlyError(error.message);
+        oneClickExecution.failureAction = {
+          action: "refresh_release_state",
+          target_focus: null,
+          runnable: false,
+        };
+      }
+    } finally {
+      if (generation === oneClickExecution.generation) {
+        releaseSubmitting = false;
+        oneClickExecution.posting = false;
+        renderOneClickExecution(currentData);
+        updateReleaseControls(currentData || {});
+      }
+    }
+  }
+
+  async function retryOneClickReadOnly() {
+    if (
+      oneClickExecution.previewBusy
+      || oneClickExecution.statusBusy
+      || oneClickExecution.acceptanceCheckBusy
+    ) return;
+    const generation = oneClickExecution.generation;
+    if (oneClickExecution.postAttempted && !oneClickExecution.job) {
+      await reconcileOneClickAcceptance(generation);
+      return;
+    }
+    if (oneClickExecution.job) {
+      await pollOneClickStatus(generation);
+      return;
+    }
+    oneClickExecution.previewAttempted = false;
+    oneClickExecution.error = "";
+    oneClickExecution.failureAction = null;
+    await requestOneClickPreview(generation);
   }
 
   function scheduleOneClickStatusPoll(generation, delay = ONECLICK_POLL_INTERVAL_MS) {
@@ -1305,6 +2588,71 @@
     }
   }
 
+  async function reconcileOneClickAcceptance(generation) {
+    if (
+      generation !== oneClickExecution.generation
+      || oneClickExecution.acceptanceCheckBusy
+      || !oneClickExecution.identity
+      || oneClickExecution.job
+    ) return;
+    oneClickExecution.acceptanceCheckBusy = true;
+    oneClickExecution.statusWarning = "";
+    oneClickExecution.error =
+      "发布响应未收到，正在只读核对服务端是否已经受理；绝不自动重发。";
+    const identity = oneClickExecution.identity;
+    const controller = new AbortController();
+    oneClickExecution.controller = controller;
+    renderOneClickExecution(currentData);
+    try {
+      const params = new URLSearchParams({ plan_id: identity.planId });
+      const { response, payload } = await boundedJsonFetch(
+        `/api/product-workspace/publish-status?${params}`,
+        {
+          headers: { Accept: "application/json" },
+          controller,
+        },
+        ONECLICK_LOCAL_READ_TIMEOUT_MS,
+        "统一发布受理状态只读核对",
+      );
+      if (!response.ok || payload.ok === false) {
+        throw new Error(payload.error || `服务返回 HTTP ${response.status}`);
+      }
+      const job = validateOneClickProjection(
+        payload.job,
+        identity,
+        ONECLICK_STATUS_SCHEMA,
+        oneClickExecution.preview,
+      );
+      if (generation !== oneClickExecution.generation) return;
+      oneClickExecution.job = job;
+      oneClickExecution.error = "";
+      oneClickExecution.statusWarning = "";
+      renderOneClickExecution(currentData);
+      updateReleaseControls(currentData || {});
+      if (ONECLICK_TERMINAL_PHASES.has(job.phase)) {
+        await refreshDashboardAfterOneClickTerminal(generation);
+      } else {
+        scheduleOneClickStatusPoll(generation, 0);
+      }
+    } catch (error) {
+      if (
+        error.name === "AbortError"
+        || generation !== oneClickExecution.generation
+      ) return;
+      oneClickExecution.error =
+        `仍无法确认发布请求是否已受理（${friendlyError(error.message)}）。禁止再次发布，只能继续只读核对。`;
+    } finally {
+      if (generation === oneClickExecution.generation) {
+        oneClickExecution.acceptanceCheckBusy = false;
+        if (oneClickExecution.controller === controller) {
+          oneClickExecution.controller = null;
+        }
+        renderOneClickExecution(currentData);
+        updateReleaseControls(currentData || {});
+      }
+    }
+  }
+
   async function pollOneClickStatus(generation) {
     if (
       generation !== oneClickExecution.generation
@@ -1324,14 +2672,15 @@
         job_id: reference.job_id,
         plan_id: identity.planId,
       });
-      const response = await fetch(
+      const { response, payload } = await boundedJsonFetch(
         `/api/product-workspace/publish-status?${params}`,
-        { headers: { Accept: "application/json" }, signal: controller.signal },
+        {
+          headers: { Accept: "application/json" },
+          controller,
+        },
+        ONECLICK_LOCAL_READ_TIMEOUT_MS,
+        "统一发布任务状态读取",
       );
-      const payload = await response.json().catch(() => ({
-        ok: false,
-        error: `服务返回 HTTP ${response.status}`,
-      }));
       if (!response.ok || payload.ok === false) {
         throw new Error(payload.error || `服务返回 HTTP ${response.status}`);
       }
@@ -1410,14 +2759,15 @@
         offer_id: identity.offerId,
         plan_id: identity.planId,
       });
-      const response = await fetch(
+      const { response, payload } = await boundedJsonFetch(
         `/api/product-workspace/publish-preview?${params}`,
-        { headers: { Accept: "application/json" }, signal: controller.signal },
+        {
+          headers: { Accept: "application/json" },
+          controller,
+        },
+        ONECLICK_LOCAL_READ_TIMEOUT_MS,
+        "统一发布条件只读预览",
       );
-      const payload = await response.json().catch(() => ({
-        ok: false,
-        error: `服务返回 HTTP ${response.status}`,
-      }));
       if (!response.ok || payload.ok === false) {
         const error = new Error(payload.error || `服务返回 HTTP ${response.status}`);
         error.payload = payload;
@@ -4005,7 +5355,7 @@
       && !runCounts.running,
     );
     const runnableTargetCount = hasOneClickAuthority
-      ? Number(oneClickExecution.preview?.runnable_target_count || 0)
+      ? Number(oneClickExecution.preview?.preparation_pending_count || 0)
       : (
         Number.isInteger(release.runnable_target_count)
           ? release.runnable_target_count
@@ -4049,13 +5399,21 @@
     }
     publishAllCheckbox.disabled = Boolean(
       !publishReady
-      || runnableTargetCount < 1
+      || (
+        hasOneClickAuthority
+          ? oneClickExecution.preview?.start_allowed !== true
+          : runnableTargetCount < 1
+      )
       || ledgerBlocksPublish
       || busy
     );
     $("#publishAllButton").disabled = Boolean(
       !publishReady
-      || runnableTargetCount < 1
+      || (
+        hasOneClickAuthority
+          ? oneClickExecution.preview?.start_allowed !== true
+          : runnableTargetCount < 1
+      )
       || ledgerBlocksPublish
       || !$("#publishAllCheckbox").checked
       || busy,
@@ -4914,7 +6272,8 @@
       || oneClickExecution.job
       || !identity
       || !preview
-      || preview.runnable_target_count < 1
+      || preview.start_allowed !== true
+      || preview.preparation_pending_count < 1
       || preview.dispatch_capability?.enabled === false
       || !$("#publishAllCheckbox").checked
     ) return;
@@ -4928,11 +6287,30 @@
     renderOneClickExecution(currentData);
     $("#publishRunMessage").textContent = "正在创建唯一持久任务；不会在浏览器中循环调用发布。";
     try {
-      const payload = await postReleaseAction(
+      const { response, payload } = await boundedJsonFetch(
         "/api/product-workspace/publish",
-        body,
-        { expectedStatus: 202 },
+        {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+        },
+        ONECLICK_LOCAL_POST_TIMEOUT_MS,
+        "统一发布任务创建",
       );
+      if (response.status !== 202 || !response.ok || payload.ok === false) {
+        const error = new Error(
+          response.status !== 202
+            ? `服务返回 HTTP ${response.status}，但本操作要求 HTTP 202`
+            : payload.error || `服务返回 HTTP ${response.status}`,
+        );
+        error.status = response.status;
+        error.payload = payload;
+        error.responseOutcomeUnknown = response.status >= 500;
+        throw error;
+      }
       if (
         payload.accepted !== true
         || !Array.isArray(payload.external_writes_performed)
@@ -4958,8 +6336,14 @@
       const message = friendlyError(error.message);
       oneClickExecution.error = message;
       showError(message);
-      $("#publishRunMessage").textContent =
-        `${message} 请求结果未确认，系统不会自动重发。`;
+      if (error.responseOutcomeUnknown === true) {
+        $("#publishRunMessage").textContent =
+          `${message} 正在只读核对是否已受理，系统不会自动重发。`;
+        await reconcileOneClickAcceptance(generation);
+      } else {
+        $("#publishRunMessage").textContent =
+          `${message} 服务端已明确拒绝本次任务；系统不会自动重发。`;
+      }
     } finally {
       if (generation === oneClickExecution.generation) {
         releaseSubmitting = false;
@@ -5282,16 +6666,51 @@
     updateReleaseControls(currentData || {});
   });
   $("#publishAllButton").addEventListener("click", publishSelectedTargets);
-  $("#oneClickNextActionButton").addEventListener("click", (event) => {
-    focusOneClickTarget(event.currentTarget.dataset.oneclickTargetFocus || "");
-  });
+  $("#oneClickNextActionButton").addEventListener(
+    "click",
+    (event) => routeOneClickNextAction(event.currentTarget),
+  );
+  $("#oneClickReadRetryButton").addEventListener(
+    "click",
+    retryOneClickReadOnly,
+  );
   $("#oneClickExecutionGroups").addEventListener("submit", (event) => {
+    const globalPlanForm = event.target.closest(
+      ".shopee-global-plan-approval-form",
+    );
+    if (globalPlanForm) {
+      event.preventDefault();
+      submitShopeeGlobalPlanApproval(globalPlanForm);
+      return;
+    }
     const form = event.target.closest(".oneclick-observation-review-form");
     if (!form) return;
     event.preventDefault();
     submitOneClickObservationAcceptance(form);
   });
   $("#oneClickExecutionGroups").addEventListener("click", (event) => {
+    const globalRetry = event.target.closest(
+      ".shopee-global-plan-preview-retry",
+    );
+    if (globalRetry) {
+      if (
+        !shopeeGlobalPlanReview.previewBusy
+        && oneClickExecution.identity
+      ) {
+        shopeeGlobalPlanReview.previewAttempted = false;
+        shopeeGlobalPlanReview.error = "";
+        requestShopeeGlobalPlanPreview(oneClickExecution.identity);
+      }
+      return;
+    }
+    const authRestore = event.target.closest(".shopee-global-auth-restore");
+    if (authRestore) {
+      focusOneClickTarget(SHOPEE_GLOBAL_CONTROL_TARGET);
+      oneClickExecution.statusWarning =
+        "请在 Shopee 授权管理中恢复当前 Global 官方读取授权，然后回到这里重新读取；系统不会猜测或刷新凭据。";
+      renderOneClickExecution(currentData);
+      return;
+    }
     const target = event.target.closest("[data-oneclick-target]");
     if (!target) return;
     focusOneClickTarget(target.dataset.oneclickTarget || "");

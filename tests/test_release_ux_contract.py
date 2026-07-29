@@ -524,17 +524,20 @@ def test_oneclick_release_ui_uses_only_the_async_server_controlplane():
         "oneClickExecutionGroups",
         "oneClickExecutionMessage",
         "oneClickNextActionButton",
+        "oneClickReadRetryButton",
     ):
         assert f'id="{control_id}"' in html
     assert "/api/product-workspace/publish-preview?" in preview
     assert "/api/product-workspace/publish-status?" in status
     assert '"/api/product-workspace/publish"' in publish
-    assert 'ONECLICK_PREVIEW_SCHEMA = "release-batch-preparation/v1"' in script
-    assert 'ONECLICK_STATUS_SCHEMA = "oneclick-release-status/v1"' in script
+    assert 'ONECLICK_PREVIEW_SCHEMA = "release-batch-preparation/v2"' in script
+    assert 'ONECLICK_STATUS_SCHEMA = "oneclick-release-status/v2"' in script
+    assert "projection.shared_controls" in script
+    assert 'SHOPEE_GLOBAL_CONTROL_TARGET = "shopee:GLOBAL"' in script
     assert "payload.persisted !== false" in preview
     assert "payload.accepted !== true" in publish
-    assert "{ expectedStatus: 202 }" in publish
-    assert "response.status !== expectedStatus" in script
+    assert "response.status !== 202" in publish
+    assert "boundedJsonFetch" in publish
     assert "oneClickExecution.postAttempted = true" in publish
     assert "oneClickExecution.job" in publish
     assert "scheduleOneClickStatusPoll(generation, 0)" in publish
@@ -552,13 +555,70 @@ def test_oneclick_release_ui_uses_only_the_async_server_controlplane():
     assert "ONECLICK_TARGET_DIGEST_KEYS.every" in script
     assert "oneClickDigest(reason.detail_digest)" in script
     assert 'dependency.policy_version !== "oneclick-target-dependency/v1"' in script
-    assert 'dependency.prerequisite_target === "miaoshou:COMMON"' in script
-    assert "previousTargets.size !== projection.targets.length" in script
+    assert 'prerequisiteLabel = isTikTok' in script
+    assert "reference.shared_controls" in script
     assert "sameSortedValues(summary.will_dispatch" in script
     assert "dashboardFromPayload" not in publish
     assert "while (" not in publish
     assert ".oneclick-execution-group" in style
     assert ".oneclick-target-card:focus-visible" in style
+
+
+def test_oneclick_v2_ui_bounds_reads_and_never_resends_unknown_posts():
+    script = (ROOT / "web/static/product_workspace.js").read_text(
+        encoding="utf-8"
+    )
+    global_preview = _function_body(script, "requestShopeeGlobalPlanPreview")
+    global_approval = _function_body(script, "submitShopeeGlobalPlanApproval")
+    reconcile = _function_body(script, "reconcileOneClickAcceptance")
+    router = _function_body(script, "routeOneClickNextAction")
+    resume = _function_body(script, "resumeExactZeroWriteFailures")
+
+    assert "ONECLICK_LOCAL_READ_TIMEOUT_MS = 15000" in script
+    assert "ONECLICK_LOCAL_POST_TIMEOUT_MS = 15000" in script
+    assert "SHOPEE_GLOBAL_READ_TIMEOUT_MS = 125000" in script
+    assert "SHOPEE_GLOBAL_READ_TIMEOUT_MS" in global_preview
+    assert "approvalPostAttempted" in global_approval
+    assert "responseOutcomeUnknown" in global_approval
+    assert "/api/product-workspace/publish-status?" in reconcile
+    assert "reconcileOneClickAcceptance(generation)" in script
+    assert "retryOneClickReadOnly" in script
+    assert "refresh_release_state" in router
+    assert "review_shopee_global_plan" in router
+    assert "focusFirstControl" in router
+    assert "wait_for_channel_capability" in script
+    assert "passiveActions" in script
+    assert "resume_exact_zero_write_failures: true" in resume
+    assert "oneClickExecution.resumePostAttempted" in resume
+    assert "response.status >= 500" in resume
+    assert "pollOneClickStatus(generation)" in resume
+    assert '"refresh_release_state"' in resume
+    assert "verify_submission_in_marketplace" in router
+    assert "marketplace_product_id" in router
+    assert "reconcile_before_any_retry" in router
+    assert "data-target-scoped-action='preview'" in router
+    assert "restore_channel_authorization" in router
+    assert "Shopee 授权管理入口" in router
+
+
+def test_shopee_global_plan_ui_is_redacted_and_fail_closed():
+    script = (ROOT / "web/static/product_workspace.js").read_text(
+        encoding="utf-8"
+    )
+    validator = script
+    panel = script
+
+    assert "shopee-global-plan-preview/v1" in script
+    assert "shopee-global-plan-candidate/v1" in script
+    assert "approved-shopee-global-plan/v1" in script
+    assert '"BLOCKED_AUTH"' in validator
+    assert '"BLOCKED_CAPABILITY"' in validator
+    assert "reason_category" in validator
+    assert "shopee-global-auth-restore" in panel
+    assert "shopee-global-plan-preview-retry" in panel
+    assert "confirm_approved_shopee_global_plan" in script
+    assert "expected_candidate_digest" in script
+    assert "raw response" not in panel.lower()
 
 
 def test_oneclick_manual_review_forms_keep_warning_and_apiless_contracts_separate():
@@ -572,7 +632,7 @@ def test_oneclick_manual_review_forms_keep_warning_and_apiless_contracts_separat
     )
     apiless_submit = _function_body(script, "submitManualTargetVerification")
 
-    assert "product_workspace.js?v=20260730-v15" in html
+    assert "product_workspace.js?v=20260730-v16" in html
     assert '"SUCCEEDED_MANUAL_REVIEW"' in script
     assert '"review_verified_observation_warning"' in script
     assert "oneclick-observation-review-form" in script

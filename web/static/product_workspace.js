@@ -1494,7 +1494,7 @@
     }
     if (dispositionActions.length) {
       descriptions.reconcile =
-        `${runCounts.succeeded}/${runCounts.total} 个目标已完成官方回读；`
+        `${runCounts.succeeded}/${runCounts.total} 个店铺已完成官方回读；`
         + dispositionActions.join(" ");
     }
     if (awaitingReadbackLabels.length) {

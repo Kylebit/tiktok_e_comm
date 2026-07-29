@@ -1147,7 +1147,8 @@ async function productReleaseTerminalState(browser) {
     });
     const ledger = (await page.locator("#releaseRunLedger").innerText()).trim();
     check(
-      ledger.includes("2 已回读 · 1 待人工验收"),
+      ledger.includes("1 已回读 · 1 待人工验收")
+      && ledger.includes("公共草稿已核验 · 不计入店铺发布"),
       "product release: terminal run separates API readback from manual verification",
       ledger,
     );
@@ -1177,7 +1178,7 @@ async function productReleaseTerminalState(browser) {
     );
     const nextStep = (await page.locator("#nextStepDescription").innerText()).trim();
     check(
-      nextStep.includes("2/3 个目标已完成官方回读")
+      nextStep.includes("1/2 个店铺已完成官方回读")
       && nextStep.includes("需在平台后台逐字段人工验收")
       && nextStep.includes("禁止重发"),
       "product release: next action explains the remaining manual verification",

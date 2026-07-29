@@ -25,6 +25,15 @@ from .source_identity import (
     SourceProductIdentityResolution,
     resolve_source_product_identity,
 )
+from .sku_lineage import (
+    BLOCKED_SKU_LINEAGE,
+    SKU_LINEAGE_SCHEMA_VERSION,
+    ModelSkuAssignment,
+    SkuAssignment,
+    SkuLineageReservation,
+    SkuLineageResolution,
+    resolve_sku_lineage_reservation,
+)
 
 __all__ = [
     "ApprovedProductPackage",
@@ -48,4 +57,11 @@ __all__ = [
     "SourceProductIdentity",
     "SourceProductIdentityResolution",
     "resolve_source_product_identity",
+    "BLOCKED_SKU_LINEAGE",
+    "SKU_LINEAGE_SCHEMA_VERSION",
+    "ModelSkuAssignment",
+    "SkuAssignment",
+    "SkuLineageReservation",
+    "SkuLineageResolution",
+    "resolve_sku_lineage_reservation",
 ]

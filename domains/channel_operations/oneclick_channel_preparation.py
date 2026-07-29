@@ -23,6 +23,8 @@ class OneClickPreparationError(ValueError):
 
 
 SYSTEMIC_IDENTITY = "SYSTEMIC_IDENTITY"
+SHOPEE_GLOBAL_MASTER_WRITE = "shopee:global_master:update"
+SHOPEE_REGIONAL_PUBLISH_WRITE = "shopee:regional_publish"
 
 
 def _digest(value: object) -> str:
@@ -121,3 +123,57 @@ def prepare_shopee_plan_native_first_attempt(command: Mapping[str, object]) -> d
         "external_writes_performed": [],
     }
     return {**payload, "prepared_digest": _digest(payload)}
+
+
+def classify_shopee_dispatch_boundary(
+    *,
+    global_master_state: str,
+    regional_state: str,
+) -> dict[str, object]:
+    """Build a truthful, append-only write receipt for a Shopee attempt.
+
+    ``global_master_state`` is one of ``not_started``, ``accepted`` or
+    ``unknown``.  ``regional_state`` is one of ``not_started``, ``accepted``
+    or ``unknown``.  An accepted/unknown global operation is never erased by
+    a later regional transport, task, parse or logistics failure.
+    """
+
+    allowed = {"not_started", "accepted", "unknown"}
+    if global_master_state not in allowed or regional_state not in allowed:
+        raise OneClickPreparationError("shopee_dispatch_state_invalid")
+    writes: list[str] = []
+    if global_master_state != "not_started":
+        writes.append(SHOPEE_GLOBAL_MASTER_WRITE)
+    if regional_state != "not_started":
+        writes.append(SHOPEE_REGIONAL_PUBLISH_WRITE)
+    uncertain = "unknown" in {global_master_state, regional_state}
+    if not writes:
+        outcome = "FAILED_PRE_SUBMIT"
+    elif uncertain or regional_state != "accepted":
+        outcome = "RECONCILIATION_REQUIRED"
+    else:
+        outcome = "POST_DISPATCH_READBACK_REQUIRED"
+    payload = {
+        "schema_version": "shopee-oneclick-dispatch-boundary/v1",
+        "global_master_state": global_master_state,
+        "regional_state": regional_state,
+        "outcome": outcome,
+        "reconciliation_required": outcome == "RECONCILIATION_REQUIRED",
+        "external_writes_performed": writes,
+    }
+    return {**payload, "receipt_digest": _digest(payload)}
+
+
+def remaining_shopee_regions(
+    target_states: Mapping[str, Mapping[str, object]],
+) -> tuple[str, ...]:
+    """Return only pristine/incomplete regions; terminal receipts never replay."""
+
+    regions: list[str] = []
+    for label in ("shopee:PH", "shopee:MY", "shopee:TH", "shopee:VN"):
+        row = target_states.get(label)
+        if not isinstance(row, Mapping):
+            continue
+        if row.get("status") == "PENDING" and row.get("attempts") == 0:
+            regions.append(label)
+    return tuple(regions)

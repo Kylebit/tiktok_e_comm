@@ -77,3 +77,39 @@ def test_shopee_native_prepare_rejects_legacy_dependency_marker():
                 "publish_match_key": "hidden-legacy",
             }
         )
+
+
+@pytest.mark.parametrize(
+    ("global_state", "regional_state", "writes", "outcome"),
+    [
+        ("not_started", "not_started", [], "FAILED_PRE_SUBMIT"),
+        ("accepted", "not_started", ["shopee:global_master:update"], "RECONCILIATION_REQUIRED"),
+        ("unknown", "not_started", ["shopee:global_master:update"], "RECONCILIATION_REQUIRED"),
+        ("accepted", "unknown", ["shopee:global_master:update", "shopee:regional_publish"], "RECONCILIATION_REQUIRED"),
+        ("accepted", "accepted", ["shopee:global_master:update", "shopee:regional_publish"], "POST_DISPATCH_READBACK_REQUIRED"),
+    ],
+)
+def test_shopee_multistage_receipt_never_loses_prior_global_write(
+    global_state,
+    regional_state,
+    writes,
+    outcome,
+):
+    receipt = subject.classify_shopee_dispatch_boundary(
+        global_master_state=global_state,
+        regional_state=regional_state,
+    )
+    assert receipt["external_writes_performed"] == writes
+    assert receipt["outcome"] == outcome
+
+
+def test_shopee_batch_replay_returns_only_pristine_unfinished_regions():
+    remaining = subject.remaining_shopee_regions(
+        {
+            "shopee:PH": {"status": "SUCCEEDED", "attempts": 1},
+            "shopee:MY": {"status": "RECONCILIATION_REQUIRED", "attempts": 1},
+            "shopee:TH": {"status": "PENDING", "attempts": 0},
+            "shopee:VN": {"status": "FAILED", "attempts": 1},
+        }
+    )
+    assert remaining == ("shopee:TH",)

@@ -97,6 +97,93 @@ class MiaoshouDraftVerificationError(ReleaseAdapterWriteVerificationError):
     """A Miaoshou update was accepted but exact readback did not verify."""
 
 
+class MiaoshouPreSubmitError(RuntimeError):
+    """A COMMON preparation failed before its editable-detail POST."""
+
+    def __init__(self, message: str, *, reason_code: str) -> None:
+        super().__init__(message)
+        self.reason_code = str(reason_code)
+        self.external_reference = None
+        self.external_write_evidence = {
+            "source": "miaoshou_open_api",
+            "verified": False,
+            "pre_submit_failure": True,
+            "submission_accepted": False,
+            "reason_code": self.reason_code,
+            "external_writes_performed": [],
+        }
+
+
+class _MiaoshouDetailListContractError(ValueError):
+    """A read-only TikTok detail-list response is not provably complete."""
+
+    def __init__(self, message: str, *, reason_code: str) -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
+
+
+def _complete_miaoshou_tiktok_detail_rows(
+    response: Any,
+    *,
+    page_size: int = 100,
+) -> list[dict[str, Any]]:
+    """Validate one bounded Miaoshou page without inventing pagination fields.
+
+    The audited Open API response may contain only ``data.detailList``. A
+    short first page is complete under its page-number contract. Optional
+    count and cursor fields remain strict hard gates whenever they are present.
+    """
+
+    if not isinstance(response, dict) or response.get("result") != "success":
+        raise _MiaoshouDetailListContractError(
+            "Miaoshou TikTok duplicate scan failed",
+            reason_code="miaoshou_tiktok_duplicate_scan_failed",
+        )
+    data = response.get("data")
+    if not isinstance(data, dict):
+        raise _MiaoshouDetailListContractError(
+            "Miaoshou TikTok duplicate scan response is malformed",
+            reason_code="miaoshou_tiktok_duplicate_scan_malformed",
+        )
+    rows = data.get("detailList")
+    if rows is None:
+        rows = data.get("list")
+    if not isinstance(rows, list) or any(
+        not isinstance(row, dict) for row in rows
+    ):
+        raise _MiaoshouDetailListContractError(
+            "Miaoshou TikTok duplicate scan rows are malformed",
+            reason_code="miaoshou_tiktok_duplicate_scan_malformed",
+        )
+    if len(rows) >= page_size:
+        raise _MiaoshouDetailListContractError(
+            "Miaoshou TikTok duplicate scan is incomplete",
+            reason_code="miaoshou_tiktok_duplicate_scan_incomplete",
+        )
+    total_key = next(
+        (key for key in ("totalCount", "total") if key in data),
+        None,
+    )
+    if total_key is not None:
+        total_count = data[total_key]
+        if type(total_count) is not int or total_count != len(rows):
+            raise _MiaoshouDetailListContractError(
+                "Miaoshou TikTok duplicate scan is incomplete",
+                reason_code="miaoshou_tiktok_duplicate_scan_incomplete",
+            )
+    if "hasNextPage" in data and data["hasNextPage"] is not False:
+        raise _MiaoshouDetailListContractError(
+            "Miaoshou TikTok duplicate scan is incomplete",
+            reason_code="miaoshou_tiktok_duplicate_scan_incomplete",
+        )
+    if "nextPageToken" in data and data["nextPageToken"] not in (None, ""):
+        raise _MiaoshouDetailListContractError(
+            "Miaoshou TikTok duplicate scan is incomplete",
+            reason_code="miaoshou_tiktok_duplicate_scan_incomplete",
+        )
+    return list(rows)
+
+
 class ShopeePriceRepairReconciliationError(
     ReleaseAdapterWriteVerificationError
 ):
@@ -118,10 +205,14 @@ def production_adapter_registry() -> dict[str, AdapterRegistration]:
         "shopee": _registration(
             ADAPTER_NAMES["shopee"],
             execute_shopee_target,
+            predecessor_recovery_mode=(
+                "OFFICIAL_READBACK_THEN_BOUNDED_WRITE"
+            ),
         ),
         "ozon": _registration(
             ADAPTER_NAMES["ozon"],
             execute_ozon_target,
+            automatic_first_attempt_mode="BLOCKED_CAPABILITY",
         ),
     }
     return {
@@ -130,7 +221,13 @@ def production_adapter_registry() -> dict[str, AdapterRegistration]:
     }
 
 
-def _registration(name: str, execute) -> AdapterRegistration:
+def _registration(
+    name: str,
+    execute,
+    *,
+    predecessor_recovery_mode: str = "BLOCKED",
+    automatic_first_attempt_mode: str = "ENABLED",
+) -> AdapterRegistration:
     return AdapterRegistration(
         adapter_name=name,
         execute=execute,
@@ -138,6 +235,8 @@ def _registration(name: str, execute) -> AdapterRegistration:
         validates_confirmation_token=True,
         preserves_idempotency_key=True,
         verifies_readback=True,
+        predecessor_recovery_mode=predecessor_recovery_mode,
+        automatic_first_attempt_mode=automatic_first_attempt_mode,
     )
 
 
@@ -871,6 +970,79 @@ def _expected_miaoshou_sku_labels(
     }
 
 
+def _miaoshou_common_spec_label_application(
+    payload: dict[str, Any],
+    sku_map: dict[str, Any],
+    sku_keys: set[str],
+) -> dict[str, Any]:
+    """Describe where approved labels are enforced without exposing labels."""
+
+    expected = _expected_miaoshou_sku_labels(payload, sku_keys)
+    applied_count = 0
+    deferred_count = 0
+    common_label_field_count = 0
+    safe = set(expected) == set(sku_keys)
+    for raw_key, raw_row in sku_map.items():
+        key = str(raw_key).strip(";")
+        if key not in sku_keys:
+            continue
+        if not isinstance(raw_row, dict):
+            safe = False
+            continue
+        expected_label = expected.get(key)
+        if not expected_label:
+            safe = False
+            continue
+        label_fields = [
+            field
+            for field in ("specLabel", "specName", "skuName")
+            if field in raw_row
+        ]
+        if label_fields:
+            common_label_field_count += 1
+            applied_count += 1
+            if any(
+                str(raw_row.get(field) or "").strip() != expected_label
+                for field in label_fields
+            ):
+                safe = False
+        elif expected_label == key:
+            applied_count += 1
+        else:
+            # COMMON has no governed sale-property surface. The immutable
+            # override remains mandatory in each site draft, where
+            # _apply_audited_english_variant_labels() maps skuPropertyList and
+            # fails before dispatch if the mapping is unavailable.
+            deferred_count += 1
+    status = (
+        "deferred_to_site_draft"
+        if safe and deferred_count
+        else ("applied_in_common" if safe else "invalid")
+    )
+    evidence = {
+        "schema_version": "miaoshou-common-spec-label-application/v1",
+        "status": status,
+        "authority": (
+            "approved_release_plan_then_site_sku_property"
+            if deferred_count
+            else "miaoshou_common"
+        ),
+        "approved_label_count": len(expected),
+        "applied_in_common_count": applied_count,
+        "deferred_to_site_count": deferred_count,
+        "common_label_field_available": (
+            common_label_field_count == len(sku_keys)
+        ),
+        "site_draft_mapping_required": deferred_count > 0,
+        "safe": safe,
+        "approved_label_digest": _miaoshou_value_digest(
+            sorted(expected.items())
+        ),
+    }
+    evidence["evidence_digest"] = _miaoshou_value_digest(evidence)
+    return evidence
+
+
 def miaoshou_common_overwrite_review(
     payload: dict[str, Any],
     readback: dict[str, Any],
@@ -1139,40 +1311,23 @@ def readback_miaoshou_common(
         (payload.get("product_facts") or {}).get("source_offer_id")
         or payload["product_id"]
     )
-    actual_spec_labels_by_key = {
-        str(key).strip(";"): str(
-            row.get("specLabel")
-            or row.get("specName")
-            or row.get("skuName")
-            or str(key).strip(";")
-        ).strip()
-        for key, row in actual_sku_map.items()
-        if isinstance(row, dict)
-    }
     expected_spec_labels_by_key = _expected_miaoshou_sku_labels(
         payload,
         expected_sku_keys,
     )
-    actual_spec_labels = sorted(actual_spec_labels_by_key.values())
-    expected_spec_labels = sorted(expected_spec_labels_by_key.values())
-    spec_label_binding = all(
-        expected_spec_labels_by_key.get(key) == key
-        or any(
-            field in row
-            for field in ("specLabel", "specName", "skuName")
-        )
-        for raw_key, row in actual_sku_map.items()
-        if isinstance(row, dict)
-        for key in (str(raw_key).strip(";"),)
-        if key in expected_sku_keys
+    spec_label_application = _miaoshou_common_spec_label_application(
+        payload,
+        actual_sku_map,
+        expected_sku_keys,
     )
+    spec_label_safe = spec_label_application.get("safe") is True
     checks = {
         "title": str(detail.get("title") or "") == expected["title"],
         "seller_sku": str(detail.get("itemNum") or "") == expected["itemNum"],
         "selected_sku_keys": actual_sku_keys == expected_sku_keys,
         "selected_sku_numbers": actual_sku_numbers == expected_sku_numbers,
-        "spec_labels": actual_spec_labels == expected_spec_labels,
-        "spec_label_binding": spec_label_binding,
+        "spec_labels": spec_label_safe,
+        "spec_label_binding": spec_label_safe,
         "weight": _numbers_equal(detail.get("weight"), expected["weight"], "0.0001"),
         "dimensions": all(
             _numbers_equal(actual, wanted, "0.0001")
@@ -1194,11 +1349,8 @@ def readback_miaoshou_common(
             or str(response_detail_id) == str(expected_detail_id)
         ),
         "source_identity": (
-            expected_source_offer_id == str(payload["product_id"])
-            and (
-                actual_source_offer_id is None
-                or str(actual_source_offer_id) == expected_source_offer_id
-            )
+            actual_source_offer_id is None
+            or str(actual_source_offer_id) == expected_source_offer_id
         ),
         "detail_binding": (
             response_detail_id is None
@@ -1223,12 +1375,23 @@ def readback_miaoshou_common(
             "actual": sorted(actual_sku_numbers),
         },
         "spec_labels": {
-            "expected": expected_spec_labels,
-            "actual": actual_spec_labels,
+            "expected": {
+                "approved_label_count": len(expected_spec_labels_by_key),
+                "authority": "approved_release_plan",
+            },
+            "actual": {
+                "applied_in_common_count": spec_label_application[
+                    "applied_in_common_count"
+                ],
+                "deferred_to_site_count": spec_label_application[
+                    "deferred_to_site_count"
+                ],
+                "status": spec_label_application["status"],
+            },
         },
         "spec_label_binding": {
             "expected": True,
-            "actual": spec_label_binding,
+            "actual": spec_label_safe,
         },
         "weight": {
             "expected": expected["weight"],
@@ -1286,6 +1449,7 @@ def readback_miaoshou_common(
         "existing_detail_digest": _miaoshou_detail_digest(detail),
         "readback_ambiguous": False,
         "image_count": len(detail.get("imgUrls") or ()),
+        "spec_label_application": spec_label_application,
         "external_writes_performed": [],
         "source": "miaoshou_common_readonly_detail",
     }
@@ -1312,15 +1476,17 @@ def write_miaoshou_common_from_plan(
         {"commonCollectBoxDetailId": detail_id},
     )
     if current_response.get("result") != "success":
-        raise RuntimeError(
-            "Miaoshou COMMON immutable write could not read current detail"
+        raise MiaoshouPreSubmitError(
+            "Miaoshou COMMON immutable write could not read current detail",
+            reason_code="common_detail_read_failed",
         )
     data = current_response.get("data") or {}
     current = data.get("editCommonCollectBoxDetail")
     oss_md5 = str(data.get("ossMd5") or "")
     if not isinstance(current, dict) or not current or not oss_md5:
-        raise RuntimeError(
-            "Miaoshou COMMON immutable write lacks editable detail or ossMd5"
+        raise MiaoshouPreSubmitError(
+            "Miaoshou COMMON immutable write lacks editable detail or ossMd5",
+            reason_code="common_editable_detail_unavailable",
         )
     if overwrite_guard is not None:
         if (
@@ -1331,8 +1497,9 @@ def write_miaoshou_common_from_plan(
             or _miaoshou_detail_digest(current)
             != str(overwrite_guard.get("existing_detail_digest"))
         ):
-            raise RuntimeError(
-                "Miaoshou COMMON changed after overwrite review; no edit was sent"
+            raise MiaoshouPreSubmitError(
+                "Miaoshou COMMON changed after overwrite review; no edit was sent",
+                reason_code="common_overwrite_review_drift",
             )
     current_sku_map = (
         current.get("skuMap")
@@ -1354,8 +1521,9 @@ def write_miaoshou_common_from_plan(
         or {str(key).strip(";") for key in selected_skus}
         != selected_sku_keys
     ):
-        raise RuntimeError(
-            "immutable ReleasePlan variants do not exactly match Miaoshou COMMON"
+        raise MiaoshouPreSubmitError(
+            "immutable ReleasePlan variants do not exactly match Miaoshou COMMON",
+            reason_code="common_variant_identity_mismatch",
         )
     sku_numbers = workbench._sequential_sku_numbers(  # noqa: SLF001
         selected_skus,
@@ -1379,19 +1547,13 @@ def write_miaoshou_common_from_plan(
         )
         normalized_key = str(key).strip(";")
         expected_label = expected_sku_labels.get(normalized_key, normalized_key)
-        if expected_label != normalized_key:
-            label_fields = [
-                field
-                for field in ("specLabel", "specName", "skuName")
-                if field in sku
-            ]
-            if not label_fields:
-                raise RuntimeError(
-                    "Miaoshou COMMON has no governed field for the approved "
-                    "spec label; no edit was sent"
-                )
-            for field in label_fields:
-                sku[field] = expected_label
+        label_fields = [
+            field
+            for field in ("specLabel", "specName", "skuName")
+            if field in sku
+        ]
+        for field in label_fields:
+            sku[field] = expected_label
         updated_skus[key] = sku
     updated = dict(current)
     for field in (
@@ -1469,6 +1631,9 @@ def write_miaoshou_common_from_plan(
         "verified": bool(readback.get("verified")),
         "checks": dict(readback.get("checks") or {}),
         "field_diffs": dict(readback.get("field_diffs") or {}),
+        "spec_label_application": dict(
+            readback.get("spec_label_application") or {}
+        ),
         "draft": draft,
         "readback": readback,
         "external_writes_performed": ["miaoshou:COMMON:immutable_plan_write"],
@@ -1505,6 +1670,9 @@ def _prepare_existing_miaoshou_target_from_plan(
         "dispatched": False,
         "outcome": "not_dispatched",
     }
+    prior_writes = list(
+        dict.fromkeys(resolved.get("external_writes_performed") or ())
+    )
 
     def tracked_post(path, body):
         is_save = (
@@ -1556,7 +1724,11 @@ def _prepare_existing_miaoshou_target_from_plan(
     except Exception as error:
         if getattr(error, "external_write_evidence", None):
             raise
-        if write_state["accepted"] or write_state["dispatched"]:
+        if (
+            prior_writes
+            or write_state["accepted"]
+            or write_state["dispatched"]
+        ):
             outcome_detail = (
                 "was accepted but verification raised"
                 if write_state["accepted"]
@@ -1581,9 +1753,21 @@ def _prepare_existing_miaoshou_target_from_plan(
                     "shop_id": int(resolved["shop_id"]),
                     "write_outcome": str(write_state["outcome"]),
                     "verification_error": str(error),
-                    "external_writes_performed": [
-                        "miaoshou:tiktok_detail:update"
-                    ],
+                    "external_writes_performed": list(
+                        dict.fromkeys(
+                            [
+                                *prior_writes,
+                                *(
+                                    ["miaoshou:tiktok_detail:update"]
+                                    if (
+                                        write_state["accepted"]
+                                        or write_state["dispatched"]
+                                    )
+                                    else []
+                                ),
+                            ]
+                        )
+                    ),
                 },
             ) from error
         raise
@@ -1609,13 +1793,309 @@ def _prepare_existing_miaoshou_target_from_plan(
                 "detail_id": int(resolved["detail_id"]),
                 "shop_id": int(resolved["shop_id"]),
                 "checks": dict(prepared.get("checks") or {}),
-                "external_writes_performed": [
-                    "miaoshou:tiktok_detail:update"
-                ],
+                "external_writes_performed": list(
+                    dict.fromkeys(
+                        [
+                            *prior_writes,
+                            "miaoshou:tiktok_detail:update",
+                        ]
+                    )
+                ),
                 "readback": dict(prepared),
             },
         )
+    prepared["external_writes_performed"] = list(
+        dict.fromkeys(
+            [
+                *prior_writes,
+                "miaoshou:tiktok_detail:update",
+            ]
+        )
+    )
     return prepared
+
+
+def _prepare_missing_miaoshou_tiktok_claim(
+    payload: dict[str, Any],
+    *,
+    site: str,
+    post,
+) -> dict[str, Any]:
+    """Create one site-isolated TikTok draft from verified COMMON exactly once."""
+
+    from modules.sourcing import new_product_workbench as workbench
+
+    clean_site = str(site or "").upper()
+    target_key = SITE_TARGET_KEYS.get(clean_site)
+    target = next(
+        (
+            dict(row)
+            for row in workbench.SEA_MARKETS
+            if str(row.get("id") or "").lower() == target_key
+        ),
+        None,
+    )
+    if not target:
+        raise MiaoshouPreSubmitError(
+            f"fixed Miaoshou target configuration is missing for {clean_site}",
+            reason_code="miaoshou_target_configuration_missing",
+        )
+    product_id = str(payload.get("product_id") or "").strip()
+    seller_sku = str(payload.get("seller_sku") or "").strip()
+    source_item_id = str(
+        (payload.get("product_facts") or {}).get("source_offer_id") or ""
+    ).strip()
+    shop_id = str(target.get("shop_id") or "").strip()
+    detail_group = workbench._anchor_group_key(target)  # noqa: SLF001
+    if not product_id or not seller_sku or not source_item_id or not shop_id:
+        raise MiaoshouPreSubmitError(
+            "immutable plan lacks TikTok draft preparation identity",
+            reason_code="miaoshou_tiktok_preparation_identity_missing",
+        )
+    claim_path = workbench.STATE_DIR / f"{product_id}_tiktok_claim.json"
+    existing_claim = workbench._load_json(claim_path) or {}  # noqa: SLF001
+    known_detail_ids: set[int] = set()
+    raw_known_ids = existing_claim.get("detail_group_detail_ids") or {}
+    if not isinstance(raw_known_ids, dict):
+        raise MiaoshouPreSubmitError(
+            "persisted TikTok detail identity is malformed",
+            reason_code="miaoshou_tiktok_existing_identity_unresolved",
+        )
+    for value in raw_known_ids.values():
+        if (
+            isinstance(value, bool)
+            or not str(value or "").isdigit()
+            or int(value) <= 0
+        ):
+            raise MiaoshouPreSubmitError(
+                "persisted TikTok detail identity is malformed",
+                reason_code="miaoshou_tiktok_existing_identity_unresolved",
+            )
+        known_detail_ids.add(int(value))
+
+    try:
+        search = post(
+            MIAOSHOU_TIKTOK_DETAIL_LIST_PATH,
+            {
+                "pageNo": 1,
+                "pageSize": 100,
+                "filter": {"sourceItemIdKeyword": source_item_id},
+            },
+        )
+    except Exception as error:
+        raise MiaoshouPreSubmitError(
+            f"Miaoshou TikTok duplicate scan failed for {clean_site}: {error}",
+            reason_code="miaoshou_tiktok_duplicate_scan_failed",
+        ) from error
+    try:
+        rows = _complete_miaoshou_tiktok_detail_rows(search)
+    except _MiaoshouDetailListContractError as error:
+        raise MiaoshouPreSubmitError(
+            str(error),
+            reason_code=error.reason_code,
+        ) from error
+    observed_detail_ids: set[int] = set()
+    for row in rows:
+        raw_detail_id = row.get("collectBoxDetailId") or row.get("detailId")
+        if (
+            isinstance(raw_detail_id, bool)
+            or not str(raw_detail_id or "").isdigit()
+            or int(raw_detail_id) <= 0
+        ):
+            raise MiaoshouPreSubmitError(
+                "Miaoshou TikTok duplicate scan identity is malformed",
+                reason_code="miaoshou_tiktok_duplicate_scan_malformed",
+            )
+        observed_detail_ids.add(int(raw_detail_id))
+    if (
+        len(observed_detail_ids) != len(rows)
+        or not observed_detail_ids.issubset(known_detail_ids)
+    ):
+        raise MiaoshouPreSubmitError(
+            (
+                "Miaoshou TikTok details already exist but no exact persisted "
+                "claim identity is available"
+            ),
+            reason_code="miaoshou_tiktok_existing_identity_unresolved",
+        )
+
+    create_class = "miaoshou:tiktok_detail:create"
+    try:
+        create_response = post(
+            "/open/v1/product/common_collect_box/common_collect_box/claimed",
+            {
+                "detailSerialNumberPlatformList": [
+                    {
+                        "detailId": int(product_id),
+                        "platform": "tiktok",
+                        "serialNumber": int(
+                            workbench._claim_serial_number(  # noqa: SLF001
+                                [(target_key, target, shop_id)]
+                            )
+                        ),
+                    }
+                ]
+            },
+        )
+        if not isinstance(create_response, dict):
+            raise TypeError("detail creation response is not a mapping")
+        create_result = create_response.get("result")
+    except Exception as error:
+        raise MiaoshouDraftVerificationError(
+            f"Miaoshou {clean_site} detail creation outcome is unknown: {error}",
+            external_reference=product_id,
+            evidence={
+                "source": "miaoshou_open_api",
+                "verified": False,
+                "write_outcome": "detail_create_unknown_after_dispatch",
+                "external_writes_performed": [create_class],
+            },
+        ) from error
+    if create_result != "success":
+        raise MiaoshouDraftVerificationError(
+            f"Miaoshou {clean_site} detail creation was not confirmed",
+            external_reference=product_id,
+            evidence={
+                "source": "miaoshou_open_api",
+                "verified": False,
+                "write_outcome": "detail_create_not_confirmed",
+                "external_writes_performed": [create_class],
+            },
+        )
+    create_data = create_response.get("data")
+    platform_map_root = (
+        create_data.get("platformCollectBoxDetailIdMap")
+        if isinstance(create_data, dict)
+        else None
+    )
+    platform_map = (
+        platform_map_root.get("tiktok")
+        if isinstance(platform_map_root, dict)
+        else None
+    )
+    if not isinstance(platform_map, dict):
+        platform_map = {}
+    detail_id = (
+        platform_map.get(product_id)
+        or platform_map.get(int(product_id))
+    )
+    try:
+        detail_id = int(detail_id)
+    except (TypeError, ValueError):
+        detail_id = 0
+    write_classes = [create_class]
+    if detail_id <= 0:
+        raise MiaoshouDraftVerificationError(
+            f"Miaoshou {clean_site} detail creation returned no identity",
+            external_reference=product_id,
+            evidence={
+                "source": "miaoshou_open_api",
+                "verified": False,
+                "write_outcome": "detail_created_identity_missing",
+                "external_writes_performed": list(write_classes),
+            },
+        )
+
+    claim_class = "miaoshou:tiktok_shop:claim"
+    try:
+        claim_response = post(
+            "/open/v1/product/collect_box/tiktok/collect_box/claim_to_shop",
+            {"detailIds": [detail_id], "shopIds": [shop_id]},
+        )
+        if not isinstance(claim_response, dict):
+            raise TypeError("shop claim response is not a mapping")
+        claim_result = claim_response.get("result")
+    except Exception as error:
+        raise MiaoshouDraftVerificationError(
+            f"Miaoshou {clean_site} shop claim outcome is unknown: {error}",
+            external_reference=f"{detail_id}:{shop_id}",
+            evidence={
+                "source": "miaoshou_open_api",
+                "verified": False,
+                "write_outcome": "shop_claim_unknown_after_dispatch",
+                "external_writes_performed": [
+                    *write_classes,
+                    claim_class,
+                ],
+            },
+        ) from error
+    if claim_result != "success":
+        raise MiaoshouDraftVerificationError(
+            f"Miaoshou {clean_site} shop claim was not confirmed",
+            external_reference=f"{detail_id}:{shop_id}",
+            evidence={
+                "source": "miaoshou_open_api",
+                "verified": False,
+                "write_outcome": "shop_claim_not_confirmed",
+                "external_writes_performed": [
+                    *write_classes,
+                    claim_class,
+                ],
+            },
+        )
+    write_classes.append(claim_class)
+
+    existing = workbench._load_json(claim_path) or {}  # noqa: SLF001
+    detail_ids = dict(existing.get("detail_group_detail_ids") or {})
+    if (
+        detail_group in detail_ids
+        and int(detail_ids[detail_group]) != detail_id
+    ):
+        raise MiaoshouDraftVerificationError(
+            "persisted TikTok detail identity changed after creation",
+            external_reference=f"{detail_id}:{shop_id}",
+            evidence={
+                "source": "miaoshou_open_api",
+                "verified": False,
+                "write_outcome": "local_identity_conflict_after_claim",
+                "external_writes_performed": list(write_classes),
+            },
+        )
+    detail_ids[detail_group] = detail_id
+    shops = dict(existing.get("shops") or {})
+    shops[target_key] = {
+        "shop_id": shop_id,
+        "shop": target.get("shop"),
+        "region": target.get("region"),
+        "publish_group": target.get("publish_group"),
+        "detail_group": detail_group,
+        "detail_id": detail_id,
+        "claimed": True,
+    }
+    receipt = {
+        **existing,
+        "ok": True,
+        "offer_id": product_id,
+        "common_detail_id": int(product_id),
+        "source_item_id": source_item_id,
+        "seller_sku": seller_sku,
+        "detail_group_detail_ids": detail_ids,
+        "publish_group_detail_ids": detail_ids,
+        "shops": shops,
+        "claimed": True,
+        "published": False,
+        "in_progress": False,
+        "last_error": "",
+        "updated_at": workbench._now(),  # noqa: SLF001
+    }
+    try:
+        workbench._write_json_atomic(claim_path, receipt)  # noqa: SLF001
+    except Exception as error:
+        raise MiaoshouDraftVerificationError(
+            f"Miaoshou {clean_site} claim receipt could not be persisted: {error}",
+            external_reference=f"{detail_id}:{shop_id}",
+            evidence={
+                "source": "miaoshou_open_api",
+                "verified": False,
+                "write_outcome": "claim_succeeded_local_receipt_failed",
+                "external_writes_performed": list(write_classes),
+            },
+        ) from error
+    return {
+        "detail_id": detail_id,
+        "shop_id": int(shop_id),
+        "external_writes_performed": list(write_classes),
+    }
 
 
 def _miaoshou_publish_target(
@@ -1625,11 +2105,59 @@ def _miaoshou_publish_target(
 ) -> tuple[str, dict[str, Any]]:
     from modules.miaoshou.client import post_open
 
-    resolved = _resolve_existing_miaoshou_tiktok_detail(
-        payload,
-        site=site,
-        post=post_open,
-    )
+    preparation_writes: list[str] = []
+    try:
+        resolved = _resolve_existing_miaoshou_tiktok_detail(
+            payload,
+            site=site,
+            post=post_open,
+        )
+    except MiaoshouPreSubmitError as error:
+        if error.reason_code != "miaoshou_tiktok_detail_missing":
+            raise
+        prepared_claim = _prepare_missing_miaoshou_tiktok_claim(
+            payload,
+            site=site,
+            post=post_open,
+        )
+        preparation_writes = list(
+            dict.fromkeys(
+                prepared_claim.get("external_writes_performed") or ()
+            )
+        )
+        readback_error: Exception | None = None
+        for attempt in range(3):
+            if attempt:
+                time.sleep(1)
+            try:
+                resolved = _resolve_existing_miaoshou_tiktok_detail(
+                    payload,
+                    site=site,
+                    post=post_open,
+                )
+                readback_error = None
+                break
+            except Exception as error:
+                readback_error = error
+        if readback_error is not None:
+            raise MiaoshouDraftVerificationError(
+                (
+                    f"Miaoshou {site} target claim was written but its exact "
+                    f"identity could not be read back: {readback_error}"
+                ),
+                external_reference=str(
+                    prepared_claim.get("detail_id") or payload["product_id"]
+                ),
+                evidence={
+                    "source": "miaoshou_open_api",
+                    "verified": False,
+                    "submission_accepted": False,
+                    "write_outcome": "claim_written_readback_unverified",
+                    "readback_attempts": 3,
+                    "external_writes_performed": preparation_writes,
+                },
+            ) from readback_error
+        resolved["external_writes_performed"] = preparation_writes
     prepared_site = _prepare_existing_miaoshou_target_from_plan(
         payload,
         site=site,
@@ -1639,13 +2167,47 @@ def _miaoshou_publish_target(
     key = SITE_TARGET_KEYS[site]
     detail_id = int(resolved["detail_id"])
     shop_id = int(resolved["shop_id"])
-    audit = _miaoshou_submission_audit(
-        payload,
-        site=site,
-        target_key=key,
-        detail_id=detail_id,
-        shop_id=shop_id,
-        prepared_site=prepared_site,
+    try:
+        audit = _miaoshou_submission_audit(
+            payload,
+            site=site,
+            target_key=key,
+            detail_id=detail_id,
+            shop_id=shop_id,
+            prepared_site=prepared_site,
+        )
+    except Exception as error:
+        draft_writes = list(
+            dict.fromkeys(
+                prepared_site.get("external_writes_performed") or ()
+            )
+        ) or ["miaoshou:tiktok_detail:update"]
+        raise MiaoshouDraftVerificationError(
+            f"Miaoshou {site} draft audit failed after detail update: {error}",
+            external_reference=f"{detail_id}:{shop_id}",
+            evidence={
+                "source": "miaoshou_open_api",
+                "verified": False,
+                "verified_draft": True,
+                "submission_accepted": False,
+                "detail_id": detail_id,
+                "shop_id": shop_id,
+                "write_outcome": "draft_saved_pre_submit_audit_failed",
+                "external_writes_performed": draft_writes,
+            },
+        ) from error
+    draft_writes = list(
+        dict.fromkeys(
+            prepared_site.get("external_writes_performed") or ()
+        )
+    ) or ["miaoshou:tiktok_detail:update"]
+    publish_writes = list(
+        dict.fromkeys(
+            [
+                *draft_writes,
+                "miaoshou:tiktok_publish:submission",
+            ]
+        )
     )
     failure_evidence = {
         "source": "miaoshou_open_api",
@@ -1656,9 +2218,7 @@ def _miaoshou_publish_target(
         "shop_id": shop_id,
         "pre_submit_audit": audit,
         "publish_dispatched": True,
-        "external_writes_performed": [
-            "miaoshou:tiktok_detail:update"
-        ],
+        "external_writes_performed": publish_writes,
     }
     try:
         response = post_open(
@@ -1678,7 +2238,20 @@ def _miaoshou_publish_target(
                 "publish_exception": str(error),
             },
         ) from error
-    if response.get("result") != "success":
+    try:
+        if not isinstance(response, dict):
+            raise ValueError("publish response is not a mapping")
+        publish_result = response.get("result")
+    except Exception as error:
+        raise MiaoshouDraftVerificationError(
+            f"Miaoshou {site} publish response is ambiguous: {error}",
+            external_reference=f"{detail_id}:{shop_id}",
+            evidence={
+                **failure_evidence,
+                "write_outcome": "unknown_after_dispatch",
+            },
+        ) from error
+    if publish_result != "success":
         raise MiaoshouDraftVerificationError(
             (
                 f"Miaoshou {site} publish submission failed: "
@@ -1703,10 +2276,7 @@ def _miaoshou_publish_target(
         "response_code": response.get("code"),
         "pre_submit_audit": audit,
         "write_outcome": "submission_accepted",
-        "external_writes_performed": [
-            "miaoshou:tiktok_detail:update",
-            "miaoshou:tiktok_publish:submission",
-        ],
+        "external_writes_performed": publish_writes,
     }
 
 
@@ -1750,15 +2320,21 @@ def _resolve_existing_miaoshou_tiktok_detail(
     )
     product_id = str(payload.get("product_id") or "").strip()
     seller_sku = str(payload.get("seller_sku") or "").strip()
-    source_item_id = str(claim.get("source_item_id") or "").strip()
+    source_item_id = str(
+        claim.get("source_item_id")
+        or (payload.get("product_facts") or {}).get("source_offer_id")
+        or ""
+    ).strip()
     if not product_id or not seller_sku or not source_item_id:
-        raise RuntimeError(
-            "persisted Miaoshou claim lacks immutable product/SKU/source identity"
+        raise MiaoshouPreSubmitError(
+            "immutable plan lacks product/SKU/source identity",
+            reason_code="miaoshou_tiktok_preparation_identity_missing",
         )
     detail_map = claim.get("detail_group_detail_ids")
     if not isinstance(detail_map, dict):
-        raise RuntimeError(
-            "persisted Miaoshou claim lacks detail_group_detail_ids"
+        raise MiaoshouPreSubmitError(
+            "persisted Miaoshou claim lacks detail_group_detail_ids",
+            reason_code="miaoshou_tiktok_detail_missing",
         )
     normalized: dict[str, int] = {}
     for key, value in detail_map.items():
@@ -1785,8 +2361,9 @@ def _resolve_existing_miaoshou_tiktok_detail(
         )
     detail_id = int(normalized.get(detail_group) or 0)
     if not detail_id:
-        raise RuntimeError(
-            f"persisted Miaoshou detail ID is missing for {detail_group}"
+        raise MiaoshouPreSubmitError(
+            f"persisted Miaoshou detail ID is missing for {detail_group}",
+            reason_code="miaoshou_tiktok_detail_missing",
         )
 
     if post is None:
@@ -1880,11 +2457,10 @@ def _resolve_existing_miaoshou_tiktok_detail(
             f"Miaoshou existing detail uniqueness lookup failed for {clean_site}: "
             f"{search.get('code')} {search.get('message') or ''}"
         )
-    rows = (
-        (search.get("data") or {}).get("detailList")
-        or (search.get("data") or {}).get("list")
-        or ()
-    )
+    try:
+        rows = _complete_miaoshou_tiktok_detail_rows(search)
+    except _MiaoshouDetailListContractError as error:
+        raise RuntimeError(str(error)) from error
     row_detail_ids = {
         int(row.get("collectBoxDetailId") or row.get("detailId") or 0)
         for row in rows
@@ -2485,7 +3061,8 @@ def _shopee_readback(
     expected_image_count: int,
     expected_description: str = "",
     require_model_sku: bool = True,
-    require_all_logistics: bool = True,
+    require_all_logistics: bool = False,
+    expected_enabled_logistic_ids: object = None,
     allow_token_refresh: bool = True,
 ) -> tuple[bool, dict[str, Any]]:
     from modules.shopee.client import shop_get
@@ -2500,14 +3077,30 @@ def _shopee_readback(
         token,
         {"item_id_list": str(item_id)},
     )
-    items = (base.get("response") or {}).get("item_list") or ()
-    if len(items) != 1:
+    base_error = (
+        str(base.get("error") or "").strip()
+        if isinstance(base, dict)
+        else "malformed_response"
+    )
+    base_response = base.get("response") if isinstance(base, dict) else None
+    items = (
+        base_response.get("item_list")
+        if isinstance(base_response, dict)
+        else None
+    )
+    if (
+        base_error not in {"", "-"}
+        or not isinstance(items, list)
+        or len(items) != 1
+        or not isinstance(items[0], dict)
+        or str(items[0].get("item_id") or "") != str(item_id)
+    ):
         return False, {
             "verified": False,
             "source": "official_shopee_partner_api",
             "region": region,
             "item_id": item_id,
-            "reason": "item_not_found",
+            "reason": "item_base_info_invalid",
         }
     item = items[0]
     models_response = shop_get(
@@ -2516,7 +3109,33 @@ def _shopee_readback(
         token,
         {"item_id": int(item_id)},
     )
-    models = (models_response.get("response") or {}).get("model") or ()
+    models_error = (
+        str(models_response.get("error") or "").strip()
+        if isinstance(models_response, dict)
+        else "malformed_response"
+    )
+    models_payload = (
+        models_response.get("response")
+        if isinstance(models_response, dict)
+        else None
+    )
+    models = (
+        models_payload.get("model")
+        if isinstance(models_payload, dict)
+        else None
+    )
+    if (
+        models_error not in {"", "-"}
+        or not isinstance(models, list)
+        or any(not isinstance(model, dict) for model in models)
+    ):
+        return False, {
+            "verified": False,
+            "source": "official_shopee_partner_api",
+            "region": region,
+            "item_id": item_id,
+            "reason": "model_list_invalid",
+        }
     model_skus = {
         str(model.get("model_sku") or "")
         for model in models
@@ -2530,6 +3149,46 @@ def _shopee_readback(
         ]
         if value not in (None, "")
     }
+    item_status = str(item.get("item_status") or "").upper()
+    deleted_model_matches = [
+        model
+        for model in models
+        if str(model.get("model_sku") or "") == match_key
+    ]
+    deleted_model_identity_exact = (
+        len(deleted_model_matches) == 1
+        and type(deleted_model_matches[0].get("model_id")) is int
+        and deleted_model_matches[0]["model_id"] > 0
+    )
+    if item_status == "SELLER_DELETE":
+        deleted_checks = {
+            "item_identity": str(item.get("item_id") or "") == str(item_id),
+            "seller_sku": match_key in seller_skus,
+            "model_identity": deleted_model_identity_exact,
+            "deletion_status": True,
+        }
+        return False, {
+            "verified": False,
+            "source": "official_shopee_partner_api",
+            "authentication_mode": (
+                "existing_token_only"
+                if not allow_token_refresh
+                else "refresh_allowed"
+            ),
+            "region": region,
+            "shop_id": shop_id,
+            "item_id": str(item_id),
+            "status": item_status,
+            "official_item_deleted": True,
+            "replacement_release_allowed": all(deleted_checks.values()),
+            "reason": (
+                "seller_deleted_item_exact"
+                if all(deleted_checks.values())
+                else "seller_deleted_item_identity_invalid"
+            ),
+            "checks": deleted_checks,
+            "external_writes_performed": [],
+        }
     price_values: list[object] = []
     for model in models:
         for price in model.get("price_info") or ():
@@ -2559,14 +3218,69 @@ def _shopee_readback(
     image_count = len((item.get("image") or {}).get("image_url_list") or ())
     description = str(item.get("description") or "")
     logistics = list(item.get("logistic_info") or ())
+    logistics_shape_valid = bool(logistics) and all(
+        isinstance(row, dict)
+        and type(row.get("enabled")) is bool
+        and type(row.get("logistic_id")) is int
+        and row["logistic_id"] > 0
+        for row in logistics
+    ) and len(
+        {
+            row["logistic_id"]
+            for row in logistics
+            if isinstance(row, dict)
+            and type(row.get("logistic_id")) is int
+        }
+    ) == len(logistics)
+    enabled_logistics = [
+        {
+            "logistic_id": row.get("logistic_id"),
+            "logistic_name": row.get("logistic_name"),
+        }
+        for row in logistics
+        if isinstance(row, dict) and row.get("enabled") is True
+    ]
     disabled_logistics = [
         {
             "logistic_id": row.get("logistic_id"),
             "logistic_name": row.get("logistic_name"),
         }
         for row in logistics
-        if not row.get("enabled")
+        if isinstance(row, dict) and row.get("enabled") is False
     ]
+    observed_enabled_logistic_ids = sorted(
+        row["logistic_id"]
+        for row in logistics
+        if (
+            isinstance(row, dict)
+            and row.get("enabled") is True
+            and type(row.get("logistic_id")) is int
+        )
+    )
+    expected_logistics_valid = False
+    normalized_expected_logistic_ids: list[int] = []
+    if isinstance(expected_enabled_logistic_ids, (list, tuple)):
+        normalized_expected_logistic_ids = list(expected_enabled_logistic_ids)
+        expected_logistics_valid = bool(normalized_expected_logistic_ids) and all(
+            type(value) is int and value > 0
+            for value in normalized_expected_logistic_ids
+        ) and len(set(normalized_expected_logistic_ids)) == len(
+            normalized_expected_logistic_ids
+        )
+        normalized_expected_logistic_ids.sort()
+    logistics_policy_satisfied = bool(
+        logistics_shape_valid
+        and observed_enabled_logistic_ids
+        and (
+            (
+                expected_logistics_valid
+                and observed_enabled_logistic_ids
+                == normalized_expected_logistic_ids
+            )
+            if require_all_logistics
+            else True
+        )
+    )
     price_expectation = (
         dict(expected_price)
         if isinstance(expected_price, dict)
@@ -2631,11 +3345,12 @@ def _shopee_readback(
         ),
         "price": price_verified,
         "image_count": image_count == expected_image_count,
-        "all_applicable_logistics": (
-            bool(logistics) and not disabled_logistics
-            if require_all_logistics
-            else bool(logistics)
-        ),
+        # Shopee returns both enabled and unavailable channel rows. A disabled
+        # locker or other non-applicable channel is not a listing failure.
+        # Generic release requires a strict official shape plus at least one
+        # enabled channel; target-scoped execution keeps its stronger exact
+        # selected-ID contract separately.
+        "all_applicable_logistics": logistics_policy_satisfied,
         "status": str(item.get("item_status") or "").upper() in {"NORMAL", "UNLIST"},
     }
     evidence = {
@@ -2676,13 +3391,28 @@ def _shopee_readback(
         "platform_derived_observation": derived_observation,
         "variance_warning": variance_warning,
         "image_count": image_count,
+        "logistics_verification_policy": (
+            "shopee-publish-receipt-enabled-logistics-exact/v1"
+            if require_all_logistics
+            else "shopee-official-enabled-logistics-present/v1"
+        ),
+        "enabled_logistics_count": len(enabled_logistics),
+        "enabled_logistic_ids_digest": _miaoshou_value_digest(
+            observed_enabled_logistic_ids
+        ),
+        "expected_enabled_logistic_ids_digest": (
+            _miaoshou_value_digest(normalized_expected_logistic_ids)
+            if expected_logistics_valid
+            else None
+        ),
         "logistics": [
             {
                 "logistic_id": row.get("logistic_id"),
                 "logistic_name": row.get("logistic_name"),
-                "enabled": bool(row.get("enabled")),
+                "enabled": row.get("enabled"),
             }
             for row in logistics
+            if isinstance(row, dict)
         ],
         "disabled_logistics": disabled_logistics,
         "status": item.get("item_status"),
@@ -2771,7 +3501,7 @@ def _shopee_price_repair_preflight(
         expected_image_count=len(context["images"]),
         expected_description=_shopee_description(payload),
         require_model_sku=True,
-        require_all_logistics=True,
+        require_all_logistics=False,
         allow_token_refresh=False,
     )
     checks = dict(evidence.get("checks") or {})
@@ -2983,7 +3713,7 @@ def execute_shopee_price_repair(
                 expected_image_count=len(context["images"]),
                 expected_description=_shopee_description(payload),
                 require_model_sku=True,
-                require_all_logistics=True,
+                require_all_logistics=False,
                 allow_token_refresh=False,
             )
         except Exception as error:
@@ -3163,7 +3893,7 @@ def reconcile_shopee_price_repair(
         expected_image_count=len(context["images"]),
         expected_description=_shopee_description(payload),
         require_model_sku=True,
-        require_all_logistics=True,
+        require_all_logistics=False,
         allow_token_refresh=False,
     )
     rows = [
@@ -3260,54 +3990,64 @@ def _discover_shopee_item_id_by_sku(
     """
 
     from modules.shopee.auth import ensure_shop_token
-    from modules.shopee.client import shop_get
     from modules.shopee.publish import sync_shop_ids
+    from modules.shopee.target_scoped import scan_prepared_shop_sku
 
     shop_id = int(sync_shop_ids()[region.upper()])
     token = ensure_shop_token(shop_id)
-    for status in ("NORMAL", "UNLIST"):
-        offset = 0
-        while True:
-            listing = shop_get(
-                "/api/v2/product/get_item_list",
-                shop_id,
-                token,
-                {
-                    "offset": offset,
-                    "page_size": 50,
-                    "item_status": status,
-                },
-            )
-            rows = (listing.get("response") or {}).get("item") or ()
-            ids = [str(row.get("item_id") or "") for row in rows if row.get("item_id")]
-            for start in range(0, len(ids), 50):
-                base = shop_get(
-                    "/api/v2/product/get_item_base_info",
-                    shop_id,
-                    token,
-                    {"item_id_list": ",".join(ids[start : start + 50])},
-                )
-                for item in (base.get("response") or {}).get("item_list") or ():
-                    if str(item.get("item_sku") or "") == seller_sku:
-                        return str(item.get("item_id") or "")
-                    if not item.get("has_model"):
-                        continue
-                    models = shop_get(
-                        "/api/v2/product/get_model_list",
-                        shop_id,
-                        token,
-                        {"item_id": int(item.get("item_id") or 0)},
-                    )
-                    if any(
-                        str(model.get("model_sku") or "") == seller_sku
-                        for model in (models.get("response") or {}).get("model") or ()
-                    ):
-                        return str(item.get("item_id") or "")
-            response = listing.get("response") or {}
-            if not response.get("has_next_page"):
-                break
-            offset = int(response.get("next_offset") or offset + 50)
-    return ""
+    scan = scan_prepared_shop_sku(
+        shop_id=shop_id,
+        access_token=token,
+        seller_sku=seller_sku,
+    )
+    if scan.get("complete") is not True:
+        raise RuntimeError("Shopee full status SKU scan is incomplete")
+    matches = scan.get("matches")
+    if not isinstance(matches, list) or any(
+        not isinstance(row, dict) for row in matches
+    ):
+        raise RuntimeError("Shopee full status SKU scan is malformed")
+    item_ids = {
+        str(row.get("item_id") or "").strip()
+        for row in matches
+        if str(row.get("item_id") or "").strip()
+    }
+    if len(item_ids) > 1:
+        raise RuntimeError("Shopee regional SKU identity is ambiguous")
+    return next(iter(item_ids), "")
+
+
+def _shopee_publish_receipt_summary(result: dict) -> tuple[list[str], dict]:
+    """Return truthful write classes and a raw-free global-master summary."""
+
+    writes = ["shopee:regional_publish"]
+    global_master = result.get("global_master")
+    summary = {
+        "source_copy_verified": False,
+        "global_master_updated": False,
+    }
+    if isinstance(global_master, dict):
+        global_writes = list(
+            global_master.get("external_writes_performed") or ()
+        )
+        writes = list(dict.fromkeys([*global_writes, *writes]))
+        summary = {
+            "source_copy_verified": global_master.get("verified") is True,
+            "global_master_updated": global_master.get("updated") is True,
+            "global_master_write_count": len(global_writes),
+            "global_master_evidence_digest": hashlib.sha256(
+                json.dumps(
+                    {
+                        "verified": global_master.get("verified") is True,
+                        "updated": global_master.get("updated") is True,
+                        "external_writes_performed": global_writes,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+        }
+    return writes, summary
 
 
 def execute_shopee_target(
@@ -3320,6 +4060,7 @@ def execute_shopee_target(
     description = _shopee_description(payload)
     pricing = _target_pricing(payload, request.target_label)
     expected_price = _shopee_price_expectation(pricing, region=region)
+    retired_item_evidence: dict[str, Any] | None = None
     item_id = (
         _shopee_item_id_for_match_key(request.seller_sku, region)
         or _discover_shopee_item_id_by_sku(
@@ -3361,6 +4102,17 @@ def execute_shopee_target(
                 item_id,
                 evidence,
             )
+        if evidence.get("replacement_release_allowed") is True:
+            retired_item_evidence = {
+                "source": "official_shopee_partner_api",
+                "region": region,
+                "retired_item_id_digest": _miaoshou_value_digest(
+                    str(item_id)
+                ),
+                "status": "SELLER_DELETE",
+                "identity_exact": True,
+                "evidence_digest": _miaoshou_value_digest(evidence),
+            }
         repairable_checks = {
             "localized_title",
             "rich_localized_description",
@@ -3371,7 +4123,11 @@ def execute_shopee_target(
             for name, passed in (evidence.get("checks") or {}).items()
             if not passed
         }
-        if failed_checks and failed_checks.issubset(repairable_checks):
+        if (
+            retired_item_evidence is None
+            and failed_checks
+            and failed_checks.issubset(repairable_checks)
+        ):
             from modules.shopee.auth import ensure_shop_token
             from modules.shopee.global_copy import localize_shopee_copy
             from modules.shopee.publish import (
@@ -3420,16 +4176,17 @@ def execute_shopee_target(
                     corrected_evidence,
                 )
             evidence = corrected_evidence
-        return AdapterExecutionResult(
-            False,
-            False,
-            (
-                f"existing Shopee {region} item still requires in-place repair; "
-                "a second publish was blocked to prevent a duplicate SKU"
-            ),
-            item_id,
-            evidence,
-        )
+        if retired_item_evidence is None:
+            return AdapterExecutionResult(
+                False,
+                False,
+                (
+                    f"existing Shopee {region} item still requires in-place repair; "
+                    "a second publish was blocked to prevent a duplicate SKU"
+                ),
+                item_id,
+                evidence,
+            )
 
     local_original_price = expected_price["source_local_price"]
     local_currency = expected_price["source_local_currency"]
@@ -3450,17 +4207,88 @@ def execute_shopee_target(
         local_original_price_override=local_original_price,
         local_price_currency_override=local_currency,
     )
-    item_id = str(result.get("item_id") or _shopee_item_id_for_match_key(
+    if not isinstance(result, dict):
+        return AdapterExecutionResult(
+            True,
+            False,
+            (
+                f"Shopee {region} publish was invoked but its receipt is "
+                "malformed"
+            ),
+            None,
+            {
+                "verified": False,
+                "source": "official_shopee_partner_api",
+                "region": region,
+                "reason": "publish_receipt_invalid",
+                "submission_accepted": False,
+                "durable_state_uncertain": True,
+                "external_writes_performed": ["shopee:regional_publish"],
+            },
+        )
+    publish_writes, global_master_summary = _shopee_publish_receipt_summary(
+        result
+    )
+    raw_item_id = result.get("item_id") or _shopee_item_id_for_match_key(
         request.seller_sku,
         region,
-    ))
+    )
+    item_id = str(raw_item_id or "").strip()
     if not item_id:
         return AdapterExecutionResult(
+            True,
             False,
-            False,
-            f"Shopee {region} publish did not return an item_id",
+            (
+                f"Shopee {region} publish was invoked but did not return an "
+                "item_id"
+            ),
             None,
-            {"source": "official_shopee_partner_api", "publish_result": result},
+            {
+                "verified": False,
+                "source": "official_shopee_partner_api",
+                "region": region,
+                "reason": "publish_item_identity_missing",
+                "submission_accepted": False,
+                "durable_state_uncertain": True,
+                "external_writes_performed": publish_writes,
+                "global_master": global_master_summary,
+            },
+        )
+    logistics_receipt = (
+        result.get("logistics")
+        if isinstance(result.get("logistics"), dict)
+        else {}
+    )
+    expected_enabled_logistic_ids = logistics_receipt.get(
+        "enabled_logistic_ids"
+    )
+    if (
+        not isinstance(expected_enabled_logistic_ids, list)
+        or not expected_enabled_logistic_ids
+        or any(
+            type(value) is not int or value <= 0
+            for value in expected_enabled_logistic_ids
+        )
+        or len(set(expected_enabled_logistic_ids))
+        != len(expected_enabled_logistic_ids)
+    ):
+        return AdapterExecutionResult(
+            True,
+            False,
+            (
+                f"Shopee {region} publish completed but its exact logistics "
+                "receipt is incomplete"
+            ),
+            item_id,
+            {
+                "verified": False,
+                "source": "official_shopee_partner_api",
+                "region": region,
+                "item_id": item_id,
+                "reason": "publish_logistics_receipt_invalid",
+                "external_writes_performed": publish_writes,
+                "global_master": global_master_summary,
+            },
         )
     for attempt in range(12):
         if attempt:
@@ -3473,8 +4301,14 @@ def execute_shopee_target(
             expected_price=expected_price,
             expected_image_count=len(context["images"]),
             expected_description=description,
+            require_all_logistics=True,
+            expected_enabled_logistic_ids=expected_enabled_logistic_ids,
         )
         evidence["poll_attempt"] = attempt + 1
+        evidence["external_writes_performed"] = publish_writes
+        evidence["global_master"] = global_master_summary
+        if retired_item_evidence is not None:
+            evidence["replacement_release"] = retired_item_evidence
         if verified:
             return AdapterExecutionResult(
                 True,
@@ -3936,8 +4770,12 @@ def _ozon_reconciliation_result(
 def _ozon_set_release_stock(
     *,
     offer_id: str,
-    stock: int = 50,
+    stock: int,
 ) -> dict[str, Any]:
+    if isinstance(stock, bool) or not isinstance(stock, int) or stock <= 0:
+        raise RuntimeError(
+            "Ozon stock update requires a positive plan-approved quantity"
+        )
     from modules.ozon.client import ozon_post
 
     warehouses_response = ozon_post("/v2/warehouse/list", {})
@@ -3989,6 +4827,26 @@ def execute_ozon_target(
 ) -> AdapterExecutionResult:
     context = _validated_context(request)
     payload = context["payload"]
+    from shared_platform.target_scoped_release_contracts import (
+        TargetScopedCommandUnavailable,
+        planned_target_command,
+    )
+
+    try:
+        planned_stock_command, _planned_stock_digest = (
+            planned_target_command(
+                payload,
+                target_label=request.target_label,
+            )
+        )
+    except TargetScopedCommandUnavailable as error:
+        raise RuntimeError(
+            "Ozon automatic release requires an immutable Kyle-approved "
+            "inventory decision; no default stock is allowed"
+        ) from error
+    desired_stock_quantity = planned_stock_command[
+        "desired_stock_quantity"
+    ]
     title = _candidate(payload, "ozon", "RU")
     pricing = _target_pricing(payload, request.target_label)
     derived = pricing.get("derived_preview") or {}
@@ -4046,7 +4904,10 @@ def execute_ozon_target(
             width_cm=width,
             height_cm=height,
         )
-        stock_evidence = _ozon_set_release_stock(offer_id=offer_id)
+        stock_evidence = _ozon_set_release_stock(
+            offer_id=offer_id,
+            stock=desired_stock_quantity,
+        )
         for attempt in range(24):
             if attempt:
                 time.sleep(10)
@@ -4103,7 +4964,10 @@ def execute_ozon_target(
         stock_evidence = (
             {"reused": True}
             if evidence.get("has_stock")
-            else _ozon_set_release_stock(offer_id=offer_id)
+            else _ozon_set_release_stock(
+                offer_id=offer_id,
+                stock=desired_stock_quantity,
+            )
         )
         for attempt in range(24):
             if attempt:
@@ -4291,7 +5155,10 @@ def execute_ozon_target(
             },
         )
     try:
-        stock_evidence = _ozon_set_release_stock(offer_id=offer_id)
+        stock_evidence = _ozon_set_release_stock(
+            offer_id=offer_id,
+            stock=desired_stock_quantity,
+        )
     except Exception as error:
         return _ozon_reconciliation_result(
             offer_id=offer_id,

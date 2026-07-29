@@ -12,7 +12,7 @@ import hashlib
 import math
 import os
 from concurrent.futures import ThreadPoolExecutor, wait
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -53,6 +53,11 @@ HTTP_DOMAIN_REGISTRY = http_registry()
 
 def _product_workspace_view(payload: dict) -> dict:
     """Present governed evidence and durable V1 state as the formal workspace."""
+    from shared_platform.product_workflow import (
+        assert_no_dead_end,
+        project_product_workflow_next_action,
+    )
+
     view_payload = dict(payload)
     product = payload.get("product") if isinstance(payload.get("product"), dict) else {}
     listing_copy = (
@@ -88,7 +93,7 @@ def _product_workspace_view(payload: dict) -> dict:
     # The fallback is a presentation aid for legacy v2 drafts. It must not
     # alter the digest of an already-approved immutable ReleasePlan.
     release_v1 = _release_v1_view(payload)
-    return {
+    view = {
         **view_payload,
         "schema_version": "product-workspace-v1",
         "mode": "formal_v1",
@@ -97,6 +102,10 @@ def _product_workspace_view(payload: dict) -> dict:
         "publication_plan": payload.get("publication_rehearsal", {}),
         "release_v1": release_v1,
     }
+    next_action = project_product_workflow_next_action(view)
+    assert_no_dead_end(next_action)
+    view["workflow_next_action"] = next_action
+    return view
 
 
 _INITIAL_PRODUCT_REVIEW_FIELDS = (
@@ -953,6 +962,7 @@ def _generate_product_workspace_title_draft(data: dict) -> tuple[int, dict]:
     """Generate and persist model copy candidates; perform no marketplace write."""
 
     from domains.content_operations import generate_title_candidates
+    from domains.content_operations.listing_title_candidates import POLICY_VERSION
     from modules.sourcing import new_product_workbench as np_mod
     from shared_platform import release_control
     from shared_platform.release_store import (
@@ -993,23 +1003,49 @@ def _generate_product_workspace_title_draft(data: dict) -> tuple[int, dict]:
             if isinstance(state.get("listing_copy"), dict)
             else {}
         )
+        policy_stale = (
+            str(listing_copy.get("policy_version") or "") != POLICY_VERSION
+        )
         locked_stale_refresh = (
             locked
-            and str(listing_copy.get("status") or "").startswith("superseded")
+            and (
+                str(listing_copy.get("status") or "").startswith("superseded")
+                or policy_stale
+            )
             and data.get("refresh_stale_locked_candidate") is True
             and data.get("user_approved") is True
             and str(data.get("approved_by") or "").strip() == "Kyle"
         )
-        if locked and not locked_stale_refresh:
+        locked_missing_recovery = (
+            locked
+            and not str(listing_copy.get("semantic_master_en") or "").strip()
+            and data.get("recover_missing_locked_candidate") is True
+            and data.get("user_approved") is True
+            and str(data.get("approved_by") or "").strip() == "Kyle"
+        )
+        locked_unadopted_refresh = (
+            locked
+            and str(listing_copy.get("status") or "")
+            == "draft_pending_kyle_review"
+            and data.get("replace_unadopted_locked_candidate") is True
+            and data.get("user_approved") is True
+            and str(data.get("approved_by") or "").strip() == "Kyle"
+        )
+        locked_candidate_recovery = (
+            locked_stale_refresh
+            or locked_missing_recovery
+            or locked_unadopted_refresh
+        )
+        if locked and not locked_candidate_recovery:
             return 409, {
                 "ok": False,
                 "error_code": "locked_title_refresh_requires_kyle_approval",
                 "error": (
                     "approved product facts are locked; only an explicitly "
-                    "approved refresh of a stale title candidate is allowed"
+                    "approved refresh or missing-candidate recovery is allowed"
                 ),
             }
-        if locked_stale_refresh and not (
+        if locked_candidate_recovery and not (
             isinstance(approval, dict)
             and str(approval.get("status") or "").strip().casefold() == "approved"
         ):
@@ -1044,7 +1080,7 @@ def _generate_product_workspace_title_draft(data: dict) -> tuple[int, dict]:
         superseded_plan_id = str(
             listing_copy.get("superseded_release_plan_id") or ""
         ).strip()
-        if locked_stale_refresh:
+        if locked_candidate_recovery:
             store = default_release_store()
             active_plan = store.active_plan_for_product(offer_id)
             active_plan_id = (
@@ -1058,7 +1094,7 @@ def _generate_product_workspace_title_draft(data: dict) -> tuple[int, dict]:
                     store.supersede_plan(
                         active_plan_id,
                         reason=(
-                            "Kyle refreshed a stale audited title candidate "
+                            "Kyle recovered an audited title candidate "
                             f"from locked product revision {expected_revision}"
                         ),
                     )
@@ -1070,6 +1106,15 @@ def _generate_product_workspace_title_draft(data: dict) -> tuple[int, dict]:
                     }
             draft["refreshed_while_product_locked"] = True
             draft["refreshed_by"] = "Kyle"
+            draft["locked_candidate_recovery"] = (
+                "missing"
+                if locked_missing_recovery
+                else (
+                    "unadopted"
+                    if locked_unadopted_refresh
+                    else "stale"
+                )
+            )
             draft["superseded_release_plan_id"] = superseded_plan_id or None
         next_state = dict(state)
         next_state["listing_copy"] = draft
@@ -1097,6 +1142,8 @@ def _generate_product_workspace_title_draft(data: dict) -> tuple[int, dict]:
         "revision": int(saved.get("_revision") or 0),
         "language_model_request_performed": True,
         "locked_stale_refresh": locked_stale_refresh,
+        "locked_unadopted_refresh": locked_unadopted_refresh,
+        "locked_missing_recovery": locked_missing_recovery,
         "superseded_release_plan_id": superseded_plan_id or None,
         "marketplace_writes_performed": [],
         "dashboard": _product_workspace_view(dashboard),
@@ -1503,14 +1550,6 @@ def _release_execution_readonly_gate(
     assert dashboard is not None
     current_payload, blockers = _release_plan_payload_from_dashboard(dashboard)
     actual_gate = dashboard.get("actual_release_gate") or {}
-    if not actual_gate.get("ready"):
-        blockers.extend(
-            str(value)
-            for value in (
-                actual_gate.get("blockers")
-                or ["actual release gate is not ready"]
-            )
-        )
     plan_id = str(data.get("plan_id") or "").strip()
     token = str(data.get("confirmation_token") or "").strip()
     try:
@@ -1519,13 +1558,14 @@ def _release_execution_readonly_gate(
         blockers.append(str(error))
         preview = {}
     plan = store.get_plan(plan_id)
-    if (
-        not plan
-        or plan_id != str(preview.get("plan_id") or "")
-        or plan.get("status") != "APPROVED"
-        or token != plan.get("confirmation_token")
-        or not _approved_plan_matches_current_payload(plan, preview)
-    ):
+    plan_identity_exact = bool(
+        plan
+        and plan_id == str(preview.get("plan_id") or "")
+        and plan.get("status") == "APPROVED"
+        and token == plan.get("confirmation_token")
+        and _approved_plan_matches_current_payload(plan, preview)
+    )
+    if not plan_identity_exact:
         blockers.append(
             "approved ReleasePlan no longer matches current immutable facts"
         )
@@ -1544,12 +1584,30 @@ def _release_execution_readonly_gate(
         if plan
         else None
     )
-    if plan:
+    predecessor_run = _release_predecessor_evidence_run(store, plan)
+    common_blockers = (
+        _verified_common_evidence_blockers(
+            run,
+            plan.get("payload") or {},
+            store=store,
+        )
+        if plan
+        else ["Miaoshou COMMON must succeed with verified readback first"]
+    )
+    blockers.extend(common_blockers)
+
+    # ``actual_release_gate`` is a pre-COMMON presentation gate.  Once the
+    # exact approved plan has a digest-verified durable COMMON readback, that
+    # canonical receipt supersedes stale legacy image-sync observations.  The
+    # current immutable payload comparison above still protects every business
+    # field, so this does not weaken the release authorization boundary.
+    canonical_common_ready = bool(plan_identity_exact and not common_blockers)
+    if not canonical_common_ready and not actual_gate.get("ready"):
         blockers.extend(
-            _verified_common_evidence_blockers(
-                run,
-                plan.get("payload") or {},
-                store=store,
+            str(value)
+            for value in (
+                actual_gate.get("blockers")
+                or ["actual release gate is not ready"]
             )
         )
     blockers = list(dict.fromkeys(value for value in blockers if value))
@@ -1570,6 +1628,7 @@ def _release_execution_readonly_gate(
         "payload": current_payload,
         "plan": plan,
         "run": run,
+        "predecessor_run": predecessor_run,
         "registry": registry,
         "target_rows": (
             (dashboard.get("omnichannel_preview") or {}).get("targets") or ()
@@ -3039,6 +3098,67 @@ def _store_release_progress(run: object) -> dict:
     }
 
 
+def _release_plan_recovery_actions(
+    dashboard: dict,
+    blockers: list[str],
+) -> list[dict[str, object]]:
+    """Expose an existing safe next step whenever plan approval is blocked."""
+
+    if not blockers:
+        return []
+    listing_copy = (
+        dashboard.get("listing_copy")
+        if isinstance(dashboard.get("listing_copy"), dict)
+        else {}
+    )
+    normalized = [str(value or "").casefold() for value in blockers]
+    stale_copy = (
+        listing_copy.get("status") == "superseded_product_facts_changed"
+        or any("listing copy input signature is stale" in value for value in normalized)
+    )
+    adoption_required = any(
+        "listing copy must be adopted" in value for value in normalized
+    )
+    if stale_copy:
+        return [
+            {
+                "code": "refresh_listing_copy",
+                "label": "重新生成平台文案",
+                "detail": (
+                    "商品事实或所选规格在上次采用文案后发生了变化。"
+                    "请按当前已批准事实重新生成候选，再由 Kyle 明确采用 EN MASTER。"
+                ),
+                "next_codes": ["refresh_listing_copy", "adopt_listing_copy"],
+                "marketplace_writes_performed": [],
+            }
+        ]
+    if adoption_required:
+        return [
+            {
+                "code": "adopt_listing_copy",
+                "label": "去采用当前 EN MASTER",
+                "detail": (
+                    "平台文案候选已经生成，但尚未绑定到当前商品事实。"
+                    "采用后再重新核对并批准发布计划。"
+                ),
+                "next_codes": ["adopt_listing_copy"],
+                "marketplace_writes_performed": [],
+            }
+        ]
+    return [
+        {
+            "code": "refresh_release_state",
+            "label": "重新检查并定位未完成步骤",
+            "detail": (
+                "系统会重新读取当前商品状态，并在相应区域保留具体阻断原因；"
+                "不会批准、同步或发布。"
+            ),
+            "next_codes": ["refresh_release_state"],
+            "marketplace_writes_performed": [],
+        }
+    ]
+
+
 def _release_v1_view(dashboard: dict) -> dict:
     from modules.products.release_adapters import production_adapter_registry
     from shared_platform.release_store import default_release_store
@@ -3070,9 +3190,27 @@ def _release_v1_view(dashboard: dict) -> dict:
             active.get("status") == "APPROVED"
             and (active.get("approval") or {}).get("status") == "APPROVED"
         )
+        historical_predecessor_run = _release_predecessor_evidence_run(
+            store,
+            active,
+        )
+        target_recovery_actions = _release_target_recovery_actions(
+            historical_run,
+            predecessor_run=historical_predecessor_run,
+            target_rows=(
+                (dashboard.get("omnichannel_preview") or {}).get(
+                    "targets"
+                )
+                or ()
+            ),
+        )
         return {
             "eligible_for_plan_approval": False,
             "blockers": blockers,
+            "recovery_actions": _release_plan_recovery_actions(
+                dashboard,
+                blockers,
+            ),
             "plan": active,
             "plan_persisted": True,
             "plan_approved": approved,
@@ -3088,6 +3226,11 @@ def _release_v1_view(dashboard: dict) -> dict:
             ),
             "adapter_blockers": [],
             "publish_ready": False,
+            "target_recovery_actions": target_recovery_actions,
+            "runnable_target_count": sum(
+                action.get("runnable") is True
+                for action in target_recovery_actions
+            ),
             "historical": True,
         }
 
@@ -3095,6 +3238,10 @@ def _release_v1_view(dashboard: dict) -> dict:
         return historical_view() or {
             "eligible_for_plan_approval": False,
             "blockers": blockers,
+            "recovery_actions": _release_plan_recovery_actions(
+                dashboard,
+                blockers,
+            ),
             "plan": None,
             "run": None,
             "miaoshou_prepared": False,
@@ -3107,6 +3254,10 @@ def _release_v1_view(dashboard: dict) -> dict:
         return historical_view() or {
             "eligible_for_plan_approval": False,
             "blockers": blockers,
+            "recovery_actions": _release_plan_recovery_actions(
+                dashboard,
+                blockers,
+            ),
             "plan": None,
             "run": None,
             "miaoshou_prepared": False,
@@ -3151,14 +3302,42 @@ def _release_v1_view(dashboard: dict) -> dict:
     miaoshou_prepared = bool(
         miaoshou_target and miaoshou_target.get("status") == "SUCCEEDED"
     )
+    common_evidence_blockers = (
+        _verified_common_evidence_blockers(
+            run,
+            plan.get("payload") or {},
+            store=store,
+        )
+        if approved
+        else ["approved ReleasePlan is required"]
+    )
+    canonical_common_ready = bool(approved and not common_evidence_blockers)
     common_overwrite_review = (
         store.get_common_overwrite_review(plan["plan_id"])
         if persisted
         else None
     )
+    predecessor_run = (
+        _release_predecessor_evidence_run(store, plan)
+        if persisted
+        else None
+    )
+    target_recovery_actions = _release_target_recovery_actions(
+        run,
+        predecessor_run=predecessor_run,
+        target_rows=(
+            (dashboard.get("omnichannel_preview") or {}).get("targets")
+            or ()
+        ),
+        registry=registry,
+    )
     return {
         "eligible_for_plan_approval": not blockers,
         "blockers": blockers,
+        "recovery_actions": _release_plan_recovery_actions(
+            dashboard,
+            blockers,
+        ),
         "plan": plan,
         "plan_persisted": bool(persisted),
         "plan_approved": approved,
@@ -3166,12 +3345,22 @@ def _release_v1_view(dashboard: dict) -> dict:
         "storefront_progress": _store_release_progress(run),
         "common_overwrite_review": common_overwrite_review,
         "miaoshou_prepared": miaoshou_prepared,
+        "canonical_common_ready": canonical_common_ready,
+        "common_evidence_blockers": common_evidence_blockers,
+        "release_preflight_authority": (
+            "canonical_common_readback"
+            if canonical_common_ready
+            else "pre_common_release_gate"
+        ),
         "adapter_blockers": list(dict.fromkeys(adapter_blockers)),
+        "target_recovery_actions": target_recovery_actions,
+        "runnable_target_count": sum(
+            action.get("runnable") is True
+            for action in target_recovery_actions
+        ),
         "publish_ready": bool(
-            approved
-            and miaoshou_prepared
+            canonical_common_ready
             and not adapter_blockers
-            and (dashboard.get("actual_release_gate") or {}).get("ready")
         ),
     }
 
@@ -5229,14 +5418,102 @@ def _prepare_miaoshou_release(
             if target.get("external_id") or failure_evidence.get(
                 "external_writes_performed"
             ):
-                return 409, {
-                    "ok": False,
-                    "error": (
-                        "COMMON already records a failed external write; "
-                        "automatic retry is disabled"
+                reconciliation_eligible = bool(
+                    target.get("external_id")
+                    and failure_evidence.get("save_accepted") is True
+                    and failure_evidence.get("verified") is False
+                    and failure_evidence.get("external_writes_performed")
+                    == ["miaoshou:COMMON:immutable_plan_write"]
+                )
+                if not reconciliation_eligible:
+                    return 409, {
+                        "ok": False,
+                        "error": (
+                            "COMMON already records a failed external write; "
+                            "automatic retry is disabled"
+                        ),
+                        "external_writes_performed": [],
+                        "run": run,
+                    }
+                try:
+                    readback = readback_miaoshou_common(
+                        plan.get("payload") or {}
+                    )
+                except Exception as error:
+                    return 502, {
+                        "ok": False,
+                        "error": str(error),
+                        "mode": "readback_reconciliation_no_write",
+                        "reconciliation_required": True,
+                        "external_writes_performed": [],
+                        "run": run,
+                    }
+                if not readback.get("verified"):
+                    return 409, {
+                        "ok": False,
+                        "error": (
+                            "COMMON official readback still differs from the "
+                            "immutable ReleasePlan"
+                        ),
+                        "mode": "readback_reconciliation_no_write",
+                        "failed_checks": [
+                            str(name)
+                            for name, passed in (
+                                readback.get("checks") or {}
+                            ).items()
+                            if passed is not True
+                        ],
+                        "reconciliation_required": True,
+                        "external_writes_performed": [],
+                        "run": run,
+                    }
+                reconciliation_evidence = {
+                    "source": "miaoshou_open_api",
+                    "verified": True,
+                    "mode": "readback_reconciliation_no_write",
+                    "offer_id": str(plan_payload["product_id"]),
+                    "collect_box_detail_id": int(plan_payload["product_id"]),
+                    "checks": dict(readback.get("checks") or {}),
+                    "spec_label_application": dict(
+                        readback.get("spec_label_application") or {}
                     ),
+                    "image_count": int(readback.get("image_count") or 0),
                     "external_writes_performed": [],
+                }
+                try:
+                    run = store.record_common_reconciled_success(
+                        run["run_id"],
+                        external_id=str(target.get("external_id") or ""),
+                        readback_evidence=reconciliation_evidence,
+                    )
+                except (
+                    ReleaseAuthorizationError,
+                    ReleaseStoreError,
+                    ValueError,
+                ) as error:
+                    return 409, {
+                        "ok": False,
+                        "error": str(error),
+                        "mode": "readback_reconciliation_no_write",
+                        "reconciliation_required": True,
+                        "external_writes_performed": [],
+                        "run": store.get_run(run["run_id"]) or run,
+                    }
+                refreshed, refresh_failure = _release_dashboard_for_request(
+                    data
+                )
+                if refresh_failure:
+                    refreshed = dashboard
+                return 200, {
+                    "ok": True,
+                    "idempotent": False,
+                    "mode": "readback_reconciliation_no_write",
+                    "external_writes_performed": [],
+                    "result": reconciliation_evidence,
                     "run": run,
+                    "dashboard": _product_workspace_view(
+                        refreshed or dashboard
+                    ),
                 }
             run = store.retry_failed_targets(
                 run["run_id"],
@@ -5292,6 +5569,9 @@ def _prepare_miaoshou_release(
             ),
             "collect_box_detail_id": result.get("detail_id"),
             "checks": dict(result.get("checks") or {}),
+            "spec_label_application": dict(
+                result.get("spec_label_application") or {}
+            ),
             "image_count": len(
                 ((result.get("draft") or {}).get("imgUrls") or ())
             ),
@@ -5389,6 +5669,218 @@ def _prepare_miaoshou_release(
     }
 
 
+_GENERIC_TIKTOK_SAFE_RETRY_LABELS = frozenset(
+    {
+        "tiktok:LH_PH",
+        "tiktok:LH_MY",
+        "tiktok:LH_TH",
+        "tiktok:LH_VN",
+        "tiktok:MX",
+        "tiktok:GB",
+        "tiktok:HB_PH",
+        "tiktok:HB_MY",
+        "tiktok:HB_TH",
+        "tiktok:HB_VN",
+    }
+)
+_GENERIC_TIKTOK_SAFE_RETRY_MARKERS = (
+    "persisted miaoshou claim lacks",
+    "miaoshou tiktok has no target draft",
+    "target draft missing",
+)
+
+
+def _zero_write_pre_submit_evidence(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    nested = value.get("evidence")
+    evidence = nested if isinstance(nested, dict) else value
+    writes = evidence.get("external_writes_performed")
+    return (
+        evidence.get("pre_submit_failure") is True
+        and evidence.get("submission_accepted") is False
+        and isinstance(writes, list)
+        and not writes
+    )
+
+
+def _generic_tiktok_safe_retry_target(target: dict) -> bool:
+    """Recognize only truthful zero-write TikTok pre-submit failures."""
+
+    label = str(target.get("target_label") or "")
+    if (
+        label not in _GENERIC_TIKTOK_SAFE_RETRY_LABELS
+        or target.get("status") != "FAILED"
+        or target.get("external_id")
+        or target.get("submission")
+        or target.get("readback")
+        or target.get("repair")
+        or target.get("external_writes_performed")
+    ):
+        return False
+    failure_events = target.get("failure_events")
+    if failure_events is None:
+        failure_events = []
+    if not isinstance(failure_events, list):
+        return False
+    structured_safe_evidence = False
+    for event in failure_events:
+        if not isinstance(event, dict):
+            return False
+        evidence = event.get("evidence")
+        if evidence in (None, {}):
+            continue
+        if not _zero_write_pre_submit_evidence(evidence):
+            return False
+        structured_safe_evidence = True
+    latest = target.get("latest_failure_evidence")
+    if isinstance(latest, dict) and latest.get("evidence") not in (None, {}):
+        if not _zero_write_pre_submit_evidence(latest):
+            return False
+        structured_safe_evidence = True
+    if structured_safe_evidence:
+        return True
+    detail = str(target.get("error") or "").casefold()
+    return any(
+        marker in detail for marker in _GENERIC_TIKTOK_SAFE_RETRY_MARKERS
+    )
+
+
+def _release_target_dependencies(
+    target_label: str,
+    statuses: dict[str, object],
+) -> tuple[str, ...]:
+    """Return only genuine same-run execution dependencies.
+
+    TikTok site drafts are derived from the governed Miaoshou COMMON record.
+    Shopee and Ozon consume the immutable ReleasePlan independently; coupling
+    them to a same-region TikTok result caused pristine targets to be skipped
+    whenever a TikTok draft hit a version conflict.
+    """
+
+    channel = str(target_label or "").split(":", 1)[0]
+    if channel == "tiktok":
+        return ("miaoshou:COMMON",)
+    return ()
+
+
+def _release_predecessor_evidence_run(store, plan: dict | None) -> dict | None:
+    """Fold durable target evidence across the full predecessor chain.
+
+    A second successor must not make an older accepted write disappear merely
+    because its immediate predecessor never attempted that target.  Keep the
+    nearest row for ordinary status context, but prefer any older row carrying
+    an external outcome.  The projection is read-only and is used only to
+    prevent automatic resubmission.
+    """
+
+    from shared_platform.target_recovery import classify_target_recovery
+
+    current = plan if isinstance(plan, dict) else None
+    seen_plan_ids: set[str] = set()
+    evidence_by_label: dict[str, dict] = {}
+    for _depth in range(100):
+        current_id = str((current or {}).get("plan_id") or "").strip()
+        if not current_id or current_id in seen_plan_ids:
+            break
+        seen_plan_ids.add(current_id)
+        predecessor = store.predecessor_plan_for(current_id)
+        if not predecessor:
+            break
+        digest = str(predecessor.get("payload_digest") or "")
+        predecessor_run = (
+            store.get_run(f"release-run:{digest[:24]}")
+            if digest
+            else None
+        )
+        for row in (predecessor_run or {}).get("targets") or ():
+            if not isinstance(row, dict):
+                continue
+            label = str(row.get("target_label") or "")
+            if not label or label == "miaoshou:COMMON":
+                continue
+            candidate_has_evidence = (
+                classify_target_recovery(row).get(
+                    "prior_write_evidence"
+                )
+                is True
+            )
+            existing = evidence_by_label.get(label)
+            existing_has_evidence = bool(
+                existing
+                and classify_target_recovery(existing).get(
+                    "prior_write_evidence"
+                )
+                is True
+            )
+            if existing is None or (
+                candidate_has_evidence and not existing_has_evidence
+            ):
+                evidence_by_label[label] = row
+        current = predecessor
+    return (
+        {"targets": list(evidence_by_label.values())}
+        if evidence_by_label
+        else None
+    )
+
+
+def _release_target_recovery_actions(
+    run: dict | None,
+    *,
+    predecessor_run: dict | None = None,
+    target_rows: object = (),
+    registry: dict | None = None,
+) -> list[dict]:
+    """Project one channel-neutral action for every physical target."""
+
+    from modules.products.release_adapters import production_adapter_registry
+    from shared_platform.target_recovery import project_run_recovery_actions
+
+    rows = (run or {}).get("targets") or ()
+    active_registry = registry or production_adapter_registry()
+    predecessor_recovery_labels = {
+        f"{row.get('channel')}:{row.get('site')}"
+        for row in (
+            target_rows if isinstance(target_rows, (list, tuple)) else ()
+        )
+        if isinstance(row, dict)
+        and (
+            registration := active_registry.get(
+                str(row.get("adapter") or "")
+            )
+        )
+        is not None
+        and registration.supports_predecessor_recovery
+    }
+    first_attempt_blocked_labels = {
+        f"{row.get('channel')}:{row.get('site')}"
+        for row in (
+            target_rows if isinstance(target_rows, (list, tuple)) else ()
+        )
+        if isinstance(row, dict)
+        and (
+            registration := active_registry.get(
+                str(row.get("adapter") or "")
+            )
+        )
+        is not None
+        and not registration.supports_automatic_first_attempt
+    }
+    safe_retry_labels = {
+        str(row.get("target_label") or "")
+        for row in rows
+        if isinstance(row, dict) and _generic_tiktok_safe_retry_target(row)
+    }
+    return project_run_recovery_actions(
+        rows,
+        safe_retry_labels=safe_retry_labels,
+        predecessor_recovery_labels=predecessor_recovery_labels,
+        first_attempt_blocked_labels=first_attempt_blocked_labels,
+        predecessor_targets=(predecessor_run or {}).get("targets") or (),
+    )
+
+
 def _publish_selected_release(data: dict) -> tuple[int, dict]:
     """Execute the approved plan once through durable per-target adapters."""
     from domains.channel_operations.release_executor import AdapterExecutionRequest
@@ -5421,6 +5913,7 @@ def _publish_selected_release(data: dict) -> tuple[int, dict]:
         dashboard = gate["dashboard"]
         plan_payload = gate["payload"]
         run = gate["run"]
+        predecessor_run = gate.get("predecessor_run")
         registry = gate["registry"]
         target_rows = gate["target_rows"]
         assert run is not None
@@ -5441,18 +5934,68 @@ def _publish_selected_release(data: dict) -> tuple[int, dict]:
             if row.get("status") in {"FAILED", "RECONCILIATION_REQUIRED"}
         ]
         if failed_targets:
+            safe_retry_targets = [
+                str(row.get("target_label") or "")
+                for row in failed_targets
+                if _generic_tiktok_safe_retry_target(row)
+            ]
+            if safe_retry_targets:
+                try:
+                    run = store.retry_failed_targets(
+                        run["run_id"],
+                        safe_retry_targets,
+                    )
+                except (ReleaseAuthorizationError, ReleaseStoreError) as error:
+                    return 409, {
+                        "ok": False,
+                        "code": "safe_retry_authorization_rejected",
+                        "error": "safe TikTok retry authorization was rejected",
+                        "detail": str(error),
+                        "blocked_targets": safe_retry_targets,
+                        "external_writes_performed": [],
+                        "run": store.get_run(run["run_id"]) or run,
+                    }
+
+        recovery_actions = _release_target_recovery_actions(
+            run,
+            predecessor_run=predecessor_run,
+            target_rows=target_rows,
+            registry=registry,
+        )
+        if not any(action.get("runnable") is True for action in recovery_actions):
+            if run.get("status") in {
+                "SUCCEEDED",
+                "COMPLETED_WITH_MANUAL_VERIFICATION",
+                "AWAITING_MANUAL_VERIFICATION",
+            }:
+                return 200, {
+                    "ok": True,
+                    "completed": run.get("status")
+                    in {"SUCCEEDED", "COMPLETED_WITH_MANUAL_VERIFICATION"},
+                    "partial": False,
+                    "awaiting_manual_verification": (
+                        run.get("status") == "AWAITING_MANUAL_VERIFICATION"
+                    ),
+                    "message": "release run is already terminal; no target was resubmitted",
+                    "external_writes_performed": [],
+                    "target_recovery_actions": recovery_actions,
+                    "run": run,
+                    "dashboard": _product_workspace_view(dashboard),
+                }
             return 409, {
                 "ok": False,
-                "code": "target_scoped_action_required",
+                "code": "no_runnable_release_targets",
                 "error": (
-                    "FAILED targets require an explicit single-target action; "
-                    "generic publish cannot retry or reset them"
+                    "no target is eligible for a first attempt or an exact "
+                    "zero-write safe retry"
                 ),
-                "blocked_targets": [
-                    row.get("target_label")
-                    for row in failed_targets
-                ],
                 "external_writes_performed": [],
+                "target_recovery_actions": recovery_actions,
+                "blocked_targets": [
+                    action["target_label"]
+                    for action in recovery_actions
+                    if action.get("action_kind") not in {"TERMINAL"}
+                ],
                 "run": run,
             }
 
@@ -5472,12 +6015,20 @@ def _publish_selected_release(data: dict) -> tuple[int, dict]:
             ),
         )
         external_writes: list[str] = []
+        recovery_action_by_label = {
+            str(action.get("target_label") or ""): action
+            for action in recovery_actions
+        }
         for durable_target in ordered:
             label = str(durable_target.get("target_label") or "")
             if (
                 label == "miaoshou:COMMON"
                 or durable_target.get("status")
                 in {"SUCCEEDED", "SUBMITTED_UNVERIFIED", "MANUALLY_VERIFIED"}
+                or (
+                    recovery_action_by_label.get(label, {}).get("runnable")
+                    is not True
+                )
             ):
                 continue
             channel, site = label.split(":", 1)
@@ -5486,31 +6037,8 @@ def _publish_selected_release(data: dict) -> tuple[int, dict]:
                 row["target_label"]: row.get("status")
                 for row in (current_run.get("targets") or ())
             }
-            if channel == "tiktok":
-                dependencies = ("miaoshou:COMMON",)
-            elif channel == "shopee":
-                dependencies = tuple(
-                    candidate
-                    for candidate in (
-                        f"tiktok:LH_{site}",
-                        f"tiktok:HB_{site}",
-                        f"tiktok:{site}",
-                    )
-                    if candidate in statuses
-                )
-            elif channel == "ozon":
-                dependencies = tuple(
-                    candidate
-                    for candidate in (
-                        "tiktok:LH_PH",
-                        "tiktok:HB_PH",
-                        "tiktok:PH",
-                    )
-                    if candidate in statuses
-                )
-            else:
-                dependencies = ()
-            if dependencies and not any(
+            dependencies = _release_target_dependencies(label, statuses)
+            if dependencies and not all(
                 statuses.get(dependency) == "SUCCEEDED"
                 for dependency in dependencies
             ):
@@ -5743,6 +6271,12 @@ def _publish_selected_release(data: dict) -> tuple[int, dict]:
                 )
             ),
             "external_writes_performed": external_writes,
+            "target_recovery_actions": _release_target_recovery_actions(
+                final_run,
+                predecessor_run=predecessor_run,
+                target_rows=target_rows,
+                registry=registry,
+            ),
             "run": final_run,
             "dashboard": _product_workspace_view(refreshed_dashboard),
         }
@@ -7657,6 +8191,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._file(WEB_DIR / "ai_image_studio.html")
         if path in ("/new-product-legacy", "/new-product-legacy.html"):
             return self._module_moved("Orbit Treasury", "http://127.0.0.1:8766/")
+        if path in ("/workbench", "/workbench.html"):
+            return self._file(WEB_DIR / "workbench.html")
         if path in ("/ozon", "/ozon.html", "/rus", "/rus.html"):
             return self._module_moved("Orbit Rus", "http://127.0.0.1:8767/")
         if self._handle_product_flow_proxy("GET"):
@@ -7960,6 +8496,33 @@ class Handler(BaseHTTPRequestHandler):
                 target_label=(q.get("target_label") or [""])[0],
             )
             return self._json(status, payload)
+        if path == "/api/workbench/dashboard":
+            from shared_platform.workbench_store import default_workbench_store
+
+            return self._json(200, {"ok": True, **default_workbench_store().dashboard()})
+        if path == "/api/workbench/deep-ops":
+            from shared_platform.workbench_store import default_workbench_store
+
+            q = parse_qs(urlparse(self.path).query)
+            try:
+                return self._json(200, {"ok": True, **default_workbench_store().deep_ops((q.get("date") or [None])[0])})
+            except ValueError as error:
+                return self._json(400, {"ok": False, "error": str(error)})
+        if path == "/api/workbench/tasks":
+            from shared_platform.workbench_store import default_workbench_store
+
+            q = parse_qs(urlparse(self.path).query)
+            filters = {name: (q.get(name) or [None])[0] for name in ("project", "business_line", "owner", "priority", "status")}
+            tasks = default_workbench_store().list_tasks(**filters)
+            return self._json(200, {"ok": True, "items": tasks, "count": len(tasks)})
+        if path.startswith("/api/workbench/tasks/"):
+            from shared_platform.workbench_store import default_workbench_store
+
+            task_id = unquote(path.rsplit("/", 1)[-1])
+            task = default_workbench_store().get_task(task_id)
+            if not task:
+                return self._json(404, {"ok": False, "error": "task not found"})
+            return self._json(200, {"ok": True, "task": task, "events": default_workbench_store().events(task_id)})
         if path in ("/api/release/dashboard", "/api/product-workspace/dashboard"):
             from shared_platform.release_control import build_release_dashboard
 
@@ -8626,6 +9189,55 @@ class Handler(BaseHTTPRequestHandler):
             data = self._read_json()
         except json.JSONDecodeError:
             return self._json(400, {"ok": False, "error": "invalid json"})
+
+        if path.startswith("/api/workbench/"):
+            from shared_platform.workbench_store import default_workbench_store
+
+            store = default_workbench_store()
+            try:
+                if path == "/api/workbench/tasks":
+                    return self._json(201, {"ok": True, "task": store.create_task(data)})
+                if path == "/api/workbench/deep-ops":
+                    session = store.update_deep_ops_session(str(data.get("date") or date.today().isoformat()), data)
+                    return self._json(200, {"ok": True, "session": session})
+                if path == "/api/workbench/inbox/import":
+                    message_id = str(data.get("message_id") or data.get("source_key") or "").strip()
+                    text = str(data.get("text") or data.get("title") or "").strip()
+                    if not message_id or not text:
+                        return self._json(400, {"ok": False, "error": "message_id and text are required"})
+                    task = store.create_task({
+                        "title": text[:500], "status": "inbox", "priority": data.get("priority") or "P2",
+                        "project": data.get("project") or "", "business_line": data.get("business_line") or "",
+                        "related_url": data.get("source_url") or "", "execution_notes": data.get("text") or text,
+                        "source_key": f"feishu:{message_id}",
+                    })
+                    return self._json(201, {"ok": True, "task": task, "deduplicated": task.get("source_key") == f"feishu:{message_id}"})
+                if path.startswith("/api/workbench/tasks/"):
+                    parts = path.split("/")
+                    if len(parts) < 5:
+                        return self._json(404, {"ok": False, "error": "unknown workbench endpoint"})
+                    task_id = unquote(parts[4])
+                    if len(parts) == 6 and parts[5] == "transition":
+                        task = store.transition(task_id, str(data.get("status") or ""), str(data.get("note") or ""))
+                        if task["status"] in {"waiting_approval", "blocked", "done"}:
+                            from shared_platform.workbench_notify import notify_task_change
+
+                            notify_task_change(store, task, task["status"])
+                    elif len(parts) == 5:
+                        task = store.update_task(task_id, data)
+                        if "owner" in data and task.get("owner"):
+                            from shared_platform.workbench_notify import notify_task_change
+
+                            notify_task_change(store, task, "assigned")
+                    else:
+                        return self._json(404, {"ok": False, "error": "unknown workbench endpoint"})
+                    return self._json(200, {"ok": True, "task": task})
+                if path == "/api/workbench/weekly-review":
+                    return self._json(200, {"ok": True, **store.weekly_review(str(data.get("week_start") or ""), data.get("content"))})
+            except KeyError:
+                return self._json(404, {"ok": False, "error": "task not found"})
+            except (TypeError, ValueError) as error:
+                return self._json(400, {"ok": False, "error": str(error)})
 
         if path == "/api/shopee/profit/run":
             from modules.finance import th_orders_pull as orders_pull

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
 import tempfile
@@ -24,7 +25,12 @@ from modules.shopee.client import (
     upload_image,
 )
 from modules.shopee.global_copy import TK_SOURCE_ORDER, build_global_copy
-from modules.shopee.global_sku_map import global_item_id_for_match_key, record_shop_item, upsert_global_entry
+from modules.shopee.global_sku_map import (
+    global_item_id_for_match_key,
+    record_shop_item,
+    replace_deleted_global_entry,
+    upsert_global_entry,
+)
 from modules.shopee.pricing import REGION_CURRENCY, tk_local_to_cny
 from modules.shopee.shops import sync_shop_ids
 
@@ -32,6 +38,127 @@ from modules.shopee.shops import sync_shop_ids
 DEFAULT_CATEGORY = {
     "TH": 101157,
 }
+
+
+class ShopeeGlobalMasterReconciliationError(RuntimeError):
+    """A global-master update may have written and requires official readback."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        global_item_id: int,
+        write_class: str = "shopee:global_master:update",
+        reason: str = "global_master_update_requires_reconciliation",
+        write_confirmed: bool = True,
+    ) -> None:
+        super().__init__(message)
+        writes = [str(write_class)] if write_confirmed else []
+        possible_writes = [] if write_confirmed else [str(write_class)]
+        self.external_reference = str(global_item_id)
+        self.external_write_evidence = {
+            "source": "official_shopee_partner_api",
+            "verified": False,
+            "durable_state_uncertain": True,
+            "submission_accepted": bool(write_confirmed),
+            "reason": str(reason),
+            "global_item_identity_digest": hashlib.sha256(
+                str(global_item_id).encode("utf-8")
+            ).hexdigest(),
+            "external_writes_performed": writes,
+            "possible_external_writes_performed": possible_writes,
+        }
+
+
+class ShopeeRegionalPublishReconciliationError(RuntimeError):
+    """A regional publish was invoked and its durable outcome is uncertain."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        global_item_id: int,
+        external_writes_performed: list[str] | tuple[str, ...] = (),
+        possible_external_writes_performed: (
+            list[str] | tuple[str, ...]
+        ) = (),
+        submission_accepted: bool = False,
+        reason: str = "regional_publish_requires_reconciliation",
+    ) -> None:
+        super().__init__(message)
+        writes = list(dict.fromkeys(str(value) for value in external_writes_performed))
+        possible_writes = list(
+            dict.fromkeys(
+                str(value)
+                for value in possible_external_writes_performed
+                if str(value) not in writes
+            )
+        )
+        self.external_reference = str(global_item_id)
+        self.external_write_evidence = {
+            "source": "official_shopee_partner_api",
+            "verified": False,
+            "durable_state_uncertain": True,
+            "submission_accepted": bool(submission_accepted),
+            "reason": str(reason),
+            "global_item_identity_digest": hashlib.sha256(
+                str(global_item_id).encode("utf-8")
+            ).hexdigest(),
+            "external_writes_performed": writes,
+            "possible_external_writes_performed": possible_writes,
+        }
+
+
+def _merge_shopee_publish_write_evidence(
+    error: Exception,
+    *,
+    global_item_id: int,
+    global_master_receipt: dict | None,
+) -> ShopeeRegionalPublishReconciliationError:
+    """Preserve every known write when a later publish stage fails."""
+
+    prior_writes = []
+    if isinstance(global_master_receipt, dict):
+        prior_writes.extend(
+            str(value)
+            for value in global_master_receipt.get(
+                "external_writes_performed"
+            )
+            or ()
+        )
+    error_evidence = getattr(error, "external_write_evidence", None)
+    later_writes = (
+        list(error_evidence.get("external_writes_performed") or ())
+        if isinstance(error_evidence, dict)
+        else []
+    )
+    possible_writes = (
+        list(
+            error_evidence.get(
+                "possible_external_writes_performed"
+            )
+            or ()
+        )
+        if isinstance(error_evidence, dict)
+        else []
+    )
+    writes = list(dict.fromkeys([*prior_writes, *later_writes]))
+    return ShopeeRegionalPublishReconciliationError(
+        "Shopee publish sequence requires reconciliation",
+        global_item_id=global_item_id,
+        external_writes_performed=writes,
+        possible_external_writes_performed=possible_writes,
+        submission_accepted=bool(
+            isinstance(error_evidence, dict)
+            and error_evidence.get("submission_accepted") is True
+        ),
+        reason=(
+            str(error_evidence.get("reason") or "")
+            if isinstance(error_evidence, dict)
+            else "post_global_master_publish_failure"
+        )
+        or "post_global_master_publish_failure",
+    )
 
 
 def _merchant_token(shop_id: int, shop_token: str) -> str:
@@ -698,7 +825,7 @@ def _shopee_title(raw: str, model_sku: str, *, max_len: int = 120) -> str:
     title = (raw or "").strip()
     if len(title) > max_len:
         title = title[: max_len - 3].rstrip() + "..."
-    if len(title) < 15:
+    if len(title) < 15 and str(model_sku or "").strip():
         title = (title + f" SKU{model_sku}").strip()[:max_len]
     return title
 
@@ -874,26 +1001,69 @@ def _run_publish_task(
             **({"model": manual_models} if manual_models else {}),
         },
     }
-    p_resp = merchant_post(
-        "/api/v2/global_product/create_publish_task",
-        merchant_id,
-        mtoken,
-        pub_body,
-    )
+    try:
+        p_resp = merchant_post(
+            "/api/v2/global_product/create_publish_task",
+            merchant_id,
+            mtoken,
+            pub_body,
+        )
+    except Exception as error:
+        raise ShopeeRegionalPublishReconciliationError(
+            "regional publish transport outcome is unknown",
+            global_item_id=global_item_id,
+            possible_external_writes_performed=[
+                "shopee:regional_publish"
+            ],
+            reason="regional_publish_dispatch_unknown",
+        ) from error
+    if not isinstance(p_resp, dict):
+        raise ShopeeRegionalPublishReconciliationError(
+            "regional publish receipt is malformed",
+            global_item_id=global_item_id,
+            possible_external_writes_performed=[
+                "shopee:regional_publish"
+            ],
+            reason="regional_publish_receipt_malformed",
+        )
     if p_resp.get("error"):
         raise RuntimeError(p_resp.get("message") or p_resp.get("error") or p_resp)
     task_id = (p_resp.get("response") or {}).get("publish_task_id")
+    if type(task_id) is not int or task_id <= 0:
+        raise ShopeeRegionalPublishReconciliationError(
+            "regional publish task identity is unavailable",
+            global_item_id=global_item_id,
+            possible_external_writes_performed=[
+                "shopee:regional_publish"
+            ],
+            reason="regional_publish_task_identity_missing",
+        )
     item_id = None
     last_status = None
     for _ in range(20):
         time.sleep(3)
-        st = merchant_get(
-            "/api/v2/global_product/get_publish_task_result",
-            merchant_id,
-            mtoken,
-            {"publish_task_id": int(task_id)},
-        )
-        res = st.get("response") or {}
+        try:
+            st = merchant_get(
+                "/api/v2/global_product/get_publish_task_result",
+                merchant_id,
+                mtoken,
+                {"publish_task_id": int(task_id)},
+            )
+            if not isinstance(st, dict) or st.get("error"):
+                raise ValueError("regional publish task readback is invalid")
+            res = st.get("response")
+            if not isinstance(res, dict):
+                raise ValueError("regional publish task response is invalid")
+        except Exception as error:
+            raise ShopeeRegionalPublishReconciliationError(
+                "regional publish task readback is unavailable",
+                global_item_id=global_item_id,
+                external_writes_performed=[
+                    "shopee:regional_publish"
+                ],
+                submission_accepted=True,
+                reason="regional_publish_task_readback_unavailable",
+            ) from error
         last_status = res.get("publish_status")
         if last_status == "success":
             success = res.get("success") or {}
@@ -902,7 +1072,23 @@ def _run_publish_task(
         if last_status == "failed":
             failed = res.get("failed") or {}
             reason = failed.get("failed_reason") or st
-            raise RuntimeError(f"发布失败: {reason}")
+            raise ShopeeRegionalPublishReconciliationError(
+                f"regional publish task failed: {reason}",
+                global_item_id=global_item_id,
+                external_writes_performed=[
+                    "shopee:regional_publish"
+                ],
+                submission_accepted=True,
+                reason="regional_publish_task_failed",
+            )
+    if item_id is None:
+        raise ShopeeRegionalPublishReconciliationError(
+            "regional publish task did not converge",
+            global_item_id=global_item_id,
+            external_writes_performed=["shopee:regional_publish"],
+            submission_accepted=True,
+            reason="regional_publish_task_nonconvergent",
+        )
     logistics = {}
     if item_id:
         for attempt in range(6):
@@ -915,7 +1101,15 @@ def _run_publish_task(
                 break
             except RuntimeError:
                 if attempt == 5:
-                    raise
+                    raise ShopeeRegionalPublishReconciliationError(
+                        "regional logistics readback did not converge",
+                        global_item_id=global_item_id,
+                        external_writes_performed=[
+                            "shopee:regional_publish"
+                        ],
+                        submission_accepted=True,
+                        reason="regional_logistics_readback_unavailable",
+                    )
                 time.sleep(2)
     return {
         "ok": bool(item_id),
@@ -1162,31 +1356,50 @@ def update_global_master(
     }
     if len(body["description"]) < 500:
         raise ValueError("Shopee global master description must be at least 500 characters")
-    response = merchant_post(
-        "/api/v2/global_product/update_global_item",
-        merchant_id,
-        merchant_token,
-        body,
-    )
+    try:
+        response = merchant_post(
+            "/api/v2/global_product/update_global_item",
+            merchant_id,
+            merchant_token,
+            body,
+        )
+    except Exception as error:
+        raise ShopeeGlobalMasterReconciliationError(
+            "global master update transport outcome is unknown",
+            global_item_id=global_item_id,
+            write_confirmed=False,
+        ) from error
+    if not isinstance(response, dict):
+        raise ShopeeGlobalMasterReconciliationError(
+            "global master update receipt is malformed",
+            global_item_id=global_item_id,
+            write_confirmed=False,
+        )
     error = str(response.get("error") or "").strip()
     if error and error != "-":
         raise RuntimeError(response.get("message") or error)
-    readback = merchant_get(
-        "/api/v2/global_product/get_global_item_info",
-        merchant_id,
-        merchant_token,
-        {"global_item_id_list": str(global_item_id)},
-    )
-    items = (readback.get("response") or {}).get("global_item_list") or []
-    if len(items) != 1:
-        raise RuntimeError(f"global item {global_item_id} readback did not converge")
-    item = items[0]
-    verified = (
-        str(item.get("global_item_name") or "") == body["global_item_name"]
-        and str(item.get("description") or "") == body["description"]
-    )
-    if not verified:
-        raise RuntimeError(f"global item {global_item_id} copy readback mismatch")
+    try:
+        readback = merchant_get(
+            "/api/v2/global_product/get_global_item_info",
+            merchant_id,
+            merchant_token,
+            {"global_item_id_list": str(global_item_id)},
+        )
+        items = (readback.get("response") or {}).get("global_item_list") or []
+        if len(items) != 1:
+            raise ValueError("global master readback row count is not exact")
+        item = items[0]
+        verified = (
+            str(item.get("global_item_name") or "") == body["global_item_name"]
+            and str(item.get("description") or "") == body["description"]
+        )
+        if not verified:
+            raise ValueError("global master copy readback mismatch")
+    except Exception as error:
+        raise ShopeeGlobalMasterReconciliationError(
+            f"global item {global_item_id} readback did not converge",
+            global_item_id=global_item_id,
+        ) from error
     attributes = [
         {
             "name": row.get("original_attribute_name"),
@@ -1205,6 +1418,119 @@ def update_global_master(
         "attributes": attributes,
         "verified": True,
     }
+
+
+def ensure_global_master(
+    *,
+    global_item_id: int,
+    merchant_id: int,
+    merchant_token: str,
+    detail: dict,
+    title: str,
+    description: str,
+    ref: dict | None,
+) -> dict:
+    """Update copy once only when strict official readback proves drift."""
+
+    expected_title = _shopee_title(title, "", max_len=120)
+    expected_description = str(description or "").strip()[:3000]
+    current = merchant_get(
+        "/api/v2/global_product/get_global_item_info",
+        merchant_id,
+        merchant_token,
+        {"global_item_id_list": str(global_item_id)},
+    )
+    error = (
+        str(current.get("error") or "").strip()
+        if isinstance(current, dict)
+        else "malformed_response"
+    )
+    response = current.get("response") if isinstance(current, dict) else None
+    items = (
+        response.get("global_item_list")
+        if isinstance(response, dict)
+        else None
+    )
+    if (
+        error not in {"", "-"}
+        or not isinstance(items, list)
+        or len(items) != 1
+        or not isinstance(items[0], dict)
+        or str(items[0].get("global_item_id") or "")
+        != str(global_item_id)
+        or not isinstance(items[0].get("global_item_name"), str)
+        or not isinstance(items[0].get("description"), str)
+    ):
+        raise RuntimeError(
+            f"global item {global_item_id} copy preflight is invalid"
+        )
+    item = items[0]
+    if (
+        item["global_item_name"] == expected_title
+        and item["description"] == expected_description
+    ):
+        return {
+            "source": "official_shopee_partner_api",
+            "global_item_id": int(global_item_id),
+            "verified": True,
+            "updated": False,
+            "external_writes_performed": [],
+        }
+    updated = update_global_master(
+        global_item_id=global_item_id,
+        merchant_id=merchant_id,
+        merchant_token=merchant_token,
+        detail=detail,
+        title=expected_title,
+        description=expected_description,
+        ref=ref,
+    )
+    return {
+        **updated,
+        "updated": True,
+        "external_writes_performed": ["shopee:global_master:update"],
+    }
+
+
+def _official_global_item_status(
+    *,
+    global_item_id: int,
+    merchant_id: int,
+    merchant_token: str,
+) -> str:
+    """Return one exact official global status or fail before any write."""
+
+    response = merchant_get(
+        "/api/v2/global_product/get_global_item_info",
+        merchant_id,
+        merchant_token,
+        {"global_item_id_list": str(global_item_id)},
+    )
+    error = (
+        str(response.get("error") or "").strip()
+        if isinstance(response, dict)
+        else "malformed_response"
+    )
+    body = response.get("response") if isinstance(response, dict) else None
+    rows = body.get("global_item_list") if isinstance(body, dict) else None
+    if (
+        error not in {"", "-"}
+        or not isinstance(rows, list)
+        or len(rows) != 1
+        or not isinstance(rows[0], dict)
+        or str(rows[0].get("global_item_id") or "")
+        != str(global_item_id)
+    ):
+        raise RuntimeError("official global item identity is unavailable")
+    status = rows[0].get("global_item_status")
+    if not isinstance(status, str) or not status.strip():
+        raise RuntimeError("official global item status is unavailable")
+    normalized = status.strip().upper()
+    if normalized not in {"NORMAL", "DELETED"}:
+        raise RuntimeError(
+            f"official global item status is not executable: {normalized}"
+        )
+    return normalized
 
 
 def update_local_listing_copy(
@@ -1351,15 +1677,23 @@ def _create_global_item(
     global_item_id = (g_resp.get("response") or {}).get("global_item_id")
     if not global_item_id:
         raise RuntimeError(f"add_global_item 无 global_item_id: {g_resp}")
-    global_model = ensure_single_global_model(
-        global_item_id=int(global_item_id),
-        merchant_id=merchant_id,
-        merchant_token=mtoken,
-        detail=detail,
-        model_sku=model_sku,
-        original_price=price,
-        stock=stock,
-    )
+    try:
+        global_model = ensure_single_global_model(
+            global_item_id=int(global_item_id),
+            merchant_id=merchant_id,
+            merchant_token=mtoken,
+            detail=detail,
+            model_sku=model_sku,
+            original_price=price,
+            stock=stock,
+        )
+    except Exception as error:
+        raise ShopeeGlobalMasterReconciliationError(
+            "global master was created but its model did not verify",
+            global_item_id=int(global_item_id),
+            write_class="shopee:global_master:create",
+            reason="global_master_create_requires_reconciliation",
+        ) from error
     return {
         "ok": True,
         "flow": "global_only",
@@ -1391,6 +1725,8 @@ def _publish_global(
     local_original_price_override: float | None = None,
     local_price_currency_override: str = "",
     logistics_override: list[dict] | None = None,
+    map_match_key: str = "",
+    replaced_deleted_global_item_id: int | None = None,
 ) -> dict:
     created = _create_global_item(
         detail,
@@ -1406,21 +1742,90 @@ def _publish_global(
         global_original_price_cny_override=global_original_price_cny_override,
     )
     global_item_id = int(created["global_item_id"])
-    result = _run_publish_task(
-        global_item_id=global_item_id,
-        detail=local_detail or detail,
-        region=region,
-        shop_id=shop_id,
-        token=token,
-        model_sku=model_sku,
-        ref=ref,
-        item_status=item_status,
-        global_original_price_cny_override=global_original_price_cny_override,
-        local_original_price_override=local_original_price_override,
-        local_price_currency_override=local_price_currency_override,
-        logistics_override=logistics_override,
-    )
-    return {**created, **result, "flow": "global_product"}
+    master_receipt = {
+        "verified": True,
+        "created": True,
+        "updated": False,
+        "external_writes_performed": [
+            "shopee:global_master:create"
+        ],
+    }
+    if map_match_key:
+        try:
+            if replaced_deleted_global_item_id is not None:
+                replace_deleted_global_entry(
+                    str(replaced_deleted_global_item_id),
+                    str(global_item_id),
+                    match_key=map_match_key,
+                    global_model_sku=model_sku,
+                    title=created.get("global_title") or "",
+                )
+            else:
+                upsert_global_entry(
+                    str(global_item_id),
+                    match_key=map_match_key,
+                    global_model_sku=model_sku,
+                    title=created.get("global_title") or "",
+                    published_regions=[],
+                )
+        except Exception as error:
+            raise ShopeeRegionalPublishReconciliationError(
+                "global master was created but its durable mapping failed",
+                global_item_id=global_item_id,
+                external_writes_performed=[
+                    "shopee:global_master:create"
+                ],
+                submission_accepted=True,
+                reason="global_master_mapping_persistence_failed",
+            ) from error
+    try:
+        result = _run_publish_task(
+            global_item_id=global_item_id,
+            detail=local_detail or detail,
+            region=region,
+            shop_id=shop_id,
+            token=token,
+            model_sku=model_sku,
+            ref=ref,
+            item_status=item_status,
+            global_original_price_cny_override=(
+                global_original_price_cny_override
+            ),
+            local_original_price_override=local_original_price_override,
+            local_price_currency_override=local_price_currency_override,
+            logistics_override=logistics_override,
+        )
+    except Exception as error:
+        raise _merge_shopee_publish_write_evidence(
+            error,
+            global_item_id=global_item_id,
+            global_master_receipt=master_receipt,
+        ) from error
+    if map_match_key and result.get("item_id"):
+        try:
+            record_shop_item(
+                str(global_item_id),
+                region,
+                shop_id=shop_id,
+                item_id=result["item_id"],
+            )
+        except Exception as error:
+            raise ShopeeRegionalPublishReconciliationError(
+                "regional publish succeeded but its durable mapping failed",
+                global_item_id=global_item_id,
+                external_writes_performed=[
+                    "shopee:global_master:create",
+                    "shopee:regional_publish",
+                ],
+                submission_accepted=True,
+                reason="regional_mapping_persistence_failed",
+            ) from error
+    return {
+        **created,
+        **result,
+        "flow": "global_product",
+        "global_master": master_receipt,
+    }
 
 
 def publish_match_key(
@@ -1447,9 +1852,18 @@ def publish_match_key(
         raise RuntimeError(f"无 Shopee 主店: {reg}")
     shop_id = int(shop_map[reg])
 
-    row = _find_tk_row(key, reg)
-    regional_detail = _fetch_tk_detail(row)
     tk_row, tk_detail, tk_source = _find_tk_for_global(key, reg)
+    try:
+        row = _find_tk_row(key, reg)
+        regional_detail = _fetch_tk_detail(row)
+    except RuntimeError:
+        if local_original_price_override is None:
+            raise
+        # The approved ReleasePlan supplies the exact regional commercial
+        # price.  A missing TikTok source-row must not prevent Shopee from
+        # publishing the approved semantic master, and must never substitute
+        # a guessed price.
+        regional_detail = dict(tk_detail)
     detail = dict(tk_detail)
     if str(title_override or "").strip():
         detail["title"] = str(title_override).strip()
@@ -1502,6 +1916,7 @@ def publish_match_key(
         return out
 
     ref = _reference_item(reg, shop_id, token)
+    global_master_receipt = None
     preflight_logistics = None
     if not global_only:
         expected_currency = REGION_CURRENCY.get(reg)
@@ -1529,34 +1944,59 @@ def publish_match_key(
         )
     meta = _shop_meta(shop_id, token)
     if meta.get("is_cb") or meta.get("is_upgraded_cbsc"):
+        retired_global_item_id = None
+        merchant_id = int(meta.get("merchant_id") or 0)
+        if not merchant_id:
+            raise RuntimeError("Shopee merchant identity is unavailable")
+        merchant_token = _merchant_token(shop_id, token)
+        if existing_gid:
+            existing_status = _official_global_item_status(
+                global_item_id=int(existing_gid),
+                merchant_id=merchant_id,
+                merchant_token=merchant_token,
+            )
+            if existing_status == "DELETED":
+                retired_global_item_id = int(existing_gid)
+                existing_gid = None
         if existing_gid and not global_only:
             if str(title_override).strip() and str(description_override).strip():
-                merchant_id = int(meta.get("merchant_id") or 0)
-                update_global_master(
+                global_master_receipt = ensure_global_master(
                     global_item_id=int(existing_gid),
                     merchant_id=merchant_id,
-                    merchant_token=_merchant_token(shop_id, token),
+                    merchant_token=merchant_token,
                     detail=detail,
                     title=title_override,
                     description=description_override,
                     ref=ref,
                 )
-            result = _publish_existing_global(
-                int(existing_gid),
-                local_detail,
-                region=reg,
-                shop_id=shop_id,
-                token=token,
-                model_sku=model_sku,
-                ref=ref,
-                item_status=item_status,
-                global_original_price_cny_override=(
-                    global_original_price_cny_override
-                ),
-                local_original_price_override=local_original_price_override,
-                local_price_currency_override=local_price_currency_override,
-                logistics_override=preflight_logistics,
-            )
+            try:
+                result = _publish_existing_global(
+                    int(existing_gid),
+                    local_detail,
+                    region=reg,
+                    shop_id=shop_id,
+                    token=token,
+                    model_sku=model_sku,
+                    ref=ref,
+                    item_status=item_status,
+                    global_original_price_cny_override=(
+                        global_original_price_cny_override
+                    ),
+                    local_original_price_override=local_original_price_override,
+                    local_price_currency_override=local_price_currency_override,
+                    logistics_override=preflight_logistics,
+                )
+            except Exception as error:
+                if (
+                    isinstance(global_master_receipt, dict)
+                    and global_master_receipt.get("updated") is True
+                ) or hasattr(error, "external_write_evidence"):
+                    raise _merge_shopee_publish_write_evidence(
+                        error,
+                        global_item_id=int(existing_gid),
+                        global_master_receipt=global_master_receipt,
+                    ) from error
+                raise
         elif existing_gid and global_only:
             return {
                 "ok": True,
@@ -1586,12 +2026,38 @@ def publish_match_key(
                         global_original_price_cny_override
                     ),
                 )
-                upsert_global_entry(
-                    str(result["global_item_id"]),
-                    match_key=key,
-                    global_model_sku=model_sku,
-                    title=result.get("global_title") or global_preview["title"],
-                )
+                try:
+                    if retired_global_item_id is not None:
+                        replace_deleted_global_entry(
+                            str(retired_global_item_id),
+                            str(result["global_item_id"]),
+                            match_key=key,
+                            global_model_sku=model_sku,
+                            title=(
+                                result.get("global_title")
+                                or global_preview["title"]
+                            ),
+                        )
+                    else:
+                        upsert_global_entry(
+                            str(result["global_item_id"]),
+                            match_key=key,
+                            global_model_sku=model_sku,
+                            title=(
+                                result.get("global_title")
+                                or global_preview["title"]
+                            ),
+                        )
+                except Exception as error:
+                    raise ShopeeGlobalMasterReconciliationError(
+                        (
+                            "global master was created but its durable "
+                            "mapping failed"
+                        ),
+                        global_item_id=int(result["global_item_id"]),
+                        write_class="shopee:global_master:create",
+                        reason="global_master_mapping_persistence_failed",
+                    ) from error
             else:
                 result = _publish_global(
                     detail,
@@ -1612,28 +2078,21 @@ def publish_match_key(
                     local_original_price_override=local_original_price_override,
                     local_price_currency_override=local_price_currency_override,
                     logistics_override=preflight_logistics,
+                    map_match_key=key,
+                    replaced_deleted_global_item_id=retired_global_item_id,
                 )
-                if result.get("global_item_id"):
-                    upsert_global_entry(
-                        str(result["global_item_id"]),
-                        match_key=key,
-                        global_model_sku=model_sku,
-                        title=result.get("global_title") or global_preview["title"],
-                        published_regions=[reg],
-                    )
-                    if result.get("item_id"):
-                        record_shop_item(
-                            str(result["global_item_id"]),
-                            reg,
-                            shop_id=shop_id,
-                            item_id=result["item_id"],
-                        )
         return {
             **result,
             "region": reg,
             "shop_id": shop_id,
             "match_key": key,
             "model_sku": model_sku,
+            "global_master": (
+                result.get("global_master")
+                if isinstance(result, dict)
+                and isinstance(result.get("global_master"), dict)
+                else global_master_receipt
+            ),
         }
 
     image_ids = _upload_images(urls)

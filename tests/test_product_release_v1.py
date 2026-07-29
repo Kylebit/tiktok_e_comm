@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import sqlite3
 
 import pytest
@@ -95,10 +96,10 @@ def _dashboard() -> dict:
         },
         "actual_release_gate": {"ready": True, "blockers": []},
         "listing_copy": {
-            "schema_version": "listing-copy-candidates-v4",
+            "schema_version": "listing-copy-candidates-v6",
             "status": "adopted_in_product_facts",
             "provider": "toapi",
-            "policy_version": "listing-copy-candidates-v4",
+            "policy_version": "listing-copy-candidates-v6",
             "model": "gpt-5.4-mini-official",
             "input_signature": copy_signature,
             "current_input_signature": copy_signature,
@@ -144,6 +145,219 @@ def _verified_common_write_result(offer_id: str) -> dict:
 
 def _verified_common_plan_write(payload: dict) -> dict:
     return _verified_common_write_result(str(payload["product_id"]))
+
+
+def test_release_dependency_policy_keeps_shopee_and_ozon_independent():
+    statuses = {
+        "miaoshou:COMMON": "SUCCEEDED",
+        "tiktok:LH_MY": "FAILED",
+        "tiktok:LH_PH": "FAILED",
+        "shopee:MY": "PENDING",
+        "ozon:RU": "PENDING",
+    }
+
+    assert product_server._release_target_dependencies(
+        "tiktok:LH_MY",
+        statuses,
+    ) == ("miaoshou:COMMON",)
+    assert product_server._release_target_dependencies(
+        "shopee:MY",
+        statuses,
+    ) == ()
+    assert product_server._release_target_dependencies(
+        "ozon:RU",
+        statuses,
+    ) == ()
+    assert product_server._release_target_dependencies(
+        "tiktok:LH_MY",
+        {},
+    ) == ("miaoshou:COMMON",)
+
+
+def test_existing_unsafe_tiktok_failure_does_not_block_pristine_targets(
+    tmp_path,
+    monkeypatch,
+):
+    store = ReleaseStore(tmp_path / "release.db")
+    monkeypatch.setattr(release_store, "default_release_store", lambda: store)
+    dashboard = deepcopy(_dashboard())
+    targets = [
+        "miaoshou:COMMON",
+        "tiktok:LH_MY",
+        "shopee:MY",
+        "ozon:RU",
+    ]
+    dashboard["publication_scope"]["selected_labels"] = targets
+    dashboard["pricing_review"]["target_pricing"] = {
+        "miaoshou:COMMON": {"status": "ready"},
+        "tiktok:LH_MY": {"status": "ready"},
+        "shopee:MY": {
+            "status": "ready",
+            "target_site": "MY",
+            "derived_preview": {
+                "global_original_price_cny": 40.95,
+                "local_original_price": 33,
+                "source_currency": "MYR",
+                "exchange_rate_cny_per_local": 1.2409,
+            },
+        },
+        "ozon:RU": {"status": "ready"},
+    }
+    dashboard["omnichannel_preview"]["targets"] = [
+        {
+            "channel": "miaoshou",
+            "site": "COMMON",
+            "adapter": "new_product_workbench_miaoshou_commit",
+            "preflights": [{"code": "audited_adapter_site", "passed": True}],
+        },
+        {
+            "channel": "tiktok",
+            "site": "LH_MY",
+            "adapter": "miaoshou_tiktok_publish",
+            "preflights": [{"code": "audited_adapter_site", "passed": True}],
+        },
+        {
+            "channel": "shopee",
+            "site": "MY",
+            "adapter": "shopee_publish",
+            "preflights": [{"code": "audited_adapter_site", "passed": True}],
+        },
+        {
+            "channel": "ozon",
+            "site": "RU",
+            "adapter": "ozon_publish",
+            "preflights": [{"code": "audited_adapter_site", "passed": True}],
+        },
+    ]
+    dashboard["listing_copy"]["shopee_description_en"] = (
+        "Approved factual English description. " * 25
+    )
+    dashboard["listing_copy"]["candidates"] = [
+        {
+            "channel": "tiktok",
+            "site": "MY",
+            "language": "English",
+            "limit": 255,
+            "title": dashboard["product"]["title"],
+            "policy_check": "passed",
+        },
+        {
+            "channel": "shopee",
+            "site": "CNSC",
+            "language": "English",
+            "limit": 120,
+            "title": dashboard["product"]["title"],
+            "policy_check": "passed",
+        },
+        {
+            "channel": "ozon",
+            "site": "RU",
+            "language": "Russian",
+            "limit": 200,
+            "title": "Approved Ozon title",
+            "policy_check": "passed",
+        },
+    ]
+    monkeypatch.setattr(
+        release_control,
+        "build_release_dashboard",
+        lambda **_kwargs: dashboard,
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "write_miaoshou_common_from_plan",
+        _verified_common_plan_write,
+    )
+    calls: list[str] = []
+
+    def execute(request):
+        calls.append(request.target_label)
+        if request.target_label == "tiktok:LH_MY":
+            return AdapterExecutionResult(
+                succeeded=False,
+                readback_verified=False,
+                detail="TikTok draft conflict before publish submission",
+                external_reference=None,
+                readback_evidence={
+                    "verified": False,
+                    "pre_submit_failure": True,
+                    "external_writes_performed": [],
+                },
+            )
+        return AdapterExecutionResult(
+            succeeded=True,
+            readback_verified=True,
+            detail=f"{request.channel} official readback verified",
+            external_reference=(
+                "57115039489"
+                if request.target_label == "shopee:MY"
+                else "ozon-product-1"
+            ),
+            readback_evidence={
+                "source": f"official_{request.channel}_api",
+                "verified": True,
+            },
+        )
+
+    def registration(name):
+        return AdapterRegistration(
+            adapter_name=name,
+            execute=execute,
+            consumes_unified_plan=True,
+            validates_confirmation_token=True,
+            preserves_idempotency_key=True,
+            verifies_readback=True,
+        )
+
+    monkeypatch.setattr(
+        release_adapters,
+        "production_adapter_registry",
+        lambda: {
+            "new_product_workbench_miaoshou_commit": registration(
+                "new_product_workbench_miaoshou_commit"
+            ),
+            "miaoshou_tiktok_publish": registration(
+                "miaoshou_tiktok_publish"
+            ),
+            "shopee_publish": registration("shopee_publish"),
+            "ozon_publish": registration("ozon_publish"),
+        },
+    )
+
+    view = product_server._product_workspace_view(dashboard)
+    request = _request(view, publication_targets=targets)
+    assert product_server._approve_release_plan_locally(
+        {**request, "approved_by": "Kyle", "user_approved": True}
+    )[0] == 200
+    prepared_status, prepared = product_server._prepare_miaoshou_release(
+        {**request, "confirm_miaoshou_write": True}
+    )
+    assert prepared_status == 200
+    store.begin_target(prepared["run"]["run_id"], "tiktok:LH_MY")
+    store.record_target_failure(
+        prepared["run"]["run_id"],
+        "tiktok:LH_MY",
+        error="TikTok draft outcome requires reconciliation",
+        failure_evidence={
+            "verified": False,
+            "durable_state_uncertain": True,
+            "external_writes_performed": ["miaoshou:tiktok_detail:update"],
+        },
+    )
+
+    status, response = product_server._publish_selected_release(
+        {**request, "confirm_publish": True}
+    )
+
+    assert status == 200
+    assert calls == ["shopee:MY", "ozon:RU"]
+    states = {
+        row["target_label"]: row["status"]
+        for row in response["run"]["targets"]
+    }
+    assert states["tiktok:LH_MY"] == "FAILED"
+    assert states["shopee:MY"] == "SUCCEEDED"
+    assert states["ozon:RU"] == "SUCCEEDED"
 
 
 def _common_mismatch_readback(
@@ -303,6 +517,54 @@ def _two_tiktok_dashboard() -> dict:
             "policy_check": "passed",
         }
     )
+    return dashboard
+
+
+def _single_shopee_dashboard() -> dict:
+    dashboard = _dashboard()
+    targets = ["miaoshou:COMMON", "shopee:PH"]
+    dashboard["publication_scope"]["selected_labels"] = targets
+    dashboard["pricing_review"]["target_pricing"] = {
+        "miaoshou:COMMON": {"status": "ready"},
+        "shopee:PH": {
+            "status": "ready",
+            "target_site": "PH",
+            "derived_preview": {
+                "global_original_price_cny": 40.95,
+                "local_original_price": 329,
+                "source_currency": "PHP",
+                "exchange_rate_cny_per_local": 0.1245,
+            },
+        },
+    }
+    dashboard["omnichannel_preview"]["targets"] = [
+        dashboard["omnichannel_preview"]["targets"][0],
+        {
+            "channel": "shopee",
+            "site": "PH",
+            "adapter": "shopee_cnsc_publish",
+            "preflights": [
+                {
+                    "code": "audited_adapter_site",
+                    "passed": True,
+                    "detail": "governed official readback adapter",
+                }
+            ],
+        },
+    ]
+    dashboard["listing_copy"]["shopee_description_en"] = (
+        "Approved factual English product description. " * 25
+    )
+    dashboard["listing_copy"]["candidates"] = [
+        {
+            "channel": "shopee",
+            "site": "CNSC",
+            "language": "English",
+            "limit": 120,
+            "title": dashboard["product"]["title"],
+            "policy_check": "passed",
+        }
+    ]
     return dashboard
 
 
@@ -503,6 +765,322 @@ def test_successor_common_can_be_reused_by_readback_without_write(
     assert common["readback"]["evidence"]["mode"] == "readback_reuse_no_write"
     assert common["readback"]["evidence"]["predecessor"]["common_status"] == "SUCCEEDED"
     assert writes == ["3828540231"]
+
+
+def test_successor_one_click_never_reopens_predecessor_submission(
+    tmp_path,
+    monkeypatch,
+):
+    store = ReleaseStore(tmp_path / "release.db")
+    monkeypatch.setattr(release_store, "default_release_store", lambda: store)
+    dashboard = _dashboard()
+    monkeypatch.setattr(
+        release_control,
+        "build_release_dashboard",
+        lambda **_kwargs: dashboard,
+    )
+    predecessor_view = product_server._product_workspace_view(dashboard)
+    predecessor_request = _request(predecessor_view)
+    assert product_server._approve_release_plan_locally(
+        {
+            **predecessor_request,
+            "approved_by": "Kyle",
+            "user_approved": True,
+        }
+    )[0] == 200
+    monkeypatch.setattr(
+        release_adapters,
+        "write_miaoshou_common_from_plan",
+        _verified_common_plan_write,
+    )
+    assert product_server._prepare_miaoshou_release(
+        {**predecessor_request, "confirm_miaoshou_write": True}
+    )[0] == 200
+
+    predecessor_calls: list[str] = []
+
+    def accepted(req):
+        predecessor_calls.append(req.target_label)
+        return AdapterExecutionResult(
+            succeeded=True,
+            readback_verified=False,
+            detail="accepted; API-less target requires manual review",
+            external_reference="submitted-mx-1",
+            readback_evidence={
+                "source": "fixture",
+                "accepted": True,
+                "submission_accepted": True,
+            },
+            submission_accepted=True,
+        )
+
+    monkeypatch.setattr(
+        release_adapters,
+        "production_adapter_registry",
+        lambda: _executable_registry(accepted),
+    )
+    assert product_server._publish_selected_release(
+        {**predecessor_request, "confirm_publish": True}
+    )[0] == 200
+    assert predecessor_calls == ["tiktok:MX"]
+
+    predecessor_plan_id = predecessor_request["plan_id"]
+    store.supersede_plan(
+        predecessor_plan_id,
+        reason="approved listing copy changed",
+    )
+    dashboard["listing_copy"][
+        "superseded_release_plan_id"
+    ] = predecessor_plan_id
+    dashboard = _successor_dashboard(dashboard)
+    successor_view = product_server._product_workspace_view(dashboard)
+    successor_request = _request(successor_view)
+    assert product_server._approve_release_plan_locally(
+        {
+            **successor_request,
+            "approved_by": "Kyle",
+            "user_approved": True,
+        }
+    )[0] == 200
+    monkeypatch.setattr(
+        release_adapters,
+        "readback_miaoshou_common",
+        lambda _payload: {
+            "verified": True,
+            "mode": "readback_reuse_no_write",
+            "checks": {"title": True, "images": True},
+            "field_diffs": {},
+            "source": "fixture-readonly",
+            "offer_id": "3828540231",
+            "image_count": 1,
+            "external_writes_performed": [],
+        },
+    )
+    assert product_server._prepare_miaoshou_release(
+        {**successor_request, "confirm_miaoshou_write": True}
+    )[0] == 200
+    monkeypatch.setattr(
+        release_adapters,
+        "production_adapter_registry",
+        lambda: _executable_registry(
+            lambda _req: (_ for _ in ()).throw(
+                AssertionError("successor must not resubmit predecessor target")
+            )
+        ),
+    )
+
+    status, blocked = product_server._publish_selected_release(
+        {**successor_request, "confirm_publish": True}
+    )
+
+    assert status == 409
+    assert blocked["code"] == "no_runnable_release_targets"
+    action = next(
+        row
+        for row in blocked["target_recovery_actions"]
+        if row["target_label"] == "tiktok:MX"
+    )
+    assert action["runnable"] is False
+    assert action["action_kind"] == "READONLY_RECONCILE"
+    assert (
+        action["reason_code"]
+        == "predecessor_external_outcome_requires_resolution"
+    )
+    successor_run = store.get_run(
+        f"release-run:{store.get_plan(successor_request['plan_id'])['payload_digest'][:24]}"
+    )
+    successor_target = next(
+        row
+        for row in successor_run["targets"]
+        if row["target_label"] == "tiktok:MX"
+    )
+    assert successor_target["status"] == "PENDING"
+    assert successor_target["attempts"] == 0
+    assert predecessor_calls == ["tiktok:MX"]
+
+
+def test_successor_one_click_uses_only_governed_shopee_recovery(
+    tmp_path,
+    monkeypatch,
+):
+    store = ReleaseStore(tmp_path / "release.db")
+    monkeypatch.setattr(release_store, "default_release_store", lambda: store)
+    dashboard = _single_shopee_dashboard()
+    monkeypatch.setattr(
+        release_control,
+        "build_release_dashboard",
+        lambda **_kwargs: dashboard,
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "write_miaoshou_common_from_plan",
+        _verified_common_plan_write,
+    )
+    calls: list[str] = []
+
+    def execute(request):
+        calls.append(request.target_label)
+        return AdapterExecutionResult(
+            succeeded=True,
+            readback_verified=True,
+            detail="official identity and readback verified",
+            external_reference="shopee-item-1",
+            readback_evidence={
+                "source": "official_shopee_partner_api",
+                "verified": True,
+                "external_writes_performed": [],
+            },
+        )
+
+    monkeypatch.setattr(
+        release_adapters,
+        "production_adapter_registry",
+        lambda: _shopee_recovery_registry(execute),
+    )
+    targets = ["miaoshou:COMMON", "shopee:PH"]
+    predecessor_view = product_server._product_workspace_view(dashboard)
+    predecessor_request = _request(
+        predecessor_view,
+        publication_targets=targets,
+    )
+    assert product_server._approve_release_plan_locally(
+        {
+            **predecessor_request,
+            "approved_by": "Kyle",
+            "user_approved": True,
+        }
+    )[0] == 200
+    assert product_server._prepare_miaoshou_release(
+        {**predecessor_request, "confirm_miaoshou_write": True}
+    )[0] == 200
+    assert product_server._publish_selected_release(
+        {**predecessor_request, "confirm_publish": True}
+    )[0] == 200
+    assert calls == ["shopee:PH"]
+
+    predecessor_plan_id = predecessor_request["plan_id"]
+    store.supersede_plan(
+        predecessor_plan_id,
+        reason="Kyle approved corrected immutable listing copy",
+    )
+    dashboard["listing_copy"][
+        "superseded_release_plan_id"
+    ] = predecessor_plan_id
+    dashboard = _successor_dashboard(dashboard)
+    dashboard["listing_copy"]["candidates"][0]["title"] = dashboard[
+        "product"
+    ]["title"]
+    successor_view = product_server._product_workspace_view(dashboard)
+    successor_request = _request(
+        successor_view,
+        publication_targets=targets,
+    )
+    assert product_server._approve_release_plan_locally(
+        {
+            **successor_request,
+            "approved_by": "Kyle",
+            "user_approved": True,
+        }
+    )[0] == 200
+    monkeypatch.setattr(
+        release_adapters,
+        "readback_miaoshou_common",
+        lambda _payload: {
+            "verified": True,
+            "mode": "readback_reuse_no_write",
+            "checks": {"title": True, "images": True},
+            "field_diffs": {},
+            "source": "fixture-readonly",
+            "offer_id": "3828540231",
+            "image_count": 1,
+            "external_writes_performed": [],
+        },
+    )
+    assert product_server._prepare_miaoshou_release(
+        {**successor_request, "confirm_miaoshou_write": True}
+    )[0] == 200
+
+    successor_view = product_server._product_workspace_view(dashboard)
+    recovery = next(
+        action
+        for action in successor_view["release_v1"][
+            "target_recovery_actions"
+        ]
+        if action["target_label"] == "shopee:PH"
+    )
+    assert recovery["action_kind"] == "GOVERNED_RECOVERY"
+    assert recovery["runnable"] is True
+
+    status, result = product_server._publish_selected_release(
+        {**successor_request, "confirm_publish": True}
+    )
+
+    assert status == 200
+    assert calls == ["shopee:PH", "shopee:PH"]
+    target = next(
+        row
+        for row in result["run"]["targets"]
+        if row["target_label"] == "shopee:PH"
+    )
+    assert target["status"] == "SUCCEEDED"
+    assert target["attempts"] == 1
+
+
+def test_predecessor_evidence_fold_cannot_be_bypassed_by_empty_successor():
+    root_digest = "a" * 64
+    middle_digest = "b" * 64
+
+    class Store:
+        def predecessor_plan_for(self, plan_id):
+            return {
+                "successor": {
+                    "plan_id": "middle",
+                    "payload_digest": middle_digest,
+                },
+                "middle": {
+                    "plan_id": "root",
+                    "payload_digest": root_digest,
+                },
+            }.get(plan_id)
+
+        def get_run(self, run_id):
+            if run_id == f"release-run:{middle_digest[:24]}":
+                return {
+                    "targets": [
+                        {
+                            "target_label": "tiktok:GB",
+                            "status": "PENDING",
+                            "attempts": 0,
+                        }
+                    ]
+                }
+            if run_id == f"release-run:{root_digest[:24]}":
+                return {
+                    "targets": [
+                        {
+                            "target_label": "tiktok:GB",
+                            "status": "SUBMITTED_UNVERIFIED",
+                            "attempts": 1,
+                            "external_id": "submitted-gb-1",
+                        }
+                    ]
+                }
+            return None
+
+    folded = product_server._release_predecessor_evidence_run(
+        Store(),
+        {"plan_id": "successor"},
+    )
+
+    assert folded is not None
+    assert folded["targets"] == [
+        {
+            "target_label": "tiktok:GB",
+            "status": "SUBMITTED_UNVERIFIED",
+            "attempts": 1,
+            "external_id": "submitted-gb-1",
+        }
+    ]
 
 
 def test_common_readback_mismatch_creates_no_run_and_never_edits(
@@ -874,6 +1452,101 @@ def test_publish_endpoint_executes_unified_adapter_and_persists_readback(
     assert tiktok["status"] == "SUCCEEDED"
     assert tiktok["attempts"] == 1
     assert tiktok["readback"]["evidence"]["source"] == "fake-official-api"
+
+
+def test_canonical_common_readback_supersedes_stale_pre_common_image_gate(
+    tmp_path,
+    monkeypatch,
+):
+    """A verified current-plan COMMON receipt is the post-sync authority."""
+
+    store = ReleaseStore(tmp_path / "release.db")
+    monkeypatch.setattr(release_store, "default_release_store", lambda: store)
+    dashboard = _dashboard()
+    dashboard["actual_release_gate"] = {
+        "ready": False,
+        "blockers": ["The previous 11-image Miaoshou write is stale."],
+    }
+
+
+def _shopee_recovery_registry(execute):
+    return {
+        "new_product_workbench_miaoshou_commit": AdapterRegistration(
+            adapter_name="new_product_workbench_miaoshou_commit",
+            execute=lambda _req: AdapterExecutionResult(
+                True,
+                True,
+                "common",
+            ),
+            consumes_unified_plan=True,
+            validates_confirmation_token=True,
+            preserves_idempotency_key=True,
+            verifies_readback=True,
+        ),
+        "shopee_cnsc_publish": AdapterRegistration(
+            adapter_name="shopee_cnsc_publish",
+            execute=execute,
+            consumes_unified_plan=True,
+            validates_confirmation_token=True,
+            preserves_idempotency_key=True,
+            verifies_readback=True,
+            predecessor_recovery_mode=(
+                "OFFICIAL_READBACK_THEN_BOUNDED_WRITE"
+            ),
+        ),
+    }
+    monkeypatch.setattr(
+        release_control,
+        "build_release_dashboard",
+        lambda **_kwargs: dashboard,
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "write_miaoshou_common_from_plan",
+        _verified_common_plan_write,
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "production_adapter_registry",
+        lambda: _executable_registry(
+            lambda _request: AdapterExecutionResult(
+                succeeded=True,
+                readback_verified=True,
+                detail="verified",
+                external_reference="mx-product-1",
+                readback_evidence={"source": "fake-official-api", "verified": True},
+            )
+        ),
+    )
+    initial = product_server._product_workspace_view(dashboard)
+    request = _request(initial)
+    assert product_server._approve_release_plan_locally(
+        {**request, "approved_by": "Kyle", "user_approved": True}
+    )[0] == 200
+    assert product_server._prepare_miaoshou_release(
+        {**request, "confirm_miaoshou_write": True}
+    )[0] == 200
+
+    refreshed = product_server._product_workspace_view(dashboard)
+
+    assert refreshed["actual_release_gate"]["ready"] is False
+    assert refreshed["release_v1"]["canonical_common_ready"] is True
+    assert refreshed["release_v1"]["common_evidence_blockers"] == []
+    assert (
+        refreshed["release_v1"]["release_preflight_authority"]
+        == "canonical_common_readback"
+    )
+    assert refreshed["release_v1"]["publish_ready"] is True
+    assert (
+        refreshed["workflow_next_action"]["code"]
+        == "publish_selected_targets"
+    )
+    gate, failure = product_server._release_execution_readonly_gate(
+        request,
+        store=store,
+    )
+    assert failure is None
+    assert gate is not None
 
 
 def test_api_less_publish_is_submitted_once_then_manually_verified(

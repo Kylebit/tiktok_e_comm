@@ -75,6 +75,20 @@ def _context():
     }
 
 
+def _with_governed_ozon_stock_action(context):
+    context["payload"]["target_actions"] = {
+        "ozon:RU": {
+            "schema_version": "ozon-existing-product-stock-command/v1",
+            "expected_listing_digest": "sha256:fixture-listing",
+            "desired_stock_quantity": 50,
+            "inventory_snapshot_id": "snapshot:fixture",
+            "inventory_snapshot_revision_or_digest": "revision:fixture",
+            "warehouse_policy": "single_active_non_kgt",
+        }
+    }
+    return context
+
+
 def test_registry_exposes_only_contract_complete_adapters():
     registry = release_adapters.production_adapter_registry()
 
@@ -85,6 +99,17 @@ def test_registry_exposes_only_contract_complete_adapters():
         "ozon_product_import",
     }
     assert all(registration.executable for registration in registry.values())
+    assert registry["shopee_cnsc_publish"].supports_predecessor_recovery
+    assert not registry[
+        "miaoshou_tiktok_publish"
+    ].supports_predecessor_recovery
+    assert not registry["ozon_product_import"].supports_predecessor_recovery
+    assert registry[
+        "shopee_cnsc_publish"
+    ].supports_automatic_first_attempt
+    assert not registry[
+        "ozon_product_import"
+    ].supports_automatic_first_attempt
 
 
 def test_miaoshou_publish_reads_current_region_site_result(monkeypatch):
@@ -208,8 +233,30 @@ def test_miaoshou_publish_failure_preserves_verified_draft_evidence(
     assert evidence["pre_submit_audit"]["checks"]["approved_title"] is True
     assert evidence["write_outcome"] == expected_outcome
     assert evidence["external_writes_performed"] == [
-        "miaoshou:tiktok_detail:update"
+        "miaoshou:tiktok_detail:update",
+        "miaoshou:tiktok_publish:submission",
     ]
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"detailList": [], "totalCount": True},
+        {"detailList": [], "totalCount": 1},
+        {"detailList": [], "hasNextPage": True},
+        {"detailList": [], "hasNextPage": 0},
+        {"detailList": [], "nextPageToken": "next"},
+        {"detailList": [{} for _ in range(100)]},
+    ],
+)
+def test_miaoshou_detail_scan_optional_pagination_remains_fail_closed(data):
+    with pytest.raises(
+        release_adapters._MiaoshouDetailListContractError,
+        match="incomplete",
+    ):
+        release_adapters._complete_miaoshou_tiktok_detail_rows(
+            {"result": "success", "data": data}
+        )
 
 
 def test_existing_detail_resolver_ignores_asymmetric_claim_shops(monkeypatch):
@@ -1550,8 +1597,9 @@ def test_shopee_readback_uses_get_endpoints_and_item_price_info(monkeypatch):
             return {
                 "response": {
                     "item_list": [
-                        {
-                            "item_name": "Approved Shopee title",
+                            {
+                                "item_id": 49464903906,
+                                "item_name": "Approved Shopee title",
                             "item_sku": "",
                             "item_status": "NORMAL",
                             "has_model": True,
@@ -1619,6 +1667,211 @@ def test_shopee_readback_uses_get_endpoints_and_item_price_info(monkeypatch):
     ]
 
 
+def test_shopee_deleted_item_requires_exact_model_identity(monkeypatch):
+    from modules.shopee import auth, client, publish
+
+    monkeypatch.setattr(publish, "sync_shop_ids", lambda: {"PH": 123})
+    monkeypatch.setattr(auth, "ensure_shop_token", lambda _shop_id: "token")
+
+    def fake_get(path, _shop_id, _token, _params):
+        if path.endswith("get_item_base_info"):
+            return {
+                "error": "",
+                "response": {
+                    "item_list": [
+                        {
+                            "item_id": 46315060605,
+                            "item_sku": "",
+                            "item_status": "SELLER_DELETE",
+                            "has_model": True,
+                        }
+                    ]
+                },
+            }
+        return {
+            "error": "",
+            "response": {
+                "model": [
+                    {
+                        "model_id": 9001,
+                        "model_sku": "0956",
+                    }
+                ]
+            },
+        }
+
+    monkeypatch.setattr(client, "shop_get", fake_get)
+
+    verified, evidence = release_adapters._shopee_readback(
+        match_key="0956",
+        region="PH",
+        item_id="46315060605",
+        expected_title="Successor title",
+        expected_price=56.05,
+        expected_image_count=8,
+    )
+
+    assert verified is False
+    assert evidence["official_item_deleted"] is True
+    assert evidence["replacement_release_allowed"] is True
+    assert evidence["status"] == "SELLER_DELETE"
+    assert evidence["external_writes_performed"] == []
+
+
+@pytest.mark.parametrize(
+    "models",
+    [
+        [{"model_id": 9001, "model_sku": "wrong"}],
+        [
+            {"model_id": 9001, "model_sku": "0956"},
+            {"model_id": 9002, "model_sku": "0956"},
+        ],
+        [{"model_id": "9001", "model_sku": "0956"}],
+    ],
+)
+def test_shopee_deleted_item_malformed_identity_blocks_replacement(
+    monkeypatch,
+    models,
+):
+    from modules.shopee import auth, client, publish
+
+    monkeypatch.setattr(publish, "sync_shop_ids", lambda: {"PH": 123})
+    monkeypatch.setattr(auth, "ensure_shop_token", lambda _shop_id: "token")
+    monkeypatch.setattr(
+        client,
+        "shop_get",
+        lambda path, *_args, **_kwargs: (
+            {
+                "error": "",
+                "response": {
+                    "item_list": [
+                        {
+                            "item_id": 46315060605,
+                            "item_status": "SELLER_DELETE",
+                            "has_model": True,
+                        }
+                    ]
+                },
+            }
+            if path.endswith("get_item_base_info")
+            else {"error": "", "response": {"model": models}}
+        ),
+    )
+
+    verified, evidence = release_adapters._shopee_readback(
+        match_key="0956",
+        region="PH",
+        item_id="46315060605",
+        expected_title="Successor title",
+        expected_price=56.05,
+        expected_image_count=8,
+    )
+
+    assert verified is False
+    assert evidence["replacement_release_allowed"] is False
+
+
+def test_shopee_exact_seller_delete_allows_one_replacement_publish(monkeypatch):
+    context = _context()
+    context["payload"]["targets"] = ["shopee:PH"]
+    context["payload"]["listing_copy"] = {
+        "candidates": [
+            {
+                "channel": "shopee",
+                "site": "CNSC",
+                "title": "Corrected successor title",
+                "policy_check": "passed",
+            }
+        ],
+        "shopee_description_en": "Verified product description. " * 30,
+    }
+    context["payload"]["pricing"]["selected_targets"] = {
+        "shopee:PH": {
+            "target_site": "PH",
+            "derived_preview": {
+                "local_original_price": 257,
+                "source_currency": "PHP",
+                "global_original_price_cny": 40.95,
+                "exchange_rate_cny_per_local": 0.1593,
+            },
+        }
+    }
+    monkeypatch.setattr(
+        release_adapters,
+        "_validated_context",
+        lambda _request: context,
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_shopee_item_id_for_match_key",
+        lambda *_args, **_kwargs: "46315060605",
+    )
+    readbacks = iter(
+        [
+            (
+                False,
+                {
+                    "verified": False,
+                    "official_item_deleted": True,
+                    "replacement_release_allowed": True,
+                    "status": "SELLER_DELETE",
+                    "checks": {
+                        "item_identity": True,
+                        "seller_sku": True,
+                        "model_identity": True,
+                        "deletion_status": True,
+                    },
+                },
+            ),
+            (
+                True,
+                {
+                    "verified": True,
+                    "checks": {"status": True},
+                },
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_shopee_readback",
+        lambda **_kwargs: next(readbacks),
+    )
+    publish_calls = []
+    monkeypatch.setattr(
+        "modules.shopee.publish.publish_match_key",
+        lambda *args, **kwargs: publish_calls.append((args, kwargs))
+        or {
+            "item_id": "new-ph-item",
+            "logistics": {"enabled_logistic_ids": [48002]},
+        },
+    )
+
+    result = release_adapters.execute_shopee_target(
+        AdapterExecutionRequest(
+            plan_id="omnichannel:successor",
+            confirmation_token="PUBLISH-SUCCESSOR",
+            approval_scope_digest="scope",
+            product_id="3838600989",
+            seller_sku="0956",
+            product_package_id="product:3838600989:0956",
+            content_package_id="content:3838600989",
+            channel="shopee",
+            site="PH",
+            target_label="shopee:PH",
+            idempotency_key="publish:shopee:PH:successor",
+        )
+    )
+
+    assert len(publish_calls) == 1
+    assert result.succeeded is True
+    assert result.readback_verified is True
+    assert result.external_reference == "new-ph-item"
+    assert result.readback_evidence["replacement_release"]["status"] == (
+        "SELLER_DELETE"
+    )
+
+
 def test_new_shopee_publish_uses_immutable_local_and_global_prices(monkeypatch):
     context = _context()
     context["payload"]["targets"] = ["shopee:MY"]
@@ -1671,16 +1924,20 @@ def test_new_shopee_publish_uses_immutable_local_and_global_prices(monkeypatch):
             )
         ]
     )
+    readback_kwargs = []
     monkeypatch.setattr(
         release_adapters,
         "_shopee_readback",
-        lambda **_kwargs: next(readbacks),
+        lambda **kwargs: readback_kwargs.append(kwargs) or next(readbacks),
     )
     published = []
     monkeypatch.setattr(
         "modules.shopee.publish.publish_match_key",
         lambda *args, **kwargs: published.append((args, kwargs))
-        or {"item_id": "my-item-0953"},
+        or {
+            "item_id": "my-item-0953",
+            "logistics": {"enabled_logistic_ids": [48002, 48003]},
+        },
     )
 
     request = AdapterExecutionRequest(
@@ -1702,6 +1959,109 @@ def test_new_shopee_publish_uses_immutable_local_and_global_prices(monkeypatch):
     assert published[0][1]["local_original_price_override"] == 45
     assert published[0][1]["local_price_currency_override"] == "MYR"
     assert published[0][1]["global_original_price_cny_override"] == 78.75
+    assert readback_kwargs[0]["require_all_logistics"] is True
+    assert readback_kwargs[0]["expected_enabled_logistic_ids"] == [
+        48002,
+        48003,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("publish_receipt", "reason"),
+    [
+        (None, "publish_receipt_invalid"),
+        ({}, "publish_item_identity_missing"),
+        (
+            {
+                "item_id": "my-item-0953",
+                "logistics": {"enabled_logistic_ids": [48002, 48002]},
+            },
+            "publish_logistics_receipt_invalid",
+        ),
+    ],
+)
+def test_new_shopee_publish_malformed_receipt_keeps_write_evidence(
+    monkeypatch,
+    publish_receipt,
+    reason,
+):
+    context = _context()
+    context["payload"]["targets"] = ["shopee:MY"]
+    context["payload"]["listing_copy"] = {
+        "candidates": [
+            {
+                "channel": "shopee",
+                "site": "CNSC",
+                "title": "Approved English Shopee master",
+                "policy_check": "passed",
+            }
+        ],
+        "shopee_description_en": "Verified product description. " * 30,
+    }
+    context["payload"]["pricing"]["selected_targets"] = {
+        "shopee:MY": {
+            "target_site": "MY",
+            "source": {"list_price": 45, "currency": "MYR"},
+            "derived_preview": {
+                "local_original_price": 45,
+                "source_currency": "MYR",
+                "global_original_price_cny": 78.75,
+                "exchange_rate_cny_per_local": 1.75,
+            },
+        }
+    }
+    monkeypatch.setattr(
+        release_adapters,
+        "_validated_context",
+        lambda _request: context,
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_shopee_item_id_for_match_key",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_discover_shopee_item_id_by_sku",
+        lambda *_args, **_kwargs: None,
+    )
+    readback_calls = []
+    monkeypatch.setattr(
+        release_adapters,
+        "_shopee_readback",
+        lambda **kwargs: readback_calls.append(kwargs),
+    )
+    publish_calls = []
+    monkeypatch.setattr(
+        "modules.shopee.publish.publish_match_key",
+        lambda *args, **kwargs: publish_calls.append((args, kwargs))
+        or publish_receipt,
+    )
+
+    result = release_adapters.execute_shopee_target(
+        AdapterExecutionRequest(
+            plan_id="omnichannel:test",
+            confirmation_token="PUBLISH-TEST",
+            approval_scope_digest="scope",
+            product_id="3828811808",
+            seller_sku="0953",
+            product_package_id="product:3828811808:0953",
+            content_package_id="content:3828811808",
+            channel="shopee",
+            site="MY",
+            target_label="shopee:MY",
+            idempotency_key="publish:shopee:MY:test",
+        )
+    )
+
+    assert len(publish_calls) == 1
+    assert readback_calls == []
+    assert result.succeeded is True
+    assert result.readback_verified is False
+    assert result.readback_evidence["reason"] == reason
+    assert result.readback_evidence["external_writes_performed"] == [
+        "shopee:regional_publish"
+    ]
 
 
 def test_new_shopee_publish_rejects_stale_local_currency_before_publish(
@@ -1973,7 +2333,7 @@ def test_ozon_release_uses_verified_tiktok_images_without_third_party_rehosting(
 ):
     from modules.ozon import migrate_batch
 
-    context = _context()
+    context = _with_governed_ozon_stock_action(_context())
     context["payload"]["targets"] = ["ozon:RU"]
     context["payload"]["listing_copy"]["candidates"] = [
         {
@@ -2221,8 +2581,41 @@ def test_ozon_stock_write_uses_only_single_eligible_non_kgt_warehouse(monkeypatc
     )
 
 
-def _ozon_release_fixture():
+def test_ozon_release_without_governed_inventory_decision_is_zero_write(
+    monkeypatch,
+):
     context = _context()
+    context["payload"]["targets"] = ["ozon:RU"]
+    request = AdapterExecutionRequest(
+        **{
+            **_request("RU").__dict__,
+            "channel": "ozon",
+            "site": "RU",
+            "target_label": "ozon:RU",
+        }
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_validated_context",
+        lambda _request: context,
+    )
+    monkeypatch.setattr(
+        release_adapters,
+        "_ozon_readback",
+        lambda **_kwargs: pytest.fail(
+            "official product API must not run without inventory authority"
+        ),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="no default stock is allowed",
+    ):
+        release_adapters.execute_ozon_target(request)
+
+
+def _ozon_release_fixture():
+    context = _with_governed_ozon_stock_action(_context())
     context["payload"]["targets"] = ["ozon:RU"]
     context["payload"]["listing_copy"]["candidates"] = [
         {

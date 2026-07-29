@@ -324,17 +324,48 @@ def record_shop_item(
     if not isinstance(shop_items, dict):
         shop_items = {}
         entry["shop_items"] = shop_items
-    shop_items[str(region).upper()] = {
+    clean_region = str(region).upper()
+    replacement = {
         "shop_id": int(shop_id),
         "item_id": str(item_id),
         "model_id": str(model_id or f"item_{item_id}"),
     }
+    previous = shop_items.get(clean_region)
+    if (
+        isinstance(previous, dict)
+        and str(previous.get("item_id") or "")
+        and str(previous.get("item_id")) != replacement["item_id"]
+    ):
+        retired = entry.setdefault("retired_shop_items", {})
+        if not isinstance(retired, dict):
+            retired = {}
+            entry["retired_shop_items"] = retired
+        rows = retired.setdefault(clean_region, [])
+        if not isinstance(rows, list):
+            rows = []
+            retired[clean_region] = rows
+        retired_identity = {
+            "shop_id": int(previous.get("shop_id") or shop_id),
+            "item_id": str(previous.get("item_id") or ""),
+            "model_id": str(previous.get("model_id") or ""),
+            "reason": "replaced_after_official_seller_delete",
+            "replacement_item_id": replacement["item_id"],
+        }
+        if not any(
+            isinstance(row, dict)
+            and row.get("item_id") == retired_identity["item_id"]
+            and row.get("replacement_item_id")
+            == retired_identity["replacement_item_id"]
+            for row in rows
+        ):
+            rows.append(retired_identity)
+    shop_items[clean_region] = replacement
     published_regions = {
         str(value).upper()
         for value in (entry.get("published_regions") or [])
         if str(value).strip()
     }
-    published_regions.add(str(region).upper())
+    published_regions.add(clean_region)
     entry["published_regions"] = sorted(published_regions)
     data[gid] = entry
     save_map(data)
@@ -360,6 +391,73 @@ def upsert_global_entry(
         "models": [{"model_name": model_name, "global_model_sku": global_model_sku}],
         "published_regions": published_regions or ["MY", "TH", "PH", "VN"],
         "shop_items": shop_items or {},
+    }
+    save_map(data)
+
+
+def replace_deleted_global_entry(
+    deleted_global_item_id: str,
+    replacement_global_item_id: str,
+    *,
+    match_key: str,
+    global_model_sku: str,
+    title: str = "",
+) -> None:
+    """Retire one officially deleted global identity and bind its replacement.
+
+    The old row is retained for audit but no longer participates in match-key
+    lookup.  This prevents a later process restart from selecting the deleted
+    identity again merely because it appears first in the JSON mapping.
+    """
+
+    data = load_map()
+    old_gid = str(deleted_global_item_id or "").strip()
+    new_gid = str(replacement_global_item_id or "").strip()
+    key = parse_search_key(match_key)
+    if (
+        not old_gid
+        or not new_gid
+        or old_gid == new_gid
+        or not key
+        or not global_model_sku
+    ):
+        raise ValueError("deleted global replacement identity is invalid")
+    old = data.get(old_gid)
+    if not isinstance(old, dict):
+        raise ValueError("deleted global mapping entry is unavailable")
+    old_keys = {
+        parse_search_key(str(old.get("match_key") or "")),
+        *{
+            parse_search_key(str(value))
+            for value in (old.get("match_keys") or ())
+        },
+    }
+    old_keys.discard("")
+    if key not in old_keys:
+        raise ValueError("deleted global mapping does not match the seller SKU")
+    if isinstance(data.get(new_gid), dict):
+        raise ValueError("replacement global identity already exists")
+
+    retired = dict(old)
+    retired["retired_match_key"] = key
+    retired["match_key"] = ""
+    retired["match_keys"] = []
+    retired["retired_reason"] = "official_global_status_deleted"
+    retired["replacement_global_item_id"] = new_gid
+    data[old_gid] = retired
+    data[new_gid] = {
+        "match_key": key,
+        "title": str(title or "").strip(),
+        "global_item_sku": "",
+        "models": [
+            {
+                "model_name": "Default",
+                "global_model_sku": str(global_model_sku),
+            }
+        ],
+        "published_regions": [],
+        "shop_items": {},
+        "replaces_deleted_global_item_id": old_gid,
     }
     save_map(data)
 

@@ -239,7 +239,7 @@ function apiFixture(url, method, state) {
   }
   if (path === "/api/orbit/inbox") return jsonResponse({ ok: true, items: [] });
   if (path === "/api/product-workspace/dashboard") {
-    return jsonResponse(productDashboard);
+    return jsonResponse(state.productDashboard || productDashboard);
   }
   if (path === "/api/product-flow/preview") return jsonResponse(state.aiPreview || aiPreview);
   if (path === "/api/profit-center/weekly") {
@@ -335,6 +335,17 @@ async function installApiRoutes(page, state, requests) {
 
 async function openScenario(browser, path, viewport, options = {}) {
   const context = await browser.newContext({ viewport });
+  if (Array.isArray(options.queueOffers)) {
+    await context.addInitScript(({ key, offers }) => {
+      localStorage.setItem(
+        key,
+        JSON.stringify(offers.map((offer_id) => ({ offer_id }))),
+      );
+    }, {
+      key: "orbit.productWorkspace.releaseQueue.v1",
+      offers: options.queueOffers,
+    });
+  }
   const page = await context.newPage();
   const errors = [];
   const requests = [];
@@ -343,6 +354,7 @@ async function openScenario(browser, path, viewport, options = {}) {
     delaySku: false,
     pending: {},
     aiPreview: options.aiPreview || null,
+    productDashboard: options.productDashboard || null,
   };
   page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
   page.on("console", (message) => {
@@ -351,6 +363,61 @@ async function openScenario(browser, path, viewport, options = {}) {
   await installApiRoutes(page, state, requests);
   await page.goto(`${baseUrl}${path}`, { waitUntil: "networkidle" });
   return { context, page, errors, requests, state };
+}
+
+async function productQueueLongTitleMobileContract(browser) {
+  const dashboard = JSON.parse(JSON.stringify(productDashboard));
+  dashboard.product.title = (
+    "Self-Adhesive Watercolor Floral Butterfly Wall Sticker, PVC Flat "
+    + "Wall Decal for Living Room and Bedroom, 30 x 90 cm, 2 Pieces"
+  );
+  const scenario = await openScenario(
+    browser,
+    "/product-workspace?offer_id=3828540231",
+    { width: 390, height: 844 },
+    {
+      productDashboard: dashboard,
+      queueOffers: [
+        "3828540231",
+        "3828811808",
+        "3838616043",
+        "3838614276",
+        "3838600989",
+        "3845133620",
+      ],
+    },
+  );
+  const { page, context, errors, requests } = scenario;
+  try {
+    await page.locator(".queue-card").first().waitFor({
+      state: "visible",
+      timeout: 5000,
+    });
+    const cardCount = await page.locator(".queue-card").count();
+    check(
+      cardCount === 6,
+      "mobile queue: all long-title products remain visible",
+      cardCount,
+    );
+    const overflow = await overflowAudit(page);
+    check(
+      overflow.pageOverflow <= 2,
+      "mobile queue: long product titles do not cause page overflow",
+      overflow,
+    );
+    check(
+      requests.filter((row) => row.method === "POST").length === 0,
+      "mobile queue: rendering and refresh perform zero writes",
+      requests,
+    );
+    check(
+      unexpectedInteractionErrors(errors).length === 0,
+      "mobile queue: no console/page errors",
+      errors,
+    );
+  } finally {
+    await context.close();
+  }
 }
 
 async function auditPage(browser, definition, viewport) {
@@ -751,7 +818,17 @@ async function productLockedStaleTitleRefresh(browser) {
   const page = await context.newPage();
   const errors = [];
   let refreshRequest = null;
+  let adoptRequest = null;
+  let refreshedDashboard = null;
   let confirmation = "";
+  let markAdoptionStarted;
+  let finishAdoption;
+  const adoptionStarted = new Promise((resolve) => {
+    markAdoptionStarted = resolve;
+  });
+  const adoptionGate = new Promise((resolve) => {
+    finishAdoption = resolve;
+  });
   const staleDashboard = JSON.parse(JSON.stringify(productDashboard));
   staleDashboard.product.revision = 20;
   staleDashboard.product.fields_locked = true;
@@ -763,6 +840,33 @@ async function productLockedStaleTitleRefresh(browser) {
     input_signature: "sha256:legacy-mutable-source-summary",
     policy_version: "listing-copy-candidates-v4",
     model: "gpt-5.4-mini-official",
+  };
+  staleDashboard.release_v1 = {
+    eligible_for_plan_approval: false,
+    plan_persisted: false,
+    plan_approved: false,
+    miaoshou_prepared: false,
+    publish_ready: false,
+    blockers: [
+      "listing copy must be adopted in approved product facts before release",
+      "listing copy input signature is stale",
+    ],
+    recovery_actions: [{
+      code: "refresh_listing_copy",
+      label: "重新生成平台文案",
+      detail: "商品事实或所选规格在上次采用文案后发生了变化。",
+      next_codes: ["refresh_listing_copy", "adopt_listing_copy"],
+      marketplace_writes_performed: [],
+    }],
+    adapter_blockers: [],
+    run: null,
+    plan: {
+      plan_id: "omnichannel:stale-preview",
+      payload: {
+        product_revision: 20,
+        content_package_id: "content:fixture:r20",
+      },
+    },
   };
   page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
   page.on("console", (message) => {
@@ -789,14 +893,29 @@ async function productLockedStaleTitleRefresh(browser) {
       updated.product.revision = 21;
       updated.listing_copy = {
         status: "draft_pending_kyle_review",
-        semantic_master_en: "Fresh English Master for Approved Product Facts",
+        semantic_master_en: staleDashboard.product.title,
         candidates: [],
         input_signature: "sha256:stable-approved-facts",
+        current_input_signature: "sha256:stable-approved-facts",
         fact_snapshot: { offer_id: "3828540231" },
         model_input_signature: "sha256:audited-model-input",
         policy_version: "listing-copy-candidates-v4",
         model: "gpt-5.4-mini-official",
       };
+      updated.release_v1 = {
+        ...staleDashboard.release_v1,
+        blockers: [
+          "listing copy must be adopted in approved product facts before release",
+        ],
+        recovery_actions: [{
+          code: "adopt_listing_copy",
+          label: "去采用当前 EN MASTER",
+          detail: "平台文案候选已经生成，但尚未绑定到当前商品事实。",
+          next_codes: ["adopt_listing_copy"],
+          marketplace_writes_performed: [],
+        }],
+      };
+      refreshedDashboard = updated;
       return route.fulfill(jsonResponse({
         ok: true,
         revision: 21,
@@ -804,6 +923,37 @@ async function productLockedStaleTitleRefresh(browser) {
         superseded_release_plan_id: "omnichannel:old-plan",
         marketplace_writes_performed: [],
         dashboard: updated,
+      }));
+    }
+    if (
+      url.pathname === "/api/product-workspace/title-adopt"
+      && request.method() === "POST"
+    ) {
+      adoptRequest = request.postDataJSON();
+      const adopted = JSON.parse(JSON.stringify(refreshedDashboard));
+      adopted.listing_copy.status = "adopted_in_product_facts";
+      adopted.release_v1 = {
+        ...adopted.release_v1,
+        eligible_for_plan_approval: true,
+        blockers: [],
+        recovery_actions: [],
+        plan: {
+          plan_id: "omnichannel:refreshed-preview",
+          confirmation_token: "PUBLISH-REFRESHED-PREVIEW",
+          payload: {
+            product_revision: 21,
+            content_package_id: "content:fixture:r21",
+          },
+        },
+      };
+      markAdoptionStarted();
+      await adoptionGate;
+      return route.fulfill(jsonResponse({
+        ok: true,
+        revision: 21,
+        product_approval_preserved: true,
+        marketplace_writes_performed: [],
+        dashboard: adopted,
       }));
     }
     const fixture = apiFixture(
@@ -817,12 +967,26 @@ async function productLockedStaleTitleRefresh(browser) {
     await page.goto(`${baseUrl}/product-workspace?offer_id=3828540231`, {
       waitUntil: "networkidle",
     });
-    const refresh = page.locator("#generateTitleDraftButton");
-    check(
-      await refresh.isEnabled(),
-      "product: locked stale title exposes an explicit refresh action",
+    const approvalCheckbox = page.locator("#releasePlanCheckbox");
+    const recovery = page.locator(
+      '[data-release-recovery="refresh_listing_copy"]',
     );
-    await refresh.click();
+    check(
+      await approvalCheckbox.isDisabled()
+      && await recovery.isEnabled()
+      && await recovery.isVisible(),
+      "product: blocked approval exposes an enabled recovery action beside the disabled gate",
+    );
+    const recoveryDetail = (
+      await page.locator("#releasePlanRecovery").innerText()
+    ).trim();
+    check(
+      recoveryDetail.includes("商品事实或所选规格")
+      && recoveryDetail.includes("重新生成平台文案"),
+      "product: blocked approval explains the stale-copy cause and next action in Chinese",
+      recoveryDetail,
+    );
+    await recovery.click();
     await page.waitForFunction(
       () => document.querySelector(".adopt-title-candidate")?.disabled === false,
     );
@@ -841,6 +1005,48 @@ async function productLockedStaleTitleRefresh(browser) {
       && refreshRequest.approved_by === "Kyle",
       "product: locked stale refresh submits exact revision and Kyle approval",
       refreshRequest,
+    );
+    check(
+      await page.locator(
+        '[data-release-recovery="adopt_listing_copy"]',
+      ).isEnabled(),
+      "product: refresh advances the release recovery action to explicit EN MASTER adoption",
+    );
+    await page.locator(
+      '[data-release-recovery="adopt_listing_copy"]',
+    ).click();
+    await page.locator(".adopt-title-candidate").click();
+    await adoptionStarted;
+    await page.waitForFunction(() => (
+      document.querySelector("#releasePlanCheckboxDisabledReason")
+        ?.textContent.includes("正在完成当前读取或本地状态更新")
+    ));
+    check(
+      await approvalCheckbox.isDisabled(),
+      "product: release approval remains disabled while EN MASTER adoption is in flight",
+    );
+    finishAdoption();
+    await page.waitForFunction(
+      () => document.querySelector("#releasePlanCheckbox")?.disabled === false,
+    );
+    check(
+      adoptRequest
+      && adoptRequest.expected_revision === 21
+      && adoptRequest.input_signature === "sha256:stable-approved-facts"
+      && adoptRequest.user_approved === true
+      && adoptRequest.approved_by === "Kyle",
+      "product: EN MASTER adoption binds the refreshed revision and signature",
+      adoptRequest,
+    );
+    check(
+      await approvalCheckbox.isEnabled()
+      && await page.locator("#releasePlanRecovery").isHidden(),
+      "product: successful adoption releases the approval checkbox without a reload",
+    );
+    await approvalCheckbox.check();
+    check(
+      await page.locator("#approveReleasePlanButton").isEnabled(),
+      "product: Kyle can proceed to approve the refreshed ReleasePlan in the same page session",
     );
     check(
       errors.length === 0,
@@ -1276,11 +1482,25 @@ async function productReleasePartialFailedLedger(browser) {
       status: "FAILED",
       attempts: 1,
       external_id: null,
-      error: `pre-submit validation failed: ${reason}; no external write was sent`,
+      error: reason,
       readback: null,
       submission: null,
-      failure_events: [],
-      latest_failure_evidence: null,
+      failure_events: [{
+        evidence: {
+          pre_submit_failure: true,
+          submission_accepted: false,
+          reason_code: "fixture_zero_write_pre_submit",
+          external_writes_performed: [],
+        },
+      }],
+      latest_failure_evidence: {
+        evidence: {
+          pre_submit_failure: true,
+          submission_accepted: false,
+          reason_code: "fixture_zero_write_pre_submit",
+          external_writes_performed: [],
+        },
+      },
     });
     const manualTarget = (targetLabel, externalId) => ({
       target_label: targetLabel,
@@ -2137,8 +2357,8 @@ async function productShopeePriceReconciliationContract(browser) {
             `Shopee price reconciliation ${viewport.width}: success removes repeat control`,
           );
           check(
-            await page.locator("#publishAllCheckbox").isEnabled(),
-            `Shopee price reconciliation ${viewport.width}: durable close re-evaluates one-click publish from remaining safe state`,
+            await page.locator("#publishAllCheckbox").isDisabled(),
+            `Shopee price reconciliation ${viewport.width}: durable close with no remaining target keeps one-click closed`,
           );
         } else {
           await pendingClose.fulfill(jsonResponse({
@@ -2936,6 +3156,405 @@ async function aiMissingPackageFeedback(browser, viewport) {
   }
 }
 
+async function productWorkflowNextActionContract(browser, viewport) {
+  const dashboard = JSON.parse(JSON.stringify(productDashboard));
+  dashboard.product.actual_product_approved = true;
+  dashboard.product.fields_locked = true;
+  dashboard.content = {
+    approved: true,
+    approval_status: "approved",
+    image_count: 1,
+    images: [{ position: 1, image_url: "https://fixture.invalid/main.jpg" }],
+    blockers: [],
+  };
+  dashboard.actual_release_gate = {
+    ready: false,
+    blockers: ["The previous 11-image Miaoshou write is stale."],
+  };
+  dashboard.release_v1 = {
+    eligible_for_plan_approval: true,
+    plan_approved: true,
+    plan_persisted: true,
+    miaoshou_prepared: true,
+    canonical_common_ready: true,
+    common_evidence_blockers: [],
+    release_preflight_authority: "canonical_common_readback",
+    publish_ready: true,
+    adapter_blockers: [],
+    blockers: [],
+    plan: {
+      plan_id: "plan:workflow-fixture",
+      confirmation_token: "PUBLISH-TEST-0001",
+      payload_digest: "a".repeat(64),
+      payload: {
+        product_revision: 1,
+        content_package_id: "content:workflow",
+        targets: ["miaoshou:COMMON", "tiktok:MX"],
+      },
+      targets: ["miaoshou:COMMON", "tiktok:MX"],
+    },
+    run: {
+      run_id: "release-run:workflow",
+      status: "RUNNING",
+      targets: [
+        {
+          target_label: "miaoshou:COMMON",
+          status: "SUCCEEDED",
+          attempts: 1,
+          external_id: "3828540231",
+        },
+        {
+          target_label: "tiktok:MX",
+          status: "PENDING",
+          attempts: 0,
+        },
+      ],
+    },
+  };
+  dashboard.workflow_next_action = {
+    schema_version: "product-workflow-next-action/v1",
+    code: "publish_selected_targets",
+    phase: "channels",
+    label: "确认并发布剩余店铺",
+    detail: "当前计划与妙手回读一致；成功目标会自动跳过，只执行仍为 PENDING 的店铺。",
+    kind: "control",
+    actionable: true,
+    terminal: false,
+    control_id: "publishAllCheckbox",
+    reason_codes: ["pending_targets_ready"],
+  };
+  const scenario = await openScenario(
+    browser,
+    "/product-workspace?offer_id=3828540231",
+    viewport,
+    { productDashboard: dashboard },
+  );
+  const { page, context, errors, requests } = scenario;
+  try {
+    const button = page.locator("#nextStepActionButton");
+    check(
+      await button.isVisible() && await button.isEnabled(),
+      `workflow ${viewport.width}: server-owned next action is visible and enabled`,
+    );
+    check(
+      (await button.innerText()).includes("发布剩余店铺"),
+      `workflow ${viewport.width}: next action copy comes from server contract`,
+      await button.innerText(),
+    );
+    check(
+      await page.locator("#publishAllCheckbox").isEnabled(),
+      `workflow ${viewport.width}: canonical COMMON readback opens publish consent despite stale legacy gate`,
+    );
+    const blockers = (await page.locator("#blockerList").innerText()).trim();
+    check(
+      !blockers.includes("11-image") && !blockers.includes("11 图"),
+      `workflow ${viewport.width}: superseded legacy blocker is not presented as active truth`,
+      blockers,
+    );
+    await button.click();
+    check(
+      await page.locator("#publishAllCheckbox").evaluate(
+        (element) => document.activeElement === element,
+      ),
+      `workflow ${viewport.width}: primary next action leads to the enabled consent control`,
+    );
+    check(
+      requests.filter((row) => row.method === "POST").length === 0,
+      `workflow ${viewport.width}: navigation to next action performs zero writes`,
+      requests,
+    );
+    const overflow = await overflowAudit(page);
+    check(
+      overflow.pageOverflow <= 2,
+      `workflow ${viewport.width}: no horizontal overflow`,
+      overflow,
+    );
+    check(
+      unexpectedInteractionErrors(errors).length === 0,
+      `workflow ${viewport.width}: no console/page errors`,
+      errors,
+    );
+  } finally {
+    await context.close();
+  }
+}
+
+async function mixedReleaseDispositionContract(browser, viewport) {
+  const dashboard = JSON.parse(JSON.stringify(productDashboard));
+  dashboard.product.actual_product_approved = true;
+  dashboard.product.fields_locked = true;
+  dashboard.content = {
+    approved: true,
+    approval_status: "approved",
+    image_count: 5,
+    images: Array.from({ length: 5 }, (_, index) => ({
+      position: index + 1,
+      image_url: `https://fixture.invalid/${index + 1}.jpg`,
+    })),
+    blockers: [],
+  };
+  dashboard.actual_release_gate = { ready: true, blockers: [] };
+  dashboard.release_v1 = {
+    eligible_for_plan_approval: true,
+    plan_approved: true,
+    plan_persisted: true,
+    miaoshou_prepared: true,
+    canonical_common_ready: true,
+    publish_ready: true,
+    runnable_target_count: 1,
+    adapter_blockers: [],
+    blockers: [],
+    plan: {
+      plan_id: "plan:mixed-release",
+      confirmation_token: "PUBLISH-MIXED-0001",
+      payload_digest: "b".repeat(64),
+      payload: {
+        product_revision: 1,
+        content_package_id: "content:mixed",
+        targets: [
+          "miaoshou:COMMON",
+          "tiktok:LH_MY",
+          "tiktok:MX",
+          "tiktok:GB",
+          "shopee:MY",
+          "shopee:VN",
+        ],
+      },
+      targets: [
+        "miaoshou:COMMON",
+        "tiktok:LH_MY",
+        "tiktok:MX",
+        "tiktok:GB",
+        "shopee:MY",
+        "shopee:VN",
+      ],
+    },
+    run: {
+      run_id: "release-run:mixed",
+      status: "PARTIAL_FAILED",
+      targets: [
+        { target_label: "miaoshou:COMMON", status: "SUCCEEDED", attempts: 1 },
+        { target_label: "tiktok:LH_MY", status: "FAILED", attempts: 1 },
+        {
+          target_label: "tiktok:MX",
+          status: "SUBMITTED_UNVERIFIED",
+          attempts: 1,
+        },
+        {
+          target_label: "tiktok:GB",
+          status: "SUBMITTED_UNVERIFIED",
+          attempts: 1,
+        },
+        { target_label: "shopee:VN", status: "FAILED", attempts: 1 },
+        { target_label: "shopee:MY", status: "PENDING", attempts: 0 },
+      ],
+    },
+  };
+  dashboard.workflow_next_action = {
+    schema_version: "product-workflow-next-action/v1",
+    code: "publish_selected_targets",
+    phase: "channels",
+    label: "继续发布 1 个安全目标",
+    detail:
+      "本次只执行 1 个从未提交目标；2 个待对账、2 个待人工验收目标保持原状态且不会重发。",
+    kind: "control",
+    actionable: true,
+    terminal: false,
+    control_id: "publishAllCheckbox",
+    reason_codes: ["runnable_release_targets_available"],
+    target_counts: {
+      running: 0,
+      reconciliation: 2,
+      manual_acceptance: 2,
+      pending: 1,
+    },
+  };
+  const scenario = await openScenario(
+    browser,
+    "/product-workspace?offer_id=3845133620",
+    viewport,
+    { productDashboard: dashboard },
+  );
+  const { page, context, errors, requests } = scenario;
+  try {
+    const button = page.locator("#nextStepActionButton");
+    check(
+      await button.isVisible() && await button.isEnabled(),
+      `mixed release ${viewport.width}: remaining first attempt is visible`,
+    );
+    check(
+      (await button.innerText()).includes("继续发布 1 个安全目标"),
+      `mixed release ${viewport.width}: first attempt is not hidden by other outcomes`,
+      await button.innerText(),
+    );
+    check(
+      (await page.locator(".next-panel").innerText()).includes("2 个待人工验收")
+        && (await page.locator(".next-panel").innerText()).includes("1 个从未提交"),
+      `mixed release ${viewport.width}: mixed target counts remain visible`,
+      await page.locator(".next-panel").innerText(),
+    );
+    await button.click();
+    check(
+      await page.locator("#publishAllCheckbox").isEnabled()
+        && await page.locator("#publishAllCheckbox").evaluate(
+          (element) => document.activeElement === element,
+        ),
+      `mixed release ${viewport.width}: action focuses the enabled one-click consent`,
+    );
+    check(
+      requests.filter((row) => row.method === "POST").length === 0,
+      `mixed release ${viewport.width}: disposition navigation performs zero writes`,
+      requests,
+    );
+    const overflow = await overflowAudit(page);
+    check(
+      overflow.pageOverflow <= 2,
+      `mixed release ${viewport.width}: no horizontal overflow`,
+      overflow,
+    );
+    check(
+      unexpectedInteractionErrors(errors).length === 0,
+      `mixed release ${viewport.width}: no console/page errors`,
+      errors,
+    );
+  } finally {
+    await context.close();
+  }
+}
+
+async function blockedCapabilityNextActionContract(browser, viewport) {
+  const dashboard = JSON.parse(JSON.stringify(productDashboard));
+  dashboard.product.actual_product_approved = true;
+  dashboard.product.fields_locked = true;
+  dashboard.content = {
+    approved: true,
+    approval_status: "approved",
+    image_count: 1,
+    images: [{ position: 1, image_url: "https://fixture.invalid/main.jpg" }],
+    blockers: [],
+  };
+  dashboard.actual_release_gate = { ready: true, blockers: [] };
+  dashboard.release_v1 = {
+    eligible_for_plan_approval: true,
+    plan_approved: true,
+    plan_persisted: true,
+    miaoshou_prepared: true,
+    canonical_common_ready: true,
+    publish_ready: true,
+    runnable_target_count: 0,
+    adapter_blockers: [],
+    blockers: [],
+    target_recovery_actions: [
+      {
+        schema_version: "release-target-recovery-action/v1",
+        target_label: "ozon:RU",
+        status: "PENDING",
+        attempts: 0,
+        action_kind: "BLOCKED_CAPABILITY",
+        runnable: false,
+        reason_code: "automatic_first_attempt_capability_unavailable",
+      },
+    ],
+    plan: {
+      plan_id: "plan:blocked-capability",
+      confirmation_token: "PUBLISH-BLOCKED-0001",
+      payload_digest: "c".repeat(64),
+      payload: {
+        product_revision: 1,
+        content_package_id: "content:blocked",
+        targets: ["miaoshou:COMMON", "ozon:RU"],
+      },
+      targets: ["miaoshou:COMMON", "ozon:RU"],
+    },
+    run: {
+      run_id: "release-run:blocked",
+      status: "RUNNING",
+      targets: [
+        { target_label: "miaoshou:COMMON", status: "SUCCEEDED", attempts: 1 },
+        { target_label: "ozon:RU", status: "PENDING", attempts: 0 },
+      ],
+    },
+  };
+  dashboard.workflow_next_action = {
+    schema_version: "product-workflow-next-action/v1",
+    code: "resolve_release_capability",
+    phase: "channels",
+    label: "查看 Ozon 安全阻断",
+    detail: "Ozon 当前缺少受治理的自动首发能力，请查看店铺卡片中的唯一解决方案。",
+    kind: "manual",
+    actionable: true,
+    terminal: false,
+    control_id: "releaseRunLedger",
+    focus_target_label: "ozon:RU",
+    reason_codes: ["adapter_capability_blocked"],
+    target_counts: {
+      running: 0,
+      reconciliation: 0,
+      manual_acceptance: 0,
+      pending: 0,
+      blocked_capability: 1,
+    },
+  };
+  const scenario = await openScenario(
+    browser,
+    "/product-workspace?offer_id=3845133620",
+    viewport,
+    { productDashboard: dashboard },
+  );
+  const { page, context, errors, requests } = scenario;
+  try {
+    const nextButton = page.locator("#nextStepActionButton");
+    const publishCheckbox = page.locator("#publishAllCheckbox");
+    const ozonCard = page.locator(
+      '.run-target[data-target-label="ozon:RU"]',
+    );
+    check(
+      await nextButton.isVisible() && await nextButton.isEnabled(),
+      `blocked capability ${viewport.width}: safe next action is visible`,
+    );
+    check(
+      !(await publishCheckbox.isEnabled()),
+      `blocked capability ${viewport.width}: one-click publish is not a dead-end control`,
+    );
+    check(
+      (await ozonCard.innerText()).includes("库存决策")
+        && (await ozonCard.innerText()).includes("默认库存"),
+      `blocked capability ${viewport.width}: card explains the unique safe resolution`,
+      await ozonCard.innerText(),
+    );
+    check(
+      (await page.locator(".run-ledger-head").innerText()).includes(
+        "1 个能力阻断",
+      ),
+      `blocked capability ${viewport.width}: ledger header does not claim active execution`,
+      await page.locator(".run-ledger-head").innerText(),
+    );
+    await nextButton.click();
+    check(
+      await ozonCard.evaluate((element) => document.activeElement === element),
+      `blocked capability ${viewport.width}: next action focuses the exact target card`,
+    );
+    check(
+      requests.filter((row) => row.method === "POST").length === 0,
+      `blocked capability ${viewport.width}: navigation performs zero writes`,
+      requests,
+    );
+    const overflow = await overflowAudit(page);
+    check(
+      overflow.pageOverflow <= 2,
+      `blocked capability ${viewport.width}: no horizontal overflow`,
+      overflow,
+    );
+    check(
+      unexpectedInteractionErrors(errors).length === 0,
+      `blocked capability ${viewport.width}: no console/page errors`,
+      errors,
+    );
+  } finally {
+    await context.close();
+  }
+}
+
 async function profitAsyncAndNoFalseSuccess(browser) {
   const scenario = await openScenario(browser, "/profit", { width: 1440, height: 900 });
   const { page, context, errors, state } = scenario;
@@ -3066,6 +3685,7 @@ async function legacyStateSafety(browser) {
       await auditPage(browser, definition, { width: 390, height: 844 });
     }
     await productAsyncFeedback(browser);
+    await productQueueLongTitleMobileContract(browser);
     await productLockedTitleAdoption(browser);
     await productPreservedTitleApprovalReload(browser);
     await productLockedStaleTitleRefresh(browser);
@@ -3081,6 +3701,12 @@ async function legacyStateSafety(browser) {
     await aiPlanningBlockerFeedback(browser, { width: 390, height: 844 });
     await aiMissingPackageFeedback(browser, { width: 1440, height: 900 });
     await aiMissingPackageFeedback(browser, { width: 390, height: 844 });
+    await productWorkflowNextActionContract(browser, { width: 1440, height: 900 });
+    await productWorkflowNextActionContract(browser, { width: 390, height: 844 });
+    await mixedReleaseDispositionContract(browser, { width: 1440, height: 900 });
+    await mixedReleaseDispositionContract(browser, { width: 390, height: 844 });
+    await blockedCapabilityNextActionContract(browser, { width: 1440, height: 900 });
+    await blockedCapabilityNextActionContract(browser, { width: 390, height: 844 });
     await profitAsyncAndNoFalseSuccess(browser);
     await legacyStateSafety(browser);
   } finally {

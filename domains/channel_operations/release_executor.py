@@ -80,6 +80,14 @@ class AdapterRegistration:
     preserves_idempotency_key: bool
     verifies_readback: bool
     blocker: ExecutionBlocker | None = None
+    predecessor_recovery_mode: Literal[
+        "BLOCKED",
+        "OFFICIAL_READBACK_THEN_BOUNDED_WRITE",
+    ] = "BLOCKED"
+    automatic_first_attempt_mode: Literal[
+        "ENABLED",
+        "BLOCKED_CAPABILITY",
+    ] = "ENABLED"
 
     @property
     def executable(self) -> bool:
@@ -90,6 +98,29 @@ class AdapterRegistration:
             and self.preserves_idempotency_key
             and self.verifies_readback
             and self.blocker is None
+        )
+
+    @property
+    def supports_predecessor_recovery(self) -> bool:
+        """Whether a successor may resolve a prior external outcome.
+
+        This is deliberately separate from ``executable``.  A normal adapter
+        may be safe for a pristine first attempt while still lacking the
+        official identity/readback contract required to touch a target whose
+        predecessor may already have written externally.
+        """
+
+        return bool(
+            self.executable
+            and self.predecessor_recovery_mode
+            == "OFFICIAL_READBACK_THEN_BOUNDED_WRITE"
+        )
+
+    @property
+    def supports_automatic_first_attempt(self) -> bool:
+        return bool(
+            self.executable
+            and self.automatic_first_attempt_mode == "ENABLED"
         )
 
 

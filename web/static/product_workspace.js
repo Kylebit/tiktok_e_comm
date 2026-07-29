@@ -71,6 +71,7 @@
   ]);
 
   const QUEUE_STORAGE_KEY = "orbit.productWorkspace.releaseQueue.v1";
+  const LISTING_COPY_POLICY_VERSION = "listing-copy-candidates-v6";
   const MAX_QUEUE_ITEMS = 50;
   const QUEUE_REFRESH_CONCURRENCY = 4;
   let currentData = null;
@@ -90,6 +91,7 @@
   const shopeePriceRepairStates = new Map();
   const TARGET_SCOPED_ACTION_TARGETS = new Set(["shopee:MY", "shopee:VN", "ozon:RU"]);
   const targetScopedActionStates = new Map();
+  const targetRecoveryActions = new Map();
 
   function productKey(offerId) {
     return String(offerId || "").trim();
@@ -436,7 +438,7 @@
     let channelReadyText = "执行已结束";
     if (runStarted && runGroups.running.length) {
       channelWaitText =
-        `执行中 · ${runCounts.succeeded}/${runCounts.total} 个店铺已发布`;
+        `执行中 · ${runCounts.succeeded}/${runCounts.total} 已完成`;
     } else if (
       runStarted
       && (
@@ -911,13 +913,20 @@
       && candidateSignature === currentSignature
     );
     const button = $("#generateTitleDraftButton");
-    const canRefreshLockedCandidate = locked && stale;
+    const missingCandidate = !String(draft.semantic_master_en || "").trim();
+    const canRecoverLockedCandidate = locked && (stale || missingCandidate);
     button.disabled =
-      (locked && !canRefreshLockedCandidate) || titleDraftSubmitting || pageLoading;
+      (locked && !canRecoverLockedCandidate) || titleDraftSubmitting || pageLoading;
     button.classList.toggle("is-loading", titleDraftSubmitting);
     if (!draft.semantic_master_en) {
       $("#titleDraftStatus").textContent =
-        "尚未生成。点击后由 ToAPI 文本模型按平台特点优化本地候选，不会写妙手或任何平台。";
+        locked
+          ? (
+            "当前商品事实已锁定，但缺少平台英文文案候选。"
+            + "可在 Kyle 确认后生成本地候选；这不会写妙手或任何渠道，"
+            + "采用候选时才会安全废止旧审批与旧发布计划。"
+          )
+          : "尚未生成。点击后由 ToAPI 文本模型按平台特点优化本地候选，不会写妙手或任何平台。";
       $("#titleCandidateGrid").innerHTML = "";
       return;
     }
@@ -991,14 +1000,41 @@
     const draft = currentData.listing_copy || {};
     const locked = Boolean(product.actual_product_approved || product.fields_locked);
     const lockedStaleRefresh =
-      locked && draft.status === "superseded_product_facts_changed";
-    if (lockedStaleRefresh && !window.confirm(
-      "当前标题候选已过期。重新生成只会调用 ToAPI 并更新本地候选，"
-      + "同时废止旧 ReleasePlan；不会修改已批准商品事实，也不会写妙手或渠道。"
+      locked && (
+        String(draft.status || "").startsWith("superseded")
+        || String(draft.policy_version || "") !== LISTING_COPY_POLICY_VERSION
+      );
+    const lockedMissingRecovery =
+      locked && !String(draft.semantic_master_en || "").trim();
+    const lockedUnadoptedRefresh =
+      locked && draft.status === "draft_pending_kyle_review";
+    if ((
+      lockedStaleRefresh
+      || lockedMissingRecovery
+      || lockedUnadoptedRefresh
+    ) && !window.confirm(
+      lockedMissingRecovery
+        ? (
+          "当前商品事实已锁定，但缺少平台英文文案候选。\n\n"
+          + "本次只会调用 ToAPI 生成本地候选，并废止不完整的旧 ReleasePlan；"
+          + "不会修改已批准商品事实，也不会写妙手或任何渠道。"
+          + "生成后仍需由 Kyle 明确采用候选并重新审批。"
+        )
+        : lockedUnadoptedRefresh
+        ? (
+          "当前商品事实已锁定，但这份候选尚未采用。\n\n"
+          + "本次只会重新生成本地候选，不会修改商品事实、妙手或任何渠道；"
+          + "生成后仍需由 Kyle 明确采用。"
+        )
+        : (
+          "当前标题候选已过期。重新生成只会调用 ToAPI 并更新本地候选，"
+          + "同时废止旧 ReleasePlan；不会修改已批准商品事实，也不会写妙手或渠道。"
+        )
     )) return;
     titleDraftSubmitting = true;
     let failureMessage = "";
     renderTitleDraft(currentData);
+    updateReleaseControls(currentData);
     $("#titleDraftStatus").textContent =
       "ToAPI 正在依据中文来源、类目、尺寸和保留规格，按各平台搜索习惯优化标题…";
     try {
@@ -1006,8 +1042,18 @@
         offer_id: product.offer_id,
         expected_revision: product.revision,
         refresh_stale_locked_candidate: lockedStaleRefresh,
-        user_approved: lockedStaleRefresh,
-        approved_by: lockedStaleRefresh ? "Kyle" : "",
+        recover_missing_locked_candidate: lockedMissingRecovery,
+        replace_unadopted_locked_candidate: lockedUnadoptedRefresh,
+        user_approved: (
+          lockedStaleRefresh
+          || lockedMissingRecovery
+          || lockedUnadoptedRefresh
+        ),
+        approved_by: (
+          lockedStaleRefresh
+          || lockedMissingRecovery
+          || lockedUnadoptedRefresh
+        ) ? "Kyle" : "",
       });
       const data = dashboardFromPayload(payload) || payload.dashboard || currentData;
       currentData = data;
@@ -1055,6 +1101,7 @@
     } finally {
       titleDraftSubmitting = false;
       renderTitleDraft(currentData || {});
+      updateReleaseControls(currentData || {});
       if (failureMessage) $("#titleDraftStatus").textContent = failureMessage;
     }
   }
@@ -1106,6 +1153,7 @@
     }
     titleAdoptSubmitting = true;
     renderTitleDraft(currentData);
+    updateReleaseControls(currentData);
     $("#titleDraftStatus").textContent =
       "正在复核候选、事实签名和 revision，并安全废止旧审批与发布计划…";
     let finalMessage = "";
@@ -1147,6 +1195,7 @@
     } finally {
       titleAdoptSubmitting = false;
       renderTitleDraft(currentData || {});
+      updateReleaseControls(currentData || {});
       if (finalMessage) $("#titleDraftStatus").textContent = finalMessage;
     }
   }
@@ -1418,6 +1467,7 @@
   }
 
   function renderNextStep(data, stages) {
+    const workflow = data.workflow_next_action || {};
     const currentIndex = Math.max(0, stages.findIndex((stage) => !stage.ready));
     const stage = stages[currentIndex] || stages[stages.length - 1];
     const blockers = (data.actual_release_gate?.blockers || []).map(translateBlocker);
@@ -1436,6 +1486,9 @@
     const reconcileOnlyLabels = targetNames(runGroups.reconcileOnly);
     const safeRetryLabels = targetNames(runGroups.safeRetry);
     const unsafeFailureLabels = targetNames(runGroups.unsafeFailure);
+    const blockedCapabilityLabels = targetNames(
+      runGroups.blockedCapability,
+    );
     const awaitingReadbackLabels = targetNames(runGroups.manualVerify);
     const draftVerifyLabels = targetNames(runGroups.draftVerify);
     const draftConflictLabels = targetNames(runGroups.draftConflict);
@@ -1450,6 +1503,12 @@
       && blockers.some((item) => item.includes("旧的 11 图版本"))
     ) {
       allBlockers = allBlockers.filter((item) => !item.startsWith("妙手图片记录与"));
+    }
+    if (data.release_v1?.release_preflight_authority === "canonical_common_readback") {
+      const superseded = new Set(
+        (data.actual_release_gate?.blockers || []).map(translateBlocker),
+      );
+      allBlockers = allBlockers.filter((item) => !superseded.has(item));
     }
     allBlockers = [...new Set(allBlockers)];
     const descriptions = {
@@ -1485,6 +1544,11 @@
     if (unsafeFailureLabels.length) {
       dispositionActions.push(
         `${unsafeFailureLabels.join("、")}：失败边界尚未证实，先查明外部结果，禁止重发。`,
+      );
+    }
+    if (blockedCapabilityLabels.length) {
+      dispositionActions.push(
+        `${blockedCapabilityLabels.join("、")}：当前缺少受治理的自动执行能力；系统不会猜测、导入或使用默认值，请按店铺卡片中的唯一解决方案处理。`,
       );
     }
     if (awaitingReadbackLabels.length) {
@@ -1525,8 +1589,29 @@
         + "在确认没有外部结果前不得重试。",
       );
     }
+    if (blockedCapabilityLabels.length) {
+      allBlockers.push(
+        `${blockedCapabilityLabels.join("、")} 当前没有可证明安全的自动执行合同；它不会阻塞其他可执行店铺，也不会被一键发布误触发。`,
+      );
+    }
     allBlockers = [...new Set(allBlockers)];
-    $("#nextStepNumber").textContent = String(currentIndex + 1).padStart(2, "0");
+    const phaseNumbers = {
+      product: 1,
+      content: 2,
+      approval: 3,
+      plan: 4,
+      sync: 5,
+      channels: 6,
+      reconcile: 7,
+      complete: 7,
+    };
+    const workflowValid = (
+      workflow.schema_version === "product-workflow-next-action/v1"
+      && workflow.code
+      && workflow.label
+    );
+    const workflowIndex = phaseNumbers[workflow.phase] || (currentIndex + 1);
+    $("#nextStepNumber").textContent = String(workflowIndex).padStart(2, "0");
     const releaseCompleted = [
       "SUCCEEDED",
       "COMPLETED_WITH_MANUAL_VERIFICATION",
@@ -1536,15 +1621,78 @@
       && !releaseCompleted
       && dispositionActions.length,
     );
-    $("#nextStepTitle").textContent = releaseCompleted
-      ? "本次正式发布已完成"
-      : (releaseNeedsDisposition ? "处理发布结果与对账" : stage.label);
-    $("#nextStepDescription").textContent = releaseCompleted
-      ? "全部已选店铺均已完成 API 回读或 Kyle 人工验收；账本保留每个目标的幂等提交证据。"
-      : descriptions[stage.key];
+    $("#nextStepTitle").textContent = workflowValid
+      ? workflow.label
+      : (
+        releaseCompleted
+          ? "本次正式发布已完成"
+          : (releaseNeedsDisposition ? "处理发布结果与对账" : stage.label)
+      );
+    $("#nextStepDescription").textContent = workflowValid
+      ? workflow.detail
+      : (
+        releaseCompleted
+          ? "全部已选店铺均已完成 API 回读或 Kyle 人工验收；账本保留每个目标的幂等提交证据。"
+          : descriptions[stage.key]
+      );
     $("#blockerList").innerHTML = allBlockers.length
       ? allBlockers.map((item) => `<li>${esc(item)}</li>`).join("")
       : '<li class="ok">当前发布前条件均已满足。</li>';
+    const actionButton = $("#nextStepActionButton");
+    const actionable = Boolean(
+      workflowValid && workflow.actionable === true && workflow.terminal !== true,
+    );
+    actionButton.hidden = !actionable;
+    actionButton.disabled = !actionable;
+    actionButton.textContent = workflow.label || "前往下一步";
+    actionButton.dataset.actionCode = workflow.code || "";
+    document.querySelector(".next-panel").dataset.workflowTerminal = String(
+      workflowValid && workflow.terminal === true,
+    );
+  }
+
+  function runWorkflowNextAction() {
+    const action = currentData?.workflow_next_action || {};
+    if (
+      action.schema_version !== "product-workflow-next-action/v1"
+      || action.actionable !== true
+      || action.terminal === true
+    ) return;
+    if (action.kind === "link" && action.href) {
+      window.open(action.href, "_blank", "noopener");
+      return;
+    }
+    if (action.kind === "refresh") {
+      const item = queueItem(currentQueueKey);
+      if (item) refreshQueueProduct(item, { collectIfMissing: true }).catch(() => {});
+      return;
+    }
+    const container = document.getElementById(action.control_id || "");
+    if (!container) return;
+    container.scrollIntoView({ behavior: "smooth", block: "center" });
+    let target = container;
+    if (action.control_id === "releaseRecoveryActions") {
+      target = container.querySelector("button:not([disabled])") || container;
+    } else if (action.control_id === "releaseRunLedger") {
+      const focusLabel = String(action.focus_target_label || "");
+      const focusedCard = focusLabel
+        ? container.querySelector(
+          `.run-target[data-target-label="${CSS.escape(focusLabel)}"]`,
+        )
+        : null;
+      target = focusedCard?.querySelector(
+        "input:not([disabled]), button:not([disabled]), a[href]",
+      ) || focusedCard || container;
+    } else if (
+      container.matches("section, article, form, div")
+    ) {
+      target = container.querySelector(
+        "input:not([disabled]), button:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href]",
+      ) || container;
+    }
+    if (typeof target.focus === "function") {
+      target.focus({ preventScroll: true });
+    }
   }
 
   function imageType(image) {
@@ -1657,7 +1805,11 @@
     } else {
       note.textContent = `当前计划已包含 ${count} 个目标；选择结果已由服务端校验。`;
     }
-    $("#applyPublicationScopeButton").disabled = pageLoading || !dirty || !count;
+    const applyButton = $("#applyPublicationScopeButton");
+    applyButton.textContent = !dirty && count
+      ? "当前选择已应用"
+      : "应用选择并审查售价";
+    applyButton.disabled = pageLoading || !dirty || !count;
   }
 
   function renderPublicationScope(scope) {
@@ -2188,6 +2340,16 @@
       || null;
   }
 
+  function isZeroWritePreSubmitEvidence(evidence) {
+    return Boolean(
+      evidence
+      && evidence.pre_submit_failure === true
+      && evidence.submission_accepted === false
+      && Array.isArray(evidence.external_writes_performed)
+      && evidence.external_writes_performed.length === 0
+    );
+  }
+
   function targetHasExternalOutcome(target) {
     const evidence = targetFailureEvidence(target);
     return Boolean(
@@ -2195,13 +2357,16 @@
       || target?.submission
       || target?.readback
       || target?.external_writes_performed?.length
-      || evidence,
+      || (evidence && !isZeroWritePreSubmitEvidence(evidence)),
     );
   }
 
   function isExplicitPreSubmitFailure(target) {
     if (target?.status !== "FAILED" || targetHasExternalOutcome(target)) {
       return false;
+    }
+    if (isZeroWritePreSubmitEvidence(targetFailureEvidence(target))) {
+      return true;
     }
     const detail = String(target?.error || "").toLowerCase();
     return [
@@ -2212,6 +2377,8 @@
       "before external",
       "not submitted",
       "no external write",
+      "no edit was sent",
+      "persisted miaoshou claim lacks",
       "提交前",
       "未提交",
       "未发生外部写入",
@@ -2253,7 +2420,49 @@
     return "waiting_verification";
   }
 
+  function commonSpecLabelApplication(release) {
+    const common = (release?.run?.targets || []).find(
+      (target) => target?.target_label === "miaoshou:COMMON",
+    );
+    return common?.readback?.evidence?.spec_label_application || {};
+  }
+
+  function preparedMiaoshouMessage(release) {
+    const application = commonSpecLabelApplication(release);
+    if (application?.status === "deferred_to_site_draft") {
+      return "妙手公共草稿已写入并回读一致；规格显示名将在各站点草稿中按已批准计划写入并校验。";
+    }
+    return "妙手公共草稿已写入并回读一致；可以继续检查渠道执行条件。";
+  }
+
+  function commonNeedsReadbackReconciliation(release) {
+    const common = (release?.run?.targets || []).find(
+      (target) => target?.target_label === "miaoshou:COMMON",
+    );
+    return Boolean(
+      common?.status === "FAILED" && targetHasExternalOutcome(common),
+    );
+  }
+
   function releaseTargetDisposition(target) {
+    const recovery = targetRecoveryActions.get(
+      String(target?.target_label || ""),
+    );
+    if (recovery?.action_kind === "MANUAL_ACCEPT") return "manual_verify";
+    if (recovery?.action_kind === "FIRST_ATTEMPT") return "pending";
+    if (recovery?.action_kind === "GOVERNED_RECOVERY") return "pending";
+    if (recovery?.action_kind === "BLOCKED_CAPABILITY") {
+      return "blocked_capability";
+    }
+    if (recovery?.action_kind === "SAFE_RETRY") return "safe_retry";
+    if (recovery?.action_kind === "READONLY_RECONCILE") {
+      return target?.status === "RUNNING" ? "running" : "reconcile_only";
+    }
+    if (recovery?.action_kind === "SAFE_REPAIR") return "unsafe_failure";
+    if (recovery?.action_kind === "BLOCKED") return "unsafe_failure";
+    if (recovery?.action_kind === "TERMINAL") {
+      return target?.status === "MANUALLY_VERIFIED" ? "verified" : "succeeded";
+    }
     const repairStatus = shopeePriceRepairLifecycle(target);
     if (repairStatus === "RUNNING") return "running";
     if (repairStatus === "RECONCILIATION_REQUIRED") return "reconcile_only";
@@ -2279,6 +2488,7 @@
       reconcileOnly: [],
       safeRetry: [],
       unsafeFailure: [],
+      blockedCapability: [],
       manualVerify: [],
       running: [],
       pending: [],
@@ -2290,6 +2500,9 @@
       if (disposition === "reconcile_only") groups.reconcileOnly.push(target);
       if (disposition === "safe_retry") groups.safeRetry.push(target);
       if (disposition === "unsafe_failure") groups.unsafeFailure.push(target);
+      if (disposition === "blocked_capability") {
+        groups.blockedCapability.push(target);
+      }
       if (disposition === "manual_verify") groups.manualVerify.push(target);
       if (disposition === "running") groups.running.push(target);
       if (disposition === "pending") groups.pending.push(target);
@@ -2318,6 +2531,7 @@
       reconcileOnly: groups.reconcileOnly.length,
       safeRetry: groups.safeRetry.length,
       unsafeFailure: groups.unsafeFailure.length,
+      blockedCapability: groups.blockedCapability.length,
       pending: groups.pending.length,
       draftVerify: groups.draftVerify.length,
       draftConflict: groups.draftConflict.length,
@@ -2329,6 +2543,23 @@
     if (run?.status === "SUCCEEDED") return `${counts.succeeded}/${counts.total} 全部回读成功`;
     if (run?.status === "COMPLETED_WITH_MANUAL_VERIFICATION") {
       return `${counts.succeeded} API 回读 · ${counts.manuallyVerified} 人工验收`;
+    }
+    if (run?.status === "RUNNING" && !counts.running) {
+      const governedOutcomes = [
+        counts.reconcileOnly ? `${counts.reconcileOnly} 待对账` : "",
+        counts.blockedCapability ? `${counts.blockedCapability} 个能力阻断` : "",
+        counts.awaitingReadback ? `${counts.awaitingReadback} 待人工验收` : "",
+        counts.safeRetry ? `${counts.safeRetry} 修复后可重试` : "",
+        counts.unsafeFailure ? `${counts.unsafeFailure} 禁止重发` : "",
+        counts.draftVerify ? `${counts.draftVerify} 个草稿待核验` : "",
+        counts.draftConflict ? `${counts.draftConflict} 个草稿版本冲突` : "",
+      ].filter(Boolean);
+      if (governedOutcomes.length) {
+        return (
+          `${counts.succeeded}/${counts.total} 个店铺发布完成 · `
+          + governedOutcomes.join(" · ")
+        );
+      }
     }
     if (run?.status === "RUNNING") return `${counts.succeeded}/${counts.total} 正在执行`;
     if (counts.awaitingReadback && !counts.failed && !counts.running) {
@@ -2370,6 +2601,9 @@
         : "挂牌价已验证 · 利润仍待财务审查";
     }
     const disposition = releaseTargetDisposition(target);
+    if (disposition === "blocked_capability") {
+      return "等待已批准的渠道执行条件";
+    }
     if (disposition === "verified") return "Kyle 已人工验收";
     if (disposition === "manual_verify") return "已提交 · 待人工验收";
     if (disposition === "draft_verify") {
@@ -2406,6 +2640,15 @@
       return "该站点挂牌价已完成官方精确回读；SIP 是 Shopee 派生观察，不代表已实现利润，仍待财务审查。";
     }
     const disposition = releaseTargetDisposition(target);
+    if (disposition === "blocked_capability") {
+      const recovery = targetRecoveryActions.get(
+        String(target?.target_label || ""),
+      );
+      if (target?.target_label === "ozon:RU") {
+        return "Ozon 缺少不可变计划内的库存决策；本轮不会使用默认库存，也不会导入或修改库存。";
+      }
+      return `当前渠道尚无受治理的自动首发能力（${recovery?.reason_code || "capability unavailable"}）。`;
+    }
     if (disposition === "manual_verify") {
       return "妙手已接收且提交凭证已锁定；当前店铺没有官方 API，系统不会自动重试。请在平台后台核对后记录人工验收。";
     }
@@ -2443,11 +2686,77 @@
     }
     if (repairStatus === "SUCCEEDED") return "repair-succeeded succeeded";
     const disposition = releaseTargetDisposition(target);
+    if (disposition === "blocked_capability") return "unsafe-failure";
     if (disposition === "manual_verify") return "awaiting-readback";
+    if (disposition === "draft_verify") return "draft-waiting-verification";
+    if (disposition === "draft_conflict") return "draft-version-conflict";
     if (disposition === "reconcile_only") return "reconciliation-required";
     if (disposition === "safe_retry") return "safe-retry";
     if (disposition === "unsafe_failure") return "unsafe-failure";
     return String(target?.status || "").toLowerCase();
+  }
+
+  function renderReleaseRecovery(release) {
+    const panel = $("#releasePlanRecovery");
+    const container = $("#releasePlanRecoveryActions");
+    if (!panel || !container) return;
+    const supplied = Array.isArray(release?.recovery_actions)
+      ? release.recovery_actions.filter((row) => row && row.code)
+      : [];
+    const actions = supplied.length
+      ? supplied
+      : (
+        !release?.plan_approved && !release?.eligible_for_plan_approval
+          ? [{
+            code: "refresh_release_state",
+            label: "重新检查并定位未完成步骤",
+            detail: "重新读取当前商品状态，不会批准、同步或发布。",
+          }]
+          : []
+      );
+    panel.hidden = actions.length === 0;
+    if (!actions.length) {
+      $("#releasePlanRecoveryDetail").textContent = "";
+      container.innerHTML = "";
+      return;
+    }
+    const primary = actions[0];
+    $("#releasePlanRecoveryTitle").textContent = "当前计划还不能批准";
+    $("#releasePlanRecoveryDetail").textContent = String(
+      primary.detail || "请先完成当前阻断项，再返回批准发布计划。",
+    );
+    container.innerHTML = actions.map((action) => `
+      <button class="button button-secondary" type="button"
+        data-release-recovery="${esc(action.code)}">
+        ${esc(action.label || "继续处理")}
+      </button>
+    `).join("");
+  }
+
+  async function runReleaseRecovery(actionCode) {
+    if (!currentData || pageLoading || releaseSubmitting || approvalSubmitting) return;
+    const code = String(actionCode || "");
+    if (code === "refresh_listing_copy") {
+      await generateTitleDraft();
+      const assistant = $("#listingCopyAssistant");
+      assistant?.scrollIntoView({ behavior: "smooth", block: "start" });
+      const adopt = assistant?.querySelector(".adopt-title-candidate:not([disabled])");
+      (adopt || $("#generateTitleDraftButton"))?.focus();
+      return;
+    }
+    if (code === "adopt_listing_copy") {
+      const assistant = $("#listingCopyAssistant");
+      assistant?.scrollIntoView({ behavior: "smooth", block: "start" });
+      const adopt = assistant?.querySelector(".adopt-title-candidate:not([disabled])");
+      (adopt || $("#generateTitleDraftButton"))?.focus();
+      $("#titleDraftStatus").textContent =
+        "请核对 EN MASTER 后点击“采用”，完成后即可返回批准发布计划。";
+      return;
+    }
+    const item = queueItem(currentQueueKey);
+    if (item) {
+      await refreshQueueProduct(item, { collectIfMissing: true }).catch(() => {});
+    }
   }
 
   function updateReleaseControls(data) {
@@ -2455,18 +2764,49 @@
     const plan = release.plan || {};
     const approved = Boolean(release.plan_approved);
     const eligible = Boolean(release.eligible_for_plan_approval && plan.plan_id);
-    const busy = releaseSubmitting || approvalSubmitting || pageLoading;
+    const busy = Boolean(
+      releaseSubmitting
+      || approvalSubmitting
+      || titleDraftSubmitting
+      || titleAdoptSubmitting
+      || factsSubmitting
+      || pageLoading
+    );
 
-    $("#releasePlanCheckbox").disabled = approved || !eligible || busy;
+    const releasePlanCheckbox = $("#releasePlanCheckbox");
+    releasePlanCheckbox.disabled = approved || !eligible || busy;
+    if (!releasePlanCheckbox.disabled) {
+      delete releasePlanCheckbox.dataset.disabledReason;
+    } else if (approved) {
+      releasePlanCheckbox.dataset.disabledReason =
+        "当前 ReleasePlan 已批准，无需重复勾选。";
+    } else if (busy) {
+      releasePlanCheckbox.dataset.disabledReason =
+        "正在完成当前读取或本地状态更新；结束后会自动重新计算审批入口。";
+    } else {
+      releasePlanCheckbox.dataset.disabledReason = translateBlocker(
+        (release.blockers || [])[0]
+        || "当前发布计划尚未满足批准条件。",
+      );
+    }
     $("#approveReleasePlanButton").disabled = Boolean(
-      approved || !eligible || !$("#releasePlanCheckbox").checked || busy,
+      approved || !eligible || !releasePlanCheckbox.checked || busy,
     );
 
     const prepared = Boolean(release.miaoshou_prepared);
+    const commonReadbackOnly = commonNeedsReadbackReconciliation(release);
     $("#prepareMiaoshouCheckbox").disabled = !approved || prepared || busy;
     $("#prepareMiaoshouButton").disabled = Boolean(
       !approved || prepared || !$("#prepareMiaoshouCheckbox").checked || busy,
     );
+    $("#prepareMiaoshouButton").textContent = commonReadbackOnly
+      ? "只读回读并结案"
+      : "同步到妙手待发布";
+    $("#prepareMiaoshouCheckbox").parentElement.querySelector(
+      "span",
+    ).textContent = commonReadbackOnly
+      ? "我确认本次只执行妙手 COMMON 官方回读与本地结案，不再次编辑妙手。"
+      : "我确认将当前 ReleasePlan 写入妙手公共采集箱并执行回读验证。";
     const overwrite = release.common_overwrite_review || {};
     const overwriteVisible = overwrite.status === "MISMATCH";
     const overwriteExact = Boolean(
@@ -2497,20 +2837,35 @@
       && !runCounts.failed
       && !runCounts.running,
     );
-    const ledgerBlocksPublish = Boolean(
-      runGroups.draftVerify.length
-      || runGroups.draftConflict.length
-      || runGroups.reconcileOnly.length
-      || runGroups.unsafeFailure.length
-      || runGroups.manualVerify.length
-      || runGroups.running.length,
-    );
-    $("#publishAllCheckbox").disabled = Boolean(
-      !publishReady || onlyWaitingForManual || ledgerBlocksPublish || busy
+    const runnableTargetCount = Number.isInteger(release.runnable_target_count)
+      ? release.runnable_target_count
+      : runGroups.pending.length;
+    const ledgerBlocksPublish = Boolean(runGroups.running.length);
+    const publishAllCheckbox = $("#publishAllCheckbox");
+    if (busy) {
+      publishAllCheckbox.dataset.disabledReason =
+        "当前操作尚未完成；完成后系统会重新计算唯一下一步。";
+    } else if (!publishReady) {
+      publishAllCheckbox.dataset.disabledReason =
+        $("#publishAllNote").textContent || "发布前条件尚未全部通过。";
+    } else if (runnableTargetCount < 1) {
+      publishAllCheckbox.dataset.disabledReason =
+        "当前没有可安全首发或已证明零写入的目标；请按店铺卡片完成对账、修复或人工验收。";
+    } else if (ledgerBlocksPublish) {
+      publishAllCheckbox.dataset.disabledReason =
+        "仍有目标正在执行或回执尚未落账；为避免重复提交，暂不允许再次发布。";
+    } else {
+      delete publishAllCheckbox.dataset.disabledReason;
+    }
+    publishAllCheckbox.disabled = Boolean(
+      !publishReady
+      || runnableTargetCount < 1
+      || ledgerBlocksPublish
+      || busy
     );
     $("#publishAllButton").disabled = Boolean(
       !publishReady
-      || onlyWaitingForManual
+      || runnableTargetCount < 1
       || ledgerBlocksPublish
       || !$("#publishAllCheckbox").checked
       || busy,
@@ -2585,6 +2940,12 @@
 
   function renderReleaseV1(data) {
     const release = data.release_v1 || {};
+    targetRecoveryActions.clear();
+    for (const action of (release.target_recovery_actions || [])) {
+      if (action?.target_label) {
+        targetRecoveryActions.set(String(action.target_label), action);
+      }
+    }
     const plan = release.plan || {};
     const payload = plan.payload || {};
     const targets = plan.targets || payload.targets || [];
@@ -2605,12 +2966,15 @@
           ? "计划预览已形成。批准只保存本地不可变计划，不会同步或发布。"
           : translateBlocker((release.blockers || [])[0] || "完成商品事实和内容审批后生成正式计划。")
       );
+    renderReleaseRecovery(release);
 
     $("#prepareMiaoshouCheckbox").checked = Boolean(release.miaoshou_prepared);
     $("#prepareMiaoshouMessage").textContent = release.miaoshou_prepared
-      ? "妙手公共草稿已写入并回读一致；可以继续检查渠道执行条件。"
+      ? preparedMiaoshouMessage(release)
       : (
-        release.plan_approved
+        commonNeedsReadbackReconciliation(release)
+          ? "COMMON 已有一次写入记录；本操作只执行官方回读和本地结案，不会再次编辑妙手。"
+          : release.plan_approved
           ? "等待你的独立确认；此动作只准备妙手待发布商品，不会提交站点发布。"
           : "先批准当前 ReleasePlan。"
       );
@@ -2618,7 +2982,22 @@
 
     const adapterBlockers = release.adapter_blockers || [];
     const ledgerGroups = releaseTargetGroups(release.run);
-    if (ledgerGroups.draftVerify.length) {
+    const runnableTargetCount = Number.isInteger(release.runnable_target_count)
+      ? release.runnable_target_count
+      : ledgerGroups.pending.length;
+    if (release.publish_ready && runnableTargetCount > 0) {
+      const preservedCount = (
+        ledgerGroups.draftVerify.length
+        + ledgerGroups.draftConflict.length
+        + ledgerGroups.reconcileOnly.length
+        + ledgerGroups.unsafeFailure.length
+        + ledgerGroups.blockedCapability.length
+        + ledgerGroups.manualVerify.length
+      );
+      $("#publishAllNote").textContent =
+        `本次只继续发布 ${runnableTargetCount} 个从未提交或已证明零写入的目标；`
+        + `${preservedCount} 个待核验、对账或人工验收目标保持原状态且不会重发。`;
+    } else if (ledgerGroups.draftVerify.length) {
       $("#publishAllNote").textContent =
         `${targetNamesForLedger(ledgerGroups.draftVerify)} 只有妙手草稿，尚未提交店铺；`
         + "先完成草稿核验和一次性店铺提交，一键重发保持关闭。";
@@ -2630,6 +3009,10 @@
       $("#publishAllNote").textContent =
         `${targetNamesForLedger(ledgerGroups.reconcileOnly)} 已有外部结果，`
         + "只能回读/对账，禁止重发；一键发布保持关闭。";
+    } else if (ledgerGroups.blockedCapability.length) {
+      $("#publishAllNote").textContent =
+        `${targetNamesForLedger(ledgerGroups.blockedCapability)} 当前缺少受治理的自动执行能力；`
+        + "请查看对应店铺卡片的唯一解决方案。一键发布保持关闭，其他独立店铺不受影响。";
     } else if (ledgerGroups.unsafeFailure.length) {
       $("#publishAllNote").textContent =
         `${targetNamesForLedger(ledgerGroups.unsafeFailure)} 的失败边界尚未证实，`
@@ -2683,7 +3066,8 @@
           ${(run.targets || []).map((target) => {
             const targetDetail = releaseTargetDetail(target);
             return `
-            <article class="run-target ${esc(releaseTargetCssClass(target))}">
+            <article class="run-target ${esc(releaseTargetCssClass(target))}"
+              data-target-label="${esc(target.target_label)}" tabindex="-1">
               <span>${esc(targetDisplayName(target.target_label))}</span>
               <strong>${esc(releaseTargetLabel(target, statusNames))}</strong>
               <small>尝试 ${esc(String(target.attempts || 0))} 次${target.external_id ? ` · 外部 ID ${esc(target.external_id)}` : ""}</small>
@@ -3125,18 +3509,31 @@
 
   async function prepareMiaoshou() {
     if (!currentData || releaseSubmitting || !$("#prepareMiaoshouCheckbox").checked) return;
+    const readbackOnly = commonNeedsReadbackReconciliation(
+      currentData?.release_v1 || {},
+    );
     releaseSubmitting = true;
     updateReleaseControls(currentData);
-    $("#prepareMiaoshouMessage").textContent = "正在写入妙手待发布草稿并逐字段回读…";
+    $("#prepareMiaoshouMessage").textContent = readbackOnly
+      ? "正在执行妙手 COMMON 官方只读回读；不会再次编辑妙手…"
+      : "正在写入妙手待发布草稿并逐字段回读…";
     try {
       const payload = await postReleaseAction(
         "/api/product-workspace/miaoshou-draft/commit",
         currentReleaseBody({ confirm_miaoshou_write: true }),
       );
       adoptWorkflowDashboard(payload.dashboard);
-      $("#prepareMiaoshouMessage").textContent = payload.idempotent
-        ? "该计划的妙手草稿已回读成功，本次没有重复写入。"
-        : "妙手待发布草稿已写入并回读一致；尚未发布到任何站点。";
+      const application = payload.result?.spec_label_application || {};
+      $("#prepareMiaoshouMessage").textContent =
+        payload.mode === "readback_reconciliation_no_write"
+          ? "COMMON 官方回读已与计划一致并完成本地结案；本次没有再次编辑妙手。"
+          : application.status === "deferred_to_site_draft"
+          ? "妙手公共草稿已写入并回读一致；规格显示名将在各站点草稿中按已批准计划写入并校验。"
+          : (
+            payload.idempotent
+              ? "该计划的妙手草稿已回读成功，本次没有重复写入。"
+              : "妙手待发布草稿已写入并回读一致；尚未发布到任何站点。"
+          );
       showError("");
     } catch (error) {
       if (error.payload?.dashboard) {
@@ -3145,7 +3542,9 @@
       const message = friendlyError(error.message);
       showError(message);
       $("#prepareMiaoshouMessage").textContent =
-        error.payload?.common_overwrite_review
+        error.payload?.mode === "readback_reconciliation_no_write"
+          ? `${message} 本次只进行了官方回读，没有再次编辑妙手。`
+          : error.payload?.common_overwrite_review
           ? `${message} 已显示脱敏差异；普通同步不会自动覆盖。`
           : `${message} 失败状态已写入运行账本，可在修复后重试。`;
     } finally {
@@ -3365,6 +3764,10 @@
             ? `自动候选 ${item.seller_sku}`
             : "系统读取后自动分配";
           syncCurrentUrl(item);
+          // The fetched dashboard is authoritative. Clear the page-level
+          // loading gate before rendering it so an eligible plan cannot remain
+          // disabled until an unrelated later render happens to run.
+          pageLoading = false;
           render(data);
           showError("");
           if (options.collectIfMissing) {
@@ -3482,6 +3885,7 @@
     const item = queueItem(currentQueueKey);
     if (item) refreshQueueProduct(item, { collectIfMissing: true }).catch(() => {});
   });
+  $("#nextStepActionButton").addEventListener("click", runWorkflowNextAction);
   $("#refreshAllButton").addEventListener("click", refreshAllQueueProducts);
   $("#refreshChannelsButton").addEventListener("click", () => {
     const item = queueItem(currentQueueKey);
@@ -3563,6 +3967,11 @@
   $("#releasePlanApprovalForm").addEventListener("submit", (event) => {
     event.preventDefault();
     approveReleasePlan();
+  });
+  $("#releasePlanRecoveryActions").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-release-recovery]");
+    if (!button || button.disabled) return;
+    runReleaseRecovery(button.dataset.releaseRecovery);
   });
   $("#prepareMiaoshouCheckbox").addEventListener("change", () => {
     updateReleaseControls(currentData || {});

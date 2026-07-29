@@ -540,6 +540,7 @@ def test_dispatch_capability_defaults_enabled_and_explicit_disable_is_clear(
         "enable_oneclick_dispatch"
     )
     assert projected["targets"][0]["next_action_target"] is None
+    assert len(projected["targets"][0]["reason"]["detail_digest"]) == 64
 
 
 def test_http_status_never_emits_raw_adapter_detail(

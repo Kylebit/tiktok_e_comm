@@ -53,30 +53,69 @@ def test_source_page_faults_fail_closed(pages):
 
 
 def test_shopee_native_prepare_has_no_tiktok_or_legacy_dependency():
-    prepared = subject.prepare_shopee_plan_native_first_attempt(
-        {
-            "target_label": "shopee:MY",
-            "seller_sku": "0954",
-            "listing_copy": {"title": "Approved"},
-            "images": [{"position": 1}],
-            "parcel": {"weight_kg": 0.12, "package_cm": [40, 3, 3]},
-            "target_pricing": {"currency": "MYR", "price": 33},
-        }
-    )
+    prepared = subject.prepare_shopee_plan_native_first_attempt(_shopee_command())
     assert prepared["plan_native"] is True
     assert prepared["legacy_tiktok_dependency"] is False
+    assert prepared["approved"]["target_pricing"]["currency"] == "MYR"
 
 
 def test_shopee_native_prepare_rejects_legacy_dependency_marker():
     with pytest.raises(subject.OneClickPreparationError):
         subject.prepare_shopee_plan_native_first_attempt(
-            {
-                "target_label": "shopee:MY", "seller_sku": "0954",
-                "listing_copy": {"title": "Approved"}, "images": [1],
-                "parcel": {"weight_kg": 1}, "target_pricing": {"price": 1},
-                "publish_match_key": "hidden-legacy",
-            }
+            {**_shopee_command(), "publish_match_key": "hidden-legacy"}
         )
+
+
+def _shopee_command():
+    return {
+        "target_label": "shopee:MY", "seller_sku": "0954", "model_sku": "0954",
+        "listing_copy": {"title": "Approved", "description": "Approved factual description"},
+        "images": [{"position": 1, "image_url": "https://assets.example/one.jpg"}],
+        "parcel": {"weight_kg": "0.12", "package_cm": [40, 3, 3]},
+        "target_pricing": {"local_original_price": "33", "currency": "MYR"},
+        "policy": {"schema_version": "shopee-policy/v1", "policy_digest": "a" * 64},
+    }
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("listing_copy", "title"), ""),
+        (("images",), [{"position": 1, "image_url": "https://x"}, False]),
+        (("images",), [{"position": True, "image_url": "https://x"}]),
+        (("parcel", "weight_kg"), True),
+        (("parcel", "package_cm"), [40, 3, False]),
+        (("target_pricing", "local_original_price"), "NaN"),
+        (("target_pricing", "currency"), "MY"),
+        (("policy", "policy_digest"), "not-a-digest"),
+    ],
+)
+def test_shopee_prepared_payload_rejects_malformed_mixed_shapes(path, value):
+    command = _shopee_command()
+    if len(path) == 1:
+        command[path[0]] = value
+    else:
+        command[path[0]][path[1]] = value
+    with pytest.raises(subject.OneClickPreparationError):
+        subject.prepare_shopee_plan_native_first_attempt(command)
+
+
+def test_shopee_prepared_digest_changes_for_each_approved_write_field():
+    baseline = subject.prepare_shopee_plan_native_first_attempt(_shopee_command())
+    for path, value in (
+        (("listing_copy", "description"), "Changed"),
+        (("images",), [{"position": 1, "image_url": "https://assets.example/two.jpg"}]),
+        (("parcel", "weight_kg"), "0.13"),
+        (("target_pricing", "local_original_price"), "34"),
+        (("model_sku",), "0955"),
+        (("policy", "policy_digest"), "b" * 64),
+    ):
+        command = _shopee_command()
+        if len(path) == 1:
+            command[path[0]] = value
+        else:
+            command[path[0]][path[1]] = value
+        assert subject.prepare_shopee_plan_native_first_attempt(command)["prepared_digest"] != baseline["prepared_digest"]
 
 
 @pytest.mark.parametrize(

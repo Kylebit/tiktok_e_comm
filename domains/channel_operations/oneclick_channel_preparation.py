@@ -9,6 +9,7 @@ before any claim/create operation can be considered.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 
@@ -108,21 +109,90 @@ def prepare_shopee_plan_native_first_attempt(command: Mapping[str, object]) -> d
     forbidden = {"publish_match_key", "_find_tk_for_global", "shop.db.products", "tiktok_api"}
     if not isinstance(command, Mapping) or any(key in command for key in forbidden):
         raise OneClickPreparationError("shopee_plan_native_command_invalid")
-    required = ("target_label", "seller_sku", "listing_copy", "images", "parcel", "target_pricing")
-    if any(not command.get(key) for key in required):
-        raise OneClickPreparationError("shopee_plan_native_command_incomplete")
     target = command.get("target_label")
     if target not in {"shopee:PH", "shopee:MY", "shopee:TH", "shopee:VN"}:
         raise OneClickPreparationError("shopee_target_unsupported")
-    payload = {
-        "schema_version": "shopee-plan-native-first-attempt/v1",
+    seller_sku = command.get("seller_sku")
+    model_sku = command.get("model_sku")
+    copy = command.get("listing_copy")
+    policy = command.get("policy")
+    if (
+        type(seller_sku) is not str or not seller_sku.strip()
+        or type(model_sku) is not str or not model_sku.strip()
+        or not isinstance(copy, Mapping)
+        or type(copy.get("title")) is not str or not copy["title"].strip()
+        or type(copy.get("description")) is not str or not copy["description"].strip()
+        or not isinstance(policy, Mapping)
+        or type(policy.get("schema_version")) is not str or not policy["schema_version"].strip()
+        or not _sha256(policy.get("policy_digest"))
+    ):
+        raise OneClickPreparationError("shopee_plan_native_command_incomplete")
+    images = command.get("images")
+    if not isinstance(images, list) or not images:
+        raise OneClickPreparationError("shopee_images_invalid")
+    normalized_images: list[dict[str, object]] = []
+    for index, image in enumerate(images, start=1):
+        if (
+            not isinstance(image, Mapping)
+            or type(image.get("position")) is not int
+            or image["position"] != index
+            or type(image.get("image_url")) is not str
+            or not image["image_url"].strip()
+        ):
+            raise OneClickPreparationError("shopee_images_invalid")
+        normalized_images.append({"position": index, "image_url": image["image_url"].strip()})
+    urls = [str(image["image_url"]) for image in normalized_images]
+    if len(urls) != len(set(urls)):
+        raise OneClickPreparationError("shopee_images_invalid")
+    parcel = command.get("parcel")
+    if not isinstance(parcel, Mapping):
+        raise OneClickPreparationError("shopee_parcel_invalid")
+    weight = _positive_decimal(parcel.get("weight_kg"))
+    package = parcel.get("package_cm")
+    if not isinstance(package, list) or len(package) != 3:
+        raise OneClickPreparationError("shopee_parcel_invalid")
+    dimensions = [_positive_decimal(value) for value in package]
+    pricing = command.get("target_pricing")
+    if not isinstance(pricing, Mapping):
+        raise OneClickPreparationError("shopee_pricing_invalid")
+    price = _positive_decimal(pricing.get("local_original_price"))
+    currency = pricing.get("currency")
+    if type(currency) is not str or not currency.strip().isalpha() or len(currency.strip()) != 3:
+        raise OneClickPreparationError("shopee_pricing_invalid")
+    approved = {
         "target_label": target,
-        "seller_sku": command["seller_sku"],
+        "seller_sku": seller_sku.strip(),
+        "model_sku": model_sku.strip(),
+        "listing_copy": {"title": copy["title"].strip(), "description": copy["description"].strip()},
+        "ordered_images": normalized_images,
+        "parcel": {"weight_kg": str(weight), "package_cm": [str(value) for value in dimensions]},
+        "target_pricing": {"local_original_price": str(price), "currency": currency.strip().upper()},
+        "policy": {"schema_version": policy["schema_version"].strip(), "policy_digest": policy["policy_digest"]},
+    }
+    payload = {
+        "schema_version": "shopee-plan-native-first-attempt/v2",
+        "approved": approved,
         "plan_native": True,
         "legacy_tiktok_dependency": False,
         "external_writes_performed": [],
     }
     return {**payload, "prepared_digest": _digest(payload)}
+
+
+def _positive_decimal(value: object) -> Decimal:
+    if value is None or isinstance(value, bool):
+        raise OneClickPreparationError("shopee_numeric_field_invalid")
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError) as error:
+        raise OneClickPreparationError("shopee_numeric_field_invalid") from error
+    if not number.is_finite() or number <= 0:
+        raise OneClickPreparationError("shopee_numeric_field_invalid")
+    return number
+
+
+def _sha256(value: object) -> bool:
+    return type(value) is str and len(value) == 64 and all(char in "0123456789abcdef" for char in value)
 
 
 def classify_shopee_dispatch_boundary(

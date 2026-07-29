@@ -195,6 +195,35 @@ def _successor_dashboard(dashboard: dict) -> dict:
     return dashboard
 
 
+def test_release_plan_rejection_returns_fresh_dashboard_and_exact_blocker(
+    tmp_path,
+    monkeypatch,
+):
+    store = ReleaseStore(tmp_path / "release.db")
+    monkeypatch.setattr(release_store, "default_release_store", lambda: store)
+    dashboard = _dashboard()
+    dashboard["product"]["actual_product_approved"] = False
+    monkeypatch.setattr(
+        release_control,
+        "build_release_dashboard",
+        lambda **_kwargs: dashboard,
+    )
+    view = product_server._product_workspace_view(dashboard)
+
+    status, payload = product_server._approve_release_plan_locally(
+        _request(view, approved_by="Kyle", user_approved=True)
+    )
+
+    assert status == 409
+    assert payload["error_code"] == "release_plan_not_ready"
+    assert payload["error"] == "商品事实尚未由 Kyle 批准并锁定"
+    assert payload["blockers"] == ["商品事实尚未由 Kyle 批准并锁定"]
+    assert payload["external_writes_performed"] == []
+    assert payload["dashboard"]["release_v1"]["eligible_for_plan_approval"] is False
+    assert payload["dashboard"]["product"]["actual_product_approved"] is False
+    assert store.active_plan_for_product("3828540231") is None
+
+
 def _approved_successor_context(tmp_path, monkeypatch, *, readback=None):
     store = ReleaseStore(tmp_path / "release.db")
     monkeypatch.setattr(release_store, "default_release_store", lambda: store)

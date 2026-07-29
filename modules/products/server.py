@@ -4533,10 +4533,14 @@ def _approve_release_plan_locally(data: dict) -> tuple[int, dict]:
     assert dashboard is not None
     plan_payload, blockers = _release_plan_payload_from_dashboard(dashboard)
     if blockers:
+        current_dashboard = _product_workspace_view(dashboard)
         return 409, {
             "ok": False,
-            "error": "release plan is not ready for approval",
+            "error_code": "release_plan_not_ready",
+            "error": blockers[0],
             "blockers": blockers,
+            "dashboard": current_dashboard,
+            "external_writes_performed": [],
         }
     store = default_release_store()
     preview = store.preview_plan(plan_payload)

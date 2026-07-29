@@ -386,6 +386,17 @@ def _legacy_migration_fixture(tmp_path: Path, monkeypatch):
     )
     monkeypatch.setattr(
         workbench,
+        "_source_summary",
+        lambda _offer: {
+            "images": [
+                {"url": first, "kind": "main"},
+                {"url": second, "kind": "detail"},
+            ],
+            "video": {},
+        },
+    )
+    monkeypatch.setattr(
+        workbench,
         "save_state",
         lambda _offer, value: saved_states.append(copy.deepcopy(value)) or value,
     )

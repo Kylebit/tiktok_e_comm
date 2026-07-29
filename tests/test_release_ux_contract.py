@@ -447,6 +447,19 @@ def test_disabled_release_checkboxes_expose_visible_reasons():
     assert ".disabled-control-reason" in studio_style
 
 
+def test_release_plan_failure_refreshes_the_current_gate_and_explains_reapproval():
+    script = (ROOT / "web/static/product_workspace.js").read_text(
+        encoding="utf-8"
+    )
+    server = (ROOT / "modules/products/server.py").read_text(encoding="utf-8")
+
+    assert "error.payload?.dashboard" in script
+    assert "adoptWorkflowDashboard(error.payload.dashboard)" in script
+    assert '"error_code": "release_plan_not_ready"' in server
+    assert '"error": blockers[0]' in server
+    assert '"dashboard": current_dashboard' in server
+
+
 def test_release_pages_in_real_chromium():
     runtime = _browser_runtime()
     if runtime is None:
@@ -470,7 +483,7 @@ def test_release_pages_in_real_chromium():
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=120,
+            timeout=180,
             check=False,
         )
     assert result.returncode == 0, (

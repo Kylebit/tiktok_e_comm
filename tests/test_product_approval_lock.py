@@ -150,6 +150,56 @@ def test_content_changes_do_not_supersede_product_facts_but_product_changes_do()
     assert changed_product.approved_package is not None
 
 
+def test_negative_video_decision_is_fingerprint_bound_and_requires_reapproval():
+    keep = preview_product_approval_lock(
+        state={"offer_id": "3828811808"},
+        product_row=_product(),
+        content_package=_content(),
+        seller_sku="0946",
+        known_seller_skus=(),
+        user_approved=True,
+        approval_fact=_approval(),
+        approval_input_facts={"video_action": "keep"},
+    )
+    approved_state = {
+        "offer_id": "3828811808",
+        "product_approval": keep.state_patch["product_approval"],
+    }
+
+    unchanged = preview_product_approval_lock(
+        state=approved_state,
+        product_row=_product(),
+        content_package=_content(),
+        seller_sku="0946",
+        known_seller_skus=(),
+        user_approved=True,
+        approval_fact=_approval(),
+        approval_input_facts={"video_action": "keep"},
+    )
+    removed = preview_product_approval_lock(
+        state=approved_state,
+        product_row=_product(),
+        content_package=_content(),
+        seller_sku="0946",
+        known_seller_skus=(),
+        user_approved=True,
+        approval_fact={
+            **_approval(),
+            "approval_id": "product-approval-video-remove",
+        },
+        approval_input_facts={"video_action": "remove"},
+    )
+
+    assert unchanged.idempotent is True
+    assert removed.idempotent is False
+    assert removed.approved_package is not None
+    assert removed.supersedes_approval_id == "product-approval-1"
+    assert (
+        removed.state_patch["product_approval"]["input_fingerprint"]
+        != keep.state_patch["product_approval"]["input_fingerprint"]
+    )
+
+
 def test_equivalent_integral_float_facts_do_not_supersede_approval():
     initial = preview_product_approval_lock(
         state={"offer_id": "3828811808"},

@@ -17,6 +17,14 @@ from .product_facts import (
     SelectedSkuPriceFact,
     build_product_facts_snapshot,
 )
+from .source_identity import (
+    BLOCKED_SOURCE_IDENTITY,
+    SCHEMA_VERSION as SOURCE_PRODUCT_IDENTITY_SCHEMA_VERSION,
+    SourceIdentityEvidence,
+    SourceProductIdentity,
+    SourceProductIdentityResolution,
+    resolve_source_product_identity,
+)
 
 __all__ = [
     "ApprovedProductPackage",
@@ -34,4 +42,10 @@ __all__ = [
     "ProductFactsSnapshot",
     "SelectedSkuPriceFact",
     "build_product_facts_snapshot",
+    "BLOCKED_SOURCE_IDENTITY",
+    "SOURCE_PRODUCT_IDENTITY_SCHEMA_VERSION",
+    "SourceIdentityEvidence",
+    "SourceProductIdentity",
+    "SourceProductIdentityResolution",
+    "resolve_source_product_identity",
 ]

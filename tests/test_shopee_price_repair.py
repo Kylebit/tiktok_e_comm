@@ -326,7 +326,7 @@ def test_price_reconciliation_adapter_is_get_only_and_keeps_sip_warning(
     assert result.readback_evidence["profit_status"] == "unverified"
     assert calls[0]["allow_token_refresh"] is False
     assert calls[0]["require_model_sku"] is True
-    assert calls[0]["require_all_logistics"] is True
+    assert calls[0]["require_all_logistics"] is False
 
 
 @pytest.mark.parametrize(

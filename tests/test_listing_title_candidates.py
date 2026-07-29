@@ -7,6 +7,8 @@ import pytest
 from domains.content_operations.listing_title_candidates import (
     EXPECTED_TARGETS,
     TOAPI_TITLE_MODEL,
+    _deterministic_shopee_title,
+    _validate_shopee_master_coverage,
     fact_signature,
     generate_title_candidates,
     model_input_signature,
@@ -94,7 +96,7 @@ def test_model_candidates_are_platform_specific_and_auditable():
     assert result["status"] == "draft_pending_kyle_review"
     assert result["provider"] == "toapi"
     assert result["model"] == TOAPI_TITLE_MODEL
-    assert result["schema_version"] == "listing-copy-candidates-v5"
+    assert result["schema_version"] == "listing-copy-candidates-v6"
     assert result["generation_attempts"] == 1
     assert result["repair_performed"] is False
     assert len(result["shopee_description_en"]) >= 500
@@ -158,6 +160,40 @@ def test_second_non_english_description_uses_fact_bound_english_fallback():
     assert "中文内容" not in result["shopee_description_en"]
     assert result["shopee_description_en"].startswith("PRODUCT OVERVIEW")
     assert len(result["candidates"]) == len(EXPECTED_TARGETS)
+
+
+def test_second_response_can_repair_title_and_description_independently():
+    rejected = json.loads(_model_payload())
+    rejected["semantic_master_en"] = (
+        "Large PVC Butterfly Floral Landscape Background Wall Sticker "
+        "for Living Room and Bedroom, 1 Piece"
+    )
+    rejected["shopee_description_en"] += "\n中文内容不允许进入全球描述"
+    shopee = next(
+        row
+        for row in rejected["candidates"]
+        if row["channel"] == "shopee" and row["site"] == "CNSC"
+    )
+    shopee["title"] = "Large PVC Floral Wall Sticker"
+
+    result = generate_title_candidates(
+        _facts(),
+        model_call=lambda *_args, **_kwargs: json.dumps(
+            rejected,
+            ensure_ascii=False,
+        ),
+    )
+    safe_title = next(
+        row["title"]
+        for row in result["candidates"]
+        if row["channel"] == "shopee" and row["site"] == "CNSC"
+    )
+
+    assert result["title_fallback_used"] is True
+    assert result["description_fallback_used"] is True
+    assert "Butterfly" in safe_title
+    assert "Background" in safe_title
+    assert "中文" not in result["shopee_description_en"]
 
 
 def test_non_english_source_brand_line_is_omitted_from_english_description():
@@ -248,6 +284,85 @@ def test_wrong_platform_language_is_rejected():
     )
     thai["title"] = "English title incorrectly returned for Thailand"
     with pytest.raises(ValueError, match="not Thai"):
+        generate_title_candidates(
+            _facts(),
+            model_call=lambda *_args, **_kwargs: json.dumps(
+                payload,
+                ensure_ascii=False,
+            ),
+        )
+
+
+def test_shopee_candidate_dropping_window_identity_uses_safe_fallback():
+    payload = json.loads(_model_payload())
+    payload["semantic_master_en"] = (
+        "Cute Cat PVC Static Cling Window Sticker Wall Decal, "
+        "Flat Decorative Wall Sticker for Bedroom and Living Room, 50 x 43 cm"
+    )
+    shopee = next(
+        row
+        for row in payload["candidates"]
+        if row["channel"] == "shopee" and row["site"] == "CNSC"
+    )
+    shopee["title"] = "Cute Cat PVC Static Cling Wall Sticker 50 x 43 cm"
+
+    result = generate_title_candidates(
+        _facts(),
+        model_call=lambda *_args, **_kwargs: json.dumps(
+            payload,
+            ensure_ascii=False,
+        ),
+    )
+    safe_title = next(
+        row["title"]
+        for row in result["candidates"]
+        if row["channel"] == "shopee" and row["site"] == "CNSC"
+    )
+
+    assert result["generation_attempts"] == 2
+    assert result["title_fallback_used"] is True
+    assert "Window Sticker Wall Decal" in safe_title
+    assert len(safe_title) <= 120
+
+
+def test_long_shopee_identity_fallback_never_truncates_tail_identity_term():
+    master = (
+        "Large Premium Decorative PVC Floral Butterfly Wall Sticker Mural "
+        "for Bedroom Living Room Rental Home Interior Background, "
+        "Flat Wall Decal with Botanical Design"
+    )
+
+    safe_title = _deterministic_shopee_title(master)
+
+    assert len(safe_title) <= 120
+    assert "Background" in safe_title
+    _validate_shopee_master_coverage(master, safe_title)
+
+
+def test_shopee_fallback_keeps_natural_faux_window_product_phrase():
+    master = (
+        "Large PVC floral landscape background wall sticker, butterfly faux "
+        "window wall decal, flat wall decor for living room and bedroom"
+    )
+
+    safe_title = _deterministic_shopee_title(master)
+
+    assert len(safe_title) <= 120
+    assert "butterfly faux window wall decal" in safe_title
+    assert not safe_title.endswith((" and", " for"))
+    _validate_shopee_master_coverage(master, safe_title)
+
+
+def test_variant_label_noise_cannot_become_semantic_product_master():
+    payload = json.loads(_model_payload())
+    payload["semantic_master_en"] = (
+        "Large PVC Floral Butterfly Wall Sticker, Picture Color"
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="variant label instead of product identity",
+    ):
         generate_title_candidates(
             _facts(),
             model_call=lambda *_args, **_kwargs: json.dumps(

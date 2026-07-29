@@ -21,6 +21,7 @@ from shared_platform.release_control import (
     summarize_weekly_profit_payload,
 )
 from shared_platform.report_store import ReportRunStore
+from shared_platform.release_store import ReleaseStore
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -989,6 +990,121 @@ def test_release_dashboard_ignores_unapproved_and_self_reservations(tmp_path):
         seller_sku="0946",
     )
 
+    assert result["approval_rehearsal"]["ready"] is True
+
+
+def test_successor_dashboard_preserves_explicit_predecessor_seller_sku(
+    tmp_path,
+):
+    root, database = _release_fixture(tmp_path)
+    state_path = (
+        root / "data" / "new_product_workbench" / "3828811808.json"
+    )
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    predecessor_sku = "0022"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO products VALUES (?)", (predecessor_sku,)
+        )
+
+    store = ReleaseStore(root / "data" / "orbit_platform.db")
+    predecessor = store.create_plan(
+        {
+            "plan_id": "omnichannel:predecessor",
+            "product_id": "3828811808",
+            "seller_sku": predecessor_sku,
+            "product_package_id": "product:3828811808:0022",
+            "content_package_id": "content:3828811808",
+            "targets": ["miaoshou:COMMON", "shopee:PH"],
+            "commercial_scope": {"policy": "test"},
+        }
+    )
+    store.approve_plan(
+        predecessor["plan_id"],
+        approved_by="Kyle",
+        user_approved=True,
+        confirmation_token=predecessor["confirmation_token"],
+    )
+    store.supersede_plan(
+        predecessor["plan_id"],
+        reason="Kyle adopted refreshed approved listing copy",
+    )
+    state["review"]["seller_sku"] = predecessor_sku
+    state["review"]["fields_locked"] = False
+    state["listing_copy"] = {
+        "superseded_release_plan_id": predecessor["plan_id"]
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    result = build_release_dashboard(
+        root=root,
+        database_path=database,
+        report_store_path=store.path,
+        offer_id="3828811808",
+    )
+
+    governance = result["product"]["seller_sku_governance"]
+    assert result["product"]["seller_sku_candidate"] == predecessor_sku
+    assert governance["allocation_source"] == "release_plan_lineage"
+    assert governance["available"] is True
+    assert governance["reservation_conflicts"] == []
+    assert (
+        "seller_sku is already assigned in the local catalog"
+        not in result["approval_rehearsal"]["blockers"]
+    )
+
+
+def test_successor_dashboard_repairs_wrong_locked_sku_to_lineage(tmp_path):
+    root, database = _release_fixture(tmp_path)
+    state_path = (
+        root / "data" / "new_product_workbench" / "3828811808.json"
+    )
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    predecessor_sku = "0022"
+    wrong_locked_sku = "0023"
+    store = ReleaseStore(root / "data" / "orbit_platform.db")
+    predecessor = store.create_plan(
+        {
+            "plan_id": "omnichannel:predecessor",
+            "product_id": "3828811808",
+            "seller_sku": predecessor_sku,
+            "product_package_id": "product:3828811808:0022",
+            "content_package_id": "content:3828811808",
+            "targets": ["miaoshou:COMMON", "shopee:PH"],
+            "commercial_scope": {"policy": "test"},
+        }
+    )
+    store.approve_plan(
+        predecessor["plan_id"],
+        approved_by="Kyle",
+        user_approved=True,
+        confirmation_token=predecessor["confirmation_token"],
+    )
+    store.supersede_plan(predecessor["plan_id"], reason="facts changed")
+    state["review"]["seller_sku"] = wrong_locked_sku
+    state["review"]["fields_locked"] = True
+    state["product_approval"] = {
+        "status": "approved",
+        "subject_type": "product",
+        "subject_id": "3828811808",
+        "seller_sku": wrong_locked_sku,
+    }
+    state["listing_copy"] = {
+        "superseded_release_plan_id": predecessor["plan_id"]
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    result = build_release_dashboard(
+        root=root,
+        database_path=database,
+        report_store_path=store.path,
+        offer_id="3828811808",
+    )
+
+    governance = result["product"]["seller_sku_governance"]
+    assert result["product"]["seller_sku_candidate"] == predecessor_sku
+    assert governance["allocation_source"] == "release_plan_lineage_repair"
+    assert result["product"]["actual_product_approved"] is False
     assert result["approval_rehearsal"]["ready"] is True
 
 

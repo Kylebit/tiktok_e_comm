@@ -396,6 +396,7 @@ def test_formal_pages_expose_accessible_feedback_regions():
             'role="alert"',
             'id="nextStepTitle"',
             'id="nextStepDescription"',
+            'id="nextStepActionButton"',
         ],
         "web/ai_image_studio.html": [
             'id="alert"',
@@ -431,8 +432,8 @@ def test_disabled_release_checkboxes_expose_visible_reasons():
         encoding="utf-8"
     )
 
-    assert "disabled_control_hints.js?v=20260729-v1" in html
-    assert "disabled_control_hints.js?v=20260729-v1" in studio_html
+    assert "disabled_control_hints.js?v=20260729-v2" in html
+    assert "disabled_control_hints.js?v=20260729-v2" in studio_html
     for control_id in (
         "releasePlanCheckbox",
         "prepareMiaoshouCheckbox",
@@ -441,10 +442,56 @@ def test_disabled_release_checkboxes_expose_visible_reasons():
     ):
         assert control_id in script
     assert "暂不可选：" in script
+    assert "control.dataset.disabledReason" in script
+    assert 'known.includes("计划预览已形成")' not in script
     assert 'control.setAttribute("aria-describedby", hint.id)' in script
     assert 'document.querySelectorAll(\'input[type="checkbox"]\')' in script
     assert ".disabled-control-reason" in style
     assert ".disabled-control-reason" in studio_style
+
+
+def test_workspace_consumes_server_owned_next_action_instead_of_guessing():
+    html = (ROOT / "web/product_workspace.html").read_text(encoding="utf-8")
+    script = (ROOT / "web/static/product_workspace.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'id="nextStepActionButton"' in html
+    assert "product-workflow-next-action/v1" in script
+    assert "data.workflow_next_action" in script
+    assert "runWorkflowNextAction" in script
+    assert "canonical_common_readback" in script
+    assert (
+        '$("#nextStepActionButton").addEventListener("click", '
+        "runWorkflowNextAction)"
+    ) in script
+
+
+def test_blocked_release_plan_exposes_a_recovery_action_instead_of_a_dead_end():
+    html = (ROOT / "web/product_workspace.html").read_text(encoding="utf-8")
+    script = (ROOT / "web/static/product_workspace.js").read_text(
+        encoding="utf-8"
+    )
+    style = (ROOT / "web/static/product_workspace.css").read_text(
+        encoding="utf-8"
+    )
+
+    for token in (
+        'id="releasePlanRecovery"',
+        'id="releasePlanRecoveryDetail"',
+        'id="releasePlanRecoveryActions"',
+        'id="listingCopyAssistant"',
+    ):
+        assert token in html
+    assert "renderReleaseRecovery(release)" in script
+    assert 'code === "refresh_listing_copy"' in script
+    assert 'code === "adopt_listing_copy"' in script
+    assert 'data-release-recovery="${esc(action.code)}"' in script
+    assert "重新检查并定位未完成步骤" in script
+    assert "titleAdoptSubmitting" in script
+    assert "updateReleaseControls(currentData || {})" in script
+    assert "pageLoading = false;" in script
+    assert ".release-plan-recovery" in style
 
 
 def test_release_plan_failure_refreshes_the_current_gate_and_explains_reapproval():

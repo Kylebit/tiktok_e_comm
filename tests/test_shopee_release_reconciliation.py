@@ -20,35 +20,50 @@ def _expectation(region: str, *, cny: float, local: float, rate: float):
     )
 
 
-def _install_readback(monkeypatch, *, region: str, price_info: dict):
+def _install_readback(
+    monkeypatch,
+    *,
+    region: str,
+    price_info: dict,
+    logistics: list[dict] | None = None,
+    base_error: str = "",
+    model_error: str = "",
+):
     from modules.shopee import auth, client, publish
 
     monkeypatch.setattr(publish, "sync_shop_ids", lambda: {region: 123})
     monkeypatch.setattr(auth, "ensure_shop_token", lambda _shop_id: "token")
-    title = (
-        "สติกเกอร์ติดผนังลายสัตว์สำหรับตกแต่งห้อง"
-        if region == "TH"
-        else "Approved Shopee title"
-    )
-    description = (
-        "รายละเอียดสินค้าสำหรับตกแต่งผนังและห้องเด็ก " * 30
-        if region == "TH"
-        else "Detailed approved description. " * 30
-    )
+    if region == "TH":
+        title = "สติกเกอร์ติดผนังลายสัตว์สำหรับตกแต่งห้อง"
+        description = "รายละเอียดสินค้าสำหรับตกแต่งผนังและห้องเด็ก " * 30
+    elif region == "VN":
+        title = "Miếng dán tường PVC hình mèo trang trí phòng"
+        description = "Mô tả sản phẩm trang trí tường bằng tiếng Việt. " * 30
+    else:
+        title = "Approved Shopee title"
+        description = "Detailed approved description. " * 30
 
     def fake_get(path, _shop_id, _token, _params):
         if path.endswith("get_item_base_info"):
             return {
+                "error": base_error,
                 "response": {
                     "item_list": [
                         {
+                            "item_id": {
+                                "PH": 56164935203,
+                                "TH": 51564925929,
+                                "VN": 47465070376,
+                            }[region],
                             "item_name": title,
                             "item_sku": "",
                             "item_status": "NORMAL",
                             "currency": price_info["currency"],
                             "has_model": True,
                             "description": description,
-                            "logistic_info": [
+                            "logistic_info": logistics
+                            if logistics is not None
+                            else [
                                 {
                                     "logistic_id": 48002,
                                     "logistic_name": "Standard",
@@ -66,6 +81,7 @@ def _install_readback(monkeypatch, *, region: str, price_info: dict):
                 }
             }
         return {
+            "error": model_error,
             "response": {
                 "model": [
                     {
@@ -178,6 +194,216 @@ def test_readback_gates_regional_local_price_and_observes_sip(
     assert evidence["derived_price_status"] == "matched"
     assert evidence["profit_status"] == "unverified"
     assert evidence["platform_derived_observation"]["writable"] is False
+
+
+def test_vn_readback_accepts_enabled_channels_with_disabled_non_applicable_rows(
+    monkeypatch,
+):
+    logistics = [
+        {"logistic_id": 5004, "logistic_name": "Bulky", "enabled": True},
+        {"logistic_id": 5001, "logistic_name": "Fast", "enabled": True},
+        {
+            "logistic_id": 58007,
+            "logistic_name": "Standard International",
+            "enabled": True,
+        },
+        {"logistic_id": 50053, "logistic_name": "Pickup", "enabled": True},
+        {"logistic_id": 58018, "logistic_name": "Locker", "enabled": False},
+        {"logistic_id": 50052, "logistic_name": "Locker", "enabled": False},
+        {"logistic_id": 50039, "logistic_name": "Locker", "enabled": False},
+    ]
+    _install_readback(
+        monkeypatch,
+        region="VN",
+        price_info={
+            "currency": "VND",
+            "original_price": 251000,
+            "current_price": 251000,
+        },
+        logistics=logistics,
+    )
+
+    verified, evidence = release_adapters._shopee_readback(
+        match_key="0954",
+        region="VN",
+        item_id="47465070376",
+        expected_title="Approved English master",
+        expected_price=251000,
+        expected_image_count=2,
+        expected_description="Approved English description. " * 30,
+    )
+
+    assert verified is True
+    assert evidence["checks"]["all_applicable_logistics"] is True
+    assert evidence["enabled_logistics_count"] == 4
+    assert len(evidence["disabled_logistics"]) == 3
+    assert evidence["logistics_verification_policy"] == (
+        "shopee-official-enabled-logistics-present/v1"
+    )
+
+
+def test_readback_fails_closed_on_non_boolean_logistics_shape(monkeypatch):
+    _install_readback(
+        monkeypatch,
+        region="PH",
+        price_info={
+            "currency": "PHP",
+            "original_price": 868,
+            "current_price": 868,
+            "sip_item_price": 81.69,
+        },
+        logistics=[
+            {"logistic_id": 48002, "logistic_name": "Standard", "enabled": True},
+            {"logistic_id": 48003, "logistic_name": "Malformed", "enabled": 1},
+        ],
+    )
+
+    verified, evidence = release_adapters._shopee_readback(
+        match_key="0954",
+        region="PH",
+        item_id="56164935203",
+        expected_title="Approved Shopee title",
+        expected_price=_expectation(
+            "PH",
+            cny=81.69,
+            local=868,
+            rate=0.0941129032,
+        ),
+        expected_image_count=2,
+    )
+
+    assert verified is False
+    assert evidence["checks"]["all_applicable_logistics"] is False
+
+
+@pytest.mark.parametrize(
+    ("base_error", "model_error", "expected_reason"),
+    [
+        ("timeout", "", "item_base_info_invalid"),
+        ("", "timeout", "model_list_invalid"),
+    ],
+)
+def test_readback_rejects_top_level_errors_even_with_matching_payload(
+    monkeypatch,
+    base_error,
+    model_error,
+    expected_reason,
+):
+    _install_readback(
+        monkeypatch,
+        region="PH",
+        price_info={
+            "currency": "PHP",
+            "original_price": 868,
+            "current_price": 868,
+            "sip_item_price": 81.69,
+        },
+        base_error=base_error,
+        model_error=model_error,
+    )
+
+    verified, evidence = release_adapters._shopee_readback(
+        match_key="0954",
+        region="PH",
+        item_id="56164935203",
+        expected_title="Approved Shopee title",
+        expected_price=_expectation(
+            "PH",
+            cny=81.69,
+            local=868,
+            rate=0.0941129032,
+        ),
+        expected_image_count=2,
+    )
+
+    assert verified is False
+    assert evidence["reason"] == expected_reason
+
+
+def test_readback_rejects_duplicate_logistics_ids(monkeypatch):
+    _install_readback(
+        monkeypatch,
+        region="PH",
+        price_info={
+            "currency": "PHP",
+            "original_price": 868,
+            "current_price": 868,
+            "sip_item_price": 81.69,
+        },
+        logistics=[
+            {"logistic_id": 48002, "logistic_name": "Standard", "enabled": True},
+            {"logistic_id": 48002, "logistic_name": "Duplicate", "enabled": False},
+        ],
+    )
+
+    verified, evidence = release_adapters._shopee_readback(
+        match_key="0954",
+        region="PH",
+        item_id="56164935203",
+        expected_title="Approved Shopee title",
+        expected_price=_expectation(
+            "PH",
+            cny=81.69,
+            local=868,
+            rate=0.0941129032,
+        ),
+        expected_image_count=2,
+    )
+
+    assert verified is False
+    assert evidence["checks"]["all_applicable_logistics"] is False
+
+
+def test_dispatch_bound_logistics_require_exact_enabled_set(monkeypatch):
+    _install_readback(
+        monkeypatch,
+        region="PH",
+        price_info={
+            "currency": "PHP",
+            "original_price": 868,
+            "current_price": 868,
+            "sip_item_price": 81.69,
+        },
+        logistics=[
+            {"logistic_id": 48002, "logistic_name": "Standard", "enabled": True},
+            {"logistic_id": 48003, "logistic_name": "Pickup", "enabled": True},
+            {"logistic_id": 48004, "logistic_name": "Locker", "enabled": False},
+        ],
+    )
+    common = {
+        "match_key": "0954",
+        "region": "PH",
+        "item_id": "56164935203",
+        "expected_title": "Approved Shopee title",
+        "expected_price": _expectation(
+            "PH",
+            cny=81.69,
+            local=868,
+            rate=0.0941129032,
+        ),
+        "expected_image_count": 2,
+        "require_all_logistics": True,
+    }
+
+    verified, evidence = release_adapters._shopee_readback(
+        **common,
+        expected_enabled_logistic_ids=[48002, 48003],
+    )
+    missing, missing_evidence = release_adapters._shopee_readback(
+        **common,
+        expected_enabled_logistic_ids=[48002],
+    )
+    extra, extra_evidence = release_adapters._shopee_readback(
+        **common,
+        expected_enabled_logistic_ids=[48002, 48003, 48005],
+    )
+
+    assert verified is True
+    assert evidence["checks"]["all_applicable_logistics"] is True
+    assert missing is False
+    assert missing_evidence["checks"]["all_applicable_logistics"] is False
+    assert extra is False
+    assert extra_evidence["checks"]["all_applicable_logistics"] is False
 
 
 def test_readback_fails_closed_on_local_currency_mismatch(monkeypatch):

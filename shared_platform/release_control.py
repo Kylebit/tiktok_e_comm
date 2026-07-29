@@ -913,6 +913,34 @@ def build_release_dashboard(
         report_store_path or project_root / "data" / "orbit_platform.db"
     )
     release_store = ReleaseStore(release_store_path)
+    listing_copy_state = (
+        state.get("listing_copy")
+        if isinstance(state.get("listing_copy"), Mapping)
+        else {}
+    )
+    lineage_plan = release_store.active_plan_for_product(clean_offer_id)
+    if not lineage_plan:
+        lineage_plan_id = str(
+            listing_copy_state.get("superseded_release_plan_id") or ""
+        ).strip()
+        lineage_candidate = (
+            release_store.get_plan(lineage_plan_id)
+            if lineage_plan_id
+            else None
+        )
+        if (
+            lineage_candidate
+            and str(lineage_candidate.get("product_id") or "").strip()
+            == clean_offer_id
+        ):
+            lineage_plan = lineage_candidate
+    lineage_seller_sku = str(
+        (lineage_plan or {}).get("seller_sku") or ""
+    ).strip()
+    if lineage_seller_sku and (
+        not lineage_seller_sku.isdigit() or len(lineage_seller_sku) > 32
+    ):
+        raise ValueError("release plan lineage has an invalid seller_sku")
     for row in release_store.active_sku_reservations():
         if str(row.get("product_id") or "").strip() == clean_offer_id:
             continue
@@ -958,7 +986,20 @@ def build_release_dashboard(
         )
     )
     requested_seller_sku = str(seller_sku or "").strip()
-    if has_locked_sku:
+    locked_sku_drifted_from_lineage = bool(
+        has_locked_sku
+        and lineage_seller_sku
+        and locked_review_sku != lineage_seller_sku
+    )
+    if locked_sku_drifted_from_lineage:
+        # A successor may never change the Seller SKU. Older dashboard
+        # versions could lock a newly allocated catalogue candidate after the
+        # predecessor was superseded. Project the immutable predecessor SKU so
+        # Kyle can re-approve the corrected local facts; do not let the stale
+        # workbench lock create an impossible successor identity.
+        clean_seller_sku = _clean_seller_sku(lineage_seller_sku)
+        seller_sku_source = "release_plan_lineage_repair"
+    elif has_locked_sku:
         clean_seller_sku = _clean_seller_sku(locked_review_sku)
         seller_sku_source = "approved_workbench_lock"
     elif requested_seller_sku:
@@ -966,6 +1007,13 @@ def build_release_dashboard(
         # this argument and always consumes the automatic catalog candidate.
         clean_seller_sku = _clean_seller_sku(requested_seller_sku)
         seller_sku_source = "legacy_explicit_candidate"
+    elif lineage_seller_sku:
+        # Editing approved facts creates a successor ReleasePlan, not a new
+        # product identity. Preserve the exact immutable Seller SKU from the
+        # active or explicitly superseded predecessor even when the workbench
+        # facts are temporarily unlocked for Kyle's re-approval.
+        clean_seller_sku = _clean_seller_sku(lineage_seller_sku)
+        seller_sku_source = "release_plan_lineage"
     else:
         if not next_seller_skus:
             raise ValueError(
@@ -973,8 +1021,12 @@ def build_release_dashboard(
             )
         clean_seller_sku = next_seller_skus[0]
         seller_sku_source = "automatic_catalog_and_reservation_scan"
+    lineage_owns_seller_sku = bool(
+        lineage_seller_sku
+        and lineage_seller_sku == clean_seller_sku
+    )
     approval_known_skus = known_skus
-    if _catalog_sku_is_owned_by_release(
+    if lineage_owns_seller_sku or _catalog_sku_is_owned_by_release(
         db_path,
         release_store,
         product_id=clean_offer_id,
@@ -985,7 +1037,12 @@ def build_release_dashboard(
         )
     displayed_sku_range = (
         (clean_seller_sku,)
-        if seller_sku_source == "approved_workbench_lock"
+        if seller_sku_source
+        in {
+            "approved_workbench_lock",
+            "release_plan_lineage",
+            "release_plan_lineage_repair",
+        }
         else next_seller_skus
     )
     source = (
@@ -1501,7 +1558,12 @@ def build_release_dashboard(
                 "candidate": clean_seller_sku,
                 "available": (
                     not candidate_reservations
-                    and not _seller_sku_matches(clean_seller_sku, known_skus)
+                    and (
+                        lineage_owns_seller_sku
+                        or not _seller_sku_matches(
+                            clean_seller_sku, known_skus
+                        )
+                    )
                 ),
                 "generated_by_system": seller_sku_source
                 == "automatic_catalog_and_reservation_scan",

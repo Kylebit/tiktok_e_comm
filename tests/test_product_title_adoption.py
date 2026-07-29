@@ -473,6 +473,47 @@ def test_locked_stale_candidate_can_be_refreshed_with_explicit_kyle_approval(
     assert store.get_plan(plan["plan_id"])["status"] == "SUPERSEDED"
 
 
+def test_locked_unadopted_candidate_can_be_regenerated_with_kyle_approval(
+    monkeypatch,
+    tmp_path,
+):
+    initial = _locked_state()
+    initial["listing_copy"]["policy_version"] = "listing-copy-candidates-v6"
+    state, saves, _store = _install(monkeypatch, tmp_path, initial=initial)
+    generated = {
+        "schema_version": "listing-copy-candidates-v6",
+        "status": "draft_pending_kyle_review",
+        "semantic_master_en": "Safer Replacement English Master",
+        "candidates": [],
+        "policy_version": "listing-copy-candidates-v6",
+        "model": "fixture-model",
+    }
+    monkeypatch.setattr(
+        content_operations,
+        "generate_title_candidates",
+        lambda _facts: copy.deepcopy(generated),
+    )
+
+    status, payload = product_server._generate_product_workspace_title_draft(
+        {
+            "offer_id": OFFER_ID,
+            "expected_revision": 15,
+            "replace_unadopted_locked_candidate": True,
+            "user_approved": True,
+            "approved_by": "Kyle",
+        }
+    )
+
+    assert status == 200
+    assert payload["locked_unadopted_refresh"] is True
+    assert payload["marketplace_writes_performed"] == []
+    assert len(saves) == 1
+    assert state["listing_copy"]["locked_candidate_recovery"] == "unadopted"
+    assert state["listing_copy"]["semantic_master_en"] == (
+        "Safer Replacement English Master"
+    )
+
+
 def test_locked_stale_refresh_rejects_stale_revision_before_model_call(
     monkeypatch,
     tmp_path,

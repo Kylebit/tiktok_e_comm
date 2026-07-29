@@ -19,13 +19,9 @@
   }
 
   function disabledReason(control) {
+    const explicit = String(control.dataset.disabledReason || "").trim();
+    if (explicit) return explicit;
     const known = statusTextFor(control);
-    if (
-      control.id === "releasePlanCheckbox"
-      && known.includes("计划预览已形成")
-    ) {
-      return "正在读取或提交最新发布计划状态，完成后会自动开放。";
-    }
     if (known) return known;
     return "当前前置条件尚未满足；完成本区域上方步骤后会自动开放。";
   }
@@ -73,7 +69,7 @@
     syncAll();
     new MutationObserver(scheduleSync).observe(document.body, {
       attributes: true,
-      attributeFilter: ["disabled", "hidden"],
+      attributeFilter: ["disabled", "hidden", "data-disabled-reason"],
       characterData: true,
       childList: true,
       subtree: true,

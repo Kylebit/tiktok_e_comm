@@ -2943,6 +2943,102 @@ def _execute_target_scoped_reconciliation(
         }
 
 
+def _store_release_progress(run: object) -> dict:
+    """Project storefront progress without counting preparation as publication."""
+
+    targets = (
+        list(run.get("targets") or ())
+        if isinstance(run, dict)
+        else []
+    )
+    storefront_targets = [
+        row
+        for row in targets
+        if isinstance(row, dict)
+        and row.get("target_label") != "miaoshou:COMMON"
+    ]
+    counts = {
+        "storefront_total": len(storefront_targets),
+        "published_verified": 0,
+        "submitted_waiting_verification": 0,
+        "draft_waiting_verification": 0,
+        "draft_version_conflict": 0,
+        "not_started": 0,
+        "running": 0,
+        "other_blocked": 0,
+    }
+    for target in storefront_targets:
+        status = str(target.get("status") or "")
+        if status in {"SUCCEEDED", "MANUALLY_VERIFIED"}:
+            counts["published_verified"] += 1
+            continue
+        if status == "SUBMITTED_UNVERIFIED":
+            counts["submitted_waiting_verification"] += 1
+            continue
+        if status == "PENDING" and int(target.get("attempts") or 0) == 0:
+            counts["not_started"] += 1
+            continue
+        if status == "RUNNING":
+            counts["running"] += 1
+            continue
+        evidence = (
+            ((target.get("latest_failure_evidence") or {}).get("evidence"))
+            or (
+                ((target.get("failure_events") or [{}])[-1]).get("evidence")
+                if isinstance(target.get("failure_events"), list)
+                and target.get("failure_events")
+                and isinstance((target.get("failure_events") or [{}])[-1], dict)
+                else {}
+            )
+            or {}
+        )
+        writes = {
+            str(value)
+            for value in (
+                evidence.get("external_writes_performed")
+                if isinstance(evidence, dict)
+                else ()
+            )
+            or ()
+            if str(value)
+        }
+        draft_writes = {
+            "miaoshou:tiktok_detail:create",
+            "miaoshou:tiktok_shop:claim",
+            "miaoshou:tiktok_detail:update",
+        }
+        publish_dispatched = (
+            "miaoshou:tiktok_publish:submission" in writes
+            or (
+                isinstance(evidence, dict)
+                and (
+                    evidence.get("submission_accepted") is True
+                    or evidence.get("publish_dispatched") is True
+                )
+            )
+        )
+        if (
+            str(target.get("target_label") or "").startswith("tiktok:")
+            and writes.intersection(draft_writes)
+            and not publish_dispatched
+        ):
+            detail = str(target.get("error") or "").casefold()
+            if (
+                "产品数据发生变动" in str(target.get("error") or "")
+                or "version" in detail
+                or "conflict" in detail
+            ):
+                counts["draft_version_conflict"] += 1
+            else:
+                counts["draft_waiting_verification"] += 1
+            continue
+        counts["other_blocked"] += 1
+    return {
+        "schema_version": "storefront-release-progress/v1",
+        **counts,
+    }
+
+
 def _release_v1_view(dashboard: dict) -> dict:
     from modules.products.release_adapters import production_adapter_registry
     from shared_platform.release_store import default_release_store
@@ -2981,6 +3077,9 @@ def _release_v1_view(dashboard: dict) -> dict:
             "plan_persisted": True,
             "plan_approved": approved,
             "run": historical_run,
+            "storefront_progress": _store_release_progress(
+                historical_run
+            ),
             "common_overwrite_review": store.get_common_overwrite_review(
                 active["plan_id"]
             ),
@@ -3064,6 +3163,7 @@ def _release_v1_view(dashboard: dict) -> dict:
         "plan_persisted": bool(persisted),
         "plan_approved": approved,
         "run": run,
+        "storefront_progress": _store_release_progress(run),
         "common_overwrite_review": common_overwrite_review,
         "miaoshou_prepared": miaoshou_prepared,
         "adapter_blockers": list(dict.fromkeys(adapter_blockers)),

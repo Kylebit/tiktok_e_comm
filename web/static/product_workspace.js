@@ -436,20 +436,22 @@
     let channelReadyText = "执行已结束";
     if (runStarted && runGroups.running.length) {
       channelWaitText =
-        `执行中 · ${runCounts.succeeded}/${runCounts.total} 已完成`;
-    } else if (runStarted && runGroups.pending.length) {
-      channelWaitText = "运行已创建 · 等待继续";
+        `执行中 · ${runCounts.succeeded}/${runCounts.total} 个店铺已发布`;
     } else if (
       runStarted
       && (
-        runGroups.reconcileOnly.length
+        runGroups.draftVerify.length
+        || runGroups.draftConflict.length
+        || runGroups.reconcileOnly.length
         || runGroups.unsafeFailure.length
         || runGroups.safeRetry.length
         || runGroups.manualVerify.length
       )
     ) {
       channelReadyText = "部分完成 · 需对账";
-      channelWaitText = "部分完成 · 需处置";
+      channelWaitText = `${runCounts.succeeded}/${runCounts.total} 个店铺发布完成 · 需处置`;
+    } else if (runStarted && runGroups.pending.length) {
+      channelWaitText = "运行已创建 · 等待继续";
     } else if (runStarted) {
       channelWaitText = "执行已开始";
     }
@@ -481,15 +483,23 @@
         label: "回读对账",
         ready: reconciliationReady,
         readyText: "全部一致",
-        waitText: runCounts.reconcileOnly
-          ? `${runCounts.reconcileOnly} 个结果待对账`
+        waitText: runCounts.draftVerify
+          ? `${runCounts.draftVerify} 个草稿待核验后提交`
           : (
-            runCounts.awaitingReadback
-              ? `${runCounts.awaitingReadback} 个待人工验收`
+            runCounts.draftConflict
+              ? `${runCounts.draftConflict} 个草稿版本冲突`
               : (
-                runCounts.safeRetry
-                  ? `${runCounts.safeRetry} 个修复后可重试`
-                  : "待对账"
+                runCounts.reconcileOnly
+                  ? `${runCounts.reconcileOnly} 个结果待对账`
+                  : (
+                    runCounts.awaitingReadback
+                      ? `${runCounts.awaitingReadback} 个待人工验收`
+                      : (
+                        runCounts.safeRetry
+                          ? `${runCounts.safeRetry} 个修复后可重试`
+                          : "待对账"
+                      )
+                  )
               )
           ),
       },
@@ -1427,6 +1437,8 @@
     const safeRetryLabels = targetNames(runGroups.safeRetry);
     const unsafeFailureLabels = targetNames(runGroups.unsafeFailure);
     const awaitingReadbackLabels = targetNames(runGroups.manualVerify);
+    const draftVerifyLabels = targetNames(runGroups.draftVerify);
+    const draftConflictLabels = targetNames(runGroups.draftConflict);
     let allBlockers = [
       ...blockers,
       ...contentBlockers,
@@ -1450,6 +1462,16 @@
       reconcile: "核对每个目标的回读结果和外部商品身份，完成发布对账。",
     };
     const dispositionActions = [];
+    if (draftVerifyLabels.length) {
+      dispositionActions.push(
+        `${draftVerifyLabels.join("、")}：妙手草稿已保存，但尚未提交店铺；先重新核验草稿，再执行一次店铺提交。`,
+      );
+    }
+    if (draftConflictLabels.length) {
+      dispositionActions.push(
+        `${draftConflictLabels.join("、")}：妙手草稿存在版本冲突，尚未提交店铺；先刷新最新草稿，禁止直接覆盖。`,
+      );
+    }
     if (reconcileOnlyLabels.length) {
       dispositionActions.push(
         `${reconcileOnlyLabels.join("、")}：已有外部结果，仅回读/对账，禁止重发。`,
@@ -1479,6 +1501,16 @@
       allBlockers.push(
         `${awaitingReadbackLabels.join("、")} 没有可用的官方店铺 API；`
         + "账本已停止自动重试，等待 Kyle 人工核对 SKU、标题、售价、图片和物流字段。",
+      );
+    }
+    if (draftVerifyLabels.length) {
+      allBlockers.push(
+        `${draftVerifyLabels.join("、")} 当前只有妙手草稿，没有店铺提交凭证或店铺商品 ID。`,
+      );
+    }
+    if (draftConflictLabels.length) {
+      allBlockers.push(
+        `${draftConflictLabels.join("、")} 在妙手草稿更新阶段发生版本冲突；不能视为发布成功。`,
       );
     }
     if (reconcileOnlyLabels.length) {
@@ -2186,6 +2218,41 @@
     ].some((marker) => detail.includes(marker));
   }
 
+  function miaoshouDraftOnlyState(target) {
+    if (
+      target?.status !== "FAILED"
+      || !String(target?.target_label || "").startsWith("tiktok:")
+    ) {
+      return "";
+    }
+    const evidence = targetFailureEvidence(target) || {};
+    const writes = new Set(
+      Array.isArray(evidence.external_writes_performed)
+        ? evidence.external_writes_performed.map(String)
+        : [],
+    );
+    const hasDraftWrite = [
+      "miaoshou:tiktok_detail:create",
+      "miaoshou:tiktok_shop:claim",
+      "miaoshou:tiktok_detail:update",
+    ].some((value) => writes.has(value));
+    const publishDispatched = Boolean(
+      writes.has("miaoshou:tiktok_publish:submission")
+      || evidence.publish_dispatched === true
+      || evidence.submission_accepted === true,
+    );
+    if (!hasDraftWrite || publishDispatched) return "";
+    const detail = String(target?.error || "").toLowerCase();
+    if (
+      detail.includes("产品数据发生变动")
+      || detail.includes("version")
+      || detail.includes("conflict")
+    ) {
+      return "version_conflict";
+    }
+    return "waiting_verification";
+  }
+
   function releaseTargetDisposition(target) {
     const repairStatus = shopeePriceRepairLifecycle(target);
     if (repairStatus === "RUNNING") return "running";
@@ -2196,6 +2263,9 @@
     if (target?.status === "RUNNING") return "running";
     if (target?.status === "PENDING") return "pending";
     if (target?.status === "FAILED") {
+      const draftState = miaoshouDraftOnlyState(target);
+      if (draftState === "waiting_verification") return "draft_verify";
+      if (draftState === "version_conflict") return "draft_conflict";
       if (targetHasExternalOutcome(target)) return "reconcile_only";
       if (isExplicitPreSubmitFailure(target)) return "safe_retry";
       return "unsafe_failure";
@@ -2212,6 +2282,8 @@
       manualVerify: [],
       running: [],
       pending: [],
+      draftVerify: [],
+      draftConflict: [],
     };
     for (const target of (run?.targets || [])) {
       const disposition = releaseTargetDisposition(target);
@@ -2221,12 +2293,16 @@
       if (disposition === "manual_verify") groups.manualVerify.push(target);
       if (disposition === "running") groups.running.push(target);
       if (disposition === "pending") groups.pending.push(target);
+      if (disposition === "draft_verify") groups.draftVerify.push(target);
+      if (disposition === "draft_conflict") groups.draftConflict.push(target);
     }
     return groups;
   }
 
   function releaseRunCounts(run) {
-    const targets = run?.targets || [];
+    const targets = (run?.targets || []).filter(
+      (target) => target?.target_label !== "miaoshou:COMMON",
+    );
     const groups = releaseTargetGroups(run);
     return {
       total: targets.length,
@@ -2243,6 +2319,8 @@
       safeRetry: groups.safeRetry.length,
       unsafeFailure: groups.unsafeFailure.length,
       pending: groups.pending.length,
+      draftVerify: groups.draftVerify.length,
+      draftConflict: groups.draftConflict.length,
     };
   }
 
@@ -2258,17 +2336,26 @@
     }
     if (run?.status === "PARTIAL_FAILED") {
       const outcomes = [
+        counts.draftVerify ? `${counts.draftVerify} 个草稿待核验` : "",
+        counts.draftConflict ? `${counts.draftConflict} 个草稿版本冲突` : "",
         counts.reconcileOnly ? `${counts.reconcileOnly} 待对账` : "",
         counts.safeRetry ? `${counts.safeRetry} 修复后可重试` : "",
         counts.unsafeFailure ? `${counts.unsafeFailure} 禁止重发` : "",
         counts.awaitingReadback ? `${counts.awaitingReadback} 待人工验收` : "",
       ].filter(Boolean);
-      return `${counts.succeeded} 已回读 · ${outcomes.join(" · ") || `${counts.failed} 待处置`}`;
+      if (counts.pending) outcomes.push(`${counts.pending} 个尚未执行`);
+      return `${counts.succeeded}/${counts.total} 个店铺发布完成 · ${outcomes.join(" · ") || `${counts.failed} 待处置`}`;
     }
     return run?.status || "未知";
   }
 
   function releaseTargetLabel(target, statusNames) {
+    if (
+      target?.target_label === "miaoshou:COMMON"
+      && target?.status === "SUCCEEDED"
+    ) {
+      return "公共草稿已核验 · 不计入店铺发布";
+    }
     const repairStatus = shopeePriceRepairLifecycle(target);
     if (repairStatus === "RUNNING") {
       return "价格修复执行中 · 禁止重复操作";
@@ -2285,6 +2372,12 @@
     const disposition = releaseTargetDisposition(target);
     if (disposition === "verified") return "Kyle 已人工验收";
     if (disposition === "manual_verify") return "已提交 · 待人工验收";
+    if (disposition === "draft_verify") {
+      return "妙手草稿已保存 · 尚未提交店铺";
+    }
+    if (disposition === "draft_conflict") {
+      return "妙手草稿版本冲突 · 尚未提交店铺";
+    }
     if (disposition === "reconcile_only") {
       return "已创建 · 结果待对账，禁止重发";
     }
@@ -2296,6 +2389,12 @@
   }
 
   function releaseTargetDetail(target) {
+    if (
+      target?.target_label === "miaoshou:COMMON"
+      && target?.status === "SUCCEEDED"
+    ) {
+      return "这里只证明妙手公共采集箱与批准计划一致；它不是任何店铺的商品，也不代表店铺发布成功。";
+    }
     const repairStatus = shopeePriceRepairLifecycle(target);
     if (repairStatus === "RUNNING") {
       return "该站点的一次性原地修价已领取；正在等待官方回读和本地账本落账，系统不会再次提交。";
@@ -2314,6 +2413,12 @@
       return `由 Kyle 在平台后台完成逐字段验收 · 商品 ID ${
         target?.submission?.verification_evidence?.marketplace_product_id || "—"
       }`;
+    }
+    if (disposition === "draft_verify") {
+      return "只完成了妙手草稿创建、店铺认领和详情更新；没有调用店铺发布提交。需要先重新只读核验草稿，再执行一次受控店铺提交。";
+    }
+    if (disposition === "draft_conflict") {
+      return "妙手在详情更新阶段报告版本冲突；没有证据表明已提交到店铺。需要重新读取最新草稿并核验，禁止直接覆盖或重复创建。";
     }
     if (disposition === "reconcile_only") {
       return "已存在外部 ID、提交、回读或失败证据。仅允许继续回读/人工对账，系统禁止再次发布。"
@@ -2393,7 +2498,9 @@
       && !runCounts.running,
     );
     const ledgerBlocksPublish = Boolean(
-      runGroups.reconcileOnly.length
+      runGroups.draftVerify.length
+      || runGroups.draftConflict.length
+      || runGroups.reconcileOnly.length
       || runGroups.unsafeFailure.length
       || runGroups.manualVerify.length
       || runGroups.running.length,
@@ -2511,7 +2618,15 @@
 
     const adapterBlockers = release.adapter_blockers || [];
     const ledgerGroups = releaseTargetGroups(release.run);
-    if (ledgerGroups.reconcileOnly.length) {
+    if (ledgerGroups.draftVerify.length) {
+      $("#publishAllNote").textContent =
+        `${targetNamesForLedger(ledgerGroups.draftVerify)} 只有妙手草稿，尚未提交店铺；`
+        + "先完成草稿核验和一次性店铺提交，一键重发保持关闭。";
+    } else if (ledgerGroups.draftConflict.length) {
+      $("#publishAllNote").textContent =
+        `${targetNamesForLedger(ledgerGroups.draftConflict)} 的妙手草稿存在版本冲突，尚未提交店铺；`
+        + "必须先读取最新草稿，禁止直接覆盖或重建。";
+    } else if (ledgerGroups.reconcileOnly.length) {
       $("#publishAllNote").textContent =
         `${targetNamesForLedger(ledgerGroups.reconcileOnly)} 已有外部结果，`
         + "只能回读/对账，禁止重发；一键发布保持关闭。";
@@ -3107,7 +3222,7 @@
           );
           if (running) {
             $("#publishRunMessage").textContent =
-              `正在执行 ${targetDisplayName(running.target_label)}；${counts.succeeded}/${counts.total} 个目标已完成并回读。`;
+              `正在执行 ${targetDisplayName(running.target_label)}；${counts.succeeded}/${counts.total} 个店铺已发布并回读。`;
           } else if (run.status === "SUCCEEDED") {
             $("#publishRunMessage").textContent =
               `执行完成；${counts.succeeded}/${counts.total} 个目标均已完成官方回读。`;
@@ -3119,6 +3234,11 @@
             $("#publishRunMessage").textContent =
               `执行已结束；${counts.succeeded}/${counts.total} 个目标已官方回读，`
               + `${counts.awaitingReadback} 个无 API 目标已提交且停止自动重试，等待 Kyle 人工验收。`;
+          } else if (counts.draftVerify || counts.draftConflict) {
+            $("#publishRunMessage").textContent =
+              `当前 ${counts.succeeded}/${counts.total} 个店铺确认发布完成；`
+              + `${counts.draftVerify} 个妙手草稿待重新核验，`
+              + `${counts.draftConflict} 个草稿存在版本冲突，均尚未确认提交店铺。`;
           } else {
             $("#publishRunMessage").textContent =
               `执行已结束；${counts.succeeded}/${counts.total} 个目标已官方回读，`

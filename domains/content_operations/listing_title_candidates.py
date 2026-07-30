@@ -12,7 +12,7 @@ from typing import Any, Callable
 
 from modules.sourcing.image_suite_plan import chat_completions, message_content
 
-POLICY_VERSION = "listing-copy-candidates-v5"
+POLICY_VERSION = "listing-copy-candidates-v6"
 TOAPI_TITLE_MODEL = "gpt-5.4-mini-official"
 EXPECTED_TARGETS = (
     ("tiktok", "MY", "English / Malay", 255),
@@ -33,6 +33,26 @@ _TIMESTAMP_FIELDS = frozenset(
         "adopted_at",
         "reviewed_at",
     }
+)
+
+_TITLE_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "as",
+        "for",
+        "in",
+        "of",
+        "on",
+        "the",
+        "to",
+        "with",
+    }
+)
+_UNAPPROVED_VARIANT_NOISE = re.compile(
+    r"\b(?:as\s+shown|picture\s+colou?r|default|random\s+colou?r)\b",
+    re.I,
 )
 
 SYSTEM_PROMPT = """You are a senior cross-border ecommerce listing strategist.
@@ -264,6 +284,11 @@ def release_listing_copy_identity(
         )
     if not identity["policy_version"]:
         blockers.append("listing copy policy version is missing")
+    elif identity["policy_version"] != POLICY_VERSION:
+        blockers.append(
+            "listing copy policy version is stale; regenerate and adopt "
+            f"{POLICY_VERSION}"
+        )
     if not identity["model"]:
         blockers.append("listing copy model identity is missing")
 
@@ -316,6 +341,112 @@ def _clean_title(value: Any, *, limit: int) -> str:
     if re.search(r"[\U0001F300-\U0001FAFF]", title):
         raise ValueError("title candidate contains emoji")
     return title
+
+
+def _english_title_tokens(value: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", value.casefold())
+        if token not in _TITLE_STOPWORDS
+    }
+
+
+def _validate_semantic_master_title(master: str) -> None:
+    if _UNAPPROVED_VARIANT_NOISE.search(master):
+        raise ValueError(
+            "semantic_master_en contains a variant label instead of product identity"
+        )
+
+
+def _validate_shopee_master_coverage(master: str, candidate: str) -> None:
+    master_tokens = _english_title_tokens(master)
+    candidate_tokens = _english_title_tokens(candidate)
+    identity_clause = re.split(r"[,;|]", master, maxsplit=1)[0]
+    identity_tokens = _english_title_tokens(identity_clause)
+    if not identity_tokens or not identity_tokens.issubset(candidate_tokens):
+        missing = sorted(identity_tokens - candidate_tokens)
+        raise ValueError(
+            "shopee:CNSC candidate drops approved product identity terms: "
+            + ", ".join(missing)
+        )
+    coverage = (
+        len(master_tokens & candidate_tokens) / len(master_tokens)
+        if master_tokens
+        else 0
+    )
+    minimum = 0.55 if len(master) > 120 else 0.70
+    if coverage < minimum:
+        raise ValueError(
+            "shopee:CNSC candidate semantic coverage is too low "
+            f"({coverage:.3f} < {minimum:.3f})"
+        )
+
+
+def _deterministic_shopee_title(master: str) -> str:
+    """Preserve identity deterministically when the model candidate is unsafe."""
+
+    if len(master) <= 120:
+        return _clean_title(master, limit=120)
+    natural_prefix = master[:120].rsplit(" ", 1)[0].rstrip(" ,;-")
+    while natural_prefix:
+        tail = re.findall(r"[A-Za-z0-9]+", natural_prefix.casefold())
+        if not tail or tail[-1] not in _TITLE_STOPWORDS:
+            break
+        natural_prefix = natural_prefix.rsplit(" ", 1)[0].rstrip(" ,;-")
+    natural_prefix = _clean_title(natural_prefix, limit=120)
+    try:
+        _validate_shopee_master_coverage(master, natural_prefix)
+        return natural_prefix
+    except ValueError:
+        pass
+
+    identity_clause = re.split(r"[,;|]", master, maxsplit=1)[0].strip()
+    identity_tokens = _english_title_tokens(identity_clause)
+    if len(identity_clause) > 120:
+        identity_words: list[str] = []
+        seen_identity_tokens: set[str] = set()
+        for word in re.findall(r"[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)?", identity_clause):
+            token = word.casefold()
+            if token in _TITLE_STOPWORDS or token in seen_identity_tokens:
+                continue
+            if token in identity_tokens:
+                identity_words.append(word)
+                seen_identity_tokens.add(token)
+        identity_clause = " ".join(identity_words)
+        if len(identity_clause) > 120:
+            raise ValueError(
+                "approved Shopee identity terms cannot fit the platform title limit"
+            )
+    dimension = re.search(
+        r"\b\d+(?:\.\d+)?\s*[x×]\s*\d+(?:\.\d+)?\s*(?:cm|mm|m|in)\b",
+        master,
+        re.I,
+    )
+    candidate = identity_clause
+    if dimension and dimension.group(0).casefold() not in candidate.casefold():
+        proposed = f"{candidate}, {dimension.group(0)}"
+        if len(proposed) <= 120:
+            candidate = proposed
+
+    candidate_tokens = _english_title_tokens(candidate)
+    for word in re.findall(r"[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)?", master):
+        token = word.casefold()
+        if token in _TITLE_STOPWORDS or token in candidate_tokens:
+            continue
+        proposed = f"{candidate}, {word}"
+        if len(proposed) > 120:
+            continue
+        candidate = proposed
+        candidate_tokens.add(token)
+        try:
+            _validate_shopee_master_coverage(master, candidate)
+            break
+        except ValueError:
+            continue
+
+    candidate = _clean_title(candidate, limit=120)
+    _validate_shopee_master_coverage(master, candidate)
+    return candidate
 
 
 def _clean_shopee_description(value: Any) -> str:
@@ -434,6 +565,7 @@ def _validated_model_payload(raw: str) -> tuple[str, str, list[dict[str, Any]], 
     master = _clean_title(parsed.get("semantic_master_en"), limit=180)
     if not re.search(r"[A-Za-z]", master) or re.search(r"[\u4e00-\u9fff]", master):
         raise ValueError("semantic_master_en must be English without Chinese text")
+    _validate_semantic_master_title(master)
     shopee_description = _clean_shopee_description(
         parsed.get("shopee_description_en")
     )
@@ -455,6 +587,8 @@ def _validated_model_payload(raw: str) -> tuple[str, str, list[dict[str, Any]], 
             raise ValueError(f"title model omitted {channel}:{site}")
         title = _clean_title(row.get("title"), limit=limit)
         _validate_language(title, channel=channel, site=site)
+        if channel == "shopee" and site == "CNSC":
+            _validate_shopee_master_coverage(master, title)
         candidates.append(
             {
                 "channel": channel,
@@ -523,6 +657,7 @@ def generate_title_candidates(
     generation_attempts = 1
     repair_performed = False
     description_fallback_used = False
+    title_fallback_used = False
     try:
         master, shopee_description, candidates, notes_zh = (
             _validated_model_payload(raw)
@@ -559,41 +694,83 @@ def generate_title_candidates(
                 _validated_model_payload(repaired_raw)
             )
         except (json.JSONDecodeError, TypeError, ValueError) as second_error:
-            if str(second_error) in {
-                "Shopee global description must be English",
-                "Shopee global description must contain English text",
-            }:
-                repaired_payload = _json_object(repaired_raw)
-                repaired_master = _clean_title(
-                    repaired_payload.get("semantic_master_en"),
-                    limit=180,
-                )
-                if (
-                    not re.search(r"[A-Za-z]", repaired_master)
-                    or re.search(r"[\u4e00-\u9fff]", repaired_master)
-                ):
-                    raise ValueError(
-                        "title model output remained invalid after one repair: "
-                        f"{second_error}"
-                    ) from second_error
-                repaired_payload["shopee_description_en"] = (
-                    _deterministic_shopee_description(
-                        facts,
-                        semantic_master_en=repaired_master,
-                    )
-                )
-                master, shopee_description, candidates, notes_zh = (
-                    _validated_model_payload(_canonical(repaired_payload))
-                )
-                description_fallback_used = True
-            else:
+            repaired_payload = _json_object(repaired_raw)
+            repaired_master = _clean_title(
+                repaired_payload.get("semantic_master_en"),
+                limit=180,
+            )
+            if (
+                not re.search(r"[A-Za-z]", repaired_master)
+                or re.search(r"[\u4e00-\u9fff]", repaired_master)
+            ):
                 raise ValueError(
                     "title model output remained invalid after one repair: "
                     f"{second_error}"
                 ) from second_error
+            _validate_semantic_master_title(repaired_master)
+
+            validation_error: Exception = second_error
+            for _ in range(3):
+                message = str(validation_error)
+                if (
+                    message.startswith("shopee:CNSC candidate")
+                    and not title_fallback_used
+                ):
+                    rows = repaired_payload.get("candidates")
+                    shopee_rows = [
+                        row
+                        for row in rows or ()
+                        if isinstance(row, dict)
+                        and str(row.get("channel") or "").casefold()
+                        == "shopee"
+                        and str(row.get("site") or "").upper() == "CNSC"
+                    ]
+                    if not isinstance(rows, list) or len(shopee_rows) != 1:
+                        break
+                    shopee_rows[0]["title"] = _deterministic_shopee_title(
+                        repaired_master
+                    )
+                    title_fallback_used = True
+                elif (
+                    message
+                    in {
+                        "Shopee global description must be English",
+                        "Shopee global description must contain English text",
+                    }
+                    and not description_fallback_used
+                ):
+                    repaired_payload["shopee_description_en"] = (
+                        _deterministic_shopee_description(
+                            facts,
+                            semantic_master_en=repaired_master,
+                        )
+                    )
+                    description_fallback_used = True
+                else:
+                    break
+                try:
+                    master, shopee_description, candidates, notes_zh = (
+                        _validated_model_payload(_canonical(repaired_payload))
+                    )
+                    break
+                except (
+                    json.JSONDecodeError,
+                    TypeError,
+                    ValueError,
+                ) as followup_error:
+                    validation_error = followup_error
+            else:
+                validation_error = ValueError(
+                    "deterministic repair budget exhausted"
+                )
+            if "master" not in locals() or master != repaired_master:
+                raise ValueError(
+                    "title model output remained invalid after one repair: "
+                    f"{validation_error}"
+                ) from validation_error
 
     return {
-        "schema_version": "listing-copy-candidates-v5",
+        "schema_version": "listing-copy-candidates-v6",
         "provider": "toapi",
         "status": "draft_pending_kyle_review",
         "semantic_master_en": master,
@@ -608,6 +785,7 @@ def generate_title_candidates(
         "generation_attempts": generation_attempts,
         "repair_performed": repair_performed,
         "description_fallback_used": description_fallback_used,
+        "title_fallback_used": title_fallback_used,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "external_writes_performed": ["language_model_request"],
         "marketplace_writes_performed": [],

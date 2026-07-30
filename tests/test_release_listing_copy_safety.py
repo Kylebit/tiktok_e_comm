@@ -137,6 +137,18 @@ def test_stale_copy_blocks_plan_eligibility_and_publish_before_run_creation(
     assert view["release_v1"]["eligible_for_plan_approval"] is False
     assert view["release_v1"]["publish_ready"] is False
     assert "listing copy input signature is stale" in view["release_v1"]["blockers"]
+    assert view["release_v1"]["recovery_actions"] == [
+        {
+            "code": "refresh_listing_copy",
+            "label": "重新生成平台文案",
+            "detail": (
+                "商品事实或所选规格在上次采用文案后发生了变化。"
+                "请按当前已批准事实重新生成候选，再由 Kyle 明确采用 EN MASTER。"
+            ),
+            "next_codes": ["refresh_listing_copy", "adopt_listing_copy"],
+            "marketplace_writes_performed": [],
+        }
+    ]
 
     status, payload = product_server._publish_selected_release(
         {
@@ -183,3 +195,24 @@ def test_draft_missing_or_incomplete_copy_is_not_eligible(mutate, expected):
     assert view["release_v1"]["eligible_for_plan_approval"] is False
     assert view["release_v1"]["publish_ready"] is False
     assert any(expected in blocker for blocker in view["release_v1"]["blockers"])
+
+
+def test_unadopted_current_copy_exposes_an_explicit_adoption_recovery_action():
+    dashboard = _dashboard()
+    dashboard["listing_copy"]["status"] = "draft_pending_kyle_review"
+
+    view = product_server._product_workspace_view(dashboard)
+
+    assert view["release_v1"]["eligible_for_plan_approval"] is False
+    assert view["release_v1"]["recovery_actions"] == [
+        {
+            "code": "adopt_listing_copy",
+            "label": "去采用当前 EN MASTER",
+            "detail": (
+                "平台文案候选已经生成，但尚未绑定到当前商品事实。"
+                "采用后再重新核对并批准发布计划。"
+            ),
+            "next_codes": ["adopt_listing_copy"],
+            "marketplace_writes_performed": [],
+        }
+    ]

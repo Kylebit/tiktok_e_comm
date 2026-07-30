@@ -1397,6 +1397,124 @@ class ReleaseStore:
                 ).fetchone()
             )
 
+    def record_common_reconciled_success(
+        self,
+        run_id: str,
+        *,
+        external_id: str,
+        readback_evidence: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Close one accepted COMMON write using a later exact GET-only readback."""
+
+        incoming = dict(readback_evidence)
+        checks = incoming.get("checks")
+        if (
+            incoming.get("verified") is not True
+            or incoming.get("mode") != "readback_reconciliation_no_write"
+            or incoming.get("external_writes_performed") != []
+            or not isinstance(checks, dict)
+            or not checks
+            or any(value is not True for value in checks.values())
+        ):
+            raise ValueError(
+                "COMMON reconciliation requires exact zero-write readback"
+            )
+        clean_external_id = _text(external_id)
+        if not clean_external_id:
+            raise ValueError("COMMON reconciliation requires external_id")
+
+        with self._transaction() as connection:
+            row = self._target_for_update(
+                connection,
+                run_id,
+                "miaoshou:COMMON",
+            )
+            if row["status"] != TARGET_FAILED:
+                raise ReleaseStoreError(
+                    "only a failed COMMON target may be reconciled"
+                )
+            if _text(row["external_id"]) != clean_external_id:
+                raise ReleaseAuthorizationError(
+                    "COMMON reconciliation external identity changed"
+                )
+            failure = connection.execute(
+                """
+                SELECT evidence_json, evidence_digest
+                FROM release_target_failure_events
+                WHERE run_id = ? AND target_label = 'miaoshou:COMMON'
+                ORDER BY attempt DESC, created_at DESC
+                LIMIT 1
+                """,
+                (row["run_id"],),
+            ).fetchone()
+            prior = (
+                json.loads(failure["evidence_json"])
+                if failure and failure["evidence_json"]
+                else {}
+            )
+            prior_writes = ["miaoshou:COMMON:immutable_plan_write"]
+            if (
+                not failure
+                or failure["evidence_digest"] != _sha256(prior)
+                or prior.get("save_accepted") is not True
+                or prior.get("verified") is not False
+                or prior.get("external_writes_performed") != prior_writes
+            ):
+                raise ReleaseAuthorizationError(
+                    "prior COMMON write evidence is not exact and truthful"
+                )
+
+            merged = {
+                **incoming,
+                "schema_version": "miaoshou-common-reconciled/v1",
+                "prior_external_write_evidence_digest": failure[
+                    "evidence_digest"
+                ],
+                "prior_external_writes_performed": prior_writes,
+                "reconciliation_external_writes_performed": [],
+                "external_writes_performed": prior_writes,
+            }
+            evidence_json = _canonical_json(merged)
+            evidence_digest = hashlib.sha256(
+                evidence_json.encode("utf-8")
+            ).hexdigest()
+            now = _utc_now()
+            connection.execute(
+                """
+                INSERT INTO release_target_readbacks (
+                    run_id, target_label, evidence_json,
+                    evidence_digest, verified_at
+                ) VALUES (?, 'miaoshou:COMMON', ?, ?, ?)
+                """,
+                (
+                    row["run_id"],
+                    evidence_json,
+                    evidence_digest,
+                    now,
+                ),
+            )
+            changed = connection.execute(
+                """
+                UPDATE release_target_runs
+                SET status = 'SUCCEEDED', error = NULL,
+                    updated_at = ?, completed_at = ?
+                WHERE run_id = ? AND target_label = 'miaoshou:COMMON'
+                  AND status = 'FAILED' AND external_id = ?
+                """,
+                (
+                    now,
+                    now,
+                    row["run_id"],
+                    clean_external_id,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise ReleaseStoreError(
+                    "COMMON reconciliation state changed before durable close"
+                )
+            self._refresh_run_status(connection, row["run_id"], now=now)
+            return self._run_in_transaction(connection, row["run_id"])
+
     def record_target_failure(
         self,
         run_id: str,

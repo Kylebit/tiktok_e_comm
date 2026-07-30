@@ -2200,9 +2200,139 @@ def test_generic_publish_never_resets_or_dispatches_a_failed_target(
     )
 
     assert status == 409
-    assert payload["code"] == "target_scoped_action_required"
+    assert payload["code"] == "no_runnable_release_targets"
     assert store.retry_calls == 0
     assert store.begin_calls == 0
+
+
+def test_generic_publish_retries_only_explicit_zero_write_tiktok_failure(
+    monkeypatch,
+):
+    run = {
+        "run_id": "run-safe-tiktok-retry",
+        "status": "FAILED",
+        "targets": [
+            {
+                "target_label": "tiktok:LH_PH",
+                "status": "FAILED",
+                "storage_status": "FAILED",
+                "attempts": 1,
+                "error": "Miaoshou TikTok duplicate scan is incomplete",
+                "external_id": None,
+                "external_writes_performed": [],
+                "failure_events": [
+                    {
+                        "evidence": {
+                            "pre_submit_failure": True,
+                            "submission_accepted": False,
+                            "reason_code": (
+                                "miaoshou_tiktok_duplicate_scan_incomplete"
+                            ),
+                            "external_writes_performed": [],
+                        }
+                    }
+                ],
+                "latest_failure_evidence": {
+                    "evidence": {
+                        "pre_submit_failure": True,
+                        "submission_accepted": False,
+                        "reason_code": (
+                            "miaoshou_tiktok_duplicate_scan_incomplete"
+                        ),
+                        "external_writes_performed": [],
+                    }
+                },
+            }
+        ],
+    }
+
+    class StoreSpy:
+        retry_calls = []
+
+        def get_run(self, _run_id):
+            return run
+
+        def retry_failed_targets(self, run_id, labels):
+            self.retry_calls.append((run_id, tuple(labels)))
+            run["targets"][0]["status"] = "SUCCEEDED"
+            run["status"] = "SUCCEEDED"
+            return run
+
+    store = StoreSpy()
+    gate = {
+        "dashboard": {},
+        "payload": {
+            "product_id": "1",
+            "seller_sku": "0001",
+            "product_package_id": "product:1",
+            "content_package_id": "content:1",
+            "targets": ["tiktok:LH_PH"],
+        },
+        "run": run,
+        "registry": {},
+        "target_rows": [],
+    }
+    monkeypatch.setattr(
+        release_store, "default_release_store", lambda: store
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_release_execution_readonly_gate",
+        lambda *_args, **_kwargs: (gate, None),
+    )
+
+    status, payload = product_server._publish_selected_release(
+        {
+            "confirm_publish": True,
+            "plan_id": "plan",
+            "confirmation_token": "token",
+        }
+    )
+
+    assert status == 200
+    assert payload["completed"] is True
+    assert store.retry_calls == [
+        ("run-safe-tiktok-retry", ("tiktok:LH_PH",))
+    ]
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        {
+            "pre_submit_failure": True,
+            "submission_accepted": True,
+            "external_writes_performed": [],
+        },
+        {
+            "pre_submit_failure": True,
+            "submission_accepted": False,
+            "external_writes_performed": [
+                "miaoshou:tiktok_detail:create"
+            ],
+        },
+        {
+            "pre_submit_failure": False,
+            "submission_accepted": False,
+            "external_writes_performed": [],
+        },
+    ],
+)
+def test_generic_tiktok_retry_rejects_nonzero_or_ambiguous_evidence(
+    evidence,
+):
+    target = {
+        "target_label": "tiktok:LH_PH",
+        "status": "FAILED",
+        "attempts": 1,
+        "error": "Miaoshou TikTok duplicate scan is incomplete",
+        "external_id": None,
+        "external_writes_performed": [],
+        "failure_events": [{"evidence": evidence}],
+        "latest_failure_evidence": {"evidence": evidence},
+    }
+
+    assert product_server._generic_tiktok_safe_retry_target(target) is False
 
 
 def test_generic_publish_still_executes_a_first_pending_target(monkeypatch):
@@ -2210,12 +2340,13 @@ def test_generic_publish_still_executes_a_first_pending_target(monkeypatch):
         "run_id": "run-first",
         "status": "PENDING",
         "targets": [
-            {
-                "target_label": "shopee:MY",
-                "status": "PENDING",
-                "storage_status": "PENDING",
-                "idempotency_key": "publish:shopee:MY:first",
-            }
+                {
+                    "target_label": "shopee:MY",
+                    "status": "PENDING",
+                    "storage_status": "PENDING",
+                    "attempts": 0,
+                    "idempotency_key": "publish:shopee:MY:first",
+                }
         ],
     }
     calls = []

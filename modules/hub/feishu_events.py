@@ -31,6 +31,11 @@ def handle_http_body(body: dict) -> tuple[int, dict]:
                 text = ""
             if text.strip():
                 threading.Thread(
+                    target=_ingest_workbench_message,
+                    args=(message_id, text),
+                    daemon=True,
+                ).start()
+                threading.Thread(
                     target=_process_and_reply,
                     args=(message_id, text),
                     daemon=True,
@@ -50,6 +55,24 @@ def _process_and_reply(message_id: str, text: str) -> None:
         reply_text(message_id, reply)
     except Exception as e:
         print(f"[feishu] 回复失败: {e}")
+
+
+def _ingest_workbench_message(message_id: str, text: str) -> None:
+    """Best-effort local capture; delivery acknowledgement never depends on it."""
+    try:
+        from shared_platform.workbench_store import default_workbench_store
+
+        default_workbench_store().create_task(
+            {
+                "title": text.strip()[:500],
+                "status": "inbox",
+                "priority": "P2",
+                "execution_notes": text.strip(),
+                "source_key": f"feishu:{message_id}",
+            }
+        )
+    except Exception as error:
+        print(f"[workbench] Feishu inbox capture failed: {error}")
 
 
 def extract_message_from_p2_event(data: Any) -> tuple[str, str] | None:

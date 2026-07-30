@@ -38,6 +38,8 @@ Otherwise:
 
 Unavailable or pending channels remain visible and contribute no fabricated units. Use `PENDING_REFRESH` when the shop mapping and refresh token exist but the access token is expired and refresh/pull has not run. Reserve `BLOCKED_AUTH` for genuinely missing or rejected authorization.
 
+Every exact SKU with a positive `recent30Units` value in at least one READY channel must remain visible in the dashboard. Missing logistics data changes the row to `BLOCKED_DATA`; it must not remove the demand row.
+
 For Shopee settlement demand, a complete pull means every listed order page and every escrow detail succeeded for the declared window. Aggregate `quantity_purchased`, discounted customer payment, and allocated actual shipping fee by exact SKU. Approved channel aliases are only four digits, `77+four digits`, and `99+four digits`. Any other model SKU must resolve through the exact Shopee `(item_id, model_id)` catalog key. Unresolved lines remain excluded evidence and must never be matched by title or image similarity.
 
 ## Quantity
@@ -56,9 +58,9 @@ For Shopee settlement demand, a complete pull means every listed order page and 
 
 ## Economics
 
-- Use chargeable volume = max(physical volume, weight-equivalent volume).
-- Apply the lane's minimum billable volume and surcharge to the final approved batch, not all demand-gap candidates.
-- Iterate the approved set until every retained SKU has positive known unit advantage after allocated head freight and local handling.
+- Apply the user-approved fixed head freight of CNY 1 per unit to every country, site, and SKU.
+- Preserve physical and chargeable volume for packing and shipment planning only; do not use it to calculate the dashboard's head-freight amount.
+- Do not use positive known unit advantage as a recommendation gate. Show positive or negative benefit without hiding the SKU or changing an otherwise valid demand-and-inventory recommendation.
 - Apply tax savings only where the user approved a country rate.
 - Use 20% of observed SKU-level cross-border shipping as the shipping saving; unavailable settlement freight contributes no fabricated saving.
 - Treat 0–30 day Seaya storage as zero under the supplied tariff, and include outbound, shelving, packaging, and head freight.

@@ -6,7 +6,6 @@ const MANUAL_INPUT_KEY = "supply-chain-manual-logistics-v1";
 let manualInputs = loadManualInputs();
 
 const number = value => Number(value || 0);
-const ceilTenth = value => Math.ceil((value - 1e-10) * 10) / 10;
 const money = (value, digits = 0) => {
   const normalized = Math.abs(value) < 0.005 ? 0 : value;
   return `¥${normalized.toLocaleString("zh-CN", {minimumFractionDigits: digits, maximumFractionDigits: digits})}`;
@@ -92,21 +91,17 @@ function calculateCountry(region) {
     const physicalM3 = items.reduce(
       (sum, item) => sum + item.volumeM3 * item.recommended, 0
     );
-    const billableM3 = rawChargeableM3 > 0
-      ? Math.max(config.minimumBillableM3, ceilTenth(rawChargeableM3))
-      : 0;
-    const surcharge = billableM3 > 0 && billableM3 < config.inboundSurchargeThresholdM3
-      ? config.inboundSurchargeCny : 0;
+    const recommendedUnits = items.reduce((sum, item) => sum + item.recommended, 0);
     return {
       rawChargeableM3,
       physicalM3,
-      billableM3,
-      surcharge,
-      freightTotal: billableM3 * config.freightRateCnyM3 + surcharge
+      billableM3: rawChargeableM3,
+      surcharge: 0,
+      freightTotal: recommendedUnits * config.fixedHeadFreightUnitCny
     };
   };
 
-  const economics = (item, metrics) => {
+  const economics = item => {
     const channels = Object.values(item.channels);
     const units = channels.reduce((sum, channel) => sum + number(channel.units), 0);
     const customerPayment = channels.reduce((sum, channel) => sum + number(channel.customerPayment), 0);
@@ -118,40 +113,24 @@ function calculateCountry(region) {
     const taxSavingUnit = customerPaymentLocal * config.taxSavingRate * config.fxToCny;
     const shippingSavingUnit = observedShippingLocal * config.shippingSavingRate * config.fxToCny;
     const handlingUnit = outboundFee(item.weightG) + shelvingFee(item.weightG) + 0.3;
-    const skuChargeable = item.chargeableUnitM3 * item.recommended;
-    const headFreightTotal = metrics.rawChargeableM3 > 0
-      ? metrics.freightTotal * skuChargeable / metrics.rawChargeableM3
-      : 0;
-    const headFreightUnit = item.recommended ? headFreightTotal / item.recommended : 0;
+    const headFreightUnit = config.fixedHeadFreightUnitCny;
     const netUnit = taxSavingUnit + shippingSavingUnit - handlingUnit - headFreightUnit;
     const netTotal = netUnit * item.recommended;
     return {units, customerPaymentLocal, observedShippingLocal, taxSavingUnit,
       shippingSavingUnit, handlingUnit, headFreightUnit, netUnit, netTotal};
   };
 
-  let approvedItems = base.filter(
+  const approvedItems = base.filter(
     item => item.calculationReady && item.dailyVelocity > 0 && item.recommended > 0
   );
-  for (let iteration = 0; iteration <= base.length; iteration += 1) {
-    const metrics = batchMetrics(approvedItems);
-    const next = approvedItems.filter(item => economics(item, metrics).netUnit > 0);
-    if (next.length === approvedItems.length) break;
-    approvedItems = next;
-  }
-  const approvedSkus = new Set(approvedItems.map(item => item.sku));
   const approvedMetrics = batchMetrics(approvedItems);
 
   const rows = base.map(item => {
-    const itemMetrics = approvedSkus.has(item.sku)
-      ? approvedMetrics
-      : batchMetrics(item.recommended > 0 ? [item] : []);
-    const itemEconomics = economics(item, itemMetrics);
+    const itemEconomics = economics(item);
     let status = item.calculationReady ? "NO_DEMAND" : "BLOCKED_DATA";
     if (item.calculationReady && item.dailyVelocity > 0 && item.recommended === 0) status = "HOLD";
     if (item.calculationReady && item.dailyVelocity > 0 && item.recommended > 0) {
-      status = approvedSkus.has(item.sku)
-        ? (item.kind === "first_stock" ? "FIRST_STOCK" : "REPLENISH")
-        : "REVIEW";
+      status = item.kind === "first_stock" ? "FIRST_STOCK" : "REPLENISH";
     }
     return {...item, ...itemEconomics, status};
   });
@@ -162,7 +141,7 @@ function calculateCountry(region) {
 }
 
 function statusLabel(status) {
-  return {REPLENISH: "建议补货", FIRST_STOCK: "建议首批", REVIEW: "待核经济性", HOLD: "库存覆盖", NO_DEMAND: "销量不足", BLOCKED_DATA: "资料待补"}[status];
+  return {REPLENISH: "建议补货", FIRST_STOCK: "建议首批", HOLD: "库存覆盖", NO_DEMAND: "销量不足", BLOCKED_DATA: "资料待补"}[status];
 }
 
 function channelBlock(label, channel, daily) {
@@ -197,7 +176,7 @@ function rowHtml(item, config) {
     <td><div class="calc-lines">${item.calculationReady ? `<span>${config.leadDays}天需求 <b>${item.leadDemand}</b></span><span>到仓剩余 <b>${item.projectedAtArrival}</b></span><span>${config.targetDays + config.safetyDays}天目标 <b>${item.arrivalTarget}</b></span><code>max(0, ${item.arrivalTarget} − ${item.projectedAtArrival})</code>` : "<code>BLOCKED：商品物流资料不完整</code>"}</div></td>
     <td class="recommend"><strong>${item.recommended}</strong><span>件</span><small>${(item.volumeM3 * item.recommended).toFixed(3)} m³</small></td>
     <td><div class="economics-mini"><span>用户结算价 <b>${local}${item.customerPaymentLocal.toFixed(2)}</b></span><span>税费节省 ${Math.round(config.taxSavingRate * 100)}% <b class="gain">${money(item.taxSavingUnit, 2)}</b></span><span>跨境运费节省 20% <b class="gain">${money(item.shippingSavingUnit, 2)}</b></span><span>本土处理 + 头程 <b>−${money(item.handlingUnit + item.headFreightUnit, 2)}</b></span><em>单件净优势 ${money(item.netUnit, 2)} · 本批 ${money(item.netTotal)} ${shippingEvidence}</em></div></td>
-    <td><span class="pill ${item.status.toLowerCase()}">${statusLabel(item.status)}</span><small class="reason">${item.status === "BLOCKED_DATA" ? "保留库存行与主图，但尺寸、重量或成本不完整，禁止猜测备货数。" : item.kind === "first_stock" ? "当前仓库为0；平台需求与商品资料门槛已通过。" : item.status === "HOLD" ? "现货与在途已覆盖到仓目标。" : item.status === "REVIEW" ? "有需求缺口，但已知节省不足以覆盖本土履约与头程。" : item.status === "NO_DEMAND" ? "没有足够的SKU级需求事实。" : "需求缺口且已知单件净优势为正。"}</small>${item.status === "BLOCKED_DATA" || item.manualInput ? `<button class="manual-entry-button" type="button" data-action="manual-entry" data-sku="${escapeHtml(item.sku)}">${item.manualInput ? "修改已补资料" : "手动补齐"}</button>` : ""}</td>
+    <td><span class="pill ${item.status.toLowerCase()}">${statusLabel(item.status)}</span><small class="reason">${item.status === "BLOCKED_DATA" ? "保留近30天动销、库存行与主图，但尺寸、重量或成本不完整，禁止猜测备货数。" : item.kind === "first_stock" ? "当前仓库为0；平台需求与商品资料门槛已通过，收益单独展示。" : item.status === "HOLD" ? "现货与在途已覆盖到仓目标。" : item.status === "NO_DEMAND" ? "没有足够的SKU级需求事实。" : "需求缺口成立；收益仅展示，不拦截补货建议。"}</small>${item.status === "BLOCKED_DATA" || item.manualInput ? `<button class="manual-entry-button" type="button" data-action="manual-entry" data-sku="${escapeHtml(item.sku)}">${item.manualInput ? "修改已补资料" : "手动补齐"}</button>` : ""}</td>
   </tr>`;
 }
 
@@ -206,7 +185,13 @@ function renderRows() {
   const filter = document.querySelector("#statusFilter").value;
   const visible = calculated.filter(item => {
     const textMatch = !query || `${item.sku} ${item.name}`.toLowerCase().includes(query);
-    return textMatch && (filter === "all" || item.status === filter);
+    const recent30Units = Object.values(item.channels).reduce(
+      (sum, channel) => sum + number(channel.recent30Units), 0
+    );
+    const filterMatch = filter === "all"
+      || (filter === "RECENT30" && recent30Units > 0)
+      || item.status === filter;
+    return textMatch && filterMatch;
   });
   const config = DATA.config[activeRegion];
   const existing = visible.filter(item => item.kind === "existing");
@@ -231,11 +216,14 @@ function renderCountry() {
   const inbound = calculated.filter(item => item.kind === "existing").reduce((sum, item) => sum + item.inventory.inbound, 0);
   const existingCount = calculated.filter(item => item.kind === "existing").length;
   const firstCount = calculated.filter(item => item.kind === "first_stock").length;
+  const recent30Count = calculated.filter(item => Object.values(item.channels).some(
+    channel => number(channel.recent30Units) > 0
+  )).length;
 
   document.querySelector("#snapshotDate").textContent = DATA.snapshotDate;
   document.querySelector("#countryEyebrow").textContent = `${activeRegion} · ${config.freightMode.toUpperCase()} · ${config.warehouse}`;
   document.querySelector("#countryName").textContent = config.name;
-  document.querySelector("#heroDescription").textContent = `把 TikTok ${activeRegion} 与 Shopee ${activeRegion} 的 SKU 需求相加，再扣除 ${config.warehouse} 的可用库存和在途；按 ${config.leadDays} 天补货周期算到仓缺口，并验证税费、跨境运费、本土处理和头程后的单件净优势。`;
+  document.querySelector("#heroDescription").textContent = `把 TikTok ${activeRegion} 与 Shopee ${activeRegion} 的 SKU 需求相加，再扣除 ${config.warehouse} 的可用库存和在途；按 ${config.leadDays} 天补货周期算到仓缺口，并单独展示税费、跨境运费、本土处理和固定头程后的收益。`;
   const taxChip = config.taxSavingRate > 0
     ? `税费节省 = 用户结算价 × ${Math.round(config.taxSavingRate * 100)}%`
     : "税费优势尚未批准，按 0";
@@ -244,34 +232,31 @@ function renderCountry() {
   document.querySelector("#batchQty").textContent = qty.toLocaleString("zh-CN");
   document.querySelector("#batchSkuCount").textContent = `${approved.length} 款`;
   document.querySelector("#batchVolume").textContent = `${result.physicalM3.toFixed(3)} m³`;
-  document.querySelector("#billableVolume").textContent = `${result.billableM3.toFixed(1)} m³`;
+  document.querySelector("#billableVolume").textContent = `${result.billableM3.toFixed(3)} m³`;
   document.querySelector("#workingCapital").textContent = money(capital);
   document.querySelector("#knownBenefit").textContent = money(benefit);
   document.querySelector("#headFreight").textContent = money(result.freightTotal);
   document.querySelector("#batchSentence").textContent = approved.length
     ? `优先：${approved.slice(0, 6).map(item => item.sku).join("、")}；其中首批候选 ${approved.filter(item => item.kind === "first_stock").length} 款。`
-    : "当前没有同时通过需求缺口与经济性门槛的 SKU。";
+    : "当前没有需要补货且商品物流资料完整的 SKU。";
   document.querySelector("#warehouseLabel").textContent = `雅仓 ${config.warehouse}`;
   document.querySelector("#inventoryUnits").textContent = `${available.toLocaleString("zh-CN")} 件`;
   document.querySelector("#inboundUnits").textContent = `${inbound.toLocaleString("zh-CN")} 件`;
   document.querySelector("#demandWindow").textContent = config.demandCoverage;
   document.querySelector("#decisionHeadline").textContent = approved.length ? `备 ${approved.length} 款` : "暂缓备货";
   document.querySelector("#formulaText").textContent = `Q = max[0, ceil(v × ${config.targetDays + config.safetyDays}) − max(0, 可用 + 在途 − ceil(v × ${config.leadDays}))]`;
-  const surchargeRule = config.inboundSurchargeCny > 0
-    ? `；不足 ${config.inboundSurchargeThresholdM3}m³另计入库附加费 ¥${config.inboundSurchargeCny}`
-    : "";
-  document.querySelector("#freightRule").textContent = `${config.freightMode} ¥${config.freightRateCnyM3}/m³；计费体积取实物体积与重量折算体积（1m³:${config.weightRatioKgM3}kg）较大值，向上取0.1m³，最低 ${config.minimumBillableM3}m³${surchargeRule}。`;
+  document.querySelector("#freightRule").textContent = `所有国家、站点和 SKU 的头程统一按 ${money(config.fixedHeadFreightUnitCny, 2)}/件计入；体积只用于装运规划，不参与本页头程金额。`;
   const taxRule = config.taxSavingRate > 0
     ? `税费节省按用户结算价的 ${Math.round(config.taxSavingRate * 100)}%`
     : "税费节省没有已批准比例，保守按 0";
-  document.querySelector("#economicsRule").textContent = `${taxRule}；跨境运费只按有 SKU 级结算证据的金额取 20%。扣除上架、出库、包材和分摊头程；0–30天仓储费按0。`;
+  document.querySelector("#economicsRule").textContent = `${taxRule}；跨境运费只按有 SKU 级结算证据的金额取 20%。扣除上架、出库、包材和固定 ${money(config.fixedHeadFreightUnitCny, 2)}/件头程；0–30天仓储费按0。收益只展示，不作为隐藏 SKU 或拦截建议的条件。`;
   const shopeeState = calculated
     .map(item => item.channels.shopee.state)
     .find(state => state && state !== "READY");
   const demandEvidenceClass = shopeeState ? "warn" : "ok";
   const demandEvidenceText = shopeeState
     ? `TikTok 已按 SKU 计入；Shopee 当前状态为 ${shopeeState} 且未计入需求。当前建议是保守下限，不把待拉取渠道当作零销量。`
-    : "TikTok 与 Shopee 独立显示订单、件数、窗口与日均，再在 SKU 层相加。不是用仓库出库量替代市场需求。";
+    : `TikTok 与 Shopee 独立显示订单、件数、窗口与日均，再在 SKU 层相加。近30天有动销 ${recent30Count} 款，全部保留在台账，可用筛选查看。`;
   const identityEvidence = config.inventoryIdentityBlocker
     ? `<article class="warn"><strong>完整 SKU 身份待恢复</strong><p>${config.inventoryIdentityBlocker}</p></article>`
     : "";
@@ -286,7 +271,7 @@ function renderCountry() {
     ${unmappedEvidence}
     <article class="ok"><strong>首批候选有硬门槛</strong><p>${firstCount} 款海外仓尚无的候选进入台账；没有尺寸、重量、成本、主图或足够需求的 SKU 已关闭。</p></article>
     <article class="${activeRegion === "TH" ? "warn" : "ok"}"><strong>运费证据范围</strong><p>${config.shippingCoverage}。</p></article>
-    <article class="warn"><strong>报价时点风险</strong><p>头程引用 2026-05-21 报价表；正式出货前应向物流商复核价格、敏感货属性与最低计费规则。</p></article>
+    <article class="neutral"><strong>固定头程口径</strong><p>本页按用户批准口径对所有国家、站点和 SKU 统一使用 ${money(config.fixedHeadFreightUnitCny, 2)}/件；实际发货报价差异不在本轮建议中调整。</p></article>
     <article class="neutral"><strong>外部写入为 0</strong><p>该页面是本地只读决策制品，不会写雅仓、TikTok、Shopee 或业务数据库，也不会自动下采购单。</p></article>`;
   renderRows();
 }

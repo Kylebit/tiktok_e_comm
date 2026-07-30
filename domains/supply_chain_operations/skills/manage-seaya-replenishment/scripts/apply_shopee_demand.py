@@ -186,10 +186,32 @@ def main() -> int:
     parser.add_argument("--catalog-db", type=Path, required=True)
     parser.add_argument("--assets-dir", type=Path, required=True)
     parser.add_argument("--download-images", action="store_true")
+    parser.add_argument(
+        "--fixed-head-freight-only",
+        action="store_true",
+        help="Only persist the approved CNY 1/unit policy; do not read snapshots or catalog.",
+    )
     args = parser.parse_args()
 
     data = _read_dashboard(args.data)
+    for region in ("MY", "TH", "VN", "PH"):
+        config = data["config"][region]
+        config["fixedHeadFreightUnitCny"] = 1
+        for obsolete_key in (
+            "freightRateCnyM3",
+            "minimumBillableM3",
+            "inboundSurchargeThresholdM3",
+            "inboundSurchargeCny",
+        ):
+            config.pop(obsolete_key, None)
     summary = {}
+    if args.fixed_head_freight_only:
+        args.data.write_text(
+            PREFIX + json.dumps(data, ensure_ascii=False, separators=(",", ":")) + ";\n",
+            encoding="utf-8",
+        )
+        print(json.dumps({"fixedHeadFreightUnitCny": 1}, ensure_ascii=False))
+        return 0
     for region in ("VN", "PH"):
         snapshot_path = (
             args.snapshot_dir / f"shopee_demand_{region}_20250730_20260730.json"

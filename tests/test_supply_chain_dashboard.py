@@ -45,6 +45,14 @@ def test_dashboard_has_four_country_isolated_facts_and_policies():
         "PH": 0.0,
     }
     assert {
+        region: data["config"][region]["fixedHeadFreightUnitCny"]
+        for region in regions
+    } == {"MY": 1, "TH": 1, "VN": 1, "PH": 1}
+    for region in regions:
+        assert "freightRateCnyM3" not in data["config"][region]
+        assert "minimumBillableM3" not in data["config"][region]
+        assert "inboundSurchargeCny" not in data["config"][region]
+    assert {
         region: len([row for row in rows if row["kind"] == "existing"])
         for region, rows in data["countries"].items()
     } == {"MY": 24, "TH": 23, "VN": 9, "PH": 4}
@@ -166,6 +174,53 @@ def test_dashboard_loads_facts_before_calculation_code_and_has_four_country_tabs
     for region in ("MY", "TH", "VN", "PH"):
         assert f'data-region="{region}"' in html
     assert "海外仓尚无、可做首批备货" in html
+    assert '<option value="RECENT30">近30天有动销</option>' in html
+    assert "待核经济性" not in html
+
+
+def test_every_recent_30_day_sku_is_present_and_filterable_without_economic_gate():
+    data = _data()
+    app = (DASHBOARD / "app.js").read_text(encoding="utf-8")
+    html = (DASHBOARD / "index.html").read_text(encoding="utf-8")
+
+    recent_counts = {}
+    for region, rows in data["countries"].items():
+        assert len({row["sku"] for row in rows}) == len(rows)
+        recent_rows = [
+            row
+            for row in rows
+            if any(
+                (channel.get("recent30Units") or 0) > 0
+                for channel in row["channels"].values()
+            )
+        ]
+        recent_counts[region] = len(recent_rows)
+        assert all((DASHBOARD / row["image"]).is_file() for row in recent_rows)
+
+    assert recent_counts == {"MY": 20, "TH": 47, "VN": 46, "PH": 77}
+    assert 'filter === "RECENT30" && recent30Units > 0' in app
+    assert 'status = item.kind === "first_stock" ? "FIRST_STOCK" : "REPLENISH"' in app
+    assert '"REVIEW"' not in app
+    assert "待核经济性" not in app
+    assert "待核经济性" not in html
+
+
+def test_head_freight_is_fixed_at_one_cny_per_unit_and_benefit_is_presentation_only():
+    app = (DASHBOARD / "app.js").read_text(encoding="utf-8")
+    reference = (
+        DASHBOARD.parent
+        / "skills"
+        / "manage-seaya-replenishment"
+        / "references"
+        / "decision-contract.md"
+    ).read_text(encoding="utf-8")
+
+    assert "recommendedUnits * config.fixedHeadFreightUnitCny" in app
+    assert "const headFreightUnit = config.fixedHeadFreightUnitCny" in app
+    assert "economics(item, metrics)" not in app
+    assert "netUnit > 0" not in app
+    assert "CNY 1 per unit" in reference
+    assert "must not remove the demand row" in reference
 
 
 def test_dashboard_contains_no_remote_image_or_secret_dependency_and_marks_blockers():

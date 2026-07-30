@@ -35,7 +35,7 @@
         <div class="decision-grid">
           <div><small>建议 SKU</small><strong id="batchSkuCount">—</strong></div>
           <div><small>实物体积</small><strong id="batchVolume">—</strong></div>
-          <div><small>计费体积</small><strong id="billableVolume">—</strong></div>
+          <div><small>装运折算体积</small><strong id="billableVolume">—</strong></div>
           <div><small>预计占款</small><strong id="workingCapital">—</strong></div>
           <div><small>已知净优势</small><strong id="knownBenefit">—</strong></div>
           <div><small>头程预算</small><strong id="headFreight">—</strong></div>
@@ -47,29 +47,29 @@
       <article><small id="warehouseLabel">海外仓</small><strong id="inventoryUnits">—</strong><span>当前可用库存</span></article>
       <article><small>高可信在途</small><strong id="inboundUnits">—</strong><span>纳入到仓时点计算</span></article>
       <article><small>需求观察窗</small><strong id="demandWindow">—</strong><span>TikTok + Shopee 分渠道合并</span></article>
-      <article><small>当前结论</small><strong id="decisionHeadline">—</strong><span>建议量与经济性共同判定</span></article>
+      <article><small>当前结论</small><strong id="decisionHeadline">—</strong><span>建议量按需求与库存判定</span></article>
     </section>
 
     <section class="section ledger" id="sku-plan">
       <div class="section-heading">
-        <div><span class="eyebrow">SKU-BY-SKU LEDGER</span><h2>逐款展示需求、库存、公式与经济性</h2></div>
+        <div><span class="eyebrow">SKU-BY-SKU LEDGER</span><h2>逐款展示需求、库存、公式与收益</h2></div>
         <p>需求来自 TikTok 与 Shopee 的 SKU 级订单/结算事实；雅仓只负责现货与在途。两个平台在同一国家共用同一海外仓，马来西亚、泰国、越南和菲律宾绝不跨国混算。</p>
       </div>
       <div class="toolbar">
         <label>搜索 SKU / 商品<input id="searchInput" type="search" placeholder="例如 0007、墙贴"></label>
-        <label>决策<select id="statusFilter"><option value="all">全部</option><option value="REPLENISH">建议补货</option><option value="FIRST_STOCK">建议首批</option><option value="REVIEW">待核经济性</option><option value="HOLD">暂不补货</option><option value="NO_DEMAND">销量不足</option><option value="BLOCKED_DATA">资料待补</option></select></label>
+        <label>决策<select id="statusFilter"><option value="all">全部</option><option value="RECENT30">近30天有动销</option><option value="REPLENISH">建议补货</option><option value="FIRST_STOCK">建议首批</option><option value="HOLD">暂不补货</option><option value="NO_DEMAND">销量不足</option><option value="BLOCKED_DATA">资料待补</option></select></label>
         <span id="visibleCount"></span>
       </div>
 
       <div class="ledger-group">
         <div class="group-heading"><div><span>01</span><h3>海外仓已有 SKU</h3></div><p>逐一扣减当前可用和高可信在途，避免重复备货。</p></div>
-        <div class="table-wrap"><table><thead><tr><th>主图 / SKU</th><th>双平台需求事实</th><th>雅仓供应事实</th><th>到仓计算</th><th>建议</th><th>单件经济性</th><th>判断</th></tr></thead><tbody id="existingRows"></tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>主图 / SKU</th><th>双平台需求事实</th><th>雅仓供应事实</th><th>到仓计算</th><th>建议</th><th>收益明细</th><th>判断</th></tr></thead><tbody id="existingRows"></tbody></table></div>
         <div class="empty-state" id="existingEmpty" hidden>当前筛选条件下没有记录。</div>
       </div>
 
       <div class="ledger-group first-stock-group">
-        <div class="group-heading"><div><span>02</span><h3>海外仓尚无、可做首批备货</h3></div><p>必须同时满足：平台有可审计需求、商品仍在售、尺寸/重量/成本/主图齐全，并通过经济性判断。</p></div>
-        <div class="table-wrap"><table><thead><tr><th>主图 / SKU</th><th>双平台需求事实</th><th>雅仓供应事实</th><th>到仓计算</th><th>建议</th><th>单件经济性</th><th>判断</th></tr></thead><tbody id="firstStockRows"></tbody></table></div>
+        <div class="group-heading"><div><span>02</span><h3>海外仓尚无、可做首批备货</h3></div><p>近30天有动销的 SKU 必须保留展示；尺寸、重量或成本不完整时显示资料待补，资料齐全后按需求与库存给出建议量。</p></div>
+        <div class="table-wrap"><table><thead><tr><th>主图 / SKU</th><th>双平台需求事实</th><th>雅仓供应事实</th><th>到仓计算</th><th>建议</th><th>收益明细</th><th>判断</th></tr></thead><tbody id="firstStockRows"></tbody></table></div>
         <div class="empty-state" id="firstStockEmpty" hidden>当前没有满足完整事实门槛的首批备货候选。</div>
       </div>
     </section>

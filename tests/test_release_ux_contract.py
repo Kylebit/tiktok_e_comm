@@ -638,6 +638,20 @@ def test_shopee_global_plan_ui_is_redacted_and_fail_closed():
     assert "expected_candidate_digest" in script
     assert "raw response" not in panel.lower()
 
+    assert "channel-category-decision-preview/v2" in script
+    assert "RECHECK_REQUIRED" in script
+    assert "required_attribute_selections" in script
+    assert "selected_brand_identity_digest" in script
+    assert "selected_location_identity_digest" in script
+    assert "selected_creation_fact_identity_digest" in script
+    assert "confirm_seller_stock_quantity: true" in script
+    assert "confirm_condition_and_preorder: true" in script
+    assert "confirm_required_attribute_selections: true" in script
+    assert 'data-selection-kind="SINGLE"' in script
+    assert 'data-selection-kind="MULTI"' in script
+    assert 'data-selection-kind="TEXT"' in script
+    assert "requestShopeeCategoryDecisionPreview(identity)" in script
+
 
 def test_oneclick_manual_review_forms_keep_warning_and_apiless_contracts_separate():
     html = (ROOT / "web/product_workspace.html").read_text(encoding="utf-8")
@@ -650,8 +664,8 @@ def test_oneclick_manual_review_forms_keep_warning_and_apiless_contracts_separat
     )
     apiless_submit = _function_body(script, "submitManualTargetVerification")
 
-    assert "product_workspace.css?v=20260730-v17" in html
-    assert "product_workspace.js?v=20260730-v17" in html
+    assert "product_workspace.css?v=20260730-v18" in html
+    assert "product_workspace.js?v=20260730-v18" in html
     assert '"SUCCEEDED_MANUAL_REVIEW"' in script
     assert '"review_verified_observation_warning"' in script
     assert "oneclick-observation-review-form" in script

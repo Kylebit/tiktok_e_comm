@@ -101,11 +101,12 @@
   const SHOPEE_GLOBAL_PLAN_APPROVAL_SCHEMA =
     "shopee-global-plan-approval-response/v1";
   const SHOPEE_CATEGORY_DECISION_PREVIEW_SCHEMA =
-    "channel-category-decision-preview/v1";
+    "channel-category-decision-preview/v2";
   const SHOPEE_CATEGORY_DECISION_STATUSES = new Set([
     "SELECTED",
     "READY_FOR_SELECTION",
     "BLOCKED_CAPABILITY",
+    "RECHECK_REQUIRED",
   ]);
   const APPROVED_SHOPEE_GLOBAL_PLAN_SCHEMA_MODES = new Map([
     ["approved-shopee-global-plan/v1", "NEW_GLOBAL"],
@@ -277,7 +278,13 @@
     contextKey: "",
     projection: null,
     draftIdentityDigest: "",
+    draftBrandIdentityDigest: "",
+    draftLocationIdentityDigest: "",
+    requiredAttributeSelections: {},
     confirmSelection: false,
+    confirmSellerStock: false,
+    confirmConditionAndPreorder: false,
+    confirmRequiredAttributes: false,
     previewAttempted: false,
     previewBusy: false,
     submitting: false,
@@ -653,7 +660,13 @@
     shopeeCategoryDecisionReview.contextKey = "";
     shopeeCategoryDecisionReview.projection = null;
     shopeeCategoryDecisionReview.draftIdentityDigest = "";
+    shopeeCategoryDecisionReview.draftBrandIdentityDigest = "";
+    shopeeCategoryDecisionReview.draftLocationIdentityDigest = "";
+    shopeeCategoryDecisionReview.requiredAttributeSelections = {};
     shopeeCategoryDecisionReview.confirmSelection = false;
+    shopeeCategoryDecisionReview.confirmSellerStock = false;
+    shopeeCategoryDecisionReview.confirmConditionAndPreorder = false;
+    shopeeCategoryDecisionReview.confirmRequiredAttributes = false;
     shopeeCategoryDecisionReview.previewAttempted = false;
     shopeeCategoryDecisionReview.previewBusy = false;
     shopeeCategoryDecisionReview.submitting = false;
@@ -1841,7 +1854,11 @@
       "options_digest",
       "recommendation",
       "options",
+      "brand_options",
+      "location_options",
+      "creation_fact_option",
       "selection",
+      "attribute_selection",
       "blocker",
       "next_action",
       "external_writes_performed",
@@ -1859,6 +1876,8 @@
       || payload.mode !== "NEW_GLOBAL"
       || !SHOPEE_CATEGORY_DECISION_STATUSES.has(payload.status)
       || !Array.isArray(payload.options)
+      || !Array.isArray(payload.brand_options)
+      || !Array.isArray(payload.location_options)
       || !Array.isArray(payload.external_writes_performed)
       || payload.external_writes_performed.length
       || (
@@ -1873,17 +1892,51 @@
         "Shopee Global 类目选择回执身份不一致，已停止使用。",
       );
     }
-    if (payload.status === "BLOCKED_CAPABILITY") {
+    const blockedLike = ["BLOCKED_CAPABILITY", "RECHECK_REQUIRED"]
+      .includes(payload.status);
+    if (blockedLike && !payload.options.length) {
+      const recheck = payload.status === "RECHECK_REQUIRED";
       if (
-        payload.options_digest !== null
+        (recheck ? !oneClickDigest(payload.options_digest) : payload.options_digest !== null)
         || payload.recommendation !== null
-        || payload.options.length
+        || payload.brand_options.length
+        || payload.location_options.length
+        || payload.creation_fact_option !== null
         || payload.selection !== null
+        || (
+          recheck
+            ? (
+              !exactObjectKeys(payload.attribute_selection, [
+                "selection_digest",
+                "category_identity_digest",
+                "attribute_tree_digest",
+                "selection_count",
+                "approved_by",
+              ])
+              || !oneClickDigest(payload.attribute_selection.selection_digest)
+              || !oneClickDigest(
+                payload.attribute_selection.category_identity_digest,
+              )
+              || !oneClickDigest(
+                payload.attribute_selection.attribute_tree_digest,
+              )
+              || !Number.isInteger(
+                payload.attribute_selection.selection_count,
+              )
+              || payload.attribute_selection.selection_count < 0
+              || payload.attribute_selection.approved_by !== "Kyle"
+            )
+            : payload.attribute_selection !== null
+        )
         || !exactObjectKeys(payload.blocker, ["category", "code"])
         || payload.blocker.category !== "CAPABILITY"
         || !oneClickRuleId(payload.blocker.code)
         || !exactObjectKeys(payload.next_action, ["action", "target_focus"])
-        || payload.next_action.action !== "wait_for_channel_capability"
+        || payload.next_action.action !== (
+          recheck
+            ? "recheck_channel_category_attributes"
+            : "wait_for_channel_capability"
+        )
         || payload.next_action.target_focus !== SHOPEE_GLOBAL_CONTROL_TARGET
       ) {
         throw oneClickContractError(
@@ -1909,6 +1962,9 @@
         payload.recommendation.category_identity_digest,
       )
       || !payload.options.length
+      || !payload.brand_options.length
+      || !payload.location_options.length
+      || !payload.creation_fact_option
       || payload.blocker !== null
     ) {
       throw oneClickContractError(
@@ -1929,9 +1985,10 @@
       "option_evidence_digest",
     ];
     const missingAttributeKeys = [
+      "attribute_identity_digest",
       "label",
       "selection_kind",
-      "option_identity_digest",
+      "option_values",
     ];
     let recommendedCount = 0;
     const seen = new Set();
@@ -1971,11 +2028,27 @@
       for (const missing of option.missing_required_attributes) {
         if (
           !exactObjectKeys(missing, missingAttributeKeys)
+          || !oneClickDigest(missing.attribute_identity_digest)
           || typeof missing.label !== "string"
           || !missing.label.trim()
-          || typeof missing.selection_kind !== "string"
-          || !missing.selection_kind.trim()
-          || !oneClickDigest(missing.option_identity_digest)
+          || !["SINGLE", "MULTI", "TEXT"].includes(missing.selection_kind)
+          || !Array.isArray(missing.option_values)
+          || missing.option_values.some((value) => (
+            !exactObjectKeys(value, [
+              "option_identity_digest",
+              "display_label",
+              "recommended",
+            ])
+            || !oneClickDigest(value.option_identity_digest)
+            || typeof value.display_label !== "string"
+            || !value.display_label.trim()
+            || typeof value.recommended !== "boolean"
+          ))
+          || (
+            missing.selection_kind === "TEXT"
+              ? missing.option_values.length !== 0
+              : missing.option_values.length === 0
+          )
         ) {
           throw oneClickContractError(
             "Shopee Global 必填属性提示结构不完整，已停止选择。",
@@ -2016,6 +2089,103 @@
       seen.add(option.category_identity_digest);
       previousDigest = option.category_identity_digest;
     }
+    const validateNamedOptions = (rows, identityKey) => {
+      const seenOptions = new Set();
+      let recommendationCount = 0;
+      for (const row of rows) {
+        if (
+          !exactObjectKeys(row, [
+            identityKey,
+            "display_name",
+            "recommended",
+            "option_evidence_digest",
+          ])
+          || !oneClickDigest(row[identityKey])
+          || seenOptions.has(row[identityKey])
+          || typeof row.display_name !== "string"
+          || !row.display_name.trim()
+          || typeof row.recommended !== "boolean"
+          || !oneClickDigest(row.option_evidence_digest)
+        ) {
+          throw oneClickContractError(
+            "Shopee Global 品牌或卖家位置候选不完整，已停止选择。",
+          );
+        }
+        if (row.recommended) recommendationCount += 1;
+        seenOptions.add(row[identityKey]);
+      }
+      if (recommendationCount !== 1) {
+        throw oneClickContractError(
+          "Shopee Global 品牌或卖家位置推荐不唯一，已停止选择。",
+        );
+      }
+    };
+    validateNamedOptions(payload.brand_options, "brand_identity_digest");
+    validateNamedOptions(
+      payload.location_options,
+      "location_identity_digest",
+    );
+    const creation = payload.creation_fact_option;
+    if (
+      !exactObjectKeys(creation, [
+        "creation_fact_identity_digest",
+        "seller_stock_quantity",
+        "condition",
+        "preorder",
+        "variation_summary",
+        "recommended",
+        "option_evidence_digest",
+      ])
+      || !oneClickDigest(creation.creation_fact_identity_digest)
+      || !Number.isInteger(creation.seller_stock_quantity)
+      || creation.seller_stock_quantity <= 0
+      || typeof creation.condition !== "string"
+      || !creation.condition.trim()
+      || !exactObjectKeys(creation.preorder, [
+        "is_pre_order",
+        "days_to_ship",
+      ])
+      || typeof creation.preorder.is_pre_order !== "boolean"
+      || !Number.isInteger(creation.preorder.days_to_ship)
+      || creation.preorder.days_to_ship < 0
+      || !exactObjectKeys(creation.variation_summary, [
+        "tier_count",
+        "model_count",
+        "model_sku_count",
+        "approved_image_position",
+      ])
+      || Object.values(creation.variation_summary).some((value) => (
+        !Number.isInteger(value) || value <= 0
+      ))
+      || creation.recommended !== true
+      || !oneClickDigest(creation.option_evidence_digest)
+      || !(
+        payload.attribute_selection === null
+        || (
+          exactObjectKeys(payload.attribute_selection, [
+            "selection_digest",
+            "category_identity_digest",
+            "attribute_tree_digest",
+            "selection_count",
+            "approved_by",
+          ])
+          && oneClickDigest(payload.attribute_selection.selection_digest)
+          && oneClickDigest(
+            payload.attribute_selection.category_identity_digest,
+          )
+          && oneClickDigest(
+            payload.attribute_selection.attribute_tree_digest,
+          )
+          && Number.isInteger(payload.attribute_selection.selection_count)
+          && payload.attribute_selection.selection_count >= 0
+          && payload.attribute_selection.approved_by === "Kyle"
+        )
+      )
+    ) {
+      throw oneClickContractError(
+        "Shopee Global 库存、状态或单 SKU 规格事实不完整，已停止选择。",
+      );
+    }
     if (
       recommendedCount !== 1
       || !seen.has(payload.recommendation.category_identity_digest)
@@ -2049,6 +2219,14 @@
         "selected_is_recommended",
         "attribute_tree_digest",
         "approved_by",
+        "selected_brand",
+        "selected_location",
+        "creation_fact_identity_digest",
+        "attribute_selection_digest",
+        "seller_stock_quantity",
+        "condition",
+        "preorder",
+        "variation_summary",
       ])
       || !oneClickDigest(payload.selection.decision_digest)
       || !oneClickDigest(
@@ -2057,6 +2235,39 @@
       || typeof payload.selection.selected_is_recommended !== "boolean"
       || !oneClickDigest(payload.selection.attribute_tree_digest)
       || payload.selection.approved_by !== "Kyle"
+      || !exactObjectKeys(payload.selection.selected_brand, [
+        "brand_identity_digest",
+        "display_name",
+        "selected_is_recommended",
+      ])
+      || !oneClickDigest(
+        payload.selection.selected_brand.brand_identity_digest,
+      )
+      || !exactObjectKeys(payload.selection.selected_location, [
+        "location_identity_digest",
+        "display_name",
+        "selected_is_recommended",
+      ])
+      || !oneClickDigest(
+        payload.selection.selected_location.location_identity_digest,
+      )
+      || !oneClickDigest(
+        payload.selection.creation_fact_identity_digest,
+      )
+      || !oneClickDigest(payload.selection.attribute_selection_digest)
+      || !Number.isInteger(payload.selection.seller_stock_quantity)
+      || payload.selection.seller_stock_quantity <= 0
+      || typeof payload.selection.condition !== "string"
+      || !exactObjectKeys(payload.selection.preorder, [
+        "is_pre_order",
+        "days_to_ship",
+      ])
+      || !exactObjectKeys(payload.selection.variation_summary, [
+        "tier_count",
+        "model_count",
+        "model_sku_count",
+        "approved_image_position",
+      ])
       || !exactObjectKeys(payload.next_action, ["action", "target_focus"])
       || payload.next_action.action !== "review_shopee_global_plan"
       || payload.next_action.target_focus !== SHOPEE_GLOBAL_CONTROL_TARGET
@@ -2078,6 +2289,16 @@
         !== payload.selection.attribute_tree_digest
       || selected.recommended
         !== payload.selection.selected_is_recommended
+      || payload.selection.creation_fact_identity_digest
+        !== creation.creation_fact_identity_digest
+      || !payload.brand_options.some((row) => (
+        row.brand_identity_digest
+        === payload.selection.selected_brand.brand_identity_digest
+      ))
+      || !payload.location_options.some((row) => (
+        row.location_identity_digest
+        === payload.selection.selected_location.location_identity_digest
+      ))
     ) {
       throw oneClickContractError(
         "Shopee Global 已选类目与当前官方候选不一致，已停止使用。",
@@ -2112,7 +2333,23 @@
         ? projection.selection.selected_category_identity_digest
         : projection.recommendation?.category_identity_digest || ""
     );
+    shopeeCategoryDecisionReview.draftBrandIdentityDigest = (
+      projection.status === "SELECTED"
+        ? projection.selection.selected_brand.brand_identity_digest
+        : projection.brand_options.find((row) => row.recommended)
+          ?.brand_identity_digest || ""
+    );
+    shopeeCategoryDecisionReview.draftLocationIdentityDigest = (
+      projection.status === "SELECTED"
+        ? projection.selection.selected_location.location_identity_digest
+        : projection.location_options.find((row) => row.recommended)
+          ?.location_identity_digest || ""
+    );
+    shopeeCategoryDecisionReview.requiredAttributeSelections = {};
     shopeeCategoryDecisionReview.confirmSelection = false;
+    shopeeCategoryDecisionReview.confirmSellerStock = false;
+    shopeeCategoryDecisionReview.confirmConditionAndPreorder = false;
+    shopeeCategoryDecisionReview.confirmRequiredAttributes = false;
     shopeeCategoryDecisionReview.error = "";
   }
 
@@ -2289,6 +2526,82 @@
     return option.path_labels.join(" › ") || option.display_name;
   }
 
+  function shopeeRequiredAttributesComplete(option) {
+    return (option?.missing_required_attributes || []).every((attribute) => {
+      const value = shopeeCategoryDecisionReview
+        .requiredAttributeSelections[attribute.attribute_identity_digest];
+      if (attribute.selection_kind === "TEXT") {
+        return typeof value?.textValue === "string"
+          && value.textValue.trim().length >= 1
+          && value.textValue.trim().length <= 120;
+      }
+      if (attribute.selection_kind === "SINGLE") {
+        return Array.isArray(value?.optionDigests)
+          && value.optionDigests.length === 1;
+      }
+      return Array.isArray(value?.optionDigests)
+        && value.optionDigests.length >= 1;
+    });
+  }
+
+  function shopeeRequiredAttributeMarkup(attribute, locked) {
+    const current = shopeeCategoryDecisionReview
+      .requiredAttributeSelections[attribute.attribute_identity_digest] || {};
+    const name = `attribute_${attribute.attribute_identity_digest}`;
+    if (attribute.selection_kind === "TEXT") {
+      return `
+        <label class="channel-attribute-field">
+          <span>${esc(attribute.label)}（文本，1–120 字）</span>
+          <input type="text" maxlength="120"
+            name="${esc(name)}"
+            data-category-attribute="${esc(attribute.attribute_identity_digest)}"
+            data-selection-kind="TEXT"
+            value="${esc(current.textValue || "")}"
+            ${locked ? "disabled" : ""}>
+        </label>
+      `;
+    }
+    if (attribute.selection_kind === "SINGLE") {
+      const selected = current.optionDigests?.[0] || "";
+      return `
+        <label class="channel-attribute-field">
+          <span>${esc(attribute.label)}（单选）</span>
+          <select name="${esc(name)}"
+            data-category-attribute="${esc(attribute.attribute_identity_digest)}"
+            data-selection-kind="SINGLE"
+            ${locked ? "disabled" : ""}>
+            <option value="">请选择，不会自动采用推荐值</option>
+            ${attribute.option_values.map((value) => `
+              <option value="${esc(value.option_identity_digest)}"
+                ${selected === value.option_identity_digest ? "selected" : ""}>
+                ${esc(value.display_label)}
+                ${value.recommended ? "（系统推荐）" : ""}
+              </option>
+            `).join("")}
+          </select>
+        </label>
+      `;
+    }
+    const selected = new Set(current.optionDigests || []);
+    return `
+      <fieldset class="channel-attribute-field">
+        <legend>${esc(attribute.label)}（多选）</legend>
+        ${attribute.option_values.map((value) => `
+          <label>
+            <input type="checkbox"
+              data-category-attribute="${esc(attribute.attribute_identity_digest)}"
+              data-selection-kind="MULTI"
+              value="${esc(value.option_identity_digest)}"
+              ${selected.has(value.option_identity_digest) ? "checked" : ""}
+              ${locked ? "disabled" : ""}>
+            <span>${esc(value.display_label)}
+              ${value.recommended ? "（系统推荐）" : ""}</span>
+          </label>
+        `).join("")}
+      </fieldset>
+    `;
+  }
+
   function shopeeCategoryDecisionPanel() {
     if (shopeeCategoryDecisionReview.previewBusy) {
       return `
@@ -2318,13 +2631,23 @@
         </section>
       `;
     }
-    if (projection.status === "BLOCKED_CAPABILITY") {
+    if (
+      projection.status === "BLOCKED_CAPABILITY"
+      || projection.status === "RECHECK_REQUIRED"
+    ) {
+      const rechecking = projection.status === "RECHECK_REQUIRED";
       return `
         <section class="channel-category-decision is-blocked">
-          <strong>Shopee Global 官方类目能力不可用</strong>
-          <p>服务端阻断：${esc(projection.blocker.code)}。系统不会猜测类目，也不会开放最终计划批准。</p>
+          <strong>${rechecking
+            ? "已保存完整决定，等待官方属性复核"
+            : "Shopee Global 官方类目能力不可用"}</strong>
+          <p>服务端阻断：${esc(projection.blocker.code)}。${rechecking
+            ? "系统只会继续 GET 复核，绝不会重复 POST。"
+            : "系统不会猜测类目，也不会开放最终计划批准。"}</p>
           <button class="button button-secondary channel-category-preview-retry"
-            type="button">重新读取官方类目能力</button>
+            type="button">${rechecking
+              ? "只读复核官方属性"
+              : "重新读取官方类目能力"}</button>
         </section>
       `;
     }
@@ -2333,11 +2656,28 @@
     );
     const selected = selectedShopeeCategoryOption();
     const locked = projection.status === "SELECTED";
-    const selectedReady = selected?.approval_ready === true;
+    const attributesComplete = shopeeRequiredAttributesComplete(selected);
+    const brandSelected = projection.brand_options.some((row) => (
+      row.brand_identity_digest
+      === shopeeCategoryDecisionReview.draftBrandIdentityDigest
+    ));
+    const locationSelected = projection.location_options.some((row) => (
+      row.location_identity_digest
+      === shopeeCategoryDecisionReview.draftLocationIdentityDigest
+    ));
+    const selectedReady = Boolean(
+      selected
+      && attributesComplete
+      && brandSelected
+      && locationSelected
+    );
     const disabled = Boolean(
       locked
       || !selectedReady
       || !shopeeCategoryDecisionReview.confirmSelection
+      || !shopeeCategoryDecisionReview.confirmSellerStock
+      || !shopeeCategoryDecisionReview.confirmConditionAndPreorder
+      || !shopeeCategoryDecisionReview.confirmRequiredAttributes
       || shopeeCategoryDecisionReview.submitting
       || shopeeCategoryDecisionReview.postAttempted,
     );
@@ -2347,9 +2687,15 @@
       : shopeeCategoryDecisionReview.postAttempted
         ? "保存请求已尝试；先只读核对结果，禁止重复提交。"
         : !selectedReady
-          ? "当前候选仍缺官方必填属性值；请先回商品事实/属性映射区完成。"
+          ? "请完成当前类目全部官方属性、品牌与卖家位置选择。"
           : !shopeeCategoryDecisionReview.confirmSelection
-            ? "请先勾选 Kyle 明确确认，才可保存当前类目决定。"
+            ? "请完成四项 Kyle 明确确认，才可保存完整创建决定。"
+            : !shopeeCategoryDecisionReview.confirmSellerStock
+              ? "请明确确认可见的正数卖家库存数量。"
+              : !shopeeCategoryDecisionReview.confirmConditionAndPreorder
+                ? "请明确确认商品状态与预购设置。"
+                : !shopeeCategoryDecisionReview.confirmRequiredAttributes
+                  ? "请明确确认全部必填属性选择。"
             : "";
     const wrapperTag = locked ? "section" : "form";
     return `
@@ -2389,10 +2735,10 @@
               <option value="${esc(option.category_identity_digest)}"
                 ${option.category_identity_digest
                   === selected?.category_identity_digest ? "selected" : ""}
-                ${option.approval_ready ? "" : "disabled"}>
+                >
                 ${esc(shopeeCategoryOptionLabel(option))}
                 ${option.recommended ? "（系统推荐）" : ""}
-                ${option.approval_ready ? "" : "（缺必填属性）"}
+                ${option.approval_ready ? "" : "（需在下方补全属性）"}
               </option>
             `).join("")}
           </select>
@@ -2406,19 +2752,75 @@
             : "未找到与当前选择一致的官方候选。"}
         </p>
         <section class="channel-category-attributes ${missing.length ? "" : "is-complete"}">
-          <strong>${missing.length ? "仍缺官方必填属性" : "官方必填属性已完整"}</strong>
+          <strong>${missing.length ? "完成官方必填属性" : "官方必填属性已完整"}</strong>
           ${missing.length ? `
-            <p>这里不填写或猜测属性值。请在商品事实/属性映射区完成后，再重新读取类目候选。</p>
-            <ul>
-              ${missing.map((row) => `
-                <li>${esc(row.label)}（${esc(row.selection_kind)}）</li>
-              `).join("")}
-            </ul>
-            <button class="button button-secondary channel-category-attributes-next"
-              type="button">前往商品事实 / 属性映射</button>
+            <p>只使用服务端提供的官方选项或受校验文本。推荐值可见，但不会自动批准。</p>
+            <div class="channel-category-attribute-grid">
+              ${missing.map((row) => (
+                shopeeRequiredAttributeMarkup(row, locked)
+              )).join("")}
+            </div>
           ` : `
             <p>当前候选的属性树已完整，可由 Kyle 明确保存类目决定。</p>
           `}
+        </section>
+        <div class="channel-category-fact-grid">
+          <label class="channel-category-choice">
+            <span>官方品牌</span>
+            <select name="selected_brand_identity_digest"
+              ${locked ? "disabled" : ""}>
+              ${projection.brand_options.map((row) => `
+                <option value="${esc(row.brand_identity_digest)}"
+                  ${row.brand_identity_digest
+                    === shopeeCategoryDecisionReview.draftBrandIdentityDigest
+                    ? "selected" : ""}>
+                  ${esc(row.display_name)}
+                  ${row.recommended ? "（系统推荐）" : ""}
+                </option>
+              `).join("")}
+            </select>
+          </label>
+          <label class="channel-category-choice">
+            <span>卖家位置</span>
+            <select name="selected_location_identity_digest"
+              ${locked ? "disabled" : ""}>
+              ${projection.location_options.map((row) => `
+                <option value="${esc(row.location_identity_digest)}"
+                  ${row.location_identity_digest
+                    === shopeeCategoryDecisionReview.draftLocationIdentityDigest
+                    ? "selected" : ""}>
+                  ${esc(row.display_name)}
+                  ${row.recommended ? "（系统推荐）" : ""}
+                </option>
+              `).join("")}
+            </select>
+          </label>
+        </div>
+        <section class="channel-category-creation-facts">
+          <strong>NEW_GLOBAL 创建事实（必须明确确认）</strong>
+          <dl class="channel-category-recommendation">
+            <div><dt>卖家库存</dt><dd>${esc(
+              projection.creation_fact_option.seller_stock_quantity,
+            )}</dd></div>
+            <div><dt>状态 / 预购</dt><dd>${esc(
+              projection.creation_fact_option.condition,
+            )} · ${projection.creation_fact_option.preorder.is_pre_order
+              ? `预购 ${esc(
+                projection.creation_fact_option.preorder.days_to_ship,
+              )} 天`
+              : "非预购"}</dd></div>
+            <div><dt>单 SKU 规格</dt><dd>${esc(
+              projection.creation_fact_option.variation_summary.tier_count,
+            )} 层 / ${esc(
+              projection.creation_fact_option.variation_summary.model_count,
+            )} 模型 / ${esc(
+              projection.creation_fact_option.variation_summary.model_sku_count,
+            )} SKU</dd></div>
+            <div><dt>批准图片位置</dt><dd>#${esc(
+              projection.creation_fact_option.variation_summary
+                .approved_image_position,
+            )}</dd></div>
+          </dl>
         </section>
         ${locked ? "" : `
           <label class="manual-verification-confirm">
@@ -2426,6 +2828,21 @@
               type="checkbox"
               ${shopeeCategoryDecisionReview.confirmSelection ? "checked" : ""}>
             <span>我 Kyle 已核对推荐依据、备选类目与必填属性，并明确选择当前类目。</span>
+          </label>
+          <label class="manual-verification-confirm">
+            <input name="confirm_seller_stock_quantity" type="checkbox"
+              ${shopeeCategoryDecisionReview.confirmSellerStock ? "checked" : ""}>
+            <span>我 Kyle 明确确认上述正数卖家库存数量；它不会被静默采用。</span>
+          </label>
+          <label class="manual-verification-confirm">
+            <input name="confirm_condition_and_preorder" type="checkbox"
+              ${shopeeCategoryDecisionReview.confirmConditionAndPreorder ? "checked" : ""}>
+            <span>我 Kyle 明确确认商品状态与预购设置。</span>
+          </label>
+          <label class="manual-verification-confirm">
+            <input name="confirm_required_attribute_selections" type="checkbox"
+              ${shopeeCategoryDecisionReview.confirmRequiredAttributes ? "checked" : ""}>
+            <span>我 Kyle 明确确认当前全部官方必填属性选择。</span>
           </label>
         `}
         <div class="channel-category-decision-actions">
@@ -2654,6 +3071,15 @@
     const confirmed = (
       form.elements.confirm_channel_category_selection?.checked === true
     );
+    const stockConfirmed = (
+      form.elements.confirm_seller_stock_quantity?.checked === true
+    );
+    const conditionConfirmed = (
+      form.elements.confirm_condition_and_preorder?.checked === true
+    );
+    const attributesConfirmed = (
+      form.elements.confirm_required_attribute_selections?.checked === true
+    );
     const message = form.querySelector(".channel-category-save-message");
     const button = form.querySelector("button[type='submit']");
     if (
@@ -2661,10 +3087,21 @@
       || projection?.status !== "READY_FOR_SELECTION"
       || optionsDigest !== projection.options_digest
       || !oneClickDigest(optionsDigest)
-      || !option?.approval_ready
+      || !shopeeRequiredAttributesComplete(option)
       || option.category_identity_digest
         !== shopeeCategoryDecisionReview.draftIdentityDigest
+      || !projection.brand_options.some((row) => (
+        row.brand_identity_digest
+        === shopeeCategoryDecisionReview.draftBrandIdentityDigest
+      ))
+      || !projection.location_options.some((row) => (
+        row.location_identity_digest
+        === shopeeCategoryDecisionReview.draftLocationIdentityDigest
+      ))
       || !confirmed
+      || !stockConfirmed
+      || !conditionConfirmed
+      || !attributesConfirmed
     ) {
       if (message) {
         message.textContent =
@@ -2697,8 +3134,38 @@
             expected_options_digest: optionsDigest,
             selected_category_identity_digest:
               option.category_identity_digest,
+            selected_brand_identity_digest:
+              shopeeCategoryDecisionReview.draftBrandIdentityDigest,
+            selected_location_identity_digest:
+              shopeeCategoryDecisionReview.draftLocationIdentityDigest,
+            selected_creation_fact_identity_digest:
+              projection.creation_fact_option
+                .creation_fact_identity_digest,
             approved_by: "Kyle",
             confirm_channel_category_selection: true,
+            confirm_seller_stock_quantity: true,
+            confirm_condition_and_preorder: true,
+            required_attribute_selections:
+              option.missing_required_attributes.map((attribute) => {
+                const chosen = shopeeCategoryDecisionReview
+                  .requiredAttributeSelections[
+                    attribute.attribute_identity_digest
+                  ] || {};
+                return {
+                  attribute_identity_digest:
+                    attribute.attribute_identity_digest,
+                  selection_kind: attribute.selection_kind,
+                  selected_option_identity_digests:
+                    attribute.selection_kind === "TEXT"
+                      ? []
+                      : [...(chosen.optionDigests || [])].sort(),
+                  text_value: attribute.selection_kind === "TEXT"
+                    ? String(chosen.textValue || "").trim()
+                    : null,
+                  confirm_attribute_selection: true,
+                };
+              }),
+            confirm_required_attribute_selections: true,
           }),
         },
         ONECLICK_LOCAL_POST_TIMEOUT_MS,
@@ -2723,9 +3190,12 @@
         { persistedResponse: true },
       );
       if (
-        saved.status !== "SELECTED"
-        || saved.selection.selected_category_identity_digest
-          !== option.category_identity_digest
+        !["SELECTED", "RECHECK_REQUIRED"].includes(saved.status)
+        || (
+          saved.status === "SELECTED"
+          && saved.selection.selected_category_identity_digest
+            !== option.category_identity_digest
+        )
       ) {
         throw oneClickContractError(
           "服务端保存的类目与 Kyle 当前选择不一致，已停止继续。",
@@ -2733,10 +3203,23 @@
       }
       if (generation !== shopeeCategoryDecisionReview.generation) return;
       adoptShopeeCategoryProjection(saved);
-      shopeeCategoryDecisionReview.message = saved.created
-        ? "类目决定已固化；正在重新读取与其绑定的最终 Shopee Global 计划。"
-        : "已恢复相同的固化类目决定；未创建重复记录。";
-      await refreshShopeeGlobalPlanAfterCategory(identity);
+      if (saved.status === "RECHECK_REQUIRED") {
+        shopeeCategoryDecisionReview.postAttempted = true;
+        shopeeCategoryDecisionReview.message =
+          "完整决定已保存，正在仅 GET 复核官方属性；不会重复 POST。";
+        shopeeCategoryDecisionReview.previewAttempted = false;
+        await requestShopeeCategoryDecisionPreview(identity);
+        if (
+          shopeeCategoryDecisionReview.projection?.status === "SELECTED"
+        ) {
+          await refreshShopeeGlobalPlanAfterCategory(identity);
+        }
+      } else {
+        shopeeCategoryDecisionReview.message = saved.created
+          ? "完整创建决定已固化；正在重新读取最终 Shopee Global 计划。"
+          : "已恢复相同的固化创建决定；未创建重复记录。";
+        await refreshShopeeGlobalPlanAfterCategory(identity);
+      }
     } catch (error) {
       if (generation !== shopeeCategoryDecisionReview.generation) return;
       if (!responseReceived) {
@@ -7489,50 +7972,66 @@
   function updateShopeeCategoryDraft(event) {
     const form = event.target.closest(".channel-category-decision-form");
     if (!form) return false;
-    if (event.target.matches(
-      "select[name='selected_category_identity_digest']",
-    )) {
+    const target = event.target;
+    if (target.matches("select[name='selected_category_identity_digest']")) {
       shopeeCategoryDecisionReview.draftIdentityDigest = String(
-        event.target.value || "",
+        target.value || "",
       );
+      shopeeCategoryDecisionReview.requiredAttributeSelections = {};
       shopeeCategoryDecisionReview.confirmSelection = false;
+      shopeeCategoryDecisionReview.confirmRequiredAttributes = false;
       shopeeCategoryDecisionReview.message = "";
-      const inRecovery = Boolean(event.target.closest("#releasePlanRecovery"));
-      renderOneClickExecution(currentData);
-      renderReleaseRecovery(currentData?.release_v1 || {});
-      const scope = inRecovery
-        ? "#releasePlanRecoveryReview"
-        : "#oneClickExecutionGroups";
-      document.querySelector(
-        `${scope} .channel-category-decision-form `
-        + "select[name='selected_category_identity_digest']",
-      )?.focus();
-      return true;
-    }
-    if (event.target.matches(
+    } else if (target.matches("select[name='selected_brand_identity_digest']")) {
+      shopeeCategoryDecisionReview.draftBrandIdentityDigest =
+        String(target.value || "");
+    } else if (target.matches("select[name='selected_location_identity_digest']")) {
+      shopeeCategoryDecisionReview.draftLocationIdentityDigest =
+        String(target.value || "");
+    } else if (target.matches("[data-category-attribute]")) {
+      const digest = String(target.dataset.categoryAttribute || "");
+      const kind = String(target.dataset.selectionKind || "");
+      if (kind === "TEXT") {
+        shopeeCategoryDecisionReview.requiredAttributeSelections[digest] = {
+          textValue: String(target.value || ""),
+        };
+      } else if (kind === "SINGLE") {
+        shopeeCategoryDecisionReview.requiredAttributeSelections[digest] = {
+          optionDigests: target.value ? [String(target.value)] : [],
+        };
+      } else if (kind === "MULTI") {
+        shopeeCategoryDecisionReview.requiredAttributeSelections[digest] = {
+          optionDigests: [...form.querySelectorAll(
+            `[data-category-attribute="${CSS.escape(digest)}"]:checked`,
+          )].map((input) => String(input.value)),
+        };
+      }
+      shopeeCategoryDecisionReview.confirmRequiredAttributes = false;
+    } else if (target.matches(
       "input[name='confirm_channel_category_selection']",
     )) {
       shopeeCategoryDecisionReview.confirmSelection =
-        event.target.checked === true;
-      const selected = selectedShopeeCategoryOption();
-      const button = form.querySelector("button[type='submit']");
-      if (button) {
-        button.disabled = Boolean(
-          !selected?.approval_ready
-          || !shopeeCategoryDecisionReview.confirmSelection
-          || shopeeCategoryDecisionReview.submitting
-          || shopeeCategoryDecisionReview.postAttempted,
-        );
-      }
-      const reason = form.querySelector(".channel-category-disabled-reason");
-      if (reason) {
-        reason.textContent = shopeeCategoryDecisionReview.confirmSelection
-          ? ""
-          : "请先勾选 Kyle 明确确认，才可保存当前类目决定。";
-      }
-      return true;
+        target.checked === true;
+    } else if (target.matches(
+      "input[name='confirm_seller_stock_quantity']",
+    )) {
+      shopeeCategoryDecisionReview.confirmSellerStock =
+        target.checked === true;
+    } else if (target.matches(
+      "input[name='confirm_condition_and_preorder']",
+    )) {
+      shopeeCategoryDecisionReview.confirmConditionAndPreorder =
+        target.checked === true;
+    } else if (target.matches(
+      "input[name='confirm_required_attribute_selections']",
+    )) {
+      shopeeCategoryDecisionReview.confirmRequiredAttributes =
+        target.checked === true;
+    } else {
+      return false;
     }
-    return false;
+    renderOneClickExecution(currentData);
+    renderReleaseRecovery(currentData?.release_v1 || {});
+    return true;
   }
 
   function handleShopeeCategoryDecisionClick(event) {
@@ -7571,6 +8070,15 @@
 
   $("#releasePlanRecovery").addEventListener("change", (event) => {
     updateShopeeCategoryDraft(event);
+  });
+  $("#releasePlanRecovery").addEventListener("input", (event) => {
+    if (event.target.matches("[data-selection-kind='TEXT']")) {
+      const digest = String(event.target.dataset.categoryAttribute || "");
+      shopeeCategoryDecisionReview.requiredAttributeSelections[digest] = {
+        textValue: String(event.target.value || ""),
+      };
+      shopeeCategoryDecisionReview.confirmRequiredAttributes = false;
+    }
   });
   $("#releasePlanRecovery").addEventListener("submit", (event) => {
     const categoryForm = event.target.closest(
@@ -7637,6 +8145,15 @@
   );
   $("#oneClickExecutionGroups").addEventListener("change", (event) => {
     updateShopeeCategoryDraft(event);
+  });
+  $("#oneClickExecutionGroups").addEventListener("input", (event) => {
+    if (event.target.matches("[data-selection-kind='TEXT']")) {
+      const digest = String(event.target.dataset.categoryAttribute || "");
+      shopeeCategoryDecisionReview.requiredAttributeSelections[digest] = {
+        textValue: String(event.target.value || ""),
+      };
+      shopeeCategoryDecisionReview.confirmRequiredAttributes = false;
+    }
   });
   $("#oneClickExecutionGroups").addEventListener("submit", (event) => {
     const categoryForm = event.target.closest(

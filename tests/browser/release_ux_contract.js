@@ -4341,6 +4341,183 @@ function shopeeGlobalCandidate() {
   };
 }
 
+function shopeeCategoryPreview({ status = "READY_FOR_SELECTION" } = {}) {
+  const digest = (character) => character.repeat(64);
+  if (status === "RECHECK_REQUIRED") {
+    return {
+      ok: true,
+      schema_version: "channel-category-decision-preview/v2",
+      offer_id: "3828540231",
+      product_revision: 31,
+      target_label: "shopee:GLOBAL",
+      mode: "NEW_GLOBAL",
+      status,
+      options_digest: digest("e"),
+      recommendation: null,
+      options: [],
+      brand_options: [],
+      location_options: [],
+      creation_fact_option: null,
+      selection: null,
+      attribute_selection: {
+        selection_digest: digest("f"),
+        category_identity_digest: digest("1"),
+        attribute_tree_digest: digest("b"),
+        selection_count: 3,
+        approved_by: "Kyle",
+      },
+      blocker: {
+        category: "CAPABILITY",
+        code: "official_category_attribute_recheck_required",
+      },
+      next_action: {
+        action: "recheck_channel_category_attributes",
+        target_focus: "shopee:GLOBAL",
+      },
+      external_writes_performed: [],
+      persisted: true,
+      created: true,
+    };
+  }
+  const selected = status === "SELECTED";
+  const attributes = selected ? [] : [
+    {
+      attribute_identity_digest: digest("6"),
+      label: "Material",
+      selection_kind: "SINGLE",
+      option_values: [{
+        option_identity_digest: digest("9"),
+        display_label: "PVC",
+        recommended: true,
+      }],
+    },
+    {
+      attribute_identity_digest: digest("7"),
+      label: "Room",
+      selection_kind: "MULTI",
+      option_values: [{
+        option_identity_digest: digest("a"),
+        display_label: "Bedroom",
+        recommended: true,
+      }],
+    },
+    {
+      attribute_identity_digest: digest("8"),
+      label: "Style note",
+      selection_kind: "TEXT",
+      option_values: [],
+    },
+  ];
+  const option = {
+    category_identity_digest: digest("1"),
+    display_name: "Wall Stickers",
+    path_labels: ["Home & Living", "Wall Stickers"],
+    recommended: true,
+    approval_ready: selected,
+    attribute_status: selected ? "READY" : "BLOCKED_REQUIRED_VALUES",
+    required_attribute_count: 3,
+    selected_attribute_count: selected ? 3 : 0,
+    missing_required_attributes: attributes,
+    attribute_tree_digest: digest("b"),
+    option_evidence_digest: digest("c"),
+  };
+  const creation = {
+    creation_fact_identity_digest: digest("5"),
+    seller_stock_quantity: 200,
+    condition: "NEW",
+    preorder: { is_pre_order: false, days_to_ship: 0 },
+    variation_summary: {
+      tier_count: 1,
+      model_count: 1,
+      model_sku_count: 1,
+      approved_image_position: 1,
+    },
+    recommended: true,
+    option_evidence_digest: digest("0"),
+  };
+  return {
+    ok: true,
+    schema_version: "channel-category-decision-preview/v2",
+    offer_id: "3828540231",
+    product_revision: 31,
+    target_label: "shopee:GLOBAL",
+    mode: "NEW_GLOBAL",
+    status,
+    options_digest: digest("e"),
+    recommendation: {
+      source: {
+        authority: "approved_copy_category_recommendation/v1",
+        evidence_digest: digest("d"),
+      },
+      category_identity_digest: digest("1"),
+    },
+    options: [option, {
+      ...option,
+      category_identity_digest: digest("2"),
+      display_name: "Decorative Stickers",
+      path_labels: ["Home & Living", "Decorative Stickers"],
+      recommended: false,
+      approval_ready: true,
+      attribute_status: "READY",
+      selected_attribute_count: 3,
+      missing_required_attributes: [],
+      attribute_tree_digest: digest("3"),
+      option_evidence_digest: digest("4"),
+    }],
+    brand_options: [{
+      brand_identity_digest: digest("3"),
+      display_name: "No Brand",
+      recommended: true,
+      option_evidence_digest: digest("4"),
+    }],
+    location_options: [{
+      location_identity_digest: digest("4"),
+      display_name: "China Warehouse A",
+      recommended: true,
+      option_evidence_digest: digest("5"),
+    }],
+    creation_fact_option: creation,
+    selection: selected ? {
+      decision_digest: digest("6"),
+      selected_category_identity_digest: digest("1"),
+      selected_is_recommended: true,
+      attribute_tree_digest: digest("b"),
+      approved_by: "Kyle",
+      selected_brand: {
+        brand_identity_digest: digest("3"),
+        display_name: "No Brand",
+        selected_is_recommended: true,
+      },
+      selected_location: {
+        location_identity_digest: digest("4"),
+        display_name: "China Warehouse A",
+        selected_is_recommended: true,
+      },
+      creation_fact_identity_digest: digest("5"),
+      attribute_selection_digest: digest("f"),
+      seller_stock_quantity: 200,
+      condition: "NEW",
+      preorder: { is_pre_order: false, days_to_ship: 0 },
+      variation_summary: creation.variation_summary,
+    } : null,
+    attribute_selection: selected ? {
+      selection_digest: digest("f"),
+      category_identity_digest: digest("1"),
+      attribute_tree_digest: digest("b"),
+      selection_count: 3,
+      approved_by: "Kyle",
+    } : null,
+    blocker: null,
+    next_action: {
+      action: selected
+        ? "review_shopee_global_plan"
+        : "select_channel_category",
+      target_focus: "shopee:GLOBAL",
+    },
+    external_writes_performed: [],
+  };
+}
+
 function approvedShopeeGlobalPlan(candidate) {
   return {
     schema_version: "approved-shopee-global-plan/v1",
@@ -5303,6 +5480,14 @@ async function shopeeGlobalPreApprovalEntryContract(browser) {
         external_writes_performed: [],
       }));
     }
+    if (
+      url.pathname
+        === "/api/product-workspace/channel-category-decision-preview"
+    ) {
+      return route.fulfill(jsonResponse(
+        shopeeCategoryPreview({ status: "SELECTED" }),
+      ));
+    }
     const fixture = apiFixture(
       url,
       request.method(),
@@ -5453,6 +5638,14 @@ async function shopeeGlobalApprovalResponseLossContract(browser) {
     }
     if (
       url.pathname
+        === "/api/product-workspace/channel-category-decision-preview"
+    ) {
+      return route.fulfill(jsonResponse(
+        shopeeCategoryPreview({ status: "SELECTED" }),
+      ));
+    }
+    if (
+      url.pathname
         === "/api/product-workspace/shopee-global-plan-approval"
       && request.method() === "POST"
     ) {
@@ -5499,6 +5692,169 @@ async function shopeeGlobalApprovalResponseLossContract(browser) {
     check(
       unexpectedInteractionErrors(errors).length === 0,
       "Shopee Global approval loss: no console/page errors",
+      errors,
+    );
+  } finally {
+    await context.close();
+  }
+}
+
+async function shopeeCategoryDecisionContract(browser, viewport) {
+  const context = await browser.newContext({ viewport });
+  const page = await context.newPage();
+  const errors = [];
+  const requests = [];
+  const candidate = shopeeGlobalCandidate();
+  let categoryPosts = 0;
+  let categoryReads = 0;
+  let selected = false;
+  let submittedBody = null;
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+  });
+  const dashboard = oneClickDashboard();
+  dashboard.release_v1.plan_approved = false;
+  dashboard.release_v1.eligible_for_plan_approval = false;
+  dashboard.release_v1.miaoshou_prepared = false;
+  dashboard.release_v1.publish_ready = false;
+  dashboard.release_v1.oneclick_controlplane = null;
+  dashboard.release_v1.canonical_next_action = null;
+  dashboard.release_v1.recovery_actions = [{
+    code: "review_shopee_global_plan",
+    label: "核对并批准 Shopee 全球商品方案",
+    detail: "先固化完整 NEW_GLOBAL 创建决定。",
+  }];
+  await page.route("**/*", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.origin !== baseUrl) {
+      requests.push({ method: request.method(), url: request.url(), external: true });
+      return route.abort("blockedbyclient");
+    }
+    if (!url.pathname.startsWith("/api/")) return route.continue();
+    requests.push({ method: request.method(), url: request.url(), external: false });
+    if (url.pathname === "/api/product-workspace/dashboard") {
+      return route.fulfill(jsonResponse(dashboard));
+    }
+    if (url.pathname === "/api/product-workspace/shopee-global-plan-preview") {
+      return route.fulfill(jsonResponse({
+        ok: true,
+        schema_version: "shopee-global-plan-preview/v1",
+        offer_id: "3828540231",
+        product_revision: 31,
+        candidate,
+        approval: null,
+        approval_current: false,
+        external_writes_performed: [],
+      }));
+    }
+    if (
+      url.pathname
+        === "/api/product-workspace/channel-category-decision-preview"
+    ) {
+      categoryReads += 1;
+      return route.fulfill(jsonResponse(
+        shopeeCategoryPreview({
+          status: selected ? "SELECTED" : "READY_FOR_SELECTION",
+        }),
+      ));
+    }
+    if (
+      url.pathname === "/api/product-workspace/channel-category-decision"
+      && request.method() === "POST"
+    ) {
+      categoryPosts += 1;
+      submittedBody = request.postDataJSON();
+      selected = true;
+      return route.fulfill(jsonResponse(
+        shopeeCategoryPreview({ status: "RECHECK_REQUIRED" }),
+      ));
+    }
+    const fixture = apiFixture(
+      url,
+      request.method(),
+      { delayWeekly: false, delaySku: false, pending: {} },
+    );
+    return route.fulfill(fixture || jsonResponse({ ok: false }, 404));
+  });
+  try {
+    await page.goto(`${baseUrl}/product-workspace?offer_id=3828540231`, {
+      waitUntil: "networkidle",
+    });
+    const scope = "#releasePlanRecoveryReview";
+    await page.locator(`${scope} .channel-category-decision-form`)
+      .waitFor({ state: "visible" });
+    check(
+      await page.locator(`${scope} .shopee-global-plan-approval-form`).count()
+        === 0,
+      "Shopee category: final plan approval is absent before full decision",
+      viewport,
+    );
+    await page.locator(
+      `${scope} [data-selection-kind="SINGLE"]`,
+    ).selectOption("9".repeat(64));
+    await page.locator(
+      `${scope} [data-selection-kind="MULTI"]`,
+    ).check();
+    await page.locator(
+      `${scope} [data-selection-kind="TEXT"]`,
+    ).fill("PVC wall decal");
+    for (const name of [
+      "confirm_channel_category_selection",
+      "confirm_seller_stock_quantity",
+      "confirm_condition_and_preorder",
+      "confirm_required_attribute_selections",
+    ]) {
+      await page.locator(`${scope} input[name="${name}"]`).check();
+    }
+    const submit = page.locator(
+      `${scope} .channel-category-decision-form button[type="submit"]`,
+    );
+    check(
+      await submit.isEnabled(),
+      "Shopee category: full explicit decision enables one save",
+      viewport,
+    );
+    await submit.click();
+    await page.locator(`${scope} .shopee-global-plan-approval-form`)
+      .waitFor({ state: "visible" });
+    check(
+      categoryPosts === 1
+      && categoryReads >= 2
+      && submittedBody?.required_attribute_selections?.length === 3
+      && submittedBody?.confirm_seller_stock_quantity === true
+      && submittedBody?.confirm_condition_and_preorder === true,
+      "Shopee category: one POST binds attributes, brand/location and creation facts, then GET-only rechecks",
+      { categoryPosts, categoryReads, submittedBody },
+    );
+    const postsBeforeReload = categoryPosts;
+    await page.reload({ waitUntil: "networkidle" });
+    await page.locator(`${scope} .shopee-global-plan-approval-form`)
+      .waitFor({ state: "visible" });
+    check(
+      categoryPosts === postsBeforeReload
+      && await page.locator(`${scope} .channel-category-decision.is-selected`)
+        .isVisible(),
+      "Shopee category: refresh restores persisted decision without another POST",
+      { categoryPosts, categoryReads },
+    );
+    check(
+      requests.filter((row) => (
+        row.method === "POST"
+        && row.url.includes("/api/product-workspace/publish")
+      )).length === 0
+      && requests.filter((row) => row.external).length === 0,
+      "Shopee category: decision journey performs zero channel publish/external requests",
+      requests,
+    );
+    const overflow = await page.evaluate(() => (
+      document.documentElement.scrollWidth > window.innerWidth + 1
+    ));
+    check(!overflow, "Shopee category: no horizontal overflow", viewport);
+    check(
+      unexpectedInteractionErrors(errors).length === 0,
+      "Shopee category: no console/page errors",
       errors,
     );
   } finally {
@@ -5674,6 +6030,8 @@ async function legacyStateSafety(browser) {
     await oneClickStrictFailureContract(browser, "unknown-target-status");
     await oneClickStrictFailureContract(browser, "unknown-canonical-action");
     await oneClickFeatureDisabledContract(browser);
+    await shopeeCategoryDecisionContract(browser, { width: 1440, height: 900 });
+    await shopeeCategoryDecisionContract(browser, { width: 390, height: 844 });
     await shopeeGlobalPreApprovalEntryContract(browser);
     await shopeeGlobalApprovalResponseLossContract(browser);
     await profitAsyncAndNoFalseSuccess(browser);

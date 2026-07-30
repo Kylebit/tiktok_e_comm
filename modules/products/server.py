@@ -1993,9 +1993,16 @@ def _observe_shopee_global_plan_candidate(payload: dict):
 def _release_plan_payload_from_dashboard(
     dashboard: dict,
     *,
-    bind_shopee_global_plan: bool = True,
+    bind_shopee_global_plan: bool = False,
 ) -> tuple[dict, list[str]]:
-    """Build the exact immutable V1 payload without persisting it."""
+    """Build the exact immutable V1 payload without persisting it.
+
+    Shopee's marketplace-specific Global plan is intentionally not a
+    prerequisite for the cross-channel ReleasePlan.  Callers that operate the
+    isolated Shopee execution stage may opt in explicitly; ordinary approval,
+    preparation, and execution must not let Shopee availability block every
+    other selected marketplace.
+    """
     from domains.content_operations import release_listing_copy_identity
     from domains.product_operations import resolve_source_product_identity
 
@@ -8235,20 +8242,48 @@ def _oneclick_approved_context(
 
     from shared_platform.release_store import default_release_store
 
-    dashboard, failure = _release_dashboard_for_request(data)
+    store = default_release_store()
+    request_data = dict(data)
+    if not require_token and request_data.get("publication_targets") is None:
+        # GET preview deliberately accepts only the public plan identity.
+        # Rehydrate the full target set from the immutable server-owned plan;
+        # never require or trust a browser-provided target list at this seam.
+        preview_plan_id = str(request_data.get("plan_id") or "").strip()
+        preview_offer_id = str(request_data.get("offer_id") or "").strip()
+        preview_plan = store.get_plan(preview_plan_id)
+        if (
+            isinstance(preview_plan, dict)
+            and str(preview_plan.get("product_id") or "") == preview_offer_id
+            and isinstance(preview_plan.get("targets"), list)
+        ):
+            request_data["publication_targets"] = list(
+                preview_plan["targets"]
+            )
+    dashboard, failure = _release_dashboard_for_request(request_data)
     if failure:
         return None, failure
     assert dashboard is not None
-    payload, blockers = _release_plan_payload_from_dashboard(dashboard)
-    store = default_release_store()
+    plan_id = str(data.get("plan_id") or "").strip()
+    plan = store.get_plan(plan_id)
+    stored_payload = (
+        plan.get("payload")
+        if isinstance(plan, dict) and isinstance(plan.get("payload"), dict)
+        else {}
+    )
+    legacy_shopee_global_binding = (
+        "approved_shopee_global_plan" in stored_payload
+        or "_approved_shopee_global_plan_record" in stored_payload
+    )
+    payload, blockers = _release_plan_payload_from_dashboard(
+        dashboard,
+        bind_shopee_global_plan=legacy_shopee_global_binding,
+    )
     try:
         preview = store.preview_plan(payload)
     except (TypeError, ValueError) as error:
         blockers = [*blockers, str(error)]
         preview = {}
-    plan_id = str(data.get("plan_id") or "").strip()
     token = str(data.get("confirmation_token") or "").strip()
-    plan = store.get_plan(plan_id)
     approval = (plan or {}).get("approval") or {}
     if (
         not plan

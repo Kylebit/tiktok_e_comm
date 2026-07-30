@@ -3734,6 +3734,26 @@ class OneClickReleaseStore:
                     inventory_reason,
                     "approved READY Ozon inventory decision is unavailable",
                 )
+        if label == SHOPEE_GLOBAL_TARGET:
+            immutable_payload = context["plan"]["payload"]
+            approved_global = immutable_payload.get(
+                "approved_shopee_global_plan"
+            )
+            approved_record = immutable_payload.get(
+                "_approved_shopee_global_plan_record"
+            )
+            if approved_global is None and approved_record is None:
+                return _prepared_blocked_row(
+                    label,
+                    BLOCKED_CAPABILITY,
+                    BLOCKED_CAPABILITY,
+                    "CONTENT",
+                    "review_shopee_global_plan",
+                    (
+                        "Shopee is an isolated final stage and requires its "
+                        "own current approved global plan"
+                    ),
+                )
         adapter_name = _adapter_name_for_target(label)
         registration = registry.get(adapter_name)
         if (
@@ -7360,6 +7380,8 @@ def _next_action(
     if status == BLOCKED_INVENTORY:
         return "approve_sellable_inventory"
     if status == BLOCKED_CAPABILITY:
+        if reason_code == "review_shopee_global_plan":
+            return "review_shopee_global_plan"
         if reason_category == "CONTENT":
             return "review_approved_content_facts"
         if reason_category == "LOGISTICS":

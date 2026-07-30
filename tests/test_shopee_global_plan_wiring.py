@@ -394,10 +394,34 @@ def test_approval_rows_are_append_only_and_revision_exact(governed_context):
             )
 
 
-def test_release_plan_requires_current_exact_approval(governed_context):
+def test_cross_channel_release_plan_does_not_require_shopee_approval(
+    governed_context,
+):
+    dashboard, _store = governed_context
+    payload, blockers = product_server._release_plan_payload_from_dashboard(
+        dashboard
+    )
+    assert blockers == []
+    assert "approved_shopee_global_plan" not in payload
+    assert "_approved_shopee_global_plan_record" not in payload
+    assert product_server._release_plan_recovery_actions(
+        dashboard, blockers
+    ) == []
+    release_view = product_server._release_v1_view(dashboard)
+    assert release_view["eligible_for_plan_approval"] is True
+    assert release_view["recovery_actions"] == []
+    assert release_view["plan"]["payload"].get(
+        "approved_shopee_global_plan"
+    ) is None
+
+
+def test_isolated_shopee_stage_requires_current_exact_approval(
+    governed_context,
+):
     dashboard, _store = governed_context
     before, blockers = product_server._release_plan_payload_from_dashboard(
-        dashboard
+        dashboard,
+        bind_shopee_global_plan=True,
     )
     assert "approved_shopee_global_plan" not in before
     assert any("review_shopee_global_plan:" in row for row in blockers)
@@ -424,7 +448,8 @@ def test_release_plan_requires_current_exact_approval(governed_context):
     )
     assert status == 200
     after, blockers = product_server._release_plan_payload_from_dashboard(
-        dashboard
+        dashboard,
+        bind_shopee_global_plan=True,
     )
     assert blockers == []
     assert set(after["approved_shopee_global_plan"]) == {
@@ -488,7 +513,8 @@ def test_existing_global_official_current_facts_can_be_approved_and_bound(
     )
     assert status == 200
     payload, blockers = product_server._release_plan_payload_from_dashboard(
-        dashboard
+        dashboard,
+        bind_shopee_global_plan=True,
     )
     assert blockers == []
     assert payload["approved_shopee_global_plan"]["mode"] == EXISTING_GLOBAL
@@ -523,7 +549,8 @@ def test_dashboard_plan_binding_never_calls_official_observer(
         lambda _payload: calls.append("called"),
     )
     payload, blockers = product_server._release_plan_payload_from_dashboard(
-        dashboard
+        dashboard,
+        bind_shopee_global_plan=True,
     )
     assert calls == []
     assert "_approved_shopee_global_plan_record" not in payload
@@ -548,7 +575,8 @@ def test_dashboard_with_local_approval_never_calls_official_observer(
         lambda _payload: calls.append("called"),
     )
     payload, blockers = product_server._release_plan_payload_from_dashboard(
-        dashboard
+        dashboard,
+        bind_shopee_global_plan=True,
     )
     assert calls == []
     assert blockers == []
@@ -747,7 +775,8 @@ def test_candidate_or_revision_drift_cannot_reuse_approval(
     assert status == 200
     assert preview["approval_current"] is False
     payload, blockers = product_server._release_plan_payload_from_dashboard(
-        dashboard
+        dashboard,
+        bind_shopee_global_plan=True,
     )
     # Ordinary dashboard reads are local-only; official drift is enforced
     # again by the background preparation seam before any claim.
@@ -785,7 +814,8 @@ def test_non_shopee_plan_never_calls_observer_or_requires_approval(
         lambda _payload: pytest.fail("observer called for non-Shopee plan"),
     )
     payload, blockers = product_server._release_plan_payload_from_dashboard(
-        dashboard
+        dashboard,
+        bind_shopee_global_plan=True,
     )
     assert not any("review_shopee_global_plan:" in row for row in blockers)
     assert "approved_shopee_global_plan" not in payload
@@ -803,7 +833,8 @@ def test_public_plan_projection_removes_private_execution_payload(
     )
     assert status == 200
     payload, blockers = product_server._release_plan_payload_from_dashboard(
-        dashboard
+        dashboard,
+        bind_shopee_global_plan=True,
     )
     assert blockers == []
     persisted = store.create_plan(payload)

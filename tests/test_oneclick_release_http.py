@@ -209,6 +209,59 @@ def test_preview_and_status_get_routes_return_server_projection_only(
     )
 
 
+def test_preview_rehydrates_publication_targets_from_server_owned_plan(
+    monkeypatch,
+):
+    class PreviewStore:
+        @staticmethod
+        def get_plan(plan_id):
+            assert plan_id == "omnichannel:test"
+            return {
+                "plan_id": plan_id,
+                "product_id": "3838616043",
+                "targets": ["tiktok:MX", "shopee:MY"],
+            }
+
+    captured = {}
+
+    def capture_dashboard_request(payload):
+        captured.update(payload)
+        return None, (
+            418,
+            {
+                "ok": False,
+                "error": "stop after request identity capture",
+            },
+        )
+
+    release_store = importlib.import_module("shared_platform.release_store")
+    monkeypatch.setattr(
+        release_store,
+        "default_release_store",
+        lambda: PreviewStore(),
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_release_dashboard_for_request",
+        capture_dashboard_request,
+    )
+
+    context, failure = product_server._oneclick_approved_context(
+        {
+            "offer_id": "3838616043",
+            "plan_id": "omnichannel:test",
+        },
+        require_token=False,
+    )
+
+    assert context is None
+    assert failure[0] == 418
+    assert captured["publication_targets"] == [
+        "tiktok:MX",
+        "shopee:MY",
+    ]
+
+
 def test_server_cancels_false_publish_ready_when_no_runnable_target(
     monkeypatch,
 ):

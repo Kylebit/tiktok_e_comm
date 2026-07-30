@@ -531,6 +531,67 @@ def test_shopee_global_uses_explicit_approved_image_selection_not_all_images(
     ] == 0
 
 
+def test_missing_shopee_global_approval_does_not_block_other_channels(
+    tmp_path,
+):
+    targets = ["miaoshou:COMMON", "tiktok:MX", "shopee:MY"]
+    payload = _plan_payload(targets=targets)
+    payload.pop("approved_shopee_global_plan")
+    payload.pop("_approved_shopee_global_plan_record")
+    release = ReleaseStore(tmp_path / "release.db")
+    created = release.create_plan(payload)
+    release.approve_plan(
+        created["plan_id"],
+        approved_by="Kyle",
+        user_approved=True,
+        confirmation_token=created["confirmation_token"],
+    )
+    plan = release.get_plan(created["plan_id"])
+    run = release.start_run(created["plan_id"])
+    registry = _registry(targets)
+    control = OneClickReleaseStore(release.path)
+    job = control.ensure_job(
+        plan=plan,
+        run=run,
+        product_revision=31,
+        registry=registry,
+    )
+
+    projected = control.prepare_job(job["job_id"], registry)
+
+    shared = projected["shared_controls"][0]
+    assert shared["target_label"] == SHOPEE_GLOBAL_TARGET
+    assert shared["status"] == BLOCKED_CAPABILITY
+    assert projected["phase"] == "READY"
+    common = next(
+        row
+        for row in projected["targets"]
+        if row["target_label"] == "miaoshou:COMMON"
+    )
+    shopee = next(
+        row
+        for row in projected["targets"]
+        if row["target_label"] == "shopee:MY"
+    )
+    assert common["runnable_now"] is True
+    assert shopee["runnable_now"] is False
+    common_request = control.claim_next_dispatch(job["job_id"], registry)
+    assert common_request is not None
+    assert common_request.target_label == "miaoshou:COMMON"
+    common_result = registry[
+        "new_product_workbench_miaoshou_commit"
+    ].dispatch(common_request)
+    control.record_dispatch_result(common_request, common_result)
+    tiktok_request = control.claim_next_dispatch(job["job_id"], registry)
+    assert tiktok_request is not None
+    assert tiktok_request.target_label == "tiktok:MX"
+    physical = {
+        row["target_label"]: row
+        for row in release.get_run(run["run_id"])["targets"]
+    }
+    assert physical["shopee:MY"]["attempts"] == 0
+
+
 def test_shopee_global_control_dispatches_once_before_regions_with_exact_counts(
     tmp_path,
 ):

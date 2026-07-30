@@ -34,6 +34,13 @@ from shared_platform.shopee_global_plan import (
 
 
 SCHEMA_VERSION = "shopee-official-new-global-candidate-observation/v1"
+CATEGORY_OPTIONS_SCHEMA_VERSION = (
+    "channel-category-options-observation/v2"
+)
+CREATION_DEFAULT_POLICY_VERSION = (
+    "shopee-new-global-explicit-creation-proposal/v1"
+)
+PROPOSED_SELLER_STOCK_QUANTITY = 200
 CATEGORY_RECOMMEND_PATH = (
     "/api/v2/global_product/category_recommend"
 )
@@ -105,6 +112,12 @@ class OfficialNewGlobalObservation:
         repr=False, compare=False
     )
     _attribute_tree: tuple[Mapping[str, object], ...] = field(
+        repr=False, compare=False
+    )
+    _brand_rows: tuple[Mapping[str, object], ...] = field(
+        repr=False, compare=False
+    )
+    _location_rows: tuple[Mapping[str, object], ...] = field(
         repr=False, compare=False
     )
 
@@ -258,6 +271,8 @@ def observe_official_new_global_candidate(
         _recommended_category_ids=recommended,
         _selected_category_path=category_path,
         _attribute_tree=attribute_tree,
+        _brand_rows=brands,
+        _location_rows=locations,
     )
 
 
@@ -365,8 +380,23 @@ def observe_channel_category_options(
                 "missing_required_attributes": missing_required,
             }
         )
+    authority_category_id = selected_id or recommended_id
+    brand_options = _brand_option_projection(
+        _read_all_brands(transport, authority_category_id)
+    )
+    location_options = _location_option_projection(
+        _read_seller_locations(transport)
+    )
+    creation_defaults = _creation_default_projection()
+    if selection is not None:
+        _revalidate_execution_choices(
+            selection,
+            brand_options=brand_options,
+            location_options=location_options,
+            creation_defaults=creation_defaults,
+        )
     return {
-        "schema_version": "channel-category-options-observation/v1",
+        "schema_version": CATEGORY_OPTIONS_SCHEMA_VERSION,
         "channel": "shopee",
         "mode": "NEW_GLOBAL",
         "authority": "shopee_official_category_get",
@@ -376,6 +406,9 @@ def observe_channel_category_options(
         },
         "recommended_category_id": recommended_id,
         "options": options,
+        "brand_options": brand_options,
+        "location_options": location_options,
+        "creation_defaults": creation_defaults,
     }
 
 
@@ -457,6 +490,21 @@ def build_official_new_global_candidate(
         ]
         attributes_complete = True
         attribute_tree_digest = selection["attribute_tree_digest"]
+        _revalidate_execution_choices(
+            selection,
+            brand_options=_brand_option_projection(
+                observation._brand_rows
+            ),
+            location_options=_location_option_projection(
+                observation._location_rows
+            ),
+            creation_defaults=_creation_default_projection(),
+        )
+        _revalidate_single_sku_default_mapping(
+            request=request,
+            seed=seed,
+            selection=selection,
+        )
     return build_shopee_global_plan_candidate(
         mode=NEW_GLOBAL,
         observation_authority=OFFICIAL_AUTHORITY,
@@ -484,14 +532,26 @@ def build_official_new_global_candidate(
         attributes=attributes,
         attributes_complete=attributes_complete,
         attribute_tree_digest=attribute_tree_digest,
-        brand=None,
-        seller_stock=None,
-        location=None,
-        condition=None,
-        preorder=None,
-        variations=[],
-        variations_complete=False,
-        models=[],
+        brand=(selection["brand"] if selection is not None else None),
+        seller_stock=(
+            selection["seller_stock"] if selection is not None else None
+        ),
+        location=(
+            selection["location"] if selection is not None else None
+        ),
+        condition=(
+            selection["condition"] if selection is not None else None
+        ),
+        preorder=(
+            selection["preorder"] if selection is not None else None
+        ),
+        variations=(
+            selection["tier_variation"] if selection is not None else []
+        ),
+        variations_complete=selection is not None,
+        models=(
+            selection["global_model"] if selection is not None else []
+        ),
     )
 
 
@@ -704,11 +764,18 @@ def _current_selection(
         "attribute_list",
         "attributes_complete",
         "attribute_tree_digest",
+        "brand",
+        "seller_stock",
+        "location",
+        "condition",
+        "preorder",
+        "tier_variation",
+        "global_model",
     }
     if (
         set(value) != expected
         or value.get("schema_version")
-        != "channel-category-decision-execution/v1"
+        != "channel-category-decision-execution/v2"
         or value.get("context_digest") != expected_context_digest
         or value.get("attributes_complete") is not True
         or any(
@@ -722,6 +789,13 @@ def _current_selection(
         )
         or not isinstance(value.get("category"), Mapping)
         or not isinstance(value.get("attribute_list"), list)
+        or not isinstance(value.get("brand"), Mapping)
+        or not isinstance(value.get("seller_stock"), Mapping)
+        or not isinstance(value.get("location"), Mapping)
+        or type(value.get("condition")) is not str
+        or not isinstance(value.get("preorder"), Mapping)
+        or not isinstance(value.get("tier_variation"), list)
+        or not isinstance(value.get("global_model"), list)
     ):
         raise _error("shopee_category_selection_invalid", "CONTENT")
     return dict(value)
@@ -739,14 +813,12 @@ def _revalidate_selected_attributes(
         or set(category)
         != {
             "category_id",
-            "name",
             "path",
             "path_complete",
             "evidence_digest",
         }
         or category.get("path_complete") is not True
         or category.get("path") != [dict(row) for row in category_path]
-        or category.get("name") != category_path[-1]["name"]
         or category.get("evidence_digest") != _digest(category_path)
         or selection.get("attribute_tree_digest") != _digest(attribute_tree)
     ):
@@ -858,6 +930,198 @@ def _missing_required_projection(
             }
         )
     return result
+
+
+def _brand_option_projection(
+    rows: tuple[Mapping[str, object], ...],
+) -> list[dict[str, object]]:
+    result = []
+    for row in rows:
+        evidence = _digest(
+            {
+                "schema_version": "shopee-official-brand-option/v1",
+                "brand_id": row["brand_id"],
+                "original_brand_name": row["original_brand_name"],
+            }
+        )
+        result.append(
+            {
+                "brand_id": row["brand_id"],
+                "original_brand_name": row["original_brand_name"],
+                "evidence_digest": evidence,
+                "recommended": False,
+            }
+        )
+    return result
+
+
+def _location_option_projection(
+    rows: tuple[Mapping[str, object], ...],
+) -> list[dict[str, object]]:
+    result = []
+    for row in rows:
+        evidence = _digest(
+            {
+                "schema_version": "shopee-official-location-option/v1",
+                "location_id": row["location_id"],
+                "display_name": row["warehouse_name"],
+            }
+        )
+        result.append(
+            {
+                "location_id": row["location_id"],
+                "display_name": row["warehouse_name"],
+                "evidence_digest": evidence,
+                "recommended": False,
+            }
+        )
+    return result
+
+
+def _creation_default_projection() -> dict[str, object]:
+    payload = {
+        "schema_version": CREATION_DEFAULT_POLICY_VERSION,
+        "seller_stock_quantity": PROPOSED_SELLER_STOCK_QUANTITY,
+        "condition": "NEW",
+        "preorder": {"is_pre_order": False, "days_to_ship": 0},
+    }
+    return {
+        "seller_stock_quantity": payload["seller_stock_quantity"],
+        "condition": payload["condition"],
+        "preorder": dict(payload["preorder"]),
+        "evidence_digest": _digest(payload),
+    }
+
+
+def _revalidate_execution_choices(
+    selection: Mapping[str, object],
+    *,
+    brand_options: list[dict[str, object]],
+    location_options: list[dict[str, object]],
+    creation_defaults: Mapping[str, object],
+) -> None:
+    brand = selection["brand"]
+    if (
+        not isinstance(brand, Mapping)
+        or set(brand)
+        != {"brand_id", "original_brand_name", "evidence_digest"}
+        or sum(
+            option["brand_id"] == brand.get("brand_id")
+            and option["original_brand_name"]
+            == brand.get("original_brand_name")
+            and option["evidence_digest"] == brand.get("evidence_digest")
+            for option in brand_options
+        )
+        != 1
+    ):
+        raise _error("shopee_selected_brand_drift", "CONTENT")
+    location = selection["location"]
+    if (
+        not isinstance(location, Mapping)
+        or set(location) != {"location_id", "evidence_digest"}
+        or sum(
+            option["location_id"] == location.get("location_id")
+            and option["evidence_digest"] == location.get("evidence_digest")
+            for option in location_options
+        )
+        != 1
+    ):
+        raise _error("shopee_selected_location_drift", "LOGISTICS")
+    stock = selection["seller_stock"]
+    preorder = selection["preorder"]
+    if (
+        not isinstance(stock, Mapping)
+        or set(stock)
+        != {
+            "source",
+            "source_digest",
+            "quantity",
+            "approval_reference",
+        }
+        or stock.get("source") != "kyle-explicit-seller-stock/v1"
+        or stock.get("source_digest")
+        != creation_defaults.get("evidence_digest")
+        or stock.get("quantity")
+        != creation_defaults.get("seller_stock_quantity")
+        or type(stock.get("approval_reference")) is not str
+        or not stock["approval_reference"].strip()
+        or selection.get("condition") != creation_defaults.get("condition")
+        or preorder != creation_defaults.get("preorder")
+    ):
+        raise _error("shopee_creation_decision_drift", "CONTENT")
+
+
+def _revalidate_single_sku_default_mapping(
+    *,
+    request: object,
+    seed: Mapping[str, object],
+    selection: Mapping[str, object],
+) -> None:
+    if not isinstance(request, Mapping):
+        raise _error("shopee_sku_lineage_mapping_invalid", "CONTENT")
+    lineage = request.get("sku_lineage")
+    assignment = (
+        lineage.get("assignment") if isinstance(lineage, Mapping) else None
+    )
+    rows = (
+        assignment.get("model_skus")
+        if isinstance(assignment, Mapping)
+        else None
+    )
+    if (
+        not isinstance(rows, list)
+        or not rows
+        or any(not isinstance(row, Mapping) for row in rows)
+    ):
+        raise _error("shopee_sku_lineage_mapping_invalid", "CONTENT")
+    model_skus = [row.get("model_sku") for row in rows]
+    if any(type(value) is not str or not value for value in model_skus):
+        raise _error("shopee_sku_lineage_mapping_invalid", "CONTENT")
+    if len(model_skus) != 1:
+        # Multi-SKU can only proceed when an exact, separately approved
+        # variation mapping exists.  The v2 platform intentionally does not
+        # derive one, so this remains an actionable capability blocker.
+        raise _error(
+            "shopee_multi_sku_variation_mapping_required", "CAPABILITY"
+        )
+    positions = seed.get("selected_image_positions")
+    pricing = seed.get("target_pricing")
+    stock = selection.get("seller_stock")
+    if (
+        not isinstance(positions, list)
+        or not positions
+        or type(positions[0]) is not int
+        or positions[0] <= 0
+        or not isinstance(pricing, Mapping)
+        or not isinstance(stock, Mapping)
+    ):
+        raise _error("shopee_single_sku_mapping_invalid", "CONTENT")
+    expected_tier = [
+        {
+            "name": "Style",
+            "option_list": [
+                {
+                    "option": "Default",
+                    "approved_image_position": positions[0],
+                }
+            ],
+        }
+    ]
+    expected_models = [
+        {
+            "global_model_sku": model_skus[0],
+            "tier_index": [0],
+            "original_price_cny": pricing.get(
+                "global_original_price"
+            ),
+            "seller_stock_quantity": stock.get("quantity"),
+        }
+    ]
+    if (
+        selection.get("tier_variation") != expected_tier
+        or selection.get("global_model") != expected_models
+    ):
+        raise _error("shopee_single_sku_mapping_drift", "CONTENT")
 
 
 def _read_all_brands(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 
@@ -372,15 +373,23 @@ def _category_execution(fake: _OfficialScan) -> dict[str, object]:
     tree = global_candidate._read_attribute_tree(
         fake.transport(), 101157
     )
+    brand = global_candidate._brand_option_projection(
+        global_candidate._read_all_brands(
+            fake.transport(), 101157
+        )
+    )[0]
+    location = global_candidate._location_option_projection(
+        global_candidate._read_seller_locations(fake.transport())
+    )[0]
+    creation = global_candidate._creation_default_projection()
     return {
-        "schema_version": "channel-category-decision-execution/v1",
+        "schema_version": "channel-category-decision-execution/v2",
         "decision_digest": _digest("decision"),
         "context_digest": _digest(context),
         "options_digest": _digest("options"),
         "selected_category_identity_digest": _digest("selected"),
         "category": {
             "category_id": 101157,
-            "name": "Wall Stickers",
             "path": [dict(row) for row in path],
             "path_complete": True,
             "evidence_digest": _digest(path),
@@ -395,6 +404,42 @@ def _category_execution(fake: _OfficialScan) -> dict[str, object]:
         ],
         "attributes_complete": True,
         "attribute_tree_digest": _digest(tree),
+        "brand": {
+            "brand_id": brand["brand_id"],
+            "original_brand_name": brand["original_brand_name"],
+            "evidence_digest": brand["evidence_digest"],
+        },
+        "seller_stock": {
+            "source": "kyle-explicit-seller-stock/v1",
+            "source_digest": creation["evidence_digest"],
+            "quantity": creation["seller_stock_quantity"],
+            "approval_reference": "Kyle/category-decision/test",
+        },
+        "location": {
+            "location_id": location["location_id"],
+            "evidence_digest": location["evidence_digest"],
+        },
+        "condition": creation["condition"],
+        "preorder": creation["preorder"],
+        "tier_variation": [
+            {
+                "name": "Style",
+                "option_list": [
+                    {
+                        "option": "Default",
+                        "approved_image_position": 1,
+                    }
+                ],
+            }
+        ],
+        "global_model": [
+            {
+                "global_model_sku": "0954",
+                "tier_index": [0],
+                "original_price_cny": "56.05",
+                "seller_stock_quantity": 200,
+            }
+        ],
     }
 
 
@@ -567,10 +612,9 @@ def test_global_observer_consumes_and_revalidates_persisted_category_decision():
         _request(category_decision_execution=selection)
     )
 
-    # Category/required values passed official revalidation.  The next
-    # unapproved execution fact (brand) remains blocked rather than defaulted.
-    assert candidate.status == "BLOCKED_CAPABILITY"
-    assert candidate.blocker_codes == ("brand_invalid",)
+    assert candidate.status == READY
+    assert candidate.mode == NEW_GLOBAL
+    assert candidate.blocker_codes == ()
     assert any(
         path == "/api/v2/global_product/get_attribute_tree"
         for path, _params in official.calls
@@ -593,6 +637,94 @@ def test_global_observer_rejects_persisted_required_value_drift():
 
     assert error.value.reason_category == "CONTENT"
     assert error.value.reason_code == "shopee_category_selection_drift"
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_code"),
+    [
+        (
+            lambda value: value["brand"].update({"brand_id": 999}),
+            "shopee_selected_brand_drift",
+        ),
+        (
+            lambda value: value["location"].update(
+                {"location_id": "OTHER"}
+            ),
+            "shopee_selected_location_drift",
+        ),
+        (
+            lambda value: value["seller_stock"].update({"quantity": 50}),
+            "shopee_creation_decision_drift",
+        ),
+        (
+            lambda value: value["tier_variation"][0][
+                "option_list"
+            ][0].update({"option": "Invented"}),
+            "shopee_single_sku_mapping_drift",
+        ),
+    ],
+)
+def test_full_execution_decision_drift_is_zero_write_blocked(
+    mutate, expected_code
+):
+    official = _OfficialScan(existing=False)
+    selection = _category_execution(official)
+    mutate(selection)
+    official.calls.clear()
+    shopee.configure_prepare_transport_factory(
+        lambda _region: official.transport()
+    )
+
+    with pytest.raises(shopee.ShopeeOneClickPrepareBlocked) as error:
+        adapters.observe_shopee_global_plan_candidate(
+            _request(category_decision_execution=selection)
+        )
+
+    assert error.value.reason_code == expected_code
+    assert all(path.startswith("/api/v2/") for path, _ in official.calls)
+
+
+def test_multi_sku_without_exact_variation_mapping_is_actionable_blocked():
+    official = _OfficialScan(existing=False)
+    selection = _category_execution(official)
+    request = _request(category_decision_execution=selection)
+    request = copy.deepcopy(request)
+    request["sku_lineage"]["assignment"]["model_skus"].append(
+        {"variant_key": "second", "model_sku": "0955"}
+    )
+    official.calls.clear()
+    shopee.configure_prepare_transport_factory(
+        lambda _region: official.transport()
+    )
+
+    with pytest.raises(ShopeeGlobalPlanObservationError) as error:
+        adapters.observe_shopee_global_plan_candidate(request)
+
+    assert error.value.category == "CAPABILITY"
+    assert error.value.code == (
+        "shopee_multi_sku_variation_mapping_required"
+    )
+
+
+def test_v1_category_execution_is_rejected_for_new_global():
+    official = _OfficialScan(existing=False)
+    selection = _category_execution(official)
+    selection["schema_version"] = (
+        "channel-category-decision-execution/v1"
+    )
+    official.calls.clear()
+    shopee.configure_prepare_transport_factory(
+        lambda _region: official.transport()
+    )
+
+    with pytest.raises(shopee.ShopeeOneClickPrepareBlocked) as error:
+        adapters.observe_shopee_global_plan_candidate(
+            _request(category_decision_execution=selection)
+        )
+
+    assert error.value.reason_code == "shopee_category_selection_invalid"
+    assert official.calls
+    assert not any("add_" in path for path, _params in official.calls)
 
 
 def test_dynamic_observer_missing_prepared_credentials_is_auth_blocked():

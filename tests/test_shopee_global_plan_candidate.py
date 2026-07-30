@@ -200,15 +200,21 @@ def _selection(fake: _OfficialReadFake, category_id: int = 202):
     transport = fake.transport()
     path = subject._read_category_path(transport, category_id)
     tree = subject._read_attribute_tree(transport, category_id)
+    brand = subject._brand_option_projection(
+        subject._read_all_brands(transport, category_id)
+    )[0]
+    location = subject._location_option_projection(
+        subject._read_seller_locations(transport)
+    )[0]
+    creation = subject._creation_default_projection()
     return {
-        "schema_version": "channel-category-decision-execution/v1",
+        "schema_version": "channel-category-decision-execution/v2",
         "decision_digest": _digest("decision"),
         "context_digest": _digest(_context()),
         "options_digest": _digest("options"),
         "selected_category_identity_digest": _digest("selected"),
         "category": {
             "category_id": category_id,
-            "name": path[-1]["name"],
             "path": [dict(row) for row in path],
             "path_complete": True,
             "evidence_digest": _digest(path),
@@ -223,6 +229,42 @@ def _selection(fake: _OfficialReadFake, category_id: int = 202):
         ],
         "attributes_complete": True,
         "attribute_tree_digest": _digest(tree),
+        "brand": {
+            "brand_id": brand["brand_id"],
+            "original_brand_name": brand["original_brand_name"],
+            "evidence_digest": brand["evidence_digest"],
+        },
+        "seller_stock": {
+            "source": "kyle-explicit-seller-stock/v1",
+            "source_digest": creation["evidence_digest"],
+            "quantity": creation["seller_stock_quantity"],
+            "approval_reference": "Kyle/category-decision/test",
+        },
+        "location": {
+            "location_id": location["location_id"],
+            "evidence_digest": location["evidence_digest"],
+        },
+        "condition": creation["condition"],
+        "preorder": creation["preorder"],
+        "tier_variation": [
+            {
+                "name": "Style",
+                "option_list": [
+                    {
+                        "option": "Default",
+                        "approved_image_position": 1,
+                    }
+                ],
+            }
+        ],
+        "global_model": [
+            {
+                "global_model_sku": "0954",
+                "tier_index": [0],
+                "original_price_cny": "56.05",
+                "seller_stock_quantity": 200,
+            }
+        ],
     }
 
 
@@ -240,7 +282,13 @@ def test_category_options_recommend_but_never_auto_approve_required_value():
         "recommendation_source",
         "recommended_category_id",
         "options",
+        "brand_options",
+        "location_options",
+        "creation_defaults",
     }
+    assert result["schema_version"] == (
+        "channel-category-options-observation/v2"
+    )
     assert result["recommended_category_id"] == 101
     assert [row["category_id"] for row in result["options"]] == [101, 202]
     assert all(row["selected_attributes"] == [] for row in result["options"])
@@ -261,6 +309,11 @@ def test_category_options_recommend_but_never_auto_approve_required_value():
     assert all(
         path in subject.AUDITED_OFFICIAL_READ_ENDPOINTS
         for path, _params in fake.calls
+    )
+    assert result["brand_options"][0]["recommended"] is False
+    assert result["location_options"][0]["recommended"] is False
+    assert result["creation_defaults"] == (
+        subject._creation_default_projection()
     )
     assert not any("post" in path.casefold() for path, _params in fake.calls)
 

@@ -223,6 +223,23 @@ def test_head_freight_is_fixed_at_one_cny_per_unit_and_benefit_is_presentation_o
     assert "must not remove the demand row" in reference
 
 
+def test_quantity_is_independent_from_dimensions_weight_and_cost():
+    app = (DASHBOARD / "app.js").read_text(encoding="utf-8")
+    html = (DASHBOARD / "index.html").read_text(encoding="utf-8")
+
+    assert "const recommended = Math.max(0, arrivalTarget - projectedAtArrival)" in app
+    assert "calculationReady" not in app
+    assert "const handlingUnit = item.weightReady" in app
+    assert "const netTotal = netUnit === null ? null" in app
+    assert '"BLOCKED_DATA"' not in app
+    assert "体积待补充" in app
+    assert "待补充（需重量）" in app
+    assert "成本待补充" in app
+    assert 'filter === "MISSING_DATA" && item.dataIncomplete' in app
+    assert '<option value="MISSING_DATA">资料待补</option>' in html
+    assert "尺寸、重量或成本不完整时，对应体积、收益或占款显示待补充" in html
+
+
 def test_dashboard_contains_no_remote_image_or_secret_dependency_and_marks_blockers():
     data_text = (DASHBOARD / "data.js").read_text(encoding="utf-8")
     app = (DASHBOARD / "app.js").read_text(encoding="utf-8")

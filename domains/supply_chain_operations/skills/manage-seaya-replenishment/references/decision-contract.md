@@ -38,7 +38,7 @@ Otherwise:
 
 Unavailable or pending channels remain visible and contribute no fabricated units. Use `PENDING_REFRESH` when the shop mapping and refresh token exist but the access token is expired and refresh/pull has not run. Reserve `BLOCKED_AUTH` for genuinely missing or rejected authorization.
 
-Every exact SKU with a positive `recent30Units` value in at least one READY channel must remain visible in the dashboard. Missing logistics data changes the row to `BLOCKED_DATA`; it must not remove the demand row.
+Every exact SKU with a positive `recent30Units` value in at least one READY channel must remain visible in the dashboard. Missing dimensions, weight, or cost must not remove the demand row or block the quantity.
 
 For Shopee settlement demand, a complete pull means every listed order page and every escrow detail succeeded for the declared window. Aggregate `quantity_purchased`, discounted customer payment, and allocated actual shipping fee by exact SKU. Approved channel aliases are only four digits, `77+four digits`, and `99+four digits`. Any other model SKU must resolve through the exact Shopee `(item_id, model_id)` catalog key. Unresolved lines remain excluded evidence and must never be matched by title or image similarity.
 
@@ -48,6 +48,14 @@ For Shopee settlement demand, a complete pull means every listed order page and 
 - `arrival_stock = max(0, available + trusted_inbound - lead_demand)`
 - `target = ceil(v × (target_days + safety_days))`
 - `recommended = max(0, target - arrival_stock)`
+
+Quantity is valid without dimensions, weight, or unit cost. Those fields affect separate outputs:
+
+- missing dimensions → batch and unit volume are `PENDING_DATA`;
+- missing weight → local handling and net benefit are `PENDING_DATA`;
+- missing unit cost → working capital is `PENDING_DATA`.
+
+Known portions may be shown with an explicit pending-item count, but a partial amount must never be presented as the complete batch total.
 
 | Country | Lead | Target | Safety | Mode |
 |---|---:|---:|---:|---|

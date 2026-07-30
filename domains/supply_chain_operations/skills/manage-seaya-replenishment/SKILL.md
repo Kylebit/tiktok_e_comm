@@ -28,7 +28,7 @@ Run `scripts/validate_inventory_snapshot.py SNAPSHOT.json` before consuming a ne
 5. Join demand by exact country and SKU. Combine TikTok and Shopee only within the same country. Distinguish `PENDING_REFRESH` (mapping and refresh credential exist, access token expired, pull not run) from `BLOCKED_AUTH`; never interpret missing demand as zero. After a successful complete pull, every included channel fact must be `READY`, retain its exact window and coverage evidence, and replace pending placeholders rather than layering data on top of them.
 6. For Shopee demand, accept a canonical 4-digit SKU or the explicitly approved `77xxxx` / `99xxxx` aliases. When a model SKU has another shape, resolve it only through an exact `(item_id, model_id) -> catalog seller_sku` relation. Never use title or image similarity. Keep unresolved item lines visible as excluded evidence.
 7. Calculate lead-time demand, arrival stock, target coverage, recommended quantity, fixed head freight, handling cost, and known savings. Apply the current user-approved head-freight policy of CNY 1 per unit to every country, site, and SKU.
-8. Keep recommendations fail-closed when identity, inventory, demand, dimensions, weight, cost, tax policy, or the approved fixed-freight policy is unavailable. Profitability is presentation evidence only and must not hide a SKU or block an otherwise valid quantity recommendation.
+8. Keep quantity recommendations fail-closed when exact identity, inventory, demand, country lead-time policy, or the approved fixed-freight policy is unavailable. Dimensions, weight, cost, and profitability are presentation or execution-readiness evidence; they must not hide a SKU or block an otherwise valid demand-and-inventory quantity recommendation.
 9. Update the local dashboard without external business writes.
 10. Verify each country, SKU main image, source evidence, blockers, and batch totals in a browser.
 11. Run focused and full relevant tests, commit on the authorized branch, and do not push unless requested.
@@ -38,7 +38,7 @@ Run `scripts/validate_inventory_snapshot.py SNAPSHOT.json` before consuming a ne
 - Keep every exact SKU with positive `recent30Units` on the dashboard, including SKUs with zero Seaya stock and SKUs whose logistics fields are incomplete.
 - Sum recent demand across READY TikTok and Shopee facts only within the same country.
 - Provide a dedicated recent-30-day filter.
-- When logistics fields are incomplete, display the SKU, image, demand and blocker, then return `BLOCKED_DATA`; never omit the row or invent a quantity.
+- When logistics fields are incomplete, display the SKU, image, demand, inventory and calculated quantity. Mark only the affected output as pending: dimensions affect volume, weight affects local handling and net benefit, and cost affects working capital.
 - Do not use known benefit as a readiness gate. Display positive or negative benefit alongside the demand-and-inventory recommendation.
 
 ## Maintain manual completion
@@ -48,6 +48,7 @@ Run `scripts/validate_inventory_snapshot.py SNAPSHOT.json` before consuming a ne
 - Store manual values only in browser-local reversible storage unless the user explicitly authorizes another destination.
 - Do not use logistics entry to resolve an identity or alias blocker.
 - Show the manual source and allow clearing the override.
+- Never require these manual fields before calculating a quantity. They are required only before relying on the affected volume, handling, benefit, or capital output.
 
 ## Keep the skill synchronized
 

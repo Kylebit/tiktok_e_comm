@@ -57,7 +57,7 @@
       </div>
       <div class="toolbar">
         <label>搜索 SKU / 商品<input id="searchInput" type="search" placeholder="例如 0007、墙贴"></label>
-        <label>决策<select id="statusFilter"><option value="all">全部</option><option value="RECENT30">近30天有动销</option><option value="REPLENISH">建议补货</option><option value="FIRST_STOCK">建议首批</option><option value="HOLD">暂不补货</option><option value="NO_DEMAND">销量不足</option><option value="BLOCKED_DATA">资料待补</option></select></label>
+        <label>决策<select id="statusFilter"><option value="all">全部</option><option value="RECENT30">近30天有动销</option><option value="MISSING_DATA">资料待补</option><option value="REPLENISH">建议补货</option><option value="FIRST_STOCK">建议首批</option><option value="HOLD">暂不补货</option><option value="NO_DEMAND">销量不足</option></select></label>
         <span id="visibleCount"></span>
       </div>
 
@@ -68,9 +68,9 @@
       </div>
 
       <div class="ledger-group first-stock-group">
-        <div class="group-heading"><div><span>02</span><h3>海外仓尚无、可做首批备货</h3></div><p>近30天有动销的 SKU 必须保留展示；尺寸、重量或成本不完整时显示资料待补，资料齐全后按需求与库存给出建议量。</p></div>
+        <div class="group-heading"><div><span>02</span><h3>海外仓尚无、可做首批备货</h3></div><p>近30天有动销的 SKU 必须保留展示；建议件数只由需求、库存、在途和补货周期决定。尺寸、重量或成本不完整时，对应体积、收益或占款显示待补充。</p></div>
         <div class="table-wrap"><table><thead><tr><th>主图 / SKU</th><th>双平台需求事实</th><th>雅仓供应事实</th><th>到仓计算</th><th>建议</th><th>收益明细</th><th>判断</th></tr></thead><tbody id="firstStockRows"></tbody></table></div>
-        <div class="empty-state" id="firstStockEmpty" hidden>当前没有满足完整事实门槛的首批备货候选。</div>
+        <div class="empty-state" id="firstStockEmpty" hidden>当前筛选条件下没有首批备货候选。</div>
       </div>
     </section>
 

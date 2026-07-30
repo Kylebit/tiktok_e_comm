@@ -581,7 +581,7 @@ def test_oneclick_v2_ui_bounds_reads_and_never_resends_unknown_posts():
 
     assert "ONECLICK_LOCAL_READ_TIMEOUT_MS = 15000" in script
     assert "ONECLICK_LOCAL_POST_TIMEOUT_MS = 15000" in script
-    assert "SHOPEE_GLOBAL_READ_TIMEOUT_MS = 125000" in script
+    assert "SHOPEE_GLOBAL_READ_TIMEOUT_MS = 180000" in script
     assert "SHOPEE_GLOBAL_READ_TIMEOUT_MS" in global_preview
     assert "approvalPostAttempted" in global_approval
     assert "responseOutcomeUnknown" in global_approval

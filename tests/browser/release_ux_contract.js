@@ -5250,6 +5250,108 @@ async function oneClickFeatureDisabledContract(browser) {
   }
 }
 
+async function shopeeGlobalPreApprovalEntryContract(browser) {
+  const context = await browser.newContext({
+    viewport: { width: 1440, height: 900 },
+  });
+  const page = await context.newPage();
+  const errors = [];
+  const requests = [];
+  const candidate = shopeeGlobalCandidate();
+  let globalReads = 0;
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+  });
+  const dashboard = oneClickDashboard();
+  dashboard.release_v1.plan_approved = false;
+  dashboard.release_v1.eligible_for_plan_approval = false;
+  dashboard.release_v1.miaoshou_prepared = false;
+  dashboard.release_v1.publish_ready = false;
+  dashboard.release_v1.oneclick_controlplane = null;
+  dashboard.release_v1.canonical_next_action = null;
+  dashboard.release_v1.recovery_actions = [{
+    code: "review_shopee_global_plan",
+    label: "核对并批准 Shopee 全球商品方案",
+    detail: "只有 Kyle 对当前精确候选完成批准后，ReleasePlan 才会开放。",
+  }];
+  await page.route("**/*", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.origin !== baseUrl) {
+      requests.push({ method: request.method(), url: request.url(), external: true });
+      return route.abort("blockedbyclient");
+    }
+    if (!url.pathname.startsWith("/api/")) return route.continue();
+    requests.push({ method: request.method(), url: request.url(), external: false });
+    if (url.pathname === "/api/product-workspace/dashboard") {
+      return route.fulfill(jsonResponse(dashboard));
+    }
+    if (
+      url.pathname
+        === "/api/product-workspace/shopee-global-plan-preview"
+    ) {
+      globalReads += 1;
+      return route.fulfill(jsonResponse({
+        ok: true,
+        schema_version: "shopee-global-plan-preview/v1",
+        offer_id: "3828540231",
+        product_revision: 31,
+        candidate,
+        approval: null,
+        approval_current: false,
+        external_writes_performed: [],
+      }));
+    }
+    const fixture = apiFixture(
+      url,
+      request.method(),
+      { delayWeekly: false, delaySku: false, pending: {} },
+    );
+    return route.fulfill(fixture || jsonResponse({ ok: false }, 404));
+  });
+  try {
+    await page.goto(`${baseUrl}/product-workspace?offer_id=3828540231`, {
+      waitUntil: "networkidle",
+    });
+    const recovery = page.locator(
+      '[data-release-recovery="review_shopee_global_plan"]',
+    );
+    const form = page.locator(
+      "#releasePlanRecoveryReview .shopee-global-plan-approval-form",
+    );
+    await form.waitFor({ state: "visible" });
+    check(
+      await page.locator("#releasePlanCheckbox").isDisabled()
+      && await recovery.isEnabled()
+      && await form.isVisible(),
+      "Shopee Global pre-approval: disabled ReleasePlan gate exposes the exact approval panel",
+    );
+    await recovery.click();
+    await page.waitForFunction(() => (
+      document.activeElement?.getAttribute("name")
+        === "confirm_approved_shopee_global_plan"
+    ));
+    check(
+      globalReads === 1,
+      "Shopee Global pre-approval: one official read supplies the candidate",
+      { globalReads, requests },
+    );
+    check(
+      requests.filter((row) => row.method === "POST").length === 0,
+      "Shopee Global pre-approval: opening and focusing the panel performs zero POSTs",
+      requests,
+    );
+    check(
+      unexpectedInteractionErrors(errors).length === 0,
+      "Shopee Global pre-approval: no console/page errors",
+      errors,
+    );
+  } finally {
+    await context.close();
+  }
+}
+
 async function shopeeGlobalApprovalResponseLossContract(browser) {
   const context = await browser.newContext({
     viewport: { width: 1440, height: 900 },
@@ -5572,6 +5674,7 @@ async function legacyStateSafety(browser) {
     await oneClickStrictFailureContract(browser, "unknown-target-status");
     await oneClickStrictFailureContract(browser, "unknown-canonical-action");
     await oneClickFeatureDisabledContract(browser);
+    await shopeeGlobalPreApprovalEntryContract(browser);
     await shopeeGlobalApprovalResponseLossContract(browser);
     await profitAsyncAndNoFalseSuccess(browser);
     await legacyStateSafety(browser);

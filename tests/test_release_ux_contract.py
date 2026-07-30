@@ -480,12 +480,17 @@ def test_blocked_release_plan_exposes_a_recovery_action_instead_of_a_dead_end():
         'id="releasePlanRecovery"',
         'id="releasePlanRecoveryDetail"',
         'id="releasePlanRecoveryActions"',
+        'id="releasePlanRecoveryReview"',
         'id="listingCopyAssistant"',
     ):
         assert token in html
     assert "renderReleaseRecovery(release)" in script
     assert 'code === "refresh_listing_copy"' in script
     assert 'code === "adopt_listing_copy"' in script
+    assert 'code === "review_shopee_global_plan"' in script
+    assert "shopeeGlobalPlanIdentity(currentData)" in script
+    assert "shopeeGlobalPlanReviewRequired(data, projection)" in script
+    assert '#releasePlanRecoveryReview .shopee-global-plan-approval-form' in script
     assert 'data-release-recovery="${esc(action.code)}"' in script
     assert "重新检查并定位未完成步骤" in script
     assert "titleAdoptSubmitting" in script

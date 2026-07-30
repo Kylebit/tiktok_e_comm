@@ -559,6 +559,17 @@
     };
   }
 
+  function shopeeGlobalPlanIdentity(data) {
+    const offerId = String(data?.product?.offer_id || "").trim();
+    const revision = data?.product?.revision;
+    if (!validOfferId(offerId) || !Number.isInteger(revision)) return null;
+    return {
+      key: `${offerId}\u0000${revision}`,
+      offerId,
+      revision,
+    };
+  }
+
   function cancelOneClickTimer() {
     if (oneClickExecution.timer !== null) {
       window.clearTimeout(oneClickExecution.timer);
@@ -1781,6 +1792,17 @@
         === "review_shopee_global_plan";
   }
 
+  function shopeeGlobalPlanRecoveryRequired(data) {
+    return (data?.release_v1?.recovery_actions || []).some(
+      (action) => action?.code === "review_shopee_global_plan",
+    );
+  }
+
+  function shopeeGlobalPlanReviewRequired(data, projection) {
+    return shopeeGlobalPlanRequired(projection)
+      || shopeeGlobalPlanRecoveryRequired(data);
+  }
+
   async function requestShopeeGlobalPlanPreview(identity) {
     const generation = shopeeGlobalPlanReview.generation;
     if (
@@ -1827,20 +1849,21 @@
           shopeeGlobalPlanReview.controller = null;
         }
         renderOneClickExecution(currentData);
+        renderReleaseRecovery(currentData?.release_v1 || {});
       }
     }
   }
 
-  function ensureShopeeGlobalPlanReview(identity, projection) {
-    if (!identity || !shopeeGlobalPlanRequired(projection)) {
+  function ensureShopeeGlobalPlanReview(identity, required) {
+    if (!identity || required !== true) {
       if (shopeeGlobalPlanReview.contextKey) resetShopeeGlobalPlanReview();
-      return;
+      return Promise.resolve();
     }
     if (shopeeGlobalPlanReview.contextKey !== identity.key) {
       resetShopeeGlobalPlanReview();
       shopeeGlobalPlanReview.contextKey = identity.key;
     }
-    requestShopeeGlobalPlanPreview(identity);
+    return requestShopeeGlobalPlanPreview(identity);
   }
 
   function shopeeGlobalPlanBlockerText(code) {
@@ -2002,7 +2025,7 @@
       || shopeeGlobalPlanReview.approvalPostAttempted
       || releaseSubmitting
     ) return;
-    const identity = oneClickExecution.identity;
+    const identity = shopeeGlobalPlanIdentity(currentData);
     const candidate = shopeeGlobalPlanReview.candidate;
     const digest = String(form.dataset.candidateDigest || "");
     const confirmed = (
@@ -2105,8 +2128,12 @@
     const readRetryButton = $("#oneClickReadRetryButton");
     if (!container || !message || !nextButton || !readRetryButton) return;
     const identity = oneClickIdentity(data);
+    const globalPlanIdentity = shopeeGlobalPlanIdentity(data);
     const projection = oneClickProjection();
-    ensureShopeeGlobalPlanReview(identity, projection);
+    ensureShopeeGlobalPlanReview(
+      globalPlanIdentity,
+      shopeeGlobalPlanReviewRequired(data, projection),
+    );
     const headings = {
       automatic: "本轮自动执行",
       manual: "提交后人工验收",
@@ -2358,16 +2385,18 @@
       return;
     }
     if (action === "review_shopee_global_plan") {
-      focusOneClickTarget(SHOPEE_GLOBAL_CONTROL_TARGET);
-      focusFirstControl([
+      await ensureShopeeGlobalPlanReview(
+        shopeeGlobalPlanIdentity(currentData),
+        true,
+      );
+      renderOneClickExecution(currentData);
+      if (!focusFirstControl([
         ".shopee-global-plan-approval-form input[name='confirm_approved_shopee_global_plan']",
         ".shopee-global-plan-preview-retry",
         ".shopee-global-auth-restore",
-      ]);
-      ensureShopeeGlobalPlanReview(
-        oneClickExecution.identity,
-        oneClickProjection(),
-      );
+      ])) {
+        focusOneClickTarget(SHOPEE_GLOBAL_CONTROL_TARGET);
+      }
       return;
     }
     if (
@@ -5203,7 +5232,8 @@
   function renderReleaseRecovery(release) {
     const panel = $("#releasePlanRecovery");
     const container = $("#releasePlanRecoveryActions");
-    if (!panel || !container) return;
+    const reviewContainer = $("#releasePlanRecoveryReview");
+    if (!panel || !container || !reviewContainer) return;
     const supplied = Array.isArray(release?.recovery_actions)
       ? release.recovery_actions.filter((row) => row && row.code)
       : [];
@@ -5222,6 +5252,8 @@
     if (!actions.length) {
       $("#releasePlanRecoveryDetail").textContent = "";
       container.innerHTML = "";
+      reviewContainer.innerHTML = "";
+      reviewContainer.hidden = true;
       return;
     }
     const primary = actions[0];
@@ -5235,11 +5267,42 @@
         ${esc(action.label || "继续处理")}
       </button>
     `).join("");
+    const globalPlanReviewRequired = actions.some(
+      (action) => action.code === "review_shopee_global_plan",
+    );
+    reviewContainer.hidden = !globalPlanReviewRequired;
+    if (globalPlanReviewRequired) {
+      ensureShopeeGlobalPlanReview(
+        shopeeGlobalPlanIdentity(currentData),
+        true,
+      );
+      reviewContainer.innerHTML = shopeeGlobalPlanPanel();
+    } else {
+      reviewContainer.innerHTML = "";
+    }
   }
 
   async function runReleaseRecovery(actionCode) {
     if (!currentData || pageLoading || releaseSubmitting || approvalSubmitting) return;
     const code = String(actionCode || "");
+    if (code === "review_shopee_global_plan") {
+      const identity = shopeeGlobalPlanIdentity(currentData);
+      if (!identity) {
+        $("#releasePlanRecoveryDetail").textContent =
+          "当前商品身份或 revision 不完整，无法读取 Shopee Global 候选；未执行任何审批或渠道写入。";
+        return;
+      }
+      await ensureShopeeGlobalPlanReview(identity, true);
+      renderReleaseRecovery(currentData.release_v1 || {});
+      if (!focusFirstControl([
+        "#releasePlanRecoveryReview .shopee-global-plan-approval-form input[name='confirm_approved_shopee_global_plan']",
+        "#releasePlanRecoveryReview .shopee-global-plan-preview-retry",
+        "#releasePlanRecoveryReview .shopee-global-auth-restore",
+      ])) {
+        focusFirstControl(["#releasePlanRecoveryReview"]);
+      }
+      return;
+    }
     if (code === "refresh_listing_copy") {
       await generateTitleDraft();
       const assistant = $("#listingCopyAssistant");
@@ -6652,7 +6715,36 @@
     event.preventDefault();
     approveReleasePlan();
   });
-  $("#releasePlanRecoveryActions").addEventListener("click", (event) => {
+  $("#releasePlanRecovery").addEventListener("submit", (event) => {
+    const globalPlanForm = event.target.closest(
+      ".shopee-global-plan-approval-form",
+    );
+    if (!globalPlanForm) return;
+    event.preventDefault();
+    submitShopeeGlobalPlanApproval(globalPlanForm);
+  });
+  $("#releasePlanRecovery").addEventListener("click", (event) => {
+    const globalRetry = event.target.closest(
+      ".shopee-global-plan-preview-retry",
+    );
+    if (globalRetry) {
+      const identity = shopeeGlobalPlanIdentity(currentData);
+      if (
+        identity
+        && !shopeeGlobalPlanReview.previewBusy
+      ) {
+        shopeeGlobalPlanReview.previewAttempted = false;
+        shopeeGlobalPlanReview.error = "";
+        requestShopeeGlobalPlanPreview(identity);
+      }
+      return;
+    }
+    const authRestore = event.target.closest(".shopee-global-auth-restore");
+    if (authRestore) {
+      $("#releasePlanRecoveryDetail").textContent =
+        "请在 Shopee 授权管理中恢复当前 Global 官方读取授权，然后回到这里重新读取；系统不会猜测或刷新凭据。";
+      return;
+    }
     const button = event.target.closest("[data-release-recovery]");
     if (!button || button.disabled) return;
     runReleaseRecovery(button.dataset.releaseRecovery);
@@ -6696,13 +6788,14 @@
       ".shopee-global-plan-preview-retry",
     );
     if (globalRetry) {
+      const identity = shopeeGlobalPlanIdentity(currentData);
       if (
         !shopeeGlobalPlanReview.previewBusy
-        && oneClickExecution.identity
+        && identity
       ) {
         shopeeGlobalPlanReview.previewAttempted = false;
         shopeeGlobalPlanReview.error = "";
-        requestShopeeGlobalPlanPreview(oneClickExecution.identity);
+        requestShopeeGlobalPlanPreview(identity);
       }
       return;
     }

@@ -1156,6 +1156,7 @@ section { scroll-margin-top: 20px; }
 }
 .release-plan-recovery {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 18px;
@@ -1179,6 +1180,14 @@ section { scroll-margin-top: 20px; }
   display: flex;
   flex: 0 0 auto;
   gap: 8px;
+}
+.release-plan-recovery-review {
+  flex: 1 0 100%;
+  min-width: 0;
+}
+.release-plan-recovery-review .shopee-global-plan-review {
+  margin-top: 2px;
+  background: rgba(255, 255, 255, .62);
 }
 
 .heading-badges { display: flex; gap: 8px; }

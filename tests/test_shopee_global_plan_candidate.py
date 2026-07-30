@@ -268,14 +268,14 @@ class _OfficialReadFake:
                     "response": {
                         "brand_list": [
                             {
-                                "brand_id": 1 if offset == 0 else 2,
+                                "brand_id": 0 if offset == 0 else 2,
                                 "original_brand_name": (
-                                    "Brand A"
+                                    "NoBrand"
                                     if offset == 0
                                     else "Brand B"
                                 ),
                                 "display_brand_name": (
-                                    "Brand A"
+                                    "NoBrand"
                                     if offset == 0
                                     else "Brand B"
                                 ),
@@ -293,8 +293,8 @@ class _OfficialReadFake:
                     "response": {
                         "brand_list": [
                             {
-                                "brand_id": 1,
-                                "original_brand_name": "Brand A",
+                                "brand_id": 0,
+                                "original_brand_name": "NoBrand",
                             }
                         ],
                         "total_count": 2,
@@ -319,7 +319,7 @@ class _OfficialReadFake:
             return {
                 "error": "",
                 "response": [
-                    {"location_id": "CNZ", "warehouse_name": "Primary"},
+                    {"location_id": "CNZ", "warehouse_name": "中国仓库"},
                     {"location_id": "CNH", "warehouse_name": "Secondary"},
                 ],
             }
@@ -522,8 +522,8 @@ def test_category_options_recommend_but_never_auto_approve_required_value():
         path in subject.AUDITED_OFFICIAL_READ_ENDPOINTS
         for path, _params in fake.calls
     )
-    assert result["brand_options"][0]["recommended"] is False
-    assert result["location_options"][0]["recommended"] is False
+    assert sum(row["recommended"] for row in result["brand_options"]) == 1
+    assert sum(row["recommended"] for row in result["location_options"]) == 1
     assert result["creation_defaults"] == (
         subject._creation_default_projection()
     )
@@ -679,6 +679,92 @@ def test_live_exact_duplicate_brand_is_deduplicated_but_conflict_fails():
     with pytest.raises(subject.ShopeeGlobalPlanCandidateError) as error:
         subject._read_all_brands(fake.transport(), 101)
     assert error.value.reason_code == "shopee_brand_list_invalid"
+
+
+def test_fixed_no_brand_accepts_official_spacing_alias():
+    result = subject._brand_option_projection(
+        (
+            {
+                "brand_id": 0,
+                "original_brand_name": "No Brand",
+            },
+            {
+                "brand_id": 2,
+                "original_brand_name": "Brand B",
+            },
+        )
+    )
+
+    assert [row["brand_id"] for row in result if row["recommended"]] == [0]
+
+
+def test_official_brand_without_no_brand_policy_fails_closed():
+    fake = _OfficialReadFake()
+    original_merchant_get = fake.merchant_get
+
+    def merchant_get(path, params):
+        response = original_merchant_get(path, params)
+        if path == subject.BRAND_LIST_PATH and params["offset"] == 0:
+            response["response"]["brand_list"][0][
+                "original_brand_name"
+            ] = "Generic"
+        return response
+
+    fake.merchant_get = merchant_get
+    _install(fake)
+    with pytest.raises(subject.ShopeeGlobalPlanCandidateError) as error:
+        adapters.observe_channel_category_options(_request())
+
+    assert error.value.reason_code == "shopee_fixed_no_brand_unavailable"
+
+
+def test_ambiguous_no_brand_policy_fails_closed():
+    with pytest.raises(subject.ShopeeGlobalPlanCandidateError) as error:
+        subject._brand_option_projection(
+            (
+                {
+                    "brand_id": 0,
+                    "original_brand_name": "NoBrand",
+                },
+                {
+                    "brand_id": 0,
+                    "original_brand_name": "No Brand",
+                },
+            )
+        )
+
+    assert error.value.reason_code == "shopee_fixed_no_brand_unavailable"
+
+
+@pytest.mark.parametrize("shape", ["missing", "duplicate"])
+def test_official_location_without_unique_china_warehouse_fails_closed(shape):
+    fake = _OfficialReadFake()
+    original_merchant_get = fake.merchant_get
+
+    def merchant_get(path, params):
+        response = original_merchant_get(path, params)
+        if path == subject.SELLER_LOCATION_PATH:
+            rows = response["response"]
+            if shape == "missing":
+                rows[0]["warehouse_name"] = "Other Warehouse"
+            else:
+                rows.append(
+                    {
+                        "location_id": "CNX",
+                        "warehouse_name": "中国仓库",
+                    }
+                )
+        return response
+
+    fake.merchant_get = merchant_get
+    _install(fake)
+    with pytest.raises(subject.ShopeeGlobalPlanCandidateError) as error:
+        adapters.observe_channel_category_options(_request())
+
+    assert (
+        error.value.reason_code
+        == "shopee_fixed_china_warehouse_unavailable"
+    )
 
 
 @pytest.mark.parametrize(
@@ -1128,8 +1214,8 @@ def test_official_candidate_observes_brand_and_locations_without_defaults(
     serialized = json.dumps(public, sort_keys=True)
     for forbidden in (
         "fixture-shop-token",
-        "Brand A",
-        "Primary",
+        "NoBrand",
+        "中国仓库",
         "9001",
         "101",
     ):

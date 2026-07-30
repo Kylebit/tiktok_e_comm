@@ -353,6 +353,25 @@ def approve_category_decision(
         )
     brand = brands[0]
     location = locations[0]
+    recommended_brands = [
+        row for row in snapshot["brand_options"] if row["recommended"] is True
+    ]
+    recommended_locations = [
+        row
+        for row in snapshot["location_options"]
+        if row["recommended"] is True
+    ]
+    if (
+        len(recommended_brands) != 1
+        or len(recommended_locations) != 1
+        or brand["brand_identity_digest"]
+        != recommended_brands[0]["brand_identity_digest"]
+        or location["location_identity_digest"]
+        != recommended_locations[0]["location_identity_digest"]
+    ):
+        raise ChannelCategoryDecisionError(
+            "fixed Shopee brand or seller location policy was not selected"
+        )
     clean_attribute_selection_digest = _digest(
         attribute_selection_digest,
         "attribute selection digest",
@@ -647,8 +666,7 @@ def validate_category_decision(value: object) -> dict[str, Any]:
         "recommended_brand_identity_digest",
         "recommended_location_identity_digest",
     ):
-        if decision[field] is not None:
-            _digest(decision[field], field)
+        _digest(decision[field], field)
     if (
         type(decision["required_attribute_count"]) is not int
         or decision["required_attribute_count"] < 0
@@ -756,16 +774,18 @@ def validate_category_decision(value: object) -> dict[str, Any]:
         != decision["selected_location_identity_digest"]
         or creation_identity["creation_fact_identity_digest"]
         != decision["selected_creation_fact_identity_digest"]
+        or decision["selected_brand_identity_digest"]
+        != decision["recommended_brand_identity_digest"]
+        or decision["selected_location_identity_digest"]
+        != decision["recommended_location_identity_digest"]
         or brand["recommended"]
         != (
-            decision["recommended_brand_identity_digest"] is not None
-            and decision["selected_brand_identity_digest"]
+            decision["selected_brand_identity_digest"]
             == decision["recommended_brand_identity_digest"]
         )
         or location["recommended"]
         != (
-            decision["recommended_location_identity_digest"] is not None
-            and decision["selected_location_identity_digest"]
+            decision["selected_location_identity_digest"]
             == decision["recommended_location_identity_digest"]
         )
     ):
@@ -1997,7 +2017,8 @@ def _brand_options(value: object) -> list[dict[str, Any]]:
         )
         recommended = bool(
             brand_id == 0
-            and _normalized_brand_name(brand_name) == "no brand"
+            and _normalized_brand_name(brand_name).replace(" ", "")
+            == "nobrand"
         )
         if item["recommended"] is not recommended:
             raise ChannelCategoryDecisionError(
@@ -2013,9 +2034,9 @@ def _brand_options(value: object) -> list[dict[str, Any]]:
             "recommended": recommended,
         }
         result.append(_brand_identity(base))
-    if sum(row["recommended"] is True for row in result) > 1:
+    if sum(row["recommended"] is True for row in result) != 1:
         raise ChannelCategoryDecisionError(
-            "official brand recommendation is ambiguous"
+            "fixed no-brand policy option is unavailable or ambiguous"
         )
     result.sort(key=lambda row: row["brand_identity_digest"])
     return result
@@ -2092,7 +2113,6 @@ def _location_options(value: object) -> list[dict[str, Any]]:
         )
     result = []
     seen = set()
-    expected_recommended = len(value) == 1
     for row in value:
         item = _exact_mapping(
             row,
@@ -2113,16 +2133,21 @@ def _location_options(value: object) -> list[dict[str, Any]]:
                 "official seller locations are ambiguous"
             )
         seen.add(location_id)
+        display_name = _nonempty_text(
+            item["display_name"],
+            "seller location name",
+        )
+        expected_recommended = (
+            unicodedata.normalize("NFC", display_name).strip()
+            == "中国仓库"
+        )
         if item["recommended"] is not expected_recommended:
             raise ChannelCategoryDecisionError(
                 "official seller location recommendation is not truthful"
             )
         base = {
             "location_id": location_id,
-            "display_name": _nonempty_text(
-                item["display_name"],
-                "seller location name",
-            ),
+            "display_name": display_name,
             "evidence_digest": _digest(
                 item["evidence_digest"],
                 "seller location evidence digest",
@@ -2130,9 +2155,9 @@ def _location_options(value: object) -> list[dict[str, Any]]:
             "recommended": expected_recommended,
         }
         result.append(_location_identity(base))
-    if sum(row["recommended"] is True for row in result) > 1:
+    if sum(row["recommended"] is True for row in result) != 1:
         raise ChannelCategoryDecisionError(
-            "official seller location recommendation is ambiguous"
+            "fixed China warehouse option is unavailable or ambiguous"
         )
     result.sort(key=lambda row: row["location_identity_digest"])
     return result

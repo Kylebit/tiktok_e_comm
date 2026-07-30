@@ -2114,7 +2114,7 @@
         if (row.recommended) recommendationCount += 1;
         seenOptions.add(row[identityKey]);
       }
-      if (recommendationCount > 1) {
+      if (recommendationCount !== 1) {
         throw oneClickContractError(
           "Shopee Global 品牌或卖家位置推荐不唯一，已停止选择。",
         );
@@ -2732,7 +2732,7 @@
       : shopeeCategoryDecisionReview.postAttempted
         ? "保存请求已尝试；先只读核对结果，禁止重复提交。"
         : !selectedReady
-          ? "请完成当前类目全部官方属性、品牌与卖家位置选择。"
+          ? "请完成当前类目全部官方必填属性；品牌和卖家位置已由固定政策锁定。"
           : !shopeeCategoryDecisionReview.confirmSelection
             ? "请完成四项 Kyle 明确确认，才可保存完整创建决定。"
             : !shopeeCategoryDecisionReview.confirmSellerStock
@@ -2810,42 +2810,20 @@
           `}
         </section>
         <div class="channel-category-fact-grid">
-          <label class="channel-category-choice">
-            <span>官方品牌</span>
-            <select name="selected_brand_identity_digest"
-              ${locked ? "disabled" : ""}>
-              ${shopeeCategoryDecisionReview.draftBrandIdentityDigest
-                ? ""
-                : '<option value="" selected>请选择官方品牌</option>'}
-              ${projection.brand_options.map((row) => `
-                <option value="${esc(row.brand_identity_digest)}"
-                  ${row.brand_identity_digest
-                    === shopeeCategoryDecisionReview.draftBrandIdentityDigest
-                    ? "selected" : ""}>
-                  ${esc(row.display_name)}
-                  ${row.recommended ? "（系统推荐）" : ""}
-                </option>
-              `).join("")}
-            </select>
-          </label>
-          <label class="channel-category-choice">
-            <span>卖家位置</span>
-            <select name="selected_location_identity_digest"
-              ${locked ? "disabled" : ""}>
-              ${shopeeCategoryDecisionReview.draftLocationIdentityDigest
-                ? ""
-                : '<option value="" selected>请选择卖家位置</option>'}
-              ${projection.location_options.map((row) => `
-                <option value="${esc(row.location_identity_digest)}"
-                  ${row.location_identity_digest
-                    === shopeeCategoryDecisionReview.draftLocationIdentityDigest
-                    ? "selected" : ""}>
-                  ${esc(row.display_name)}
-                  ${row.recommended ? "（系统推荐）" : ""}
-                </option>
-              `).join("")}
-            </select>
-          </label>
+          <div class="channel-category-choice channel-category-fixed-fact">
+            <span>官方品牌（固定政策）</span>
+            <strong>${esc(
+              projection.brand_options.find((row) => row.recommended)
+                ?.display_name || "无品牌政策不可用",
+            )}</strong>
+          </div>
+          <div class="channel-category-choice channel-category-fixed-fact">
+            <span>卖家位置（固定政策）</span>
+            <strong>${esc(
+              projection.location_options.find((row) => row.recommended)
+                ?.display_name || "中国仓库政策不可用",
+            )}</strong>
+          </div>
         </div>
         <section class="channel-category-creation-facts">
           <strong>NEW_GLOBAL 创建事实（必须明确确认）</strong>

@@ -207,8 +207,8 @@ class _OfficialScan:
                 "response": {
                     "brand_list": [
                         {
-                            "brand_id": 8,
-                            "original_brand_name": "Official Brand",
+                            "brand_id": 0,
+                            "original_brand_name": "NoBrand",
                         }
                     ],
                     "total_count": 1,
@@ -221,7 +221,7 @@ class _OfficialScan:
             return {
                 "error": "",
                 "response": [
-                    {"location_id": "CNZ", "warehouse_name": "Primary"}
+                    {"location_id": "CNZ", "warehouse_name": "中国仓库"}
                 ],
             }
         if path == shopee.GLOBAL_ITEM_PATH and self.existing:

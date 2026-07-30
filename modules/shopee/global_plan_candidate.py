@@ -6,7 +6,8 @@ listing facts.  In particular:
 * a category recommendation is never a category decision;
 * selecting a category causes its path and attribute tree to be fetched again;
 * required attribute values are never selected or synthesized here;
-* brand, seller stock, and seller location are never defaulted; and
+* brand and seller location are bound only by explicit server policy;
+* seller stock is never defaulted; and
 * community/generated SDK metadata is not an authority source.
 
 Only redacted counts, booleans, rule codes, and SHA-256 digests are exposed.
@@ -49,6 +50,11 @@ CATEGORY_ATTRIBUTE_SELECTION_EXECUTION_SCHEMA_VERSION = (
 CREATION_DEFAULT_POLICY_VERSION = (
     "shopee-new-global-explicit-creation-proposal/v1"
 )
+NO_BRAND_POLICY_VERSION = "shopee-global-fixed-no-brand/v1"
+SELLER_LOCATION_POLICY_VERSION = (
+    "shopee-global-fixed-china-warehouse/v1"
+)
+FIXED_SELLER_LOCATION_NAME = "中国仓库"
 PROPOSED_SELLER_STOCK_QUANTITY = 200
 CATEGORY_RECOMMEND_PATH = (
     "/api/v2/global_product/category_recommend"
@@ -1459,11 +1465,29 @@ def _missing_required_projection(
 def _brand_option_projection(
     rows: tuple[Mapping[str, object], ...],
 ) -> list[dict[str, object]]:
+    policy_matches = [
+        row
+        for row in rows
+        if row["brand_id"] == 0
+        and "".join(
+            unicodedata.normalize(
+                "NFKC", row["original_brand_name"]
+            )
+            .strip()
+            .casefold()
+            .split()
+        )
+        == "nobrand"
+    ]
+    if len(policy_matches) != 1:
+        raise _error("shopee_fixed_no_brand_unavailable", "CONTENT")
+    fixed_brand_id = policy_matches[0]["brand_id"]
     result = []
     for row in rows:
         evidence = _digest(
             {
                 "schema_version": "shopee-official-brand-option/v1",
+                "policy_version": NO_BRAND_POLICY_VERSION,
                 "brand_id": row["brand_id"],
                 "original_brand_name": row["original_brand_name"],
             }
@@ -1473,15 +1497,7 @@ def _brand_option_projection(
                 "brand_id": row["brand_id"],
                 "original_brand_name": row["original_brand_name"],
                 "evidence_digest": evidence,
-                "recommended": bool(
-                    row["brand_id"] == 0
-                    and unicodedata.normalize(
-                        "NFC", row["original_brand_name"]
-                    )
-                    .strip()
-                    .casefold()
-                    == "no brand"
-                ),
+                "recommended": row["brand_id"] == fixed_brand_id,
             }
         )
     return result
@@ -1490,12 +1506,24 @@ def _brand_option_projection(
 def _location_option_projection(
     rows: tuple[Mapping[str, object], ...],
 ) -> list[dict[str, object]]:
+    policy_matches = [
+        row
+        for row in rows
+        if unicodedata.normalize("NFC", row["warehouse_name"]).strip()
+        == FIXED_SELLER_LOCATION_NAME
+    ]
+    if len(policy_matches) != 1:
+        raise _error(
+            "shopee_fixed_china_warehouse_unavailable",
+            "LOGISTICS",
+        )
+    fixed_location_id = policy_matches[0]["location_id"]
     result = []
-    single_official_location = len(rows) == 1
     for row in rows:
         evidence = _digest(
             {
                 "schema_version": "shopee-official-location-option/v1",
+                "policy_version": SELLER_LOCATION_POLICY_VERSION,
                 "location_id": row["location_id"],
                 "display_name": row["warehouse_name"],
             }
@@ -1505,7 +1533,7 @@ def _location_option_projection(
                 "location_id": row["location_id"],
                 "display_name": row["warehouse_name"],
                 "evidence_digest": evidence,
-                "recommended": single_official_location,
+                "recommended": row["location_id"] == fixed_location_id,
             }
         )
     return result

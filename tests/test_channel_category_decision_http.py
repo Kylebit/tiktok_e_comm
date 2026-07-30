@@ -93,7 +93,7 @@ def _observed_options(*, missing_required: bool = False) -> dict:
         "brand_options": [
             {
                 "brand_id": 0,
-                "original_brand_name": "No Brand",
+                "original_brand_name": "NoBrand",
                 "evidence_digest": _digest("brand"),
                 "recommended": True,
             }
@@ -101,7 +101,7 @@ def _observed_options(*, missing_required: bool = False) -> dict:
         "location_options": [
             {
                 "location_id": "CN-A",
-                "display_name": "China Warehouse A",
+                "display_name": "中国仓库",
                 "evidence_digest": _digest("location"),
                 "recommended": True,
             }

@@ -120,7 +120,7 @@ def _observation() -> dict:
         "brand_options": [
             {
                 "brand_id": 0,
-                "original_brand_name": "No Brand",
+                "original_brand_name": "NoBrand",
                 "evidence_digest": _digest("brand-no-brand"),
                 "recommended": True,
             },
@@ -134,9 +134,9 @@ def _observation() -> dict:
         "location_options": [
             {
                 "location_id": "CN-A",
-                "display_name": "China Warehouse A",
+                "display_name": "中国仓库",
                 "evidence_digest": _digest("location-a"),
-                "recommended": False,
+                "recommended": True,
             },
             {
                 "location_id": "CN-B",
@@ -171,7 +171,9 @@ def _approve(
     brand = next(
         row for row in options["brand_options"] if row["recommended"]
     )
-    location = options["location_options"][0]
+    location = next(
+        row for row in options["location_options"] if row["recommended"]
+    )
     return approve_category_decision(
         options,
         product_id="3845131687",
@@ -667,22 +669,81 @@ def test_required_single_multi_text_selection_and_recheck_are_exact(
     assert attribute_selection_matches_options(rechecked, selection)
 
 
-def test_zero_or_one_brand_and_location_recommendations():
+def test_fixed_no_brand_and_china_warehouse_policy_is_required():
     snapshot = _options()
     assert sum(row["recommended"] for row in snapshot["brand_options"]) == 1
-    assert (
-        sum(row["recommended"] for row in snapshot["location_options"])
-        == 0
-    )
+    assert sum(
+        row["recommended"] for row in snapshot["location_options"]
+    ) == 1
     observed = _observation()
     observed["brand_options"][0]["original_brand_name"] = "Generic"
     observed["brand_options"][0]["recommended"] = False
-    observed["location_options"] = [observed["location_options"][0]]
-    observed["location_options"][0]["recommended"] = True
-    changed = build_category_options(
-        observed,
-        context=_context(),
-        creation_seed=_creation_seed(),
-    )
-    assert sum(row["recommended"] for row in changed["brand_options"]) == 0
-    assert sum(row["recommended"] for row in changed["location_options"]) == 1
+    with pytest.raises(
+        ChannelCategoryDecisionError,
+        match="fixed no-brand policy option",
+    ):
+        build_category_options(
+            observed,
+            context=_context(),
+            creation_seed=_creation_seed(),
+        )
+
+    observed = _observation()
+    observed["location_options"][0]["display_name"] = "Other Warehouse"
+    observed["location_options"][0]["recommended"] = False
+    with pytest.raises(
+        ChannelCategoryDecisionError,
+        match="fixed China warehouse option",
+    ):
+        build_category_options(
+            observed,
+            context=_context(),
+            creation_seed=_creation_seed(),
+        )
+
+
+@pytest.mark.parametrize("override_field", ["brand", "location"])
+def test_approval_cannot_override_fixed_brand_or_location_policy(
+    override_field,
+):
+    snapshot = _options()
+    approved = _approve(snapshot)
+    brand_digest = approved["selected_brand_identity_digest"]
+    location_digest = approved["selected_location_identity_digest"]
+    if override_field == "brand":
+        brand_digest = next(
+            row["brand_identity_digest"]
+            for row in snapshot["brand_options"]
+            if row["recommended"] is False
+        )
+    else:
+        location_digest = next(
+            row["location_identity_digest"]
+            for row in snapshot["location_options"]
+            if row["recommended"] is False
+        )
+
+    with pytest.raises(
+        ChannelCategoryDecisionError,
+        match="fixed Shopee brand or seller location policy",
+    ):
+        approve_category_decision(
+            snapshot,
+            product_id="3845131687",
+            product_revision=7,
+            selected_category_identity_digest=approved[
+                "selected_category_identity_digest"
+            ],
+            selected_brand_identity_digest=brand_digest,
+            selected_location_identity_digest=location_digest,
+            selected_creation_fact_identity_digest=approved[
+                "selected_creation_fact_identity_digest"
+            ],
+            attribute_selection_digest=approved[
+                "attribute_selection_digest"
+            ],
+            approved_by="Kyle",
+            confirm_channel_category_selection=True,
+            confirm_seller_stock_quantity=True,
+            confirm_condition_and_preorder=True,
+        )

@@ -4343,7 +4343,6 @@ function shopeeGlobalCandidate() {
 
 function shopeeCategoryPreview({
   status = "READY_FOR_SELECTION",
-  namedRecommendations = true,
 } = {}) {
   const digest = (character) => character.repeat(64);
   if (status === "RECHECK_REQUIRED") {
@@ -4472,14 +4471,14 @@ function shopeeCategoryPreview({
     }],
     brand_options: [{
       brand_identity_digest: digest("3"),
-      display_name: "No Brand",
-      recommended: namedRecommendations,
+      display_name: "NoBrand",
+      recommended: true,
       option_evidence_digest: digest("4"),
     }],
     location_options: [{
       location_identity_digest: digest("4"),
-      display_name: "China Warehouse A",
-      recommended: namedRecommendations,
+      display_name: "中国仓库",
+      recommended: true,
       option_evidence_digest: digest("5"),
     }],
     creation_fact_option: creation,
@@ -4491,13 +4490,13 @@ function shopeeCategoryPreview({
       approved_by: "Kyle",
       selected_brand: {
         brand_identity_digest: digest("3"),
-        display_name: "No Brand",
-        selected_is_recommended: namedRecommendations,
+        display_name: "NoBrand",
+        selected_is_recommended: true,
       },
       selected_location: {
         location_identity_digest: digest("4"),
-        display_name: "China Warehouse A",
-        selected_is_recommended: namedRecommendations,
+        display_name: "中国仓库",
+        selected_is_recommended: true,
       },
       creation_fact_identity_digest: digest("5"),
       attribute_selection_digest: digest("f"),
@@ -5873,7 +5872,6 @@ async function shopeeCategoryDecisionContract(browser, viewport) {
           // usable options is an actionable decision form, not an observer
           // failure.
           status: selected ? "SELECTED" : "BLOCKED_CAPABILITY",
-          namedRecommendations: false,
         }),
       ));
     }
@@ -5908,20 +5906,25 @@ async function shopeeCategoryDecisionContract(browser, viewport) {
       "Shopee category: final plan approval is absent before full decision",
       viewport,
     );
-    const brandSelect = page.locator(
-      `${scope} select[name="selected_brand_identity_digest"]`,
-    );
-    const locationSelect = page.locator(
-      `${scope} select[name="selected_location_identity_digest"]`,
-    );
     check(
-      await brandSelect.evaluate((element) => element.value) === ""
-      && await locationSelect.evaluate((element) => element.value) === "",
-      "Shopee category: zero recommendations remain explicit choices",
+      await page.locator(
+        `${scope} select[name="selected_brand_identity_digest"]`,
+      ).count() === 0
+      && await page.locator(
+        `${scope} select[name="selected_location_identity_digest"]`,
+      ).count() === 0,
+      "Shopee category: fixed brand/location are not editable controls",
       viewport,
     );
-    await brandSelect.selectOption("3".repeat(64));
-    await locationSelect.selectOption("4".repeat(64));
+    const fixedFacts = await page.locator(
+      `${scope} .channel-category-fixed-fact`,
+    ).allTextContents();
+    check(
+      fixedFacts.some((text) => text.includes("NoBrand"))
+      && fixedFacts.some((text) => text.includes("中国仓库")),
+      "Shopee category: fixed no-brand and China warehouse are visible",
+      viewport,
+    );
     await page.locator(
       `${scope} [data-selection-kind="SINGLE"]`,
     ).selectOption("9".repeat(64));

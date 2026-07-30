@@ -1,0 +1,67 @@
+---
+name: manage-seaya-replenishment
+description: Audit Seaya/雅仓 inventory and inbound supply, combine TikTok and Shopee SKU demand, calculate country-level replenishment and first-stock recommendations, maintain the local supply-chain dashboard, and diagnose shortage orders. Use for Seaya inventory reads, complete SKU mapping, MY/TH/VN/PH replenishment, logistics data completion, landed-cost comparisons, or any update to domains/supply_chain_operations/dashboard.
+---
+
+# Manage Seaya Replenishment
+
+Produce auditable, read-only, SKU-level supply decisions for MY, TH, VN, and PH.
+
+## Enforce exact identifiers
+
+- Read the complete source value for every SKU, warehouse code, barcode, order ID, snapshot ID, and revision.
+- Reject values containing `…`, `...`, masked characters, clipped prefixes/suffixes, or synthetic wildcards.
+- Never infer a SKU from its visible prefix, last four digits, title similarity, image, row position, or another country's mapping.
+- Never create placeholder identifiers such as `082X`.
+- Normalize aliases only through an explicit, evidence-backed mapping that preserves every original identifier.
+- If a list cell is visually clipped, inspect its DOM value, detail page, official export, or read-only API response. If none exposes the full value, return `BLOCKED_IDENTITY` and exclude that record from stock totals and SKU decisions.
+- Do not combine rows merely because their titles or images match.
+
+Run `scripts/validate_inventory_snapshot.py SNAPSHOT.json` before consuming a newly captured inventory file.
+
+## Follow the workflow
+
+1. Verify the authorized worktree, branch, ownership rules, and clean/dirty state.
+2. Read inventory from the strongest available current source: audited read-only API, logged-in Seaya browser page, or official export.
+3. Capture complete identity and inventory fields. Read `references/decision-contract.md`.
+4. Reconcile exact aliases. Preserve source identifiers and mapping evidence.
+5. Join demand by exact country and SKU. Combine TikTok and Shopee only within the same country. Label unavailable channels `BLOCKED_AUTH` or `BLOCKED_CAPABILITY`; never interpret missing demand as zero.
+6. Calculate lead-time demand, arrival stock, target coverage, recommended quantity, head freight, handling cost, and known savings.
+7. Keep recommendations fail-closed when identity, inventory, demand, dimensions, weight, cost, tax policy, or freight policy is unavailable.
+8. Update the local dashboard without external business writes.
+9. Verify each country, SKU main image, source evidence, blockers, and batch totals in a browser.
+10. Run focused and full relevant tests, commit on the authorized branch, and do not push unless requested.
+
+## Maintain manual completion
+
+- Allow manual entry only for missing package dimensions, weight, unit cost, and an optional source note.
+- Require finite positive numbers; reject booleans, strings, zero, negative, `NaN`, and infinity.
+- Store manual values only in browser-local reversible storage unless the user explicitly authorizes another destination.
+- Do not use logistics entry to resolve an identity or alias blocker.
+- Show the manual source and allow clearing the override.
+
+## Keep the skill synchronized
+
+Treat dashboard calculations, fields, policies, normalization, demand-source behavior, this skill, and its references as one change set.
+
+After any such update:
+
+1. Update `SKILL.md` and the relevant reference.
+2. Run:
+
+```powershell
+python scripts/verify_dashboard_sync.py --update
+python scripts/verify_dashboard_sync.py --check
+```
+
+3. Commit the dashboard and skill changes together.
+
+Do not declare the feature complete when the sync check fails.
+
+## Preserve safety
+
+- Default to read-only operations.
+- Never log, display, persist, or commit credentials, tokens, cookies, or raw sensitive responses.
+- Do not use production mutations to test inventory logic.
+- Report network reads, auth writes, business writes, rollback, unknown outcomes, and external writes separately.
+- Distinguish captured facts, user-approved policy, conservative assumptions, and blockers.

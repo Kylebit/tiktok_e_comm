@@ -1,0 +1,11 @@
+{
+  "sha256": {
+    "dashboard/README.md": "aacc41f4047f1cb737fb7386072b914128e31bcec3f6d0b3d8f74a63e1e42cc1",
+    "dashboard/app.js": "0c27a4bf3d8d198f769639cd62a4dbfdf29bc8e83ea79f5b9fec2a8d10f27973",
+    "dashboard/data.js": "a577c9e6dd771e6e0275dbd745545f6e840cfc63c2f4561c10f20c89e0e52f82",
+    "dashboard/index.html": "a912d644916b05479030dbf65e82e161327f8d3465b60a969c32167b6250cbf1",
+    "dashboard/styles.css": "2df51801c046e43951474edfb1169380d1c07a43fb7de3d0c721921b10fd8877",
+    "skills/manage-seaya-replenishment/SKILL.md": "998823cfda6b7c87171aad2b20d50c74e499e5963079ded3852635d330b32ef5",
+    "skills/manage-seaya-replenishment/references/decision-contract.md": "d628aab6d84c7e77317ba14a70eb0e1feb96c4867785b0430f5c1c53d39c9fc8"
+  }
+}

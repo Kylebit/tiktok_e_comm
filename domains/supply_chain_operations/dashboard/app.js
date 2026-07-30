@@ -183,22 +183,17 @@ function rowHtml(item, config) {
   const manualSource = item.manualInput?.sourceNote
     ? ` · 来源：${escapeHtml(item.manualInput.sourceNote)}`
     : "";
-  const physicalLabel = item.unresolvedAvailable
-    ? `同名规格库存 ${item.unresolvedAvailable} 件，尚不能唯一分配到具体 SKU`
-    : item.calculationReady
+  const physicalLabel = item.calculationReady
     ? `${item.manualInput ? "手动补齐 · " : ""}${item.dimensionsCm.join("×")} cm · ${item.weightG} g · 成本 ${money(item.costCny, 2)}${manualSource}`
     : "尺寸 / 重量 / 成本至少一项待补，当前不生成数量";
-  const unresolvedLabel = item.unresolvedAvailable
-    ? `<span>待分配<b>${item.unresolvedAvailable}</b></span>`
-    : "";
   return `<tr>
     <td><div class="product-cell"><img src="./${escapeHtml(item.image)}" alt="SKU ${escapeHtml(item.sku)} 主图"><div><strong>${escapeHtml(item.sku)}</strong><span>${escapeHtml(item.name)}</span><small>${physicalLabel}</small></div></div></td>
     <td><div class="channel-stack">${channelBlock("TikTok", item.channels.tiktok, item.tiktokDaily)}${channelBlock("Shopee", item.channels.shopee, item.shopeeDaily)}<em>合并需求 ${item.dailyVelocity.toFixed(2)} 件/天</em></div></td>
-    <td><div class="inventory-grid"><span>库存<b>${item.inventory.stock}</b></span><span>可用<b>${item.inventory.available}</b></span><span>占用<b>${item.inventory.allocated}</b></span><span>冻结<b>${item.inventory.frozen}</b></span><span>在途<b>${item.inventory.inbound}</b></span>${unresolvedLabel}<span>绑定<b>${inventoryLabel}</b></span></div></td>
-    <td><div class="calc-lines">${item.calculationReady ? `<span>${config.leadDays}天需求 <b>${item.leadDemand}</b></span><span>到仓剩余 <b>${item.projectedAtArrival}</b></span><span>${config.targetDays + config.safetyDays}天目标 <b>${item.arrivalTarget}</b></span><code>max(0, ${item.arrivalTarget} − ${item.projectedAtArrival})</code>` : `<code>BLOCKED：${item.unresolvedAvailable ? "规格库存映射待确认" : "商品物流资料不完整"}</code>`}</div></td>
+    <td><div class="inventory-grid"><span>库存<b>${item.inventory.stock}</b></span><span>可用<b>${item.inventory.available}</b></span><span>占用<b>${item.inventory.allocated}</b></span><span>冻结<b>${item.inventory.frozen}</b></span><span>在途<b>${item.inventory.inbound}</b></span><span>绑定<b>${inventoryLabel}</b></span></div></td>
+    <td><div class="calc-lines">${item.calculationReady ? `<span>${config.leadDays}天需求 <b>${item.leadDemand}</b></span><span>到仓剩余 <b>${item.projectedAtArrival}</b></span><span>${config.targetDays + config.safetyDays}天目标 <b>${item.arrivalTarget}</b></span><code>max(0, ${item.arrivalTarget} − ${item.projectedAtArrival})</code>` : "<code>BLOCKED：商品物流资料不完整</code>"}</div></td>
     <td class="recommend"><strong>${item.recommended}</strong><span>件</span><small>${(item.volumeM3 * item.recommended).toFixed(3)} m³</small></td>
     <td><div class="economics-mini"><span>用户结算价 <b>${local}${item.customerPaymentLocal.toFixed(2)}</b></span><span>税费节省 ${Math.round(config.taxSavingRate * 100)}% <b class="gain">${money(item.taxSavingUnit, 2)}</b></span><span>跨境运费节省 20% <b class="gain">${money(item.shippingSavingUnit, 2)}</b></span><span>本土处理 + 头程 <b>−${money(item.handlingUnit + item.headFreightUnit, 2)}</b></span><em>单件净优势 ${money(item.netUnit, 2)} · 本批 ${money(item.netTotal)} ${shippingEvidence}</em></div></td>
-    <td><span class="pill ${item.status.toLowerCase()}">${statusLabel(item.status)}</span><small class="reason">${item.status === "BLOCKED_DATA" ? (item.unresolvedAvailable ? "雅仓同名商品无法唯一落到具体规格；这批库存不抵扣任何单 SKU。" : "保留库存行与主图，但尺寸、重量或成本不完整，禁止猜测备货数。") : item.kind === "first_stock" ? "当前仓库为0；平台需求与商品资料门槛已通过。" : item.status === "HOLD" ? "现货与在途已覆盖到仓目标。" : item.status === "REVIEW" ? "有需求缺口，但已知节省不足以覆盖本土履约与头程。" : item.status === "NO_DEMAND" ? "没有足够的SKU级需求事实。" : "需求缺口且已知单件净优势为正。"}</small>${!item.unresolvedAvailable && (item.status === "BLOCKED_DATA" || item.manualInput) ? `<button class="manual-entry-button" type="button" data-action="manual-entry" data-sku="${escapeHtml(item.sku)}">${item.manualInput ? "修改已补资料" : "手动补齐"}</button>` : ""}</td>
+    <td><span class="pill ${item.status.toLowerCase()}">${statusLabel(item.status)}</span><small class="reason">${item.status === "BLOCKED_DATA" ? "保留库存行与主图，但尺寸、重量或成本不完整，禁止猜测备货数。" : item.kind === "first_stock" ? "当前仓库为0；平台需求与商品资料门槛已通过。" : item.status === "HOLD" ? "现货与在途已覆盖到仓目标。" : item.status === "REVIEW" ? "有需求缺口，但已知节省不足以覆盖本土履约与头程。" : item.status === "NO_DEMAND" ? "没有足够的SKU级需求事实。" : "需求缺口且已知单件净优势为正。"}</small>${item.status === "BLOCKED_DATA" || item.manualInput ? `<button class="manual-entry-button" type="button" data-action="manual-entry" data-sku="${escapeHtml(item.sku)}">${item.manualInput ? "修改已补资料" : "手动补齐"}</button>` : ""}</td>
   </tr>`;
 }
 
@@ -229,7 +224,6 @@ function renderCountry() {
   const capital = approved.reduce((sum, item) => sum + item.costCny * item.recommended, 0);
   const benefit = approved.reduce((sum, item) => sum + item.netTotal, 0);
   const available = calculated.filter(item => item.kind === "existing").reduce((sum, item) => sum + item.inventory.available, 0);
-  const unresolved = calculated.reduce((sum, item) => sum + number(item.unresolvedAvailable), 0);
   const inbound = calculated.filter(item => item.kind === "existing").reduce((sum, item) => sum + item.inventory.inbound, 0);
   const existingCount = calculated.filter(item => item.kind === "existing").length;
   const firstCount = calculated.filter(item => item.kind === "first_stock").length;
@@ -254,9 +248,7 @@ function renderCountry() {
     ? `优先：${approved.slice(0, 6).map(item => item.sku).join("、")}；其中首批候选 ${approved.filter(item => item.kind === "first_stock").length} 款。`
     : "当前没有同时通过需求缺口与经济性门槛的 SKU。";
   document.querySelector("#warehouseLabel").textContent = `雅仓 ${config.warehouse}`;
-  document.querySelector("#inventoryUnits").textContent = unresolved
-    ? `${available.toLocaleString("zh-CN")} 件 + ${unresolved} 件待分配`
-    : `${available.toLocaleString("zh-CN")} 件`;
+  document.querySelector("#inventoryUnits").textContent = `${available.toLocaleString("zh-CN")} 件`;
   document.querySelector("#inboundUnits").textContent = `${inbound.toLocaleString("zh-CN")} 件`;
   document.querySelector("#demandWindow").textContent = config.demandCoverage;
   document.querySelector("#decisionHeadline").textContent = approved.length ? `备 ${approved.length} 款` : "暂缓备货";
@@ -274,13 +266,13 @@ function renderCountry() {
   const demandEvidenceText = shopeeBlocked
     ? "TikTok 已按 SKU 计入；Shopee 当前授权不可用，明确标为 BLOCKED_AUTH 且未计入需求。当前建议是保守下限，不把缺失渠道当作零销量。"
     : "TikTok 与 Shopee 独立显示订单、件数、窗口与日均，再在 SKU 层相加。不是用仓库出库量替代市场需求。";
-  const unresolvedEvidence = unresolved
-    ? `<article class="warn"><strong>规格库存待唯一绑定</strong><p>${config.unresolvedInventory}；页面单列待分配数量，不抵扣具体 SKU 的补货需求。</p></article>`
+  const identityEvidence = config.inventoryIdentityBlocker
+    ? `<article class="warn"><strong>完整 SKU 身份待恢复</strong><p>${config.inventoryIdentityBlocker}</p></article>`
     : "";
   document.querySelector("#evidenceGrid").innerHTML = `
     <article class="${demandEvidenceClass}"><strong>${shopeeBlocked ? "Shopee 需求暂未纳入" : "双平台需求已合并"}</strong><p>${demandEvidenceText}</p></article>
     <article class="ok"><strong>库存按国家隔离</strong><p>${config.warehouse} 当前可用 ${available} 件、在途 ${inbound} 件；不使用其他国家仓库存抵扣本国需求。</p></article>
-    ${unresolvedEvidence}
+    ${identityEvidence}
     <article class="ok"><strong>首批候选有硬门槛</strong><p>${firstCount} 款海外仓尚无的候选进入台账；没有尺寸、重量、成本、主图或足够需求的 SKU 已关闭。</p></article>
     <article class="${activeRegion === "TH" ? "warn" : "ok"}"><strong>运费证据范围</strong><p>${config.shippingCoverage}。</p></article>
     <article class="warn"><strong>报价时点风险</strong><p>头程引用 2026-05-21 报价表；正式出货前应向物流商复核价格、敏感货属性与最低计费规则。</p></article>

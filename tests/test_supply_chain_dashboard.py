@@ -47,7 +47,7 @@ def test_dashboard_has_four_country_isolated_facts_and_policies():
     assert {
         region: len([row for row in rows if row["kind"] == "existing"])
         for region, rows in data["countries"].items()
-    } == {"MY": 24, "TH": 23, "VN": 10, "PH": 4}
+    } == {"MY": 24, "TH": 23, "VN": 9, "PH": 3}
 
 
 def test_thailand_truncated_codes_are_normalized_without_fuzzy_merging():
@@ -76,17 +76,14 @@ def test_thailand_truncated_codes_are_normalized_without_fuzzy_merging():
     assert _row(data, "TH", "0613")["inventory"]["available"] == 20
 
 
-def test_vietnam_and_philippines_keep_unresolved_family_inventory_fail_closed():
+def test_vietnam_and_philippines_exclude_records_without_complete_sku_identity():
     data = _data()
 
     assert sum(row["inventory"]["available"] for row in data["countries"]["VN"]) == 298
     assert sum(row["inventory"]["available"] for row in data["countries"]["PH"]) == 31
-    assert _row(data, "VN", "082X")["unresolvedAvailable"] == 47
-    assert _row(data, "PH", "082X")["unresolvedAvailable"] == 2
     for region in ("VN", "PH"):
-        family = _row(data, region, "082X")
-        assert family["inventory"]["available"] == 0
-        assert family["channels"]["tiktok"]["state"] == "BLOCKED_MAPPING"
+        assert all("X" not in row["sku"] for row in data["countries"][region])
+        assert "完整 SKU" in data["config"][region]["inventoryIdentityBlocker"]
         assert all(
             row["channels"]["shopee"]["state"] == "BLOCKED_AUTH"
             for row in data["countries"][region]
@@ -129,7 +126,8 @@ def test_dashboard_contains_no_remote_image_or_secret_dependency_and_marks_block
     assert "imageUrl" not in data_text
     assert 'channel.state !== "READY"' in app
     assert "BLOCKED_AUTH" in app
-    assert "unresolvedAvailable" in app
+    assert "inventoryIdentityBlocker" in app
+    assert "082X" not in data_text
     assert 'typeof effectiveItem.costCny === "number"' in app
 
 

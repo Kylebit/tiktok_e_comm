@@ -207,4 +207,3 @@ def test_permission_or_snapshot_tamper_is_rejected():
     )
     with pytest.raises(ShopeeGlobalPlanContractError):
         rehydrate_approved_shopee_global_plan(tampered)
-

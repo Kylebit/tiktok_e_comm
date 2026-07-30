@@ -580,6 +580,62 @@ def test_server_seed_selects_every_approved_image_when_within_shopee_limit(
     assert seed["selected_image_positions"] == [1, 2, 3]
 
 
+def test_server_seed_uses_approved_master_price_source_across_regions(
+    governed_context,
+):
+    dashboard, _store = governed_context
+    dashboard["publication_scope"]["selected_labels"].append("shopee:MY")
+    ph = dashboard["pricing_review"]["target_pricing"]["shopee:PH"]
+    ph["source"] = {"target_key": "lh_ph"}
+    dashboard["pricing_review"]["target_pricing"]["shopee:MY"] = {
+        "status": "ready",
+        "target_site": "MY",
+        "source": {"target_key": "lh_my"},
+        "derived_preview": {
+            "global_original_price_cny": 50.75,
+            "local_original_price": 29,
+            "source_currency": "MYR",
+            "exchange_rate_cny_per_local": 1.75,
+        },
+    }
+    dashboard["pricing_review"]["master_price_source"] = {
+        "target_key": "lh_ph"
+    }
+    dashboard["omnichannel_preview"]["targets"].append(
+        {
+            "channel": "shopee",
+            "site": "MY",
+            "adapter": "shopee_cnsc_publish",
+            "preflights": [
+                {
+                    "code": "audited_adapter_site",
+                    "passed": True,
+                    "detail": "governed official readback adapter",
+                }
+            ],
+        }
+    )
+
+    payload, blockers = product_server._release_plan_payload_from_dashboard(
+        dashboard,
+        bind_shopee_global_plan=False,
+    )
+
+    assert blockers == []
+    ph_seed = product_server._shopee_global_plan_seed(payload)
+    assert ph_seed["target_pricing"]["global_original_price"] == "40.95"
+
+    payload["pricing"]["master_price_source"] = {
+        "target_key": "lh_my"
+    }
+    my_seed = product_server._shopee_global_plan_seed(payload)
+    assert my_seed["target_pricing"]["global_original_price"] == "50.75"
+    assert (
+        my_seed["target_pricing"]["contract_digest"]
+        != ph_seed["target_pricing"]["contract_digest"]
+    )
+
+
 def test_local_binding_rejects_observer_selected_image_subset(
     governed_context,
 ):

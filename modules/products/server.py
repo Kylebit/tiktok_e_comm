@@ -1497,7 +1497,6 @@ def _shopee_global_plan_seed(
     )
     if not targets or not isinstance(selected_pricing, dict):
         raise ValueError("Shopee target pricing is unavailable")
-    prices: list[str] = []
     bound_target_pricing: dict[str, object] = {}
     for label in targets:
         row = selected_pricing.get(label)
@@ -1507,20 +1506,59 @@ def _shopee_global_plan_seed(
             if isinstance(derived, dict)
             else None
         )
-        prices.append(_positive_decimal_text(price))
+        _positive_decimal_text(price)
         bound_target_pricing[label] = row
-    normalized_prices = set(prices)
-    if len(normalized_prices) != 1:
-        raise ValueError("Shopee global CNY prices are not exact")
+    master_source = (payload.get("pricing") or {}).get(
+        "master_price_source"
+    )
+    if len(targets) == 1:
+        master_target_label = targets[0]
+    else:
+        master_target_key = (
+            master_source.get("target_key")
+            if isinstance(master_source, dict)
+            else None
+        )
+        if type(master_target_key) is not str or not master_target_key:
+            raise ValueError(
+                "Shopee global master price source is unavailable"
+            )
+        matching_targets = [
+            label
+            for label in targets
+            if (
+                isinstance(selected_pricing.get(label), dict)
+                and isinstance(
+                    selected_pricing[label].get("source"), dict
+                )
+                and selected_pricing[label]["source"].get("target_key")
+                == master_target_key
+            )
+        ]
+        if len(matching_targets) != 1:
+            raise ValueError(
+                "Shopee global master price source is not selected"
+            )
+        master_target_label = matching_targets[0]
+    master_row = selected_pricing[master_target_label]
+    master_derived = master_row.get("derived_preview")
+    global_original_price = _positive_decimal_text(
+        master_derived.get("global_original_price_cny")
+        if isinstance(master_derived, dict)
+        else None
+    )
     pricing_digest = _server_canonical_digest(
         {
-            "schema_version": "approved-shopee-target-pricing-binding/v1",
+            "schema_version": "approved-shopee-target-pricing-binding/v2",
             "targets": bound_target_pricing,
+            "master_price_source": master_source,
+            "master_target_label": master_target_label,
+            "global_original_price_cny": global_original_price,
         }
     )
     target_pricing = {
         "currency": "CNY",
-        "global_original_price": next(iter(normalized_prices)),
+        "global_original_price": global_original_price,
         "contract_digest": pricing_digest,
     }
     category_decision = (
@@ -2142,6 +2180,9 @@ def _release_plan_payload_from_dashboard(
         "pricing": {
             "schema_version": pricing.get("schema_version"),
             "selected_targets": selected_target_pricing,
+            "master_price_source": dict(
+                pricing.get("master_price_source") or {}
+            ),
             "workbench_exchange_rates": dict(
                 pricing.get("workbench_exchange_rates") or {}
             ),

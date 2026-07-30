@@ -62,15 +62,9 @@
       </div>
 
       <div class="ledger-group">
-        <div class="group-heading"><div><span>01</span><h3>海外仓已有 SKU</h3></div><p>逐一扣减当前可用和高可信在途，避免重复备货。</p></div>
-        <div class="table-wrap"><table><thead><tr><th>主图 / SKU</th><th>双平台需求事实</th><th>雅仓供应事实</th><th>到仓计算</th><th>建议</th><th>收益明细</th><th>判断</th></tr></thead><tbody id="existingRows"></tbody></table></div>
-        <div class="empty-state" id="existingEmpty" hidden>当前筛选条件下没有记录。</div>
-      </div>
-
-      <div class="ledger-group first-stock-group">
-        <div class="group-heading"><div><span>02</span><h3>海外仓尚无、可做首批备货</h3></div><p>近30天有动销的 SKU 必须保留展示；建议件数只由需求、库存、在途和补货周期决定。尺寸、重量或成本不完整时，对应体积、收益或占款显示待补充。</p></div>
-        <div class="table-wrap"><table><thead><tr><th>主图 / SKU</th><th>双平台需求事实</th><th>雅仓供应事实</th><th>到仓计算</th><th>建议</th><th>收益明细</th><th>判断</th></tr></thead><tbody id="firstStockRows"></tbody></table></div>
-        <div class="empty-state" id="firstStockEmpty" hidden>当前筛选条件下没有首批备货候选。</div>
+        <div class="group-heading"><div><span>01</span><h3>全部 SKU 备货建议</h3></div><p>“建议补货”表示海外仓已有该 SKU；“建议首批”表示海外仓当前没有该 SKU。两类建议按同一规则排序并在同一张表中展示。</p></div>
+        <div class="table-wrap"><table><thead><tr><th>主图 / SKU</th><th>双平台需求事实</th><th>雅仓供应事实</th><th>到仓计算</th><th>建议</th><th>收益明细</th><th>判断</th></tr></thead><tbody id="skuRows"></tbody></table></div>
+        <div class="empty-state" id="skuEmpty" hidden>当前筛选条件下没有记录。</div>
       </div>
     </section>
 

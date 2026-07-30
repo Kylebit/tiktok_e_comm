@@ -231,12 +231,8 @@ function renderRows() {
     return textMatch && filterMatch;
   });
   const config = DATA.config[activeRegion];
-  const existing = visible.filter(item => item.kind === "existing");
-  const firstStock = visible.filter(item => item.kind === "first_stock");
-  document.querySelector("#existingRows").innerHTML = existing.map(item => rowHtml(item, config)).join("");
-  document.querySelector("#firstStockRows").innerHTML = firstStock.map(item => rowHtml(item, config)).join("");
-  document.querySelector("#existingEmpty").hidden = existing.length > 0;
-  document.querySelector("#firstStockEmpty").hidden = firstStock.length > 0;
+  document.querySelector("#skuRows").innerHTML = visible.map(item => rowHtml(item, config)).join("");
+  document.querySelector("#skuEmpty").hidden = visible.length > 0;
   document.querySelector("#visibleCount").textContent = `显示 ${visible.length} / ${calculated.length} 个 SKU`;
 }
 

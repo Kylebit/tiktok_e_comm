@@ -79,4 +79,6 @@ The dashboard is a local decision artifact:
 
 `domains/supply_chain_operations/dashboard/index.html`
 
+Render `REPLENISH` and `FIRST_STOCK` rows in one sortable/filterable SKU ledger. The status label preserves the inventory distinction; separate tables must not fragment the recommendation view.
+
 It may write reversible manual logistics overrides to browser `localStorage`. It must not write Seaya, TikTok, Shopee, order systems, or business databases.

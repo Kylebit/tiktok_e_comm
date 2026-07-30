@@ -38,6 +38,7 @@ Run `scripts/validate_inventory_snapshot.py SNAPSHOT.json` before consuming a ne
 - Keep every exact SKU with positive `recent30Units` on the dashboard, including SKUs with zero Seaya stock and SKUs whose logistics fields are incomplete.
 - Sum recent demand across READY TikTok and Shopee facts only within the same country.
 - Provide a dedicated recent-30-day filter.
+- Render existing-stock replenishment and first-stock recommendations in one SKU ledger. Distinguish them with `REPLENISH` and `FIRST_STOCK` labels and shared filters; do not split them into separate tables.
 - When logistics fields are incomplete, display the SKU, image, demand, inventory and calculated quantity. Mark only the affected output as pending: dimensions affect volume, weight affects local handling and net benefit, and cost affects working capital.
 - Do not use known benefit as a readiness gate. Display positive or negative benefit alongside the demand-and-inventory recommendation.
 

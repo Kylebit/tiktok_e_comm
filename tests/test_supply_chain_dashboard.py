@@ -173,7 +173,11 @@ def test_dashboard_loads_facts_before_calculation_code_and_has_four_country_tabs
     assert html.index('src="./data.js"') < html.index('src="./app.js"')
     for region in ("MY", "TH", "VN", "PH"):
         assert f'data-region="{region}"' in html
-    assert "海外仓尚无、可做首批备货" in html
+    assert "全部 SKU 备货建议" in html
+    assert 'id="skuRows"' in html
+    assert 'id="skuEmpty"' in html
+    assert 'id="existingRows"' not in html
+    assert 'id="firstStockRows"' not in html
     assert '<option value="RECENT30">近30天有动销</option>' in html
     assert "待核经济性" not in html
 
@@ -237,7 +241,7 @@ def test_quantity_is_independent_from_dimensions_weight_and_cost():
     assert "成本待补充" in app
     assert 'filter === "MISSING_DATA" && item.dataIncomplete' in app
     assert '<option value="MISSING_DATA">资料待补</option>' in html
-    assert "尺寸、重量或成本不完整时，对应体积、收益或占款显示待补充" in html
+    assert "两类建议按同一规则排序并在同一张表中展示" in html
 
 
 def test_dashboard_contains_no_remote_image_or_secret_dependency_and_marks_blockers():

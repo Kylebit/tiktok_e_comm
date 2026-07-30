@@ -94,6 +94,36 @@
     </section>
   </main>
 
+  <dialog id="manualInputDialog" class="manual-dialog">
+    <form id="manualInputForm" class="manual-form" novalidate>
+      <div class="manual-dialog-head">
+        <div><span class="eyebrow">LOCAL MANUAL INPUT</span><h2 id="manualDialogTitle">手动补齐商品物流资料</h2></div>
+        <button id="cancelManualInput" class="dialog-close" type="button" aria-label="关闭">×</button>
+      </div>
+      <p class="manual-intro">资料只保存在当前浏览器，不会写入雅仓、平台或数据库。保存后页面会立即重新计算该 SKU。</p>
+      <input name="region" type="hidden">
+      <input name="sku" type="hidden">
+      <fieldset>
+        <legend>包装尺寸（厘米）</legend>
+        <label>长<input name="lengthCm" type="number" min="0.01" step="0.01" inputmode="decimal" required></label>
+        <label>宽<input name="widthCm" type="number" min="0.01" step="0.01" inputmode="decimal" required></label>
+        <label>高<input name="heightCm" type="number" min="0.01" step="0.01" inputmode="decimal" required></label>
+      </fieldset>
+      <div class="manual-grid">
+        <label>包装重量（克）<input name="weightG" type="number" min="0.01" step="0.01" inputmode="decimal" required></label>
+        <label>采购成本（人民币/件）<input name="costCny" type="number" min="0.01" step="0.01" inputmode="decimal" required></label>
+      </div>
+      <label>来源备注（可选）<input name="sourceNote" type="text" maxlength="120" placeholder="例如：供应商报价 2026-07-30"></label>
+      <p id="manualInputError" class="manual-error" role="alert"></p>
+      <div class="manual-actions">
+        <button id="clearManualInput" class="secondary danger" type="button" hidden>清除已补资料</button>
+        <span></span>
+        <button id="cancelManualInputBottom" class="secondary" type="button">取消</button>
+        <button class="primary" type="submit">保存并重新计算</button>
+      </div>
+    </form>
+  </dialog>
+
   <footer><span>Supply Chain Operations · Read-only decision artifact</span><span>这是决策建议，不是采购或发货指令；正式发货前复核采购可得量与当期头程报价。</span></footer>
   <script src="./data.js"></script>
   <script src="./app.js"></script>

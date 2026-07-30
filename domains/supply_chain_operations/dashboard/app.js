@@ -2,6 +2,8 @@ const DATA = window.SUPPLY_CHAIN_DATA;
 let activeRegion = "MY";
 let calculated = [];
 let batch = {};
+const MANUAL_INPUT_KEY = "supply-chain-manual-logistics-v1";
+let manualInputs = loadManualInputs();
 
 const number = value => Number(value || 0);
 const ceilTenth = value => Math.ceil((value - 1e-10) * 10) / 10;
@@ -12,6 +14,21 @@ const money = (value, digits = 0) => {
 const escapeHtml = value => String(value ?? "").replace(/[&<>"']/g, char => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
 })[char]);
+
+function loadManualInputs() {
+  try {
+    const value = JSON.parse(localStorage.getItem(MANUAL_INPUT_KEY) || "{}");
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveManualInputs() {
+  localStorage.setItem(MANUAL_INPUT_KEY, JSON.stringify(manualInputs));
+}
+
+const manualInputId = (region, sku) => `${region}:${sku}`;
 
 function outboundFee(weightG) {
   if (weightG <= 50) return 1.8;
@@ -39,22 +56,32 @@ function channelDaily(channel) {
 function calculateCountry(region) {
   const config = DATA.config[region];
   const base = DATA.countries[region].map(item => {
-    const tiktokDaily = channelDaily(item.channels.tiktok);
-    const shopeeDaily = channelDaily(item.channels.shopee);
+    const manualInput = manualInputs[manualInputId(region, item.sku)];
+    const effectiveItem = manualInput
+      ? {
+          ...item,
+          dimensionsCm: manualInput.dimensionsCm,
+          weightG: manualInput.weightG,
+          costCny: manualInput.costCny,
+          manualInput
+        }
+      : item;
+    const tiktokDaily = channelDaily(effectiveItem.channels.tiktok);
+    const shopeeDaily = channelDaily(effectiveItem.channels.shopee);
     const dailyVelocity = tiktokDaily + shopeeDaily;
-    const calculationReady = Array.isArray(item.dimensionsCm) && item.dimensionsCm.length === 3
-      && item.dimensionsCm.every(value => typeof value === "number" && Number.isFinite(value) && value > 0)
-      && typeof item.weightG === "number" && Number.isFinite(item.weightG) && item.weightG > 0
-      && typeof item.costCny === "number" && Number.isFinite(item.costCny) && item.costCny > 0;
+    const calculationReady = Array.isArray(effectiveItem.dimensionsCm) && effectiveItem.dimensionsCm.length === 3
+      && effectiveItem.dimensionsCm.every(value => typeof value === "number" && Number.isFinite(value) && value > 0)
+      && typeof effectiveItem.weightG === "number" && Number.isFinite(effectiveItem.weightG) && effectiveItem.weightG > 0
+      && typeof effectiveItem.costCny === "number" && Number.isFinite(effectiveItem.costCny) && effectiveItem.costCny > 0;
     const leadDemand = calculationReady ? Math.ceil(dailyVelocity * config.leadDays) : 0;
     const arrivalTarget = calculationReady ? Math.ceil(dailyVelocity * (config.targetDays + config.safetyDays)) : 0;
-    const trusted = number(item.inventory.available) + number(item.inventory.inbound);
+    const trusted = number(effectiveItem.inventory.available) + number(effectiveItem.inventory.inbound);
     const projectedAtArrival = Math.max(0, trusted - leadDemand);
     const recommended = calculationReady ? Math.max(0, arrivalTarget - projectedAtArrival) : 0;
-    const volumeM3 = calculationReady ? item.dimensionsCm.reduce((a, b) => a * number(b), 1) / 1e6 : 0;
-    const weightEquivalentM3 = calculationReady ? number(item.weightG) / 1000 / config.weightRatioKgM3 : 0;
+    const volumeM3 = calculationReady ? effectiveItem.dimensionsCm.reduce((a, b) => a * number(b), 1) / 1e6 : 0;
+    const weightEquivalentM3 = calculationReady ? number(effectiveItem.weightG) / 1000 / config.weightRatioKgM3 : 0;
     const chargeableUnitM3 = Math.max(volumeM3, weightEquivalentM3);
-    return {...item, calculationReady, tiktokDaily, shopeeDaily, dailyVelocity, leadDemand, arrivalTarget,
+    return {...effectiveItem, calculationReady, tiktokDaily, shopeeDaily, dailyVelocity, leadDemand, arrivalTarget,
       projectedAtArrival, recommended, volumeM3, chargeableUnitM3};
   });
 
@@ -153,10 +180,13 @@ function rowHtml(item, config) {
   const local = config.currencySymbol;
   const inventoryLabel = item.kind === "first_stock" ? "海外仓尚无" : config.warehouse;
   const shippingEvidence = item.channels.shopee.actualShippingFee === null ? "（Shopee运费未计）" : "";
+  const manualSource = item.manualInput?.sourceNote
+    ? ` · 来源：${escapeHtml(item.manualInput.sourceNote)}`
+    : "";
   const physicalLabel = item.unresolvedAvailable
     ? `同名规格库存 ${item.unresolvedAvailable} 件，尚不能唯一分配到具体 SKU`
     : item.calculationReady
-    ? `${item.dimensionsCm.join("×")} cm · ${item.weightG} g · 成本 ${money(item.costCny, 2)}`
+    ? `${item.manualInput ? "手动补齐 · " : ""}${item.dimensionsCm.join("×")} cm · ${item.weightG} g · 成本 ${money(item.costCny, 2)}${manualSource}`
     : "尺寸 / 重量 / 成本至少一项待补，当前不生成数量";
   const unresolvedLabel = item.unresolvedAvailable
     ? `<span>待分配<b>${item.unresolvedAvailable}</b></span>`
@@ -168,7 +198,7 @@ function rowHtml(item, config) {
     <td><div class="calc-lines">${item.calculationReady ? `<span>${config.leadDays}天需求 <b>${item.leadDemand}</b></span><span>到仓剩余 <b>${item.projectedAtArrival}</b></span><span>${config.targetDays + config.safetyDays}天目标 <b>${item.arrivalTarget}</b></span><code>max(0, ${item.arrivalTarget} − ${item.projectedAtArrival})</code>` : `<code>BLOCKED：${item.unresolvedAvailable ? "规格库存映射待确认" : "商品物流资料不完整"}</code>`}</div></td>
     <td class="recommend"><strong>${item.recommended}</strong><span>件</span><small>${(item.volumeM3 * item.recommended).toFixed(3)} m³</small></td>
     <td><div class="economics-mini"><span>用户结算价 <b>${local}${item.customerPaymentLocal.toFixed(2)}</b></span><span>税费节省 ${Math.round(config.taxSavingRate * 100)}% <b class="gain">${money(item.taxSavingUnit, 2)}</b></span><span>跨境运费节省 20% <b class="gain">${money(item.shippingSavingUnit, 2)}</b></span><span>本土处理 + 头程 <b>−${money(item.handlingUnit + item.headFreightUnit, 2)}</b></span><em>单件净优势 ${money(item.netUnit, 2)} · 本批 ${money(item.netTotal)} ${shippingEvidence}</em></div></td>
-    <td><span class="pill ${item.status.toLowerCase()}">${statusLabel(item.status)}</span><small class="reason">${item.status === "BLOCKED_DATA" ? (item.unresolvedAvailable ? "雅仓同名商品无法唯一落到具体规格；这批库存不抵扣任何单 SKU。" : "保留库存行与主图，但尺寸、重量或成本不完整，禁止猜测备货数。") : item.kind === "first_stock" ? "当前仓库为0；平台需求与商品资料门槛已通过。" : item.status === "HOLD" ? "现货与在途已覆盖到仓目标。" : item.status === "REVIEW" ? "有需求缺口，但已知节省不足以覆盖本土履约与头程。" : item.status === "NO_DEMAND" ? "没有足够的SKU级需求事实。" : "需求缺口且已知单件净优势为正。"}</small></td>
+    <td><span class="pill ${item.status.toLowerCase()}">${statusLabel(item.status)}</span><small class="reason">${item.status === "BLOCKED_DATA" ? (item.unresolvedAvailable ? "雅仓同名商品无法唯一落到具体规格；这批库存不抵扣任何单 SKU。" : "保留库存行与主图，但尺寸、重量或成本不完整，禁止猜测备货数。") : item.kind === "first_stock" ? "当前仓库为0；平台需求与商品资料门槛已通过。" : item.status === "HOLD" ? "现货与在途已覆盖到仓目标。" : item.status === "REVIEW" ? "有需求缺口，但已知节省不足以覆盖本土履约与头程。" : item.status === "NO_DEMAND" ? "没有足够的SKU级需求事实。" : "需求缺口且已知单件净优势为正。"}</small>${!item.unresolvedAvailable && (item.status === "BLOCKED_DATA" || item.manualInput) ? `<button class="manual-entry-button" type="button" data-action="manual-entry" data-sku="${escapeHtml(item.sku)}">${item.manualInput ? "修改已补资料" : "手动补齐"}</button>` : ""}</td>
   </tr>`;
 }
 
@@ -265,4 +295,74 @@ document.querySelectorAll(".country-tab").forEach(button => button.addEventListe
 }));
 document.querySelector("#searchInput").addEventListener("input", renderRows);
 document.querySelector("#statusFilter").addEventListener("change", renderRows);
+
+const manualDialog = document.querySelector("#manualInputDialog");
+const manualForm = document.querySelector("#manualInputForm");
+const manualError = document.querySelector("#manualInputError");
+
+document.addEventListener("click", event => {
+  const button = event.target.closest("[data-action='manual-entry']");
+  if (!button) return;
+  const sku = button.dataset.sku;
+  const sourceItem = DATA.countries[activeRegion].find(item => item.sku === sku);
+  if (!sourceItem) return;
+  const saved = manualInputs[manualInputId(activeRegion, sku)];
+  const dimensions = saved?.dimensionsCm || sourceItem.dimensionsCm || [];
+  manualForm.elements.region.value = activeRegion;
+  manualForm.elements.sku.value = sku;
+  manualForm.elements.lengthCm.value = dimensions[0] ?? "";
+  manualForm.elements.widthCm.value = dimensions[1] ?? "";
+  manualForm.elements.heightCm.value = dimensions[2] ?? "";
+  manualForm.elements.weightG.value = saved?.weightG ?? sourceItem.weightG ?? "";
+  manualForm.elements.costCny.value = saved?.costCny ?? sourceItem.costCny ?? "";
+  manualForm.elements.sourceNote.value = saved?.sourceNote ?? "";
+  document.querySelector("#manualDialogTitle").textContent = `${activeRegion} · SKU ${sku} 手动补齐`;
+  document.querySelector("#clearManualInput").hidden = !saved;
+  manualError.textContent = "";
+  manualDialog.showModal();
+});
+
+document.querySelector("#cancelManualInput").addEventListener("click", () => manualDialog.close());
+document.querySelector("#cancelManualInputBottom").addEventListener("click", () => manualDialog.close());
+
+manualForm.addEventListener("submit", event => {
+  event.preventDefault();
+  const values = ["lengthCm", "widthCm", "heightCm", "weightG", "costCny"]
+    .map(name => Number(manualForm.elements[name].value));
+  if (values.some(value => !Number.isFinite(value) || value <= 0)) {
+    manualError.textContent = "长、宽、高、重量和采购成本都必须填写大于 0 的数字。";
+    return;
+  }
+  const region = manualForm.elements.region.value;
+  const sku = manualForm.elements.sku.value;
+  manualInputs[manualInputId(region, sku)] = {
+    dimensionsCm: values.slice(0, 3),
+    weightG: values[3],
+    costCny: values[4],
+    sourceNote: manualForm.elements.sourceNote.value.trim(),
+    updatedAt: new Date().toISOString()
+  };
+  try {
+    saveManualInputs();
+  } catch {
+    manualError.textContent = "浏览器本地存储不可用，资料尚未保存。";
+    return;
+  }
+  manualDialog.close();
+  renderCountry();
+});
+
+document.querySelector("#clearManualInput").addEventListener("click", () => {
+  const region = manualForm.elements.region.value;
+  const sku = manualForm.elements.sku.value;
+  delete manualInputs[manualInputId(region, sku)];
+  try {
+    saveManualInputs();
+  } catch {
+    manualError.textContent = "浏览器本地存储不可用，无法清除。";
+    return;
+  }
+  manualDialog.close();
+  renderCountry();
+});
 renderCountry();

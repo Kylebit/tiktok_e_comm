@@ -130,4 +130,18 @@ def test_dashboard_contains_no_remote_image_or_secret_dependency_and_marks_block
     assert 'channel.state !== "READY"' in app
     assert "BLOCKED_AUTH" in app
     assert "unresolvedAvailable" in app
-    assert 'typeof item.costCny === "number"' in app
+    assert 'typeof effectiveItem.costCny === "number"' in app
+
+
+def test_blocked_logistics_rows_have_local_manual_completion_controls():
+    html = (DASHBOARD / "index.html").read_text(encoding="utf-8")
+    app = (DASHBOARD / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="manualInputDialog"' in html
+    for name in ("lengthCm", "widthCm", "heightCm", "weightG", "costCny"):
+        assert f'name="{name}"' in html
+    assert 'data-action="manual-entry"' in app
+    assert 'supply-chain-manual-logistics-v1' in app
+    assert "localStorage.setItem" in app
+    assert "clearManualInput" in app
+    assert "保存并重新计算" in html

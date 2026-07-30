@@ -941,6 +941,103 @@ def test_homebloom_one_write_reconciliation_is_terminal_across_restart(
     assert len(fake.calls) == calls_before_restart
 
 
+def test_homebloom_publish_unknown_settles_both_ledgers_without_replay(
+    tmp_path,
+):
+    target = "tiktok:HB_VN"
+    release, plan, run = _approved_worker_context(tmp_path, target)
+    fake = MiaoshouFake(_miaoshou_command(target=target))
+    miaoshou.configure_prepare_post_factory(lambda: fake.post)
+    miaoshou.configure_runtime_transport_factory(
+        lambda: miaoshou.MiaoshouRuntimeTransport(
+            post=fake.post,
+            publish=lambda *_args: (_ for _ in ()).throw(
+                TimeoutError("publish transport outcome unknown")
+            ),
+        )
+    )
+    registry = production_adapter_registry()
+    control = OneClickReleaseStore(release.path)
+    job = control.ensure_job(
+        plan=plan,
+        run=run,
+        product_revision=31,
+        registry=registry,
+    )
+    worker = OneClickReleaseWorker(
+        control, lambda: registry, dispatch_enabled=lambda: True
+    )
+    for _ in range(8):
+        if not worker.advance_once(job["job_id"]):
+            break
+
+    public = control.get_job(job_id=job["job_id"])
+    homebloom = next(
+        row for row in public["targets"] if row["target_label"] == target
+    )
+    expected_classes = [
+        miaoshou.DETAIL_UPDATE_WRITE,
+        miaoshou.PUBLISH_WRITE,
+        "UNKNOWN",
+    ]
+    assert homebloom["status"] == "RECONCILIATION_REQUIRED"
+    assert homebloom["dispatch_count"] == 1
+    assert homebloom["dispatch_ledger"][
+        "cumulative_external_write_classes"
+    ] == expected_classes
+    assert homebloom["dispatch_ledger"][
+        "cumulative_external_write_count"
+    ] is None
+    assert homebloom["dispatch_ledger"][
+        "confirmed_external_write_count_lower_bound"
+    ] == 1
+    assert homebloom["dispatch_ledger"][
+        "possible_external_write_count_upper_bound"
+    ] == 2
+    assert homebloom["result"][
+        "cumulative_external_write_classes"
+    ] == expected_classes
+
+    with release._connect_readonly() as connection:
+        physical = connection.execute(
+            """
+            SELECT status, attempts
+            FROM release_target_runs
+            WHERE run_id = ? AND target_label = ?
+            """,
+            (run["run_id"], target),
+        ).fetchone()
+        outcome = connection.execute(
+            """
+            SELECT receipt_json
+            FROM oneclick_release_outcomes
+            WHERE job_id = ? AND target_label = ? AND attempt = 1
+            """,
+            (job["job_id"], target),
+        ).fetchone()
+    assert physical["status"] == "FAILED"
+    assert physical["attempts"] == 1
+    outcome_receipt = json.loads(outcome["receipt_json"])
+    assert outcome_receipt["dispatch"]["external_write_count"] is None
+    assert outcome_receipt["dispatch"][
+        "external_write_classes"
+    ] == expected_classes
+    assert outcome_receipt["dispatch"][
+        "confirmed_external_write_count_lower_bound"
+    ] == 1
+
+    calls_before_restart = len(fake.calls)
+    restarted = OneClickReleaseStore(release.path)
+    restarted_worker = OneClickReleaseWorker(
+        restarted,
+        lambda: production_adapter_registry(),
+        dispatch_enabled=lambda: True,
+    )
+    assert restarted_worker.recover() == 0
+    assert restarted_worker.advance_once(job["job_id"]) is False
+    assert len(fake.calls) == calls_before_restart
+
+
 def test_production_registry_auth_blocker_keeps_canonical_targets_pristine(
     tmp_path,
 ):

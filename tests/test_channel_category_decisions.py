@@ -15,6 +15,7 @@ from shared_platform.channel_category_decisions import (
     digest_json,
     public_options_projection,
     serialize_category_decision,
+    validate_category_decision,
 )
 from shared_platform.release_store import ReleaseStore
 
@@ -238,6 +239,36 @@ def test_option_or_context_drift_invalidates_prior_selection():
         changed_snapshot,
         decision=decision,
     )["selection"] is None
+
+
+def test_approval_rejects_product_identity_drift_and_false_recommendation():
+    snapshot = _options()
+    with pytest.raises(
+        ChannelCategoryDecisionError,
+        match="product identity changed",
+    ):
+        approve_category_decision(
+            snapshot,
+            product_id="999",
+            product_revision=7,
+            selected_category_identity_digest=snapshot["options"][0][
+                "category_identity_digest"
+            ],
+            approved_by="Kyle",
+            confirm_channel_category_selection=True,
+        )
+    decision = _approve(snapshot)
+    decision["selected_is_recommended"] = not decision[
+        "selected_is_recommended"
+    ]
+    decision_without_digest = dict(decision)
+    decision_without_digest.pop("decision_digest")
+    decision["decision_digest"] = digest_json(decision_without_digest)
+    with pytest.raises(
+        ChannelCategoryDecisionError,
+        match="not truthful",
+    ):
+        validate_category_decision(decision)
 
 
 def test_execution_payload_matches_exact_new_global_plan_shape():

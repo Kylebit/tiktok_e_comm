@@ -214,6 +214,13 @@ def approve_category_decision(
         raise ChannelCategoryDecisionError(
             "product revision must be a non-negative int"
         )
+    if (
+        snapshot["context"]["product_id"] != clean_product_id
+        or snapshot["context"]["product_revision"] != product_revision
+    ):
+        raise ChannelCategoryDecisionError(
+            "category decision product identity changed"
+        )
     selected_digest = _digest(
         selected_category_identity_digest,
         "selected category identity digest",
@@ -241,6 +248,9 @@ def approve_category_decision(
         "context_digest": snapshot["context_digest"],
         "options_digest": snapshot["options_digest"],
         "selected_category_identity_digest": selected_digest,
+        "recommended_category_identity_digest": snapshot[
+            "recommended_category_identity_digest"
+        ],
         "selected_is_recommended": (
             selected_digest
             == snapshot["recommended_category_identity_digest"]
@@ -360,6 +370,7 @@ def validate_category_decision(value: object) -> dict[str, Any]:
         "context_digest",
         "options_digest",
         "selected_category_identity_digest",
+        "recommended_category_identity_digest",
         "selected_is_recommended",
         "recommendation_source",
         "selected_category",
@@ -391,6 +402,7 @@ def validate_category_decision(value: object) -> dict[str, Any]:
         "context_digest",
         "options_digest",
         "selected_category_identity_digest",
+        "recommended_category_identity_digest",
         "attribute_tree_digest",
         "decision_digest",
     ):
@@ -420,6 +432,36 @@ def validate_category_decision(value: object) -> dict[str, Any]:
         "selected_attributes": attributes,
         "recommendation_source": dict(recommendation),
     }
+    selected_identity_payload = {
+        "schema_version": "channel-category-option-identity/v1",
+        "channel": decision["channel"],
+        "mode": decision["mode"],
+        "category": category,
+        "selected_attributes": attributes,
+        "attribute_tree_digest": decision["attribute_tree_digest"],
+        "required_attribute_count": decision[
+            "required_attribute_count"
+        ],
+        "attributes_complete": True,
+        "required_values_complete": True,
+        "missing_required_attributes": [],
+        "recommendation_authority": recommendation["authority"],
+        "recommendation_evidence_digest": recommendation[
+            "evidence_digest"
+        ],
+    }
+    if (
+        digest_json(selected_identity_payload)
+        != decision["selected_category_identity_digest"]
+        or decision["selected_is_recommended"]
+        != (
+            decision["selected_category_identity_digest"]
+            == decision["recommended_category_identity_digest"]
+        )
+    ):
+        raise ChannelCategoryDecisionError(
+            "selected category identity is not truthful"
+        )
     supplied_digest = canonical.pop("decision_digest")
     canonical["decision_digest"] = digest_json(canonical)
     if canonical["decision_digest"] != supplied_digest:

@@ -292,9 +292,23 @@ def test_final_typed_registry_is_owned_by_channel_operations():
         "miaoshou_tiktok_publish",
         "shopee_cnsc_publish",
         "ozon_product_publish",
+        "postpublish_promotion",
     }
     assert registry["shopee_cnsc_publish"].preparation_available is True
     assert registry["miaoshou_tiktok_publish"].dispatch_available is True
+    promotion = registry["postpublish_promotion"]
+    assert promotion.preparation_available is True
+    assert promotion.dispatch_available is True
+    assert set(promotion.target_labels) == {
+        "promotion:tiktok:LH_PH",
+        "promotion:tiktok:LH_MY",
+        "promotion:tiktok:LH_TH",
+        "promotion:tiktok:LH_VN",
+        "promotion:shopee:PH",
+        "promotion:shopee:MY",
+        "promotion:shopee:TH",
+        "promotion:shopee:VN",
+    }
 
 
 @pytest.mark.parametrize(

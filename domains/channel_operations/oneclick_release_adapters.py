@@ -128,6 +128,18 @@ def configure_provider_factory(factory: Callable[[], OneClickProvider] | None) -
     _provider_factory = factory
 
 
+def observe_channel_category_options(
+    request: Mapping[str, object],
+) -> dict[str, object]:
+    """Read official Shopee NEW_GLOBAL category options without mutation."""
+
+    from modules.shopee.global_plan_candidate import (
+        observe_channel_category_options as observe_official,
+    )
+
+    return observe_official(request)
+
+
 def observe_shopee_global_plan_candidate(
     request: Mapping[str, object],
 ) -> object:
@@ -152,7 +164,12 @@ def observe_shopee_global_plan_candidate(
         _prepare_transport,
         _scan_global_model_candidates,
     )
+    from modules.shopee.global_plan_candidate import (
+        ShopeeGlobalPlanCandidateError,
+        build_official_new_global_candidate,
+    )
     from shared_platform.shopee_global_plan import (
+        BLOCKED_CAPABILITY,
         EXISTING_GLOBAL,
         NEW_GLOBAL,
         READY,
@@ -295,19 +312,36 @@ def observe_shopee_global_plan_candidate(
                     category="CONTENT",
                 )
             return candidate
-        raise ShopeeGlobalPlanObservationError(
-            category="CAPABILITY",
-            code="shopee_official_global_candidate_fixture_required",
+        observer = build_official_new_global_candidate
+    else:
+        observer = _global_candidate_observer_factory
+    try:
+        candidate = observer(
+            request,
+            {
+                **seed,
+                "mode": mode,
+                "official_identity_observation": official_context,
+            },
+            transport,
         )
-    candidate = _global_candidate_observer_factory(
-        request,
-        {
-            **seed,
-            "mode": mode,
-            "official_identity_observation": official_context,
-        },
-        transport,
-    )
+    except ShopeeGlobalPlanCandidateError as error:
+        if error.reason_category not in {"AUTH", "CAPABILITY"}:
+            raise ShopeeOneClickPrepareBlocked(
+                error.reason_code,
+                "official Shopee selected category evidence drifted",
+                category=error.reason_category,
+            ) from error
+        raise ShopeeGlobalPlanObservationError(
+            category=error.reason_category,
+            code=error.reason_code,
+        ) from error
+    if (
+        type(candidate) is ShopeeGlobalPlanCandidate
+        and candidate.status == BLOCKED_CAPABILITY
+        and candidate.mode == mode
+    ):
+        return candidate
     if (
         type(candidate) is not ShopeeGlobalPlanCandidate
         or candidate.status != READY
@@ -1384,7 +1418,7 @@ def _global_observer_request(
         "sku_lineage",
         "candidate_seed",
     }
-    expected_seed_keys = {
+    required_seed_keys = {
         "source_identity_schema_version",
         "source_identity_digest",
         "sku_lineage_schema_version",
@@ -1400,6 +1434,7 @@ def _global_observer_request(
         "target_pricing",
         "policy_digest",
     }
+    optional_seed_keys = {"category_decision_execution"}
     if (
         not isinstance(request, Mapping)
         or set(request) != expected_request_keys
@@ -1451,7 +1486,8 @@ def _global_observer_request(
         or not isinstance(lineage, Mapping)
         or not isinstance(reservation, Mapping)
         or not isinstance(seed, Mapping)
-        or set(seed) != expected_seed_keys
+        or set(seed) - required_seed_keys - optional_seed_keys
+        or not required_seed_keys.issubset(seed)
         or source.get("schema_version")
         != seed.get("source_identity_schema_version")
         or source.get("identity_digest")
@@ -1477,6 +1513,12 @@ def _global_observer_request(
     ):
         raise OneClickAdapterInputError(
             "shopee_global_observer_lineage_invalid"
+        )
+    if "category_decision_execution" in seed and not isinstance(
+        seed["category_decision_execution"], Mapping
+    ):
+        raise OneClickAdapterInputError(
+            "shopee_global_observer_selected_category_invalid"
         )
     model_skus: list[str] = []
     seen_variants: set[str] = set()

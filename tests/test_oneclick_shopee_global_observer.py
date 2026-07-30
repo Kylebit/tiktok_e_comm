@@ -6,6 +6,7 @@ import json
 import pytest
 
 from domains.channel_operations import oneclick_release_adapters as adapters
+from modules.shopee import global_plan_candidate as global_candidate
 from modules.shopee import oneclick_release as shopee
 from shared_platform.shopee_global_plan import (
     EXISTING_GLOBAL,
@@ -33,7 +34,7 @@ def _digest(value: object) -> str:
     ).hexdigest()
 
 
-def _request() -> dict[str, object]:
+def _request(*, category_decision_execution=None) -> dict[str, object]:
     source_digest = _digest("source")
     lineage_digest = _digest("lineage")
     title = "Approved English title"
@@ -44,7 +45,7 @@ def _request() -> dict[str, object]:
             "source_image_digest": _digest("image-1"),
         }
     ]
-    return {
+    request = {
         "schema_version": "shopee-global-plan-observer-request/v1",
         "offer_id": "3838616043",
         "product_revision": 31,
@@ -102,12 +103,18 @@ def _request() -> dict[str, object]:
             "policy_digest": _digest("policy"),
         },
     }
+    if category_decision_execution is not None:
+        request["candidate_seed"]["category_decision_execution"] = (
+            category_decision_execution
+        )
+    return request
 
 
 class _OfficialScan:
     def __init__(self, *, existing: bool):
         self.existing = existing
         self.calls: list[tuple[str, dict[str, object]]] = []
+        self.attribute_value_name = "PVC"
 
     def merchant_get(self, path, params):
         self.calls.append((path, dict(params)))
@@ -137,6 +144,78 @@ class _OfficialScan:
                         }
                     ]
                 },
+            }
+        if path == (
+            "/api/v2/global_product/category_recommend"
+        ):
+            return {
+                "error": "",
+                "response": {"category_id_list": [101157]},
+            }
+        if path == "/api/v2/global_product/get_category":
+            return {
+                "error": "",
+                "response": {
+                    "category_list": [
+                        {
+                            "category_id": 100000,
+                            "parent_category_id": 0,
+                            "original_category_name": "Home",
+                            "has_children": True,
+                        },
+                        {
+                            "category_id": 101157,
+                            "parent_category_id": 100000,
+                            "original_category_name": "Wall Stickers",
+                            "has_children": False,
+                        },
+                    ]
+                },
+            }
+        if path == "/api/v2/global_product/get_attribute_tree":
+            return {
+                "error": "",
+                "response": {
+                    "attribute_list": [
+                        {
+                            "attribute_id": 1001,
+                            "original_attribute_name": "Material",
+                            "is_mandatory": True,
+                            "input_type": "SINGLE_SELECT",
+                            "attribute_value_list": [
+                                {
+                                    "value_id": 7,
+                                    "original_value_name": (
+                                        self.attribute_value_name
+                                    ),
+                                }
+                            ],
+                        }
+                    ]
+                },
+            }
+        if path == "/api/v2/global_product/get_brand_list":
+            return {
+                "error": "",
+                "response": {
+                    "brand_list": [
+                        {
+                            "brand_id": 8,
+                            "original_brand_name": "Official Brand",
+                        }
+                    ],
+                    "total_count": 1,
+                    "has_next_page": False,
+                },
+            }
+        if path == (
+            "/api/v2/merchant/get_merchant_warehouse_location_list"
+        ):
+            return {
+                "error": "",
+                "response": [
+                    {"location_id": "CNZ", "warehouse_name": "Primary"}
+                ],
             }
         if path == shopee.GLOBAL_ITEM_PATH and self.existing:
             return {
@@ -271,6 +350,52 @@ class _PagedOfficialScan(_OfficialScan):
                 },
             }
         raise AssertionError((path, params))
+
+
+def _category_execution(fake: _OfficialScan) -> dict[str, object]:
+    request = _request()
+    seed = request["candidate_seed"]
+    context = {
+        "schema_version": "channel-category-observer-request/v1",
+        "product_id": request["offer_id"],
+        "product_revision": request["product_revision"],
+        "channel": "shopee",
+        "mode": "NEW_GLOBAL",
+        "source_identity_digest": seed["source_identity_digest"],
+        "sku_lineage_digest": seed["sku_lineage_digest"],
+        "approved_copy_digest": seed["approved_copy_digest"],
+        "targets_digest": _digest(sorted(request["targets"])),
+    }
+    path = global_candidate._read_category_path(
+        fake.transport(), 101157
+    )
+    tree = global_candidate._read_attribute_tree(
+        fake.transport(), 101157
+    )
+    return {
+        "schema_version": "channel-category-decision-execution/v1",
+        "decision_digest": _digest("decision"),
+        "context_digest": _digest(context),
+        "options_digest": _digest("options"),
+        "selected_category_identity_digest": _digest("selected"),
+        "category": {
+            "category_id": 101157,
+            "name": "Wall Stickers",
+            "path": [dict(row) for row in path],
+            "path_complete": True,
+            "evidence_digest": _digest(path),
+        },
+        "attribute_list": [
+            {
+                "attribute_id": 1001,
+                "attribute_value_list": [
+                    {"value_id": 7, "original_value_name": "PVC"}
+                ],
+            }
+        ],
+        "attributes_complete": True,
+        "attribute_tree_digest": _digest(tree),
+    }
 
 
 def _first_party_candidate(_request, seed, _transport):
@@ -413,19 +538,61 @@ def test_dynamic_observer_returns_only_shared_ready_candidate(
     assert "fixture-shop-token" not in repr(candidate)
 
 
-def test_dynamic_observer_missing_first_party_metadata_is_capability_blocked():
+def test_dynamic_observer_default_official_recommendation_is_not_approval():
     official = _OfficialScan(existing=False)
     shopee.configure_prepare_transport_factory(
         lambda _region: official.transport()
     )
 
-    with pytest.raises(ShopeeGlobalPlanObservationError) as error:
-        adapters.observe_shopee_global_plan_candidate(_request())
+    candidate = adapters.observe_shopee_global_plan_candidate(_request())
 
-    assert error.value.category == "CAPABILITY"
-    assert error.value.code == (
-        "shopee_official_global_candidate_fixture_required"
+    assert candidate.status == "BLOCKED_CAPABILITY"
+    assert candidate.mode == NEW_GLOBAL
+    assert candidate.blocker_codes == ("category_invalid",)
+    assert any(
+        path == "/api/v2/global_product/category_recommend"
+        for path, _params in official.calls
     )
+
+
+def test_global_observer_consumes_and_revalidates_persisted_category_decision():
+    official = _OfficialScan(existing=False)
+    selection = _category_execution(official)
+    official.calls.clear()
+    shopee.configure_prepare_transport_factory(
+        lambda _region: official.transport()
+    )
+
+    candidate = adapters.observe_shopee_global_plan_candidate(
+        _request(category_decision_execution=selection)
+    )
+
+    # Category/required values passed official revalidation.  The next
+    # unapproved execution fact (brand) remains blocked rather than defaulted.
+    assert candidate.status == "BLOCKED_CAPABILITY"
+    assert candidate.blocker_codes == ("brand_invalid",)
+    assert any(
+        path == "/api/v2/global_product/get_attribute_tree"
+        for path, _params in official.calls
+    )
+
+
+def test_global_observer_rejects_persisted_required_value_drift():
+    official = _OfficialScan(existing=False)
+    selection = _category_execution(official)
+    official.attribute_value_name = "Vinyl"
+    official.calls.clear()
+    shopee.configure_prepare_transport_factory(
+        lambda _region: official.transport()
+    )
+
+    with pytest.raises(shopee.ShopeeOneClickPrepareBlocked) as error:
+        adapters.observe_shopee_global_plan_candidate(
+            _request(category_decision_execution=selection)
+        )
+
+    assert error.value.reason_category == "CONTENT"
+    assert error.value.reason_code == "shopee_category_selection_drift"
 
 
 def test_dynamic_observer_missing_prepared_credentials_is_auth_blocked():

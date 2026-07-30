@@ -111,6 +111,78 @@ class ReplenishmentRecommendation:
     reason: str
 
 
+@dataclass(frozen=True)
+class SettlementEconomics:
+    """Auditable SKU-level settlement inputs used for local-stock economics."""
+
+    units: int
+    customer_payment: Decimal
+    actual_shipping_fee: Decimal
+
+    def __post_init__(self) -> None:
+        _positive_int(self.units, "units")
+        if (
+            isinstance(self.customer_payment, bool)
+            or not isinstance(self.customer_payment, Decimal)
+            or self.customer_payment < 0
+        ):
+            raise ValueError("customer_payment must be a non-negative Decimal")
+        if isinstance(self.actual_shipping_fee, bool) or not isinstance(
+            self.actual_shipping_fee, Decimal
+        ):
+            raise ValueError("actual_shipping_fee must be a Decimal")
+
+    @property
+    def customer_payment_per_unit(self) -> Decimal:
+        return self.customer_payment / Decimal(self.units)
+
+    @property
+    def shipping_fee_per_unit(self) -> Decimal:
+        return abs(self.actual_shipping_fee) / Decimal(self.units)
+
+    def tax_saving_per_unit(
+        self,
+        *,
+        tax_rate: Decimal = Decimal("0.10"),
+        fx_to_cny: Decimal = Decimal("1"),
+    ) -> Decimal:
+        if not Decimal("0") <= tax_rate <= Decimal("1"):
+            raise ValueError("tax_rate must be between zero and one")
+        if fx_to_cny <= 0:
+            raise ValueError("fx_to_cny must be positive")
+        return self.customer_payment_per_unit * tax_rate * fx_to_cny
+
+
+def blended_daily_velocity(
+    *,
+    recent: DemandSignal | None,
+    annual: DemandSignal,
+    recent_weight: Decimal = Decimal("0.70"),
+) -> Decimal:
+    """Blend a precise recent SKU signal with its long-run settlement signal.
+
+    Product-level analytics must be passed as ``recent=None`` when a product
+    contains multiple variants; this prevents copying one product total onto
+    every SKU in that product.
+    """
+
+    if not Decimal("0") <= recent_weight <= Decimal("1"):
+        raise ValueError("recent_weight must be between zero and one")
+    if recent is None:
+        return annual.daily_velocity
+    if (
+        recent.seller_sku != annual.seller_sku
+        or recent.country != annual.country
+    ):
+        raise ValueError("demand identities must match")
+    if annual.units_sold == 0:
+        return recent.daily_velocity
+    return (
+        recent.daily_velocity * recent_weight
+        + annual.daily_velocity * (Decimal("1") - recent_weight)
+    )
+
+
 def recommend_replenishment(
     demand: DemandSignal,
     inventory: InventoryPosition,

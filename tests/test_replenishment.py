@@ -6,6 +6,8 @@ from domains.supply_chain_operations.replenishment import (
     DemandSignal,
     InventoryPosition,
     ReplenishmentPolicy,
+    SettlementEconomics,
+    blended_daily_velocity,
     recommend_replenishment,
 )
 
@@ -89,4 +91,51 @@ def test_current_my_candidate_batch_reproduces_496_unit_upper_bound():
 )
 def test_invalid_inputs_fail_closed(factory, message):
     with pytest.raises(ValueError, match=message):
+        factory()
+
+
+def test_blended_velocity_uses_precise_recent_and_annual_sku_facts():
+    recent = DemandSignal("0007", "MY", 77, 30, "2026-07-18T03:17:18Z")
+    annual = DemandSignal("0007", "MY", 540, 366, "2026-07-30T08:00:00Z")
+
+    result = blended_daily_velocity(recent=recent, annual=annual)
+
+    assert result == (Decimal(77) / Decimal(30)) * Decimal("0.70") + (
+        Decimal(540) / Decimal(366)
+    ) * Decimal("0.30")
+
+
+def test_variant_family_signal_is_not_duplicated_across_skus():
+    annual = DemandSignal("0010", "MY", 42, 366, "2026-07-30T08:00:00Z")
+
+    result = blended_daily_velocity(recent=None, annual=annual)
+
+    assert result == Decimal(42) / Decimal(366)
+
+
+def test_tax_saving_is_exactly_ten_percent_of_customer_settlement_price():
+    settlement = SettlementEconomics(
+        units=4,
+        customer_payment=Decimal("100"),
+        actual_shipping_fee=Decimal("-20"),
+    )
+
+    assert settlement.customer_payment_per_unit == Decimal("25")
+    assert settlement.shipping_fee_per_unit == Decimal("5")
+    assert settlement.tax_saving_per_unit(
+        tax_rate=Decimal("0.10"),
+        fx_to_cny=Decimal("1.659101"),
+    ) == Decimal("4.1477525")
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: SettlementEconomics(True, Decimal("1"), Decimal("1")),
+        lambda: SettlementEconomics(1, Decimal("-1"), Decimal("1")),
+        lambda: SettlementEconomics(1, Decimal("1"), "1"),
+    ],
+)
+def test_invalid_settlement_economics_fail_closed(factory):
+    with pytest.raises(ValueError):
         factory()

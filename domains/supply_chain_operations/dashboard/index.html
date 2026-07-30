@@ -4,150 +4,106 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>本土备货决策台</title>
+  <title>马来西亚逐 SKU 备货决策台</title>
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
       <span class="brand-mark">SC</span>
-      <div><strong>供应链运营</strong><small>LOCAL STOCKING DESK</small></div>
+      <div><strong>供应链运营</strong><small>SKU REPLENISHMENT LEDGER</small></div>
     </div>
-    <div class="snapshot">
-      <span class="pulse"></span>
-      数据截点 <strong>2026-07-30</strong>
-    </div>
+    <div class="snapshot"><span class="pulse"></span>雅仓库存截点 <strong>2026-07-30</strong></div>
   </header>
 
   <main>
     <section class="hero">
-      <div class="hero-copy">
-        <div class="eyebrow">LATEST BATCH · 建议批次 01</div>
-        <h1>马来西亚海运<br><span>先备 4 款，496 件</span></h1>
-        <p>这是未扣除马来西亚仓可用库存与可信在途的“备料上限”。可以先锁定货源和装箱计划；真实发运数量必须在补齐仓库库存后自动下调。</p>
-        <div class="hero-actions">
-          <button class="primary" data-scroll="#sku-plan">查看备货明细</button>
-          <button class="ghost" data-scroll="#logic">展开计算逻辑</button>
+      <div>
+        <span class="eyebrow">MALAYSIA · SEA FREIGHT · MY8803</span>
+        <h1>逐 SKU 算清楚，<br><span>再决定备什么。</span></h1>
+        <p>每款商品都同时扣除雅仓可用库存和可信在途，再结合 SKU 级结算销量计算到仓后的 35 天目标覆盖。主图、库存、销量、费用和公式全部在同一行，避免用整体平均掩盖单款风险。</p>
+        <div class="source-chips">
+          <span>雅仓 24 SKU</span><span>TikTok 全年结算</span><span>本土尾程 ¥0</span><span>税费节省 = 用户结算价 × 10%</span>
         </div>
       </div>
-      <div class="decision-card">
-        <div class="decision-head">
-          <span class="status warning">有条件建议</span>
-          <span>MY · SEA</span>
-        </div>
-        <div class="big-number"><span id="batchQty">496</span><small>件</small></div>
-        <div class="meter"><span style="width:82%"></span></div>
+      <aside class="decision-card">
+        <div class="decision-head"><span class="status">本批建议</span><span>25 天交期 · 30+5 天覆盖</span></div>
+        <div class="big-number"><span id="batchQty">—</span><small>件</small></div>
+        <p id="batchSentence">正在汇总逐 SKU 决策……</p>
         <div class="decision-grid">
-          <div><small>覆盖目标</small><strong>30 + 5 天</strong></div>
-          <div><small>预测体积</small><strong id="batchVolume">0.729 m³</strong></div>
-          <div><small>备料占款</small><strong id="workingCapital">¥2,828</strong></div>
-          <div><small>已知净优势</small><strong class="positive" id="knownBenefit">+¥427</strong></div>
+          <div><small>建议 SKU</small><strong id="batchSkuCount">—</strong></div>
+          <div><small>预估体积</small><strong id="batchVolume">—</strong></div>
+          <div><small>预计占款</small><strong id="workingCapital">—</strong></div>
+          <div><small>预计净优势</small><strong id="knownBenefit">—</strong></div>
         </div>
-      </div>
+      </aside>
     </section>
 
-    <section class="kpi-strip" aria-label="核心数据">
-      <article><small>30天样本销量</small><strong>423</strong><span>入选 4 款合计</span></article>
-      <article><small>需求贡献</small><strong>94%</strong><span>占已匹配 SKU 销量</span></article>
-      <article><small>头程估算</small><strong>¥423</strong><span>马来西亚西马海运</span></article>
-      <article><small>额外节省</small><strong>待结算</strong><span>20% × 实际跨境运费</span></article>
+    <section class="kpi-strip">
+      <article><small>雅仓 MY8803</small><strong id="inventoryUnits">—</strong><span>可用库存；占用/冻结已排除</span></article>
+      <article><small>运输中批次</small><strong>0</strong><span>MY 入库列表：无未签收批次</span></article>
+      <article><small>结算观察窗</small><strong>12 个月</strong><span>2025-07-30 至 2026-07-30</span></article>
+      <article><small>当前结论</small><strong id="decisionHeadline">—</strong><span>按建议数量与净优势共同排序</span></article>
     </section>
 
-    <section class="section" id="sku-plan">
+    <section class="section ledger" id="sku-plan">
       <div class="section-heading">
-        <div><span class="eyebrow">WHAT & HOW MANY</span><h2>这一批具体备什么</h2></div>
-        <p>在右侧填入马来西亚仓真实“可用 + 可信在途”，建议数会即时扣减。空值表示库存未知，当前数字仅为上限。</p>
+        <div><span class="eyebrow">SKU-BY-SKU LEDGER</span><h2>24 款逐一核算</h2></div>
+        <p>主图来自雅仓当前库存页并已本地保存。结算字段均为 SKU 级汇总；一个商品含多规格时，不会把商品级 30 天销量重复分给每个 SKU。</p>
+      </div>
+      <div class="toolbar">
+        <label>搜索 SKU / 商品<input id="searchInput" type="search" placeholder="例如 0007、墙贴"></label>
+        <label>决策<select id="statusFilter"><option value="all">全部</option><option value="REPLENISH">建议补货</option><option value="REVIEW">待核经济性</option><option value="HOLD">暂不补货</option><option value="NO_DEMAND">销量不足</option></select></label>
+        <span id="visibleCount"></span>
       </div>
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>优先级 / SKU</th><th>近30天销量</th><th>日均</th><th>到仓目标</th><th>可用</th><th>可信在途</th><th>建议备货</th><th>判断</th></tr>
+            <tr>
+              <th>主图 / SKU</th>
+              <th>需求事实</th>
+              <th>雅仓库存</th>
+              <th>到仓计算</th>
+              <th>建议</th>
+              <th>单件经济性</th>
+              <th>判断</th>
+            </tr>
           </thead>
           <tbody id="skuRows"></tbody>
         </table>
       </div>
-      <div class="guardrail">
-        <strong>发运闸门</strong>
-        <span>只有“马来西亚仓可用库存”和“可在新批次到达前上架的在途”均已核实，才把上限转换成正式发运数。</span>
-      </div>
     </section>
 
-    <section class="section two-column" id="logic">
+    <section class="section formula-section">
       <div>
-        <div class="section-heading compact">
-          <div><span class="eyebrow">WHY THIS BATCH</span><h2>为什么先做这 4 款</h2></div>
-        </div>
-        <div class="logic-list">
-          <article><b>01</b><div><strong>先抓高确定性需求</strong><p>0003、0007、0008、0015 在现有马来西亚 30 天销量样本中合计 423 件，占已匹配候选约 94%，先排除长尾库存风险。</p></div></article>
-          <article><b>02</b><div><strong>按到仓后的覆盖量下单</strong><p>数量 = 日均销量 ×（30 天免仓储覆盖 + 5 天安全期）− 预计到仓时剩余可信库存。不会把 25 天运输期内已经流失的需求重复压成到仓库存。</p></div></article>
-          <article><b>03</b><div><strong>组合发货摊薄最低计费</strong><p>四款预测合计约 0.729 m³，高于 0.3 m³最低计费；按西马海运 580 元/m³估算头程约 423 元。</p></div></article>
-          <article><b>04</b><div><strong>经济账先用保守下限</strong><p>已知净优势只计算 10% 税费假设，扣除头程、上架、出库、卸货与包材；尚未把“实际跨境运费节省”计入，所以不是乐观口径。</p></div></article>
-        </div>
+        <span class="eyebrow">FORMULA & GUARDRAILS</span>
+        <h2>每一件建议数从哪里来</h2>
+        <div class="formula">Q = max[0, ceil(v × 35) − max(0, 可用 + 可信在途 − ceil(v × 25))]</div>
       </div>
-      <aside class="formula-card">
-        <div class="formula-title"><span>FORMULA</span><small>逐 SKU 计算</small></div>
-        <div class="formula">Q = ⌈v × (30 + 5)⌉ − max(0, A + I − ⌈v × 25⌉)</div>
-        <dl>
-          <div><dt>v</dt><dd>近 30 天日均销量</dd></div>
-          <div><dt>A</dt><dd>本地仓可用库存</dd></div>
-          <div><dt>I</dt><dd>高可信、可及时上架的在途</dd></div>
-          <div><dt>排除</dt><dd>冻结、已分配、未上架、低可信在途</dd></div>
-        </dl>
-        <div class="formula-note">安全期 = 25 天交期 × 20% = 5 天。仓储 0–30 天免费，因此常规覆盖目标固定为 30 天。</div>
-      </aside>
-    </section>
-
-    <section class="section">
-      <div class="section-heading">
-        <div><span class="eyebrow">COUNTRY QUEUE</span><h2>四国当前动作排序</h2></div>
-        <p>不把“有货在路上”误算成已经能卖，也不因缺少销量数据而编造采购量。</p>
-      </div>
-      <div class="country-grid">
-        <article class="country active"><div><span>01</span><b>MY</b></div><h3>备料 496 件</h3><p>海运 · 25 天 · 4 个 A 类 SKU</p><em>补齐本地库存后发运</em></article>
-        <article class="country"><div><span>02</span><b>TH</b></div><h3>先上架，不追加</h3><p>2 个缺货订单；0001 有 60 件高可信在途，另有 20 件收货/上架链路需复核</p><em>避免重复补货</em></article>
-        <article class="country"><div><span>03</span><b>VN</b></div><h3>等待销量接入</h3><p>陆运 · 15 天；后台存在已完成入库，但缺少按 SKU 的近期销量</p><em>不输出伪精确数量</em></article>
-        <article class="country"><div><span>04</span><b>PH</b></div><h3>等待销量接入</h3><p>海运 · 25 天；税费优惠尚未确认，结算运费仍为空</p><em>保持观察</em></article>
-      </div>
-    </section>
-
-    <section class="section economics">
-      <div class="section-heading">
-        <div><span class="eyebrow">UNIT ECONOMICS</span><h2>这一批为什么有利</h2></div>
-        <p>人民币口径；税费按售价的 10%作为待确认假设。实际跨境运费结算尚未接入。</p>
-      </div>
-      <div class="economics-grid">
-        <div class="cost-stack">
-          <div class="bar benefit" style="--w:100%"><span>税费节省假设</span><strong>+¥2,172</strong></div>
-          <div class="bar cost" style="--w:50.2%"><span>本地出库</span><strong>−¥1,091</strong></div>
-          <div class="bar cost" style="--w:19.5%"><span>头程海运</span><strong>−¥423</strong></div>
-          <div class="bar cost" style="--w:10.6%"><span>上架 / 卸货 / 包材</span><strong>−¥231</strong></div>
-          <div class="net"><span>保守已知净优势</span><strong>+¥427</strong></div>
-        </div>
-        <div class="assumption-card">
-          <h3>还没有算进去的上行空间</h3>
-          <strong>20% × 实际跨境物流扣费</strong>
-          <p>结算表目前为空，因此不能把这项直接变成人民币。接入 TikTok / Shopee 订单结算后，页面会按 SKU 自动加入。</p>
-          <div class="tags"><span>本地尾程 ¥0</span><span>0–30天仓储 ¥0</span><span>税率待确认</span><span>报价已过有效期</span></div>
-        </div>
+      <div class="rules">
+        <article><b>v</b><p>单规格商品：70% × 近 30 天日均 + 30% × 全年结算日均；多规格商品无法安全拆分近 30 天商品级销量时，只用全年 SKU 级结算日均。</p></article>
+        <article><b>库存</b><p>直接使用雅仓“可用”字段；占用、冻结不再重复计入。在途仅接受运输中且可在新批次前上架的批次。本次 MY 运输中批次为 0。</p></article>
+        <article><b>经济性</b><p>税费节省严格等于用户结算价格的 10%；物流节省按已观察跨境运费的 20%保守计入，再扣头程、上架、出库、卸货和包材。</p></article>
       </div>
     </section>
 
     <section class="section evidence">
-      <div class="section-heading compact">
-        <div><span class="eyebrow">EVIDENCE & RISKS</span><h2>数据依据与未决风险</h2></div>
+      <div class="section-heading">
+        <div><span class="eyebrow">AUDIT TRAIL</span><h2>这次建议用了什么事实</h2></div>
       </div>
       <div class="evidence-grid">
-        <article><span class="dot green"></span><div><strong>真实销量聚合</strong><p>TikTok MY 商品分析，30 天窗口，719 件总销量；本批候选有 SKU 精确映射。</p></div></article>
-        <article><span class="dot green"></span><div><strong>真实仓库状态</strong><p>雅仓共 2971 件、50 个 SKU、7 个低库存提醒；在途和收货中分层处理。</p></div></article>
-        <article><span class="dot amber"></span><div><strong>马来西亚库存缺口</strong><p>当前未取得 MY 仓逐 SKU 可用量，所以 496 是未扣库存上限，不是无条件发运指令。</p></div></article>
-        <article><span class="dot amber"></span><div><strong>费率与税口径</strong><p>头程报价已超过 30 天有效期；“少 10% 税费”需确认是售价百分点还是原税额折减。</p></div></article>
-        <article><span class="dot red"></span><div><strong>结算事实为空</strong><p>settlement_lines 当前 0 条，实际跨境运费节省暂不能精确到人民币。</p></div></article>
-        <article><span class="dot blue"></span><div><strong>执行原则</strong><p>冻结、已分配、未上架、低可信在途一律不当作可售库存，也不使用默认 50。</p></div></article>
+        <article class="ok"><strong>雅仓库存完整</strong><p>MY8803 共 24 个 SKU；库存、占用、冻结、在途、可用、尺寸、重量与主图均来自当前登录页面。</p></article>
+        <article class="ok"><strong>MY 在途为零</strong><p>入库列表筛选 MY8803 后共 7 批：5 批已完成、2 批作废、0 批运输中，因此本轮不拿历史批次抵扣新建议。</p></article>
+        <article class="ok"><strong>税费口径已纠正</strong><p>不再按挂牌价估算，逐 SKU 使用结算中的 Customer payment ÷ 件数，再取 10% 并按 MYR/CNY 汇率换算。</p></article>
+        <article class="warn"><strong>头程报价需复核</strong><p>当前仍按西马海运 ¥580/m³、最低 0.3m³估算；报价有效期已过，正式发货前需要供应商重新确认。</p></article>
+        <article class="warn"><strong>Shopee 尚未并入</strong><p>本版结算事实来自 TikTok MY。若同款在 Shopee 有显著销量，补入 Shopee SKU 级结算后应再次计算。</p></article>
+        <article class="neutral"><strong>外部写入为 0</strong><p>仅读取雅仓网页、TikTok 结算和本地只读数据库；未写雅仓、平台或业务数据库。</p></article>
       </div>
     </section>
   </main>
 
-  <footer><span>Supply Chain Operations · Read-only decision artifact</span><span>外部写入 0 · 仓库写入 0 · 数据库写入 0</span></footer>
+  <footer><span>Supply Chain Operations · Read-only decision artifact</span><span>数据不是下单指令；正式发货前复核采购可得量与头程报价</span></footer>
+  <script src="./data.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>

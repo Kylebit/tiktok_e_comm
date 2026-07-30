@@ -410,6 +410,37 @@ CREATE INDEX IF NOT EXISTS idx_release_shopee_global_plan_product
         product_id, product_revision DESC, created_at DESC
     );
 
+CREATE TABLE IF NOT EXISTS release_channel_category_decisions (
+    decision_digest TEXT PRIMARY KEY,
+    product_id TEXT NOT NULL,
+    product_revision INTEGER NOT NULL CHECK (product_revision >= 0),
+    channel TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    context_digest TEXT NOT NULL,
+    options_digest TEXT NOT NULL,
+    selected_category_identity_digest TEXT NOT NULL,
+    attribute_tree_digest TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    record_digest TEXT NOT NULL,
+    approved_by TEXT NOT NULL CHECK (approved_by = 'Kyle'),
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_release_channel_category_product
+    ON release_channel_category_decisions(
+        product_id, product_revision DESC, channel, mode, created_at DESC
+    );
+CREATE TABLE IF NOT EXISTS release_active_channel_category_decisions (
+    product_id TEXT NOT NULL,
+    product_revision INTEGER NOT NULL CHECK (product_revision >= 0),
+    channel TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    decision_digest TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (product_id, product_revision, channel, mode),
+    FOREIGN KEY (decision_digest)
+        REFERENCES release_channel_category_decisions(decision_digest)
+);
+
 CREATE TRIGGER IF NOT EXISTS trg_release_plan_immutable
 BEFORE UPDATE OF
     plan_id, product_id, seller_sku, sku_key, product_package_id,
@@ -488,6 +519,22 @@ CREATE TRIGGER IF NOT EXISTS trg_release_shopee_global_plan_append_only_delete
 BEFORE DELETE ON release_shopee_global_plan_approvals
 BEGIN
     SELECT RAISE(ABORT, 'approved Shopee global plan records are append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_release_channel_category_decision_immutable
+BEFORE UPDATE ON release_channel_category_decisions
+BEGIN
+    SELECT RAISE(ABORT, 'channel category decisions are immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_release_channel_category_decision_append_only
+BEFORE DELETE ON release_channel_category_decisions
+BEGIN
+    SELECT RAISE(ABORT, 'channel category decisions are append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_release_active_category_identity_immutable
+BEFORE UPDATE OF product_id, product_revision, channel, mode
+ON release_active_channel_category_decisions
+BEGIN
+    SELECT RAISE(ABORT, 'active channel category identity is immutable');
 END;
 """
 
@@ -1165,6 +1212,201 @@ class ReleaseStore:
     def preview_plan(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         """Build the exact write-free preview consumed by the formal UI."""
         return preview_release_plan(payload)
+
+    def persist_channel_category_decision(
+        self,
+        serialized_record: object,
+    ) -> dict[str, Any]:
+        """Append one immutable selection and make it current locally."""
+
+        from shared_platform.channel_category_decisions import (
+            rehydrate_category_decision,
+            serialize_category_decision,
+        )
+
+        if type(serialized_record) is not str:
+            raise ValueError(
+                "channel category decision must be canonical JSON"
+            )
+        decision = rehydrate_category_decision(serialized_record)
+        if serialize_category_decision(decision) != serialized_record:
+            raise ImmutableReleaseError(
+                "channel category decision record is not canonical"
+            )
+        record_digest = hashlib.sha256(
+            serialized_record.encode("utf-8")
+        ).hexdigest()
+        now = _utc_now()
+        with self._transaction() as connection:
+            existing = connection.execute(
+                """
+                SELECT * FROM release_channel_category_decisions
+                WHERE decision_digest = ?
+                """,
+                (decision["decision_digest"],),
+            ).fetchone()
+            created = existing is None
+            if existing is not None:
+                if (
+                    existing["record_json"] != serialized_record
+                    or existing["record_digest"] != record_digest
+                    or existing["product_id"] != decision["product_id"]
+                    or existing["product_revision"]
+                    != decision["product_revision"]
+                    or existing["context_digest"]
+                    != decision["context_digest"]
+                    or existing["options_digest"]
+                    != decision["options_digest"]
+                ):
+                    raise ImmutableReleaseError(
+                        "channel category decision identity is immutable"
+                    )
+            else:
+                connection.execute(
+                    """
+                    INSERT INTO release_channel_category_decisions (
+                        decision_digest, product_id, product_revision,
+                        channel, mode, context_digest, options_digest,
+                        selected_category_identity_digest,
+                        attribute_tree_digest, record_json, record_digest,
+                        approved_by, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Kyle', ?)
+                    """,
+                    (
+                        decision["decision_digest"],
+                        decision["product_id"],
+                        decision["product_revision"],
+                        decision["channel"],
+                        decision["mode"],
+                        decision["context_digest"],
+                        decision["options_digest"],
+                        decision["selected_category_identity_digest"],
+                        decision["attribute_tree_digest"],
+                        serialized_record,
+                        record_digest,
+                        now,
+                    ),
+                )
+            connection.execute(
+                """
+                INSERT INTO release_active_channel_category_decisions (
+                    product_id, product_revision, channel, mode,
+                    decision_digest, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(product_id, product_revision, channel, mode)
+                DO UPDATE SET
+                    decision_digest = excluded.decision_digest,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    decision["product_id"],
+                    decision["product_revision"],
+                    decision["channel"],
+                    decision["mode"],
+                    decision["decision_digest"],
+                    now,
+                ),
+            )
+        return {
+            "decision": decision,
+            "record_json": serialized_record,
+            "record_digest": record_digest,
+            "created": created,
+        }
+
+    def channel_category_decision(
+        self,
+        *,
+        product_id: object,
+        product_revision: object,
+        channel: object,
+        mode: object,
+        context_digest: object | None = None,
+    ) -> dict[str, Any] | None:
+        """Read and fully revalidate the current local category selection."""
+
+        from shared_platform.channel_category_decisions import (
+            rehydrate_category_decision,
+            serialize_category_decision,
+        )
+
+        clean_product_id = _text(product_id)
+        clean_channel = _text(channel)
+        clean_mode = _text(mode)
+        if (
+            not clean_product_id
+            or type(product_revision) is not int
+            or product_revision < 0
+            or not clean_channel
+            or not clean_mode
+            or not self.path.is_file()
+        ):
+            return None
+        clean_context_digest = (
+            _sha256_text(context_digest, field="context_digest")
+            if context_digest is not None
+            else None
+        )
+        with self._connect_readonly() as connection:
+            try:
+                row = connection.execute(
+                    """
+                    SELECT decision.*
+                    FROM release_active_channel_category_decisions AS active
+                    JOIN release_channel_category_decisions AS decision
+                      ON decision.decision_digest = active.decision_digest
+                    WHERE active.product_id = ?
+                      AND active.product_revision = ?
+                      AND active.channel = ?
+                      AND active.mode = ?
+                    """,
+                    (
+                        clean_product_id,
+                        product_revision,
+                        clean_channel,
+                        clean_mode,
+                    ),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return None
+        if not row:
+            return None
+        result = dict(row)
+        decision = rehydrate_category_decision(result["record_json"])
+        if (
+            serialize_category_decision(decision) != result["record_json"]
+            or hashlib.sha256(
+                result["record_json"].encode("utf-8")
+            ).hexdigest()
+            != result["record_digest"]
+            or decision["decision_digest"] != result["decision_digest"]
+            or decision["product_id"] != result["product_id"]
+            or decision["product_revision"]
+            != result["product_revision"]
+            or decision["channel"] != result["channel"]
+            or decision["mode"] != result["mode"]
+            or decision["context_digest"] != result["context_digest"]
+            or decision["options_digest"] != result["options_digest"]
+            or decision["selected_category_identity_digest"]
+            != result["selected_category_identity_digest"]
+            or decision["attribute_tree_digest"]
+            != result["attribute_tree_digest"]
+            or decision["approved_by"] != result["approved_by"]
+        ):
+            raise ImmutableReleaseError(
+                "stored channel category decision is invalid"
+            )
+        if (
+            clean_context_digest is not None
+            and decision["context_digest"] != clean_context_digest
+        ):
+            return None
+        return {
+            "decision": decision,
+            "record_json": result["record_json"],
+            "record_digest": result["record_digest"],
+            "created_at": result["created_at"],
+        }
 
     def persist_shopee_global_plan_approval(
         self,

@@ -44,6 +44,12 @@ _SHOPEE_GLOBAL_PLAN_OBSERVER_REQUEST_SCHEMA = (
 _SHOPEE_GLOBAL_PLAN_POLICY_SCHEMA = (
     "shopee-global-plan-platform-policy/v1"
 )
+_CHANNEL_CATEGORY_PREVIEW_PATH = (
+    "/api/product-workspace/channel-category-decision-preview"
+)
+_CHANNEL_CATEGORY_APPROVAL_PATH = (
+    "/api/product-workspace/channel-category-decision"
+)
 _READONLY_SHOPEE_RECONCILE_CHECKS = frozenset(
     {
         "seller_sku",
@@ -1332,7 +1338,11 @@ def _positive_decimal_text(value: object) -> str:
     return text
 
 
-def _shopee_global_plan_seed(payload: dict) -> dict:
+def _shopee_global_plan_seed(
+    payload: dict,
+    *,
+    include_category_decision: bool = True,
+) -> dict:
     """Derive every non-official candidate fact from server-owned state."""
 
     from shared_platform.target_scoped_release_contracts import (
@@ -1513,10 +1523,20 @@ def _shopee_global_plan_seed(payload: dict) -> dict:
         "global_original_price": next(iter(normalized_prices)),
         "contract_digest": pricing_digest,
     }
-    policy_digest = _server_canonical_digest(
-        {"schema_version": _SHOPEE_GLOBAL_PLAN_POLICY_SCHEMA}
+    category_decision = (
+        _category_decision_from_payload(payload)
+        if include_category_decision
+        else None
     )
-    return {
+    policy_payload = {
+        "schema_version": _SHOPEE_GLOBAL_PLAN_POLICY_SCHEMA
+    }
+    if category_decision is not None:
+        policy_payload["category_decision_digest"] = category_decision[
+            "decision_digest"
+        ]
+    policy_digest = _server_canonical_digest(policy_payload)
+    result = {
         "source_identity_schema_version": source_identity.get(
             "schema_version"
         ),
@@ -1534,6 +1554,76 @@ def _shopee_global_plan_seed(payload: dict) -> dict:
         "target_pricing": target_pricing,
         "policy_digest": policy_digest,
         "targets": targets,
+    }
+    if category_decision is not None:
+        from shared_platform.channel_category_decisions import (
+            category_decision_execution_payload,
+        )
+
+        result["category_decision_execution"] = (
+            category_decision_execution_payload(category_decision)
+        )
+    return result
+
+
+def _category_decision_from_payload(
+    payload: dict,
+) -> dict | None:
+    """Rehydrate the exact internal decision bound by its public digest."""
+
+    from shared_platform.channel_category_decisions import (
+        ChannelCategoryDecisionError,
+        category_decision_plan_binding,
+        rehydrate_category_decision,
+    )
+
+    bindings = payload.get("approved_channel_category_decisions")
+    records = payload.get("_channel_category_decision_records")
+    binding = (
+        bindings.get("shopee:GLOBAL")
+        if isinstance(bindings, dict)
+        else None
+    )
+    record = (
+        records.get("shopee:GLOBAL")
+        if isinstance(records, dict)
+        else None
+    )
+    if binding is None and record is None:
+        return None
+    if not isinstance(binding, dict) or type(record) is not str:
+        raise ValueError("Shopee category decision binding is incomplete")
+    try:
+        decision = rehydrate_category_decision(record)
+        if category_decision_plan_binding(decision) != binding:
+            raise ChannelCategoryDecisionError(
+                "category decision binding drifted"
+            )
+    except ChannelCategoryDecisionError as error:
+        raise ValueError("Shopee category decision is invalid") from error
+    return decision
+
+
+def _channel_category_context(payload: dict) -> dict:
+    """Derive the decision context only from current server-owned facts."""
+
+    from shared_platform.channel_category_decisions import (
+        OBSERVER_REQUEST_SCHEMA_VERSION,
+    )
+
+    seed = _shopee_global_plan_seed(payload)
+    return {
+        "schema_version": OBSERVER_REQUEST_SCHEMA_VERSION,
+        "product_id": str(payload.get("product_id") or ""),
+        "product_revision": payload.get("product_revision"),
+        "channel": "shopee",
+        "mode": "NEW_GLOBAL",
+        "source_identity_digest": seed["source_identity_digest"],
+        "sku_lineage_digest": seed["sku_lineage_digest"],
+        "approved_copy_digest": seed["approved_copy_digest"],
+        "targets_digest": _server_canonical_digest(
+            sorted(seed["targets"])
+        ),
     }
 
 
@@ -1594,7 +1684,12 @@ def _shopee_global_plan_matches_local_payload(
     if not isinstance(current, dict):
         return False
     try:
-        expected = _shopee_global_plan_seed(payload)
+        expected = _shopee_global_plan_seed(
+            payload,
+            include_category_decision=(
+                current.get("mode") == "NEW_GLOBAL"
+            ),
+        )
         expected_binding_subset = {
             "source_identity_schema_version": expected[
                 "source_identity_schema_version"
@@ -1739,6 +1834,9 @@ def _observe_shopee_global_plan_candidate(payload: dict):
         ShopeeGlobalPlanCandidate,
         build_shopee_global_plan_candidate,
     )
+    from shared_platform.channel_category_decisions import (
+        decision_matches_global_plan,
+    )
 
     try:
         seed = _shopee_global_plan_seed(payload)
@@ -1779,8 +1877,24 @@ def _observe_shopee_global_plan_candidate(payload: dict):
         return _blocked_shopee_global_plan_candidate()
     if candidate.status != "READY" or candidate._plan is None:
         return candidate
+    category_decision = _category_decision_from_payload(payload)
+    candidate_payload = candidate._plan.payload()
+    if candidate_payload.get("mode") == "NEW_GLOBAL":
+        if category_decision is None:
+            raise ShopeeGlobalPlanObservationError(
+                category="CAPABILITY",
+                code="shopee_category_decision_required",
+            )
+        if not decision_matches_global_plan(
+            category_decision,
+            candidate_payload,
+        ):
+            raise ShopeeGlobalPlanObservationError(
+                category="CAPABILITY",
+                code="shopee_category_decision_not_applied",
+            )
     if not _shopee_global_plan_matches_local_payload(
-        payload, candidate._plan.payload()
+        payload, candidate_payload
     ):
         return _blocked_shopee_global_plan_candidate()
     return candidate
@@ -2004,6 +2118,59 @@ def _release_plan_payload_from_dashboard(
             )
         ),
     }
+    has_shopee_target = any(
+        type(label) is str and label.startswith("shopee:")
+        for label in targets
+    )
+    if has_shopee_target and not blockers:
+        from shared_platform.channel_category_decisions import (
+            ChannelCategoryDecisionError,
+            category_decision_plan_binding,
+        )
+        from shared_platform.release_store import (
+            ImmutableReleaseError,
+            default_release_store,
+        )
+
+        try:
+            store = default_release_store()
+            stored_category = store.channel_category_decision(
+                product_id=payload["product_id"],
+                product_revision=payload["product_revision"],
+                channel="shopee",
+                mode="NEW_GLOBAL",
+            )
+            if stored_category is not None:
+                category_context = _channel_category_context(payload)
+                expected_context_digest = _server_canonical_digest(
+                    category_context
+                )
+                if (
+                    stored_category["decision"]["context_digest"]
+                    != expected_context_digest
+                ):
+                    raise ChannelCategoryDecisionError(
+                        "stored category context drifted"
+                    )
+                decision = stored_category["decision"]
+                payload["approved_channel_category_decisions"] = {
+                    "shopee:GLOBAL": category_decision_plan_binding(
+                        decision
+                    )
+                }
+                payload["_channel_category_decision_records"] = {
+                    "shopee:GLOBAL": stored_category["record_json"]
+                }
+        except (
+            ChannelCategoryDecisionError,
+            ImmutableReleaseError,
+            TypeError,
+            ValueError,
+        ):
+            blockers.append(
+                "select_channel_category: stored Shopee category "
+                "decision is invalid or stale"
+            )
     if any(
         label
         in {
@@ -2033,10 +2200,6 @@ def _release_plan_payload_from_dashboard(
                 ),
             )
         )
-    has_shopee_target = any(
-        type(label) is str and label.startswith("shopee:")
-        for label in targets
-    )
     if (
         bind_shopee_global_plan
         and has_shopee_target
@@ -2119,6 +2282,310 @@ def _release_plan_payload_from_dashboard(
                 "plan approval is required"
             )
     return payload, list(dict.fromkeys(value for value in blockers if value))
+
+
+def _observe_channel_category_options(payload: dict) -> dict:
+    """Call the optional channel-owned read-only observer and validate it."""
+
+    import importlib
+
+    from shared_platform.channel_category_decisions import (
+        ChannelCategoryDecisionError,
+        blocked_category_options,
+        build_category_options,
+        category_decision_execution_payload,
+    )
+
+    context = _channel_category_context(payload)
+    seed = _shopee_global_plan_seed(payload)
+    decision = _category_decision_from_payload(payload)
+    request = {
+        "schema_version": "channel-category-observer-request/v1",
+        "channel": "shopee",
+        "mode": "NEW_GLOBAL",
+        "context": context,
+        "approved_title": seed["title"],
+        "approved_title_digest": hashlib.sha256(
+            unicodedata.normalize("NFC", seed["title"].strip()).encode(
+                "utf-8"
+            )
+        ).hexdigest(),
+        "current_selection": (
+            category_decision_execution_payload(decision)
+            if decision is not None
+            else None
+        ),
+    }
+    try:
+        module = importlib.import_module(
+            "domains.channel_operations.oneclick_release_adapters"
+        )
+        observer = getattr(
+            module, "observe_channel_category_options", None
+        )
+        if not callable(observer):
+            return blocked_category_options(
+                context=context,
+                reason_code=(
+                    "official_channel_category_observer_unavailable"
+                ),
+            )
+        return build_category_options(
+            observer(request),
+            context=context,
+        )
+    except ChannelCategoryDecisionError:
+        return blocked_category_options(
+            context=context,
+            reason_code="official_channel_category_shape_invalid",
+        )
+    except Exception:
+        return blocked_category_options(
+            context=context,
+            reason_code="official_channel_category_read_failed",
+        )
+
+
+def _channel_category_preview_projection(
+    *,
+    payload: dict,
+    snapshot: dict,
+) -> dict:
+    from shared_platform.channel_category_decisions import (
+        OPTIONS_SCHEMA_VERSION,
+        PREVIEW_SCHEMA_VERSION,
+        public_options_projection,
+    )
+    from shared_platform.release_store import default_release_store
+
+    if snapshot.get("schema_version") != OPTIONS_SCHEMA_VERSION or (
+        snapshot.get("status") == "BLOCKED_CAPABILITY"
+    ):
+        return {
+            "ok": True,
+            "schema_version": PREVIEW_SCHEMA_VERSION,
+            "offer_id": payload["product_id"],
+            "product_revision": payload["product_revision"],
+            "target_label": "shopee:GLOBAL",
+            "mode": "NEW_GLOBAL",
+            "status": "BLOCKED_CAPABILITY",
+            "options_digest": None,
+            "recommendation": None,
+            "options": [],
+            "selection": None,
+            "blocker": dict(
+                snapshot.get("reason")
+                or {
+                    "category": "CAPABILITY",
+                    "code": "official_channel_category_unavailable",
+                }
+            ),
+            "next_action": dict(
+                snapshot.get("next_action")
+                or {
+                    "action": "wait_for_channel_capability",
+                    "target_focus": "shopee:GLOBAL",
+                }
+            ),
+            "external_writes_performed": [],
+        }
+    current = default_release_store().channel_category_decision(
+        product_id=payload["product_id"],
+        product_revision=payload["product_revision"],
+        channel="shopee",
+        mode="NEW_GLOBAL",
+        context_digest=snapshot["context_digest"],
+    )
+    projection = public_options_projection(
+        snapshot,
+        decision=(current or {}).get("decision"),
+    )
+    return {
+        "ok": True,
+        **projection,
+        "offer_id": payload["product_id"],
+        "product_revision": payload["product_revision"],
+        "external_writes_performed": [],
+    }
+
+
+def _preview_channel_category_decision(
+    *,
+    offer_id: object,
+    target_label: object,
+) -> tuple[int, dict]:
+    """Return official alternatives and the current explicit local selection."""
+
+    from shared_platform import release_control
+
+    clean_offer_id = str(offer_id or "").strip()
+    if (
+        type(offer_id) is not str
+        or not clean_offer_id.isascii()
+        or not clean_offer_id.isdigit()
+        or not 1 <= len(clean_offer_id) <= 32
+        or target_label != "shopee:GLOBAL"
+    ):
+        return 400, {
+            "ok": False,
+            "error": (
+                "offer_id and target_label=shopee:GLOBAL are required"
+            ),
+            "external_writes_performed": [],
+        }
+    try:
+        dashboard = release_control.build_release_dashboard(
+            offer_id=clean_offer_id
+        )
+        payload, blockers = _release_plan_payload_from_dashboard(
+            dashboard,
+            bind_shopee_global_plan=False,
+        )
+        if not any(
+            type(label) is str and label.startswith("shopee:")
+            for label in payload.get("targets") or ()
+        ):
+            raise ValueError("current release scope has no Shopee target")
+        if blockers:
+            raise ValueError(blockers[0])
+        snapshot = _observe_channel_category_options(payload)
+        return 200, _channel_category_preview_projection(
+            payload=payload,
+            snapshot=snapshot,
+        )
+    except FileNotFoundError as error:
+        return 404, {
+            "ok": False,
+            "error": str(error),
+            "external_writes_performed": [],
+        }
+    except (TypeError, ValueError) as error:
+        return 409, {
+            "ok": False,
+            "error": str(error),
+            "external_writes_performed": [],
+        }
+
+
+def _approve_channel_category_decision_locally(
+    data: dict,
+) -> tuple[int, dict]:
+    """Persist one exact offered selection; never call a marketplace write."""
+
+    from shared_platform import release_control
+    from shared_platform.channel_category_decisions import (
+        ChannelCategoryDecisionError,
+        approve_category_decision,
+        serialize_category_decision,
+    )
+    from shared_platform.release_store import (
+        ImmutableReleaseError,
+        ReleaseStoreError,
+        default_release_store,
+    )
+
+    expected_fields = {
+        "offer_id",
+        "target_label",
+        "expected_product_revision",
+        "expected_options_digest",
+        "selected_category_identity_digest",
+        "approved_by",
+        "confirm_channel_category_selection",
+    }
+    if set(data) != expected_fields:
+        return 400, {
+            "ok": False,
+            "error": "channel category selection fields are invalid",
+            "external_writes_performed": [],
+        }
+    if (
+        type(data["offer_id"]) is not str
+        or not data["offer_id"].isascii()
+        or not data["offer_id"].isdigit()
+        or not 1 <= len(data["offer_id"]) <= 32
+        or data["target_label"] != "shopee:GLOBAL"
+        or type(data["expected_product_revision"]) is not int
+        or data["expected_product_revision"] < 0
+        or data["approved_by"] != "Kyle"
+        or data["confirm_channel_category_selection"] is not True
+    ):
+        return 400, {
+            "ok": False,
+            "error": "channel category selection identity is invalid",
+            "external_writes_performed": [],
+        }
+    try:
+        dashboard = release_control.build_release_dashboard(
+            offer_id=data["offer_id"]
+        )
+        payload, blockers = _release_plan_payload_from_dashboard(
+            dashboard,
+            bind_shopee_global_plan=False,
+        )
+        if blockers:
+            raise ChannelCategoryDecisionError(blockers[0])
+        if (
+            payload["product_revision"]
+            != data["expected_product_revision"]
+        ):
+            raise ChannelCategoryDecisionError(
+                "product revision changed; refresh category options"
+            )
+        snapshot = _observe_channel_category_options(payload)
+        if snapshot.get("status") == "BLOCKED_CAPABILITY":
+            raise ChannelCategoryDecisionError(
+                (snapshot.get("reason") or {}).get("code")
+                or "official category options are unavailable"
+            )
+        if (
+            type(data["expected_options_digest"]) is not str
+            or data["expected_options_digest"]
+            != snapshot["options_digest"]
+        ):
+            raise ChannelCategoryDecisionError(
+                "category options changed; refresh before selection"
+            )
+        decision = approve_category_decision(
+            snapshot,
+            product_id=payload["product_id"],
+            product_revision=payload["product_revision"],
+            selected_category_identity_digest=data[
+                "selected_category_identity_digest"
+            ],
+            approved_by="Kyle",
+            confirm_channel_category_selection=True,
+        )
+        stored = default_release_store().persist_channel_category_decision(
+            serialize_category_decision(decision)
+        )
+        projection = _channel_category_preview_projection(
+            payload=payload,
+            snapshot=snapshot,
+        )
+    except FileNotFoundError as error:
+        return 404, {
+            "ok": False,
+            "error": str(error),
+            "external_writes_performed": [],
+        }
+    except (
+        ChannelCategoryDecisionError,
+        ImmutableReleaseError,
+        ReleaseStoreError,
+        TypeError,
+        ValueError,
+    ) as error:
+        return 409, {
+            "ok": False,
+            "error": str(error),
+            "external_writes_performed": [],
+        }
+    return 200, {
+        **projection,
+        "persisted": True,
+        "created": stored["created"],
+    }
 
 
 def _shopee_global_plan_preview_for_dashboard(
@@ -4336,6 +4803,15 @@ def _public_release_plan_projection(plan: object) -> object:
         approved = payload.get("approved_shopee_global_plan")
         if isinstance(approved, dict):
             safe_payload["approved_shopee_global_plan"] = dict(approved)
+        category_decisions = payload.get(
+            "approved_channel_category_decisions"
+        )
+        if isinstance(category_decisions, dict):
+            safe_payload["approved_channel_category_decisions"] = {
+                str(target): dict(binding)
+                for target, binding in category_decisions.items()
+                if isinstance(binding, dict)
+            }
         public["payload"] = safe_payload
     return public
 
@@ -10360,6 +10836,32 @@ class Handler(BaseHTTPRequestHandler):
                 )
             status, payload = _preview_shopee_global_plan(q["offer_id"][0])
             return self._json(status, payload)
+        if path == _CHANNEL_CATEGORY_PREVIEW_PATH:
+            q = parse_qs(
+                urlparse(self.path).query,
+                keep_blank_values=True,
+            )
+            if (
+                set(q) != {"offer_id", "target_label"}
+                or len(q["offer_id"]) != 1
+                or len(q["target_label"]) != 1
+            ):
+                return self._json(
+                    400,
+                    {
+                        "ok": False,
+                        "error": (
+                            "exactly one offer_id and target_label "
+                            "are required"
+                        ),
+                        "external_writes_performed": [],
+                    },
+                )
+            status, payload = _preview_channel_category_decision(
+                offer_id=q["offer_id"][0],
+                target_label=q["target_label"][0],
+            )
+            return self._json(status, payload)
         if path == "/api/product-workspace/reconcile-target":
             q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
             status, payload = _reconcile_existing_shopee_target_readonly(
@@ -11000,6 +11502,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/product-workspace/approve",
             "/api/product-workspace/release-plan/approve",
             "/api/product-workspace/shopee-global-plan-approval",
+            _CHANNEL_CATEGORY_APPROVAL_PATH,
             "/api/product-workspace/miaoshou-draft/commit",
             "/api/product-workspace/publish",
             "/api/product-workspace/release-target/manual-verify",
@@ -11068,6 +11571,10 @@ class Handler(BaseHTTPRequestHandler):
                 status, payload = _approve_release_plan_locally(data)
             elif path == "/api/product-workspace/shopee-global-plan-approval":
                 status, payload = _approve_shopee_global_plan_locally(data)
+            elif path == _CHANNEL_CATEGORY_APPROVAL_PATH:
+                status, payload = (
+                    _approve_channel_category_decision_locally(data)
+                )
             elif path == "/api/product-workspace/miaoshou-draft/commit":
                 status, payload = _prepare_miaoshou_release(data)
             elif path == "/api/product-workspace/release-target/manual-verify":

@@ -2482,6 +2482,11 @@ class OneClickReleaseStore:
                 UPDATE oneclick_release_targets
                 SET status = ?, reason_category = ?, reason_scope = ?,
                     reason_code = ?, reason_detail = ?, result_json = ?,
+                    cumulative_external_writes_json = ?,
+                    cumulative_external_writes_digest = ?,
+                    cumulative_external_write_count = ?,
+                    cumulative_external_write_lower_bound = ?,
+                    cumulative_external_write_upper_bound = ?,
                     updated_at = ?, completed_at = ?
                 WHERE job_id = ? AND target_label = ?
                 """,
@@ -2492,6 +2497,11 @@ class OneClickReleaseStore:
                     result.reason_code,
                     durable_detail,
                     _canonical_json(public_result),
+                    _canonical_json(list(result.external_writes)),
+                    _digest_json(list(result.external_writes)),
+                    result_exact,
+                    result_lower,
+                    result_upper,
                     now,
                     now,
                     request.job_id,

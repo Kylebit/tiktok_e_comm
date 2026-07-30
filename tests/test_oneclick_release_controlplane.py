@@ -1296,7 +1296,24 @@ def test_terminal_receipts_keep_control_and_canonical_ledgers_consistent(
     control.record_dispatch_result(request, result)
 
     public = control.get_job(job_id=job["job_id"])
-    assert public["targets"][0]["status"] == expected_control
+    public_target = public["targets"][0]
+    assert public_target["status"] == expected_control
+    assert public_target["dispatch_ledger"][
+        "cumulative_external_write_classes"
+    ] == public_target["result"]["cumulative_external_write_classes"]
+    assert public_target["dispatch_ledger"][
+        "cumulative_external_write_count"
+    ] == public_target["result"]["cumulative_external_write_count"]
+    assert public_target["dispatch_ledger"][
+        "confirmed_external_write_count_lower_bound"
+    ] == public_target["result"][
+        "confirmed_external_write_count_lower_bound"
+    ]
+    assert public_target["dispatch_ledger"][
+        "possible_external_write_count_upper_bound"
+    ] == public_target["result"][
+        "possible_external_write_count_upper_bound"
+    ]
     physical = ReleaseStore(tmp_path / "release.db").get_run(run["run_id"])[
         "targets"
     ][0]

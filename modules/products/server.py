@@ -2705,8 +2705,16 @@ def _preview_channel_category_decision(
             raise ValueError("current release scope has no Shopee target")
         if blockers:
             raise ValueError(blockers[0])
+        # A finalized decision and its earlier attribute-intent row may both
+        # remain append-only in the store.  They are alternative observer
+        # inputs: once the exact decision exists, revalidate that decision
+        # alone.  Passing both makes the strict channel observer reject an
+        # otherwise valid saved decision and traps the UI in RECHECK_REQUIRED.
+        current_decision = _category_decision_from_payload(payload)
         attribute_selection = (
-            _active_channel_category_attribute_selection(payload)
+            None
+            if current_decision is not None
+            else _active_channel_category_attribute_selection(payload)
         )
         snapshot = _observe_channel_category_options(
             payload,

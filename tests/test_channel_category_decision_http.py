@@ -515,11 +515,16 @@ def test_required_attribute_single_post_rechecks_and_replay_is_local(
     def observe(payload, *, attribute_selection=None):
         calls.append(attribute_selection is not None)
         observed = _observed_options(missing_required=True)
-        if attribute_selection is not None:
+        current_decision = product_server._category_decision_from_payload(
+            payload
+        )
+        if attribute_selection is not None or current_decision is not None:
             row = observed["options"][0]
-            row["selected_attributes"] = attribute_selection[
-                "selected_attributes"
-            ]
+            row["selected_attributes"] = (
+                attribute_selection["selected_attributes"]
+                if attribute_selection is not None
+                else current_decision["selected_attributes"]
+            )
             row["attributes_complete"] = True
             row["required_values_complete"] = True
             row["missing_required_attributes"] = []
@@ -591,6 +596,12 @@ def test_required_attribute_single_post_rechecks_and_replay_is_local(
         channel="shopee",
         mode="NEW_GLOBAL",
     ) is not None
+    status, reloaded = _request(
+        _preview_url(http_server, dashboard["product"]["offer_id"])
+    )
+    assert status == 200
+    assert reloaded["status"] == "SELECTED"
+    assert calls[-1] is False
 
 
 def test_recheck_required_is_resumed_by_get_without_second_post(

@@ -5779,10 +5779,19 @@ async function shopeeGlobalApprovalResponseLossContract(browser) {
     });
     const form = page.locator(".shopee-global-plan-approval-form");
     await form.waitFor({ state: "visible" });
+    const approvalButton = form.locator("button[type='submit']");
+    check(
+      await approvalButton.isDisabled(),
+      "Shopee Global approval: submit stays disabled before explicit consent",
+    );
     await form.locator(
       "input[name='confirm_approved_shopee_global_plan']",
     ).check();
-    await form.locator("button[type='submit']").click();
+    check(
+      await approvalButton.isEnabled(),
+      "Shopee Global approval: explicit consent enables exactly one submit",
+    );
+    await approvalButton.click();
     await page.waitForFunction(() => (
       document.querySelector(".shopee-global-plan-review.is-approved")
       || performance.getEntriesByType("navigation").length > 1

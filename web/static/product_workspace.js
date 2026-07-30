@@ -1564,7 +1564,7 @@
           <input name="manual_review_accepted" type="checkbox" required>
           <span>我已查看上述平台派生观察警告，并确认接受本次官方回读结果；此操作只结案，不会重新发布或重试。</span>
         </label>
-        <button class="button button-secondary" type="submit">
+        <button class="button button-secondary" type="submit" disabled>
           记录 Kyle 观察警告验收
         </button>
         <span class="manual-verification-message" role="status" aria-live="polite"></span>
@@ -3379,6 +3379,39 @@
     }
   }
 
+  function syncShopeeGlobalPlanApprovalConsent(root = document) {
+    const forms = root.matches?.(".shopee-global-plan-approval-form")
+      ? [root]
+      : root.querySelectorAll(".shopee-global-plan-approval-form");
+    forms.forEach(
+      (form) => {
+        const checkbox = form.querySelector(
+          "input[name='confirm_approved_shopee_global_plan']",
+        );
+        const button = form.querySelector("button[type='submit']");
+        if (button) {
+          button.disabled = (
+            checkbox?.checked !== true
+            || shopeeGlobalPlanReview.submitting
+            || shopeeGlobalPlanReview.approvalPostAttempted
+            || releaseSubmitting
+          );
+        }
+      },
+    );
+  }
+
+  function updateShopeeGlobalPlanApprovalConsent(event) {
+    const checkbox = event.target.closest(
+      ".shopee-global-plan-approval-form "
+        + "input[name='confirm_approved_shopee_global_plan']",
+    );
+    if (!checkbox) return false;
+    const form = checkbox.closest(".shopee-global-plan-approval-form");
+    if (form) syncShopeeGlobalPlanApprovalConsent(form);
+    return true;
+  }
+
   function renderOneClickExecution(data) {
     const container = $("#oneClickExecutionGroups");
     const message = $("#oneClickExecutionMessage");
@@ -3448,6 +3481,7 @@
         </section>
       `).join("") || "<p>尚无服务端店铺状态。</p>";
 
+    syncShopeeGlobalPlanApprovalConsent(container);
     const nextAction = currentOneClickNextAction(data);
     const passiveActions = new Set([
       "prepare_batch",
@@ -6557,6 +6591,7 @@
           ),
       );
       reviewContainer.innerHTML = shopeeGlobalPlanPanel();
+      syncShopeeGlobalPlanApprovalConsent(reviewContainer);
     } else {
       reviewContainer.innerHTML = "";
     }
@@ -8098,6 +8133,7 @@
   }
 
   $("#releasePlanRecovery").addEventListener("change", (event) => {
+    if (updateShopeeGlobalPlanApprovalConsent(event)) return;
     updateShopeeCategoryDraft(event);
   });
   $("#releasePlanRecovery").addEventListener("input", (event) => {
@@ -8173,6 +8209,7 @@
     retryOneClickReadOnly,
   );
   $("#oneClickExecutionGroups").addEventListener("change", (event) => {
+    if (updateShopeeGlobalPlanApprovalConsent(event)) return;
     updateShopeeCategoryDraft(event);
   });
   $("#oneClickExecutionGroups").addEventListener("input", (event) => {

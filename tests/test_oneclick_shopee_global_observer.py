@@ -125,7 +125,7 @@ class _OfficialScan:
         if path == shopee.GLOBAL_LIST_PATH:
             rows = (
                 [{"global_item_id": 57115039489}]
-                if self.existing and params["item_status"] == "NORMAL"
+                if self.existing
                 else []
             )
             return {
@@ -154,7 +154,7 @@ class _OfficialScan:
         ):
             return {
                 "error": "",
-                "response": {"category_id_list": [101157]},
+                "response": {"category_id": [101157]},
             }
         if path == "/api/v2/global_product/get_category":
             return {
@@ -301,18 +301,8 @@ class _PagedOfficialScan(_OfficialScan):
     def merchant_get(self, path, params):
         self.calls.append((path, dict(params)))
         if path == shopee.GLOBAL_LIST_PATH:
-            status = params["item_status"]
-            offset = params["offset"]
-            if status != "NORMAL":
-                return {
-                    "error": "",
-                    "response": {
-                        "global_item_list": [],
-                        "total_count": 0,
-                        "has_next_page": False,
-                    },
-                }
-            if offset == 0:
+            offset = params.get("offset")
+            if offset is None:
                 return {
                     "error": "",
                     "response": {
@@ -320,13 +310,13 @@ class _PagedOfficialScan(_OfficialScan):
                         "total_count": 2,
                         "has_next_page": not self.incomplete,
                         **(
-                            {"next_offset": 100}
+                            {"offset": "opaque-page-2"}
                             if not self.incomplete
                             else {}
                         ),
                     },
                 }
-            if offset == 100 and not self.incomplete:
+            if offset == "opaque-page-2" and not self.incomplete:
                 return {
                     "error": "",
                     "response": {
@@ -357,6 +347,96 @@ class _PagedOfficialScan(_OfficialScan):
                 },
             }
         raise AssertionError((path, params))
+
+
+class _CursorFaultOfficialScan(_OfficialScan):
+    def __init__(self, fault: str):
+        super().__init__(existing=True)
+        self.fault = fault
+
+    def merchant_get(self, path, params):
+        self.calls.append((path, dict(params)))
+        if path != shopee.GLOBAL_LIST_PATH:
+            return super().merchant_get(path, params)
+        offset = params.get("offset")
+        if offset is None:
+            response = {
+                "global_item_list": [{"global_item_id": 111}],
+                "total_count": 2,
+                "has_next_page": True,
+            }
+            if self.fault == "missing_cursor":
+                return {"error": "", "response": response}
+            if self.fault == "numeric_cursor":
+                response["offset"] = 100
+                return {"error": "", "response": response}
+            if self.fault == "empty_cursor":
+                response["offset"] = ""
+                return {"error": "", "response": response}
+            response["offset"] = "opaque-page-2"
+            return {"error": "", "response": response}
+        if offset != "opaque-page-2":
+            raise AssertionError(params)
+        response = {
+            "global_item_list": [{"global_item_id": 222}],
+            "total_count": 2,
+            "has_next_page": False,
+        }
+        if self.fault == "cursor_loop":
+            response.update(
+                {
+                    "has_next_page": True,
+                    "offset": "opaque-page-2",
+                }
+            )
+        elif self.fault == "total_drift":
+            response["total_count"] = 3
+        elif self.fault == "terminal_numeric_cursor":
+            response["offset"] = 200
+        return {"error": "", "response": response}
+
+
+class _SingleSkuOfficialScan(_OfficialScan):
+    def __init__(self, *, matches: bool):
+        super().__init__(existing=False)
+        self.matches = matches
+
+    def merchant_get(self, path, params):
+        self.calls.append((path, dict(params)))
+        if path == shopee.GLOBAL_LIST_PATH:
+            return {
+                "error": "",
+                "response": {
+                    "global_item_list": [{"global_item_id": 57115039489}],
+                    "total_count": 1,
+                    "has_next_page": False,
+                },
+            }
+        if path == shopee.GLOBAL_MODEL_PATH:
+            return {
+                "error": "",
+                "response": {
+                    "tier_variation": [{"name": "Default"}],
+                    "standardise_tier_variation": [{"name": "Default"}],
+                },
+            }
+        if path == shopee.GLOBAL_ITEM_PATH:
+            return {
+                "error": "",
+                "response": {
+                    "global_item_list": [
+                        {
+                            "global_item_id": 57115039489,
+                            "global_item_status": "NORMAL",
+                            "global_item_sku": (
+                                "0954" if self.matches else "OTHER"
+                            ),
+                            "has_model": False,
+                        }
+                    ]
+                },
+            }
+        return super().merchant_get(path, params)
 
 
 def _category_execution(fake: _OfficialScan) -> dict[str, object]:
@@ -607,11 +687,12 @@ def test_dynamic_observer_returns_only_shared_ready_candidate(
 
     assert candidate.status == READY
     assert candidate.mode == expected_mode
-    assert {
-        params["item_status"]
+    list_calls = [
+        params
         for path, params in official.calls
         if path == shopee.GLOBAL_LIST_PATH
-    } == {"NORMAL", "UNLIST", "BANNED"}
+    ]
+    assert list_calls == [{"page_size": 50}]
     assert "fixture-shop-token" not in repr(candidate)
 
 
@@ -692,6 +773,41 @@ def test_global_observer_reports_official_list_capability_failure():
     assert captured.value.code == (
         "shopee_official_global_list_unavailable"
     )
+
+
+def test_single_sku_global_without_model_is_actionable_not_malformed():
+    official = _SingleSkuOfficialScan(matches=True)
+    shopee.configure_prepare_transport_factory(
+        lambda _region: official.transport()
+    )
+
+    with pytest.raises(ShopeeGlobalPlanObservationError) as captured:
+        adapters.observe_shopee_global_plan_candidate(_request())
+
+    assert captured.value.category == "CAPABILITY"
+    assert captured.value.code == (
+        "shopee_existing_global_model_initialization_required"
+    )
+    assert [
+        params
+        for path, params in official.calls
+        if path == shopee.GLOBAL_LIST_PATH
+    ] == [{"page_size": 50}]
+
+
+def test_unrelated_single_sku_global_does_not_block_new_global_candidate():
+    official = _SingleSkuOfficialScan(matches=False)
+    shopee.configure_prepare_transport_factory(
+        lambda _region: official.transport()
+    )
+    shopee.configure_global_candidate_observer_factory(
+        _first_party_candidate
+    )
+
+    candidate = adapters.observe_shopee_global_plan_candidate(_request())
+
+    assert candidate.status == READY
+    assert candidate.mode == NEW_GLOBAL
 
 
 def test_global_observer_consumes_and_revalidates_persisted_category_decision():
@@ -997,7 +1113,7 @@ def test_dynamic_observer_rejects_partial_model_identity_before_candidate():
     )
 
 
-def test_dynamic_observer_consumes_complete_paginated_status_scan():
+def test_dynamic_observer_consumes_complete_opaque_cursor_scan():
     official = _PagedOfficialScan()
     shopee.configure_prepare_transport_factory(
         lambda _region: official.transport()
@@ -1009,13 +1125,15 @@ def test_dynamic_observer_consumes_complete_paginated_status_scan():
     candidate = adapters.observe_shopee_global_plan_candidate(_request())
 
     assert candidate.status == READY
-    normal_offsets = [
-        params["offset"]
+    page_params = [
+        params
         for path, params in official.calls
         if path == shopee.GLOBAL_LIST_PATH
-        and params["item_status"] == "NORMAL"
     ]
-    assert normal_offsets == [0, 100]
+    assert page_params == [
+        {"page_size": 50},
+        {"page_size": 50, "offset": "opaque-page-2"},
+    ]
 
 
 def test_dynamic_observer_incomplete_page_blocks_before_first_party_candidate():
@@ -1031,6 +1149,47 @@ def test_dynamic_observer_incomplete_page_blocks_before_first_party_candidate():
     with pytest.raises(
         shopee.ShopeeOneClickPreDispatchError,
         match="pagination is incomplete",
+    ):
+        adapters.observe_shopee_global_plan_candidate(_request())
+
+    assert first_party_calls == []
+    assert not any(
+        path
+        in {
+            shopee.GLOBAL_CREATE_PATH,
+            shopee.GLOBAL_MODEL_INIT_PATH,
+            shopee.REGIONAL_TASK_PATH,
+        }
+        for path, _params in official.calls
+    )
+
+
+@pytest.mark.parametrize(
+    ("fault", "message"),
+    [
+        ("missing_cursor", "pagination cursor is invalid"),
+        ("numeric_cursor", "pagination cursor is invalid"),
+        ("empty_cursor", "pagination cursor is invalid"),
+        ("cursor_loop", "pagination cursor looped"),
+        ("total_drift", "total changed during pagination"),
+        ("terminal_numeric_cursor", "list is malformed"),
+    ],
+)
+def test_dynamic_observer_rejects_malformed_official_cursor_contract(
+    fault, message
+):
+    official = _CursorFaultOfficialScan(fault)
+    first_party_calls = []
+    shopee.configure_prepare_transport_factory(
+        lambda _region: official.transport()
+    )
+    shopee.configure_global_candidate_observer_factory(
+        lambda *_args: first_party_calls.append(True)
+    )
+
+    with pytest.raises(
+        shopee.ShopeeOneClickPreDispatchError,
+        match=message,
     ):
         adapters.observe_shopee_global_plan_candidate(_request())
 

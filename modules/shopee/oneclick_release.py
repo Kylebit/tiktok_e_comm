@@ -8,6 +8,7 @@ publish task, and performs bounded official readback.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 import hashlib
@@ -41,6 +42,7 @@ REGIONAL_TASK_PATH = "/api/v2/global_product/create_publish_task"
 REGIONAL_TASK_RESULT_PATH = "/api/v2/global_product/get_publish_task_result"
 GLOBAL_CREATE_PATH = "/api/v2/global_product/add_global_item"
 GLOBAL_MODEL_INIT_PATH = "/api/v2/global_product/init_tier_variation"
+GLOBAL_SCAN_MAX_WORKERS = 8
 
 
 class ShopeeOneClickPreDispatchError(RuntimeError):
@@ -2906,109 +2908,196 @@ def _scan_global_model_candidates(
     transport: ShopeePrepareTransport,
     *,
     model_sku: str,
-    page_size: int = 100,
+    page_size: int = 50,
     max_pages: int = 100,
 ) -> list[str]:
-    """Full NORMAL/UNLIST/BANNED scan with exact pagination evidence."""
+    """Scan the official Global Product list with its opaque cursor contract.
+
+    Shopee's current v2 endpoint does not accept ``item_status`` and does not
+    use an integer page offset.  The first request contains only
+    ``page_size``; every later request echoes the opaque string returned in
+    ``response.offset`` by the preceding page.
+    """
     matches: list[str] = []
+    single_sku_matches: list[str] = []
     item_ids: set[str] = set()
-    for status in ("NORMAL", "UNLIST", "BANNED"):
-        offset = 0
-        seen_offsets: set[int] = set()
-        observed_count = 0
-        for _ in range(max_pages):
-            if offset in seen_offsets:
-                raise ShopeeOneClickPreDispatchError(
-                    "global item pagination cursor looped"
-                )
-            seen_offsets.add(offset)
-            raw = transport.merchant_get(
-                GLOBAL_LIST_PATH,
-                {
-                    "offset": offset,
-                    "page_size": page_size,
-                    "item_status": status,
-                },
-            )
-            if not isinstance(raw, Mapping) or raw.get("error"):
-                raise ShopeeOneClickPreDispatchError(
-                    "official global item list failed"
-                )
-            data = raw.get("response")
-            if not isinstance(data, Mapping):
-                raise ShopeeOneClickPreDispatchError(
-                    "official global item response is malformed"
-                )
-            total = data.get("total_count")
-            has_next = data.get("has_next_page")
-            rows = data.get("global_item_list")
-            if (
-                rows is None
-                and "global_item_list" not in data
-                and type(total) is int
-                and total == 0
-                and has_next is False
-            ):
-                rows = []
-            if (
-                type(total) is not int
-                or total < 0
-                or type(has_next) is not bool
-                or not isinstance(rows, list)
-                or any(not isinstance(row, Mapping) for row in rows)
-            ):
-                raise ShopeeOneClickPreDispatchError(
-                    "official global item list is malformed"
-                )
-            ids = [
-                _positive_identity(
-                    row.get("global_item_id"), "global item identity"
-                )
-                for row in rows
-            ]
-            if len(ids) != len(set(ids)) or item_ids.intersection(ids):
-                raise ShopeeOneClickPreDispatchError(
-                    "official global item identity is duplicated"
-                )
-            item_ids.update(ids)
-            observed_count += len(ids)
-            for global_id in ids:
-                models = _global_models(transport, global_id)
-                exact_models = [
-                    row
-                    for row in models
-                    if row.get("global_model_sku") == model_sku
-                ]
-                if len(exact_models) > 1:
-                    raise ShopeeOneClickPreDispatchError(
-                        "official global model SKU is ambiguous"
-                    )
-                if exact_models:
-                    matches.append(global_id)
-            if has_next is False:
-                if observed_count != total:
-                    raise ShopeeOneClickPreDispatchError(
-                        "official global item pagination is incomplete"
-                    )
-                break
-            next_offset = data.get("next_offset")
-            if (
-                type(next_offset) is not int
-                or next_offset <= offset
-            ):
-                raise ShopeeOneClickPreDispatchError(
-                    "official global item pagination is non-terminating"
-                )
-            offset = next_offset
-        else:
+    cursor: str | None = None
+    seen_cursors: set[str] = set()
+    observed_count = 0
+    expected_total: int | None = None
+    for _ in range(max_pages):
+        params: dict[str, object] = {"page_size": page_size}
+        if cursor is not None:
+            params["offset"] = cursor
+        raw = transport.merchant_get(GLOBAL_LIST_PATH, params)
+        if not isinstance(raw, Mapping) or raw.get("error"):
             raise ShopeeOneClickPreDispatchError(
-                "official global item pagination exceeded its bound"
+                "official global item list failed"
             )
+        data = raw.get("response")
+        if not isinstance(data, Mapping):
+            raise ShopeeOneClickPreDispatchError(
+                "official global item response is malformed"
+            )
+        total = data.get("total_count")
+        has_next = data.get("has_next_page")
+        rows = data.get("global_item_list")
+        if (
+            rows is None
+            and "global_item_list" not in data
+            and type(total) is int
+            and total == 0
+            and has_next is False
+        ):
+            rows = []
+        terminal_cursor = data.get("offset")
+        if (
+            type(total) is not int
+            or total < 0
+            or type(has_next) is not bool
+            or not isinstance(rows, list)
+            or any(not isinstance(row, Mapping) for row in rows)
+            or (
+                has_next is False
+                and terminal_cursor is not None
+                and type(terminal_cursor) is not str
+            )
+        ):
+            raise ShopeeOneClickPreDispatchError(
+                "official global item list is malformed"
+            )
+        if expected_total is None:
+            expected_total = total
+        elif total != expected_total:
+            raise ShopeeOneClickPreDispatchError(
+                "official global item total changed during pagination"
+            )
+        ids = [
+            _positive_identity(
+                row.get("global_item_id"), "global item identity"
+            )
+            for row in rows
+        ]
+        if len(ids) != len(set(ids)) or item_ids.intersection(ids):
+            raise ShopeeOneClickPreDispatchError(
+                "official global item identity is duplicated"
+            )
+        item_ids.update(ids)
+        observed_count += len(ids)
+        with ThreadPoolExecutor(
+            max_workers=min(GLOBAL_SCAN_MAX_WORKERS, max(1, len(ids)))
+        ) as executor:
+            futures = [
+                executor.submit(
+                    _global_sku_match_kind,
+                    transport,
+                    global_item_id=global_id,
+                    model_sku=model_sku,
+                )
+                for global_id in ids
+            ]
+            match_kinds = [future.result() for future in futures]
+        for global_id, match_kind in zip(ids, match_kinds):
+            if match_kind == "MODEL":
+                matches.append(global_id)
+            elif match_kind == "SINGLE":
+                single_sku_matches.append(global_id)
+        if has_next is False:
+            if observed_count != total:
+                raise ShopeeOneClickPreDispatchError(
+                    "official global item pagination is incomplete"
+                )
+            break
+        next_cursor = data.get("offset")
+        if type(next_cursor) is not str or not next_cursor:
+            raise ShopeeOneClickPreDispatchError(
+                "official global item pagination cursor is invalid"
+            )
+        if next_cursor == cursor or next_cursor in seen_cursors:
+            raise ShopeeOneClickPreDispatchError(
+                "global item pagination cursor looped"
+            )
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+    else:
+        raise ShopeeOneClickPreDispatchError(
+            "official global item pagination exceeded its bound"
+        )
     if len(matches) != len(set(matches)):
         raise ShopeeOneClickPreDispatchError(
-            "official global model identity repeated across statuses"
+            "official global model identity repeated across pages"
+        )
+    if single_sku_matches:
+        combined = [*matches, *single_sku_matches]
+        if len(combined) != 1:
+            return combined
+        raise ShopeeOneClickPrepareBlocked(
+            "shopee_existing_global_model_initialization_required",
+            (
+                "an official single-SKU global item already owns the "
+                "approved SKU but has no model identity for regional publish"
+            ),
+            category="CAPABILITY",
         )
     return matches
+
+
+def _global_sku_match_kind(
+    transport: ShopeePrepareTransport,
+    *,
+    global_item_id: str,
+    model_sku: str,
+) -> str | None:
+    """Return the exact official SKU identity kind for one global item."""
+
+    raw_models = transport.merchant_get(
+        GLOBAL_MODEL_PATH,
+        {"global_item_id": int(global_item_id)},
+    )
+    model_response = (
+        raw_models.get("response")
+        if isinstance(raw_models, Mapping) and not raw_models.get("error")
+        else None
+    )
+    if (
+        isinstance(model_response, Mapping)
+        and "global_model" not in model_response
+    ):
+        tier = model_response.get("tier_variation")
+        standard_tier = model_response.get(
+            "standardise_tier_variation"
+        )
+        if (
+            not isinstance(tier, list)
+            or not isinstance(standard_tier, list)
+            or any(not isinstance(row, Mapping) for row in tier)
+            or any(
+                not isinstance(row, Mapping)
+                for row in standard_tier
+            )
+        ):
+            raise ShopeeOneClickPreDispatchError(
+                "official global model list is malformed"
+            )
+        return (
+            "SINGLE"
+            if _single_sku_global_item(
+                transport, global_item_id=global_item_id
+            )
+            == model_sku
+            else None
+        )
+    models = _global_models(
+        transport, global_item_id, raw=raw_models
+    )
+    exact_models = [
+        row for row in models if row.get("global_model_sku") == model_sku
+    ]
+    if len(exact_models) > 1:
+        raise ShopeeOneClickPreDispatchError(
+            "official global model SKU is ambiguous"
+        )
+    return "MODEL" if exact_models else None
 
 
 def _observe_existing_global_candidate_availability(
@@ -3391,12 +3480,52 @@ def _read_global_master(
     }
 
 
-def _global_models(
-    transport: ShopeePrepareTransport, global_item_id: str
-) -> list[Mapping[str, object]]:
+def _single_sku_global_item(
+    transport: ShopeePrepareTransport, *, global_item_id: str
+) -> str:
     raw = transport.merchant_get(
-        GLOBAL_MODEL_PATH, {"global_item_id": int(global_item_id)}
+        GLOBAL_ITEM_PATH, {"global_item_id_list": global_item_id}
     )
+    if not isinstance(raw, Mapping) or raw.get("error"):
+        raise ShopeeOneClickPreDispatchError(
+            "official single-SKU global item GET failed"
+        )
+    response = raw.get("response")
+    rows = (
+        response.get("global_item_list")
+        if isinstance(response, Mapping)
+        else None
+    )
+    if (
+        not isinstance(rows, list)
+        or len(rows) != 1
+        or not isinstance(rows[0], Mapping)
+        or _positive_identity(
+            rows[0].get("global_item_id"), "global item identity"
+        )
+        != global_item_id
+        or rows[0].get("has_model") is not False
+        or type(rows[0].get("global_item_status")) is not str
+        or not rows[0]["global_item_status"].strip()
+        or type(rows[0].get("global_item_sku")) is not str
+        or not rows[0]["global_item_sku"].strip()
+    ):
+        raise ShopeeOneClickPreDispatchError(
+            "official single-SKU global item identity is malformed"
+        )
+    return rows[0]["global_item_sku"]
+
+
+def _global_models(
+    transport: ShopeePrepareTransport,
+    global_item_id: str,
+    *,
+    raw: object = None,
+) -> list[Mapping[str, object]]:
+    if raw is None:
+        raw = transport.merchant_get(
+            GLOBAL_MODEL_PATH, {"global_item_id": int(global_item_id)}
+        )
     if not isinstance(raw, Mapping) or raw.get("error"):
         raise ShopeeOneClickPreDispatchError(
             "official global model GET failed"

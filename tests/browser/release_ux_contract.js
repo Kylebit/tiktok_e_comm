@@ -4341,7 +4341,10 @@ function shopeeGlobalCandidate() {
   };
 }
 
-function shopeeCategoryPreview({ status = "READY_FOR_SELECTION" } = {}) {
+function shopeeCategoryPreview({
+  status = "READY_FOR_SELECTION",
+  namedRecommendations = true,
+} = {}) {
   const digest = (character) => character.repeat(64);
   if (status === "RECHECK_REQUIRED") {
     return {
@@ -4470,13 +4473,13 @@ function shopeeCategoryPreview({ status = "READY_FOR_SELECTION" } = {}) {
     brand_options: [{
       brand_identity_digest: digest("3"),
       display_name: "No Brand",
-      recommended: true,
+      recommended: namedRecommendations,
       option_evidence_digest: digest("4"),
     }],
     location_options: [{
       location_identity_digest: digest("4"),
       display_name: "China Warehouse A",
-      recommended: true,
+      recommended: namedRecommendations,
       option_evidence_digest: digest("5"),
     }],
     creation_fact_option: creation,
@@ -4489,12 +4492,12 @@ function shopeeCategoryPreview({ status = "READY_FOR_SELECTION" } = {}) {
       selected_brand: {
         brand_identity_digest: digest("3"),
         display_name: "No Brand",
-        selected_is_recommended: true,
+        selected_is_recommended: namedRecommendations,
       },
       selected_location: {
         location_identity_digest: digest("4"),
         display_name: "China Warehouse A",
-        selected_is_recommended: true,
+        selected_is_recommended: namedRecommendations,
       },
       creation_fact_identity_digest: digest("5"),
       attribute_selection_digest: digest("f"),
@@ -5870,6 +5873,7 @@ async function shopeeCategoryDecisionContract(browser, viewport) {
           // usable options is an actionable decision form, not an observer
           // failure.
           status: selected ? "SELECTED" : "BLOCKED_CAPABILITY",
+          namedRecommendations: false,
         }),
       ));
     }
@@ -5904,6 +5908,20 @@ async function shopeeCategoryDecisionContract(browser, viewport) {
       "Shopee category: final plan approval is absent before full decision",
       viewport,
     );
+    const brandSelect = page.locator(
+      `${scope} select[name="selected_brand_identity_digest"]`,
+    );
+    const locationSelect = page.locator(
+      `${scope} select[name="selected_location_identity_digest"]`,
+    );
+    check(
+      await brandSelect.evaluate((element) => element.value) === ""
+      && await locationSelect.evaluate((element) => element.value) === "",
+      "Shopee category: zero recommendations remain explicit choices",
+      viewport,
+    );
+    await brandSelect.selectOption("3".repeat(64));
+    await locationSelect.selectOption("4".repeat(64));
     await page.locator(
       `${scope} [data-selection-kind="SINGLE"]`,
     ).selectOption("9".repeat(64));

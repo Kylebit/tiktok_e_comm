@@ -225,6 +225,11 @@ def observe_shopee_global_plan_candidate(
             sku: _scan_global_model_candidates(transport, model_sku=sku)
             for sku in model_skus
         }
+    except ShopeeOneClickPrepareBlocked as error:
+        raise ShopeeGlobalPlanObservationError(
+            category=error.reason_category,
+            code=error.reason_code,
+        ) from error
     except ShopeeOneClickPreDispatchError as error:
         if str(error) == "official global item list failed":
             raise ShopeeGlobalPlanObservationError(

@@ -201,8 +201,15 @@ def observe_official_new_global_candidate(
     recommendation_response = _response_mapping(
         recommendation_raw, "shopee_category_recommendation_invalid"
     )
+    recommendation_fields = {
+        key
+        for key in ("category_id", "category_id_list")
+        if key in recommendation_response
+    }
+    if len(recommendation_fields) != 1:
+        raise _error("shopee_category_recommendation_invalid")
     recommended = _positive_unique_ids(
-        recommendation_response.get("category_id_list"),
+        recommendation_response[next(iter(recommendation_fields))],
         "shopee_category_recommendation_invalid",
         allow_empty=False,
     )

@@ -1098,8 +1098,12 @@ def test_category_request_and_identity_shapes_fail_before_official_read(
     assert fake.calls == []
 
 
-def test_official_candidate_observes_brand_and_locations_without_defaults():
+@pytest.mark.parametrize("recommendation_field", ["category_id", "category_id_list"])
+def test_official_candidate_observes_brand_and_locations_without_defaults(
+    recommendation_field,
+):
     fake = _OfficialReadFake()
+    fake.recommendation_field = recommendation_field
     observation = subject.observe_official_new_global_candidate(
         approved_title="Approved title",
         selected_category_id=101,
@@ -1130,6 +1134,33 @@ def test_official_candidate_observes_brand_and_locations_without_defaults():
         "101",
     ):
         assert forbidden not in serialized
+
+
+def test_official_candidate_rejects_ambiguous_recommendation_fields():
+    fake = _OfficialReadFake()
+    original_merchant_get = fake.merchant_get
+
+    def merchant_get(path, params):
+        if path == subject.CATEGORY_RECOMMEND_PATH:
+            return {
+                "error": "",
+                "response": {
+                    "category_id": [101, 202],
+                    "category_id_list": [101, 202],
+                },
+            }
+        return original_merchant_get(path, params)
+
+    fake.merchant_get = merchant_get
+
+    with pytest.raises(subject.ShopeeGlobalPlanCandidateError) as error:
+        subject.observe_official_new_global_candidate(
+            approved_title="Approved title",
+            selected_category_id=101,
+            transport=fake.transport(),
+        )
+
+    assert error.value.reason_code == "shopee_category_recommendation_invalid"
 
 
 def test_global_candidate_remains_blocked_without_approved_execution_facts():

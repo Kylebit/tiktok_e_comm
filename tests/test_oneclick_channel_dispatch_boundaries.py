@@ -1271,12 +1271,11 @@ class ShopeePrepareFake:
     def merchant_get(self, path, params):
         self.calls.append(("merchant", path, deepcopy(params)))
         if path == shopee.GLOBAL_LIST_PATH:
-            status = params["item_status"]
-            if self.list_fault is not None and status == "NORMAL":
+            if self.list_fault is not None:
                 return deepcopy(self.list_fault)
             rows = (
                 [{"global_item_id": 9}]
-                if status == "NORMAL" and self.candidate
+                if self.candidate
                 else []
             )
             return {
@@ -1697,11 +1696,11 @@ def test_shopee_live_prepare_full_status_proof_is_json_restart_safe():
     assert command["global_image_outcome"][
         "global_image_status"
     ] == "warning"
-    assert {
-        call[2]["item_status"]
+    assert [
+        call[2]
         for call in fake.calls
         if call[1] == shopee.GLOBAL_LIST_PATH
-    } == {"NORMAL", "UNLIST", "BANNED"}
+    ] == [{"page_size": 50}]
     assert "publish_match_key" not in repr(result)
     assert "shop-token" not in repr(result)
 

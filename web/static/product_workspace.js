@@ -2114,7 +2114,7 @@
         if (row.recommended) recommendationCount += 1;
         seenOptions.add(row[identityKey]);
       }
-      if (recommendationCount !== 1) {
+      if (recommendationCount > 1) {
         throw oneClickContractError(
           "Shopee Global 品牌或卖家位置推荐不唯一，已停止选择。",
         );
@@ -2814,6 +2814,9 @@
             <span>官方品牌</span>
             <select name="selected_brand_identity_digest"
               ${locked ? "disabled" : ""}>
+              ${shopeeCategoryDecisionReview.draftBrandIdentityDigest
+                ? ""
+                : '<option value="" selected>请选择官方品牌</option>'}
               ${projection.brand_options.map((row) => `
                 <option value="${esc(row.brand_identity_digest)}"
                   ${row.brand_identity_digest
@@ -2829,6 +2832,9 @@
             <span>卖家位置</span>
             <select name="selected_location_identity_digest"
               ${locked ? "disabled" : ""}>
+              ${shopeeCategoryDecisionReview.draftLocationIdentityDigest
+                ? ""
+                : '<option value="" selected>请选择卖家位置</option>'}
               ${projection.location_options.map((row) => `
                 <option value="${esc(row.location_identity_digest)}"
                   ${row.location_identity_digest

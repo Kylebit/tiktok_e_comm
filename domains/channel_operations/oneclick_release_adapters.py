@@ -1093,6 +1093,25 @@ def _canonical_shopee_global_seed(
     bindings = (
         stored.get("bindings") if isinstance(stored, Mapping) else None
     )
+    lineage = payload.get("sku_lineage")
+    reservation = (
+        lineage.get("reservation")
+        if isinstance(lineage, Mapping)
+        else None
+    )
+    try:
+        bound_source_digest = _canonical_binding_digest(
+            getattr(request, "source_identity_digest", None)
+        )
+        bound_lineage_digest = _canonical_binding_digest(
+            reservation.get("reservation_digest")
+            if isinstance(reservation, Mapping)
+            else getattr(request, "sku_lineage_digest", None)
+        )
+    except OneClickAdapterInputError:
+        raise OneClickAdapterInputError(
+            "approved_shopee_global_binding_drift"
+        ) from None
     if (
         approved.mode != compact["mode"]
         or approved.candidate_digest != compact["candidate_digest"]
@@ -1111,9 +1130,9 @@ def _canonical_shopee_global_seed(
         != compact["selected_source_image_manifest_digest"]
         or not isinstance(bindings, Mapping)
         or bindings.get("source_identity_digest")
-        != getattr(request, "source_identity_digest", None)
+        != bound_source_digest
         or bindings.get("sku_lineage_digest")
-        != getattr(request, "sku_lineage_digest", None)
+        != bound_lineage_digest
     ):
         raise OneClickAdapterInputError(
             "approved_shopee_global_binding_drift"
@@ -1419,3 +1438,13 @@ def _is_digest(value: object) -> bool:
         and len(value) == 64
         and all(character in "0123456789abcdef" for character in value)
     )
+
+
+def _canonical_binding_digest(value: object) -> str:
+    if type(value) is str and value.startswith("sha256:"):
+        value = value[7:]
+    if not _is_digest(value):
+        raise OneClickAdapterInputError(
+            "approved_shopee_global_binding_digest_invalid"
+        )
+    return value

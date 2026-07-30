@@ -857,10 +857,20 @@ class ShopeePrepareFake:
         )
 
 
-def _existing_v2_request(fake, *, target="shopee:GLOBAL"):
+def _existing_v2_request(
+    fake,
+    *,
+    target="shopee:GLOBAL",
+    source_digest=None,
+    lineage_digest=None,
+):
     source_url = "https://assets.example/one.jpg"
-    source_digest = shopee._digest({"source": "official-1688"})
-    lineage_digest = shopee._digest({"lineage": "0954"})
+    source_digest = source_digest or shopee._digest(
+        {"source": "official-1688"}
+    )
+    lineage_digest = lineage_digest or shopee._digest(
+        {"lineage": "0954"}
+    )
     approved_copy_digest = approved_shopee_copy_digest(
         fake.approved["listing_copy"]["title"],
         fake.approved["listing_copy"]["description"],
@@ -1000,6 +1010,124 @@ def _existing_v2_request(fake, *, target="shopee:GLOBAL"):
         sku_lineage_payload_digest=digest({"lineage": lineage_digest}),
         adapter_policy_digest=digest({"adapter": "shopee-v2"}),
         immutable_plan_payload=immutable_payload,
+    )
+
+
+def _approved_shopee_existing_worker_context(tmp_path, fake):
+    identity_resolution = resolve_source_product_identity(
+        collect_box={
+            "source_item_id": "986159122616",
+            "source_item_code": "JD5047",
+        },
+        precollect={
+            "records": [
+                {
+                    "source_id": "986159122616",
+                    "source_item_code": "JD5047",
+                }
+            ]
+        },
+        source_authority="1688",
+    )
+    assert identity_resolution.ready
+    identity = identity_resolution.identity
+    assignment = SkuAssignment(
+        seller_sku="0954",
+        model_skus=(
+            ModelSkuAssignment(
+                variant_key="default", model_sku="0954"
+            ),
+        ),
+    )
+    finalized = finalize_new_source_sku_reservation(
+        source_identity=identity,
+        assignment=assignment,
+    )
+    assert finalized.ready
+    reservation = finalized.reservation
+    request = _existing_v2_request(
+        fake,
+        source_digest=identity.identity_digest.removeprefix("sha256:"),
+        lineage_digest=reservation.reservation_digest.removeprefix(
+            "sha256:"
+        ),
+    )
+    compact = request.immutable_plan_payload[
+        "approved_shopee_global_plan"
+    ]
+    record = request.immutable_plan_payload[
+        "_approved_shopee_global_plan_record"
+    ]
+    payload = {
+        **_immutable_payload(),
+        "plan_id": "omnichannel:existing-v2-worker",
+        "product_id": "7",
+        "seller_sku": "0954",
+        "product_package_id": "product:7:0954",
+        "content_package_id": "content:7:r31",
+        "targets": ["shopee:MY"],
+        "product_revision": 31,
+        "source_product_identity": identity.payload(),
+        "sku_lineage": {
+            "schema_version": "sku-lineage-reservation/v1",
+            "status": "READY",
+            "ready": True,
+            "source_identity_digest": identity.identity_digest,
+            "lineage_mode": "NEW_SOURCE",
+            "assignment": assignment.payload(),
+            "predecessor_id": None,
+            "predecessor_revision": None,
+            "predecessor_digest": None,
+            "reservation": reservation.payload(),
+            "blockers": [],
+        },
+        "commercial_scope": {"policy": "fixture-only"},
+        "product_facts": {
+            "title": fake.approved["listing_copy"]["title"],
+            "weight_kg": "0.2",
+            "package_cm": [30, 20, 1],
+            "selected_sku_keys": ["default"],
+        },
+        "images": [
+            {
+                "position": 1,
+                "image_url": "https://assets.example/one.jpg",
+            }
+        ],
+        "listing_copy": {
+            "shopee_description_en": fake.approved[
+                "listing_copy"
+            ]["description"],
+            "candidates": [],
+        },
+        "pricing": {
+            "selected_targets": {
+                "shopee:MY": {
+                    "store_prices": [
+                        {
+                            "list_price": "33",
+                            "currency": "MYR",
+                        }
+                    ]
+                }
+            }
+        },
+        "approved_shopee_global_plan": dict(compact),
+        "_approved_shopee_global_plan_record": record,
+    }
+    release = ReleaseStore(tmp_path / "release.db")
+    created = release.create_plan(payload)
+    release.approve_plan(
+        created["plan_id"],
+        approved_by="Kyle",
+        user_approved=True,
+        confirmation_token=created["confirmation_token"],
+    )
+    return (
+        release,
+        release.get_plan(created["plan_id"]),
+        release.start_run(created["plan_id"]),
+        json.loads(record)["approved_plan"]["plan"],
     )
 
 
@@ -1361,6 +1489,102 @@ def test_shopee_existing_v2_regional_failure_never_invents_global_write():
     assert all(
         "global" not in write for write in error.value.external_writes
     )
+
+
+def test_shopee_existing_v2_worker_restart_never_repeats_regional_write(
+    tmp_path,
+):
+    fake = ShopeePrepareFake()
+    release, plan, run, approved_plan = (
+        _approved_shopee_existing_worker_context(tmp_path, fake)
+    )
+    shopee.configure_prepare_transport_factory(
+        lambda _region: fake.transport()
+    )
+    official = shopee._read_approved_global_contract(
+        fake.transport(),
+        global_item_id="9",
+        plan=approved_plan,
+        approved_plan_digest=plan["payload"][
+            "approved_shopee_global_plan"
+        ]["approved_plan_digest"],
+        exact_current=shopee._current_existing_snapshot_candidate(
+            approved_plan,
+            fake.transport(),
+        ),
+    )
+    regional_invocations = []
+
+    def regional_publish(body):
+        regional_invocations.append(deepcopy(body))
+        raise TimeoutError("regional transport timeout")
+
+    shopee.configure_runtime_transport_factory(
+        lambda: shopee.ShopeeRuntimeTransport(
+            verify_pre_dispatch=lambda _command: True,
+            resolve_existing_global=lambda _command: {
+                "verified": True,
+                "global_item_id": "9",
+                "global_model_id": official["global_model_id"],
+                "tier_index": official["tier_index"],
+                "image_snapshot_digest": official[
+                    "image_snapshot_digest"
+                ],
+                "image_count": official["image_count"],
+                "image_outcome": official["image_outcome"],
+                "master_evidence_digest": official[
+                    "master_evidence_digest"
+                ],
+            },
+            regional_publish=regional_publish,
+        )
+    )
+    registry = production_adapter_registry()
+    control = OneClickReleaseStore(release.path)
+    job = control.ensure_job(
+        plan=plan,
+        run=run,
+        product_revision=31,
+        registry=registry,
+    )
+    worker = OneClickReleaseWorker(
+        control,
+        lambda: registry,
+        dispatch_enabled=lambda: True,
+    )
+    for _ in range(8):
+        if not worker.advance_once(job["job_id"]):
+            break
+
+    public = control.get_job(job_id=job["job_id"])
+    targets = {
+        row["target_label"]: row for row in public["targets"]
+    }
+    shared_controls = {
+        row["target_label"]: row
+        for row in public["shared_controls"]
+    }
+    assert shared_controls["shopee:GLOBAL"]["status"] == "SUCCEEDED"
+    assert targets["shopee:MY"]["status"] == "RECONCILIATION_REQUIRED"
+    assert len(regional_invocations) == 1
+    canonical = release.get_run(run["run_id"])
+    my_target = next(
+        row
+        for row in canonical["targets"]
+        if row["target_label"] == "shopee:MY"
+    )
+    assert my_target["status"] == "FAILED"
+    assert my_target["attempts"] == 1
+
+    restarted = OneClickReleaseStore(release.path)
+    restarted_worker = OneClickReleaseWorker(
+        restarted,
+        lambda: production_adapter_registry(),
+        dispatch_enabled=lambda: True,
+    )
+    assert restarted_worker.recover() == 0
+    assert restarted_worker.advance_once(job["job_id"]) is False
+    assert len(regional_invocations) == 1
 
 
 def test_shopee_new_global_prepare_is_plan_native_and_json_restart_safe():

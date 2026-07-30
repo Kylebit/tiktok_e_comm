@@ -5379,11 +5379,16 @@ def _approved_selected_image_count(
             "selected_source_image_manifest_digest",
             "record_digest",
         }
-        or approved_global.get("schema_version")
-        != "approved-shopee-global-plan/v1"
-        or approved_global.get("mode") not in {
-            "NEW_GLOBAL",
-            "EXISTING_GLOBAL",
+        or (
+            approved_global.get("schema_version"),
+            approved_global.get("mode"),
+        )
+        not in {
+            ("approved-shopee-global-plan/v1", "NEW_GLOBAL"),
+            # Backward-compatible complete legacy approval.  New official
+            # existing-item observations are emitted only as v2.
+            ("approved-shopee-global-plan/v1", "EXISTING_GLOBAL"),
+            ("approved-shopee-global-plan/v2", "EXISTING_GLOBAL"),
         }
         or any(
             not _is_digest(approved_global.get(field))

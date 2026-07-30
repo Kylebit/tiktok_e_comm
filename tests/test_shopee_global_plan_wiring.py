@@ -11,6 +11,7 @@ import urllib.request
 import pytest
 
 from modules.products import server as product_server
+from modules.shopee import oneclick_release as channel_shopee
 from shared_platform import release_control, release_store
 from shared_platform.oneclick_release_controlplane import (
     AdapterContractError,
@@ -23,8 +24,11 @@ from shared_platform.release_store import (
     ReleaseStore,
 )
 from shared_platform.shopee_global_plan import (
+    APPROVED_EXISTING_PLAN_SCHEMA_VERSION,
     EXISTING_GLOBAL,
+    EXISTING_GLOBAL_PERMISSIONS,
     ShopeeGlobalPlanObservationError,
+    build_shopee_existing_current_snapshot_candidate,
     build_shopee_official_existing_global_seller_stock,
     build_shopee_global_plan_candidate,
 )
@@ -124,6 +128,113 @@ def _observer(
         return build_shopee_global_plan_candidate(**args)
 
     return observe
+
+
+def _existing_v2_observer(request):
+    seed = deepcopy(request["candidate_seed"])
+    model_skus = [
+        row["model_sku"]
+        for row in request["sku_lineage"]["assignment"]["model_skus"]
+    ]
+    models = [
+        {
+            "global_model_id": index,
+            "global_model_sku": sku,
+            "tier_index": [index - 1],
+        }
+        for index, sku in enumerate(model_skus, start=1)
+    ]
+    item = {
+        "global_item_id": 57115039489,
+        "global_item_name": seed["title"],
+        "description": seed["description"],
+        "image": {
+            "image_url_list": [
+                "https://official.example/rehost.jpg"
+            ],
+            "image_id_list": ["official-image-1"],
+        },
+        "category_id": 101157,
+        "attribute_list": [
+            {
+                "attribute_id": 1001,
+                "attribute_value_list": [
+                    {
+                        "value_id": 0,
+                        "original_value_name": "PVC",
+                    }
+                ],
+            }
+        ],
+        "brand": None,
+        "seller_stock": [
+            {
+                "location_id": "CN-WAREHOUSE-APPROVED",
+                "stock": 200,
+            }
+        ],
+        "condition": "NEW",
+        "pre_order": {
+            "is_pre_order": False,
+            "days_to_ship": 0,
+        },
+        "tier_variation": [
+            {
+                "name": "Style",
+                "option_list": [{"option": "Default"}],
+            }
+        ],
+    }
+    identity_evidence_digest = channel_shopee._digest(
+        {
+            "schema_version": (
+                "shopee-official-existing-global-identity/v1"
+            ),
+            "global_item_id": "57115039489",
+            "model_skus": sorted(model_skus),
+        }
+    )
+    observation_evidence_digest = channel_shopee._digest(
+        {
+            "schema_version": (
+                "shopee-official-existing-global-observation/v1"
+            ),
+            "global_item_identity_digest": channel_shopee._text_digest(
+                "57115039489"
+            ),
+            "existing_global_identity_evidence_digest": (
+                identity_evidence_digest
+            ),
+            "copy_digest": seed["approved_copy_digest"],
+            "official_image_id_snapshot_digest": channel_shopee._digest(
+                {"ordered_image_ids": ["official-image-1"]}
+            ),
+            "selected_image_count": 1,
+            "category_id": item["category_id"],
+            "attribute_shape_digest": channel_shopee._digest(
+                item["attribute_list"]
+            ),
+            "brand_shape_digest": channel_shopee._digest(item["brand"]),
+            "condition": item["condition"],
+            "pre_order": item["pre_order"],
+            "tier_variation_shape_digest": channel_shopee._digest(
+                item["tier_variation"]
+            ),
+            "model_shape_digest": channel_shopee._digest(models),
+        }
+    )
+    return build_shopee_existing_current_snapshot_candidate(
+        observation_authority="shopee_official_open_api",
+        observation_schema_version=(
+            "shopee-official-global-plan-observation/v1"
+        ),
+        observation_evidence_digest=observation_evidence_digest,
+        **seed,
+        expected_model_skus=model_skus,
+        existing_global_item=item,
+        existing_global_models=models,
+        existing_global_identity_evidence_digest=identity_evidence_digest,
+    )
 
 
 @pytest.fixture
@@ -336,7 +447,7 @@ def test_existing_global_official_current_facts_can_be_approved_and_bound(
 
     def observe_payload(payload):
         seed = product_server._shopee_global_plan_seed(payload)
-        return _observer(existing_global=True)(
+        return _existing_v2_observer(
             {
                 "schema_version": (
                     "shopee-global-plan-observer-request/v1"
@@ -381,6 +492,9 @@ def test_existing_global_official_current_facts_can_be_approved_and_bound(
     )
     assert blockers == []
     assert payload["approved_shopee_global_plan"]["mode"] == EXISTING_GLOBAL
+    assert payload["approved_shopee_global_plan"]["schema_version"] == (
+        APPROVED_EXISTING_PLAN_SCHEMA_VERSION
+    )
     stored = store.shopee_global_plan_approval(
         product_id=payload["product_id"],
         product_revision=payload["product_revision"],
@@ -390,10 +504,12 @@ def test_existing_global_official_current_facts_can_be_approved_and_bound(
     internal = stored["approved"].server_owned_execution_payload(
         observe_payload(payload)
     )["plan"]
-    assert internal["seller_stock"]["source"] == (
+    assert internal["permissions"] == EXISTING_GLOBAL_PERMISSIONS
+    assert internal["current_snapshot"]["global_item_id"] == 57115039489
+    assert internal["current_snapshot"]["seller_stock"]["source"] == (
         "shopee-official-existing-global-seller-stock/v1"
     )
-    assert internal["seller_stock"]["quantity"] == 200
+    assert internal["current_snapshot"]["seller_stock"]["quantity"] == 200
 
 
 def test_dashboard_plan_binding_never_calls_official_observer(

@@ -445,19 +445,42 @@ def test_dynamic_observer_missing_prepared_credentials_is_auth_blocked():
     )
 
 
-def test_default_existing_observer_reads_full_shape_then_blocks_missing_approval():
+def test_default_existing_observer_returns_v2_preserve_only_candidate(
+    monkeypatch,
+):
     official = _OfficialScan(existing=True)
     shopee.configure_prepare_transport_factory(
         lambda _region: official.transport()
     )
+    from shared_platform import shopee_global_plan
 
-    with pytest.raises(ShopeeGlobalPlanObservationError) as error:
-        adapters.observe_shopee_global_plan_candidate(_request())
-
-    assert error.value.category == "CAPABILITY"
-    assert error.value.code == (
-        "shopee_existing_global_approved_facts_unavailable"
+    actual = (
+        shopee_global_plan.build_shopee_official_existing_global_seller_stock
     )
+    observed = []
+
+    def record_shared_binding(**kwargs):
+        observed.append(kwargs)
+        return actual(**kwargs)
+
+    monkeypatch.setattr(
+        shopee_global_plan,
+        "build_shopee_official_existing_global_seller_stock",
+        record_shared_binding,
+    )
+
+    candidate = adapters.observe_shopee_global_plan_candidate(_request())
+
+    assert candidate.status == READY
+    assert candidate.mode == EXISTING_GLOBAL
+    assert len(observed) == 1
+    assert observed[0]["seller_stock_rows"] == [
+        {"location_id": "CNZ", "stock": 200}
+    ]
+    assert type(observed[0]["existing_global_item_id"]) is int
+    assert len(observed[0]["observation_evidence_digest"]) == 64
+    approved = candidate.public_projection()
+    assert approved["checks"]["no_default_execution_fact"] is True
     assert any(
         path == shopee.GLOBAL_ITEM_PATH for path, _params in official.calls
     )

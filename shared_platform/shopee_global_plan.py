@@ -27,8 +27,12 @@ from shared_platform.target_scoped_release_contracts import (
 
 CANDIDATE_SCHEMA_VERSION = "shopee-global-plan-candidate/v1"
 APPROVED_PLAN_SCHEMA_VERSION = "approved-shopee-global-plan/v1"
+APPROVED_EXISTING_PLAN_SCHEMA_VERSION = "approved-shopee-global-plan/v2"
 APPROVED_PLAN_RECORD_SCHEMA_VERSION = (
     "approved-shopee-global-plan-record/v1"
+)
+EXISTING_CURRENT_SNAPSHOT_SCHEMA_VERSION = (
+    "approved-shopee-existing-current-snapshot/v1"
 )
 OFFICIAL_OBSERVATION_SCHEMA_VERSION = (
     "shopee-official-global-plan-observation/v1"
@@ -70,6 +74,14 @@ SELLER_STOCK_SOURCES = frozenset(
     }
 )
 CONDITIONS = frozenset({"NEW", "USED"})
+EXISTING_GLOBAL_PERMISSIONS = {
+    "reuse_existing_global": True,
+    "regional_publish": True,
+    "global_create": False,
+    "global_update": False,
+    "global_model_init": False,
+    "global_stock_update": False,
+}
 
 _DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 _CODE_RE = re.compile(r"[a-z0-9][a-z0-9._:/-]{0,127}")
@@ -304,6 +316,217 @@ class _Model:
 
 
 @dataclass(frozen=True)
+class _ExistingGlobalModel:
+    global_model_id: int
+    model_sku: str
+    tier_index: tuple[int, ...]
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "global_model_id": self.global_model_id,
+            "global_model_sku": self.model_sku,
+            "tier_index": list(self.tier_index),
+        }
+
+
+@dataclass(frozen=True)
+class _ExistingSnapshotPlan:
+    """Approved current facts for preserve-only reuse of one global item."""
+
+    observation_evidence_digest: str
+    source_identity_schema_version: str
+    source_identity_digest: str
+    sku_lineage_schema_version: str
+    sku_lineage_digest: str
+    content_package_digest: str
+    title: str
+    description: str
+    approved_copy_digest: str
+    approved_images: tuple[_ApprovedImage, ...]
+    approved_source_image_manifest_digest: str
+    selected_image_positions: tuple[int, ...]
+    selected_source_image_manifest_digest: str
+    parcel: _Parcel
+    target_pricing_digest: str
+    global_original_price_cny: str
+    policy_digest: str
+    existing_global_item_id: int
+    existing_global_identity_evidence_digest: str
+    category_id: int
+    attributes_json: str
+    brand_json: str
+    seller_stock: _SellerStock
+    location: _Location
+    condition: str
+    preorder: _PreOrder
+    tier_variation_json: str
+    official_image_ids: tuple[str, ...]
+    official_image_url_count: int
+    models: tuple[_ExistingGlobalModel, ...]
+    current_snapshot_digest: str
+    permissions_digest: str
+
+    @property
+    def mode(self) -> str:
+        return EXISTING_GLOBAL
+
+    def _snapshot_payload(self) -> dict[str, Any]:
+        return {
+            "schema_version": EXISTING_CURRENT_SNAPSHOT_SCHEMA_VERSION,
+            "authority": OFFICIAL_AUTHORITY,
+            "observation_schema_version": (
+                OFFICIAL_OBSERVATION_SCHEMA_VERSION
+            ),
+            "observation_evidence_digest": (
+                self.observation_evidence_digest
+            ),
+            "global_item_id": self.existing_global_item_id,
+            "existing_global_identity_evidence_digest": (
+                self.existing_global_identity_evidence_digest
+            ),
+            "category_id": self.category_id,
+            "attribute_list": json.loads(self.attributes_json),
+            "brand": json.loads(self.brand_json),
+            "copy": {
+                "title": self.title,
+                "description": self.description,
+                "approved_copy_digest": self.approved_copy_digest,
+            },
+            "image": {
+                "image_id_list": list(self.official_image_ids),
+                "image_id_snapshot_digest": _digest(
+                    {"ordered_image_ids": self.official_image_ids}
+                ),
+                "image_url_count": self.official_image_url_count,
+                "count_aligned": True,
+            },
+            "seller_stock": self.seller_stock.payload(),
+            "location": self.location.payload(),
+            "condition": self.condition,
+            "preorder": self.preorder.payload(),
+            "tier_variation": json.loads(self.tier_variation_json),
+            "global_model": [row.payload() for row in self.models],
+        }
+
+    def payload(self) -> dict[str, Any]:
+        selected_urls = [
+            self.approved_images[position - 1].source_url
+            for position in self.selected_image_positions
+        ]
+        return {
+            "mode": EXISTING_GLOBAL,
+            "observation_evidence_digest": (
+                self.observation_evidence_digest
+            ),
+            "bindings": {
+                "source_identity_schema_version": (
+                    self.source_identity_schema_version
+                ),
+                "source_identity_digest": self.source_identity_digest,
+                "sku_lineage_schema_version": (
+                    self.sku_lineage_schema_version
+                ),
+                "sku_lineage_digest": self.sku_lineage_digest,
+                "content_package_digest": self.content_package_digest,
+                "approved_copy_digest": self.approved_copy_digest,
+                "approved_source_image_manifest_digest": (
+                    self.approved_source_image_manifest_digest
+                ),
+                "parcel_contract_digest": self.parcel.contract_digest,
+                "target_pricing_digest": self.target_pricing_digest,
+                "policy_digest": self.policy_digest,
+                "model_sku_set_digest": _digest(
+                    sorted(row.model_sku for row in self.models)
+                ),
+                "current_snapshot_digest": self.current_snapshot_digest,
+                "permissions_digest": self.permissions_digest,
+            },
+            "copy": {
+                "title": self.title,
+                "description": self.description,
+                "approved_copy_digest": self.approved_copy_digest,
+            },
+            "approved_images": [
+                row.payload() for row in self.approved_images
+            ],
+            "approved_source_image_manifest_digest": (
+                self.approved_source_image_manifest_digest
+            ),
+            "selected_image_positions": list(
+                self.selected_image_positions
+            ),
+            "selected_image_urls": selected_urls,
+            "selected_source_image_manifest_digest": (
+                self.selected_source_image_manifest_digest
+            ),
+            "parcel": self.parcel.payload(),
+            "pricing": {
+                "currency": "CNY",
+                "global_original_price": self.global_original_price_cny,
+                "target_pricing_digest": self.target_pricing_digest,
+            },
+            "policy_digest": self.policy_digest,
+            "current_snapshot": self._snapshot_payload(),
+            "current_snapshot_digest": self.current_snapshot_digest,
+            "permissions": dict(EXISTING_GLOBAL_PERMISSIONS),
+            "permissions_digest": self.permissions_digest,
+        }
+
+    def public_counts(self) -> dict[str, int]:
+        return {
+            "category_path_depth": 0,
+            "attribute_count": len(json.loads(self.attributes_json)),
+            "approved_image_count": len(self.approved_images),
+            "selected_image_count": len(self.selected_image_positions),
+            "variation_tier_count": len(
+                json.loads(self.tier_variation_json)
+            ),
+            "model_count": len(self.models),
+        }
+
+    def public_digests(self) -> dict[str, str | None]:
+        return {
+            "observation_evidence_digest": (
+                self.observation_evidence_digest
+            ),
+            "source_identity_digest": self.source_identity_digest,
+            "sku_lineage_digest": self.sku_lineage_digest,
+            "content_package_digest": self.content_package_digest,
+            "approved_copy_digest": self.approved_copy_digest,
+            "approved_source_image_manifest_digest": (
+                self.approved_source_image_manifest_digest
+            ),
+            "selected_source_image_manifest_digest": (
+                self.selected_source_image_manifest_digest
+            ),
+            "parcel_contract_digest": self.parcel.contract_digest,
+            "target_pricing_digest": self.target_pricing_digest,
+            "policy_digest": self.policy_digest,
+            "category_evidence_digest": _digest(
+                {"category_id": self.category_id}
+            ),
+            "attribute_tree_digest": _digest(
+                json.loads(self.attributes_json)
+            ),
+            "brand_evidence_digest": _digest(
+                json.loads(self.brand_json)
+            ),
+            "seller_stock_source_digest": (
+                self.seller_stock.source_digest
+            ),
+            "location_evidence_digest": self.location.evidence_digest,
+            "existing_global_identity_digest": _digest(
+                {
+                    "global_item_id": self.existing_global_item_id,
+                    "evidence_digest": (
+                        self.existing_global_identity_evidence_digest
+                    ),
+                }
+            ),
+        }
+
+
+@dataclass(frozen=True)
 class _Plan:
     mode: str
     observation_evidence_digest: str
@@ -458,7 +681,9 @@ class ShopeeGlobalPlanCandidate:
     observation_evidence_digest: str | None
     blocker_codes: tuple[str, ...]
     candidate_digest: str
-    _plan: _Plan | None = field(default=None, repr=False, compare=False)
+    _plan: _Plan | _ExistingSnapshotPlan | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         if self.schema_version != CANDIDATE_SCHEMA_VERSION:
@@ -491,7 +716,8 @@ class ShopeeGlobalPlanCandidate:
                 != OFFICIAL_OBSERVATION_SCHEMA_VERSION
                 or not _is_digest(self.observation_evidence_digest)
                 or self.blocker_codes
-                or type(self._plan) is not _Plan
+                or type(self._plan)
+                not in {_Plan, _ExistingSnapshotPlan}
             ):
                 raise ShopeeGlobalPlanContractError(
                     "ready candidate is not authoritative"
@@ -565,10 +791,23 @@ class ApprovedShopeeGlobalPlan:
     candidate_digest: str
     mode: str
     approved_plan_digest: str
-    _plan: _Plan = field(repr=False, compare=False)
+    _plan: _Plan | _ExistingSnapshotPlan = field(
+        repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
-        if self.schema_version != APPROVED_PLAN_SCHEMA_VERSION:
+        expected_schema = (
+            APPROVED_EXISTING_PLAN_SCHEMA_VERSION
+            if type(self._plan) is _ExistingSnapshotPlan
+            else APPROVED_PLAN_SCHEMA_VERSION
+        )
+        expected_plan_type = (
+            _ExistingSnapshotPlan
+            if self.schema_version
+            == APPROVED_EXISTING_PLAN_SCHEMA_VERSION
+            else _Plan
+        )
+        if self.schema_version != expected_schema:
             raise ShopeeGlobalPlanContractError("approved plan schema is invalid")
         if type(self.approved_by) is not str or self.approved_by != "Kyle":
             raise ShopeeGlobalPlanContractError("approved actor is invalid")
@@ -578,7 +817,10 @@ class ApprovedShopeeGlobalPlan:
             )
         if not _is_digest(self.candidate_digest):
             raise ShopeeGlobalPlanContractError("candidate digest is invalid")
-        if self.mode not in GLOBAL_PLAN_MODES or type(self._plan) is not _Plan:
+        if (
+            self.mode not in GLOBAL_PLAN_MODES
+            or type(self._plan) is not expected_plan_type
+        ):
             raise ShopeeGlobalPlanContractError("approved plan payload is invalid")
         if self._plan.mode != self.mode:
             raise ShopeeGlobalPlanContractError("approved mode drifted")
@@ -717,7 +959,16 @@ def rehydrate_approved_shopee_global_plan(
         code="approved_plan_record_invalid",
     )
     try:
-        plan = _plan_from_payload(stored["plan"])
+        if (
+            stored["schema_version"]
+            == APPROVED_EXISTING_PLAN_SCHEMA_VERSION
+            and stored["mode"] == EXISTING_GLOBAL
+        ):
+            plan = _existing_snapshot_plan_from_payload(stored["plan"])
+        elif stored["schema_version"] == APPROVED_PLAN_SCHEMA_VERSION:
+            plan = _plan_from_payload(stored["plan"])
+        else:
+            raise _Violation("approved_plan_schema_mode_invalid")
     except _Violation as error:
         raise ShopeeGlobalPlanContractError(
             f"approved Shopee global plan record failed {error.code}"
@@ -922,6 +1173,126 @@ def build_shopee_official_existing_global_seller_stock(
         ) from error
 
 
+def build_shopee_existing_current_snapshot_candidate(
+    *,
+    observation_authority: object,
+    observation_schema_version: object,
+    observation_evidence_digest: object,
+    source_identity_schema_version: object,
+    source_identity_digest: object,
+    sku_lineage_schema_version: object,
+    sku_lineage_digest: object,
+    content_package_digest: object,
+    title: object,
+    description: object,
+    approved_copy_digest: object,
+    ordered_approved_images: object,
+    approved_source_image_manifest_digest: object,
+    selected_image_positions: object,
+    parcel: object,
+    target_pricing: object,
+    policy_digest: object,
+    expected_model_skus: object,
+    existing_global_item: object,
+    existing_global_models: object,
+    existing_global_identity_evidence_digest: object,
+) -> ShopeeGlobalPlanCandidate:
+    """Build the preserve-only v2 candidate for one official existing item.
+
+    Unlike NEW_GLOBAL, this contract does not require or synthesize an
+    approved category path, attribute tree, brand decision, variation design,
+    stock decision, or global-create body.  It binds the current official item
+    snapshot and explicitly forbids every global mutation.  Only reuse of the
+    exact global identity and later regional publication are authorized.
+    """
+
+    authority = (
+        observation_authority
+        if type(observation_authority) is str
+        and observation_authority in OBSERVATION_AUTHORITIES
+        else INJECTED_UNVERIFIED_AUTHORITY
+    )
+    schema = (
+        OFFICIAL_OBSERVATION_SCHEMA_VERSION
+        if observation_schema_version == OFFICIAL_OBSERVATION_SCHEMA_VERSION
+        else "unavailable"
+    )
+    evidence = (
+        observation_evidence_digest
+        if _is_digest(observation_evidence_digest)
+        else None
+    )
+    if authority != OFFICIAL_AUTHORITY:
+        return _blocked_candidate(
+            mode=EXISTING_GLOBAL,
+            authority=authority,
+            observation_schema_version=schema,
+            observation_evidence_digest=evidence,
+            code="official_authority_unavailable",
+        )
+    if schema != OFFICIAL_OBSERVATION_SCHEMA_VERSION:
+        return _blocked_candidate(
+            mode=EXISTING_GLOBAL,
+            authority=authority,
+            observation_schema_version=schema,
+            observation_evidence_digest=evidence,
+            code="audited_schema_unavailable",
+        )
+    if evidence is None:
+        return _blocked_candidate(
+            mode=EXISTING_GLOBAL,
+            authority=authority,
+            observation_schema_version=schema,
+            observation_evidence_digest=None,
+            code="audited_evidence_unavailable",
+        )
+    try:
+        plan = _normalize_existing_snapshot_plan(
+            observation_evidence_digest=evidence,
+            source_identity_schema_version=(
+                source_identity_schema_version
+            ),
+            source_identity_digest=source_identity_digest,
+            sku_lineage_schema_version=sku_lineage_schema_version,
+            sku_lineage_digest=sku_lineage_digest,
+            content_package_digest=content_package_digest,
+            title=title,
+            description=description,
+            approved_copy_digest_value=approved_copy_digest,
+            ordered_approved_images=ordered_approved_images,
+            approved_source_image_manifest_digest_value=(
+                approved_source_image_manifest_digest
+            ),
+            selected_image_positions=selected_image_positions,
+            parcel=parcel,
+            target_pricing=target_pricing,
+            policy_digest=policy_digest,
+            expected_model_skus=expected_model_skus,
+            existing_global_item=existing_global_item,
+            existing_global_models=existing_global_models,
+            existing_global_identity_evidence_digest=(
+                existing_global_identity_evidence_digest
+            ),
+        )
+    except _Violation as error:
+        return _blocked_candidate(
+            mode=EXISTING_GLOBAL,
+            authority=authority,
+            observation_schema_version=schema,
+            observation_evidence_digest=evidence,
+            code=error.code,
+        )
+    except (InvalidOperation, KeyError, TypeError, ValueError, OverflowError):
+        return _blocked_candidate(
+            mode=EXISTING_GLOBAL,
+            authority=authority,
+            observation_schema_version=schema,
+            observation_evidence_digest=evidence,
+            code="candidate_shape_invalid",
+        )
+    return _ready_candidate_from_plan(plan)
+
+
 def approve_shopee_global_plan(
     candidate: ShopeeGlobalPlanCandidate,
     *,
@@ -946,12 +1317,16 @@ def approve_shopee_global_plan(
         or expected_candidate_digest != candidate.candidate_digest
     ):
         raise ShopeeGlobalPlanApprovalError("candidate digest is stale")
-    if type(candidate._plan) is not _Plan:
+    if type(candidate._plan) not in {_Plan, _ExistingSnapshotPlan}:
         raise ShopeeGlobalPlanApprovalError("candidate plan is unavailable")
 
     provisional = ApprovedShopeeGlobalPlan.__new__(ApprovedShopeeGlobalPlan)
     values = {
-        "schema_version": APPROVED_PLAN_SCHEMA_VERSION,
+        "schema_version": (
+            APPROVED_EXISTING_PLAN_SCHEMA_VERSION
+            if type(candidate._plan) is _ExistingSnapshotPlan
+            else APPROVED_PLAN_SCHEMA_VERSION
+        ),
         "approved_by": "Kyle",
         "confirm_approved_shopee_global_plan": True,
         "candidate_digest": candidate.candidate_digest,
@@ -987,8 +1362,10 @@ def validate_approved_shopee_global_plan(
         )
 
 
-def _ready_candidate_from_plan(plan: _Plan) -> ShopeeGlobalPlanCandidate:
-    if type(plan) is not _Plan:
+def _ready_candidate_from_plan(
+    plan: _Plan | _ExistingSnapshotPlan,
+) -> ShopeeGlobalPlanCandidate:
+    if type(plan) not in {_Plan, _ExistingSnapshotPlan}:
         raise ShopeeGlobalPlanContractError(
             "Shopee global plan payload is invalid"
         )
@@ -1144,6 +1521,565 @@ def _plan_from_payload(value: object) -> _Plan:
     # persisted identity.
     if _canonical_json(plan.payload()) != _canonical_json(payload):
         raise _Violation("serialized_plan_derived_field_mismatch")
+    return plan
+
+
+def _normalize_existing_snapshot_plan(**raw: Any) -> _ExistingSnapshotPlan:
+    observation_digest = _required_digest(
+        raw["observation_evidence_digest"],
+        "audited_evidence_unavailable",
+    )
+    source_schema = _required_string(
+        raw["source_identity_schema_version"], "source_identity_invalid"
+    )
+    if source_schema != SOURCE_IDENTITY_SCHEMA_VERSION:
+        raise _Violation("source_identity_invalid")
+    source_digest = _required_digest(
+        raw["source_identity_digest"], "source_identity_invalid"
+    )
+    lineage_schema = _required_string(
+        raw["sku_lineage_schema_version"], "sku_lineage_invalid"
+    )
+    if lineage_schema not in SKU_LINEAGE_SCHEMA_VERSIONS:
+        raise _Violation("sku_lineage_invalid")
+    lineage_digest = _required_digest(
+        raw["sku_lineage_digest"], "sku_lineage_invalid"
+    )
+    content_digest = _required_digest(
+        raw["content_package_digest"], "content_binding_invalid"
+    )
+    if type(raw["title"]) is not str or type(raw["description"]) is not str:
+        raise _Violation("approved_copy_invalid")
+    title = unicodedata.normalize("NFC", raw["title"].strip())
+    description = raw["description"]
+    if (
+        not title
+        or len(title) > 120
+        or not description.strip()
+        or len(description) > 3000
+    ):
+        raise _Violation("approved_copy_invalid")
+    copy_digest = _required_digest(
+        raw["approved_copy_digest_value"], "approved_copy_invalid"
+    )
+    if copy_digest != approved_shopee_copy_digest(title, description):
+        raise _Violation("approved_copy_digest_mismatch")
+
+    images = _normalize_images(raw["ordered_approved_images"])
+    source_manifest_digest = _required_digest(
+        raw["approved_source_image_manifest_digest_value"],
+        "approved_image_manifest_invalid",
+    )
+    if source_manifest_digest != approved_source_image_manifest_digest(
+        [image.source_url for image in images]
+    ):
+        raise _Violation("approved_image_manifest_digest_mismatch")
+    positions = _normalize_selected_positions(
+        raw["selected_image_positions"], len(images)
+    )
+    selected_manifest_digest = approved_source_image_manifest_digest(
+        [images[position - 1].source_url for position in positions]
+    )
+    parcel = _normalize_parcel(raw["parcel"])
+    pricing_digest, global_price = _normalize_target_pricing(
+        raw["target_pricing"]
+    )
+    policy_digest = _required_digest(
+        raw["policy_digest"], "policy_digest_invalid"
+    )
+
+    expected_rows = _required_list(
+        raw["expected_model_skus"], "existing_global_models_invalid"
+    )
+    if (
+        not expected_rows
+        or any(
+            type(value) is not str
+            or not _MODEL_SKU_RE.fullmatch(value)
+            for value in expected_rows
+        )
+        or len(expected_rows) != len(set(expected_rows))
+    ):
+        raise _Violation("existing_global_models_invalid")
+
+    item = _exact_mapping(
+        raw["existing_global_item"],
+        required={
+            "global_item_id",
+            "global_item_name",
+            "description",
+            "image",
+            "category_id",
+            "attribute_list",
+            "brand",
+            "seller_stock",
+            "condition",
+            "pre_order",
+            "tier_variation",
+        },
+        optional=set(),
+        code="existing_current_snapshot_invalid",
+    )
+    item_id = _positive_int(
+        item["global_item_id"], "existing_global_identity_invalid"
+    )
+    identity_digest = _required_digest(
+        raw["existing_global_identity_evidence_digest"],
+        "existing_global_identity_invalid",
+    )
+    official_title = item["global_item_name"]
+    official_description = item["description"]
+    if (
+        type(official_title) is not str
+        or type(official_description) is not str
+        or approved_shopee_copy_digest(
+            official_title, official_description
+        )
+        != copy_digest
+    ):
+        raise _Violation("existing_global_copy_drift")
+
+    image = _exact_mapping(
+        item["image"],
+        required={"image_url_list", "image_id_list"},
+        optional=set(),
+        code="existing_global_images_invalid",
+    )
+    image_urls = _required_list(
+        image["image_url_list"], "existing_global_images_invalid"
+    )
+    image_ids = _required_list(
+        image["image_id_list"], "existing_global_images_invalid"
+    )
+    if (
+        not image_urls
+        or len(image_urls) != len(image_ids)
+        or len(image_ids) != len(positions)
+        or any(
+            type(value) is not str or not value.strip()
+            for value in image_ids
+        )
+        or len(image_ids) != len(set(image_ids))
+        or any(
+            type(value) is not str
+            or not value.startswith("https://")
+            for value in image_urls
+        )
+        or len(image_urls) != len(set(image_urls))
+    ):
+        raise _Violation("existing_global_images_invalid")
+
+    category_id = _positive_int(
+        item["category_id"], "existing_global_category_invalid"
+    )
+    attributes = _normalize_attributes(item["attribute_list"])
+    attributes_json = _canonical_json(
+        [attribute.payload() for attribute in attributes]
+    )
+    brand_value = item["brand"]
+    if brand_value is None:
+        brand_json = "null"
+    else:
+        brand = _exact_mapping(
+            brand_value,
+            required={"brand_id", "original_brand_name"},
+            optional=set(),
+            code="existing_global_brand_invalid",
+        )
+        brand_json = _canonical_json(
+            {
+                "brand_id": _nonnegative_int(
+                    brand["brand_id"], "existing_global_brand_invalid"
+                ),
+                "original_brand_name": _required_string(
+                    brand["original_brand_name"],
+                    "existing_global_brand_invalid",
+                ),
+            }
+        )
+    condition = _required_string(
+        item["condition"], "condition_invalid"
+    )
+    if condition not in CONDITIONS:
+        raise _Violation("condition_invalid")
+    preorder = _normalize_preorder(item["pre_order"])
+    tier_variation_json = _normalize_existing_tier_variation(
+        item["tier_variation"]
+    )
+
+    model_rows = _required_list(
+        raw["existing_global_models"], "existing_global_models_invalid"
+    )
+    if not model_rows:
+        raise _Violation("existing_global_models_invalid")
+    models: list[_ExistingGlobalModel] = []
+    seen_ids: set[int] = set()
+    seen_skus: set[str] = set()
+    for raw_model in model_rows:
+        model = _exact_mapping(
+            raw_model,
+            required={
+                "global_model_id",
+                "global_model_sku",
+                "tier_index",
+            },
+            optional=set(),
+            code="existing_global_models_invalid",
+        )
+        model_id = _positive_int(
+            model["global_model_id"], "existing_global_models_invalid"
+        )
+        model_sku = _required_string(
+            model["global_model_sku"], "existing_global_models_invalid"
+        )
+        tier = _required_list(
+            model["tier_index"], "existing_global_models_invalid"
+        )
+        if (
+            not _MODEL_SKU_RE.fullmatch(model_sku)
+            or model_id in seen_ids
+            or model_sku in seen_skus
+            or not tier
+            or any(type(value) is not int or value < 0 for value in tier)
+        ):
+            raise _Violation("existing_global_models_invalid")
+        seen_ids.add(model_id)
+        seen_skus.add(model_sku)
+        models.append(
+            _ExistingGlobalModel(model_id, model_sku, tuple(tier))
+        )
+    if sorted(seen_skus) != sorted(expected_rows):
+        raise _Violation("existing_global_model_set_drift")
+
+    stock_binding = _official_existing_global_seller_stock_binding(
+        observation_evidence_digest=observation_digest,
+        existing_global_item_id=item_id,
+        existing_global_identity_evidence_digest=identity_digest,
+        seller_stock_rows=item["seller_stock"],
+    )
+    stock = _normalize_stock(stock_binding["seller_stock"])
+    location = _normalize_location(stock_binding["location"])
+    permissions_digest = _digest(EXISTING_GLOBAL_PERMISSIONS)
+    provisional = _ExistingSnapshotPlan(
+        observation_evidence_digest=observation_digest,
+        source_identity_schema_version=source_schema,
+        source_identity_digest=source_digest,
+        sku_lineage_schema_version=lineage_schema,
+        sku_lineage_digest=lineage_digest,
+        content_package_digest=content_digest,
+        title=title,
+        description=description,
+        approved_copy_digest=copy_digest,
+        approved_images=images,
+        approved_source_image_manifest_digest=source_manifest_digest,
+        selected_image_positions=positions,
+        selected_source_image_manifest_digest=selected_manifest_digest,
+        parcel=parcel,
+        target_pricing_digest=pricing_digest,
+        global_original_price_cny=global_price,
+        policy_digest=policy_digest,
+        existing_global_item_id=item_id,
+        existing_global_identity_evidence_digest=identity_digest,
+        category_id=category_id,
+        attributes_json=attributes_json,
+        brand_json=brand_json,
+        seller_stock=stock,
+        location=location,
+        condition=condition,
+        preorder=preorder,
+        tier_variation_json=tier_variation_json,
+        official_image_ids=tuple(image_ids),
+        official_image_url_count=len(image_urls),
+        models=tuple(models),
+        current_snapshot_digest="0" * 64,
+        permissions_digest=permissions_digest,
+    )
+    snapshot_digest = _digest(provisional._snapshot_payload())
+    return _ExistingSnapshotPlan(
+        **{
+            **provisional.__dict__,
+            "current_snapshot_digest": snapshot_digest,
+        }
+    )
+
+
+def _normalize_existing_tier_variation(value: object) -> str:
+    rows = _required_list(value, "existing_global_variation_invalid")
+    if not rows:
+        raise _Violation("existing_global_variation_invalid")
+    normalized: list[dict[str, Any]] = []
+    for raw_row in rows:
+        row = _exact_mapping(
+            raw_row,
+            required={"name", "option_list"},
+            optional=set(),
+            code="existing_global_variation_invalid",
+        )
+        options = _required_list(
+            row["option_list"], "existing_global_variation_invalid"
+        )
+        if not options:
+            raise _Violation("existing_global_variation_invalid")
+        normalized_options: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for raw_option in options:
+            option = _exact_mapping(
+                raw_option,
+                required={"option"},
+                optional=set(),
+                code="existing_global_variation_invalid",
+            )
+            name = _required_string(
+                option["option"], "existing_global_variation_invalid"
+            )
+            if name in seen:
+                raise _Violation("existing_global_variation_invalid")
+            seen.add(name)
+            normalized_options.append({"option": name})
+        normalized.append(
+            {
+                "name": _required_string(
+                    row["name"], "existing_global_variation_invalid"
+                ),
+                "option_list": normalized_options,
+            }
+        )
+    return _canonical_json(normalized)
+
+
+def _existing_snapshot_plan_from_payload(
+    value: object,
+) -> _ExistingSnapshotPlan:
+    payload = _exact_mapping(
+        value,
+        required={
+            "mode",
+            "observation_evidence_digest",
+            "bindings",
+            "copy",
+            "approved_images",
+            "approved_source_image_manifest_digest",
+            "selected_image_positions",
+            "selected_image_urls",
+            "selected_source_image_manifest_digest",
+            "parcel",
+            "pricing",
+            "policy_digest",
+            "current_snapshot",
+            "current_snapshot_digest",
+            "permissions",
+            "permissions_digest",
+        },
+        optional=set(),
+        code="serialized_existing_plan_shape_invalid",
+    )
+    if payload["mode"] != EXISTING_GLOBAL:
+        raise _Violation("serialized_existing_plan_shape_invalid")
+    permissions = _exact_mapping(
+        payload["permissions"],
+        required=set(EXISTING_GLOBAL_PERMISSIONS),
+        optional=set(),
+        code="existing_global_permissions_invalid",
+    )
+    if (
+        dict(permissions) != EXISTING_GLOBAL_PERMISSIONS
+        or payload["permissions_digest"] != _digest(
+            EXISTING_GLOBAL_PERMISSIONS
+        )
+    ):
+        raise _Violation("existing_global_permissions_invalid")
+    bindings = _exact_mapping(
+        payload["bindings"],
+        required={
+            "source_identity_schema_version",
+            "source_identity_digest",
+            "sku_lineage_schema_version",
+            "sku_lineage_digest",
+            "content_package_digest",
+            "approved_copy_digest",
+            "approved_source_image_manifest_digest",
+            "parcel_contract_digest",
+            "target_pricing_digest",
+            "policy_digest",
+            "model_sku_set_digest",
+            "current_snapshot_digest",
+            "permissions_digest",
+        },
+        optional=set(),
+        code="serialized_existing_plan_bindings_invalid",
+    )
+    snapshot = _exact_mapping(
+        payload["current_snapshot"],
+        required={
+            "schema_version",
+            "authority",
+            "observation_schema_version",
+            "observation_evidence_digest",
+            "global_item_id",
+            "existing_global_identity_evidence_digest",
+            "category_id",
+            "attribute_list",
+            "brand",
+            "copy",
+            "image",
+            "seller_stock",
+            "location",
+            "condition",
+            "preorder",
+            "tier_variation",
+            "global_model",
+        },
+        optional=set(),
+        code="serialized_existing_snapshot_invalid",
+    )
+    if (
+        snapshot["schema_version"]
+        != EXISTING_CURRENT_SNAPSHOT_SCHEMA_VERSION
+        or snapshot["authority"] != OFFICIAL_AUTHORITY
+        or snapshot["observation_schema_version"]
+        != OFFICIAL_OBSERVATION_SCHEMA_VERSION
+    ):
+        raise _Violation("serialized_existing_snapshot_invalid")
+    copy = _exact_mapping(
+        payload["copy"],
+        required={"title", "description", "approved_copy_digest"},
+        optional=set(),
+        code="serialized_existing_plan_copy_invalid",
+    )
+    snapshot_copy = _exact_mapping(
+        snapshot["copy"],
+        required={"title", "description", "approved_copy_digest"},
+        optional=set(),
+        code="serialized_existing_snapshot_invalid",
+    )
+    if dict(copy) != dict(snapshot_copy):
+        raise _Violation("serialized_existing_snapshot_invalid")
+    parcel = _exact_mapping(
+        payload["parcel"],
+        required={"weight_kg", "package_cm", "contract_digest"},
+        optional=set(),
+        code="serialized_existing_plan_parcel_invalid",
+    )
+    package = _exact_mapping(
+        parcel["package_cm"],
+        required={"length", "width", "height"},
+        optional=set(),
+        code="serialized_existing_plan_parcel_invalid",
+    )
+    pricing = _exact_mapping(
+        payload["pricing"],
+        required={
+            "currency",
+            "global_original_price",
+            "target_pricing_digest",
+        },
+        optional=set(),
+        code="serialized_existing_plan_pricing_invalid",
+    )
+    image = _exact_mapping(
+        snapshot["image"],
+        required={
+            "image_id_list",
+            "image_id_snapshot_digest",
+            "image_url_count",
+            "count_aligned",
+        },
+        optional=set(),
+        code="serialized_existing_snapshot_invalid",
+    )
+    # Rebuild through the one authoritative normalizer.  Persisted official
+    # URLs are intentionally absent, so use deterministic private sentinels
+    # only for count/shape reconstruction; they are never returned or stored.
+    selected_positions = payload["selected_image_positions"]
+    if not isinstance(selected_positions, list):
+        raise _Violation("serialized_existing_plan_shape_invalid")
+    synthetic_urls = [
+        f"https://redacted.invalid/{index}"
+        for index in range(1, len(selected_positions) + 1)
+    ]
+    plan = _normalize_existing_snapshot_plan(
+        observation_evidence_digest=payload[
+            "observation_evidence_digest"
+        ],
+        source_identity_schema_version=bindings[
+            "source_identity_schema_version"
+        ],
+        source_identity_digest=bindings["source_identity_digest"],
+        sku_lineage_schema_version=bindings[
+            "sku_lineage_schema_version"
+        ],
+        sku_lineage_digest=bindings["sku_lineage_digest"],
+        content_package_digest=bindings["content_package_digest"],
+        title=copy["title"],
+        description=copy["description"],
+        approved_copy_digest_value=copy["approved_copy_digest"],
+        ordered_approved_images=payload["approved_images"],
+        approved_source_image_manifest_digest_value=payload[
+            "approved_source_image_manifest_digest"
+        ],
+        selected_image_positions=selected_positions,
+        parcel={
+            "weight_kg": parcel["weight_kg"],
+            "length_cm": package["length"],
+            "width_cm": package["width"],
+            "height_cm": package["height"],
+            "contract_digest": parcel["contract_digest"],
+        },
+        target_pricing={
+            "currency": pricing["currency"],
+            "global_original_price": pricing["global_original_price"],
+            "contract_digest": pricing["target_pricing_digest"],
+        },
+        policy_digest=payload["policy_digest"],
+        expected_model_skus=[
+            row.get("global_model_sku")
+            for row in snapshot["global_model"]
+            if isinstance(row, Mapping)
+        ],
+        existing_global_item={
+            "global_item_id": snapshot["global_item_id"],
+            "global_item_name": snapshot_copy["title"],
+            "description": snapshot_copy["description"],
+            "image": {
+                "image_url_list": synthetic_urls,
+                "image_id_list": image["image_id_list"],
+            },
+            "category_id": snapshot["category_id"],
+            "attribute_list": snapshot["attribute_list"],
+            "brand": snapshot["brand"],
+            "seller_stock": [
+                {
+                    "location_id": _exact_mapping(
+                        snapshot["location"],
+                        required={"location_id", "evidence_digest"},
+                        optional=set(),
+                        code="serialized_existing_snapshot_invalid",
+                    )["location_id"],
+                    "stock": _exact_mapping(
+                        snapshot["seller_stock"],
+                        required={
+                            "source",
+                            "source_digest",
+                            "quantity",
+                            "approval_reference",
+                        },
+                        optional=set(),
+                        code="serialized_existing_snapshot_invalid",
+                    )["quantity"],
+                }
+            ],
+            "condition": snapshot["condition"],
+            "pre_order": snapshot["preorder"],
+            "tier_variation": snapshot["tier_variation"],
+        },
+        existing_global_models=snapshot["global_model"],
+        existing_global_identity_evidence_digest=snapshot[
+            "existing_global_identity_evidence_digest"
+        ],
+    )
+    # Every derived field and duplicate binding must match byte-for-byte.
+    if _canonical_json(plan.payload()) != _canonical_json(payload):
+        raise _Violation("serialized_existing_plan_derived_field_mismatch")
     return plan
 
 
@@ -1952,6 +2888,7 @@ def _digest(value: object) -> str:
 
 
 __all__ = [
+    "APPROVED_EXISTING_PLAN_SCHEMA_VERSION",
     "APPROVED_PLAN_SCHEMA_VERSION",
     "APPROVED_PLAN_RECORD_SCHEMA_VERSION",
     "ApprovedShopeeGlobalPlan",
@@ -1959,6 +2896,8 @@ __all__ = [
     "CANDIDATE_SCHEMA_VERSION",
     "COMMUNITY_AUTHORITY",
     "EXISTING_GLOBAL",
+    "EXISTING_CURRENT_SNAPSHOT_SCHEMA_VERSION",
+    "EXISTING_GLOBAL_PERMISSIONS",
     "GENERATED_SDK_AUTHORITY",
     "GLOBAL_PLAN_MODES",
     "INJECTED_UNVERIFIED_AUTHORITY",
@@ -1975,6 +2914,7 @@ __all__ = [
     "ShopeeGlobalPlanObservationError",
     "approve_shopee_global_plan",
     "build_shopee_official_existing_global_seller_stock",
+    "build_shopee_existing_current_snapshot_candidate",
     "build_shopee_global_plan_candidate",
     "rehydrate_approved_shopee_global_plan",
     "serialize_approved_shopee_global_plan",

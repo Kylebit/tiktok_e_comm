@@ -100,8 +100,10 @@
     "shopee-global-plan-candidate/v1";
   const SHOPEE_GLOBAL_PLAN_APPROVAL_SCHEMA =
     "shopee-global-plan-approval-response/v1";
-  const APPROVED_SHOPEE_GLOBAL_PLAN_SCHEMA =
-    "approved-shopee-global-plan/v1";
+  const APPROVED_SHOPEE_GLOBAL_PLAN_SCHEMAS = new Set([
+    "approved-shopee-global-plan/v1",
+    "approved-shopee-global-plan/v2",
+  ]);
   const ONECLICK_TERMINAL_PHASES = new Set([
     "SUCCEEDED",
     "WAITING_MANUAL_ACCEPTANCE",
@@ -1646,7 +1648,9 @@
     ];
     if (
       !exactObjectKeys(approval, keys)
-      || approval.schema_version !== APPROVED_SHOPEE_GLOBAL_PLAN_SCHEMA
+      || !APPROVED_SHOPEE_GLOBAL_PLAN_SCHEMAS.has(
+        approval.schema_version
+      )
       || approval.approved_by !== "Kyle"
       || approval.literal_consent_recorded !== true
       || !["NEW_GLOBAL", "EXISTING_GLOBAL"].includes(approval.mode)

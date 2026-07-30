@@ -1595,7 +1595,7 @@ def _shopee_global_plan_matches_local_payload(
         return False
     try:
         expected = _shopee_global_plan_seed(payload)
-        expected_bindings = {
+        expected_binding_subset = {
             "source_identity_schema_version": expected[
                 "source_identity_schema_version"
             ],
@@ -1614,8 +1614,22 @@ def _shopee_global_plan_matches_local_payload(
                 "contract_digest"
             ],
             "policy_digest": expected["policy_digest"],
-            "attribute_tree_digest": current["attribute_tree_digest"],
         }
+        existing_snapshot = current.get("current_snapshot")
+        is_existing_v2 = bool(
+            current.get("mode") == "EXISTING_GLOBAL"
+            and isinstance(existing_snapshot, dict)
+        )
+        expected_bindings = (
+            {
+                **expected_binding_subset,
+                "attribute_tree_digest": current[
+                    "attribute_tree_digest"
+                ],
+            }
+            if not is_existing_v2
+            else None
+        )
         expected_copy = {
             "title": unicodedata.normalize("NFC", expected["title"].strip()),
             "description": expected["description"],
@@ -1649,7 +1663,11 @@ def _shopee_global_plan_matches_local_payload(
             if type(model_assignments) is list
             else []
         )
-        observed_models = current.get("global_model")
+        observed_models = (
+            existing_snapshot.get("global_model")
+            if is_existing_v2
+            else current.get("global_model")
+        )
         observed_model_skus = (
             sorted(
                 row["global_model_sku"]
@@ -1662,7 +1680,15 @@ def _shopee_global_plan_matches_local_payload(
             else []
         )
         return bool(
-            current.get("bindings") == expected_bindings
+            (
+                isinstance(current.get("bindings"), dict)
+                and all(
+                    current.get("bindings", {}).get(key) == value
+                    for key, value in expected_binding_subset.items()
+                )
+                if is_existing_v2
+                else current.get("bindings") == expected_bindings
+            )
             and current.get("copy") == expected_copy
             and current.get("approved_images") == expected_images
             and current.get("selected_image_positions")

@@ -1,4 +1,5 @@
 from copy import deepcopy
+import hashlib
 import json
 from types import SimpleNamespace
 import urllib.error
@@ -7,6 +8,9 @@ import pytest
 
 from domains.channel_operations import oneclick_channel_preparation
 from domains.channel_operations.oneclick_release_adapters import (
+    build_shopee_prepare_seed,
+    dispatch_oneclick_target,
+    prepare_oneclick_target,
     production_adapter_registry,
 )
 from domains.product_operations import (
@@ -18,10 +22,23 @@ from domains.product_operations import (
 from modules.miaoshou import oneclick_release as miaoshou
 from modules.shopee import oneclick_release as shopee
 from shared_platform.oneclick_release_controlplane import (
+    DispatchInvocationError,
+    DispatchTargetResult,
     OneClickReleaseStore,
     OneClickReleaseWorker,
+    PrepareTargetRequest,
 )
 from shared_platform.release_store import ReleaseStore
+from shared_platform.shopee_global_plan import (
+    approve_shopee_global_plan,
+    build_shopee_existing_current_snapshot_candidate,
+    build_shopee_global_plan_candidate,
+    serialize_approved_shopee_global_plan,
+)
+from shared_platform.target_scoped_release_contracts import (
+    approved_shopee_copy_digest,
+    approved_source_image_manifest_digest,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -701,10 +718,19 @@ def _shopee_approved(*, with_global_create=False):
 
 
 class ShopeePrepareFake:
-    def __init__(self, *, candidate=True, list_fault=None):
+    def __init__(
+        self,
+        *,
+        candidate=True,
+        list_fault=None,
+        item_mutator=None,
+        model_mutator=None,
+    ):
         self.approved = _shopee_approved()
         self.candidate = candidate
         self.list_fault = list_fault
+        self.item_mutator = item_mutator
+        self.model_mutator = model_mutator
         self.calls = []
         self.credentials = shopee.ShopeeCredentials(
             region="MY",
@@ -734,32 +760,68 @@ class ShopeePrepareFake:
                 },
             }
         if path == shopee.GLOBAL_MODEL_PATH:
+            rows = [{
+                "global_model_id": 7,
+                "global_model_sku": "0954",
+                "tier_index": [0],
+            }]
+            if self.model_mutator is not None:
+                self.model_mutator(rows)
             return {
                 "error": "",
                 "response": {
-                    "global_model": [{
-                        "global_model_id": 7,
-                        "global_model_sku": "0954",
-                        "tier_index": [0],
-                    }]
+                    "global_model": rows
                 },
             }
         if path == shopee.GLOBAL_ITEM_PATH:
             copy = self.approved["listing_copy"]
+            item = {
+                "global_item_id": 9,
+                "global_item_name": copy["title"],
+                "description": copy["description"],
+                "image": {
+                    "image_url_list": [
+                        "https://shopee-rehost.example/one"
+                    ],
+                    "image_id_list": ["stable-image-1"],
+                },
+                "category_id": 101157,
+                "attribute_list": [
+                    {
+                        "attribute_id": 1,
+                        "attribute_value_list": [
+                            {
+                                "value_id": 2,
+                                "original_value_name": "PVC",
+                            }
+                        ],
+                    }
+                ],
+                "brand": {
+                    "brand_id": 0,
+                    "original_brand_name": "NoBrand",
+                },
+                "seller_stock": [
+                    {"location_id": "CNZ", "stock": 200}
+                ],
+                "condition": "NEW",
+                "pre_order": {
+                    "is_pre_order": False,
+                    "days_to_ship": 0,
+                },
+                "tier_variation": [
+                    {
+                        "name": "Style",
+                        "option_list": [{"option": "Default"}],
+                    }
+                ],
+            }
+            if self.item_mutator is not None:
+                self.item_mutator(item)
             return {
                 "error": "",
                 "response": {
-                    "global_item_list": [{
-                        "global_item_id": 9,
-                        "global_item_name": copy["title"],
-                        "description": copy["description"],
-                        "image": {
-                            "image_url_list": [
-                                "https://shopee-rehost.example/one"
-                            ],
-                            "image_id_list": ["stable-image-1"],
-                        },
-                    }]
+                    "global_item_list": [item]
                 },
             }
         raise AssertionError((path, params))
@@ -793,6 +855,152 @@ class ShopeePrepareFake:
             merchant_get=self.merchant_get,
             shop_get=self.shop_get,
         )
+
+
+def _existing_v2_request(fake, *, target="shopee:GLOBAL"):
+    source_url = "https://assets.example/one.jpg"
+    source_digest = shopee._digest({"source": "official-1688"})
+    lineage_digest = shopee._digest({"lineage": "0954"})
+    approved_copy_digest = approved_shopee_copy_digest(
+        fake.approved["listing_copy"]["title"],
+        fake.approved["listing_copy"]["description"],
+    )
+    current = shopee._observe_existing_global_candidate_availability(
+        fake.transport(),
+        global_item_id="9",
+        seed={
+            "approved_copy_digest": approved_copy_digest,
+            "selected_image_positions": [1],
+            "ordered_approved_images": [
+                {
+                    "source_url": source_url,
+                    "source_image_digest": shopee._digest(
+                        {"source_image": 1}
+                    ),
+                }
+            ],
+        },
+        expected_model_skus=("0954",),
+    )
+    candidate = build_shopee_existing_current_snapshot_candidate(
+        observation_authority="shopee_official_open_api",
+        observation_schema_version=(
+            "shopee-official-global-plan-observation/v1"
+        ),
+        observation_evidence_digest=current[
+            "observation_evidence_digest"
+        ],
+        source_identity_schema_version="source-product-identity/v1",
+        source_identity_digest=source_digest,
+        sku_lineage_schema_version="new-source-sku-reservation/v1",
+        sku_lineage_digest=lineage_digest,
+        content_package_digest=shopee._digest({"content": "approved"}),
+        title=fake.approved["listing_copy"]["title"],
+        description=fake.approved["listing_copy"]["description"],
+        approved_copy_digest=approved_copy_digest,
+        ordered_approved_images=[
+            {
+                "source_url": source_url,
+                "source_image_digest": shopee._digest(
+                    {"source_image": 1}
+                ),
+            }
+        ],
+        approved_source_image_manifest_digest=(
+            approved_source_image_manifest_digest([source_url])
+        ),
+        selected_image_positions=[1],
+        parcel={
+            "weight_kg": "0.2",
+            "length_cm": "30",
+            "width_cm": "20",
+            "height_cm": "1",
+            "contract_digest": shopee._digest({"parcel": "approved"}),
+        },
+        target_pricing={
+            "currency": "CNY",
+            "global_original_price": "9.5",
+            "contract_digest": shopee._digest({"pricing": "approved"}),
+        },
+        policy_digest=shopee._digest({"policy": "approved"}),
+        expected_model_skus=["0954"],
+        existing_global_item=current["existing_global_item"],
+        existing_global_models=current["existing_global_models"],
+        existing_global_identity_evidence_digest=current[
+            "existing_global_identity_evidence_digest"
+        ],
+    )
+    assert candidate.status == "READY"
+    approved = approve_shopee_global_plan(
+        candidate,
+        approved_by="Kyle",
+        confirm_approved_shopee_global_plan=True,
+        expected_candidate_digest=candidate.candidate_digest,
+    )
+    record = serialize_approved_shopee_global_plan(approved)
+    projection = approved.public_projection()
+    plan = approved.server_owned_execution_payload(candidate)["plan"]
+    compact = {
+        "schema_version": approved.schema_version,
+        "mode": approved.mode,
+        "candidate_digest": approved.candidate_digest,
+        "approved_plan_digest": approved.approved_plan_digest,
+        "selected_image_positions": list(
+            plan["selected_image_positions"]
+        ),
+        "selected_source_image_manifest_digest": plan[
+            "selected_source_image_manifest_digest"
+        ],
+        "record_digest": hashlib.sha256(record.encode("utf-8")).hexdigest(),
+    }
+    immutable_payload = {
+        "product_id": "7",
+        "seller_sku": "0954",
+        "targets": ["shopee:GLOBAL", "shopee:MY"],
+        "approved_shopee_global_plan": compact,
+        "_approved_shopee_global_plan_record": record,
+        "pricing": {
+            "selected_targets": {
+                "shopee:MY": {
+                    "store_prices": [
+                        {
+                            "list_price": "33",
+                            "currency": "MYR",
+                        }
+                    ]
+                }
+            }
+        },
+    }
+    digest = shopee._digest
+    return PrepareTargetRequest(
+        schema_version="oneclick-prepare-target-request/v1",
+        plan_id="omnichannel:existing-v2",
+        run_id="release-run:existing-v2",
+        target_label=target,
+        product_revision=31,
+        payload_digest=digest(immutable_payload),
+        confirmation_token_digest=digest({"confirmation": "approved"}),
+        targets_digest=digest({"targets": immutable_payload["targets"]}),
+        idempotency_key=f"test:{target}",
+        source_identity_digest=source_digest,
+        source_identity_payload_digest=digest(
+            {
+                "schema_version": "source-product-identity/v1",
+                "identity_digest": source_digest,
+                "source_offer_id": "986159122616",
+            }
+        ),
+        source_identity={
+            "schema_version": "source-product-identity/v1",
+            "identity_digest": source_digest,
+            "source_offer_id": "986159122616",
+        },
+        sku_lineage_digest=lineage_digest,
+        sku_lineage_payload_digest=digest({"lineage": lineage_digest}),
+        adapter_policy_digest=digest({"adapter": "shopee-v2"}),
+        immutable_plan_payload=immutable_payload,
+    )
 
 
 def _shopee_seed_and_request(
@@ -880,6 +1088,279 @@ def test_shopee_default_prepare_rehydrates_no_refresh_clients(
     assert result["proof"]["no_refresh"] is True
     assert result["external_writes_performed"] == []
     assert fake.calls
+
+
+def test_shopee_existing_v2_prepare_and_global_owner_are_get_only():
+    fake = ShopeePrepareFake()
+    request = _existing_v2_request(fake)
+    fake.calls.clear()
+    shopee.configure_prepare_transport_factory(
+        lambda region: (
+            fake.transport()
+            if region == "MY"
+            else pytest.fail("wrong region")
+        )
+    )
+
+    prepared = prepare_oneclick_target(request)
+
+    provider = prepared["command"]["provider_command"]
+    assert provider["kind"] == "GLOBAL_EXISTING"
+    assert prepared["write_occurrence_plan"]["occurrences"] == []
+    assert prepared["shared_resource"][
+        "expected_external_write_count"
+    ] == 0
+    result = dispatch_oneclick_target(
+        SimpleNamespace(
+            target_label="shopee:GLOBAL",
+            command={"payload": prepared["command"]},
+        )
+    )
+    validated = DispatchTargetResult.from_value(result)
+    assert validated.canonical_status == "SUCCEEDED"
+    assert validated.external_writes == ()
+    assert validated.external_write_count == 0
+    assert validated.submission_accepted is False
+    assert validated.readback_verified is True
+    assert validated.evidence["shared_resource"]["mode"] == (
+        "EXISTING_GLOBAL"
+    )
+    assert all(call[0] in {"merchant", "shop"} for call in fake.calls)
+    encoded = json.dumps(
+        result,
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    for forbidden in (
+        "shop-token",
+        "merchant-token",
+        "https://shopee-rehost.example/one",
+        "stable-image-1",
+    ):
+        assert forbidden not in encoded
+
+
+def test_shopee_legacy_v1_existing_is_readable_but_not_oneclick_executable():
+    from tests.test_shopee_global_plan import _base_args
+
+    request = _existing_v2_request(ShopeePrepareFake())
+    args = _base_args()
+    args.update(
+        {
+            "mode": "EXISTING_GLOBAL",
+            "source_identity_digest": request.source_identity_digest,
+            "sku_lineage_digest": request.sku_lineage_digest,
+            "existing_global_item_id": 9,
+            "existing_global_identity_evidence_digest": "8" * 64,
+        }
+    )
+    candidate = build_shopee_global_plan_candidate(**args)
+    assert candidate.status == "READY"
+    approved = approve_shopee_global_plan(
+        candidate,
+        approved_by="Kyle",
+        confirm_approved_shopee_global_plan=True,
+        expected_candidate_digest=candidate.candidate_digest,
+    )
+    assert approved.schema_version == "approved-shopee-global-plan/v1"
+    record = serialize_approved_shopee_global_plan(approved)
+    plan = approved.server_owned_execution_payload(candidate)["plan"]
+    request.immutable_plan_payload[
+        "_approved_shopee_global_plan_record"
+    ] = record
+    request.immutable_plan_payload["approved_shopee_global_plan"] = {
+        "schema_version": approved.schema_version,
+        "mode": approved.mode,
+        "candidate_digest": approved.candidate_digest,
+        "approved_plan_digest": approved.approved_plan_digest,
+        "selected_image_positions": list(
+            plan["selected_image_positions"]
+        ),
+        "selected_source_image_manifest_digest": plan[
+            "selected_source_image_manifest_digest"
+        ],
+        "record_digest": hashlib.sha256(record.encode("utf-8")).hexdigest(),
+    }
+
+    prepared = prepare_oneclick_target(request)
+
+    assert prepared["classification"] == "BLOCKED_CAPABILITY"
+    assert prepared["reason_category"] == "CONTENT"
+    assert prepared["reason_code"] == (
+        "approved_shopee_existing_v2_required"
+    )
+    assert prepared["command"] is None
+    assert prepared["proof"] is None
+
+
+@pytest.mark.parametrize(
+    ("item_mutator", "model_mutator"),
+    [
+        (lambda item: item.update({"category_id": 999999}), None),
+        (
+            lambda item: item.update(
+                {
+                    "attribute_list": [
+                        {
+                            "attribute_id": 2,
+                            "attribute_value_list": [],
+                        }
+                    ]
+                }
+            ),
+            None,
+        ),
+        (lambda item: item.update({"brand": None}), None),
+        (
+            lambda item: item.update(
+                {
+                    "seller_stock": [
+                        {"location_id": "CNZ", "stock": 199}
+                    ]
+                }
+            ),
+            None,
+        ),
+        (
+            lambda item: item.update(
+                {"global_item_name": "Drifted official title"}
+            ),
+            None,
+        ),
+        (
+            lambda item: item["image"].update(
+                {"image_id_list": ["drifted-image-id"]}
+            ),
+            None,
+        ),
+        (
+            None,
+            lambda rows: rows[0].update({"global_model_id": 8}),
+        ),
+    ],
+    ids=[
+        "category",
+        "attributes",
+        "brand",
+        "stock",
+        "copy",
+        "image",
+        "model",
+    ],
+)
+def test_shopee_existing_v2_snapshot_drift_blocks_before_claim(
+    item_mutator,
+    model_mutator,
+):
+    fake = ShopeePrepareFake()
+    request = _existing_v2_request(fake)
+    fake.calls.clear()
+    fake.item_mutator = item_mutator
+    fake.model_mutator = model_mutator
+    shopee.configure_prepare_transport_factory(lambda _region: fake.transport())
+
+    prepared = prepare_oneclick_target(request)
+
+    assert prepared["classification"] == "BLOCKED_CAPABILITY"
+    assert prepared["reason_category"] == "CONTENT"
+    assert prepared["command"] is None
+    assert prepared["proof"] is None
+    assert not any(
+        path
+        in {
+            shopee.GLOBAL_CREATE_PATH,
+            shopee.GLOBAL_MODEL_INIT_PATH,
+            shopee.REGIONAL_TASK_PATH,
+        }
+        for _authority, path, _body in fake.calls
+    )
+
+
+def test_shopee_existing_v2_regional_failure_never_invents_global_write():
+    fake = ShopeePrepareFake()
+    global_request = _existing_v2_request(fake)
+    shopee.configure_prepare_transport_factory(lambda _region: fake.transport())
+    global_prepared = prepare_oneclick_target(global_request)
+    global_result = dispatch_oneclick_target(
+        SimpleNamespace(
+            target_label="shopee:GLOBAL",
+            command={"payload": global_prepared["command"]},
+        )
+    )
+    shared_result = global_result["evidence"]["shared_resource"]
+    shared = {
+        key: shared_result[key]
+        for key in (
+            "schema_version",
+            "policy_version",
+            "owner_key",
+            "master_lineage_digest",
+            "global_identity_digest",
+            "master_evidence_digest",
+        )
+    }
+
+    regional_request = _existing_v2_request(fake, target="shopee:MY")
+    regional_prepared = prepare_oneclick_target(regional_request)
+    provider = regional_prepared["command"]["provider_command"]
+    assert provider["kind"] == "REGION_FROM_SHARED"
+    assert regional_prepared["write_occurrence_plan"]["occurrences"] == [
+        {
+            "occurrence_id": "regional_publish-1",
+            "write_class": "shopee:regional_publish",
+        }
+    ]
+    shopee.configure_runtime_transport_factory(
+        lambda: shopee.ShopeeRuntimeTransport(
+            verify_pre_dispatch=lambda _command: True,
+            resolve_existing_global=lambda _command: {
+                "verified": True,
+                "global_item_id": "9",
+                "global_model_id": "7",
+                "tier_index": [0],
+                "image_snapshot_digest": shopee._image_id_snapshot_digest(
+                    ["stable-image-1"]
+                ),
+                "image_count": 1,
+                "image_outcome": {
+                    "manual_review_required": True,
+                    "matched_rule_ids": [
+                        "global_image:rehosted_order_unverifiable"
+                    ],
+                    "global_image_status": "warning",
+                    "global_image_verification_scope": (
+                        "linked_count_verified_order_unverifiable"
+                    ),
+                    "global_image_approved_order_exact": False,
+                    "evidence_digest": "c" * 64,
+                },
+                "master_evidence_digest": shared[
+                    "master_evidence_digest"
+                ],
+            },
+            regional_publish=lambda _body: (_ for _ in ()).throw(
+                TimeoutError("regional transport timeout")
+            ),
+        )
+    )
+
+    with pytest.raises(DispatchInvocationError) as error:
+        dispatch_oneclick_target(
+            SimpleNamespace(
+                target_label="shopee:MY",
+                command={"payload": regional_prepared["command"]},
+                shared_resource_context=shared,
+            )
+        )
+    assert error.value.external_writes == (
+        "shopee:regional_publish",
+    )
+    assert error.value.external_write_count is None
+    assert error.value.confirmed_external_write_count_lower_bound == 0
+    assert error.value.possible_external_write_count_upper_bound == 1
+    assert all(
+        "global" not in write for write in error.value.external_writes
+    )
 
 
 def test_shopee_new_global_prepare_is_plan_native_and_json_restart_safe():

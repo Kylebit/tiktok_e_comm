@@ -148,6 +148,7 @@ def observe_shopee_global_plan_candidate(
         READY,
         ShopeeGlobalPlanCandidate,
         ShopeeGlobalPlanObservationError,
+        build_shopee_existing_current_snapshot_candidate,
     )
 
     seed, targets, model_skus = _global_observer_request(request)
@@ -228,22 +229,62 @@ def observe_shopee_global_plan_candidate(
 
     if _global_candidate_observer_factory is None:
         if mode == EXISTING_GLOBAL:
-            # Do not stop at the model-list scan.  Consume the complete
-            # official existing-global shape first, so a malformed or drifted
-            # item never gets misclassified as a mere missing feature.  The
-            # current server request still lacks the approved selection and
-            # approval-lineage facts required by the shared plan contract, so
-            # the read-only evidence cannot yet become a READY candidate.
-            _observe_existing_global_candidate_availability(
+            current = _observe_existing_global_candidate_availability(
                 transport,
                 global_item_id=official_context["global_item_id"],
                 seed=seed,
                 expected_model_skus=model_skus,
             )
-            raise ShopeeGlobalPlanObservationError(
-                category="CAPABILITY",
-                code="shopee_existing_global_approved_facts_unavailable",
+            candidate = build_shopee_existing_current_snapshot_candidate(
+                observation_authority="shopee_official_open_api",
+                observation_schema_version=(
+                    "shopee-official-global-plan-observation/v1"
+                ),
+                observation_evidence_digest=current[
+                    "observation_evidence_digest"
+                ],
+                source_identity_schema_version=seed[
+                    "source_identity_schema_version"
+                ],
+                source_identity_digest=seed["source_identity_digest"],
+                sku_lineage_schema_version=seed[
+                    "sku_lineage_schema_version"
+                ],
+                sku_lineage_digest=seed["sku_lineage_digest"],
+                content_package_digest=seed["content_package_digest"],
+                title=seed["title"],
+                description=seed["description"],
+                approved_copy_digest=seed["approved_copy_digest"],
+                ordered_approved_images=seed[
+                    "ordered_approved_images"
+                ],
+                approved_source_image_manifest_digest=seed[
+                    "approved_source_image_manifest_digest"
+                ],
+                selected_image_positions=seed[
+                    "selected_image_positions"
+                ],
+                parcel=seed["parcel"],
+                target_pricing=seed["target_pricing"],
+                policy_digest=seed["policy_digest"],
+                expected_model_skus=list(model_skus),
+                existing_global_item=current["existing_global_item"],
+                existing_global_models=current["existing_global_models"],
+                existing_global_identity_evidence_digest=current[
+                    "existing_global_identity_evidence_digest"
+                ],
             )
+            if (
+                type(candidate) is not ShopeeGlobalPlanCandidate
+                or candidate.status != READY
+                or candidate.mode != EXISTING_GLOBAL
+            ):
+                raise ShopeeOneClickPrepareBlocked(
+                    "shopee_official_existing_snapshot_invalid",
+                    "official Shopee existing-global snapshot is invalid",
+                    category="CONTENT",
+                )
+            return candidate
         raise ShopeeGlobalPlanObservationError(
             category="CAPABILITY",
             code="shopee_official_global_candidate_fixture_required",
@@ -426,6 +467,13 @@ def prepare_oneclick_target(
         try:
             command = _immutable_shopee_command(request)
         except OneClickAdapterInputError as error:
+            if str(error) == "approved_shopee_existing_v2_required":
+                return _blocked_prepare_result(
+                    "BLOCKED_CAPABILITY",
+                    "CONTENT",
+                    "approved_shopee_existing_v2_required",
+                    "existing Shopee global facts require a fresh official v2 observation and approval",
+                )
             if str(error) == "approved_shopee_plan_facts_incomplete":
                 return _blocked_prepare_result(
                     "BLOCKED_CAPABILITY",
@@ -993,13 +1041,26 @@ def _canonical_shopee_global_seed(
         "record_digest",
     }
     if (
+        isinstance(compact, Mapping)
+        and compact.get("schema_version")
+        == "approved-shopee-global-plan/v1"
+        and compact.get("mode") == "EXISTING_GLOBAL"
+    ):
+        raise OneClickAdapterInputError(
+            "approved_shopee_existing_v2_required"
+        )
+    if (
         target not in SHOPEE_TARGETS
         or not isinstance(compact, Mapping)
         or set(compact) != expected_keys
-        or compact.get("schema_version")
-        != "approved-shopee-global-plan/v1"
-        or compact.get("mode")
-        not in {"NEW_GLOBAL", "EXISTING_GLOBAL"}
+        or (
+            compact.get("schema_version"),
+            compact.get("mode"),
+        )
+        not in {
+            ("approved-shopee-global-plan/v1", "NEW_GLOBAL"),
+            ("approved-shopee-global-plan/v2", "EXISTING_GLOBAL"),
+        }
         or type(record) is not str
         or not record
         or any(

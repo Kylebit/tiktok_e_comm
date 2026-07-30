@@ -540,7 +540,10 @@ def _prepare_approved_global_target(seed, request) -> dict[str, object]:
                 "schema_version": "oneclick-shopee-global-owner-command/v1",
                 "kind": "GLOBAL_EXISTING",
                 "target_label": SHOPEE_GLOBAL_TARGET,
+                "region": region,
+                "shop_id": transport.credentials.shop_id,
                 "approved_plan_digest": approved.approved_plan_digest,
+                "approved_global_plan_record": record,
                 "shared_resource": declaration,
             }
         else:
@@ -647,8 +650,12 @@ def _prepare_approved_global_target(seed, request) -> dict[str, object]:
         "approved_plan_digest": approved.approved_plan_digest,
         "approved_global_plan_payload": dict(plan),
         "approved": approved_regional,
-        "expected_models": list(plan["global_model"]),
-        "model_contract_digest": _digest(plan["global_model"]),
+        "expected_models": list(
+            _approved_plan_models(plan)
+        ),
+        "model_contract_digest": _digest(
+            _approved_plan_models(plan)
+        ),
         "selected_logistics_ids": selected_logistics,
         "regional_scan_digest": regional["scan_digest"],
         "proof_snapshot_digest": _digest(
@@ -683,7 +690,7 @@ def _current_approved_global_candidate(
     plan: Mapping[str, object],
     transport: ShopeePrepareTransport,
 ) -> tuple[object, dict[str, object]]:
-    models = plan.get("global_model")
+    models = _approved_plan_models(plan)
     if not isinstance(models, list) or not models or any(
         not isinstance(row, Mapping) for row in models
     ):
@@ -722,8 +729,13 @@ def _current_approved_global_candidate(
             "model_sku_count": len(model_skus),
             "candidate_digest": getattr(candidate, "candidate_digest", None),
         }
+    snapshot = plan.get("current_snapshot")
     expected_id = _positive_identity(
-        plan.get("existing_global_item_id"),
+        (
+            snapshot.get("global_item_id")
+            if isinstance(snapshot, Mapping)
+            else plan.get("existing_global_item_id")
+        ),
         "approved existing global item identity",
     )
     if any(values != [expected_id] for values in observed_by_sku.values()):
@@ -732,6 +744,18 @@ def _current_approved_global_candidate(
             "official global model identities no longer match approval",
             category="CONTENT",
         )
+    if isinstance(snapshot, Mapping):
+        candidate, current = _current_existing_snapshot_candidate(
+            plan, transport
+        )
+        official = _read_approved_global_contract(
+            transport,
+            global_item_id=expected_id,
+            plan=plan,
+            approved_plan_digest=approved.approved_plan_digest,
+            exact_current=(candidate, current),
+        )
+        return candidate, official
     official = _read_approved_global_contract(
         transport,
         global_item_id=expected_id,
@@ -739,6 +763,115 @@ def _current_approved_global_candidate(
         approved_plan_digest=approved.approved_plan_digest,
     )
     return _candidate_from_plan_payload(plan), official
+
+
+def _current_existing_snapshot_candidate(
+    plan: Mapping[str, object],
+    transport: ShopeePrepareTransport,
+) -> tuple[object, dict[str, object]]:
+    from shared_platform.shopee_global_plan import (
+        OFFICIAL_AUTHORITY,
+        OFFICIAL_OBSERVATION_SCHEMA_VERSION,
+        READY,
+        build_shopee_existing_current_snapshot_candidate,
+    )
+
+    snapshot = _mapping(
+        plan.get("current_snapshot"), "approved current snapshot"
+    )
+    bindings = _mapping(plan.get("bindings"), "approved plan bindings")
+    copy = _mapping(plan.get("copy"), "approved copy")
+    parcel = _mapping(plan.get("parcel"), "approved parcel")
+    package = _mapping(parcel.get("package_cm"), "approved package")
+    pricing = _mapping(plan.get("pricing"), "approved pricing")
+    models = snapshot.get("global_model")
+    if not isinstance(models, list) or not models:
+        raise ShopeeOneClickPrepareBlocked(
+            "approved_shopee_existing_models_invalid",
+            "approved existing Shopee model contract is invalid",
+            category="CONTENT",
+        )
+    expected_model_skus = [
+        _nonempty(row.get("global_model_sku"), "approved model SKU")
+        for row in models
+    ]
+    global_item_id = _positive_identity(
+        snapshot.get("global_item_id"),
+        "approved existing global item identity",
+    )
+    try:
+        current = _observe_existing_global_candidate_availability(
+            transport,
+            global_item_id=global_item_id,
+            seed={
+                "approved_copy_digest": bindings.get(
+                    "approved_copy_digest"
+                ),
+                "selected_image_positions": plan.get(
+                    "selected_image_positions"
+                ),
+                "ordered_approved_images": plan.get("approved_images"),
+            },
+            expected_model_skus=tuple(expected_model_skus),
+        )
+    except ShopeeOneClickPreDispatchError as error:
+        raise ShopeeOneClickPrepareBlocked(
+            "shopee_existing_current_snapshot_drift",
+            "official Shopee existing-global snapshot drifted",
+            category="CONTENT",
+        ) from error
+    candidate = build_shopee_existing_current_snapshot_candidate(
+        observation_authority=OFFICIAL_AUTHORITY,
+        observation_schema_version=OFFICIAL_OBSERVATION_SCHEMA_VERSION,
+        observation_evidence_digest=current[
+            "observation_evidence_digest"
+        ],
+        source_identity_schema_version=bindings.get(
+            "source_identity_schema_version"
+        ),
+        source_identity_digest=bindings.get("source_identity_digest"),
+        sku_lineage_schema_version=bindings.get(
+            "sku_lineage_schema_version"
+        ),
+        sku_lineage_digest=bindings.get("sku_lineage_digest"),
+        content_package_digest=bindings.get("content_package_digest"),
+        title=copy.get("title"),
+        description=copy.get("description"),
+        approved_copy_digest=bindings.get("approved_copy_digest"),
+        ordered_approved_images=plan.get("approved_images"),
+        approved_source_image_manifest_digest=plan.get(
+            "approved_source_image_manifest_digest"
+        ),
+        selected_image_positions=plan.get("selected_image_positions"),
+        parcel={
+            "weight_kg": parcel.get("weight_kg"),
+            "length_cm": package.get("length"),
+            "width_cm": package.get("width"),
+            "height_cm": package.get("height"),
+            "contract_digest": parcel.get("contract_digest"),
+        },
+        target_pricing={
+            "currency": pricing.get("currency"),
+            "global_original_price": pricing.get(
+                "global_original_price"
+            ),
+            "contract_digest": pricing.get("target_pricing_digest"),
+        },
+        policy_digest=plan.get("policy_digest"),
+        expected_model_skus=expected_model_skus,
+        existing_global_item=current["existing_global_item"],
+        existing_global_models=current["existing_global_models"],
+        existing_global_identity_evidence_digest=current[
+            "existing_global_identity_evidence_digest"
+        ],
+    )
+    if candidate.status != READY:
+        raise ShopeeOneClickPrepareBlocked(
+            "shopee_existing_current_snapshot_drift",
+            "official Shopee existing-global snapshot drifted",
+            category="CONTENT",
+        )
+    return candidate, current
 
 
 def _candidate_from_plan_payload(plan: Mapping[str, object]) -> object:
@@ -842,7 +975,7 @@ def _approved_regional_contract(
     plan: Mapping[str, object],
 ) -> dict[str, object]:
     selected_urls = plan.get("selected_image_urls")
-    models = plan.get("global_model")
+    models = _approved_plan_models(plan)
     pricing = approved_seed.get("target_pricing")
     parcel = _mapping(plan.get("parcel"), "approved parcel")
     package = _mapping(parcel.get("package_cm"), "approved package")
@@ -880,6 +1013,7 @@ def _approved_regional_contract(
         "listing_copy": {
             "title": copy.get("title"),
             "description": copy.get("description"),
+            "approved_copy_digest": copy.get("approved_copy_digest"),
             "approved_master_digest": copy.get("approved_copy_digest"),
         },
         "ordered_images": [
@@ -904,6 +1038,7 @@ def _read_approved_global_contract(
     global_item_id: str,
     plan: Mapping[str, object],
     approved_plan_digest: str,
+    exact_current: tuple[object, Mapping[str, object]] | None = None,
 ) -> dict[str, object]:
     approved = _approved_regional_contract(
         {
@@ -923,7 +1058,13 @@ def _read_approved_global_contract(
         approved=approved,
     )
     official_models = _global_models(transport, global_item_id)
-    expected_models = plan.get("global_model")
+    expected_models = _approved_plan_models(plan)
+    if not isinstance(expected_models, list) or not expected_models:
+        raise ShopeeOneClickPrepareBlocked(
+            "approved_shopee_model_contract_invalid",
+            "approved Shopee model contract is invalid",
+            category="CONTENT",
+        )
     expected = {
         (
             _nonempty(row.get("global_model_sku"), "approved model SKU"),
@@ -944,6 +1085,37 @@ def _read_approved_global_contract(
             "official global models no longer match approval",
             category="CONTENT",
         )
+    snapshot = plan.get("current_snapshot")
+    if isinstance(snapshot, Mapping):
+        if exact_current is None:
+            exact_current = _current_existing_snapshot_candidate(
+                plan, transport
+            )
+        current_candidate, current_observation = exact_current
+        current_plan = getattr(current_candidate, "_plan", None)
+        current_payload = (
+            current_plan.payload()
+            if current_plan is not None
+            and callable(getattr(current_plan, "payload", None))
+            else None
+        )
+        if (
+            not isinstance(current_payload, Mapping)
+            or current_payload.get("current_snapshot_digest")
+            != plan.get("current_snapshot_digest")
+            or str(
+                _mapping(
+                    current_observation.get("existing_global_item"),
+                    "official current item",
+                ).get("global_item_id")
+            )
+            != global_item_id
+        ):
+            raise ShopeeOneClickPrepareBlocked(
+                "shopee_existing_current_snapshot_drift",
+                "official Shopee existing-global snapshot drifted",
+                category="CONTENT",
+            )
     summary = {
         "global_item_id": global_item_id,
         "copy_digest": master["copy_digest"],
@@ -961,7 +1133,7 @@ def _read_approved_global_contract(
             global_item_id=global_item_id,
             image_snapshot_digest=master["image_snapshot_digest"],
             image_count=master["image_count"],
-            model_contract_digest=_digest(plan["global_model"]),
+            model_contract_digest=_digest(expected_models),
         ),
     }
 
@@ -972,9 +1144,7 @@ def dispatch_plan_native_target(request) -> dict[str, object]:
     if kind == "GLOBAL_NEW":
         return _dispatch_global_owner(request, command)
     if kind == "GLOBAL_EXISTING":
-        raise ShopeeOneClickPreDispatchError(
-            "verified existing Shopee GLOBAL must not be dispatched"
-        )
+        return _dispatch_existing_global_owner(command)
     transport: ShopeeRuntimeTransport
     if kind == "REGION_FROM_SHARED":
         transport = _runtime_transport(command)
@@ -1334,6 +1504,108 @@ def dispatch_plan_native_target(request) -> dict[str, object]:
                 }
             ),
         },
+    }
+
+
+def _dispatch_existing_global_owner(
+    command: Mapping[str, object],
+) -> dict[str, object]:
+    """Re-read an approved existing master and publish zero channel writes.
+
+    The synthetic GLOBAL owner is still dispatched by the durable control
+    plane so it can produce the shared-resource identity consumed by regional
+    targets.  Its dispatch is an official GET-only verification: no global
+    create, update, model-init, image upload, or stock-update callable is
+    reachable from this path.
+    """
+
+    declaration = _mapping(
+        command.get("shared_resource"), "shared resource declaration"
+    )
+    if (
+        declaration.get("mode") != "EXISTING_GLOBAL"
+        or declaration.get("expected_external_write_count") != 0
+    ):
+        raise ShopeeOneClickPreDispatchError(
+            "Shopee existing GLOBAL declaration is invalid"
+        )
+    region = _nonempty(command.get("region"), "region")
+    transport = _prepare_transport(region)
+    if transport.credentials.shop_id != command.get("shop_id"):
+        raise ShopeeOneClickPreDispatchError(
+            "prepared Shopee shop binding drifted"
+        )
+    record = command.get("approved_global_plan_record")
+    try:
+        from shared_platform.shopee_global_plan import (
+            rehydrate_approved_shopee_global_plan,
+        )
+
+        approved = rehydrate_approved_shopee_global_plan(record)
+        plan = _mapping(
+            _mapping(
+                json.loads(record).get("approved_plan"),
+                "approved plan record",
+            ).get("plan"),
+            "approved global plan",
+        )
+        candidate, official = _current_approved_global_candidate(
+            approved,
+            plan,
+            transport,
+        )
+        approved.server_owned_execution_payload(candidate)
+    except Exception as error:
+        raise ShopeeOneClickPreDispatchError(
+            "official existing Shopee GLOBAL proof drifted before dispatch"
+        ) from error
+    global_item_id = _positive_identity(
+        official.get("global_item_id"),
+        "official existing global item identity",
+    )
+    global_identity_digest = _text_digest(global_item_id)
+    master_evidence_digest = _nonempty_digest(
+        official.get("master_evidence_digest"),
+        "official existing master evidence",
+    )
+    if (
+        approved.mode != "EXISTING_GLOBAL"
+        or approved.approved_plan_digest
+        != command.get("approved_plan_digest")
+        or declaration.get("master_lineage_digest")
+        != approved.approved_plan_digest
+        or declaration.get("global_identity_digest")
+        != global_identity_digest
+        or declaration.get("master_evidence_digest")
+        != master_evidence_digest
+    ):
+        raise ShopeeOneClickPreDispatchError(
+            "official existing Shopee GLOBAL identity drifted"
+        )
+    shared = {
+        "schema_version": declaration["schema_version"],
+        "policy_version": declaration["policy_version"],
+        "mode": "EXISTING_GLOBAL",
+        "owner_key": declaration["owner_key"],
+        "master_lineage_digest": declaration["master_lineage_digest"],
+        "global_identity_digest": global_identity_digest,
+        "master_evidence_digest": master_evidence_digest,
+    }
+    return {
+        "canonical_status": "SUCCEEDED",
+        "reason_category": "PRE_SUBMIT",
+        "reason_scope": "TARGET",
+        "reason_code": "shopee_existing_global_verified_no_write",
+        "reason_detail": "official existing global master readback verified",
+        "external_writes": (),
+        "external_write_count": 0,
+        "confirmed_external_write_count_lower_bound": 0,
+        "possible_external_write_count_upper_bound": 0,
+        "external_id": "sha256:" + global_identity_digest,
+        "submission_accepted": False,
+        "readback_verified": True,
+        "dispatch_outcome_unknown": False,
+        "evidence": {"shared_resource": shared},
     }
 
 
@@ -2748,14 +3020,19 @@ def _observe_existing_global_candidate_availability(
 ) -> dict[str, object]:
     """Read and validate the complete existing-global candidate shape.
 
-    This function deliberately returns only counts and digests.  The official
-    item can prove current marketplace facts, but it cannot manufacture the
-    server-owned approval lineage required for category selection, attributes,
-    brand, stock, location, condition/preorder, or variation/image choices.
+    This function deliberately returns only normalized current-fact bindings
+    and digests.  Item-level seller stock/location is delegated to the shared
+    official-existing contract.  The official item still cannot manufacture
+    the server-owned approval lineage required for category path/tree,
+    attributes, brand, condition/preorder, or variation/image choices.
     """
 
     from shared_platform.target_scoped_release_contracts import (
         approved_shopee_copy_digest,
+    )
+    from shared_platform.shopee_global_plan import (
+        ShopeeGlobalPlanContractError,
+        build_shopee_official_existing_global_seller_stock,
     )
 
     raw = transport.merchant_get(
@@ -2830,20 +3107,16 @@ def _observe_existing_global_candidate_availability(
         or not isinstance(attributes, list)
         or not attributes
         or any(not isinstance(row, Mapping) for row in attributes)
-        or not isinstance(brand, Mapping)
-        or type(brand.get("brand_id")) is not int
-        or brand["brand_id"] < 0
-        or type(brand.get("original_brand_name")) is not str
-        or not brand["original_brand_name"].strip()
-        or not isinstance(stock, list)
-        or not stock
-        or any(not isinstance(row, Mapping) for row in stock)
-        or any(
-            type(row.get("location_id")) is not str
-            or not row["location_id"].strip()
-            or type(row.get("stock")) is not int
-            or row["stock"] <= 0
-            for row in stock
+        or "brand" not in item
+        or not (
+            brand is None
+            or (
+                isinstance(brand, Mapping)
+                and type(brand.get("brand_id")) is int
+                and brand["brand_id"] >= 0
+                and type(brand.get("original_brand_name")) is str
+                and bool(brand["original_brand_name"].strip())
+            )
         )
         or type(condition) is not str
         or not condition.strip()
@@ -2872,8 +3145,91 @@ def _observe_existing_global_candidate_availability(
         raise ShopeeOneClickPreDispatchError(
             "official global model contract drifted"
         )
+    projected_models = [
+        {
+            "global_model_id": int(
+                _positive_identity(
+                    row.get("global_model_id"),
+                    "global model identity",
+                )
+            ),
+            "global_model_sku": _nonempty(
+                row.get("global_model_sku"), "global model SKU"
+            ),
+            "tier_index": list(row.get("tier_index") or ()),
+        }
+        for row in models
+    ]
+    identity_evidence_digest = _digest(
+        {
+            "schema_version": (
+                "shopee-official-existing-global-identity/v1"
+            ),
+            "global_item_id": global_item_id,
+            "model_skus": sorted(model_skus),
+        }
+    )
+    observation_evidence_digest = _digest(
+        {
+            "schema_version": (
+                "shopee-official-existing-global-observation/v1"
+            ),
+            "global_item_identity_digest": _text_digest(global_item_id),
+            "existing_global_identity_evidence_digest": (
+                identity_evidence_digest
+            ),
+            "copy_digest": seed["approved_copy_digest"],
+            "official_image_id_snapshot_digest": _digest(
+                {"ordered_image_ids": ids}
+            ),
+            "selected_image_count": len(ids),
+            "category_id": category_id,
+            "attribute_shape_digest": _digest(attributes),
+            "brand_shape_digest": _digest(brand),
+            "condition": condition,
+            "pre_order": preorder,
+            "tier_variation_shape_digest": _digest(variations),
+            "model_shape_digest": _digest(projected_models),
+        }
+    )
+    try:
+        stock_location = (
+            build_shopee_official_existing_global_seller_stock(
+                observation_evidence_digest=observation_evidence_digest,
+                existing_global_item_id=int(global_item_id),
+                existing_global_identity_evidence_digest=(
+                    identity_evidence_digest
+                ),
+                seller_stock_rows=stock,
+            )
+        )
+    except ShopeeGlobalPlanContractError as error:
+        raise ShopeeOneClickPreDispatchError(
+            "official existing-global seller stock shape is invalid"
+        ) from error
     return {
+        "existing_global_item": {
+            "global_item_id": int(global_item_id),
+            "global_item_name": title,
+            "description": description,
+            "image": {
+                "image_url_list": list(urls),
+                "image_id_list": list(ids),
+            },
+            "category_id": category_id,
+            "attribute_list": [dict(row) for row in attributes],
+            "brand": dict(brand) if isinstance(brand, Mapping) else None,
+            "seller_stock": [dict(row) for row in stock],
+            "condition": condition,
+            "pre_order": dict(preorder),
+            "tier_variation": [dict(row) for row in variations],
+        },
+        "existing_global_models": projected_models,
         "global_item_identity_digest": _text_digest(global_item_id),
+        "existing_global_identity_evidence_digest": (
+            identity_evidence_digest
+        ),
+        "observation_evidence_digest": observation_evidence_digest,
         "copy_digest": seed["approved_copy_digest"],
         "official_image_id_snapshot_digest": _digest(
             {"ordered_image_ids": ids}
@@ -2882,14 +3238,27 @@ def _observe_existing_global_candidate_availability(
         "category_id_digest": _digest({"category_id": category_id}),
         "attribute_shape_digest": _digest(attributes),
         "brand_shape_digest": _digest(brand),
-        "stock_shape_digest": _digest(stock),
+        "seller_stock": dict(stock_location["seller_stock"]),
+        "location": dict(stock_location["location"]),
         "condition_preorder_digest": _digest(
             {"condition": condition, "pre_order": preorder}
         ),
         "variation_model_shape_digest": _digest(
-            {"tier_variation": variations, "model_skus": model_skus}
+            {
+                "tier_variation": variations,
+                "models": projected_models,
+            }
         ),
     }
+
+
+def _approved_plan_models(
+    plan: Mapping[str, object],
+) -> object:
+    snapshot = plan.get("current_snapshot")
+    if isinstance(snapshot, Mapping):
+        return snapshot.get("global_model")
+    return plan.get("global_model")
 
 
 def _read_global_master(

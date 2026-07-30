@@ -11,8 +11,10 @@ import time
 import hashlib
 import math
 import os
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import date, datetime, timezone
+from decimal import Decimal, InvalidOperation
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -29,6 +31,19 @@ DEFAULT_PORT = 8765
 IMAGE_CACHE_DIR = ROOT / "data" / "web_image_cache"
 PRODUCT_APPROVAL_BODY_LIMIT = 64 * 1024
 _READONLY_SHOPEE_RECONCILE_TARGETS = frozenset({"shopee:PH", "shopee:TH"})
+_ONECLICK_SHOPEE_MANUAL_REVIEW_TARGETS = frozenset(
+    {"shopee:PH", "shopee:MY", "shopee:TH", "shopee:VN"}
+)
+_SHOPEE_GLOBAL_PLAN_PREVIEW_SCHEMA = "shopee-global-plan-preview/v1"
+_SHOPEE_GLOBAL_PLAN_APPROVAL_RESPONSE_SCHEMA = (
+    "shopee-global-plan-approval-response/v1"
+)
+_SHOPEE_GLOBAL_PLAN_OBSERVER_REQUEST_SCHEMA = (
+    "shopee-global-plan-observer-request/v1"
+)
+_SHOPEE_GLOBAL_PLAN_POLICY_SCHEMA = (
+    "shopee-global-plan-platform-policy/v1"
+)
 _READONLY_SHOPEE_RECONCILE_CHECKS = frozenset(
     {
         "seller_sku",
@@ -59,6 +74,9 @@ def _product_workspace_view(payload: dict) -> dict:
     )
 
     view_payload = dict(payload)
+    view_payload.pop("_source_product_identity", None)
+    view_payload.pop("_source_identity_inputs", None)
+    view_payload.pop("_sku_lineage", None)
     product = payload.get("product") if isinstance(payload.get("product"), dict) else {}
     listing_copy = (
         dict(payload.get("listing_copy"))
@@ -92,7 +110,7 @@ def _product_workspace_view(payload: dict) -> dict:
         view_payload["listing_copy"] = listing_copy
     # The fallback is a presentation aid for legacy v2 drafts. It must not
     # alter the digest of an already-approved immutable ReleasePlan.
-    release_v1 = _release_v1_view(payload)
+    release_v1 = _apply_oneclick_release_authority(_release_v1_view(payload))
     view = {
         **view_payload,
         "schema_version": "product-workspace-v1",
@@ -106,6 +124,123 @@ def _product_workspace_view(payload: dict) -> dict:
     assert_no_dead_end(next_action)
     view["workflow_next_action"] = next_action
     return view
+
+
+def _apply_oneclick_release_authority(release_v1: dict) -> dict:
+    """Make the server the sole canonical status/next-action authority."""
+
+    result = dict(release_v1)
+    plan = result.get("plan") if isinstance(result.get("plan"), dict) else {}
+    plan_id = str(plan.get("plan_id") or "")
+    job = _oneclick_control_store().get_job(plan_id=plan_id) if plan_id else None
+    if job:
+        job = _project_oneclick_dispatch_capability(job)
+    if job:
+        actions = [
+            {
+                "target_label": target["target_label"],
+                "target_focus": target.get("next_action_target")
+                or target["target_label"],
+                "canonical_status": target["status"],
+                "action": target["next_action"],
+                "runnable": target.get("runnable_now") is True,
+            }
+            for target in [
+                *(job.get("targets") or ()),
+                *(job.get("shared_controls") or ()),
+            ]
+            if target.get("next_action")
+        ]
+        runnable = [
+            action
+            for action in actions
+            if action["runnable"] is True
+        ]
+        result["oneclick_controlplane"] = job
+        result["target_recovery_actions"] = actions
+        result["runnable_target_count"] = int(
+            job.get("runnable_target_count", len(runnable))
+        )
+        result["publish_ready"] = bool(
+            job["phase"] == "READY"
+            and result["runnable_target_count"] > 0
+        )
+        result["canonical_next_action"] = job.get(
+            "canonical_next_action"
+        )
+        return result
+
+    actions = []
+    for action in result.get("target_recovery_actions") or ():
+        if not isinstance(action, dict):
+            continue
+        target = str(
+            action.get("target_label")
+            or action.get("target")
+            or ""
+        )
+        projected = dict(action)
+        projected["target_focus"] = target or None
+        actions.append(projected)
+    runnable_count = int(result.get("runnable_target_count") or 0)
+    if runnable_count <= 0:
+        result["publish_ready"] = False
+    result["target_recovery_actions"] = actions
+    result["canonical_next_action"] = actions[0] if actions else (
+        {
+            "action": "refresh_release_state",
+            "target_focus": None,
+            "runnable": False,
+        }
+        if result.get("publish_ready") is not True
+        else None
+    )
+    return result
+
+
+_ONECLICK_RECOVERY_ACTION_PRIORITY = {
+    "reconcile_before_any_retry": 10,
+    "verify_submission_in_marketplace": 20,
+    "retry_exact_zero_write_action": 30,
+    "restore_channel_authorization": 40,
+    "review_approved_content_facts": 45,
+    "review_logistics_policy": 46,
+    "approve_sellable_inventory": 50,
+    "perform_governed_safe_action": 60,
+    "resolve_source_product_identity": 70,
+    "resolve_predecessor_sku_lineage": 71,
+    "resolve_prerequisite_target": 80,
+    "wait_for_channel_capability": 90,
+    "wait_for_dependency": 100,
+    "wait_for_dispatch_receipt": 110,
+    "wait_for_preparation": 120,
+    "prepare_batch": 130,
+    "wait_for_worker": 140,
+}
+
+
+def _select_canonical_oneclick_action(
+    actions: list[dict],
+) -> dict | None:
+    """Choose one stable server-owned action independent of target ordering."""
+
+    if not actions:
+        return None
+
+    def priority(action: dict) -> tuple:
+        runnable_rank = 0 if action.get("runnable") is True else 1
+        recovery_rank = _ONECLICK_RECOVERY_ACTION_PRIORITY.get(
+            str(action.get("action") or ""),
+            999,
+        )
+        return (
+            runnable_rank,
+            recovery_rank,
+            str(action.get("target_focus") or ""),
+            str(action.get("target_label") or ""),
+        )
+
+    return min(actions, key=priority)
 
 
 _INITIAL_PRODUCT_REVIEW_FIELDS = (
@@ -1150,9 +1285,515 @@ def _generate_product_workspace_title_draft(data: dict) -> tuple[int, dict]:
     }
 
 
-def _release_plan_payload_from_dashboard(dashboard: dict) -> tuple[dict, list[str]]:
+def _server_canonical_digest(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _is_lower_sha256(value: object) -> bool:
+    return bool(
+        type(value) is str
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _canonical_sha256(value: object) -> str:
+    if type(value) is str and value.startswith("sha256:"):
+        value = value[7:]
+    if not _is_lower_sha256(value):
+        raise ValueError("value is not a SHA-256 digest")
+    return value
+
+
+def _canonical_decimal_text(value: object) -> str:
+    if isinstance(value, bool):
+        raise ValueError("boolean is not a decimal")
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError) as error:
+        raise ValueError("value is not a decimal") from error
+    if not number.is_finite():
+        raise ValueError("decimal must be finite")
+    text = format(number.normalize(), "f")
+    return "0" if text in {"-0", ""} else text
+
+
+def _positive_decimal_text(value: object) -> str:
+    text = _canonical_decimal_text(value)
+    if Decimal(text) <= 0:
+        raise ValueError("decimal must be positive")
+    return text
+
+
+def _shopee_global_plan_seed(payload: dict) -> dict:
+    """Derive every non-official candidate fact from server-owned state."""
+
+    from shared_platform.target_scoped_release_contracts import (
+        approved_shopee_copy_digest,
+        approved_source_image_manifest_digest,
+    )
+
+    source_identity = payload.get("source_product_identity")
+    sku_lineage = payload.get("sku_lineage")
+    reservation = (
+        sku_lineage.get("reservation")
+        if isinstance(sku_lineage, dict)
+        else None
+    )
+    if (
+        not isinstance(source_identity, dict)
+        or not isinstance(sku_lineage, dict)
+        or not isinstance(reservation, dict)
+    ):
+        raise ValueError("Shopee global plan lineage evidence is unavailable")
+    source_digest = _canonical_sha256(
+        source_identity.get("identity_digest")
+    )
+    lineage_digest = _canonical_sha256(
+        reservation.get("reservation_digest")
+    )
+    lineage_schema = reservation.get("schema_version")
+    if type(lineage_schema) is not str or not lineage_schema:
+        raise ValueError("Shopee global plan lineage schema is unavailable")
+
+    listing_copy = payload.get("listing_copy")
+    product_facts = payload.get("product_facts")
+    if not isinstance(listing_copy, dict) or not isinstance(
+        product_facts, dict
+    ):
+        raise ValueError("Shopee global plan copy facts are unavailable")
+    title = product_facts.get("title")
+    description = listing_copy.get("shopee_description_en")
+    if (
+        type(title) is not str
+        or not title.strip()
+        or type(description) is not str
+        or not description.strip()
+    ):
+        raise ValueError("Shopee global description is unavailable")
+    copy_digest = approved_shopee_copy_digest(title, description)
+
+    raw_images = payload.get("images")
+    if type(raw_images) is not list or not raw_images:
+        raise ValueError("Shopee global plan requires approved images")
+    source_images: list[dict] = []
+    source_urls: list[str] = []
+    for expected_position, row in enumerate(
+        raw_images, start=1
+    ):
+        if (
+            not isinstance(row, dict)
+            or type(row.get("position")) is not int
+            or row.get("position") != expected_position
+            or type(row.get("image_url")) is not str
+            or not row["image_url"].startswith("https://")
+        ):
+            raise ValueError("Shopee approved image sequence is invalid")
+        source_urls.append(row["image_url"])
+        source_images.append(
+            {
+                "source_url": row["image_url"],
+                "source_image_digest": _server_canonical_digest(
+                    {
+                        "schema_version": "approved-content-image/v1",
+                        "position": expected_position,
+                        "artifact_id": row.get("artifact_id"),
+                        "audit_id": row.get("audit_id"),
+                        "asset_type": row.get("asset_type"),
+                        "decision_source": row.get("decision_source"),
+                    }
+                ),
+            }
+        )
+    if len(set(source_urls)) != len(source_urls):
+        raise ValueError("Shopee approved image URLs must be unique")
+    image_digests = [
+        row["source_image_digest"] for row in source_images
+    ]
+    if len(set(image_digests)) != len(image_digests):
+        raise ValueError("Shopee approved image identities must be unique")
+    if len(source_images) > 9:
+        raise ValueError(
+            "Shopee global image selection requires explicit approval"
+        )
+    selected_image_positions = list(range(1, len(source_images) + 1))
+    video_urls = payload.get("video_urls")
+    if type(video_urls) is not list or any(
+        type(value) is not str for value in video_urls
+    ):
+        raise ValueError("approved content video shape is invalid")
+    image_manifest_digest = approved_source_image_manifest_digest(
+        source_urls
+    )
+    content_package_digest = _server_canonical_digest(
+        {
+            "schema_version": "approved-content-package-binding/v1",
+            "content_package_id": payload.get("content_package_id"),
+            "content_approval_status": payload.get(
+                "content_approval_status"
+            ),
+            "content_strategy": payload.get("content_strategy"),
+            "images": source_images,
+            "video_urls": video_urls,
+        }
+    )
+
+    package = product_facts.get("package_cm")
+    weight = product_facts.get("weight_kg")
+    if (
+        type(package) is not list
+        or len(package) != 3
+    ):
+        raise ValueError("Shopee global parcel facts are unavailable")
+    normalized_weight = _positive_decimal_text(weight)
+    normalized_package = [
+        _positive_decimal_text(value) for value in package
+    ]
+    parcel_contract_digest = _server_canonical_digest(
+        {
+            "schema_version": "approved-parcel-binding/v1",
+            "weight_kg": normalized_weight,
+            "package_cm": normalized_package,
+            "product_fingerprint": payload.get("product_fingerprint"),
+        }
+    )
+    parcel = {
+        "weight_kg": normalized_weight,
+        "length_cm": normalized_package[0],
+        "width_cm": normalized_package[1],
+        "height_cm": normalized_package[2],
+        "contract_digest": parcel_contract_digest,
+    }
+
+    raw_targets = payload.get("targets")
+    if type(raw_targets) is not list:
+        raise ValueError("Shopee target identity is invalid")
+    targets = [
+        label
+        for label in raw_targets
+        if type(label) is str and label.startswith("shopee:")
+    ]
+    selected_pricing = (
+        (payload.get("pricing") or {}).get("selected_targets")
+        if isinstance(payload.get("pricing"), dict)
+        else None
+    )
+    if not targets or not isinstance(selected_pricing, dict):
+        raise ValueError("Shopee target pricing is unavailable")
+    prices: list[str] = []
+    bound_target_pricing: dict[str, object] = {}
+    for label in targets:
+        row = selected_pricing.get(label)
+        derived = row.get("derived_preview") if isinstance(row, dict) else None
+        price = (
+            derived.get("global_original_price_cny")
+            if isinstance(derived, dict)
+            else None
+        )
+        prices.append(_positive_decimal_text(price))
+        bound_target_pricing[label] = row
+    normalized_prices = set(prices)
+    if len(normalized_prices) != 1:
+        raise ValueError("Shopee global CNY prices are not exact")
+    pricing_digest = _server_canonical_digest(
+        {
+            "schema_version": "approved-shopee-target-pricing-binding/v1",
+            "targets": bound_target_pricing,
+        }
+    )
+    target_pricing = {
+        "currency": "CNY",
+        "global_original_price": next(iter(normalized_prices)),
+        "contract_digest": pricing_digest,
+    }
+    policy_digest = _server_canonical_digest(
+        {"schema_version": _SHOPEE_GLOBAL_PLAN_POLICY_SCHEMA}
+    )
+    return {
+        "source_identity_schema_version": source_identity.get(
+            "schema_version"
+        ),
+        "source_identity_digest": source_digest,
+        "sku_lineage_schema_version": lineage_schema,
+        "sku_lineage_digest": lineage_digest,
+        "content_package_digest": content_package_digest,
+        "title": title,
+        "description": description,
+        "approved_copy_digest": copy_digest,
+        "ordered_approved_images": source_images,
+        "approved_source_image_manifest_digest": image_manifest_digest,
+        "selected_image_positions": selected_image_positions,
+        "parcel": parcel,
+        "target_pricing": target_pricing,
+        "policy_digest": policy_digest,
+        "targets": targets,
+    }
+
+
+_SHOPEE_GLOBAL_CANDIDATE_FIELDS = frozenset(
+    {
+        "mode",
+        "observation_authority",
+        "observation_schema_version",
+        "observation_evidence_digest",
+        "source_identity_schema_version",
+        "source_identity_digest",
+        "sku_lineage_schema_version",
+        "sku_lineage_digest",
+        "content_package_digest",
+        "title",
+        "description",
+        "approved_copy_digest",
+        "ordered_approved_images",
+        "approved_source_image_manifest_digest",
+        "selected_image_positions",
+        "parcel",
+        "target_pricing",
+        "policy_digest",
+        "category",
+        "attributes",
+        "attributes_complete",
+        "attribute_tree_digest",
+        "brand",
+        "seller_stock",
+        "location",
+        "condition",
+        "preorder",
+        "variations",
+        "variations_complete",
+        "models",
+        "existing_global_item_id",
+        "existing_global_identity_evidence_digest",
+    }
+)
+
+
+def _blocked_shopee_global_plan_candidate():
+    from shared_platform.shopee_global_plan import (
+        build_shopee_global_plan_candidate,
+    )
+
+    return build_shopee_global_plan_candidate(
+        **{field: None for field in _SHOPEE_GLOBAL_CANDIDATE_FIELDS}
+    )
+
+
+def _shopee_global_plan_matches_local_payload(
+    payload: dict,
+    current: object,
+) -> bool:
+    """Verify approved/observed raw facts against local immutable plan facts."""
+
+    if not isinstance(current, dict):
+        return False
+    try:
+        expected = _shopee_global_plan_seed(payload)
+        expected_binding_subset = {
+            "source_identity_schema_version": expected[
+                "source_identity_schema_version"
+            ],
+            "source_identity_digest": expected["source_identity_digest"],
+            "sku_lineage_schema_version": expected[
+                "sku_lineage_schema_version"
+            ],
+            "sku_lineage_digest": expected["sku_lineage_digest"],
+            "content_package_digest": expected["content_package_digest"],
+            "approved_copy_digest": expected["approved_copy_digest"],
+            "approved_source_image_manifest_digest": expected[
+                "approved_source_image_manifest_digest"
+            ],
+            "parcel_contract_digest": expected["parcel"]["contract_digest"],
+            "target_pricing_digest": expected["target_pricing"][
+                "contract_digest"
+            ],
+            "policy_digest": expected["policy_digest"],
+        }
+        existing_snapshot = current.get("current_snapshot")
+        is_existing_v2 = bool(
+            current.get("mode") == "EXISTING_GLOBAL"
+            and isinstance(existing_snapshot, dict)
+        )
+        expected_bindings = (
+            {
+                **expected_binding_subset,
+                "attribute_tree_digest": current[
+                    "attribute_tree_digest"
+                ],
+            }
+            if not is_existing_v2
+            else None
+        )
+        expected_copy = {
+            "title": unicodedata.normalize("NFC", expected["title"].strip()),
+            "description": expected["description"],
+            "approved_copy_digest": expected["approved_copy_digest"],
+        }
+        expected_images = [
+            {
+                "source_url": row["source_url"],
+                "source_image_digest": row["source_image_digest"],
+            }
+            for row in expected["ordered_approved_images"]
+        ]
+        assignment = (
+            (payload.get("sku_lineage") or {}).get("assignment")
+            if isinstance(payload.get("sku_lineage"), dict)
+            else None
+        )
+        model_assignments = (
+            assignment.get("model_skus")
+            if isinstance(assignment, dict)
+            else None
+        )
+        expected_model_skus = (
+            sorted(
+                row["model_sku"]
+                for row in model_assignments
+                if isinstance(row, dict)
+                and type(row.get("model_sku")) is str
+                and row["model_sku"]
+            )
+            if type(model_assignments) is list
+            else []
+        )
+        observed_models = (
+            existing_snapshot.get("global_model")
+            if is_existing_v2
+            else current.get("global_model")
+        )
+        observed_model_skus = (
+            sorted(
+                row["global_model_sku"]
+                for row in observed_models
+                if isinstance(row, dict)
+                and type(row.get("global_model_sku")) is str
+                and row["global_model_sku"]
+            )
+            if type(observed_models) is list
+            else []
+        )
+        return bool(
+            (
+                isinstance(current.get("bindings"), dict)
+                and all(
+                    current.get("bindings", {}).get(key) == value
+                    for key, value in expected_binding_subset.items()
+                )
+                if is_existing_v2
+                else current.get("bindings") == expected_bindings
+            )
+            and current.get("copy") == expected_copy
+            and current.get("approved_images") == expected_images
+            and current.get("selected_image_positions")
+            == expected["selected_image_positions"]
+            and current.get("parcel")
+            == {
+                "weight_kg": _canonical_decimal_text(
+                    expected["parcel"]["weight_kg"]
+                ),
+                "package_cm": {
+                    "length": _canonical_decimal_text(
+                        expected["parcel"]["length_cm"]
+                    ),
+                    "width": _canonical_decimal_text(
+                        expected["parcel"]["width_cm"]
+                    ),
+                    "height": _canonical_decimal_text(
+                        expected["parcel"]["height_cm"]
+                    ),
+                },
+                "contract_digest": expected["parcel"]["contract_digest"],
+            }
+            and current.get("pricing")
+            == {
+                "currency": "CNY",
+                "global_original_price": _canonical_decimal_text(
+                    expected["target_pricing"]["global_original_price"]
+                ),
+                "target_pricing_digest": expected["target_pricing"][
+                    "contract_digest"
+                ],
+            }
+            and current.get("policy_digest") == expected["policy_digest"]
+            and bool(expected_model_skus)
+            and observed_model_skus == expected_model_skus
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _observe_shopee_global_plan_candidate(payload: dict):
+    """Call the channel-owned read-only seam and verify server bindings."""
+
+    import importlib
+
+    from shared_platform.shopee_global_plan import (
+        ShopeeGlobalPlanObservationError,
+        ShopeeGlobalPlanCandidate,
+        build_shopee_global_plan_candidate,
+    )
+
+    try:
+        seed = _shopee_global_plan_seed(payload)
+    except (TypeError, ValueError):
+        return _blocked_shopee_global_plan_candidate()
+    request = {
+        "schema_version": _SHOPEE_GLOBAL_PLAN_OBSERVER_REQUEST_SCHEMA,
+        "offer_id": payload.get("product_id"),
+        "product_revision": payload.get("product_revision"),
+        "targets": list(seed["targets"]),
+        "source_identity": payload.get("source_product_identity"),
+        "sku_lineage": payload.get("sku_lineage"),
+        "candidate_seed": {
+            key: value for key, value in seed.items() if key != "targets"
+        },
+    }
+    try:
+        module = importlib.import_module(
+            "domains.channel_operations.oneclick_release_adapters"
+        )
+        observer = getattr(
+            module, "observe_shopee_global_plan_candidate", None
+        )
+        if not callable(observer):
+            return _blocked_shopee_global_plan_candidate()
+        observed = observer(request)
+        if type(observed) is ShopeeGlobalPlanCandidate:
+            candidate = observed
+        elif isinstance(observed, dict) and set(observed) == set(
+            _SHOPEE_GLOBAL_CANDIDATE_FIELDS
+        ):
+            candidate = build_shopee_global_plan_candidate(**observed)
+        else:
+            return _blocked_shopee_global_plan_candidate()
+    except ShopeeGlobalPlanObservationError:
+        raise
+    except Exception:
+        return _blocked_shopee_global_plan_candidate()
+    if candidate.status != "READY" or candidate._plan is None:
+        return candidate
+    if not _shopee_global_plan_matches_local_payload(
+        payload, candidate._plan.payload()
+    ):
+        return _blocked_shopee_global_plan_candidate()
+    return candidate
+
+
+def _release_plan_payload_from_dashboard(
+    dashboard: dict,
+    *,
+    bind_shopee_global_plan: bool = True,
+) -> tuple[dict, list[str]]:
     """Build the exact immutable V1 payload without persisting it."""
     from domains.content_operations import release_listing_copy_identity
+    from domains.product_operations import resolve_source_product_identity
 
     product = dashboard.get("product") or {}
     content = dashboard.get("content") or {}
@@ -1183,6 +1824,88 @@ def _release_plan_payload_from_dashboard(dashboard: dict) -> tuple[dict, list[st
     content_package_id = str(content.get("package_id") or "").strip()
     if not content_package_id:
         blockers.append("内容审批缺少 content package ID")
+
+    stored_source_resolution = dashboard.get("_source_product_identity")
+    source_identity_inputs = dashboard.get("_source_identity_inputs")
+    if (
+        not isinstance(stored_source_resolution, dict)
+        or not isinstance(source_identity_inputs, dict)
+    ):
+        blockers.append(
+            "BLOCKED_SOURCE_IDENTITY: server-owned identity evidence is missing"
+        )
+        source_identity_payload = None
+    else:
+        source_identity_resolution = resolve_source_product_identity(
+            collect_box=source_identity_inputs.get("collect_box"),
+            precollect=source_identity_inputs.get("precollect"),
+            source_record=source_identity_inputs.get("source_record"),
+            source_authority=source_identity_inputs.get(
+                "source_authority", "1688"
+            ),
+        )
+        recomputed = source_identity_resolution.payload()
+        public_source = dashboard.get("source_product_identity")
+        public_digest = (
+            public_source.get("identity_digest")
+            if isinstance(public_source, dict)
+            else None
+        )
+        if (
+            recomputed != stored_source_resolution
+            or not source_identity_resolution.ready
+            or source_identity_resolution.identity is None
+            or public_digest
+            != source_identity_resolution.identity.identity_digest
+        ):
+            blockers.extend(
+                source_identity_resolution.blockers
+                or (
+                    "BLOCKED_SOURCE_IDENTITY: identity evidence is stale or malformed",
+                )
+            )
+            source_identity_payload = None
+        else:
+            source_identity_payload = (
+                source_identity_resolution.identity.payload()
+            )
+    sku_lineage_payload = dashboard.get("_sku_lineage")
+    public_sku_lineage = dashboard.get("sku_lineage")
+    if (
+        not isinstance(sku_lineage_payload, dict)
+        or sku_lineage_payload.get("schema_version")
+        != "sku-lineage-reservation/v1"
+        or sku_lineage_payload.get("status") != "READY"
+        or sku_lineage_payload.get("ready") is not True
+        or not isinstance(public_sku_lineage, dict)
+        or public_sku_lineage.get("lineage_mode")
+        != sku_lineage_payload.get("lineage_mode")
+        or public_sku_lineage.get("assignment")
+        != sku_lineage_payload.get("assignment")
+    ):
+        blockers.extend(
+            list(
+                (sku_lineage_payload or {}).get("blockers")
+                if isinstance(sku_lineage_payload, dict)
+                else ()
+            )
+            or ["BLOCKED_SKU_LINEAGE: lineage evidence is missing or stale"]
+        )
+        sku_lineage_payload = None
+    elif (
+        sku_lineage_payload.get("lineage_mode")
+        == "INHERITED_PREDECESSOR"
+        and (
+            not isinstance(sku_lineage_payload.get("assignment"), dict)
+            or sku_lineage_payload["assignment"].get("seller_sku")
+            != str(product.get("seller_sku_candidate") or "")
+            or not isinstance(sku_lineage_payload.get("reservation"), dict)
+        )
+    ):
+        blockers.append(
+            "BLOCKED_SKU_LINEAGE: inherited assignment/reservation drifted"
+        )
+        sku_lineage_payload = None
 
     target_pricing = pricing.get("target_pricing") or {}
     selected_target_pricing = {
@@ -1224,6 +1947,8 @@ def _release_plan_payload_from_dashboard(dashboard: dict) -> tuple[dict, list[st
         "seller_sku": str(product.get("seller_sku_candidate") or "").strip(),
         "product_package_id": product_package_id,
         "content_package_id": content_package_id,
+        "source_product_identity": source_identity_payload,
+        "sku_lineage": sku_lineage_payload,
         "targets": targets,
         "product_revision": int(product.get("revision") or 0),
         "product_approval_id": str(actual_approval.get("approval_id") or ""),
@@ -1231,9 +1956,8 @@ def _release_plan_payload_from_dashboard(dashboard: dict) -> tuple[dict, list[st
         "content_approval_status": str(content.get("approval_status") or ""),
         "content_strategy": str(content.get("strategy") or ""),
         "product_facts": {
-            "title": str(product.get("title") or ""),
+            "title": product.get("title"),
             "source_title_zh": str(product.get("source_title_zh") or ""),
-            "source_offer_id": str(product.get("source_offer_id") or ""),
             "category": dict(product.get("category") or {}),
             "cost_cny": product.get("cost_cny"),
             "weight_kg": product.get("weight_kg"),
@@ -1247,6 +1971,7 @@ def _release_plan_payload_from_dashboard(dashboard: dict) -> tuple[dict, list[st
                     "key": str(row.get("key") or ""),
                     "label": str(row.get("label") or ""),
                     "price_cny": row.get("price_cny"),
+                    "model_sku": row.get("model_sku"),
                 }
                 for row in (product.get("source_skus") or ())
                 if isinstance(row, dict)
@@ -1279,7 +2004,426 @@ def _release_plan_payload_from_dashboard(dashboard: dict) -> tuple[dict, list[st
             )
         ),
     }
+    if any(
+        label
+        in {
+            "tiktok:LH_PH",
+            "tiktok:LH_MY",
+            "tiktok:LH_TH",
+            "tiktok:LH_VN",
+            "shopee:PH",
+            "shopee:MY",
+            "shopee:TH",
+            "shopee:VN",
+        }
+        for label in targets
+    ):
+        from shared_platform.postpublish_promotions import (
+            build_approved_postpublish_promotion_policy,
+        )
+
+        # Kyle approved this server-owned, versioned policy on 2026-07-30.
+        # It is derived here for every *new* immutable plan.  Existing stored
+        # plans are never rewritten and browser/dashboard fields cannot
+        # inject, remove, or override it.
+        payload["approved_postpublish_promotion_policy"] = (
+            build_approved_postpublish_promotion_policy(
+                approval_reference=(
+                    "Kyle-20260730-existing-ongoing-direct-discount"
+                ),
+            )
+        )
+    has_shopee_target = any(
+        type(label) is str and label.startswith("shopee:")
+        for label in targets
+    )
+    if (
+        bind_shopee_global_plan
+        and has_shopee_target
+        and not blockers
+    ):
+        from shared_platform.release_store import (
+            ImmutableReleaseError,
+            default_release_store,
+        )
+        from shared_platform.shopee_global_plan import (
+            ShopeeGlobalPlanContractError,
+        )
+
+        try:
+            stored = default_release_store().shopee_global_plan_approval(
+                product_id=payload["product_id"],
+                product_revision=payload["product_revision"],
+            )
+            if not stored:
+                raise ShopeeGlobalPlanContractError(
+                    "current approved Shopee global plan was not found"
+                )
+            approved = stored["approved"]
+            raw_plan = approved._plan.payload()
+            if not _shopee_global_plan_matches_local_payload(
+                payload, raw_plan
+            ):
+                raise ShopeeGlobalPlanContractError(
+                    "approved Shopee global plan drifted from local facts"
+                )
+            compact = {
+                "schema_version": approved.schema_version,
+                "mode": approved.mode,
+                "candidate_digest": approved.candidate_digest,
+                "approved_plan_digest": approved.approved_plan_digest,
+                "selected_image_positions": list(
+                    raw_plan["selected_image_positions"]
+                ),
+                "selected_source_image_manifest_digest": raw_plan[
+                    "selected_source_image_manifest_digest"
+                ],
+                "record_digest": stored["record_digest"],
+            }
+            if (
+                set(compact)
+                != {
+                    "schema_version",
+                    "mode",
+                    "candidate_digest",
+                    "approved_plan_digest",
+                    "selected_image_positions",
+                    "selected_source_image_manifest_digest",
+                    "record_digest",
+                }
+                or any(
+                    not _is_lower_sha256(compact[field])
+                    for field in (
+                        "candidate_digest",
+                        "approved_plan_digest",
+                        "selected_source_image_manifest_digest",
+                        "record_digest",
+                    )
+                )
+            ):
+                raise ShopeeGlobalPlanContractError(
+                    "approved Shopee global plan projection is invalid"
+                )
+            payload["approved_shopee_global_plan"] = compact
+            payload["_approved_shopee_global_plan_record"] = stored[
+                "record_json"
+            ]
+        except (
+            ImmutableReleaseError,
+            ShopeeGlobalPlanContractError,
+            TypeError,
+            ValueError,
+        ):
+            blockers.append(
+                "review_shopee_global_plan: current exact Shopee global "
+                "plan approval is required"
+            )
     return payload, list(dict.fromkeys(value for value in blockers if value))
+
+
+def _shopee_global_plan_preview_for_dashboard(
+    dashboard: dict,
+) -> tuple[dict, dict, object, dict | None]:
+    """Return the current base payload, candidate, and exact approval."""
+
+    from shared_platform.release_store import (
+        ImmutableReleaseError,
+        default_release_store,
+    )
+    from shared_platform.shopee_global_plan import (
+        ShopeeGlobalPlanContractError,
+        ShopeeGlobalPlanObservationError,
+        validate_approved_shopee_global_plan,
+    )
+
+    payload, blockers = _release_plan_payload_from_dashboard(
+        dashboard,
+        bind_shopee_global_plan=False,
+    )
+    if not any(
+        type(label) is str and label.startswith("shopee:")
+        for label in (payload.get("targets") or ())
+    ):
+        raise ValueError("current release scope has no Shopee target")
+    store = default_release_store()
+    try:
+        candidate = _observe_shopee_global_plan_candidate(payload)
+    except ShopeeGlobalPlanObservationError as failure:
+        latest = None
+        try:
+            latest = store.shopee_global_plan_approval(
+                product_id=payload["product_id"],
+            )
+        except (ImmutableReleaseError, TypeError, ValueError):
+            pass
+        return payload, {"blockers": blockers}, failure, latest
+    current: dict | None = None
+    if candidate.status == "READY" and not blockers:
+        try:
+            current = store.shopee_global_plan_approval(
+                product_id=payload["product_id"],
+                product_revision=payload["product_revision"],
+                candidate_digest=candidate.candidate_digest,
+            )
+            if current:
+                validate_approved_shopee_global_plan(
+                    current["approved"], candidate
+                )
+        except (
+            ImmutableReleaseError,
+            ShopeeGlobalPlanContractError,
+            TypeError,
+            ValueError,
+        ):
+            current = None
+    latest = None
+    try:
+        latest = store.shopee_global_plan_approval(
+            product_id=payload["product_id"],
+        )
+    except (ImmutableReleaseError, TypeError, ValueError):
+        latest = None
+    return payload, {"blockers": blockers}, candidate, current or latest
+
+
+def _preview_shopee_global_plan(
+    offer_id: object,
+) -> tuple[int, dict]:
+    """Build one pure/read-only redacted Shopee global plan preview."""
+
+    from shared_platform import release_control
+    from shared_platform.shopee_global_plan import (
+        ShopeeGlobalPlanContractError,
+        ShopeeGlobalPlanObservationError,
+        validate_approved_shopee_global_plan,
+    )
+
+    clean_offer_id = str(offer_id or "").strip()
+    if not clean_offer_id.isdigit() or not 1 <= len(clean_offer_id) <= 32:
+        return 400, {
+            "ok": False,
+            "error": "offer_id must contain 1-32 digits",
+            "external_writes_performed": [],
+        }
+    try:
+        dashboard = release_control.build_release_dashboard(
+            offer_id=clean_offer_id,
+        )
+        payload, state, candidate, approval_row = (
+            _shopee_global_plan_preview_for_dashboard(dashboard)
+        )
+    except FileNotFoundError as error:
+        return 404, {
+            "ok": False,
+            "error": str(error),
+            "external_writes_performed": [],
+        }
+    except (TypeError, ValueError) as error:
+        return 409, {
+            "ok": False,
+            "error": str(error),
+            "external_writes_performed": [],
+        }
+    approval = approval_row["approved"] if approval_row else None
+    if isinstance(candidate, ShopeeGlobalPlanObservationError):
+        return 200, {
+            "ok": True,
+            "schema_version": _SHOPEE_GLOBAL_PLAN_PREVIEW_SCHEMA,
+            "offer_id": payload["product_id"],
+            "product_revision": payload["product_revision"],
+            "candidate": candidate.public_projection(),
+            "approval": (
+                approval.public_projection() if approval is not None else None
+            ),
+            "approval_current": False,
+            "external_writes_performed": [],
+        }
+    approval_current = False
+    if approval is not None and not state["blockers"]:
+        try:
+            validate_approved_shopee_global_plan(approval, candidate)
+            approval_current = bool(
+                approval_row["product_revision"]
+                == payload["product_revision"]
+            )
+        except ShopeeGlobalPlanContractError:
+            approval_current = False
+    return 200, {
+        "ok": True,
+        "schema_version": _SHOPEE_GLOBAL_PLAN_PREVIEW_SCHEMA,
+        "offer_id": payload["product_id"],
+        "product_revision": payload["product_revision"],
+        "candidate": candidate.public_projection(),
+        "approval": (
+            approval.public_projection() if approval is not None else None
+        ),
+        "approval_current": approval_current,
+        "external_writes_performed": [],
+    }
+
+
+def _approve_shopee_global_plan_locally(
+    data: dict,
+) -> tuple[int, dict]:
+    """Persist Kyle's current candidate approval without marketplace writes."""
+
+    from shared_platform import release_control
+    from shared_platform.release_store import (
+        ImmutableReleaseError,
+        ReleaseStoreError,
+        default_release_store,
+    )
+    from shared_platform.shopee_global_plan import (
+        ShopeeGlobalPlanApprovalError,
+        ShopeeGlobalPlanContractError,
+        ShopeeGlobalPlanObservationError,
+        approve_shopee_global_plan,
+        serialize_approved_shopee_global_plan,
+    )
+
+    expected_fields = {
+        "offer_id",
+        "expected_product_revision",
+        "expected_candidate_digest",
+        "approved_by",
+        "confirm_approved_shopee_global_plan",
+    }
+    if set(data) != expected_fields:
+        return 400, {
+            "ok": False,
+            "error": "Shopee global plan approval fields are invalid",
+            "external_writes_performed": [],
+        }
+    clean_offer_id = data.get("offer_id")
+    if (
+        type(clean_offer_id) is not str
+        or not clean_offer_id.isdigit()
+        or not 1 <= len(clean_offer_id) <= 32
+    ):
+        return 400, {
+            "ok": False,
+            "error": "offer_id must contain 1-32 digits",
+            "external_writes_performed": [],
+        }
+    expected_revision = data.get("expected_product_revision")
+    if type(expected_revision) is not int or expected_revision < 0:
+        return 400, {
+            "ok": False,
+            "error": "expected_product_revision must be a non-negative int",
+            "external_writes_performed": [],
+        }
+    if data.get("approved_by") != "Kyle":
+        return 400, {
+            "ok": False,
+            "error": "approved_by must be Kyle",
+            "external_writes_performed": [],
+        }
+    if data.get("confirm_approved_shopee_global_plan") is not True:
+        return 400, {
+            "ok": False,
+            "error": (
+                "literal confirm_approved_shopee_global_plan=true is required"
+            ),
+            "external_writes_performed": [],
+        }
+    try:
+        dashboard = release_control.build_release_dashboard(
+            offer_id=clean_offer_id,
+        )
+        payload, state, candidate, _approval_row = (
+            _shopee_global_plan_preview_for_dashboard(dashboard)
+        )
+    except FileNotFoundError as error:
+        return 404, {
+            "ok": False,
+            "error": str(error),
+            "external_writes_performed": [],
+        }
+    except (TypeError, ValueError) as error:
+        return 409, {
+            "ok": False,
+            "error": str(error),
+            "external_writes_performed": [],
+        }
+    if expected_revision != payload["product_revision"]:
+        return 409, {
+            "ok": False,
+            "error": "product revision changed; refresh the candidate",
+            "external_writes_performed": [],
+        }
+    if isinstance(candidate, ShopeeGlobalPlanObservationError):
+        return 409, {
+            "ok": False,
+            "error": candidate.code,
+            "reason": {
+                "category": candidate.category,
+                "code": candidate.code,
+            },
+            "canonical_next_action": {
+                "action": (
+                    "restore_channel_authorization"
+                    if candidate.category == "AUTH"
+                    else "wait_for_channel_capability"
+                ),
+                "target_focus": "shopee:GLOBAL",
+            },
+            "external_writes_performed": [],
+        }
+    if state["blockers"]:
+        return 409, {
+            "ok": False,
+            "error": state["blockers"][0],
+            "blockers": state["blockers"],
+            "external_writes_performed": [],
+        }
+    if (
+        type(data.get("expected_candidate_digest")) is not str
+        or data["expected_candidate_digest"] != candidate.candidate_digest
+    ):
+        return 409, {
+            "ok": False,
+            "error": "Shopee global plan candidate changed; refresh first",
+            "external_writes_performed": [],
+        }
+    try:
+        approved = approve_shopee_global_plan(
+            candidate,
+            approved_by="Kyle",
+            confirm_approved_shopee_global_plan=True,
+            expected_candidate_digest=data["expected_candidate_digest"],
+        )
+        serialized = serialize_approved_shopee_global_plan(approved)
+        seed = _shopee_global_plan_seed(payload)
+        stored = default_release_store().persist_shopee_global_plan_approval(
+            product_id=payload["product_id"],
+            product_revision=payload["product_revision"],
+            source_identity_digest=seed["source_identity_digest"],
+            sku_lineage_digest=seed["sku_lineage_digest"],
+            serialized_record=serialized,
+        )
+    except (
+        ImmutableReleaseError,
+        ReleaseStoreError,
+        ShopeeGlobalPlanApprovalError,
+        ShopeeGlobalPlanContractError,
+        TypeError,
+        ValueError,
+    ) as error:
+        return 409, {
+            "ok": False,
+            "error": str(error),
+            "external_writes_performed": [],
+        }
+    return 200, {
+        "ok": True,
+        "persisted": True,
+        "schema_version": _SHOPEE_GLOBAL_PLAN_APPROVAL_RESPONSE_SCHEMA,
+        "offer_id": payload["product_id"],
+        "product_revision": payload["product_revision"],
+        "approval": approved.public_projection(),
+        "record_digest": stored["record_digest"],
+        "external_writes_performed": [],
+    }
 
 
 def _immutable_listing_copy_preflight(payload: dict) -> list[str]:
@@ -3112,6 +4256,19 @@ def _release_plan_recovery_actions(
         else {}
     )
     normalized = [str(value or "").casefold() for value in blockers]
+    if any("review_shopee_global_plan:" in value for value in normalized):
+        return [
+            {
+                "code": "review_shopee_global_plan",
+                "label": "核对并批准 Shopee 全球商品方案",
+                "detail": (
+                    "系统将重新读取当前官方候选；只有 Kyle 对当前精确"
+                    "候选完成批准后，ReleasePlan 才会开放。"
+                ),
+                "next_codes": ["review_shopee_global_plan"],
+                "marketplace_writes_performed": [],
+            }
+        ]
     stale_copy = (
         listing_copy.get("status") == "superseded_product_facts_changed"
         or any("listing copy input signature is stale" in value for value in normalized)
@@ -3157,6 +4314,30 @@ def _release_plan_recovery_actions(
             "marketplace_writes_performed": [],
         }
     ]
+
+
+def _public_release_plan_projection(plan: object) -> object:
+    """Remove server-internal execution facts from a public plan projection."""
+
+    if not isinstance(plan, dict):
+        return plan
+    public = {
+        key: value
+        for key, value in plan.items()
+        if key not in {"seller_sku", "sku_key", "payload"}
+    }
+    payload = plan.get("payload")
+    if isinstance(payload, dict):
+        safe_payload = {
+            "product_revision": payload.get("product_revision"),
+            "content_package_id": payload.get("content_package_id"),
+            "targets": list(payload.get("targets") or ()),
+        }
+        approved = payload.get("approved_shopee_global_plan")
+        if isinstance(approved, dict):
+            safe_payload["approved_shopee_global_plan"] = dict(approved)
+        public["payload"] = safe_payload
+    return public
 
 
 def _release_v1_view(dashboard: dict) -> dict:
@@ -3211,7 +4392,7 @@ def _release_v1_view(dashboard: dict) -> dict:
                 dashboard,
                 blockers,
             ),
-            "plan": active,
+            "plan": _public_release_plan_projection(active),
             "plan_persisted": True,
             "plan_approved": approved,
             "run": historical_run,
@@ -3338,7 +4519,7 @@ def _release_v1_view(dashboard: dict) -> dict:
             dashboard,
             blockers,
         ),
-        "plan": plan,
+        "plan": _public_release_plan_projection(plan),
         "plan_persisted": bool(persisted),
         "plan_approved": approved,
         "run": run,
@@ -5881,6 +7062,518 @@ def _release_target_recovery_actions(
     )
 
 
+_oneclick_worker_guard = threading.Lock()
+_oneclick_worker_wake = threading.Event()
+_oneclick_worker_jobs: set[str] = set()
+_oneclick_worker_thread: threading.Thread | None = None
+
+
+def _oneclick_adapter_registry() -> dict:
+    """Load only the channel-owned typed registry; never import a client."""
+
+    import importlib
+
+    try:
+        module = importlib.import_module(
+            "domains.channel_operations.oneclick_release_adapters"
+        )
+    except ModuleNotFoundError:
+        return {}
+    provider = getattr(module, "production_adapter_registry", None)
+    if not callable(provider):
+        return {}
+    registry = provider()
+    try:
+        return dict(registry)
+    except (TypeError, ValueError):
+        return {}
+
+
+def _oneclick_control_store():
+    from shared_platform.oneclick_release_controlplane import OneClickReleaseStore
+    from shared_platform.release_store import default_release_store
+
+    return OneClickReleaseStore(default_release_store().path)
+
+
+def _oneclick_dispatch_enabled() -> bool:
+    return _oneclick_dispatch_capability()["enabled"] is True
+
+
+def _oneclick_dispatch_capability() -> dict:
+    raw = os.environ.get("ORBIT_ONECLICK_EXTERNAL_DISPATCH")
+    if raw is None or raw == "":
+        enabled = True
+        source = "server_default"
+        reason_code = "oneclick_dispatch_enabled_by_default"
+    elif raw.casefold() in {"1", "true", "yes", "on", "enabled"}:
+        enabled = True
+        source = "explicit_environment"
+        reason_code = "oneclick_dispatch_explicitly_enabled"
+    elif raw.casefold() in {"0", "false", "no", "off", "disabled"}:
+        enabled = False
+        source = "explicit_environment"
+        reason_code = "oneclick_dispatch_explicitly_disabled"
+    else:
+        enabled = False
+        source = "invalid_environment_fail_closed"
+        reason_code = "oneclick_dispatch_configuration_invalid"
+    return {
+        "schema_version": "oneclick-dispatch-capability/v1",
+        "enabled": enabled,
+        "source": source,
+        "reason_code": reason_code,
+        "next_action": None if enabled else "enable_oneclick_dispatch",
+    }
+
+
+def _project_oneclick_dispatch_capability(job: dict) -> dict:
+    projected = dict(job)
+    capability = _oneclick_dispatch_capability()
+    projected["dispatch_capability"] = capability
+    if capability["enabled"] is True:
+        return _attach_oneclick_canonical_action(projected)
+    def disable_runnable(values):
+        disabled = []
+        for target_value in values or ():
+            target = dict(target_value)
+            if (
+                target.get("runnable_now") is True
+                or target.get("classification") == "PREPARE_PENDING"
+            ):
+                target.update(
+                    {
+                        "classification": "BLOCKED_CAPABILITY",
+                        "status": "BLOCKED_CAPABILITY",
+                        "runnable_now": False,
+                        "next_action": "enable_oneclick_dispatch",
+                        "next_action_target": None,
+                        "reason": {
+                            "category": "CAPABILITY",
+                            "scope": "TARGET",
+                            "code": "oneclick_dispatch_disabled",
+                            "summary_code": "channel_capability_status",
+                            "detail_digest": hashlib.sha256(
+                                b"oneclick_dispatch_disabled"
+                            ).hexdigest(),
+                        },
+                    }
+                )
+            disabled.append(target)
+        return disabled
+
+    targets = disable_runnable(projected.get("targets"))
+    projected["shared_controls"] = disable_runnable(
+        projected.get("shared_controls")
+    )
+    projected["targets"] = targets
+    projected["phase"] = (
+        "BLOCKED" if projected.get("phase") == "READY" else projected.get("phase")
+    )
+    projected["runnable_target_count"] = 0
+    projected["preparation_pending_count"] = 0
+    projected["prepare_pending"] = []
+    projected["start_allowed"] = False
+    summary = dict(projected.get("summary") or {})
+    newly_blocked = [
+        target["target_label"]
+        for target in targets
+        if target.get("next_action") == "enable_oneclick_dispatch"
+    ]
+    summary["will_dispatch"] = []
+    summary["manual_after_submit"] = []
+    summary["blocked"] = list(
+        dict.fromkeys([*(summary.get("blocked") or ()), *newly_blocked])
+    )
+    projected["summary"] = summary
+    return _attach_oneclick_canonical_action(projected)
+
+
+def _attach_oneclick_canonical_action(projected: dict) -> dict:
+    """Attach the sole server-owned next action to every public projection."""
+
+    result = dict(projected)
+    capability = result.get("dispatch_capability") or {}
+    if capability.get("enabled") is False:
+        result["canonical_next_action"] = {
+            "target_label": None,
+            "target_focus": None,
+            "canonical_status": "BLOCKED_CAPABILITY",
+            "action": "enable_oneclick_dispatch",
+            "runnable": False,
+        }
+        return result
+    actions = [
+        {
+            "target_label": target["target_label"],
+            "target_focus": target.get("next_action_target")
+            or target["target_label"],
+            "canonical_status": target["status"],
+            "action": target["next_action"],
+            "runnable": target.get("runnable_now") is True,
+        }
+        for target in [
+            *(result.get("targets") or ()),
+            *(result.get("shared_controls") or ()),
+        ]
+        if isinstance(target, dict) and target.get("next_action")
+    ]
+    result["canonical_next_action"] = _select_canonical_oneclick_action(
+        actions
+    )
+    return result
+
+
+def _oneclick_worker_loop() -> None:
+    from shared_platform.oneclick_release_controlplane import OneClickReleaseWorker
+
+    store = _oneclick_control_store()
+    worker = OneClickReleaseWorker(
+        store,
+        _oneclick_adapter_registry,
+        dispatch_enabled=_oneclick_dispatch_enabled,
+    )
+    worker.recover()
+    _consume_oneclick_outcome_receipts(store)
+    with _oneclick_worker_guard:
+        _oneclick_worker_jobs.update(store.resumable_job_ids())
+        if _oneclick_worker_jobs:
+            _oneclick_worker_wake.set()
+    while True:
+        _oneclick_worker_wake.wait(timeout=5.0)
+        _oneclick_worker_wake.clear()
+        with _oneclick_worker_guard:
+            job_ids = tuple(_oneclick_worker_jobs)
+        for job_id in job_ids:
+            try:
+                progressed = worker.advance_once(job_id)
+                _consume_oneclick_outcome_receipts(store)
+                job = store.get_job(job_id=job_id)
+            except Exception:
+                progressed = False
+                job = None
+            phase = str((job or {}).get("phase") or "")
+            if progressed and phase in {"PENDING", "PREPARING", "READY", "RUNNING"}:
+                _oneclick_worker_wake.set()
+                continue
+            if phase not in {"PENDING", "PREPARING", "READY", "RUNNING"}:
+                with _oneclick_worker_guard:
+                    _oneclick_worker_jobs.discard(job_id)
+
+
+def _consume_oneclick_outcome_receipts(store) -> None:
+    """Normalize redacted receipts through 05 without affecting release state."""
+
+    import importlib
+
+    try:
+        module = importlib.import_module(
+            "domains.data_operations.release_outcomes"
+        )
+        adapter = getattr(module, "adapt_release_outcome_receipt")
+        contract_error = getattr(
+            module,
+            "ReleaseOutcomeContractError",
+            (),
+        )
+    except (ImportError, AttributeError):
+        return
+    if not callable(adapter):
+        return
+    for pending in store.pending_outcome_receipts(limit=50):
+        try:
+            fact = adapter(pending["receipt"])
+            payload = fact.payload()
+            fact_digest = payload.get("fact_digest")
+            store.record_outcome_consumer_result(
+                job_id=pending["job_id"],
+                target_label=pending["target_label"],
+                attempt=pending["attempt"],
+                receipt_digest=pending["receipt_digest"],
+                fact_digest=fact_digest,
+                error_code=None,
+            )
+        except Exception as error:
+            code = (
+                "release_outcome_contract_rejected"
+                if isinstance(contract_error, type)
+                and isinstance(error, contract_error)
+                else "release_outcome_consumer_failed"
+            )
+            try:
+                store.record_outcome_consumer_result(
+                    job_id=pending["job_id"],
+                    target_label=pending["target_label"],
+                    attempt=pending["attempt"],
+                    receipt_digest=pending["receipt_digest"],
+                    fact_digest=None,
+                    error_code=code,
+                )
+            except Exception:
+                # Consumer persistence is observational only.  The canonical
+                # release target and one-click terminal state remain final.
+                pass
+    resolution_adapter = getattr(
+        module,
+        "adapt_release_outcome_manual_acceptance",
+        None,
+    )
+    if not callable(resolution_adapter):
+        # 05 must merge this append-only resolution with the original
+        # receipt.  It must never be sent through the ordinary outcome
+        # adapter as a second publication sample.
+        return
+    for pending in store.pending_manual_acceptance_resolutions(limit=50):
+        try:
+            fact = resolution_adapter(pending["resolution"])
+            payload = fact.payload()
+            store.record_manual_acceptance_consumer_result(
+                job_id=pending["job_id"],
+                target_label=pending["target_label"],
+                attempt=pending["attempt"],
+                resolution_digest=pending["resolution_digest"],
+                fact_digest=payload.get("fact_digest"),
+                error_code=None,
+            )
+        except Exception as error:
+            code = (
+                "release_outcome_manual_acceptance_contract_rejected"
+                if isinstance(contract_error, type)
+                and isinstance(error, contract_error)
+                else "release_outcome_manual_acceptance_consumer_failed"
+            )
+            try:
+                store.record_manual_acceptance_consumer_result(
+                    job_id=pending["job_id"],
+                    target_label=pending["target_label"],
+                    attempt=pending["attempt"],
+                    resolution_digest=pending["resolution_digest"],
+                    fact_digest=None,
+                    error_code=code,
+                )
+            except Exception:
+                pass
+
+
+def _start_oneclick_background_worker() -> None:
+    global _oneclick_worker_thread
+
+    with _oneclick_worker_guard:
+        if _oneclick_worker_thread and _oneclick_worker_thread.is_alive():
+            return
+        _oneclick_worker_thread = threading.Thread(
+            target=_oneclick_worker_loop,
+            name="orbit-oneclick-release-worker",
+            daemon=True,
+        )
+        _oneclick_worker_thread.start()
+
+
+def _wake_oneclick_worker(job_id: str) -> None:
+    _start_oneclick_background_worker()
+    with _oneclick_worker_guard:
+        _oneclick_worker_jobs.add(job_id)
+    _oneclick_worker_wake.set()
+
+
+def _oneclick_approved_context(
+    data: dict,
+    *,
+    require_token: bool = True,
+) -> tuple[dict | None, tuple[int, dict] | None]:
+    """Rebuild the exact approved plan without mutating a run or job."""
+
+    from shared_platform.release_store import default_release_store
+
+    dashboard, failure = _release_dashboard_for_request(data)
+    if failure:
+        return None, failure
+    assert dashboard is not None
+    payload, blockers = _release_plan_payload_from_dashboard(dashboard)
+    store = default_release_store()
+    try:
+        preview = store.preview_plan(payload)
+    except (TypeError, ValueError) as error:
+        blockers = [*blockers, str(error)]
+        preview = {}
+    plan_id = str(data.get("plan_id") or "").strip()
+    token = str(data.get("confirmation_token") or "").strip()
+    plan = store.get_plan(plan_id)
+    approval = (plan or {}).get("approval") or {}
+    if (
+        not plan
+        or plan_id != str(preview.get("plan_id") or "")
+        or plan.get("status") != "APPROVED"
+        or approval.get("status") != "APPROVED"
+        or approval.get("approved_by") != "Kyle"
+        or (require_token and token != plan.get("confirmation_token"))
+        or not _approved_plan_matches_current_payload(plan, preview)
+    ):
+        blockers = [
+            *blockers,
+            "approved ReleasePlan no longer matches current immutable facts",
+        ]
+    reservation = (plan or {}).get("sku_reservation")
+    source_reservation = (plan or {}).get("source_sku_reservation")
+    if not (
+        (
+            isinstance(reservation, dict)
+            and reservation.get("status") == "ACTIVE"
+            and reservation.get("plan_id") == plan_id
+            and reservation.get("seller_sku") == (plan or {}).get(
+                "seller_sku"
+            )
+        )
+        or (
+            isinstance(source_reservation, dict)
+            and source_reservation.get("status") == "ACTIVE"
+            and (source_reservation.get("assignment") or {}).get(
+                "seller_sku"
+            )
+            == (plan or {}).get("seller_sku")
+        )
+    ):
+        blockers = [
+            *blockers,
+            "predecessor SKU reservation conflicts with the active plan",
+        ]
+    blockers = list(dict.fromkeys(str(value) for value in blockers if value))
+    if blockers:
+        return None, (
+            409,
+            {
+                "ok": False,
+                "error": "one-click batch preparation is blocked",
+                "blockers": blockers,
+                "external_writes_performed": [],
+                "canonical_next_action": {
+                    "action": "resolve_plan_or_source_identity",
+                    "target_focus": None,
+                },
+            },
+        )
+    return {
+        "dashboard": dashboard,
+        "payload": payload,
+        "plan": plan,
+        "store": store,
+    }, None
+
+
+def _preview_oneclick_release(data: dict) -> tuple[int, dict]:
+    from shared_platform.oneclick_release_controlplane import (
+        SystemicIdentityError,
+        build_batch_preview,
+        preview_run_for_plan,
+    )
+
+    context, failure = _oneclick_approved_context(data, require_token=False)
+    if failure:
+        return failure
+    assert context is not None
+    plan = context["plan"]
+    store = context["store"]
+    run = store.get_run(f"release-run:{plan['payload_digest'][:24]}")
+    preview_run = run or preview_run_for_plan(plan)
+    try:
+        preview = build_batch_preview(
+            plan=plan,
+            run=preview_run,
+            product_revision=int(context["payload"]["product_revision"]),
+            registry=_oneclick_adapter_registry(),
+        )
+    except SystemicIdentityError as error:
+        return 409, {
+            "ok": False,
+            "error": str(error),
+            "external_writes_performed": [],
+        }
+    preview = _project_oneclick_dispatch_capability(
+        {
+            **preview,
+            "summary": {
+                "will_dispatch": preview.get("will_dispatch") or [],
+                "manual_after_submit": (
+                    preview.get("manual_after_submit") or []
+                ),
+                "blocked": preview.get("blocked") or [],
+                "already_terminal": (
+                    preview.get("already_terminal") or []
+                ),
+            },
+        }
+    )
+    preview["will_dispatch"] = preview["summary"]["will_dispatch"]
+    preview["manual_after_submit"] = preview["summary"][
+        "manual_after_submit"
+    ]
+    preview["blocked"] = preview["summary"]["blocked"]
+    return 200, {
+        "ok": True,
+        "persisted": False,
+        "external_writes_performed": [],
+        "preview": preview,
+    }
+
+
+def _oneclick_release_status(data: dict) -> tuple[int, dict]:
+    job = _oneclick_control_store().get_job(
+        job_id=str(data.get("job_id") or "").strip() or None,
+        plan_id=str(data.get("plan_id") or "").strip() or None,
+    )
+    if not job:
+        return 404, {"ok": False, "error": "one-click release job was not found"}
+    return 200, {
+        "ok": True,
+        "job": _project_oneclick_dispatch_capability(job),
+    }
+
+
+def _start_oneclick_release(data: dict) -> tuple[int, dict]:
+    """Create/wake one durable job and return without channel I/O."""
+
+    if data.get("confirm_publish") is not True:
+        return 400, {
+            "ok": False,
+            "error": "explicit confirm_publish=true is required",
+        }
+    context, failure = _oneclick_approved_context(data)
+    if failure:
+        return failure
+    assert context is not None
+    with _release_execution_lock:
+        context, failure = _oneclick_approved_context(data)
+        if failure:
+            return failure
+        assert context is not None
+        plan = context["plan"]
+        run = context["store"].start_run(plan["plan_id"])
+        registry = _oneclick_adapter_registry()
+        control_store = _oneclick_control_store()
+        job = control_store.ensure_job(
+            plan=context["store"].get_plan(plan["plan_id"]),
+            run=run,
+            product_revision=int(context["payload"]["product_revision"]),
+            registry=registry,
+        )
+        dispatch_capability = _oneclick_dispatch_capability()
+        job = control_store.set_dispatch_capability(
+            job["job_id"],
+            enabled=dispatch_capability["enabled"],
+        )
+        if data.get("resume_exact_zero_write_failures") is True:
+            control_store.resume_exact_zero_write_failures(job["job_id"])
+            job = control_store.get_job(job_id=job["job_id"]) or job
+        _wake_oneclick_worker(job["job_id"])
+    return 202, {
+        "ok": True,
+        "accepted": True,
+        "idempotent": job["phase"] not in {"PENDING", "PREPARING"},
+        "external_writes_performed": [],
+        "job": _project_oneclick_dispatch_capability(job),
+    }
+
+
 def _publish_selected_release(data: dict) -> tuple[int, dict]:
     """Execute the approved plan once through durable per-target adapters."""
     from domains.channel_operations.release_executor import AdapterExecutionRequest
@@ -6283,13 +7976,18 @@ def _publish_selected_release(data: dict) -> tuple[int, dict]:
 
 
 def _manually_verify_release_target(data: dict) -> tuple[int, dict]:
-    """Record Kyle's exact platform inspection for a target without API access."""
+    """Close the exact pending manual contract for a one-click target."""
 
     from shared_platform.release_store import (
         ImmutableReleaseError,
         ReleaseAuthorizationError,
         ReleaseStoreError,
         default_release_store,
+    )
+    from shared_platform.oneclick_release_controlplane import (
+        AdapterContractError,
+        OneClickReleaseStore,
+        SystemicIdentityError,
     )
 
     if data.get("user_verified") is not True:
@@ -6327,7 +8025,7 @@ def _manually_verify_release_target(data: dict) -> tuple[int, dict]:
             "error": "approved ReleasePlan no longer matches current facts",
         }
     target_label = str(data.get("target_label") or "").strip()
-    allowed = {
+    api_less_targets = {
         "tiktok:HB_PH",
         "tiktok:HB_MY",
         "tiktok:HB_TH",
@@ -6335,49 +8033,235 @@ def _manually_verify_release_target(data: dict) -> tuple[int, dict]:
         "tiktok:MX",
         "tiktok:GB",
     }
-    if target_label not in allowed or target_label not in (plan.get("targets") or ()):
+    if target_label not in (plan.get("targets") or ()):
         return 400, {
             "ok": False,
-            "error": "target is not an approved API-less TikTok destination",
+            "error": "target is not an approved ReleasePlan destination",
         }
-    marketplace_product_id = str(
-        data.get("marketplace_product_id") or ""
-    ).strip()
-    if (
-        not marketplace_product_id
-        or len(marketplace_product_id) > 128
-        or any(character.isspace() for character in marketplace_product_id)
-    ):
-        return 400, {
-            "ok": False,
-            "error": "marketplace_product_id must be a non-empty ID without spaces",
-        }
-    checks = data.get("checks") if isinstance(data.get("checks"), dict) else {}
-    evidence = {
-        "source": "kyle_marketplace_console_inspection",
-        "marketplace_product_id": marketplace_product_id,
-        "identity_matches": checks.get("identity_matches") is True,
-        "seller_sku_matches": checks.get("seller_sku_matches") is True,
-        "single_listing_for_sku": checks.get("single_listing_for_sku") is True,
-        "title_matches": checks.get("title_matches") is True,
-        "price_matches": checks.get("price_matches") is True,
-        "images_match": checks.get("images_match") is True,
-        "logistics_match": checks.get("logistics_match") is True,
-    }
     run_id = f"release-run:{plan['payload_digest'][:24]}"
     try:
-        target = store.record_manual_verification(
-            run_id,
-            target_label,
-            verified_by="Kyle",
-            user_verified=True,
-            verification_evidence=evidence,
-        )
+        oneclick = OneClickReleaseStore(store.path)
+        oneclick_job = oneclick.get_job(plan_id=plan_id)
+        if oneclick_job:
+            oneclick_target = next(
+                (
+                    row
+                    for row in oneclick_job.get("targets", ())
+                    if row.get("target_label") == target_label
+                ),
+                None,
+            )
+            if not isinstance(oneclick_target, dict):
+                raise SystemicIdentityError(
+                    "one-click manual acceptance target was not found"
+                )
+            checks = (
+                data.get("checks")
+                if isinstance(data.get("checks"), dict)
+                else {}
+            )
+            if oneclick_target.get("status") == "SUBMITTED_UNVERIFIED":
+                if target_label not in api_less_targets:
+                    raise SystemicIdentityError(
+                        "submitted-unverified target is not an approved API-less destination"
+                    )
+                marketplace_product_id = str(
+                    data.get("marketplace_product_id") or ""
+                ).strip()
+                if (
+                    not marketplace_product_id
+                    or len(marketplace_product_id) > 128
+                    or any(
+                        character.isspace()
+                        for character in marketplace_product_id
+                    )
+                ):
+                    return 400, {
+                        "ok": False,
+                        "error": (
+                            "marketplace_product_id must be a non-empty ID "
+                            "without spaces"
+                        ),
+                    }
+                evidence = {
+                    "source": "kyle_marketplace_console_inspection",
+                    "marketplace_product_id": marketplace_product_id,
+                    "identity_matches": checks.get("identity_matches") is True,
+                    "seller_sku_matches": (
+                        checks.get("seller_sku_matches") is True
+                    ),
+                    "single_listing_for_sku": (
+                        checks.get("single_listing_for_sku") is True
+                    ),
+                    "title_matches": checks.get("title_matches") is True,
+                    "price_matches": checks.get("price_matches") is True,
+                    "images_match": checks.get("images_match") is True,
+                    "logistics_match": checks.get("logistics_match") is True,
+                }
+            elif oneclick_target.get("status") == "SUCCEEDED_MANUAL_REVIEW":
+                if target_label not in _ONECLICK_SHOPEE_MANUAL_REVIEW_TARGETS:
+                    raise SystemicIdentityError(
+                        "verified-warning acceptance is limited to Shopee targets"
+                    )
+                if "marketplace_product_id" in data:
+                    return 400, {
+                        "ok": False,
+                        "error": (
+                            "verified Shopee warning acceptance must not "
+                            "provide marketplace_product_id"
+                        ),
+                    }
+                if (
+                    data.get("manual_review_accepted") is not True
+                    or "checks" in data
+                ):
+                    return 400, {
+                        "ok": False,
+                        "error": (
+                            "verified Shopee warning acceptance requires "
+                            "manual_review_accepted=true without API-less checks"
+                        ),
+                    }
+                result = oneclick_target.get("result")
+                outcome = oneclick_target.get("outcome_receipt")
+                if (
+                    not isinstance(result, dict)
+                    or not isinstance(outcome, dict)
+                    or not isinstance(result.get("observation_digests"), list)
+                    or not result["observation_digests"]
+                ):
+                    raise SystemicIdentityError(
+                        "verified Shopee warning evidence is unavailable"
+                    )
+                observation_digests = sorted(
+                    result["observation_digests"]
+                )
+                observation_echo = data.get(
+                    "observation_evidence_digest"
+                )
+                if (
+                    type(observation_echo) is not str
+                    or observation_echo != observation_digests[0]
+                ):
+                    return 409, {
+                        "ok": False,
+                        "error": (
+                            "verified Shopee observation evidence no longer "
+                            "matches the current receipt"
+                        ),
+                    }
+                job_id = str(oneclick_job.get("job_id") or "")
+                result_digest = result.get("evidence_digest")
+                outcome_digest = outcome.get("receipt_digest")
+                if (
+                    len(job_id) == 0
+                    or not isinstance(result_digest, str)
+                    or len(result_digest) != 64
+                    or not isinstance(outcome_digest, str)
+                    or len(outcome_digest) != 64
+                ):
+                    raise SystemicIdentityError(
+                        "verified Shopee warning identity is invalid"
+                    )
+                evidence = {
+                    "source": "kyle_verified_shopee_observation_review",
+                    "manual_review_accepted": True,
+                    "observation_evidence_digest": observation_echo,
+                    "job_identity_digest": hashlib.sha256(
+                        job_id.encode("utf-8")
+                    ).hexdigest(),
+                    "result_evidence_digest": result_digest,
+                    "readback_evidence_digest": result_digest,
+                    "outcome_receipt_digest": outcome_digest,
+                    "observation_evidence_digests": observation_digests,
+                }
+            else:
+                raise SystemicIdentityError(
+                    "one-click target is not awaiting a supported manual acceptance"
+                )
+            oneclick.record_manual_acceptance(
+                run_id=run_id,
+                target_label=target_label,
+                verified_by="Kyle",
+                user_verified=True,
+                verification_evidence=evidence,
+            )
+            current_run = store.get_run(run_id)
+            if not current_run:
+                raise ReleaseStoreError(
+                    "manual verification run disappeared after commit"
+                )
+            target = next(
+                (
+                    row
+                    for row in current_run["targets"]
+                    if row["target_label"] == target_label
+                ),
+                None,
+            )
+            if not target:
+                raise ReleaseStoreError(
+                    "manual verification target disappeared after commit"
+                )
+        else:
+            if target_label not in api_less_targets:
+                return 400, {
+                    "ok": False,
+                    "error": (
+                        "legacy manual verification is limited to approved "
+                        "API-less TikTok destinations"
+                    ),
+                }
+            marketplace_product_id = str(
+                data.get("marketplace_product_id") or ""
+            ).strip()
+            if (
+                not marketplace_product_id
+                or len(marketplace_product_id) > 128
+                or any(
+                    character.isspace()
+                    for character in marketplace_product_id
+                )
+            ):
+                return 400, {
+                    "ok": False,
+                    "error": (
+                        "marketplace_product_id must be a non-empty ID "
+                        "without spaces"
+                    ),
+                }
+            checks = (
+                data.get("checks")
+                if isinstance(data.get("checks"), dict)
+                else {}
+            )
+            evidence = {
+                "source": "kyle_marketplace_console_inspection",
+                "marketplace_product_id": marketplace_product_id,
+                "identity_matches": checks.get("identity_matches") is True,
+                "seller_sku_matches": checks.get("seller_sku_matches") is True,
+                "single_listing_for_sku": (
+                    checks.get("single_listing_for_sku") is True
+                ),
+                "title_matches": checks.get("title_matches") is True,
+                "price_matches": checks.get("price_matches") is True,
+                "images_match": checks.get("images_match") is True,
+                "logistics_match": checks.get("logistics_match") is True,
+            }
+            target = store.record_manual_verification(
+                run_id,
+                target_label,
+                verified_by="Kyle",
+                user_verified=True,
+                verification_evidence=evidence,
+            )
     except (
+        AdapterContractError,
         ValueError,
         ImmutableReleaseError,
         ReleaseAuthorizationError,
         ReleaseStoreError,
+        SystemicIdentityError,
     ) as error:
         return 409, {"ok": False, "error": str(error)}
     refreshed, refresh_failure = _release_dashboard_for_request(data)
@@ -8445,6 +10329,37 @@ class Handler(BaseHTTPRequestHandler):
             from shared_platform.orbit_registry import navigation_payload
 
             return self._json(200, {"ok": True, **navigation_payload()})
+        if path == "/api/product-workspace/publish-preview":
+            q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+            status, payload = _preview_oneclick_release(
+                {
+                    "offer_id": (q.get("offer_id") or [""])[0],
+                    "plan_id": (q.get("plan_id") or [""])[0],
+                }
+            )
+            return self._json(status, payload)
+        if path == "/api/product-workspace/publish-status":
+            q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+            status, payload = _oneclick_release_status(
+                {
+                    "job_id": (q.get("job_id") or [""])[0],
+                    "plan_id": (q.get("plan_id") or [""])[0],
+                }
+            )
+            return self._json(status, payload)
+        if path == "/api/product-workspace/shopee-global-plan-preview":
+            q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+            if set(q) != {"offer_id"} or len(q["offer_id"]) != 1:
+                return self._json(
+                    400,
+                    {
+                        "ok": False,
+                        "error": "exactly one offer_id is required",
+                        "external_writes_performed": [],
+                    },
+                )
+            status, payload = _preview_shopee_global_plan(q["offer_id"][0])
+            return self._json(status, payload)
         if path == "/api/product-workspace/reconcile-target":
             q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
             status, payload = _reconcile_existing_shopee_target_readonly(
@@ -8541,6 +10456,11 @@ class Handler(BaseHTTPRequestHandler):
                 payload = build_release_dashboard(**kwargs)
                 if path == "/api/product-workspace/dashboard":
                     payload = _product_workspace_view(payload)
+                else:
+                    payload = dict(payload)
+                    payload.pop("_source_product_identity", None)
+                    payload.pop("_source_identity_inputs", None)
+                    payload.pop("_sku_lineage", None)
                 return self._json(200, payload)
             except FileNotFoundError as error:
                 return self._json(404, {"ok": False, "error": str(error)})
@@ -9079,6 +10999,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/product-workspace/title-adopt",
             "/api/product-workspace/approve",
             "/api/product-workspace/release-plan/approve",
+            "/api/product-workspace/shopee-global-plan-approval",
             "/api/product-workspace/miaoshou-draft/commit",
             "/api/product-workspace/publish",
             "/api/product-workspace/release-target/manual-verify",
@@ -9145,6 +11066,8 @@ class Handler(BaseHTTPRequestHandler):
                 status, payload = _approve_product_workspace_locally(data)
             elif path == "/api/product-workspace/release-plan/approve":
                 status, payload = _approve_release_plan_locally(data)
+            elif path == "/api/product-workspace/shopee-global-plan-approval":
+                status, payload = _approve_shopee_global_plan_locally(data)
             elif path == "/api/product-workspace/miaoshou-draft/commit":
                 status, payload = _prepare_miaoshou_release(data)
             elif path == "/api/product-workspace/release-target/manual-verify":
@@ -9175,7 +11098,7 @@ class Handler(BaseHTTPRequestHandler):
             ):
                 status, payload = _execute_target_scoped_reconciliation(data)
             else:
-                status, payload = _publish_selected_release(data)
+                status, payload = _start_oneclick_release(data)
             return self._json(status, payload)
         if self._handle_product_flow_proxy("POST"):
             return
@@ -10098,6 +12021,8 @@ def serve(
         start_scheduler()
     except Exception as e:
         print(f"  [WARN] orders-pull 调度未启动: {e}")
+
+    _start_oneclick_background_worker()
 
     if open_browser:
         import webbrowser

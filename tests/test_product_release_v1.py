@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
 import sqlite3
 
 import pytest
@@ -11,6 +12,13 @@ from domains.channel_operations.release_executor import (
     AdapterExecutionResult,
     AdapterRegistration,
 )
+from domains.product_operations import (
+    ModelSkuAssignment,
+    SkuAssignment,
+    finalize_new_source_sku_reservation,
+    resolve_sku_lineage_reservation,
+    resolve_source_product_identity,
+)
 from shared_platform import release_control, release_store
 from shared_platform.release_store import ReleaseStore
 
@@ -19,8 +27,66 @@ def _dashboard() -> dict:
     targets = ["miaoshou:COMMON", "tiktok:MX"]
     approved_title = "Cute Dog PVC Wall Sticker 34 x 58 cm"
     copy_signature = "sha256:copy-facts-v1"
+    source_inputs = {
+        "collect_box": {
+            "source_item_id": "986159122616",
+            "source_item_code": "DOG-WALL-34X58",
+        },
+        "precollect": {
+            "records": [{"source_id": "986159122616"}],
+        },
+        "source_record": {"source_id": "986159122616"},
+        "source_authority": "1688",
+    }
+    source_resolution = resolve_source_product_identity(**source_inputs)
+    assert source_resolution.ready is True
+    assert source_resolution.identity is not None
+    lineage_resolution = resolve_sku_lineage_reservation(
+        source_identity=source_resolution.identity,
+        predecessor_records=(),
+    )
+    assignment = SkuAssignment(
+        seller_sku="0952",
+        model_skus=(
+            ModelSkuAssignment(
+                variant_key="default",
+                model_sku="0952",
+            ),
+        ),
+    )
+    finalized = finalize_new_source_sku_reservation(
+        source_identity=source_resolution.identity,
+        assignment=assignment,
+    )
+    assert finalized.ready is True
+    assert finalized.reservation is not None
+    lineage_payload = {
+        **lineage_resolution.payload(),
+        "assignment": assignment.payload(),
+        "reservation": finalized.reservation.payload(),
+    }
     return {
         "ok": True,
+        "_source_identity_inputs": source_inputs,
+        "_source_product_identity": source_resolution.payload(),
+        "_sku_lineage": lineage_payload,
+        "source_product_identity": {
+            "schema_version": source_resolution.payload()["schema_version"],
+            "status": source_resolution.status,
+            "ready": source_resolution.ready,
+            "blockers": [],
+            "identity_digest": source_resolution.identity.identity_digest,
+            "source_item_code": source_resolution.identity.source_item_code,
+        },
+        "sku_lineage": {
+            "schema_version": lineage_payload["schema_version"],
+            "status": lineage_payload["status"],
+            "ready": lineage_payload["ready"],
+            "lineage_mode": lineage_payload["lineage_mode"],
+            "assignment": lineage_payload["assignment"],
+            "reservation_digest": finalized.reservation.reservation_digest,
+            "blockers": [],
+        },
         "product": {
             "offer_id": "3828540231",
             "seller_sku_candidate": "0952",
@@ -324,6 +390,7 @@ def test_existing_unsafe_tiktok_failure_does_not_block_pristine_targets(
         },
     )
 
+    _approve_shopee_global_fixture(dashboard, monkeypatch)
     view = product_server._product_workspace_view(dashboard)
     request = _request(view, publication_targets=targets)
     assert product_server._approve_release_plan_locally(
@@ -566,6 +633,69 @@ def _single_shopee_dashboard() -> dict:
         }
     ]
     return dashboard
+
+
+def _approve_shopee_global_fixture(dashboard, monkeypatch):
+    from shared_platform.shopee_global_plan import (
+        build_shopee_global_plan_candidate,
+    )
+    from tests.test_shopee_global_plan import _base_args
+
+    dashboard["product"].setdefault("weight_kg", 0.02)
+    dashboard["product"].setdefault("package_cm", [58, 34, 0.02])
+    payload, _blockers = product_server._release_plan_payload_from_dashboard(
+        dashboard,
+        bind_shopee_global_plan=False,
+    )
+    seed = product_server._shopee_global_plan_seed(payload)
+    args = _base_args()
+    args.update(
+        {key: value for key, value in seed.items() if key != "targets"}
+    )
+    args["selected_image_positions"] = list(
+        range(1, len(seed["ordered_approved_images"]) + 1)
+    )
+    model_sku = payload["sku_lineage"]["assignment"]["model_skus"][0][
+        "model_sku"
+    ]
+    args["variations"] = [
+        {
+            "name": "Model",
+            "option_list": [
+                {
+                    "option": "Default",
+                    "approved_image_position": 1,
+                }
+            ],
+        }
+    ]
+    args["models"] = [
+        {
+            "global_model_sku": model_sku,
+            "tier_index": [0],
+            "original_price_cny": seed["target_pricing"][
+                "global_original_price"
+            ],
+            "seller_stock_quantity": args["seller_stock"]["quantity"],
+        }
+    ]
+    candidate = build_shopee_global_plan_candidate(**args)
+    assert candidate.status == "READY", candidate.blocker_codes
+    monkeypatch.setattr(
+        product_server,
+        "_observe_shopee_global_plan_candidate",
+        lambda _payload: candidate,
+    )
+    status, _response = product_server._approve_shopee_global_plan_locally(
+        {
+            "offer_id": payload["product_id"],
+            "expected_product_revision": payload["product_revision"],
+            "expected_candidate_digest": candidate.candidate_digest,
+            "approved_by": "Kyle",
+            "confirm_approved_shopee_global_plan": True,
+        }
+    )
+    assert status == 200
 
 
 def _executable_registry(execute):
@@ -938,6 +1068,7 @@ def test_successor_one_click_uses_only_governed_shopee_recovery(
         lambda: _shopee_recovery_registry(execute),
     )
     targets = ["miaoshou:COMMON", "shopee:PH"]
+    _approve_shopee_global_fixture(dashboard, monkeypatch)
     predecessor_view = product_server._product_workspace_view(dashboard)
     predecessor_request = _request(
         predecessor_view,
@@ -970,6 +1101,7 @@ def test_successor_one_click_uses_only_governed_shopee_recovery(
     dashboard["listing_copy"]["candidates"][0]["title"] = dashboard[
         "product"
     ]["title"]
+    _approve_shopee_global_fixture(dashboard, monkeypatch)
     successor_view = product_server._product_workspace_view(dashboard)
     successor_request = _request(
         successor_view,
@@ -1639,6 +1771,54 @@ def test_api_less_publish_is_submitted_once_then_manually_verified(
     assert calls == ["tiktok:MX"]
     assert repeated["external_writes_performed"] == []
 
+    from shared_platform.oneclick_release_controlplane import (
+        OneClickReleaseStore,
+    )
+
+    close_calls = []
+    job_reads = []
+
+    def oneclick_job_once(_self, **_kwargs):
+        job_reads.append(True)
+        return (
+            {
+                "job_id": "oneclick-job:test",
+                "targets": [
+                    {
+                        "target_label": "tiktok:MX",
+                        "status": "SUBMITTED_UNVERIFIED",
+                    }
+                ],
+            }
+            if len(job_reads) == 1
+            else None
+        )
+
+    monkeypatch.setattr(
+        OneClickReleaseStore,
+        "get_job",
+        oneclick_job_once,
+    )
+
+    def close_oneclick(_self, **kwargs):
+        close_calls.append(kwargs)
+        store.record_manual_verification(
+            kwargs["run_id"],
+            kwargs["target_label"],
+            verified_by=kwargs["verified_by"],
+            user_verified=kwargs["user_verified"],
+            verification_evidence=kwargs["verification_evidence"],
+        )
+        return {
+            "idempotent": False,
+            "external_writes_performed": [],
+        }
+
+    monkeypatch.setattr(
+        OneClickReleaseStore,
+        "record_manual_acceptance",
+        close_oneclick,
+    )
     status, verified = product_server._manually_verify_release_target(
         {
             **request,
@@ -1660,6 +1840,122 @@ def test_api_less_publish_is_submitted_once_then_manually_verified(
     assert status == 200
     assert verified["external_writes_performed"] == []
     assert verified["run"]["status"] == "COMPLETED_WITH_MANUAL_VERIFICATION"
+    assert len(close_calls) == 1
+    assert close_calls[0]["target_label"] == "tiktok:MX"
+    assert close_calls[0]["verified_by"] == "Kyle"
+
+
+def test_shopee_verified_warning_manual_body_is_distinct_and_digest_bound(
+    tmp_path,
+    monkeypatch,
+):
+    from shared_platform.oneclick_release_controlplane import (
+        OneClickReleaseStore,
+    )
+
+    store = ReleaseStore(tmp_path / "release.db")
+    monkeypatch.setattr(release_store, "default_release_store", lambda: store)
+    dashboard = _single_shopee_dashboard()
+    monkeypatch.setattr(
+        release_control,
+        "build_release_dashboard",
+        lambda **_kwargs: dashboard,
+    )
+    _approve_shopee_global_fixture(dashboard, monkeypatch)
+    view = product_server._product_workspace_view(dashboard)
+    request = {
+        **_request(view),
+        "publication_targets": [
+            "miaoshou:COMMON",
+            "shopee:PH",
+        ],
+    }
+    assert product_server._approve_release_plan_locally(
+        {
+            **request,
+            "approved_by": "Kyle",
+            "user_approved": True,
+        }
+    )[0] == 200
+    plan = store.get_plan(request["plan_id"])
+    store.start_run(plan["plan_id"])
+    observation_digest = "a" * 64
+    result_digest = "b" * 64
+    outcome_digest = "c" * 64
+    calls = []
+
+    monkeypatch.setattr(
+        OneClickReleaseStore,
+        "get_job",
+        lambda _self, **_kwargs: {
+            "job_id": "oneclick-job:shopee-warning",
+            "phase": "WAITING_MANUAL_ACCEPTANCE",
+            "runnable_target_count": 0,
+            "shared_controls": [],
+            "targets": [
+                {
+                    "target_label": "shopee:PH",
+                    "status": "SUCCEEDED_MANUAL_REVIEW",
+                    "result": {
+                        "evidence_digest": result_digest,
+                        "observation_digests": [observation_digest],
+                    },
+                    "outcome_receipt": {
+                        "receipt_digest": outcome_digest,
+                    },
+                }
+            ],
+        },
+    )
+
+    def accept(_self, **kwargs):
+        calls.append(kwargs)
+        return {
+            "idempotent": len(calls) > 1,
+            "external_writes_performed": [],
+        }
+
+    monkeypatch.setattr(
+        OneClickReleaseStore,
+        "record_manual_acceptance",
+        accept,
+    )
+    body = {
+        **request,
+        "target_label": "shopee:PH",
+        "verified_by": "Kyle",
+        "user_verified": True,
+        "manual_review_accepted": True,
+        "observation_evidence_digest": observation_digest,
+    }
+    status, response = product_server._manually_verify_release_target(body)
+    assert status == 200
+    assert response["external_writes_performed"] == []
+    assert calls[0]["verification_evidence"] == {
+        "source": "kyle_verified_shopee_observation_review",
+        "manual_review_accepted": True,
+        "observation_evidence_digest": observation_digest,
+        "job_identity_digest": hashlib.sha256(
+            b"oneclick-job:shopee-warning"
+        ).hexdigest(),
+        "result_evidence_digest": result_digest,
+        "readback_evidence_digest": result_digest,
+        "outcome_receipt_digest": outcome_digest,
+        "observation_evidence_digests": [observation_digest],
+    }
+    status, _response = product_server._manually_verify_release_target(
+        {**body, "observation_evidence_digest": "d" * 64}
+    )
+    assert status == 409
+    status, _response = product_server._manually_verify_release_target(
+        {**body, "marketplace_product_id": "must-not-be-used"}
+    )
+    assert status == 400
+    status, _response = product_server._manually_verify_release_target(
+        {**body, "checks": {"identity_matches": True}}
+    )
+    assert status == 400
+    assert len(calls) == 1
 
 
 def test_publish_common_blocker_creates_no_run(tmp_path, monkeypatch):

@@ -152,8 +152,11 @@ def backup_database(
     if destination_path.exists():
         raise FileExistsError(f"backup destination already exists: {destination_path}")
     destination_path.parent.mkdir(parents=True, exist_ok=True)
+    # Keep the temporary basename bounded.  SQLite may append ``-journal``;
+    # echoing a long destination name plus a full UUID can otherwise cross
+    # the legacy Windows path limit even when the final backup path is valid.
     temporary = destination_path.with_name(
-        f".{destination_path.name}.{uuid4().hex}.partial"
+        f".db-backup-{uuid4().hex[:16]}.tmp"
     )
     source_connection = connect_readonly(source_path)
     destination_connection: sqlite3.Connection | None = None

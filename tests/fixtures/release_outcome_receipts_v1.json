@@ -1,0 +1,111 @@
+{
+  "schema_version": "release-outcome-receipt-fixture/v1",
+  "receipts": [
+    {
+      "schema_version": "release-outcome-receipt/v1",
+      "identity": {
+        "plan_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "target_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "channel": "shopee",
+      "region": "PH",
+      "versions": {"adapter": "shopee-v4", "policy": "policy-2026-07"},
+      "outcome": {"class": "SUCCESS"},
+      "dispatch": {
+        "boundary": "ACCEPTED",
+        "external_write_count": 1,
+        "external_write_classes": ["shopee:price"]
+      },
+      "readback": {
+        "status": "VERIFIED",
+        "evidence_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "manual": {"status": "NOT_REQUIRED"},
+      "reconciliation": {"status": "NOT_REQUIRED"},
+      "error": {"category": "NONE"},
+      "latency_ms": 1250,
+      "counts": {
+        "attempts": 1,
+        "dispatches": 1,
+        "readbacks": 1,
+        "manual_reviews": 0,
+        "reconciliations": 0
+      },
+      "duplicate_prevented": false,
+      "evidence_digests": []
+    },
+    {
+      "schema_version": "release-outcome-receipt/v1",
+      "identity": {
+        "plan_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "target_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "channel": "tiktok",
+      "region": "MX",
+      "versions": {"adapter": "miaoshou-v2", "policy": "policy-2026-07"},
+      "outcome": {"class": "MANUAL_ACCEPTED"},
+      "dispatch": {
+        "boundary": "ACCEPTED",
+        "external_write_count": 1,
+        "external_write_classes": ["miaoshou:publish"]
+      },
+      "readback": {"status": "UNAVAILABLE"},
+      "manual": {
+        "status": "ACCEPTED",
+        "evidence_digest": "1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "reconciliation": {"status": "NOT_REQUIRED"},
+      "error": {"category": "NONE"},
+      "latency_ms": 2200,
+      "counts": {
+        "attempts": 1,
+        "dispatches": 1,
+        "readbacks": 0,
+        "manual_reviews": 1,
+        "reconciliations": 0
+      },
+      "duplicate_prevented": false,
+      "evidence_digests": []
+    },
+    {
+      "schema_version": "release-outcome-receipt/v1",
+      "identity": {
+        "plan_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+        "run_digest": "3333333333333333333333333333333333333333333333333333333333333333",
+        "target_digest": "4444444444444444444444444444444444444444444444444444444444444444"
+      },
+      "channel": "ozon",
+      "region": "RU",
+      "versions": {"adapter": "ozon-v3", "policy": "policy-2026-08"},
+      "outcome": {"class": "RECONCILIATION_REQUIRED"},
+      "dispatch": {
+        "boundary": "ACCEPTED",
+        "external_write_count": 1,
+        "external_write_classes": ["ozon:stock"]
+      },
+      "readback": {"status": "FAILED"},
+      "manual": {"status": "PENDING"},
+      "reconciliation": {
+        "status": "REQUIRED",
+        "evidence_digest": "5555555555555555555555555555555555555555555555555555555555555555"
+      },
+      "error": {
+        "category": "INVENTORY",
+        "code": "INVENTORY_READBACK_MISMATCH",
+        "type": "ReadbackMismatch"
+      },
+      "latency_ms": 4000,
+      "counts": {
+        "attempts": 1,
+        "dispatches": 1,
+        "readbacks": 2,
+        "manual_reviews": 0,
+        "reconciliations": 1
+      },
+      "duplicate_prevented": false,
+      "evidence_digests": []
+    }
+  ]
+}

@@ -17,6 +17,28 @@ from .product_facts import (
     SelectedSkuPriceFact,
     build_product_facts_snapshot,
 )
+from .source_identity import (
+    BLOCKED_SOURCE_IDENTITY,
+    SCHEMA_VERSION as SOURCE_PRODUCT_IDENTITY_SCHEMA_VERSION,
+    SourceIdentityEvidence,
+    SourceProductIdentity,
+    SourceProductIdentityResolution,
+    resolve_source_product_identity,
+)
+from .sku_lineage import (
+    BLOCKED_SKU_LINEAGE,
+    NEW_SOURCE_SKU_RESERVATION_SCHEMA_VERSION,
+    SKU_LINEAGE_SCHEMA_VERSION,
+    ModelSkuAssignment,
+    NewSourceSkuReservation,
+    NewSourceSkuReservationResolution,
+    SkuAssignment,
+    SkuLineageReservation,
+    SkuLineageResolution,
+    finalize_new_source_sku_reservation,
+    new_source_sku_reservation_digest,
+    resolve_sku_lineage_reservation,
+)
 
 __all__ = [
     "ApprovedProductPackage",
@@ -34,4 +56,22 @@ __all__ = [
     "ProductFactsSnapshot",
     "SelectedSkuPriceFact",
     "build_product_facts_snapshot",
+    "BLOCKED_SOURCE_IDENTITY",
+    "SOURCE_PRODUCT_IDENTITY_SCHEMA_VERSION",
+    "SourceIdentityEvidence",
+    "SourceProductIdentity",
+    "SourceProductIdentityResolution",
+    "resolve_source_product_identity",
+    "BLOCKED_SKU_LINEAGE",
+    "NEW_SOURCE_SKU_RESERVATION_SCHEMA_VERSION",
+    "SKU_LINEAGE_SCHEMA_VERSION",
+    "ModelSkuAssignment",
+    "NewSourceSkuReservation",
+    "NewSourceSkuReservationResolution",
+    "SkuAssignment",
+    "SkuLineageReservation",
+    "SkuLineageResolution",
+    "finalize_new_source_sku_reservation",
+    "new_source_sku_reservation_digest",
+    "resolve_sku_lineage_reservation",
 ]

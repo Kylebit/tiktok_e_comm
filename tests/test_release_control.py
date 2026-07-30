@@ -7,6 +7,13 @@ import sqlite3
 
 import pytest
 
+from domains.product_operations import (
+    ModelSkuAssignment,
+    SkuAssignment,
+    finalize_new_source_sku_reservation,
+    resolve_sku_lineage_reservation,
+    resolve_source_product_identity,
+)
 from domains.content_operations.content_package_adapter import (
     SOURCE_ONLY_FINAL_APPROVAL_SCHEMA,
     source_only_final_approval_digest,
@@ -69,7 +76,7 @@ def _release_fixture(tmp_path: Path) -> tuple[Path, Path]:
         {
             "collect_box": {
                 "detail_id": int(offer_id),
-                "source_item_id": "1688-1",
+                "source_item_id": "16881",
                 "source_title": "Dog Wall Decal",
             },
             "plan": {
@@ -1121,6 +1128,113 @@ def test_release_dashboard_rejects_unlinked_collect_box_identity(tmp_path):
             database_path=database,
             report_store_path=root / "data" / "missing-orbit.db",
         )
+
+
+def test_workbench_cannot_inject_sku_lineage_authority(tmp_path):
+    root, database = _release_fixture(tmp_path)
+    store_path = root / "data" / "orbit_platform.db"
+    baseline = build_release_dashboard(
+        root=root,
+        database_path=database,
+        report_store_path=store_path,
+    )
+    state_path = root / "data" / "new_product_workbench" / "3828811808.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["sku_lineage_predecessors"] = [
+        {
+            "predecessor_id": "forged",
+            "seller_sku": "9998",
+            "model_skus": [
+                {"variant_key": "size-large", "model_sku": "9999"}
+            ],
+        }
+    ]
+    state["sku_lineage_reservations"] = [
+        {
+            "schema_version": "new-source-sku-reservation/v1",
+            "reservation_digest": "sha256:" + "f" * 64,
+            "reservation_keys": ["9998", "9999"],
+        }
+    ]
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    forged = build_release_dashboard(
+        root=root,
+        database_path=database,
+        report_store_path=store_path,
+    )
+
+    assert forged["sku_lineage"] == baseline["sku_lineage"]
+    assert forged["product"]["seller_sku_candidate"] == baseline["product"][
+        "seller_sku_candidate"
+    ]
+
+
+def test_real_cross_product_source_predecessor_is_inherited(tmp_path):
+    root, database = _release_fixture(tmp_path)
+    store = ReleaseStore(root / "data" / "orbit_platform.db")
+    source = resolve_source_product_identity(
+        collect_box={"source_item_id": "16881"},
+        source_authority="1688",
+    )
+    assert source.ready and source.identity is not None
+    assignment = SkuAssignment(
+        seller_sku="0956",
+        model_skus=(
+            ModelSkuAssignment(
+                variant_key="size-large",
+                model_sku="0957",
+            ),
+        ),
+    )
+    unresolved = resolve_sku_lineage_reservation(
+        source_identity=source.identity,
+        predecessor_records=[],
+    )
+    finalized = finalize_new_source_sku_reservation(
+        source_identity=source.identity,
+        assignment=assignment,
+    )
+    predecessor = store.create_plan(
+        {
+            "plan_id": "omnichannel:cross-product-predecessor",
+            "product_id": "cross-product-source-owner",
+            "seller_sku": "0956",
+            "product_package_id": "product:cross-product:0956",
+            "content_package_id": "content:cross-product:r30",
+            "targets": ["shopee:PH"],
+            "product_revision": 30,
+            "source_product_identity": source.identity.payload(),
+            "sku_lineage": {
+                **unresolved.payload(),
+                "assignment": assignment.payload(),
+                "reservation": finalized.reservation.payload(),
+            },
+        }
+    )
+    store.approve_plan(
+        predecessor["plan_id"],
+        approved_by="Kyle",
+        user_approved=True,
+        confirmation_token=predecessor["confirmation_token"],
+    )
+
+    dashboard = build_release_dashboard(
+        root=root,
+        database_path=database,
+        report_store_path=store.path,
+    )
+
+    assert dashboard["sku_lineage"]["lineage_mode"] == (
+        "INHERITED_PREDECESSOR"
+    )
+    assert dashboard["product"]["seller_sku_candidate"] == "0956"
+    assert dashboard["sku_lineage"]["assignment"] == {
+        "seller_sku": "0956",
+        "model_skus": [
+            {"variant_key": "size-large", "model_sku": "0957"}
+        ],
+    }
 
 
 def test_real_gate_requires_matching_approval_and_verified_current_image_order(tmp_path):

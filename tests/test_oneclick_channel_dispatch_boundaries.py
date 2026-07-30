@@ -61,6 +61,7 @@ def _reset_oneclick_channel_transport_factories():
 
 def _request(command, *, recorder=None):
     return SimpleNamespace(
+        target_label=command.get("target_label"),
         command={"payload": {"provider_command": command}},
         progress_recorder=recorder,
     )
@@ -68,6 +69,14 @@ def _request(command, *, recorder=None):
 
 def _miaoshou_expected(*, target="tiktok:MX", api_less=True):
     config = miaoshou.SITE_CONFIG[target]
+    currency_by_region = {
+        "MX": "MXN",
+        "GB": "GBP",
+        "PH": "PHP",
+        "MY": "MYR",
+        "TH": "THB",
+        "VN": "VND",
+    }
     return {
         "common_detail_id": "7",
         "source_offer_id": "986159122616",
@@ -85,7 +94,7 @@ def _miaoshou_expected(*, target="tiktok:MX", api_less=True):
         "shop_id": str(config["shop_id"]),
         "region": config["region"],
         "price": "33",
-        "currency": "MXN" if target == "tiktok:MX" else "MYR",
+        "currency": currency_by_region[str(config["region"])],
     }
 
 
@@ -216,7 +225,16 @@ class MiaoshouFake:
         raise AssertionError(path)
 
 
-def _immutable_payload():
+def _immutable_payload(target="tiktok:MX"):
+    config = miaoshou.SITE_CONFIG[target]
+    currency_by_region = {
+        "MX": "MXN",
+        "GB": "GBP",
+        "PH": "PHP",
+        "MY": "MYR",
+        "TH": "THB",
+        "VN": "VND",
+    }
     return {
         "product_id": "7",
         "seller_sku": "0954",
@@ -234,18 +252,18 @@ def _immutable_payload():
             "shopee_description_en": "Exact",
             "candidates": [{
                 "channel": "tiktok",
-                "site": "MX",
+                "site": config["region"],
                 "policy_check": "passed",
                 "title": "Approved title",
             }],
         },
         "pricing": {
             "selected_targets": {
-                "tiktok:MX": {
+                target: {
                     "store_prices": [{
-                        "target_key": "mx",
+                        "target_key": config["key"],
                         "list_price": "33",
-                        "currency": "MXN",
+                        "currency": currency_by_region[str(config["region"])],
                     }]
                 }
             }
@@ -253,7 +271,7 @@ def _immutable_payload():
     }
 
 
-def _approved_worker_context(tmp_path):
+def _approved_worker_context(tmp_path, target="tiktok:MX"):
     identity_resolution = resolve_source_product_identity(
         collect_box={
             "source_item_id": "986159122616",
@@ -284,13 +302,13 @@ def _approved_worker_context(tmp_path):
     )
     assert reservation.ready
     payload = {
-        **_immutable_payload(),
+        **_immutable_payload(target),
         "plan_id": "omnichannel:oneclick-channel-cross",
         "product_id": "7",
         "seller_sku": "0954",
         "product_package_id": "product:7:0954",
         "content_package_id": "content:7:r31",
-        "targets": ["miaoshou:COMMON", "tiktok:MX"],
+        "targets": ["miaoshou:COMMON", target],
         "product_revision": 31,
         "source_product_identity": identity.payload(),
         "sku_lineage": {
@@ -462,6 +480,136 @@ def test_miaoshou_json_restart_apiless_submission_and_replay_command():
     assert "JD5047" not in repr(fake.calls)
 
 
+def test_homebloom_api_less_target_set_matches_fixed_shop_contract():
+    expected = {
+        "tiktok:HB_PH",
+        "tiktok:HB_MY",
+        "tiktok:HB_TH",
+        "tiktok:HB_VN",
+    }
+    assert set(miaoshou.HOMEBLOOM_API_LESS_TARGETS) == expected
+    assert expected <= set(miaoshou.API_LESS_TIKTOK_TARGETS)
+    assert all(
+        miaoshou.SITE_CONFIG[target]["shop"] == "HomeBloom"
+        and miaoshou.SITE_CONFIG[target]["api"] is False
+        for target in expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("target", "shop_id", "currency"),
+    [
+        ("tiktok:HB_PH", "15173238", "PHP"),
+        ("tiktok:HB_MY", "16770639", "MYR"),
+        ("tiktok:HB_TH", "16770557", "THB"),
+        ("tiktok:HB_VN", "16783702", "VND"),
+    ],
+)
+def test_homebloom_prepare_and_submit_are_fixed_apiless_manual_contracts(
+    target,
+    shop_id,
+    currency,
+):
+    command = _miaoshou_command(target=target)
+    fake = MiaoshouFake(command)
+    miaoshou.configure_prepare_post_factory(lambda: fake.post)
+    request = SimpleNamespace(
+        target_label=target,
+        idempotency_key=f"fixture:{target}",
+        source_identity={
+            "schema_version": "source-product-identity/v1",
+            "source_offer_id": "986159122616",
+            "identity_digest": "a" * 64,
+        },
+        source_identity_digest="a" * 64,
+        immutable_plan_payload=_immutable_payload(target),
+    )
+
+    prepared = prepare_oneclick_target(request)
+    stored = json.loads(
+        json.dumps(
+            prepared["command"]["provider_command"],
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    assert prepared["classification"] == "READY_SUBMIT_MANUAL"
+    assert prepared["manual_after_submit"] is True
+    assert stored["target_label"] == target
+    assert stored["shop_id"] == shop_id
+    assert stored["expected"]["shop_name"] == "HomeBloom"
+    assert stored["expected"]["currency"] == currency
+    assert stored["api_less"] is True
+    assert prepared["write_occurrence_plan"]["occurrences"] == [
+        {
+            "occurrence_id": "detail_update-1",
+            "write_class": miaoshou.DETAIL_UPDATE_WRITE,
+        },
+        {
+            "occurrence_id": "publish_submit-1",
+            "write_class": miaoshou.PUBLISH_WRITE,
+        },
+    ]
+
+    miaoshou.configure_runtime_transport_factory(
+        lambda: miaoshou.MiaoshouRuntimeTransport(post=fake.post)
+    )
+    receipt = miaoshou.dispatch_tiktok_miaoshou_prepared_target(
+        _request(stored)
+    )
+    assert receipt["canonical_status"] == "SUBMITTED_UNVERIFIED"
+    assert receipt["external_writes"] == (
+        miaoshou.DETAIL_UPDATE_WRITE,
+        miaoshou.PUBLISH_WRITE,
+    )
+    assert receipt["submission_accepted"] is True
+    assert receipt["readback_verified"] is False
+    assert receipt["evidence"]["manual_acceptance_required"] is True
+    assert sum(path == miaoshou.PUBLISH_PATH for path, _ in fake.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda command: command.__setitem__("target_label", "tiktok:MX"),
+        lambda command: command.__setitem__("shop_id", "16265910"),
+        lambda command: command["expected"].__setitem__(
+            "shop_id", "16265910"
+        ),
+        lambda command: command["expected"].__setitem__(
+            "source_offer_id", "986159122617"
+        ),
+        lambda command: command.__setitem__("api_less", False),
+    ],
+)
+def test_homebloom_wrong_target_shop_or_source_fails_before_client(
+    mutation,
+):
+    command = _miaoshou_command(target="tiktok:HB_MY")
+    mutation(command)
+    client_calls = []
+    miaoshou.configure_runtime_transport_factory(
+        lambda: (
+            client_calls.append("factory")
+            or miaoshou.MiaoshouRuntimeTransport(
+                post=lambda *_args: pytest.fail(
+                    "identity drift must stop before client use"
+                )
+            )
+        )
+    )
+    request = _request(command)
+    request.target_label = "tiktok:HB_MY"
+
+    with pytest.raises(
+        miaoshou.MiaoshouOneClickPreDispatchError,
+        match="identity|drift",
+    ):
+        miaoshou.dispatch_tiktok_miaoshou_prepared_target(request)
+
+    assert client_calls == []
+
+
 def test_production_registry_store_worker_restart_and_terminal_replay(
     tmp_path,
 ):
@@ -508,6 +656,289 @@ def test_production_registry_store_worker_restart_and_terminal_replay(
     assert restarted_worker.recover() == 0
     assert restarted_worker.advance_once(job["job_id"]) is False
     assert len(fake.calls) == before
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "tiktok:HB_PH",
+        "tiktok:HB_MY",
+        "tiktok:HB_TH",
+        "tiktok:HB_VN",
+    ],
+)
+def test_homebloom_worker_records_manual_pending_and_restart_replays_zero(
+    tmp_path,
+    target,
+):
+    release, plan, run = _approved_worker_context(tmp_path, target)
+    fake = MiaoshouFake(_miaoshou_command(target=target))
+    miaoshou.configure_prepare_post_factory(lambda: fake.post)
+    miaoshou.configure_runtime_transport_factory(
+        lambda: miaoshou.MiaoshouRuntimeTransport(post=fake.post)
+    )
+    registry = production_adapter_registry()
+    control = OneClickReleaseStore(release.path)
+    job = control.ensure_job(
+        plan=plan,
+        run=run,
+        product_revision=31,
+        registry=registry,
+    )
+    worker = OneClickReleaseWorker(
+        control, lambda: registry, dispatch_enabled=lambda: True
+    )
+    for _ in range(8):
+        if not worker.advance_once(job["job_id"]):
+            break
+
+    public = control.get_job(job_id=job["job_id"])
+    homebloom = next(
+        row for row in public["targets"] if row["target_label"] == target
+    )
+    assert homebloom["status"] == "SUBMITTED_UNVERIFIED"
+    assert homebloom["classification"] == "READY_SUBMIT_MANUAL"
+    assert homebloom["manual_after_submit"] is True
+    assert homebloom["requires_human"] is True
+    assert homebloom["dispatch_count"] == 1
+    assert homebloom["dispatch_ledger"][
+        "cumulative_external_write_classes"
+    ] == [
+        miaoshou.DETAIL_UPDATE_WRITE,
+        miaoshou.PUBLISH_WRITE,
+    ]
+    assert public["phase"] == "WAITING_MANUAL_ACCEPTANCE"
+    assert sum(
+        path == miaoshou.PUBLISH_PATH for path, _body in fake.calls
+    ) == 1
+
+    with release._connect_readonly() as connection:
+        physical = connection.execute(
+            """
+            SELECT status, attempts
+            FROM release_target_runs
+            WHERE run_id = ? AND target_label = ?
+            """,
+            (run["run_id"], target),
+        ).fetchone()
+        submissions = connection.execute(
+            """
+            SELECT status, COUNT(*) AS receipt_count
+            FROM release_target_submissions
+            WHERE run_id = ? AND target_label = ?
+            GROUP BY status
+            """,
+            (run["run_id"], target),
+        ).fetchone()
+        outcome = connection.execute(
+            """
+            SELECT receipt_json
+            FROM oneclick_release_outcomes
+            WHERE job_id = ? AND target_label = ? AND attempt = 1
+            """,
+            (job["job_id"], target),
+        ).fetchone()
+        prepared_row = connection.execute(
+            """
+            SELECT command_json, command_digest, proof_json, proof_digest
+            FROM oneclick_release_targets
+            WHERE job_id = ? AND target_label = ?
+            """,
+            (job["job_id"], target),
+        ).fetchone()
+    assert physical["status"] == "FAILED"
+    assert physical["attempts"] == 1
+    assert submissions["status"] == "SUBMITTED_UNVERIFIED"
+    assert submissions["receipt_count"] == 1
+    outcome_receipt = json.loads(outcome["receipt_json"])
+    assert outcome_receipt["outcome"]["class"] == "SUBMITTED_UNVERIFIED"
+    assert outcome_receipt["manual"]["status"] == "PENDING"
+    assert outcome_receipt["reconciliation"]["status"] == "NOT_REQUIRED"
+    assert outcome_receipt["dispatch"] == {
+        "boundary": "ACCEPTED",
+        "external_write_count": 2,
+        "external_write_classes": [
+            miaoshou.DETAIL_UPDATE_WRITE,
+            miaoshou.PUBLISH_WRITE,
+        ],
+        "confirmed_external_write_count_lower_bound": 2,
+    }
+    stored_command = json.loads(prepared_row["command_json"])
+    stored_proof = json.loads(prepared_row["proof_json"])
+    provider_command = stored_command["payload"]["provider_command"]
+    provider_proof = stored_proof["payload"]["provider_proof"]
+    assert provider_command["action"] == "USE_EXISTING"
+    assert provider_command["detail_id"] == "77"
+    assert provider_command["observed_snapshot_digest"] == (
+        provider_proof["observed_snapshot_digest"]
+    )
+    assert prepared_row["command_digest"] == hashlib.sha256(
+        json.dumps(
+            stored_command,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    assert prepared_row["proof_digest"] == hashlib.sha256(
+        json.dumps(
+            stored_proof,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+    encoded = json.dumps(public, ensure_ascii=False, sort_keys=True)
+    for forbidden in (
+        "986159122616",
+        str(miaoshou.SITE_CONFIG[target]["shop_id"]),
+        "77:",
+        "Approved title",
+        "https://assets.example/one.jpg",
+    ):
+        assert forbidden not in encoded
+
+    calls_before_restart = len(fake.calls)
+    restarted = OneClickReleaseStore(release.path)
+    restarted_worker = OneClickReleaseWorker(
+        restarted,
+        lambda: production_adapter_registry(),
+        dispatch_enabled=lambda: True,
+    )
+    assert restarted_worker.recover() == 0
+    assert restarted_worker.advance_once(job["job_id"]) is False
+    assert len(fake.calls) == calls_before_restart
+
+
+def test_homebloom_write_boundaries_preserve_one_and_two_write_truth():
+    command = _miaoshou_command(target="tiktok:HB_MY")
+    audit_fake = MiaoshouFake(command)
+    miaoshou.configure_runtime_transport_factory(
+        lambda: miaoshou.MiaoshouRuntimeTransport(
+            post=audit_fake.post,
+            audit_detail=lambda *_args: False,
+        )
+    )
+    with pytest.raises(miaoshou.MiaoshouOneClickDispatchError) as one:
+        miaoshou.dispatch_tiktok_miaoshou_prepared_target(
+            _request(command)
+        )
+    assert one.value.external_writes == (miaoshou.DETAIL_UPDATE_WRITE,)
+    assert one.value.external_write_count == 1
+    assert one.value.confirmed_external_write_count_lower_bound == 1
+    assert one.value.possible_external_write_count_upper_bound == 1
+    assert one.value.dispatch_outcome_unknown is False
+    assert not any(
+        path == miaoshou.PUBLISH_PATH for path, _ in audit_fake.calls
+    )
+
+    publish_fake = MiaoshouFake(command)
+    miaoshou.configure_runtime_transport_factory(
+        lambda: miaoshou.MiaoshouRuntimeTransport(
+            post=publish_fake.post,
+            publish=lambda *_args: (_ for _ in ()).throw(
+                TimeoutError("publish transport outcome unknown")
+            ),
+        )
+    )
+    with pytest.raises(miaoshou.MiaoshouOneClickDispatchError) as two:
+        miaoshou.dispatch_tiktok_miaoshou_prepared_target(
+            _request(command)
+        )
+    assert two.value.external_writes == (
+        miaoshou.DETAIL_UPDATE_WRITE,
+        miaoshou.PUBLISH_WRITE,
+    )
+    assert two.value.external_write_count is None
+    assert two.value.confirmed_external_write_count_lower_bound == 1
+    assert two.value.possible_external_write_count_upper_bound == 2
+
+
+def test_homebloom_one_write_reconciliation_is_terminal_across_restart(
+    tmp_path,
+):
+    target = "tiktok:HB_TH"
+    release, plan, run = _approved_worker_context(tmp_path, target)
+    fake = MiaoshouFake(_miaoshou_command(target=target))
+    miaoshou.configure_prepare_post_factory(lambda: fake.post)
+    miaoshou.configure_runtime_transport_factory(
+        lambda: miaoshou.MiaoshouRuntimeTransport(
+            post=fake.post,
+            audit_detail=lambda *_args: False,
+        )
+    )
+    registry = production_adapter_registry()
+    control = OneClickReleaseStore(release.path)
+    job = control.ensure_job(
+        plan=plan,
+        run=run,
+        product_revision=31,
+        registry=registry,
+    )
+    worker = OneClickReleaseWorker(
+        control, lambda: registry, dispatch_enabled=lambda: True
+    )
+    for _ in range(8):
+        if not worker.advance_once(job["job_id"]):
+            break
+
+    public = control.get_job(job_id=job["job_id"])
+    homebloom = next(
+        row for row in public["targets"] if row["target_label"] == target
+    )
+    assert homebloom["status"] == "RECONCILIATION_REQUIRED"
+    assert homebloom["dispatch_count"] == 1
+    assert homebloom["dispatch_ledger"][
+        "cumulative_external_write_classes"
+    ] == [miaoshou.DETAIL_UPDATE_WRITE]
+    assert homebloom["dispatch_ledger"][
+        "cumulative_external_write_count"
+    ] == 1
+    assert not any(
+        path == miaoshou.PUBLISH_PATH for path, _ in fake.calls
+    )
+    with release._connect_readonly() as connection:
+        physical = connection.execute(
+            """
+            SELECT status, attempts
+            FROM release_target_runs
+            WHERE run_id = ? AND target_label = ?
+            """,
+            (run["run_id"], target),
+        ).fetchone()
+        outcome = connection.execute(
+            """
+            SELECT receipt_json
+            FROM oneclick_release_outcomes
+            WHERE job_id = ? AND target_label = ? AND attempt = 1
+            """,
+            (job["job_id"], target),
+        ).fetchone()
+    assert physical["status"] == "FAILED"
+    assert physical["attempts"] == 1
+    outcome_receipt = json.loads(outcome["receipt_json"])
+    assert outcome_receipt["outcome"]["class"] == (
+        "RECONCILIATION_REQUIRED"
+    )
+    assert outcome_receipt["reconciliation"]["status"] == "REQUIRED"
+    assert outcome_receipt["dispatch"] == {
+        "boundary": "SUBMITTED",
+        "external_write_count": 1,
+        "external_write_classes": [miaoshou.DETAIL_UPDATE_WRITE],
+        "confirmed_external_write_count_lower_bound": 1,
+    }
+
+    calls_before_restart = len(fake.calls)
+    restarted = OneClickReleaseStore(release.path)
+    restarted_worker = OneClickReleaseWorker(
+        restarted,
+        lambda: production_adapter_registry(),
+        dispatch_enabled=lambda: True,
+    )
+    assert restarted_worker.recover() == 0
+    assert restarted_worker.advance_once(job["job_id"]) is False
+    assert len(fake.calls) == calls_before_restart
 
 
 def test_production_registry_auth_blocker_keeps_canonical_targets_pristine(

@@ -74,6 +74,16 @@ TIKTOK_MIAOSHOU_TARGETS = frozenset(
         "tiktok:HB_VN",
     }
 )
+API_LESS_TIKTOK_TARGETS = frozenset(
+    {
+        "tiktok:MX",
+        "tiktok:GB",
+        "tiktok:HB_PH",
+        "tiktok:HB_MY",
+        "tiktok:HB_TH",
+        "tiktok:HB_VN",
+    }
+)
 SHOPEE_GLOBAL_TARGET = "shopee:GLOBAL"
 SHOPEE_REGIONAL_TARGETS = frozenset(
     {"shopee:PH", "shopee:MY", "shopee:TH", "shopee:VN"}
@@ -460,8 +470,7 @@ def prepare_oneclick_target(
             target=target,
             seed=seed,
             observed=observed,
-            manual_after_submit=target.startswith("tiktok:")
-            and target.rsplit(":", 1)[1] in {"MX", "GB", "HB_PH", "HB_MY", "HB_TH", "HB_VN"},
+            manual_after_submit=target in API_LESS_TIKTOK_TARGETS,
         )
     if target in SHOPEE_TARGETS:
         try:

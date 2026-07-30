@@ -68,6 +68,16 @@ SITE_CONFIG: dict[str, dict[str, object]] = {
     "tiktok:HB_TH": {"key": "hb_th", "shop": "HomeBloom", "shop_id": 16770557, "region": "TH", "api": False},
     "tiktok:HB_VN": {"key": "hb_vn", "shop": "HomeBloom", "shop_id": 16783702, "region": "VN", "api": False},
 }
+API_LESS_TIKTOK_TARGETS = frozenset(
+    target
+    for target, config in SITE_CONFIG.items()
+    if config["api"] is not True
+)
+HOMEBLOOM_API_LESS_TARGETS = frozenset(
+    target
+    for target, config in SITE_CONFIG.items()
+    if config["shop"] == "HomeBloom" and config["api"] is not True
+)
 
 
 class MiaoshouOneClickPreDispatchError(RuntimeError):
@@ -327,6 +337,7 @@ def read_source_offer_pages(
 def dispatch_tiktok_miaoshou_prepared_target(request) -> dict[str, object]:
     """Dispatch COMMON or one TikTok site with cumulative write evidence."""
     command = _provider_command(request)
+    _verify_stored_command_identity(request, command)
     kind = command.get("kind")
     if kind == "COMMON":
         return _dispatch_common(request, command)
@@ -335,6 +346,84 @@ def dispatch_tiktok_miaoshou_prepared_target(request) -> dict[str, object]:
     raise MiaoshouOneClickPreDispatchError(
         "prepared Miaoshou command is incomplete"
     )
+
+
+def _verify_stored_command_identity(
+    request: object,
+    command: Mapping[str, object],
+) -> None:
+    """Rebind a stored command to the fixed 03 shop contract before clients."""
+
+    target = command.get("target_label")
+    request_target = getattr(request, "target_label", None)
+    if (
+        type(target) is not str
+        or not target
+        or type(request_target) is not str
+        or request_target != target
+    ):
+        raise MiaoshouOneClickPreDispatchError(
+            "stored Miaoshou target identity is invalid"
+        )
+    kind = command.get("kind")
+    if kind == "COMMON":
+        if (
+            target != "miaoshou:COMMON"
+            or command.get("schema_version")
+            != "oneclick-miaoshou-common-command/v1"
+        ):
+            raise MiaoshouOneClickPreDispatchError(
+                "stored Miaoshou COMMON identity is invalid"
+            )
+        return
+    if kind != "TIKTOK_SITE" or target not in SITE_CONFIG:
+        raise MiaoshouOneClickPreDispatchError(
+            "stored Miaoshou site identity is invalid"
+        )
+    if command.get("schema_version") != "oneclick-miaoshou-tiktok-command/v1":
+        raise MiaoshouOneClickPreDispatchError(
+            "stored Miaoshou site schema is invalid"
+        )
+    config = SITE_CONFIG[target]
+    expected = command.get("expected")
+    if not isinstance(expected, Mapping):
+        raise MiaoshouOneClickPreDispatchError(
+            "stored Miaoshou expected identity is invalid"
+        )
+    fixed_identity = (
+        command.get("shop_id") == str(config["shop_id"])
+        and expected.get("target_label") == target
+        and expected.get("shop_id") == str(config["shop_id"])
+        and expected.get("shop_name") == config["shop"]
+        and expected.get("region") == config["region"]
+        and command.get("api_less") is (config["api"] is not True)
+    )
+    source_offer_id = command.get("source_offer_id")
+    common_detail_id = command.get("common_detail_id")
+    identity_exact = (
+        type(source_offer_id) is str
+        and source_offer_id.isdecimal()
+        and int(source_offer_id) > 0
+        and expected.get("source_offer_id") == source_offer_id
+        and type(common_detail_id) is str
+        and common_detail_id.isdecimal()
+        and int(common_detail_id) > 0
+        and expected.get("common_detail_id") == common_detail_id
+    )
+    action = command.get("action")
+    detail_id = command.get("detail_id")
+    action_exact = (
+        action == "CREATE_AND_CLAIM" and detail_id is None
+    ) or (
+        action == "USE_EXISTING"
+        and type(detail_id) is str
+        and detail_id.isdecimal()
+        and int(detail_id) > 0
+    )
+    if not fixed_identity or not identity_exact or not action_exact:
+        raise MiaoshouOneClickPreDispatchError(
+            "stored Miaoshou shop/source identity drifted"
+        )
 
 
 def _prepare_common(
@@ -747,7 +836,10 @@ def _dispatch_site(
         raise MiaoshouOneClickDispatchError(
             "TikTok detail update readback is unknown",
             writes=occurrence_state.external_writes,
-            unknown=True,
+            # The update itself is already confirmed and no later write was
+            # invoked.  Reconciliation is required for readback, but the
+            # external write count is exact rather than dispatch-unknown.
+            unknown=False,
             external_id=external_id,
             external_write_count=occurrence_state.external_write_count,
             confirmed_lower_bound=occurrence_state.external_write_count,

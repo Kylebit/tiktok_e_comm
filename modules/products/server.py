@@ -1931,9 +1931,13 @@ def _observe_shopee_global_plan_candidate(payload: dict):
             key: value for key, value in seed.items() if key != "targets"
         },
     }
+    adapter_contract_error = None
     try:
         module = importlib.import_module(
             "domains.channel_operations.oneclick_release_adapters"
+        )
+        adapter_contract_error = getattr(
+            module, "OneClickAdapterInputError", None
         )
         observer = getattr(
             module, "observe_shopee_global_plan_candidate", None
@@ -1951,7 +1955,15 @@ def _observe_shopee_global_plan_candidate(payload: dict):
             return _blocked_shopee_global_plan_candidate()
     except ShopeeGlobalPlanObservationError:
         raise
-    except Exception:
+    except Exception as error:
+        if (
+            isinstance(adapter_contract_error, type)
+            and isinstance(error, adapter_contract_error)
+        ):
+            raise ShopeeGlobalPlanObservationError(
+                category="CAPABILITY",
+                code="shopee_global_observer_contract_invalid",
+            ) from error
         return _blocked_shopee_global_plan_candidate()
     if candidate.status != "READY" or candidate._plan is None:
         return candidate

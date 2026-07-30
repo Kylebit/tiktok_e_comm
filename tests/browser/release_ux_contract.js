@@ -5542,6 +5542,110 @@ async function shopeeGlobalPreApprovalEntryContract(browser) {
   }
 }
 
+async function shopeeGlobalCapabilityBlockerContract(browser) {
+  const context = await browser.newContext({
+    viewport: { width: 1440, height: 900 },
+  });
+  const page = await context.newPage();
+  const errors = [];
+  const requests = [];
+  let globalReads = 0;
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+  });
+  const dashboard = oneClickDashboard();
+  dashboard.release_v1.plan_approved = false;
+  dashboard.release_v1.eligible_for_plan_approval = false;
+  dashboard.release_v1.miaoshou_prepared = false;
+  dashboard.release_v1.publish_ready = false;
+  dashboard.release_v1.oneclick_controlplane = null;
+  dashboard.release_v1.canonical_next_action = null;
+  dashboard.release_v1.recovery_actions = [{
+    code: "review_shopee_global_plan",
+    label: "核对并批准 Shopee 全球商品方案",
+    detail: "必须先取得官方只读候选。",
+  }];
+  await page.route("**/*", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.origin !== baseUrl) {
+      requests.push({ method: request.method(), url: request.url(), external: true });
+      return route.abort("blockedbyclient");
+    }
+    if (!url.pathname.startsWith("/api/")) return route.continue();
+    requests.push({ method: request.method(), url: request.url(), external: false });
+    if (url.pathname === "/api/product-workspace/dashboard") {
+      return route.fulfill(jsonResponse(dashboard));
+    }
+    if (
+      url.pathname
+        === "/api/product-workspace/shopee-global-plan-preview"
+    ) {
+      globalReads += 1;
+      return route.fulfill(jsonResponse({
+        ok: true,
+        schema_version: "shopee-global-plan-preview/v1",
+        offer_id: "3828540231",
+        product_revision: 31,
+        candidate: {
+          schema_version: "shopee-global-plan-candidate/v1",
+          status: "BLOCKED_CAPABILITY",
+          planning_allowed: false,
+          reason_category: "CAPABILITY",
+          reason_code: "shopee_official_global_list_unavailable",
+          blocker_codes: ["shopee_official_global_list_unavailable"],
+        },
+        approval: null,
+        approval_current: false,
+        external_writes_performed: [],
+      }));
+    }
+    const fixture = apiFixture(
+      url,
+      request.method(),
+      { delayWeekly: false, delaySku: false, pending: {} },
+    );
+    return route.fulfill(fixture || jsonResponse({ ok: false }, 404));
+  });
+  try {
+    await page.goto(`${baseUrl}/product-workspace?offer_id=3828540231`, {
+      waitUntil: "networkidle",
+    });
+    const recovery = page.locator(
+      '[data-release-recovery="review_shopee_global_plan"]',
+    );
+    const blocker = page.locator(
+      "#releasePlanRecoveryReview .shopee-global-plan-review.is-blocked",
+    );
+    await blocker.waitFor({ state: "visible" });
+    await recovery.click();
+    await page.waitForFunction(() => (
+      document.activeElement?.classList
+        .contains("shopee-global-plan-preview-retry")
+    ));
+    check(
+      (await blocker.innerText()).includes("Global Product")
+      && (await blocker.innerText()).includes("权限"),
+      "Shopee Global blocker: official-list capability failure is actionable and visible after the real recovery click",
+      await blocker.innerText(),
+    );
+    check(
+      globalReads === 1
+      && requests.filter((row) => row.method === "POST").length === 0,
+      "Shopee Global blocker: the visible diagnosis performs one GET and zero writes",
+      { globalReads, requests },
+    );
+    check(
+      unexpectedInteractionErrors(errors).length === 0,
+      "Shopee Global blocker: no console/page errors",
+      errors,
+    );
+  } finally {
+    await context.close();
+  }
+}
+
 async function shopeeGlobalApprovalResponseLossContract(browser) {
   const context = await browser.newContext({
     viewport: { width: 1440, height: 900 },
@@ -6042,6 +6146,7 @@ async function legacyStateSafety(browser) {
     await shopeeCategoryDecisionContract(browser, { width: 1440, height: 900 });
     await shopeeCategoryDecisionContract(browser, { width: 390, height: 844 });
     await shopeeGlobalPreApprovalEntryContract(browser);
+    await shopeeGlobalCapabilityBlockerContract(browser);
     await shopeeGlobalApprovalResponseLossContract(browser);
     await profitAsyncAndNoFalseSuccess(browser);
     await legacyStateSafety(browser);

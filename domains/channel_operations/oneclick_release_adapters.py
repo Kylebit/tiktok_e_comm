@@ -179,35 +179,59 @@ def observe_shopee_global_plan_candidate(
     )
 
     seed, targets, model_skus = _global_observer_request(request)
-    region = next(
-        (
-            value
-            for value in ("PH", "MY", "TH", "VN")
-            if f"shopee:{value}" in targets
-        ),
-        None,
-    )
-    if region is None:
+    regions = [
+        value
+        for value in ("PH", "MY", "TH", "VN")
+        if f"shopee:{value}" in targets
+    ]
+    if not regions:
         raise OneClickAdapterInputError(
             "shopee_global_observer_target_invalid"
         )
-    try:
-        transport = _prepare_transport(region)
-    except ShopeeOneClickPreDispatchError as error:
-        if "credential" in str(error).casefold():
+    available_transports = []
+    transport_errors = []
+    for region in regions:
+        try:
+            available_transports.append(_prepare_transport(region))
+        except ShopeeOneClickPreDispatchError as error:
+            transport_errors.append(error)
+        except Exception as error:
+            transport_errors.append(error)
+    if not available_transports:
+        if transport_errors and all(
+            "credential" in str(error).casefold()
+            for error in transport_errors
+        ):
             raise ShopeeGlobalPlanObservationError(
                 category="AUTH",
                 code="shopee_prepared_credentials_unavailable",
-            ) from error
+            ) from transport_errors[0]
         raise ShopeeGlobalPlanObservationError(
             category="CAPABILITY",
             code="shopee_official_global_observation_unavailable",
-        ) from error
-
-    observed_by_sku = {
-        sku: _scan_global_model_candidates(transport, model_sku=sku)
-        for sku in model_skus
+        ) from (transport_errors[0] if transport_errors else None)
+    merchant_ids = {
+        value.credentials.merchant_id for value in available_transports
     }
+    if len(merchant_ids) != 1:
+        raise ShopeeGlobalPlanObservationError(
+            category="AUTH",
+            code="shopee_global_observer_merchant_ambiguous",
+        )
+    transport = available_transports[0]
+
+    try:
+        observed_by_sku = {
+            sku: _scan_global_model_candidates(transport, model_sku=sku)
+            for sku in model_skus
+        }
+    except ShopeeOneClickPreDispatchError as error:
+        if str(error) == "official global item list failed":
+            raise ShopeeGlobalPlanObservationError(
+                category="CAPABILITY",
+                code="shopee_official_global_list_unavailable",
+            ) from error
+        raise
     unique_ids = {
         item_id
         for values in observed_by_sku.values()
@@ -1481,6 +1505,23 @@ def _global_observer_request(
         if isinstance(assignment, Mapping)
         else None
     )
+    try:
+        source_identity_digest = (
+            _canonical_binding_digest(source.get("identity_digest"))
+            if isinstance(source, Mapping)
+            else None
+        )
+        reservation_digest = (
+            _canonical_binding_digest(
+                reservation.get("reservation_digest")
+            )
+            if isinstance(reservation, Mapping)
+            else None
+        )
+    except OneClickAdapterInputError as error:
+        raise OneClickAdapterInputError(
+            "shopee_global_observer_lineage_invalid"
+        ) from error
     if (
         not isinstance(source, Mapping)
         or not isinstance(lineage, Mapping)
@@ -1490,12 +1531,10 @@ def _global_observer_request(
         or not required_seed_keys.issubset(seed)
         or source.get("schema_version")
         != seed.get("source_identity_schema_version")
-        or source.get("identity_digest")
-        != seed.get("source_identity_digest")
+        or source_identity_digest != seed.get("source_identity_digest")
         or reservation.get("schema_version")
         != seed.get("sku_lineage_schema_version")
-        or reservation.get("reservation_digest")
-        != seed.get("sku_lineage_digest")
+        or reservation_digest != seed.get("sku_lineage_digest")
         or not all(
             _is_digest(seed.get(key))
             for key in (

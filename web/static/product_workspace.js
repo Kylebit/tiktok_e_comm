@@ -2550,6 +2550,10 @@
   function shopeeGlobalPlanBlockerText(code) {
     const labels = {
       official_authority_unavailable: "缺少官方 Open API 权威观察",
+      shopee_global_observer_contract_invalid:
+        "Shopee Global 观察合同不一致；系统已安全阻断",
+      shopee_official_global_list_unavailable:
+        "Shopee 官方 Global 商品清单无法读取；请检查 Open API Global Product 权限",
       audited_schema_unavailable: "官方响应结构尚未完成审计",
       category_evidence_unavailable: "缺少官方类目证据",
       attributes_incomplete: "类目属性尚未完整核准",

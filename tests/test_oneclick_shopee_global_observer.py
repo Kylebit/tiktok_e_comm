@@ -632,6 +632,68 @@ def test_dynamic_observer_default_official_recommendation_is_not_approval():
     )
 
 
+def test_global_observer_accepts_durable_prefixed_lineage_and_available_target():
+    official = _OfficialScan(existing=False)
+    request = _request()
+    request["targets"] = ["shopee:PH", "shopee:MY"]
+    request["source_identity"]["identity_digest"] = (
+        "sha256:" + request["source_identity"]["identity_digest"]
+    )
+    request["sku_lineage"]["reservation"]["reservation_digest"] = (
+        "sha256:"
+        + request["sku_lineage"]["reservation"]["reservation_digest"]
+    )
+
+    def transport_for_region(region):
+        if region == "PH":
+            raise shopee.ShopeeOneClickPreDispatchError(
+                "prepared credential is unavailable"
+            )
+        assert region == "MY"
+        return official.transport()
+
+    shopee.configure_prepare_transport_factory(transport_for_region)
+
+    candidate = adapters.observe_shopee_global_plan_candidate(request)
+
+    assert candidate.status == "BLOCKED_CAPABILITY"
+    assert candidate.mode == NEW_GLOBAL
+    assert candidate.blocker_codes == ("category_invalid",)
+    assert any(
+        path == "/api/v2/global_product/category_recommend"
+        for path, _params in official.calls
+    )
+
+
+def test_global_observer_reports_official_list_capability_failure():
+    official = _OfficialScan(existing=False)
+    original_get = official.merchant_get
+
+    def merchant_get(path, params):
+        if path == shopee.GLOBAL_LIST_PATH:
+            return {
+                "error": "product.error_unknown",
+                "request_id": "redacted-request",
+            }
+        return original_get(path, params)
+
+    base_transport = official.transport()
+    transport = shopee.ShopeePrepareTransport(
+        credentials=base_transport.credentials,
+        merchant_get=merchant_get,
+        shop_get=base_transport.shop_get,
+    )
+    shopee.configure_prepare_transport_factory(lambda _region: transport)
+
+    with pytest.raises(ShopeeGlobalPlanObservationError) as captured:
+        adapters.observe_shopee_global_plan_candidate(_request())
+
+    assert captured.value.category == "CAPABILITY"
+    assert captured.value.code == (
+        "shopee_official_global_list_unavailable"
+    )
+
+
 def test_global_observer_consumes_and_revalidates_persisted_category_decision():
     official = _OfficialScan(existing=False)
     selection = _category_execution(official)

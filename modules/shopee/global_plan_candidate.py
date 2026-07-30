@@ -26,6 +26,7 @@ import unicodedata
 
 from modules.shopee.oneclick_release import ShopeePrepareTransport
 from shared_platform.channel_category_decisions import (
+    EXECUTION_SCHEMA_VERSION,
     seller_stock_source_digest,
 )
 from shared_platform.shopee_global_plan import (
@@ -1171,6 +1172,7 @@ def _current_selection(
         "attribute_list",
         "attributes_complete",
         "attribute_tree_digest",
+        "attribute_selection_digest",
         "brand",
         "seller_stock",
         "location",
@@ -1182,7 +1184,7 @@ def _current_selection(
     if (
         set(value) != expected
         or value.get("schema_version")
-        != "channel-category-decision-execution/v2"
+        != EXECUTION_SCHEMA_VERSION
         or value.get("context_digest") != expected_context_digest
         or value.get("attributes_complete") is not True
         or any(
@@ -1192,6 +1194,7 @@ def _current_selection(
                 "options_digest",
                 "selected_category_identity_digest",
                 "attribute_tree_digest",
+                "attribute_selection_digest",
             )
         )
         or not isinstance(value.get("category"), Mapping)
@@ -1571,6 +1574,7 @@ def _revalidate_execution_choices(
             and option["original_brand_name"]
             == brand.get("original_brand_name")
             and option["evidence_digest"] == brand.get("evidence_digest")
+            and option["recommended"] is True
             for option in brand_options
         )
         != 1
@@ -1582,6 +1586,7 @@ def _revalidate_execution_choices(
         for option in location_options
         if option["location_id"] == location.get("location_id")
         and option["evidence_digest"] == location.get("evidence_digest")
+        and option["recommended"] is True
     ] if isinstance(location, Mapping) else []
     if (
         not isinstance(location, Mapping)

@@ -396,6 +396,7 @@ def _selection(fake: _OfficialReadFake, category_id: int = 202):
         ],
         "attributes_complete": True,
         "attribute_tree_digest": _digest(tree),
+        "attribute_selection_digest": _digest("attribute-selection"),
         "brand": {
             "brand_id": brand["brand_id"],
             "original_brand_name": brand["original_brand_name"],

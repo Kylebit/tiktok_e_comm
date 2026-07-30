@@ -505,6 +505,7 @@ def _category_execution(fake: _OfficialScan) -> dict[str, object]:
         ),
         "attributes_complete": True,
         "attribute_tree_digest": _digest(tree),
+        "attribute_selection_digest": _digest("attribute-selection"),
         "brand": {
             "brand_id": brand["brand_id"],
             "original_brand_name": brand["original_brand_name"],

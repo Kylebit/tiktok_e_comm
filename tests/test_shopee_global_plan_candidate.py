@@ -65,6 +65,7 @@ class _OfficialReadFake:
         self.loop_brand = False
         self.attribute_value_name = "PVC"
         self.attribute_value_id = 91
+        self.recommendation_field = "category_id_list"
         self.attribute_rows_by_category: dict[
             int, list[dict[str, object]]
         ] = {}
@@ -82,7 +83,9 @@ class _OfficialReadFake:
         if path == subject.CATEGORY_RECOMMEND_PATH:
             return {
                 "error": "",
-                "response": {"category_id_list": [101, 202]},
+                "response": {
+                    self.recommendation_field: [101, 202]
+                },
             }
         if path == subject.CATEGORY_PATH_PATH:
             category_id = params["category_id"]
@@ -387,6 +390,43 @@ def test_category_options_recommend_but_never_auto_approve_required_value():
         subject._creation_default_projection()
     )
     assert not any("post" in path.casefold() for path, _params in fake.calls)
+
+
+def test_live_category_id_recommendation_field_is_strictly_supported():
+    fake = _OfficialReadFake()
+    fake.recommendation_field = "category_id"
+    _install(fake)
+
+    result = adapters.observe_channel_category_options(_request())
+
+    assert result["recommended_category_id"] == 101
+    assert [row["category_id"] for row in result["options"]] == [101, 202]
+
+
+def test_ambiguous_recommendation_fields_fail_closed():
+    fake = _OfficialReadFake()
+    original = fake.merchant_get
+
+    def ambiguous(path, params):
+        if path == subject.CATEGORY_RECOMMEND_PATH:
+            return {
+                "error": "",
+                "response": {
+                    "category_id": [101],
+                    "category_id_list": [101],
+                },
+            }
+        return original(path, params)
+
+    fake.merchant_get = ambiguous
+    _install(fake)
+
+    with pytest.raises(subject.ShopeeGlobalPlanCandidateError) as error:
+        adapters.observe_channel_category_options(_request())
+
+    assert error.value.reason_code == (
+        "shopee_category_recommendation_invalid"
+    )
 
 
 def test_required_attribute_option_value_zero_is_projected_and_selectable():

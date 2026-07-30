@@ -341,8 +341,15 @@ def observe_channel_category_options(
     response = _response_mapping(
         raw, "shopee_category_recommendation_invalid"
     )
+    recommendation_fields = {
+        key
+        for key in ("category_id", "category_id_list")
+        if key in response
+    }
+    if len(recommendation_fields) != 1:
+        raise _error("shopee_category_recommendation_invalid")
     recommended = _positive_unique_ids(
-        response.get("category_id_list"),
+        response[next(iter(recommendation_fields))],
         "shopee_category_recommendation_invalid",
         allow_empty=False,
     )

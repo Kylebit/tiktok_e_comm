@@ -116,6 +116,9 @@ class _OfficialScan:
         self.existing = existing
         self.calls: list[tuple[str, dict[str, object]]] = []
         self.attribute_value_name = "PVC"
+        self.attribute_value_id = 7
+        self.attribute_rows: list[dict[str, object]] | None = None
+        self.selected_attributes: list[dict[str, object]] | None = None
 
     def merchant_get(self, path, params):
         self.calls.append((path, dict(params)))
@@ -174,25 +177,28 @@ class _OfficialScan:
                 },
             }
         if path == "/api/v2/global_product/get_attribute_tree":
+            attribute_rows = self.attribute_rows
+            if attribute_rows is None:
+                attribute_rows = [
+                    {
+                        "attribute_id": 1001,
+                        "original_attribute_name": "Material",
+                        "is_mandatory": True,
+                        "input_type": "SINGLE_SELECT",
+                        "attribute_value_list": [
+                            {
+                                "value_id": self.attribute_value_id,
+                                "original_value_name": (
+                                    self.attribute_value_name
+                                ),
+                            }
+                        ],
+                    }
+                ]
             return {
                 "error": "",
                 "response": {
-                    "attribute_list": [
-                        {
-                            "attribute_id": 1001,
-                            "original_attribute_name": "Material",
-                            "is_mandatory": True,
-                            "input_type": "SINGLE_SELECT",
-                            "attribute_value_list": [
-                                {
-                                    "value_id": 7,
-                                    "original_value_name": (
-                                        self.attribute_value_name
-                                    ),
-                                }
-                            ],
-                        }
-                    ]
+                    "attribute_list": attribute_rows
                 },
             }
         if path == "/api/v2/global_product/get_brand_list":
@@ -357,7 +363,7 @@ def _category_execution(fake: _OfficialScan) -> dict[str, object]:
     request = _request()
     seed = request["candidate_seed"]
     context = {
-        "schema_version": "channel-category-observer-request/v1",
+        "schema_version": "channel-category-observer-request/v2",
         "product_id": request["offer_id"],
         "product_revision": request["product_revision"],
         "channel": "shopee",
@@ -382,10 +388,18 @@ def _category_execution(fake: _OfficialScan) -> dict[str, object]:
         global_candidate._read_seller_locations(fake.transport())
     )[0]
     creation = global_candidate._creation_default_projection()
+    context_digest = _digest(context)
+    creation_identity_digest = _digest("creation-fact")
+    location_identity_digest = _digest(
+        {
+            "schema_version": "channel-location-option-identity/v1",
+            **location,
+        }
+    )
     return {
         "schema_version": "channel-category-decision-execution/v2",
         "decision_digest": _digest("decision"),
-        "context_digest": _digest(context),
+        "context_digest": context_digest,
         "options_digest": _digest("options"),
         "selected_category_identity_digest": _digest("selected"),
         "category": {
@@ -394,14 +408,21 @@ def _category_execution(fake: _OfficialScan) -> dict[str, object]:
             "path_complete": True,
             "evidence_digest": _digest(path),
         },
-        "attribute_list": [
-            {
-                "attribute_id": 1001,
-                "attribute_value_list": [
-                    {"value_id": 7, "original_value_name": "PVC"}
-                ],
-            }
-        ],
+        "attribute_list": (
+            copy.deepcopy(fake.selected_attributes)
+            if fake.selected_attributes is not None
+            else [
+                {
+                    "attribute_id": 1001,
+                    "attribute_value_list": [
+                        {
+                            "value_id": fake.attribute_value_id,
+                            "original_value_name": "PVC",
+                        }
+                    ],
+                }
+            ]
+        ),
         "attributes_complete": True,
         "attribute_tree_digest": _digest(tree),
         "brand": {
@@ -411,9 +432,20 @@ def _category_execution(fake: _OfficialScan) -> dict[str, object]:
         },
         "seller_stock": {
             "source": "kyle-explicit-seller-stock/v1",
-            "source_digest": creation["evidence_digest"],
+            "source_digest": (
+                global_candidate.seller_stock_source_digest(
+                    context_digest=context_digest,
+                    creation_fact_identity_digest=(
+                        creation_identity_digest
+                    ),
+                    location_identity_digest=(
+                        location_identity_digest
+                    ),
+                    quantity=creation["seller_stock_quantity"],
+                )
+            ),
             "quantity": creation["seller_stock_quantity"],
-            "approval_reference": "Kyle/category-decision/test",
+            "approval_reference": creation_identity_digest,
         },
         "location": {
             "location_id": location["location_id"],
@@ -423,7 +455,7 @@ def _category_execution(fake: _OfficialScan) -> dict[str, object]:
         "preorder": creation["preorder"],
         "tier_variation": [
             {
-                "name": "Style",
+                "name": "Default",
                 "option_list": [
                     {
                         "option": "Default",
@@ -618,6 +650,94 @@ def test_global_observer_consumes_and_revalidates_persisted_category_decision():
     assert any(
         path == "/api/v2/global_product/get_attribute_tree"
         for path, _params in official.calls
+    )
+
+
+def test_value_id_zero_roundtrips_to_ready_new_global_candidate():
+    official = _OfficialScan(existing=False)
+    official.attribute_value_id = 0
+    selection = _category_execution(official)
+    official.calls.clear()
+    shopee.configure_prepare_transport_factory(
+        lambda _region: official.transport()
+    )
+
+    candidate = adapters.observe_shopee_global_plan_candidate(
+        _request(category_decision_execution=selection)
+    )
+
+    assert candidate.status == READY
+    assert candidate._plan.payload()["attribute_list"][0][
+        "attribute_value_list"
+    ][0]["value_id"] == 0
+
+
+def test_explicit_single_multi_text_decision_reaches_ready_candidate():
+    official = _OfficialScan(existing=False)
+    official.attribute_rows = [
+        {
+            "attribute_id": 1001,
+            "original_attribute_name": "Material",
+            "is_mandatory": True,
+            "input_type": "SINGLE_SELECT",
+            "attribute_value_list": [
+                {"value_id": 0, "original_value_name": "PVC"}
+            ],
+        },
+        {
+            "attribute_id": 1002,
+            "original_attribute_name": "Features",
+            "is_mandatory": True,
+            "input_type": "MULTI_SELECT",
+            "attribute_value_list": [
+                {"value_id": 20, "original_value_name": "Removable"},
+                {"value_id": 21, "original_value_name": "Waterproof"},
+            ],
+        },
+        {
+            "attribute_id": 1003,
+            "original_attribute_name": "Style name",
+            "is_mandatory": True,
+            "input_type": "TEXT",
+            "attribute_value_list": [
+                {"value_id": 0, "original_value_name": "Text Input"}
+            ],
+        },
+    ]
+    official.selected_attributes = [
+        {
+            "attribute_id": 1001,
+            "attribute_value_list": [
+                {"value_id": 0, "original_value_name": "PVC"}
+            ],
+        },
+        {
+            "attribute_id": 1002,
+            "attribute_value_list": [
+                {"value_id": 20, "original_value_name": "Removable"},
+                {"value_id": 21, "original_value_name": "Waterproof"},
+            ],
+        },
+        {
+            "attribute_id": 1003,
+            "attribute_value_list": [
+                {"value_id": 0, "original_value_name": "Floral"}
+            ],
+        },
+    ]
+    selection = _category_execution(official)
+    official.calls.clear()
+    shopee.configure_prepare_transport_factory(
+        lambda _region: official.transport()
+    )
+
+    candidate = adapters.observe_shopee_global_plan_candidate(
+        _request(category_decision_execution=selection)
+    )
+
+    assert candidate.status == READY
+    assert candidate._plan.payload()["attribute_list"] == (
+        official.selected_attributes
     )
 
 

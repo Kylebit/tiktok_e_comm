@@ -24,6 +24,9 @@ from typing import Any
 import unicodedata
 
 from modules.shopee.oneclick_release import ShopeePrepareTransport
+from shared_platform.channel_category_decisions import (
+    seller_stock_source_digest,
+)
 from shared_platform.shopee_global_plan import (
     NEW_GLOBAL,
     OFFICIAL_AUTHORITY,
@@ -36,6 +39,12 @@ from shared_platform.shopee_global_plan import (
 SCHEMA_VERSION = "shopee-official-new-global-candidate-observation/v1"
 CATEGORY_OPTIONS_SCHEMA_VERSION = (
     "channel-category-options-observation/v2"
+)
+CATEGORY_OBSERVER_REQUEST_SCHEMA_VERSION = (
+    "channel-category-observer-request/v2"
+)
+CATEGORY_ATTRIBUTE_SELECTION_EXECUTION_SCHEMA_VERSION = (
+    "channel-category-attribute-selection-execution/v1"
 )
 CREATION_DEFAULT_POLICY_VERSION = (
     "shopee-new-global-explicit-creation-proposal/v1"
@@ -293,12 +302,13 @@ def observe_channel_category_options(
         "approved_title",
         "approved_title_digest",
         "current_selection",
+        "current_attribute_selection",
     }
     if (
         not isinstance(request, Mapping)
         or set(request) != expected
         or request.get("schema_version")
-        != "channel-category-observer-request/v1"
+        != CATEGORY_OBSERVER_REQUEST_SCHEMA_VERSION
         or request.get("channel") != "shopee"
         or request.get("mode") != "NEW_GLOBAL"
     ):
@@ -316,6 +326,12 @@ def observe_channel_category_options(
         request.get("current_selection"),
         expected_context_digest=_digest(context),
     )
+    attribute_selection = _current_attribute_selection(
+        request.get("current_attribute_selection"),
+        expected_context=context,
+    )
+    if selection is not None and attribute_selection is not None:
+        raise _error("shopee_category_selection_invalid", "CONTENT")
     transport = _category_prepare_transport()
     raw = _official_get(
         transport,
@@ -340,10 +356,30 @@ def observe_channel_category_options(
     if selected_id is not None and selected_id not in option_ids:
         option_ids.append(selected_id)
     recommendation_digest = _digest(recommended)
-    options: list[dict[str, object]] = []
+    observed_options: list[
+        tuple[
+            int,
+            tuple[Mapping[str, object], ...],
+            tuple[Mapping[str, object], ...],
+        ]
+    ] = []
     for category_id in option_ids:
         path = _read_category_path(transport, category_id)
         tree = _read_attribute_tree(transport, category_id)
+        observed_options.append((category_id, path, tree))
+    attribute_category_id = None
+    if attribute_selection is not None:
+        matching_categories = [
+            category_id
+            for category_id, _path, tree in observed_options
+            if _digest(tree)
+            == attribute_selection["attribute_tree_digest"]
+        ]
+        if len(matching_categories) != 1:
+            raise _error("shopee_attribute_selection_drift", "CONTENT")
+        attribute_category_id = matching_categories[0]
+    options: list[dict[str, object]] = []
+    for category_id, path, tree in observed_options:
         required_rows = [
             row for row in tree if row["is_mandatory"] is True
         ]
@@ -353,6 +389,24 @@ def observe_channel_category_options(
             selected_attributes = _revalidate_selected_attributes(
                 selection=selection,
                 category_path=path,
+                attribute_tree=tree,
+            )
+            selected_ids = {
+                row["attribute_id"] for row in selected_attributes
+            }
+            missing_required = _missing_required_projection(
+                [
+                    row
+                    for row in required_rows
+                    if row["attribute_id"] not in selected_ids
+                ]
+            )
+        elif (
+            attribute_selection is not None
+            and category_id == attribute_category_id
+        ):
+            selected_attributes = _revalidate_attribute_rows(
+                attribute_selection["selected_attributes"],
                 attribute_tree=tree,
             )
             selected_ids = {
@@ -431,7 +485,7 @@ def build_official_new_global_candidate(
         if not isinstance(request, Mapping):
             raise _error("shopee_category_selection_context_invalid")
         context = {
-            "schema_version": "channel-category-observer-request/v1",
+            "schema_version": CATEGORY_OBSERVER_REQUEST_SCHEMA_VERSION,
             "product_id": request.get("offer_id"),
             "product_revision": request.get("product_revision"),
             "channel": "shopee",
@@ -726,7 +780,7 @@ def _category_context(value: object) -> dict[str, object]:
     if (
         set(value) != expected
         or value.get("schema_version")
-        != "channel-category-observer-request/v1"
+        != CATEGORY_OBSERVER_REQUEST_SCHEMA_VERSION
         or value.get("channel") != "shopee"
         or value.get("mode") != "NEW_GLOBAL"
         or type(value.get("product_id")) is not str
@@ -745,6 +799,66 @@ def _category_context(value: object) -> dict[str, object]:
     ):
         raise _error("shopee_category_observer_context_invalid")
     return dict(value)
+
+
+def _current_attribute_selection(
+    value: object, *, expected_context: Mapping[str, object]
+) -> dict[str, object] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise _error("shopee_attribute_selection_invalid", "CONTENT")
+    expected = {
+        "schema_version",
+        "product_id",
+        "product_revision",
+        "channel",
+        "mode",
+        "selection_digest",
+        "context_digest",
+        "options_digest",
+        "category_identity_digest",
+        "selected_brand_identity_digest",
+        "selected_location_identity_digest",
+        "selected_creation_fact_identity_digest",
+        "attribute_tree_digest",
+        "selected_attributes",
+    }
+    if (
+        set(value) != expected
+        or value.get("schema_version")
+        != CATEGORY_ATTRIBUTE_SELECTION_EXECUTION_SCHEMA_VERSION
+        or value.get("product_id") != expected_context["product_id"]
+        or value.get("product_revision")
+        != expected_context["product_revision"]
+        or value.get("context_digest") != _digest(expected_context)
+        or value.get("channel") != "shopee"
+        or value.get("mode") != "NEW_GLOBAL"
+        or type(value.get("product_revision")) is not int
+        or value["product_revision"] < 0
+        or any(
+            not _is_digest(value.get(field))
+            for field in (
+                "selection_digest",
+                "options_digest",
+                "category_identity_digest",
+                "selected_brand_identity_digest",
+                "selected_location_identity_digest",
+                "selected_creation_fact_identity_digest",
+                "attribute_tree_digest",
+            )
+        )
+        or type(value.get("selected_attributes")) is not list
+    ):
+        raise _error("shopee_attribute_selection_invalid", "CONTENT")
+    normalized_attributes = _canonical_attribute_rows(
+        value["selected_attributes"],
+        code="shopee_attribute_selection_invalid",
+    )
+    return {
+        **dict(value),
+        "selected_attributes": normalized_attributes,
+    }
 
 
 def _current_selection(
@@ -823,48 +937,154 @@ def _revalidate_selected_attributes(
         or selection.get("attribute_tree_digest") != _digest(attribute_tree)
     ):
         raise _error("shopee_category_selection_drift", "CONTENT")
-    tree_by_id = {row["attribute_id"]: row for row in attribute_tree}
+    return _revalidate_attribute_rows(
+        selection["attribute_list"],
+        attribute_tree=attribute_tree,
+    )
+
+
+def _canonical_attribute_rows(
+    value: object, *, code: str
+) -> list[dict[str, object]]:
+    if type(value) is not list or not value:
+        raise _error(code, "CONTENT")
     result: list[dict[str, object]] = []
     seen: set[int] = set()
-    for row in selection["attribute_list"]:
+    for row in value:
         if (
             not isinstance(row, Mapping)
             or set(row) != {"attribute_id", "attribute_value_list"}
         ):
-            raise _error("shopee_selected_attributes_invalid", "CONTENT")
-        attribute_id = _positive_int(
-            row["attribute_id"], "shopee_selected_attributes_invalid"
+            raise _error(code, "CONTENT")
+        attribute_id = _positive_int(row["attribute_id"], code)
+        values = row["attribute_value_list"]
+        if (
+            attribute_id in seen
+            or type(values) is not list
+            or not values
+        ):
+            raise _error(code, "CONTENT")
+        seen.add(attribute_id)
+        normalized_values: list[dict[str, object]] = []
+        identities: set[tuple[int, str, str | None]] = set()
+        for value_row in values:
+            if not isinstance(value_row, Mapping) or (
+                set(value_row)
+                - {"value_id", "original_value_name", "value_unit"}
+                or not {
+                    "value_id",
+                    "original_value_name",
+                }.issubset(value_row)
+            ):
+                raise _error(code, "CONTENT")
+            value_id = _nonnegative_int(value_row["value_id"], code)
+            original_value_name = _nonempty_string(
+                value_row["original_value_name"], code
+            )
+            normalized_value: dict[str, object] = {
+                "value_id": value_id,
+                "original_value_name": original_value_name,
+            }
+            value_unit = None
+            if "value_unit" in value_row:
+                value_unit = _nonempty_string(
+                    value_row["value_unit"], code
+                )
+                normalized_value["value_unit"] = value_unit
+            identity = (
+                value_id,
+                original_value_name,
+                value_unit,
+            )
+            if identity in identities:
+                raise _error(code, "CONTENT")
+            identities.add(identity)
+            normalized_values.append(normalized_value)
+        normalized_values.sort(
+            key=lambda item: (
+                item["value_id"],
+                item["original_value_name"],
+                item.get("value_unit") or "",
+            )
         )
+        result.append(
+            {
+                "attribute_id": attribute_id,
+                "attribute_value_list": normalized_values,
+            }
+        )
+    result.sort(key=lambda item: item["attribute_id"])
+    if result != value:
+        raise _error(code, "CONTENT")
+    return result
+
+
+def _revalidate_attribute_rows(
+    value: object,
+    *,
+    attribute_tree: tuple[Mapping[str, object], ...],
+) -> list[dict[str, object]]:
+    canonical = _canonical_attribute_rows(
+        value,
+        code="shopee_selected_attributes_invalid",
+    )
+    tree_by_id = {row["attribute_id"]: row for row in attribute_tree}
+    result: list[dict[str, object]] = []
+    seen: set[int] = set()
+    for row in canonical:
+        attribute_id = row["attribute_id"]
         tree_row = tree_by_id.get(attribute_id)
         values = row["attribute_value_list"]
         if (
             attribute_id in seen
             or tree_row is None
-            or not isinstance(values, list)
-            or not values
         ):
             raise _error("shopee_selected_attributes_invalid", "CONTENT")
         seen.add(attribute_id)
-        official_values = {
-            entry["value_id"]: entry
-            for entry in tree_row["attribute_value_list"]
-        }
-        normalized: list[dict[str, object]] = []
-        for value in values:
-            if not isinstance(value, Mapping) or (
-                set(value) - {"value_id", "original_value_name", "value_unit"}
-                or not {"value_id", "original_value_name"}.issubset(value)
+        input_type = tree_row["input_type"]
+        official_rows = tree_row["attribute_value_list"]
+        if input_type == "SINGLE_SELECT" and len(values) != 1:
+            raise _error("shopee_selected_attributes_invalid", "CONTENT")
+        if input_type == "TEXT":
+            if (
+                len(values) != 1
+                or len(official_rows) != 1
+                or values[0]["value_id"]
+                != official_rows[0]["value_id"]
+                or "value_unit" in values[0]
             ):
                 raise _error(
                     "shopee_selected_attributes_invalid", "CONTENT"
                 )
-            value_id = _positive_int(
-                value["value_id"], "shopee_selected_attributes_invalid"
+            normalized_text = unicodedata.normalize(
+                "NFC", values[0]["original_value_name"].strip()
             )
-            display = _nonempty_string(
-                value["original_value_name"],
-                "shopee_selected_attributes_invalid",
+            if (
+                not normalized_text
+                or values[0]["original_value_name"] != normalized_text
+            ):
+                raise _error(
+                    "shopee_selected_attributes_invalid", "CONTENT"
+                )
+            result.append(
+                {
+                    "attribute_id": attribute_id,
+                    "attribute_value_list": [
+                        {
+                            "value_id": values[0]["value_id"],
+                            "original_value_name": normalized_text,
+                        }
+                    ],
+                }
             )
+            continue
+        official_values = {
+            entry["value_id"]: entry for entry in official_rows
+        }
+        normalized: list[dict[str, object]] = []
+        for value in values:
+            value_id = value["value_id"]
+            display = value["original_value_name"]
             official_value = official_values.get(value_id)
             if (
                 official_value is None
@@ -879,10 +1099,7 @@ def _revalidate_selected_attributes(
                 "original_value_name": display,
             }
             if "value_unit" in value:
-                normalized_value["value_unit"] = _nonempty_string(
-                    value["value_unit"],
-                    "shopee_selected_attributes_invalid",
-                )
+                normalized_value["value_unit"] = value["value_unit"]
             normalized.append(normalized_value)
         result.append(
             {
@@ -904,29 +1121,49 @@ def _missing_required_projection(
     rows: list[Mapping[str, object]],
 ) -> list[dict[str, object]]:
     kinds = {
-        "SINGLE_SELECT": "single",
-        "MULTI_SELECT": "multiple",
-        "TEXT": "text",
+        "SINGLE_SELECT": "SINGLE",
+        "MULTI_SELECT": "MULTI",
+        "TEXT": "TEXT",
     }
     result = []
     for row in rows:
-        options = []
-        for value in row["attribute_value_list"]:
-            value_id = _positive_int(
-                value["value_id"], "shopee_attribute_tree_invalid"
+        official_values = row["attribute_value_list"]
+        if row["input_type"] == "TEXT":
+            if (
+                len(official_values) != 1
+                or "value_unit" in official_values[0]
+            ):
+                raise _error("shopee_attribute_tree_invalid", "CONTENT")
+            options = []
+            text_value_id = _nonnegative_int(
+                official_values[0]["value_id"],
+                "shopee_attribute_tree_invalid",
             )
-            options.append(
-                {
-                    "value_id": value_id,
-                    "original_value_name": value["original_value_name"],
-                }
-            )
+        else:
+            if not official_values:
+                raise _error("shopee_attribute_tree_invalid", "CONTENT")
+            options = []
+            for value in official_values:
+                value_id = _nonnegative_int(
+                    value["value_id"], "shopee_attribute_tree_invalid"
+                )
+                options.append(
+                    {
+                        "value_id": value_id,
+                        "original_value_name": value[
+                            "original_value_name"
+                        ],
+                        "recommended": False,
+                    }
+                )
+            text_value_id = None
         result.append(
             {
                 "attribute_id": row["attribute_id"],
                 "label": row["original_attribute_name"],
                 "selection_kind": kinds[row["input_type"]],
                 "option_values": options,
+                "text_value_id": text_value_id,
             }
         )
     return result
@@ -949,7 +1186,15 @@ def _brand_option_projection(
                 "brand_id": row["brand_id"],
                 "original_brand_name": row["original_brand_name"],
                 "evidence_digest": evidence,
-                "recommended": False,
+                "recommended": bool(
+                    row["brand_id"] == 0
+                    and unicodedata.normalize(
+                        "NFC", row["original_brand_name"]
+                    )
+                    .strip()
+                    .casefold()
+                    == "no brand"
+                ),
             }
         )
     return result
@@ -959,6 +1204,7 @@ def _location_option_projection(
     rows: tuple[Mapping[str, object], ...],
 ) -> list[dict[str, object]]:
     result = []
+    single_official_location = len(rows) == 1
     for row in rows:
         evidence = _digest(
             {
@@ -972,7 +1218,7 @@ def _location_option_projection(
                 "location_id": row["location_id"],
                 "display_name": row["warehouse_name"],
                 "evidence_digest": evidence,
-                "recommended": False,
+                "recommended": single_official_location,
             }
         )
     return result
@@ -1016,19 +1262,30 @@ def _revalidate_execution_choices(
     ):
         raise _error("shopee_selected_brand_drift", "CONTENT")
     location = selection["location"]
+    matched_locations = [
+        option
+        for option in location_options
+        if option["location_id"] == location.get("location_id")
+        and option["evidence_digest"] == location.get("evidence_digest")
+    ] if isinstance(location, Mapping) else []
     if (
         not isinstance(location, Mapping)
         or set(location) != {"location_id", "evidence_digest"}
-        or sum(
-            option["location_id"] == location.get("location_id")
-            and option["evidence_digest"] == location.get("evidence_digest")
-            for option in location_options
-        )
-        != 1
+        or len(matched_locations) != 1
     ):
         raise _error("shopee_selected_location_drift", "LOGISTICS")
     stock = selection["seller_stock"]
     preorder = selection["preorder"]
+    location_option = matched_locations[0]
+    location_identity_digest = _digest(
+        {
+            "schema_version": "channel-location-option-identity/v1",
+            "location_id": location_option["location_id"],
+            "display_name": location_option["display_name"],
+            "evidence_digest": location_option["evidence_digest"],
+            "recommended": location_option["recommended"],
+        }
+    )
     if (
         not isinstance(stock, Mapping)
         or set(stock)
@@ -1039,12 +1296,18 @@ def _revalidate_execution_choices(
             "approval_reference",
         }
         or stock.get("source") != "kyle-explicit-seller-stock/v1"
-        or stock.get("source_digest")
-        != creation_defaults.get("evidence_digest")
         or stock.get("quantity")
         != creation_defaults.get("seller_stock_quantity")
-        or type(stock.get("approval_reference")) is not str
-        or not stock["approval_reference"].strip()
+        or not _is_digest(stock.get("approval_reference"))
+        or stock.get("source_digest")
+        != seller_stock_source_digest(
+            context_digest=selection["context_digest"],
+            creation_fact_identity_digest=stock[
+                "approval_reference"
+            ],
+            location_identity_digest=location_identity_digest,
+            quantity=stock["quantity"],
+        )
         or selection.get("condition") != creation_defaults.get("condition")
         or preorder != creation_defaults.get("preorder")
     ):
@@ -1098,7 +1361,7 @@ def _revalidate_single_sku_default_mapping(
         raise _error("shopee_single_sku_mapping_invalid", "CONTENT")
     expected_tier = [
         {
-            "name": "Style",
+            "name": "Default",
             "option_list": [
                 {
                     "option": "Default",

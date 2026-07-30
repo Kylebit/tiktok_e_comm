@@ -25,7 +25,7 @@ def _digest(value: object) -> str:
 
 def _context() -> dict[str, object]:
     return {
-        "schema_version": "channel-category-observer-request/v1",
+        "schema_version": "channel-category-observer-request/v2",
         "product_id": "3845131687",
         "product_revision": 7,
         "channel": "shopee",
@@ -37,10 +37,14 @@ def _context() -> dict[str, object]:
     }
 
 
-def _request(*, current_selection=None) -> dict[str, object]:
+def _request(
+    *,
+    current_selection=None,
+    current_attribute_selection=None,
+) -> dict[str, object]:
     title = "  Café PVC wall decal  "
     return {
-        "schema_version": "channel-category-observer-request/v1",
+        "schema_version": "channel-category-observer-request/v2",
         "channel": "shopee",
         "mode": "NEW_GLOBAL",
         "context": _context(),
@@ -49,6 +53,7 @@ def _request(*, current_selection=None) -> dict[str, object]:
             unicodedata.normalize("NFC", title.strip()).encode("utf-8")
         ).hexdigest(),
         "current_selection": current_selection,
+        "current_attribute_selection": current_attribute_selection,
     }
 
 
@@ -59,6 +64,10 @@ class _OfficialReadFake:
         self.malformed_path: str | None = None
         self.loop_brand = False
         self.attribute_value_name = "PVC"
+        self.attribute_value_id = 91
+        self.attribute_rows_by_category: dict[
+            int, list[dict[str, object]]
+        ] = {}
 
     def merchant_get(self, path, params):
         self.calls.append((path, dict(params)))
@@ -101,32 +110,38 @@ class _OfficialReadFake:
                 },
             }
         if path == subject.ATTRIBUTE_TREE_PATH:
+            category_id = params["category_id"]
+            attribute_rows = self.attribute_rows_by_category.get(
+                category_id
+            )
+            if attribute_rows is None:
+                attribute_rows = [
+                    {
+                        "attribute_id": 9001,
+                        "original_attribute_name": "Material",
+                        "is_mandatory": True,
+                        "input_type": "SINGLE_SELECT",
+                        "attribute_value_list": [
+                            {
+                                "value_id": self.attribute_value_id,
+                                "original_value_name": (
+                                    self.attribute_value_name
+                                ),
+                            }
+                        ],
+                    },
+                    {
+                        "attribute_id": 9002,
+                        "original_attribute_name": "Pattern",
+                        "is_mandatory": False,
+                        "input_type": "TEXT",
+                        "attribute_value_list": [],
+                    },
+                ]
             return {
                 "error": "",
                 "response": {
-                    "attribute_list": [
-                        {
-                            "attribute_id": 9001,
-                            "original_attribute_name": "Material",
-                            "is_mandatory": True,
-                            "input_type": "SINGLE_SELECT",
-                            "attribute_value_list": [
-                                {
-                                    "value_id": 91,
-                                    "original_value_name": (
-                                        self.attribute_value_name
-                                    ),
-                                }
-                            ],
-                        },
-                        {
-                            "attribute_id": 9002,
-                            "original_attribute_name": "Pattern",
-                            "is_mandatory": False,
-                            "input_type": "TEXT",
-                            "attribute_value_list": [],
-                        },
-                    ]
+                    "attribute_list": attribute_rows
                 },
             }
         if path == subject.BRAND_LIST_PATH:
@@ -207,6 +222,14 @@ def _selection(fake: _OfficialReadFake, category_id: int = 202):
         subject._read_seller_locations(transport)
     )[0]
     creation = subject._creation_default_projection()
+    context_digest = _digest(_context())
+    creation_identity_digest = _digest("creation-fact")
+    location_identity_digest = _digest(
+        {
+            "schema_version": "channel-location-option-identity/v1",
+            **location,
+        }
+    )
     return {
         "schema_version": "channel-category-decision-execution/v2",
         "decision_digest": _digest("decision"),
@@ -223,7 +246,10 @@ def _selection(fake: _OfficialReadFake, category_id: int = 202):
             {
                 "attribute_id": 9001,
                 "attribute_value_list": [
-                    {"value_id": 91, "original_value_name": "PVC"}
+                    {
+                        "value_id": fake.attribute_value_id,
+                        "original_value_name": "PVC",
+                    }
                 ],
             }
         ],
@@ -236,9 +262,16 @@ def _selection(fake: _OfficialReadFake, category_id: int = 202):
         },
         "seller_stock": {
             "source": "kyle-explicit-seller-stock/v1",
-            "source_digest": creation["evidence_digest"],
+            "source_digest": subject.seller_stock_source_digest(
+                context_digest=context_digest,
+                creation_fact_identity_digest=(
+                    creation_identity_digest
+                ),
+                location_identity_digest=location_identity_digest,
+                quantity=creation["seller_stock_quantity"],
+            ),
             "quantity": creation["seller_stock_quantity"],
-            "approval_reference": "Kyle/category-decision/test",
+            "approval_reference": creation_identity_digest,
         },
         "location": {
             "location_id": location["location_id"],
@@ -248,7 +281,7 @@ def _selection(fake: _OfficialReadFake, category_id: int = 202):
         "preorder": creation["preorder"],
         "tier_variation": [
             {
-                "name": "Style",
+                "name": "Default",
                 "option_list": [
                     {
                         "option": "Default",
@@ -265,6 +298,39 @@ def _selection(fake: _OfficialReadFake, category_id: int = 202):
                 "seller_stock_quantity": 200,
             }
         ],
+    }
+
+
+def _attribute_selection(
+    fake: _OfficialReadFake,
+    *,
+    category_id: int,
+    selected_attributes: list[dict[str, object]],
+) -> dict[str, object]:
+    tree = subject._read_attribute_tree(fake.transport(), category_id)
+    return {
+        "schema_version": (
+            "channel-category-attribute-selection-execution/v1"
+        ),
+        "product_id": _context()["product_id"],
+        "product_revision": _context()["product_revision"],
+        "channel": "shopee",
+        "mode": "NEW_GLOBAL",
+        "selection_digest": _digest("attribute-selection"),
+        "context_digest": _digest(_context()),
+        "options_digest": _digest("attribute-options"),
+        "category_identity_digest": _digest(
+            f"category-{category_id}"
+        ),
+        "selected_brand_identity_digest": _digest("selected-brand"),
+        "selected_location_identity_digest": _digest(
+            "selected-location"
+        ),
+        "selected_creation_fact_identity_digest": _digest(
+            "selected-creation"
+        ),
+        "attribute_tree_digest": _digest(tree),
+        "selected_attributes": selected_attributes,
     }
 
 
@@ -300,10 +366,15 @@ def test_category_options_recommend_but_never_auto_approve_required_value():
         {
             "attribute_id": 9001,
             "label": "Material",
-            "selection_kind": "single",
+            "selection_kind": "SINGLE",
             "option_values": [
-                {"value_id": 91, "original_value_name": "PVC"}
+                {
+                    "value_id": 91,
+                    "original_value_name": "PVC",
+                    "recommended": False,
+                }
             ],
+            "text_value_id": None,
         }
     ]
     assert all(
@@ -316,6 +387,280 @@ def test_category_options_recommend_but_never_auto_approve_required_value():
         subject._creation_default_projection()
     )
     assert not any("post" in path.casefold() for path, _params in fake.calls)
+
+
+def test_required_attribute_option_value_zero_is_projected_and_selectable():
+    fake = _OfficialReadFake()
+    fake.attribute_value_id = 0
+    _install(fake)
+
+    preview = adapters.observe_channel_category_options(_request())
+    assert preview["options"][0]["missing_required_attributes"][0][
+        "option_values"
+    ] == [
+        {
+            "value_id": 0,
+            "original_value_name": "PVC",
+            "recommended": False,
+        }
+    ]
+
+    selection = _selection(fake, category_id=202)
+    refreshed = adapters.observe_channel_category_options(
+        _request(current_selection=selection)
+    )
+    selected = next(
+        row for row in refreshed["options"] if row["category_id"] == 202
+    )
+    assert selected["required_values_complete"] is True
+    assert selected["selected_attributes"][0][
+        "attribute_value_list"
+    ] == [{"value_id": 0, "original_value_name": "PVC"}]
+
+
+def test_explicit_single_multi_text_selection_is_officially_rechecked():
+    fake = _OfficialReadFake()
+    fake.attribute_rows_by_category[101] = [
+        {
+            "attribute_id": 9101,
+            "original_attribute_name": "Material",
+            "is_mandatory": True,
+            "input_type": "SINGLE_SELECT",
+            "attribute_value_list": [
+                {"value_id": 0, "original_value_name": "PVC"},
+                {"value_id": 1, "original_value_name": "Vinyl"},
+            ],
+        },
+        {
+            "attribute_id": 9102,
+            "original_attribute_name": "Features",
+            "is_mandatory": True,
+            "input_type": "MULTI_SELECT",
+            "attribute_value_list": [
+                {"value_id": 20, "original_value_name": "Removable"},
+                {"value_id": 21, "original_value_name": "Waterproof"},
+            ],
+        },
+        {
+            "attribute_id": 9103,
+            "original_attribute_name": "Style name",
+            "is_mandatory": True,
+            "input_type": "TEXT",
+            "attribute_value_list": [
+                {"value_id": 0, "original_value_name": "Text Input"}
+            ],
+        },
+    ]
+    _install(fake)
+
+    preview = adapters.observe_channel_category_options(_request())
+    recommended = preview["options"][0]
+    assert [
+        row["selection_kind"]
+        for row in recommended["missing_required_attributes"]
+    ] == ["SINGLE", "MULTI", "TEXT"]
+    assert recommended["missing_required_attributes"][2] == {
+        "attribute_id": 9103,
+        "label": "Style name",
+        "selection_kind": "TEXT",
+        "option_values": [],
+        "text_value_id": 0,
+    }
+    selected_attributes = [
+        {
+            "attribute_id": 9101,
+            "attribute_value_list": [
+                {"value_id": 0, "original_value_name": "PVC"}
+            ],
+        },
+        {
+            "attribute_id": 9102,
+            "attribute_value_list": [
+                {
+                    "value_id": 20,
+                    "original_value_name": "Removable",
+                },
+                {
+                    "value_id": 21,
+                    "original_value_name": "Waterproof",
+                },
+            ],
+        },
+        {
+            "attribute_id": 9103,
+            "attribute_value_list": [
+                {
+                    "value_id": 0,
+                    "original_value_name": "Floral",
+                }
+            ],
+        },
+    ]
+    draft = _attribute_selection(
+        fake,
+        category_id=101,
+        selected_attributes=selected_attributes,
+    )
+    fake.calls.clear()
+
+    refreshed = adapters.observe_channel_category_options(
+        _request(current_attribute_selection=draft)
+    )
+
+    selected = next(
+        row for row in refreshed["options"] if row["category_id"] == 101
+    )
+    assert selected["selected_attributes"] == selected_attributes
+    assert selected["required_values_complete"] is True
+    assert selected["missing_required_attributes"] == []
+    assert sum(
+        path == subject.ATTRIBUTE_TREE_PATH
+        and params["category_id"] == 101
+        for path, params in fake.calls
+    ) == 1
+
+
+@pytest.mark.parametrize(
+    "mutator",
+    [
+        lambda rows: [
+            {
+                **rows[0],
+                "attribute_value_list": [
+                    {"value_id": 0, "original_value_name": "PVC"},
+                    {"value_id": 1, "original_value_name": "Vinyl"},
+                ],
+            },
+            *rows[1:],
+        ],
+        lambda rows: [
+            *rows[:2],
+            {
+                **rows[2],
+                "attribute_value_list": [
+                    {
+                        "value_id": 99,
+                        "original_value_name": "Floral",
+                    }
+                ],
+            },
+        ],
+        lambda rows: [
+            *rows[:2],
+            {
+                **rows[2],
+                "attribute_value_list": [
+                    {
+                        "value_id": 0,
+                        "original_value_name": " Floral ",
+                    }
+                ],
+            },
+        ],
+    ],
+)
+def test_explicit_attribute_kind_or_text_identity_drift_fails_closed(
+    mutator,
+):
+    fake = _OfficialReadFake()
+    fake.attribute_rows_by_category[101] = [
+        {
+            "attribute_id": 9101,
+            "original_attribute_name": "Material",
+            "is_mandatory": True,
+            "input_type": "SINGLE_SELECT",
+            "attribute_value_list": [
+                {"value_id": 0, "original_value_name": "PVC"},
+                {"value_id": 1, "original_value_name": "Vinyl"},
+            ],
+        },
+        {
+            "attribute_id": 9102,
+            "original_attribute_name": "Features",
+            "is_mandatory": True,
+            "input_type": "MULTI_SELECT",
+            "attribute_value_list": [
+                {"value_id": 20, "original_value_name": "Removable"}
+            ],
+        },
+        {
+            "attribute_id": 9103,
+            "original_attribute_name": "Style name",
+            "is_mandatory": True,
+            "input_type": "TEXT",
+            "attribute_value_list": [
+                {"value_id": 0, "original_value_name": "Text Input"}
+            ],
+        },
+    ]
+    rows = [
+        {
+            "attribute_id": 9101,
+            "attribute_value_list": [
+                {"value_id": 0, "original_value_name": "PVC"}
+            ],
+        },
+        {
+            "attribute_id": 9102,
+            "attribute_value_list": [
+                {"value_id": 20, "original_value_name": "Removable"}
+            ],
+        },
+        {
+            "attribute_id": 9103,
+            "attribute_value_list": [
+                {"value_id": 0, "original_value_name": "Floral"}
+            ],
+        },
+    ]
+    draft = _attribute_selection(
+        fake,
+        category_id=101,
+        selected_attributes=mutator(rows),
+    )
+    _install(fake)
+
+    with pytest.raises(subject.ShopeeGlobalPlanCandidateError):
+        adapters.observe_channel_category_options(
+            _request(current_attribute_selection=draft)
+        )
+
+
+def test_attribute_selection_identity_or_official_tree_drift_fails_closed():
+    fake = _OfficialReadFake()
+    rows = [
+        {
+            "attribute_id": 9001,
+            "attribute_value_list": [
+                {"value_id": 91, "original_value_name": "PVC"}
+            ],
+        }
+    ]
+    draft = _attribute_selection(
+        fake,
+        category_id=101,
+        selected_attributes=rows,
+    )
+    fake.calls.clear()
+    _install(fake)
+    with pytest.raises(subject.ShopeeGlobalPlanCandidateError):
+        adapters.observe_channel_category_options(
+            _request(
+                current_attribute_selection={
+                    **draft,
+                    "selection_digest": "not-a-digest",
+                }
+            )
+        )
+    assert fake.calls == []
+
+    fake.calls.clear()
+    fake.attribute_value_name = "Vinyl"
+    with pytest.raises(subject.ShopeeGlobalPlanCandidateError) as error:
+        adapters.observe_channel_category_options(
+            _request(current_attribute_selection=draft)
+        )
+    assert error.value.reason_code == "shopee_attribute_selection_drift"
 
 
 def test_persisted_nonrecommended_selection_is_refetched_and_revalidated():
@@ -363,6 +708,7 @@ def test_persisted_selection_attribute_tree_drift_fails_closed():
         lambda value: {**value, "unknown": True},
         lambda value: {**value, "approved_title_digest": _digest("bad")},
         lambda value: {**value, "current_selection": False},
+        lambda value: {**value, "current_attribute_selection": False},
     ],
 )
 def test_category_request_and_identity_shapes_fail_before_official_read(

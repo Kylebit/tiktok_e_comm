@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#173b36">
   <title>Orbit · 商品发布中心</title>
   <link rel="stylesheet" href="/static/product_workspace.css?v=20260730-v18">
-  <script src="/static/product_workspace.js?v=20260730-v21" defer></script>
+  <script src="/static/product_workspace.js?v=20260730-v22" defer></script>
   <script src="/static/disabled_control_hints.js?v=20260729-v2" defer></script>
 </head>
 <body>
@@ -358,10 +358,10 @@
           <div><span>批准状态</span><strong>未批准</strong></div>
         </div>
         <form id="releasePlanApprovalForm" class="release-plan-form">
-          <label class="approval-confirm">
-            <input id="releasePlanCheckbox" type="checkbox">
-            <span>我已核对本次商品、内容、视频、目标店铺、来源映射、售价与费用，并批准当前 ReleasePlan。</span>
-          </label>
+          <input id="releasePlanCheckbox" type="checkbox" hidden aria-hidden="true" tabindex="-1">
+          <p class="approval-confirm approval-confirm-single-action">
+            点击“批准当前发布计划”即表示 Kyle 已核对本次商品、内容、视频、目标店铺、来源映射、售价与费用。
+          </p>
           <div class="approval-actions">
             <span>批准人：<strong>Kyle</strong></span>
             <button id="approveReleasePlanButton" class="button button-primary" type="submit" disabled>

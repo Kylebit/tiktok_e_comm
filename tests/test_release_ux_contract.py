@@ -124,12 +124,12 @@ def test_every_formal_async_action_has_loading_success_and_failure_feedback():
                 "catch (error)",
                 "finally",
                 "approvalMessage",
-            ],
-            "approveReleasePlan": [
-                "releaseSubmitting = true",
-                "try {",
-                "catch (error)",
-                "finally",
+                ],
+                "approveReleasePlan": [
+                    "releasePlanApprovalSubmitting = true",
+                    "try {",
+                    "catch (error)",
+                    "finally",
                 "releasePlanMessage",
             ],
             "prepareMiaoshou": [
@@ -550,7 +550,7 @@ def test_oneclick_release_ui_uses_only_the_async_server_controlplane():
     assert "AbortController" in status
     assert "generation !== oneClickExecution.generation" in preview
     assert "generation !== oneClickExecution.generation" in status
-    assert "if (approvalSubmitting || releaseSubmitting) return;" in script
+    assert "|| releasePlanApprovalSubmitting" in script
     assert "projection?.canonical_next_action" in script
     assert "error.oneClickContractError === true" in status
     assert "ONECLICK_JOB_PHASES.has(projection.phase)" in script
@@ -559,7 +559,19 @@ def test_oneclick_release_ui_uses_only_the_async_server_controlplane():
     assert "ONECLICK_DIGEST_KEYS.every" in script
     assert "ONECLICK_TARGET_DIGEST_KEYS.every" in script
     assert "oneClickDigest(reason.detail_digest)" in script
-    assert 'dependency.policy_version !== "oneclick-target-dependency/v1"' in script
+    assert (
+        'ONECLICK_DEPENDENCY_POLICY_VERSION =\n'
+        '    "oneclick-target-dependency/v2"'
+    ) in script
+    assert (
+        "dependency.policy_version !== ONECLICK_DEPENDENCY_POLICY_VERSION"
+        in script
+    )
+    assert "oneClickSourceIdentityDigest" in script
+    assert "oneClickPromotionPrerequisite" in script
+    assert "projection.postpublish_actions" in script
+    assert '"tiktok:LH_PH"' in script
+    assert '"shopee:VN"' in script
     assert 'prerequisiteLabel = isTikTok' in script
     assert "reference.shared_controls" in script
     assert "sameSortedValues(summary.will_dispatch" in script
@@ -665,7 +677,7 @@ def test_oneclick_manual_review_forms_keep_warning_and_apiless_contracts_separat
     apiless_submit = _function_body(script, "submitManualTargetVerification")
 
     assert "product_workspace.css?v=20260730-v18" in html
-    assert "product_workspace.js?v=20260730-v21" in html
+    assert "product_workspace.js?v=20260730-v22" in html
     assert '"SUCCEEDED_MANUAL_REVIEW"' in script
     assert '"review_verified_observation_warning"' in script
     assert "oneclick-observation-review-form" in script

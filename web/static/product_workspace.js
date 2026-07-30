@@ -80,6 +80,7 @@
   let titleDraftSubmitting = false;
   let titleAdoptSubmitting = false;
   let releaseSubmitting = false;
+  let releasePlanApprovalSubmitting = false;
   let pageLoading = false;
   let queueRefreshing = false;
   let queueItems = [];
@@ -122,6 +123,8 @@
   const ONECLICK_LOCAL_READ_TIMEOUT_MS = 15000;
   const ONECLICK_LOCAL_POST_TIMEOUT_MS = 15000;
   const SHOPEE_GLOBAL_READ_TIMEOUT_MS = 180000;
+  const ONECLICK_DEPENDENCY_POLICY_VERSION =
+    "oneclick-target-dependency/v2";
   const ONECLICK_JOB_PHASES = new Set([
     "PENDING",
     "PREPARING",
@@ -211,6 +214,16 @@
     "adapter_policy",
     "shared_resource",
     "shared_resource_context",
+  ]);
+  const ONECLICK_POSTPUBLISH_PROMOTION_PREREQUISITES = new Set([
+    "tiktok:LH_PH",
+    "tiktok:LH_MY",
+    "tiktok:LH_TH",
+    "tiktok:LH_VN",
+    "shopee:PH",
+    "shopee:MY",
+    "shopee:TH",
+    "shopee:VN",
   ]);
   const SHOPEE_GLOBAL_PLAN_COUNT_KEYS = Object.freeze([
     "category_path_depth",
@@ -687,6 +700,31 @@
     return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
   }
 
+  function oneClickSourceIdentityDigest(value) {
+    return oneClickDigest(value)
+      || (
+        typeof value === "string"
+        && /^sha256:[a-f0-9]{64}$/.test(value)
+      );
+  }
+
+  function oneClickProjectionDigest(key, value) {
+    return key === "source_identity"
+      ? oneClickSourceIdentityDigest(value)
+      : oneClickDigest(value);
+  }
+
+  function oneClickPromotionPrerequisite(targetLabel) {
+    if (
+      typeof targetLabel !== "string"
+      || !targetLabel.startsWith("promotion:")
+    ) return null;
+    const prerequisite = targetLabel.slice("promotion:".length);
+    return ONECLICK_POSTPUBLISH_PROMOTION_PREREQUISITES.has(prerequisite)
+      ? prerequisite
+      : null;
+  }
+
   function exactObjectKeys(value, keys) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return false;
     const actual = Object.keys(value).sort();
@@ -923,7 +961,8 @@
       || typeof digests !== "object"
       || Array.isArray(digests)
       || !ONECLICK_DIGEST_KEYS.every((key) => (
-        Object.hasOwn(digests, key) && oneClickDigest(digests[key])
+        Object.hasOwn(digests, key)
+          && oneClickProjectionDigest(key, digests[key])
       ))
     ) {
       throw oneClickContractError("统一发布控制面缺少不可变摘要，已停止提交。");
@@ -960,6 +999,9 @@
       const targetDigests = target?.digests;
       const dependency = target?.dependency;
       const reason = target?.reason;
+      const promotionPrerequisite = oneClickPromotionPrerequisite(
+        target?.target_label,
+      );
       if (
         !target
         || typeof target !== "object"
@@ -996,6 +1038,7 @@
             )
             : (
               target.target_label === "miaoshou:COMMON"
+                || promotionPrerequisite !== null
                 ? target.storefront !== false
                 : target.storefront !== true
             )
@@ -1003,7 +1046,7 @@
         || !dependency
         || typeof dependency !== "object"
         || Array.isArray(dependency)
-        || dependency.policy_version !== "oneclick-target-dependency/v1"
+        || dependency.policy_version !== ONECLICK_DEPENDENCY_POLICY_VERSION
         || !["SATISFIED", "WAITING", "BLOCKED"].includes(dependency.state)
         || typeof dependency.satisfied !== "boolean"
         || (
@@ -1110,6 +1153,20 @@
         "Shopee Global 共享控制身份不完整，已停止提交。",
       );
     }
+    const promotionRows = projection.targets.filter((target) => (
+      oneClickPromotionPrerequisite(target.target_label) !== null
+    ));
+    if (
+      !Array.isArray(projection.postpublish_actions)
+      || projection.postpublish_actions.length !== promotionRows.length
+      || projection.postpublish_actions.some((action, index) => (
+        JSON.stringify(action) !== JSON.stringify(promotionRows[index])
+      ))
+    ) {
+      throw oneClickContractError(
+        "统一发布控制面的发布后动作身份不完整，已停止提交。",
+      );
+    }
     if (reference) {
       const previousTargets = new Map(
         [
@@ -1160,17 +1217,28 @@
         target.target_label.startsWith("shopee:")
         && target.target_label !== SHOPEE_GLOBAL_CONTROL_TARGET
       );
+      const promotionPrerequisite = oneClickPromotionPrerequisite(
+        target.target_label,
+      );
       const prerequisite = isTikTok
         ? common
         : isShopeeRegion
           ? shopeeGlobal
-          : null;
+          : promotionPrerequisite
+            ? projection.targets.find(
+              (candidate) => candidate.target_label === promotionPrerequisite,
+            )
+            : null;
       const prerequisiteLabel = isTikTok
         ? "miaoshou:COMMON"
         : isShopeeRegion
           ? SHOPEE_GLOBAL_CONTROL_TARGET
-          : null;
-      const dependencyExact = (isTikTok || isShopeeRegion)
+          : promotionPrerequisite;
+      const dependencyExact = (
+        isTikTok
+        || isShopeeRegion
+        || promotionPrerequisite !== null
+      )
         ? (
           dependency.prerequisite_target === prerequisiteLabel
           && (
@@ -1207,7 +1275,11 @@
           && dependency.prerequisite_status === null
         );
       const prerequisiteSummary = dependency.prerequisite;
-      const prerequisiteSummaryExact = isShopeeRegion
+      const prerequisiteSummaryExact = (
+        isTikTok
+        || isShopeeRegion
+        || promotionPrerequisite !== null
+      )
         ? (
           prerequisite
           && exactObjectKeys(prerequisiteSummary, [
@@ -1245,7 +1317,7 @@
       }
       if (!prerequisiteSummaryExact) {
         throw oneClickContractError(
-          "Shopee Global 前置摘要不一致，已停止提交。",
+          "统一发布控制面的前置目标摘要不一致，已停止提交。",
         );
       }
       if (
@@ -1415,9 +1487,9 @@
     if (
       isPreview
       && projection.start_allowed
+      && canonical?.action === "prepare_batch"
       && (
-        canonical?.action !== "prepare_batch"
-        || canonical.canonical_status !== "PENDING"
+        canonical.canonical_status !== "PENDING"
         || canonical.runnable !== false
       )
     ) {
@@ -6649,7 +6721,7 @@
     const plan = release.plan || {};
     const approved = Boolean(release.plan_approved);
     const eligible = Boolean(release.eligible_for_plan_approval && plan.plan_id);
-    const busy = Boolean(
+    const executionBusy = Boolean(
       releaseSubmitting
       || approvalSubmitting
       || titleDraftSubmitting
@@ -6661,15 +6733,14 @@
     );
 
     const releasePlanCheckbox = $("#releasePlanCheckbox");
-    releasePlanCheckbox.disabled = approved || !eligible || busy;
-    if (!releasePlanCheckbox.disabled) {
-      delete releasePlanCheckbox.dataset.disabledReason;
-    } else if (approved) {
+    releasePlanCheckbox.checked = Boolean(eligible && !approved);
+    releasePlanCheckbox.disabled = true;
+    if (approved) {
       releasePlanCheckbox.dataset.disabledReason =
-        "当前 ReleasePlan 已批准，无需重复勾选。";
-    } else if (busy) {
+        "当前 ReleasePlan 已批准，无需重复操作。";
+    } else if (releasePlanApprovalSubmitting) {
       releasePlanCheckbox.dataset.disabledReason =
-        "正在完成当前读取或本地状态更新；结束后会自动重新计算审批入口。";
+        "正在批准当前 ReleasePlan。";
     } else {
       releasePlanCheckbox.dataset.disabledReason = translateBlocker(
         (release.blockers || [])[0]
@@ -6677,14 +6748,18 @@
       );
     }
     $("#approveReleasePlanButton").disabled = Boolean(
-      approved || !eligible || !releasePlanCheckbox.checked || busy,
+      approved || !eligible || releasePlanApprovalSubmitting,
     );
 
     const prepared = Boolean(release.miaoshou_prepared);
     const commonReadbackOnly = commonNeedsReadbackReconciliation(release);
-    $("#prepareMiaoshouCheckbox").disabled = !approved || prepared || busy;
+    $("#prepareMiaoshouCheckbox").disabled =
+      !approved || prepared || executionBusy;
     $("#prepareMiaoshouButton").disabled = Boolean(
-      !approved || prepared || !$("#prepareMiaoshouCheckbox").checked || busy,
+      !approved
+      || prepared
+      || !$("#prepareMiaoshouCheckbox").checked
+      || executionBusy,
     );
     $("#prepareMiaoshouButton").textContent = commonReadbackOnly
       ? "只读回读并结案"
@@ -6710,9 +6785,12 @@
       && overwriteExact
       && !release.run,
     );
-    $("#commonOverwriteCheckbox").disabled = !overwriteReady || busy;
+    $("#commonOverwriteCheckbox").disabled =
+      !overwriteReady || executionBusy;
     $("#commonOverwriteButton").disabled = Boolean(
-      !overwriteReady || !$("#commonOverwriteCheckbox").checked || busy,
+      !overwriteReady
+      || !$("#commonOverwriteCheckbox").checked
+      || executionBusy,
     );
 
     const hasOneClickAuthority = oneClickAuthorityAvailable(data);
@@ -6749,7 +6827,7 @@
       runGroups.running.length || oneClickJobExists,
     );
     const publishAllCheckbox = $("#publishAllCheckbox");
-    if (busy) {
+    if (executionBusy) {
       publishAllCheckbox.dataset.disabledReason =
         "当前操作尚未完成；完成后系统会重新计算唯一下一步。";
     } else if (hasOneClickAuthority && oneClickExecution.postAttempted && !oneClickJobExists) {
@@ -6789,7 +6867,7 @@
           : runnableTargetCount < 1
       )
       || ledgerBlocksPublish
-      || busy
+      || executionBusy
     );
     $("#publishAllButton").disabled = Boolean(
       !publishReady
@@ -6800,7 +6878,7 @@
       )
       || ledgerBlocksPublish
       || !$("#publishAllCheckbox").checked
-      || busy,
+      || executionBusy,
     );
     document.querySelectorAll("[data-price-repair-action]").forEach((button) => {
       const panel = button.closest("[data-price-repair-target]");
@@ -6810,7 +6888,7 @@
         panel?.querySelector("[data-price-repair-confirm]")?.checked,
       );
       button.disabled = Boolean(
-        busy
+        executionBusy
         || repairState.phase === "checking"
         || repairState.phase === "repairing"
         || repairState.phase === "reconciling"
@@ -7527,8 +7605,8 @@
   }
 
   async function approveReleasePlan() {
-    if (!currentData || releaseSubmitting || !$("#releasePlanCheckbox").checked) return;
-    releaseSubmitting = true;
+    if (!currentData || releasePlanApprovalSubmitting) return;
+    releasePlanApprovalSubmitting = true;
     updateReleaseControls(currentData);
     $("#releasePlanMessage").textContent = "正在重新计算精确计划并校验确认令牌…";
     try {
@@ -7548,7 +7626,7 @@
       showError(message);
       $("#releasePlanMessage").textContent = `${message} 请刷新后重新核对计划。`;
     } finally {
-      releaseSubmitting = false;
+      releasePlanApprovalSubmitting = false;
       updateReleaseControls(currentData || {});
     }
   }
@@ -7862,7 +7940,11 @@
     // the durable job identity.  Do not let offer switching discard that
     // context.  Once the 202 receipt is stored locally, releaseSubmitting is
     // cleared and switching only cancels this page's read-only polling.
-    if (approvalSubmitting || releaseSubmitting) return;
+    if (
+      approvalSubmitting
+      || releaseSubmitting
+      || releasePlanApprovalSubmitting
+    ) return;
     const item = queueItem(key);
     if (!item) return;
     currentQueueKey = key;
@@ -8025,9 +8107,6 @@
     const button = event.target.closest(".adopt-title-candidate");
     if (!button || button.disabled) return;
     adoptTitleCandidate(button);
-  });
-  $("#releasePlanCheckbox").addEventListener("change", () => {
-    updateReleaseControls(currentData || {});
   });
   $("#releasePlanApprovalForm").addEventListener("submit", (event) => {
     event.preventDefault();

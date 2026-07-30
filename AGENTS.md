@@ -65,6 +65,10 @@ Web 页面：`/`、`/catalog`、`/ozon`、`/settlement`、`/titles`、`/images`�
 - 最小 diff；匹配现有命名与模块边界
 - 勿提交 token、settings.json、*.db
 - Ozon 集成优先走 `modules/ozon/`，避免在 webapp 写死本机绝对路径
+- 所有 Bug 修复必须遵守
+  [docs/TESTING_GOVERNANCE.md](docs/TESTING_GOVERNANCE.md) 的
+  “先失败、后修复”门禁：先稳定复现并运行新增失败测试，再修改生产代码；
+  无法稳定复现时禁止猜测性修改。
 
 ## Codex 线程与交付治理
 

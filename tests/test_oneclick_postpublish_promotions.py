@@ -22,12 +22,14 @@ from modules.tiktok.oneclick_promotion import (
 )
 from shared_platform.oneclick_release_controlplane import (
     AdapterRegistration,
+    build_batch_preview,
     DispatchInvocationError,
     DispatchTargetResult,
     EXACT_READY_AUTOMATIC,
     OneClickReleaseStore,
     OneClickReleaseWorker,
     PrepareTargetResult,
+    preview_run_for_plan,
     RECONCILIATION_REQUIRED,
     SUCCEEDED,
 )
@@ -443,6 +445,35 @@ def _approved_promotion_context(tmp_path, targets):
         release.get_plan(created["plan_id"]),
         release.start_run(created["plan_id"]),
     )
+
+
+def test_readonly_batch_preview_includes_server_owned_promotion_action(
+    tmp_path,
+):
+    targets = ["miaoshou:COMMON", "tiktok:LH_PH"]
+    _release, plan, _run = _approved_promotion_context(tmp_path, targets)
+    registry = _registry(targets)
+    registry["postpublish_promotion"] = _promotion_registration(
+        lambda _request: None,
+        lambda _request: None,
+    )
+
+    preview = build_batch_preview(
+        plan=plan,
+        run=preview_run_for_plan(plan),
+        product_revision=31,
+        registry=registry,
+    )
+
+    action = next(
+        row
+        for row in preview["postpublish_actions"]
+        if row["target_label"] == "promotion:tiktok:LH_PH"
+    )
+    assert action["status"] == "PENDING"
+    assert action["classification"] == "PREPARE_PENDING"
+    assert action["runnable_now"] is False
+    assert action["dependency"]["state"] == "WAITING"
 
 
 def test_same_job_defers_promotion_and_never_rewrites_primary_success(

@@ -450,6 +450,100 @@ async function auditPage(browser, definition, viewport) {
   }
 }
 
+async function productReleasePlanSingleApprovalAction(browser) {
+  const dashboard = JSON.parse(JSON.stringify(productDashboard));
+  dashboard.product.fields_locked = true;
+  dashboard.product.actual_product_approved = true;
+  dashboard.content = {
+    approved: true,
+    image_count: 5,
+    images: [],
+    blockers: [],
+  };
+  dashboard.actual_release_gate = { ready: true, blockers: [] };
+  dashboard.release_v1 = {
+    eligible_for_plan_approval: true,
+    plan_persisted: false,
+    plan_approved: false,
+    miaoshou_prepared: false,
+    publish_ready: false,
+    blockers: [],
+    plan: {
+      plan_id: "omnichannel:single-approval-action",
+      confirmation_token: "PUBLISH-SINGLE-APPROVAL",
+      payload_digest: "a".repeat(64),
+      targets: ["miaoshou:COMMON"],
+      payload: {
+        product_revision: 1,
+        content_package_id: "content:single-approval-action",
+        targets: ["miaoshou:COMMON"],
+      },
+    },
+    run: null,
+  };
+  const scenario = await openScenario(
+    browser,
+    "/product-workspace?offer_id=3828540231",
+    { width: 1440, height: 900 },
+    { productDashboard: dashboard },
+  );
+  const { page, context, errors, requests } = scenario;
+  let approvalRequest = null;
+  await page.route(
+    "**/api/product-workspace/release-plan/approve",
+    async (route) => {
+      approvalRequest = route.request().postDataJSON();
+      const approved = JSON.parse(JSON.stringify(dashboard));
+      approved.release_v1.plan_persisted = true;
+      approved.release_v1.plan_approved = true;
+      approved.release_v1.eligible_for_plan_approval = false;
+      approved.release_v1.plan.approval = {
+        status: "APPROVED",
+        approved_by: "Kyle",
+      };
+      await route.fulfill(jsonResponse({
+        ok: true,
+        dashboard: approved,
+        external_writes_performed: [],
+      }));
+    },
+  );
+  try {
+    const button = page.locator("#approveReleasePlanButton");
+    check(
+      await button.isEnabled()
+      && await page.locator("#releasePlanCheckbox").isHidden(),
+      "product: an eligible ReleasePlan exposes one direct approval action without a prerequisite checkbox",
+    );
+    await button.click();
+    await page.waitForFunction(() => (
+      document.querySelector("#releasePlanMessage")
+        ?.textContent.includes("已由 Kyle 批准并持久化")
+    ));
+    check(
+      approvalRequest?.approved_by === "Kyle"
+      && approvalRequest?.user_approved === true,
+      "product: direct approval sends the exact Kyle consent once",
+      approvalRequest,
+    );
+    check(
+      requests.filter((row) => (
+        row.method === "POST"
+        && !row.url.includes("/release-plan/approve")
+      )).length === 0,
+      "product: direct plan approval sends no publish or channel POST",
+      requests,
+    );
+    check(
+      errors.length === 0,
+      "product single approval action: no console/page errors",
+      errors,
+    );
+  } finally {
+    await context.close();
+  }
+}
+
 async function productAsyncFeedback(browser) {
   const scenario = await openScenario(
     browser,
@@ -967,15 +1061,15 @@ async function productLockedStaleTitleRefresh(browser) {
     await page.goto(`${baseUrl}/product-workspace?offer_id=3828540231`, {
       waitUntil: "networkidle",
     });
-    const approvalCheckbox = page.locator("#releasePlanCheckbox");
+    const approvalButton = page.locator("#approveReleasePlanButton");
     const recovery = page.locator(
       '[data-release-recovery="refresh_listing_copy"]',
     );
     check(
-      await approvalCheckbox.isDisabled()
+      await approvalButton.isDisabled()
       && await recovery.isEnabled()
       && await recovery.isVisible(),
-      "product: blocked approval exposes an enabled recovery action beside the disabled gate",
+      "product: blocked approval exposes an enabled recovery action beside the disabled approval button",
     );
     const recoveryDetail = (
       await page.locator("#releasePlanRecovery").innerText()
@@ -1017,17 +1111,13 @@ async function productLockedStaleTitleRefresh(browser) {
     ).click();
     await page.locator(".adopt-title-candidate").click();
     await adoptionStarted;
-    await page.waitForFunction(() => (
-      document.querySelector("#releasePlanCheckboxDisabledReason")
-        ?.textContent.includes("正在完成当前读取或本地状态更新")
-    ));
     check(
-      await approvalCheckbox.isDisabled(),
+      await approvalButton.isDisabled(),
       "product: release approval remains disabled while EN MASTER adoption is in flight",
     );
     finishAdoption();
     await page.waitForFunction(
-      () => document.querySelector("#releasePlanCheckbox")?.disabled === false,
+      () => document.querySelector("#approveReleasePlanButton")?.disabled === false,
     );
     check(
       adoptRequest
@@ -1039,14 +1129,9 @@ async function productLockedStaleTitleRefresh(browser) {
       adoptRequest,
     );
     check(
-      await approvalCheckbox.isEnabled()
+      await approvalButton.isEnabled()
       && await page.locator("#releasePlanRecovery").isHidden(),
-      "product: successful adoption releases the approval checkbox without a reload",
-    );
-    await approvalCheckbox.check();
-    check(
-      await page.locator("#approveReleasePlanButton").isEnabled(),
-      "product: Kyle can proceed to approve the refreshed ReleasePlan in the same page session",
+      "product: successful adoption directly releases the single approval action without a reload",
     );
     check(
       errors.length === 0,
@@ -3766,14 +3851,14 @@ function oneClickDashboard({
 
 function oneClickTargets(stage) {
   const independentDependency = {
-    policy_version: "oneclick-target-dependency/v1",
+    policy_version: "oneclick-target-dependency/v2",
     state: "SATISFIED",
     satisfied: true,
     prerequisite_target: null,
     prerequisite_status: null,
   };
   const tiktokDependency = {
-    policy_version: "oneclick-target-dependency/v1",
+    policy_version: "oneclick-target-dependency/v2",
     state: "SATISFIED",
     satisfied: true,
     prerequisite_target: "miaoshou:COMMON",
@@ -3958,7 +4043,7 @@ function oneClickGlobalControl(stage) {
     manual_after_submit: false,
     requires_human: false,
     dependency: {
-      policy_version: "oneclick-target-dependency/v1",
+      policy_version: "oneclick-target-dependency/v2",
       state: "SATISFIED",
       satisfied: true,
       prerequisite_target: null,
@@ -3994,12 +4079,12 @@ function oneClickStatusLedger(target) {
 
 function oneClickProjection(schemaVersion, stage, phase = null) {
   const sharedControl = oneClickGlobalControl(stage);
-  const targets = oneClickTargets(stage).map((target) => {
+  let targets = oneClickTargets(stage).map((target) => {
     if (!target.target_label.startsWith("shopee:")) return target;
     return {
       ...target,
       dependency: {
-        policy_version: "oneclick-target-dependency/v1",
+        policy_version: "oneclick-target-dependency/v2",
         state: "SATISFIED",
         satisfied: true,
         prerequisite_target: "shopee:GLOBAL",
@@ -4020,6 +4105,32 @@ function oneClickProjection(schemaVersion, stage, phase = null) {
       },
     };
   });
+  const commonTarget = targets.find(
+    (target) => target.target_label === "miaoshou:COMMON",
+  );
+  targets = targets.map((target) => (
+    target.target_label.startsWith("tiktok:")
+      ? {
+        ...target,
+        dependency: {
+          ...target.dependency,
+          prerequisite: {
+            target_label: commonTarget.target_label,
+            status: commonTarget.status,
+            reason: commonTarget.reason ?? null,
+            next_action: commonTarget.next_action ?? null,
+            digests: {
+              prepared_command: commonTarget.digests.prepared_command,
+              proof: commonTarget.digests.proof,
+              shared_resource: commonTarget.digests.shared_resource,
+              shared_resource_context:
+                commonTarget.digests.shared_resource_context,
+            },
+          },
+        },
+      }
+      : target
+  ));
   const projection = {
     schema_version: schemaVersion,
     plan_id: "omnichannel:oneclick-ui",
@@ -4028,7 +4139,7 @@ function oneClickProjection(schemaVersion, stage, phase = null) {
     digests: {
       payload: "a".repeat(64),
       targets: "b".repeat(64),
-      source_identity: "c".repeat(64),
+      source_identity: `sha256:${"c".repeat(64)}`,
       source_identity_payload: "d".repeat(64),
       sku_lineage: "e".repeat(64),
       sku_lineage_payload: "f".repeat(64),
@@ -4036,6 +4147,7 @@ function oneClickProjection(schemaVersion, stage, phase = null) {
     },
     targets,
     shared_controls: [sharedControl],
+    postpublish_actions: [],
     storefront_count: 4,
     control_row_count: 2,
     runnable_target_count: stage === "preview" ? 2
@@ -4204,6 +4316,132 @@ function oneClickProjection(schemaVersion, stage, phase = null) {
   return projection;
 }
 
+function withPostpublishPromotionAction(projection) {
+  const prerequisite = projection.targets.find(
+    (target) => target.target_label === "shopee:MY",
+  );
+  const promotion = {
+    target_label: "promotion:shopee:MY",
+    storefront: false,
+    control_target: false,
+    status: "PENDING",
+    classification: "PREPARE_PENDING",
+    runnable_now: false,
+    manual_after_submit: false,
+    requires_human: false,
+    dependency: {
+      policy_version: "oneclick-target-dependency/v2",
+      state: "WAITING",
+      satisfied: false,
+      prerequisite_target: prerequisite.target_label,
+      prerequisite_status: prerequisite.status,
+      prerequisite: {
+        target_label: prerequisite.target_label,
+        status: prerequisite.status,
+        reason: prerequisite.reason,
+        next_action: prerequisite.next_action,
+        digests: {
+          prepared_command: prerequisite.digests.prepared_command,
+          proof: prerequisite.digests.proof,
+          shared_resource: prerequisite.digests.shared_resource,
+          shared_resource_context:
+            prerequisite.digests.shared_resource_context,
+        },
+      },
+    },
+    next_action: "prepare_batch",
+    next_action_target: prerequisite.target_label,
+    reason: null,
+    digests: {
+      prepared_command: null,
+      proof: null,
+      adapter_policy: "c".repeat(64),
+      shared_resource: null,
+      shared_resource_context: null,
+    },
+  };
+  projection.targets.push(promotion);
+  projection.postpublish_actions = [promotion];
+  projection.control_row_count += 1;
+  projection.canonical_next_action = {
+    target_label: "ozon:RU",
+    target_focus: "ozon:RU",
+    canonical_status: "BLOCKED_INVENTORY",
+    action: "approve_sellable_inventory",
+    runnable: false,
+  };
+  return projection;
+}
+
+async function oneClickLivePostpublishProjectionContract(browser) {
+  const context = await browser.newContext({
+    viewport: { width: 1440, height: 900 },
+  });
+  const page = await context.newPage();
+  const errors = [];
+  const requests = [];
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+  });
+  await page.route("**/*", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.origin !== baseUrl) return route.abort("blockedbyclient");
+    if (!url.pathname.startsWith("/api/")) return route.continue();
+    requests.push({ method: request.method(), url: request.url() });
+    if (url.pathname === "/api/product-workspace/dashboard") {
+      return route.fulfill(jsonResponse(oneClickDashboard()));
+    }
+    if (url.pathname === "/api/product-workspace/publish-preview") {
+      return route.fulfill(jsonResponse({
+        ok: true,
+        persisted: false,
+        external_writes_performed: [],
+        preview: withPostpublishPromotionAction(oneClickProjection(
+          "release-batch-preparation/v2",
+          "preview",
+        )),
+      }));
+    }
+    const fixture = apiFixture(
+      url,
+      request.method(),
+      { delayWeekly: false, delaySku: false, pending: {} },
+    );
+    return route.fulfill(fixture || jsonResponse({ ok: false }, 404));
+  });
+  try {
+    await page.goto(`${baseUrl}/product-workspace?offer_id=3828540231`, {
+      waitUntil: "networkidle",
+    });
+    try {
+      await page.waitForFunction(() => (
+        document.querySelector("#publishAllCheckbox")?.disabled === false
+      ), null, { timeout: 5000 });
+    } catch (error) {
+      throw new Error(
+        `${error.message}\nmessage=${
+          await page.locator("#oneClickExecutionMessage").innerText()
+        }\nnote=${await page.locator("#publishAllNote").innerText()
+        }\nerrors=${JSON.stringify(errors)}`,
+      );
+    }
+    check(
+      requests.filter((row) => row.method === "POST").length === 0,
+      "one-click live postpublish projection: preview performs zero writes",
+      requests,
+    );
+    check(
+      unexpectedInteractionErrors(errors).length === 0,
+      "one-click live postpublish projection: no console/page errors",
+      errors,
+    );
+  } finally {
+    await context.close();
+  }
+}
+
 function oneClickPendingJobProjection() {
   const projection = oneClickProjection(
     "oneclick-release-status/v2",
@@ -4220,7 +4458,7 @@ function oneClickPendingJobProjection() {
     requires_human: false,
     dependency: target.target_label.startsWith("tiktok:")
       ? {
-        policy_version: "oneclick-target-dependency/v1",
+        policy_version: "oneclick-target-dependency/v2",
         state: "WAITING",
         satisfied: false,
         prerequisite_target: "miaoshou:COMMON",
@@ -4237,6 +4475,32 @@ function oneClickPendingJobProjection() {
       shared_resource_context: target.digests.shared_resource_context,
     },
   }));
+  const pendingCommon = projection.targets.find(
+    (target) => target.target_label === "miaoshou:COMMON",
+  );
+  projection.targets = projection.targets.map((target) => (
+    target.target_label.startsWith("tiktok:")
+      ? {
+        ...target,
+        dependency: {
+          ...target.dependency,
+          prerequisite: {
+            target_label: pendingCommon.target_label,
+            status: pendingCommon.status,
+            reason: pendingCommon.reason ?? null,
+            next_action: pendingCommon.next_action ?? null,
+            digests: {
+              prepared_command: pendingCommon.digests.prepared_command,
+              proof: pendingCommon.digests.proof,
+              shared_resource: pendingCommon.digests.shared_resource,
+              shared_resource_context:
+                pendingCommon.digests.shared_resource_context,
+            },
+          },
+        },
+      }
+      : target
+  ));
   projection.shared_controls = projection.shared_controls.map((target) => ({
     ...target,
     dispatch_count: 0,
@@ -5698,7 +5962,7 @@ async function shopeeGlobalApprovalResponseLossContract(browser) {
         target.next_action = "resolve_prerequisite_target";
         target.reason = null;
         target.dependency = {
-          policy_version: "oneclick-target-dependency/v1",
+          policy_version: "oneclick-target-dependency/v2",
           state: "BLOCKED",
           satisfied: false,
           prerequisite_target: "shopee:GLOBAL",
@@ -6135,6 +6399,7 @@ async function legacyStateSafety(browser) {
       await auditPage(browser, definition, { width: 390, height: 844 });
     }
     await productAsyncFeedback(browser);
+    await productReleasePlanSingleApprovalAction(browser);
     await productQueueLongTitleMobileContract(browser);
     await productLockedTitleAdoption(browser);
     await productPreservedTitleApprovalReload(browser);
@@ -6159,6 +6424,7 @@ async function legacyStateSafety(browser) {
     await mixedReleaseDispositionContract(browser, { width: 390, height: 844 });
     await blockedCapabilityNextActionContract(browser, { width: 1440, height: 900 });
     await blockedCapabilityNextActionContract(browser, { width: 390, height: 844 });
+    await oneClickLivePostpublishProjectionContract(browser);
     await oneClickAsyncControlPlaneContract(browser, { width: 1440, height: 900 });
     await oneClickAsyncControlPlaneContract(browser, { width: 390, height: 844 });
     await oneClickContentRecoveryContract(browser, { width: 1440, height: 900 });

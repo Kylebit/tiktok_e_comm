@@ -4892,7 +4892,10 @@ def build_batch_preview(
     ):
         current_status = (
             PENDING
-            if label == SHOPEE_GLOBAL_TARGET
+            if (
+                label == SHOPEE_GLOBAL_TARGET
+                or is_postpublish_promotion_target(label)
+            )
             else _initial_public_status(rows[label])
         )
         result = _local_preview_preparation(

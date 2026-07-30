@@ -1627,6 +1627,46 @@ def _channel_category_context(payload: dict) -> dict:
     }
 
 
+def _channel_category_creation_seed(payload: dict) -> dict:
+    """Derive one deterministic single-SKU create model from plan facts."""
+
+    seed = _shopee_global_plan_seed(
+        payload,
+        include_category_decision=False,
+    )
+    lineage = payload.get("sku_lineage")
+    assignment = (
+        lineage.get("assignment")
+        if isinstance(lineage, dict)
+        else None
+    )
+    model_skus = (
+        assignment.get("model_skus")
+        if isinstance(assignment, dict)
+        else None
+    )
+    if (
+        type(model_skus) is not list
+        or len(model_skus) != 1
+        or not isinstance(model_skus[0], dict)
+        or type(model_skus[0].get("model_sku")) is not str
+        or not model_skus[0]["model_sku"].strip()
+    ):
+        raise ValueError("shopee_exact_variant_mapping_required")
+    selected_positions = seed["selected_image_positions"]
+    if type(selected_positions) is not list or not selected_positions:
+        raise ValueError("shopee_approved_image_position_required")
+    return {
+        "schema_version": "channel-category-creation-seed/v1",
+        "sku_lineage_digest": seed["sku_lineage_digest"],
+        "model_sku": model_skus[0]["model_sku"],
+        "selected_image_position": selected_positions[0],
+        "global_original_price_cny": seed["target_pricing"][
+            "global_original_price"
+        ],
+    }
+
+
 _SHOPEE_GLOBAL_CANDIDATE_FIELDS = frozenset(
     {
         "mode",
@@ -2284,7 +2324,11 @@ def _release_plan_payload_from_dashboard(
     return payload, list(dict.fromkeys(value for value in blockers if value))
 
 
-def _observe_channel_category_options(payload: dict) -> dict:
+def _observe_channel_category_options(
+    payload: dict,
+    *,
+    attribute_selection: dict | None = None,
+) -> dict:
     """Call the optional channel-owned read-only observer and validate it."""
 
     import importlib
@@ -2293,14 +2337,32 @@ def _observe_channel_category_options(payload: dict) -> dict:
         ChannelCategoryDecisionError,
         blocked_category_options,
         build_category_options,
+        attribute_selection_execution_payload,
         category_decision_execution_payload,
     )
 
     context = _channel_category_context(payload)
     seed = _shopee_global_plan_seed(payload)
     decision = _category_decision_from_payload(payload)
+    try:
+        creation_seed = _channel_category_creation_seed(payload)
+    except ValueError as error:
+        code = str(error)
+        if code == "shopee_exact_variant_mapping_required":
+            return blocked_category_options(
+                context=context,
+                reason_code=code,
+                reason_category="CONTENT",
+                next_action="complete_shopee_variant_mapping",
+            )
+        return blocked_category_options(
+            context=context,
+            reason_code=code,
+            reason_category="CONTENT",
+            next_action="review_approved_content_facts",
+        )
     request = {
-        "schema_version": "channel-category-observer-request/v1",
+        "schema_version": "channel-category-observer-request/v2",
         "channel": "shopee",
         "mode": "NEW_GLOBAL",
         "context": context,
@@ -2313,6 +2375,13 @@ def _observe_channel_category_options(payload: dict) -> dict:
         "current_selection": (
             category_decision_execution_payload(decision)
             if decision is not None
+            else None
+        ),
+        "current_attribute_selection": (
+            attribute_selection_execution_payload(
+                attribute_selection
+            )
+            if attribute_selection is not None
             else None
         ),
     }
@@ -2333,6 +2402,7 @@ def _observe_channel_category_options(payload: dict) -> dict:
         return build_category_options(
             observer(request),
             context=context,
+            creation_seed=creation_seed,
         )
     except ChannelCategoryDecisionError:
         return blocked_category_options(
@@ -2350,6 +2420,7 @@ def _channel_category_preview_projection(
     *,
     payload: dict,
     snapshot: dict,
+    attribute_selection: dict | None = None,
 ) -> dict:
     from shared_platform.channel_category_decisions import (
         OPTIONS_SCHEMA_VERSION,
@@ -2358,9 +2429,59 @@ def _channel_category_preview_projection(
     )
     from shared_platform.release_store import default_release_store
 
+    attribute_summary = (
+        {
+            "selection_digest": attribute_selection[
+                "selection_digest"
+            ],
+            "category_identity_digest": attribute_selection[
+                "category_identity_digest"
+            ],
+            "attribute_tree_digest": attribute_selection[
+                "attribute_tree_digest"
+            ],
+            "selection_count": attribute_selection[
+                "selection_count"
+            ],
+            "approved_by": "Kyle",
+        }
+        if attribute_selection is not None
+        else None
+    )
     if snapshot.get("schema_version") != OPTIONS_SCHEMA_VERSION or (
         snapshot.get("status") == "BLOCKED_CAPABILITY"
     ):
+        if attribute_summary is not None:
+            return {
+                "ok": True,
+                "schema_version": PREVIEW_SCHEMA_VERSION,
+                "offer_id": payload["product_id"],
+                "product_revision": payload["product_revision"],
+                "target_label": "shopee:GLOBAL",
+                "mode": "NEW_GLOBAL",
+                "status": "RECHECK_REQUIRED",
+                "options_digest": attribute_selection[
+                    "options_digest"
+                ],
+                "recommendation": None,
+                "options": [],
+                "brand_options": [],
+                "location_options": [],
+                "creation_fact_option": None,
+                "selection": None,
+                "attribute_selection": attribute_summary,
+                "blocker": {
+                    "category": "CAPABILITY",
+                    "code": (
+                        "official_category_attribute_recheck_required"
+                    ),
+                },
+                "next_action": {
+                    "action": "recheck_channel_category_attributes",
+                    "target_focus": "shopee:GLOBAL",
+                },
+                "external_writes_performed": [],
+            }
         return {
             "ok": True,
             "schema_version": PREVIEW_SCHEMA_VERSION,
@@ -2372,7 +2493,11 @@ def _channel_category_preview_projection(
             "options_digest": None,
             "recommendation": None,
             "options": [],
+            "brand_options": [],
+            "location_options": [],
+            "creation_fact_option": None,
             "selection": None,
+            "attribute_selection": None,
             "blocker": dict(
                 snapshot.get("reason")
                 or {
@@ -2400,13 +2525,92 @@ def _channel_category_preview_projection(
         snapshot,
         decision=(current or {}).get("decision"),
     )
+    if attribute_summary is not None and projection["selection"] is None:
+        projection = {
+            **projection,
+            "status": "RECHECK_REQUIRED",
+            "attribute_selection": attribute_summary,
+            "blocker": {
+                "category": "CAPABILITY",
+                "code": "official_category_attribute_recheck_required",
+            },
+            "next_action": {
+                "action": "recheck_channel_category_attributes",
+                "target_focus": "shopee:GLOBAL",
+            },
+        }
     return {
         "ok": True,
         **projection,
+        "attribute_selection": (
+            projection.get("attribute_selection")
+            or attribute_summary
+        ),
         "offer_id": payload["product_id"],
         "product_revision": payload["product_revision"],
         "external_writes_performed": [],
     }
+
+
+def _active_channel_category_attribute_selection(
+    payload: dict,
+) -> dict | None:
+    from shared_platform.channel_category_decisions import digest_json
+    from shared_platform.release_store import default_release_store
+
+    context = _channel_category_context(payload)
+    stored = (
+        default_release_store()
+        .channel_category_attribute_selection(
+            product_id=payload["product_id"],
+            product_revision=payload["product_revision"],
+            channel="shopee",
+            mode="NEW_GLOBAL",
+            context_digest=digest_json(context),
+        )
+    )
+    return (stored or {}).get("selection")
+
+
+def _finalize_channel_category_decision(
+    *,
+    payload: dict,
+    snapshot: dict,
+    attribute_selection: dict,
+) -> dict:
+    from shared_platform.channel_category_decisions import (
+        approve_category_decision,
+        serialize_category_decision,
+    )
+    from shared_platform.release_store import default_release_store
+
+    decision = approve_category_decision(
+        snapshot,
+        product_id=payload["product_id"],
+        product_revision=payload["product_revision"],
+        selected_category_identity_digest=attribute_selection[
+            "category_identity_digest"
+        ],
+        selected_brand_identity_digest=attribute_selection[
+            "selected_brand_identity_digest"
+        ],
+        selected_location_identity_digest=attribute_selection[
+            "selected_location_identity_digest"
+        ],
+        selected_creation_fact_identity_digest=attribute_selection[
+            "selected_creation_fact_identity_digest"
+        ],
+        attribute_selection_digest=attribute_selection[
+            "selection_digest"
+        ],
+        approved_by="Kyle",
+        confirm_channel_category_selection=True,
+        confirm_seller_stock_quantity=True,
+        confirm_condition_and_preorder=True,
+    )
+    return default_release_store().persist_channel_category_decision(
+        serialize_category_decision(decision)
+    )
 
 
 def _preview_channel_category_decision(
@@ -2448,10 +2652,31 @@ def _preview_channel_category_decision(
             raise ValueError("current release scope has no Shopee target")
         if blockers:
             raise ValueError(blockers[0])
-        snapshot = _observe_channel_category_options(payload)
+        attribute_selection = (
+            _active_channel_category_attribute_selection(payload)
+        )
+        snapshot = _observe_channel_category_options(
+            payload,
+            attribute_selection=attribute_selection,
+        )
+        if attribute_selection is not None:
+            from shared_platform.channel_category_decisions import (
+                attribute_selection_matches_options,
+            )
+
+            if attribute_selection_matches_options(
+                snapshot,
+                attribute_selection,
+            ):
+                _finalize_channel_category_decision(
+                    payload=payload,
+                    snapshot=snapshot,
+                    attribute_selection=attribute_selection,
+                )
         return 200, _channel_category_preview_projection(
             payload=payload,
             snapshot=snapshot,
+            attribute_selection=attribute_selection,
         )
     except FileNotFoundError as error:
         return 404, {
@@ -2475,8 +2700,10 @@ def _approve_channel_category_decision_locally(
     from shared_platform import release_control
     from shared_platform.channel_category_decisions import (
         ChannelCategoryDecisionError,
-        approve_category_decision,
-        serialize_category_decision,
+        attribute_selection_matches_options,
+        digest_json,
+        resolve_required_attribute_selections,
+        serialize_attribute_selection,
     )
     from shared_platform.release_store import (
         ImmutableReleaseError,
@@ -2490,8 +2717,15 @@ def _approve_channel_category_decision_locally(
         "expected_product_revision",
         "expected_options_digest",
         "selected_category_identity_digest",
+        "selected_brand_identity_digest",
+        "selected_location_identity_digest",
+        "selected_creation_fact_identity_digest",
         "approved_by",
         "confirm_channel_category_selection",
+        "confirm_seller_stock_quantity",
+        "confirm_condition_and_preorder",
+        "required_attribute_selections",
+        "confirm_required_attribute_selections",
     }
     if set(data) != expected_fields:
         return 400, {
@@ -2509,6 +2743,10 @@ def _approve_channel_category_decision_locally(
         or data["expected_product_revision"] < 0
         or data["approved_by"] != "Kyle"
         or data["confirm_channel_category_selection"] is not True
+        or data["confirm_seller_stock_quantity"] is not True
+        or data["confirm_condition_and_preorder"] is not True
+        or data["confirm_required_attribute_selections"] is not True
+        or type(data["required_attribute_selections"]) is not list
     ):
         return 400, {
             "ok": False,
@@ -2532,6 +2770,40 @@ def _approve_channel_category_decision_locally(
             raise ChannelCategoryDecisionError(
                 "product revision changed; refresh category options"
             )
+        approval_request_digest = digest_json(data)
+        active_attribute_selection = (
+            _active_channel_category_attribute_selection(payload)
+        )
+        if (
+            active_attribute_selection is not None
+            and active_attribute_selection[
+                "approval_request_digest"
+            ]
+            == approval_request_digest
+        ):
+            rechecked = _observe_channel_category_options(
+                payload,
+                attribute_selection=active_attribute_selection,
+            )
+            if attribute_selection_matches_options(
+                rechecked,
+                active_attribute_selection,
+            ):
+                _finalize_channel_category_decision(
+                    payload=payload,
+                    snapshot=rechecked,
+                    attribute_selection=active_attribute_selection,
+                )
+            projection = _channel_category_preview_projection(
+                payload=payload,
+                snapshot=rechecked,
+                attribute_selection=active_attribute_selection,
+            )
+            return 200, {
+                **projection,
+                "persisted": True,
+                "created": False,
+            }
         snapshot = _observe_channel_category_options(payload)
         if snapshot.get("status") == "BLOCKED_CAPABILITY":
             raise ChannelCategoryDecisionError(
@@ -2546,22 +2818,63 @@ def _approve_channel_category_decision_locally(
             raise ChannelCategoryDecisionError(
                 "category options changed; refresh before selection"
             )
-        decision = approve_category_decision(
+        attribute_selection = resolve_required_attribute_selections(
             snapshot,
-            product_id=payload["product_id"],
-            product_revision=payload["product_revision"],
             selected_category_identity_digest=data[
                 "selected_category_identity_digest"
             ],
+            selected_brand_identity_digest=data[
+                "selected_brand_identity_digest"
+            ],
+            selected_location_identity_digest=data[
+                "selected_location_identity_digest"
+            ],
+            selected_creation_fact_identity_digest=data[
+                "selected_creation_fact_identity_digest"
+            ],
+            required_attribute_selections=data[
+                "required_attribute_selections"
+            ],
+            approval_request_digest=approval_request_digest,
             approved_by="Kyle",
             confirm_channel_category_selection=True,
+            confirm_seller_stock_quantity=True,
+            confirm_condition_and_preorder=True,
+            confirm_required_attribute_selections=True,
         )
-        stored = default_release_store().persist_channel_category_decision(
-            serialize_category_decision(decision)
+        draft = (
+            default_release_store()
+            .persist_channel_category_attribute_selection(
+                serialize_attribute_selection(attribute_selection)
+            )
+        )
+        rechecked = _observe_channel_category_options(
+            payload,
+            attribute_selection=attribute_selection,
+        )
+        if not attribute_selection_matches_options(
+            rechecked,
+            attribute_selection,
+        ):
+            projection = _channel_category_preview_projection(
+                payload=payload,
+                snapshot=rechecked,
+                attribute_selection=attribute_selection,
+            )
+            return 200, {
+                **projection,
+                "persisted": True,
+                "created": draft["created"],
+            }
+        stored = _finalize_channel_category_decision(
+            payload=payload,
+            snapshot=rechecked,
+            attribute_selection=attribute_selection,
         )
         projection = _channel_category_preview_projection(
             payload=payload,
-            snapshot=snapshot,
+            snapshot=rechecked,
+            attribute_selection=attribute_selection,
         )
     except FileNotFoundError as error:
         return 404, {

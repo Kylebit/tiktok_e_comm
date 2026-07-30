@@ -440,6 +440,34 @@ CREATE TABLE IF NOT EXISTS release_active_channel_category_decisions (
     FOREIGN KEY (decision_digest)
         REFERENCES release_channel_category_decisions(decision_digest)
 );
+CREATE TABLE IF NOT EXISTS release_channel_category_attribute_selections (
+    selection_digest TEXT PRIMARY KEY,
+    product_id TEXT NOT NULL,
+    product_revision INTEGER NOT NULL CHECK (product_revision >= 0),
+    channel TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    context_digest TEXT NOT NULL,
+    options_digest TEXT NOT NULL,
+    category_identity_digest TEXT NOT NULL,
+    attribute_tree_digest TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    record_digest TEXT NOT NULL,
+    approved_by TEXT NOT NULL CHECK (approved_by = 'Kyle'),
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS release_active_channel_category_attribute_selections (
+    product_id TEXT NOT NULL,
+    product_revision INTEGER NOT NULL CHECK (product_revision >= 0),
+    channel TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    selection_digest TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (product_id, product_revision, channel, mode),
+    FOREIGN KEY (selection_digest)
+        REFERENCES release_channel_category_attribute_selections(
+            selection_digest
+        )
+);
 
 CREATE TRIGGER IF NOT EXISTS trg_release_plan_immutable
 BEFORE UPDATE OF
@@ -535,6 +563,31 @@ BEFORE UPDATE OF product_id, product_revision, channel, mode
 ON release_active_channel_category_decisions
 BEGIN
     SELECT RAISE(ABORT, 'active channel category identity is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_release_category_attribute_selection_immutable
+BEFORE UPDATE ON release_channel_category_attribute_selections
+BEGIN
+    SELECT RAISE(
+        ABORT,
+        'channel category attribute selections are immutable'
+    );
+END;
+CREATE TRIGGER IF NOT EXISTS trg_release_category_attribute_selection_delete
+BEFORE DELETE ON release_channel_category_attribute_selections
+BEGIN
+    SELECT RAISE(
+        ABORT,
+        'channel category attribute selections are append-only'
+    );
+END;
+CREATE TRIGGER IF NOT EXISTS trg_release_active_attribute_identity_immutable
+BEFORE UPDATE OF product_id, product_revision, channel, mode
+ON release_active_channel_category_attribute_selections
+BEGIN
+    SELECT RAISE(
+        ABORT,
+        'active channel category attribute identity is immutable'
+    );
 END;
 """
 
@@ -1212,6 +1265,205 @@ class ReleaseStore:
     def preview_plan(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         """Build the exact write-free preview consumed by the formal UI."""
         return preview_release_plan(payload)
+
+    def persist_channel_category_attribute_selection(
+        self,
+        serialized_record: object,
+    ) -> dict[str, Any]:
+        """Append one immutable Kyle attribute intent and make it active."""
+
+        from shared_platform.channel_category_decisions import (
+            rehydrate_attribute_selection,
+            serialize_attribute_selection,
+        )
+
+        if type(serialized_record) is not str:
+            raise ValueError(
+                "channel category attribute selection must be canonical JSON"
+            )
+        selection = rehydrate_attribute_selection(serialized_record)
+        if serialize_attribute_selection(selection) != serialized_record:
+            raise ImmutableReleaseError(
+                "channel category attribute selection is not canonical"
+            )
+        record_digest = hashlib.sha256(
+            serialized_record.encode("utf-8")
+        ).hexdigest()
+        now = _utc_now()
+        with self._transaction() as connection:
+            existing = connection.execute(
+                """
+                SELECT *
+                FROM release_channel_category_attribute_selections
+                WHERE selection_digest = ?
+                """,
+                (selection["selection_digest"],),
+            ).fetchone()
+            created = existing is None
+            if existing is not None:
+                if (
+                    existing["record_json"] != serialized_record
+                    or existing["record_digest"] != record_digest
+                    or existing["product_id"] != selection["product_id"]
+                    or existing["product_revision"]
+                    != selection["product_revision"]
+                    or existing["context_digest"]
+                    != selection["context_digest"]
+                    or existing["options_digest"]
+                    != selection["options_digest"]
+                ):
+                    raise ImmutableReleaseError(
+                        "channel category attribute selection is immutable"
+                    )
+            else:
+                connection.execute(
+                    """
+                    INSERT INTO release_channel_category_attribute_selections (
+                        selection_digest, product_id, product_revision,
+                        channel, mode, context_digest, options_digest,
+                        category_identity_digest, attribute_tree_digest,
+                        record_json, record_digest, approved_by, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Kyle', ?)
+                    """,
+                    (
+                        selection["selection_digest"],
+                        selection["product_id"],
+                        selection["product_revision"],
+                        selection["channel"],
+                        selection["mode"],
+                        selection["context_digest"],
+                        selection["options_digest"],
+                        selection["category_identity_digest"],
+                        selection["attribute_tree_digest"],
+                        serialized_record,
+                        record_digest,
+                        now,
+                    ),
+                )
+            connection.execute(
+                """
+                INSERT INTO release_active_channel_category_attribute_selections (
+                    product_id, product_revision, channel, mode,
+                    selection_digest, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(product_id, product_revision, channel, mode)
+                DO UPDATE SET
+                    selection_digest = excluded.selection_digest,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    selection["product_id"],
+                    selection["product_revision"],
+                    selection["channel"],
+                    selection["mode"],
+                    selection["selection_digest"],
+                    now,
+                ),
+            )
+        return {
+            "selection": selection,
+            "record_json": serialized_record,
+            "record_digest": record_digest,
+            "created": created,
+        }
+
+    def channel_category_attribute_selection(
+        self,
+        *,
+        product_id: object,
+        product_revision: object,
+        channel: object,
+        mode: object,
+        context_digest: object | None = None,
+    ) -> dict[str, Any] | None:
+        """Read and fully validate the active Kyle attribute intent."""
+
+        from shared_platform.channel_category_decisions import (
+            rehydrate_attribute_selection,
+            serialize_attribute_selection,
+        )
+
+        clean_product_id = _text(product_id)
+        clean_channel = _text(channel)
+        clean_mode = _text(mode)
+        if (
+            not clean_product_id
+            or type(product_revision) is not int
+            or product_revision < 0
+            or not clean_channel
+            or not clean_mode
+            or not self.path.is_file()
+        ):
+            return None
+        clean_context_digest = (
+            _sha256_text(context_digest, field="context_digest")
+            if context_digest is not None
+            else None
+        )
+        with self._connect_readonly() as connection:
+            try:
+                row = connection.execute(
+                    """
+                    SELECT selection.*
+                    FROM release_active_channel_category_attribute_selections
+                        AS active
+                    JOIN release_channel_category_attribute_selections
+                        AS selection
+                      ON selection.selection_digest =
+                         active.selection_digest
+                    WHERE active.product_id = ?
+                      AND active.product_revision = ?
+                      AND active.channel = ?
+                      AND active.mode = ?
+                    """,
+                    (
+                        clean_product_id,
+                        product_revision,
+                        clean_channel,
+                        clean_mode,
+                    ),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return None
+        if not row:
+            return None
+        result = dict(row)
+        selection = rehydrate_attribute_selection(result["record_json"])
+        if (
+            serialize_attribute_selection(selection)
+            != result["record_json"]
+            or hashlib.sha256(
+                result["record_json"].encode("utf-8")
+            ).hexdigest()
+            != result["record_digest"]
+            or any(
+                selection[field] != result[field]
+                for field in (
+                    "selection_digest",
+                    "product_id",
+                    "product_revision",
+                    "channel",
+                    "mode",
+                    "context_digest",
+                    "options_digest",
+                    "category_identity_digest",
+                    "attribute_tree_digest",
+                    "approved_by",
+                )
+            )
+        ):
+            raise ImmutableReleaseError(
+                "stored channel category attribute selection is invalid"
+            )
+        if (
+            clean_context_digest is not None
+            and selection["context_digest"] != clean_context_digest
+        ):
+            return None
+        return {
+            **result,
+            "selection": selection,
+        }
 
     def persist_channel_category_decision(
         self,

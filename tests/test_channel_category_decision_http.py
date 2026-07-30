@@ -65,17 +65,19 @@ def _observed_options(*, missing_required: bool = False) -> dict:
             {
                 "attribute_id": 9001,
                 "label": "Material",
-                "selection_kind": "single",
+                "selection_kind": "SINGLE",
                 "option_values": [
                     {
                         "value_id": 9002,
                         "original_value_name": "PVC",
+                        "recommended": True,
                     }
                 ],
+                "text_value_id": None,
             }
         ]
     return {
-        "schema_version": "channel-category-options-observation/v1",
+        "schema_version": "channel-category-options-observation/v2",
         "channel": "shopee",
         "mode": "NEW_GLOBAL",
         "authority": "shopee_official_category_get",
@@ -88,6 +90,28 @@ def _observed_options(*, missing_required: bool = False) -> dict:
             recommended,
             option(101158, "Decorative Stickers", 2002),
         ],
+        "brand_options": [
+            {
+                "brand_id": 0,
+                "original_brand_name": "No Brand",
+                "evidence_digest": _digest("brand"),
+                "recommended": True,
+            }
+        ],
+        "location_options": [
+            {
+                "location_id": "CN-A",
+                "display_name": "China Warehouse A",
+                "evidence_digest": _digest("location"),
+                "recommended": True,
+            }
+        ],
+        "creation_defaults": {
+            "seller_stock_quantity": 200,
+            "condition": "NEW",
+            "preorder": {"is_pre_order": False, "days_to_ship": 0},
+            "evidence_digest": _digest("creation-defaults"),
+        },
     }
 
 
@@ -102,10 +126,13 @@ def category_context(tmp_path, monkeypatch):
         lambda **_kwargs: deepcopy(dashboard),
     )
 
-    def observe(payload):
+    def observe(payload, **_kwargs):
         return build_category_options(
             _observed_options(),
             context=product_server._channel_category_context(payload),
+            creation_seed=(
+                product_server._channel_category_creation_seed(payload)
+            ),
         )
 
     monkeypatch.setattr(
@@ -170,14 +197,33 @@ def _preview_url(base: str, offer_id: str) -> str:
 
 
 def _approval_body(preview: dict, selected_digest: str) -> dict:
+    brand = next(
+        row for row in preview["brand_options"] if row["recommended"]
+    )
+    location = next(
+        row for row in preview["location_options"] if row["recommended"]
+    )
     return {
         "offer_id": preview["offer_id"],
         "target_label": "shopee:GLOBAL",
         "expected_product_revision": preview["product_revision"],
         "expected_options_digest": preview["options_digest"],
         "selected_category_identity_digest": selected_digest,
+        "selected_brand_identity_digest": brand[
+            "brand_identity_digest"
+        ],
+        "selected_location_identity_digest": location[
+            "location_identity_digest"
+        ],
+        "selected_creation_fact_identity_digest": preview[
+            "creation_fact_option"
+        ]["creation_fact_identity_digest"],
         "approved_by": "Kyle",
         "confirm_channel_category_selection": True,
+        "confirm_seller_stock_quantity": True,
+        "confirm_condition_and_preorder": True,
+        "required_attribute_selections": [],
+        "confirm_required_attribute_selections": True,
     }
 
 
@@ -201,7 +247,11 @@ def test_http_get_post_reload_and_exact_key_schema(
         "options_digest",
         "recommendation",
         "options",
-        "selection",
+        "brand_options",
+        "location_options",
+        "creation_fact_option",
+            "selection",
+            "attribute_selection",
         "blocker",
         "next_action",
         "external_writes_performed",
@@ -294,10 +344,13 @@ def test_missing_required_attribute_is_public_and_not_approvable(
 ):
     dashboard, store = category_context
 
-    def observe(payload):
+    def observe(payload, **_kwargs):
         return build_category_options(
             _observed_options(missing_required=True),
             context=product_server._channel_category_context(payload),
+            creation_seed=(
+                product_server._channel_category_creation_seed(payload)
+            ),
         )
 
     monkeypatch.setattr(
@@ -317,9 +370,9 @@ def test_missing_required_attribute_is_public_and_not_approvable(
         "Material"
     )
     encoded = json.dumps(preview, ensure_ascii=False)
-    assert "attribute_id" not in encoded
-    assert "value_id" not in encoded
-    assert "PVC" not in encoded
+    assert '"attribute_id":' not in encoded
+    assert '"value_id":' not in encoded
+    assert "original_value_name" not in encoded
 
     status, response = _request(
         http_server
@@ -363,8 +416,21 @@ def test_local_selection_binds_final_plan_and_switch_invalidates_policy(
                 ],
                 "expected_options_digest": snapshot["options_digest"],
                 "selected_category_identity_digest": first,
+                "selected_brand_identity_digest": snapshot[
+                    "brand_options"
+                ][0]["brand_identity_digest"],
+                "selected_location_identity_digest": snapshot[
+                    "location_options"
+                ][0]["location_identity_digest"],
+                "selected_creation_fact_identity_digest": snapshot[
+                    "creation_fact_option"
+                ]["creation_fact_identity_digest"],
                 "approved_by": "Kyle",
                 "confirm_channel_category_selection": True,
+                "confirm_seller_stock_quantity": True,
+                "confirm_condition_and_preorder": True,
+                "required_attribute_selections": [],
+                "confirm_required_attribute_selections": True,
             }
         )
     )
@@ -402,8 +468,21 @@ def test_local_selection_binds_final_plan_and_switch_invalidates_policy(
                 ],
                 "expected_options_digest": snapshot["options_digest"],
                 "selected_category_identity_digest": second,
+                "selected_brand_identity_digest": snapshot[
+                    "brand_options"
+                ][0]["brand_identity_digest"],
+                "selected_location_identity_digest": snapshot[
+                    "location_options"
+                ][0]["location_identity_digest"],
+                "selected_creation_fact_identity_digest": snapshot[
+                    "creation_fact_option"
+                ]["creation_fact_identity_digest"],
                 "approved_by": "Kyle",
                 "confirm_channel_category_selection": True,
+                "confirm_seller_stock_quantity": True,
+                "confirm_condition_and_preorder": True,
+                "required_attribute_selections": [],
+                "confirm_required_attribute_selections": True,
             }
         )
     )
@@ -423,6 +502,172 @@ def test_local_selection_binds_final_plan_and_switch_invalidates_policy(
     ]["decision_digest"] == second_response["selection"][
         "decision_digest"
     ]
+
+
+def test_required_attribute_single_post_rechecks_and_replay_is_local(
+    category_context,
+    http_server,
+    monkeypatch,
+):
+    dashboard, store = category_context
+    calls = []
+
+    def observe(payload, *, attribute_selection=None):
+        calls.append(attribute_selection is not None)
+        observed = _observed_options(missing_required=True)
+        if attribute_selection is not None:
+            row = observed["options"][0]
+            row["selected_attributes"] = attribute_selection[
+                "selected_attributes"
+            ]
+            row["attributes_complete"] = True
+            row["required_values_complete"] = True
+            row["missing_required_attributes"] = []
+        return build_category_options(
+            observed,
+            context=product_server._channel_category_context(payload),
+            creation_seed=(
+                product_server._channel_category_creation_seed(payload)
+            ),
+        )
+
+    monkeypatch.setattr(
+        product_server,
+        "_observe_channel_category_options",
+        observe,
+    )
+    status, preview = _request(
+        _preview_url(http_server, dashboard["product"]["offer_id"])
+    )
+    assert status == 200
+    offered = next(
+        row for row in preview["options"] if row["recommended"]
+    )
+    attribute = offered["missing_required_attributes"][0]
+    body = _approval_body(
+        preview,
+        offered["category_identity_digest"],
+    )
+    body["required_attribute_selections"] = [
+        {
+            "attribute_identity_digest": attribute[
+                "attribute_identity_digest"
+            ],
+            "selection_kind": "SINGLE",
+            "selected_option_identity_digests": [
+                attribute["option_values"][0][
+                    "option_identity_digest"
+                ]
+            ],
+            "text_value": None,
+            "confirm_attribute_selection": True,
+        }
+    ]
+    endpoint = (
+        http_server
+        + "/api/product-workspace/channel-category-decision"
+    )
+    status, selected = _request(
+        endpoint,
+        method="POST",
+        payload=body,
+    )
+    assert status == 200
+    assert selected["status"] == "SELECTED"
+    assert selected["attribute_selection"]["selection_count"] == 1
+    assert selected["external_writes_performed"] == []
+    assert calls == [False, False, True]
+    status, replay = _request(
+        endpoint,
+        method="POST",
+        payload=body,
+    )
+    assert status == 200
+    assert replay["status"] == "SELECTED"
+    assert replay["created"] is False
+    assert store.channel_category_decision(
+        product_id=dashboard["product"]["offer_id"],
+        product_revision=dashboard["product"]["revision"],
+        channel="shopee",
+        mode="NEW_GLOBAL",
+    ) is not None
+
+
+def test_recheck_required_is_resumed_by_get_without_second_post(
+    category_context,
+    http_server,
+    monkeypatch,
+):
+    dashboard, _store = category_context
+    allow_recheck = {"value": False}
+
+    def observe(payload, *, attribute_selection=None):
+        observed = _observed_options(missing_required=True)
+        if attribute_selection is not None and allow_recheck["value"]:
+            row = observed["options"][0]
+            row["selected_attributes"] = attribute_selection[
+                "selected_attributes"
+            ]
+            row["attributes_complete"] = True
+            row["required_values_complete"] = True
+            row["missing_required_attributes"] = []
+        return build_category_options(
+            observed,
+            context=product_server._channel_category_context(payload),
+            creation_seed=(
+                product_server._channel_category_creation_seed(payload)
+            ),
+        )
+
+    monkeypatch.setattr(
+        product_server,
+        "_observe_channel_category_options",
+        observe,
+    )
+    preview_url = _preview_url(
+        http_server,
+        dashboard["product"]["offer_id"],
+    )
+    status, preview = _request(preview_url)
+    assert status == 200
+    offered = next(
+        row for row in preview["options"] if row["recommended"]
+    )
+    attribute = offered["missing_required_attributes"][0]
+    body = _approval_body(
+        preview,
+        offered["category_identity_digest"],
+    )
+    body["required_attribute_selections"] = [
+        {
+            "attribute_identity_digest": attribute[
+                "attribute_identity_digest"
+            ],
+            "selection_kind": "SINGLE",
+            "selected_option_identity_digests": [
+                attribute["option_values"][0][
+                    "option_identity_digest"
+                ]
+            ],
+            "text_value": None,
+            "confirm_attribute_selection": True,
+        }
+    ]
+    status, pending = _request(
+        http_server
+        + "/api/product-workspace/channel-category-decision",
+        method="POST",
+        payload=body,
+    )
+    assert status == 200
+    assert pending["status"] == "RECHECK_REQUIRED"
+    assert pending["selection"] is None
+    allow_recheck["value"] = True
+    status, completed = _request(preview_url)
+    assert status == 200
+    assert completed["status"] == "SELECTED"
+    assert completed["attribute_selection"]["selection_count"] == 1
+    assert completed["external_writes_performed"] == []
 
 
 def test_get_query_shape_and_wrong_target_are_rejected(

@@ -611,6 +611,19 @@ def test_shopee_global_plan_ui_is_redacted_and_fail_closed():
     assert "shopee-global-plan-preview/v1" in script
     assert "shopee-global-plan-candidate/v1" in script
     assert "approved-shopee-global-plan/v1" in script
+    assert "approved-shopee-global-plan/v2" in script
+    assert (
+        '["approved-shopee-global-plan/v1", "NEW_GLOBAL"]'
+        in validator
+    )
+    assert (
+        '["approved-shopee-global-plan/v2", "EXISTING_GLOBAL"]'
+        in validator
+    )
+    assert (
+        "APPROVED_SHOPEE_GLOBAL_PLAN_SCHEMA_MODES.get("
+        in validator
+    )
     assert '"BLOCKED_AUTH"' in validator
     assert '"BLOCKED_CAPABILITY"' in validator
     assert "reason_category" in validator

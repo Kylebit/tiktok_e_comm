@@ -100,9 +100,9 @@
     "shopee-global-plan-candidate/v1";
   const SHOPEE_GLOBAL_PLAN_APPROVAL_SCHEMA =
     "shopee-global-plan-approval-response/v1";
-  const APPROVED_SHOPEE_GLOBAL_PLAN_SCHEMAS = new Set([
-    "approved-shopee-global-plan/v1",
-    "approved-shopee-global-plan/v2",
+  const APPROVED_SHOPEE_GLOBAL_PLAN_SCHEMA_MODES = new Map([
+    ["approved-shopee-global-plan/v1", "NEW_GLOBAL"],
+    ["approved-shopee-global-plan/v2", "EXISTING_GLOBAL"],
   ]);
   const ONECLICK_TERMINAL_PHASES = new Set([
     "SUCCEEDED",
@@ -1648,12 +1648,11 @@
     ];
     if (
       !exactObjectKeys(approval, keys)
-      || !APPROVED_SHOPEE_GLOBAL_PLAN_SCHEMAS.has(
+      || APPROVED_SHOPEE_GLOBAL_PLAN_SCHEMA_MODES.get(
         approval.schema_version
-      )
+      ) !== approval.mode
       || approval.approved_by !== "Kyle"
       || approval.literal_consent_recorded !== true
-      || !["NEW_GLOBAL", "EXISTING_GLOBAL"].includes(approval.mode)
       || approval.status !== "APPROVED"
       || !exactObjectKeys(approval.counts, SHOPEE_GLOBAL_PLAN_COUNT_KEYS)
       || Object.values(approval.counts).some((count) => (

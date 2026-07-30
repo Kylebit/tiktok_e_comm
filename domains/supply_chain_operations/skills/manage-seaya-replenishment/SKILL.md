@@ -25,12 +25,13 @@ Run `scripts/validate_inventory_snapshot.py SNAPSHOT.json` before consuming a ne
 2. Read inventory from the strongest available current source: audited read-only API, logged-in Seaya browser page, or official export.
 3. Capture complete identity and inventory fields. Read `references/decision-contract.md`.
 4. Reconcile exact aliases. Preserve source identifiers and mapping evidence.
-5. Join demand by exact country and SKU. Combine TikTok and Shopee only within the same country. Distinguish `PENDING_REFRESH` (mapping and refresh credential exist, access token expired, pull not run) from `BLOCKED_AUTH`; never interpret missing demand as zero.
-6. Calculate lead-time demand, arrival stock, target coverage, recommended quantity, head freight, handling cost, and known savings.
-7. Keep recommendations fail-closed when identity, inventory, demand, dimensions, weight, cost, tax policy, or freight policy is unavailable.
-8. Update the local dashboard without external business writes.
-9. Verify each country, SKU main image, source evidence, blockers, and batch totals in a browser.
-10. Run focused and full relevant tests, commit on the authorized branch, and do not push unless requested.
+5. Join demand by exact country and SKU. Combine TikTok and Shopee only within the same country. Distinguish `PENDING_REFRESH` (mapping and refresh credential exist, access token expired, pull not run) from `BLOCKED_AUTH`; never interpret missing demand as zero. After a successful complete pull, every included channel fact must be `READY`, retain its exact window and coverage evidence, and replace pending placeholders rather than layering data on top of them.
+6. For Shopee demand, accept a canonical 4-digit SKU or the explicitly approved `77xxxx` / `99xxxx` aliases. When a model SKU has another shape, resolve it only through an exact `(item_id, model_id) -> catalog seller_sku` relation. Never use title or image similarity. Keep unresolved item lines visible as excluded evidence.
+7. Calculate lead-time demand, arrival stock, target coverage, recommended quantity, head freight, handling cost, and known savings.
+8. Keep recommendations fail-closed when identity, inventory, demand, dimensions, weight, cost, tax policy, or freight policy is unavailable.
+9. Update the local dashboard without external business writes.
+10. Verify each country, SKU main image, source evidence, blockers, and batch totals in a browser.
+11. Run focused and full relevant tests, commit on the authorized branch, and do not push unless requested.
 
 ## Maintain manual completion
 
@@ -62,6 +63,7 @@ Do not declare the feature complete when the sync check fails.
 
 - Default to read-only operations.
 - Never log, display, persist, or commit credentials, tokens, cookies, or raw sensitive responses.
+- Persist only redacted SKU aggregates in dashboard source. Keep order numbers and raw escrow responses in ignored local runtime files.
 - Do not use production mutations to test inventory logic.
 - Report network reads, auth writes, business writes, rollback, unknown outcomes, and external writes separately.
 - Distinguish captured facts, user-approved policy, conservative assumptions, and blockers.

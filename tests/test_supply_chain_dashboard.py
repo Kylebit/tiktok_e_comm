@@ -76,7 +76,7 @@ def test_thailand_truncated_codes_are_normalized_without_fuzzy_merging():
     assert _row(data, "TH", "0613")["inventory"]["available"] == 20
 
 
-def test_vietnam_and_philippines_exclude_records_without_complete_sku_identity():
+def test_vietnam_and_philippines_use_complete_shopee_settlement_snapshots():
     data = _data()
 
     assert sum(row["inventory"]["available"] for row in data["countries"]["VN"]) == 298
@@ -92,9 +92,31 @@ def test_vietnam_and_philippines_exclude_records_without_complete_sku_identity()
     for region in ("VN", "PH"):
         assert all("X" not in row["sku"] for row in data["countries"][region])
         assert all(
-            row["channels"]["shopee"]["state"] == "PENDING_REFRESH"
+            row["channels"]["shopee"]["state"] == "READY"
             for row in data["countries"][region]
         )
+        assert data["config"][region]["shopeeDemandEvidence"]["errors"] == 0
+
+    assert data["config"]["VN"]["shopeeDemandEvidence"] == {
+        "window": "2025-07-30~2026-07-30",
+        "orders": 205,
+        "successfulDetails": 205,
+        "errors": 0,
+        "mappedSkuCount": 49,
+        "catalogResolvedItems": 21,
+        "unmappedItemLines": 0,
+    }
+    assert data["config"]["PH"]["shopeeDemandEvidence"] == {
+        "window": "2025-07-30~2026-07-30",
+        "orders": 450,
+        "successfulDetails": 450,
+        "errors": 0,
+        "mappedSkuCount": 76,
+        "catalogResolvedItems": 193,
+        "unmappedItemLines": 19,
+    }
+    assert sum(row["channels"]["shopee"]["units"] for row in data["countries"]["VN"]) == 273
+    assert sum(row["channels"]["shopee"]["units"] for row in data["countries"]["PH"]) == 622
 
 
 def test_every_displayed_sku_has_a_local_main_image_and_both_channels():
@@ -107,10 +129,34 @@ def test_every_displayed_sku_has_a_local_main_image_and_both_channels():
             assert set(row["channels"]) == {"tiktok", "shopee"}
             assert (DASHBOARD / row["image"]).is_file()
             if row["kind"] == "first_stock":
-                assert len(row["dimensionsCm"]) == 3
-                assert all(type(value) in (int, float) and value > 0 for value in row["dimensionsCm"])
-                assert type(row["weightG"]) in (int, float) and row["weightG"] > 0
-                assert type(row["costCny"]) in (int, float) and row["costCny"] > 0
+                complete = (
+                    isinstance(row["dimensionsCm"], list)
+                    and len(row["dimensionsCm"]) == 3
+                    and all(
+                        type(value) in (int, float) and value > 0
+                        for value in row["dimensionsCm"]
+                    )
+                    and type(row["weightG"]) in (int, float)
+                    and row["weightG"] > 0
+                    and type(row["costCny"]) in (int, float)
+                    and row["costCny"] > 0
+                )
+                assert row["dimensionsCm"] is None or (
+                    isinstance(row["dimensionsCm"], list)
+                    and len(row["dimensionsCm"]) == 3
+                )
+                assert row["weightG"] is None or (
+                    type(row["weightG"]) in (int, float) and row["weightG"] >= 0
+                )
+                assert row["costCny"] is None or (
+                    type(row["costCny"]) in (int, float) and row["costCny"] >= 0
+                )
+                if not complete:
+                    assert (
+                        row["dimensionsCm"] is None
+                        or row["weightG"] in (None, 0)
+                        or row["costCny"] in (None, 0)
+                    )
 
 
 def test_dashboard_loads_facts_before_calculation_code_and_has_four_country_tabs():
@@ -135,6 +181,8 @@ def test_dashboard_contains_no_remote_image_or_secret_dependency_and_marks_block
     assert "BLOCKED_AUTH" in app
     assert "PENDING_REFRESH" in app
     assert "inventoryIdentityBlocker" in app
+    assert "shopeeDemandEvidence" in app
+    assert "unmappedItemLines" in app
     assert "082X" not in data_text
     assert 'typeof effectiveItem.costCny === "number"' in app
 

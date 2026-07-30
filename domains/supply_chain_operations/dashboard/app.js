@@ -275,10 +275,15 @@ function renderCountry() {
   const identityEvidence = config.inventoryIdentityBlocker
     ? `<article class="warn"><strong>完整 SKU 身份待恢复</strong><p>${config.inventoryIdentityBlocker}</p></article>`
     : "";
+  const shopeeAudit = config.shopeeDemandEvidence;
+  const unmappedEvidence = shopeeAudit?.unmappedItemLines
+    ? `<article class="warn"><strong>Shopee 明细待映射</strong><p>完整结算已拉取，但 ${shopeeAudit.unmappedItemLines} 条商品明细无可审计 4 位 SKU 映射，已排除自动备货计算，未伪造销量。</p></article>`
+    : "";
   document.querySelector("#evidenceGrid").innerHTML = `
     <article class="${demandEvidenceClass}"><strong>${shopeeState ? "Shopee 需求暂未纳入" : "双平台需求已合并"}</strong><p>${demandEvidenceText}</p></article>
     <article class="ok"><strong>库存按国家隔离</strong><p>${config.warehouse} 当前可用 ${available} 件、在途 ${inbound} 件；不使用其他国家仓库存抵扣本国需求。</p></article>
     ${identityEvidence}
+    ${unmappedEvidence}
     <article class="ok"><strong>首批候选有硬门槛</strong><p>${firstCount} 款海外仓尚无的候选进入台账；没有尺寸、重量、成本、主图或足够需求的 SKU 已关闭。</p></article>
     <article class="${activeRegion === "TH" ? "warn" : "ok"}"><strong>运费证据范围</strong><p>${config.shippingCoverage}。</p></article>
     <article class="warn"><strong>报价时点风险</strong><p>头程引用 2026-05-21 报价表；正式出货前应向物流商复核价格、敏感货属性与最低计费规则。</p></article>

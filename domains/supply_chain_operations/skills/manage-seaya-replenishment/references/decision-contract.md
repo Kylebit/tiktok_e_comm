@@ -38,6 +38,8 @@ Otherwise:
 
 Unavailable or pending channels remain visible and contribute no fabricated units. Use `PENDING_REFRESH` when the shop mapping and refresh token exist but the access token is expired and refresh/pull has not run. Reserve `BLOCKED_AUTH` for genuinely missing or rejected authorization.
 
+For Shopee settlement demand, a complete pull means every listed order page and every escrow detail succeeded for the declared window. Aggregate `quantity_purchased`, discounted customer payment, and allocated actual shipping fee by exact SKU. Approved channel aliases are only four digits, `77+four digits`, and `99+four digits`. Any other model SKU must resolve through the exact Shopee `(item_id, model_id)` catalog key. Unresolved lines remain excluded evidence and must never be matched by title or image similarity.
+
 ## Quantity
 
 - `lead_demand = ceil(v × lead_days)`

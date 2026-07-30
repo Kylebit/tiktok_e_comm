@@ -63,6 +63,11 @@ def test_skill_has_ui_metadata_and_hard_no_truncation_rule():
     assert "BLOCKED_IDENTITY" in skill
     assert "`770821 → 0821`" in skill
     assert "PENDING_REFRESH" in skill
+    assert "(item_id, model_id) -> catalog seller_sku" in skill
+    assert "title or image similarity" in skill
+    assert "apply_shopee_demand.py" in {
+        path.name for path in (SKILL / "scripts").iterdir()
+    }
     assert "verify_dashboard_sync.py --check" in skill
     assert "$manage-seaya-replenishment" in ui
 

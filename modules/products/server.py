@@ -2004,6 +2004,35 @@ def _release_plan_payload_from_dashboard(
             )
         ),
     }
+    if any(
+        label
+        in {
+            "tiktok:LH_PH",
+            "tiktok:LH_MY",
+            "tiktok:LH_TH",
+            "tiktok:LH_VN",
+            "shopee:PH",
+            "shopee:MY",
+            "shopee:TH",
+            "shopee:VN",
+        }
+        for label in targets
+    ):
+        from shared_platform.postpublish_promotions import (
+            build_approved_postpublish_promotion_policy,
+        )
+
+        # Kyle approved this server-owned, versioned policy on 2026-07-30.
+        # It is derived here for every *new* immutable plan.  Existing stored
+        # plans are never rewritten and browser/dashboard fields cannot
+        # inject, remove, or override it.
+        payload["approved_postpublish_promotion_policy"] = (
+            build_approved_postpublish_promotion_policy(
+                approval_reference=(
+                    "Kyle-20260730-existing-ongoing-direct-discount"
+                ),
+            )
+        )
     has_shopee_target = any(
         type(label) is str and label.startswith("shopee:")
         for label in targets

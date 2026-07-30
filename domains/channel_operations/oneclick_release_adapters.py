@@ -640,7 +640,7 @@ def production_adapter_registry(
         ),
         "ozon_product_publish": ("ozon:RU",),
     }
-    return {
+    registry = {
         name: AdapterRegistration(
             adapter_name=name,
             target_labels=labels,
@@ -658,6 +658,111 @@ def production_adapter_registry(
         )
         for name, labels in registrations.items()
     }
+    from modules.tiktok.oneclick_promotion import (
+        promotion_adapter_policy_digest,
+    )
+
+    promotion_targets = tuple(
+        f"promotion:{channel}:{site}"
+        for channel, site in (
+            ("shopee", "MY"),
+            ("shopee", "PH"),
+            ("shopee", "TH"),
+            ("shopee", "VN"),
+            ("tiktok", "LH_MY"),
+            ("tiktok", "LH_PH"),
+            ("tiktok", "LH_TH"),
+            ("tiktok", "LH_VN"),
+        )
+    )
+    registry["postpublish_promotion"] = AdapterRegistration(
+        adapter_name="postpublish_promotion",
+        target_labels=promotion_targets,
+        prepare=_prepare_postpublish_promotion,
+        dispatch=_dispatch_postpublish_promotion,
+        policy_digest=promotion_adapter_policy_digest(),
+        prepare_is_read_only=True,
+        consumes_prepared_command=True,
+        preserves_idempotency_key=True,
+        reports_truthful_receipt=True,
+    )
+    return registry
+
+
+def _prepare_postpublish_promotion(request: object) -> Mapping[str, object]:
+    from modules.tiktok.oneclick_promotion import (
+        TikTokPromotionBlocked,
+        prepare_postpublish_promotion,
+    )
+    from shared_platform.postpublish_promotions import (
+        PostpublishPromotionContractError,
+    )
+
+    try:
+        return prepare_postpublish_promotion(request)
+    except TikTokPromotionBlocked as error:
+        return {
+            "classification": error.classification,
+            "reason_category": error.reason_category,
+            "reason_scope": "TARGET",
+            "reason_code": error.reason_code,
+            "reason_detail": error.reason_detail,
+            "command": None,
+            "proof": None,
+            "manual_after_submit": False,
+        }
+    except PostpublishPromotionContractError as error:
+        return {
+            "classification": "BLOCKED_CAPABILITY",
+            "reason_category": "SYSTEMIC_CONTRACT",
+            "reason_scope": "TARGET",
+            "reason_code": "approved_promotion_policy_invalid",
+            "reason_detail": str(error),
+            "command": None,
+            "proof": None,
+            "manual_after_submit": False,
+        }
+
+
+def _dispatch_postpublish_promotion(
+    request: object,
+) -> Mapping[str, object]:
+    from modules.tiktok.oneclick_promotion import (
+        TikTokPromotionBlocked,
+        TikTokPromotionDispatchError,
+        TikTokPromotionPreDispatchError,
+        dispatch_postpublish_promotion,
+    )
+    from shared_platform.postpublish_promotions import (
+        PostpublishPromotionContractError,
+    )
+    from shared_platform.oneclick_release_controlplane import (
+        DispatchInvocationError,
+        PreDispatchInvocationError,
+    )
+
+    try:
+        return dispatch_postpublish_promotion(request)
+    except TikTokPromotionPreDispatchError as error:
+        raise PreDispatchInvocationError(str(error)) from error
+    except (
+        TikTokPromotionBlocked,
+        PostpublishPromotionContractError,
+    ) as error:
+        raise PreDispatchInvocationError(str(error)) from error
+    except TikTokPromotionDispatchError as error:
+        raise DispatchInvocationError(
+            str(error),
+            external_writes=error.external_writes,
+            dispatch_outcome_unknown=error.dispatch_outcome_unknown,
+            external_write_count=error.external_write_count,
+            confirmed_external_write_count_lower_bound=(
+                error.confirmed_external_write_count_lower_bound
+            ),
+            possible_external_write_count_upper_bound=(
+                error.possible_external_write_count_upper_bound
+            ),
+        ) from error
 
 
 def _production_provider_factory() -> OneClickProvider:

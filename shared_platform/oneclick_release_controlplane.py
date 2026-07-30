@@ -25,6 +25,13 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from shared_platform.postpublish_promotions import (
+    enabled_promotion_action_targets,
+    is_postpublish_promotion_target,
+    promotion_policy_digest,
+    promotion_prerequisite_target,
+    TIKTOK_PROMOTION_WRITE_CLASS,
+)
 from shared_platform.release_store import ReleaseStore
 
 
@@ -32,7 +39,7 @@ PREPARED_COMMAND_SCHEMA = "release-target-prepared-command/v2"
 BATCH_PREPARATION_SCHEMA = "release-batch-preparation/v2"
 PUBLIC_STATUS_SCHEMA = "oneclick-release-status/v2"
 REGISTRY_SCHEMA = "release-adapter-registry/v1"
-DEPENDENCY_POLICY_VERSION = "oneclick-target-dependency/v1"
+DEPENDENCY_POLICY_VERSION = "oneclick-target-dependency/v2"
 SHARED_RESOURCE_SCHEMA = "oneclick-shared-resource/v1"
 MANUAL_ACCEPTANCE_RESOLUTION_SCHEMA = (
     "release-outcome-manual-acceptance/v1"
@@ -241,6 +248,7 @@ class PrepareTargetRequest:
     adapter_policy_digest: str
     idempotency_key: str
     immutable_plan_payload: Mapping[str, Any]
+    prerequisite_context: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -872,7 +880,10 @@ class OneClickReleaseStore:
                 ),
             )
             targets = _target_labels(plan)
-            execution_targets = _execution_target_labels(targets)
+            execution_targets = _execution_target_labels(
+                targets,
+                plan["payload"],
+            )
             rows = _run_targets(run)
             connection.executemany(
                 """
@@ -888,12 +899,17 @@ class OneClickReleaseStore:
                         label,
                         ordinal,
                         int(
-                            label not in {_COMMON_LABEL, SHOPEE_GLOBAL_TARGET}
+                            label
+                            not in {_COMMON_LABEL, SHOPEE_GLOBAL_TARGET}
+                            and not is_postpublish_promotion_target(label)
                         ),
                         int(label == SHOPEE_GLOBAL_TARGET),
                         (
                             PENDING
-                            if label == SHOPEE_GLOBAL_TARGET
+                            if (
+                                label == SHOPEE_GLOBAL_TARGET
+                                or is_postpublish_promotion_target(label)
+                            )
                             else _initial_public_status(rows[label])
                         ),
                         _adapter_name_for_target(label),
@@ -1340,7 +1356,24 @@ class OneClickReleaseStore:
 
         prepared_rows: list[dict[str, Any]] = []
         systemic: dict[str, str] | None = None
+        status_by_label = {
+            row["target_label"]: row["status"]
+            for row in context["targets"]
+        }
         for row in context["targets"]:
+            if (
+                is_postpublish_promotion_target(row["target_label"])
+                and row["status"] == PENDING
+                and _dependency_state(
+                    row["target_label"],
+                    status_by_label,
+                )["satisfied"]
+                is not True
+            ):
+                # Promotion proof needs the verified external product identity
+                # produced by its prerequisite storefront.  Leave the action
+                # unprepared until that official readback exists.
+                continue
             result = self._prepare_one(context, row, registry)
             prepared_rows.append(result)
             if result["reason_scope"] == SYSTEMIC_IDENTITY_SCOPE:
@@ -1636,8 +1669,12 @@ class OneClickReleaseStore:
                 )
 
             is_control = bool(selected["control_target"])
+            is_action = is_postpublish_promotion_target(
+                selected["target_label"]
+            )
+            is_auxiliary = is_control or is_action
             canonical = None
-            if not is_control:
+            if not is_auxiliary:
                 canonical = connection.execute(
                     """
                     SELECT target.*, run.plan_id
@@ -1711,7 +1748,7 @@ class OneClickReleaseStore:
                 (now, job_id, selected["target_label"]),
             )
             canonical_claimed = None
-            if not is_control:
+            if not is_auxiliary:
                 canonical_claimed = connection.execute(
                     """
                     UPDATE release_target_runs
@@ -1733,7 +1770,7 @@ class OneClickReleaseStore:
                 and canonical_claimed.rowcount != 1
             ):
                 raise SystemicIdentityError("atomic target claim lost a race")
-            if not is_control:
+            if not is_auxiliary:
                 connection.execute(
                     """
                     UPDATE release_runs
@@ -1770,7 +1807,14 @@ class OneClickReleaseStore:
                 idempotency_key=(
                     _shopee_global_idempotency_key(context["job"])
                     if is_control
-                    else canonical["idempotency_key"]
+                    else (
+                        _promotion_idempotency_key(
+                            context["job"],
+                            selected["target_label"],
+                        )
+                        if is_action
+                        else canonical["idempotency_key"]
+                    )
                 ),
                 product_revision=context["job"]["product_revision"],
                 payload_digest=context["job"]["payload_digest"],
@@ -1795,7 +1839,14 @@ class OneClickReleaseStore:
                 shared_resource_context=(
                     _stored_shared_resource(selected, context=False)
                     if is_control
-                    else _stored_shared_resource(selected, context=True)
+                    else (
+                        None
+                        if is_action
+                        else _stored_shared_resource(
+                            selected,
+                            context=True,
+                        )
+                    )
                 ),
             )
 
@@ -1855,6 +1906,9 @@ class OneClickReleaseStore:
                 target["status"] != DISPATCHING
                 or (
                     target["control_target"] != 1
+                    and not is_postpublish_promotion_target(
+                        target["target_label"]
+                    )
                     and (
                         not canonical
                         or canonical["status"] != "RUNNING"
@@ -1931,7 +1985,51 @@ class OneClickReleaseStore:
                 raise AdapterContractError(
                     "storefront dispatch cannot report the Shopee global write"
                 )
-            if target["control_target"] != 1:
+            is_promotion = is_postpublish_promotion_target(
+                target["target_label"]
+            )
+            if is_promotion:
+                expected_progress_classes = (
+                    ()
+                    if write_boundary == "POST_RESPONSE_REJECTED"
+                    else (TIKTOK_PROMOTION_WRITE_CLASS,)
+                )
+                if additions != expected_progress_classes:
+                    raise AdapterContractError(
+                        "promotion progress must report its one approved write"
+                    )
+                if write_boundary not in {
+                    "PRE_INVOCATION_INTENT",
+                    "POST_RESPONSE_CONFIRMED",
+                    "POST_RESPONSE_REJECTED",
+                }:
+                    raise AdapterContractError(
+                        "promotion progress requires an exact write boundary"
+                    )
+                if (
+                    write_boundary == "PRE_INVOCATION_INTENT"
+                    and (
+                        addition_exact is not None
+                        or addition_lower != 0
+                        or addition_upper != 1
+                    )
+                ) or (
+                    write_boundary != "PRE_INVOCATION_INTENT"
+                    and (
+                        addition_exact is None
+                        or addition_exact != addition_lower
+                        or addition_exact != addition_upper
+                        or addition_exact not in {0, 1}
+                    )
+                ):
+                    raise AdapterContractError(
+                        "promotion progress bounds do not match its write boundary"
+                    )
+                if stage_value != "promotion_apply-1":
+                    raise AdapterContractError(
+                        "promotion write occurrence identity is invalid"
+                    )
+            if target["control_target"] != 1 and not is_promotion:
                 addition_exact, addition_lower, addition_upper = (
                     _validated_write_count_bounds(
                         additions,
@@ -1941,7 +2039,11 @@ class OneClickReleaseStore:
                         infer_legacy_exact=True,
                     )
                 )
-            if target["control_target"] != 1 and not additions:
+            if (
+                target["control_target"] != 1
+                and not is_promotion
+                and not additions
+            ):
                 raise AdapterContractError(
                     "dispatch progress requires a write class"
                 )
@@ -1951,7 +2053,7 @@ class OneClickReleaseStore:
             )
             pending_intent = _stored_pending_write_intent(target)
             next_pending = None
-            if target["control_target"] == 1:
+            if target["control_target"] == 1 or is_promotion:
                 occurrence = connection.execute(
                     """
                     SELECT * FROM oneclick_release_write_occurrences
@@ -1968,38 +2070,44 @@ class OneClickReleaseStore:
                 if write_boundary == "PRE_INVOCATION_INTENT":
                     if occurrence is not None:
                         raise AdapterContractError(
-                            "Shopee GLOBAL write occurrence was already opened"
+                            "write occurrence was already opened"
                         )
-                    declaration = _stored_shared_resource(
-                        target,
-                        context=False,
-                    )
-                    if not declaration:
-                        raise SystemicIdentityError(
-                            "Shopee GLOBAL write sequence declaration is unavailable"
+                    if target["control_target"] == 1:
+                        declaration = _stored_shared_resource(
+                            target,
+                            context=False,
                         )
-                    image_count = declaration[
-                        "approved_selected_image_count"
-                    ]
-                    if addition_lower < image_count:
-                        expected_occurrence = (
-                            f"image_upload-{addition_lower + 1}"
-                        )
-                        expected_classes = (
-                            SHOPEE_IMAGE_UPLOAD_WRITE,
-                        )
-                    elif addition_lower == image_count:
-                        expected_occurrence = "global_create-1"
-                        expected_classes = (
-                            SHOPEE_IMAGE_UPLOAD_WRITE,
-                            SHOPEE_GLOBAL_WRITE,
-                        )
-                    elif addition_lower == image_count + 1:
-                        expected_occurrence = "model_init-1"
-                        expected_classes = SHOPEE_GLOBAL_WRITE_CLASSES
+                        if not declaration:
+                            raise SystemicIdentityError(
+                                "Shopee GLOBAL write sequence declaration is unavailable"
+                            )
+                        image_count = declaration[
+                            "approved_selected_image_count"
+                        ]
+                        if addition_lower < image_count:
+                            expected_occurrence = (
+                                f"image_upload-{addition_lower + 1}"
+                            )
+                            expected_classes = (
+                                SHOPEE_IMAGE_UPLOAD_WRITE,
+                            )
+                        elif addition_lower == image_count:
+                            expected_occurrence = "global_create-1"
+                            expected_classes = (
+                                SHOPEE_IMAGE_UPLOAD_WRITE,
+                                SHOPEE_GLOBAL_WRITE,
+                            )
+                        elif addition_lower == image_count + 1:
+                            expected_occurrence = "model_init-1"
+                            expected_classes = SHOPEE_GLOBAL_WRITE_CLASSES
+                        else:
+                            raise AdapterContractError(
+                                "Shopee GLOBAL write sequence exceeded its approved plan"
+                            )
                     else:
-                        raise AdapterContractError(
-                            "Shopee GLOBAL write sequence exceeded its approved plan"
+                        expected_occurrence = "promotion_apply-1"
+                        expected_classes = (
+                            TIKTOK_PROMOTION_WRITE_CLASS,
                         )
                     if (
                         stage_value != expected_occurrence
@@ -2035,7 +2143,7 @@ class OneClickReleaseStore:
                     )
                     if occurrence is None:
                         raise AdapterContractError(
-                            "Shopee GLOBAL write resolution has no occurrence"
+                            "write resolution has no occurrence"
                         )
                     if occurrence["status"] != "OPEN":
                         if (
@@ -2050,14 +2158,14 @@ class OneClickReleaseStore:
                         ):
                             return
                         raise AdapterContractError(
-                            "Shopee GLOBAL write occurrence was already resolved"
+                            "write occurrence was already resolved"
                         )
                     if (
                         pending_intent is None
                         or pending_intent["stage"] != stage_value
                     ):
                         raise AdapterContractError(
-                            "Shopee GLOBAL write resolution has no matching intent"
+                            "write resolution has no matching intent"
                         )
                     if write_boundary == "POST_RESPONSE_CONFIRMED":
                         expected_classes = tuple(
@@ -2080,7 +2188,7 @@ class OneClickReleaseStore:
                         or addition_upper != expected_count
                     ):
                         raise AdapterContractError(
-                            "Shopee GLOBAL write resolution drifted from its intent"
+                            "write resolution drifted from its intent"
                         )
                 cumulative = additions
             else:
@@ -2109,7 +2217,7 @@ class OneClickReleaseStore:
                     "dispatch progress write-count bounds regressed"
                 )
             if (
-                target["control_target"] == 1
+                (target["control_target"] == 1 or is_promotion)
                 and write_boundary == "PRE_INVOCATION_INTENT"
             ):
                 connection.execute(
@@ -2136,7 +2244,7 @@ class OneClickReleaseStore:
                         now,
                     ),
                 )
-            elif target["control_target"] == 1:
+            elif target["control_target"] == 1 or is_promotion:
                 connection.execute(
                     """
                     UPDATE oneclick_release_write_occurrences
@@ -2321,6 +2429,17 @@ class OneClickReleaseStore:
             _require_dispatch_identity(job, target, request)
             if target["control_target"] == 1:
                 return self._record_shared_control_result_in_transaction(
+                    connection,
+                    job=job,
+                    target=target,
+                    request=request,
+                    result=result,
+                    now=now,
+                )
+            if is_postpublish_promotion_target(
+                target["target_label"]
+            ):
+                return self._record_postpublish_action_result_in_transaction(
                     connection,
                     job=job,
                     target=target,
@@ -2547,6 +2666,179 @@ class OneClickReleaseStore:
                 connection,
                 request.job_id,
             )
+
+    def _record_postpublish_action_result_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        job: Mapping[str, Any],
+        target: Mapping[str, Any],
+        request: DispatchTargetRequest,
+        result: DispatchTargetResult,
+        now: str,
+    ) -> dict[str, Any]:
+        prerequisite = promotion_prerequisite_target(
+            target["target_label"]
+        )
+        if (
+            prerequisite is None
+            or target["status"] != DISPATCHING
+            or target["dispatch_count"] < 1
+            or result.canonical_status
+            not in {
+                SUCCEEDED,
+                FAILED_PRE_SUBMIT,
+                RECONCILIATION_REQUIRED,
+                BLOCKED_AUTH,
+                BLOCKED_CAPABILITY,
+            }
+        ):
+            raise SystemicIdentityError(
+                "promotion receipt does not match an active action claim"
+            )
+        prerequisite_row = connection.execute(
+            """
+            SELECT target.status AS action_status,
+                   target.result_json,
+                   canonical.status AS canonical_status,
+                   canonical.external_id,
+                   readback.evidence_digest AS readback_evidence_digest
+            FROM oneclick_release_targets AS target
+            JOIN release_target_runs AS canonical
+              ON canonical.run_id = ?
+             AND canonical.target_label = target.target_label
+            JOIN release_target_readbacks AS readback
+              ON readback.run_id = canonical.run_id
+             AND readback.target_label = canonical.target_label
+            WHERE target.job_id = ? AND target.target_label = ?
+            """,
+            (request.run_id, request.job_id, prerequisite),
+        ).fetchone()
+        command_prerequisite = request.command.get("prerequisite")
+        proof_prerequisite = request.proof.get("prerequisite")
+        if (
+            not prerequisite_row
+            or prerequisite_row["action_status"]
+            not in {SUCCEEDED, SUCCEEDED_MANUAL_REVIEW}
+            or prerequisite_row["canonical_status"] != SUCCEEDED
+            or type(prerequisite_row["external_id"]) is not str
+            or not prerequisite_row["external_id"].strip()
+            or not _is_digest(
+                prerequisite_row["readback_evidence_digest"]
+            )
+            or not isinstance(command_prerequisite, Mapping)
+            or command_prerequisite != proof_prerequisite
+            or command_prerequisite.get("target_label") != prerequisite
+            or command_prerequisite.get("external_id")
+            != prerequisite_row["external_id"]
+            or command_prerequisite.get("readback_evidence_digest")
+            != prerequisite_row["readback_evidence_digest"]
+        ):
+            raise SystemicIdentityError(
+                "promotion prerequisite drifted after preparation"
+            )
+        cumulative = _stored_write_classes(target)
+        if any(item not in result.external_writes for item in cumulative):
+            raise AdapterContractError(
+                "promotion receipt omitted a confirmed write"
+            )
+        result_exact, result_lower, result_upper = (
+            _result_write_count_bounds(result)
+        )
+        _, stored_lower, stored_upper = _stored_write_count_bounds(target)
+        pending_intent = _stored_pending_write_intent(target)
+        if pending_intent is not None and not (
+            result.canonical_status == RECONCILIATION_REQUIRED
+            and result.dispatch_outcome_unknown is True
+            and result_exact is None
+            and result_lower == stored_lower
+            and result_upper == stored_upper
+        ):
+            raise AdapterContractError(
+                "promotion terminal receipt left an unresolved write intent"
+            )
+        if (
+            result_lower < stored_lower
+            or (
+                stored_upper is not None
+                and result_upper is not None
+                and result_upper < stored_upper
+            )
+        ):
+            raise AdapterContractError(
+                "promotion receipt omitted write-count evidence"
+            )
+        if result.canonical_status == SUCCEEDED and (
+            result.submission_accepted is not True
+            or result.readback_verified is not True
+            or result_exact != 1
+            or result.external_writes
+            != (TIKTOK_PROMOTION_WRITE_CLASS,)
+        ):
+            raise AdapterContractError(
+                "promotion success requires one exact write and official readback"
+            )
+        evidence = _canonical_evidence(request, result)
+        evidence_digest = _digest_json(evidence)
+        durable_detail = _durable_reason_detail(
+            result.reason_category,
+            result.reason_code,
+            result.reason_detail,
+        )
+        public_result = _public_result(result, evidence_digest)
+        connection.execute(
+            """
+            UPDATE oneclick_release_targets
+            SET status = ?, reason_category = ?, reason_scope = ?,
+                reason_code = ?, reason_detail = ?, result_json = ?,
+                cumulative_external_writes_json = ?,
+                cumulative_external_writes_digest = ?,
+                cumulative_external_write_count = ?,
+                cumulative_external_write_lower_bound = ?,
+                cumulative_external_write_upper_bound = ?,
+                updated_at = ?, completed_at = ?
+            WHERE job_id = ? AND target_label = ?
+              AND status = 'DISPATCHING'
+            """,
+            (
+                result.canonical_status,
+                result.reason_category,
+                result.reason_scope,
+                result.reason_code,
+                durable_detail,
+                _canonical_json(public_result),
+                _canonical_json(list(result.external_writes)),
+                _digest_json(list(result.external_writes)),
+                result_exact,
+                result_lower,
+                result_upper,
+                now,
+                now,
+                request.job_id,
+                request.target_label,
+            ),
+        )
+        _insert_outcome_receipt(
+            connection,
+            job=job,
+            target=target,
+            result=result,
+            evidence_digest=evidence_digest,
+            now=now,
+        )
+        self._refresh_job(connection, request.job_id)
+        self._event(
+            connection,
+            request.job_id,
+            request.target_label,
+            "POSTPUBLISH_ACTION_TERMINAL",
+            public_result,
+            now,
+        )
+        return self._project_job_in_transaction(
+            connection,
+            request.job_id,
+        )
 
     def _record_shared_control_result_in_transaction(
         self,
@@ -3125,7 +3417,12 @@ class OneClickReleaseStore:
                 )
                 interrupted_upper = (
                     possible_upper
-                    if row["control_target"] == 1
+                    if (
+                        row["control_target"] == 1
+                        or is_postpublish_promotion_target(
+                            row["target_label"]
+                        )
+                    )
                     else (
                         possible_upper + 1
                         if possible_upper is not None
@@ -3285,11 +3582,14 @@ class OneClickReleaseStore:
                         evidence_digest=digest,
                         now=now,
                     )
-                    self._refresh_canonical_run(
-                        connection,
-                        row["run_id"],
-                        now,
-                    )
+                    if not is_postpublish_promotion_target(
+                        row["target_label"]
+                    ):
+                        self._refresh_canonical_run(
+                            connection,
+                            row["run_id"],
+                            now,
+                        )
                 self._refresh_job(connection, row["job_id"])
                 recovered += 1
         return recovered
@@ -3450,6 +3750,22 @@ class OneClickReleaseStore:
                 "prepare_or_dispatch_seam_unavailable",
                 "adapter requires read-only prepare and governed dispatch seams",
             )
+        prerequisite_context = None
+        if is_postpublish_promotion_target(label):
+            try:
+                prerequisite_context = _promotion_prerequisite_context(
+                    context,
+                    label,
+                )
+            except SystemicIdentityError as error:
+                return _prepared_blocked_row(
+                    label,
+                    BLOCKED_CAPABILITY,
+                    BLOCKED_CAPABILITY,
+                    "SYSTEMIC_CONTRACT",
+                    "promotion_prerequisite_readback_invalid",
+                    str(error),
+                )
         request = PrepareTargetRequest(
             schema_version=PREPARED_COMMAND_SCHEMA,
             plan_id=context["job"]["plan_id"],
@@ -3473,6 +3789,7 @@ class OneClickReleaseStore:
             adapter_policy_digest=registration.policy_digest,
             idempotency_key=str(row["idempotency_key"]),
             immutable_plan_payload=context["plan"]["payload"],
+            prerequisite_context=prerequisite_context,
         )
         try:
             result = PrepareTargetResult.from_value(registration.prepare(request))
@@ -3552,6 +3869,9 @@ class OneClickReleaseStore:
             ],
             "payload": dict(result.proof or {}),
         }
+        if prerequisite_context is not None:
+            command["prerequisite"] = dict(prerequisite_context)
+            proof["prerequisite"] = dict(prerequisite_context)
         prepared = {
             "target_label": label,
             "classification": result.classification,
@@ -3627,7 +3947,10 @@ class OneClickReleaseStore:
         targets = _run_targets(run)
         source_identity = _resolve_plan_source_identity(plan["payload"])
         raw_targets = self._raw_targets(job_id)
-        expected_labels = _execution_target_labels(_target_labels(plan))
+        expected_labels = _execution_target_labels(
+            _target_labels(plan),
+            plan["payload"],
+        )
         if (
             [row["target_label"] for row in raw_targets] != expected_labels
             or sum(
@@ -3643,6 +3966,7 @@ class OneClickReleaseStore:
             "job": job,
             "plan": plan,
             "run": run,
+            "run_targets": targets,
             "source_identity": source_identity,
             "targets": [
                 {
@@ -3650,7 +3974,18 @@ class OneClickReleaseStore:
                     "idempotency_key": (
                         _shopee_global_idempotency_key(job)
                         if row["target_label"] == SHOPEE_GLOBAL_TARGET
-                        else targets[row["target_label"]]["idempotency_key"]
+                        else (
+                            _promotion_idempotency_key(
+                                job,
+                                row["target_label"],
+                            )
+                            if is_postpublish_promotion_target(
+                                row["target_label"]
+                            )
+                            else targets[row["target_label"]][
+                                "idempotency_key"
+                            ]
+                        )
                     ),
                 }
                 for row in raw_targets
@@ -3765,7 +4100,8 @@ class OneClickReleaseStore:
             != job["sku_lineage_payload_digest"]
             or _registry_digest(
                 _execution_target_labels(
-                    json.loads(plan["target_labels_json"])
+                    json.loads(plan["target_labels_json"]),
+                    plan_payload,
                 ),
                 registry,
             )
@@ -3840,12 +4176,31 @@ class OneClickReleaseStore:
             (job_id,),
         ).fetchall()
         statuses = [row["status"] for row in rows]
+        status_by_label = {
+            row["target_label"]: row["status"]
+            for row in rows
+        }
+        pending_promotion_dependencies = [
+            _dependency_state(row["target_label"], status_by_label)
+            for row in rows
+            if (
+                row["status"] == PENDING
+                and is_postpublish_promotion_target(row["target_label"])
+            )
+        ]
+        promotable_promotion = any(
+            dependency["satisfied"] is True
+            for dependency in pending_promotion_dependencies
+        )
         runnable_ready = _runnable_ready_count(rows)
         if any(status == DISPATCHING for status in statuses):
             status = "RUNNING"
             completed_at = None
         elif runnable_ready:
             status = "READY"
+            completed_at = None
+        elif promotable_promotion:
+            status = "PREPARING"
             completed_at = None
         elif any(status == RECONCILIATION_REQUIRED for status in statuses):
             status = "BLOCKED"
@@ -3865,6 +4220,18 @@ class OneClickReleaseStore:
             # claim can ever succeed.
             status = "BLOCKED"
             completed_at = _utc_now()
+        elif pending_promotion_dependencies:
+            status = (
+                "RUNNING"
+                if any(
+                    dependency["state"] == "WAITING"
+                    for dependency in pending_promotion_dependencies
+                )
+                else "BLOCKED"
+            )
+            completed_at = (
+                None if status == "RUNNING" else _utc_now()
+            )
         elif statuses and all(
             value
             in {
@@ -4040,6 +4407,11 @@ class OneClickReleaseStore:
             row for row in all_targets if not row["control_target"]
         ]
         storefronts = [row for row in targets if row["storefront"]]
+        postpublish_actions = [
+            row
+            for row in targets
+            if is_postpublish_promotion_target(row["target_label"])
+        ]
         will_dispatch = [
             row["target_label"]
             for row in storefronts
@@ -4112,13 +4484,36 @@ class OneClickReleaseStore:
                 target["runnable_now"] is True
                 for target in storefronts
             ),
+            "runnable_postpublish_action_count": sum(
+                target["runnable_now"] is True
+                for target in postpublish_actions
+            ),
             "summary": {
                 "will_dispatch": will_dispatch,
                 "manual_after_submit": manual_after_submit,
                 "blocked": blocked,
                 "already_terminal": already_terminal,
+                "postpublish_pending": [
+                    row["target_label"]
+                    for row in postpublish_actions
+                    if row["status"]
+                    in {PENDING, PREPARING, READY, DISPATCHING}
+                ],
+                "postpublish_recovery_required": [
+                    row["target_label"]
+                    for row in postpublish_actions
+                    if row["status"]
+                    in {
+                        FAILED_PRE_SUBMIT,
+                        RECONCILIATION_REQUIRED,
+                        BLOCKED_AUTH,
+                        BLOCKED_CAPABILITY,
+                    }
+                    or row["dependency"]["state"] == "BLOCKED"
+                ],
             },
             "targets": targets,
+            "postpublish_actions": postpublish_actions,
             "shared_controls": shared_controls,
             "created_at": job["created_at"],
             "updated_at": job["updated_at"],
@@ -4388,7 +4783,13 @@ class OneClickReleaseWorker:
                     possible_external_write_count_upper_bound=(
                         stored_upper
                         if (
-                            request.target_label == SHOPEE_GLOBAL_TARGET
+                            (
+                                request.target_label
+                                == SHOPEE_GLOBAL_TARGET
+                                or is_postpublish_promotion_target(
+                                    request.target_label
+                                )
+                            )
                             and pending_intent
                         )
                         else (
@@ -4465,7 +4866,10 @@ def build_batch_preview(
     # background worker calls ``prepare_job``.
     prepared_rows = []
     systemic = None
-    for label in _execution_target_labels(_target_labels(plan)):
+    for label in _execution_target_labels(
+        _target_labels(plan),
+        plan["payload"],
+    ):
         current_status = (
             PENDING
             if label == SHOPEE_GLOBAL_TARGET
@@ -4492,8 +4896,13 @@ def build_batch_preview(
         )
         public = {
             "target_label": result["target_label"],
-            "storefront": result["target_label"]
-            not in {_COMMON_LABEL, SHOPEE_GLOBAL_TARGET},
+            "storefront": (
+                result["target_label"]
+                not in {_COMMON_LABEL, SHOPEE_GLOBAL_TARGET}
+                and not is_postpublish_promotion_target(
+                    result["target_label"]
+                )
+            ),
             "control_target": (
                 result["target_label"] == SHOPEE_GLOBAL_TARGET
             ),
@@ -4559,6 +4968,11 @@ def build_batch_preview(
         row for row in prepared if not row["control_target"]
     ]
     storefronts = [row for row in visible_targets if row["storefront"]]
+    postpublish_actions = [
+        row
+        for row in visible_targets
+        if is_postpublish_promotion_target(row["target_label"])
+    ]
     prepare_pending = [
         row["target_label"]
         for row in storefronts
@@ -4585,6 +4999,7 @@ def build_batch_preview(
         "storefront_count": len(storefronts),
         "control_row_count": len(prepared) - len(storefronts),
         "runnable_target_count": 0,
+        "runnable_postpublish_action_count": 0,
         "preparation_pending_count": len(prepare_pending),
         "prepare_pending": prepare_pending,
         "start_allowed": bool(prepare_pending and systemic is None),
@@ -4625,6 +5040,7 @@ def build_batch_preview(
             }
         ],
         "targets": visible_targets,
+        "postpublish_actions": postpublish_actions,
         "shared_controls": shared_controls,
     }
 
@@ -4744,7 +5160,7 @@ def _batch_identity(
     sku_lineage_digest = _sku_lineage_identity_digest(sku_lineage)
     sku_lineage_payload_digest = _digest_json(sku_lineage)
     registry_digest = _registry_digest(
-        _execution_target_labels(targets),
+        _execution_target_labels(targets, payload),
         registry,
     )
     identity = {
@@ -4903,9 +5319,16 @@ def _target_labels(plan: Mapping[str, Any]) -> list[str]:
     return clean
 
 
-def _execution_target_labels(targets: list[str]) -> list[str]:
+def _execution_target_labels(
+    targets: list[str],
+    immutable_plan_payload: Mapping[str, Any] | None = None,
+) -> list[str]:
     """Add server-owned controls without changing approved storefront identity."""
 
+    if any(is_postpublish_promotion_target(label) for label in targets):
+        raise SystemicIdentityError(
+            "server-owned promotion action cannot be a storefront target"
+        )
     result = list(targets)
     if any(label.startswith("shopee:") for label in result):
         if SHOPEE_GLOBAL_TARGET in result:
@@ -4913,6 +5336,13 @@ def _execution_target_labels(targets: list[str]) -> list[str]:
                 "server-owned Shopee GLOBAL cannot be a storefront target"
             )
         result.insert(0, SHOPEE_GLOBAL_TARGET)
+    if immutable_plan_payload is not None:
+        result.extend(
+            enabled_promotion_action_targets(
+                immutable_plan_payload,
+                targets,
+            )
+        )
     return result
 
 
@@ -4955,6 +5385,27 @@ def _shopee_global_idempotency_key(job: Mapping[str, Any]) -> str:
     )[:32]
 
 
+def _promotion_idempotency_key(
+    job: Mapping[str, Any],
+    action_target: str,
+) -> str:
+    prerequisite = promotion_prerequisite_target(action_target)
+    if prerequisite is None:
+        raise SystemicIdentityError(
+            "post-publish promotion target is invalid"
+        )
+    return "oneclick-promotion:" + _digest_json(
+        {
+            "policy_digest": promotion_policy_digest(),
+            "job_id": job["job_id"],
+            "plan_id": job["plan_id"],
+            "payload_digest": job["payload_digest"],
+            "action_target": action_target,
+            "prerequisite_target": prerequisite,
+        }
+    )[:32]
+
+
 def _run_targets(run: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     rows = run.get("targets")
     if not isinstance(rows, list):
@@ -4968,6 +5419,68 @@ def _run_targets(run: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
             raise SystemicIdentityError("run target identity is ambiguous")
         result[label] = dict(row)
     return result
+
+
+def _promotion_prerequisite_context(
+    context: Mapping[str, Any],
+    action_target: str,
+) -> dict[str, Any]:
+    prerequisite = promotion_prerequisite_target(action_target)
+    if prerequisite is None:
+        raise SystemicIdentityError(
+            "post-publish promotion prerequisite is invalid"
+        )
+    oneclick_rows = {
+        row["target_label"]: row
+        for row in context.get("targets", ())
+    }
+    action_row = oneclick_rows.get(prerequisite)
+    run_targets = context.get("run_targets")
+    canonical = (
+        run_targets.get(prerequisite)
+        if isinstance(run_targets, Mapping)
+        else None
+    )
+    if (
+        not isinstance(action_row, Mapping)
+        or action_row.get("status")
+        not in {SUCCEEDED, SUCCEEDED_MANUAL_REVIEW}
+        or not isinstance(canonical, Mapping)
+        or canonical.get("status") != SUCCEEDED
+        or type(canonical.get("external_id")) is not str
+        or not canonical["external_id"].strip()
+        or not isinstance(canonical.get("readback"), Mapping)
+        or not _is_digest(
+            canonical["readback"].get("evidence_digest")
+        )
+    ):
+        raise SystemicIdentityError(
+            "promotion prerequisite lacks verified official readback"
+        )
+    result_json = action_row.get("result_json")
+    if type(result_json) is not str:
+        raise SystemicIdentityError(
+            "promotion prerequisite result identity is unavailable"
+        )
+    try:
+        result = json.loads(result_json)
+    except (TypeError, ValueError) as error:
+        raise SystemicIdentityError(
+            "promotion prerequisite result identity is invalid"
+        ) from error
+    if not isinstance(result, Mapping):
+        raise SystemicIdentityError(
+            "promotion prerequisite result identity is invalid"
+        )
+    return {
+        "schema_version": "postpublish-prerequisite-readback/v1",
+        "target_label": prerequisite,
+        "external_id": canonical["external_id"].strip(),
+        "readback_evidence_digest": canonical["readback"][
+            "evidence_digest"
+        ],
+        "result_digest": _digest_json(result),
+    }
 
 
 def _initial_public_status(row: Mapping[str, Any]) -> str:
@@ -5272,6 +5785,8 @@ def _policy_digest_for_target(
 
 
 def _adapter_name_for_target(label: str) -> str:
+    if is_postpublish_promotion_target(label):
+        return "postpublish_promotion"
     channel = str(label).split(":", 1)[0]
     return {
         "miaoshou": "new_product_workbench_miaoshou_commit",
@@ -6235,7 +6750,11 @@ def _release_outcome_receipt(
     result: DispatchTargetResult,
     evidence_digest: str,
 ) -> dict[str, Any]:
-    label_parts = target["target_label"].split(":", 1)
+    outcome_target = (
+        promotion_prerequisite_target(target["target_label"])
+        or target["target_label"]
+    )
+    label_parts = outcome_target.split(":", 1)
     channel = label_parts[0].casefold()
     region = label_parts[1].upper() if len(label_parts) == 2 else "UNKNOWN"
     write_count, write_lower, _write_upper = _result_write_count_bounds(result)
@@ -6552,6 +7071,52 @@ def _dependency_state(
     statuses: Mapping[str, str],
 ) -> dict[str, Any]:
     label = _exact_text(target_label, "dependency target_label")
+    promotion_prerequisite = promotion_prerequisite_target(label)
+    if promotion_prerequisite is not None:
+        if promotion_prerequisite not in statuses:
+            return {
+                "policy_version": DEPENDENCY_POLICY_VERSION,
+                "state": "BLOCKED",
+                "satisfied": False,
+                "prerequisite_target": promotion_prerequisite,
+                "prerequisite_status": "MISSING",
+                "reason_category": "SYSTEMIC_CONTRACT",
+                "reason_code": (
+                    "required_promotion_storefront_target_missing"
+                ),
+            }
+        prerequisite_status = statuses[promotion_prerequisite]
+        if prerequisite_status in {
+            SUCCEEDED,
+            SUCCEEDED_MANUAL_REVIEW,
+        }:
+            state, satisfied = "SATISFIED", True
+        elif prerequisite_status in {
+            PENDING,
+            PREPARING,
+            READY,
+            DISPATCHING,
+        }:
+            state, satisfied = "WAITING", False
+        else:
+            state, satisfied = "BLOCKED", False
+        return {
+            "policy_version": DEPENDENCY_POLICY_VERSION,
+            "state": state,
+            "satisfied": satisfied,
+            "prerequisite_target": promotion_prerequisite,
+            "prerequisite_status": prerequisite_status,
+            **(
+                {
+                    "reason_category": "DEPENDENCY",
+                    "reason_code": (
+                        "promotion_requires_verified_storefront_readback"
+                    ),
+                }
+                if state == "BLOCKED"
+                else {}
+            ),
+        }
     if label == SHOPEE_GLOBAL_TARGET:
         return {
             "policy_version": DEPENDENCY_POLICY_VERSION,
@@ -6622,36 +7187,35 @@ def _dependency_state(
 def _attach_shared_control_dependency_summaries(
     targets: list[dict[str, Any]],
 ) -> None:
-    controls = {
+    prerequisites = {
         row["target_label"]: row
         for row in targets
-        if row.get("control_target") is True
     }
     for row in targets:
         dependency = row.get("dependency")
         if not isinstance(dependency, dict):
             continue
         prerequisite_label = dependency.get("prerequisite_target")
-        control = controls.get(prerequisite_label)
-        if not control:
+        prerequisite = prerequisites.get(prerequisite_label)
+        if not prerequisite:
             continue
         dependency["prerequisite"] = {
-            "target_label": control["target_label"],
-            "status": control["status"],
-            "reason": control.get("reason"),
-            "next_action": control.get("next_action"),
+            "target_label": prerequisite["target_label"],
+            "status": prerequisite["status"],
+            "reason": prerequisite.get("reason"),
+            "next_action": prerequisite.get("next_action"),
             "digests": {
                 "prepared_command": (
-                    control.get("digests") or {}
+                    prerequisite.get("digests") or {}
                 ).get("prepared_command"),
                 "proof": (
-                    control.get("digests") or {}
+                    prerequisite.get("digests") or {}
                 ).get("proof"),
                 "shared_resource": (
-                    control.get("digests") or {}
+                    prerequisite.get("digests") or {}
                 ).get("shared_resource"),
                 "shared_resource_context": (
-                    control.get("digests") or {}
+                    prerequisite.get("digests") or {}
                 ).get("shared_resource_context"),
             },
         }

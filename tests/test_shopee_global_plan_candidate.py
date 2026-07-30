@@ -63,9 +63,13 @@ class _OfficialReadFake:
         self.error_path: str | None = None
         self.malformed_path: str | None = None
         self.loop_brand = False
+        self.live_brand_pages = False
+        self.nonleaf_category_ids: set[int] = set()
         self.attribute_value_name = "PVC"
         self.attribute_value_id = 91
         self.recommendation_field = "category_id_list"
+        self.full_category_tree = False
+        self.live_attribute_tree = False
         self.attribute_rows_by_category: dict[
             int, list[dict[str, object]]
         ] = {}
@@ -89,31 +93,59 @@ class _OfficialReadFake:
             }
         if path == subject.CATEGORY_PATH_PATH:
             category_id = params["category_id"]
-            return {
-                "error": "",
-                "response": {
-                    "category_list": [
-                        {
-                            "category_id": 10,
-                            "parent_category_id": 0,
-                            "original_category_name": "Home",
-                            "has_children": True,
-                        },
-                        {
-                            "category_id": category_id,
-                            "parent_category_id": 10,
-                            "original_category_name": (
-                                "Wall Stickers"
-                                if category_id == 101
-                                else "Decorative Decals"
-                            ),
-                            "has_children": False,
-                        },
-                    ]
+            rows = [
+                {
+                    "category_id": 10,
+                    "parent_category_id": 0,
+                    "original_category_name": "Home",
+                    "has_children": True,
                 },
+                {
+                    "category_id": category_id,
+                    "parent_category_id": 10,
+                    "original_category_name": (
+                        "Wall Stickers"
+                        if category_id == 101
+                        else "Decorative Decals"
+                    ),
+                    "has_children": (
+                        category_id in self.nonleaf_category_ids
+                    ),
+                },
+            ]
+            if self.full_category_tree:
+                rows = [
+                    {
+                        **row,
+                        "display_category_name": row[
+                            "original_category_name"
+                        ],
+                        "debug_message": None,
+                    }
+                    for row in rows
+                ]
+                rows.insert(
+                    1,
+                    {
+                        "category_id": 20,
+                        "parent_category_id": 0,
+                        "original_category_name": "Unrelated",
+                        "display_category_name": "Unrelated",
+                        "has_children": False,
+                        "debug_message": None,
+                    },
+                )
+            envelope = {
+                "error": "",
+                "response": {"category_list": rows},
             }
+            if self.full_category_tree:
+                envelope.update(
+                    {"debug_message": "", "warning": ""}
+                )
+            return envelope
         if path == subject.ATTRIBUTE_TREE_PATH:
-            category_id = params["category_id"]
+            category_id = int(params["category_id_list"])
             attribute_rows = self.attribute_rows_by_category.get(
                 category_id
             )
@@ -141,6 +173,83 @@ class _OfficialReadFake:
                         "attribute_value_list": [],
                     },
                 ]
+            if self.live_attribute_tree:
+                return {
+                    "error": "",
+                    "debug_message": "",
+                    "message": "",
+                    "request_id": "fixture",
+                    "warning": "",
+                    "response": {
+                        "list": [
+                            {
+                                "category_id": category_id,
+                                "attribute_tree": [
+                                    {
+                                        "attribute_id": 9001,
+                                        "mandatory": True,
+                                        "name": "Material",
+                                        "attribute_value_list": [
+                                            {
+                                                "value_id": 91,
+                                                "name": "PVC",
+                                                "multi_lang": [
+                                                    {
+                                                        "language": "en",
+                                                        "value": "PVC",
+                                                    }
+                                                ],
+                                            },
+                                            {
+                                                "value_id": 92,
+                                                "name": "Other",
+                                                "child_attribute_list": [
+                                                    {
+                                                        "attribute_id": 9901,
+                                                        "mandatory": False,
+                                                        "name": "Other detail",
+                                                        "attribute_info": {
+                                                            "input_type": 3,
+                                                            "input_validation_type": 2,
+                                                            "format_type": 1,
+                                                            "is_oem": False,
+                                                            "support_search_value": False,
+                                                        },
+                                                    }
+                                                ],
+                                            },
+                                        ],
+                                        "attribute_info": {
+                                            "input_type": 1,
+                                            "input_validation_type": 0,
+                                            "format_type": 1,
+                                            "is_oem": False,
+                                            "support_search_value": False,
+                                        },
+                                        "multi_lang": [
+                                            {
+                                                "language": "en",
+                                                "value": "Material",
+                                            }
+                                        ],
+                                    },
+                                    {
+                                        "attribute_id": 9002,
+                                        "mandatory": False,
+                                        "name": "Pattern name",
+                                        "attribute_info": {
+                                            "input_type": 3,
+                                            "input_validation_type": 2,
+                                            "format_type": 1,
+                                            "is_oem": False,
+                                            "support_search_value": False,
+                                        },
+                                    },
+                                ],
+                            }
+                        ]
+                    },
+                }
             return {
                 "error": "",
                 "response": {
@@ -149,6 +258,35 @@ class _OfficialReadFake:
             }
         if path == subject.BRAND_LIST_PATH:
             offset = params["offset"]
+            if self.live_brand_pages:
+                return {
+                    "error": "",
+                    "debug_message": "",
+                    "message": "",
+                    "request_id": "fixture",
+                    "warning": "",
+                    "response": {
+                        "brand_list": [
+                            {
+                                "brand_id": 1 if offset == 0 else 2,
+                                "original_brand_name": (
+                                    "Brand A"
+                                    if offset == 0
+                                    else "Brand B"
+                                ),
+                                "display_brand_name": (
+                                    "Brand A"
+                                    if offset == 0
+                                    else "Brand B"
+                                ),
+                            }
+                        ],
+                        "has_next_page": offset == 0,
+                        "next_offset": 100,
+                        "is_mandatory": False,
+                        "input_type": "SINGLE_COMBO_BOX",
+                    },
+                }
             if offset == 0:
                 return {
                     "error": "",
@@ -403,6 +541,201 @@ def test_live_category_id_recommendation_field_is_strictly_supported():
     assert [row["category_id"] for row in result["options"]] == [101, 202]
 
 
+def test_live_full_category_tree_reconstructs_selected_paths():
+    fake = _OfficialReadFake()
+    fake.full_category_tree = True
+    _install(fake)
+
+    result = adapters.observe_channel_category_options(_request())
+
+    assert result["options"][0]["path"] == [
+        {"category_id": 10, "name": "Home"},
+        {"category_id": 101, "name": "Wall Stickers"},
+    ]
+    assert all(
+        row["category_id"] != 20
+        for option in result["options"]
+        for row in option["path"]
+    )
+
+
+def test_nonleaf_official_recommendation_is_not_offered_for_publish():
+    fake = _OfficialReadFake()
+    fake.nonleaf_category_ids.add(202)
+    _install(fake)
+
+    result = adapters.observe_channel_category_options(_request())
+
+    assert [row["category_id"] for row in result["options"]] == [101]
+    assert result["recommended_category_id"] == 101
+    assert any(
+        path == subject.CATEGORY_PATH_PATH
+        and params["category_id"] == 202
+        for path, params in fake.calls
+    )
+
+
+def test_explicit_nonleaf_category_selection_fails_closed():
+    fake = _OfficialReadFake()
+    selection = _selection(fake, category_id=202)
+    fake.nonleaf_category_ids.add(202)
+    _install(fake)
+
+    with pytest.raises(subject.ShopeeGlobalPlanCandidateError) as error:
+        adapters.observe_channel_category_options(
+            _request(current_selection=selection)
+        )
+
+    assert error.value.reason_code == "shopee_category_not_publishable"
+
+
+def test_live_grouped_attribute_tree_is_strictly_normalized():
+    fake = _OfficialReadFake()
+    fake.live_attribute_tree = True
+    _install(fake)
+
+    result = adapters.observe_channel_category_options(_request())
+
+    offered = result["options"][0]
+    assert offered["missing_required_attributes"] == [
+        {
+            "attribute_id": 9001,
+            "label": "Material",
+            "selection_kind": "SINGLE",
+            "option_values": [
+                {
+                    "value_id": 91,
+                    "original_value_name": "PVC",
+                    "recommended": False,
+                },
+                {
+                    "value_id": 92,
+                    "original_value_name": "Other",
+                    "recommended": False,
+                },
+            ],
+            "text_value_id": None,
+        }
+    ]
+    attribute_calls = [
+        params
+        for path, params in fake.calls
+        if path == subject.ATTRIBUTE_TREE_PATH
+    ]
+    assert attribute_calls
+    assert all(
+        set(params) == {"category_id_list", "language"}
+        and params["category_id_list"] in {"101", "202"}
+        and params["language"] == "en"
+        for params in attribute_calls
+    )
+
+
+def test_live_brand_pages_use_numeric_status_and_terminate_by_cursor():
+    fake = _OfficialReadFake()
+    fake.live_brand_pages = True
+    _install(fake)
+
+    result = adapters.observe_channel_category_options(_request())
+
+    assert len(result["brand_options"]) == 2
+    brand_calls = [
+        params
+        for path, params in fake.calls
+        if path == subject.BRAND_LIST_PATH
+    ]
+    assert len(brand_calls) == 2
+    assert all(params["status"] == 1 for params in brand_calls)
+    assert {
+        params["offset"] for params in brand_calls
+    } == {0, 100}
+
+
+def test_live_exact_duplicate_brand_is_deduplicated_but_conflict_fails():
+    fake = _OfficialReadFake()
+    fake.live_brand_pages = True
+    original = fake.merchant_get
+
+    def duplicated(path, params):
+        response = original(path, params)
+        if path == subject.BRAND_LIST_PATH and params["offset"] == 0:
+            response["response"]["brand_list"].append(
+                dict(response["response"]["brand_list"][0])
+            )
+        return response
+
+    fake.merchant_get = duplicated
+    assert len(subject._read_all_brands(fake.transport(), 101)) == 2
+
+    def conflicting(path, params):
+        response = original(path, params)
+        if path == subject.BRAND_LIST_PATH and params["offset"] == 0:
+            row = dict(response["response"]["brand_list"][0])
+            row["display_brand_name"] = "Conflicting display"
+            response["response"]["brand_list"].append(row)
+        return response
+
+    fake.merchant_get = conflicting
+    with pytest.raises(subject.ShopeeGlobalPlanCandidateError) as error:
+        subject._read_all_brands(fake.transport(), 101)
+    assert error.value.reason_code == "shopee_brand_list_invalid"
+
+
+@pytest.mark.parametrize(
+    "mutator",
+    [
+        lambda tree: [
+            *tree,
+            {**tree[0], "attribute_id": tree[0]["attribute_id"]},
+        ],
+        lambda tree: [
+            {
+                **tree[0],
+                "attribute_info": {
+                    **tree[0]["attribute_info"],
+                    "input_type": True,
+                },
+            },
+            *tree[1:],
+        ],
+        lambda tree: [
+            {
+                **tree[0],
+                "attribute_value_list": [
+                    *tree[0]["attribute_value_list"],
+                    {
+                        **tree[0]["attribute_value_list"][0],
+                        "value_id": tree[0]["attribute_value_list"][0][
+                            "value_id"
+                        ],
+                    },
+                ],
+            },
+            *tree[1:],
+        ],
+    ],
+)
+def test_live_grouped_attribute_tree_mixed_shapes_fail_closed(mutator):
+    fake = _OfficialReadFake()
+    fake.live_attribute_tree = True
+    original = fake.merchant_get
+
+    def malformed(path, params):
+        response = original(path, params)
+        if path == subject.ATTRIBUTE_TREE_PATH:
+            group = response["response"]["list"][0]
+            group["attribute_tree"] = mutator(group["attribute_tree"])
+        return response
+
+    fake.merchant_get = malformed
+    _install(fake)
+
+    with pytest.raises(subject.ShopeeGlobalPlanCandidateError) as error:
+        adapters.observe_channel_category_options(_request())
+
+    assert error.value.reason_code == "shopee_attribute_tree_invalid"
+
+
 def test_ambiguous_recommendation_fields_fail_closed():
     fake = _OfficialReadFake()
     original = fake.merchant_get
@@ -555,7 +888,7 @@ def test_explicit_single_multi_text_selection_is_officially_rechecked():
     assert selected["missing_required_attributes"] == []
     assert sum(
         path == subject.ATTRIBUTE_TREE_PATH
-        and params["category_id"] == 101
+        and params["category_id_list"] == "101"
         for path, params in fake.calls
     ) == 1
 
@@ -721,7 +1054,7 @@ def test_persisted_nonrecommended_selection_is_refetched_and_revalidated():
     assert selected["missing_required_attributes"] == []
     assert sum(
         path == subject.ATTRIBUTE_TREE_PATH
-        and params["category_id"] == 202
+        and params["category_id_list"] == "202"
         for path, params in fake.calls
     ) == 1
     assert result["recommended_category_id"] == 101

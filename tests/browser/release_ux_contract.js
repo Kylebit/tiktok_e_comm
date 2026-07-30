@@ -4380,6 +4380,7 @@ function shopeeCategoryPreview({ status = "READY_FOR_SELECTION" } = {}) {
     };
   }
   const selected = status === "SELECTED";
+  const awaitingRequired = status === "BLOCKED_CAPABILITY";
   const attributes = selected ? [] : [
     {
       attribute_identity_digest: digest("6"),
@@ -4457,10 +4458,12 @@ function shopeeCategoryPreview({ status = "READY_FOR_SELECTION" } = {}) {
       display_name: "Decorative Stickers",
       path_labels: ["Home & Living", "Decorative Stickers"],
       recommended: false,
-      approval_ready: true,
-      attribute_status: "READY",
-      selected_attribute_count: 3,
-      missing_required_attributes: [],
+      approval_ready: !awaitingRequired,
+      attribute_status: awaitingRequired
+        ? "BLOCKED_REQUIRED_VALUES"
+        : "READY",
+      selected_attribute_count: awaitingRequired ? 0 : 3,
+      missing_required_attributes: awaitingRequired ? attributes : [],
       attribute_tree_digest: digest("3"),
       option_evidence_digest: digest("4"),
     }],
@@ -4511,7 +4514,9 @@ function shopeeCategoryPreview({ status = "READY_FOR_SELECTION" } = {}) {
     next_action: {
       action: selected
         ? "review_shopee_global_plan"
-        : "select_channel_category",
+        : awaitingRequired
+          ? "complete_official_category_attributes"
+          : "select_channel_category",
       target_focus: "shopee:GLOBAL",
     },
     external_writes_performed: [],
@@ -5756,7 +5761,11 @@ async function shopeeCategoryDecisionContract(browser, viewport) {
       categoryReads += 1;
       return route.fulfill(jsonResponse(
         shopeeCategoryPreview({
-          status: selected ? "SELECTED" : "READY_FOR_SELECTION",
+          // The live server keeps the conservative platform status while
+          // required official values are incomplete.  A null blocker plus
+          // usable options is an actionable decision form, not an observer
+          // failure.
+          status: selected ? "SELECTED" : "BLOCKED_CAPABILITY",
         }),
       ));
     }

@@ -2197,6 +2197,23 @@
     const readyOptions = payload.options.filter(
       (option) => option.approval_ready,
     );
+    if (payload.status === "BLOCKED_CAPABILITY") {
+      if (
+        payload.blocker !== null
+        || payload.selection !== null
+        || payload.attribute_selection !== null
+        || readyOptions.length
+        || !exactObjectKeys(payload.next_action, ["action", "target_focus"])
+        || payload.next_action.action
+          !== "complete_official_category_attributes"
+        || payload.next_action.target_focus !== SHOPEE_GLOBAL_CONTROL_TARGET
+      ) {
+        throw oneClickContractError(
+          "Shopee Global 必填属性待补全状态不一致，已停止选择。",
+        );
+      }
+      return payload;
+    }
     if (payload.status === "READY_FOR_SELECTION") {
       if (
         payload.selection !== null
@@ -2315,9 +2332,30 @@
     );
   }
 
+  function shopeeCategoryDecisionCanCollectSelection(projection) {
+    return Boolean(
+      projection
+      && (
+        projection.status === "READY_FOR_SELECTION"
+        || (
+          projection.status === "BLOCKED_CAPABILITY"
+          && projection.blocker === null
+          && Array.isArray(projection.options)
+          && projection.options.length > 0
+        )
+      ),
+    );
+  }
+
   function selectedShopeeCategoryOption() {
     const projection = shopeeCategoryDecisionReview.projection;
-    if (!projection || projection.status === "BLOCKED_CAPABILITY") return null;
+    if (
+      !projection
+      || (
+        projection.status !== "SELECTED"
+        && !shopeeCategoryDecisionCanCollectSelection(projection)
+      )
+    ) return null;
     const digest = projection.status === "SELECTED"
       ? projection.selection.selected_category_identity_digest
       : shopeeCategoryDecisionReview.draftIdentityDigest;
@@ -2632,7 +2670,10 @@
       `;
     }
     if (
-      projection.status === "BLOCKED_CAPABILITY"
+      (
+        projection.status === "BLOCKED_CAPABILITY"
+        && !shopeeCategoryDecisionCanCollectSelection(projection)
+      )
       || projection.status === "RECHECK_REQUIRED"
     ) {
       const rechecking = projection.status === "RECHECK_REQUIRED";
@@ -3084,7 +3125,7 @@
     const button = form.querySelector("button[type='submit']");
     if (
       !identity
-      || projection?.status !== "READY_FOR_SELECTION"
+      || !shopeeCategoryDecisionCanCollectSelection(projection)
       || optionsDigest !== projection.options_digest
       || !oneClickDigest(optionsDigest)
       || !shopeeRequiredAttributesComplete(option)

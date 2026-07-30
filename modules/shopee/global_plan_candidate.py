@@ -353,7 +353,6 @@ def observe_channel_category_options(
         "shopee_category_recommendation_invalid",
         allow_empty=False,
     )
-    recommended_id = recommended[0]
     option_ids = list(recommended)
     selected_id = (
         selection["category"]["category_id"]
@@ -371,9 +370,26 @@ def observe_channel_category_options(
         ]
     ] = []
     for category_id in option_ids:
-        path = _read_category_path(transport, category_id)
+        try:
+            path = _read_category_path(transport, category_id)
+        except ShopeeGlobalPlanCandidateError as error:
+            if (
+                error.reason_code == "shopee_category_not_publishable"
+                and category_id in recommended
+                and category_id != selected_id
+            ):
+                continue
+            raise
         tree = _read_attribute_tree(transport, category_id)
         observed_options.append((category_id, path, tree))
+    publishable_recommendations = [
+        category_id
+        for category_id, _path, _tree in observed_options
+        if category_id in recommended
+    ]
+    if not publishable_recommendations:
+        raise _error("shopee_category_recommendation_invalid", "CONTENT")
+    recommended_id = publishable_recommendations[0]
     attribute_category_id = None
     if attribute_selection is not None:
         matching_categories = [
@@ -628,16 +644,20 @@ def _read_category_path(
     )
     if not rows:
         raise _error("shopee_category_path_invalid", "CONTENT")
-    result: list[Mapping[str, object]] = []
-    previous_id = 0
-    seen: set[int] = set()
-    for index, row in enumerate(rows):
-        if set(row) != {
-            "category_id",
-            "parent_category_id",
-            "original_category_name",
-            "has_children",
-        }:
+    compact_keys = {
+        "category_id",
+        "parent_category_id",
+        "original_category_name",
+        "has_children",
+    }
+    full_tree_keys = {
+        *compact_keys,
+        "display_category_name",
+        "debug_message",
+    }
+    normalized: dict[int, Mapping[str, object]] = {}
+    for row in rows:
+        if set(row) not in {frozenset(compact_keys), frozenset(full_tree_keys)}:
             raise _error("shopee_category_path_invalid", "CONTENT")
         category_id = _positive_int(
             row["category_id"], "shopee_category_path_invalid"
@@ -648,18 +668,60 @@ def _read_category_path(
         name = _nonempty_string(
             row["original_category_name"], "shopee_category_path_invalid"
         )
-        if type(row["has_children"]) is not bool:
+        if (
+            type(row["has_children"]) is not bool
+            or category_id in normalized
+        ):
             raise _error("shopee_category_path_invalid", "CONTENT")
-        if category_id in seen or parent_id != previous_id:
-            raise _error("shopee_category_path_invalid", "CONTENT")
-        if index < len(rows) - 1 and row["has_children"] is not True:
+        if set(row) == full_tree_keys:
+            _nonempty_string(
+                row["display_category_name"],
+                "shopee_category_path_invalid",
+            )
+            if (
+                row["debug_message"] is not None
+                and type(row["debug_message"]) is not str
+            ):
+                raise _error("shopee_category_path_invalid", "CONTENT")
+        normalized[category_id] = {
+            "category_id": category_id,
+            "parent_category_id": parent_id,
+            "name": name,
+            "has_children": row["has_children"],
+        }
+    if any(
+        row["parent_category_id"] != 0
+        and row["parent_category_id"] not in normalized
+        for row in normalized.values()
+    ):
+        raise _error("shopee_category_path_invalid", "CONTENT")
+    selected = normalized.get(selected_id)
+    if selected is None:
+        raise _error("shopee_category_path_invalid", "CONTENT")
+    if selected["has_children"] is not False:
+        raise _error("shopee_category_not_publishable", "CONTENT")
+    reverse_path: list[Mapping[str, object]] = []
+    seen: set[int] = set()
+    current = selected
+    while True:
+        category_id = current["category_id"]
+        if category_id in seen:
             raise _error("shopee_category_path_invalid", "CONTENT")
         seen.add(category_id)
-        previous_id = category_id
-        result.append({"category_id": category_id, "name": name})
-    if previous_id != selected_id or rows[-1]["has_children"] is not False:
+        reverse_path.append(
+            {"category_id": category_id, "name": current["name"]}
+        )
+        parent_id = current["parent_category_id"]
+        if parent_id == 0:
+            break
+        current = normalized[parent_id]
+    result = tuple(reversed(reverse_path))
+    if any(
+        normalized[row["category_id"]]["has_children"] is not True
+        for row in result[:-1]
+    ):
         raise _error("shopee_category_path_invalid", "CONTENT")
-    return tuple(result)
+    return result
 
 
 def _category_prepare_transport() -> ShopeePrepareTransport:
@@ -691,12 +753,37 @@ def _read_attribute_tree(
     raw = _official_get(
         transport,
         ATTRIBUTE_TREE_PATH,
-        {"category_id": selected_id, "language": "en"},
+        {"category_id_list": str(selected_id), "language": "en"},
     )
     response = _response_mapping(raw, "shopee_attribute_tree_invalid")
-    rows = _mapping_list(
-        response.get("attribute_list"), "shopee_attribute_tree_invalid"
+    if set(response) == {"attribute_list"}:
+        rows = _mapping_list(
+            response["attribute_list"], "shopee_attribute_tree_invalid"
+        )
+        return _normalize_compact_attribute_rows(rows)
+    if set(response) != {"list"}:
+        raise _error("shopee_attribute_tree_invalid", "CONTENT")
+    groups = _mapping_list(
+        response["list"], "shopee_attribute_tree_invalid"
     )
+    if (
+        len(groups) != 1
+        or set(groups[0]) != {"category_id", "attribute_tree"}
+        or _positive_int(
+            groups[0]["category_id"], "shopee_attribute_tree_invalid"
+        )
+        != selected_id
+    ):
+        raise _error("shopee_attribute_tree_invalid", "CONTENT")
+    rows = _mapping_list(
+        groups[0]["attribute_tree"], "shopee_attribute_tree_invalid"
+    )
+    return _normalize_live_attribute_rows(rows)
+
+
+def _normalize_compact_attribute_rows(
+    rows: list[Mapping[str, object]],
+) -> tuple[Mapping[str, object], ...]:
     seen: set[int] = set()
     normalized: list[Mapping[str, object]] = []
     for row in rows:
@@ -768,6 +855,192 @@ def _read_attribute_tree(
             }
         )
     return tuple(normalized)
+
+
+def _normalize_live_attribute_rows(
+    rows: list[Mapping[str, object]],
+) -> tuple[Mapping[str, object], ...]:
+    seen: set[int] = set()
+    return tuple(
+        _normalize_live_attribute_row(row, seen=seen) for row in rows
+    )
+
+
+def _normalize_live_attribute_row(
+    row: Mapping[str, object],
+    *,
+    seen: set[int],
+) -> Mapping[str, object]:
+    required = {
+        "attribute_id",
+        "mandatory",
+        "name",
+        "attribute_info",
+    }
+    optional = {"attribute_value_list", "multi_lang"}
+    if not required.issubset(row) or set(row) - required - optional:
+        raise _error("shopee_attribute_tree_invalid", "CONTENT")
+    attribute_id = _positive_int(
+        row["attribute_id"], "shopee_attribute_tree_invalid"
+    )
+    if attribute_id in seen or type(row["mandatory"]) is not bool:
+        raise _error("shopee_attribute_tree_invalid", "CONTENT")
+    seen.add(attribute_id)
+    name = _nonempty_string(
+        row["name"], "shopee_attribute_tree_invalid"
+    )
+    _validate_multilang(row.get("multi_lang", []))
+    info = _live_attribute_info(row["attribute_info"])
+    input_type = {
+        1: "SINGLE_SELECT",
+        2: "SINGLE_SELECT",
+        3: "TEXT",
+        4: "MULTI_SELECT",
+        5: "MULTI_SELECT",
+    }[info["input_type"]]
+    raw_values = row.get("attribute_value_list", [])
+    values = _mapping_list(raw_values, "shopee_attribute_tree_invalid")
+    normalized_values = [
+        _normalize_live_attribute_value(value, seen=seen)
+        for value in values
+    ]
+    value_ids = [value["value_id"] for value in normalized_values]
+    if len(value_ids) != len(set(value_ids)):
+        raise _error("shopee_attribute_tree_invalid", "CONTENT")
+    if input_type == "TEXT":
+        if normalized_values:
+            raise _error("shopee_attribute_tree_invalid", "CONTENT")
+        # Shopee's official free-text protocol uses value_id=0.  This is a
+        # transport sentinel, not a selected or generated business value.
+        normalized_values = [
+            {
+                "value_id": 0,
+                "original_value_name": "Text Input",
+            }
+        ]
+    return {
+        "attribute_id": attribute_id,
+        "original_attribute_name": name,
+        "is_mandatory": row["mandatory"],
+        "input_type": input_type,
+        "attribute_value_list": normalized_values,
+    }
+
+
+def _live_attribute_info(value: object) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise _error("shopee_attribute_tree_invalid", "CONTENT")
+    required = {
+        "input_type",
+        "input_validation_type",
+        "format_type",
+        "is_oem",
+        "support_search_value",
+    }
+    optional = {
+        "attribute_unit_list",
+        "date_format_type",
+        "mandatory_region",
+        "max_value_count",
+    }
+    if not required.issubset(value) or set(value) - required - optional:
+        raise _error("shopee_attribute_tree_invalid", "CONTENT")
+    if (
+        type(value["input_type"]) is not int
+        or value["input_type"] not in {1, 2, 3, 4, 5}
+        or type(value["input_validation_type"]) is not int
+        or value["input_validation_type"] not in {0, 1, 2, 3, 4}
+        or type(value["format_type"]) is not int
+        or value["format_type"] not in {1, 2}
+        or type(value["is_oem"]) is not bool
+        or type(value["support_search_value"]) is not bool
+    ):
+        raise _error("shopee_attribute_tree_invalid", "CONTENT")
+    if "date_format_type" in value and (
+        type(value["date_format_type"]) is not int
+        or value["date_format_type"] not in {0, 1}
+    ):
+        raise _error("shopee_attribute_tree_invalid", "CONTENT")
+    if "max_value_count" in value and (
+        type(value["max_value_count"]) is not int
+        or value["max_value_count"] <= 0
+    ):
+        raise _error("shopee_attribute_tree_invalid", "CONTENT")
+    for field, region_only in (
+        ("attribute_unit_list", False),
+        ("mandatory_region", True),
+    ):
+        if field not in value:
+            continue
+        entries = value[field]
+        if (
+            type(entries) is not list
+            or any(
+                type(entry) is not str
+                or not entry.strip()
+                or (region_only and (
+                    len(entry) != 2 or entry.upper() != entry
+                ))
+                for entry in entries
+            )
+            or len(entries) != len(set(entries))
+        ):
+            raise _error("shopee_attribute_tree_invalid", "CONTENT")
+    return value
+
+
+def _normalize_live_attribute_value(
+    value: Mapping[str, object],
+    *,
+    seen: set[int],
+) -> Mapping[str, object]:
+    required = {"value_id", "name"}
+    optional = {"child_attribute_list", "multi_lang", "value_unit"}
+    if not required.issubset(value) or set(value) - required - optional:
+        raise _error("shopee_attribute_tree_invalid", "CONTENT")
+    value_id = _nonnegative_int(
+        value["value_id"], "shopee_attribute_tree_invalid"
+    )
+    name = _nonempty_string(
+        value["name"], "shopee_attribute_tree_invalid"
+    )
+    _validate_multilang(value.get("multi_lang", []))
+    normalized: dict[str, object] = {
+        "value_id": value_id,
+        "original_value_name": name,
+    }
+    if "value_unit" in value:
+        normalized["value_unit"] = _nonempty_string(
+            value["value_unit"], "shopee_attribute_tree_invalid"
+        )
+    children = _mapping_list(
+        value.get("child_attribute_list", []),
+        "shopee_attribute_tree_invalid",
+    )
+    if children:
+        normalized_children = [
+            _normalize_live_attribute_row(child, seen=seen)
+            for child in children
+        ]
+        normalized["child_attribute_digest"] = _digest(
+            normalized_children
+        )
+    return normalized
+
+
+def _validate_multilang(value: object) -> None:
+    rows = _mapping_list(value, "shopee_attribute_tree_invalid")
+    languages: set[str] = set()
+    for row in rows:
+        if set(row) != {"language", "value"}:
+            raise _error("shopee_attribute_tree_invalid", "CONTENT")
+        language = _nonempty_string(
+            row["language"], "shopee_attribute_tree_invalid"
+        )
+        _nonempty_string(row["value"], "shopee_attribute_tree_invalid")
+        if language in languages:
+            raise _error("shopee_attribute_tree_invalid", "CONTENT")
+        languages.add(language)
 
 
 def _category_context(value: object) -> dict[str, object]:
@@ -1401,9 +1674,10 @@ def _read_all_brands(
         return ()
     offset = 0
     expected_total: int | None = None
+    live_metadata: tuple[bool, str] | None = None
     rows: list[Mapping[str, object]] = []
     seen_offsets: set[int] = set()
-    seen_ids: set[int] = set()
+    seen_brands: dict[int, tuple[str, str | None]] = {}
     for _page in range(100):
         if offset in seen_offsets:
             raise _error("shopee_brand_pagination_invalid")
@@ -1415,41 +1689,101 @@ def _read_all_brands(
                 "category_id": selected_id,
                 "page_size": 100,
                 "offset": offset,
-                "status": "NORMAL",
+                "status": 1,
                 "language": "en",
             },
         )
         response = _response_mapping(raw, "shopee_brand_list_invalid")
-        page_rows = _mapping_list(
-            response.get("brand_list"), "shopee_brand_list_invalid"
+        compact_keys = {
+            "brand_list",
+            "total_count",
+            "has_next_page",
+        }
+        live_keys = {
+            "brand_list",
+            "has_next_page",
+            "next_offset",
+            "is_mandatory",
+            "input_type",
+        }
+        is_compact = compact_keys.issubset(response) and (
+            set(response) == compact_keys
+            or set(response) == compact_keys | {"next_offset"}
         )
-        total = _nonnegative_int(
-            response.get("total_count"), "shopee_brand_list_invalid"
-        )
-        if expected_total is None:
-            expected_total = total
-        if total != expected_total or type(response.get("has_next_page")) is not bool:
+        is_live = set(response) == live_keys
+        if is_compact == is_live:
             raise _error("shopee_brand_list_invalid")
+        page_rows = _mapping_list(
+            response["brand_list"], "shopee_brand_list_invalid"
+        )
+        if type(response["has_next_page"]) is not bool:
+            raise _error("shopee_brand_list_invalid")
+        if is_compact:
+            total = _nonnegative_int(
+                response["total_count"], "shopee_brand_list_invalid"
+            )
+            if expected_total is None:
+                expected_total = total
+            if total != expected_total:
+                raise _error("shopee_brand_list_invalid")
+        else:
+            mandatory = response["is_mandatory"]
+            input_type = response["input_type"]
+            if (
+                type(mandatory) is not bool
+                or type(input_type) is not str
+                or not input_type.strip()
+            ):
+                raise _error("shopee_brand_list_invalid")
+            current_metadata = (mandatory, input_type)
+            if live_metadata is None:
+                live_metadata = current_metadata
+            elif live_metadata != current_metadata:
+                raise _error("shopee_brand_list_invalid")
         for row in page_rows:
-            if set(row) != {"brand_id", "original_brand_name"}:
+            compact_row = set(row) == {
+                "brand_id",
+                "original_brand_name",
+            }
+            live_row = set(row) == {
+                "brand_id",
+                "original_brand_name",
+                "display_brand_name",
+            }
+            if (is_compact and not compact_row) or (
+                is_live and not live_row
+            ):
                 raise _error("shopee_brand_list_invalid")
             brand_id = _nonnegative_int(
                 row["brand_id"], "shopee_brand_list_invalid"
             )
-            if brand_id in seen_ids:
-                raise _error("shopee_brand_list_invalid")
-            seen_ids.add(brand_id)
+            original_name = _nonempty_string(
+                row["original_brand_name"],
+                "shopee_brand_list_invalid",
+            )
+            display_name = None
+            if is_live:
+                display_name = _nonempty_string(
+                    row["display_brand_name"],
+                    "shopee_brand_list_invalid",
+                )
+            identity = (original_name, display_name)
+            if brand_id in seen_brands:
+                if not is_live or seen_brands[brand_id] != identity:
+                    raise _error("shopee_brand_list_invalid")
+                # The live endpoint can repeat the exact same immutable row.
+                # Treat it as idempotent pagination noise, never as a second
+                # candidate.
+                continue
+            seen_brands[brand_id] = identity
             rows.append(
                 {
                     "brand_id": brand_id,
-                    "original_brand_name": _nonempty_string(
-                        row["original_brand_name"],
-                        "shopee_brand_list_invalid",
-                    ),
+                    "original_brand_name": original_name,
                 }
             )
         if response["has_next_page"] is False:
-            if len(rows) != total:
+            if is_compact and len(rows) != expected_total:
                 raise _error("shopee_brand_pagination_invalid")
             return tuple(rows)
         next_offset = _positive_int(
@@ -1512,10 +1846,22 @@ def _official_get(
 def _response_value(value: object, code: str) -> object:
     if not isinstance(value, Mapping):
         raise _error(code)
-    allowed = {"error", "message", "request_id", "response"}
+    allowed = {
+        "error",
+        "message",
+        "request_id",
+        "response",
+        "debug_message",
+        "warning",
+    }
     if set(value) - allowed or "response" not in value or value.get("error"):
         category = "AUTH" if _looks_auth_error(value.get("error")) else "CAPABILITY"
         raise _error(code, category)
+    for field in ("debug_message", "warning"):
+        if field in value and (
+            type(value[field]) is not str or value[field]
+        ):
+            raise _error(code)
     return value["response"]
 
 

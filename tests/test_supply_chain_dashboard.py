@@ -47,7 +47,7 @@ def test_dashboard_has_four_country_isolated_facts_and_policies():
     assert {
         region: len([row for row in rows if row["kind"] == "existing"])
         for region, rows in data["countries"].items()
-    } == {"MY": 24, "TH": 23, "VN": 9, "PH": 3}
+    } == {"MY": 24, "TH": 23, "VN": 9, "PH": 4}
 
 
 def test_thailand_truncated_codes_are_normalized_without_fuzzy_merging():
@@ -80,12 +80,19 @@ def test_vietnam_and_philippines_exclude_records_without_complete_sku_identity()
     data = _data()
 
     assert sum(row["inventory"]["available"] for row in data["countries"]["VN"]) == 298
-    assert sum(row["inventory"]["available"] for row in data["countries"]["PH"]) == 31
+    assert sum(row["inventory"]["available"] for row in data["countries"]["PH"]) == 33
+    assert _row(data, "PH", "0820")["sourceAliases"] == ["0820", "770820"]
+    assert _row(data, "PH", "0820")["inventory"]["available"] == 0
+    assert _row(data, "PH", "0821")["sourceAliases"] == ["0821", "770821"]
+    assert _row(data, "PH", "0821")["inventory"]["available"] == 2
+    assert _row(data, "PH", "0822")["sourceAliases"] == ["0822", "770822"]
+    assert _row(data, "PH", "0822")["inventory"]["available"] == 0
+    assert "inventoryIdentityBlocker" not in data["config"]["PH"]
+    assert "完整 SKU" in data["config"]["VN"]["inventoryIdentityBlocker"]
     for region in ("VN", "PH"):
         assert all("X" not in row["sku"] for row in data["countries"][region])
-        assert "完整 SKU" in data["config"][region]["inventoryIdentityBlocker"]
         assert all(
-            row["channels"]["shopee"]["state"] == "BLOCKED_AUTH"
+            row["channels"]["shopee"]["state"] == "PENDING_REFRESH"
             for row in data["countries"][region]
         )
 
@@ -126,6 +133,7 @@ def test_dashboard_contains_no_remote_image_or_secret_dependency_and_marks_block
     assert "imageUrl" not in data_text
     assert 'channel.state !== "READY"' in app
     assert "BLOCKED_AUTH" in app
+    assert "PENDING_REFRESH" in app
     assert "inventoryIdentityBlocker" in app
     assert "082X" not in data_text
     assert 'typeof effectiveItem.costCny === "number"' in app

@@ -13,7 +13,7 @@ Produce auditable, read-only, SKU-level supply decisions for MY, TH, VN, and PH.
 - Reject values containing `…`, `...`, masked characters, clipped prefixes/suffixes, or synthetic wildcards.
 - Never infer a SKU from its visible prefix, last four digits, title similarity, image, row position, or another country's mapping.
 - Never create placeholder identifiers such as `082X`.
-- Normalize aliases only through an explicit, evidence-backed mapping that preserves every original identifier.
+- Normalize aliases only through an explicit, evidence-backed mapping that preserves every original identifier. Current approved PH evidence includes `770820 → 0820`, `770821 → 0821`, and `770822 → 0822`.
 - If a list cell is visually clipped, inspect its DOM value, detail page, official export, or read-only API response. If none exposes the full value, return `BLOCKED_IDENTITY` and exclude that record from stock totals and SKU decisions.
 - Do not combine rows merely because their titles or images match.
 
@@ -25,7 +25,7 @@ Run `scripts/validate_inventory_snapshot.py SNAPSHOT.json` before consuming a ne
 2. Read inventory from the strongest available current source: audited read-only API, logged-in Seaya browser page, or official export.
 3. Capture complete identity and inventory fields. Read `references/decision-contract.md`.
 4. Reconcile exact aliases. Preserve source identifiers and mapping evidence.
-5. Join demand by exact country and SKU. Combine TikTok and Shopee only within the same country. Label unavailable channels `BLOCKED_AUTH` or `BLOCKED_CAPABILITY`; never interpret missing demand as zero.
+5. Join demand by exact country and SKU. Combine TikTok and Shopee only within the same country. Distinguish `PENDING_REFRESH` (mapping and refresh credential exist, access token expired, pull not run) from `BLOCKED_AUTH`; never interpret missing demand as zero.
 6. Calculate lead-time demand, arrival stock, target coverage, recommended quantity, head freight, handling cost, and known savings.
 7. Keep recommendations fail-closed when identity, inventory, demand, dimensions, weight, cost, tax policy, or freight policy is unavailable.
 8. Update the local dashboard without external business writes.

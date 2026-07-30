@@ -14,6 +14,14 @@ Reject clipped or masked identifiers. Keep excluded records outside inventory to
 
 An alias mapping must contain the complete source SKU, complete canonical SKU, country, warehouse, evidence source, and approval/reference. Suffix stripping and title matching are not alias evidence.
 
+Current user-confirmed Seaya PH8807 mappings:
+
+| Complete source SKU | Canonical SKU | Available |
+|---|---|---:|
+| 770820 | 0820 | 0 |
+| 770821 | 0821 | 2 |
+| 770822 | 0822 | 0 |
+
 ## Demand
 
 Calculate per country and exact SKU. TikTok and Shopee may share one local warehouse within a country, but inventory and demand never cross countries.
@@ -28,7 +36,7 @@ Otherwise:
 
 `v = sum(READY channel velocities)`
 
-Unavailable channels remain visible as blockers and contribute no fabricated units.
+Unavailable or pending channels remain visible and contribute no fabricated units. Use `PENDING_REFRESH` when the shop mapping and refresh token exist but the access token is expired and refresh/pull has not run. Reserve `BLOCKED_AUTH` for genuinely missing or rejected authorization.
 
 ## Quantity
 

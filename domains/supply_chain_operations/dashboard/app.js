@@ -167,7 +167,11 @@ function statusLabel(status) {
 
 function channelBlock(label, channel, daily) {
   if (channel.state && channel.state !== "READY") {
-    const reason = channel.state === "BLOCKED_AUTH" ? "授权不可用" : "SKU 映射待确认";
+    const reason = channel.state === "PENDING_REFRESH"
+      ? "访问令牌可刷新 · 结算待拉取"
+      : channel.state === "BLOCKED_AUTH"
+      ? "授权不可用"
+      : "SKU 映射待确认";
     return `<div class="channel-line blocked-channel"><b>${label}</b><span>${channel.state}</span><small>${reason} · 未计入需求</small></div>`;
   }
   const recent = channel.recent30Units === null || channel.recent30Units === undefined
@@ -261,16 +265,18 @@ function renderCountry() {
     ? `税费节省按用户结算价的 ${Math.round(config.taxSavingRate * 100)}%`
     : "税费节省没有已批准比例，保守按 0";
   document.querySelector("#economicsRule").textContent = `${taxRule}；跨境运费只按有 SKU 级结算证据的金额取 20%。扣除上架、出库、包材和分摊头程；0–30天仓储费按0。`;
-  const shopeeBlocked = calculated.some(item => item.channels.shopee.state === "BLOCKED_AUTH");
-  const demandEvidenceClass = shopeeBlocked ? "warn" : "ok";
-  const demandEvidenceText = shopeeBlocked
-    ? "TikTok 已按 SKU 计入；Shopee 当前授权不可用，明确标为 BLOCKED_AUTH 且未计入需求。当前建议是保守下限，不把缺失渠道当作零销量。"
+  const shopeeState = calculated
+    .map(item => item.channels.shopee.state)
+    .find(state => state && state !== "READY");
+  const demandEvidenceClass = shopeeState ? "warn" : "ok";
+  const demandEvidenceText = shopeeState
+    ? `TikTok 已按 SKU 计入；Shopee 当前状态为 ${shopeeState} 且未计入需求。当前建议是保守下限，不把待拉取渠道当作零销量。`
     : "TikTok 与 Shopee 独立显示订单、件数、窗口与日均，再在 SKU 层相加。不是用仓库出库量替代市场需求。";
   const identityEvidence = config.inventoryIdentityBlocker
     ? `<article class="warn"><strong>完整 SKU 身份待恢复</strong><p>${config.inventoryIdentityBlocker}</p></article>`
     : "";
   document.querySelector("#evidenceGrid").innerHTML = `
-    <article class="${demandEvidenceClass}"><strong>${shopeeBlocked ? "Shopee 需求暂未纳入" : "双平台需求已合并"}</strong><p>${demandEvidenceText}</p></article>
+    <article class="${demandEvidenceClass}"><strong>${shopeeState ? "Shopee 需求暂未纳入" : "双平台需求已合并"}</strong><p>${demandEvidenceText}</p></article>
     <article class="ok"><strong>库存按国家隔离</strong><p>${config.warehouse} 当前可用 ${available} 件、在途 ${inbound} 件；不使用其他国家仓库存抵扣本国需求。</p></article>
     ${identityEvidence}
     <article class="ok"><strong>首批候选有硬门槛</strong><p>${firstCount} 款海外仓尚无的候选进入台账；没有尺寸、重量、成本、主图或足够需求的 SKU 已关闭。</p></article>

@@ -61,6 +61,8 @@ def test_skill_has_ui_metadata_and_hard_no_truncation_rule():
 
     assert "Never create placeholder identifiers such as `082X`" in skill
     assert "BLOCKED_IDENTITY" in skill
+    assert "`770821 → 0821`" in skill
+    assert "PENDING_REFRESH" in skill
     assert "verify_dashboard_sync.py --check" in skill
     assert "$manage-seaya-replenishment" in ui
 

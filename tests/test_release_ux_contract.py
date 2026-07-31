@@ -704,8 +704,8 @@ def test_oneclick_manual_review_forms_keep_warning_and_apiless_contracts_separat
     )
     apiless_submit = _function_body(script, "submitManualTargetVerification")
 
-    assert "product_workspace.css?v=20260730-v18" in html
-    assert "product_workspace.js?v=20260731-v23" in html
+    assert "product_workspace.css?v=20260731-v19" in html
+    assert "product_workspace.js?v=20260731-v24" in html
     assert '"SUCCEEDED_MANUAL_REVIEW"' in script
     assert '"review_verified_observation_warning"' in script
     assert "oneclick-observation-review-form" in script

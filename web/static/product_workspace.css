@@ -1741,6 +1741,10 @@ section { scroll-margin-top: 20px; }
   gap: 14px;
   margin-top: 14px;
 }
+
+#releasePlan.oneclick-unified-action button:not(#releasePrimaryActionButton) {
+  display: none !important;
+}
 .external-action-card {
   display: grid;
   align-content: start;

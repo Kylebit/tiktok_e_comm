@@ -1634,6 +1634,22 @@
   function currentOneClickNextAction(data) {
     const release = data?.release_v1 || {};
     const projection = oneClickProjection();
+    if (
+      !oneClickExecution.job
+      && (
+        release.canonical_next_action?.action
+          === "review_shopee_global_plan"
+        || shopeeGlobalPlanReviewRequired(data, projection)
+      )
+    ) {
+      return {
+        target_label: SHOPEE_GLOBAL_CONTROL_TARGET,
+        target_focus: SHOPEE_GLOBAL_CONTROL_TARGET,
+        canonical_status: "BLOCKED_CAPABILITY",
+        action: "review_shopee_global_plan",
+        runnable: false,
+      };
+    }
     const action = oneClickExecution.failureAction
       || projection?.canonical_next_action
       || release.canonical_next_action;
@@ -3453,7 +3469,11 @@
         await requestShopeeGlobalPlanPreview(identity);
         shopeeGlobalPlanReview.reconciliationBusy = false;
         if (shopeeGlobalPlanReview.approvalCurrent) {
-          window.location.reload();
+          shopeeGlobalPlanReview.error = "";
+          oneClickExecution.statusWarning =
+            "Shopee Global 计划已通过 GET 对账确认保存；当前页面已稳定结案，不会再次提交。";
+          renderOneClickExecution(currentData);
+          renderReleaseRecovery(currentData?.release_v1 || {});
           return;
         }
         shopeeGlobalPlanReview.error =
@@ -6750,15 +6770,21 @@
     const message = $("#releasePrimaryActionMessage");
     const approvalButton = $("#approveReleasePlanButton");
     const legacyPanels = $("#legacyReleaseActionPanels");
+    const releaseSection = $("#releasePlan");
     if (
       !panel
       || !button
       || !message
       || !approvalButton
       || !legacyPanels
+      || !releaseSection
     ) return;
 
     const unifiedAuthority = approved && oneClickAuthorityAvailable(data);
+    releaseSection.classList.toggle(
+      "oneclick-unified-action",
+      unifiedAuthority,
+    );
     approvalButton.hidden = approved;
     panel.hidden = !unifiedAuthority;
     legacyPanels.hidden = unifiedAuthority;
@@ -6817,15 +6843,6 @@
         || "上次请求结果尚未确认；本操作只读核对，不会重复提交。";
       return;
     }
-    if (
-      oneClickExecution.preview
-      && oneClickExecution.preview.start_allowed === true
-      && oneClickExecution.preview.preparation_pending_count > 0
-    ) {
-      button.textContent = "开始执行已批准计划";
-      message.textContent = "点击一次即可创建唯一持久任务；后续步骤由服务端状态机推进。";
-      return;
-    }
     if (canonicalNextAction?.action) {
       button.dataset.oneclickAction = String(canonicalNextAction.action);
       button.dataset.oneclickTargetFocus = String(
@@ -6833,6 +6850,15 @@
       );
       button.textContent = oneClickActionText(canonicalNextAction.action);
       message.textContent = "当前尚不能提交发布；按钮会进入服务端指定的唯一处理步骤。";
+      return;
+    }
+    if (
+      oneClickExecution.preview
+      && oneClickExecution.preview.start_allowed === true
+      && oneClickExecution.preview.preparation_pending_count > 0
+    ) {
+      button.textContent = "开始执行已批准计划";
+      message.textContent = "点击一次即可创建唯一持久任务；后续步骤由服务端状态机推进。";
       return;
     }
     button.textContent = "读取并继续发布";
@@ -7850,6 +7876,90 @@
   async function runReleasePrimaryAction() {
     if (!currentData?.release_v1?.plan_approved) return;
     const canonicalNextAction = currentOneClickNextAction(currentData);
+    if (canonicalNextAction?.action === "review_shopee_global_plan") {
+      const approvalForm = [...document.querySelectorAll(
+        ".shopee-global-plan-approval-form",
+      )].find((form) => (
+        form.elements.confirm_approved_shopee_global_plan?.checked === true
+        && form.querySelector("button[type='submit']")?.disabled === false
+      )) || null;
+      const approvalConsent = approvalForm?.elements
+        ?.confirm_approved_shopee_global_plan;
+      const approvalSubmit = approvalForm?.querySelector(
+        "button[type='submit']",
+      );
+      if (
+        approvalForm
+        && approvalConsent?.checked === true
+        && approvalSubmit
+        && approvalSubmit.disabled === false
+      ) {
+        await submitShopeeGlobalPlanApproval(approvalForm);
+        return;
+      }
+      const categoryForm = document.querySelector(
+        ".channel-category-decision-form",
+      );
+      const categorySubmit = categoryForm?.querySelector(
+        "button[type='submit']",
+      );
+      if (
+        categoryForm
+        && categorySubmit
+        && categorySubmit.disabled === false
+      ) {
+        await submitShopeeCategoryDecision(categoryForm);
+        return;
+      }
+    }
+    if (
+      canonicalNextAction?.action
+        === "review_verified_observation_warning"
+    ) {
+      const targetLabel = String(
+        canonicalNextAction.target_focus
+        || canonicalNextAction.target_label
+        || "",
+      );
+      const warningForm = document.querySelector(
+        `[data-oneclick-observation-review="${CSS.escape(targetLabel)}"]`,
+      );
+      if (
+        warningForm
+        && warningForm.elements.manual_review_accepted?.checked === true
+      ) {
+        await submitOneClickObservationAcceptance(warningForm);
+        return;
+      }
+    }
+    if (
+      canonicalNextAction?.action === "verify_submission_in_marketplace"
+    ) {
+      const targetLabel = String(
+        canonicalNextAction.target_focus
+        || canonicalNextAction.target_label
+        || "",
+      );
+      const verificationForm = document.querySelector(
+        `.run-target[data-target-label="${CSS.escape(targetLabel)}"] `
+          + ".manual-verification-form",
+      );
+      const verificationSubmit = verificationForm?.querySelector(
+        "button[type='submit']",
+      );
+      if (
+        verificationForm
+        && String(
+          verificationForm.elements.marketplace_product_id?.value || "",
+        ).trim()
+        && verificationForm.elements.all_checks_confirmed?.checked === true
+        && verificationSubmit
+        && verificationSubmit.disabled === false
+      ) {
+        await submitManualTargetVerification(verificationForm);
+        return;
+      }
+    }
     if (oneClickExecution.job) {
       if (canonicalNextAction?.action) {
         const button = $("#releasePrimaryActionButton");

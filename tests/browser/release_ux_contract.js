@@ -4655,7 +4655,7 @@ async function oneClickBlockedPromotionStatusAndSingleActionContract(browser) {
       await reconciliation.innerText(),
     );
     const visibleReleaseButtons = await page.locator(
-      "#releasePrimaryActionPanel > #releasePrimaryActionButton:visible",
+      "#releasePlan button:visible",
     ).count();
     check(
       visibleReleaseButtons === 1,
@@ -5290,10 +5290,8 @@ async function oneClickAsyncControlPlaneContract(browser, viewport) {
       `one-click ${viewport.width}: canonical warning action focuses its controlled acceptance`,
     );
     await warningCheckbox.check();
-    await warningForm.evaluate((form) => {
-      form.requestSubmit();
-      form.requestSubmit();
-    });
+    await nextActionButton.click();
+    await nextActionButton.click();
     await page.waitForFunction(() => (
       !document.querySelector("[data-oneclick-observation-review='shopee:MY']")
       && document.querySelector("#releasePrimaryActionButton")
@@ -5483,7 +5481,7 @@ async function oneClickContentRecoveryContract(browser, viewport) {
     await page.goto(`${baseUrl}/product-workspace?offer_id=3828540231`, {
       waitUntil: "networkidle",
     });
-    const nextButton = page.locator("#oneClickNextActionButton");
+    const nextButton = page.locator("#releasePrimaryActionButton");
     await nextButton.waitFor({ state: "visible" });
     check(
       !(await page.locator("#publishAllCheckbox").isEnabled()),
@@ -6289,11 +6287,30 @@ async function shopeeGlobalApprovalResponseLossContract(browser) {
       await approvalButton.isEnabled(),
       "Shopee Global approval: explicit consent enables exactly one submit",
     );
-    await approvalButton.click();
-    await page.waitForFunction(() => (
-      document.querySelector(".shopee-global-plan-review.is-approved")
-      || performance.getEntriesByType("navigation").length > 1
-    ));
+    const primaryAction = page.locator("#releasePrimaryActionButton");
+    check(
+      await primaryAction.getAttribute("data-oneclick-action")
+        === "review_shopee_global_plan",
+      "Shopee Global approval: the one visible action is bound to the server review action",
+      await primaryAction.getAttribute("data-oneclick-action"),
+    );
+    await primaryAction.click();
+    await page.waitForTimeout(250);
+    check(
+      approvalPosts === 1,
+      "Shopee Global approval: the one visible action dispatches the approved form once",
+      {
+        approvalPosts,
+        globalReads,
+        primaryAction: await primaryAction.getAttribute("data-oneclick-action"),
+        forms: await page.locator(".shopee-global-plan-approval-form").count(),
+      },
+    );
+    check(
+      globalReads >= 2,
+      "Shopee Global approval: response loss is reconciled by a GET-only reread",
+      { approvalPosts, globalReads, requests },
+    );
     check(
       approvalPosts === 1 && globalReads >= 2,
       "Shopee Global approval loss: exactly one POST and GET-only reconciliation",
@@ -6606,6 +6623,13 @@ async function legacyStateSafety(browser) {
 (async () => {
   const browser = await chromium.launch({ headless: true });
   try {
+    if (
+      process.env.ORBIT_BROWSER_CONTRACT_ONLY
+        === "shopee-global-approval"
+    ) {
+      await shopeeGlobalApprovalResponseLossContract(browser);
+      return;
+    }
     const pages = [
       {
         name: "Orbit 首页",

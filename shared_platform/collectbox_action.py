@@ -851,8 +851,22 @@ class CollectBoxActionStore:
         now: float,
     ) -> None:
         expected_class = _WRITE_CLASS[platform]
-        if result.external_writes and result.external_writes != (
-            expected_class,
+        platform_name = platform.lower()
+        allowed_prefixes = (
+            f"miaoshou:collectbox:{platform_name}:detail:update:",
+            *(
+                (
+                    "miaoshou:collectbox:tiktok:detail:create:",
+                    "miaoshou:collectbox:tiktok:shop:claim:",
+                )
+                if platform == "TIKTOK"
+                else ()
+            ),
+        )
+        if any(
+            write != expected_class
+            and not any(write.startswith(prefix) for prefix in allowed_prefixes)
+            for write in result.external_writes
         ):
             raise ValueError("collect-box write class is invalid")
         evidence = _assert_redacted_evidence(result.receipt_evidence)

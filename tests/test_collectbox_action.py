@@ -74,6 +74,47 @@ def test_platform_request_carries_exact_approved_payload_and_targets(tmp_path):
     assert all(request.approved_targets == tuple(plan["targets"]) for request in seen)
 
 
+def test_platform_multi_write_success_is_persisted_without_reconciliation(
+    tmp_path,
+):
+    store = CollectBoxActionStore(tmp_path / "platform.db")
+    plan = _plan()
+
+    def adapter(request):
+        platform = request.platform.lower()
+        target = "tiktok:MX" if platform == "tiktok" else "shopee:MY"
+        return CollectBoxPlatformResult(
+            status="SUCCEEDED",
+            outcome=IMPORTED,
+            platform_detail_id="71001",
+            external_writes=(
+                f"miaoshou:collectbox:claim:{platform}",
+                f"miaoshou:collectbox:{platform}:detail:update:{target}",
+            ),
+            external_write_count=2,
+            receipt_evidence={
+                "schema_version": "collectbox-platform-preparation-evidence/v1",
+                "checks": {"readback_exact": True},
+            },
+        )
+
+    projection = store.start(
+        plan=plan,
+        common_collect_box_detail_id=plan["product_id"],
+        adapter=adapter,
+        now=lambda: 100.0,
+        wait=lambda _seconds: None,
+    )
+
+    assert projection["action"]["status"] == "SUCCEEDED"
+    assert projection["action"]["terminal"] is True
+    assert projection["external_write_count"] == 4
+    assert all(
+        row["external_writes"]["count"] == 2
+        for row in projection["action"]["platforms"]
+    )
+
+
 def test_collectbox_preview_is_pure_and_does_not_expose_raw_detail_id(
     tmp_path,
 ):

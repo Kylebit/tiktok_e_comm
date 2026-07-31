@@ -668,9 +668,17 @@ def _prepare_site(
     pages = read_source_offer_pages(
         source_offer_id, post=post, target=target
     )
+    observed_common_detail_id = _resolve_common_detail_id_from_pages(
+        pages,
+        source_offer_id=source_offer_id,
+    )
+    # The approved product_id is the business product/offer identity.  It is
+    # not Miaoshou's platform-specific COMMON detail identity.  Bind the
+    # latter only from the exact canonical-source query.
+    expected["common_detail_id"] = observed_common_detail_id
     detail_id = _resolve_detail_from_pages(
         pages,
-        common_detail_id=expected["common_detail_id"],
+        common_detail_id=observed_common_detail_id,
         shop_id=expected["shop_id"],
         target=target,
     )
@@ -1777,6 +1785,82 @@ def _resolve_detail_from_pages(
     return next(iter(matched)) if matched else None
 
 
+def _resolve_common_detail_id_from_pages(
+    pages: tuple[dict[str, object], ...],
+    *,
+    source_offer_id: str,
+) -> str:
+    """Resolve Miaoshou COMMON identity from the exact source-offer result.
+
+    ``source_offer_id`` is the upstream product identity used only by the
+    exact search filter.  ``commonCollectBoxDetailId`` is Miaoshou's internal
+    identity and must be observed from that response; the two namespaces are
+    never interchangeable.
+    """
+
+    observed: set[str] = set()
+    for page in pages:
+        rows = page["data"]["detailList"]
+        for row in rows:
+            raw_common = row.get("commonCollectBoxDetailId")
+            if (
+                isinstance(raw_common, bool)
+                or not str(raw_common or "").isdigit()
+                or int(raw_common) <= 0
+            ):
+                raise MiaoshouOneClickPreDispatchError(
+                    "source COMMON identity is malformed"
+                )
+
+            source_values: list[object] = []
+            for field in (
+                "sourceOfferId",
+                "sourceItemId",
+                "sourceProductId",
+            ):
+                if field in row and row.get(field) is not None:
+                    source_values.append(row.get(field))
+            source_list = row.get("sourceList")
+            if source_list is not None:
+                if not isinstance(source_list, list) or any(
+                    not isinstance(item, Mapping) for item in source_list
+                ):
+                    raise MiaoshouOneClickPreDispatchError(
+                        "canonical source identity evidence is malformed"
+                    )
+                for item in source_list:
+                    for field in (
+                        "sourceOfferId",
+                        "sourceItemId",
+                        "sourceProductId",
+                    ):
+                        if field in item and item.get(field) is not None:
+                            source_values.append(item.get(field))
+
+            canonical_sources: set[str] = set()
+            for value in source_values:
+                if (
+                    isinstance(value, bool)
+                    or not str(value or "").isdigit()
+                    or int(value) <= 0
+                ):
+                    raise MiaoshouOneClickPreDispatchError(
+                        "canonical source identity evidence is malformed"
+                    )
+                canonical_sources.add(str(int(value)))
+            if canonical_sources and source_offer_id not in canonical_sources:
+                raise MiaoshouOneClickPreDispatchError(
+                    "canonical source offer identity drifted"
+                )
+            observed.add(str(int(raw_common)))
+
+    if len(observed) != 1:
+        raise MiaoshouOneClickPreDispatchError(
+            "source COMMON identity is unavailable or ambiguous"
+        )
+    return next(iter(observed))
+
+
 def _verify_common_identity(
     detail: Mapping[str, object],
     *,
@@ -2104,6 +2188,19 @@ def _candidate_title(payload: Mapping[str, object], target: str) -> str:
         and type(row.get("title")) is str
         and row["title"].strip()
     ]
+    # The approved listing contract intentionally carries one Shopee CNSC
+    # master title.  Regional Miaoshou details all inherit that exact approved
+    # title; they do not require four duplicated title approvals.
+    if not exact and channel == "shopee":
+        exact = [
+            row
+            for row in candidates
+            if str(row.get("channel") or "").casefold() == "shopee"
+            and str(row.get("site") or "").upper() == "CNSC"
+            and row.get("policy_check") == "passed"
+            and type(row.get("title")) is str
+            and row["title"].strip()
+        ]
     if len(exact) != 1:
         raise MiaoshouOneClickPrepareBlocked(
             "approved_storefront_title_not_unique",
@@ -2119,20 +2216,59 @@ def _price(
     selected = _mapping(pricing.get("selected_targets"), "selected pricing")
     row = _mapping(selected.get(target), "target pricing")
     store_prices = row.get("store_prices")
+    if store_prices is not None:
+        if (
+            not isinstance(store_prices, list)
+            or len(store_prices) != 1
+            or not isinstance(store_prices[0], Mapping)
+            or str(store_prices[0].get("target_key") or "") != target_key
+        ):
+            raise MiaoshouOneClickPrepareBlocked(
+                "approved_store_price_not_unique",
+                "exactly one approved target price is required",
+            )
+        price = _positive_decimal(
+            store_prices[0].get("list_price"), "approved list price"
+        )
+        currency = _text(
+            store_prices[0].get("currency"), "approved currency"
+        )
+        return str(price), currency
+
+    derived = row.get("derived_preview")
+    expected_site = target.split(":", 1)[1]
     if (
-        not isinstance(store_prices, list)
-        or len(store_prices) != 1
-        or not isinstance(store_prices[0], Mapping)
-        or str(store_prices[0].get("target_key") or "") != target_key
+        not isinstance(derived, Mapping)
+        or type(row.get("selected_source_target_key")) is not str
+        or not row["selected_source_target_key"].strip()
+        or row.get("target_site") != expected_site
     ):
         raise MiaoshouOneClickPrepareBlocked(
             "approved_store_price_not_unique",
             "exactly one approved target price is required",
         )
+    if target.startswith("shopee:"):
+        price_field = "local_original_price"
+        currency = {
+            "PH": "PHP",
+            "MY": "MYR",
+            "TH": "THB",
+            "VN": "VND",
+        }.get(expected_site)
+    elif target == "ozon:RU":
+        price_field = "price_cny"
+        currency = "CNY"
+    else:
+        price_field = ""
+        currency = None
+    if type(currency) is not str:
+        raise MiaoshouOneClickPrepareBlocked(
+            "approved_store_price_not_unique",
+            "exactly one approved target price is required",
+        )
     price = _positive_decimal(
-        store_prices[0].get("list_price"), "approved list price"
+        derived.get(price_field), "approved derived target price"
     )
-    currency = _text(store_prices[0].get("currency"), "approved currency")
     return str(price), currency
 
 

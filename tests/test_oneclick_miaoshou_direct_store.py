@@ -231,6 +231,63 @@ def _plan_payload(target):
     }
 
 
+def _live_shaped_plan_payload(target):
+    """Sanitized shape captured from approved Offer 3846511157.
+
+    Values are synthetic; only the server-owned nesting and cardinality match
+    the production payload.
+    """
+    config = miaoshou.DIRECT_STORE_CONFIG[target]
+    payload = _plan_payload(target)
+    payload["product_id"] = "3846511157"
+    payload["listing_copy"]["candidates"] = [
+        {
+            "channel": "ozon",
+            "site": "RU",
+            "policy_check": "passed",
+            "title": "Approved Ozon title",
+        },
+        {
+            "channel": "shopee",
+            "site": "CNSC",
+            "policy_check": "passed",
+            "title": "Approved Shopee master title",
+        },
+        {
+            "channel": "tiktok",
+            "site": config["region"],
+            "policy_check": "passed",
+            "title": "Approved TikTok title",
+        },
+    ]
+    if target.startswith("shopee:"):
+        region = target.split(":", 1)[1]
+        payload["pricing"]["selected_targets"][target] = {
+            "selected_source_target_key": f"lh_{region.lower()}",
+            "target_site": region,
+            "derived_preview": {
+                "exchange_rate_cny_per_local": 1,
+                "global_original_price_cny": 8,
+                "local_original_price": 33,
+                "source_currency": "PHP",
+            },
+            "write_fields": ["global.original_price"],
+        }
+    elif target == "ozon:RU":
+        payload["pricing"]["selected_targets"][target] = {
+            "selected_source_target_key": "lh_ph",
+            "target_site": "RU",
+            "derived_preview": {
+                "exchange_rate_cny_per_local": 1,
+                "old_price_cny": 56,
+                "price_cny": 33,
+                "source_currency": "PHP",
+            },
+            "write_fields": ["draft.price", "draft.old_price"],
+        }
+    return payload
+
+
 def _prepare_request(target):
     return SimpleNamespace(
         target_label=target,
@@ -497,4 +554,141 @@ def test_one_store_failure_does_not_poison_a_different_store_dispatch():
     assert result["external_writes"] == (
         "miaoshou:ozon_detail:update",
         "miaoshou:ozon_publish:submission",
+    )
+
+
+def test_live_shaped_shopee_cnsc_title_prepares_each_regional_store():
+    target = "shopee:MY"
+    fake = DirectStoreFake(target)
+    miaoshou.configure_prepare_post_factory(lambda: fake.post)
+    request = _prepare_request(target)
+    request.immutable_plan_payload = _live_shaped_plan_payload(target)
+
+    result = prepare_oneclick_target(request)
+
+    assert result["classification"] == "READY_SUBMIT_MANUAL"
+    assert result["command"]["provider_command"]["expected"]["title"] == (
+        "Approved Shopee master title"
+    )
+    assert result["command"]["provider_command"]["expected"]["price"] == "33"
+    assert result["command"]["provider_command"]["expected"]["currency"] == (
+        "MYR"
+    )
+
+
+def test_live_shaped_ozon_derived_preview_supplies_approved_price():
+    target = "ozon:RU"
+    fake = DirectStoreFake(target)
+    miaoshou.configure_prepare_post_factory(lambda: fake.post)
+    request = _prepare_request(target)
+    request.immutable_plan_payload = _live_shaped_plan_payload(target)
+
+    result = prepare_oneclick_target(request)
+
+    assert result["classification"] == "READY_SUBMIT_MANUAL"
+    assert result["command"]["provider_command"]["expected"]["price"] == "33"
+    assert result["command"]["provider_command"]["expected"]["currency"] == (
+        "CNY"
+    )
+
+
+def test_live_shaped_tiktok_default_prepare_uses_miaoshou_common_id_not_offer_id(
+    monkeypatch,
+):
+    target = "tiktok:LH_PH"
+    fake = DirectStoreFake(target)
+    original_post = fake.post
+
+    def post(path, body):
+        result = original_post(path, body)
+        if path == fake.config["search_path"]:
+            result["data"]["detailList"][0][
+                "commonCollectBoxDetailId"
+            ] = 7001
+        return result
+
+    monkeypatch.setattr("modules.miaoshou.client.post_open", post)
+    request = _prepare_request(target)
+    request.immutable_plan_payload = _live_shaped_plan_payload(target)
+
+    result = prepare_oneclick_target(request)
+    command = result["command"]["provider_command"]
+
+    assert command["source_offer_id"] == "986159122616"
+    assert command["common_detail_id"] == "7001"
+    assert command["detail_id"] == "77"
+    assert command["action"] == "USE_EXISTING"
+
+
+def test_shopee_master_title_and_derived_price_remain_strictly_unique():
+    target = "shopee:MY"
+    fake = DirectStoreFake(target)
+    miaoshou.configure_prepare_post_factory(lambda: fake.post)
+    duplicate_title = _prepare_request(target)
+    duplicate_title.immutable_plan_payload = _live_shaped_plan_payload(target)
+    duplicate_title.immutable_plan_payload["listing_copy"]["candidates"].append(
+        {
+            "channel": "shopee",
+            "site": "CNSC",
+            "policy_check": "passed",
+            "title": "A second approved master is invalid",
+        }
+    )
+
+    title_result = prepare_oneclick_target(duplicate_title)
+
+    assert title_result["classification"] == "BLOCKED_CAPABILITY"
+    assert title_result["reason_code"] == (
+        "approved_storefront_title_not_unique"
+    )
+
+    wrong_site = _prepare_request(target)
+    wrong_site.immutable_plan_payload = _live_shaped_plan_payload(target)
+    wrong_site.immutable_plan_payload["pricing"]["selected_targets"][target][
+        "target_site"
+    ] = "PH"
+
+    price_result = prepare_oneclick_target(wrong_site)
+
+    assert price_result["classification"] == "BLOCKED_CAPABILITY"
+    assert price_result["reason_code"] == "approved_store_price_not_unique"
+
+
+def test_source_result_common_identity_mismatch_or_ambiguity_fails_closed():
+    target = "tiktok:LH_PH"
+    request = _prepare_request(target)
+    request.immutable_plan_payload = _live_shaped_plan_payload(target)
+    fake = DirectStoreFake(target)
+    original_post = fake.post
+
+    def mismatched_source(path, body):
+        result = original_post(path, body)
+        if path == fake.config["search_path"]:
+            result["data"]["detailList"][0]["sourceList"] = [
+                {"sourceItemId": "111111111111"}
+            ]
+        return result
+
+    miaoshou.configure_prepare_post_factory(lambda: mismatched_source)
+    mismatch = prepare_oneclick_target(request)
+    assert mismatch["classification"] == "BLOCKED_CAPABILITY"
+    assert mismatch["reason_code"] == (
+        "miaoshou_official_prepare_proof_unavailable"
+    )
+
+    def ambiguous_common(path, body):
+        result = original_post(path, body)
+        if path == fake.config["search_path"]:
+            second = deepcopy(result["data"]["detailList"][0])
+            second["commonCollectBoxDetailId"] = 7002
+            second["collectBoxDetailId"] = 78
+            result["data"]["detailList"].append(second)
+            result["data"]["totalCount"] = 2
+        return result
+
+    miaoshou.configure_prepare_post_factory(lambda: ambiguous_common)
+    ambiguous = prepare_oneclick_target(request)
+    assert ambiguous["classification"] == "BLOCKED_CAPABILITY"
+    assert ambiguous["reason_code"] == (
+        "miaoshou_official_prepare_proof_unavailable"
     )

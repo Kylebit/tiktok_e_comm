@@ -74,6 +74,16 @@ TIKTOK_MIAOSHOU_TARGETS = frozenset(
         "tiktok:HB_VN",
     }
 )
+MIAOSHOU_DIRECT_STORE_TARGETS = frozenset(
+    {
+        *(label for label in TIKTOK_MIAOSHOU_TARGETS if label.startswith("tiktok:")),
+        "shopee:PH",
+        "shopee:MY",
+        "shopee:TH",
+        "shopee:VN",
+        "ozon:RU",
+    }
+)
 API_LESS_TIKTOK_TARGETS = frozenset(
     {
         "tiktok:MX",
@@ -420,7 +430,10 @@ def build_tiktok_miaoshou_prepare_seed(request: object) -> OneClickPrepareSeed:
     target_label, idempotency_key, source_identity, source_digest = _request_identity(
         request
     )
-    if target_label not in TIKTOK_MIAOSHOU_TARGETS:
+    if target_label not in {
+        *TIKTOK_MIAOSHOU_TARGETS,
+        *MIAOSHOU_DIRECT_STORE_TARGETS,
+    }:
         raise OneClickAdapterInputError("tiktok_miaoshou_target_unsupported")
     try:
         query = prepare_tiktok_source_query_from_canonical_identity(source_identity)
@@ -522,7 +535,7 @@ def prepare_oneclick_target(
     """
     target = getattr(request, "target_label", None)
     provider = _resolve_provider(provider_factory)
-    if target in TIKTOK_MIAOSHOU_TARGETS:
+    if target in MIAOSHOU_DIRECT_STORE_TARGETS:
         seed = build_tiktok_miaoshou_prepare_seed(request)
         observed = _provider_prepare(
             provider.prepare_tiktok_miaoshou, seed, request
@@ -533,7 +546,14 @@ def prepare_oneclick_target(
             target=target,
             seed=seed,
             observed=observed,
-            manual_after_submit=target in API_LESS_TIKTOK_TARGETS,
+            manual_after_submit=True,
+        )
+    if target == "miaoshou:COMMON":
+        return _blocked_prepare_result(
+            "BLOCKED_CAPABILITY",
+            "CAPABILITY",
+            "synthetic_common_target_removed",
+            "Miaoshou direct-store publishing owns real storefront targets only",
         )
     if target in SHOPEE_TARGETS:
         try:
@@ -598,8 +618,17 @@ def dispatch_oneclick_target(
     target = getattr(request, "target_label", None)
     provider = _resolve_provider(provider_factory)
     try:
-        if target in TIKTOK_MIAOSHOU_TARGETS:
+        if target in MIAOSHOU_DIRECT_STORE_TARGETS:
             receipt = provider.dispatch_tiktok_miaoshou(request)
+        elif target == "miaoshou:COMMON":
+            return {
+                "canonical_status": "BLOCKED_CAPABILITY",
+                "reason_category": "CAPABILITY",
+                "reason_scope": "TARGET",
+                "reason_code": "synthetic_common_target_removed",
+                "reason_detail": "Miaoshou direct-store publishing owns real storefront targets only",
+                "external_writes": (),
+            }
         elif target in SHOPEE_TARGETS:
             receipt = provider.dispatch_shopee(request)
         elif target == "ozon:RU":
@@ -679,34 +708,18 @@ def production_adapter_registry(
         raise RuntimeError("one-click control-plane contract is not integrated") from error
     policy_digest = _digest(
         {
-            "schema_version": "oneclick-channel-operations-policy/v1",
-            "channels": ["miaoshou", "tiktok", "shopee", "ozon"],
+            "schema_version": "miaoshou-direct-store-policy/v1",
+            "channels": ["tiktok", "shopee", "ozon"],
             "source_identity": "source-product-identity/v1",
-            "shopee": "plan-native-v2-no-legacy-match",
-            "ozon": "approved-inventory-only",
+            "marketplace_readback": "disabled",
+            "submission_outcome": "SUBMITTED_UNVERIFIED",
         }
     )
     factory = provider_factory or _production_provider_factory
-    registrations = {
-        "new_product_workbench_miaoshou_commit": (
-            tuple(sorted(label for label in TIKTOK_MIAOSHOU_TARGETS if label == "miaoshou:COMMON"))
-        ),
-        "miaoshou_tiktok_publish": tuple(sorted(label for label in TIKTOK_MIAOSHOU_TARGETS if label.startswith("tiktok:"))),
-        "shopee_cnsc_publish": tuple(
-            sorted(
-                SHOPEE_TARGETS,
-                key=lambda label: (
-                    label != SHOPEE_GLOBAL_TARGET,
-                    label,
-                ),
-            )
-        ),
-        "ozon_product_publish": ("ozon:RU",),
-    }
     registry = {
-        name: AdapterRegistration(
-            adapter_name=name,
-            target_labels=labels,
+        "miaoshou-direct-store/v1": AdapterRegistration(
+            adapter_name="miaoshou-direct-store/v1",
+            target_labels=tuple(sorted(MIAOSHOU_DIRECT_STORE_TARGETS)),
             prepare=lambda request, factory=factory: prepare_oneclick_target(
                 request, provider_factory=factory
             ),
@@ -719,36 +732,7 @@ def production_adapter_registry(
             preserves_idempotency_key=True,
             reports_truthful_receipt=True,
         )
-        for name, labels in registrations.items()
     }
-    from modules.tiktok.oneclick_promotion import (
-        promotion_adapter_policy_digest,
-    )
-
-    promotion_targets = tuple(
-        f"promotion:{channel}:{site}"
-        for channel, site in (
-            ("shopee", "MY"),
-            ("shopee", "PH"),
-            ("shopee", "TH"),
-            ("shopee", "VN"),
-            ("tiktok", "LH_MY"),
-            ("tiktok", "LH_PH"),
-            ("tiktok", "LH_TH"),
-            ("tiktok", "LH_VN"),
-        )
-    )
-    registry["postpublish_promotion"] = AdapterRegistration(
-        adapter_name="postpublish_promotion",
-        target_labels=promotion_targets,
-        prepare=_prepare_postpublish_promotion,
-        dispatch=_dispatch_postpublish_promotion,
-        policy_digest=promotion_adapter_policy_digest(),
-        prepare_is_read_only=True,
-        consumes_prepared_command=True,
-        preserves_idempotency_key=True,
-        reports_truthful_receipt=True,
-    )
     return registry
 
 
@@ -839,15 +823,13 @@ def _production_provider_factory() -> OneClickProvider:
         dispatch_tiktok_miaoshou_prepared_target,
         prepare_tiktok_miaoshou_target,
     )
-    from modules.shopee.oneclick_release import (
-        dispatch_plan_native_target,
-        prepare_plan_native_target,
-    )
     return OneClickProvider(
         prepare_tiktok_miaoshou=prepare_tiktok_miaoshou_target,
         dispatch_tiktok_miaoshou=dispatch_tiktok_miaoshou_prepared_target,
-        prepare_shopee=prepare_plan_native_target,
-        dispatch_shopee=dispatch_plan_native_target,
+        # Kept only for the injectable dataclass ABI; direct-store routing
+        # never reaches official Shopee primitives.
+        prepare_shopee=prepare_tiktok_miaoshou_target,
+        dispatch_shopee=dispatch_tiktok_miaoshou_prepared_target,
     )
 
 
@@ -997,30 +979,34 @@ def _write_occurrence_plan(
                 "write_class": "miaoshou:COMMON:immutable_plan_write",
             }
         ]
-    elif target in TIKTOK_MIAOSHOU_TARGETS:
+    elif target in MIAOSHOU_DIRECT_STORE_TARGETS:
+        platform = target.split(":", 1)[0]
         rows = []
         if provider_command.get("action") == "CREATE_AND_CLAIM":
-            rows.extend(
-                [
-                    {
-                        "occurrence_id": "detail_create-1",
-                        "write_class": "miaoshou:tiktok_detail:create",
-                    },
+            rows.append(
+                {
+                    "occurrence_id": "detail_create-1",
+                    "write_class": f"miaoshou:{platform}_detail:create",
+                }
+            )
+            if platform == "tiktok":
+                rows.append(
                     {
                         "occurrence_id": "shop_claim-1",
                         "write_class": "miaoshou:tiktok_shop:claim",
-                    },
-                ]
-            )
+                    }
+                )
         rows.extend(
             [
                 {
                     "occurrence_id": "detail_update-1",
-                    "write_class": "miaoshou:tiktok_detail:update",
+                    "write_class": f"miaoshou:{platform}_detail:update",
                 },
                 {
                     "occurrence_id": "publish_submit-1",
-                    "write_class": "miaoshou:tiktok_publish:submission",
+                    "write_class": (
+                        f"miaoshou:{platform}_publish:submission"
+                    ),
                 },
             ]
         )

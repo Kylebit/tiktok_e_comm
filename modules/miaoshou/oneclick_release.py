@@ -1,8 +1,9 @@
-"""Plan-bound Miaoshou/TikTok one-click primitives.
+"""Plan-bound Miaoshou direct-store one-click primitives.
 
-The prepare half performs official read-only observations only.  The dispatch
-half accepts a JSON-only command, rehydrates the client at runtime, rechecks
-the observed identity, and records every invoked write boundary.  It never
+The prepare half performs Miaoshou read-only observations only for TikTok,
+Shopee, and Ozon.  The dispatch half accepts a JSON-only command, rehydrates
+the Miaoshou client at runtime, rechecks the observed identity, and records
+every invoked write boundary.  It never calls a marketplace API and never
 loads or writes a workbench claim file.
 """
 from __future__ import annotations
@@ -56,18 +57,136 @@ PUBLISH_PATH = (
     "/open/v1/product/collect_box/tiktok/collect_box/save_move_collect_task"
 )
 
-SITE_CONFIG: dict[str, dict[str, object]] = {
-    "tiktok:LH_PH": {"key": "lh_ph", "shop": "LivelyHive", "shop_id": 7676267, "region": "PH", "api": True},
-    "tiktok:LH_MY": {"key": "lh_my", "shop": "LivelyHive", "shop_id": 13295169, "region": "MY", "api": True},
-    "tiktok:LH_TH": {"key": "lh_th", "shop": "LivelyHive", "shop_id": 13295228, "region": "TH", "api": True},
-    "tiktok:LH_VN": {"key": "lh_vn", "shop": "LivelyHive", "shop_id": 13295291, "region": "VN", "api": True},
-    "tiktok:MX": {"key": "mx", "shop": "LivelyHive", "shop_id": 16265910, "region": "MX", "api": False},
-    "tiktok:GB": {"key": "gb", "shop": "LivelyHive", "shop_id": 10204699, "region": "GB", "api": False},
-    "tiktok:HB_PH": {"key": "hb_ph", "shop": "HomeBloom", "shop_id": 15173238, "region": "PH", "api": False},
-    "tiktok:HB_MY": {"key": "hb_my", "shop": "HomeBloom", "shop_id": 16770639, "region": "MY", "api": False},
-    "tiktok:HB_TH": {"key": "hb_th", "shop": "HomeBloom", "shop_id": 16770557, "region": "TH", "api": False},
-    "tiktok:HB_VN": {"key": "hb_vn", "shop": "HomeBloom", "shop_id": 16783702, "region": "VN", "api": False},
+def _direct_store_config(
+    *,
+    key: str,
+    shop: str,
+    shop_id: int,
+    platform: str,
+    site: str,
+) -> dict[str, object]:
+    """Build one immutable Miaoshou Open API storefront binding.
+
+    The three endpoint families below are the current official Apifox
+    contracts.  They are kept beside the shop identity so a stored command
+    cannot drift from one platform family to another after restart.
+    """
+
+    return {
+        "key": key,
+        "shop": shop,
+        "shop_id": shop_id,
+        "region": site,
+        "site": site,
+        "platform": platform,
+        # Every direct-store target is intentionally API-less from the
+        # marketplace perspective.  Acceptance is Miaoshou submission only.
+        "api": False,
+        "search_path": (
+            f"/open/v1/product/collect_box/{platform}/collect_box/"
+            "search_collect_box_detail_list"
+        ),
+        "get_path": (
+            f"/open/v1/product/collect_box/{platform}/collect_box/"
+            + (
+                "get_shop_collect_item_info"
+                if platform == "tiktok"
+                else (
+                    "get_site_detail_simple_data"
+                    if platform == "shopee"
+                    else "get_site_collect_item_info"
+                )
+            )
+        ),
+        "save_path": (
+            f"/open/v1/product/collect_box/{platform}/collect_box/"
+            + (
+                "save_shop_collect_item_info"
+                if platform == "tiktok"
+                else "save_site_detail_data"
+            )
+        ),
+        "publish_path": (
+            (
+                "/open/v1/product/collect_box/tiktok/collect_box/"
+                "save_move_collect_task"
+            )
+            if platform == "tiktok"
+            else (
+                f"/open/v1/product/collect_box/{platform}/"
+                "move_collect/save_move_collect_task"
+            )
+        ),
+    }
+
+
+DIRECT_STORE_CONFIG: dict[str, dict[str, object]] = {
+    "tiktok:LH_PH": _direct_store_config(
+        key="lh_ph", shop="LivelyHive", shop_id=7676267,
+        platform="tiktok", site="PH",
+    ),
+    "tiktok:LH_MY": _direct_store_config(
+        key="lh_my", shop="LivelyHive", shop_id=13295169,
+        platform="tiktok", site="MY",
+    ),
+    "tiktok:LH_TH": _direct_store_config(
+        key="lh_th", shop="LivelyHive", shop_id=13295228,
+        platform="tiktok", site="TH",
+    ),
+    "tiktok:LH_VN": _direct_store_config(
+        key="lh_vn", shop="LivelyHive", shop_id=13295291,
+        platform="tiktok", site="VN",
+    ),
+    "tiktok:MX": _direct_store_config(
+        key="mx", shop="LivelyHive", shop_id=16265910,
+        platform="tiktok", site="MX",
+    ),
+    "tiktok:GB": _direct_store_config(
+        key="gb", shop="LivelyHive", shop_id=10204699,
+        platform="tiktok", site="GB",
+    ),
+    "tiktok:HB_PH": _direct_store_config(
+        key="hb_ph", shop="HomeBloom", shop_id=15173238,
+        platform="tiktok", site="PH",
+    ),
+    "tiktok:HB_MY": _direct_store_config(
+        key="hb_my", shop="HomeBloom", shop_id=16770639,
+        platform="tiktok", site="MY",
+    ),
+    "tiktok:HB_TH": _direct_store_config(
+        key="hb_th", shop="HomeBloom", shop_id=16770557,
+        platform="tiktok", site="TH",
+    ),
+    "tiktok:HB_VN": _direct_store_config(
+        key="hb_vn", shop="HomeBloom", shop_id=16783702,
+        platform="tiktok", site="VN",
+    ),
+    "shopee:PH": _direct_store_config(
+        key="ph", shop="LivelyHive", shop_id=7808255,
+        platform="shopee", site="PH",
+    ),
+    "shopee:MY": _direct_store_config(
+        key="my", shop="LivelyHive", shop_id=13295318,
+        platform="shopee", site="MY",
+    ),
+    "shopee:TH": _direct_store_config(
+        key="th", shop="LivelyHive", shop_id=13295319,
+        platform="shopee", site="TH",
+    ),
+    "shopee:VN": _direct_store_config(
+        key="vn", shop="LivelyHive", shop_id=13295320,
+        platform="shopee", site="VN",
+    ),
+    # Miaoshou's shop-list contract uses the literal site value ``OZON``.
+    "ozon:RU": _direct_store_config(
+        key="ru", shop="LivelyHive_OZON", shop_id=16075432,
+        platform="ozon", site="OZON",
+    ),
 }
+
+# Backward-compatible symbol for focused tests and older imports.  Its
+# semantics are now all direct-store targets, not TikTok-only sites.
+SITE_CONFIG = DIRECT_STORE_CONFIG
 API_LESS_TIKTOK_TARGETS = frozenset(
     target
     for target, config in SITE_CONFIG.items()
@@ -228,6 +347,30 @@ def _prepare_tiktok_miaoshou_target(seed, request) -> dict[str, object]:
             "fixed Miaoshou target configuration is unavailable",
             category="CAPABILITY",
         )
+    if command.get("kind") == "DIRECT_STORE":
+        identity_binding = {
+            "target_label": target,
+            "shop_id": command["shop_id"],
+            "platform": command["platform"],
+            "idempotency_key": str(getattr(seed, "idempotency_key", "")),
+            "source_identity_digest": str(
+                getattr(seed, "source_identity_digest", "")
+            ),
+            "payload_digest": str(
+                getattr(request, "payload_digest", "")
+            ),
+            "adapter_policy_digest": str(
+                getattr(request, "adapter_policy_digest", "")
+            ),
+        }
+        if any(not value for value in identity_binding.values()):
+            raise MiaoshouOneClickPrepareBlocked(
+                "direct_store_identity_binding_incomplete",
+                "direct-store immutable identity binding is incomplete",
+                category="CAPABILITY",
+            )
+        command["identity_binding"] = identity_binding
+        proof["identity_binding_digest"] = _digest(identity_binding)
     json.loads(json.dumps(command, ensure_ascii=False, sort_keys=True))
     json.loads(json.dumps(proof, ensure_ascii=False, sort_keys=True))
     return {
@@ -241,6 +384,7 @@ def read_source_offer_pages(
     source_offer_id: str,
     *,
     post: Callable[[str, Mapping[str, object]], object],
+    target: str | None = None,
     page_size: int = 100,
     max_pages: int = 20,
 ) -> tuple[dict[str, object], ...]:
@@ -265,8 +409,14 @@ def read_source_offer_pages(
         if page_no in seen:
             raise MiaoshouOneClickPreDispatchError("source query cursor loop")
         seen.add(page_no)
+        config = DIRECT_STORE_CONFIG.get(target) if target is not None else None
+        search_path = (
+            str(config["search_path"])
+            if isinstance(config, Mapping)
+            else SOURCE_LIST_PATH
+        )
         response = post(
-            SOURCE_LIST_PATH,
+            search_path,
             {
                 "pageNo": page_no,
                 "pageSize": page_size,
@@ -335,13 +485,13 @@ def read_source_offer_pages(
 
 
 def dispatch_tiktok_miaoshou_prepared_target(request) -> dict[str, object]:
-    """Dispatch COMMON or one TikTok site with cumulative write evidence."""
+    """Dispatch COMMON or one Miaoshou storefront with cumulative evidence."""
     command = _provider_command(request)
     _verify_stored_command_identity(request, command)
     kind = command.get("kind")
     if kind == "COMMON":
         return _dispatch_common(request, command)
-    if kind == "TIKTOK_SITE":
+    if kind in {"TIKTOK_SITE", "DIRECT_STORE"}:
         return _dispatch_site(request, command)
     raise MiaoshouOneClickPreDispatchError(
         "prepared Miaoshou command is incomplete"
@@ -376,14 +526,45 @@ def _verify_stored_command_identity(
                 "stored Miaoshou COMMON identity is invalid"
             )
         return
-    if kind != "TIKTOK_SITE" or target not in SITE_CONFIG:
+    if kind not in {"TIKTOK_SITE", "DIRECT_STORE"} or target not in SITE_CONFIG:
         raise MiaoshouOneClickPreDispatchError(
             "stored Miaoshou site identity is invalid"
         )
-    if command.get("schema_version") != "oneclick-miaoshou-tiktok-command/v1":
+    expected_schema = (
+        "oneclick-miaoshou-tiktok-command/v1"
+        if kind == "TIKTOK_SITE"
+        else "oneclick-miaoshou-direct-store-command/v1"
+    )
+    if command.get("schema_version") != expected_schema:
         raise MiaoshouOneClickPreDispatchError(
             "stored Miaoshou site schema is invalid"
         )
+    if kind == "DIRECT_STORE":
+        binding = command.get("identity_binding")
+        expected_binding = {
+            "target_label": request_target,
+            "shop_id": command.get("shop_id"),
+            "platform": command.get("platform"),
+            "idempotency_key": getattr(request, "idempotency_key", None),
+            "source_identity_digest": getattr(
+                request, "source_identity_digest", None
+            ),
+            "payload_digest": getattr(request, "payload_digest", None),
+            "adapter_policy_digest": getattr(
+                request, "adapter_policy_digest", None
+            ),
+        }
+        if (
+            not isinstance(binding, Mapping)
+            or dict(binding) != expected_binding
+            or any(
+                type(value) is not str or not value
+                for value in expected_binding.values()
+            )
+        ):
+            raise MiaoshouOneClickPreDispatchError(
+                "stored Miaoshou immutable identity binding drifted"
+            )
     config = SITE_CONFIG[target]
     expected = command.get("expected")
     if not isinstance(expected, Mapping):
@@ -396,6 +577,8 @@ def _verify_stored_command_identity(
         and expected.get("shop_id") == str(config["shop_id"])
         and expected.get("shop_name") == config["shop"]
         and expected.get("region") == config["region"]
+        and expected.get("platform") in {None, config["platform"]}
+        and command.get("platform") in {None, config["platform"]}
         and command.get("api_less") is (config["api"] is not True)
     )
     source_offer_id = command.get("source_offer_id")
@@ -482,16 +665,24 @@ def _prepare_site(
         config=config,
         source_offer_id=source_offer_id,
     )
-    pages = read_source_offer_pages(source_offer_id, post=post)
+    pages = read_source_offer_pages(
+        source_offer_id, post=post, target=target
+    )
     detail_id = _resolve_detail_from_pages(
         pages,
         common_detail_id=expected["common_detail_id"],
         shop_id=expected["shop_id"],
+        target=target,
     )
     action = "USE_EXISTING" if detail_id is not None else "CREATE_AND_CLAIM"
     snapshot_digest = None
     if detail_id is not None:
-        detail, _oss_md5 = _read_shop(post, detail_id, expected["shop_id"])
+        detail, _oss_md5 = _read_shop(
+            post,
+            detail_id,
+            expected["shop_id"],
+            target=target,
+        )
         _verify_shop_identity(
             detail,
             detail_id=detail_id,
@@ -500,9 +691,11 @@ def _prepare_site(
         _verify_site_variants(detail, expected)
         snapshot_digest = _digest(_detail_snapshot(detail))
     command = {
-        "schema_version": "oneclick-miaoshou-tiktok-command/v1",
-        "kind": "TIKTOK_SITE",
+        "schema_version": "oneclick-miaoshou-direct-store-command/v1",
+        "kind": "DIRECT_STORE",
         "target_label": target,
+        "platform": config["platform"],
+        "site": config["site"],
         "source_offer_id": source_offer_id,
         "common_detail_id": expected["common_detail_id"],
         "shop_id": expected["shop_id"],
@@ -513,8 +706,9 @@ def _prepare_site(
         "observed_snapshot_digest": snapshot_digest,
     }
     proof = {
-        "schema_version": "oneclick-miaoshou-tiktok-proof/v1",
+        "schema_version": "oneclick-miaoshou-direct-store-proof/v1",
         "target_label": target,
+        "platform": config["platform"],
         "shop_binding_exact": True,
         "source_offer_id_digest": _text_digest(source_offer_id),
         "detail_action": action,
@@ -625,26 +819,34 @@ def _dispatch_site(
 ) -> dict[str, object]:
     transport = _runtime_transport()
     post = _required_post(transport)
-    expected = _mapping(command.get("expected"), "TikTok expected payload")
+    target = str(command["target_label"])
+    config = DIRECT_STORE_CONFIG[target]
+    platform = str(config["platform"])
+    expected = _mapping(
+        command.get("expected"), "Miaoshou direct-store expected payload"
+    )
     occurrence_state = WriteOccurrenceState()
     external_id: str | None = None
 
-    pages = read_source_offer_pages(str(command["source_offer_id"]), post=post)
+    pages = read_source_offer_pages(
+        str(command["source_offer_id"]), post=post, target=target
+    )
     detail_id = _resolve_detail_from_pages(
         pages,
         common_detail_id=str(command["common_detail_id"]),
         shop_id=str(command["shop_id"]),
+        target=target,
     )
     if detail_id is None:
         if command.get("action") != "CREATE_AND_CLAIM":
             raise MiaoshouOneClickPreDispatchError(
-                "prepared TikTok detail identity disappeared"
+                "prepared Miaoshou detail identity disappeared"
             )
         occurrence = _open_write(
             request,
             occurrence_state,
             "detail_create-1",
-            DETAIL_CREATE_WRITE,
+            _platform_write(platform, "detail:create"),
         )
         try:
             created = post(
@@ -653,7 +855,7 @@ def _dispatch_site(
                     "detailSerialNumberPlatformList": [
                         {
                             "detailId": int(str(command["common_detail_id"])),
-                            "platform": "tiktok",
+                            "platform": platform,
                             "serialNumber": 1,
                         }
                     ]
@@ -663,28 +865,30 @@ def _dispatch_site(
             raise _unknown_write_error(
                 occurrence_state,
                 occurrence,
-                "TikTok detail creation outcome is unknown",
+                f"Miaoshou {platform} detail creation outcome is unknown",
             ) from error
         if not isinstance(created, Mapping):
             raise _unknown_write_error(
                 occurrence_state,
                 occurrence,
-                "TikTok detail creation response is malformed",
+                f"Miaoshou {platform} detail creation response is malformed",
             )
         if not _success(created):
             _reject_write(request, occurrence_state, occurrence)
             raise _rejected_write_error(
                 occurrence_state,
-                "TikTok detail creation was not accepted",
+                f"Miaoshou {platform} detail creation was not accepted",
             )
         _confirm_write(request, occurrence_state, occurrence)
         try:
             detail_id = _created_detail_id(
-                created, str(command["common_detail_id"])
+                created,
+                str(command["common_detail_id"]),
+                platform=platform,
             )
         except Exception as error:
             raise MiaoshouOneClickDispatchError(
-                "TikTok detail creation identity is unknown",
+                f"Miaoshou {platform} detail creation identity is unknown",
                 writes=occurrence_state.external_writes,
                 unknown=False,
                 external_write_count=occurrence_state.external_write_count,
@@ -692,64 +896,68 @@ def _dispatch_site(
                 possible_upper_bound=occurrence_state.external_write_count,
             ) from error
         external_id = str(detail_id)
-        occurrence = _open_write(
-            request,
-            occurrence_state,
-            "shop_claim-1",
-            SHOP_CLAIM_WRITE,
-            external_id=external_id,
-        )
-        try:
-            claimed = post(
-                SHOP_CLAIM_PATH,
-                {
-                    "detailIds": [detail_id],
-                    "shopIds": [str(command["shop_id"])],
-                },
-            )
-        except Exception as error:
-            raise _unknown_write_error(
+        if platform == "tiktok":
+            occurrence = _open_write(
+                request,
                 occurrence_state,
-                occurrence,
-                "TikTok shop claim outcome is unknown",
-                external_id=external_id,
-            ) from error
-        if not isinstance(claimed, Mapping):
-            raise _unknown_write_error(
-                occurrence_state,
-                occurrence,
-                "TikTok shop claim response is malformed",
+                "shop_claim-1",
+                _platform_write(platform, "shop:claim"),
                 external_id=external_id,
             )
-        if not _success(claimed):
-            _reject_write(
+            try:
+                claimed = post(
+                    SHOP_CLAIM_PATH,
+                    {
+                        "detailIds": [detail_id],
+                        "shopIds": [str(command["shop_id"])],
+                    },
+                )
+            except Exception as error:
+                raise _unknown_write_error(
+                    occurrence_state,
+                    occurrence,
+                    "TikTok shop claim outcome is unknown",
+                    external_id=external_id,
+                ) from error
+            if not isinstance(claimed, Mapping):
+                raise _unknown_write_error(
+                    occurrence_state,
+                    occurrence,
+                    "TikTok shop claim response is malformed",
+                    external_id=external_id,
+                )
+            if not _success(claimed):
+                _reject_write(
+                    request,
+                    occurrence_state,
+                    occurrence,
+                    external_id=external_id,
+                )
+                raise _rejected_write_error(
+                    occurrence_state,
+                    "TikTok shop claim was not accepted",
+                    external_id=external_id,
+                )
+            _confirm_write(
                 request,
                 occurrence_state,
                 occurrence,
                 external_id=external_id,
             )
-            raise _rejected_write_error(
-                occurrence_state,
-                "TikTok shop claim was not accepted",
-                external_id=external_id,
-            )
-        _confirm_write(
-            request,
-            occurrence_state,
-            occurrence,
-            external_id=external_id,
-        )
     elif command.get("detail_id") is not None and str(detail_id) != str(
         command["detail_id"]
     ):
         raise MiaoshouOneClickPreDispatchError(
-            "prepared TikTok detail identity drifted"
+            "prepared Miaoshou detail identity drifted"
         )
 
     try:
         external_id = f"{detail_id}:{command['shop_id']}"
         detail, oss_md5 = _read_shop(
-            post, detail_id, str(command["shop_id"])
+            post,
+            detail_id,
+            str(command["shop_id"]),
+            target=target,
         )
         _verify_shop_identity(
             detail, detail_id=detail_id, shop_id=str(command["shop_id"])
@@ -758,20 +966,24 @@ def _dispatch_site(
             _detail_snapshot(detail)
         ) != command.get("observed_snapshot_digest"):
             raise MiaoshouOneClickPreDispatchError(
-                "Miaoshou TikTok detail changed after preparation"
+                f"Miaoshou {platform} detail changed after preparation"
             )
         _verify_site_variants(detail, expected)
-        updated = _apply_expected(detail, expected)
-        body = {
-            "detailId": detail_id,
-            "shopId": str(command["shop_id"]),
-            "shopCollectItemInfo": updated,
-            "ossMd5": oss_md5,
-        }
+        updated = _apply_expected_for_platform(
+            detail, expected, platform=platform
+        )
+        body = _save_body(
+            platform=platform,
+            site=str(config["site"]),
+            detail_id=detail_id,
+            shop_id=str(command["shop_id"]),
+            updated=updated,
+            oss_md5=oss_md5,
+        )
     except Exception as error:
         if occurrence_state.external_write_count:
             raise MiaoshouOneClickDispatchError(
-                "TikTok claimed detail verification is unknown",
+                f"Miaoshou {platform} claimed detail verification is unknown",
                 writes=occurrence_state.external_writes,
                 unknown=True,
                 external_id=external_id,
@@ -784,27 +996,27 @@ def _dispatch_site(
         request,
         occurrence_state,
         "detail_update-1",
-        DETAIL_UPDATE_WRITE,
+        _platform_write(platform, "detail:update"),
         external_id=external_id,
     )
     try:
         saved = (
             transport.update_detail(body)
             if transport.update_detail is not None
-            else post(SHOP_SAVE_PATH, body)
+            else post(str(config["save_path"]), body)
         )
     except Exception as error:
         raise _unknown_write_error(
             occurrence_state,
             occurrence,
-            "TikTok detail update outcome is unknown",
+            f"Miaoshou {platform} detail update outcome is unknown",
             external_id=external_id,
         ) from error
     if not isinstance(saved, Mapping):
         raise _unknown_write_error(
             occurrence_state,
             occurrence,
-            "TikTok detail update response is malformed",
+            f"Miaoshou {platform} detail update response is malformed",
             external_id=external_id,
         )
     if not _accepted(saved):
@@ -816,7 +1028,7 @@ def _dispatch_site(
         )
         raise _rejected_write_error(
             occurrence_state,
-            "TikTok detail update was not accepted",
+            f"Miaoshou {platform} detail update was not accepted",
             external_id=external_id,
         )
     _confirm_write(
@@ -830,11 +1042,18 @@ def _dispatch_site(
             if transport.audit_detail(str(detail_id), str(command["shop_id"])) is not True:
                 raise ValueError("injected draft audit mismatch")
         else:
-            readback, _ = _read_shop(post, detail_id, str(command["shop_id"]))
-            _verify_expected_detail(readback, expected)
+            readback, _ = _read_shop(
+                post,
+                detail_id,
+                str(command["shop_id"]),
+                target=target,
+            )
+            _verify_expected_detail(
+                readback, expected, platform=platform
+            )
     except Exception as error:
         raise MiaoshouOneClickDispatchError(
-            "TikTok detail update readback is unknown",
+            f"Miaoshou {platform} detail update readback is unknown",
             writes=occurrence_state.external_writes,
             # The update itself is already confirmed and no later write was
             # invoked.  Reconciliation is required for readback, but the
@@ -850,7 +1069,7 @@ def _dispatch_site(
         request,
         occurrence_state,
         "publish_submit-1",
-        PUBLISH_WRITE,
+        _platform_write(platform, "publish:submission"),
         external_id=external_id,
     )
     try:
@@ -858,7 +1077,7 @@ def _dispatch_site(
             transport.publish(str(detail_id), str(command["shop_id"]))
             if transport.publish is not None
             else post(
-                PUBLISH_PATH,
+                str(config["publish_path"]),
                 {
                     "detailIds": [detail_id],
                     "shopIds": [str(command["shop_id"])],
@@ -869,14 +1088,14 @@ def _dispatch_site(
         raise _unknown_write_error(
             occurrence_state,
             occurrence,
-            "TikTok publish outcome is unknown",
+            f"Miaoshou {platform} publish outcome is unknown",
             external_id=external_id,
         ) from error
     if not isinstance(submitted, Mapping):
         raise _unknown_write_error(
             occurrence_state,
             occurrence,
-            "TikTok publish response is malformed",
+            f"Miaoshou {platform} publish response is malformed",
             external_id=external_id,
         )
     if not _accepted(submitted):
@@ -888,7 +1107,7 @@ def _dispatch_site(
         )
         raise _rejected_write_error(
             occurrence_state,
-            "TikTok publish was not accepted",
+            f"Miaoshou {platform} publish was not accepted",
             external_id=external_id,
         )
     _confirm_write(
@@ -897,44 +1116,12 @@ def _dispatch_site(
         occurrence,
         external_id=external_id,
     )
-    if command.get("api_less") is True:
-        return _receipt(
-            "SUBMITTED_UNVERIFIED",
-            external_id,
-            occurrence_state.external_writes,
-            False,
-            "miaoshou_submission_recorded",
-            write_count=occurrence_state.external_write_count,
-        )
-    readback = transport.tiktok_readback or _default_tiktok_readback
-    try:
-        verified = readback(expected) is True
-    except Exception as error:
-        raise MiaoshouOneClickDispatchError(
-            "official TikTok readback is unknown",
-            writes=occurrence_state.external_writes,
-            unknown=True,
-            external_id=external_id,
-            external_write_count=occurrence_state.external_write_count,
-            confirmed_lower_bound=occurrence_state.external_write_count,
-            possible_upper_bound=occurrence_state.external_write_count,
-        ) from error
-    if not verified:
-        raise MiaoshouOneClickDispatchError(
-            "official TikTok readback mismatch",
-            writes=occurrence_state.external_writes,
-            unknown=False,
-            external_id=external_id,
-            external_write_count=occurrence_state.external_write_count,
-            confirmed_lower_bound=occurrence_state.external_write_count,
-            possible_upper_bound=occurrence_state.external_write_count,
-        )
     return _receipt(
-        "SUCCEEDED",
+        "SUBMITTED_UNVERIFIED",
         external_id,
         occurrence_state.external_writes,
-        True,
-        "tiktok_official_readback_verified",
+        False,
+        "miaoshou_submission_recorded",
         write_count=occurrence_state.external_write_count,
     )
 
@@ -983,10 +1170,117 @@ def _approved_site(
         "shop_name": str(config["shop"]),
         "shop_id": str(config["shop_id"]),
         "region": str(config["region"]),
+        "platform": str(config["platform"]),
         "title": title,
         "price": price,
         "currency": currency,
     }
+
+
+def _platform_write(platform: str, operation: str) -> str:
+    if platform not in {"tiktok", "shopee", "ozon"}:
+        raise MiaoshouOneClickPreDispatchError(
+            "Miaoshou platform write class is invalid"
+        )
+    return f"miaoshou:{platform}_{operation}"
+
+
+def _save_body(
+    *,
+    platform: str,
+    site: str,
+    detail_id: int,
+    shop_id: str,
+    updated: Mapping[str, object],
+    oss_md5: str,
+) -> dict[str, object]:
+    if platform == "tiktok":
+        return {
+            "detailId": detail_id,
+            "shopId": shop_id,
+            "shopCollectItemInfo": dict(updated),
+            "ossMd5": oss_md5,
+        }
+    if platform == "shopee":
+        if not oss_md5:
+            raise MiaoshouOneClickPreDispatchError(
+                "Shopee site edit identity is incomplete"
+            )
+        return {
+            "detailId": detail_id,
+            "site": site,
+            "ossMd5": oss_md5,
+            "siteDetailSimpleData": dict(updated),
+            "syncSites": [],
+            "syncSiteFields": [],
+            "shopIdAndSizeChartIdMap": {},
+        }
+    if platform == "ozon":
+        return {
+            "detailId": detail_id,
+            "siteCollectItemInfo": dict(updated),
+        }
+    raise MiaoshouOneClickPreDispatchError(
+        "Miaoshou platform save payload is invalid"
+    )
+
+
+def _apply_expected_for_platform(
+    current: Mapping[str, object],
+    expected: Mapping[str, object],
+    *,
+    platform: str,
+) -> dict[str, object]:
+    if platform in {"tiktok", "shopee"}:
+        return _apply_expected(current, expected)
+    if platform != "ozon":
+        raise MiaoshouOneClickPreDispatchError(
+            "Miaoshou platform detail is unsupported"
+        )
+    updated = dict(current)
+    updated.update(
+        {
+            "title": expected["title"],
+            "itemNum": expected["item_num"],
+            "notes": expected["notes"],
+            "mainImgVideoUrl": expected["video_url"],
+            "packageInfoType": "ALL",
+            "packageInfo": {
+                "depth": float(str(expected["package_cm"][0])),
+                "width": float(str(expected["package_cm"][1])),
+                "height": float(str(expected["package_cm"][2])),
+                "dimensionUnit": "CENTIMETER",
+            },
+            "weightInfo": {
+                "weight": float(str(expected["weight"])),
+                "weightUnit": "KILOGRAM",
+            },
+        }
+    )
+    current_skus = _sku_map(current)
+    normalized = {_normalize_variant(key): key for key in current_skus}
+    updated_skus: dict[str, object] = {}
+    for variant in expected["selected_sku_keys"]:
+        raw_key = normalized.get(variant)
+        if raw_key is None:
+            raise MiaoshouOneClickPreDispatchError(
+                "approved variant is unavailable at dispatch"
+            )
+        row = dict(_mapping(current_skus[raw_key], "sku row"))
+        row.update(
+            {
+                "itemNum": expected["model_skus"][variant],
+                "price": float(str(expected["price"])),
+                "marketPrice": float(str(expected["price"])),
+                "originPrice": float(str(expected["price"])),
+                "imgUrls": list(expected["images"]),
+                "packageInfo": dict(updated["packageInfo"]),
+                "weightInfo": dict(updated["weightInfo"]),
+            }
+        )
+        updated_skus[raw_key] = row
+    updated["skuMap"] = updated_skus
+    return updated
 
 
 def _apply_expected(
@@ -1037,27 +1331,47 @@ def _apply_expected(
 
 
 def _verify_expected_detail(
-    detail: Mapping[str, object], expected: Mapping[str, object]
+    detail: Mapping[str, object],
+    expected: Mapping[str, object],
+    *,
+    platform: str = "tiktok",
 ) -> None:
     sku_map = _sku_map(detail)
     normalized = {_normalize_variant(key): row for key, row in sku_map.items()}
     wanted = set(expected["selected_sku_keys"])
+    if platform == "ozon":
+        package = detail.get("packageInfo")
+        weight = detail.get("weightInfo")
+        package_values = (
+            (
+                package.get("depth"),
+                package.get("width"),
+                package.get("height"),
+            )
+            if isinstance(package, Mapping)
+            else (None, None, None)
+        )
+        actual_weight = (
+            weight.get("weight") if isinstance(weight, Mapping) else None
+        )
+    else:
+        package_values = (
+            detail.get("packageLength"),
+            detail.get("packageWidth"),
+            detail.get("packageHeight"),
+        )
+        actual_weight = detail.get("weight")
     checks = [
         str(detail.get("title") or "") == expected["title"],
         str(detail.get("itemNum") or "") == expected["item_num"],
-        _numbers_equal(detail.get("weight"), expected["weight"]),
+        _numbers_equal(actual_weight, expected["weight"]),
         all(
             _numbers_equal(actual, wanted_value)
             for actual, wanted_value in zip(
-                (
-                    detail.get("packageLength"),
-                    detail.get("packageWidth"),
-                    detail.get("packageHeight"),
-                ),
+                package_values,
                 expected["package_cm"],
             )
         ),
-        list(detail.get("imgUrls") or []) == list(expected["images"]),
         _normalize_notes(detail.get("notes"))
         == _normalize_notes(expected["notes"]),
         str(detail.get("mainImgVideoUrl") or "")
@@ -1069,6 +1383,20 @@ def _verify_expected_detail(
             for key in wanted
         ),
     ]
+    if platform != "ozon":
+        checks.append(
+            list(detail.get("imgUrls") or []) == list(expected["images"])
+        )
+    else:
+        checks.append(
+            all(
+                list(
+                    _mapping(normalized[key], "sku row").get("imgUrls") or []
+                )
+                == list(expected["images"])
+                for key in wanted
+            )
+        )
     if "price" in expected:
         checks.append(
             all(
@@ -1340,25 +1668,54 @@ def _read_common(post, common_detail_id: str) -> tuple[dict[str, object], str]:
     return dict(detail), oss_md5
 
 
-def _read_shop(post, detail_id: int, shop_id: str) -> tuple[dict[str, object], str]:
+def _read_shop(
+    post,
+    detail_id: int,
+    shop_id: str,
+    *,
+    target: str | None = None,
+) -> tuple[dict[str, object], str]:
+    config = DIRECT_STORE_CONFIG.get(target) if target is not None else None
+    platform = (
+        str(config["platform"]) if isinstance(config, Mapping) else "tiktok"
+    )
+    get_path = (
+        str(config["get_path"])
+        if isinstance(config, Mapping)
+        else SHOP_GET_PATH
+    )
+    if platform == "tiktok":
+        body = {"detailId": int(detail_id), "shopId": str(shop_id)}
+        data_field = "shopCollectItemInfo"
+    elif platform == "shopee":
+        body = {"detailId": int(detail_id), "site": str(config["site"])}
+        data_field = "siteDetailSimpleData"
+    else:
+        body = {"detailId": int(detail_id)}
+        data_field = "siteCollectItemInfo"
     response = post(
-        SHOP_GET_PATH,
-        {"detailId": int(detail_id), "shopId": str(shop_id)},
+        get_path,
+        body,
     )
     if not _success(response):
         raise MiaoshouOneClickPreDispatchError(
-            "TikTok shop detail read-only GET failed"
+            f"Miaoshou {platform} detail read-only GET failed"
         )
     data = response.get("data")
     detail = (
-        data.get("shopCollectItemInfo")
+        data.get(data_field)
         if isinstance(data, Mapping)
         else None
     )
     oss_md5 = str(data.get("ossMd5") or "") if isinstance(data, Mapping) else ""
-    if not isinstance(detail, Mapping) or not detail or not oss_md5:
+    # Ozon's documented site-detail response does not require an ossMd5.
+    if (
+        not isinstance(detail, Mapping)
+        or not detail
+        or (platform != "ozon" and not oss_md5)
+    ):
         raise MiaoshouOneClickPreDispatchError(
-            "TikTok shop detail response is malformed"
+            f"Miaoshou {platform} detail response is malformed"
         )
     return dict(detail), oss_md5
 
@@ -1368,7 +1725,12 @@ def _resolve_detail_from_pages(
     *,
     common_detail_id: str,
     shop_id: str,
+    target: str | None = None,
 ) -> int | None:
+    config = DIRECT_STORE_CONFIG.get(target) if target is not None else None
+    expected_site = (
+        str(config["site"]) if isinstance(config, Mapping) else None
+    )
     matched: set[int] = set()
     for page in pages:
         rows = page["data"]["detailList"]
@@ -1388,20 +1750,25 @@ def _resolve_detail_from_pages(
                     "source COMMON identity is malformed"
                 )
             shops = row.get("collectBoxDetailShopList")
-            if not isinstance(shops, list) or any(
-                not isinstance(item, Mapping) for item in shops
-            ):
-                raise MiaoshouOneClickPreDispatchError(
-                    "source shop identity list is malformed"
-                )
-            shop_ids = [str(item.get("shopId") or "") for item in shops]
-            if any(not value.isdigit() for value in shop_ids) or len(
-                shop_ids
-            ) != len(set(shop_ids)):
-                raise MiaoshouOneClickPreDispatchError(
-                    "source shop identity list is malformed"
-                )
-            if row_common == common_detail_id and shop_id in shop_ids:
+            site = str(row.get("site") or row.get("region") or "").upper()
+            if shops is None and expected_site is not None:
+                row_matches_target = site in {"", expected_site.upper()}
+            else:
+                if not isinstance(shops, list) or any(
+                    not isinstance(item, Mapping) for item in shops
+                ):
+                    raise MiaoshouOneClickPreDispatchError(
+                        "source shop identity list is malformed"
+                    )
+                shop_ids = [str(item.get("shopId") or "") for item in shops]
+                if any(not value.isdigit() for value in shop_ids) or len(
+                    shop_ids
+                ) != len(set(shop_ids)):
+                    raise MiaoshouOneClickPreDispatchError(
+                        "source shop identity list is malformed"
+                    )
+                row_matches_target = shop_id in shop_ids
+            if row_common == common_detail_id and row_matches_target:
                 matched.add(int(raw_detail))
     if len(matched) > 1:
         raise MiaoshouOneClickPreDispatchError(
@@ -1461,14 +1828,19 @@ def _verify_site_variants(
         )
 
 
-def _created_detail_id(response: Mapping[str, object], common_id: str) -> int:
+def _created_detail_id(
+    response: Mapping[str, object],
+    common_id: str,
+    *,
+    platform: str = "tiktok",
+) -> int:
     data = response.get("data")
     root = (
         data.get("platformCollectBoxDetailIdMap")
         if isinstance(data, Mapping)
         else None
     )
-    mapping = root.get("tiktok") if isinstance(root, Mapping) else None
+    mapping = root.get(platform) if isinstance(root, Mapping) else None
     raw = None
     if isinstance(mapping, Mapping):
         raw = mapping.get(common_id)
@@ -1476,8 +1848,8 @@ def _created_detail_id(response: Mapping[str, object], common_id: str) -> int:
             raw = mapping.get(int(common_id))
     if isinstance(raw, bool) or not str(raw or "").isdigit() or int(raw) <= 0:
         raise MiaoshouOneClickDispatchError(
-            "TikTok detail creation returned no identity",
-            writes=(DETAIL_CREATE_WRITE,),
+            f"Miaoshou {platform} detail creation returned no identity",
+            writes=(_platform_write(platform, "detail:create"),),
             unknown=False,
         )
     return int(raw)
@@ -1710,7 +2082,9 @@ def _detail_snapshot(detail: Mapping[str, object]) -> dict[str, object]:
 
 def _candidate_title(payload: Mapping[str, object], target: str) -> str:
     site = target.split(":", 1)[1]
-    region = str(SITE_CONFIG[target]["region"])
+    config = SITE_CONFIG[target]
+    region = str(config["region"])
+    channel = str(config["platform"])
     candidates = _mapping(
         payload.get("listing_copy"), "listing_copy"
     ).get("candidates")
@@ -1718,13 +2092,13 @@ def _candidate_title(payload: Mapping[str, object], target: str) -> str:
         not isinstance(row, Mapping) for row in candidates
     ):
         raise MiaoshouOneClickPrepareBlocked(
-            "approved_tiktok_title_missing",
-            "approved TikTok title candidates are unavailable",
+            "approved_storefront_title_missing",
+            "approved storefront title candidates are unavailable",
         )
     exact = [
         row
         for row in candidates
-        if str(row.get("channel") or "").casefold() == "tiktok"
+        if str(row.get("channel") or "").casefold() == channel
         and str(row.get("site") or "").upper() in {site, region}
         and row.get("policy_check") == "passed"
         and type(row.get("title")) is str
@@ -1732,8 +2106,8 @@ def _candidate_title(payload: Mapping[str, object], target: str) -> str:
     ]
     if len(exact) != 1:
         raise MiaoshouOneClickPrepareBlocked(
-            "approved_tiktok_title_not_unique",
-            "exactly one approved TikTok title is required",
+            "approved_storefront_title_not_unique",
+            "exactly one approved storefront title is required",
         )
     return exact[0]["title"].strip()
 

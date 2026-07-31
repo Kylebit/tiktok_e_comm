@@ -1272,6 +1272,20 @@ def prepare_selected_platform_collectbox(
             detail, writes=tuple(writes), write_count=len(writes)
         )
 
+    expected_by_target: dict[str, dict[str, object]] = {}
+    for target in selected:
+        try:
+            expected = _approved_site(
+                approved_plan_payload,
+                target=target,
+                config=DIRECT_STORE_CONFIG[target],
+                source_offer_id=common_id,
+            )
+            expected["common_detail_id"] = common_id
+            expected_by_target[target] = expected
+        except Exception:
+            fail("approved platform draft is invalid")
+
     detail_ids: list[int] = []
     for index, target in enumerate(selected):
         config = DIRECT_STORE_CONFIG[target]
@@ -1337,13 +1351,7 @@ def prepare_selected_platform_collectbox(
                 fail("TikTok shop claim was rejected")
             writes.append(claim_class)
 
-        expected = _approved_site(
-            approved_plan_payload,
-            target=target,
-            config=config,
-            source_offer_id=common_id,
-        )
-        expected["common_detail_id"] = common_id
+        expected = expected_by_target[target]
         try:
             detail, oss_md5 = _read_shop(
                 client,

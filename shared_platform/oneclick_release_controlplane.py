@@ -853,6 +853,47 @@ class OneClickReleaseStore:
             if existing:
                 _require_job_immutable_identity(existing, identity)
                 if (
+                    int(existing["batch_sequence"] or 0) == 0
+                    and (
+                        existing["status"] not in {"PENDING", "PREPARING"}
+                        or existing["completed_at"] is not None
+                        or connection.execute(
+                            """
+                            SELECT 1
+                            FROM oneclick_release_targets
+                            WHERE job_id = ?
+                              AND dispatch_count > 0
+                            LIMIT 1
+                            """,
+                            (existing["job_id"],),
+                        ).fetchone()
+                        is not None
+                        or connection.execute(
+                            """
+                            SELECT 1
+                            FROM oneclick_release_outcomes
+                            WHERE job_id = ?
+                            LIMIT 1
+                            """,
+                            (existing["job_id"],),
+                        ).fetchone()
+                        is not None
+                    )
+                ):
+                    # Jobs created before batch_sequence existed already
+                    # represent one completed/attempted batch.  Preserve that
+                    # history as sequence 1 so the next explicit click becomes
+                    # a distinct sequence 2 instead of relabelling the old
+                    # batch as the first one.
+                    connection.execute(
+                        """
+                        UPDATE oneclick_release_jobs
+                        SET batch_sequence = 1, updated_at = ?
+                        WHERE job_id = ?
+                        """,
+                        (now, existing["job_id"]),
+                    )
+                if (
                     existing["adapter_policy_digest"]
                     != identity["adapter_policy_digest"]
                     or _mvp_registry_enabled(registry)

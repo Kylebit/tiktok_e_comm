@@ -88,6 +88,107 @@ def test_publish_http_is_short_202_job_start_not_legacy_loop(
     assert len(calls) == 1
 
 
+def test_publish_post_advances_rebound_legacy_job_to_next_batch(monkeypatch):
+    calls = []
+    plan = {"plan_id": "omnichannel:test"}
+
+    class ReleaseStore:
+        @staticmethod
+        def start_run(plan_id):
+            assert plan_id == plan["plan_id"]
+            calls.append("start_run")
+            return {"run_id": "release-run:test"}
+
+        @staticmethod
+        def get_plan(plan_id):
+            assert plan_id == plan["plan_id"]
+            return plan
+
+    class ControlStore:
+        @staticmethod
+        def ensure_job(**_kwargs):
+            calls.append("ensure_job")
+            return {
+                "job_id": "oneclick-job:legacy",
+                "phase": "BLOCKED",
+                "batch_sequence": 1,
+            }
+
+        @staticmethod
+        def set_dispatch_capability(job_id, *, enabled):
+            assert job_id == "oneclick-job:legacy"
+            assert enabled is True
+            calls.append("set_dispatch_capability")
+            return {
+                "job_id": job_id,
+                "phase": "BLOCKED",
+                "batch_sequence": 1,
+            }
+
+        @staticmethod
+        def start_explicit_batch(job_id):
+            assert job_id == "oneclick-job:legacy"
+            calls.append("start_explicit_batch")
+            return {
+                "job_id": job_id,
+                "phase": "PENDING",
+                "batch_sequence": 2,
+            }
+
+    context = {
+        "plan": plan,
+        "payload": {"product_revision": 31},
+        "store": ReleaseStore(),
+    }
+    monkeypatch.setattr(
+        product_server,
+        "_oneclick_approved_context",
+        lambda _data: (context, None),
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_oneclick_adapter_registry",
+        lambda: {"miaoshou-direct-store/v1": object()},
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_oneclick_control_store",
+        lambda: ControlStore(),
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_oneclick_dispatch_capability",
+        lambda: {"enabled": True},
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_wake_oneclick_worker",
+        lambda job_id: calls.append(f"wake:{job_id}"),
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_project_oneclick_dispatch_capability",
+        lambda job: job,
+    )
+
+    status, response = product_server._start_oneclick_release(
+        {
+            "confirm_publish": True,
+            "plan_id": plan["plan_id"],
+        }
+    )
+
+    assert status == 202
+    assert response["job"]["batch_sequence"] == 2
+    assert calls == [
+        "start_run",
+        "ensure_job",
+        "set_dispatch_capability",
+        "start_explicit_batch",
+        "wake:oneclick-job:legacy",
+    ]
+
+
 def test_shared_control_v2_is_canonical_action_without_storefront_count(
     monkeypatch,
 ):

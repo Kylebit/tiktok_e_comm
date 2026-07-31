@@ -629,7 +629,7 @@ def test_mvp_target_failure_does_not_prevent_later_storefront_dispatch(
     assert by_target["ozon:RU"]["status"] == SUBMITTED_UNVERIFIED
 
 
-def test_mvp_rebinds_existing_legacy_terminal_job_without_old_controls(
+def test_mvp_explicit_click_counts_legacy_terminal_job_as_prior_batch(
     tmp_path,
 ):
     targets = [
@@ -700,9 +700,10 @@ def test_mvp_rebinds_existing_legacy_terminal_job_without_old_controls(
     assert rebound["job_id"] == legacy["job_id"]
     assert rebound["shared_controls"] == []
     assert [row["target_label"] for row in rebound["targets"]] == mvp_targets
+    assert rebound["batch_sequence"] == 1
 
     started = control.start_explicit_batch(rebound["job_id"])
-    assert started["batch_sequence"] == 1
+    assert started["batch_sequence"] == 2
     assert started["phase"] == "PENDING"
     assert all(row["status"] == "PENDING" for row in started["targets"])
     assert all(

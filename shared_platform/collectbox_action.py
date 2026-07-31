@@ -688,6 +688,7 @@ class CollectBoxActionStore:
             if self._batch_tables_exist(connection):
                 sources.append(("collectbox_action_batch_platforms", True))
             recovered = 0
+            recovered_batch_ids: set[str] = set()
             for platform_table, batched in sources:
                 rows = list(
                     connection.execute(
@@ -751,7 +752,106 @@ class CollectBoxActionStore:
                         batched=batched,
                         finalize_pending=True,
                     )
+                    if batched:
+                        recovered_batch_ids.add(row["action_id"])
                     recovered += 1
+            if self._batch_tables_exist(connection):
+                orphan_batches = list(
+                    connection.execute(
+                        """
+                        SELECT batch.action_id
+                        FROM collectbox_action_batches AS batch
+                        WHERE batch.execution_claimed_at IS NOT NULL
+                          AND EXISTS (
+                              SELECT 1
+                              FROM collectbox_action_batch_platforms AS item
+                              WHERE item.action_id = batch.action_id
+                                AND item.status = ?
+                          )
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM collectbox_action_batch_platforms AS item
+                              WHERE item.action_id = batch.action_id
+                                AND item.status = ?
+                          )
+                        ORDER BY batch.action_id
+                        """,
+                        (PENDING, RUNNING),
+                    )
+                )
+                for batch in orphan_batches:
+                    action_id = batch["action_id"]
+                    error = _redacted_error(
+                        "UNKNOWN",
+                        "collectbox_interrupted_before_dispatch",
+                        (
+                            "process stopped before the pending platform "
+                            "invocation began"
+                        ),
+                    )
+                    for row in connection.execute(
+                        """
+                        SELECT platform
+                        FROM collectbox_action_batch_platforms
+                        WHERE action_id = ? AND status = ?
+                        ORDER BY platform
+                        """,
+                        (action_id, PENDING),
+                    ):
+                        receipt = {
+                            "schema_version": (
+                                "collectbox-platform-receipt/v1"
+                            ),
+                            "status": FAILED_RETRYABLE,
+                            "outcome": None,
+                            "platform_detail_id_digest": None,
+                            "external_writes": [],
+                            "external_write_count": 0,
+                            "evidence_digest": _digest({}),
+                            "error": error,
+                        }
+                        connection.execute(
+                            """
+                            UPDATE collectbox_action_batch_platforms
+                            SET status = ?, retry_allowed = 1,
+                                outcome = NULL,
+                                platform_detail_id = NULL,
+                                platform_detail_id_digest = NULL,
+                                external_writes_json = '[]',
+                                external_write_count = 0,
+                                receipt_json = ?, receipt_digest = ?,
+                                error_json = ?, updated_at = ?
+                            WHERE action_id = ? AND platform = ?
+                              AND status = ?
+                            """,
+                            (
+                                FAILED_RETRYABLE,
+                                _canonical_json(receipt),
+                                _digest(receipt),
+                                _canonical_json(error),
+                                recovered_at,
+                                action_id,
+                                row["platform"],
+                                PENDING,
+                            ),
+                        )
+                    connection.execute(
+                        """
+                        UPDATE collectbox_action_batches
+                        SET execution_claimed_at = NULL, updated_at = ?
+                        WHERE action_id = ?
+                        """,
+                        (recovered_at, action_id),
+                    )
+                    self._refresh_action(
+                        connection,
+                        action_id,
+                        recovered_at,
+                        batched=True,
+                        finalize_pending=True,
+                    )
+                    if action_id not in recovered_batch_ids:
+                        recovered += 1
             connection.commit()
             return recovered
 

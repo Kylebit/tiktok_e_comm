@@ -55,7 +55,12 @@ def test_dashboard_has_four_country_isolated_facts_and_policies():
     assert {
         region: len([row for row in rows if row["kind"] == "existing"])
         for region, rows in data["countries"].items()
-    } == {"MY": 24, "TH": 23, "VN": 9, "PH": 4}
+    } == {"MY": 24, "TH": 23, "VN": 10, "PH": 4}
+
+    for region, rows in data["countries"].items():
+        for row in rows:
+            assert row["channels"]["tiktok"]["source"].startswith(f"TikTok {region}")
+            assert row["channels"]["shopee"]["source"].startswith(f"Shopee {region}")
 
 
 def test_thailand_truncated_codes_are_normalized_without_fuzzy_merging():
@@ -87,8 +92,18 @@ def test_thailand_truncated_codes_are_normalized_without_fuzzy_merging():
 def test_vietnam_and_philippines_use_complete_shopee_settlement_snapshots():
     data = _data()
 
-    assert sum(row["inventory"]["available"] for row in data["countries"]["VN"]) == 298
+    assert sum(row["inventory"]["available"] for row in data["countries"]["VN"]) == 345
     assert sum(row["inventory"]["available"] for row in data["countries"]["PH"]) == 33
+    assert _row(data, "VN", "0004")["sourceAliases"] == ["0004", "880004"]
+    assert _row(data, "VN", "0004")["kind"] == "existing"
+    assert _row(data, "VN", "0004")["inventory"] == {
+        "stock": 47,
+        "available": 47,
+        "allocated": 0,
+        "frozen": 0,
+        "inbound": 0,
+        "warehouse": "VN8805",
+    }
     assert _row(data, "PH", "0820")["sourceAliases"] == ["0820", "770820"]
     assert _row(data, "PH", "0820")["inventory"]["available"] == 0
     assert _row(data, "PH", "0821")["sourceAliases"] == ["0821", "770821"]
@@ -96,7 +111,8 @@ def test_vietnam_and_philippines_use_complete_shopee_settlement_snapshots():
     assert _row(data, "PH", "0822")["sourceAliases"] == ["0822", "770822"]
     assert _row(data, "PH", "0822")["inventory"]["available"] == 0
     assert "inventoryIdentityBlocker" not in data["config"]["PH"]
-    assert "完整 SKU" in data["config"]["VN"]["inventoryIdentityBlocker"]
+    assert "inventoryIdentityBlocker" not in data["config"]["VN"]
+    assert "880004→0004" in data["config"]["VN"]["inventoryIdentityEvidence"]
     for region in ("VN", "PH"):
         assert all("X" not in row["sku"] for row in data["countries"][region])
         assert all(
@@ -201,7 +217,7 @@ def test_every_recent_30_day_sku_is_present_and_filterable_without_economic_gate
         recent_counts[region] = len(recent_rows)
         assert all((DASHBOARD / row["image"]).is_file() for row in recent_rows)
 
-    assert recent_counts == {"MY": 20, "TH": 47, "VN": 46, "PH": 77}
+    assert recent_counts == {"MY": 20, "TH": 47, "VN": 43, "PH": 76}
     assert 'filter === "RECENT30" && recent30Units > 0' in app
     assert 'status = item.kind === "first_stock" ? "FIRST_STOCK" : "REPLENISH"' in app
     assert '"REVIEW"' not in app
@@ -267,6 +283,10 @@ def test_dashboard_contains_no_remote_image_or_secret_dependency_and_marks_block
     assert "access_token" not in data_text
     assert "imageUrl" not in data_text
     assert 'channel.state !== "READY"' in app
+    assert 'method: "COUNTRY_MISMATCH"' in app
+    assert "BLOCKED_COUNTRY_SOURCE" in app
+    assert "channelDemand(effectiveItem.channels.tiktok, region, \"TikTok\")" in app
+    assert "channelDemand(effectiveItem.channels.shopee, region, \"Shopee\")" in app
     assert "BLOCKED_AUTH" in app
     assert "PENDING_REFRESH" in app
     assert "inventoryIdentityBlocker" in app

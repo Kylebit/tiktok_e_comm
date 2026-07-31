@@ -24,7 +24,7 @@ Current user-confirmed Seaya PH8807 mappings:
 
 ## Demand
 
-Calculate per country and exact SKU. TikTok and Shopee may share one local warehouse within a country, but inventory and demand never cross countries.
+Calculate per country and exact SKU. TikTok and Shopee may share one local warehouse within a country, but inventory and demand never cross countries. A channel fact whose declared source country differs from the decision country is ineligible. Cross-country templates may contribute presentation metadata only; discard their demand, inventory, warehouse binding, and aliases.
 
 When recent 30-day demand exists:
 

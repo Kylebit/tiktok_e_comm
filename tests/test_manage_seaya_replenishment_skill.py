@@ -23,6 +23,15 @@ def _load_validator():
     return module
 
 
+def _load_shopee_applier():
+    path = SKILL / "scripts" / "apply_shopee_demand.py"
+    spec = importlib.util.spec_from_file_location("shopee_demand_applier", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader
+    spec.loader.exec_module(module)
+    return module
+
+
 def _valid_record() -> dict:
     return {
         "seller_sku": "770820",
@@ -53,6 +62,40 @@ def test_inventory_validator_rejects_bool_float_string_and_negative_quantities()
         record = _valid_record()
         record["available"] = invalid
         assert validator.validate_payload([record])
+
+
+def test_country_isolation_removes_cross_country_channel_facts():
+    applier = _load_shopee_applier()
+    rows = [
+        {
+            "sku": "0007",
+            "channels": {
+                "tiktok": {
+                    "days": 366,
+                    "orders": 10,
+                    "units": 12,
+                    "recent30Units": 8,
+                    "source": "TikTok MY settlement",
+                }
+            },
+        },
+        {
+            "sku": "0004",
+            "channels": {
+                "tiktok": {
+                    "days": 31,
+                    "orders": 2,
+                    "units": 2,
+                    "recent30Units": 2,
+                    "source": "TikTok VN settlement",
+                }
+            },
+        },
+    ]
+
+    assert applier.enforce_country_isolation(rows, "VN") == 1
+    assert rows[0]["channels"]["tiktok"] == applier._empty_tiktok_channel("VN")
+    assert rows[1]["channels"]["tiktok"]["units"] == 2
 
 
 def test_skill_has_ui_metadata_and_hard_no_truncation_rule():

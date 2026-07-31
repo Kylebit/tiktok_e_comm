@@ -59,7 +59,11 @@ function validTrendDecision(trend, channel) {
     || Math.abs(trendTotal - number(channel.recent30Units)) < 0.001;
 }
 
-function channelDemand(channel) {
+function channelDemand(channel, region, platform) {
+  const expectedSource = `${platform} ${region}`;
+  if (typeof channel.source !== "string" || !channel.source.startsWith(expectedSource)) {
+    return {daily: 0, method: "COUNTRY_MISMATCH", trendClass: null, confidence: null, trend: null};
+  }
   if (channel.state && channel.state !== "READY") {
     return {daily: 0, method: "BLOCKED", trendClass: null, confidence: null, trend: null};
   }
@@ -98,8 +102,8 @@ function calculateCountry(region) {
           manualInput
         }
       : item;
-    const tiktokDemand = channelDemand(effectiveItem.channels.tiktok);
-    const shopeeDemand = channelDemand(effectiveItem.channels.shopee);
+    const tiktokDemand = channelDemand(effectiveItem.channels.tiktok, region, "TikTok");
+    const shopeeDemand = channelDemand(effectiveItem.channels.shopee, region, "Shopee");
     const tiktokDaily = tiktokDemand.daily;
     const shopeeDaily = shopeeDemand.daily;
     const dailyVelocity = tiktokDaily + shopeeDaily;
@@ -199,6 +203,9 @@ function statusLabel(status) {
 }
 
 function channelBlock(label, channel, demand) {
+  if (demand.method === "COUNTRY_MISMATCH") {
+    return `<div class="channel-line blocked"><b>${label}</b><span>BLOCKED_COUNTRY_SOURCE</span><small>来源国家与当前决策国家不一致 · 未计入需求</small></div>`;
+  }
   if (channel.state && channel.state !== "READY") {
     const reason = channel.state === "PENDING_REFRESH"
       ? "访问令牌可刷新 · 结算待拉取"

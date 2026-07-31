@@ -34,3 +34,10 @@ Shopee 明细优先使用完整 `model_sku`；只有 `4位`、`77+4位`、`99+4�
 泰国库存使用显式、可审计的完整别名归一化：`990401` 与 `0401` 合并为 `0401`，`990605` 与 `0605` 合并为 `0605`。任何只读到前缀、后缀、省略号或掩码的 SKU 一律从库存总数和逐 SKU 决策中排除，取得完整原值前不得猜测、合并或创建 `082X` 一类占位 SKU。
 
 菲律宾猫托盘 SKU 已按雅仓完整字段核对：`770820 → 0820`（0件）、`770821 → 0821`（2件）、`770822 → 0822`（0件）。只有 `0821` 抵扣 2 件库存。
+
+Country-isolation hardening:
+
+- Each TikTok and Shopee source identity must match the target decision country.
+- A cross-country product template may provide presentation metadata only; its demand, inventory, warehouse binding, and aliases are discarded.
+- The dashboard independently rejects mismatched facts as `BLOCKED_COUNTRY_SOURCE`.
+- Seaya VN evidence now maps complete source SKU `880004` to canonical `0004`: stock 47, available 47, allocated/inbound/frozen 0 in `VN8805`.

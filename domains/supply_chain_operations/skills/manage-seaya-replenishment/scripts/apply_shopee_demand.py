@@ -22,6 +22,35 @@ from domains.supply_chain_operations.shopee_demand import canonical_demand_sku
 PREFIX = "window.SUPPLY_CHAIN_DATA = "
 
 
+def _empty_tiktok_channel(region: str) -> dict:
+    return {
+        "days": 31,
+        "orders": 0,
+        "units": 0,
+        "recent30Units": 0,
+        "customerPayment": 0.0,
+        "actualShippingFee": None,
+        "source": f"TikTok {region}",
+        "evidence": "no_sku_fact",
+        "state": "READY",
+    }
+
+
+def enforce_country_isolation(rows: list[dict], region: str) -> int:
+    """Remove channel facts whose source country differs from the target country."""
+
+    replaced = 0
+    for row in rows:
+        channels = row.setdefault("channels", {})
+        tiktok = channels.get("tiktok")
+        if not isinstance(tiktok, dict) or not str(tiktok.get("source", "")).startswith(
+            f"TikTok {region}"
+        ):
+            channels["tiktok"] = _empty_tiktok_channel(region)
+            replaced += 1
+    return replaced
+
+
 def _read_dashboard(path: Path) -> dict:
     text = path.read_text(encoding="utf-8")
     if not text.startswith(PREFIX) or not text.endswith(";\n"):
@@ -93,6 +122,8 @@ def apply_region(
         if sku in global_templates:
             row = copy.deepcopy(global_templates[sku])
             row["kind"] = "first_stock"
+            row.pop("sourceAliases", None)
+            row["channels"] = {}
             row["inventory"] = {
                 "stock": 0,
                 "available": 0,
@@ -141,22 +172,10 @@ def apply_region(
         "evidence": "complete_settled_window",
         "state": "READY",
     }
+    isolated = enforce_country_isolation(rows, region)
     for row in rows:
         row.setdefault("channels", {})
-        row["channels"].setdefault(
-            "tiktok",
-            {
-                "days": 31,
-                "orders": 0,
-                "units": 0,
-                "recent30Units": 0,
-                "customerPayment": 0.0,
-                "actualShippingFee": None,
-                "source": f"TikTok {region}",
-                "evidence": "no_sku_fact",
-                "state": "READY",
-            },
-        )
+        row["channels"].setdefault("tiktok", _empty_tiktok_channel(region))
         fact = copy.deepcopy(empty_channel)
         if row["sku"] in snapshot["skus"]:
             fact.update(snapshot["skus"][row["sku"]])
@@ -176,7 +195,7 @@ def apply_region(
         "catalogResolvedItems": snapshot["evidence"]["catalog_resolved_items"],
         "unmappedItemLines": snapshot["evidence"]["rejected_items"],
     }
-    return {"added": added, "downloaded": downloaded}
+    return {"added": added, "downloaded": downloaded, "isolated": isolated}
 
 
 def main() -> int:

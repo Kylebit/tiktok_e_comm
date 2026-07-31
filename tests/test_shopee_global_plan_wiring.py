@@ -1117,7 +1117,7 @@ def test_http_publish_preview_is_local_only_and_prepare_pending(
     assert preview["start_allowed"] is True
 
 
-def test_publish_post_returns_202_before_background_prepare(
+def test_legacy_publish_post_is_blocked_until_collectbox_step_completes(
     tmp_path, monkeypatch
 ):
     prepare_calls = []
@@ -1152,10 +1152,16 @@ def test_publish_post_returns_202_before_background_prepare(
     status, response = product_server._start_oneclick_release(
         {"confirm_publish": True}
     )
-    assert status == 202
-    assert response["accepted"] is True
+    assert status == 409
+    assert response["ok"] is False
+    assert response["error"]["code"] == "step1_collectbox_required"
+    assert response["canonical_next_action"] == {
+        "action": "start_collectbox_action",
+        "target_focus": None,
+    }
+    assert response["external_writes_performed"] == []
     assert prepare_calls == []
-    assert wake_calls == [response["job"]["job_id"]]
+    assert wake_calls == []
 
 
 @pytest.mark.parametrize(

@@ -574,6 +574,273 @@ def test_interrupted_reimport_batch_recovers_without_redispatch(tmp_path):
     assert tiktok["external_writes"]["count"] is None
 
 
+def test_recover_clears_claimed_lease_before_first_platform_mark(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "platform.db"
+    store = CollectBoxActionStore(path)
+    plan = _plan()
+
+    def adapter(request):
+        return CollectBoxPlatformResult(
+            status="SUCCEEDED",
+            outcome=IMPORTED,
+            platform_detail_id=(
+                "71001" if request.platform == "TIKTOK" else "71002"
+            ),
+            external_writes=(
+                f"miaoshou:collectbox:claim:{request.platform.lower()}",
+            ),
+            external_write_count=1,
+            receipt_evidence={"checks": {"readback_exact": True}},
+        )
+
+    store.start(
+        plan=plan,
+        common_collect_box_detail_id=plan["product_id"],
+        adapter=adapter,
+        now=lambda: 100.0,
+        wait=lambda _seconds: None,
+    )
+    original_mark_running = store._mark_running
+
+    def crash_before_first_mark(*_args, **_kwargs):
+        raise KeyboardInterrupt("crash after lease claim")
+
+    monkeypatch.setattr(store, "_mark_running", crash_before_first_mark)
+    request_id = "77777777-7777-4777-8777-777777777777"
+    with pytest.raises(KeyboardInterrupt):
+        store.start(
+            plan=plan,
+            common_collect_box_detail_id=plan["product_id"],
+            adapter=adapter,
+            now=lambda: 200.0,
+            wait=lambda _seconds: None,
+            restart_existing=True,
+            restart_request_id=request_id,
+        )
+    monkeypatch.setattr(store, "_mark_running", original_mark_running)
+
+    with sqlite3.connect(path) as connection:
+        before = connection.execute(
+            """
+            SELECT status, execution_claimed_at
+            FROM collectbox_action_batches
+            WHERE plan_id = ? AND reimport_request_id = ?
+            """,
+            (plan["plan_id"], request_id),
+        ).fetchone()
+        before_platforms = connection.execute(
+            """
+            SELECT platform, status FROM collectbox_action_batch_platforms
+            WHERE action_id = (
+                SELECT action_id FROM collectbox_action_batches
+                WHERE plan_id = ? AND reimport_request_id = ?
+            ) ORDER BY platform
+            """,
+            (plan["plan_id"], request_id),
+        ).fetchall()
+    assert before[0] == "READY"
+    assert before[1] is not None
+    assert {row[1] for row in before_platforms} == {"PENDING"}
+
+    assert store.recover_interrupted(now=lambda: 300.0) > 0
+    recovered = store.status(plan_id=plan["plan_id"])
+    assert recovered["action"]["status"] == "PARTIAL_FAILED"
+    assert recovered["action"]["terminal"] is True
+    assert recovered["action"]["start_allowed"] is True
+    assert recovered["canonical_next_action"] == {
+        "action": "restart_collectbox_action",
+        "target_focus": None,
+    }
+    assert all(
+        row["status"] == FAILED_RETRYABLE
+        and row["external_writes"] == {"count": 0, "classes": []}
+        and row["receipt_digest"]
+        and row["error"]
+        for row in recovered["action"]["platforms"]
+    )
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            """
+            SELECT execution_claimed_at FROM collectbox_action_batches
+            WHERE plan_id = ? AND reimport_request_id = ?
+            """,
+            (plan["plan_id"], request_id),
+        ).fetchone()[0] is None
+
+    replay_calls = []
+    replay = store.start(
+        plan=plan,
+        common_collect_box_detail_id=plan["product_id"],
+        adapter=lambda request: replay_calls.append(request.platform),
+        now=lambda: 400.0,
+        wait=lambda _seconds: None,
+        restart_existing=True,
+        restart_request_id=request_id,
+    )
+    assert replay == recovered
+    assert replay_calls == []
+
+    fresh_calls = []
+
+    def fresh_adapter(request):
+        fresh_calls.append(request.platform)
+        return adapter(request)
+
+    fresh = store.start(
+        plan=plan,
+        common_collect_box_detail_id=plan["product_id"],
+        adapter=fresh_adapter,
+        now=lambda: 500.0,
+        wait=lambda _seconds: None,
+        restart_existing=True,
+        restart_request_id="88888888-8888-4888-8888-888888888888",
+    )
+    assert fresh_calls == ["TIKTOK", "SHOPEE"]
+    assert fresh["action"]["status"] == "SUCCEEDED"
+
+
+def test_recover_preserves_tiktok_success_and_terminalizes_pending_shopee(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "platform.db"
+    store = CollectBoxActionStore(path)
+    plan = _plan()
+    calls = []
+
+    def adapter(request):
+        calls.append(request.platform)
+        return CollectBoxPlatformResult(
+            status="SUCCEEDED",
+            outcome=IMPORTED,
+            platform_detail_id=(
+                "71001" if request.platform == "TIKTOK" else "71002"
+            ),
+            external_writes=(
+                f"miaoshou:collectbox:claim:{request.platform.lower()}",
+            ),
+            external_write_count=1,
+            receipt_evidence={"checks": {"readback_exact": True}},
+        )
+
+    store.start(
+        plan=plan,
+        common_collect_box_detail_id=plan["product_id"],
+        adapter=adapter,
+        now=lambda: 100.0,
+        wait=lambda _seconds: None,
+    )
+    calls.clear()
+    original_mark_running = store._mark_running
+
+    def crash_before_shopee_mark(
+        action_id,
+        platform,
+        invoked_at,
+        **kwargs,
+    ):
+        if platform == "SHOPEE":
+            raise KeyboardInterrupt("crash after TikTok receipt")
+        return original_mark_running(
+            action_id,
+            platform,
+            invoked_at,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(store, "_mark_running", crash_before_shopee_mark)
+    request_id = "99999999-9999-4999-8999-999999999999"
+    with pytest.raises(KeyboardInterrupt):
+        store.start(
+            plan=plan,
+            common_collect_box_detail_id=plan["product_id"],
+            adapter=adapter,
+            now=lambda: 200.0,
+            wait=lambda _seconds: None,
+            restart_existing=True,
+            restart_request_id=request_id,
+        )
+    monkeypatch.setattr(store, "_mark_running", original_mark_running)
+    assert calls == ["TIKTOK"]
+
+    with sqlite3.connect(path) as connection:
+        before = connection.execute(
+            """
+            SELECT platform, status, receipt_digest, external_write_count
+            FROM collectbox_action_batch_platforms
+            WHERE action_id = (
+                SELECT action_id FROM collectbox_action_batches
+                WHERE plan_id = ? AND reimport_request_id = ?
+            ) ORDER BY CASE platform WHEN 'TIKTOK' THEN 0 ELSE 1 END
+            """,
+            (plan["plan_id"], request_id),
+        ).fetchall()
+    assert before[0][0:2] == ("TIKTOK", "SUCCEEDED")
+    assert before[0][2] and before[0][3] == 1
+    assert before[1][0:2] == ("SHOPEE", "PENDING")
+
+    assert store.recover_interrupted(now=lambda: 300.0) > 0
+    recovered = store.status(plan_id=plan["plan_id"])
+    by_platform = {
+        row["platform"]: row for row in recovered["action"]["platforms"]
+    }
+    assert recovered["action"]["status"] == "PARTIAL_FAILED"
+    assert by_platform["TIKTOK"]["status"] == "SUCCEEDED"
+    assert by_platform["TIKTOK"]["external_writes"] == {
+        "count": 1,
+        "classes": ["miaoshou:collectbox:claim:tiktok"],
+    }
+    assert by_platform["SHOPEE"]["status"] == FAILED_RETRYABLE
+    assert by_platform["SHOPEE"]["external_writes"] == {
+        "count": 0,
+        "classes": [],
+    }
+    assert by_platform["SHOPEE"]["receipt_digest"]
+    assert by_platform["SHOPEE"]["error"]
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            """
+            SELECT execution_claimed_at FROM collectbox_action_batches
+            WHERE plan_id = ? AND reimport_request_id = ?
+            """,
+            (plan["plan_id"], request_id),
+        ).fetchone()[0] is None
+
+    replay_calls = []
+    replay = store.start(
+        plan=plan,
+        common_collect_box_detail_id=plan["product_id"],
+        adapter=lambda request: replay_calls.append(request.platform),
+        now=lambda: 400.0,
+        wait=lambda _seconds: None,
+        restart_existing=True,
+        restart_request_id=request_id,
+    )
+    assert replay == recovered
+    assert replay_calls == []
+
+    fresh_calls = []
+
+    def fresh_adapter(request):
+        fresh_calls.append(request.platform)
+        return adapter(request)
+
+    fresh = store.start(
+        plan=plan,
+        common_collect_box_detail_id=plan["product_id"],
+        adapter=fresh_adapter,
+        now=lambda: 500.0,
+        wait=lambda _seconds: None,
+        restart_existing=True,
+        restart_request_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    )
+    assert fresh_calls == ["TIKTOK", "SHOPEE"]
+    assert fresh["action"]["status"] == "SUCCEEDED"
+
+
 def test_collectbox_preview_is_pure_and_does_not_expose_raw_detail_id(
     tmp_path,
 ):

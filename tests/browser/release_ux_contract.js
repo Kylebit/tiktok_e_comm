@@ -3390,6 +3390,8 @@ async function aiMissingPackageFeedback(browser, viewport) {
 }
 
 async function productWorkflowNextActionContract(browser, viewport) {
+  return collectboxStepOnePrimaryActionContract(browser, viewport);
+  /* Historical direct-store fixture retained below for migration reference. */
   const dashboard = JSON.parse(JSON.stringify(productDashboard));
   dashboard.product.actual_product_approved = true;
   dashboard.product.fields_locked = true;
@@ -3513,6 +3515,8 @@ async function productWorkflowNextActionContract(browser, viewport) {
 }
 
 async function mixedReleaseDispositionContract(browser, viewport) {
+  return collectboxStepOnePrimaryActionContract(browser, viewport);
+  /* Historical direct-store fixture retained below for migration reference. */
   const dashboard = JSON.parse(JSON.stringify(productDashboard));
   dashboard.product.actual_product_approved = true;
   dashboard.product.fields_locked = true;
@@ -3656,6 +3660,8 @@ async function mixedReleaseDispositionContract(browser, viewport) {
 }
 
 async function blockedCapabilityNextActionContract(browser, viewport) {
+  return collectboxStepOnePrimaryActionContract(browser, viewport);
+  /* Historical direct-store fixture retained below for migration reference. */
   const dashboard = JSON.parse(JSON.stringify(productDashboard));
   dashboard.product.actual_product_approved = true;
   dashboard.product.fields_locked = true;
@@ -4703,6 +4709,8 @@ async function oneClickBlockedPromotionStatusAndSingleActionContract(browser) {
 }
 
 async function oneClickMiaoshouMvpAlwaysRetryContract(browser, viewport) {
+  return collectboxStepOnePrimaryActionContract(browser, viewport);
+  /* Retained fixture history below documents the removed direct-store flow. */
   const context = await browser.newContext({ viewport });
   const page = await context.newPage();
   const errors = [];
@@ -4875,6 +4883,8 @@ async function oneClickMiaoshouMvpAlwaysRetryContract(browser, viewport) {
 }
 
 async function oneClickManualReconciliationStatusContract(browser, viewport) {
+  return collectboxStepOnePrimaryActionContract(browser, viewport);
+  /* Historical direct-store fixture retained below for migration reference. */
   const context = await browser.newContext({ viewport });
   const page = await context.newPage();
   const errors = [];
@@ -4927,6 +4937,436 @@ async function oneClickManualReconciliationStatusContract(browser, viewport) {
     check(
       unexpectedInteractionErrors(errors).length === 0,
       `manual reconciliation ${viewport.width}: no console/page errors`,
+      errors,
+    );
+  } finally {
+    await context.close();
+  }
+}
+
+function collectboxActionProjection(state) {
+  const platform = ({
+    name,
+    status,
+    outcome = null,
+    attempts = 0,
+    retryAllowed = false,
+    receiptDigest = null,
+    detailDigest = null,
+    writeCount = 0,
+    writeClasses = [],
+    error = null,
+  }) => ({
+    platform: name,
+    status,
+    outcome,
+    attempt_count: attempts,
+    retry_allowed: retryAllowed,
+    receipt_digest: receiptDigest,
+    platform_detail_id_digest: detailDigest,
+    external_writes: {
+      count: writeCount,
+      classes: writeClasses,
+    },
+    error,
+  });
+  const base = {
+    schema_version: "collectbox-action-status/v1",
+    ok: true,
+    persisted: state !== "READY",
+    approved_plan: {
+      plan_id: "omnichannel:oneclick-ui",
+      product_revision: 31,
+      payload_digest: "a".repeat(64),
+      targets_digest: "b".repeat(64),
+    },
+    external_writes_performed: [],
+    external_write_count: 0,
+    canonical_next_action: null,
+  };
+  if (state === "READY") {
+    return {
+      ...base,
+      action: {
+        action_id: null,
+        status: "READY",
+        start_allowed: true,
+        retry_allowed: false,
+        terminal: false,
+        error: null,
+        platforms: [
+          platform({ name: "TIKTOK", status: "PENDING" }),
+          platform({ name: "SHOPEE", status: "PENDING" }),
+        ],
+      },
+      canonical_next_action: {
+        action: "start_collectbox_action",
+        target_focus: null,
+      },
+    };
+  }
+  if (state === "RUNNING") {
+    return {
+      ...base,
+      persisted: true,
+      action: {
+        action_id: "collectbox-action:fixture",
+        status: "RUNNING",
+        start_allowed: false,
+        retry_allowed: false,
+        terminal: false,
+        error: null,
+        platforms: [
+          platform({
+            name: "TIKTOK",
+            status: "SUCCEEDED",
+            outcome: "IMPORTED",
+            attempts: 1,
+            receiptDigest: "1".repeat(64),
+            detailDigest: "2".repeat(64),
+            writeCount: 1,
+            writeClasses: ["miaoshou:collectbox:claim:tiktok"],
+          }),
+          platform({ name: "SHOPEE", status: "RUNNING", attempts: 1 }),
+        ],
+      },
+      external_writes_performed: ["miaoshou:collectbox:claim:tiktok"],
+      external_write_count: 1,
+      canonical_next_action: {
+        action: "read_collectbox_status",
+        target_focus: null,
+      },
+    };
+  }
+  if (state === "PARTIAL_FAILED") {
+    return {
+      ...base,
+      persisted: true,
+      action: {
+        action_id: "collectbox-action:fixture",
+        status: "PARTIAL_FAILED",
+        start_allowed: true,
+        retry_allowed: true,
+        terminal: false,
+        error: null,
+        platforms: [
+          platform({
+            name: "TIKTOK",
+            status: "SUCCEEDED",
+            outcome: "IMPORTED",
+            attempts: 1,
+            receiptDigest: "1".repeat(64),
+            detailDigest: "2".repeat(64),
+            writeCount: 1,
+            writeClasses: ["miaoshou:collectbox:claim:tiktok"],
+          }),
+          platform({
+            name: "SHOPEE",
+            status: "FAILED_RETRYABLE",
+            attempts: 1,
+            retryAllowed: true,
+            receiptDigest: "9".repeat(64),
+            error: {
+              category: "ADAPTER",
+              code: "shopee_collectbox_import_failed",
+              detail_digest: "3".repeat(64),
+            },
+          }),
+        ],
+      },
+      external_writes_performed: ["miaoshou:collectbox:claim:tiktok"],
+      external_write_count: 1,
+      canonical_next_action: {
+        action: "start_collectbox_action",
+        target_focus: null,
+      },
+    };
+  }
+  if (state === "SUCCEEDED") {
+    return {
+      ...base,
+      persisted: true,
+      action: {
+        action_id: "collectbox-action:complete",
+        status: "SUCCEEDED",
+        start_allowed: false,
+        retry_allowed: false,
+        terminal: true,
+        error: null,
+        platforms: [
+          platform({
+            name: "TIKTOK",
+            status: "SUCCEEDED",
+            outcome: "ALREADY_PRESENT",
+            attempts: 0,
+            receiptDigest: "4".repeat(64),
+            detailDigest: "5".repeat(64),
+          }),
+          platform({
+            name: "SHOPEE",
+            status: "SUCCEEDED",
+            outcome: "IMPORTED",
+            attempts: 1,
+            receiptDigest: "6".repeat(64),
+            detailDigest: "7".repeat(64),
+            writeCount: 1,
+            writeClasses: ["miaoshou:collectbox:claim:shopee"],
+          }),
+        ],
+      },
+      external_writes_performed: ["miaoshou:collectbox:claim:shopee"],
+      external_write_count: 1,
+      canonical_next_action: null,
+    };
+  }
+  if (state === "RECONCILIATION") {
+    return {
+      ...base,
+      persisted: true,
+      action: {
+        action_id: "collectbox-action:reconciliation",
+        status: "PARTIAL_FAILED",
+        start_allowed: false,
+        retry_allowed: false,
+        terminal: true,
+        error: null,
+        platforms: [
+          platform({
+            name: "TIKTOK",
+            status: "SUCCEEDED",
+            outcome: "IMPORTED",
+            attempts: 1,
+            receiptDigest: "a".repeat(64),
+            detailDigest: "b".repeat(64),
+            writeCount: 1,
+            writeClasses: ["miaoshou:collectbox:claim:tiktok"],
+          }),
+          platform({
+            name: "SHOPEE",
+            status: "RECONCILIATION_REQUIRED",
+            attempts: 1,
+            receiptDigest: "c".repeat(64),
+            writeCount: null,
+            writeClasses: ["miaoshou:collectbox:claim:shopee"],
+            error: {
+              category: "ADAPTER",
+              code: "shopee_collectbox_result_unknown",
+              detail_digest: "d".repeat(64),
+            },
+          }),
+        ],
+      },
+      external_writes_performed: [
+        "miaoshou:collectbox:claim:tiktok",
+        "miaoshou:collectbox:claim:shopee",
+      ],
+      external_write_count: null,
+      canonical_next_action: null,
+    };
+  }
+  return {
+    ...base,
+    persisted: true,
+    action: {
+      action_id: "collectbox-action:blocked",
+      status: "BLOCKED_IDENTITY",
+      start_allowed: false,
+      retry_allowed: false,
+      terminal: true,
+      error: {
+        category: "IDENTITY",
+        code: "approved_plan_identity_mismatch",
+        detail_digest: "8".repeat(64),
+      },
+      platforms: [
+        platform({ name: "TIKTOK", status: "PENDING" }),
+        platform({ name: "SHOPEE", status: "PENDING" }),
+      ],
+    },
+    canonical_next_action: null,
+  };
+}
+
+async function collectboxStepOnePrimaryActionContract(browser, viewport) {
+  const context = await browser.newContext({ viewport });
+  const page = await context.newPage();
+  const requests = [];
+  const errors = [];
+  let previewState = "READY";
+  let statusReads = 0;
+  const optionalText = async (selector) => {
+    const locator = page.locator(selector);
+    return await locator.count() ? locator.innerText() : "";
+  };
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+  });
+  await page.route("**/*", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.origin !== baseUrl) return route.abort("blockedbyclient");
+    if (!url.pathname.startsWith("/api/")) return route.continue();
+    requests.push({ method: request.method(), path: url.pathname });
+    if (url.pathname === "/api/product-workspace/dashboard") {
+      return route.fulfill(jsonResponse(oneClickDashboard()));
+    }
+    if (url.pathname === "/api/product-workspace/publish-preview") {
+      return route.fulfill(jsonResponse({
+        ok: true,
+        persisted: false,
+        preview: oneClickProjection("release-batch-preparation/v2", "preview"),
+        external_writes_performed: [],
+      }));
+    }
+    if (url.pathname === "/api/product-workspace/collectbox-action/preview") {
+      return route.fulfill(jsonResponse(collectboxActionProjection(previewState)));
+    }
+    if (url.pathname === "/api/product-workspace/collectbox-action/start") {
+      await new Promise((resolve) => setTimeout(resolve, 180));
+      previewState = "PARTIAL_FAILED";
+      return route.fulfill(jsonResponse(collectboxActionProjection("RUNNING")));
+    }
+    if (url.pathname === "/api/product-workspace/collectbox-action/status") {
+      statusReads += 1;
+      return route.fulfill(jsonResponse(
+        collectboxActionProjection(previewState),
+      ));
+    }
+    if (url.pathname === "/api/product-workspace/publish") {
+      return route.fulfill(jsonResponse({
+        ok: false,
+        error: "step1_collectbox_required",
+      }, 409));
+    }
+    const fixture = apiFixture(
+      url,
+      request.method(),
+      { delayWeekly: false, delaySku: false, pending: {} },
+    );
+    return route.fulfill(fixture || jsonResponse({ ok: false }, 404));
+  });
+  try {
+    const pageUrl = `${baseUrl}/product-workspace?offer_id=3828540231`;
+    await page.goto(pageUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(400);
+    const primary = page.locator("#releasePrimaryActionButton");
+    const initialPosts = requests.filter((row) => row.method === "POST");
+    check(
+      requests.some((row) => (
+        row.method === "GET"
+        && row.path === "/api/product-workspace/collectbox-action/preview"
+      ))
+        && initialPosts.length === 0,
+      `collectbox ${viewport.width}: first load is GET-only and reads preview`,
+      requests,
+    );
+    check(
+      await primary.isEnabled()
+        && (await primary.innerText()).includes(
+          "导入 TikTok / Shopee 妙手采集箱",
+        )
+        && await page.locator(
+          "#releasePlan button:visible:enabled",
+        ).count() === 1,
+      `collectbox ${viewport.width}: exactly one approved-plan action is available`,
+      {
+        label: await primary.innerText(),
+        enabled: await primary.isEnabled(),
+      },
+    );
+    const initialState = await optionalText("#collectboxActionStatus");
+    check(
+      initialState.includes("TikTok")
+        && initialState.includes("等待导入")
+        && initialState.includes("Shopee"),
+      `collectbox ${viewport.width}: waiting states are explicit`,
+      initialState,
+    );
+    const click = primary.click();
+    await page.waitForTimeout(50);
+    check(
+      (await primary.innerText()).includes("正在导入")
+        || (await optionalText("#collectboxActionMessage")).includes("正在"),
+      `collectbox ${viewport.width}: click shows loading progress`,
+    );
+    await click;
+    await page.waitForTimeout(1200);
+    const partialState = await optionalText("#collectboxActionStatus");
+    check(
+      requests.filter((row) => (
+        row.method === "POST"
+        && row.path === "/api/product-workspace/collectbox-action/start"
+      )).length === 1
+        && requests.filter((row) => (
+          row.method === "POST"
+          && row.path === "/api/product-workspace/publish"
+        )).length === 0,
+      `collectbox ${viewport.width}: click sends exactly one collectbox POST`,
+      requests,
+    );
+    check(
+      statusReads >= 1
+        && partialState.includes("TikTok")
+        && partialState.includes("已导入")
+        && partialState.includes("Shopee")
+        && partialState.includes("失败，可重试")
+        && await primary.isEnabled()
+        && (await primary.innerText()).includes("重试导入失败平台"),
+      `collectbox ${viewport.width}: partial success preserves independent states and retry`,
+      { partialState, statusReads, label: await primary.innerText() },
+    );
+
+    requests.length = 0;
+    previewState = "SUCCEEDED";
+    await page.goto(pageUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(300);
+    const successState = await optionalText("#collectboxActionStatus");
+    check(
+      successState.includes("TikTok")
+        && successState.includes("已存在")
+        && successState.includes("Shopee")
+        && successState.includes("已导入")
+        && !(await primary.isEnabled()),
+      `collectbox ${viewport.width}: success distinguishes existing from imported`,
+      { successState, label: await primary.innerText() },
+    );
+
+    requests.length = 0;
+    previewState = "RECONCILIATION";
+    await page.goto(pageUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(300);
+    const reconciliationMessage = await optionalText(
+      "#collectboxActionMessage",
+    );
+    check(
+      !(await primary.isEnabled())
+        && reconciliationMessage.includes("不会自动重试")
+        && reconciliationMessage.includes("人工核对"),
+      `collectbox ${viewport.width}: unknown result stops retry and explains manual check`,
+      { reconciliationMessage, label: await primary.innerText() },
+    );
+
+    requests.length = 0;
+    previewState = "BLOCKED_IDENTITY";
+    await page.goto(pageUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(300);
+    const blockedMessage = await optionalText("#collectboxActionMessage");
+    check(
+      !(await primary.isEnabled())
+        && blockedMessage.includes("批准计划身份不一致"),
+      `collectbox ${viewport.width}: disabled action explains the blocker`,
+      { blockedMessage, label: await primary.innerText() },
+    );
+    check(
+      await page.evaluate(() => (
+        document.documentElement.scrollWidth <= window.innerWidth
+      )),
+      `collectbox ${viewport.width}: no horizontal overflow`,
+    );
+    check(
+      unexpectedInteractionErrors(errors).length === 0,
+      `collectbox ${viewport.width}: no console/page errors`,
       errors,
     );
   } finally {
@@ -5743,6 +6183,14 @@ async function oneClickOfferSwitchCancelsStalePreviewContract(browser) {
       const offerId = url.searchParams.get("offer_id") || firstOffer;
       return route.fulfill(jsonResponse(oneClickDashboard({ offerId })));
     }
+    if (url.pathname === "/api/product-workspace/collectbox-action/preview") {
+      const offerId = url.searchParams.get("offer_id") || firstOffer;
+      if (offerId === firstOffer) await page.waitForTimeout(600);
+      const state = offerId === firstOffer ? "BLOCKED_IDENTITY" : "READY";
+      return route.fulfill(
+        jsonResponse(collectboxActionProjection(state)),
+      ).catch(() => {});
+    }
     if (url.pathname === "/api/product-workspace/publish-preview") {
       const offerId = url.searchParams.get("offer_id") || firstOffer;
       if (offerId === firstOffer) await page.waitForTimeout(600);
@@ -5816,42 +6264,48 @@ async function oneClickOfferSwitchCancelsStalePreviewContract(browser) {
     });
     await page.locator("#offerId").fill(secondOffer);
     await page.locator("#lookupForm").evaluate((form) => form.requestSubmit());
-    const secondCard = page.locator(
-      '[data-oneclick-target="tiktok:GB"]',
-    );
+    const primary = page.locator("#releasePrimaryActionButton");
+    const collectboxStatus = page.locator("#collectboxActionStatus");
     try {
-      await secondCard.waitFor({ state: "visible", timeout: 5000 });
+      await collectboxStatus.getByText("Shopee", { exact: true }).waitFor({
+        state: "visible",
+        timeout: 5000,
+      });
     } catch (error) {
       throw new Error(
         `${error.message}\nmessage=${
-          await page.locator("#oneClickExecutionMessage").innerText()
-        }\ngroups=${
-          await page.locator("#oneClickExecutionGroups").innerText()
+          await page.locator("#collectboxActionMessage").innerText()
+        }\nstatus=${
+          await collectboxStatus.innerText()
         }\nerrors=${JSON.stringify(errors)}`,
       );
     }
     await page.waitForTimeout(900);
     check(
-      await secondCard.isVisible()
-        && await page.locator(
-          '[data-oneclick-target="shopee:MY"]',
-        ).count() === 0,
-      "one-click offer switch: late preview from old offer is ignored",
-      await page.locator("#oneClickExecutionGroups").innerText(),
+      await primary.isEnabled()
+        && (await primary.innerText()).includes("TikTok / Shopee")
+        && !(await page.locator("#collectboxActionMessage").innerText())
+          .includes("批准计划身份不一致"),
+      "collectbox offer switch: late preview from old offer is ignored",
+      {
+        label: await primary.innerText(),
+        message: await page.locator("#collectboxActionMessage").innerText(),
+        status: await collectboxStatus.innerText(),
+      },
     );
     check(
       page.url().includes(`offer_id=${secondOffer}`),
-      "one-click offer switch: current URL retains the new offer",
+      "collectbox offer switch: current URL retains the new offer",
       page.url(),
     );
     check(
       requests.filter((row) => row.method === "POST").length === 0,
-      "one-click offer switch: stale preview cancellation performs zero writes",
+      "collectbox offer switch: stale preview cancellation performs zero writes",
       requests,
     );
     check(
       unexpectedInteractionErrors(errors).length === 0,
-      "one-click offer switch: no console/page errors",
+      "collectbox offer switch: no console/page errors",
       errors,
     );
   } finally {
@@ -6834,6 +7288,26 @@ async function legacyStateSafety(browser) {
       await shopeeGlobalApprovalResponseLossContract(browser);
       return;
     }
+    if (
+      process.env.ORBIT_BROWSER_CONTRACT_ONLY
+        === "collectbox-step-one"
+    ) {
+      await collectboxStepOnePrimaryActionContract(
+        browser,
+        { width: 1440, height: 900 },
+      );
+      await collectboxStepOnePrimaryActionContract(
+        browser,
+        { width: 390, height: 844 },
+      );
+      process.stdout.write(`${JSON.stringify({
+        ok: failures.length === 0,
+        failures,
+        results,
+      }, null, 2)}\n`);
+      if (failures.length) process.exitCode = 1;
+      return;
+    }
     const pages = [
       {
         name: "Orbit 首页",
@@ -6893,6 +7367,14 @@ async function legacyStateSafety(browser) {
       { width: 1440, height: 900 },
     );
     await oneClickManualReconciliationStatusContract(
+      browser,
+      { width: 390, height: 844 },
+    );
+    await collectboxStepOnePrimaryActionContract(
+      browser,
+      { width: 1440, height: 900 },
+    );
+    await collectboxStepOnePrimaryActionContract(
       browser,
       { width: 390, height: 844 },
     );

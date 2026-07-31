@@ -122,6 +122,22 @@
   const ONECLICK_POLL_INTERVAL_MS = 750;
   const ONECLICK_LOCAL_READ_TIMEOUT_MS = 15000;
   const ONECLICK_LOCAL_POST_TIMEOUT_MS = 15000;
+  const COLLECTBOX_ACTION_SCHEMA = "collectbox-action-status/v1";
+  const COLLECTBOX_ACTION_STATUSES = new Set([
+    "READY",
+    "RUNNING",
+    "PARTIAL_FAILED",
+    "SUCCEEDED",
+    "BLOCKED_IDENTITY",
+  ]);
+  const COLLECTBOX_PLATFORM_STATUSES = new Set([
+    "PENDING",
+    "RUNNING",
+    "SUCCEEDED",
+    "FAILED_RETRYABLE",
+    "RECONCILIATION_REQUIRED",
+  ]);
+  const COLLECTBOX_ACTION_POLL_INTERVAL_MS = 400;
   const SHOPEE_GLOBAL_READ_TIMEOUT_MS = 180000;
   const ONECLICK_DEPENDENCY_POLICY_VERSION =
     "oneclick-target-dependency/mvp-unblocked-v1";
@@ -271,6 +287,19 @@
     timer: null,
     controller: null,
     finalDashboardRefreshed: false,
+  };
+  const collectboxAction = {
+    generation: 0,
+    contextKey: "",
+    identity: null,
+    projection: null,
+    previewAttempted: false,
+    previewBusy: false,
+    posting: false,
+    statusBusy: false,
+    error: "",
+    timer: null,
+    controller: null,
   };
   const shopeeGlobalPlanReview = {
     generation: 0,
@@ -643,6 +672,679 @@
     oneClickExecution.finalDashboardRefreshed = false;
     if (wasPosting) releaseSubmitting = false;
     resetShopeeGlobalPlanReview();
+  }
+
+  function collectboxActionIdentity(data) {
+    const identity = oneClickIdentity(data);
+    const token = String(data?.release_v1?.plan?.confirmation_token || "");
+    if (
+      !identity
+      || !oneClickDigest(identity.payloadDigest)
+      || !oneClickDigest(identity.targetsDigest)
+      || !token
+    ) return null;
+    return {
+      ...identity,
+      confirmationToken: token,
+      key: [
+        identity.key,
+        identity.payloadDigest,
+        identity.targetsDigest,
+        token,
+      ].join("\u0000"),
+    };
+  }
+
+  function cancelCollectboxActionTimer() {
+    if (collectboxAction.timer !== null) {
+      window.clearTimeout(collectboxAction.timer);
+      collectboxAction.timer = null;
+    }
+  }
+
+  function resetCollectboxAction() {
+    collectboxAction.generation += 1;
+    cancelCollectboxActionTimer();
+    if (collectboxAction.controller) collectboxAction.controller.abort();
+    collectboxAction.contextKey = "";
+    collectboxAction.identity = null;
+    collectboxAction.projection = null;
+    collectboxAction.previewAttempted = false;
+    collectboxAction.previewBusy = false;
+    collectboxAction.posting = false;
+    collectboxAction.statusBusy = false;
+    collectboxAction.error = "";
+    collectboxAction.controller = null;
+  }
+
+  function collectboxErrorShape(error) {
+    return (
+      error
+      && exactObjectKeys(error, ["category", "code", "detail_digest"])
+      && typeof error.category === "string"
+      && error.category
+      && typeof error.code === "string"
+      && error.code
+      && oneClickDigest(error.detail_digest)
+    );
+  }
+
+  function collectboxWriteClass(platform) {
+    return platform === "TIKTOK"
+      ? "miaoshou:collectbox:claim:tiktok"
+      : "miaoshou:collectbox:claim:shopee";
+  }
+
+  function validateCollectboxPlatform(row, expectedPlatform) {
+    if (
+      !exactObjectKeys(row, [
+        "platform",
+        "status",
+        "outcome",
+        "attempt_count",
+        "retry_allowed",
+        "receipt_digest",
+        "platform_detail_id_digest",
+        "external_writes",
+        "error",
+      ])
+      || row.platform !== expectedPlatform
+      || !COLLECTBOX_PLATFORM_STATUSES.has(row.status)
+      || !Number.isInteger(row.attempt_count)
+      || row.attempt_count < 0
+      || typeof row.retry_allowed !== "boolean"
+      || ![null, "IMPORTED", "ALREADY_PRESENT"].includes(row.outcome)
+      || !(row.receipt_digest === null || oneClickDigest(row.receipt_digest))
+      || !(
+        row.platform_detail_id_digest === null
+        || oneClickDigest(row.platform_detail_id_digest)
+      )
+      || !exactObjectKeys(row.external_writes, ["count", "classes"])
+      || !(
+        row.external_writes.count === null
+        || (
+          Number.isInteger(row.external_writes.count)
+          && row.external_writes.count >= 0
+        )
+      )
+      || !Array.isArray(row.external_writes.classes)
+      || row.external_writes.classes.some((value) => (
+        typeof value !== "string" || !value
+      ))
+      || new Set(row.external_writes.classes).size
+        !== row.external_writes.classes.length
+      || !(row.error === null || collectboxErrorShape(row.error))
+    ) {
+      throw oneClickContractError(
+        "妙手采集箱平台状态不完整，请刷新后重试。",
+      );
+    }
+    const writeClass = collectboxWriteClass(expectedPlatform);
+    const successExact = row.status === "SUCCEEDED" && (
+      row.outcome === "IMPORTED"
+        ? (
+          row.external_writes.count === 1
+          && row.external_writes.classes.length === 1
+          && row.external_writes.classes[0] === writeClass
+        )
+        : (
+          row.outcome === "ALREADY_PRESENT"
+          && row.external_writes.count === 0
+          && row.external_writes.classes.length === 0
+        )
+    );
+    const failedExact = row.status === "FAILED_RETRYABLE" && (
+      row.outcome === null
+      && row.retry_allowed === true
+      && row.error !== null
+      && oneClickDigest(row.receipt_digest)
+      && row.platform_detail_id_digest === null
+      && row.external_writes.count === 0
+      && row.external_writes.classes.length === 0
+    );
+    const reconciliationExact = row.status === "RECONCILIATION_REQUIRED" && (
+      row.outcome === null
+      && row.retry_allowed === false
+      && row.error !== null
+      && oneClickDigest(row.receipt_digest)
+      && row.platform_detail_id_digest === null
+    );
+    const pendingExact = ["PENDING", "RUNNING"].includes(row.status) && (
+      row.outcome === null
+      && row.retry_allowed === false
+      && row.error === null
+      && row.receipt_digest === null
+      && row.platform_detail_id_digest === null
+    );
+    if (
+      !(successExact || failedExact || reconciliationExact || pendingExact)
+      || (row.status === "SUCCEEDED" && row.error !== null)
+    ) {
+      throw oneClickContractError(
+        "妙手采集箱平台结果互相矛盾，请刷新后重试。",
+      );
+    }
+    return row;
+  }
+
+  function validateCollectboxProjection(payload, identity) {
+    if (
+      !exactObjectKeys(payload, [
+        "schema_version",
+        "ok",
+        "persisted",
+        "approved_plan",
+        "action",
+        "external_writes_performed",
+        "external_write_count",
+        "canonical_next_action",
+      ])
+      || payload.schema_version !== COLLECTBOX_ACTION_SCHEMA
+      || payload.ok !== true
+      || typeof payload.persisted !== "boolean"
+      || !exactObjectKeys(payload.approved_plan, [
+        "plan_id",
+        "product_revision",
+        "payload_digest",
+        "targets_digest",
+      ])
+      || payload.approved_plan.plan_id !== identity.planId
+      || payload.approved_plan.product_revision !== identity.revision
+      || payload.approved_plan.payload_digest !== identity.payloadDigest
+      || payload.approved_plan.targets_digest !== identity.targetsDigest
+      || !Array.isArray(payload.external_writes_performed)
+      || payload.external_writes_performed.some((value) => (
+        typeof value !== "string" || !value
+      ))
+      || new Set(payload.external_writes_performed).size
+        !== payload.external_writes_performed.length
+      || !(
+        payload.external_write_count === null
+        || (
+          Number.isInteger(payload.external_write_count)
+          && payload.external_write_count >= 0
+        )
+      )
+      || !exactObjectKeys(payload.action, [
+        "action_id",
+        "status",
+        "start_allowed",
+        "retry_allowed",
+        "terminal",
+        "platforms",
+        "error",
+      ])
+      || !COLLECTBOX_ACTION_STATUSES.has(payload.action.status)
+      || !(
+        payload.action.action_id === null
+        || (
+          typeof payload.action.action_id === "string"
+          && payload.action.action_id
+        )
+      )
+      || typeof payload.action.start_allowed !== "boolean"
+      || typeof payload.action.retry_allowed !== "boolean"
+      || typeof payload.action.terminal !== "boolean"
+      || !(payload.action.error === null
+        || collectboxErrorShape(payload.action.error))
+      || !Array.isArray(payload.action.platforms)
+      || payload.action.platforms.length !== 2
+    ) {
+      throw oneClickContractError(
+        "妙手采集箱状态合同不完整，请刷新后重试。",
+      );
+    }
+    const platforms = [
+      validateCollectboxPlatform(payload.action.platforms[0], "TIKTOK"),
+      validateCollectboxPlatform(payload.action.platforms[1], "SHOPEE"),
+    ];
+    const status = payload.action.status;
+    const retryablePartial = status === "PARTIAL_FAILED" && (
+      payload.action.start_allowed === true
+      && payload.action.retry_allowed === true
+      && payload.action.terminal === false
+      && platforms.some((row) => row.status === "FAILED_RETRYABLE")
+      && platforms.every((row) => (
+        row.status === "SUCCEEDED" || row.status === "FAILED_RETRYABLE"
+      ))
+    );
+    const reconciliationPartial = status === "PARTIAL_FAILED" && (
+      payload.action.start_allowed === false
+      && payload.action.retry_allowed === false
+      && payload.action.terminal === true
+      && platforms.some((row) => row.status === "RECONCILIATION_REQUIRED")
+      && platforms.every((row) => (
+        row.status === "SUCCEEDED"
+        || row.status === "RECONCILIATION_REQUIRED"
+      ))
+    );
+    const actionExact = (
+      status === "READY"
+        ? (
+          payload.persisted === false
+          && payload.action.action_id === null
+          && payload.action.start_allowed === true
+          && payload.action.retry_allowed === false
+          && payload.action.terminal === false
+          && payload.action.error === null
+        )
+        : status === "RUNNING"
+          ? (
+            payload.persisted === true
+            && typeof payload.action.action_id === "string"
+            && payload.action.start_allowed === false
+            && payload.action.retry_allowed === false
+            && payload.action.terminal === false
+            && payload.action.error === null
+          )
+          : status === "PARTIAL_FAILED"
+            ? (
+              payload.persisted === true
+              && typeof payload.action.action_id === "string"
+              && payload.action.error === null
+              && (retryablePartial || reconciliationPartial)
+            )
+            : status === "SUCCEEDED"
+              ? (
+                payload.persisted === true
+                && typeof payload.action.action_id === "string"
+                && payload.action.start_allowed === false
+                && payload.action.retry_allowed === false
+                && payload.action.terminal === true
+                && payload.action.error === null
+                && platforms.every((row) => row.status === "SUCCEEDED")
+              )
+              : (
+                payload.persisted === true
+                && typeof payload.action.action_id === "string"
+                && payload.action.start_allowed === false
+                && payload.action.retry_allowed === false
+                && payload.action.terminal === true
+                && collectboxErrorShape(payload.action.error)
+                && platforms.every((row) => row.status === "PENDING")
+              )
+    );
+    const expectedAction = status === "READY" || retryablePartial
+      ? "start_collectbox_action"
+      : status === "RUNNING"
+        ? "read_collectbox_status"
+        : null;
+    if (
+      !actionExact
+      || (
+        expectedAction === null
+          ? payload.canonical_next_action !== null
+          : !exactObjectKeys(
+            payload.canonical_next_action,
+            ["action", "target_focus"],
+          )
+            || payload.canonical_next_action.action !== expectedAction
+            || payload.canonical_next_action.target_focus !== null
+      )
+    ) {
+      throw oneClickContractError(
+        "妙手采集箱下一步状态不一致，请刷新后重试。",
+      );
+    }
+    const platformClasses = platforms.flatMap(
+      (row) => row.external_writes.classes,
+    );
+    const platformCountUnknown = platforms.some(
+      (row) => row.external_writes.count === null,
+    );
+    const platformCount = platformCountUnknown
+      ? null
+      : platforms.reduce(
+        (total, row) => total + row.external_writes.count,
+        0,
+      );
+    if (
+      JSON.stringify(payload.external_writes_performed)
+        !== JSON.stringify(platformClasses)
+      || payload.external_write_count !== platformCount
+    ) {
+      throw oneClickContractError(
+        "妙手采集箱写入证据不一致，请刷新后重试。",
+      );
+    }
+    return payload;
+  }
+
+  function collectboxActionErrorText(error) {
+    const code = String(error?.code || "");
+    if (code === "approved_plan_identity_mismatch") {
+      return "批准计划身份不一致，请刷新页面后重新核对计划。";
+    }
+    if (code.includes("shopee")) return "Shopee 导入失败，可重试。";
+    if (code.includes("tiktok")) return "TikTok 导入失败，可重试。";
+    return "妙手采集箱状态暂不可用，请刷新后重试。";
+  }
+
+  function collectboxPlatformState(row) {
+    if (row.status === "SUCCEEDED") {
+      return row.outcome === "ALREADY_PRESENT" ? "已存在" : "已导入";
+    }
+    if (row.status === "RUNNING") return "正在导入";
+    if (row.status === "FAILED_RETRYABLE") return "失败，可重试";
+    if (row.status === "RECONCILIATION_REQUIRED") {
+      return "结果待人工确认，不能重试";
+    }
+    return "等待导入";
+  }
+
+  function renderCollectboxAction(data) {
+    const panel = $("#collectboxActionPanel");
+    const status = $("#collectboxActionStatus");
+    const message = $("#collectboxActionMessage");
+    const button = $("#releasePrimaryActionButton");
+    const approved = Boolean(data?.release_v1?.plan_approved);
+    if (!panel || !status || !message || !button) return;
+    panel.hidden = !approved;
+    if (!approved) {
+      status.innerHTML = "";
+      return;
+    }
+    const projection = collectboxAction.projection;
+    const busy = collectboxAction.previewBusy
+      || collectboxAction.posting
+      || collectboxAction.statusBusy;
+    if (!projection) {
+      status.innerHTML = "";
+      button.disabled = true;
+      button.textContent = collectboxAction.previewBusy
+        ? "正在读取妙手采集箱状态"
+        : "导入 TikTok / Shopee 妙手采集箱";
+      message.textContent = collectboxAction.error
+        || "正在读取 TikTok 与 Shopee 妙手采集箱状态。";
+      button.dataset.disabledReason = message.textContent;
+      return;
+    }
+    status.innerHTML = projection.action.platforms.map((row) => {
+      const failed = [
+        "FAILED_RETRYABLE",
+        "RECONCILIATION_REQUIRED",
+      ].includes(row.status);
+      return `
+        <article class="collectbox-platform-state${failed ? " failed" : ""}"
+          data-collectbox-platform="${esc(row.platform)}">
+          <strong>${row.platform === "TIKTOK" ? "TikTok" : "Shopee"}</strong>
+          <span>${esc(collectboxPlatformState(row))}</span>
+        </article>
+      `;
+    }).join("");
+    if (collectboxAction.posting || projection.action.status === "RUNNING") {
+      button.disabled = true;
+      button.textContent = "正在导入妙手采集箱";
+      message.textContent =
+        "正在分别处理 TikTok 与 Shopee；页面只读取同一持久任务状态。";
+    } else if (
+      projection.action.status === "READY"
+      && projection.action.start_allowed
+    ) {
+      button.disabled = false;
+      button.textContent = "导入 TikTok / Shopee 妙手采集箱";
+      message.textContent = "点击一次，分别导入 TikTok 与 Shopee 妙手采集箱。";
+    } else if (
+      projection.action.status === "PARTIAL_FAILED"
+      && projection.action.retry_allowed
+    ) {
+      button.disabled = false;
+      button.textContent = "重试导入失败平台";
+      message.textContent =
+        "已成功的平台不会重复导入；本次只重试标记为失败且允许重试的平台。";
+    } else if (
+      projection.action.status === "PARTIAL_FAILED"
+      && projection.action.terminal
+    ) {
+      button.disabled = true;
+      button.textContent = "妙手采集箱结果待人工核对";
+      message.textContent =
+        "至少一个平台的导入结果不确定；为避免重复导入，系统不会自动重试，请到妙手采集箱人工核对。";
+    } else if (projection.action.status === "SUCCEEDED") {
+      button.disabled = true;
+      button.textContent = "妙手采集箱导入完成";
+      message.textContent =
+        "TikTok 与 Shopee 妙手采集箱步骤已完成；店铺发布将在下一阶段开放。";
+    } else {
+      button.disabled = true;
+      button.textContent = "暂不可导入妙手采集箱";
+      message.textContent = collectboxActionErrorText(
+        projection.action.error,
+      );
+    }
+    if (busy || button.disabled) {
+      button.dataset.disabledReason = message.textContent;
+    } else {
+      delete button.dataset.disabledReason;
+    }
+  }
+
+  function scheduleCollectboxActionStatus(
+    generation,
+    delay = COLLECTBOX_ACTION_POLL_INTERVAL_MS,
+  ) {
+    cancelCollectboxActionTimer();
+    if (
+      generation !== collectboxAction.generation
+      || collectboxAction.projection?.action?.status !== "RUNNING"
+    ) return;
+    collectboxAction.timer = window.setTimeout(
+      () => pollCollectboxActionStatus(generation),
+      delay,
+    );
+  }
+
+  async function requestCollectboxActionPreview(generation) {
+    if (
+      generation !== collectboxAction.generation
+      || collectboxAction.previewBusy
+      || collectboxAction.previewAttempted
+      || !collectboxAction.identity
+    ) return;
+    collectboxAction.previewAttempted = true;
+    collectboxAction.previewBusy = true;
+    collectboxAction.error = "";
+    const identity = collectboxAction.identity;
+    const controller = new AbortController();
+    collectboxAction.controller = controller;
+    renderCollectboxAction(currentData);
+    updateReleasePrimaryAction(currentData || {});
+    try {
+      const params = new URLSearchParams({
+        offer_id: identity.offerId,
+        plan_id: identity.planId,
+      });
+      const { response, payload } = await boundedJsonFetch(
+        `/api/product-workspace/collectbox-action/preview?${params}`,
+        {
+          headers: { Accept: "application/json" },
+          controller,
+        },
+        ONECLICK_LOCAL_READ_TIMEOUT_MS,
+        "妙手采集箱导入预览",
+      );
+      if (!response.ok || payload.ok === false) {
+        throw new Error(
+          payload.error?.code || `服务返回 HTTP ${response.status}`,
+        );
+      }
+      const projection = validateCollectboxProjection(payload, identity);
+      if (generation !== collectboxAction.generation) return;
+      collectboxAction.projection = projection;
+      if (projection.action.status === "RUNNING") {
+        scheduleCollectboxActionStatus(generation, 0);
+      }
+    } catch (error) {
+      if (
+        error.name === "AbortError"
+        || generation !== collectboxAction.generation
+      ) return;
+      collectboxAction.error = friendlyError(error.message);
+    } finally {
+      if (generation === collectboxAction.generation) {
+        collectboxAction.previewBusy = false;
+        if (collectboxAction.controller === controller) {
+          collectboxAction.controller = null;
+        }
+        renderCollectboxAction(currentData);
+        updateReleasePrimaryAction(currentData || {});
+      }
+    }
+  }
+
+  async function pollCollectboxActionStatus(generation) {
+    if (
+      generation !== collectboxAction.generation
+      || collectboxAction.statusBusy
+      || !collectboxAction.identity
+      || !collectboxAction.projection?.action?.action_id
+    ) return;
+    collectboxAction.statusBusy = true;
+    const identity = collectboxAction.identity;
+    const controller = new AbortController();
+    collectboxAction.controller = controller;
+    try {
+      const params = new URLSearchParams({
+        offer_id: identity.offerId,
+        plan_id: identity.planId,
+      });
+      const { response, payload } = await boundedJsonFetch(
+        `/api/product-workspace/collectbox-action/status?${params}`,
+        {
+          headers: { Accept: "application/json" },
+          controller,
+        },
+        ONECLICK_LOCAL_READ_TIMEOUT_MS,
+        "妙手采集箱导入状态",
+      );
+      if (!response.ok || payload.ok === false) {
+        throw new Error(
+          payload.error?.code || `服务返回 HTTP ${response.status}`,
+        );
+      }
+      const projection = validateCollectboxProjection(payload, identity);
+      if (
+        generation !== collectboxAction.generation
+        || projection.action.action_id
+          !== collectboxAction.projection.action.action_id
+      ) {
+        if (generation === collectboxAction.generation) {
+          throw oneClickContractError(
+            "妙手采集箱任务身份已变化，请刷新后重试。",
+          );
+        }
+        return;
+      }
+      collectboxAction.projection = projection;
+      collectboxAction.error = "";
+      if (projection.action.status === "RUNNING") {
+        scheduleCollectboxActionStatus(generation);
+      }
+    } catch (error) {
+      if (
+        error.name === "AbortError"
+        || generation !== collectboxAction.generation
+      ) return;
+      collectboxAction.error =
+        `导入状态读取失败：${friendlyError(error.message)}`;
+      scheduleCollectboxActionStatus(generation);
+    } finally {
+      if (generation === collectboxAction.generation) {
+        collectboxAction.statusBusy = false;
+        if (collectboxAction.controller === controller) {
+          collectboxAction.controller = null;
+        }
+        renderCollectboxAction(currentData);
+        updateReleasePrimaryAction(currentData || {});
+      }
+    }
+  }
+
+  function ensureCollectboxAction(data) {
+    const identity = collectboxActionIdentity(data);
+    if (!identity) {
+      if (collectboxAction.contextKey) resetCollectboxAction();
+      return;
+    }
+    if (collectboxAction.contextKey !== identity.key) {
+      resetCollectboxAction();
+      collectboxAction.contextKey = identity.key;
+      collectboxAction.identity = identity;
+    } else {
+      collectboxAction.identity = identity;
+    }
+    requestCollectboxActionPreview(collectboxAction.generation);
+  }
+
+  async function runCollectboxPrimaryAction() {
+    const projection = collectboxAction.projection;
+    const identity = collectboxAction.identity;
+    if (
+      !identity
+      || !projection
+      || collectboxAction.posting
+      || projection.action.start_allowed !== true
+      || !["READY", "PARTIAL_FAILED"].includes(projection.action.status)
+    ) return;
+    collectboxAction.posting = true;
+    collectboxAction.error = "";
+    const generation = collectboxAction.generation;
+    const controller = new AbortController();
+    collectboxAction.controller = controller;
+    renderCollectboxAction(currentData);
+    updateReleasePrimaryAction(currentData || {});
+    try {
+      const { response, payload } = await boundedJsonFetch(
+        "/api/product-workspace/collectbox-action/start",
+        {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            confirm_collectbox_action: true,
+            approved_by: "Kyle",
+            offer_id: identity.offerId,
+            plan_id: identity.planId,
+            product_revision: identity.revision,
+            payload_digest: identity.payloadDigest,
+            confirmation_token: identity.confirmationToken,
+            targets_digest: identity.targetsDigest,
+          }),
+          controller,
+        },
+        ONECLICK_LOCAL_POST_TIMEOUT_MS,
+        "妙手采集箱导入",
+      );
+      if (!response.ok || payload.ok === false) {
+        throw new Error(
+          payload.error?.code || `服务返回 HTTP ${response.status}`,
+        );
+      }
+      const next = validateCollectboxProjection(payload, identity);
+      if (generation !== collectboxAction.generation) return;
+      collectboxAction.projection = next;
+      if (next.action.status === "RUNNING") {
+        scheduleCollectboxActionStatus(generation, 0);
+      }
+    } catch (error) {
+      if (
+        error.name === "AbortError"
+        || generation !== collectboxAction.generation
+      ) return;
+      collectboxAction.error =
+        `导入请求失败：${friendlyError(error.message)}`;
+    } finally {
+      if (generation === collectboxAction.generation) {
+        collectboxAction.posting = false;
+        if (collectboxAction.controller === controller) {
+          collectboxAction.controller = null;
+        }
+        renderCollectboxAction(currentData);
+        updateReleasePrimaryAction(currentData || {});
+      }
+    }
   }
 
   function resetShopeeGlobalPlanReview() {
@@ -6559,6 +7261,8 @@
     const approvalButton = $("#approveReleasePlanButton");
     const legacyPanels = $("#legacyReleaseActionPanels");
     const legacyRunLedger = $("#legacyReleaseRunLedger");
+    const oneClickPreview = $("#oneClickExecutionPreview");
+    const collectboxPanel = $("#collectboxActionPanel");
     const releaseSection = $("#releasePlan");
     if (
       !panel
@@ -6567,6 +7271,8 @@
       || !approvalButton
       || !legacyPanels
       || !legacyRunLedger
+      || !oneClickPreview
+      || !collectboxPanel
       || !releaseSection
     ) return;
 
@@ -6581,6 +7287,8 @@
     legacyPanels.setAttribute("aria-hidden", String(unifiedAuthority));
     legacyRunLedger.hidden = unifiedAuthority;
     legacyRunLedger.setAttribute("aria-hidden", String(unifiedAuthority));
+    oneClickPreview.hidden = unifiedAuthority;
+    collectboxPanel.hidden = !unifiedAuthority;
     if (!unifiedAuthority) {
       button.disabled = true;
       button.textContent = "一键发布已选店铺";
@@ -6589,27 +7297,9 @@
         : "批准当前发布计划后，系统会显示唯一可执行的下一步。";
       return;
     }
-
-    const busy = Boolean(
-      releaseSubmitting
-      || approvalSubmitting
-      || oneClickExecution.posting
-    );
-    button.disabled = busy;
-    button.textContent = "一键发布已选店铺";
-
-    if (busy) {
-      button.textContent = oneClickExecution.posting
-        ? "正在提交到妙手…"
-        : "正在读取发布状态…";
-      message.textContent = oneClickExecution.posting
-        ? "本次点击只会发送一个妙手 API 发布请求。"
-        : "读取结束后即可一键发布。";
-      return;
-    }
-    message.textContent = oneClickExecution.error
-      || oneClickExecution.statusWarning
-      || "点击后直接通过妙手 API 提交所选 TikTok、Shopee 和 Ozon 店铺。";
+    message.textContent =
+      "先完成 TikTok 与 Shopee 妙手采集箱导入；本步骤不会发布任何店铺。";
+    renderCollectboxAction(data);
   }
 
   function updateReleaseControls(data) {
@@ -7001,8 +7691,8 @@
         </div>
       `;
     }
-    ensureOneClickExecution(data);
-    renderOneClickExecution(data);
+    ensureCollectboxAction(data);
+    renderCollectboxAction(data);
     updateReleaseControls(data);
   }
 
@@ -7870,6 +8560,7 @@
 
   function clearCurrentApprovalContext() {
     resetOneClickExecution();
+    resetCollectboxAction();
     currentData = null;
     loadedQueueKey = "";
     $("#releasePlanCheckbox").checked = false;
@@ -8301,7 +8992,7 @@
   $("#commonOverwriteButton").addEventListener("click", overwriteMiaoshou);
   $("#releasePrimaryActionButton").addEventListener(
     "click",
-    runReleasePrimaryAction,
+    runCollectboxPrimaryAction,
   );
   $("#publishAllCheckbox").addEventListener("change", () => {
     updateReleaseControls(currentData || {});

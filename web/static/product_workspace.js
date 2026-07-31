@@ -241,6 +241,48 @@
     "shopee:TH",
     "shopee:VN",
   ]);
+  const COLLECTBOX_TARGETS = Object.freeze({
+    TIKTOK: Object.freeze([
+      "tiktok:LH_PH",
+      "tiktok:LH_MY",
+      "tiktok:LH_TH",
+      "tiktok:LH_VN",
+      "tiktok:HB_PH",
+      "tiktok:HB_MY",
+      "tiktok:HB_TH",
+      "tiktok:HB_VN",
+      "tiktok:MX",
+      "tiktok:GB",
+    ]),
+    SHOPEE: Object.freeze([
+      "shopee:PH",
+      "shopee:MY",
+      "shopee:TH",
+      "shopee:VN",
+    ]),
+  });
+  const COLLECTBOX_TARGET_OPERATIONS = Object.freeze({
+    TIKTOK: Object.freeze([
+      "detail:create",
+      "shop:claim",
+      "detail:update",
+    ]),
+    SHOPEE: Object.freeze(["detail:update"]),
+  });
+  const COLLECTBOX_ALLOWED_WRITE_CLASSES = Object.freeze(
+    Object.fromEntries(["TIKTOK", "SHOPEE"].map((platform) => {
+      const platformName = platform.toLowerCase();
+      const classes = new Set([`miaoshou:collectbox:claim:${platformName}`]);
+      COLLECTBOX_TARGET_OPERATIONS[platform].forEach((operation) => {
+        COLLECTBOX_TARGETS[platform].forEach((target) => {
+          classes.add(
+            `miaoshou:collectbox:${platformName}:${operation}:${target}`,
+          );
+        });
+      });
+      return [platform, classes];
+    })),
+  );
   const SHOPEE_GLOBAL_PLAN_COUNT_KEYS = Object.freeze([
     "category_path_depth",
     "attribute_count",
@@ -736,17 +778,7 @@
   }
 
   function collectboxWriteClassAllowed(platform, value) {
-    if (value === collectboxWriteClass(platform)) return true;
-    if (platform === "TIKTOK") {
-      return [
-        "miaoshou:collectbox:tiktok:detail:create:",
-        "miaoshou:collectbox:tiktok:shop:claim:",
-        "miaoshou:collectbox:tiktok:detail:update:",
-      ].some((prefix) => value.startsWith(prefix));
-    }
-    return value.startsWith(
-      "miaoshou:collectbox:shopee:detail:update:",
-    );
+    return COLLECTBOX_ALLOWED_WRITE_CLASSES[platform]?.has(value) === true;
   }
 
   function validateCollectboxPlatform(row, expectedPlatform) {

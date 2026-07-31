@@ -32,6 +32,33 @@ _WRITE_CLASS = {
     "TIKTOK": "miaoshou:collectbox:claim:tiktok",
     "SHOPEE": "miaoshou:collectbox:claim:shopee",
 }
+_COLLECTBOX_TARGETS = {
+    "TIKTOK": frozenset(
+        {
+            "tiktok:LH_PH",
+            "tiktok:LH_MY",
+            "tiktok:LH_TH",
+            "tiktok:LH_VN",
+            "tiktok:HB_PH",
+            "tiktok:HB_MY",
+            "tiktok:HB_TH",
+            "tiktok:HB_VN",
+            "tiktok:MX",
+            "tiktok:GB",
+        }
+    ),
+    "SHOPEE": frozenset(
+        {"shopee:PH", "shopee:MY", "shopee:TH", "shopee:VN"}
+    ),
+}
+_COLLECTBOX_TARGET_OPERATIONS = {
+    "TIKTOK": (
+        "detail:create",
+        "shop:claim",
+        "detail:update",
+    ),
+    "SHOPEE": ("detail:update",),
+}
 _SHA256_EMPTY_LIST = hashlib.sha256(b"[]").hexdigest()
 
 
@@ -53,6 +80,26 @@ def _is_sha256(value: object) -> bool:
         type(value) is str
         and len(value) == 64
         and all(char in "0123456789abcdef" for char in value)
+    )
+
+
+def _allowed_write_classes(
+    platform: str,
+    approved_targets: tuple[str, ...],
+) -> frozenset[str]:
+    platform_name = platform.lower()
+    selected_targets = _COLLECTBOX_TARGETS[platform].intersection(
+        approved_targets
+    )
+    return frozenset(
+        {
+            _WRITE_CLASS[platform],
+            *(
+                f"miaoshou:collectbox:{platform_name}:{operation}:{target}"
+                for operation in _COLLECTBOX_TARGET_OPERATIONS[platform]
+                for target in selected_targets
+            ),
+        }
     )
 
 
@@ -677,6 +724,7 @@ class CollectBoxActionStore:
                     platform,
                     result,
                     current_time,
+                    tuple(plan["targets"]),
                 )
                 if result.status == RECONCILIATION_REQUIRED:
                     break
@@ -693,6 +741,7 @@ class CollectBoxActionStore:
                         error_detail=f"{type(error).__name__}:{error}",
                     ),
                     current_time,
+                    tuple(plan["targets"]),
                 )
                 break
         projected = self.status(plan_id=identity["plan_id"])
@@ -849,23 +898,14 @@ class CollectBoxActionStore:
         platform: str,
         result: CollectBoxPlatformResult,
         now: float,
+        approved_targets: tuple[str, ...],
     ) -> None:
-        expected_class = _WRITE_CLASS[platform]
-        platform_name = platform.lower()
-        allowed_prefixes = (
-            f"miaoshou:collectbox:{platform_name}:detail:update:",
-            *(
-                (
-                    "miaoshou:collectbox:tiktok:detail:create:",
-                    "miaoshou:collectbox:tiktok:shop:claim:",
-                )
-                if platform == "TIKTOK"
-                else ()
-            ),
+        allowed_write_classes = _allowed_write_classes(
+            platform,
+            approved_targets,
         )
         if any(
-            write != expected_class
-            and not any(write.startswith(prefix) for prefix in allowed_prefixes)
+            write not in allowed_write_classes
             for write in result.external_writes
         ):
             raise ValueError("collect-box write class is invalid")

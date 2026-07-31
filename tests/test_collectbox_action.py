@@ -115,6 +115,79 @@ def test_platform_multi_write_success_is_persisted_without_reconciliation(
     )
 
 
+@pytest.mark.parametrize(
+    ("platform", "invalid_write"),
+    [
+        (
+            "TIKTOK",
+            "miaoshou:collectbox:tiktok:detail:update:",
+        ),
+        (
+            "TIKTOK",
+            "miaoshou:collectbox:tiktok:detail:update:shopee:MY",
+        ),
+        (
+            "TIKTOK",
+            "miaoshou:collectbox:tiktok:detail:update:tiktok:UNKNOWN",
+        ),
+        (
+            "SHOPEE",
+            "miaoshou:collectbox:shopee:detail:update:tiktok:MX",
+        ),
+    ],
+)
+def test_platform_result_rejects_non_allowlisted_write_class(
+    tmp_path,
+    platform,
+    invalid_write,
+):
+    store = CollectBoxActionStore(tmp_path / "platform.db")
+    plan = _plan()
+
+    def adapter(request):
+        if request.platform != platform:
+            return CollectBoxPlatformResult(
+                status="SUCCEEDED",
+                outcome=ALREADY_PRESENT,
+                platform_detail_id="71000",
+                external_writes=(),
+                external_write_count=0,
+            )
+        return CollectBoxPlatformResult(
+            status="SUCCEEDED",
+            outcome=IMPORTED,
+            platform_detail_id="71001",
+            external_writes=(
+                f"miaoshou:collectbox:claim:{platform.lower()}",
+                invalid_write,
+            ),
+            external_write_count=2,
+            receipt_evidence={
+                "schema_version": "collectbox-platform-preparation-evidence/v1",
+                "checks": {"readback_exact": True},
+            },
+        )
+
+    projection = store.start(
+        plan=plan,
+        common_collect_box_detail_id=plan["product_id"],
+        adapter=adapter,
+        now=lambda: 100.0,
+        wait=lambda _seconds: None,
+    )
+
+    row = next(
+        item
+        for item in projection["action"]["platforms"]
+        if item["platform"] == platform
+    )
+    assert row["status"] == RECONCILIATION_REQUIRED
+    assert row["external_writes"] == {
+        "count": None,
+        "classes": [f"miaoshou:collectbox:claim:{platform.lower()}"],
+    }
+
+
 def test_collectbox_preview_is_pure_and_does_not_expose_raw_detail_id(
     tmp_path,
 ):

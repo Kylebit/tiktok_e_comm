@@ -5173,6 +5173,49 @@ function collectboxActionProjection(state) {
       canonical_next_action: null,
     };
   }
+  if (state === "INVALID_WRITE_CLASS") {
+    return {
+      ...base,
+      persisted: true,
+      action: {
+        action_id: "collectbox-action:invalid-write-class",
+        status: "SUCCEEDED",
+        start_allowed: false,
+        retry_allowed: false,
+        terminal: true,
+        error: null,
+        platforms: [
+          platform({
+            name: "TIKTOK",
+            status: "SUCCEEDED",
+            outcome: "IMPORTED",
+            attempts: 1,
+            receiptDigest: "1".repeat(64),
+            detailDigest: "2".repeat(64),
+            writeCount: 2,
+            writeClasses: [
+              "miaoshou:collectbox:claim:tiktok",
+              "miaoshou:collectbox:tiktok:detail:update:shopee:MY",
+            ],
+          }),
+          platform({
+            name: "SHOPEE",
+            status: "SUCCEEDED",
+            outcome: "ALREADY_PRESENT",
+            attempts: 1,
+            receiptDigest: "3".repeat(64),
+            detailDigest: "4".repeat(64),
+          }),
+        ],
+      },
+      external_writes_performed: [
+        "miaoshou:collectbox:claim:tiktok",
+        "miaoshou:collectbox:tiktok:detail:update:shopee:MY",
+      ],
+      external_write_count: 2,
+      canonical_next_action: null,
+    };
+  }
   if (state === "RECONCILIATION") {
     return {
       ...base,
@@ -5415,6 +5458,24 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
         reconciliationPendingState,
         label: await primary.innerText(),
         message: await optionalText("#collectboxActionMessage"),
+      },
+    );
+
+    requests.length = 0;
+    previewState = "INVALID_WRITE_CLASS";
+    await page.goto(pageUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(300);
+    const invalidWriteState = await optionalText("#collectboxActionStatus");
+    const invalidWriteMessage = await optionalText("#collectboxActionMessage");
+    check(
+      !(await primary.isEnabled())
+        && invalidWriteState === ""
+        && invalidWriteMessage.length > 0,
+      `collectbox ${viewport.width}: illegal cross-platform write class fails closed`,
+      {
+        invalidWriteState,
+        invalidWriteMessage,
+        label: await primary.innerText(),
       },
     );
 

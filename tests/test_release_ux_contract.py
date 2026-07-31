@@ -563,7 +563,7 @@ def test_oneclick_release_ui_uses_only_the_async_server_controlplane():
     assert "oneClickDigest(reason.detail_digest)" in script
     assert (
         'ONECLICK_DEPENDENCY_POLICY_VERSION =\n'
-        '    "oneclick-target-dependency/v2"'
+        '    "oneclick-target-dependency/mvp-unblocked-v1"'
     ) in script
     assert (
         "dependency.policy_version !== ONECLICK_DEPENDENCY_POLICY_VERSION"
@@ -574,7 +574,7 @@ def test_oneclick_release_ui_uses_only_the_async_server_controlplane():
     assert "projection.postpublish_actions" in script
     assert '"tiktok:LH_PH"' in script
     assert '"shopee:VN"' in script
-    assert 'prerequisiteLabel = isTikTok' in script
+    assert "dependency.prerequisite === undefined" in script
     assert "reference.shared_controls" in script
     assert "sameSortedValues(summary.will_dispatch" in script
     assert "dashboardFromPayload" not in publish
@@ -720,7 +720,7 @@ def test_oneclick_manual_review_forms_keep_warning_and_apiless_contracts_separat
     apiless_submit = _function_body(script, "submitManualTargetVerification")
 
     assert "product_workspace.css?v=20260731-v19" in html
-    assert "product_workspace.js?v=20260731-v25" in html
+    assert "product_workspace.js?v=20260731-v26" in html
     assert '"SUCCEEDED_MANUAL_REVIEW"' in script
     assert '"review_verified_observation_warning"' in script
     assert "oneclick-observation-review-form" in script

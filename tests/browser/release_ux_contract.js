@@ -3762,10 +3762,10 @@ async function blockedCapabilityNextActionContract(browser, viewport) {
       `blocked capability ${viewport.width}: ledger header does not claim active execution`,
       await page.locator(".run-ledger-head").innerText(),
     );
-    await nextButton.click();
     check(
-      await ozonCard.evaluate((element) => document.activeElement === element),
-      `blocked capability ${viewport.width}: next action focuses the exact target card`,
+      await page.locator("#legacyReleaseRunLedger").isHidden()
+        && await page.locator("#releasePrimaryActionButton").isEnabled(),
+      `blocked capability ${viewport.width}: approved MVP uses the primary action instead of the legacy ledger`,
     );
     check(
       requests.filter((row) => row.method === "POST").length === 0,
@@ -3867,18 +3867,11 @@ function oneClickDashboard({
 
 function oneClickTargets(stage) {
   const independentDependency = {
-    policy_version: "oneclick-target-dependency/v2",
+    policy_version: "oneclick-target-dependency/mvp-unblocked-v1",
     state: "SATISFIED",
     satisfied: true,
     prerequisite_target: null,
     prerequisite_status: null,
-  };
-  const tiktokDependency = {
-    policy_version: "oneclick-target-dependency/v2",
-    state: "SATISFIED",
-    satisfied: true,
-    prerequisite_target: "miaoshou:COMMON",
-    prerequisite_status: "SUCCEEDED",
   };
   return [
     {
@@ -3975,7 +3968,7 @@ function oneClickTargets(stage) {
       runnable_now: stage === "preview" || stage === "running",
       manual_after_submit: true,
       requires_human: ["terminal", "accepted"].includes(stage),
-      dependency: tiktokDependency,
+      dependency: independentDependency,
       next_action: ["terminal", "accepted"].includes(stage)
         ? "verify_submission_in_marketplace" : "wait_for_worker",
       next_action_target: "tiktok:GB",
@@ -4059,7 +4052,7 @@ function oneClickGlobalControl(stage) {
     manual_after_submit: false,
     requires_human: false,
     dependency: {
-      policy_version: "oneclick-target-dependency/v2",
+      policy_version: "oneclick-target-dependency/mvp-unblocked-v1",
       state: "SATISFIED",
       satisfied: true,
       prerequisite_target: null,
@@ -4093,60 +4086,84 @@ function oneClickStatusLedger(target) {
   };
 }
 
-function oneClickProjection(schemaVersion, stage, phase = null) {
-  const sharedControl = oneClickGlobalControl(stage);
-  let targets = oneClickTargets(stage).map((target) => {
-    if (!target.target_label.startsWith("shopee:")) return target;
-    return {
-      ...target,
-      dependency: {
-        policy_version: "oneclick-target-dependency/v2",
-        state: "SATISFIED",
-        satisfied: true,
-        prerequisite_target: "shopee:GLOBAL",
-        prerequisite_status: "SUCCEEDED",
-        prerequisite: {
-          target_label: "shopee:GLOBAL",
-          status: "SUCCEEDED",
-          reason: null,
-          next_action: null,
-          digests: {
-            prepared_command: sharedControl.digests.prepared_command,
-            proof: sharedControl.digests.proof,
-            shared_resource: sharedControl.digests.shared_resource,
-            shared_resource_context:
-              sharedControl.digests.shared_resource_context,
-          },
-        },
-      },
-    };
-  });
-  const commonTarget = targets.find(
-    (target) => target.target_label === "miaoshou:COMMON",
+function oneClickManualReconciliationStatusProjection() {
+  const projection = oneClickProjection(
+    "oneclick-release-status/v2",
+    "accepted",
+    "RUNNING",
   );
-  targets = targets.map((target) => (
-    target.target_label.startsWith("tiktok:")
-      ? {
-        ...target,
-        dependency: {
-          ...target.dependency,
-          prerequisite: {
-            target_label: commonTarget.target_label,
-            status: commonTarget.status,
-            reason: commonTarget.reason ?? null,
-            next_action: commonTarget.next_action ?? null,
-            digests: {
-              prepared_command: commonTarget.digests.prepared_command,
-              proof: commonTarget.digests.proof,
-              shared_resource: commonTarget.digests.shared_resource,
-              shared_resource_context:
-                commonTarget.digests.shared_resource_context,
-            },
-          },
-        },
-      }
-      : target
-  ));
+  const mvpDependency = {
+    policy_version: "oneclick-target-dependency/mvp-unblocked-v1",
+    state: "SATISFIED",
+    satisfied: true,
+    prerequisite_target: null,
+    prerequisite_status: null,
+  };
+  const template = projection.targets.find(
+    (target) => target.target_label === "tiktok:GB",
+  );
+  const reconciliationTarget = (label) => ({
+    ...template,
+    target_label: label,
+    status: "RECONCILIATION_REQUIRED",
+    classification: "READY_SUBMIT_MANUAL",
+    runnable_now: false,
+    manual_after_submit: true,
+    requires_human: false,
+    next_action: "reconcile_before_any_retry",
+    next_action_target: label,
+    result: null,
+    dispatch_ledger: {
+      stage: "dispatch_invoked",
+      cumulative_external_write_count: 2,
+      cumulative_external_write_classes: [
+        "miaoshou:tiktok_detail:update",
+        "miaoshou:tiktok_publish:submit",
+      ],
+      confirmed_external_write_count_lower_bound: 2,
+      possible_external_write_count_upper_bound: 2,
+      digest: null,
+      stage_evidence_digest: null,
+      pending_write_intent_digest: null,
+    },
+  });
+  projection.targets = projection.targets.filter(
+    (target) => target.target_label !== "tiktok:GB",
+  );
+  projection.targets.push(
+    reconciliationTarget("tiktok:LH_TH"),
+    reconciliationTarget("tiktok:LH_VN"),
+  );
+  projection.targets = projection.targets.map((target) => ({
+    ...target,
+    dependency: { ...mvpDependency },
+  }));
+  projection.shared_controls = [];
+  projection.postpublish_actions = [];
+  projection.control_row_count = projection.targets.filter(
+    (target) => target.storefront === false,
+  ).length;
+  projection.storefront_count += 1;
+  projection.summary.manual_after_submit = [];
+  projection.summary.blocked = [
+    ...projection.summary.blocked,
+    "tiktok:LH_TH",
+    "tiktok:LH_VN",
+  ];
+  projection.summary.already_terminal = projection.summary.already_terminal
+    .filter((label) => label !== "tiktok:GB");
+  projection.canonical_next_action = {
+    target_label: "tiktok:LH_TH",
+    target_focus: "tiktok:LH_TH",
+    canonical_status: "RECONCILIATION_REQUIRED",
+    action: "reconcile_before_any_retry",
+    runnable: false,
+  };
+  return projection;
+}
+
+function oneClickProjection(schemaVersion, stage, phase = null) {
+  const targets = oneClickTargets(stage);
   const projection = {
     schema_version: schemaVersion,
     plan_id: "omnichannel:oneclick-ui",
@@ -4162,10 +4179,10 @@ function oneClickProjection(schemaVersion, stage, phase = null) {
       adapter_policy: "0".repeat(64),
     },
     targets,
-    shared_controls: [sharedControl],
+    shared_controls: [],
     postpublish_actions: [],
     storefront_count: 4,
-    control_row_count: 2,
+    control_row_count: 1,
     runnable_target_count: stage === "preview" ? 2
       : stage === "running" ? 1 : 0,
     summary: {
@@ -4260,32 +4277,6 @@ function oneClickProjection(schemaVersion, stage, phase = null) {
           proof: null,
         },
       }));
-      const global = projection.shared_controls[0];
-      projection.targets = projection.targets.map((target) => {
-        if (!target.target_label.startsWith("shopee:")) return target;
-        return {
-          ...target,
-          dependency: {
-            ...target.dependency,
-            state: "WAITING",
-            satisfied: false,
-            prerequisite_status: "PENDING",
-            prerequisite: {
-              target_label: global.target_label,
-              status: global.status,
-              reason: global.reason,
-              next_action: global.next_action,
-              digests: {
-                prepared_command: global.digests.prepared_command,
-                proof: global.digests.proof,
-                shared_resource: global.digests.shared_resource,
-                shared_resource_context:
-                  global.digests.shared_resource_context,
-              },
-            },
-          },
-        };
-      });
       projection.prepare_pending = [
         ...projection.targets,
       ]
@@ -4346,7 +4337,7 @@ function withPostpublishPromotionAction(projection) {
     manual_after_submit: false,
     requires_human: false,
     dependency: {
-      policy_version: "oneclick-target-dependency/v2",
+      policy_version: "oneclick-target-dependency/mvp-unblocked-v1",
       state: "WAITING",
       satisfied: false,
       prerequisite_target: prerequisite.target_label,
@@ -4596,6 +4587,23 @@ function oneClickBlockedPromotionStatusProjection() {
     action: "reconcile_before_any_retry",
     runnable: false,
   };
+  projection.targets = projection.targets
+    .filter((target) => target.target_label !== "promotion:shopee:MY")
+    .map((target) => ({
+      ...target,
+      dependency: {
+        policy_version: "oneclick-target-dependency/mvp-unblocked-v1",
+        state: "SATISFIED",
+        satisfied: true,
+        prerequisite_target: null,
+        prerequisite_status: null,
+      },
+    }));
+  projection.postpublish_actions = [];
+  projection.control_row_count = projection.targets.filter(
+    (target) => target.storefront === false,
+  ).length;
+  delete projection.summary.postpublish_pending;
   return projection;
 }
 
@@ -4705,10 +4713,23 @@ async function oneClickMiaoshouMvpAlwaysRetryContract(browser, viewport) {
     "accepted",
     "WAITING_MANUAL_ACCEPTANCE",
   );
-  const dashboard = oneClickDashboard();
-  dashboard.release_v1.oneclick_controlplane = blockedStatus;
-  dashboard.release_v1.canonical_next_action =
-    blockedStatus.canonical_next_action;
+    const dashboard = oneClickDashboard();
+    dashboard.release_v1.oneclick_controlplane = blockedStatus;
+    dashboard.release_v1.canonical_next_action =
+      blockedStatus.canonical_next_action;
+    dashboard.release_v1.run = {
+      run_id: "release-run:legacy-mvp-history",
+      status: "PARTIAL_FAILED",
+      targets: [
+        {
+          target_label: "tiktok:LH_TH",
+          status: "FAILED",
+          attempts: 1,
+          external_id: "legacy-external-id",
+          error: "accepted; waiting for official readback; retry forbidden",
+        },
+      ],
+    };
   let publishAttempts = 0;
   page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
   page.on("console", (message) => {
@@ -4786,6 +4807,13 @@ async function oneClickMiaoshouMvpAlwaysRetryContract(browser, viewport) {
       `Miaoshou MVP ${viewport.width}: no reconcile/readback dependency controls`,
       await forbiddenControls.allTextContents(),
     );
+    check(
+      !await page.locator(".run-ledger").isVisible()
+        && !((await page.locator("#releasePlan").innerText()).includes("禁止重发"))
+        && !((await page.locator("#releasePlan").innerText()).includes("等待官方回读")),
+      `Miaoshou MVP ${viewport.width}: approved flow hides the legacy reconciliation ledger`,
+      await page.locator("#releasePlan").innerText(),
+    );
 
     await publishButton.click();
     await page.waitForTimeout(40);
@@ -4846,6 +4874,66 @@ async function oneClickMiaoshouMvpAlwaysRetryContract(browser, viewport) {
   }
 }
 
+async function oneClickManualReconciliationStatusContract(browser, viewport) {
+  const context = await browser.newContext({ viewport });
+  const page = await context.newPage();
+  const errors = [];
+  const requests = [];
+  const status = oneClickManualReconciliationStatusProjection();
+  const dashboard = oneClickDashboard();
+  dashboard.release_v1.oneclick_controlplane = status;
+  dashboard.release_v1.canonical_next_action = status.canonical_next_action;
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+  });
+  await page.route("**/*", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.origin !== baseUrl) return route.abort("blockedbyclient");
+    if (!url.pathname.startsWith("/api/")) return route.continue();
+    requests.push({ method: request.method(), url: request.url() });
+    if (url.pathname === "/api/product-workspace/dashboard") {
+      return route.fulfill(jsonResponse(dashboard));
+    }
+    if (url.pathname === "/api/product-workspace/publish-status") {
+      return route.fulfill(jsonResponse({ ok: true, job: status }));
+    }
+    const fixture = apiFixture(
+      url,
+      request.method(),
+      { delayWeekly: false, delaySku: false, pending: {} },
+    );
+    return route.fulfill(fixture || jsonResponse({ ok: false }, 404));
+  });
+  try {
+    await page.goto(`${baseUrl}/product-workspace?offer_id=3846511157`, {
+      waitUntil: "networkidle",
+    });
+    await page.waitForTimeout(1200);
+    const message = await page.locator("#oneClickExecutionMessage").innerText();
+    check(
+      !message.includes("店铺状态不完整")
+        && requests.filter(
+          (row) => row.url.includes("/publish-status"),
+        ).length >= 2,
+      `manual reconciliation ${viewport.width}: valid server status remains pollable`,
+      { message, requests },
+    );
+    check(
+      await page.locator("#releasePrimaryActionButton").isEnabled(),
+      `manual reconciliation ${viewport.width}: status does not disable explicit republish`,
+    );
+    check(
+      unexpectedInteractionErrors(errors).length === 0,
+      `manual reconciliation ${viewport.width}: no console/page errors`,
+      errors,
+    );
+  } finally {
+    await context.close();
+  }
+}
+
 function oneClickPendingJobProjection() {
   const projection = oneClickProjection(
     "oneclick-release-status/v2",
@@ -4862,11 +4950,11 @@ function oneClickPendingJobProjection() {
     requires_human: false,
     dependency: target.target_label.startsWith("tiktok:")
       ? {
-        policy_version: "oneclick-target-dependency/v2",
-        state: "WAITING",
-        satisfied: false,
-        prerequisite_target: "miaoshou:COMMON",
-        prerequisite_status: "PENDING",
+        policy_version: "oneclick-target-dependency/mvp-unblocked-v1",
+        state: "SATISFIED",
+        satisfied: true,
+        prerequisite_target: null,
+        prerequisite_status: null,
       }
       : target.dependency,
     next_action: "prepare_batch",
@@ -4879,32 +4967,6 @@ function oneClickPendingJobProjection() {
       shared_resource_context: target.digests.shared_resource_context,
     },
   }));
-  const pendingCommon = projection.targets.find(
-    (target) => target.target_label === "miaoshou:COMMON",
-  );
-  projection.targets = projection.targets.map((target) => (
-    target.target_label.startsWith("tiktok:")
-      ? {
-        ...target,
-        dependency: {
-          ...target.dependency,
-          prerequisite: {
-            target_label: pendingCommon.target_label,
-            status: pendingCommon.status,
-            reason: pendingCommon.reason ?? null,
-            next_action: pendingCommon.next_action ?? null,
-            digests: {
-              prepared_command: pendingCommon.digests.prepared_command,
-              proof: pendingCommon.digests.proof,
-              shared_resource: pendingCommon.digests.shared_resource,
-              shared_resource_context:
-                pendingCommon.digests.shared_resource_context,
-            },
-          },
-        },
-      }
-      : target
-  ));
   projection.shared_controls = projection.shared_controls.map((target) => ({
     ...target,
     dispatch_count: 0,
@@ -4918,32 +4980,6 @@ function oneClickPendingJobProjection() {
     },
     dispatch_ledger: oneClickStatusLedger({ status: "PENDING" }),
   }));
-  const pendingGlobal = projection.shared_controls[0];
-  projection.targets = projection.targets.map((target) => {
-    if (!target.target_label.startsWith("shopee:")) return target;
-    return {
-      ...target,
-      dependency: {
-        ...target.dependency,
-        state: "WAITING",
-        satisfied: false,
-        prerequisite_status: "PENDING",
-        prerequisite: {
-          target_label: pendingGlobal.target_label,
-          status: pendingGlobal.status,
-          reason: pendingGlobal.reason,
-          next_action: pendingGlobal.next_action,
-          digests: {
-            prepared_command: pendingGlobal.digests.prepared_command,
-            proof: pendingGlobal.digests.proof,
-            shared_resource: pendingGlobal.digests.shared_resource,
-            shared_resource_context:
-              pendingGlobal.digests.shared_resource_context,
-          },
-        },
-      },
-    };
-  });
   projection.runnable_target_count = 0;
   projection.summary = {
     will_dispatch: [],
@@ -6362,7 +6398,7 @@ async function shopeeGlobalApprovalResponseLossContract(browser) {
         target.next_action = "resolve_prerequisite_target";
         target.reason = null;
         target.dependency = {
-          policy_version: "oneclick-target-dependency/v2",
+          policy_version: "oneclick-target-dependency/mvp-unblocked-v1",
           state: "BLOCKED",
           satisfied: false,
           prerequisite_target: "shopee:GLOBAL",
@@ -6849,6 +6885,14 @@ async function legacyStateSafety(browser) {
       { width: 1440, height: 900 },
     );
     await oneClickMiaoshouMvpAlwaysRetryContract(
+      browser,
+      { width: 390, height: 844 },
+    );
+    await oneClickManualReconciliationStatusContract(
+      browser,
+      { width: 1440, height: 900 },
+    );
+    await oneClickManualReconciliationStatusContract(
       browser,
       { width: 390, height: 844 },
     );

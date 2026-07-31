@@ -124,7 +124,7 @@
   const ONECLICK_LOCAL_POST_TIMEOUT_MS = 15000;
   const SHOPEE_GLOBAL_READ_TIMEOUT_MS = 180000;
   const ONECLICK_DEPENDENCY_POLICY_VERSION =
-    "oneclick-target-dependency/v2";
+    "oneclick-target-dependency/mvp-unblocked-v1";
   const ONECLICK_JOB_PHASES = new Set([
     "PENDING",
     "PREPARING",
@@ -1225,112 +1225,15 @@
         }
       }
     }
-    const common = projection.targets.find(
-      (target) => target.target_label === "miaoshou:COMMON",
-    );
-    const shopeeGlobal = projection.shared_controls.find(
-      (target) => target.target_label === SHOPEE_GLOBAL_CONTROL_TARGET,
-    );
     for (const { target } of projectedRows) {
       const dependency = target.dependency;
-      const isTikTok = target.target_label.startsWith("tiktok:");
-      const isShopeeRegion = (
-        target.target_label.startsWith("shopee:")
-        && target.target_label !== SHOPEE_GLOBAL_CONTROL_TARGET
-      );
-      const promotionPrerequisite = oneClickPromotionPrerequisite(
-        target.target_label,
-      );
-      const prerequisite = isTikTok
-        ? common
-        : isShopeeRegion
-          ? shopeeGlobal
-          : promotionPrerequisite
-            ? projection.targets.find(
-              (candidate) => candidate.target_label === promotionPrerequisite,
-            )
-            : null;
-      const prerequisiteLabel = isTikTok
-        ? "miaoshou:COMMON"
-        : isShopeeRegion
-          ? SHOPEE_GLOBAL_CONTROL_TARGET
-          : promotionPrerequisite;
       const dependencyExact = (
-        isTikTok
-        || isShopeeRegion
-        || promotionPrerequisite !== null
-      )
-        ? (
-          dependency.prerequisite_target === prerequisiteLabel
-          && (
-            prerequisite
-              ? dependency.prerequisite_status === prerequisite.status
-                && (
-                  prerequisite.status === "SUCCEEDED"
-                    ? (
-                      dependency.state === "SATISFIED"
-                      && dependency.satisfied === true
-                    )
-                    : ["PENDING", "PREPARING", "READY", "DISPATCHING"]
-                      .includes(prerequisite.status)
-                      ? (
-                        dependency.state === "WAITING"
-                        && dependency.satisfied === false
-                      )
-                      : (
-                        dependency.state === "BLOCKED"
-                        && dependency.satisfied === false
-                      )
-                )
-              : (
-                dependency.prerequisite_status === "MISSING"
-                && dependency.state === "BLOCKED"
-                && dependency.satisfied === false
-              )
-          )
-        )
-        : (
-          dependency.state === "SATISFIED"
-          && dependency.satisfied === true
-          && dependency.prerequisite_target === null
-          && dependency.prerequisite_status === null
-        );
-      const prerequisiteSummary = dependency.prerequisite;
-      const prerequisiteSummaryExact = (
-        isTikTok
-        || isShopeeRegion
-        || promotionPrerequisite !== null
-      )
-        ? (
-          prerequisite
-          && exactObjectKeys(prerequisiteSummary, [
-            "target_label",
-            "status",
-            "reason",
-            "next_action",
-            "digests",
-          ])
-          && prerequisiteSummary.target_label === prerequisite.target_label
-          && prerequisiteSummary.status === prerequisite.status
-          && JSON.stringify(prerequisiteSummary.reason)
-            === JSON.stringify(prerequisite.reason)
-          && prerequisiteSummary.next_action === prerequisite.next_action
-          && exactObjectKeys(prerequisiteSummary.digests, [
-            "prepared_command",
-            "proof",
-            "shared_resource",
-            "shared_resource_context",
-          ])
-          && [
-            "prepared_command",
-            "proof",
-            "shared_resource",
-            "shared_resource_context",
-          ].every((key) => (
-            prerequisiteSummary.digests[key] === prerequisite.digests[key]
-          ))
-        )
-        : prerequisiteSummary === undefined;
+        dependency.state === "SATISFIED"
+        && dependency.satisfied === true
+        && dependency.prerequisite_target === null
+        && dependency.prerequisite_status === null
+      );
+      const prerequisiteSummaryExact = dependency.prerequisite === undefined;
       if (!dependencyExact) {
         throw oneClickContractError(
           "统一发布控制面的店铺依赖证据不一致，已停止提交。",
@@ -1344,16 +1247,6 @@
       if (
         target.next_action_target
         && !labels.has(target.next_action_target)
-        && !(
-          isTikTok
-          && !common
-          && target.next_action_target === "miaoshou:COMMON"
-        )
-        && !(
-          isShopeeRegion
-          && !shopeeGlobal
-          && target.next_action_target === SHOPEE_GLOBAL_CONTROL_TARGET
-        )
       ) {
         throw oneClickContractError(
           "统一发布控制面的下一步目标无效，已停止提交。",
@@ -6665,6 +6558,7 @@
     const message = $("#releasePrimaryActionMessage");
     const approvalButton = $("#approveReleasePlanButton");
     const legacyPanels = $("#legacyReleaseActionPanels");
+    const legacyRunLedger = $("#legacyReleaseRunLedger");
     const releaseSection = $("#releasePlan");
     if (
       !panel
@@ -6672,6 +6566,7 @@
       || !message
       || !approvalButton
       || !legacyPanels
+      || !legacyRunLedger
       || !releaseSection
     ) return;
 
@@ -6684,6 +6579,8 @@
     panel.hidden = !unifiedAuthority;
     legacyPanels.hidden = unifiedAuthority;
     legacyPanels.setAttribute("aria-hidden", String(unifiedAuthority));
+    legacyRunLedger.hidden = unifiedAuthority;
+    legacyRunLedger.setAttribute("aria-hidden", String(unifiedAuthority));
     if (!unifiedAuthority) {
       button.disabled = true;
       button.textContent = "一键发布已选店铺";

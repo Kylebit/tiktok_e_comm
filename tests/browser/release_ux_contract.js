@@ -4448,6 +4448,53 @@ function oneClickBlockedPromotionStatusProjection() {
     "terminal",
     "BLOCKED",
   ));
+  projection.targets = projection.targets.map((target) => (
+    target.target_label === "miaoshou:COMMON"
+      ? {
+        ...target,
+        classification: null,
+        digests: {
+          ...target.digests,
+          prepared_command: null,
+          proof: null,
+        },
+        dispatch_count: 0,
+        dispatch_ledger: {
+          stage: null,
+          cumulative_external_write_count: 0,
+          cumulative_external_write_classes: [],
+          confirmed_external_write_count_lower_bound: 0,
+          possible_external_write_count_upper_bound: 0,
+          digest: null,
+          stage_evidence_digest: null,
+          pending_write_intent_digest: null,
+        },
+      }
+      : target
+  ));
+  const completedCommon = projection.targets.find(
+    (target) => target.target_label === "miaoshou:COMMON",
+  );
+  projection.targets = projection.targets.map((target) => (
+    target.target_label.startsWith("tiktok:")
+      ? {
+        ...target,
+        dependency: {
+          ...target.dependency,
+          prerequisite: {
+            ...target.dependency.prerequisite,
+            digests: {
+              prepared_command: completedCommon.digests.prepared_command,
+              proof: completedCommon.digests.proof,
+              shared_resource: completedCommon.digests.shared_resource,
+              shared_resource_context:
+                completedCommon.digests.shared_resource_context,
+            },
+          },
+        },
+      }
+      : target
+  ));
   projection.targets = projection.targets.map((target) => {
     if (target.target_label !== "tiktok:GB") return target;
     return {

@@ -1011,6 +1011,17 @@
         && target?.storefront === false
         && target?.runnable_now === false
       );
+      const completedCommonControl = Boolean(
+        isStatus
+        && target?.target_label === "miaoshou:COMMON"
+        && target?.status === "SUCCEEDED"
+        && target?.classification === null
+        && target?.runnable_now === false
+        && target?.manual_after_submit === false
+        && target?.requires_human === false
+        && targetDigests?.prepared_command === null
+        && targetDigests?.proof === null
+      );
       if (
         !target
         || typeof target !== "object"
@@ -1022,7 +1033,9 @@
         || target.control_target !== sharedControl
         || !ONECLICK_TARGET_STATUSES.has(target.status)
         || (
-          isUnpreparedStatus || deferredPostpublishAction
+          isUnpreparedStatus
+            || deferredPostpublishAction
+            || completedCommonControl
             ? target.classification !== null
             : !ONECLICK_CLASSIFICATIONS.has(target.classification)
         )

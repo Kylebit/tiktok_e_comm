@@ -41,6 +41,7 @@ Run `scripts/validate_inventory_snapshot.py SNAPSHOT.json` before consuming a ne
 - Sum recent demand across READY TikTok and Shopee facts only within the same country.
 - Provide a dedicated recent-30-day filter.
 - Render existing-stock replenishment and first-stock recommendations in one SKU ledger. Distinguish them with `REPLENISH` and `FIRST_STOCK` labels and shared filters; do not split them into separate tables.
+- Provide a four-country summary view that first calculates each country independently and then includes only rows whose recommended quantity is strictly greater than 10. Preserve the country identity on every row; never aggregate the same SKU across countries.
 - When logistics fields are incomplete, display the SKU, image, demand, inventory and calculated quantity. Mark only the affected output as pending: dimensions affect volume, weight affects local handling and net benefit, and cost affects working capital.
 - Do not use known benefit as a readiness gate. Display positive or negative benefit alongside the demand-and-inventory recommendation.
 

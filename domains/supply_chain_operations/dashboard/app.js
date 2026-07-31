@@ -232,7 +232,7 @@ function channelBlock(label, channel, demand) {
   return `<div class="channel-line"><b>${label}</b><span>${channel.units.toLocaleString("zh-CN")} 件 / ${channel.orders.toLocaleString("zh-CN")} 单</span><small>${recent} · ${fallback} · 日均 ${demand.daily.toFixed(2)}</small></div>`;
 }
 
-function rowHtml(item, config) {
+function rowHtml(item, config, region = activeRegion) {
   const local = config.currencySymbol;
   const inventoryLabel = item.kind === "first_stock" ? "海外仓尚无" : config.warehouse;
   const shippingEvidence = item.channels.shopee.actualShippingFee === null ? "（Shopee运费未计）" : "";
@@ -265,13 +265,13 @@ function rowHtml(item, config) {
     !item.costReady ? "占款" : ""
   ].filter(Boolean).join("、");
   return `<tr>
-    <td><div class="product-cell"><img src="./${escapeHtml(item.image)}" alt="SKU ${escapeHtml(item.sku)} 主图"><div><strong>${escapeHtml(item.sku)}</strong><span>${escapeHtml(item.name)}</span><small>${physicalLabel}</small></div></div></td>
+    <td><div class="product-cell"><img src="./${escapeHtml(item.image)}" alt="SKU ${escapeHtml(item.sku)} 主图"><div>${activeRegion === "SUMMARY" ? `<small class="region-badge">${escapeHtml(region)} · ${escapeHtml(config.name)}</small>` : ""}<strong>${escapeHtml(item.sku)}</strong><span>${escapeHtml(item.name)}</span><small>${physicalLabel}</small></div></div></td>
     <td><div class="channel-stack">${channelBlock("TikTok", item.channels.tiktok, item.tiktokDemand)}${channelBlock("Shopee", item.channels.shopee, item.shopeeDemand)}<em>合并需求 ${item.dailyVelocity.toFixed(2)} 件/天${item.spikeProtection ? " · 短期爆量首批仅覆盖15天" : ""}</em></div></td>
     <td><div class="inventory-grid"><span>库存<b>${item.inventory.stock}</b></span><span>可用<b>${item.inventory.available}</b></span><span>占用<b>${item.inventory.allocated}</b></span><span>冻结<b>${item.inventory.frozen}</b></span><span>在途<b>${item.inventory.inbound}</b></span><span>绑定<b>${inventoryLabel}</b></span></div></td>
     <td><div class="calc-lines"><span>${config.leadDays}天需求 <b>${item.leadDemand}</b></span><span>到仓剩余 <b>${item.projectedAtArrival}</b></span><span>${item.targetCoverageDays}天目标 <b>${item.arrivalTarget}</b></span><code>max(0, ${item.arrivalTarget} − ${item.projectedAtArrival})</code></div></td>
     <td class="recommend"><strong>${item.recommended}</strong><span>件</span><small>${volumeLabel}</small></td>
     <td><div class="economics-mini"><span>用户结算价 <b>${local}${item.customerPaymentLocal.toFixed(2)}</b></span><span>税费节省 ${Math.round(config.taxSavingRate * 100)}% <b class="gain">${money(item.taxSavingUnit, 2)}</b></span><span>跨境运费节省 20% <b class="gain">${money(item.shippingSavingUnit, 2)}</b></span><span>本土处理 + 头程 <b>${handlingLabel}</b></span><em>${benefitLabel} ${shippingEvidence}</em></div></td>
-    <td><span class="pill ${item.status.toLowerCase()}">${statusLabel(item.status)}</span><small class="reason">${item.dataIncomplete ? `建议件数已生成；${missingFields}待补充，仅影响${affectedOutputs}展示。` : item.kind === "first_stock" ? "当前仓库为0；平台需求与商品资料齐全，收益单独展示。" : item.status === "HOLD" ? "现货与在途已覆盖到仓目标。" : item.status === "NO_DEMAND" ? "没有足够的SKU级需求事实。" : "需求缺口成立；收益仅展示，不拦截补货建议。"}</small>${item.dataIncomplete || item.manualInput ? `<button class="manual-entry-button" type="button" data-action="manual-entry" data-sku="${escapeHtml(item.sku)}">${item.manualInput ? "修改已补资料" : "手动补齐"}</button>` : ""}</td>
+    <td><span class="pill ${item.status.toLowerCase()}">${statusLabel(item.status)}</span><small class="reason">${item.dataIncomplete ? `建议件数已生成；${missingFields}待补充，仅影响${affectedOutputs}展示。` : item.kind === "first_stock" ? "当前仓库为0；平台需求与商品资料齐全，收益单独展示。" : item.status === "HOLD" ? "现货与在途已覆盖到仓目标。" : item.status === "NO_DEMAND" ? "没有足够的SKU级需求事实。" : "需求缺口成立；收益仅展示，不拦截补货建议。"}</small>${item.dataIncomplete || item.manualInput ? `<button class="manual-entry-button" type="button" data-action="manual-entry" data-region="${escapeHtml(region)}" data-sku="${escapeHtml(item.sku)}">${item.manualInput ? "修改已补资料" : "手动补齐"}</button>` : ""}</td>
   </tr>`;
 }
 
@@ -289,13 +289,95 @@ function renderRows() {
       || item.status === filter;
     return textMatch && filterMatch;
   });
-  const config = DATA.config[activeRegion];
-  document.querySelector("#skuRows").innerHTML = visible.map(item => rowHtml(item, config)).join("");
+  document.querySelector("#skuRows").innerHTML = visible.map(item => {
+    const region = activeRegion === "SUMMARY" ? item.region : activeRegion;
+    return rowHtml(item, DATA.config[region], region);
+  }).join("");
   document.querySelector("#skuEmpty").hidden = visible.length > 0;
   document.querySelector("#visibleCount").textContent = `显示 ${visible.length} / ${calculated.length} 个 SKU`;
 }
 
+function renderSummary() {
+  const regions = ["MY", "TH", "VN", "PH"];
+  calculated = regions.flatMap(region => calculateCountry(region).rows.map(item => ({
+    ...item,
+    region
+  }))).filter(item => item.recommended > 10)
+    .sort((left, right) => right.recommended - left.recommended || left.region.localeCompare(right.region) || left.sku.localeCompare(right.sku));
+  batch = {rows: calculated};
+
+  const qty = calculated.reduce((sum, item) => sum + item.recommended, 0);
+  const capital = calculated.reduce(
+    (sum, item) => sum + (item.costReady ? item.costCny * item.recommended : 0), 0
+  );
+  const benefit = calculated.reduce((sum, item) => sum + number(item.netTotal), 0);
+  const physicalM3 = calculated.reduce(
+    (sum, item) => sum + (item.dimensionsReady ? item.volumeM3 * item.recommended : 0), 0
+  );
+  const billableM3 = calculated.reduce(
+    (sum, item) => sum + (item.chargeableUnitM3 === null ? 0 : item.chargeableUnitM3 * item.recommended), 0
+  );
+  const missingCostCount = calculated.filter(item => !item.costReady).length;
+  const missingBenefitCount = calculated.filter(item => item.netTotal === null).length;
+  const missingVolumeCount = calculated.filter(item => !item.dimensionsReady).length;
+  const missingChargeableCount = calculated.filter(item => !item.dimensionsReady || !item.weightReady).length;
+  const inbound = calculated.reduce((sum, item) => sum + item.inventory.inbound, 0);
+  const countryCounts = Object.fromEntries(regions.map(region => [
+    region,
+    calculated.filter(item => item.region === region).length
+  ]));
+  const replenishCount = calculated.filter(item => item.kind === "existing").length;
+  const firstStockCount = calculated.length - replenishCount;
+
+  document.querySelector("#snapshotDate").textContent = DATA.snapshotDate;
+  document.querySelector("#countryEyebrow").textContent = "MY · TH · VN · PH · 建议数 > 10";
+  document.querySelector("#countryName").textContent = "四国汇总：";
+  document.querySelector("#heroDescription").textContent = "把马来西亚、泰国、越南和菲律宾分别按本国需求、本国仓库与本国交期完成计算，再集中展示建议备货数严格大于10件的 SKU；跨国库存和销量不会互相抵扣。";
+  document.querySelector("#sourceChips").innerHTML = regions.map(
+    region => `<span>${region} ${countryCounts[region]} 款</span>`
+  ).join("") + "<span>门槛：建议数 &gt; 10</span>";
+  document.querySelector("#coverageLabel").textContent = "四国独立计算 · 仅汇总 >10件";
+  document.querySelector("#batchQty").textContent = qty.toLocaleString("zh-CN");
+  document.querySelector("#batchSkuCount").textContent = `${calculated.length} 款`;
+  document.querySelector("#batchVolume").textContent = missingVolumeCount
+    ? `${physicalM3.toFixed(3)} m³ + ${missingVolumeCount}款待补`
+    : `${physicalM3.toFixed(3)} m³`;
+  document.querySelector("#billableVolume").textContent = missingChargeableCount
+    ? `${billableM3.toFixed(3)} m³ + ${missingChargeableCount}款待补`
+    : `${billableM3.toFixed(3)} m³`;
+  document.querySelector("#workingCapital").textContent = missingCostCount
+    ? `${money(capital)} + ${missingCostCount}款待补`
+    : money(capital);
+  document.querySelector("#knownBenefit").textContent = missingBenefitCount
+    ? `${money(benefit)} + ${missingBenefitCount}款待补`
+    : money(benefit);
+  document.querySelector("#headFreight").textContent = money(qty);
+  document.querySelector("#batchSentence").textContent = calculated.length
+    ? `数量最高：${calculated.slice(0, 6).map(item => `${item.region}-${item.sku} ${item.recommended}件`).join("、")}。`
+    : "四国当前没有建议备货数大于10件的 SKU。";
+  document.querySelector("#warehouseLabel").textContent = "覆盖国家";
+  document.querySelector("#inventoryUnits").textContent = "4 国";
+  document.querySelector("#inboundUnits").textContent = `${inbound.toLocaleString("zh-CN")} 件`;
+  document.querySelector("#demandWindow").textContent = "四国分国计算";
+  document.querySelector("#decisionHeadline").textContent = `备 ${calculated.length} 款`;
+  document.querySelector("#ledgerTitle").textContent = "四国建议备货数 >10 件汇总";
+  document.querySelector("#ledgerDescription").textContent = "每行带国家标识；同一 SKU 在不同国家分别成行，因为需求、库存和补货周期互不混算。";
+  document.querySelector("#formulaText").textContent = "每国独立计算 Q；本页仅保留 Q > 10，再按建议件数从高到低排序";
+  document.querySelector("#freightRule").textContent = "每个国家仍按各自库存、交期和处理规则计算；头程统一按 ¥1.00/件展示。";
+  document.querySelector("#economicsRule").textContent = "收益按各国已批准税费比例和本国结算事实分别计算，仅展示、不拦截数量建议。";
+  document.querySelector("#evidenceGrid").innerHTML = `
+    <article class="ok"><strong>四国严格隔离</strong><p>MY ${countryCounts.MY} 款、TH ${countryCounts.TH} 款、VN ${countryCounts.VN} 款、PH ${countryCounts.PH} 款。每国先独立计算，再汇总展示。</p></article>
+    <article class="ok"><strong>门槛严格大于10</strong><p>当前共 ${calculated.length} 款、${qty.toLocaleString("zh-CN")} 件；建议数等于10的记录不进入本页。</p></article>
+    <article class="neutral"><strong>建议类型</strong><p>已有海外仓库存的建议补货 ${replenishCount} 款；海外仓尚无的建议首批 ${firstStockCount} 款。</p></article>
+    <article class="neutral"><strong>外部写入为0</strong><p>该汇总只读取本地决策快照，不会创建采购单、调整库存或写入任何平台。</p></article>`;
+  renderRows();
+}
+
 function renderCountry() {
+  if (activeRegion === "SUMMARY") {
+    renderSummary();
+    return;
+  }
   const result = calculateCountry(activeRegion);
   calculated = result.rows;
   batch = result;
@@ -356,6 +438,8 @@ function renderCountry() {
   document.querySelector("#inboundUnits").textContent = `${inbound.toLocaleString("zh-CN")} 件`;
   document.querySelector("#demandWindow").textContent = config.demandCoverage;
   document.querySelector("#decisionHeadline").textContent = approved.length ? `备 ${approved.length} 款` : "暂缓备货";
+  document.querySelector("#ledgerTitle").textContent = "全部 SKU 备货建议";
+  document.querySelector("#ledgerDescription").textContent = "“建议补货”表示海外仓已有该 SKU；“建议首批”表示海外仓当前没有该 SKU。两类建议按同一规则排序并在同一张表中展示。";
   document.querySelector("#formulaText").textContent = `Q = max[0, ceil(v × 目标覆盖天数) − max(0, 可用 + 在途 − ceil(v × ${config.leadDays}))]`;
   document.querySelector("#freightRule").textContent = `所有国家、站点和 SKU 的头程统一按 ${money(config.fixedHeadFreightUnitCny, 2)}/件计入；体积只用于装运规划，不参与本页头程金额。`;
   const taxRule = config.taxSavingRate > 0
@@ -405,11 +489,12 @@ document.addEventListener("click", event => {
   const button = event.target.closest("[data-action='manual-entry']");
   if (!button) return;
   const sku = button.dataset.sku;
-  const sourceItem = DATA.countries[activeRegion].find(item => item.sku === sku);
+  const sourceRegion = button.dataset.region || activeRegion;
+  const sourceItem = DATA.countries[sourceRegion].find(item => item.sku === sku);
   if (!sourceItem) return;
-  const saved = manualInputs[manualInputId(activeRegion, sku)];
+  const saved = manualInputs[manualInputId(sourceRegion, sku)];
   const dimensions = saved?.dimensionsCm || sourceItem.dimensionsCm || [];
-  manualForm.elements.region.value = activeRegion;
+  manualForm.elements.region.value = sourceRegion;
   manualForm.elements.sku.value = sku;
   manualForm.elements.lengthCm.value = dimensions[0] ?? "";
   manualForm.elements.widthCm.value = dimensions[1] ?? "";
@@ -417,7 +502,7 @@ document.addEventListener("click", event => {
   manualForm.elements.weightG.value = saved?.weightG ?? sourceItem.weightG ?? "";
   manualForm.elements.costCny.value = saved?.costCny ?? sourceItem.costCny ?? "";
   manualForm.elements.sourceNote.value = saved?.sourceNote ?? "";
-  document.querySelector("#manualDialogTitle").textContent = `${activeRegion} · SKU ${sku} 手动补齐`;
+  document.querySelector("#manualDialogTitle").textContent = `${sourceRegion} · SKU ${sku} 手动补齐`;
   document.querySelector("#clearManualInput").hidden = !saved;
   manualError.textContent = "";
   manualDialog.showModal();

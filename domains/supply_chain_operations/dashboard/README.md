@@ -41,3 +41,10 @@ Country-isolation hardening:
 - A cross-country product template may provide presentation metadata only; its demand, inventory, warehouse binding, and aliases are discarded.
 - The dashboard independently rejects mismatched facts as `BLOCKED_COUNTRY_SOURCE`.
 - Seaya VN evidence now maps complete source SKU `880004` to canonical `0004`: stock 47, available 47, allocated/inbound/frozen 0 in `VN8805`.
+
+Four-country summary:
+
+- The `四国汇总 >10` tab calculates MY, TH, VN, and PH independently, then places only rows with `recommended > 10` into one table.
+- The threshold is strict: a recommendation of exactly 10 units is excluded.
+- Every summary row retains its country badge, main image, SKU, demand, local inventory, arrival calculation, recommendation type, quantity, and benefit evidence.
+- The same SKU may appear once per country because no demand or inventory is netted across borders.

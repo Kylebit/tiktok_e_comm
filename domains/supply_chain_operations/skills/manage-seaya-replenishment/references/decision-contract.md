@@ -26,6 +26,8 @@ Current user-confirmed Seaya PH8807 mappings:
 
 Calculate per country and exact SKU. TikTok and Shopee may share one local warehouse within a country, but inventory and demand never cross countries. A channel fact whose declared source country differs from the decision country is ineligible. Cross-country templates may contribute presentation metadata only; discard their demand, inventory, warehouse binding, and aliases.
 
+The combined MY/TH/VN/PH summary is a projection over completed country decisions, not a new inventory calculation. Include a row only when its country-specific `recommended` value is a built-in positive number strictly greater than 10. Keep country + SKU as the row identity; do not merge quantities for matching SKUs across countries.
+
 When recent 30-day demand exists:
 
 `v_channel = 70% × recent_30_day_daily + 30% × longer_window_daily`

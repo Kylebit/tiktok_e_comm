@@ -189,6 +189,7 @@ def test_dashboard_loads_facts_before_calculation_code_and_has_four_country_tabs
     assert html.index('src="./data.js"') < html.index('src="./app.js"')
     for region in ("MY", "TH", "VN", "PH"):
         assert f'data-region="{region}"' in html
+    assert 'data-region="SUMMARY"' in html
     assert "全部 SKU 备货建议" in html
     assert 'id="skuRows"' in html
     assert 'id="skuEmpty"' in html
@@ -196,6 +197,21 @@ def test_dashboard_loads_facts_before_calculation_code_and_has_four_country_tabs
     assert 'id="firstStockRows"' not in html
     assert '<option value="RECENT30">近30天有动销</option>' in html
     assert "待核经济性" not in html
+
+
+def test_dashboard_has_strict_four_country_over_ten_summary():
+    app = (DASHBOARD / "app.js").read_text(encoding="utf-8")
+    html = (DASHBOARD / "index.html").read_text(encoding="utf-8")
+
+    assert "function renderSummary()" in app
+    assert ".filter(item => item.recommended > 10)" in app
+    assert 'region = activeRegion === "SUMMARY" ? item.region : activeRegion' in app
+    assert 'class="region-badge"' in app
+    assert "同一 SKU 在不同国家分别成行" in app
+    assert 'data-region="${escapeHtml(region)}"' in app
+    assert "const sourceRegion = button.dataset.region || activeRegion" in app
+    assert "四国汇总" in html
+    assert "&gt;10" in html
 
 
 def test_every_recent_30_day_sku_is_present_and_filterable_without_economic_gate():

@@ -40,6 +40,8 @@ BATCH_PREPARATION_SCHEMA = "release-batch-preparation/v2"
 PUBLIC_STATUS_SCHEMA = "oneclick-release-status/v2"
 REGISTRY_SCHEMA = "release-adapter-registry/v1"
 DEPENDENCY_POLICY_VERSION = "oneclick-target-dependency/v2"
+MVP_DEPENDENCY_POLICY_VERSION = "oneclick-target-dependency/mvp-unblocked-v1"
+MIAOSHOU_DIRECT_STORE_ADAPTER = "miaoshou-direct-store/v1"
 SHARED_RESOURCE_SCHEMA = "oneclick-shared-resource/v1"
 MANUAL_ACCEPTANCE_RESOLUTION_SCHEMA = (
     "release-outcome-manual-acceptance/v1"
@@ -642,6 +644,7 @@ CREATE TABLE IF NOT EXISTS oneclick_release_jobs (
     sku_lineage_digest TEXT NOT NULL,
     sku_lineage_payload_digest TEXT NOT NULL,
     adapter_policy_digest TEXT NOT NULL,
+    batch_sequence INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL,
     systemic_reason_json TEXT,
     created_at TEXT NOT NULL,
@@ -663,6 +666,8 @@ CREATE TABLE IF NOT EXISTS oneclick_release_targets (
     reason_detail TEXT,
     adapter_name TEXT,
     adapter_policy_digest TEXT NOT NULL,
+    active_for_batch INTEGER NOT NULL DEFAULT 1
+        CHECK (active_for_batch IN (0, 1)),
     command_json TEXT,
     command_digest TEXT,
     proof_json TEXT,
@@ -846,7 +851,51 @@ class OneClickReleaseStore:
                 (identity["plan_id"],),
             ).fetchone()
             if existing:
-                _require_job_identity(existing, identity)
+                _require_job_immutable_identity(existing, identity)
+                if (
+                    existing["adapter_policy_digest"]
+                    != identity["adapter_policy_digest"]
+                    or _mvp_registry_enabled(registry)
+                ):
+                    active_labels = set(identity["execution_targets"])
+                    connection.execute(
+                        """
+                        UPDATE oneclick_release_jobs
+                        SET adapter_policy_digest = ?, updated_at = ?
+                        WHERE job_id = ?
+                        """,
+                        (
+                            identity["adapter_policy_digest"],
+                            now,
+                            existing["job_id"],
+                        ),
+                    )
+                    for row in connection.execute(
+                        """
+                        SELECT target_label
+                        FROM oneclick_release_targets
+                        WHERE job_id = ?
+                        """,
+                        (existing["job_id"],),
+                    ):
+                        label = row["target_label"]
+                        active = label in active_labels
+                        connection.execute(
+                            """
+                            UPDATE oneclick_release_targets
+                            SET active_for_batch = ?, adapter_name = ?,
+                                adapter_policy_digest = ?, updated_at = ?
+                            WHERE job_id = ? AND target_label = ?
+                            """,
+                            (
+                                int(active),
+                                _adapter_name_for_target(label, registry),
+                                _policy_digest_for_target(label, registry),
+                                now,
+                                existing["job_id"],
+                                label,
+                            ),
+                        )
                 return self._project_job_in_transaction(
                     connection,
                     existing["job_id"],
@@ -880,10 +929,7 @@ class OneClickReleaseStore:
                 ),
             )
             targets = _target_labels(plan)
-            execution_targets = _execution_target_labels(
-                targets,
-                plan["payload"],
-            )
+            execution_targets = identity["execution_targets"]
             rows = _run_targets(run)
             connection.executemany(
                 """
@@ -907,12 +953,13 @@ class OneClickReleaseStore:
                         (
                             PENDING
                             if (
-                                label == SHOPEE_GLOBAL_TARGET
+                                _mvp_registry_enabled(registry)
+                                or label == SHOPEE_GLOBAL_TARGET
                                 or is_postpublish_promotion_target(label)
                             )
                             else _initial_public_status(rows[label])
                         ),
-                        _adapter_name_for_target(label),
+                        _adapter_name_for_target(label, registry),
                         _policy_digest_for_target(label, registry),
                         now,
                         now,
@@ -944,6 +991,145 @@ class OneClickReleaseStore:
                 connection,
                 identity["job_id"],
             )
+
+    def start_explicit_batch(self, job_id: str) -> dict[str, Any]:
+        """Start a fresh user-requested attempt without erasing prior receipts.
+
+        The one-click outcome and write-occurrence tables remain append-only.
+        Only the mutable current-attempt projection is reset.  A target that
+        previously succeeded, failed, or required reconciliation is therefore
+        eligible for another explicit Miaoshou submission, while a currently
+        dispatching batch cannot be overwritten.
+        """
+
+        now = _utc_now()
+        with self._transaction() as connection:
+            job = connection.execute(
+                "SELECT * FROM oneclick_release_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if not job:
+                raise OneClickControlPlaneError(
+                    "one-click job was not found"
+                )
+            if connection.execute(
+                """
+                SELECT 1 FROM oneclick_release_targets
+                WHERE job_id = ? AND active_for_batch = 1
+                  AND status = 'DISPATCHING'
+                LIMIT 1
+                """,
+                (job_id,),
+            ).fetchone():
+                return self._project_job_in_transaction(connection, job_id)
+
+            sequence = int(job["batch_sequence"] or 0) + 1
+            connection.execute(
+                """
+                UPDATE oneclick_release_targets
+                SET status = 'PENDING', capability = NULL,
+                    reason_category = NULL, reason_scope = NULL,
+                    reason_code = NULL, reason_detail = NULL,
+                    command_json = NULL, command_digest = NULL,
+                    proof_json = NULL, proof_digest = NULL,
+                    shared_resource_json = NULL,
+                    shared_resource_digest = NULL,
+                    shared_resource_context_json = NULL,
+                    shared_resource_context_digest = NULL,
+                    manual_after_submit = 0,
+                    cumulative_external_writes_json = '[]',
+                    cumulative_external_writes_digest =
+                        '4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945',
+                    cumulative_external_write_count = 0,
+                    cumulative_external_write_lower_bound = 0,
+                    cumulative_external_write_upper_bound = 0,
+                    dispatch_stage = NULL,
+                    dispatch_stage_evidence_digest = NULL,
+                    pending_write_intent_json = NULL,
+                    pending_write_intent_digest = NULL,
+                    result_json = NULL, completed_at = NULL, updated_at = ?
+                WHERE job_id = ? AND active_for_batch = 1
+                """,
+                (now, job_id),
+            )
+            active_labels = [
+                row["target_label"]
+                for row in connection.execute(
+                    """
+                    SELECT target_label
+                    FROM oneclick_release_targets
+                    WHERE job_id = ? AND active_for_batch = 1
+                      AND storefront = 1
+                    ORDER BY ordinal
+                    """,
+                    (job_id,),
+                )
+            ]
+            for label in active_labels:
+                canonical = connection.execute(
+                    """
+                    SELECT attempts FROM release_target_runs
+                    WHERE run_id = ? AND target_label = ?
+                    """,
+                    (job["run_id"], label),
+                ).fetchone()
+                if canonical:
+                    connection.execute(
+                        """
+                        UPDATE oneclick_release_targets
+                        SET dispatch_count = CASE
+                            WHEN dispatch_count < ? THEN ?
+                            ELSE dispatch_count
+                        END
+                        WHERE job_id = ? AND target_label = ?
+                        """,
+                        (
+                            canonical["attempts"],
+                            canonical["attempts"],
+                            job_id,
+                            label,
+                        ),
+                    )
+                connection.execute(
+                    """
+                    UPDATE release_target_runs
+                    SET status = 'PENDING', external_id = NULL, error = NULL,
+                        completed_at = NULL, updated_at = ?
+                    WHERE run_id = ? AND target_label = ?
+                    """,
+                    (now, job["run_id"], label),
+                )
+            connection.execute(
+                """
+                UPDATE release_runs
+                SET status = 'PENDING', completed_at = NULL, updated_at = ?
+                WHERE run_id = ?
+                """,
+                (now, job["run_id"]),
+            )
+            connection.execute(
+                """
+                UPDATE oneclick_release_jobs
+                SET status = 'PENDING', batch_sequence = ?,
+                    systemic_reason_json = NULL, completed_at = NULL,
+                    updated_at = ?
+                WHERE job_id = ?
+                """,
+                (sequence, now, job_id),
+            )
+            self._event(
+                connection,
+                job_id,
+                None,
+                "EXPLICIT_BATCH_STARTED",
+                {
+                    "schema_version": BATCH_PREPARATION_SCHEMA,
+                    "batch_sequence": sequence,
+                    "target_count": len(active_labels),
+                },
+                now,
+            )
+            return self._project_job_in_transaction(connection, job_id)
 
     def get_job(
         self,
@@ -1367,6 +1553,7 @@ class OneClickReleaseStore:
                 and _dependency_state(
                     row["target_label"],
                     status_by_label,
+                    mvp_unblocked=_mvp_rows(context["targets"]),
                 )["satisfied"]
                 is not True
             ):
@@ -1600,7 +1787,8 @@ class OneClickReleaseStore:
             candidates = connection.execute(
                 """
                 SELECT * FROM oneclick_release_targets
-                WHERE job_id = ? AND status = 'READY'
+                WHERE job_id = ? AND active_for_batch = 1
+                  AND status = 'READY'
                 ORDER BY ordinal
                 """,
                 (job_id,),
@@ -1673,6 +1861,9 @@ class OneClickReleaseStore:
                 selected["target_label"]
             )
             is_auxiliary = is_control or is_action
+            mvp_unblocked = (
+                selected["adapter_name"] == MIAOSHOU_DIRECT_STORE_ADAPTER
+            )
             canonical = None
             if not is_auxiliary:
                 canonical = connection.execute(
@@ -1690,8 +1881,13 @@ class OneClickReleaseStore:
                     or canonical["status"] != "PENDING"
                     or type(canonical["attempts"]) is not int
                     or canonical["attempts"] != selected["dispatch_count"]
-                    or canonical["external_id"] is not None
-                    or canonical["error"] is not None
+                    or (
+                        not mvp_unblocked
+                        and (
+                            canonical["external_id"] is not None
+                            or canonical["error"] is not None
+                        )
+                    )
                 ):
                     self._stop_systemic_in_transaction(
                         connection,
@@ -1700,7 +1896,7 @@ class OneClickReleaseStore:
                         "canonical target is no longer pristine PENDING",
                     )
                     return None
-                if connection.execute(
+                if not mvp_unblocked and connection.execute(
                     """
                     SELECT 1 FROM release_target_submissions
                     WHERE run_id = ? AND target_label = ?
@@ -1726,8 +1922,12 @@ class OneClickReleaseStore:
                     """,
                     (context["job"]["run_id"], selected["target_label"]),
                 ).fetchall()
-                if failure_rows and not _failure_rows_are_safe_zero_write(
+                if (
+                    not mvp_unblocked
+                    and failure_rows
+                    and not _failure_rows_are_safe_zero_write(
                     failure_rows
+                    )
                 ):
                     self._stop_systemic_in_transaction(
                         connection,
@@ -1756,13 +1956,14 @@ class OneClickReleaseStore:
                         error = NULL, completed_at = NULL, updated_at = ?
                     WHERE run_id = ? AND target_label = ?
                       AND status = 'PENDING' AND attempts = ?
-                      AND external_id IS NULL AND error IS NULL
+                      AND (? = 1 OR (external_id IS NULL AND error IS NULL))
                     """,
                     (
                         now,
                         context["job"]["run_id"],
                         selected["target_label"],
                         selected["dispatch_count"],
+                        int(mvp_unblocked),
                     ),
                 )
             if claimed.rowcount != 1 or (
@@ -1813,7 +2014,14 @@ class OneClickReleaseStore:
                             selected["target_label"],
                         )
                         if is_action
-                        else canonical["idempotency_key"]
+                        else (
+                            _attempt_idempotency_key(
+                                canonical["idempotency_key"],
+                                selected["dispatch_count"] + 1,
+                            )
+                            if mvp_unblocked
+                            else canonical["idempotency_key"]
+                        )
                     )
                 ),
                 product_revision=context["job"]["product_revision"],
@@ -2505,6 +2713,10 @@ class OneClickReleaseStore:
                         run_id, target_label, evidence_json,
                         evidence_digest, verified_at
                     ) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(run_id, target_label) DO UPDATE SET
+                        evidence_json = excluded.evidence_json,
+                        evidence_digest = excluded.evidence_digest,
+                        verified_at = excluded.verified_at
                     """,
                     (
                         request.run_id,
@@ -2536,6 +2748,16 @@ class OneClickReleaseStore:
                         run_id, target_label, external_id, evidence_json,
                         evidence_digest, status, submitted_at
                     ) VALUES (?, ?, ?, ?, ?, 'SUBMITTED_UNVERIFIED', ?)
+                    ON CONFLICT(run_id, target_label) DO UPDATE SET
+                        external_id = excluded.external_id,
+                        evidence_json = excluded.evidence_json,
+                        evidence_digest = excluded.evidence_digest,
+                        status = excluded.status,
+                        submitted_at = excluded.submitted_at,
+                        verified_by = NULL,
+                        verified_at = NULL,
+                        verification_evidence_json = NULL,
+                        verification_evidence_digest = NULL
                     """,
                     (
                         request.run_id,
@@ -3721,7 +3943,7 @@ class OneClickReleaseStore:
                 "canonical_target_not_pristine",
                 "target is not a pristine first attempt",
             )
-        if label == "ozon:RU":
+        if label == "ozon:RU" and not _mvp_registry_enabled(registry):
             inventory_reason = _ozon_inventory_blocker(
                 context["plan"]["payload"]
             )
@@ -3754,7 +3976,7 @@ class OneClickReleaseStore:
                         "own current approved global plan"
                     ),
                 )
-        adapter_name = _adapter_name_for_target(label)
+        adapter_name = _adapter_name_for_target(label, registry)
         registration = registry.get(adapter_name)
         if (
             not registration
@@ -3833,7 +4055,11 @@ class OneClickReleaseStore:
                 "SYSTEMIC_CONTRACT",
                 "adapter_prepare_contract_error",
                 str(error),
-                scope=SYSTEMIC_IDENTITY_SCOPE,
+                scope=(
+                    TARGET_REASON_SCOPE
+                    if _mvp_registry_enabled(registry)
+                    else SYSTEMIC_IDENTITY_SCOPE
+                ),
             )
         if result.classification not in READY_CLASSIFICATIONS:
             return _prepared_blocked_row(
@@ -3967,10 +4193,7 @@ class OneClickReleaseStore:
         targets = _run_targets(run)
         source_identity = _resolve_plan_source_identity(plan["payload"])
         raw_targets = self._raw_targets(job_id)
-        expected_labels = _execution_target_labels(
-            _target_labels(plan),
-            plan["payload"],
-        )
+        expected_labels = identity["execution_targets"]
         if (
             [row["target_label"] for row in raw_targets] != expected_labels
             or sum(
@@ -4002,9 +4225,19 @@ class OneClickReleaseStore:
                             if is_postpublish_promotion_target(
                                 row["target_label"]
                             )
-                            else targets[row["target_label"]][
-                                "idempotency_key"
-                            ]
+                            else (
+                                _attempt_idempotency_key(
+                                    targets[row["target_label"]][
+                                        "idempotency_key"
+                                    ],
+                                    int(row["dispatch_count"]) + 1,
+                                )
+                                if row["adapter_name"]
+                                == MIAOSHOU_DIRECT_STORE_ADAPTER
+                                else targets[row["target_label"]][
+                                    "idempotency_key"
+                                ]
+                            )
                         )
                     ),
                 }
@@ -4122,6 +4355,7 @@ class OneClickReleaseStore:
                 _execution_target_labels(
                     json.loads(plan["target_labels_json"]),
                     plan_payload,
+                    mvp_unblocked=_mvp_registry_enabled(registry),
                 ),
                 registry,
             )
@@ -4141,7 +4375,7 @@ class OneClickReleaseStore:
             """
             SELECT *
             FROM oneclick_release_targets
-            WHERE job_id = ?
+            WHERE job_id = ? AND active_for_batch = 1
             """,
             (job["job_id"],),
         ).fetchall()
@@ -4153,6 +4387,7 @@ class OneClickReleaseStore:
         return _dependency_state(
             target["target_label"],
             statuses,
+            mvp_unblocked=_mvp_rows(rows),
         )["satisfied"]
 
     def _stop_systemic_in_transaction(
@@ -4191,7 +4426,7 @@ class OneClickReleaseStore:
         rows = connection.execute(
             """
             SELECT * FROM oneclick_release_targets
-            WHERE job_id = ? ORDER BY ordinal
+            WHERE job_id = ? AND active_for_batch = 1 ORDER BY ordinal
             """,
             (job_id,),
         ).fetchall()
@@ -4201,7 +4436,11 @@ class OneClickReleaseStore:
             for row in rows
         }
         pending_promotion_dependencies = [
-            _dependency_state(row["target_label"], status_by_label)
+            _dependency_state(
+                row["target_label"],
+                status_by_label,
+                mvp_unblocked=_mvp_rows(rows),
+            )
             for row in rows
             if (
                 row["status"] == PENDING
@@ -4339,7 +4578,7 @@ class OneClickReleaseStore:
         rows = connection.execute(
             """
             SELECT * FROM oneclick_release_targets
-            WHERE job_id = ? ORDER BY ordinal
+            WHERE job_id = ? AND active_for_batch = 1 ORDER BY ordinal
             """,
             (job_id,),
         ).fetchall()
@@ -4354,6 +4593,7 @@ class OneClickReleaseStore:
                 dependency=_dependency_state(
                     row["target_label"],
                     status_by_label,
+                    mvp_unblocked=_mvp_rows(rows),
                 ),
             )
             for row in rows
@@ -4478,6 +4718,7 @@ class OneClickReleaseStore:
             "job_id": job["job_id"],
             "plan_id": job["plan_id"],
             "run_id": job["run_id"],
+            "batch_sequence": int(job["batch_sequence"] or 0),
             "phase": job["status"],
             "requires_human": job["status"] == "WAITING_MANUAL_ACCEPTANCE",
             "product_revision": job["product_revision"],
@@ -4563,7 +4804,8 @@ class OneClickReleaseStore:
                 for row in connection.execute(
                     """
                     SELECT * FROM oneclick_release_targets
-                    WHERE job_id = ? ORDER BY ordinal
+                    WHERE job_id = ? AND active_for_batch = 1
+                    ORDER BY ordinal
                     """,
                     (job_id,),
                 )
@@ -4670,7 +4912,9 @@ class OneClickReleaseWorker:
             request,
             progress_recorder=self.store.record_dispatch_progress,
         )
-        registration = registry.get(_adapter_name_for_target(request.target_label))
+        registration = registry.get(
+            _adapter_name_for_target(request.target_label, registry)
+        )
         if not registration or not registration.dispatch_available:
             result = DispatchTargetResult(
                 canonical_status=BLOCKED_CAPABILITY,
@@ -4886,14 +5130,13 @@ def build_batch_preview(
     # background worker calls ``prepare_job``.
     prepared_rows = []
     systemic = None
-    for label in _execution_target_labels(
-        _target_labels(plan),
-        plan["payload"],
-    ):
+    mvp_unblocked = _mvp_registry_enabled(registry)
+    for label in identity["execution_targets"]:
         current_status = (
             PENDING
             if (
-                label == SHOPEE_GLOBAL_TARGET
+                mvp_unblocked
+                or label == SHOPEE_GLOBAL_TARGET
                 or is_postpublish_promotion_target(label)
             )
             else _initial_public_status(rows[label])
@@ -4916,6 +5159,7 @@ def build_batch_preview(
         dependency = _dependency_state(
             result["target_label"],
             status_by_label,
+            mvp_unblocked=mvp_unblocked,
         )
         public = {
             "target_label": result["target_label"],
@@ -5025,7 +5269,10 @@ def build_batch_preview(
         "runnable_postpublish_action_count": 0,
         "preparation_pending_count": len(prepare_pending),
         "prepare_pending": prepare_pending,
-        "start_allowed": bool(prepare_pending and systemic is None),
+        "start_allowed": bool(
+            (mvp_unblocked or prepare_pending)
+            and systemic is None
+        ),
         "will_dispatch": [
             row["target_label"]
             for row in storefronts
@@ -5077,6 +5324,21 @@ def _local_preview_preparation(
 ) -> dict[str, Any]:
     """Project local eligibility without calling an adapter prepare seam."""
 
+    if _mvp_registry_enabled(registry):
+        return {
+            "target_label": label,
+            "classification": PREPARE_PENDING,
+            "status": PENDING,
+            "reason_category": "CAPABILITY",
+            "reason_scope": TARGET_REASON_SCOPE,
+            "reason_code": None,
+            "reason_detail": "",
+            "command_digest": None,
+            "proof_digest": None,
+            "manual_after_submit": True,
+            "shared_resource_digest": None,
+            "shared_resource_context_digest": None,
+        }
     if current_status in {
         SUCCEEDED,
         SUCCEEDED_MANUAL_REVIEW,
@@ -5113,7 +5375,7 @@ def _local_preview_preparation(
                 inventory_reason,
                 "approved READY Ozon inventory decision is unavailable",
             )
-    registration = registry.get(_adapter_name_for_target(label))
+    registration = registry.get(_adapter_name_for_target(label, registry))
     if (
         not registration
         or label not in registration.target_labels
@@ -5182,10 +5444,12 @@ def _batch_identity(
     )
     sku_lineage_digest = _sku_lineage_identity_digest(sku_lineage)
     sku_lineage_payload_digest = _digest_json(sku_lineage)
-    registry_digest = _registry_digest(
-        _execution_target_labels(targets, payload),
-        registry,
+    execution_targets = _execution_target_labels(
+        targets,
+        payload,
+        mvp_unblocked=_mvp_registry_enabled(registry),
     )
+    registry_digest = _registry_digest(execution_targets, registry)
     identity = {
         "schema_version": BATCH_PREPARATION_SCHEMA,
         "plan_id": str(plan.get("plan_id") or ""),
@@ -5199,6 +5463,7 @@ def _batch_identity(
         "sku_lineage_digest": sku_lineage_digest,
         "sku_lineage_payload_digest": sku_lineage_payload_digest,
         "adapter_policy_digest": registry_digest,
+        "execution_targets": execution_targets,
     }
     if not identity["plan_id"] or not identity["run_id"]:
         raise SystemicIdentityError("plan/run identity is incomplete")
@@ -5232,8 +5497,18 @@ def _require_job_identity(
     row: Mapping[str, Any],
     identity: Mapping[str, Any],
 ) -> None:
+    _require_job_immutable_identity(row, identity)
+    if row["adapter_policy_digest"] != identity["adapter_policy_digest"]:
+        raise SystemicIdentityError(
+            "one-click job adapter_policy_digest drifted"
+        )
+
+
+def _require_job_immutable_identity(
+    row: Mapping[str, Any],
+    identity: Mapping[str, Any],
+) -> None:
     for key in (
-        "job_id",
         "plan_id",
         "run_id",
         "product_revision",
@@ -5244,7 +5519,6 @@ def _require_job_identity(
         "source_identity_payload_digest",
         "sku_lineage_digest",
         "sku_lineage_payload_digest",
-        "adapter_policy_digest",
     ):
         if row[key] != identity[key]:
             raise SystemicIdentityError(f"one-click job {key} drifted")
@@ -5345,6 +5619,8 @@ def _target_labels(plan: Mapping[str, Any]) -> list[str]:
 def _execution_target_labels(
     targets: list[str],
     immutable_plan_payload: Mapping[str, Any] | None = None,
+    *,
+    mvp_unblocked: bool = False,
 ) -> list[str]:
     """Add server-owned controls without changing approved storefront identity."""
 
@@ -5352,6 +5628,8 @@ def _execution_target_labels(
         raise SystemicIdentityError(
             "server-owned promotion action cannot be a storefront target"
         )
+    if mvp_unblocked:
+        return [label for label in targets if label != _COMMON_LABEL]
     result = list(targets)
     if any(label.startswith("shopee:") for label in result):
         if SHOPEE_GLOBAL_TARGET in result:
@@ -5404,6 +5682,17 @@ def _shopee_global_idempotency_key(job: Mapping[str, Any]) -> str:
             "payload_digest": job["payload_digest"],
             "source_identity_digest": job["source_identity_digest"],
             "sku_lineage_digest": job["sku_lineage_digest"],
+        }
+    )[:32]
+
+
+def _attempt_idempotency_key(base_key: str, attempt: int) -> str:
+    if type(attempt) is not int or attempt < 1:
+        raise SystemicIdentityError("dispatch attempt identity is invalid")
+    return "oneclick-attempt:" + _digest_json(
+        {
+            "base_idempotency_key": base_key,
+            "attempt": attempt,
         }
     )[:32]
 
@@ -5778,7 +6067,7 @@ def _registry_digest(
             "targets": [
                 {
                     "target_label": label,
-                    "adapter_name": _adapter_name_for_target(label),
+                    "adapter_name": _adapter_name_for_target(label, registry),
                     "policy_digest": _policy_digest_for_target(label, registry),
                 }
                 for label in targets
@@ -5791,7 +6080,7 @@ def _policy_digest_for_target(
     label: str,
     registry: Mapping[str, AdapterRegistration],
 ) -> str:
-    registration = registry.get(_adapter_name_for_target(label))
+    registration = registry.get(_adapter_name_for_target(label, registry))
     if (
         registration
         and label in registration.target_labels
@@ -5807,7 +6096,26 @@ def _policy_digest_for_target(
     )
 
 
-def _adapter_name_for_target(label: str) -> str:
+def _mvp_registry_enabled(
+    registry: Mapping[str, AdapterRegistration],
+) -> bool:
+    registration = registry.get(MIAOSHOU_DIRECT_STORE_ADAPTER)
+    return bool(
+        isinstance(registration, AdapterRegistration)
+        and registration.adapter_name == MIAOSHOU_DIRECT_STORE_ADAPTER
+    )
+
+
+def _adapter_name_for_target(
+    label: str,
+    registry: Mapping[str, AdapterRegistration] | None = None,
+) -> str:
+    if (
+        registry is not None
+        and _mvp_registry_enabled(registry)
+        and label != _COMMON_LABEL
+    ):
+        return MIAOSHOU_DIRECT_STORE_ADAPTER
     if is_postpublish_promotion_target(label):
         return "postpublish_promotion"
     channel = str(label).split(":", 1)[0]
@@ -6119,6 +6427,18 @@ def _stored_shared_resource(
 
 def _validate_job_shared_resource_rows(rows: object) -> None:
     materialized = list(rows)
+    if _mvp_rows(materialized):
+        if any(
+            row["control_target"]
+            or row["target_label"] == SHOPEE_GLOBAL_TARGET
+            or _stored_shared_resource(row, context=False)
+            or _stored_shared_resource(row, context=True)
+            for row in materialized
+        ):
+            raise SystemicIdentityError(
+                "Miaoshou MVP storefront rows cannot own shared controls"
+            )
+        return
     globals_ = [
         row for row in materialized
         if row["target_label"] == SHOPEE_GLOBAL_TARGET
@@ -7092,8 +7412,18 @@ def _public_stored_reason(value: object) -> dict[str, str] | None:
 def _dependency_state(
     target_label: object,
     statuses: Mapping[str, str],
+    *,
+    mvp_unblocked: bool = False,
 ) -> dict[str, Any]:
     label = _exact_text(target_label, "dependency target_label")
+    if mvp_unblocked:
+        return {
+            "policy_version": MVP_DEPENDENCY_POLICY_VERSION,
+            "state": "SATISFIED",
+            "satisfied": True,
+            "prerequisite_target": None,
+            "prerequisite_status": None,
+        }
     promotion_prerequisite = promotion_prerequisite_target(label)
     if promotion_prerequisite is not None:
         if promotion_prerequisite not in statuses:
@@ -7244,6 +7574,17 @@ def _attach_shared_control_dependency_summaries(
         }
 
 
+def _mvp_rows(rows: object) -> bool:
+    materialized = list(rows)
+    return bool(
+        materialized
+        and all(
+            row["adapter_name"] == MIAOSHOU_DIRECT_STORE_ADAPTER
+            for row in materialized
+        )
+    )
+
+
 def _runnable_ready_count(rows: object) -> int:
     if not isinstance(rows, (list, tuple)):
         rows = list(rows)
@@ -7257,6 +7598,7 @@ def _runnable_ready_count(rows: object) -> int:
         and _dependency_state(
             row["target_label"],
             status_by_label,
+            mvp_unblocked=_mvp_rows(rows),
         )["satisfied"]
         is True
         for row in rows
@@ -7450,6 +7792,17 @@ def _is_digest(value: object) -> bool:
 
 
 def _ensure_oneclick_schema(connection: sqlite3.Connection) -> None:
+    job_columns = {
+        row["name"]
+        for row in connection.execute(
+            "PRAGMA table_info(oneclick_release_jobs)"
+        )
+    }
+    if job_columns and "batch_sequence" not in job_columns:
+        connection.execute(
+            "ALTER TABLE oneclick_release_jobs "
+            "ADD COLUMN batch_sequence INTEGER NOT NULL DEFAULT 0"
+        )
     columns = {
         row["name"]
         for row in connection.execute(
@@ -7457,6 +7810,7 @@ def _ensure_oneclick_schema(connection: sqlite3.Connection) -> None:
         )
     }
     additions = {
+        "active_for_batch": "INTEGER NOT NULL DEFAULT 1",
         "control_target": "INTEGER NOT NULL DEFAULT 0",
         "cumulative_external_writes_json": (
             "TEXT NOT NULL DEFAULT '[]'"

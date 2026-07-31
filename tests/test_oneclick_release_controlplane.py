@@ -322,6 +322,74 @@ def _registry(
     return result
 
 
+def _mvp_miaoshou_registry(
+    targets,
+    *,
+    prepare_calls=None,
+    dispatch_calls=None,
+    prepare_override=None,
+    dispatch_override=None,
+):
+    """One Miaoshou API family owns every storefront in the MVP."""
+
+    prepare_calls = prepare_calls if prepare_calls is not None else []
+    dispatch_calls = dispatch_calls if dispatch_calls is not None else []
+
+    def prepare(request):
+        prepare_calls.append(request.target_label)
+        if prepare_override:
+            return prepare_override(request)
+        return PrepareTargetResult(
+            classification=EXACT_READY_AUTOMATIC,
+            reason_category="CAPABILITY",
+            reason_scope="TARGET",
+            reason_code="miaoshou_command_ready",
+            reason_detail="Miaoshou target command is ready",
+            command={
+                "kind": "miaoshou-direct-store",
+                "target": request.target_label,
+            },
+            proof={
+                "kind": "approved-plan-only",
+                "target": request.target_label,
+            },
+        )
+
+    def dispatch(request):
+        dispatch_calls.append(request.target_label)
+        if dispatch_override:
+            return dispatch_override(request)
+        return DispatchTargetResult(
+            canonical_status=SUBMITTED_UNVERIFIED,
+            reason_category="POST_WRITE",
+            reason_scope="TARGET",
+            reason_code="miaoshou_submission_accepted",
+            reason_detail="Miaoshou accepted the target submission",
+            external_writes=("miaoshou:storefront:submit",),
+            external_write_count=1,
+            confirmed_external_write_count_lower_bound=1,
+            possible_external_write_count_upper_bound=1,
+            external_id=f"miaoshou-{request.target_label}",
+            submission_accepted=True,
+            readback_verified=False,
+            evidence={"checks": {"miaoshou_submission_accepted": True}},
+        )
+
+    return {
+        "miaoshou-direct-store/v1": AdapterRegistration(
+            adapter_name="miaoshou-direct-store/v1",
+            target_labels=tuple(targets),
+            prepare=prepare,
+            dispatch=dispatch,
+            policy_digest=_digest("miaoshou-direct-store/v1"),
+            prepare_is_read_only=True,
+            consumes_prepared_command=True,
+            preserves_idempotency_key=True,
+            reports_truthful_receipt=True,
+        )
+    }
+
+
 def _ensure_new_global_prepare(request):
     master_lineage = _digest("fixture-approved-new-shopee-master")
     return PrepareTargetResult(
@@ -378,6 +446,343 @@ def _verified_global_result(request, *, image_count=6):
                 ),
             }
         },
+    )
+
+
+def test_mvp_preview_is_startable_without_prepare_calls_or_prerequisites(
+    tmp_path,
+):
+    targets = ["tiktok:MX", "shopee:MY", "ozon:RU"]
+    _release, plan, run = _approved_context(
+        tmp_path,
+        targets=targets,
+        inventory_ready=False,
+    )
+    prepare_calls = []
+    registry = _mvp_miaoshou_registry(
+        targets,
+        prepare_calls=prepare_calls,
+    )
+
+    preview = build_batch_preview(
+        plan=plan,
+        run=run,
+        product_revision=31,
+        registry=registry,
+    )
+
+    assert prepare_calls == []
+    assert preview["start_allowed"] is True
+    assert preview["blocked"] == []
+    assert [row["target_label"] for row in preview["targets"]] == targets
+    assert preview["shared_controls"] == []
+    assert all(
+        row["dependency"]["state"] == "SATISFIED"
+        and row["runnable_now"] is False
+        for row in preview["targets"]
+    )
+
+
+def test_mvp_explicit_click_starts_new_batch_after_partial_reconciliation(
+    tmp_path,
+):
+    targets = ["tiktok:MX", "shopee:MY", "ozon:RU"]
+    release, plan, run = _approved_context(
+        tmp_path,
+        targets=targets,
+        inventory_ready=False,
+    )
+    dispatch_calls = []
+    first_batch = True
+
+    def dispatch(request):
+        nonlocal first_batch
+        if first_batch and request.target_label == "tiktok:MX":
+            return DispatchTargetResult(
+                canonical_status=RECONCILIATION_REQUIRED,
+                reason_category="POST_WRITE",
+                reason_scope="TARGET",
+                reason_code="miaoshou_submission_unknown",
+                reason_detail="Miaoshou submission outcome is unknown",
+                external_writes=("miaoshou:storefront:submit",),
+                external_write_count=None,
+                confirmed_external_write_count_lower_bound=0,
+                possible_external_write_count_upper_bound=1,
+                dispatch_outcome_unknown=True,
+                evidence={"checks": {"outcome_unknown": True}},
+            )
+        return DispatchTargetResult(
+            canonical_status=SUBMITTED_UNVERIFIED,
+            reason_category="POST_WRITE",
+            reason_scope="TARGET",
+            reason_code="miaoshou_submission_accepted",
+            reason_detail="Miaoshou accepted the target submission",
+            external_writes=("miaoshou:storefront:submit",),
+            external_write_count=1,
+            confirmed_external_write_count_lower_bound=1,
+            possible_external_write_count_upper_bound=1,
+            external_id=f"miaoshou-{request.target_label}",
+            submission_accepted=True,
+            readback_verified=False,
+            evidence={"checks": {"miaoshou_submission_accepted": True}},
+        )
+
+    registry = _mvp_miaoshou_registry(
+        targets,
+        dispatch_calls=dispatch_calls,
+        dispatch_override=dispatch,
+    )
+    control = OneClickReleaseStore(release.path)
+    job = control.ensure_job(
+        plan=plan,
+        run=run,
+        product_revision=31,
+        registry=registry,
+    )
+    control.start_explicit_batch(job["job_id"])
+    worker = OneClickReleaseWorker(
+        control,
+        lambda: registry,
+        dispatch_enabled=lambda: True,
+    )
+    while worker.advance_once(job["job_id"]):
+        pass
+
+    first = control.get_job(job_id=job["job_id"])
+    assert first["phase"] == "BLOCKED"
+    assert dispatch_calls == targets
+    assert release.get_run(run["run_id"])["status"] == "PARTIAL_FAILED"
+
+    first_batch = False
+    restarted = control.start_explicit_batch(job["job_id"])
+    assert restarted["phase"] == "PENDING"
+    assert restarted["batch_sequence"] == 2
+    assert all(row["status"] == "PENDING" for row in restarted["targets"])
+
+    while worker.advance_once(job["job_id"]):
+        pass
+
+    second = control.get_job(job_id=job["job_id"])
+    assert dispatch_calls == targets + targets
+    assert second["phase"] == "WAITING_MANUAL_ACCEPTANCE"
+    assert [row["dispatch_count"] for row in second["targets"]] == [2, 2, 2]
+    assert all(row["status"] == SUBMITTED_UNVERIFIED for row in second["targets"])
+    assert len(control.pending_outcome_receipts()) == 6
+
+
+def test_mvp_target_failure_does_not_prevent_later_storefront_dispatch(
+    tmp_path,
+):
+    targets = ["tiktok:GB", "shopee:VN", "ozon:RU"]
+    release, plan, run = _approved_context(
+        tmp_path,
+        targets=targets,
+        inventory_ready=False,
+    )
+    calls = []
+
+    def dispatch(request):
+        if request.target_label == "tiktok:GB":
+            raise PreDispatchInvocationError("fixture pre-submit failure")
+        return DispatchTargetResult(
+            canonical_status=SUBMITTED_UNVERIFIED,
+            reason_category="POST_WRITE",
+            reason_scope="TARGET",
+            reason_code="miaoshou_submission_accepted",
+            reason_detail="Miaoshou accepted the target submission",
+            external_writes=("miaoshou:storefront:submit",),
+            external_write_count=1,
+            confirmed_external_write_count_lower_bound=1,
+            possible_external_write_count_upper_bound=1,
+            external_id=f"miaoshou-{request.target_label}",
+            submission_accepted=True,
+            readback_verified=False,
+            evidence={"checks": {"miaoshou_submission_accepted": True}},
+        )
+
+    registry = _mvp_miaoshou_registry(
+        targets,
+        dispatch_calls=calls,
+        dispatch_override=dispatch,
+    )
+    control = OneClickReleaseStore(release.path)
+    job = control.ensure_job(
+        plan=plan,
+        run=run,
+        product_revision=31,
+        registry=registry,
+    )
+    control.start_explicit_batch(job["job_id"])
+    worker = OneClickReleaseWorker(
+        control,
+        lambda: registry,
+        dispatch_enabled=lambda: True,
+    )
+    while worker.advance_once(job["job_id"]):
+        pass
+
+    projected = control.get_job(job_id=job["job_id"])
+    assert calls == targets
+    by_target = {row["target_label"]: row for row in projected["targets"]}
+    assert by_target["tiktok:GB"]["status"] == FAILED_PRE_SUBMIT
+    assert by_target["shopee:VN"]["status"] == SUBMITTED_UNVERIFIED
+    assert by_target["ozon:RU"]["status"] == SUBMITTED_UNVERIFIED
+
+
+def test_mvp_rebinds_existing_legacy_terminal_job_without_old_controls(
+    tmp_path,
+):
+    targets = [
+        "miaoshou:COMMON",
+        "tiktok:MX",
+        "shopee:MY",
+        "ozon:RU",
+    ]
+    release, plan, run = _approved_context(
+        tmp_path,
+        targets=targets,
+        inventory_ready=True,
+    )
+    legacy_registry = _registry(targets)
+    control = OneClickReleaseStore(release.path)
+    legacy = control.ensure_job(
+        plan=plan,
+        run=run,
+        product_revision=31,
+        registry=legacy_registry,
+    )
+    with sqlite3.connect(release.path) as connection:
+        connection.execute(
+            """
+            UPDATE oneclick_release_jobs
+            SET status = 'BLOCKED'
+            WHERE job_id = ?
+            """,
+            (legacy["job_id"],),
+        )
+        connection.execute(
+            """
+            UPDATE oneclick_release_targets
+            SET status = CASE
+                WHEN target_label = 'miaoshou:COMMON' THEN 'SUCCEEDED'
+                WHEN target_label = 'tiktok:MX' THEN 'RECONCILIATION_REQUIRED'
+                ELSE 'BLOCKED_CAPABILITY'
+            END
+            WHERE job_id = ?
+            """,
+            (legacy["job_id"],),
+        )
+        connection.execute(
+            """
+            UPDATE release_target_runs
+            SET status = CASE
+                WHEN target_label = 'miaoshou:COMMON' THEN 'SUCCEEDED'
+                ELSE 'FAILED'
+            END,
+            attempts = 1
+            WHERE run_id = ?
+            """,
+            (run["run_id"],),
+        )
+        connection.execute(
+            "UPDATE release_runs SET status = 'PARTIAL_FAILED' WHERE run_id = ?",
+            (run["run_id"],),
+        )
+
+    mvp_targets = ["tiktok:MX", "shopee:MY", "ozon:RU"]
+    mvp_registry = _mvp_miaoshou_registry(mvp_targets)
+    rebound = control.ensure_job(
+        plan=release.get_plan(plan["plan_id"]),
+        run=release.get_run(run["run_id"]),
+        product_revision=31,
+        registry=mvp_registry,
+    )
+    assert rebound["job_id"] == legacy["job_id"]
+    assert rebound["shared_controls"] == []
+    assert [row["target_label"] for row in rebound["targets"]] == mvp_targets
+
+    started = control.start_explicit_batch(rebound["job_id"])
+    assert started["batch_sequence"] == 1
+    assert started["phase"] == "PENDING"
+    assert all(row["status"] == "PENDING" for row in started["targets"])
+    assert all(
+        row["dependency"]["state"] == "SATISFIED"
+        for row in started["targets"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("blocked_target", "classification", "category"),
+    [
+        ("tiktok:MX", BLOCKED_CAPABILITY, "CONTENT"),
+        ("shopee:MY", BLOCKED_CAPABILITY, "CAPABILITY"),
+        ("ozon:RU", BLOCKED_INVENTORY, "INVENTORY"),
+    ],
+)
+def test_mvp_prepare_blocker_is_target_local_and_other_targets_still_run(
+    tmp_path,
+    blocked_target,
+    classification,
+    category,
+):
+    targets = ["tiktok:MX", "shopee:MY", "ozon:RU"]
+    release, plan, run = _approved_context(
+        tmp_path,
+        targets=targets,
+        inventory_ready=False,
+    )
+    dispatch_calls = []
+
+    def prepare(request):
+        if request.target_label == blocked_target:
+            return PrepareTargetResult(
+                classification=classification,
+                reason_category=category,
+                reason_scope="TARGET",
+                reason_code="fixture_target_local_blocker",
+                reason_detail="fixture target-local preparation blocker",
+            )
+        return PrepareTargetResult(
+            classification=EXACT_READY_AUTOMATIC,
+            reason_category="CAPABILITY",
+            reason_scope="TARGET",
+            reason_code="miaoshou_command_ready",
+            reason_detail="Miaoshou target command is ready",
+            command={"target": request.target_label},
+            proof={"target": request.target_label},
+        )
+
+    registry = _mvp_miaoshou_registry(
+        targets,
+        prepare_override=prepare,
+        dispatch_calls=dispatch_calls,
+    )
+    control = OneClickReleaseStore(release.path)
+    job = control.ensure_job(
+        plan=plan,
+        run=run,
+        product_revision=31,
+        registry=registry,
+    )
+    control.start_explicit_batch(job["job_id"])
+    worker = OneClickReleaseWorker(
+        control,
+        lambda: registry,
+        dispatch_enabled=lambda: True,
+    )
+    while worker.advance_once(job["job_id"]):
+        pass
+
+    assert dispatch_calls == [
+        label for label in targets if label != blocked_target
+    ]
+    projected = control.get_job(job_id=job["job_id"])
+    by_target = {row["target_label"]: row for row in projected["targets"]}
+    assert by_target[blocked_target]["status"] == classification
+    assert all(
+        by_target[label]["status"] == SUBMITTED_UNVERIFIED
+        for label in targets
+        if label != blocked_target
     )
 
 

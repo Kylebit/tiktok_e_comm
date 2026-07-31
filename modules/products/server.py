@@ -8274,10 +8274,16 @@ def _oneclick_approved_context(
         "approved_shopee_global_plan" in stored_payload
         or "_approved_shopee_global_plan_record" in stored_payload
     )
-    payload, blockers = _release_plan_payload_from_dashboard(
+    payload, _current_candidate_blockers = _release_plan_payload_from_dashboard(
         dashboard,
         bind_shopee_global_plan=legacy_shopee_global_binding,
     )
+    # An APPROVED plan is the immutable execution authority.  The current
+    # dashboard may already have moved on to a newer content/category
+    # candidate, so its authoring-time blockers must not re-block execution of
+    # the approved snapshot.  Exact plan/token/payload and SKU reservation
+    # identity are still checked below.
+    blockers: list[str] = []
     try:
         preview = store.preview_plan(payload)
     except (TypeError, ValueError) as error:
@@ -8446,14 +8452,12 @@ def _start_oneclick_release(data: dict) -> tuple[int, dict]:
             job["job_id"],
             enabled=dispatch_capability["enabled"],
         )
-        if data.get("resume_exact_zero_write_failures") is True:
-            control_store.resume_exact_zero_write_failures(job["job_id"])
-            job = control_store.get_job(job_id=job["job_id"]) or job
+        job = control_store.start_explicit_batch(job["job_id"])
         _wake_oneclick_worker(job["job_id"])
     return 202, {
         "ok": True,
         "accepted": True,
-        "idempotent": job["phase"] not in {"PENDING", "PREPARING"},
+        "idempotent": False,
         "external_writes_performed": [],
         "job": _project_oneclick_dispatch_capability(job),
     }

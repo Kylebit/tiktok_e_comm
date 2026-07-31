@@ -262,6 +262,79 @@ def test_preview_rehydrates_publication_targets_from_server_owned_plan(
     ]
 
 
+def test_mvp_approved_context_does_not_reblock_start_on_current_content_gate(
+    monkeypatch,
+):
+    payload = {
+        "product_id": "3838616043",
+        "publication_targets": ["tiktok:MX", "shopee:MY"],
+    }
+    preview = {"plan_id": "omnichannel:test"}
+    plan = {
+        "plan_id": "omnichannel:test",
+        "product_id": "3838616043",
+        "status": "APPROVED",
+        "approval": {"status": "APPROVED", "approved_by": "Kyle"},
+        "confirmation_token": "approved-token",
+        "payload": payload,
+        "seller_sku": "0954",
+        "sku_reservation": {
+            "status": "ACTIVE",
+            "plan_id": "omnichannel:test",
+            "seller_sku": "0954",
+        },
+    }
+
+    class ApprovedStore:
+        @staticmethod
+        def get_plan(plan_id):
+            assert plan_id == "omnichannel:test"
+            return plan
+
+        @staticmethod
+        def preview_plan(candidate):
+            assert candidate == payload
+            return preview
+
+    release_store = importlib.import_module("shared_platform.release_store")
+    monkeypatch.setattr(
+        release_store,
+        "default_release_store",
+        lambda: ApprovedStore(),
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_release_dashboard_for_request",
+        lambda _data: ({"release_v1": {}}, None),
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_release_plan_payload_from_dashboard",
+        lambda _dashboard, **_kwargs: (
+            payload,
+            ["listing copy must be adapted in approved product facts"],
+        ),
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_approved_plan_matches_current_payload",
+        lambda _plan, _preview: True,
+    )
+
+    context, failure = product_server._oneclick_approved_context(
+        {
+            "offer_id": "3838616043",
+            "plan_id": "omnichannel:test",
+            "confirmation_token": "approved-token",
+            "publication_targets": ["tiktok:MX", "shopee:MY"],
+        }
+    )
+
+    assert failure is None
+    assert context is not None
+    assert context["plan"] == plan
+
+
 def test_server_cancels_false_publish_ready_when_no_runnable_target(
     monkeypatch,
 ):

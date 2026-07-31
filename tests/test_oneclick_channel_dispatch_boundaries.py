@@ -21,11 +21,13 @@ from domains.product_operations import (
 )
 from modules.miaoshou import oneclick_release as miaoshou
 from modules.shopee import oneclick_release as shopee
+from tests import test_oneclick_miaoshou_direct_store as direct_store_fixture
 from shared_platform.oneclick_release_controlplane import (
     DispatchInvocationError,
     DispatchTargetResult,
     OneClickReleaseStore,
     OneClickReleaseWorker,
+    PreDispatchInvocationError,
     PrepareTargetRequest,
 )
 from shared_platform.release_store import ReleaseStore
@@ -60,8 +62,17 @@ def _reset_oneclick_channel_transport_factories():
 
 
 def _request(command, *, recorder=None):
+    binding = (
+        command.get("identity_binding")
+        if isinstance(command.get("identity_binding"), dict)
+        else {}
+    )
     return SimpleNamespace(
         target_label=command.get("target_label"),
+        idempotency_key=binding.get("idempotency_key"),
+        source_identity_digest=binding.get("source_identity_digest"),
+        payload_digest=binding.get("payload_digest"),
+        adapter_policy_digest=binding.get("adapter_policy_digest"),
         command={"payload": {"provider_command": command}},
         progress_recorder=recorder,
     )
@@ -76,6 +87,7 @@ def _miaoshou_expected(*, target="tiktok:MX", api_less=True):
         "MY": "MYR",
         "TH": "THB",
         "VN": "VND",
+        "OZON": "RUB",
     }
     return {
         "common_detail_id": "7",
@@ -251,7 +263,7 @@ def _immutable_payload(target="tiktok:MX"):
         "listing_copy": {
             "shopee_description_en": "Exact",
             "candidates": [{
-                "channel": "tiktok",
+                "channel": config["platform"],
                 "site": config["region"],
                 "policy_check": "passed",
                 "title": "Approved title",
@@ -308,7 +320,7 @@ def _approved_worker_context(tmp_path, target="tiktok:MX"):
         "seller_sku": "0954",
         "product_package_id": "product:7:0954",
         "content_package_id": "content:7:r31",
-        "targets": ["miaoshou:COMMON", target],
+        "targets": [target],
         "product_revision": 31,
         "source_product_identity": identity.payload(),
         "sku_lineage": {
@@ -341,27 +353,36 @@ def _approved_worker_context(tmp_path, target="tiktok:MX"):
     )
 
 
-def test_miaoshou_live_prepare_uses_official_source_only_and_json_command():
+def test_miaoshou_live_prepare_binds_source_and_json_command():
     command = _miaoshou_command()
     fake = MiaoshouFake(command)
     miaoshou.configure_prepare_post_factory(lambda: fake.post)
     seed = SimpleNamespace(
         target_label="tiktok:MX",
+        idempotency_key="publish:tiktok:MX",
+        source_identity_digest="a" * 64,
         command={
             "source_query": {"source_offer_id": "986159122616"}
         },
     )
-    request = SimpleNamespace(immutable_plan_payload=_immutable_payload())
+    request = SimpleNamespace(
+        immutable_plan_payload=_immutable_payload(),
+        payload_digest="b" * 64,
+        adapter_policy_digest="c" * 64,
+    )
     prepared = miaoshou.prepare_tiktok_miaoshou_target(seed, request)
     restored = json.loads(json.dumps(prepared["command"], sort_keys=True))
-    assert restored["kind"] == "TIKTOK_SITE"
+    assert restored["kind"] == "DIRECT_STORE"
     assert restored["source_offer_id"] == "986159122616"
     assert restored["shop_id"] == "16265910"
+    assert restored["identity_binding"]["idempotency_key"] == (
+        "publish:tiktok:MX"
+    )
     assert all("JD5047" not in repr(body) for _, body in fake.calls)
     assert prepared["external_writes_performed"] == []
 
 
-def test_miaoshou_default_prepare_rehydrates_official_client(
+def test_miaoshou_default_prepare_rehydrates_miaoshou_client(
     monkeypatch,
 ):
     command = _miaoshou_command()
@@ -372,6 +393,8 @@ def test_miaoshou_default_prepare_rehydrates_official_client(
     )
     seed = SimpleNamespace(
         target_label="tiktok:MX",
+        idempotency_key="publish:tiktok:MX",
+        source_identity_digest="a" * 64,
         command={
             "source_query": {"source_offer_id": "986159122616"}
         },
@@ -379,10 +402,14 @@ def test_miaoshou_default_prepare_rehydrates_official_client(
 
     prepared = miaoshou.prepare_tiktok_miaoshou_target(
         seed,
-        SimpleNamespace(immutable_plan_payload=_immutable_payload()),
+        SimpleNamespace(
+            immutable_plan_payload=_immutable_payload(),
+            payload_digest="b" * 64,
+            adapter_policy_digest="c" * 64,
+        ),
     )
 
-    assert prepared["command"]["kind"] == "TIKTOK_SITE"
+    assert prepared["command"]["kind"] == "DIRECT_STORE"
     assert prepared["command"]["source_offer_id"] == "986159122616"
     assert prepared["external_writes_performed"] == []
     assert fake.calls
@@ -522,6 +549,8 @@ def test_homebloom_prepare_and_submit_are_fixed_apiless_manual_contracts(
             "identity_digest": "a" * 64,
         },
         source_identity_digest="a" * 64,
+        payload_digest="b" * 64,
+        adapter_policy_digest="c" * 64,
         immutable_plan_payload=_immutable_payload(target),
     )
 
@@ -638,7 +667,7 @@ def test_production_registry_store_worker_restart_and_terminal_replay(
     by_target = {
         row["target_label"]: row for row in public["targets"]
     }
-    assert by_target["miaoshou:COMMON"]["status"] == "SUCCEEDED"
+    assert set(by_target) == {"tiktok:MX"}
     assert by_target["tiktok:MX"]["status"] == "SUBMITTED_UNVERIFIED"
     assert by_target["tiktok:MX"]["classification"] == (
         "READY_SUBMIT_MANUAL"
@@ -1074,7 +1103,7 @@ def test_production_registry_auth_blocker_keeps_canonical_targets_pristine(
     )
 
 
-def test_miaoshou_sea_exact_readback_succeeds_for_exact_fixed_shop():
+def test_miaoshou_sea_submission_waits_for_manual_without_platform_readback():
     command = _miaoshou_command(target="tiktok:LH_MY")
     fake = MiaoshouFake(command)
     observed = []
@@ -1089,9 +1118,13 @@ def test_miaoshou_sea_exact_readback_succeeds_for_exact_fixed_shop():
     result = miaoshou.dispatch_tiktok_miaoshou_prepared_target(
         _request(json.loads(json.dumps(command)))
     )
-    assert result["canonical_status"] == "SUCCEEDED"
-    assert observed[0]["shop_id"] == "13295169"
-    assert observed[0]["shop_name"] == "LivelyHive"
+    assert result["canonical_status"] == "SUBMITTED_UNVERIFIED"
+    assert result["readback_verified"] is False
+    assert observed == []
+    assert result["external_writes"] == (
+        miaoshou.DETAIL_UPDATE_WRITE,
+        miaoshou.PUBLISH_WRITE,
+    )
 
 
 def test_miaoshou_create_claim_then_read_fault_preserves_two_writes():
@@ -1745,54 +1778,45 @@ def test_shopee_default_prepare_rehydrates_no_refresh_clients(
     assert fake.calls
 
 
-def test_shopee_existing_v2_prepare_and_global_owner_are_get_only():
-    fake = ShopeePrepareFake()
-    request = _existing_v2_request(fake)
-    fake.calls.clear()
-    shopee.configure_prepare_transport_factory(
-        lambda region: (
-            fake.transport()
-            if region == "MY"
-            else pytest.fail("wrong region")
-        )
+def test_shopee_direct_store_prepare_is_miaoshou_read_only_and_json_safe():
+    target = "shopee:MY"
+    fake = direct_store_fixture.DirectStoreFake(target)
+    miaoshou.configure_prepare_post_factory(lambda: fake.post)
+
+    prepared = prepare_oneclick_target(
+        direct_store_fixture._prepare_request(target)
     )
 
-    prepared = prepare_oneclick_target(request)
-
-    provider = prepared["command"]["provider_command"]
-    assert provider["kind"] == "GLOBAL_EXISTING"
-    assert prepared["write_occurrence_plan"]["occurrences"] == []
-    assert prepared["shared_resource"][
-        "expected_external_write_count"
-    ] == 0
-    result = dispatch_oneclick_target(
-        SimpleNamespace(
-            target_label="shopee:GLOBAL",
-            command={"payload": prepared["command"]},
+    provider = json.loads(
+        json.dumps(
+            prepared["command"]["provider_command"],
+            ensure_ascii=False,
+            sort_keys=True,
         )
     )
-    validated = DispatchTargetResult.from_value(result)
-    assert validated.canonical_status == "SUCCEEDED"
-    assert validated.external_writes == ()
-    assert validated.external_write_count == 0
-    assert validated.submission_accepted is False
-    assert validated.readback_verified is True
-    assert validated.evidence["shared_resource"]["mode"] == (
-        "EXISTING_GLOBAL"
+    assert prepared["classification"] == "READY_SUBMIT_MANUAL"
+    assert prepared["manual_after_submit"] is True
+    assert provider["kind"] == "DIRECT_STORE"
+    assert provider["platform"] == "shopee"
+    assert provider["shop_id"] == "13295318"
+    assert prepared["write_occurrence_plan"]["occurrences"] == [
+        {
+            "occurrence_id": "detail_update-1",
+            "write_class": "miaoshou:shopee_detail:update",
+        },
+        {
+            "occurrence_id": "publish_submit-1",
+            "write_class": "miaoshou:shopee_publish:submission",
+        },
+    ]
+    assert all(
+        path
+        in {
+            miaoshou.DIRECT_STORE_CONFIG[target]["search_path"],
+            miaoshou.DIRECT_STORE_CONFIG[target]["get_path"],
+        }
+        for path, _body in fake.calls
     )
-    assert all(call[0] in {"merchant", "shop"} for call in fake.calls)
-    encoded = json.dumps(
-        result,
-        ensure_ascii=False,
-        sort_keys=True,
-    )
-    for forbidden in (
-        "shop-token",
-        "merchant-token",
-        "https://shopee-rehost.example/one",
-        "stable-image-1",
-    ):
-        assert forbidden not in encoded
 
 
 def test_shopee_legacy_v1_existing_is_readable_but_not_oneclick_executable():
@@ -1849,222 +1873,91 @@ def test_shopee_legacy_v1_existing_is_readable_but_not_oneclick_executable():
 
 
 @pytest.mark.parametrize(
-    ("item_mutator", "model_mutator"),
-    [
-        (lambda item: item.update({"category_id": 999999}), None),
-        (
-            lambda item: item.update(
-                {
-                    "attribute_list": [
-                        {
-                            "attribute_id": 2,
-                            "attribute_value_list": [],
-                        }
-                    ]
-                }
-            ),
-            None,
-        ),
-        (lambda item: item.update({"brand": None}), None),
-        (
-            lambda item: item.update(
-                {
-                    "seller_stock": [
-                        {"location_id": "CNZ", "stock": 199}
-                    ]
-                }
-            ),
-            None,
-        ),
-        (
-            lambda item: item.update(
-                {"global_item_name": "Drifted official title"}
-            ),
-            None,
-        ),
-        (
-            lambda item: item["image"].update(
-                {"image_id_list": ["drifted-image-id"]}
-            ),
-            None,
-        ),
-        (
-            None,
-            lambda rows: rows[0].update({"global_model_id": 8}),
-        ),
-    ],
-    ids=[
-        "category",
-        "attributes",
-        "brand",
-        "stock",
-        "copy",
-        "image",
-        "model",
-    ],
+    "field",
+    ["title", "images", "model", "parcel", "price", "notes", "video"],
 )
-def test_shopee_existing_v2_snapshot_drift_blocks_before_claim(
-    item_mutator,
-    model_mutator,
-):
-    fake = ShopeePrepareFake()
-    request = _existing_v2_request(fake)
+def test_shopee_miaoshou_snapshot_drift_blocks_before_any_write(field):
+    target = "shopee:MY"
+    fake = direct_store_fixture.DirectStoreFake(target)
+    miaoshou.configure_prepare_post_factory(lambda: fake.post)
+    prepared = prepare_oneclick_target(
+        direct_store_fixture._prepare_request(target)
+    )
+    provider = prepared["command"]["provider_command"]
     fake.calls.clear()
-    fake.item_mutator = item_mutator
-    fake.model_mutator = model_mutator
-    shopee.configure_prepare_transport_factory(lambda _region: fake.transport())
+    if field == "title":
+        fake.detail["title"] = "Drifted title"
+    elif field == "images":
+        fake.detail["imgUrls"] = ["https://assets.example/drift.jpg"]
+    elif field == "model":
+        fake.detail["skuMap"]["default"]["itemNum"] = "drifted"
+    elif field == "parcel":
+        fake.detail["packageLength"] = 31
+    elif field == "price":
+        fake.detail["skuMap"]["default"]["price"] = 34
+    elif field == "notes":
+        fake.detail["notes"] = "<p>Drifted</p>"
+    else:
+        fake.detail["mainImgVideoUrl"] = "https://assets.example/drift.mp4"
+    miaoshou.configure_runtime_transport_factory(
+        lambda: miaoshou.MiaoshouRuntimeTransport(post=fake.post)
+    )
 
-    prepared = prepare_oneclick_target(request)
+    with pytest.raises(
+        PreDispatchInvocationError,
+        match="changed after preparation",
+    ):
+        dispatch_oneclick_target(
+            direct_store_fixture._dispatch_request(provider)
+        )
 
-    assert prepared["classification"] == "BLOCKED_CAPABILITY"
-    assert prepared["reason_category"] == "CONTENT"
-    assert prepared["command"] is None
-    assert prepared["proof"] is None
     assert not any(
         path
         in {
-            shopee.GLOBAL_CREATE_PATH,
-            shopee.GLOBAL_MODEL_INIT_PATH,
-            shopee.REGIONAL_TASK_PATH,
+            miaoshou.DIRECT_STORE_CONFIG[target]["save_path"],
+            miaoshou.DIRECT_STORE_CONFIG[target]["publish_path"],
         }
-        for _authority, path, _body in fake.calls
+        for path, _body in fake.calls
     )
 
 
-def test_shopee_existing_v2_regional_failure_never_invents_global_write():
-    fake = ShopeePrepareFake()
-    global_request = _existing_v2_request(fake)
-    shopee.configure_prepare_transport_factory(lambda _region: fake.transport())
-    global_prepared = prepare_oneclick_target(global_request)
-    global_result = dispatch_oneclick_target(
-        SimpleNamespace(
-            target_label="shopee:GLOBAL",
-            command={"payload": global_prepared["command"]},
-        )
+def test_shopee_miaoshou_publish_unknown_never_invents_global_write():
+    target = "shopee:MY"
+    command = direct_store_fixture._command(target)
+    fake = direct_store_fixture.DirectStoreFake(
+        target, malformed_publish=True
     )
-    shared_result = global_result["evidence"]["shared_resource"]
-    shared = {
-        key: shared_result[key]
-        for key in (
-            "schema_version",
-            "policy_version",
-            "owner_key",
-            "master_lineage_digest",
-            "global_identity_digest",
-            "master_evidence_digest",
-        )
-    }
-
-    regional_request = _existing_v2_request(fake, target="shopee:MY")
-    regional_prepared = prepare_oneclick_target(regional_request)
-    provider = regional_prepared["command"]["provider_command"]
-    assert provider["kind"] == "REGION_FROM_SHARED"
-    assert regional_prepared["write_occurrence_plan"]["occurrences"] == [
-        {
-            "occurrence_id": "regional_publish-1",
-            "write_class": "shopee:regional_publish",
-        }
-    ]
-    shopee.configure_runtime_transport_factory(
-        lambda: shopee.ShopeeRuntimeTransport(
-            verify_pre_dispatch=lambda _command: True,
-            resolve_existing_global=lambda _command: {
-                "verified": True,
-                "global_item_id": "9",
-                "global_model_id": "7",
-                "tier_index": [0],
-                "image_snapshot_digest": shopee._image_id_snapshot_digest(
-                    ["stable-image-1"]
-                ),
-                "image_count": 1,
-                "image_outcome": {
-                    "manual_review_required": True,
-                    "matched_rule_ids": [
-                        "global_image:rehosted_order_unverifiable"
-                    ],
-                    "global_image_status": "warning",
-                    "global_image_verification_scope": (
-                        "linked_count_verified_order_unverifiable"
-                    ),
-                    "global_image_approved_order_exact": False,
-                    "evidence_digest": "c" * 64,
-                },
-                "master_evidence_digest": shared[
-                    "master_evidence_digest"
-                ],
-            },
-            regional_publish=lambda _body: (_ for _ in ()).throw(
-                TimeoutError("regional transport timeout")
-            ),
-        )
+    miaoshou.configure_runtime_transport_factory(
+        lambda: miaoshou.MiaoshouRuntimeTransport(post=fake.post)
     )
 
     with pytest.raises(DispatchInvocationError) as error:
         dispatch_oneclick_target(
-            SimpleNamespace(
-                target_label="shopee:MY",
-                command={"payload": regional_prepared["command"]},
-                shared_resource_context=shared,
-            )
+            direct_store_fixture._dispatch_request(command)
         )
+
     assert error.value.external_writes == (
-        "shopee:regional_publish",
+        "miaoshou:shopee_detail:update",
+        "miaoshou:shopee_publish:submission",
     )
     assert error.value.external_write_count is None
-    assert error.value.confirmed_external_write_count_lower_bound == 0
-    assert error.value.possible_external_write_count_upper_bound == 1
+    assert error.value.confirmed_external_write_count_lower_bound == 1
+    assert error.value.possible_external_write_count_upper_bound == 2
     assert all(
-        "global" not in write for write in error.value.external_writes
+        "global" not in write.casefold()
+        for write in error.value.external_writes
     )
 
 
-def test_shopee_existing_v2_worker_restart_never_repeats_regional_write(
+def test_shopee_miaoshou_worker_restart_never_repeats_submission(
     tmp_path,
 ):
-    fake = ShopeePrepareFake()
-    release, plan, run, approved_plan = (
-        _approved_shopee_existing_worker_context(tmp_path, fake)
-    )
-    shopee.configure_prepare_transport_factory(
-        lambda _region: fake.transport()
-    )
-    official = shopee._read_approved_global_contract(
-        fake.transport(),
-        global_item_id="9",
-        plan=approved_plan,
-        approved_plan_digest=plan["payload"][
-            "approved_shopee_global_plan"
-        ]["approved_plan_digest"],
-        exact_current=shopee._current_existing_snapshot_candidate(
-            approved_plan,
-            fake.transport(),
-        ),
-    )
-    regional_invocations = []
-
-    def regional_publish(body):
-        regional_invocations.append(deepcopy(body))
-        raise TimeoutError("regional transport timeout")
-
-    shopee.configure_runtime_transport_factory(
-        lambda: shopee.ShopeeRuntimeTransport(
-            verify_pre_dispatch=lambda _command: True,
-            resolve_existing_global=lambda _command: {
-                "verified": True,
-                "global_item_id": "9",
-                "global_model_id": official["global_model_id"],
-                "tier_index": official["tier_index"],
-                "image_snapshot_digest": official[
-                    "image_snapshot_digest"
-                ],
-                "image_count": official["image_count"],
-                "image_outcome": official["image_outcome"],
-                "master_evidence_digest": official[
-                    "master_evidence_digest"
-                ],
-            },
-            regional_publish=regional_publish,
-        )
+    target = "shopee:MY"
+    release, plan, run = _approved_worker_context(tmp_path, target)
+    fake = direct_store_fixture.DirectStoreFake(target)
+    miaoshou.configure_prepare_post_factory(lambda: fake.post)
+    miaoshou.configure_runtime_transport_factory(
+        lambda: miaoshou.MiaoshouRuntimeTransport(post=fake.post)
     )
     registry = production_adapter_registry()
     control = OneClickReleaseStore(release.path)
@@ -2084,25 +1977,23 @@ def test_shopee_existing_v2_worker_restart_never_repeats_regional_write(
             break
 
     public = control.get_job(job_id=job["job_id"])
-    targets = {
-        row["target_label"]: row for row in public["targets"]
-    }
-    shared_controls = {
-        row["target_label"]: row
-        for row in public["shared_controls"]
-    }
-    assert shared_controls["shopee:GLOBAL"]["status"] == "SUCCEEDED"
-    assert targets["shopee:MY"]["status"] == "RECONCILIATION_REQUIRED"
-    assert len(regional_invocations) == 1
+    assert public["shared_controls"] == []
+    target_row = public["targets"][0]
+    assert target_row["target_label"] == target
+    assert target_row["status"] == "SUBMITTED_UNVERIFIED"
+    assert target_row["manual_after_submit"] is True
+    publish_path = miaoshou.DIRECT_STORE_CONFIG[target]["publish_path"]
+    assert sum(path == publish_path for path, _body in fake.calls) == 1
     canonical = release.get_run(run["run_id"])
     my_target = next(
         row
         for row in canonical["targets"]
-        if row["target_label"] == "shopee:MY"
+        if row["target_label"] == target
     )
-    assert my_target["status"] == "FAILED"
+    assert my_target["status"] == "SUBMITTED_UNVERIFIED"
     assert my_target["attempts"] == 1
 
+    calls_before_restart = len(fake.calls)
     restarted = OneClickReleaseStore(release.path)
     restarted_worker = OneClickReleaseWorker(
         restarted,
@@ -2111,7 +2002,7 @@ def test_shopee_existing_v2_worker_restart_never_repeats_regional_write(
     )
     assert restarted_worker.recover() == 0
     assert restarted_worker.advance_once(job["job_id"]) is False
-    assert len(regional_invocations) == 1
+    assert len(fake.calls) == calls_before_restart
 
 
 def test_shopee_new_global_prepare_is_plan_native_and_json_restart_safe():

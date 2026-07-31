@@ -133,18 +133,21 @@ def test_tiktok_prepare_uses_injected_readonly_provider_and_manual_branch():
     }
 
 
-def test_shopee_prepare_uses_injected_provider_and_blocks_legacy_command():
+def test_shopee_prepare_uses_unified_miaoshou_manual_provider():
     request = _PrepareRequestFixture(target_label="shopee:MY")
     object.__setattr__(request, "immutable_plan_payload", {"oneclick_shopee_command": _shopee_command()})
     result = adapter_subject.prepare_oneclick_target(
         request,
         provider_factory=lambda: _provider(),
     )
-    assert result["classification"] == "EXACT_READY_AUTOMATIC"
-    assert result["command"]["seed"]["prepared"]["plan_native"] is True
+    assert result["classification"] == "READY_SUBMIT_MANUAL"
+    assert result["manual_after_submit"] is True
+    assert result["command"]["seed"]["source_query"]["filter"] == {
+        "sourceItemIdKeyword": "986159122616"
+    }
 
 
-def test_shopee_multi_model_lineage_is_blocked_before_provider_or_write():
+def test_shopee_multi_model_payload_is_delegated_to_miaoshou_prepare():
     request = _PrepareRequestFixture(target_label="shopee:MY")
     object.__setattr__(
         request,
@@ -183,33 +186,31 @@ def test_shopee_multi_model_lineage_is_blocked_before_provider_or_write():
     )
     provider_calls = {"prepare": 0}
     provider = _provider()
-    object.__setattr__(
-        provider,
-        "prepare_shopee",
-        lambda *_args: provider_calls.__setitem__(
-            "prepare", provider_calls["prepare"] + 1
-        ),
-    )
+    prepared = provider.prepare_tiktok_miaoshou
+
+    def record_prepare(*args):
+        provider_calls["prepare"] += 1
+        return prepared(*args)
+
+    object.__setattr__(provider, "prepare_tiktok_miaoshou", record_prepare)
 
     result = adapter_subject.prepare_oneclick_target(
         request,
         provider_factory=lambda: provider,
     )
 
-    assert result["classification"] == "BLOCKED_CAPABILITY"
-    assert result["reason_category"] == "CONTENT"
-    assert result["command"] is None
-    assert result["proof"] is None
-    assert provider_calls["prepare"] == 0
+    assert result["classification"] == "READY_SUBMIT_MANUAL"
+    assert result["manual_after_submit"] is True
+    assert provider_calls["prepare"] == 1
 
 
-def test_ozon_is_inventory_blocked_without_default_stock():
+def test_ozon_uses_unified_miaoshou_manual_provider():
     result = adapter_subject.prepare_oneclick_target(
         _PrepareRequestFixture(target_label="ozon:RU"),
         provider_factory=lambda: _provider(),
     )
-    assert result["classification"] == "BLOCKED_INVENTORY"
-    assert result["command"] is None
+    assert result["classification"] == "READY_SUBMIT_MANUAL"
+    assert result["manual_after_submit"] is True
 
 
 def test_provider_prepare_write_is_rejected_before_dispatch():
@@ -287,28 +288,17 @@ def test_final_typed_registry_is_owned_by_channel_operations():
     registry = adapter_subject.production_adapter_registry(
         provider_factory=lambda: _provider()
     )
-    assert set(registry) == {
-        "new_product_workbench_miaoshou_commit",
-        "miaoshou_tiktok_publish",
-        "shopee_cnsc_publish",
-        "ozon_product_publish",
-        "postpublish_promotion",
-    }
-    assert registry["shopee_cnsc_publish"].preparation_available is True
-    assert registry["miaoshou_tiktok_publish"].dispatch_available is True
-    promotion = registry["postpublish_promotion"]
-    assert promotion.preparation_available is True
-    assert promotion.dispatch_available is True
-    assert set(promotion.target_labels) == {
-        "promotion:tiktok:LH_PH",
-        "promotion:tiktok:LH_MY",
-        "promotion:tiktok:LH_TH",
-        "promotion:tiktok:LH_VN",
-        "promotion:shopee:PH",
-        "promotion:shopee:MY",
-        "promotion:shopee:TH",
-        "promotion:shopee:VN",
-    }
+    assert set(registry) == {"miaoshou-direct-store/v1"}
+    direct = registry["miaoshou-direct-store/v1"]
+    assert direct.preparation_available is True
+    assert direct.dispatch_available is True
+    assert set(direct.target_labels) == set(
+        adapter_subject.MIAOSHOU_DIRECT_STORE_TARGETS
+    )
+    assert all(
+        not label.startswith("promotion:")
+        for label in direct.target_labels
+    )
 
 
 @pytest.mark.parametrize(

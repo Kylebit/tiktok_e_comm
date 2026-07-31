@@ -767,16 +767,10 @@ def test_promotion_transport_unknown_is_consistent_across_terminal_ledgers(
     ] == [TIKTOK_PROMOTION_WRITE_CLASS, "UNKNOWN"]
 
 
-def test_shopee_promotion_is_explicitly_blocked_without_any_transport():
+def test_promotion_targets_are_not_registered_in_direct_store_mvp():
     registry = production_adapter_registry()
-    prepare = registry["postpublish_promotion"].prepare
-    result = prepare(
-        _prepare_request(
-            payload=_promotion_payload(
-                targets=("shopee:MY",)
-            ),
-            target="promotion:shopee:MY",
-        )
+    assert set(registry) == {"miaoshou-direct-store/v1"}
+    assert all(
+        not target.startswith("promotion:")
+        for target in registry["miaoshou-direct-store/v1"].target_labels
     )
-    assert result["classification"] == "BLOCKED_CAPABILITY"
-    assert result["reason_code"] == "shopee_promotion_api_unavailable"

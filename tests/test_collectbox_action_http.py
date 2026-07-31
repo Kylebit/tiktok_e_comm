@@ -290,6 +290,61 @@ def test_collectbox_status_missing_is_redacted_not_found(monkeypatch):
     assert len(response["error"]["detail_digest"]) == 64
 
 
+def test_collectbox_status_compares_the_same_public_plan_identity(monkeypatch):
+    context = _context()
+    identity = approved_plan_identity(_plan())
+    public_identity = {
+        key: identity[key]
+        for key in (
+            "plan_id",
+            "product_revision",
+            "payload_digest",
+            "targets_digest",
+        )
+    }
+    persisted = {
+        "schema_version": "collectbox-action-status/v1",
+        "ok": True,
+        "persisted": True,
+        "approved_plan": public_identity,
+        "action": {
+            "action_id": "collectbox-action:fixture",
+            "status": "PARTIAL_FAILED",
+            "start_allowed": False,
+            "retry_allowed": False,
+            "terminal": True,
+            "platforms": [],
+            "error": None,
+        },
+        "external_writes_performed": [
+            "miaoshou:collectbox:claim:tiktok",
+        ],
+        "external_write_count": 1,
+        "canonical_next_action": None,
+    }
+    monkeypatch.setattr(
+        product_server,
+        "_oneclick_approved_context",
+        lambda _data, **_kwargs: (context, None),
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_collectbox_action_store",
+        lambda: type(
+            "CollectStore",
+            (object,),
+            {"status": staticmethod(lambda **_kwargs: persisted)},
+        )(),
+    )
+
+    status, response = product_server._collectbox_action_status(
+        {"offer_id": _plan()["product_id"], "plan_id": _plan()["plan_id"]}
+    )
+
+    assert status == 200
+    assert response is persisted
+
+
 def test_collectbox_http_routes_use_direct_frozen_schema(
     monkeypatch,
     product_http_server,

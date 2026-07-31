@@ -735,6 +735,20 @@
       : "miaoshou:collectbox:claim:shopee";
   }
 
+  function collectboxWriteClassAllowed(platform, value) {
+    if (value === collectboxWriteClass(platform)) return true;
+    if (platform === "TIKTOK") {
+      return [
+        "miaoshou:collectbox:tiktok:detail:create:",
+        "miaoshou:collectbox:tiktok:shop:claim:",
+        "miaoshou:collectbox:tiktok:detail:update:",
+      ].some((prefix) => value.startsWith(prefix));
+    }
+    return value.startsWith(
+      "miaoshou:collectbox:shopee:detail:update:",
+    );
+  }
+
   function validateCollectboxPlatform(row, expectedPlatform) {
     if (
       !exactObjectKeys(row, [
@@ -783,9 +797,16 @@
     const successExact = row.status === "SUCCEEDED" && (
       row.outcome === "IMPORTED"
         ? (
-          row.external_writes.count === 1
-          && row.external_writes.classes.length === 1
-          && row.external_writes.classes[0] === writeClass
+          Number.isInteger(row.external_writes.count)
+          && row.external_writes.count > 0
+          && row.external_writes.count
+            === row.external_writes.classes.length
+          && row.external_writes.classes.every(
+            (value) => collectboxWriteClassAllowed(
+              expectedPlatform,
+              value,
+            ),
+          )
         )
         : (
           row.outcome === "ALREADY_PRESENT"
@@ -808,6 +829,9 @@
       && row.error !== null
       && oneClickDigest(row.receipt_digest)
       && row.platform_detail_id_digest === null
+      && row.external_writes.classes.every(
+        (value) => collectboxWriteClassAllowed(expectedPlatform, value),
+      )
     );
     const pendingExact = ["PENDING", "RUNNING"].includes(row.status) && (
       row.outcome === null
@@ -916,6 +940,7 @@
       && platforms.every((row) => (
         row.status === "SUCCEEDED"
         || row.status === "RECONCILIATION_REQUIRED"
+        || row.status === "PENDING"
       ))
     );
     const actionExact = (

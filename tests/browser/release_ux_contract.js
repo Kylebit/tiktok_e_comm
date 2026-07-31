@@ -5097,10 +5097,16 @@ function collectboxActionProjection(state) {
           platform({
             name: "TIKTOK",
             status: "SUCCEEDED",
-            outcome: "ALREADY_PRESENT",
-            attempts: 0,
+            outcome: "IMPORTED",
+            attempts: 1,
             receiptDigest: "4".repeat(64),
             detailDigest: "5".repeat(64),
+            writeCount: 3,
+            writeClasses: [
+              "miaoshou:collectbox:claim:tiktok",
+              "miaoshou:collectbox:tiktok:shop:claim:tiktok:LH_PH",
+              "miaoshou:collectbox:tiktok:detail:update:tiktok:LH_PH",
+            ],
           }),
           platform({
             name: "SHOPEE",
@@ -5109,13 +5115,61 @@ function collectboxActionProjection(state) {
             attempts: 1,
             receiptDigest: "6".repeat(64),
             detailDigest: "7".repeat(64),
-            writeCount: 1,
-            writeClasses: ["miaoshou:collectbox:claim:shopee"],
+            writeCount: 2,
+            writeClasses: [
+              "miaoshou:collectbox:claim:shopee",
+              "miaoshou:collectbox:shopee:detail:update:shopee:MY",
+            ],
           }),
         ],
       },
-      external_writes_performed: ["miaoshou:collectbox:claim:shopee"],
-      external_write_count: 1,
+      external_writes_performed: [
+        "miaoshou:collectbox:claim:tiktok",
+        "miaoshou:collectbox:tiktok:shop:claim:tiktok:LH_PH",
+        "miaoshou:collectbox:tiktok:detail:update:tiktok:LH_PH",
+        "miaoshou:collectbox:claim:shopee",
+        "miaoshou:collectbox:shopee:detail:update:shopee:MY",
+      ],
+      external_write_count: 5,
+      canonical_next_action: null,
+    };
+  }
+  if (state === "RECONCILIATION_PENDING") {
+    return {
+      ...base,
+      persisted: true,
+      action: {
+        action_id: "collectbox-action:reconciliation-pending",
+        status: "PARTIAL_FAILED",
+        start_allowed: false,
+        retry_allowed: false,
+        terminal: true,
+        error: null,
+        platforms: [
+          platform({
+            name: "TIKTOK",
+            status: "RECONCILIATION_REQUIRED",
+            attempts: 1,
+            receiptDigest: "e".repeat(64),
+            writeCount: 2,
+            writeClasses: [
+              "miaoshou:collectbox:claim:tiktok",
+              "miaoshou:collectbox:tiktok:shop:claim:tiktok:LH_PH",
+            ],
+            error: {
+              category: "UNKNOWN",
+              code: "collectbox_platform_preparation_failed",
+              detail_digest: "f".repeat(64),
+            },
+          }),
+          platform({ name: "SHOPEE", status: "PENDING" }),
+        ],
+      },
+      external_writes_performed: [
+        "miaoshou:collectbox:claim:tiktok",
+        "miaoshou:collectbox:tiktok:shop:claim:tiktok:LH_PH",
+      ],
+      external_write_count: 2,
       canonical_next_action: null,
     };
   }
@@ -5324,11 +5378,9 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
     const successState = await optionalText("#collectboxActionStatus");
     check(
       successState.includes("TikTok")
-        && successState.includes("已存在")
         && successState.includes("Shopee")
-        && successState.includes("已导入")
         && !(await primary.isEnabled()),
-      `collectbox ${viewport.width}: success distinguishes existing from imported`,
+      `collectbox ${viewport.width}: success accepts multi-write imported receipts`,
       { successState, label: await primary.innerText() },
     );
 
@@ -5345,6 +5397,25 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
         && reconciliationMessage.includes("人工核对"),
       `collectbox ${viewport.width}: unknown result stops retry and explains manual check`,
       { reconciliationMessage, label: await primary.innerText() },
+    );
+
+    requests.length = 0;
+    previewState = "RECONCILIATION_PENDING";
+    await page.goto(pageUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(300);
+    const reconciliationPendingState = await optionalText(
+      "#collectboxActionStatus",
+    );
+    check(
+      !(await primary.isEnabled())
+        && reconciliationPendingState.includes("TikTok")
+        && reconciliationPendingState.includes("Shopee"),
+      `collectbox ${viewport.width}: reconciliation plus pending is a valid terminal partial state`,
+      {
+        reconciliationPendingState,
+        label: await primary.innerText(),
+        message: await optionalText("#collectboxActionMessage"),
+      },
     );
 
     requests.length = 0;

@@ -1508,14 +1508,10 @@ def _apply_expected_for_platform(
         }
     )
     current_skus = _sku_map(current)
-    normalized = {_normalize_variant(key): key for key in current_skus}
+    bindings = _approved_variant_key_bindings(current, expected)
     updated_skus: dict[str, object] = {}
     for variant in expected["selected_sku_keys"]:
-        raw_key = normalized.get(variant)
-        if raw_key is None:
-            raise MiaoshouOneClickPreDispatchError(
-                "approved variant is unavailable at dispatch"
-            )
+        raw_key = bindings[variant]
         row = dict(_mapping(current_skus[raw_key], "sku row"))
         row.update(
             {
@@ -1553,14 +1549,10 @@ def _apply_expected(
     if "simple_description" in expected:
         updated["notesText"] = expected["simple_description"]
     current_skus = _sku_map(current)
-    normalized = {_normalize_variant(key): key for key in current_skus}
+    bindings = _approved_variant_key_bindings(current, expected)
     updated_skus: dict[str, object] = {}
     for variant in expected["selected_sku_keys"]:
-        raw_key = normalized.get(variant)
-        if raw_key is None:
-            raise MiaoshouOneClickPreDispatchError(
-                "approved variant is unavailable at dispatch"
-            )
+        raw_key = bindings[variant]
         row = dict(_mapping(current_skus[raw_key], "sku row"))
         row["itemNum"] = expected["model_skus"][variant]
         row["weight"] = float(str(expected["weight"]))
@@ -1572,12 +1564,15 @@ def _apply_expected(
             row["priceIncludeVat"] = float(str(expected["price"]))
         updated_skus[raw_key] = row
     updated["skuMap"] = updated_skus
+    selected_raw_keys = set(bindings.values())
     for map_name in ("colorMap", "sizeMap", "saleProp3Map"):
         if isinstance(updated.get(map_name), Mapping):
             updated[map_name] = {
                 key: value
                 for key, value in updated[map_name].items()
-                if _normalize_variant(key) in set(expected["selected_sku_keys"])
+                if key in selected_raw_keys
+                or _normalize_variant(key)
+                in set(expected["selected_sku_keys"])
             }
     return updated
 
@@ -1589,7 +1584,11 @@ def _verify_expected_detail(
     platform: str = "tiktok",
 ) -> None:
     sku_map = _sku_map(detail)
-    normalized = {_normalize_variant(key): row for key, row in sku_map.items()}
+    bindings = _approved_variant_key_bindings(detail, expected)
+    normalized = {
+        variant: sku_map[raw_key]
+        for variant, raw_key in bindings.items()
+    }
     wanted = set(expected["selected_sku_keys"])
     if platform == "ozon":
         package = detail.get("packageInfo")
@@ -2154,11 +2153,85 @@ def _verify_shop_identity(
 def _verify_site_variants(
     detail: Mapping[str, object], expected: Mapping[str, object]
 ) -> None:
-    observed = {_normalize_variant(key) for key in _sku_map(detail)}
-    if observed != set(expected["selected_sku_keys"]):
+    _approved_variant_key_bindings(detail, expected)
+
+
+def _approved_variant_key_bindings(
+    detail: Mapping[str, object], expected: Mapping[str, object]
+) -> dict[str, object]:
+    """Bind Miaoshou's raw SKU-map keys to approved variants exactly.
+
+    Some claimed TikTok drafts replace the human-readable variant key with an
+    opaque Miaoshou key.  The model SKU survives that transformation.  Exact
+    raw-key matching remains preferred; otherwise every observed and approved
+    model SKU must be a unique built-in string and the two sets must match.
+    No title, position, or fuzzy matching is permitted.
+    """
+
+    sku_map = _sku_map(detail)
+    variants = expected.get("selected_sku_keys")
+    model_skus = expected.get("model_skus")
+    if (
+        not isinstance(variants, list)
+        or not variants
+        or any(type(value) is not str or not value for value in variants)
+        or len(variants) != len(set(variants))
+        or not isinstance(model_skus, Mapping)
+        or set(model_skus) != set(variants)
+    ):
         raise MiaoshouOneClickPreDispatchError(
-            "TikTok variant identity does not match approved plan"
+            "approved variant identity does not match the draft"
         )
+
+    raw_by_normalized: dict[str, object] = {}
+    for raw_key in sku_map:
+        normalized = _normalize_variant(raw_key)
+        if not normalized or normalized in raw_by_normalized:
+            raise MiaoshouOneClickPreDispatchError(
+                "Miaoshou variant identity is ambiguous"
+            )
+        raw_by_normalized[normalized] = raw_key
+    if set(raw_by_normalized) == set(variants):
+        return {
+            variant: raw_by_normalized[variant]
+            for variant in variants
+        }
+
+    expected_by_model: dict[str, str] = {}
+    for variant in variants:
+        model_sku = model_skus.get(variant)
+        if (
+            type(model_sku) is not str
+            or not model_sku
+            or model_sku != model_sku.strip()
+            or model_sku in expected_by_model
+        ):
+            raise MiaoshouOneClickPreDispatchError(
+                "approved model SKU identity is ambiguous"
+            )
+        expected_by_model[model_sku] = variant
+
+    observed_by_model: dict[str, object] = {}
+    for raw_key, row in sku_map.items():
+        model_sku = row.get("itemNum")
+        if (
+            type(model_sku) is not str
+            or not model_sku
+            or model_sku != model_sku.strip()
+            or model_sku in observed_by_model
+        ):
+            raise MiaoshouOneClickPreDispatchError(
+                "Miaoshou model SKU identity is ambiguous"
+            )
+        observed_by_model[model_sku] = raw_key
+    if set(observed_by_model) != set(expected_by_model):
+        raise MiaoshouOneClickPreDispatchError(
+            "TikTok model SKU identity does not match approved plan"
+        )
+    return {
+        variant: observed_by_model[model_sku]
+        for model_sku, variant in expected_by_model.items()
+    }
 
 
 def _created_detail_id(

@@ -436,6 +436,83 @@ def test_collectbox_tiktok_writes_selected_store_price_without_publish():
     assert fake.config["publish_path"] not in [path for path, _ in fake.calls]
 
 
+def test_collectbox_tiktok_accepts_latest_draft_opaque_variant_key_by_exact_model_sku():
+    """Miaoshou rewrites the claimed draft's SKU-map key to an opaque ID.
+
+    The approved model SKU remains exact and is the only safe binding between
+    the approved variant and the latest platform draft.  Historical drafts do
+    not participate in this operation because the claim response already
+    supplies the exact latest detail identity.
+    """
+
+    target = "tiktok:LH_PH"
+    payload = _plan_payload(target)
+    fake = DirectStoreFake(target)
+    original_row = fake.detail["skuMap"].pop("default")
+    fake.detail["skuMap"][";a00a0f90f5;"] = original_row
+
+    def post(path, body):
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            fake.calls.append((path, deepcopy(body)))
+            return {"result": "success"}
+        return fake.post(path, body)
+
+    result = miaoshou.prepare_selected_platform_collectbox(
+        platform="tiktok",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=(target,),
+        post=post,
+    )
+
+    save = next(
+        body for path, body in fake.calls if path == fake.config["save_path"]
+    )
+    assert set(save["shopCollectItemInfo"]["skuMap"]) == {
+        ";a00a0f90f5;"
+    }
+    assert save["shopCollectItemInfo"]["skuMap"][";a00a0f90f5;"][
+        "itemNum"
+    ] == "0954"
+    assert result["checks"]["readback_exact"] is True
+    assert fake.config["publish_path"] not in [path for path, _ in fake.calls]
+
+
+def test_collectbox_tiktok_rejects_opaque_variant_with_wrong_model_sku():
+    target = "tiktok:LH_PH"
+    payload = _plan_payload(target)
+    fake = DirectStoreFake(target)
+    original_row = fake.detail["skuMap"].pop("default")
+    original_row["itemNum"] = "different-model"
+    fake.detail["skuMap"][";a00a0f90f5;"] = original_row
+
+    def post(path, body):
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            fake.calls.append((path, deepcopy(body)))
+            return {"result": "success"}
+        return fake.post(path, body)
+
+    with pytest.raises(miaoshou.MiaoshouCollectBoxPreparationError) as captured:
+        miaoshou.prepare_selected_platform_collectbox(
+            platform="tiktok",
+            common_detail_id="7",
+            initial_platform_detail_id="77",
+            initial_claim_written=True,
+            approved_plan_payload=payload,
+            approved_targets=(target,),
+            post=post,
+        )
+
+    assert captured.value.external_writes == (
+        "miaoshou:collectbox:claim:tiktok",
+        "miaoshou:collectbox:tiktok:shop:claim:tiktok:LH_PH",
+    )
+    assert captured.value.external_write_count == 2
+    assert fake.config["save_path"] not in [path for path, _ in fake.calls]
+
+
 def test_collectbox_tiktok_writes_each_selected_country_and_approved_price():
     targets = ("tiktok:MX", "tiktok:GB")
     payload = _plan_payload(targets[0])

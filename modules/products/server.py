@@ -8467,7 +8467,16 @@ def _collectbox_action_status(data: dict) -> tuple[int, dict]:
             "external_writes_performed": [],
             "external_write_count": 0,
         }
-    if projection["approved_plan"] != identity:
+    public_identity = {
+        key: identity[key]
+        for key in (
+            "plan_id",
+            "product_revision",
+            "payload_digest",
+            "targets_digest",
+        )
+    }
+    if projection["approved_plan"] != public_identity:
         return 409, {
             "schema_version": "collectbox-action-status/v1",
             "ok": False,

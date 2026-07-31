@@ -955,22 +955,17 @@
       validateCollectboxPlatform(payload.action.platforms[1], "SHOPEE"),
     ];
     const status = payload.action.status;
-    const retryablePartial = status === "PARTIAL_FAILED" && (
+    const terminalPartial = status === "PARTIAL_FAILED" && (
       payload.action.start_allowed === true
-      && payload.action.retry_allowed === true
-      && payload.action.terminal === false
-      && platforms.some((row) => row.status === "FAILED_RETRYABLE")
-      && platforms.every((row) => (
-        row.status === "SUCCEEDED" || row.status === "FAILED_RETRYABLE"
-      ))
-    );
-    const reconciliationPartial = status === "PARTIAL_FAILED" && (
-      payload.action.start_allowed === false
       && payload.action.retry_allowed === false
       && payload.action.terminal === true
-      && platforms.some((row) => row.status === "RECONCILIATION_REQUIRED")
+      && platforms.some((row) => [
+        "FAILED_RETRYABLE",
+        "RECONCILIATION_REQUIRED",
+      ].includes(row.status))
       && platforms.every((row) => (
         row.status === "SUCCEEDED"
+        || row.status === "FAILED_RETRYABLE"
         || row.status === "RECONCILIATION_REQUIRED"
         || row.status === "PENDING"
       ))
@@ -999,13 +994,13 @@
               payload.persisted === true
               && typeof payload.action.action_id === "string"
               && payload.action.error === null
-              && (retryablePartial || reconciliationPartial)
+              && terminalPartial
             )
             : status === "SUCCEEDED"
               ? (
                 payload.persisted === true
                 && typeof payload.action.action_id === "string"
-                && payload.action.start_allowed === false
+                && payload.action.start_allowed === true
                 && payload.action.retry_allowed === false
                 && payload.action.terminal === true
                 && payload.action.error === null
@@ -1021,11 +1016,13 @@
                 && platforms.every((row) => row.status === "PENDING")
               )
     );
-    const expectedAction = status === "READY" || retryablePartial
+    const expectedAction = status === "READY"
       ? "start_collectbox_action"
       : status === "RUNNING"
         ? "read_collectbox_status"
-        : null;
+        : ["SUCCEEDED", "PARTIAL_FAILED"].includes(status)
+          ? "restart_collectbox_action"
+          : null;
     if (
       !actionExact
       || (
@@ -1142,26 +1139,13 @@
       button.textContent = "导入 TikTok / Shopee 妙手采集箱";
       message.textContent = "点击一次，分别导入 TikTok 与 Shopee 妙手采集箱。";
     } else if (
-      projection.action.status === "PARTIAL_FAILED"
-      && projection.action.retry_allowed
+      ["PARTIAL_FAILED", "SUCCEEDED"].includes(projection.action.status)
+      && projection.action.start_allowed
     ) {
       button.disabled = false;
-      button.textContent = "重试导入失败平台";
+      button.textContent = "重新导入 TikTok / Shopee 妙手采集箱";
       message.textContent =
-        "已成功的平台不会重复导入；本次只重试标记为失败且允许重试的平台。";
-    } else if (
-      projection.action.status === "PARTIAL_FAILED"
-      && projection.action.terminal
-    ) {
-      button.disabled = true;
-      button.textContent = "妙手采集箱结果待人工核对";
-      message.textContent =
-        "至少一个平台的导入结果不确定；为避免重复导入，系统不会自动重试，请到妙手采集箱人工核对。";
-    } else if (projection.action.status === "SUCCEEDED") {
-      button.disabled = true;
-      button.textContent = "妙手采集箱导入完成";
-      message.textContent =
-        "TikTok 与 Shopee 妙手采集箱步骤已完成；店铺发布将在下一阶段开放。";
+        "点击后从头创建一个新导入批次；旧草稿保留，妙手中使用最新草稿。";
     } else {
       button.disabled = true;
       button.textContent = "暂不可导入妙手采集箱";
@@ -1336,12 +1320,17 @@
   async function runCollectboxPrimaryAction() {
     const projection = collectboxAction.projection;
     const identity = collectboxAction.identity;
+    const actionName = projection?.canonical_next_action?.action;
+    const restarting = actionName === "restart_collectbox_action";
     if (
       !identity
       || !projection
       || collectboxAction.posting
       || projection.action.start_allowed !== true
-      || !["READY", "PARTIAL_FAILED"].includes(projection.action.status)
+      || ![
+        "start_collectbox_action",
+        "restart_collectbox_action",
+      ].includes(actionName)
     ) return;
     collectboxAction.posting = true;
     collectboxAction.error = "";
@@ -1368,6 +1357,10 @@
             payload_digest: identity.payloadDigest,
             confirmation_token: identity.confirmationToken,
             targets_digest: identity.targetsDigest,
+            ...(restarting ? {
+              restart_collectbox_action: true,
+              reimport_request_id: window.crypto.randomUUID(),
+            } : {}),
           }),
           controller,
         },

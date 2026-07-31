@@ -169,6 +169,69 @@ def test_server_derives_collectbox_id_and_rejects_client_override(
     assert _plan()["product_id"] not in json.dumps(response)
 
 
+def test_terminal_collectbox_post_explicitly_restarts_full_batch(
+    monkeypatch,
+    tmp_path,
+):
+    store = CollectBoxActionStore(tmp_path / "platform.db")
+    context = _context()
+    seen = []
+    clock = [100.0]
+
+    monkeypatch.setattr(
+        product_server,
+        "_oneclick_approved_context",
+        lambda _data, **_kwargs: (context, None),
+    )
+    monkeypatch.setattr(product_server, "_collectbox_action_store", lambda: store)
+    monkeypatch.setattr(
+        product_server,
+        "_collectbox_action_timing",
+        lambda: (
+            lambda: clock[0],
+            lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        ),
+    )
+
+    def adapter(request):
+        seen.append(request.platform)
+        return CollectBoxPlatformResult(
+            status="SUCCEEDED",
+            outcome=IMPORTED,
+            platform_detail_id=(
+                "71001" if request.platform == "TIKTOK" else "71002"
+            ),
+            external_writes=(
+                f"miaoshou:collectbox:claim:{request.platform.lower()}",
+            ),
+            external_write_count=1,
+            receipt_evidence={"checks": {"readback_exact": True}},
+        )
+
+    monkeypatch.setattr(
+        product_server,
+        "_collectbox_platform_adapter",
+        lambda: adapter,
+    )
+
+    first_status, first = product_server._start_collectbox_action(_post_body())
+    clock[0] = 200.0
+    restart_status, restarted = product_server._start_collectbox_action(
+        {
+            **_post_body(),
+            "restart_collectbox_action": True,
+            "reimport_request_id": (
+                "11111111-1111-4111-8111-111111111111"
+            ),
+        }
+    )
+
+    assert (first_status, restart_status) == (200, 200)
+    assert first["action"]["status"] == "SUCCEEDED"
+    assert restarted["action"]["status"] == "SUCCEEDED"
+    assert seen == ["TIKTOK", "SHOPEE", "TIKTOK", "SHOPEE"]
+
+
 def test_collectbox_optional_review_package_identity_conflict_blocks_start(
     monkeypatch,
     tmp_path,

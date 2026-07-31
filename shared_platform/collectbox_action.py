@@ -15,6 +15,7 @@ from pathlib import Path
 import sqlite3
 import time
 from typing import Any, Callable, Mapping
+import uuid
 
 
 SCHEMA_VERSION = "collectbox-action-status/v1"
@@ -493,6 +494,44 @@ CREATE TABLE IF NOT EXISTS collectbox_action_platforms (
     PRIMARY KEY (action_id, platform),
     FOREIGN KEY (action_id) REFERENCES collectbox_actions(action_id)
 );
+CREATE TABLE IF NOT EXISTS collectbox_action_batches (
+    action_id TEXT PRIMARY KEY,
+    plan_id TEXT NOT NULL,
+    batch_sequence INTEGER NOT NULL,
+    reimport_request_id TEXT NOT NULL,
+    offer_id TEXT NOT NULL,
+    product_revision INTEGER NOT NULL,
+    payload_digest TEXT NOT NULL,
+    targets_digest TEXT NOT NULL,
+    common_identity_digest TEXT NOT NULL,
+    status TEXT NOT NULL,
+    action_error_json TEXT,
+    last_invoked_at REAL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    completed_at REAL,
+    UNIQUE (plan_id, batch_sequence),
+    UNIQUE (plan_id, reimport_request_id)
+);
+CREATE TABLE IF NOT EXISTS collectbox_action_batch_platforms (
+    action_id TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    status TEXT NOT NULL,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    retry_allowed INTEGER NOT NULL DEFAULT 0,
+    outcome TEXT,
+    platform_detail_id TEXT,
+    platform_detail_id_digest TEXT,
+    external_writes_json TEXT NOT NULL DEFAULT '[]',
+    external_write_count INTEGER,
+    receipt_json TEXT,
+    receipt_digest TEXT,
+    error_json TEXT,
+    last_invoked_at REAL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (action_id, platform),
+    FOREIGN KEY (action_id) REFERENCES collectbox_action_batches(action_id)
+);
 """
 
 
@@ -530,8 +569,58 @@ class CollectBoxActionStore:
         }
 
     @staticmethod
+    def _batch_tables_exist(connection: sqlite3.Connection) -> bool:
+        names = {
+            row["name"]
+            for row in connection.execute(
+                """
+                SELECT name FROM sqlite_master
+                WHERE type = 'table' AND name IN (
+                    'collectbox_action_batches',
+                    'collectbox_action_batch_platforms'
+                )
+                """
+            )
+        }
+        return names == {
+            "collectbox_action_batches",
+            "collectbox_action_batch_platforms",
+        }
+
+    @staticmethod
     def _action_id(plan_id: str) -> str:
         return f"collectbox-action:{hashlib.sha256(plan_id.encode()).hexdigest()[:24]}"
+
+    @staticmethod
+    def _batch_action_id(
+        plan_id: str,
+        batch_sequence: int,
+        request_id: str,
+    ) -> str:
+        identity = _canonical_json(
+            {
+                "plan_id": plan_id,
+                "batch_sequence": batch_sequence,
+                "reimport_request_id": request_id,
+            }
+        )
+        return (
+            "collectbox-action-batch:"
+            f"{hashlib.sha256(identity.encode()).hexdigest()[:24]}"
+        )
+
+    @staticmethod
+    def _validated_restart_request_id(value: object) -> str:
+        if type(value) is not str or not value.strip():
+            raise ValueError("reimport_request_id is required")
+        clean = value.strip().lower()
+        try:
+            parsed = uuid.UUID(clean)
+        except (AttributeError, ValueError) as error:
+            raise ValueError("reimport_request_id is invalid") from error
+        if str(parsed) != clean or parsed.version != 4:
+            raise ValueError("reimport_request_id must be a canonical UUID v4")
+        return clean
 
     def preview(
         self,
@@ -555,13 +644,25 @@ class CollectBoxActionStore:
         with self._connect() as connection:
             if not self._tables_exist(connection):
                 return None
+            if self._batch_tables_exist(connection):
+                batch = connection.execute(
+                    """
+                    SELECT * FROM collectbox_action_batches
+                    WHERE plan_id = ?
+                    ORDER BY batch_sequence DESC
+                    LIMIT 1
+                    """,
+                    (clean_plan_id,),
+                ).fetchone()
+                if batch is not None:
+                    return self._project(connection, batch, batched=True)
             row = connection.execute(
                 "SELECT * FROM collectbox_actions WHERE plan_id = ?",
                 (clean_plan_id,),
             ).fetchone()
             if row is None:
                 return None
-            return self._project(connection, row)
+            return self._project(connection, row, batched=False)
 
     def recover_interrupted(
         self,
@@ -582,65 +683,75 @@ class CollectBoxActionStore:
             if not self._tables_exist(connection):
                 return 0
             connection.execute("BEGIN IMMEDIATE")
-            rows = list(
-                connection.execute(
-                    """
-                    SELECT action_id, platform
-                    FROM collectbox_action_platforms
-                    WHERE status = ?
-                    ORDER BY action_id, platform
-                    """,
-                    (RUNNING,),
+            sources = [("collectbox_action_platforms", False)]
+            if self._batch_tables_exist(connection):
+                sources.append(("collectbox_action_batch_platforms", True))
+            recovered = 0
+            for platform_table, batched in sources:
+                rows = list(
+                    connection.execute(
+                        f"""
+                        SELECT action_id, platform
+                        FROM {platform_table}
+                        WHERE status = ?
+                        ORDER BY action_id, platform
+                        """,
+                        (RUNNING,),
+                    )
                 )
-            )
-            for row in rows:
-                platform = row["platform"]
-                error = _redacted_error(
-                    "UNKNOWN",
-                    "collectbox_interrupted_after_dispatch",
-                    "process stopped while the collect-box invocation was in flight",
-                )
-                receipt = {
-                    "schema_version": "collectbox-platform-receipt/v1",
-                    "status": RECONCILIATION_REQUIRED,
-                    "outcome": None,
-                    "platform_detail_id_digest": None,
-                    "external_writes": [_WRITE_CLASS[platform]],
-                    "external_write_count": None,
-                    "evidence_digest": _digest({}),
-                    "error": error,
-                }
-                connection.execute(
-                    """
-                    UPDATE collectbox_action_platforms
-                    SET status = ?, retry_allowed = 0, outcome = NULL,
-                        platform_detail_id = NULL,
-                        platform_detail_id_digest = NULL,
-                        external_writes_json = ?,
-                        external_write_count = NULL,
-                        receipt_json = ?, receipt_digest = ?,
-                        error_json = ?, updated_at = ?
-                    WHERE action_id = ? AND platform = ? AND status = ?
-                    """,
-                    (
-                        RECONCILIATION_REQUIRED,
-                        _canonical_json([_WRITE_CLASS[platform]]),
-                        _canonical_json(receipt),
-                        _digest(receipt),
-                        _canonical_json(error),
-                        recovered_at,
+                for row in rows:
+                    platform = row["platform"]
+                    error = _redacted_error(
+                        "UNKNOWN",
+                        "collectbox_interrupted_after_dispatch",
+                        (
+                            "process stopped while the collect-box "
+                            "invocation was in flight"
+                        ),
+                    )
+                    receipt = {
+                        "schema_version": "collectbox-platform-receipt/v1",
+                        "status": RECONCILIATION_REQUIRED,
+                        "outcome": None,
+                        "platform_detail_id_digest": None,
+                        "external_writes": [_WRITE_CLASS[platform]],
+                        "external_write_count": None,
+                        "evidence_digest": _digest({}),
+                        "error": error,
+                    }
+                    connection.execute(
+                        f"""
+                        UPDATE {platform_table}
+                        SET status = ?, retry_allowed = 0, outcome = NULL,
+                            platform_detail_id = NULL,
+                            platform_detail_id_digest = NULL,
+                            external_writes_json = ?,
+                            external_write_count = NULL,
+                            receipt_json = ?, receipt_digest = ?,
+                            error_json = ?, updated_at = ?
+                        WHERE action_id = ? AND platform = ? AND status = ?
+                        """,
+                        (
+                            RECONCILIATION_REQUIRED,
+                            _canonical_json([_WRITE_CLASS[platform]]),
+                            _canonical_json(receipt),
+                            _digest(receipt),
+                            _canonical_json(error),
+                            recovered_at,
+                            row["action_id"],
+                            platform,
+                            RUNNING,
+                        ),
+                    )
+                    self._refresh_action(
+                        connection,
                         row["action_id"],
-                        platform,
-                        RUNNING,
-                    ),
-                )
-                self._refresh_action(
-                    connection,
-                    row["action_id"],
-                    recovered_at,
-                )
+                        recovered_at,
+                        batched=batched,
+                    )
+                    recovered += 1
             connection.commit()
-            return len(rows)
+            return recovered
 
     def start(
         self,
@@ -652,7 +763,15 @@ class CollectBoxActionStore:
         ],
         now: Callable[[], float] = time.monotonic,
         wait: Callable[[float], None] = time.sleep,
+        restart_existing: bool = False,
+        restart_request_id: object = None,
     ) -> dict[str, Any]:
+        if type(restart_existing) is not bool:
+            raise ValueError("restart_existing must be a literal boolean")
+        if not restart_existing and restart_request_id is not None:
+            raise ValueError(
+                "reimport_request_id requires restart_existing=true"
+            )
         identity = approved_plan_identity(plan)
         self._ensure_schema()
         clean_common_id = str(common_collect_box_detail_id).strip()
@@ -660,9 +779,30 @@ class CollectBoxActionStore:
             identity["plan_id"],
             common_collect_box_detail_id,
         )
-        action_id = self._action_id(identity["plan_id"])
         self._ensure_action(identity, common_digest, now())
-        current = self.status(plan_id=identity["plan_id"])
+        batched = False
+        action_id = self._action_id(identity["plan_id"])
+        if restart_existing:
+            action_id, _created = self._ensure_restart_batch(
+                identity,
+                common_digest,
+                self._validated_restart_request_id(restart_request_id),
+                float(now()),
+            )
+            batched = True
+        if batched:
+            with self._connect() as connection:
+                batch = connection.execute(
+                    """
+                    SELECT * FROM collectbox_action_batches
+                    WHERE action_id = ?
+                    """,
+                    (action_id,),
+                ).fetchone()
+                assert batch is not None
+                current = self._project(connection, batch, batched=True)
+        else:
+            current = self.status(plan_id=identity["plan_id"])
         assert current is not None
         if current["action"]["terminal"] is True:
             return current
@@ -672,9 +812,14 @@ class CollectBoxActionStore:
             if row["status"] in {PENDING, FAILED_RETRYABLE}
         ]
         for platform in candidates:
+            action_table = (
+                "collectbox_action_batches"
+                if batched
+                else "collectbox_actions"
+            )
             with self._connect() as connection:
                 action = connection.execute(
-                    "SELECT * FROM collectbox_actions WHERE action_id = ?",
+                    f"SELECT * FROM {action_table} WHERE action_id = ?",
                     (action_id,),
                 ).fetchone()
                 assert action is not None
@@ -693,6 +838,7 @@ class CollectBoxActionStore:
                 action_id,
                 platform,
                 current_time,
+                batched=batched,
             )
             request = CollectBoxPlatformRequest(
                 action_id=action_id,
@@ -725,9 +871,8 @@ class CollectBoxActionStore:
                     result,
                     current_time,
                     tuple(plan["targets"]),
+                    batched=batched,
                 )
-                if result.status == RECONCILIATION_REQUIRED:
-                    break
             except Exception as error:
                 self._record_result(
                     action_id,
@@ -742,8 +887,19 @@ class CollectBoxActionStore:
                     ),
                     current_time,
                     tuple(plan["targets"]),
+                    batched=batched,
                 )
-                break
+        if batched:
+            with self._connect() as connection:
+                batch = connection.execute(
+                    """
+                    SELECT * FROM collectbox_action_batches
+                    WHERE action_id = ?
+                    """,
+                    (action_id,),
+                ).fetchone()
+                assert batch is not None
+                return self._project(connection, batch, batched=True)
         projected = self.status(plan_id=identity["plan_id"])
         assert projected is not None
         return projected
@@ -837,20 +993,133 @@ class CollectBoxActionStore:
                     )
             connection.commit()
 
+    def _ensure_restart_batch(
+        self,
+        identity: Mapping[str, Any],
+        common_digest: str,
+        request_id: str,
+        now: float,
+    ) -> tuple[str, bool]:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                """
+                SELECT * FROM collectbox_action_batches
+                WHERE plan_id = ? AND reimport_request_id = ?
+                """,
+                (identity["plan_id"], request_id),
+            ).fetchone()
+            if existing is not None:
+                durable = {
+                    "plan_id": existing["plan_id"],
+                    "offer_id": existing["offer_id"],
+                    "product_revision": existing["product_revision"],
+                    "payload_digest": existing["payload_digest"],
+                    "targets_digest": existing["targets_digest"],
+                }
+                if durable != dict(identity):
+                    raise ValueError(
+                        "collect-box reimport identity drifted"
+                    )
+                if existing["common_identity_digest"] != common_digest:
+                    raise ValueError(
+                        "common collect-box reimport identity drifted"
+                    )
+                connection.commit()
+                return existing["action_id"], False
+
+            latest_batch = connection.execute(
+                """
+                SELECT action_id, status, batch_sequence
+                FROM collectbox_action_batches
+                WHERE plan_id = ?
+                ORDER BY batch_sequence DESC
+                LIMIT 1
+                """,
+                (identity["plan_id"],),
+            ).fetchone()
+            if latest_batch is not None:
+                prior_status = latest_batch["status"]
+                batch_sequence = int(latest_batch["batch_sequence"]) + 1
+            else:
+                legacy = connection.execute(
+                    """
+                    SELECT status FROM collectbox_actions
+                    WHERE plan_id = ?
+                    """,
+                    (identity["plan_id"],),
+                ).fetchone()
+                prior_status = legacy["status"] if legacy else None
+                batch_sequence = 2
+            if prior_status not in {SUCCEEDED, "PARTIAL_FAILED"}:
+                raise ValueError(
+                    "collect-box action must finish before a new import"
+                )
+
+            action_id = self._batch_action_id(
+                identity["plan_id"],
+                batch_sequence,
+                request_id,
+            )
+            connection.execute(
+                """
+                INSERT INTO collectbox_action_batches (
+                    action_id, plan_id, batch_sequence,
+                    reimport_request_id, offer_id, product_revision,
+                    payload_digest, targets_digest,
+                    common_identity_digest, status,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'READY', ?, ?)
+                """,
+                (
+                    action_id,
+                    identity["plan_id"],
+                    batch_sequence,
+                    request_id,
+                    identity["offer_id"],
+                    identity["product_revision"],
+                    identity["payload_digest"],
+                    identity["targets_digest"],
+                    common_digest,
+                    now,
+                    now,
+                ),
+            )
+            connection.executemany(
+                """
+                INSERT INTO collectbox_action_batch_platforms (
+                    action_id, platform, status, updated_at
+                ) VALUES (?, ?, 'PENDING', ?)
+                """,
+                [(action_id, platform, now) for platform in PLATFORMS],
+            )
+            connection.commit()
+            return action_id, True
+
     def _mark_running(
         self,
         action_id: str,
         platform: str,
         invoked_at: float,
+        *,
+        batched: bool = False,
     ) -> int:
+        action_table = (
+            "collectbox_action_batches" if batched else "collectbox_actions"
+        )
+        platform_table = (
+            "collectbox_action_batch_platforms"
+            if batched
+            else "collectbox_action_platforms"
+        )
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 """
                 SELECT status, attempt_count
-                FROM collectbox_action_platforms
+                FROM {platform_table}
                 WHERE action_id = ? AND platform = ?
-                """,
+                """.format(platform_table=platform_table),
                 (action_id, platform),
             ).fetchone()
             if row is None or row["status"] not in {
@@ -861,7 +1130,7 @@ class CollectBoxActionStore:
             attempt = int(row["attempt_count"]) + 1
             connection.execute(
                 """
-                UPDATE collectbox_action_platforms
+                UPDATE {platform_table}
                 SET status = ?, attempt_count = ?, retry_allowed = 0,
                     outcome = NULL, platform_detail_id = NULL,
                     platform_detail_id_digest = NULL,
@@ -870,7 +1139,7 @@ class CollectBoxActionStore:
                     receipt_json = NULL, receipt_digest = NULL,
                     error_json = NULL, last_invoked_at = ?, updated_at = ?
                 WHERE action_id = ? AND platform = ?
-                """,
+                """.format(platform_table=platform_table),
                 (
                     RUNNING,
                     attempt,
@@ -882,11 +1151,11 @@ class CollectBoxActionStore:
             )
             connection.execute(
                 """
-                UPDATE collectbox_actions
+                UPDATE {action_table}
                 SET status = ?, last_invoked_at = ?, updated_at = ?,
                     completed_at = NULL
                 WHERE action_id = ?
-                """,
+                """.format(action_table=action_table),
                 (RUNNING, invoked_at, invoked_at, action_id),
             )
             connection.commit()
@@ -899,7 +1168,14 @@ class CollectBoxActionStore:
         result: CollectBoxPlatformResult,
         now: float,
         approved_targets: tuple[str, ...],
+        *,
+        batched: bool = False,
     ) -> None:
+        platform_table = (
+            "collectbox_action_batch_platforms"
+            if batched
+            else "collectbox_action_platforms"
+        )
         allowed_write_classes = _allowed_write_classes(
             platform,
             approved_targets,
@@ -954,7 +1230,7 @@ class CollectBoxActionStore:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """
-                UPDATE collectbox_action_platforms
+                UPDATE {platform_table}
                 SET status = ?, retry_allowed = ?, outcome = ?,
                     platform_detail_id = ?,
                     platform_detail_id_digest = ?,
@@ -963,7 +1239,7 @@ class CollectBoxActionStore:
                     receipt_json = ?, receipt_digest = ?,
                     error_json = ?, updated_at = ?
                 WHERE action_id = ? AND platform = ?
-                """,
+                """.format(platform_table=platform_table),
                 (
                     result.status,
                     int(result.status == FAILED_RETRYABLE),
@@ -980,7 +1256,12 @@ class CollectBoxActionStore:
                     platform,
                 ),
             )
-            self._refresh_action(connection, action_id, now)
+            self._refresh_action(
+                connection,
+                action_id,
+                now,
+                batched=batched,
+            )
             connection.commit()
 
     @staticmethod
@@ -988,14 +1269,24 @@ class CollectBoxActionStore:
         connection: sqlite3.Connection,
         action_id: str,
         now: float,
+        *,
+        batched: bool = False,
     ) -> None:
+        action_table = (
+            "collectbox_action_batches" if batched else "collectbox_actions"
+        )
+        platform_table = (
+            "collectbox_action_batch_platforms"
+            if batched
+            else "collectbox_action_platforms"
+        )
         statuses = [
             row["status"]
             for row in connection.execute(
                 """
-                SELECT status FROM collectbox_action_platforms
+                SELECT status FROM {platform_table}
                 WHERE action_id = ?
-                """,
+                """.format(platform_table=platform_table),
                 (action_id,),
             )
         ]
@@ -1016,10 +1307,10 @@ class CollectBoxActionStore:
             completed_at = None
         connection.execute(
             """
-            UPDATE collectbox_actions
+            UPDATE {action_table}
             SET status = ?, updated_at = ?, completed_at = ?
             WHERE action_id = ?
-            """,
+            """.format(action_table=action_table),
             (status, now, completed_at, action_id),
         )
 
@@ -1075,7 +1366,14 @@ class CollectBoxActionStore:
         self,
         connection: sqlite3.Connection,
         action: sqlite3.Row,
+        *,
+        batched: bool = False,
     ) -> dict[str, Any]:
+        platform_table = (
+            "collectbox_action_batch_platforms"
+            if batched
+            else "collectbox_action_platforms"
+        )
         platforms = []
         union_writes = []
         total_count = 0
@@ -1083,14 +1381,14 @@ class CollectBoxActionStore:
         retry_allowed = False
         for row in connection.execute(
             """
-            SELECT * FROM collectbox_action_platforms
+            SELECT * FROM {platform_table}
             WHERE action_id = ?
             ORDER BY CASE platform
                 WHEN 'TIKTOK' THEN 0
                 WHEN 'SHOPEE' THEN 1
                 ELSE 99
             END
-            """,
+            """.format(platform_table=platform_table),
             (action["action_id"],),
         ):
             classes = json.loads(row["external_writes_json"] or "[]")
@@ -1127,13 +1425,16 @@ class CollectBoxActionStore:
                 }
             )
         status = action["status"]
-        start_allowed = status == "READY" or retry_allowed
-        terminal = status == SUCCEEDED or (
-            status == "PARTIAL_FAILED" and not retry_allowed
-        )
+        terminal = status in {SUCCEEDED, "PARTIAL_FAILED"}
+        start_allowed = status == "READY" or terminal
+        retry_allowed = False
         canonical_next_action = (
             {
-                "action": "start_collectbox_action",
+                "action": (
+                    "restart_collectbox_action"
+                    if terminal
+                    else "start_collectbox_action"
+                ),
                 "target_focus": None,
             }
             if start_allowed

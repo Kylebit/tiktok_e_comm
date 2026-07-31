@@ -8532,6 +8532,26 @@ def _start_collectbox_action(data: dict) -> tuple[int, dict]:
             "external_writes_performed": [],
             "external_write_count": 0,
         }
+    restart_existing = data.get("restart_collectbox_action", False)
+    if type(restart_existing) is not bool or (
+        restart_existing is False
+        and "reimport_request_id" in data
+    ):
+        return 400, {
+            "schema_version": "collectbox-action-status/v1",
+            "ok": False,
+            "persisted": False,
+            "error": _collectbox_public_error(
+                category="VALIDATION",
+                code="collectbox_restart_request_invalid",
+                detail=(
+                    "restart_collectbox_action must be a literal boolean; "
+                    "reimport_request_id is only valid for a restart"
+                ),
+            ),
+            "external_writes_performed": [],
+            "external_write_count": 0,
+        }
     context, failure = _collectbox_identity_context(
         data,
         require_token=True,
@@ -8584,6 +8604,8 @@ def _start_collectbox_action(data: dict) -> tuple[int, dict]:
             adapter=adapter,
             now=now,
             wait=wait_for_spacing,
+            restart_existing=restart_existing,
+            restart_request_id=data.get("reimport_request_id"),
         )
     except (TypeError, ValueError) as error:
         return 409, {

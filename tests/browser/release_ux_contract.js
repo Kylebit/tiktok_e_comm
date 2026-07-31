@@ -5046,8 +5046,8 @@ function collectboxActionProjection(state) {
         action_id: "collectbox-action:fixture",
         status: "PARTIAL_FAILED",
         start_allowed: true,
-        retry_allowed: true,
-        terminal: false,
+        retry_allowed: false,
+        terminal: true,
         error: null,
         platforms: [
           platform({
@@ -5077,7 +5077,7 @@ function collectboxActionProjection(state) {
       external_writes_performed: ["miaoshou:collectbox:claim:tiktok"],
       external_write_count: 1,
       canonical_next_action: {
-        action: "start_collectbox_action",
+        action: "restart_collectbox_action",
         target_focus: null,
       },
     };
@@ -5089,7 +5089,7 @@ function collectboxActionProjection(state) {
       action: {
         action_id: "collectbox-action:complete",
         status: "SUCCEEDED",
-        start_allowed: false,
+        start_allowed: true,
         retry_allowed: false,
         terminal: true,
         error: null,
@@ -5131,7 +5131,10 @@ function collectboxActionProjection(state) {
         "miaoshou:collectbox:shopee:detail:update:shopee:MY",
       ],
       external_write_count: 5,
-      canonical_next_action: null,
+      canonical_next_action: {
+        action: "restart_collectbox_action",
+        target_focus: null,
+      },
     };
   }
   if (state === "RECONCILIATION_PENDING") {
@@ -5141,7 +5144,7 @@ function collectboxActionProjection(state) {
       action: {
         action_id: "collectbox-action:reconciliation-pending",
         status: "PARTIAL_FAILED",
-        start_allowed: false,
+        start_allowed: true,
         retry_allowed: false,
         terminal: true,
         error: null,
@@ -5170,7 +5173,10 @@ function collectboxActionProjection(state) {
         "miaoshou:collectbox:tiktok:shop:claim:tiktok:LH_PH",
       ],
       external_write_count: 2,
-      canonical_next_action: null,
+      canonical_next_action: {
+        action: "restart_collectbox_action",
+        target_focus: null,
+      },
     };
   }
   if (state === "INVALID_WRITE_CLASS") {
@@ -5180,7 +5186,7 @@ function collectboxActionProjection(state) {
       action: {
         action_id: "collectbox-action:invalid-write-class",
         status: "SUCCEEDED",
-        start_allowed: false,
+        start_allowed: true,
         retry_allowed: false,
         terminal: true,
         error: null,
@@ -5213,7 +5219,10 @@ function collectboxActionProjection(state) {
         "miaoshou:collectbox:tiktok:detail:update:shopee:MY",
       ],
       external_write_count: 2,
-      canonical_next_action: null,
+      canonical_next_action: {
+        action: "restart_collectbox_action",
+        target_focus: null,
+      },
     };
   }
   if (state === "RECONCILIATION") {
@@ -5223,7 +5232,7 @@ function collectboxActionProjection(state) {
       action: {
         action_id: "collectbox-action:reconciliation",
         status: "PARTIAL_FAILED",
-        start_allowed: false,
+        start_allowed: true,
         retry_allowed: false,
         terminal: true,
         error: null,
@@ -5258,7 +5267,10 @@ function collectboxActionProjection(state) {
         "miaoshou:collectbox:claim:shopee",
       ],
       external_write_count: null,
-      canonical_next_action: null,
+      canonical_next_action: {
+        action: "restart_collectbox_action",
+        target_focus: null,
+      },
     };
   }
   return {
@@ -5304,7 +5316,19 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
     const url = new URL(request.url());
     if (url.origin !== baseUrl) return route.abort("blockedbyclient");
     if (!url.pathname.startsWith("/api/")) return route.continue();
-    requests.push({ method: request.method(), path: url.pathname });
+    let requestBody = null;
+    if (request.method() === "POST") {
+      try {
+        requestBody = request.postDataJSON();
+      } catch (_error) {
+        requestBody = null;
+      }
+    }
+    requests.push({
+      method: request.method(),
+      path: url.pathname,
+      body: requestBody,
+    });
     if (url.pathname === "/api/product-workspace/dashboard") {
       return route.fulfill(jsonResponse(oneClickDashboard()));
     }
@@ -5320,7 +5344,7 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
       return route.fulfill(jsonResponse(collectboxActionProjection(previewState)));
     }
     if (url.pathname === "/api/product-workspace/collectbox-action/start") {
-      await new Promise((resolve) => setTimeout(resolve, 180));
+      await new Promise((resolve) => setTimeout(resolve, 500));
       previewState = "PARTIAL_FAILED";
       return route.fulfill(jsonResponse(collectboxActionProjection("RUNNING")));
     }
@@ -5381,7 +5405,7 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
       initialState,
     );
     const click = primary.click();
-    await page.waitForTimeout(50);
+    await page.waitForTimeout(100);
     check(
       (await primary.innerText()).includes("正在导入")
         || (await optionalText("#collectboxActionMessage")).includes("正在"),
@@ -5409,8 +5433,8 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
         && partialState.includes("Shopee")
         && partialState.includes("失败，可重试")
         && await primary.isEnabled()
-        && (await primary.innerText()).includes("重试导入失败平台"),
-      `collectbox ${viewport.width}: partial success preserves independent states and retry`,
+        && (await primary.innerText()).includes("重新导入"),
+      `collectbox ${viewport.width}: partial result offers one fresh full batch`,
       { partialState, statusReads, label: await primary.innerText() },
     );
 
@@ -5419,13 +5443,32 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
     await page.goto(pageUrl, { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(300);
     const successState = await optionalText("#collectboxActionStatus");
+    const restartEnabled = await primary.isEnabled();
     check(
       successState.includes("TikTok")
         && successState.includes("Shopee")
-        && !(await primary.isEnabled()),
-      `collectbox ${viewport.width}: success accepts multi-write imported receipts`,
+        && restartEnabled
+        && (await primary.innerText()).includes("重新导入"),
+      `collectbox ${viewport.width}: terminal success offers one explicit full restart`,
       { successState, label: await primary.innerText() },
     );
+    if (restartEnabled) {
+      await primary.click();
+      await page.waitForTimeout(250);
+      const restartPosts = requests.filter((row) => (
+        row.method === "POST"
+        && row.path === "/api/product-workspace/collectbox-action/start"
+      ));
+      check(
+        restartPosts.length === 1
+          && restartPosts[0].body?.restart_collectbox_action === true
+          && /^[0-9a-f-]{36}$/.test(
+            restartPosts[0].body?.reimport_request_id || "",
+          ),
+        `collectbox ${viewport.width}: one explicit restart sends one full-batch POST`,
+        restartPosts,
+      );
+    }
 
     requests.length = 0;
     previewState = "RECONCILIATION";
@@ -5435,10 +5478,9 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
       "#collectboxActionMessage",
     );
     check(
-      !(await primary.isEnabled())
-        && reconciliationMessage.includes("不会自动重试")
-        && reconciliationMessage.includes("人工核对"),
-      `collectbox ${viewport.width}: unknown result stops retry and explains manual check`,
+      await primary.isEnabled()
+        && (await primary.innerText()).includes("重新导入"),
+      `collectbox ${viewport.width}: unknown result can start a fresh explicit batch`,
       { reconciliationMessage, label: await primary.innerText() },
     );
 
@@ -5450,10 +5492,11 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
       "#collectboxActionStatus",
     );
     check(
-      !(await primary.isEnabled())
+      await primary.isEnabled()
         && reconciliationPendingState.includes("TikTok")
-        && reconciliationPendingState.includes("Shopee"),
-      `collectbox ${viewport.width}: reconciliation plus pending is a valid terminal partial state`,
+        && reconciliationPendingState.includes("Shopee")
+        && (await primary.innerText()).includes("重新导入"),
+      `collectbox ${viewport.width}: reconciliation plus pending offers a fresh batch`,
       {
         reconciliationPendingState,
         label: await primary.innerText(),

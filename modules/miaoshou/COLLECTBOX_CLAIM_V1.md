@@ -67,3 +67,20 @@ Public projections exclude the common detail ID, platform detail ID,
 idempotency key, request body, raw response, credentials, and error message.
 They retain stable status, write/recovery facts, identity/evidence digests, and
 the deterministic receipt digest.
+
+## Shared-platform bridge
+
+`domains.channel_operations.collectbox_action_adapters` is the only dynamic
+bridge consumed by the shared control plane. It exact-checks the server-owned
+common identity before invoking this service and maps the typed receipt as
+follows:
+
+- `ACCEPTED` -> `SUCCEEDED / IMPORTED`, one platform-specific write;
+- exact-ID `ALREADY_PRESENT` -> `SUCCEEDED / ALREADY_PRESENT`, zero writes;
+- known retry-safe rejection -> `FAILED_RETRYABLE`, zero writes;
+- unresolved known identity -> `RECONCILIATION_REQUIRED`, zero writes;
+- unknown invoked outcome -> `RECONCILIATION_REQUIRED`, unknown write count
+  and the exact platform-specific write class.
+
+The bridge returns the raw platform detail ID only in the server-internal
+typed result. Its receipt evidence remains the redacted service projection.

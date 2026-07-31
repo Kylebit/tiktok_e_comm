@@ -1,6 +1,7 @@
 import json
 import json
 import sqlite3
+import threading
 
 import pytest
 
@@ -323,6 +324,177 @@ def test_terminal_action_can_restart_full_batch_and_preserves_history(tmp_path):
         }
     assert batches == [(2, request_id)]
     assert legacy_after == legacy_before
+
+
+def test_same_reimport_request_concurrent_start_has_one_batch_and_one_execution(
+    tmp_path,
+    monkeypatch,
+):
+    """Two exact simultaneous clicks must join one idempotent execution."""
+
+    path = tmp_path / "platform.db"
+    store = CollectBoxActionStore(path)
+    plan = _plan()
+    calls = []
+    calls_lock = threading.Lock()
+
+    def adapter(request):
+        with calls_lock:
+            calls.append(request.platform)
+        return CollectBoxPlatformResult(
+            status="SUCCEEDED",
+            outcome=IMPORTED,
+            platform_detail_id=(
+                "71001" if request.platform == "TIKTOK" else "71002"
+            ),
+            external_writes=(
+                f"miaoshou:collectbox:claim:{request.platform.lower()}",
+            ),
+            external_write_count=1,
+            receipt_evidence={"checks": {"readback_exact": True}},
+        )
+
+    store.start(
+        plan=plan,
+        common_collect_box_detail_id=plan["product_id"],
+        adapter=adapter,
+        now=lambda: 100.0,
+        wait=lambda _seconds: None,
+    )
+    calls.clear()
+
+    # Force both callers to observe the same TIKTOK row as runnable before
+    # either can claim it.  This makes the contention deterministic instead of
+    # relying on scheduler timing.
+    original_mark_running = store._mark_running
+    tiktok_claim_barrier = threading.Barrier(2, timeout=5)
+
+    def overlapping_mark_running(action_id, platform, invoked_at, **kwargs):
+        if platform == "TIKTOK":
+            tiktok_claim_barrier.wait()
+        return original_mark_running(
+            action_id,
+            platform,
+            invoked_at,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(store, "_mark_running", overlapping_mark_running)
+    start_barrier = threading.Barrier(3, timeout=5)
+    request_id = "44444444-4444-4444-8444-444444444444"
+    results = []
+    errors = []
+
+    def invoke_start():
+        start_barrier.wait()
+        try:
+            results.append(
+                store.start(
+                    plan=plan,
+                    common_collect_box_detail_id=plan["product_id"],
+                    adapter=adapter,
+                    now=lambda: 200.0,
+                    wait=lambda _seconds: None,
+                    restart_existing=True,
+                    restart_request_id=request_id,
+                )
+            )
+        except Exception as error:  # captured for the desired assertion
+            errors.append(error)
+
+    threads = [threading.Thread(target=invoke_start) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    start_barrier.wait()
+    for thread in threads:
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+
+    with sqlite3.connect(path) as connection:
+        batch_count = connection.execute(
+            """
+            SELECT COUNT(*) FROM collectbox_action_batches
+            WHERE plan_id = ? AND reimport_request_id = ?
+            """,
+            (plan["plan_id"], request_id),
+        ).fetchone()[0]
+
+    assert batch_count == 1
+    assert calls.count("TIKTOK") == 1
+    assert calls.count("SHOPEE") == 1
+    assert errors == []
+    assert len(results) == 2
+    assert results[0] == results[1]
+    assert results[0]["action"]["status"] == "SUCCEEDED"
+
+
+def test_creating_batch_three_does_not_mutate_batch_two_receipt_rows(tmp_path):
+    path = tmp_path / "platform.db"
+    store = CollectBoxActionStore(path)
+    plan = _plan()
+
+    def adapter(request):
+        return CollectBoxPlatformResult(
+            status="SUCCEEDED",
+            outcome=IMPORTED,
+            platform_detail_id=(
+                "71001" if request.platform == "TIKTOK" else "71002"
+            ),
+            external_writes=(
+                f"miaoshou:collectbox:claim:{request.platform.lower()}",
+            ),
+            external_write_count=1,
+            receipt_evidence={"checks": {"readback_exact": True}},
+        )
+
+    store.start(
+        plan=plan,
+        common_collect_box_detail_id=plan["product_id"],
+        adapter=adapter,
+        now=lambda: 100.0,
+        wait=lambda _seconds: None,
+    )
+    store.start(
+        plan=plan,
+        common_collect_box_detail_id=plan["product_id"],
+        adapter=adapter,
+        now=lambda: 200.0,
+        wait=lambda _seconds: None,
+        restart_existing=True,
+        restart_request_id="55555555-5555-4555-8555-555555555555",
+    )
+
+    def batch_two_snapshot():
+        with sqlite3.connect(path) as connection:
+            rows = connection.execute(
+                """
+                SELECT platform, receipt_json, receipt_digest,
+                       external_writes_json, external_write_count
+                FROM collectbox_action_batch_platforms
+                WHERE action_id = (
+                    SELECT action_id FROM collectbox_action_batches
+                    WHERE plan_id = ? AND batch_sequence = 2
+                )
+                ORDER BY platform
+                """,
+                (plan["plan_id"],),
+            ).fetchall()
+        return rows, json.dumps(rows, separators=(",", ":")).encode()
+
+    rows_before, bytes_before = batch_two_snapshot()
+    store.start(
+        plan=plan,
+        common_collect_box_detail_id=plan["product_id"],
+        adapter=adapter,
+        now=lambda: 300.0,
+        wait=lambda _seconds: None,
+        restart_existing=True,
+        restart_request_id="66666666-6666-4666-8666-666666666666",
+    )
+    rows_after, bytes_after = batch_two_snapshot()
+
+    assert rows_before == rows_after
+    assert bytes_before == bytes_after
 
 
 def test_interrupted_reimport_batch_recovers_without_redispatch(tmp_path):

@@ -2482,6 +2482,21 @@ def _price(
         currency = _text(
             store_prices[0].get("currency"), "approved currency"
         )
+        config = DIRECT_STORE_CONFIG.get(target)
+        expected_currency = {
+            "MX": "MXN",
+            "GB": "GBP",
+            "PH": "PHP",
+            "MY": "MYR",
+            "TH": "THB",
+            "VN": "VND",
+            "OZON": "RUB",
+        }.get(str(config.get("region"))) if isinstance(config, Mapping) else None
+        if currency != expected_currency:
+            raise MiaoshouOneClickPrepareBlocked(
+                "approved_store_currency_mismatch",
+                "approved target currency does not match the storefront",
+            )
         return str(price), currency
 
     derived = row.get("derived_preview")

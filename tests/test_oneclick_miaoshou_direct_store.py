@@ -548,6 +548,36 @@ def test_collectbox_invalid_approved_price_preserves_prior_claim_write():
     assert calls == []
 
 
+def test_collectbox_wrong_target_currency_stops_before_storefront_writes():
+    target = "tiktok:MX"
+    payload = _plan_payload(target)
+    payload["pricing"]["selected_targets"][target]["store_prices"][0][
+        "currency"
+    ] = "GBP"
+    calls = []
+
+    def post(path, body):
+        calls.append((path, body))
+        return {"result": "success"}
+
+    with pytest.raises(miaoshou.MiaoshouCollectBoxPreparationError) as captured:
+        miaoshou.prepare_selected_platform_collectbox(
+            platform="tiktok",
+            common_detail_id="7",
+            initial_platform_detail_id="77",
+            initial_claim_written=True,
+            approved_plan_payload=payload,
+            approved_targets=(target,),
+            post=post,
+        )
+
+    assert captured.value.external_writes == (
+        "miaoshou:collectbox:claim:tiktok",
+    )
+    assert captured.value.external_write_count == 1
+    assert calls == []
+
+
 def test_collectbox_shopee_writes_exact_simple_description_without_publish():
     target = "shopee:MY"
     description = (

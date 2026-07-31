@@ -244,6 +244,19 @@ def test_quantity_is_independent_from_dimensions_weight_and_cost():
     assert "两类建议按同一规则排序并在同一张表中展示" in html
 
 
+def test_dashboard_consumes_segmented_trend_and_discloses_fallbacks():
+    app = (DASHBOARD / "app.js").read_text(encoding="utf-8")
+    html = (DASHBOARD / "index.html").read_text(encoding="utf-8")
+
+    assert 'trend.method !== "segmented_7_8_15_v1"' in app
+    assert 'demand.trendClass === "SPIKE"' in app
+    assert "const targetCoverageDays = spikeProtection ? 15" in app
+    assert "缺逐日分段，按30日+长窗降级" in app
+    assert "趋势算法数据覆盖" in app
+    assert "最近7天60% + 第8–15天30% + 第16–30天10%" in html
+    assert "缺逐日分段时明确降级，不伪造趋势" in html
+
+
 def test_dashboard_contains_no_remote_image_or_secret_dependency_and_marks_blockers():
     data_text = (DASHBOARD / "data.js").read_text(encoding="utf-8")
     app = (DASHBOARD / "app.js").read_text(encoding="utf-8")

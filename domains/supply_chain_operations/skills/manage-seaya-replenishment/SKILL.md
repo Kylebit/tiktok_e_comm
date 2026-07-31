@@ -42,6 +42,16 @@ Run `scripts/validate_inventory_snapshot.py SNAPSHOT.json` before consuming a ne
 - When logistics fields are incomplete, display the SKU, image, demand, inventory and calculated quantity. Mark only the affected output as pending: dimensions affect volume, weight affects local handling and net benefit, and cost affects working capital.
 - Do not use known benefit as a readiness gate. Display positive or negative benefit alongside the demand-and-inventory recommendation.
 
+## Forecast volatile demand
+
+- Calculate TikTok and Shopee independently, then sum their approved daily velocities at exact country + SKU.
+- When exact daily settlement facts exist, use three non-overlapping windows: last 7 days at 60%, days 8–15 at 30%, and days 16–30 at 10%.
+- Divide by verified sellable days when an audited stockout calendar exists. Otherwise divide by calendar days and disclose `calendar_days_no_stockout_adjustment`; never invent in-stock days.
+- Classify a 30-day series as `SPIKE` when it has at least 5 units and either no more than 2 active sales days or one day contributes at least 60% of units.
+- For a `SPIKE` first-stock SKU, use 15 arrival-coverage days instead of the normal country target. Do not apply this first-stock guard to existing local stock.
+- Use the segmented trend only when its exact window units reconcile with `recent30Units`. Otherwise fail over to the declared 30-day + long-window or long-window method and surface the fallback.
+- Preserve method, weights, window units, denominator basis, velocity, trend class, confidence, and spike-protection days in the aggregate contract.
+
 ## Maintain manual completion
 
 - Allow manual entry only for missing package dimensions, weight, unit cost, and an optional source note.

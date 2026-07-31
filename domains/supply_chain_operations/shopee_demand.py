@@ -11,6 +11,8 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
+from .demand_trend import calculate_segmented_trend
+
 _CANONICAL_SKU = re.compile(r"^\d{4}$")
 _APPROVED_CHANNEL_ALIAS = re.compile(r"^(?:77|99)(\d{4})$")
 
@@ -44,6 +46,7 @@ def aggregate_escrow_details(
     window_days: int,
     recent_cutoff_ts: int,
     catalog_sku_by_model: dict[tuple[int, int], str] | None = None,
+    trend_end_ts: int | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
     """Aggregate redacted order details into exact-SKU demand facts."""
 
@@ -51,6 +54,12 @@ def aggregate_escrow_details(
         raise ValueError("window_days must be a positive built-in int")
     if type(recent_cutoff_ts) is not int or isinstance(recent_cutoff_ts, bool):
         raise ValueError("recent_cutoff_ts must be a built-in int")
+    if trend_end_ts is not None and (
+        type(trend_end_ts) is not int
+        or isinstance(trend_end_ts, bool)
+        or trend_end_ts <= recent_cutoff_ts
+    ):
+        raise ValueError("trend_end_ts must be a built-in int after recent_cutoff_ts")
 
     totals: dict[str, dict[str, Any]] = defaultdict(
         lambda: {
@@ -60,6 +69,8 @@ def aggregate_escrow_details(
             "customerPayment": 0.0,
             "actualShippingFee": 0.0,
             "sourceAliases": set(),
+            "trendWindowUnits": [0, 0, 0],
+            "trendDailyUnits": defaultdict(int),
         }
     )
     rejected = 0
@@ -110,8 +121,20 @@ def aggregate_escrow_details(
                 row["orders"] += 1
                 seen_in_order.add(canonical)
             row["units"] += quantity
-            if release_ts >= recent_cutoff_ts:
+            if release_ts >= recent_cutoff_ts and (
+                trend_end_ts is None or release_ts < trend_end_ts
+            ):
                 row["recent30Units"] += quantity
+            if trend_end_ts is not None and recent_cutoff_ts <= release_ts < trend_end_ts:
+                age_seconds = trend_end_ts - release_ts
+                if age_seconds <= 7 * 86400:
+                    window_index = 0
+                elif age_seconds <= 15 * 86400:
+                    window_index = 1
+                else:
+                    window_index = 2
+                row["trendWindowUnits"][window_index] += quantity
+                row["trendDailyUnits"][release_ts // 86400] += quantity
             row["customerPayment"] += subtotal
             row["actualShippingFee"] += shipping_total * (max(subtotal, 0.01) / weight_total)
             row["sourceAliases"].add(source_sku)
@@ -127,6 +150,16 @@ def aggregate_escrow_details(
             "actualShippingFee": round(row["actualShippingFee"], 2),
             "sourceAliases": sorted(row["sourceAliases"]),
         }
+        if trend_end_ts is not None:
+            window_units = row["trendWindowUnits"]
+            daily_units = row["trendDailyUnits"]
+            result[sku]["trendDecision"] = calculate_segmented_trend(
+                last_7_units=window_units[0],
+                days_8_to_15_units=window_units[1],
+                days_16_to_30_units=window_units[2],
+                active_sales_days_30=len(daily_units),
+                max_daily_units_30=max(daily_units.values(), default=0),
+            )
     return result, {
         "details": detail_count,
         "catalog_resolved_items": catalog_resolved,

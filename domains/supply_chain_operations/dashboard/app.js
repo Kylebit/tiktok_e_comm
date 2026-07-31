@@ -45,11 +45,44 @@ function shelvingFee(weightG) {
   return 1;
 }
 
-function channelDaily(channel) {
-  if (channel.state && channel.state !== "READY") return 0;
+function validTrendDecision(trend, channel) {
+  if (!trend || trend.method !== "segmented_7_8_15_v1") return false;
+  if (!["RISING", "STABLE", "FALLING", "SPIKE"].includes(trend.trendClass)) return false;
+  if (!["HIGH", "MEDIUM", "LOW"].includes(trend.confidence)) return false;
+  if (typeof trend.dailyVelocity !== "number" || !Number.isFinite(trend.dailyVelocity) || trend.dailyVelocity < 0) return false;
+  const units = trend.units;
+  if (!units || ["last7", "days8To15", "days16To30"].some(
+    key => typeof units[key] !== "number" || !Number.isFinite(units[key]) || units[key] < 0
+  )) return false;
+  const trendTotal = units.last7 + units.days8To15 + units.days16To30;
+  return channel.recent30Units === null || channel.recent30Units === undefined
+    || Math.abs(trendTotal - number(channel.recent30Units)) < 0.001;
+}
+
+function channelDemand(channel) {
+  if (channel.state && channel.state !== "READY") {
+    return {daily: 0, method: "BLOCKED", trendClass: null, confidence: null, trend: null};
+  }
+  if (validTrendDecision(channel.trendDecision, channel)) {
+    return {
+      daily: channel.trendDecision.dailyVelocity,
+      method: "SEGMENTED_TREND",
+      trendClass: channel.trendDecision.trendClass,
+      confidence: channel.trendDecision.confidence,
+      trend: channel.trendDecision
+    };
+  }
   const longDaily = channel.days ? channel.units / channel.days : 0;
-  if (channel.recent30Units === null || channel.recent30Units === undefined) return longDaily;
-  return (channel.recent30Units / 30) * 0.7 + longDaily * 0.3;
+  if (channel.recent30Units === null || channel.recent30Units === undefined) {
+    return {daily: longDaily, method: "LONG_WINDOW_FALLBACK", trendClass: null, confidence: null, trend: null};
+  }
+  return {
+    daily: (channel.recent30Units / 30) * 0.7 + longDaily * 0.3,
+    method: "RECENT30_FALLBACK",
+    trendClass: null,
+    confidence: null,
+    trend: null
+  };
 }
 
 function calculateCountry(region) {
@@ -65,8 +98,10 @@ function calculateCountry(region) {
           manualInput
         }
       : item;
-    const tiktokDaily = channelDaily(effectiveItem.channels.tiktok);
-    const shopeeDaily = channelDaily(effectiveItem.channels.shopee);
+    const tiktokDemand = channelDemand(effectiveItem.channels.tiktok);
+    const shopeeDemand = channelDemand(effectiveItem.channels.shopee);
+    const tiktokDaily = tiktokDemand.daily;
+    const shopeeDaily = shopeeDemand.daily;
     const dailyVelocity = tiktokDaily + shopeeDaily;
     const dimensionsReady = Array.isArray(effectiveItem.dimensionsCm) && effectiveItem.dimensionsCm.length === 3
       && effectiveItem.dimensionsCm.every(value => typeof value === "number" && Number.isFinite(value) && value > 0)
@@ -75,8 +110,12 @@ function calculateCountry(region) {
     const costReady = typeof effectiveItem.costCny === "number"
       && Number.isFinite(effectiveItem.costCny) && effectiveItem.costCny > 0;
     const dataIncomplete = !dimensionsReady || !weightReady || !costReady;
+    const spikeProtection = effectiveItem.kind === "first_stock" && [tiktokDemand, shopeeDemand].some(
+      demand => demand.trendClass === "SPIKE"
+    );
+    const targetCoverageDays = spikeProtection ? 15 : config.targetDays + config.safetyDays;
     const leadDemand = Math.ceil(dailyVelocity * config.leadDays);
-    const arrivalTarget = Math.ceil(dailyVelocity * (config.targetDays + config.safetyDays));
+    const arrivalTarget = Math.ceil(dailyVelocity * targetCoverageDays);
     const trusted = number(effectiveItem.inventory.available) + number(effectiveItem.inventory.inbound);
     const projectedAtArrival = Math.max(0, trusted - leadDemand);
     const recommended = Math.max(0, arrivalTarget - projectedAtArrival);
@@ -90,7 +129,8 @@ function calculateCountry(region) {
       ? Math.max(volumeM3, weightEquivalentM3)
       : null;
     return {...effectiveItem, dimensionsReady, weightReady, costReady, dataIncomplete,
-      tiktokDaily, shopeeDaily, dailyVelocity, leadDemand, arrivalTarget,
+      tiktokDemand, shopeeDemand, tiktokDaily, shopeeDaily, dailyVelocity,
+      spikeProtection, targetCoverageDays, leadDemand, arrivalTarget,
       projectedAtArrival, recommended, volumeM3, chargeableUnitM3};
   });
 
@@ -158,7 +198,7 @@ function statusLabel(status) {
   return {REPLENISH: "建议补货", FIRST_STOCK: "建议首批", HOLD: "库存覆盖", NO_DEMAND: "销量不足"}[status];
 }
 
-function channelBlock(label, channel, daily) {
+function channelBlock(label, channel, demand) {
   if (channel.state && channel.state !== "READY") {
     const reason = channel.state === "PENDING_REFRESH"
       ? "访问令牌可刷新 · 结算待拉取"
@@ -170,7 +210,19 @@ function channelBlock(label, channel, daily) {
   const recent = channel.recent30Units === null || channel.recent30Units === undefined
     ? "无可安全拆分的近30天值"
     : `近30天 ${channel.recent30Units} 件`;
-  return `<div class="channel-line"><b>${label}</b><span>${channel.units.toLocaleString("zh-CN")} 件 / ${channel.orders.toLocaleString("zh-CN")} 单</span><small>${recent} · 日均 ${daily.toFixed(2)}</small></div>`;
+  if (demand.method === "SEGMENTED_TREND") {
+    const trend = demand.trend;
+    const trendLabel = {RISING: "上涨", STABLE: "稳定", FALLING: "下降", SPIKE: "短期爆量"}[trend.trendClass];
+    const confidenceLabel = {HIGH: "高", MEDIUM: "中", LOW: "低"}[trend.confidence];
+    const denominatorNote = trend.denominatorBasis === "verified_sellable_days"
+      ? "按实际可售天数"
+      : "暂无缺货日历，按自然日";
+    return `<div class="channel-line"><b>${label}</b><span>${channel.units.toLocaleString("zh-CN")} 件 / ${channel.orders.toLocaleString("zh-CN")} 单</span><small>近7天 ${trend.units.last7} · 8–15天 ${trend.units.days8To15} · 16–30天 ${trend.units.days16To30}</small><small>趋势${trendLabel} · 置信度${confidenceLabel} · ${denominatorNote} · 预测日均 ${demand.daily.toFixed(2)}</small></div>`;
+  }
+  const fallback = demand.method === "RECENT30_FALLBACK"
+    ? "缺逐日分段，按30日+长窗降级"
+    : "缺逐日分段，按长窗降级";
+  return `<div class="channel-line"><b>${label}</b><span>${channel.units.toLocaleString("zh-CN")} 件 / ${channel.orders.toLocaleString("zh-CN")} 单</span><small>${recent} · ${fallback} · 日均 ${demand.daily.toFixed(2)}</small></div>`;
 }
 
 function rowHtml(item, config) {
@@ -207,9 +259,9 @@ function rowHtml(item, config) {
   ].filter(Boolean).join("、");
   return `<tr>
     <td><div class="product-cell"><img src="./${escapeHtml(item.image)}" alt="SKU ${escapeHtml(item.sku)} 主图"><div><strong>${escapeHtml(item.sku)}</strong><span>${escapeHtml(item.name)}</span><small>${physicalLabel}</small></div></div></td>
-    <td><div class="channel-stack">${channelBlock("TikTok", item.channels.tiktok, item.tiktokDaily)}${channelBlock("Shopee", item.channels.shopee, item.shopeeDaily)}<em>合并需求 ${item.dailyVelocity.toFixed(2)} 件/天</em></div></td>
+    <td><div class="channel-stack">${channelBlock("TikTok", item.channels.tiktok, item.tiktokDemand)}${channelBlock("Shopee", item.channels.shopee, item.shopeeDemand)}<em>合并需求 ${item.dailyVelocity.toFixed(2)} 件/天${item.spikeProtection ? " · 短期爆量首批仅覆盖15天" : ""}</em></div></td>
     <td><div class="inventory-grid"><span>库存<b>${item.inventory.stock}</b></span><span>可用<b>${item.inventory.available}</b></span><span>占用<b>${item.inventory.allocated}</b></span><span>冻结<b>${item.inventory.frozen}</b></span><span>在途<b>${item.inventory.inbound}</b></span><span>绑定<b>${inventoryLabel}</b></span></div></td>
-    <td><div class="calc-lines"><span>${config.leadDays}天需求 <b>${item.leadDemand}</b></span><span>到仓剩余 <b>${item.projectedAtArrival}</b></span><span>${config.targetDays + config.safetyDays}天目标 <b>${item.arrivalTarget}</b></span><code>max(0, ${item.arrivalTarget} − ${item.projectedAtArrival})</code></div></td>
+    <td><div class="calc-lines"><span>${config.leadDays}天需求 <b>${item.leadDemand}</b></span><span>到仓剩余 <b>${item.projectedAtArrival}</b></span><span>${item.targetCoverageDays}天目标 <b>${item.arrivalTarget}</b></span><code>max(0, ${item.arrivalTarget} − ${item.projectedAtArrival})</code></div></td>
     <td class="recommend"><strong>${item.recommended}</strong><span>件</span><small>${volumeLabel}</small></td>
     <td><div class="economics-mini"><span>用户结算价 <b>${local}${item.customerPaymentLocal.toFixed(2)}</b></span><span>税费节省 ${Math.round(config.taxSavingRate * 100)}% <b class="gain">${money(item.taxSavingUnit, 2)}</b></span><span>跨境运费节省 20% <b class="gain">${money(item.shippingSavingUnit, 2)}</b></span><span>本土处理 + 头程 <b>${handlingLabel}</b></span><em>${benefitLabel} ${shippingEvidence}</em></div></td>
     <td><span class="pill ${item.status.toLowerCase()}">${statusLabel(item.status)}</span><small class="reason">${item.dataIncomplete ? `建议件数已生成；${missingFields}待补充，仅影响${affectedOutputs}展示。` : item.kind === "first_stock" ? "当前仓库为0；平台需求与商品资料齐全，收益单独展示。" : item.status === "HOLD" ? "现货与在途已覆盖到仓目标。" : item.status === "NO_DEMAND" ? "没有足够的SKU级需求事实。" : "需求缺口成立；收益仅展示，不拦截补货建议。"}</small>${item.dataIncomplete || item.manualInput ? `<button class="manual-entry-button" type="button" data-action="manual-entry" data-sku="${escapeHtml(item.sku)}">${item.manualInput ? "修改已补资料" : "手动补齐"}</button>` : ""}</td>
@@ -258,6 +310,12 @@ function renderCountry() {
   const recent30Count = calculated.filter(item => Object.values(item.channels).some(
     channel => number(channel.recent30Units) > 0
   )).length;
+  const readyChannelDemands = calculated.flatMap(item => [item.tiktokDemand, item.shopeeDemand])
+    .filter(demand => demand.method !== "BLOCKED");
+  const segmentedChannelCount = readyChannelDemands.filter(
+    demand => demand.method === "SEGMENTED_TREND"
+  ).length;
+  const spikeProtectedCount = calculated.filter(item => item.spikeProtection).length;
 
   document.querySelector("#snapshotDate").textContent = DATA.snapshotDate;
   document.querySelector("#countryEyebrow").textContent = `${activeRegion} · ${config.freightMode.toUpperCase()} · ${config.warehouse}`;
@@ -267,7 +325,7 @@ function renderCountry() {
     ? `税费节省 = 用户结算价 × ${Math.round(config.taxSavingRate * 100)}%`
     : "税费优势尚未批准，按 0";
   document.querySelector("#sourceChips").innerHTML = `<span>雅仓 ${existingCount} SKU</span><span>${config.demandCoverage}</span><span>${config.freightMode}</span><span>${taxChip}</span>`;
-  document.querySelector("#coverageLabel").textContent = `${config.leadDays}天交期 · ${config.targetDays}+${config.safetyDays}天覆盖`;
+  document.querySelector("#coverageLabel").textContent = `${config.leadDays}天交期 · 常规${config.targetDays + config.safetyDays}天 · 爆量首批15天`;
   document.querySelector("#batchQty").textContent = qty.toLocaleString("zh-CN");
   document.querySelector("#batchSkuCount").textContent = `${approved.length} 款`;
   document.querySelector("#batchVolume").textContent = missingVolumeCount
@@ -291,7 +349,7 @@ function renderCountry() {
   document.querySelector("#inboundUnits").textContent = `${inbound.toLocaleString("zh-CN")} 件`;
   document.querySelector("#demandWindow").textContent = config.demandCoverage;
   document.querySelector("#decisionHeadline").textContent = approved.length ? `备 ${approved.length} 款` : "暂缓备货";
-  document.querySelector("#formulaText").textContent = `Q = max[0, ceil(v × ${config.targetDays + config.safetyDays}) − max(0, 可用 + 在途 − ceil(v × ${config.leadDays}))]`;
+  document.querySelector("#formulaText").textContent = `Q = max[0, ceil(v × 目标覆盖天数) − max(0, 可用 + 在途 − ceil(v × ${config.leadDays}))]`;
   document.querySelector("#freightRule").textContent = `所有国家、站点和 SKU 的头程统一按 ${money(config.fixedHeadFreightUnitCny, 2)}/件计入；体积只用于装运规划，不参与本页头程金额。`;
   const taxRule = config.taxSavingRate > 0
     ? `税费节省按用户结算价的 ${Math.round(config.taxSavingRate * 100)}%`
@@ -316,6 +374,7 @@ function renderCountry() {
     <article class="ok"><strong>库存按国家隔离</strong><p>${config.warehouse} 当前可用 ${available} 件、在途 ${inbound} 件；不使用其他国家仓库存抵扣本国需求。</p></article>
     ${identityEvidence}
     ${unmappedEvidence}
+    <article class="${segmentedChannelCount ? "ok" : "warn"}"><strong>趋势算法数据覆盖</strong><p>${segmentedChannelCount} / ${readyChannelDemands.length} 个可用渠道具备精确7/8/15天分段；其余明确使用30日+长窗或长窗降级，不伪造趋势。当前短期爆量首批保护 ${spikeProtectedCount} 款。</p></article>
     <article class="ok"><strong>数量与物流资料已解耦</strong><p>${firstCount} 款海外仓尚无的候选进入台账；缺尺寸、重量或成本仍按需求、库存、在途生成建议件数，相关体积、占款或收益显示待补充。</p></article>
     <article class="${activeRegion === "TH" ? "warn" : "ok"}"><strong>运费证据范围</strong><p>${config.shippingCoverage}。</p></article>
     <article class="neutral"><strong>固定头程口径</strong><p>本页按用户批准口径对所有国家、站点和 SKU 统一使用 ${money(config.fixedHeadFreightUnitCny, 2)}/件；实际发货报价差异不在本轮建议中调整。</p></article>

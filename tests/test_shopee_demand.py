@@ -127,3 +127,85 @@ def test_invalid_sku_or_quantity_is_rejected_fail_closed():
         "catalog_resolved_items": 0,
         "rejected_items": 3,
     }
+
+
+def test_aggregate_can_emit_exact_segmented_trend_from_release_dates():
+    day = 86400
+    trend_end = 100 * day
+    details = []
+    for age, quantity in ((1, 14), (8, 16)):
+        details.append(
+            {
+                "release_ts": trend_end - age * day,
+                "detail": {
+                    "order_income": {
+                        "items": [
+                            {
+                                "model_sku": "0401",
+                                "quantity_purchased": quantity,
+                                "discounted_price": 1,
+                            }
+                        ]
+                    }
+                },
+            }
+        )
+
+    aggregate, _ = aggregate_escrow_details(
+        details,
+        window_days=30,
+        recent_cutoff_ts=trend_end - 30 * day,
+        trend_end_ts=trend_end,
+    )
+
+    trend = aggregate["0401"]["trendDecision"]
+    assert trend["units"] == {
+        "last7": 14.0,
+        "days8To15": 16.0,
+        "days16To30": 0.0,
+    }
+    assert trend["dailyVelocity"] == 1.8
+    assert trend["forecast30Units"] == 54
+
+
+def test_segmented_trend_excludes_records_at_or_after_window_end():
+    day = 86400
+    trend_end = 100 * day
+    aggregate, _ = aggregate_escrow_details(
+        [
+            {
+                "release_ts": trend_end - day,
+                "detail": {
+                    "order_income": {
+                        "items": [
+                            {
+                                "model_sku": "0401",
+                                "quantity_purchased": 3,
+                                "discounted_price": 1,
+                            }
+                        ]
+                    }
+                },
+            },
+            {
+                "release_ts": trend_end,
+                "detail": {
+                    "order_income": {
+                        "items": [
+                            {
+                                "model_sku": "0401",
+                                "quantity_purchased": 99,
+                                "discounted_price": 1,
+                            }
+                        ]
+                    }
+                },
+            },
+        ],
+        window_days=30,
+        recent_cutoff_ts=trend_end - 30 * day,
+        trend_end_ts=trend_end,
+    )
+
+    assert aggregate["0401"]["recent30Units"] == 3
+    assert aggregate["0401"]["trendDecision"]["units"]["last7"] == 3.0

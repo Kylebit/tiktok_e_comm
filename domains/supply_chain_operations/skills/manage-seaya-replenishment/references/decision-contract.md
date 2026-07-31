@@ -34,6 +34,17 @@ Otherwise:
 
 `v_channel = longer_window_units / longer_window_days`
 
+The two formulas above are fallback methods when exact daily segmentation is unavailable. When exact daily facts exist and reconcile to the 30-day total:
+
+- `r7 = units age 0–7 / verified sellable days or 7 calendar days`
+- `r8_15 = units age 8–15 / verified sellable days or 8 calendar days`
+- `r16_30 = units age 16–30 / verified sellable days or 15 calendar days`
+- `v_channel = 60% × r7 + 30% × r8_15 + 10% × r16_30`
+
+Calculate each channel independently. A valid trend decision carries method `segmented_7_8_15_v1`, exact non-overlapping units, denominator days and basis, daily velocity, 30-day forecast, `RISING|STABLE|FALLING|SPIKE`, confidence, active sales days, maximum daily units, and optional spike protection.
+
+`SPIKE` requires at least 5 units and either at most 2 active sales days or a maximum day representing at least 60% of the 30-day units. For first-stock only, `SPIKE` changes arrival target coverage to 15 days. It does not change the lead-time demand calculation.
+
 `v = sum(READY channel velocities)`
 
 Unavailable or pending channels remain visible and contribute no fabricated units. Use `PENDING_REFRESH` when the shop mapping and refresh token exist but the access token is expired and refresh/pull has not run. Reserve `BLOCKED_AUTH` for genuinely missing or rejected authorization.

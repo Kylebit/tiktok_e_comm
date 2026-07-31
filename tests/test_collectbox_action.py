@@ -27,6 +27,53 @@ def _plan():
     }
 
 
+def test_platform_request_carries_exact_approved_payload_and_targets(tmp_path):
+    store = CollectBoxActionStore(tmp_path / "platform.db")
+    plan = _plan()
+    plan["payload"] = {
+        "product_revision": 31,
+        "listing_copy": {
+            "shopee_description_en": "Product overview\n\nVerified details"
+        },
+        "pricing": {
+            "selected_targets": {
+                "tiktok:MX": {
+                    "store_prices": [
+                        {
+                            "target_key": "mx",
+                            "list_price": "286",
+                            "currency": "MXN",
+                        }
+                    ]
+                }
+            }
+        },
+    }
+    seen = []
+
+    def adapter(request):
+        seen.append(request)
+        return CollectBoxPlatformResult(
+            status="SUCCEEDED",
+            outcome=ALREADY_PRESENT,
+            platform_detail_id="71001",
+            external_writes=(),
+            external_write_count=0,
+        )
+
+    store.start(
+        plan=plan,
+        common_collect_box_detail_id=plan["product_id"],
+        adapter=adapter,
+        now=lambda: 100.0,
+        wait=lambda _seconds: None,
+    )
+
+    assert len(seen) == 2
+    assert all(request.approved_plan_payload == plan["payload"] for request in seen)
+    assert all(request.approved_targets == tuple(plan["targets"]) for request in seen)
+
+
 def test_collectbox_preview_is_pure_and_does_not_expose_raw_detail_id(
     tmp_path,
 ):

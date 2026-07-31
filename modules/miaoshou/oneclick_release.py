@@ -261,6 +261,21 @@ class MiaoshouOneClickDispatchError(RuntimeError):
         )
 
 
+class MiaoshouCollectBoxPreparationError(RuntimeError):
+    """Truthful boundary for platform-collect-box preparation only."""
+
+    def __init__(
+        self,
+        detail: str,
+        *,
+        writes: tuple[str, ...],
+        write_count: int | None,
+    ) -> None:
+        super().__init__(detail)
+        self.external_writes = writes
+        self.external_write_count = write_count
+
+
 @dataclass(frozen=True)
 class MiaoshouRuntimeTransport:
     """Fixture-friendly runtime transport.
@@ -1156,6 +1171,7 @@ def _approved_common(
         "package_cm": package,
         "images": images,
         "notes": _notes(description, images),
+        "simple_description": description,
         "video_url": video,
         "selected_sku_keys": selected,
         "model_skus": model_skus,
@@ -1182,6 +1198,224 @@ def _approved_site(
         "title": title,
         "price": price,
         "currency": currency,
+    }
+
+
+def prepare_selected_platform_collectbox(
+    *,
+    platform: str,
+    common_detail_id: str,
+    initial_platform_detail_id: str,
+    initial_claim_written: bool,
+    approved_plan_payload: Mapping[str, object],
+    approved_targets: tuple[str, ...],
+    post: Callable[[str, Mapping[str, object]], object] | None = None,
+) -> dict[str, object]:
+    """Populate approved platform drafts without moving/publishing them."""
+
+    if platform not in {"tiktok", "shopee"}:
+        raise MiaoshouCollectBoxPreparationError(
+            "collect-box platform is unsupported", writes=(), write_count=0
+        )
+    if not isinstance(approved_plan_payload, Mapping):
+        raise MiaoshouCollectBoxPreparationError(
+            "approved plan payload is unavailable", writes=(), write_count=0
+        )
+    if type(approved_targets) is not tuple or any(
+        type(value) is not str for value in approved_targets
+    ):
+        raise MiaoshouCollectBoxPreparationError(
+            "approved target list is invalid", writes=(), write_count=0
+        )
+    selected = tuple(
+        target
+        for target in approved_targets
+        if target.startswith(f"{platform}:")
+    )
+    if not selected or any(
+        target not in DIRECT_STORE_CONFIG
+        or DIRECT_STORE_CONFIG[target]["platform"] != platform
+        for target in selected
+    ):
+        raise MiaoshouCollectBoxPreparationError(
+            "approved platform targets are unavailable",
+            writes=(),
+            write_count=0,
+        )
+    try:
+        common_id = _positive_digit(common_detail_id, "common_detail_id")
+        primary_detail_id = int(
+            _positive_digit(
+                initial_platform_detail_id, "initial_platform_detail_id"
+            )
+        )
+    except Exception as error:
+        raise MiaoshouCollectBoxPreparationError(
+            "platform collect-box identity is invalid",
+            writes=(),
+            write_count=0,
+        ) from error
+
+    client = post or _prepare_post()
+    writes: list[str] = []
+    if initial_claim_written:
+        writes.append(f"miaoshou:collectbox:claim:{platform}")
+
+    def fail(detail: str, *, current_unknown: str | None = None) -> None:
+        if current_unknown is not None:
+            raise MiaoshouCollectBoxPreparationError(
+                detail,
+                writes=tuple([*writes, current_unknown]),
+                write_count=None,
+            )
+        raise MiaoshouCollectBoxPreparationError(
+            detail, writes=tuple(writes), write_count=len(writes)
+        )
+
+    detail_ids: list[int] = []
+    for index, target in enumerate(selected):
+        config = DIRECT_STORE_CONFIG[target]
+        detail_id = primary_detail_id
+        if platform == "tiktok" and index > 0:
+            create_class = (
+                f"miaoshou:collectbox:tiktok:detail:create:{target}"
+            )
+            try:
+                created = client(
+                    DETAIL_CREATE_PATH,
+                    {
+                        "detailSerialNumberPlatformList": [
+                            {
+                                "detailId": int(common_id),
+                                "platform": platform,
+                                "serialNumber": index + 1,
+                            }
+                        ]
+                    },
+                )
+            except Exception:
+                fail(
+                    "TikTok platform-detail creation outcome is unknown",
+                    current_unknown=create_class,
+                )
+            if not isinstance(created, Mapping):
+                fail(
+                    "TikTok platform-detail creation response is malformed",
+                    current_unknown=create_class,
+                )
+            if not _success(created):
+                fail("TikTok platform-detail creation was rejected")
+            writes.append(create_class)
+            try:
+                detail_id = _created_detail_id(
+                    created, common_id, platform=platform
+                )
+            except Exception:
+                fail("TikTok platform-detail identity is unavailable")
+
+        if platform == "tiktok":
+            claim_class = f"miaoshou:collectbox:tiktok:shop:claim:{target}"
+            try:
+                claimed = client(
+                    SHOP_CLAIM_PATH,
+                    {
+                        "detailIds": [detail_id],
+                        "shopIds": [str(config["shop_id"])],
+                    },
+                )
+            except Exception:
+                fail(
+                    "TikTok shop-claim outcome is unknown",
+                    current_unknown=claim_class,
+                )
+            if not isinstance(claimed, Mapping):
+                fail(
+                    "TikTok shop-claim response is malformed",
+                    current_unknown=claim_class,
+                )
+            if not _accepted(claimed):
+                fail("TikTok shop claim was rejected")
+            writes.append(claim_class)
+
+        expected = _approved_site(
+            approved_plan_payload,
+            target=target,
+            config=config,
+            source_offer_id=common_id,
+        )
+        expected["common_detail_id"] = common_id
+        try:
+            detail, oss_md5 = _read_shop(
+                client,
+                detail_id,
+                str(config["shop_id"]),
+                target=target,
+            )
+            _verify_shop_identity(
+                detail,
+                detail_id=detail_id,
+                shop_id=str(config["shop_id"]),
+            )
+            _verify_site_variants(detail, expected)
+            updated = _apply_expected_for_platform(
+                detail, expected, platform=platform
+            )
+            body = _save_body(
+                platform=platform,
+                site=str(config["site"]),
+                detail_id=detail_id,
+                shop_id=str(config["shop_id"]),
+                updated=updated,
+                oss_md5=oss_md5,
+            )
+        except Exception:
+            fail(f"{platform} draft preparation failed before update")
+
+        update_class = (
+            f"miaoshou:collectbox:{platform}:detail:update:{target}"
+        )
+        try:
+            saved = client(str(config["save_path"]), body)
+        except Exception:
+            fail(
+                f"{platform} draft update outcome is unknown",
+                current_unknown=update_class,
+            )
+        if not isinstance(saved, Mapping):
+            fail(
+                f"{platform} draft update response is malformed",
+                current_unknown=update_class,
+            )
+        if not _accepted(saved):
+            fail(f"{platform} draft update was rejected")
+        writes.append(update_class)
+        try:
+            readback, _ = _read_shop(
+                client,
+                detail_id,
+                str(config["shop_id"]),
+                target=target,
+            )
+            _verify_expected_detail(readback, expected, platform=platform)
+        except Exception:
+            fail(f"{platform} draft readback did not match approved plan")
+        detail_ids.append(detail_id)
+
+    return {
+        "schema_version": "miaoshou-platform-collectbox-preparation/v1",
+        "platform": platform,
+        "primary_platform_detail_id": str(primary_detail_id),
+        "target_count": len(selected),
+        "platform_detail_count": len(set(detail_ids)),
+        "external_writes": tuple(writes),
+        "external_write_count": len(writes),
+        "checks": {
+            "approved_targets_exact": True,
+            "approved_prices_exact": True,
+            "approved_content_exact": True,
+            "readback_exact": True,
+            "publish_not_invoked": True,
+        },
     }
 
 
@@ -1308,6 +1542,8 @@ def _apply_expected(
             "mainImgVideoUrl": expected["video_url"],
         }
     )
+    if "simple_description" in expected:
+        updated["notesText"] = expected["simple_description"]
     current_skus = _sku_map(current)
     normalized = {_normalize_variant(key): key for key in current_skus}
     updated_skus: dict[str, object] = {}
@@ -1391,6 +1627,11 @@ def _verify_expected_detail(
             for key in wanted
         ),
     ]
+    if platform == "shopee":
+        checks.append(
+            str(detail.get("notesText") or "")
+            == str(expected.get("simple_description") or "")
+        )
     if platform != "ozon":
         checks.append(
             list(detail.get("imgUrls") or []) == list(expected["images"])

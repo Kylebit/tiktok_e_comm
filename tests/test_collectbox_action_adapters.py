@@ -52,6 +52,8 @@ def contract(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
         payload_digest: str
         targets_digest: str
         idempotency_key: str
+        approved_plan_payload: object
+        approved_targets: tuple[str, ...]
 
     @dataclass(frozen=True)
     class CollectBoxPlatformResult:
@@ -69,6 +71,33 @@ def contract(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
     module.CollectBoxPlatformRequest = CollectBoxPlatformRequest
     module.CollectBoxPlatformResult = CollectBoxPlatformResult
     monkeypatch.setitem(sys.modules, module.__name__, module)
+    from domains.channel_operations import collectbox_action_adapters
+
+    def prepare_fixture(**kwargs):
+        written = bool(kwargs["initial_claim_written"])
+        platform = kwargs["platform"]
+        return {
+            "primary_platform_detail_id": kwargs["initial_platform_detail_id"],
+            "target_count": 1,
+            "platform_detail_count": 1,
+            "external_writes": (
+                (f"miaoshou:collectbox:claim:{platform}",) if written else ()
+            ),
+            "external_write_count": 1 if written else 0,
+            "checks": {
+                "approved_targets_exact": True,
+                "approved_prices_exact": True,
+                "approved_content_exact": True,
+                "readback_exact": True,
+                "publish_not_invoked": True,
+            },
+        }
+
+    monkeypatch.setattr(
+        collectbox_action_adapters,
+        "prepare_selected_platform_collectbox",
+        prepare_fixture,
+    )
     return module
 
 
@@ -86,6 +115,8 @@ def _request(contract: types.ModuleType, *, platform: str = "TIKTOK"):
         payload_digest="a" * 64,
         targets_digest="b" * 64,
         idempotency_key="c" * 64,
+        approved_plan_payload={"product_revision": 31},
+        approved_targets=("tiktok:MX", "shopee:MY"),
     )
 
 

@@ -8,7 +8,7 @@ not import or call a channel client.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import json
 from pathlib import Path
@@ -314,6 +314,26 @@ class CollectBoxPlatformRequest:
     payload_digest: str
     targets_digest: str
     idempotency_key: str
+    approved_plan_payload: Mapping[str, Any] = field(repr=False)
+    approved_targets: tuple[str, ...] = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.approved_plan_payload, Mapping):
+            raise ValueError("approved_plan_payload must be a mapping")
+        copied_payload = json.loads(_canonical_json(self.approved_plan_payload))
+        if (
+            type(self.approved_targets) is not tuple
+            or not self.approved_targets
+            or any(
+                type(value) is not str or not value.strip()
+                for value in self.approved_targets
+            )
+            or len(set(self.approved_targets)) != len(self.approved_targets)
+        ):
+            raise ValueError("approved_targets must be unique strings")
+        if _digest(list(self.approved_targets)) != self.targets_digest:
+            raise ValueError("approved target identity drifted")
+        object.__setattr__(self, "approved_plan_payload", copied_payload)
 
     @property
     def schema_version(self) -> str:
@@ -366,10 +386,11 @@ class CollectBoxPlatformResult:
                 ),
             )
             if self.outcome == IMPORTED and (
-                self.external_write_count != 1
-                or len(self.external_writes) != 1
+                self.external_write_count is None
+                or self.external_write_count < 1
+                or not self.external_writes
             ):
-                raise ValueError("IMPORTED requires exactly one write")
+                raise ValueError("IMPORTED requires confirmed writes")
             if self.outcome == ALREADY_PRESENT and (
                 self.external_write_count != 0 or self.external_writes
             ):
@@ -642,6 +663,8 @@ class CollectBoxActionStore:
                         "attempt": attempt,
                     }
                 ),
+                approved_plan_payload=plan["payload"],
+                approved_targets=tuple(plan["targets"]),
             )
             try:
                 result = adapter(request)

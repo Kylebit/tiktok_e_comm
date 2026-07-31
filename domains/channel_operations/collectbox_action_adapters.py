@@ -8,6 +8,10 @@ from modules.miaoshou.collectbox_claim import (
     CollectBoxPlatformClaimRequest,
     claim_common_collectbox_platform,
 )
+from modules.miaoshou.oneclick_release import (
+    MiaoshouCollectBoxPreparationError,
+    prepare_selected_platform_collectbox,
+)
 
 
 def _contract():
@@ -52,7 +56,7 @@ def _identity_failure(contract, *, code: str, detail: str):
 
 
 def execute_collectbox_platform(request):
-    """Execute one server-owned TikTok or Shopee platform claim."""
+    """Claim and configure selected platform drafts; never publish them."""
 
     contract = _contract()
     request_type = contract["CollectBoxPlatformRequest"]
@@ -96,7 +100,7 @@ def execute_collectbox_platform(request):
 
     receipt = claim_common_collectbox_platform(claim_request)
     result = receipt.result
-    evidence = receipt.public_projection()
+    claim_evidence = receipt.public_projection()
     expected_write_class = f"miaoshou:collectbox:claim:{platform}"
     if result.write_class != expected_write_class:
         raise ValueError("collect-box platform write class drifted")
@@ -104,42 +108,28 @@ def execute_collectbox_platform(request):
     if result.status == ACCEPTED:
         if result.platform_detail_id is None:
             raise ValueError("accepted collect-box result has no identity")
-        return contract["CollectBoxPlatformResult"](
-            status=contract["SUCCEEDED"],
-            outcome=contract["IMPORTED"],
-            platform_detail_id=str(result.platform_detail_id),
-            external_writes=(expected_write_class,),
-            external_write_count=1,
-            receipt_evidence=evidence,
-        )
-    if result.status == CLAIM_ALREADY_PRESENT:
+        initial_claim_written = True
+    elif result.status == CLAIM_ALREADY_PRESENT:
         if result.platform_detail_id is None:
             raise ValueError("existing collect-box result has no identity")
-        return contract["CollectBoxPlatformResult"](
-            status=contract["SUCCEEDED"],
-            outcome=contract["ALREADY_PRESENT"],
-            platform_detail_id=str(result.platform_detail_id),
-            external_writes=(),
-            external_write_count=0,
-            receipt_evidence=evidence,
-        )
-    if result.retry_safe and not result.reconciliation_required:
+        initial_claim_written = False
+    elif result.retry_safe and not result.reconciliation_required:
         return contract["CollectBoxPlatformResult"](
             status=contract["FAILED_RETRYABLE"],
             external_writes=(),
             external_write_count=0,
-            receipt_evidence=evidence,
+            receipt_evidence=claim_evidence,
             error_category="CHANNEL",
             error_code=result.reason_code,
             error_detail="Miaoshou rejected the collect-box claim before write",
         )
-    if result.reconciliation_required:
+    elif result.reconciliation_required:
         unknown = result.write_outcome == "UNKNOWN"
         return contract["CollectBoxPlatformResult"](
             status=contract["RECONCILIATION_REQUIRED"],
             external_writes=(expected_write_class,) if unknown else (),
             external_write_count=None if unknown else 0,
-            receipt_evidence=evidence,
+            receipt_evidence=claim_evidence,
             error_category="UNKNOWN" if unknown else "CHANNEL",
             error_code=result.reason_code,
             error_detail=(
@@ -148,4 +138,64 @@ def execute_collectbox_platform(request):
                 else "Miaoshou collect-box identity requires reconciliation"
             ),
         )
-    raise ValueError("collect-box platform result is not mappable")
+    else:
+        raise ValueError("collect-box platform result is not mappable")
+
+    try:
+        prepared = prepare_selected_platform_collectbox(
+            platform=platform,
+            common_detail_id=request.common_collect_box_detail_id,
+            initial_platform_detail_id=str(result.platform_detail_id),
+            initial_claim_written=initial_claim_written,
+            approved_plan_payload=request.approved_plan_payload,
+            approved_targets=request.approved_targets,
+        )
+    except MiaoshouCollectBoxPreparationError as error:
+        writes = tuple(error.external_writes)
+        count = error.external_write_count
+        status = (
+            contract["FAILED_RETRYABLE"]
+            if count == 0 and not writes
+            else contract["RECONCILIATION_REQUIRED"]
+        )
+        return contract["CollectBoxPlatformResult"](
+            status=status,
+            external_writes=writes,
+            external_write_count=count,
+            receipt_evidence={
+                "schema_version": "collectbox-platform-preparation-evidence/v1",
+                "platform": platform,
+                "target_configuration_exact": False,
+                "claim_result_digest": claim_evidence["result"]["evidence_digest"],
+            },
+            error_category=(
+                "CHANNEL"
+                if status == contract["FAILED_RETRYABLE"]
+                else "UNKNOWN"
+            ),
+            error_code="collectbox_platform_preparation_failed",
+            error_detail="Miaoshou platform collect-box preparation failed",
+        )
+
+    writes = tuple(prepared["external_writes"])
+    count = int(prepared["external_write_count"])
+    return contract["CollectBoxPlatformResult"](
+        status=contract["SUCCEEDED"],
+        outcome=(
+            contract["IMPORTED"]
+            if count > 0
+            else contract["ALREADY_PRESENT"]
+        ),
+        platform_detail_id=str(prepared["primary_platform_detail_id"]),
+        external_writes=writes,
+        external_write_count=count,
+        receipt_evidence={
+            "schema_version": "collectbox-platform-preparation-evidence/v1",
+            "platform": platform,
+            "target_count": prepared["target_count"],
+            "platform_detail_count": prepared["platform_detail_count"],
+            "checks": prepared["checks"],
+            "result": claim_evidence["result"],
+            "claim_result_digest": claim_evidence["result"]["evidence_digest"],
+        },
+    )

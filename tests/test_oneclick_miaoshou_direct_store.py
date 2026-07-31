@@ -231,6 +231,30 @@ def _plan_payload(target):
     }
 
 
+def test_shopee_simple_description_preserves_approved_cnsc_master_text():
+    description = (
+        "Product overview\n"
+        "Decorative wall sticker made of PVC.\n\n"
+        "Verified details\n"
+        "- Material: PVC\n\n"
+        "Suitable spaces\n"
+        "Living room and bedroom"
+    )
+    payload = _plan_payload("shopee:MY")
+    payload["listing_copy"]["shopee_description_en"] = description
+
+    expected = miaoshou._approved_site(
+        payload,
+        target="shopee:MY",
+        config=miaoshou.DIRECT_STORE_CONFIG["shopee:MY"],
+        source_offer_id="986159122616",
+    )
+    updated = miaoshou._apply_expected(_detail("shopee:MY"), expected)
+
+    assert expected["simple_description"] == description
+    assert updated["notesText"] == description
+
+
 def _live_shaped_plan_payload(target):
     """Sanitized shape captured from approved Offer 3846511157.
 
@@ -375,6 +399,151 @@ class DirectStoreFake:
         if path == self.config["publish_path"]:
             return [] if self.malformed_publish else {"result": "success"}
         raise AssertionError(path)
+
+
+def test_collectbox_tiktok_writes_selected_store_price_without_publish():
+    target = "tiktok:MX"
+    payload = _plan_payload(target)
+    payload["pricing"]["selected_targets"][target]["store_prices"][0][
+        "list_price"
+    ] = "286"
+    fake = DirectStoreFake(target)
+
+    def post(path, body):
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            fake.calls.append((path, deepcopy(body)))
+            return {"result": "success"}
+        return fake.post(path, body)
+
+    result = miaoshou.prepare_selected_platform_collectbox(
+        platform="tiktok",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=(target,),
+        post=post,
+    )
+
+    save = next(
+        body for path, body in fake.calls if path == fake.config["save_path"]
+    )
+    sku = save["shopCollectItemInfo"]["skuMap"]["default"]
+    assert sku["price"] == 286
+    assert sku["priceIncludeVat"] == 286
+    assert result["target_count"] == 1
+    assert result["checks"]["approved_prices_exact"] is True
+    assert fake.config["publish_path"] not in [path for path, _ in fake.calls]
+
+
+def test_collectbox_tiktok_writes_each_selected_country_and_approved_price():
+    targets = ("tiktok:MX", "tiktok:GB")
+    payload = _plan_payload(targets[0])
+    payload["listing_copy"]["candidates"].append(
+        {
+            "channel": "tiktok",
+            "site": "GB",
+            "policy_check": "passed",
+            "title": "Approved GB title",
+        }
+    )
+    payload["pricing"]["selected_targets"] = {
+        "tiktok:MX": {
+            "store_prices": [
+                {"target_key": "mx", "list_price": "286", "currency": "MXN"}
+            ]
+        },
+        "tiktok:GB": {
+            "store_prices": [
+                {"target_key": "gb", "list_price": "42", "currency": "GBP"}
+            ]
+        },
+    }
+    calls = []
+    details = {
+        str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"]): _detail(target)
+        for target in targets
+    }
+    details[str(miaoshou.DIRECT_STORE_CONFIG["tiktok:GB"]["shop_id"])][
+        "detailId"
+    ] = 78
+
+    def post(path, body):
+        calls.append((path, deepcopy(body)))
+        if path == miaoshou.DETAIL_CREATE_PATH:
+            return {
+                "result": "success",
+                "data": {"platformCollectBoxDetailIdMap": {"tiktok": {"7": 78}}},
+            }
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            return {"result": "success"}
+        if path.endswith("get_shop_collect_item_info"):
+            shop_id = str(body["shopId"])
+            return {
+                "result": "success",
+                "data": {
+                    "shopCollectItemInfo": deepcopy(details[shop_id]),
+                    "ossMd5": "md5",
+                },
+            }
+        if path.endswith("save_shop_collect_item_info"):
+            shop_id = str(body["shopId"])
+            details[shop_id] = deepcopy(body["shopCollectItemInfo"])
+            details[shop_id]["detailId"] = int(body["detailId"])
+            details[shop_id]["shopId"] = shop_id
+            return {"result": "success"}
+        raise AssertionError(path)
+
+    result = miaoshou.prepare_selected_platform_collectbox(
+        platform="tiktok",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=targets,
+        post=post,
+    )
+
+    saved = {
+        str(body["shopId"]): body["shopCollectItemInfo"]["skuMap"]["default"]["price"]
+        for path, body in calls
+        if path.endswith("save_shop_collect_item_info")
+    }
+    assert saved == {
+        str(miaoshou.DIRECT_STORE_CONFIG["tiktok:MX"]["shop_id"]): 286,
+        str(miaoshou.DIRECT_STORE_CONFIG["tiktok:GB"]["shop_id"]): 42,
+    }
+    assert result["target_count"] == 2
+    assert result["platform_detail_count"] == 2
+    assert all("save_move_collect_task" not in path for path, _ in calls)
+
+
+def test_collectbox_shopee_writes_exact_simple_description_without_publish():
+    target = "shopee:MY"
+    description = (
+        "Product overview\nDecorative wall sticker made of PVC.\n\n"
+        "Verified details\n- Material: PVC\n\nSuitable spaces"
+    )
+    payload = _plan_payload(target)
+    payload["listing_copy"]["shopee_description_en"] = description
+    fake = DirectStoreFake(target)
+
+    result = miaoshou.prepare_selected_platform_collectbox(
+        platform="shopee",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=(target,),
+        post=fake.post,
+    )
+
+    save = next(
+        body for path, body in fake.calls if path == fake.config["save_path"]
+    )
+    assert save["siteDetailSimpleData"]["notesText"] == description
+    assert result["checks"]["approved_content_exact"] is True
+    assert fake.config["publish_path"] not in [path for path, _ in fake.calls]
 
 
 def _dispatch_request(command):

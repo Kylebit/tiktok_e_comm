@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#173b36">
   <title>Orbit · 商品发布中心</title>
   <link rel="stylesheet" href="/static/product_workspace.css?v=20260731-v19">
-  <script src="/static/product_workspace.js?v=20260731-v24" defer></script>
+  <script src="/static/product_workspace.js?v=20260731-v25" defer></script>
   <script src="/static/disabled_control_hints.js?v=20260729-v2" defer></script>
 </head>
 <body>
@@ -390,22 +390,14 @@
         </div>
         <button id="releasePrimaryActionButton" class="button button-primary"
           type="button" disabled>
-          继续当前发布流程
+          一键发布已选店铺
         </button>
         <section id="oneClickExecutionPreview" class="oneclick-execution-preview"
           aria-labelledby="oneClickExecutionTitle">
           <h4 id="oneClickExecutionTitle">本轮执行状态</h4>
           <p id="oneClickExecutionMessage" role="status" aria-live="polite">
-            正在读取服务端执行账本…
+            批准后可随时发起新的妙手 API 发布批次。
           </p>
-          <button id="oneClickNextActionButton" class="button button-secondary"
-            type="button" hidden disabled>
-            查看服务端唯一下一步
-          </button>
-          <button id="oneClickReadRetryButton" class="button button-secondary"
-            type="button" hidden disabled>
-            重新读取发布条件
-          </button>
           <div id="oneClickExecutionGroups" class="oneclick-execution-groups"></div>
         </section>
       </article>

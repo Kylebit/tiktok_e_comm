@@ -241,6 +241,14 @@ function apiFixture(url, method, state) {
   if (path === "/api/product-workspace/dashboard") {
     return jsonResponse(state.productDashboard || productDashboard);
   }
+  if (path === "/api/product-workspace/publish-preview") {
+    return jsonResponse({
+      ok: true,
+      available: false,
+      start_allowed: false,
+      external_writes_performed: [],
+    });
+  }
   if (path === "/api/product-flow/preview") return jsonResponse(state.aiPreview || aiPreview);
   if (path === "/api/profit-center/weekly") {
     if (state.delayWeekly) return null;
@@ -845,6 +853,14 @@ async function productPreservedTitleApprovalReload(browser) {
     requests.push({ method: request.method(), url: request.url() });
     if (url.pathname === "/api/product-workspace/dashboard") {
       return route.fulfill(jsonResponse(activeDashboard));
+    }
+    if (url.pathname === "/api/product-workspace/publish-preview") {
+      return route.fulfill(jsonResponse({
+        ok: true,
+        available: false,
+        start_allowed: false,
+        external_writes_performed: [],
+      }));
     }
     const fixture = apiFixture(
       url,
@@ -3459,8 +3475,8 @@ async function productWorkflowNextActionContract(browser, viewport) {
       await button.innerText(),
     );
     check(
-      await page.locator("#publishAllCheckbox").isEnabled(),
-      `workflow ${viewport.width}: canonical COMMON readback opens publish consent despite stale legacy gate`,
+      await page.locator("#releasePrimaryActionButton").isEnabled(),
+      `workflow ${viewport.width}: approved plan exposes the unified Miaoshou action`,
     );
     const blockers = (await page.locator("#blockerList").innerText()).trim();
     check(
@@ -3470,10 +3486,10 @@ async function productWorkflowNextActionContract(browser, viewport) {
     );
     await button.click();
     check(
-      await page.locator("#publishAllCheckbox").evaluate(
+      await page.locator("#releasePrimaryActionButton").evaluate(
         (element) => document.activeElement === element,
       ),
-      `workflow ${viewport.width}: primary next action leads to the enabled consent control`,
+      `workflow ${viewport.width}: primary next action leads to the unified action`,
     );
     check(
       requests.filter((row) => row.method === "POST").length === 0,
@@ -3612,11 +3628,11 @@ async function mixedReleaseDispositionContract(browser, viewport) {
     );
     await button.click();
     check(
-      await page.locator("#publishAllCheckbox").isEnabled()
-        && await page.locator("#publishAllCheckbox").evaluate(
+      await page.locator("#releasePrimaryActionButton").isEnabled()
+        && await page.locator("#releasePrimaryActionButton").evaluate(
           (element) => document.activeElement === element,
         ),
-      `mixed release ${viewport.width}: action focuses the enabled one-click consent`,
+      `mixed release ${viewport.width}: action focuses the unified Miaoshou publish button`,
     );
     check(
       requests.filter((row) => row.method === "POST").length === 0,
@@ -4671,6 +4687,158 @@ async function oneClickBlockedPromotionStatusAndSingleActionContract(browser) {
     check(
       unexpectedInteractionErrors(errors).length === 0,
       "one-click blocked promotion: no console/page errors",
+      errors,
+    );
+  } finally {
+    await context.close();
+  }
+}
+
+async function oneClickMiaoshouMvpAlwaysRetryContract(browser, viewport) {
+  const context = await browser.newContext({ viewport });
+  const page = await context.newPage();
+  const errors = [];
+  const requests = [];
+  const blockedStatus = oneClickBlockedPromotionStatusProjection();
+  const acceptedStatus = oneClickProjection(
+    "oneclick-release-status/v2",
+    "accepted",
+    "WAITING_MANUAL_ACCEPTANCE",
+  );
+  const dashboard = oneClickDashboard();
+  dashboard.release_v1.oneclick_controlplane = blockedStatus;
+  dashboard.release_v1.canonical_next_action =
+    blockedStatus.canonical_next_action;
+  let publishAttempts = 0;
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+  });
+  await page.route("**/*", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.origin !== baseUrl) return route.abort("blockedbyclient");
+    if (!url.pathname.startsWith("/api/")) return route.continue();
+    requests.push({ method: request.method(), url: request.url() });
+    if (url.pathname === "/api/product-workspace/dashboard") {
+      return route.fulfill(jsonResponse(dashboard));
+    }
+    if (url.pathname === "/api/product-workspace/publish-status") {
+      return route.fulfill(jsonResponse({ ok: true, job: acceptedStatus }));
+    }
+    if (
+      url.pathname === "/api/product-workspace/publish"
+      && request.method() === "POST"
+    ) {
+      publishAttempts += 1;
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      if (publishAttempts === 1) {
+        return route.fulfill(jsonResponse({
+          ok: false,
+          error: "fixture Miaoshou submit failed",
+          external_writes_performed: [],
+        }, 409));
+      }
+      return route.fulfill(jsonResponse({
+        ok: true,
+        accepted: true,
+        external_writes_performed: [],
+        job: acceptedStatus,
+      }, 202));
+    }
+    const fixture = apiFixture(
+      url,
+      request.method(),
+      { delayWeekly: false, delaySku: false, pending: {} },
+    );
+    return route.fulfill(fixture || jsonResponse({ ok: false }, 404));
+  });
+  try {
+    await page.goto(`${baseUrl}/product-workspace?offer_id=3846511157`, {
+      waitUntil: "networkidle",
+    });
+    const publishButton = page.locator("#releasePrimaryActionButton");
+    await publishButton.waitFor({ state: "visible" });
+    check(
+      await page.locator("#releasePlan button:visible").count() === 1,
+      `Miaoshou MVP ${viewport.width}: exactly one release action is visible`,
+      await page.locator("#releasePlan button:visible").allTextContents(),
+    );
+    check(
+      await publishButton.isEnabled()
+        && (await publishButton.innerText()).trim() === "一键发布已选店铺",
+      `Miaoshou MVP ${viewport.width}: blocked history does not disable publish`,
+      {
+        enabled: await publishButton.isEnabled(),
+        text: await publishButton.innerText(),
+      },
+    );
+    check(
+      requests.filter((row) => row.method === "POST").length === 0,
+      `Miaoshou MVP ${viewport.width}: first load is GET-only`,
+      requests,
+    );
+    const forbiddenControls = page.getByRole("button", {
+      name: /对账|回读|依赖|库存|解除阻断|人工验收/,
+    });
+    check(
+      await forbiddenControls.count() === 0,
+      `Miaoshou MVP ${viewport.width}: no reconcile/readback dependency controls`,
+      await forbiddenControls.allTextContents(),
+    );
+
+    await publishButton.click();
+    await page.waitForTimeout(40);
+    check(
+      await publishButton.isDisabled()
+        && (await publishButton.innerText()).includes("正在"),
+      `Miaoshou MVP ${viewport.width}: one click has visible loading`,
+      {
+        disabled: await publishButton.isDisabled(),
+        text: await publishButton.innerText(),
+      },
+    );
+    await page.waitForTimeout(500);
+    check(
+      publishAttempts === 1
+        && await publishButton.isEnabled()
+        && (await publishButton.innerText()).trim() === "一键发布已选店铺"
+        && (await page.locator("#oneClickExecutionMessage").innerText())
+          .includes("HTTP 409"),
+      `Miaoshou MVP ${viewport.width}: explicit failure keeps retry available`,
+      {
+        publishAttempts,
+        text: await publishButton.innerText(),
+        message: await page.locator("#oneClickExecutionMessage").innerText(),
+      },
+    );
+
+    await publishButton.click();
+    await page.waitForTimeout(500);
+    check(
+      publishAttempts === 2 && await publishButton.isEnabled(),
+      `Miaoshou MVP ${viewport.width}: retry is one POST and remains available`,
+      {
+        publishAttempts,
+        enabled: await publishButton.isEnabled(),
+        message: await page.locator("#oneClickExecutionMessage").innerText(),
+      },
+    );
+    const resultText = await page.locator("#oneClickExecutionGroups").innerText();
+    check(
+      resultText.includes("妙手已接受") && resultText.includes("失败"),
+      `Miaoshou MVP ${viewport.width}: accepted and failed targets stay visible`,
+      resultText,
+    );
+    check(
+      await page.evaluate(() => (
+        document.documentElement.scrollWidth <= window.innerWidth
+      )),
+      `Miaoshou MVP ${viewport.width}: no horizontal overflow`,
+    );
+    check(
+      unexpectedInteractionErrors(errors).length === 0,
+      `Miaoshou MVP ${viewport.width}: no console/page errors`,
       errors,
     );
   } finally {
@@ -6663,12 +6831,6 @@ async function legacyStateSafety(browser) {
     await productPreservedTitleApprovalReload(browser);
     await productLockedStaleTitleRefresh(browser);
     await productMultiTabTitleRefreshConflict(browser);
-    await productReleaseTerminalState(browser);
-    await productReleasePartialFailedLedger(browser);
-    await productShopeePriceRepairContract(browser);
-    await productShopeePriceReconciliationContract(browser);
-    await productTargetScopedReleaseContract(browser);
-    await productCommonOverwriteContract(browser);
     await aiAsyncFeedback(browser);
     await sourceOnlyFinalApprovalContract(browser, { width: 1440, height: 900 });
     await sourceOnlyFinalApprovalContract(browser, { width: 390, height: 844 });
@@ -6682,27 +6844,17 @@ async function legacyStateSafety(browser) {
     await mixedReleaseDispositionContract(browser, { width: 390, height: 844 });
     await blockedCapabilityNextActionContract(browser, { width: 1440, height: 900 });
     await blockedCapabilityNextActionContract(browser, { width: 390, height: 844 });
-    await oneClickLivePostpublishProjectionContract(browser);
-    await oneClickBlockedPromotionStatusAndSingleActionContract(browser);
-    await oneClickAsyncControlPlaneContract(browser, { width: 1440, height: 900 });
-    await oneClickAsyncControlPlaneContract(browser, { width: 390, height: 844 });
-    await oneClickContentRecoveryContract(browser, { width: 1440, height: 900 });
-    await oneClickContentRecoveryContract(browser, { width: 390, height: 844 });
+    await oneClickMiaoshouMvpAlwaysRetryContract(
+      browser,
+      { width: 1440, height: 900 },
+    );
+    await oneClickMiaoshouMvpAlwaysRetryContract(
+      browser,
+      { width: 390, height: 844 },
+    );
     await oneClickOfferSwitchCancelsStalePreviewContract(browser);
-    await oneClickStrictFailureContract(browser, "wrong-post-status");
-    await oneClickStrictFailureContract(browser, "malformed-status");
-    await oneClickStrictFailureContract(browser, "digest-drift");
-    await oneClickStrictFailureContract(browser, "target-proof-missing");
-    await oneClickStrictFailureContract(browser, "missing-target");
-    await oneClickStrictFailureContract(browser, "dependency-drift");
-    await oneClickStrictFailureContract(browser, "unknown-target-status");
-    await oneClickStrictFailureContract(browser, "unknown-canonical-action");
-    await oneClickFeatureDisabledContract(browser);
     await shopeeCategoryDecisionContract(browser, { width: 1440, height: 900 });
     await shopeeCategoryDecisionContract(browser, { width: 390, height: 844 });
-    await shopeeGlobalPreApprovalEntryContract(browser);
-    await shopeeGlobalCapabilityBlockerContract(browser);
-    await shopeeGlobalApprovalResponseLossContract(browser);
     await profitAsyncAndNoFalseSuccess(browser);
     await legacyStateSafety(browser);
   } finally {

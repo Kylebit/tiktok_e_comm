@@ -571,9 +571,8 @@
   function oneClickAuthorityAvailable(data) {
     const release = data?.release_v1 || {};
     return Boolean(
-      Object.hasOwn(release, "canonical_next_action")
-      || Object.hasOwn(release, "oneclick_controlplane")
-      || Array.isArray(release.target_recovery_actions),
+      release.plan_approved === true
+      && String(release.plan?.plan_id || "").trim(),
     );
   }
 
@@ -1555,17 +1554,17 @@
       PENDING: "等待准备",
       PREPARING: "准备中",
       READY: "可执行",
-      DISPATCHING: "提交中",
-      SUCCEEDED: "已完成官方回读",
-      SUCCEEDED_MANUAL_REVIEW: "官方硬事实已验证 · 等待观察警告验收",
-      SUBMITTED_UNVERIFIED: "已提交，等待人工验收",
-      FAILED_PRE_SUBMIT: "提交前安全失败",
-      RECONCILIATION_REQUIRED: "需要对账，禁止重发",
-      BLOCKED_AUTH: "渠道授权阻断",
-      BLOCKED_INVENTORY: "库存决策阻断",
-      BLOCKED_CAPABILITY: "渠道能力阻断",
-      BLOCKED_SOURCE_IDENTITY: "来源身份阻断",
-      BLOCKED_SKU_LINEAGE: "Seller SKU 血缘阻断",
+      DISPATCHING: "正在提交到妙手",
+      SUCCEEDED: "妙手已接受提交",
+      SUCCEEDED_MANUAL_REVIEW: "妙手已接受提交",
+      SUBMITTED_UNVERIFIED: "妙手已接受提交",
+      FAILED_PRE_SUBMIT: "上次发布失败，可再次发布",
+      RECONCILIATION_REQUIRED: "上次结果未确认，可再次发布",
+      BLOCKED_AUTH: "上次发布失败，可再次发布",
+      BLOCKED_INVENTORY: "上次发布失败，可再次发布",
+      BLOCKED_CAPABILITY: "上次发布失败，可再次发布",
+      BLOCKED_SOURCE_IDENTITY: "上次发布失败，可再次发布",
+      BLOCKED_SKU_LINEAGE: "上次发布失败，可再次发布",
     };
     return labels[String(status || "")] || "状态由服务端核定";
   }
@@ -1590,20 +1589,16 @@
   }
 
   function oneClickReasonText(target) {
-    const reason = target?.reason || {};
-    const categoryLabels = {
-      AUTH: "渠道授权尚未就绪",
-      INVENTORY: "缺少已批准的库存决策",
-      CAPABILITY: "该渠道的受治理能力尚未开放",
-      CONTENT: "已批准的内容、类目或属性事实不完整",
-      LOGISTICS: "已批准的物流策略或包裹事实不完整",
-      SOURCE_IDENTITY: "来源商品身份尚未核准",
-      SKU_LINEAGE: "Seller SKU 血缘尚未核准",
-      DEPENDENCY: "前置目标尚未完成",
-      SYSTEMIC_CONTRACT: "批次身份合同不完整",
-    };
-    return categoryLabels[String(reason.category || "")]
-      || oneClickActionText(target?.next_action);
+    if (
+      ["SUCCEEDED", "SUCCEEDED_MANUAL_REVIEW", "SUBMITTED_UNVERIFIED"]
+        .includes(String(target?.status || ""))
+    ) {
+      return "妙手已接受该店铺的提交；不等待平台官方回读。";
+    }
+    if (String(target?.status || "") === "DISPATCHING") {
+      return "妙手 API 正在处理该店铺。";
+    }
+    return "该店铺上次未完成；点击上方按钮可重新发起妙手发布。";
   }
 
   function oneClickTargetBucket(target) {
@@ -3529,34 +3524,17 @@
   function renderOneClickExecution(data) {
     const container = $("#oneClickExecutionGroups");
     const message = $("#oneClickExecutionMessage");
-    const nextButton = $("#oneClickNextActionButton");
-    const readRetryButton = $("#oneClickReadRetryButton");
-    if (!container || !message || !nextButton || !readRetryButton) return;
+    if (!container || !message) return;
     const identity = oneClickIdentity(data);
-    const globalPlanIdentity = shopeeGlobalPlanIdentity(data);
     const projection = oneClickProjection();
-    ensureShopeeGlobalPlanReview(
-      globalPlanIdentity,
-      shopeeGlobalPlanReviewRequired(data, projection),
-    );
-    ensureShopeeCategoryDecisionReview(
-      globalPlanIdentity,
-      shopeeCategoryDecisionRequired(shopeeGlobalPlanReview.candidate)
-        || Boolean(
-          globalPlanIdentity
-          && shopeeGlobalPlanReview.previewBusy
-          && shopeeCategoryDecisionReview.contextKey
-            === globalPlanIdentity.key,
-        ),
-    );
     const headings = {
-      automatic: "本轮自动执行",
-      manual: "提交后人工验收",
-      dependency: "依赖等待",
-      preSubmit: "提交前安全失败",
-      reconciliation: "需要对账",
-      blocked: "阻断不执行",
-      terminal: "已终态",
+      automatic: "等待妙手提交",
+      manual: "妙手已接受",
+      dependency: "上次未完成",
+      preSubmit: "上次发布失败",
+      reconciliation: "上次结果未确认",
+      blocked: "上次未发布",
+      terminal: "妙手已接受",
     };
     const groups = {
       automatic: [],
@@ -3567,14 +3545,12 @@
       blocked: [],
       terminal: [],
     };
-    for (const target of (projection?.targets || [])) {
+    for (const target of (projection?.targets || []).filter(
+      (candidate) => candidate.storefront === true,
+    )) {
       groups[oneClickTargetBucket(target)].push(target);
     }
-    const sharedControls = projection?.shared_controls || [];
-    const sharedMarkup = sharedControls.map((control) => (
-      shopeeGlobalControlCard(control)
-    )).join("");
-    container.innerHTML = sharedMarkup + Object.entries(groups)
+    container.innerHTML = Object.entries(groups)
       .filter(([, targets]) => targets.length)
       .map(([bucket, targets]) => `
         <section class="oneclick-execution-group oneclick-${esc(bucket)}">
@@ -3588,87 +3564,26 @@
                    <span>${esc(oneClickStatusText(target.status))}</span>
                    <small>${esc(oneClickReasonText(target))}</small>
                  </article>
-                 ${oneClickObservationWarningForm(target)}
                </div>
              `).join("")}
            </div>
         </section>
       `).join("") || "<p>尚无服务端店铺状态。</p>";
 
-    syncShopeeGlobalPlanApprovalConsent(container);
-    const nextAction = currentOneClickNextAction(data);
-    const passiveActions = new Set([
-      "prepare_batch",
-      "wait_for_preparation",
-      "wait_for_worker",
-      "wait_for_dispatch_receipt",
-      "wait_for_dependency",
-      "wait_for_channel_capability",
-      "enable_oneclick_dispatch",
-    ]);
-    if (nextAction?.action && !passiveActions.has(nextAction.action)) {
-      nextButton.hidden = false;
-      nextButton.disabled = false;
-      nextButton.dataset.oneclickAction = String(nextAction.action);
-      nextButton.dataset.oneclickTargetFocus = String(nextAction.target_focus || "");
-      nextButton.textContent = oneClickActionText(nextAction.action);
-    } else {
-      nextButton.hidden = true;
-      nextButton.disabled = true;
-      delete nextButton.dataset.oneclickAction;
-      delete nextButton.dataset.oneclickTargetFocus;
-    }
-    const retryReadOnly = Boolean(
-      !oneClickExecution.previewBusy
-      && !oneClickExecution.statusBusy
-      && !oneClickExecution.acceptanceCheckBusy
-      && (
-        (
-          !oneClickExecution.postAttempted
-          && !oneClickExecution.job
-          && oneClickExecution.error
-        )
-        || (
-          oneClickExecution.postAttempted
-          && !oneClickExecution.job
-        )
-        || oneClickExecution.statusWarning
-      )
-    );
-    readRetryButton.hidden = !retryReadOnly;
-    readRetryButton.disabled = !retryReadOnly;
-    readRetryButton.textContent = oneClickExecution.postAttempted
-      && !oneClickExecution.job
-      ? "重新核对任务是否受理"
-      : oneClickExecution.job
-        ? "重新读取任务状态"
-        : "重新读取发布条件";
-
     if (!identity) {
       message.textContent = "批准不可变发布计划后，系统会读取服务端批次预览。";
     } else if (oneClickExecution.previewBusy) {
-      message.textContent = "正在只读核对本批次店铺、依赖和执行能力…";
+      message.textContent = "正在读取上次妙手提交结果…";
     } else if (oneClickExecution.posting) {
-      message.textContent = "正在创建唯一持久任务；请勿重复点击。";
+      message.textContent = "正在向妙手 API 提交所选 TikTok、Shopee 和 Ozon 店铺…";
     } else if (oneClickExecution.error) {
-      message.textContent = oneClickExecution.postAttempted
-        ? `${oneClickExecution.error} 请求结果未确认，系统不会自动重发。`
-        : `${oneClickExecution.error} 未发送任何发布请求。`;
+      message.textContent =
+        `${oneClickExecution.error} 本次已结束；可以再次点击一键发布。`;
     } else if (oneClickExecution.statusWarning) {
       message.textContent = oneClickExecution.statusWarning;
     } else if (oneClickExecution.job) {
-      const phaseLabels = {
-        PENDING: "持久任务已建立，等待准备。",
-        PREPARING: "服务端正在准备本批次。",
-        READY: "本批次已就绪，等待后台执行。",
-        RUNNING: "后台正在逐店执行并记录回执。",
-        SUCCEEDED: "所有可执行店铺已完成。",
-        WAITING_MANUAL_ACCEPTANCE: "自动执行已终止，存在等待人工验收的店铺。",
-        BLOCKED: "自动执行已终止，请按唯一下一步解除阻断。",
-        SYSTEMIC_STOPPED: "批次身份异常，系统已安全停止且不会重试。",
-      };
-      message.textContent = phaseLabels[oneClickExecution.job.phase]
-        || "任务状态已由服务端更新。";
+      message.textContent =
+        "已显示上一轮妙手提交结果；需要时可再次点击一键发布。";
     } else if (oneClickExecution.preview) {
       const count = Number(
         oneClickExecution.preview.preparation_pending_count || 0,
@@ -3680,32 +3595,9 @@
       message.textContent = "等待服务端只读批次预览。";
     }
     if (identity) {
-      if (oneClickExecution.job) {
-        $("#publishAllNote").textContent = ONECLICK_TERMINAL_PHASES.has(
-          oneClickExecution.job.phase,
-        )
-          ? "本计划已有终态持久任务；请按下方唯一下一步处理，不能再次发布。"
-          : "持久任务正在运行；页面只读轮询状态，不会再次提交。";
-      } else if (oneClickExecution.postAttempted) {
-        $("#publishAllNote").textContent =
-          "发布请求已尝试；确认服务端持久任务前禁止再次提交。";
-      } else if (oneClickExecution.error) {
-        $("#publishAllNote").textContent =
-          "服务端批次预览未通过；没有发送发布请求，请按唯一下一步处理。";
-      } else if (oneClickExecution.previewBusy || !oneClickExecution.preview) {
-        $("#publishAllNote").textContent =
-          "正在只读核对本批次；预览完成前不会发送发布请求。";
-      } else if (oneClickExecution.preview.dispatch_capability?.enabled === false) {
-        $("#publishAllNote").textContent =
-          "统一发布执行能力当前关闭；所有店铺保持原状态。";
-      } else {
-        const count = Number(
-          oneClickExecution.preview.preparation_pending_count || 0,
-        );
-        $("#publishAllNote").textContent = oneClickExecution.preview.start_allowed
-          ? `将启动 ${count} 个目标的后台正式准备；准备完成后才会逐目标执行，其他店铺保持原状态。`
-          : "当前没有可执行店铺；请按服务端唯一下一步处理。";
-      }
+      $("#publishAllNote").textContent =
+        "所有所选 TikTok、Shopee 和 Ozon 店铺统一通过妙手 API 提交；"
+        + "上一轮失败不会阻止再次显式发布。";
     }
     $("#oneClickExecutionPreview").setAttribute(
       "aria-busy",
@@ -5609,7 +5501,10 @@
       if (item) refreshQueueProduct(item, { collectIfMissing: true }).catch(() => {});
       return;
     }
-    const container = document.getElementById(action.control_id || "");
+    const requestedControlId = action.control_id === "publishAllCheckbox"
+      ? "releasePrimaryActionButton"
+      : (action.control_id || "");
+    const container = document.getElementById(requestedControlId);
     if (!container) return;
     container.scrollIntoView({ behavior: "smooth", block: "center" });
     let target = container;
@@ -6791,78 +6686,33 @@
     legacyPanels.setAttribute("aria-hidden", String(unifiedAuthority));
     if (!unifiedAuthority) {
       button.disabled = true;
-      button.textContent = "继续当前发布流程";
+      button.textContent = "一键发布已选店铺";
       message.textContent = approved
         ? "当前旧版计划不具备统一控制面，继续使用原有受治理入口。"
         : "批准当前发布计划后，系统会显示唯一可执行的下一步。";
       return;
     }
 
-    const projection = oneClickProjection();
-    const canonicalNextAction = currentOneClickNextAction(data);
     const busy = Boolean(
       releaseSubmitting
       || approvalSubmitting
-      || pageLoading
-      || oneClickExecution.previewBusy
-      || oneClickExecution.statusBusy
-      || oneClickExecution.acceptanceCheckBusy
       || oneClickExecution.posting
     );
     button.disabled = busy;
-    delete button.dataset.oneclickAction;
-    delete button.dataset.oneclickTargetFocus;
+    button.textContent = "一键发布已选店铺";
 
     if (busy) {
-      button.textContent = "正在处理当前步骤…";
-      message.textContent = "系统正在完成当前读取或提交；结束后会自动显示下一步。";
+      button.textContent = oneClickExecution.posting
+        ? "正在提交到妙手…"
+        : "正在读取发布状态…";
+      message.textContent = oneClickExecution.posting
+        ? "本次点击只会发送一个妙手 API 发布请求。"
+        : "读取结束后即可一键发布。";
       return;
     }
-    if (oneClickExecution.job) {
-      if (canonicalNextAction?.action) {
-        button.dataset.oneclickAction = String(canonicalNextAction.action);
-        button.dataset.oneclickTargetFocus = String(
-          canonicalNextAction.target_focus || "",
-        );
-        button.textContent = oneClickActionText(canonicalNextAction.action);
-        message.textContent = "任务已由服务端接管；按钮只执行服务端给出的唯一下一步。";
-      } else {
-        button.textContent = "刷新当前发布状态";
-        message.textContent = "任务已建立；这里只读取最新状态，不会再次提交发布。";
-      }
-      return;
-    }
-    if (
-      oneClickExecution.error
+    message.textContent = oneClickExecution.error
       || oneClickExecution.statusWarning
-      || oneClickExecution.postAttempted
-    ) {
-      button.textContent = "重新读取当前发布状态";
-      message.textContent = oneClickExecution.error
-        || oneClickExecution.statusWarning
-        || "上次请求结果尚未确认；本操作只读核对，不会重复提交。";
-      return;
-    }
-    if (canonicalNextAction?.action) {
-      button.dataset.oneclickAction = String(canonicalNextAction.action);
-      button.dataset.oneclickTargetFocus = String(
-        canonicalNextAction.target_focus || "",
-      );
-      button.textContent = oneClickActionText(canonicalNextAction.action);
-      message.textContent = "当前尚不能提交发布；按钮会进入服务端指定的唯一处理步骤。";
-      return;
-    }
-    if (
-      oneClickExecution.preview
-      && oneClickExecution.preview.start_allowed === true
-      && oneClickExecution.preview.preparation_pending_count > 0
-    ) {
-      button.textContent = "开始执行已批准计划";
-      message.textContent = "点击一次即可创建唯一持久任务；后续步骤由服务端状态机推进。";
-      return;
-    }
-    button.textContent = "读取并继续发布";
-    message.textContent = "先读取服务端发布条件；读取操作不会产生外部写入。";
+      || "点击后直接通过妙手 API 提交所选 TikTok、Shopee 和 Ozon 店铺。";
   }
 
   function updateReleaseControls(data) {
@@ -7873,7 +7723,7 @@
     }
   }
 
-  async function runReleasePrimaryAction() {
+  async function runLegacyReleasePrimaryAction() {
     if (!currentData?.release_v1?.plan_approved) return;
     const canonicalNextAction = currentOneClickNextAction(currentData);
     if (canonicalNextAction?.action === "review_shopee_global_plan") {
@@ -8003,20 +7853,20 @@
     await publishSelectedTargets();
   }
 
+  async function runReleasePrimaryAction() {
+    if (!currentData?.release_v1?.plan_approved) return;
+    // The approved-plan button is the only confirmation interaction in MVP.
+    $("#publishAllCheckbox").checked = true;
+    await publishSelectedTargets();
+  }
+
   async function publishSelectedTargets() {
     const identity = oneClickExecution.identity;
-    const preview = oneClickExecution.preview;
     if (
       !currentData
       || releaseSubmitting
       || oneClickExecution.posting
-      || oneClickExecution.postAttempted
-      || oneClickExecution.job
       || !identity
-      || !preview
-      || preview.start_allowed !== true
-      || preview.preparation_pending_count < 1
-      || preview.dispatch_capability?.enabled === false
       || !$("#publishAllCheckbox").checked
     ) return;
     const generation = oneClickExecution.generation;
@@ -8064,13 +7914,15 @@
         payload.job,
         identity,
         ONECLICK_STATUS_SCHEMA,
-        preview,
+        null,
       );
       if (generation !== oneClickExecution.generation) return;
       oneClickExecution.job = job;
       oneClickExecution.error = "";
+      oneClickExecution.statusWarning =
+        "妙手发布批次已提交；各店铺结果如下，需要时可再次一键发布。";
       $("#publishRunMessage").textContent =
-        "持久任务已接受；正在只读轮询服务端状态，不会再次提交。";
+        "妙手发布批次已接受；正在读取各店铺提交结果。";
       showError("");
       scheduleOneClickStatusPoll(generation, 0);
     } catch (error) {
@@ -8078,18 +7930,13 @@
       const message = friendlyError(error.message);
       oneClickExecution.error = message;
       showError(message);
-      if (error.responseOutcomeUnknown === true) {
-        $("#publishRunMessage").textContent =
-          `${message} 正在只读核对是否已受理，系统不会自动重发。`;
-        await reconcileOneClickAcceptance(generation);
-      } else {
-        $("#publishRunMessage").textContent =
-          `${message} 服务端已明确拒绝本次任务；系统不会自动重发。`;
-      }
+      $("#publishRunMessage").textContent =
+        `${message} 本次已结束；可以再次点击一键发布。`;
     } finally {
       if (generation === oneClickExecution.generation) {
         releaseSubmitting = false;
         oneClickExecution.posting = false;
+        oneClickExecution.postAttempted = false;
         renderOneClickExecution(currentData);
         updateReleaseControls(currentData || {});
       }
@@ -8563,14 +8410,6 @@
     updateReleaseControls(currentData || {});
   });
   $("#publishAllButton").addEventListener("click", publishSelectedTargets);
-  $("#oneClickNextActionButton").addEventListener(
-    "click",
-    (event) => routeOneClickNextAction(event.currentTarget),
-  );
-  $("#oneClickReadRetryButton").addEventListener(
-    "click",
-    retryOneClickReadOnly,
-  );
   $("#oneClickExecutionGroups").addEventListener("change", (event) => {
     if (updateShopeeGlobalPlanApprovalConsent(event)) return;
     updateShopeeCategoryDraft(event);

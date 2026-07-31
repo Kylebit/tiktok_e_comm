@@ -31,6 +31,8 @@ class _ReleaseStaticHandler(http.server.SimpleHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path in self.route_files:
             self.path = f"/{self.route_files[path]}"
+        else:
+            self.path = path
         super().do_GET()
 
     def log_message(self, _format, *args):
@@ -528,10 +530,10 @@ def test_oneclick_release_ui_uses_only_the_async_server_controlplane():
         "oneClickExecutionPreview",
         "oneClickExecutionGroups",
         "oneClickExecutionMessage",
-        "oneClickNextActionButton",
-        "oneClickReadRetryButton",
     ):
         assert f'id="{control_id}"' in html
+    assert 'id="oneClickNextActionButton"' not in html
+    assert 'id="oneClickReadRetryButton"' not in html
     assert "/api/product-workspace/publish-preview?" in preview
     assert "/api/product-workspace/publish-status?" in status
     assert '"/api/product-workspace/publish"' in publish
@@ -598,18 +600,19 @@ def test_approved_release_flow_has_one_server_driven_primary_action():
     assert "legacyPanels.hidden = unifiedAuthority" in primary_projection
     assert "panel.hidden = !unifiedAuthority" in primary_projection
     primary = _function_body(script, "runReleasePrimaryAction")
-    assert "currentOneClickNextAction(currentData)" in primary
     assert "prepareMiaoshou" not in primary
-    assert "retryOneClickReadOnly" in primary
-    assert "routeOneClickNextAction" in primary
+    assert "currentOneClickNextAction" not in primary
+    assert "retryOneClickReadOnly" not in primary
+    assert "routeOneClickNextAction" not in primary
     assert "publishSelectedTargets" in primary
+    assert "一键发布已选店铺" in html
     assert (
         '"click",\n    runReleasePrimaryAction'
         in script
     )
 
 
-def test_oneclick_v2_ui_bounds_reads_and_never_resends_unknown_posts():
+def test_oneclick_mvp_keeps_legacy_reads_idle_and_allows_explicit_resubmit():
     script = (ROOT / "web/static/product_workspace.js").read_text(
         encoding="utf-8"
     )
@@ -632,7 +635,6 @@ def test_oneclick_v2_ui_bounds_reads_and_never_resends_unknown_posts():
     assert "review_shopee_global_plan" in router
     assert "focusFirstControl" in router
     assert "wait_for_channel_capability" in script
-    assert "passiveActions" in script
     assert "resume_exact_zero_write_failures: true" in resume
     assert "oneClickExecution.resumePostAttempted" in resume
     assert "response.status >= 500" in resume
@@ -644,6 +646,19 @@ def test_oneclick_v2_ui_bounds_reads_and_never_resends_unknown_posts():
     assert "data-target-scoped-action='preview'" in router
     assert "restore_channel_authorization" in router
     assert "Shopee 授权管理入口" in router
+    publish = _function_body(script, "publishSelectedTargets")
+    primary = _function_body(script, "runReleasePrimaryAction")
+    render = script[
+        script.index("function renderOneClickExecution("):
+        script.index("function focusOneClickTarget(")
+    ]
+    assert "await publishSelectedTargets()" in primary
+    assert "preview.start_allowed" not in publish
+    assert "preview.preparation_pending_count" not in publish
+    assert "reconcileOneClickAcceptance" not in publish
+    assert "oneClickExecution.postAttempted = false" in publish
+    assert "oneClickObservationWarningForm(target)" not in render
+    assert "shopeeGlobalControlCard(control)" not in render
 
 
 def test_shopee_global_plan_ui_is_redacted_and_fail_closed():
@@ -705,7 +720,7 @@ def test_oneclick_manual_review_forms_keep_warning_and_apiless_contracts_separat
     apiless_submit = _function_body(script, "submitManualTargetVerification")
 
     assert "product_workspace.css?v=20260731-v19" in html
-    assert "product_workspace.js?v=20260731-v24" in html
+    assert "product_workspace.js?v=20260731-v25" in html
     assert '"SUCCEEDED_MANUAL_REVIEW"' in script
     assert '"review_verified_observation_warning"' in script
     assert "oneclick-observation-review-form" in script

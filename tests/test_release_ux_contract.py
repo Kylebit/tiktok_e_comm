@@ -581,6 +581,34 @@ def test_oneclick_release_ui_uses_only_the_async_server_controlplane():
     assert ".oneclick-target-card:focus-visible" in style
 
 
+def test_approved_release_flow_has_one_server_driven_primary_action():
+    """Permanent regression: approval must not open a maze of action buttons."""
+
+    html = (ROOT / "web/product_workspace.html").read_text(encoding="utf-8")
+    script = (ROOT / "web/static/product_workspace.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'id="releasePrimaryActionButton"' in html
+    assert 'id="legacyReleaseActionPanels"' in html
+    primary_projection = script[
+        script.index("function updateReleasePrimaryAction("):
+        script.index("function updateReleaseControls(")
+    ]
+    assert "legacyPanels.hidden = unifiedAuthority" in primary_projection
+    assert "panel.hidden = !unifiedAuthority" in primary_projection
+    primary = _function_body(script, "runReleasePrimaryAction")
+    assert "currentOneClickNextAction(currentData)" in primary
+    assert "prepareMiaoshou" not in primary
+    assert "retryOneClickReadOnly" in primary
+    assert "routeOneClickNextAction" in primary
+    assert "publishSelectedTargets" in primary
+    assert (
+        '"click",\n    runReleasePrimaryAction'
+        in script
+    )
+
+
 def test_oneclick_v2_ui_bounds_reads_and_never_resends_unknown_posts():
     script = (ROOT / "web/static/product_workspace.js").read_text(
         encoding="utf-8"
@@ -677,7 +705,7 @@ def test_oneclick_manual_review_forms_keep_warning_and_apiless_contracts_separat
     apiless_submit = _function_body(script, "submitManualTargetVerification")
 
     assert "product_workspace.css?v=20260730-v18" in html
-    assert "product_workspace.js?v=20260730-v22" in html
+    assert "product_workspace.js?v=20260731-v23" in html
     assert '"SUCCEEDED_MANUAL_REVIEW"' in script
     assert '"review_verified_observation_warning"' in script
     assert "oneclick-observation-review-form" in script

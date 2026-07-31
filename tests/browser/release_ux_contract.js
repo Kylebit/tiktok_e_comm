@@ -4442,6 +4442,195 @@ async function oneClickLivePostpublishProjectionContract(browser) {
   }
 }
 
+function oneClickBlockedPromotionStatusProjection() {
+  const projection = withPostpublishPromotionAction(oneClickProjection(
+    "oneclick-release-status/v2",
+    "terminal",
+    "BLOCKED",
+  ));
+  projection.targets = projection.targets.map((target) => {
+    if (target.target_label !== "tiktok:GB") return target;
+    return {
+      ...target,
+      status: "RECONCILIATION_REQUIRED",
+      runnable_now: false,
+      requires_human: false,
+      next_action: "reconcile_before_any_retry",
+      reason: {
+        category: "POST_WRITE",
+        scope: "TARGET",
+        code: "dispatch_invocation_requires_reconciliation",
+        summary_code: "dispatch_invocation_requires_reconciliation",
+        detail_digest: "e".repeat(64),
+      },
+      dispatch_ledger: {
+        stage: "dispatch_invoked",
+        cumulative_external_write_count: 1,
+        cumulative_external_write_classes: [
+          "miaoshou:tiktok_detail:update",
+        ],
+        confirmed_external_write_count_lower_bound: 1,
+        possible_external_write_count_upper_bound: 1,
+        digest: "f".repeat(64),
+        stage_evidence_digest: "0".repeat(64),
+        pending_write_intent_digest: null,
+      },
+    };
+  });
+  const promotionIndex = projection.targets.findIndex(
+    (target) => target.target_label === "promotion:shopee:MY",
+  );
+  const prerequisite = projection.targets.find(
+    (target) => target.target_label === "shopee:MY",
+  );
+  const promotion = {
+    ...projection.targets[promotionIndex],
+    classification: null,
+    dispatch_count: 0,
+    dispatch_ledger: {
+      stage: null,
+      cumulative_external_write_count: 0,
+      cumulative_external_write_classes: [],
+      confirmed_external_write_count_lower_bound: 0,
+      possible_external_write_count_upper_bound: 0,
+      digest: null,
+      stage_evidence_digest: null,
+      pending_write_intent_digest: null,
+    },
+    dependency: {
+      ...projection.targets[promotionIndex].dependency,
+      state: "BLOCKED",
+      satisfied: false,
+      prerequisite_status: prerequisite.status,
+      prerequisite: {
+        target_label: prerequisite.target_label,
+        status: prerequisite.status,
+        reason: prerequisite.reason,
+        next_action: prerequisite.next_action,
+        digests: {
+          prepared_command: prerequisite.digests.prepared_command,
+          proof: prerequisite.digests.proof,
+          shared_resource: prerequisite.digests.shared_resource,
+          shared_resource_context:
+            prerequisite.digests.shared_resource_context,
+        },
+      },
+    },
+  };
+  projection.targets[promotionIndex] = promotion;
+  projection.postpublish_actions = [promotion];
+  projection.summary = {
+    will_dispatch: [],
+    manual_after_submit: ["shopee:MY"],
+    blocked: ["tiktok:GB", "shopee:VN", "ozon:RU"],
+    already_terminal: ["shopee:MY"],
+    postpublish_pending: ["promotion:shopee:MY"],
+  };
+  projection.canonical_next_action = {
+    target_label: "tiktok:GB",
+    target_focus: "tiktok:GB",
+    canonical_status: "RECONCILIATION_REQUIRED",
+    action: "reconcile_before_any_retry",
+    runnable: false,
+  };
+  return projection;
+}
+
+async function oneClickBlockedPromotionStatusAndSingleActionContract(browser) {
+  const context = await browser.newContext({
+    viewport: { width: 1440, height: 900 },
+  });
+  const page = await context.newPage();
+  const errors = [];
+  const requests = [];
+  const status = oneClickBlockedPromotionStatusProjection();
+  const dashboard = oneClickDashboard();
+  dashboard.release_v1.oneclick_controlplane = status;
+  dashboard.release_v1.canonical_next_action =
+    status.canonical_next_action;
+  let statusReads = 0;
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+  });
+  await page.route("**/*", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.origin !== baseUrl) return route.abort("blockedbyclient");
+    if (!url.pathname.startsWith("/api/")) return route.continue();
+    requests.push({ method: request.method(), url: request.url() });
+    if (url.pathname === "/api/product-workspace/dashboard") {
+      return route.fulfill(jsonResponse(dashboard));
+    }
+    if (url.pathname === "/api/product-workspace/publish-status") {
+      statusReads += 1;
+      return route.fulfill(jsonResponse({ ok: true, job: status }));
+    }
+    const fixture = apiFixture(
+      url,
+      request.method(),
+      { delayWeekly: false, delaySku: false, pending: {} },
+    );
+    return route.fulfill(fixture || jsonResponse({ ok: false }, 404));
+  });
+  try {
+    await page.goto(`${baseUrl}/product-workspace?offer_id=3828540231`, {
+      waitUntil: "networkidle",
+    });
+    await page.waitForFunction(() => (
+      document.querySelector("#releasePrimaryActionButton")
+      && !document.querySelector("#releasePrimaryActionButton").hidden
+    ));
+    const message = await page.locator("#oneClickExecutionMessage").innerText();
+    check(
+      !message.includes("店铺状态不完整"),
+      "one-click blocked promotion: durable status replaces stale cached job",
+      message,
+    );
+    const reconciliation = page.locator(
+      '[data-oneclick-target="tiktok:GB"]',
+    );
+    await page.waitForTimeout(500);
+    if (await reconciliation.count() === 0) {
+      throw new Error(
+        "blocked promotion status did not render: "
+        + JSON.stringify({
+          message: await page.locator("#oneClickExecutionMessage").innerText(),
+          errors,
+          body: (await page.locator("#releasePlan").innerText()).slice(0, 2000),
+        }),
+      );
+    }
+    check(
+      await reconciliation.isVisible()
+        && (await reconciliation.innerText()).includes("需要对账"),
+      "one-click blocked promotion: reconciliable target is visible",
+      await reconciliation.innerText(),
+    );
+    const visibleReleaseButtons = await page.locator(
+      "#releasePrimaryActionPanel > #releasePrimaryActionButton:visible",
+    ).count();
+    check(
+      visibleReleaseButtons === 1,
+      "one-click approved flow: exactly one visible action remains",
+      visibleReleaseButtons,
+    );
+    check(
+      statusReads === 0
+        && requests.filter((row) => row.method === "POST").length === 0,
+      "one-click blocked promotion: persisted terminal dashboard performs no retry",
+      { statusReads, requests },
+    );
+    check(
+      unexpectedInteractionErrors(errors).length === 0,
+      "one-click blocked promotion: no console/page errors",
+      errors,
+    );
+  } finally {
+    await context.close();
+  }
+}
+
 function oneClickPendingJobProjection() {
   const projection = oneClickProjection(
     "oneclick-release-status/v2",
@@ -4933,8 +5122,8 @@ async function oneClickAsyncControlPlaneContract(browser, viewport) {
     });
     try {
       await page.waitForFunction(() => {
-        const checkbox = document.querySelector("#publishAllCheckbox");
-        return checkbox && !checkbox.disabled;
+        const button = document.querySelector("#releasePrimaryActionButton");
+        return button && !button.hidden && !button.disabled;
       });
     } catch (error) {
       throw new Error(
@@ -4957,10 +5146,10 @@ async function oneClickAsyncControlPlaneContract(browser, viewport) {
       `one-click ${viewport.width}: mixed server-owned groups are visible`,
       groupText,
     );
-    await page.locator("#publishAllCheckbox").check();
-    await page.locator("#publishAllButton").focus();
+    const primaryActionButton = page.locator("#releasePrimaryActionButton");
+    await primaryActionButton.focus();
     await page.keyboard.press("Enter");
-    await page.locator("#publishAllButton").evaluate((button) => {
+    await primaryActionButton.evaluate((button) => {
       button.click();
       button.click();
     });
@@ -4977,11 +5166,10 @@ async function oneClickAsyncControlPlaneContract(browser, viewport) {
     try {
       await page.waitForFunction(() => {
         if (
-          document.querySelector("#oneClickNextActionButton")
+          document.querySelector("#releasePrimaryActionButton")
             ?.dataset.oneclickAction === "review_verified_observation_warning"
         ) return true;
-        const text = document.querySelector("#oneClickExecutionMessage")?.textContent || "";
-        return text.includes("人工") || text.includes("验收") || text.includes("楠屾敹");
+        return false;
       }, null, { timeout: 8000 });
     } catch (error) {
       throw new Error(
@@ -5016,7 +5204,7 @@ async function oneClickAsyncControlPlaneContract(browser, viewport) {
         && !(await page.locator("#publishAllButton").isEnabled()),
       `one-click ${viewport.width}: terminal job cannot be submitted again`,
     );
-    const nextActionButton = page.locator("#oneClickNextActionButton");
+    const nextActionButton = page.locator("#releasePrimaryActionButton");
     check(
       await nextActionButton.getAttribute("data-oneclick-action")
         === "review_verified_observation_warning",
@@ -5061,7 +5249,7 @@ async function oneClickAsyncControlPlaneContract(browser, viewport) {
     });
     await page.waitForFunction(() => (
       !document.querySelector("[data-oneclick-observation-review='shopee:MY']")
-      && document.querySelector("#oneClickNextActionButton")
+      && document.querySelector("#releasePrimaryActionButton")
         ?.dataset.oneclickAction === "verify_submission_in_marketplace"
     ));
     check(
@@ -5526,14 +5714,13 @@ async function oneClickStrictFailureContract(browser, mode) {
       waitUntil: "networkidle",
     });
     await page.waitForFunction(() => {
-      const checkbox = document.querySelector("#publishAllCheckbox");
-      return checkbox && !checkbox.disabled;
+      const button = document.querySelector("#releasePrimaryActionButton");
+      return button && !button.hidden && !button.disabled;
     });
-    await page.locator("#publishAllCheckbox").check();
-    await page.locator("#publishAllButton").focus();
+    await page.locator("#releasePrimaryActionButton").focus();
     await page.keyboard.press("Enter");
     await page.waitForFunction(() => (
-      document.querySelector("#publishAllButton")?.disabled === true
+      document.querySelector("#releasePrimaryActionButton")?.disabled === true
     ));
     if (mode === "wrong-post-status") {
       await page.waitForFunction(() => (
@@ -6425,6 +6612,7 @@ async function legacyStateSafety(browser) {
     await blockedCapabilityNextActionContract(browser, { width: 1440, height: 900 });
     await blockedCapabilityNextActionContract(browser, { width: 390, height: 844 });
     await oneClickLivePostpublishProjectionContract(browser);
+    await oneClickBlockedPromotionStatusAndSingleActionContract(browser);
     await oneClickAsyncControlPlaneContract(browser, { width: 1440, height: 900 });
     await oneClickAsyncControlPlaneContract(browser, { width: 390, height: 844 });
     await oneClickContentRecoveryContract(browser, { width: 1440, height: 900 });

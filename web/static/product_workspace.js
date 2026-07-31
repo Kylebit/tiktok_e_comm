@@ -1002,6 +1002,15 @@
       const promotionPrerequisite = oneClickPromotionPrerequisite(
         target?.target_label,
       );
+      const deferredPostpublishAction = Boolean(
+        isStatus
+        && promotionPrerequisite !== null
+        && target?.status === "PENDING"
+        && target?.classification === null
+        && target?.control_target === false
+        && target?.storefront === false
+        && target?.runnable_now === false
+      );
       if (
         !target
         || typeof target !== "object"
@@ -1013,7 +1022,7 @@
         || target.control_target !== sharedControl
         || !ONECLICK_TARGET_STATUSES.has(target.status)
         || (
-          isUnpreparedStatus
+          isUnpreparedStatus || deferredPostpublishAction
             ? target.classification !== null
             : !ONECLICK_CLASSIFICATIONS.has(target.classification)
         )
@@ -3540,12 +3549,12 @@
            <div class="oneclick-target-list">
              ${targets.map((target) => `
                <div class="oneclick-target-control">
-                 <button type="button" class="oneclick-target-card"
-                   data-oneclick-target="${esc(target.target_label)}">
+                 <article class="oneclick-target-card"
+                   data-oneclick-target="${esc(target.target_label)}" tabindex="-1">
                    <strong>${esc(targetDisplayName(target.target_label))}</strong>
                    <span>${esc(oneClickStatusText(target.status))}</span>
                    <small>${esc(oneClickReasonText(target))}</small>
-                 </button>
+                 </article>
                  ${oneClickObservationWarningForm(target)}
                </div>
              `).join("")}
@@ -3673,6 +3682,7 @@
         || oneClickExecution.statusBusy
       )),
     );
+    updateReleasePrimaryAction(data);
   }
 
   function focusOneClickTarget(targetLabel) {
@@ -4238,6 +4248,9 @@
         );
       } catch (error) {
         oneClickExecution.error = friendlyError(error.message);
+        oneClickExecution.failureAction =
+          data?.release_v1?.canonical_next_action || null;
+        return;
       }
     }
     if (oneClickExecution.job) {
@@ -6716,6 +6729,103 @@
     }
   }
 
+  function updateReleasePrimaryAction(data) {
+    const release = data?.release_v1 || {};
+    const approved = Boolean(release.plan_approved);
+    const panel = $("#releasePrimaryActionPanel");
+    const button = $("#releasePrimaryActionButton");
+    const message = $("#releasePrimaryActionMessage");
+    const approvalButton = $("#approveReleasePlanButton");
+    const legacyPanels = $("#legacyReleaseActionPanels");
+    if (
+      !panel
+      || !button
+      || !message
+      || !approvalButton
+      || !legacyPanels
+    ) return;
+
+    const unifiedAuthority = approved && oneClickAuthorityAvailable(data);
+    approvalButton.hidden = approved;
+    panel.hidden = !unifiedAuthority;
+    legacyPanels.hidden = unifiedAuthority;
+    legacyPanels.setAttribute("aria-hidden", String(unifiedAuthority));
+    if (!unifiedAuthority) {
+      button.disabled = true;
+      button.textContent = "继续当前发布流程";
+      message.textContent = approved
+        ? "当前旧版计划不具备统一控制面，继续使用原有受治理入口。"
+        : "批准当前发布计划后，系统会显示唯一可执行的下一步。";
+      return;
+    }
+
+    const projection = oneClickProjection();
+    const canonicalNextAction = currentOneClickNextAction(data);
+    const busy = Boolean(
+      releaseSubmitting
+      || approvalSubmitting
+      || pageLoading
+      || oneClickExecution.previewBusy
+      || oneClickExecution.statusBusy
+      || oneClickExecution.acceptanceCheckBusy
+      || oneClickExecution.posting
+    );
+    button.disabled = busy;
+    delete button.dataset.oneclickAction;
+    delete button.dataset.oneclickTargetFocus;
+
+    if (busy) {
+      button.textContent = "正在处理当前步骤…";
+      message.textContent = "系统正在完成当前读取或提交；结束后会自动显示下一步。";
+      return;
+    }
+    if (oneClickExecution.job) {
+      if (canonicalNextAction?.action) {
+        button.dataset.oneclickAction = String(canonicalNextAction.action);
+        button.dataset.oneclickTargetFocus = String(
+          canonicalNextAction.target_focus || "",
+        );
+        button.textContent = oneClickActionText(canonicalNextAction.action);
+        message.textContent = "任务已由服务端接管；按钮只执行服务端给出的唯一下一步。";
+      } else {
+        button.textContent = "刷新当前发布状态";
+        message.textContent = "任务已建立；这里只读取最新状态，不会再次提交发布。";
+      }
+      return;
+    }
+    if (
+      oneClickExecution.error
+      || oneClickExecution.statusWarning
+      || oneClickExecution.postAttempted
+    ) {
+      button.textContent = "重新读取当前发布状态";
+      message.textContent = oneClickExecution.error
+        || oneClickExecution.statusWarning
+        || "上次请求结果尚未确认；本操作只读核对，不会重复提交。";
+      return;
+    }
+    if (
+      oneClickExecution.preview
+      && oneClickExecution.preview.start_allowed === true
+      && oneClickExecution.preview.preparation_pending_count > 0
+    ) {
+      button.textContent = "开始执行已批准计划";
+      message.textContent = "点击一次即可创建唯一持久任务；后续步骤由服务端状态机推进。";
+      return;
+    }
+    if (canonicalNextAction?.action) {
+      button.dataset.oneclickAction = String(canonicalNextAction.action);
+      button.dataset.oneclickTargetFocus = String(
+        canonicalNextAction.target_focus || "",
+      );
+      button.textContent = oneClickActionText(canonicalNextAction.action);
+      message.textContent = "当前尚不能提交发布；按钮会进入服务端指定的唯一处理步骤。";
+      return;
+    }
+    button.textContent = "读取并继续发布";
+    message.textContent = "先读取服务端发布条件；读取操作不会产生外部写入。";
+  }
+
   function updateReleaseControls(data) {
     const release = data?.release_v1 || {};
     const plan = release.plan || {};
@@ -6750,6 +6860,7 @@
     $("#approveReleasePlanButton").disabled = Boolean(
       approved || !eligible || releasePlanApprovalSubmitting,
     );
+    updateReleasePrimaryAction(data);
 
     const prepared = Boolean(release.miaoshou_prepared);
     const commonReadbackOnly = commonNeedsReadbackReconciliation(release);
@@ -7723,6 +7834,52 @@
     }
   }
 
+  async function runReleasePrimaryAction() {
+    if (!currentData?.release_v1?.plan_approved) return;
+    const canonicalNextAction = currentOneClickNextAction(currentData);
+    if (oneClickExecution.job) {
+      if (canonicalNextAction?.action) {
+        const button = $("#releasePrimaryActionButton");
+        button.dataset.oneclickAction = String(canonicalNextAction.action);
+        button.dataset.oneclickTargetFocus = String(
+          canonicalNextAction.target_focus || "",
+        );
+        await routeOneClickNextAction(button);
+      } else {
+        await retryOneClickReadOnly();
+      }
+      return;
+    }
+    if (
+      oneClickExecution.error
+      || oneClickExecution.statusWarning
+      || oneClickExecution.postAttempted
+    ) {
+      await retryOneClickReadOnly();
+      return;
+    }
+    if (
+      !oneClickExecution.preview
+      || oneClickExecution.preview.start_allowed !== true
+    ) {
+      if (canonicalNextAction?.action) {
+        const button = $("#releasePrimaryActionButton");
+        button.dataset.oneclickAction = String(canonicalNextAction.action);
+        button.dataset.oneclickTargetFocus = String(
+          canonicalNextAction.target_focus || "",
+        );
+        await routeOneClickNextAction(button);
+      } else {
+        await retryOneClickReadOnly();
+      }
+      return;
+    }
+
+    // The single visible click supplies the former redundant confirmation.
+    $("#publishAllCheckbox").checked = true;
+    await publishSelectedTargets();
+  }
+
   async function publishSelectedTargets() {
     const identity = oneClickExecution.identity;
     const preview = oneClickExecution.preview;
@@ -8275,6 +8432,10 @@
     updateReleaseControls(currentData || {});
   });
   $("#commonOverwriteButton").addEventListener("click", overwriteMiaoshou);
+  $("#releasePrimaryActionButton").addEventListener(
+    "click",
+    runReleasePrimaryAction,
+  );
   $("#publishAllCheckbox").addEventListener("change", () => {
     updateReleaseControls(currentData || {});
   });

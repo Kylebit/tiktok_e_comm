@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#173b36">
   <title>Orbit · 商品发布中心</title>
   <link rel="stylesheet" href="/static/product_workspace.css?v=20260730-v18">
-  <script src="/static/product_workspace.js?v=20260730-v22" defer></script>
+  <script src="/static/product_workspace.js?v=20260731-v23" defer></script>
   <script src="/static/disabled_control_hints.js?v=20260729-v2" defer></script>
 </head>
 <body>
@@ -380,7 +380,37 @@
         </div>
       </article>
 
-      <div class="release-actions-grid">
+      <article id="releasePrimaryActionPanel" class="external-action-card publish" hidden>
+        <div>
+          <p class="kicker">APPROVED RELEASE</p>
+          <h3>发布已批准计划</h3>
+          <p id="releasePrimaryActionMessage" role="status" aria-live="polite">
+            批准后，系统会按照服务端给出的唯一下一步继续执行。
+          </p>
+        </div>
+        <button id="releasePrimaryActionButton" class="button button-primary"
+          type="button" disabled>
+          继续当前发布流程
+        </button>
+        <section id="oneClickExecutionPreview" class="oneclick-execution-preview"
+          aria-labelledby="oneClickExecutionTitle">
+          <h4 id="oneClickExecutionTitle">本轮执行状态</h4>
+          <p id="oneClickExecutionMessage" role="status" aria-live="polite">
+            正在读取服务端执行账本…
+          </p>
+          <button id="oneClickNextActionButton" class="button button-secondary"
+            type="button" hidden disabled>
+            查看服务端唯一下一步
+          </button>
+          <button id="oneClickReadRetryButton" class="button button-secondary"
+            type="button" hidden disabled>
+            重新读取发布条件
+          </button>
+          <div id="oneClickExecutionGroups" class="oneclick-execution-groups"></div>
+        </section>
+      </article>
+
+      <div id="legacyReleaseActionPanels" class="release-actions-grid">
         <article class="external-action-card">
           <div>
             <p class="kicker">STEP 1 · PREPARE</p>
@@ -432,19 +462,6 @@
             一键发布已选店铺
           </button>
           <p id="publishRunMessage" class="approval-message" role="status"></p>
-          <section id="oneClickExecutionPreview" class="oneclick-execution-preview" aria-labelledby="oneClickExecutionTitle">
-            <h4 id="oneClickExecutionTitle">本轮执行预览</h4>
-            <p id="oneClickExecutionMessage" role="status" aria-live="polite">正在读取服务端执行账本…</p>
-            <button id="oneClickNextActionButton" class="button button-secondary"
-              type="button" hidden disabled>
-              查看服务端唯一下一步
-            </button>
-            <button id="oneClickReadRetryButton" class="button button-secondary"
-              type="button" hidden disabled>
-              重新读取发布条件
-            </button>
-            <div id="oneClickExecutionGroups" class="oneclick-execution-groups"></div>
-          </section>
         </article>
       </div>
 

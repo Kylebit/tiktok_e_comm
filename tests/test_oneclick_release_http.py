@@ -88,7 +88,7 @@ def test_publish_http_is_short_202_job_start_not_legacy_loop(
     assert len(calls) == 1
 
 
-def test_publish_post_advances_rebound_legacy_job_to_next_batch(monkeypatch):
+def test_publish_post_cannot_reopen_legacy_job_before_collectbox_step(monkeypatch):
     calls = []
     plan = {"plan_id": "omnichannel:test"}
 
@@ -178,15 +178,12 @@ def test_publish_post_advances_rebound_legacy_job_to_next_batch(monkeypatch):
         }
     )
 
-    assert status == 202
-    assert response["job"]["batch_sequence"] == 2
-    assert calls == [
-        "start_run",
-        "ensure_job",
-        "set_dispatch_capability",
-        "start_explicit_batch",
-        "wake:oneclick-job:legacy",
-    ]
+    assert status == 409
+    assert response["error"]["code"] == "step1_collectbox_required"
+    assert response["canonical_next_action"]["action"] == (
+        "start_collectbox_action"
+    )
+    assert calls == []
 
 
 def test_shared_control_v2_is_canonical_action_without_storefront_count(

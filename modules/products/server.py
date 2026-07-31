@@ -138,6 +138,40 @@ def _apply_oneclick_release_authority(release_v1: dict) -> dict:
     result = dict(release_v1)
     plan = result.get("plan") if isinstance(result.get("plan"), dict) else {}
     plan_id = str(plan.get("plan_id") or "")
+    if plan_id and result.get("plan_approved") is True:
+        from shared_platform.collectbox_action import (
+            approved_plan_identity,
+            invalid_plan_projection,
+            ready_projection,
+        )
+
+        try:
+            identity = approved_plan_identity(plan)
+        except (TypeError, ValueError) as error:
+            collectbox_action = invalid_plan_projection(
+                plan,
+                detail=str(error),
+            )
+            result["collectbox_action"] = collectbox_action
+            result["oneclick_controlplane"] = None
+            result["target_recovery_actions"] = []
+            result["runnable_target_count"] = 0
+            result["publish_ready"] = False
+            result["canonical_next_action"] = None
+            return result
+        plan = {**plan, "targets_digest": identity["targets_digest"]}
+        result["plan"] = plan
+        collectbox = _collectbox_action_store().status(plan_id=plan_id)
+        collectbox_action = collectbox or ready_projection(plan)
+        result["collectbox_action"] = collectbox_action
+        result["oneclick_controlplane"] = None
+        result["target_recovery_actions"] = []
+        result["runnable_target_count"] = 0
+        result["publish_ready"] = False
+        result["canonical_next_action"] = collectbox_action.get(
+            "canonical_next_action"
+        )
+        return result
     job = _oneclick_control_store().get_job(plan_id=plan_id) if plan_id else None
     if job:
         job = _project_oneclick_dispatch_capability(job)
@@ -8233,6 +8267,331 @@ def _wake_oneclick_worker(job_id: str) -> None:
     _oneclick_worker_wake.set()
 
 
+def _collectbox_action_store():
+    from shared_platform.collectbox_action import CollectBoxActionStore
+    from shared_platform.release_store import default_release_store
+
+    return CollectBoxActionStore(default_release_store().path)
+
+
+def _collectbox_action_timing():
+    return time.monotonic, time.sleep
+
+
+def _recover_collectbox_actions() -> int:
+    return _collectbox_action_store().recover_interrupted()
+
+
+def _collectbox_platform_adapter():
+    import importlib
+
+    module = importlib.import_module(
+        "domains.channel_operations.collectbox_action_adapters"
+    )
+    adapter = getattr(module, "execute_collectbox_platform", None)
+    if not callable(adapter):
+        raise RuntimeError("collect-box channel adapter is unavailable")
+    return adapter
+
+
+def _collectbox_public_error(
+    *,
+    category: str,
+    code: str,
+    detail: str,
+) -> dict[str, str]:
+    return {
+        "category": category,
+        "code": code,
+        "detail_digest": hashlib.sha256(
+            detail.encode("utf-8")
+        ).hexdigest(),
+    }
+
+
+def _collectbox_common_detail_id(context: dict) -> str:
+    # In this workflow the approved plan's product_id is the exact Miaoshou
+    # commonCollectBoxDetailId.  The review-package collect-box evidence is
+    # optional corroboration; source_offer_id is a different business identity
+    # and must never be substituted here.
+    plan = context.get("plan") if isinstance(context.get("plan"), dict) else {}
+    plan_detail_id = plan.get("product_id")
+    if type(plan_detail_id) not in {str, int} or isinstance(
+        plan_detail_id, bool
+    ):
+        raise ValueError("approved plan common collect-box identity is missing")
+    clean = str(plan_detail_id)
+    if (
+        not clean.isascii()
+        or not clean.isdigit()
+        or (len(clean) > 1 and clean.startswith("0"))
+        or not 1 <= len(clean) <= 32
+        or int(clean) <= 0
+    ):
+        raise ValueError("approved plan common collect-box identity is invalid")
+    inputs = (context.get("dashboard") or {}).get(
+        "_source_identity_inputs"
+    )
+    collect_box = (
+        inputs.get("collect_box") if isinstance(inputs, dict) else None
+    )
+    detail_id = (
+        collect_box.get("detail_id")
+        if isinstance(collect_box, dict)
+        else None
+    )
+    if detail_id is not None and detail_id != "":
+        if type(detail_id) not in {str, int} or isinstance(detail_id, bool):
+            raise ValueError("collect-box corroborating identity is invalid")
+        corroborating = str(detail_id)
+        if (
+            not corroborating.isascii()
+            or not corroborating.isdigit()
+            or (
+                len(corroborating) > 1
+                and corroborating.startswith("0")
+            )
+            or int(corroborating) <= 0
+        ):
+            raise ValueError("collect-box corroborating identity is invalid")
+        if corroborating != clean:
+            raise ValueError(
+                "collect-box corroborating identity conflicts with approved plan"
+            )
+    return clean
+
+
+def _collectbox_identity_context(
+    data: dict,
+    *,
+    require_token: bool,
+) -> tuple[dict | None, tuple[int, dict] | None]:
+    from shared_platform.collectbox_action import approved_plan_identity
+
+    request_data = dict(data)
+    if request_data.get("publication_targets") is None:
+        from shared_platform.release_store import default_release_store
+
+        stored_plan = default_release_store().get_plan(
+            str(request_data.get("plan_id") or "").strip()
+        )
+        if (
+            isinstance(stored_plan, dict)
+            and str(stored_plan.get("product_id") or "")
+            == str(request_data.get("offer_id") or "")
+            and isinstance(stored_plan.get("targets"), list)
+        ):
+            request_data["publication_targets"] = list(
+                stored_plan["targets"]
+            )
+    context, failure = _oneclick_approved_context(
+        request_data,
+        require_token=require_token,
+    )
+    if failure:
+        return None, failure
+    assert context is not None
+    try:
+        identity = approved_plan_identity(context["plan"])
+        common_detail_id = _collectbox_common_detail_id(context)
+    except (TypeError, ValueError) as error:
+        return None, (
+            409,
+            {
+                "schema_version": "collectbox-action-status/v1",
+                "ok": False,
+                "persisted": False,
+                "error": _collectbox_public_error(
+                    category="IDENTITY",
+                    code="collectbox_source_identity_unavailable",
+                    detail=str(error),
+                ),
+                "external_writes_performed": [],
+                "external_write_count": 0,
+            },
+        )
+    return {
+        **context,
+        "approved_plan_identity": identity,
+        "common_collect_box_detail_id": common_detail_id,
+    }, None
+
+
+def _preview_collectbox_action(data: dict) -> tuple[int, dict]:
+    from shared_platform.collectbox_action import (
+        common_collectbox_identity_digest,
+    )
+
+    context, failure = _collectbox_identity_context(
+        data,
+        require_token=False,
+    )
+    if failure:
+        return failure
+    assert context is not None
+    identity = context["approved_plan_identity"]
+    projection = _collectbox_action_store().preview(
+        plan=context["plan"],
+        common_collectbox_identity_digest=(
+            common_collectbox_identity_digest(
+                identity["plan_id"],
+                context["common_collect_box_detail_id"],
+            )
+        ),
+    )
+    return 200, projection
+
+
+def _collectbox_action_status(data: dict) -> tuple[int, dict]:
+    context, failure = _collectbox_identity_context(
+        data,
+        require_token=False,
+    )
+    if failure:
+        return failure
+    assert context is not None
+    identity = context["approved_plan_identity"]
+    projection = _collectbox_action_store().status(
+        plan_id=identity["plan_id"]
+    )
+    if projection is None:
+        return 404, {
+            "schema_version": "collectbox-action-status/v1",
+            "ok": False,
+            "persisted": False,
+            "error": _collectbox_public_error(
+                category="NOT_FOUND",
+                code="collectbox_action_not_found",
+                detail="collect-box action has not been started",
+            ),
+            "external_writes_performed": [],
+            "external_write_count": 0,
+        }
+    if projection["approved_plan"] != identity:
+        return 409, {
+            "schema_version": "collectbox-action-status/v1",
+            "ok": False,
+            "persisted": True,
+            "error": _collectbox_public_error(
+                category="IDENTITY",
+                code="collectbox_action_plan_identity_drift",
+                detail="persisted collect-box action identity drifted",
+            ),
+            "external_writes_performed": [],
+            "external_write_count": 0,
+        }
+    return 200, projection
+
+
+def _start_collectbox_action(data: dict) -> tuple[int, dict]:
+    forbidden = {
+        "commoncollectboxdetailid",
+        "common_collect_box_detail_id",
+        "platform_detail_id",
+        "platform_receipt",
+        "adapter_command",
+    }
+    if any(str(key).casefold() in forbidden for key in data):
+        return 400, {
+            "schema_version": "collectbox-action-status/v1",
+            "ok": False,
+            "persisted": False,
+            "error": _collectbox_public_error(
+                category="VALIDATION",
+                code="client_collectbox_override_forbidden",
+                detail="client cannot supply collect-box identity or receipts",
+            ),
+            "external_writes_performed": [],
+            "external_write_count": 0,
+        }
+    if (
+        data.get("confirm_collectbox_action") is not True
+        or data.get("approved_by") != "Kyle"
+    ):
+        return 400, {
+            "schema_version": "collectbox-action-status/v1",
+            "ok": False,
+            "persisted": False,
+            "error": _collectbox_public_error(
+                category="VALIDATION",
+                code="collectbox_explicit_confirmation_required",
+                detail=(
+                    "literal confirm_collectbox_action=true and "
+                    "approved_by=Kyle are required"
+                ),
+            ),
+            "external_writes_performed": [],
+            "external_write_count": 0,
+        }
+    context, failure = _collectbox_identity_context(
+        data,
+        require_token=True,
+    )
+    if failure:
+        return failure
+    assert context is not None
+    identity = context["approved_plan_identity"]
+    if (
+        data.get("product_revision") != identity["product_revision"]
+        or data.get("payload_digest") != identity["payload_digest"]
+        or data.get("targets_digest") != identity["targets_digest"]
+        or data.get("plan_id") != identity["plan_id"]
+        or str(data.get("offer_id") or "") != identity["offer_id"]
+    ):
+        return 409, {
+            "schema_version": "collectbox-action-status/v1",
+            "ok": False,
+            "persisted": False,
+            "error": _collectbox_public_error(
+                category="IDENTITY",
+                code="collectbox_approved_plan_echo_mismatch",
+                detail="collect-box approved plan echo is stale",
+            ),
+            "external_writes_performed": [],
+            "external_write_count": 0,
+        }
+    try:
+        adapter = _collectbox_platform_adapter()
+    except (ImportError, RuntimeError) as error:
+        return 503, {
+            "schema_version": "collectbox-action-status/v1",
+            "ok": False,
+            "persisted": False,
+            "error": _collectbox_public_error(
+                category="CAPABILITY",
+                code="collectbox_channel_adapter_unavailable",
+                detail=str(error),
+            ),
+            "external_writes_performed": [],
+            "external_write_count": 0,
+        }
+    now, wait_for_spacing = _collectbox_action_timing()
+    try:
+        projection = _collectbox_action_store().start(
+            plan=context["plan"],
+            common_collect_box_detail_id=(
+                context["common_collect_box_detail_id"]
+            ),
+            adapter=adapter,
+            now=now,
+            wait=wait_for_spacing,
+        )
+    except (TypeError, ValueError) as error:
+        return 409, {
+            "schema_version": "collectbox-action-status/v1",
+            "ok": False,
+            "persisted": False,
+            "error": _collectbox_public_error(
+                category="IDENTITY",
+                code="collectbox_action_identity_conflict",
+                detail=str(error),
+            ),
+            "external_writes_performed": [],
+            "external_write_count": 0,
+        }
+    return 200, projection
+
+
 def _oneclick_approved_context(
     data: dict,
     *,
@@ -8432,37 +8791,44 @@ def _start_oneclick_release(data: dict) -> tuple[int, dict]:
     if failure:
         return failure
     assert context is not None
-    with _release_execution_lock:
-        context, failure = _oneclick_approved_context(data)
-        if failure:
-            return failure
-        assert context is not None
-        plan = context["plan"]
-        run = context["store"].start_run(plan["plan_id"])
-        registry = _oneclick_adapter_registry()
-        control_store = _oneclick_control_store()
-        job = control_store.ensure_job(
-            plan=context["store"].get_plan(plan["plan_id"]),
-            run=run,
-            product_revision=int(context["payload"]["product_revision"]),
-            registry=registry,
-        )
-        dispatch_capability = _oneclick_dispatch_capability()
-        job = control_store.set_dispatch_capability(
-            job["job_id"],
-            enabled=dispatch_capability["enabled"],
-        )
-        job = control_store.start_explicit_batch(job["job_id"])
-        _wake_oneclick_worker(job["job_id"])
-    return 202, {
-        "ok": True,
-        "accepted": True,
-        "idempotent": False,
+    collectbox = _collectbox_action_store().status(
+        plan_id=context["plan"]["plan_id"]
+    )
+    collectbox_status = (
+        (collectbox.get("action") or {}).get("status")
+        if isinstance(collectbox, dict)
+        else None
+    )
+    error_code = (
+        "store_publish_not_yet_enabled"
+        if collectbox_status == "SUCCEEDED"
+        else "step1_collectbox_required"
+    )
+    return 409, {
+        "ok": False,
+        "error": _collectbox_public_error(
+            category="CAPABILITY",
+            code=error_code,
+            detail=(
+                "store publishing is not enabled in collect-box Step 1"
+                if collectbox_status == "SUCCEEDED"
+                else "complete the plan-bound collect-box action first"
+            ),
+        ),
         "external_writes_performed": [],
-        "job": _project_oneclick_dispatch_capability(job),
+        "canonical_next_action": (
+            None
+            if collectbox_status == "SUCCEEDED"
+            else {
+                "action": (
+                    "read_collectbox_status"
+                    if collectbox_status == "RUNNING"
+                    else "start_collectbox_action"
+                ),
+                "target_focus": None,
+            }
+        ),
     }
-
-
 def _publish_selected_release(data: dict) -> tuple[int, dict]:
     """Execute the approved plan once through durable per-target adapters."""
     from domains.channel_operations.release_executor import AdapterExecutionRequest
@@ -11218,6 +11584,47 @@ class Handler(BaseHTTPRequestHandler):
             from shared_platform.orbit_registry import navigation_payload
 
             return self._json(200, {"ok": True, **navigation_payload()})
+        if path in {
+            "/api/product-workspace/collectbox-action/preview",
+            "/api/product-workspace/collectbox-action/status",
+        }:
+            q = parse_qs(
+                urlparse(self.path).query,
+                keep_blank_values=True,
+            )
+            if (
+                set(q) != {"offer_id", "plan_id"}
+                or len(q["offer_id"]) != 1
+                or len(q["plan_id"]) != 1
+            ):
+                return self._json(
+                    400,
+                    {
+                        "schema_version": "collectbox-action-status/v1",
+                        "ok": False,
+                        "persisted": False,
+                        "error": _collectbox_public_error(
+                            category="VALIDATION",
+                            code="collectbox_query_identity_invalid",
+                            detail=(
+                                "exactly one offer_id and plan_id "
+                                "are required"
+                            ),
+                        ),
+                        "external_writes_performed": [],
+                        "external_write_count": 0,
+                    },
+                )
+            request = {
+                "offer_id": q["offer_id"][0],
+                "plan_id": q["plan_id"][0],
+            }
+            status, payload = (
+                _preview_collectbox_action(request)
+                if path.endswith("/preview")
+                else _collectbox_action_status(request)
+            )
+            return self._json(status, payload)
         if path == "/api/product-workspace/publish-preview":
             q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
             status, payload = _preview_oneclick_release(
@@ -11917,6 +12324,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/product-workspace/shopee-global-plan-approval",
             _CHANNEL_CATEGORY_APPROVAL_PATH,
             "/api/product-workspace/miaoshou-draft/commit",
+            "/api/product-workspace/collectbox-action/start",
             "/api/product-workspace/publish",
             "/api/product-workspace/release-target/manual-verify",
             "/api/product-workspace/release-target/shopee-price-repair",
@@ -11990,6 +12398,8 @@ class Handler(BaseHTTPRequestHandler):
                 )
             elif path == "/api/product-workspace/miaoshou-draft/commit":
                 status, payload = _prepare_miaoshou_release(data)
+            elif path == "/api/product-workspace/collectbox-action/start":
+                status, payload = _start_collectbox_action(data)
             elif path == "/api/product-workspace/release-target/manual-verify":
                 status, payload = _manually_verify_release_target(data)
             elif (
@@ -12942,6 +13352,7 @@ def serve(
     except Exception as e:
         print(f"  [WARN] orders-pull 调度未启动: {e}")
 
+    _recover_collectbox_actions()
     _start_oneclick_background_worker()
 
     if open_browser:

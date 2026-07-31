@@ -1133,15 +1133,12 @@ def test_successor_one_click_uses_only_governed_shopee_recovery(
     )[0] == 200
 
     successor_view = product_server._product_workspace_view(dashboard)
-    recovery = next(
-        action
-        for action in successor_view["release_v1"][
-            "target_recovery_actions"
-        ]
-        if action["target_label"] == "shopee:PH"
-    )
-    assert recovery["action_kind"] == "GOVERNED_RECOVERY"
-    assert recovery["runnable"] is True
+    release_v1 = successor_view["release_v1"]
+    assert release_v1["target_recovery_actions"] == []
+    assert release_v1["canonical_next_action"] == {
+        "action": "start_collectbox_action",
+        "target_focus": None,
+    }
 
     status, result = product_server._publish_selected_release(
         {**successor_request, "confirm_publish": True}

@@ -337,10 +337,21 @@ def test_same_reimport_request_concurrent_start_has_one_batch_and_one_execution(
     plan = _plan()
     calls = []
     calls_lock = threading.Lock()
+    winner_started = threading.Event()
+    release_winner = threading.Event()
+    duplicate_waiting = threading.Event()
+    exercise_concurrency = threading.Event()
 
     def adapter(request):
         with calls_lock:
             calls.append(request.platform)
+        if (
+            exercise_concurrency.is_set()
+            and request.platform == "TIKTOK"
+            and not winner_started.is_set()
+        ):
+            winner_started.set()
+            assert release_winner.wait(timeout=5)
         return CollectBoxPlatformResult(
             status="SUCCEEDED",
             outcome=IMPORTED,
@@ -362,31 +373,20 @@ def test_same_reimport_request_concurrent_start_has_one_batch_and_one_execution(
         wait=lambda _seconds: None,
     )
     calls.clear()
+    exercise_concurrency.set()
+    winner_started.clear()
+    original_wait = store._wait_for_restart_batch
 
-    # Force both callers to observe the same TIKTOK row as runnable before
-    # either can claim it.  This makes the contention deterministic instead of
-    # relying on scheduler timing.
-    original_mark_running = store._mark_running
-    tiktok_claim_barrier = threading.Barrier(2, timeout=5)
+    def observed_wait(action_id, **kwargs):
+        duplicate_waiting.set()
+        return original_wait(action_id, **kwargs)
 
-    def overlapping_mark_running(action_id, platform, invoked_at, **kwargs):
-        if platform == "TIKTOK":
-            tiktok_claim_barrier.wait()
-        return original_mark_running(
-            action_id,
-            platform,
-            invoked_at,
-            **kwargs,
-        )
-
-    monkeypatch.setattr(store, "_mark_running", overlapping_mark_running)
-    start_barrier = threading.Barrier(3, timeout=5)
+    monkeypatch.setattr(store, "_wait_for_restart_batch", observed_wait)
     request_id = "44444444-4444-4444-8444-444444444444"
     results = []
     errors = []
 
     def invoke_start():
-        start_barrier.wait()
         try:
             results.append(
                 store.start(
@@ -403,9 +403,11 @@ def test_same_reimport_request_concurrent_start_has_one_batch_and_one_execution(
             errors.append(error)
 
     threads = [threading.Thread(target=invoke_start) for _ in range(2)]
-    for thread in threads:
-        thread.start()
-    start_barrier.wait()
+    threads[0].start()
+    assert winner_started.wait(timeout=5)
+    threads[1].start()
+    assert duplicate_waiting.wait(timeout=5)
+    release_winner.set()
     for thread in threads:
         thread.join(timeout=10)
         assert not thread.is_alive()

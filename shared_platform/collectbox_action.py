@@ -507,6 +507,7 @@ CREATE TABLE IF NOT EXISTS collectbox_action_batches (
     status TEXT NOT NULL,
     action_error_json TEXT,
     last_invoked_at REAL,
+    execution_claimed_at REAL,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
     completed_at REAL,
@@ -748,6 +749,7 @@ class CollectBoxActionStore:
                         row["action_id"],
                         recovered_at,
                         batched=batched,
+                        finalize_pending=True,
                     )
                     recovered += 1
             connection.commit()
@@ -790,6 +792,8 @@ class CollectBoxActionStore:
                 float(now()),
             )
             batched = True
+            if not self._claim_restart_batch(action_id, float(now())):
+                return self._wait_for_restart_batch(action_id)
         if batched:
             with self._connect() as connection:
                 batch = connection.execute(
@@ -1096,6 +1100,55 @@ class CollectBoxActionStore:
             connection.commit()
             return action_id, True
 
+    def _claim_restart_batch(self, action_id: str, now: float) -> bool:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            claimed = connection.execute(
+                """
+                UPDATE collectbox_action_batches
+                SET execution_claimed_at = ?, updated_at = ?
+                WHERE action_id = ?
+                  AND status = 'READY'
+                  AND execution_claimed_at IS NULL
+                """,
+                (now, now, action_id),
+            ).rowcount
+            connection.commit()
+            return claimed == 1
+
+    def _wait_for_restart_batch(
+        self,
+        action_id: str,
+        *,
+        timeout_seconds: float = 300.0,
+    ) -> dict[str, Any]:
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            with self._connect() as connection:
+                batch = connection.execute(
+                    """
+                    SELECT * FROM collectbox_action_batches
+                    WHERE action_id = ?
+                    """,
+                    (action_id,),
+                ).fetchone()
+                if batch is None:
+                    raise ValueError("collect-box reimport batch is missing")
+                projection = self._project(
+                    connection,
+                    batch,
+                    batched=True,
+                )
+            unfinished = any(
+                row["status"] in {PENDING, RUNNING}
+                for row in projection["action"]["platforms"]
+            )
+            if not unfinished:
+                return projection
+            if time.monotonic() >= deadline:
+                return projection
+            time.sleep(0.02)
+
     def _mark_running(
         self,
         action_id: str,
@@ -1271,6 +1324,7 @@ class CollectBoxActionStore:
         now: float,
         *,
         batched: bool = False,
+        finalize_pending: bool = False,
     ) -> None:
         action_table = (
             "collectbox_action_batches" if batched else "collectbox_actions"
@@ -1293,7 +1347,11 @@ class CollectBoxActionStore:
         if statuses and all(status == SUCCEEDED for status in statuses):
             status = SUCCEEDED
             completed_at = now
-        elif RUNNING in statuses:
+        elif RUNNING in statuses or (
+            not finalize_pending
+            and PENDING in statuses
+            and any(status != PENDING for status in statuses)
+        ):
             status = RUNNING
             completed_at = None
         elif any(

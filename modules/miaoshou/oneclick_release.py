@@ -1451,7 +1451,12 @@ def prepare_selected_platform_collectbox(
                 target=target,
             )
             readback_available = True
-            _verify_expected_detail(readback, expected, platform=platform)
+            _verify_expected_detail(
+                readback,
+                expected,
+                platform=platform,
+                strict_collectbox_tiktok=True,
+            )
             return detail_id, _target_result(target, "SUCCEEDED")
         except Exception:
             if platform != "tiktok":
@@ -1503,7 +1508,10 @@ def prepare_selected_platform_collectbox(
                 )
                 repair_readback_available = True
                 _verify_expected_detail(
-                    readback, expected, platform=platform
+                    readback,
+                    expected,
+                    platform=platform,
+                    strict_collectbox_tiktok=True,
                 )
                 return detail_id, _target_result(
                     target, "REPAIRED_SUCCEEDED"
@@ -1766,6 +1774,7 @@ def _verify_expected_detail(
     expected: Mapping[str, object],
     *,
     platform: str = "tiktok",
+    strict_collectbox_tiktok: bool = False,
 ) -> None:
     sku_map = _sku_map(detail)
     bindings = _approved_variant_key_bindings(detail, expected)
@@ -1847,7 +1856,7 @@ def _verify_expected_detail(
                 for key in wanted
             )
         )
-        if platform == "tiktok":
+        if platform == "tiktok" and strict_collectbox_tiktok:
             checks.append(
                 all(
                     _numbers_equal(
@@ -1859,7 +1868,7 @@ def _verify_expected_detail(
                     for key in wanted
                 )
             )
-    if platform == "tiktok":
+    if platform == "tiktok" and strict_collectbox_tiktok:
         expected_category = expected.get("category_id")
         checks.append(
             type(expected_category) is str

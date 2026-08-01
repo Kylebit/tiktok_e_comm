@@ -133,6 +133,12 @@ def _miaoshou_detail(expected, *, detail_id=77):
                 "packageHeight": 1,
                 "price": 33,
                 "priceIncludeVat": 33,
+                "stock": 300,
+                "shopIdToWarehouseIdAndStockMap": {
+                    expected["shop_id"]: {
+                        "EXISTING-WAREHOUSE": "300"
+                    }
+                },
             }
         },
     }

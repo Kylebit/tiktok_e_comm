@@ -193,6 +193,13 @@ def _detail(target):
         detail["collectBoxDetailShopList"] = [
             {"shopId": expected["shop_id"], "site": expected["region"]}
         ]
+    if expected["platform"] == "tiktok":
+        detail["skuMap"]["default"].update({
+            "stock": 300,
+            "shopIdToWarehouseIdAndStockMap": {
+                expected["shop_id"]: {"EXISTING-WAREHOUSE": "300"}
+            },
+        })
     return detail
 
 
@@ -857,6 +864,152 @@ LIVE_SIX_TIKTOK_TARGETS = (
     "tiktok:MX",
     "tiktok:GB",
 )
+
+
+@pytest.mark.parametrize("target", LIVE_SIX_TIKTOK_TARGETS)
+def test_collectbox_tiktok_restores_proven_per_site_price_and_category_without_web(
+    target, monkeypatch
+):
+    """The legacy complete per-site draft contract must persist both fields.
+
+    Offer 3846511157 reproduced the regression: the reduced save payload was
+    accepted, but Miaoshou rebuilt the local price from COMMON CNY 10 and some
+    site categories were blank.  The previously proven path first reads the
+    target warehouse and writes the complete site/shop draft contract.  That
+    path must not depend on a browser Cookie or the batch-price repair API.
+    """
+
+    approved_prices = {
+        "tiktok:LH_PH": ("523", "PHP"),
+        "tiktok:LH_MY": ("46", "MYR"),
+        "tiktok:LH_TH": ("386", "THB"),
+        "tiktok:LH_VN": ("408000", "VND"),
+        "tiktok:MX": ("286", "MXN"),
+        "tiktok:GB": ("15", "GBP"),
+    }
+    converted_prices = {
+        "tiktok:LH_PH": 90.66,
+        "tiktok:LH_MY": 6.05,
+        "tiktok:LH_TH": 49.47,
+        "tiktok:LH_VN": 38939.8,
+        "tiktok:MX": 25.66,
+        "tiktok:GB": 1.1,
+    }
+    config = miaoshou.DIRECT_STORE_CONFIG[target]
+    approved_price, currency = approved_prices[target]
+    payload = _plan_payload(target)
+    payload["pricing"]["selected_targets"][target]["store_prices"][0].update(
+        {"list_price": approved_price, "currency": currency}
+    )
+    payload["approved_tiktok_category_decisions"] = (
+        _tiktok_category_decisions((target,))
+    )
+    detail = _detail(target)
+    detail["cid"] = ""
+    detail["skuMap"]["default"].pop(
+        "shopIdToWarehouseIdAndStockMap", None
+    )
+    calls = []
+
+    def post(path, body):
+        nonlocal detail
+        calls.append((path, deepcopy(body)))
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            return {"result": "success"}
+        if path.endswith("get_shop_warehouse_list"):
+            assert body == {"shopIds": [str(config["shop_id"])]}
+            return {
+                "result": "success",
+                "data": {
+                    "shopWarehouseList": [{
+                        "warehouseList": [{
+                            "warehouseId": "WAREHOUSE-1",
+                            "warehouseEffectStatus": "1",
+                            "isDefault": "1",
+                        }]
+                    }]
+                },
+            }
+        if path == config["get_path"]:
+            field = (
+                "siteCollectItemInfo"
+                if config["draft_mode"] == "site"
+                else "shopCollectItemInfo"
+            )
+            return {
+                "result": "success",
+                "data": {field: deepcopy(detail), "ossMd5": "md5"},
+            }
+        if path == config["save_path"]:
+            field = (
+                "siteCollectItemInfo"
+                if config["draft_mode"] == "site"
+                else "shopCollectItemInfo"
+            )
+            candidate = deepcopy(body[field])
+            sku = candidate["skuMap"]["default"]
+            shop_rows = candidate.get("collectBoxDetailShopList") or []
+            brand_exact = (
+                len(shop_rows) == 1
+                and str(shop_rows[0].get("brandId") or "") == "0"
+                if config["draft_mode"] == "site"
+                else str(candidate.get("brandId") or "") == "0"
+            )
+            complete_legacy_contract = all((
+                candidate.get("isCodOpen") == "0",
+                candidate.get("sizeChart") == "",
+                candidate.get("sizeChartType") == "",
+                candidate.get("deliveryOptionSetType") == "default",
+                isinstance(candidate.get("productAttributes"), list),
+                brand_exact,
+                sku.get("stock") == 300,
+                sku.get("shopIdToWarehouseIdAndStockMap") == {
+                    str(config["shop_id"]): {"WAREHOUSE-1": "300"}
+                },
+            ))
+            detail = candidate
+            detail["detailId"] = int(body["detailId"])
+            detail["cid"] = (
+                "600338" if complete_legacy_contract else ""
+            )
+            if not complete_legacy_contract:
+                detail["skuMap"]["default"]["price"] = converted_prices[target]
+                detail["skuMap"]["default"]["priceIncludeVat"] = (
+                    converted_prices[target]
+                )
+            elif config["draft_mode"] == "site":
+                # The live API localizes this display label; brandId is the
+                # stable no-brand identity.
+                detail["collectBoxDetailShopList"][0]["brandName"] = "无品牌"
+            return {"result": "success"}
+        raise AssertionError(path)
+
+    monkeypatch.setattr(
+        miaoshou,
+        "_prepare_web_price_post",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("browser batch-price repair must not be used")
+        ),
+    )
+
+    result = miaoshou.prepare_selected_platform_collectbox(
+        platform="tiktok",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=(target,),
+        post=post,
+    )
+
+    assert result["target_results"] == [{
+        "target_label": target,
+        "status": "SUCCEEDED",
+        "error_code": None,
+        "detail_digest": None,
+    }]
+    assert any(path.endswith("get_shop_warehouse_list") for path, _ in calls)
+    assert all(path != miaoshou.WEB_BATCH_SET_PRICE_PATH for path, _ in calls)
 
 
 def _run_live_six_site_tiktok_drift(

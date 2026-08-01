@@ -45,6 +45,10 @@ DETAIL_CREATE_PATH = (
 SHOP_CLAIM_PATH = (
     "/open/v1/product/collect_box/tiktok/collect_box/claim_to_shop"
 )
+WAREHOUSE_GET_PATH = (
+    "/open/v1/product/collect_box/tiktok/collect_box/"
+    "get_shop_warehouse_list"
+)
 SHOP_GET_PATH = (
     "/open/v1/product/collect_box/tiktok/collect_box/"
     "get_shop_collect_item_info"
@@ -1021,11 +1025,17 @@ def _dispatch_site(
                 f"Miaoshou {platform} detail changed after preparation"
             )
         _verify_site_variants(detail, expected)
+        warehouse_id = (
+            _tiktok_warehouse_id(post, detail, expected)
+            if platform == "tiktok"
+            else None
+        )
         updated = _apply_expected_for_platform(
             detail,
             expected,
             platform=platform,
             draft_mode=str(config.get("draft_mode") or "shop"),
+            warehouse_id=warehouse_id,
         )
         body = _save_body(
             platform=platform,
@@ -1596,11 +1606,17 @@ def _prepare_selected_platform_collectbox(
                 shop_id=str(config["shop_id"]),
             )
             _verify_site_variants(detail, expected)
+            warehouse_id = (
+                _tiktok_warehouse_id(client, detail, expected)
+                if platform == "tiktok"
+                else None
+            )
             updated = _apply_expected_for_platform(
                 detail,
                 expected,
                 platform=platform,
                 draft_mode=str(config.get("draft_mode") or "shop"),
+                warehouse_id=warehouse_id,
             )
             body = _save_body(
                 platform=platform,
@@ -1892,15 +1908,155 @@ def _save_body(
     )
 
 
+def _tiktok_warehouse_id(
+    post: Callable[[str, Mapping[str, object]], object],
+    detail: Mapping[str, object],
+    expected: Mapping[str, object],
+) -> str:
+    """Return the exact shop warehouse used by the proven draft contract.
+
+    A claimed draft may already contain the binding.  Otherwise the official
+    read-only warehouse endpoint is queried before the save.  No default or
+    cross-shop warehouse is invented.
+    """
+
+    shop_id = str(expected["shop_id"])
+    observed: set[str] = set()
+    for value in _sku_map(detail).values():
+        row = _mapping(value, "sku row")
+        shop_map = row.get("shopIdToWarehouseIdAndStockMap")
+        if shop_map is None:
+            continue
+        if not isinstance(shop_map, Mapping):
+            raise MiaoshouOneClickPreDispatchError(
+                "TikTok warehouse binding is malformed"
+            )
+        warehouse_map = shop_map.get(shop_id)
+        if warehouse_map is None:
+            continue
+        if not isinstance(warehouse_map, Mapping) or not warehouse_map:
+            raise MiaoshouOneClickPreDispatchError(
+                "TikTok warehouse binding is malformed"
+            )
+        for warehouse_id in warehouse_map:
+            if type(warehouse_id) is not str or not warehouse_id.strip():
+                raise MiaoshouOneClickPreDispatchError(
+                    "TikTok warehouse identity is malformed"
+                )
+            observed.add(warehouse_id.strip())
+    if len(observed) == 1:
+        return next(iter(observed))
+    if len(observed) > 1:
+        raise MiaoshouOneClickPreDispatchError(
+            "TikTok warehouse identity is ambiguous"
+        )
+
+    response = post(WAREHOUSE_GET_PATH, {"shopIds": [shop_id]})
+    if not _success(response):
+        raise MiaoshouOneClickPreDispatchError(
+            "TikTok warehouse read-only GET failed"
+        )
+    data = response.get("data")
+    groups = data.get("shopWarehouseList") if isinstance(data, Mapping) else None
+    if (
+        not isinstance(groups, list)
+        or not groups
+        or any(not isinstance(group, Mapping) for group in groups)
+    ):
+        raise MiaoshouOneClickPreDispatchError(
+            "TikTok warehouse response is malformed"
+        )
+    rows: list[Mapping[str, object]] = []
+    for group in groups:
+        group_shop_id = str(group.get("shopId") or "")
+        if group_shop_id and group_shop_id != shop_id:
+            continue
+        warehouses = group.get("warehouseList")
+        if not isinstance(warehouses, list) or any(
+            not isinstance(row, Mapping) for row in warehouses
+        ):
+            raise MiaoshouOneClickPreDispatchError(
+                "TikTok warehouse response is malformed"
+            )
+        rows.extend(warehouses)
+    active = [
+        row
+        for row in rows
+        if str(row.get("warehouseEffectStatus") or "1") == "1"
+        and type(row.get("warehouseId")) is str
+        and bool(str(row.get("warehouseId") or "").strip())
+    ]
+    if not active:
+        raise MiaoshouOneClickPreDispatchError(
+            "TikTok active warehouse is unavailable"
+        )
+    active.sort(
+        key=lambda row: (
+            str(row.get("isDefault") or "0") != "1",
+            str(row.get("warehouseSubType") or "") == "3",
+            str(row.get("warehouseId") or ""),
+        )
+    )
+    return str(active[0]["warehouseId"]).strip()
+
+
 def _apply_expected_for_platform(
     current: Mapping[str, object],
     expected: Mapping[str, object],
     *,
     platform: str,
     draft_mode: str = "shop",
+    warehouse_id: str | None = None,
 ) -> dict[str, object]:
     if platform in {"tiktok", "shopee"}:
         updated = _apply_expected(current, expected)
+        if platform == "tiktok":
+            if type(warehouse_id) is not str or not warehouse_id:
+                raise MiaoshouOneClickPreDispatchError(
+                    "TikTok warehouse identity is unavailable"
+                )
+            updated.update(
+                {
+                    "isCodOpen": "0",
+                    "mainImgAppVideoId": "",
+                    "mainImgPlatformVideoId": "",
+                    "sizeChart": "",
+                    "sizeChartType": "",
+                    "deliveryOptionSetType": str(
+                        current.get("deliveryOptionSetType") or "default"
+                    ),
+                    "deliveryOptionIds": list(
+                        current.get("deliveryOptionIds") or []
+                    ),
+                    "manufacturerIds": list(
+                        current.get("manufacturerIds") or []
+                    ),
+                    "responsiblePersonIds": list(
+                        current.get("responsiblePersonIds") or []
+                    ),
+                    "productAttributes": [],
+                    "productCertifications": list(
+                        current.get("productCertifications") or []
+                    ),
+                }
+            )
+            for row in _sku_map(updated).values():
+                sku = _mapping(row, "sku row")
+                stock = sku.get("stock")
+                if (
+                    isinstance(stock, bool)
+                    or not str(stock or "").isdigit()
+                    or int(stock) <= 0
+                ):
+                    raise MiaoshouOneClickPreDispatchError(
+                        "TikTok approved stock is unavailable"
+                    )
+                sku["stock"] = int(stock)
+                sku["shopIdToWarehouseIdAndStockMap"] = {
+                    str(expected["shop_id"]): {
+                        warehouse_id: str(int(stock))
+                    }
+                }
         if platform == "tiktok" and draft_mode == "site":
             shop_id = str(expected["shop_id"])
             current_rows = current.get("collectBoxDetailShopList")
@@ -1916,17 +2072,48 @@ def _apply_expected_for_platform(
                 if str(row.get("shopId") or "") == shop_id
             ]
             template = matching[0] if len(matching) == 1 else {}
+            current_brand_id = str(template.get("brandId") or "")
+            current_brand_name = str(template.get("brandName") or "").strip()
             template.update(
                 {
                     "shopId": shop_id,
                     "site": str(expected["region"]),
                     "brandId": TIKTOK_NO_BRAND_ID,
-                    "brandName": TIKTOK_NO_BRAND_NAME,
+                    "brandName": (
+                        current_brand_name
+                        if current_brand_id == TIKTOK_NO_BRAND_ID
+                        and current_brand_name
+                        else TIKTOK_NO_BRAND_NAME
+                    ),
+                    "deliveryOptionSetType": str(
+                        template.get("deliveryOptionSetType")
+                        or updated["deliveryOptionSetType"]
+                    ),
+                    "deliveryOptionIds": list(
+                        template.get("deliveryOptionIds")
+                        or updated["deliveryOptionIds"]
+                    ),
+                    "manufacturerIds": list(
+                        template.get("manufacturerIds") or []
+                    ),
+                    "responsiblePersonIds": list(
+                        template.get("responsiblePersonIds") or []
+                    ),
                 }
             )
             updated["site"] = str(expected["region"])
             updated["editModel"] = "site"
             updated["collectBoxDetailShopList"] = [template]
+        elif platform == "tiktok" and draft_mode == "shop":
+            updated["brandId"] = TIKTOK_NO_BRAND_ID
+            current_brand_id = str(current.get("brandId") or "")
+            current_brand_name = str(current.get("brandName") or "").strip()
+            updated["brandName"] = (
+                current_brand_name
+                if current_brand_id == TIKTOK_NO_BRAND_ID
+                and current_brand_name
+                else TIKTOK_NO_BRAND_NAME
+            )
         return updated
     if platform != "ozon":
         raise MiaoshouOneClickPreDispatchError(
@@ -2150,8 +2337,8 @@ def _verify_expected_detail(
                 isinstance(shop_rows, list)
                 and len(shop_rows) == 1
                 and isinstance(shop_rows[0], Mapping)
-                and str(shop_rows[0].get("brandName") or "")
-                == TIKTOK_NO_BRAND_NAME,
+                and type(shop_rows[0].get("brandName")) is str
+                and bool(str(shop_rows[0].get("brandName") or "").strip()),
             ]
         )
     if not all(checks):

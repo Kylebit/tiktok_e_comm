@@ -1081,7 +1081,7 @@
     if (row.status === "RUNNING") return "正在导入";
     if (row.status === "FAILED_RETRYABLE") return "失败，可重试";
     if (row.status === "RECONCILIATION_REQUIRED") {
-      return "结果待人工确认，不能重试";
+      return "本批次结果待确认；可重新导入并创建新批次";
     }
     return "等待导入";
   }

@@ -5303,6 +5303,11 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
   const errors = [];
   let previewState = "READY";
   let statusReads = 0;
+  let releaseInitialStartResponse;
+  let initialStartIsLatched = true;
+  const initialStartResponseGate = new Promise((resolve) => {
+    releaseInitialStartResponse = resolve;
+  });
   const optionalText = async (selector) => {
     const locator = page.locator(selector);
     return await locator.count() ? locator.innerText() : "";
@@ -5344,7 +5349,10 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
       return route.fulfill(jsonResponse(collectboxActionProjection(previewState)));
     }
     if (url.pathname === "/api/product-workspace/collectbox-action/start") {
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      if (initialStartIsLatched) {
+        initialStartIsLatched = false;
+        await initialStartResponseGate;
+      }
       previewState = "PARTIAL_FAILED";
       return route.fulfill(jsonResponse(collectboxActionProjection("RUNNING")));
     }
@@ -5404,13 +5412,28 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
       `collectbox ${viewport.width}: waiting states are explicit`,
       initialState,
     );
+    const initialStartRequest = page.waitForRequest((request) => (
+      request.method() === "POST"
+      && new URL(request.url()).pathname
+        === "/api/product-workspace/collectbox-action/start"
+    ));
     const click = primary.click();
-    await page.waitForTimeout(100);
-    check(
-      (await primary.innerText()).includes("正在导入")
-        || (await optionalText("#collectboxActionMessage")).includes("正在"),
-      `collectbox ${viewport.width}: click shows loading progress`,
-    );
+    await initialStartRequest;
+    try {
+      await page.waitForFunction(() => {
+        const button = document.querySelector("#releasePrimaryActionButton");
+        const message = document.querySelector("#collectboxActionMessage");
+        return button?.textContent?.includes("正在导入")
+          || message?.textContent?.includes("正在");
+      });
+      check(
+        (await primary.innerText()).includes("正在导入")
+          || (await optionalText("#collectboxActionMessage")).includes("正在"),
+        `collectbox ${viewport.width}: click shows loading progress`,
+      );
+    } finally {
+      releaseInitialStartResponse();
+    }
     await click;
     await page.waitForTimeout(1200);
     const partialState = await optionalText("#collectboxActionStatus");
@@ -5477,11 +5500,21 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
     const reconciliationMessage = await optionalText(
       "#collectboxActionMessage",
     );
+    const reconciliationState = await optionalText(
+      "#collectboxActionStatus",
+    );
     check(
       await primary.isEnabled()
+        && reconciliationState.includes(
+          "本批次结果待确认；可重新导入并创建新批次",
+        )
         && (await primary.innerText()).includes("重新导入"),
       `collectbox ${viewport.width}: unknown result can start a fresh explicit batch`,
-      { reconciliationMessage, label: await primary.innerText() },
+      {
+        reconciliationMessage,
+        reconciliationState,
+        label: await primary.innerText(),
+      },
     );
 
     requests.length = 0;
@@ -5495,6 +5528,9 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
       await primary.isEnabled()
         && reconciliationPendingState.includes("TikTok")
         && reconciliationPendingState.includes("Shopee")
+        && reconciliationPendingState.includes(
+          "本批次结果待确认；可重新导入并创建新批次",
+        )
         && (await primary.innerText()).includes("重新导入"),
       `collectbox ${viewport.width}: reconciliation plus pending offers a fresh batch`,
       {
@@ -5545,6 +5581,7 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
       errors,
     );
   } finally {
+    releaseInitialStartResponse();
     await context.close();
   }
 }

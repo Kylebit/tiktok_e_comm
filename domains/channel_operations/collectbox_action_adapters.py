@@ -184,7 +184,15 @@ def execute_collectbox_platform(request):
     prepared_targets = prepared.get("target_results")
     target_statuses = (
         tuple(
-            (row["target_label"], row["status"])
+            (
+                row["target_label"],
+                (
+                    "SUCCEEDED"
+                    if row["status"]
+                    in {"SUCCEEDED", "REPAIRED_SUCCEEDED"}
+                    else "RECONCILIATION_REQUIRED"
+                ),
+            )
             for row in prepared_targets
         )
         if isinstance(prepared_targets, list)

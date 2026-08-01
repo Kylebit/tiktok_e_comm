@@ -1177,7 +1177,35 @@ def _approved_common(
         "video_url": video,
         "selected_sku_keys": selected,
         "model_skus": model_skus,
+        "product_category": facts.get("category"),
     }
+
+
+def _approved_tiktok_category_id(
+    payload: Mapping[str, object], *, target: str
+) -> str | None:
+    decisions = payload.get("approved_tiktok_category_decisions")
+    if not isinstance(decisions, Mapping):
+        return None
+    decision = decisions.get(target)
+    if not isinstance(decision, Mapping) or set(decision) != {
+        "category_id",
+        "evidence_digest",
+    }:
+        return None
+    category_id = decision.get("category_id")
+    evidence_digest = decision.get("evidence_digest")
+    if (
+        type(category_id) is not str
+        or not category_id.isascii()
+        or not category_id.isdigit()
+        or int(category_id) <= 0
+        or type(evidence_digest) is not str
+        or len(evidence_digest) != 64
+        or any(char not in "0123456789abcdef" for char in evidence_digest)
+    ):
+        return None
+    return category_id
 
 
 def _approved_site(
@@ -1190,7 +1218,7 @@ def _approved_site(
     common = _approved_common(payload, source_offer_id)
     title = _candidate_title(payload, target)
     price, currency = _price(payload, target, str(config["key"]))
-    return {
+    result = {
         **common,
         "target_label": target,
         "shop_name": str(config["shop"]),
@@ -1201,6 +1229,11 @@ def _approved_site(
         "price": price,
         "currency": currency,
     }
+    if str(config["platform"]) == "tiktok":
+        result["category_id"] = _approved_tiktok_category_id(
+            payload, target=target
+        )
+    return result
 
 
 def prepare_selected_platform_collectbox(
@@ -1261,10 +1294,14 @@ def prepare_selected_platform_collectbox(
     client = post or _prepare_post()
     writes: list[str] = []
     write_count_unknown = False
+    write_invocation_count = 0
     if initial_claim_written:
         writes.append(f"miaoshou:collectbox:claim:{platform}")
+        write_invocation_count = 1
 
     def add_write(write_class: str) -> None:
+        nonlocal write_invocation_count
+        write_invocation_count += 1
         if write_class not in writes:
             writes.append(write_class)
 
@@ -1276,10 +1313,14 @@ def prepare_selected_platform_collectbox(
         raise MiaoshouCollectBoxPreparationError(
             detail,
             writes=tuple(writes),
-            write_count=None if write_count_unknown else len(writes),
+            write_count=(
+                None if write_count_unknown else write_invocation_count
+            ),
         )
 
-    def prepare_target(target: str, index: int) -> int:
+    def prepare_target(
+        target: str, index: int
+    ) -> tuple[int, dict[str, object]]:
         config = DIRECT_STORE_CONFIG[target]
         try:
             expected = _approved_site(
@@ -1399,36 +1440,149 @@ def prepare_selected_platform_collectbox(
         if not _accepted(saved):
             fail(f"{platform} draft update was rejected")
         add_write(update_class)
+        readback: Mapping[str, object] = {}
+        readback_oss_md5 = ""
+        readback_available = False
         try:
-            readback, _ = _read_shop(
+            readback, readback_oss_md5 = _read_shop(
                 client,
                 detail_id,
                 str(config["shop_id"]),
                 target=target,
             )
+            readback_available = True
             _verify_expected_detail(readback, expected, platform=platform)
+            return detail_id, _target_result(target, "SUCCEEDED")
         except Exception:
-            fail(f"{platform} draft readback did not match approved plan")
-        return detail_id
+            if platform != "tiktok":
+                fail(f"{platform} draft readback did not match approved plan")
+
+        # The official TikTok readback may retain the common-box CNY price
+        # conversion after an accepted site update.  Repeat the same exact
+        # approved body at most once; this is the only automatic repair.
+        repairable_price = readback_available and not _tiktok_prices_exact(
+            readback, expected
+        )
+        if repairable_price:
+            try:
+                repaired_updated = _apply_expected_for_platform(
+                    readback, expected, platform=platform
+                )
+                repair_body = _save_body(
+                    platform=platform,
+                    site=str(config["site"]),
+                    detail_id=detail_id,
+                    shop_id=str(config["shop_id"]),
+                    updated=repaired_updated,
+                    oss_md5=readback_oss_md5,
+                )
+            except Exception:
+                fail("TikTok bounded price repair could not be prepared")
+            try:
+                repaired = client(str(config["save_path"]), repair_body)
+            except Exception:
+                fail(
+                    "TikTok bounded price repair outcome is unknown",
+                    current_unknown=update_class,
+                )
+            if not isinstance(repaired, Mapping):
+                fail(
+                    "TikTok bounded price repair response is malformed",
+                    current_unknown=update_class,
+                )
+            if not _accepted(repaired):
+                fail("TikTok bounded price repair was rejected")
+            add_write(update_class)
+            repair_readback_available = False
+            try:
+                readback, _ = _read_shop(
+                    client,
+                    detail_id,
+                    str(config["shop_id"]),
+                    target=target,
+                )
+                repair_readback_available = True
+                _verify_expected_detail(
+                    readback, expected, platform=platform
+                )
+                return detail_id, _target_result(
+                    target, "REPAIRED_SUCCEEDED"
+                )
+            except Exception:
+                pass
+            if not repair_readback_available:
+                return detail_id, _target_result(
+                    target,
+                    "FAILED",
+                    error_code="official_readback_unavailable",
+                    detail=(
+                        "official target draft readback is unavailable after repair"
+                    ),
+                )
+
+        if not readback_available:
+            return detail_id, _target_result(
+                target,
+                "FAILED",
+                error_code="official_readback_unavailable",
+                detail="official target draft readback is unavailable",
+            )
+
+        category_error = _tiktok_category_error_code(readback, expected)
+        if category_error is not None:
+            return detail_id, _target_result(
+                target,
+                "FAILED",
+                error_code=category_error,
+                detail=(
+                    "approved site category evidence is unavailable"
+                    if category_error == "category_not_approved"
+                    else "official category readback differs from approved site category"
+                ),
+            )
+        if not _tiktok_prices_exact(readback, expected):
+            return detail_id, _target_result(
+                target,
+                "FAILED",
+                error_code="approved_price_readback_mismatch",
+                detail="official price readback differs after one bounded repair",
+            )
+        return detail_id, _target_result(
+            target,
+            "FAILED",
+            error_code="approved_detail_readback_mismatch",
+            detail="official draft readback differs from approved target",
+        )
 
     detail_ids: list[int] = []
-    target_results: list[tuple[str, str]] = []
-    failures: list[MiaoshouCollectBoxPreparationError] = []
+    target_results: list[dict[str, object]] = []
     for index, target in enumerate(selected):
         try:
-            detail_ids.append(prepare_target(target, index))
+            detail_id, target_result = prepare_target(target, index)
+            detail_ids.append(detail_id)
+            target_results.append(target_result)
         except MiaoshouCollectBoxPreparationError as error:
-            failures.append(error)
-            target_results.append((target, "RECONCILIATION_REQUIRED"))
+            target_results.append(
+                _target_result(
+                    target,
+                    "FAILED",
+                    error_code="target_preparation_failed",
+                    detail=str(error),
+                )
+            )
             continue
-        target_results.append((target, "SUCCEEDED"))
 
-    if failures and not detail_ids:
+    if not detail_ids:
         raise MiaoshouCollectBoxPreparationError(
             "all approved platform drafts failed preparation",
             writes=tuple(writes),
-            write_count=None if write_count_unknown else len(writes),
-            target_results=tuple(target_results),
+            write_count=(
+                None if write_count_unknown else write_invocation_count
+            ),
+            target_results=tuple(
+                (str(row["target_label"]), "RECONCILIATION_REQUIRED")
+                for row in target_results
+            ),
         )
 
     return {
@@ -1439,17 +1593,17 @@ def prepare_selected_platform_collectbox(
         "platform_detail_count": len(set(detail_ids)),
         "external_writes": tuple(writes),
         "external_write_count": (
-            None if write_count_unknown else len(writes)
+            None if write_count_unknown else write_invocation_count
         ),
-        "target_results": [
-            {"target_label": target, "status": status}
-            for target, status in target_results
-        ],
+        "target_results": target_results,
         "checks": {
             "approved_targets_exact": True,
             "approved_prices_exact": True,
             "approved_content_exact": True,
-            "readback_exact": not failures,
+            "readback_exact": all(
+                row["status"] in {"SUCCEEDED", "REPAIRED_SUCCEEDED"}
+                for row in target_results
+            ),
             "publish_not_invoked": True,
         },
     }
@@ -1576,6 +1730,8 @@ def _apply_expected(
     )
     if "simple_description" in expected:
         updated["notesText"] = expected["simple_description"]
+    if type(expected.get("category_id")) is str and expected["category_id"]:
+        updated["cid"] = expected["category_id"]
     current_skus = _sku_map(current)
     bindings = _approved_variant_key_bindings(current, expected)
     updated_skus: dict[str, object] = {}
@@ -1691,10 +1847,95 @@ def _verify_expected_detail(
                 for key in wanted
             )
         )
+        if platform == "tiktok":
+            checks.append(
+                all(
+                    _numbers_equal(
+                        _mapping(normalized[key], "sku row").get(
+                            "priceIncludeVat"
+                        ),
+                        expected["price"],
+                    )
+                    for key in wanted
+                )
+            )
+    if platform == "tiktok":
+        expected_category = expected.get("category_id")
+        checks.append(
+            type(expected_category) is str
+            and bool(expected_category)
+            and str(detail.get("cid") or "") == expected_category
+        )
     if not all(checks):
         raise MiaoshouOneClickPreDispatchError(
             "official Miaoshou readback does not match approved command"
         )
+
+
+def _tiktok_prices_exact(
+    detail: Mapping[str, object], expected: Mapping[str, object]
+) -> bool:
+    try:
+        sku_map = _sku_map(detail)
+        bindings = _approved_variant_key_bindings(detail, expected)
+        rows = [sku_map[raw_key] for raw_key in bindings.values()]
+        if (
+            len(bindings) != len(expected["selected_sku_keys"])
+            or any(not isinstance(row, Mapping) for row in rows)
+        ):
+            return False
+        return all(
+            _numbers_equal(row.get("price"), expected["price"])
+            and _numbers_equal(
+                row.get("priceIncludeVat"), expected["price"]
+            )
+            for row in rows
+        )
+    except (KeyError, TypeError, ValueError, MiaoshouOneClickPreDispatchError):
+        return False
+
+
+def _tiktok_category_error_code(
+    detail: Mapping[str, object], expected: Mapping[str, object]
+) -> str | None:
+    category_id = expected.get("category_id")
+    if type(category_id) is not str or not category_id:
+        return "category_not_approved"
+    if str(detail.get("cid") or "") != category_id:
+        return "category_readback_mismatch"
+    return None
+
+
+def _target_result(
+    target: str,
+    status: str,
+    *,
+    error_code: str | None = None,
+    detail: str | None = None,
+) -> dict[str, object]:
+    if status not in {"SUCCEEDED", "REPAIRED_SUCCEEDED", "FAILED"}:
+        raise ValueError("collect-box target result status is invalid")
+    if status == "FAILED":
+        if type(error_code) is not str or not error_code or not detail:
+            raise ValueError("failed collect-box target result is incomplete")
+        detail_digest = _digest(
+            {
+                "schema_version": "miaoshou-target-error/v1",
+                "target_label": target,
+                "error_code": error_code,
+                "detail": detail,
+            }
+        )
+    else:
+        if error_code is not None or detail is not None:
+            raise ValueError("successful collect-box target result has error")
+        detail_digest = None
+    return {
+        "target_label": target,
+        "status": status,
+        "error_code": error_code,
+        "detail_digest": detail_digest,
+    }
 
 
 def _default_tiktok_readback(expected: Mapping[str, object]) -> bool:

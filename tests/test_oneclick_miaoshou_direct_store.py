@@ -250,7 +250,7 @@ def _tiktok_category_decisions(targets):
     return decisions
 
 
-def test_legacy_plan_derives_exact_tiktok_category_from_its_own_payload():
+def test_legacy_missing_category_field_backfills_but_present_malformed_fails():
     target = "tiktok:GB"
     payload = _plan_payload(target)
     payload.pop("approved_tiktok_category_decisions")
@@ -280,6 +280,14 @@ def test_legacy_plan_derives_exact_tiktok_category_from_its_own_payload():
         payload,
         target=target,
     ) is None
+
+    for malformed in (None, [], "legacy"):
+        payload = _plan_payload(target)
+        payload["approved_tiktok_category_decisions"] = malformed
+        assert miaoshou._approved_tiktok_category_id(
+            payload,
+            target=target,
+        ) is None
 
 
 def test_present_tiktok_category_semantic_drift_fails_closed():

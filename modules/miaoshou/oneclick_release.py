@@ -1208,16 +1208,16 @@ def _approved_tiktok_category_id(
     expected_decision = expected.get(target)
     if not isinstance(expected_decision, Mapping):
         return None
-    decisions = payload.get("approved_tiktok_category_decisions")
-    if decisions is None:
+    if "approved_tiktok_category_decisions" not in payload:
         # Legacy approved plans predate the explicit category-decision field.
         # Recover it only from that immutable plan's own category and exact
         # target set; malformed or explicitly supplied decisions still fail
         # closed below.
         decision = expected_decision
-    elif not isinstance(decisions, Mapping):
-        return None
     else:
+        decisions = payload.get("approved_tiktok_category_decisions")
+        if not isinstance(decisions, Mapping):
+            return None
         decision = decisions.get(target)
         if decision != expected_decision:
             return None

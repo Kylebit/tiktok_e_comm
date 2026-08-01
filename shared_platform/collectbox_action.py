@@ -61,6 +61,9 @@ _COLLECTBOX_TARGET_OPERATIONS = {
     "SHOPEE": ("detail:update",),
 }
 _SHA256_EMPTY_LIST = hashlib.sha256(b"[]").hexdigest()
+_TARGET_TERMINAL_STATUSES = frozenset(
+    {SUCCEEDED, FAILED_RETRYABLE, RECONCILIATION_REQUIRED}
+)
 
 
 def _canonical_json(value: object) -> str:
@@ -102,6 +105,101 @@ def _allowed_write_classes(
             ),
         }
     )
+
+
+def _platform_target_rows(
+    platform: str,
+    approved_targets: tuple[str, ...] | list[str],
+    *,
+    status: str = PENDING,
+) -> list[dict[str, str]]:
+    if platform not in PLATFORMS:
+        raise ValueError("collect-box platform is invalid")
+    return [
+        {"target_label": target, "status": status}
+        for target in approved_targets
+        if target in _COLLECTBOX_TARGETS[platform]
+    ]
+
+
+def _pending_target_receipt(
+    platform: str,
+    approved_targets: tuple[str, ...] | list[str],
+) -> str:
+    return _canonical_json(
+        {
+            "schema_version": "collectbox-target-selection/v1",
+            "targets": _platform_target_rows(platform, approved_targets),
+        }
+    )
+
+
+def _targets_from_receipt(
+    raw_receipt: object,
+    platform: str,
+    *,
+    status: str,
+) -> list[dict[str, str]]:
+    try:
+        receipt = json.loads(raw_receipt) if type(raw_receipt) is str else {}
+    except (TypeError, ValueError):
+        receipt = {}
+    rows = receipt.get("targets") if isinstance(receipt, Mapping) else None
+    if not isinstance(rows, list):
+        return []
+    labels = []
+    for row in rows:
+        label = row.get("target_label") if isinstance(row, Mapping) else None
+        if (
+            type(label) is not str
+            or label not in _COLLECTBOX_TARGETS[platform]
+            or label in labels
+        ):
+            return []
+        labels.append(label)
+    return [
+        {"target_label": label, "status": status}
+        for label in labels
+    ]
+
+
+def _projected_targets(raw_receipt: object, platform: str) -> list[dict[str, str]]:
+    try:
+        receipt = json.loads(raw_receipt) if type(raw_receipt) is str else {}
+    except (TypeError, ValueError) as error:
+        raise ValueError("collect-box target receipt is malformed") from error
+    rows = receipt.get("targets") if isinstance(receipt, Mapping) else None
+    if rows is None:
+        return []
+    if not isinstance(rows, list):
+        raise ValueError("collect-box target receipt is invalid")
+    projected: list[dict[str, str]] = []
+    seen: set[str] = set()
+    allowed_statuses = {
+        PENDING,
+        RUNNING,
+        SUCCEEDED,
+        FAILED_RETRYABLE,
+        RECONCILIATION_REQUIRED,
+    }
+    for row in rows:
+        if not isinstance(row, Mapping) or set(row) != {
+            "target_label",
+            "status",
+        }:
+            raise ValueError("collect-box target receipt row is invalid")
+        label = row.get("target_label")
+        status = row.get("status")
+        if (
+            type(label) is not str
+            or label not in _COLLECTBOX_TARGETS[platform]
+            or label in seen
+            or status not in allowed_statuses
+        ):
+            raise ValueError("collect-box target receipt identity is invalid")
+        seen.add(label)
+        projected.append({"target_label": label, "status": status})
+    return projected
 
 
 def _nonempty_text(value: object, field: str) -> str:
@@ -209,7 +307,10 @@ def blocked_identity_projection(
     detail: str,
 ) -> dict[str, Any]:
     identity = approved_plan_identity(plan)
-    projection = CollectBoxActionStore._empty_projection(identity)
+    projection = CollectBoxActionStore._empty_projection(
+        identity,
+        tuple(plan["targets"]),
+    )
     projection["ok"] = False
     projection["action"].update(
         {
@@ -228,7 +329,8 @@ def ready_projection(plan: Mapping[str, Any]) -> dict[str, Any]:
     """Build the pure, non-persisted two-platform READY projection."""
 
     return CollectBoxActionStore._empty_projection(
-        approved_plan_identity(plan)
+        approved_plan_identity(plan),
+        tuple(plan["targets"]),
     )
 
 
@@ -278,6 +380,10 @@ def invalid_plan_projection(
             "platforms": [
                 {
                     "platform": platform,
+                    "targets": _platform_target_rows(
+                        platform,
+                        targets if isinstance(targets, list) else [],
+                    ),
                     "status": PENDING,
                     "outcome": None,
                     "attempt_count": 0,
@@ -399,6 +505,7 @@ class CollectBoxPlatformResult:
     error_category: str | None = None
     error_code: str | None = None
     error_detail: str | None = None
+    target_statuses: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if self.status not in {
@@ -422,6 +529,20 @@ class CollectBoxPlatformResult:
         ):
             raise ValueError("external_write_count is invalid")
         _assert_redacted_evidence(self.receipt_evidence)
+        if (
+            type(self.target_statuses) is not tuple
+            or any(
+                type(value) is not tuple
+                or len(value) != 2
+                or type(value[0]) is not str
+                or not value[0]
+                or value[1] not in _TARGET_TERMINAL_STATUSES
+                for value in self.target_statuses
+            )
+            or len({value[0] for value in self.target_statuses})
+            != len(self.target_statuses)
+        ):
+            raise ValueError("target_statuses are invalid")
         if self.status == SUCCEEDED:
             if self.outcome not in {IMPORTED, ALREADY_PRESENT}:
                 raise ValueError("success requires an exact outcome")
@@ -443,6 +564,11 @@ class CollectBoxPlatformResult:
                 self.external_write_count != 0 or self.external_writes
             ):
                 raise ValueError("ALREADY_PRESENT must be zero-write")
+            if self.target_statuses and any(
+                status != SUCCEEDED
+                for _target, status in self.target_statuses
+            ):
+                raise ValueError("platform success requires target success")
         else:
             if self.outcome is not None or self.platform_detail_id is not None:
                 raise ValueError("non-success result cannot carry an outcome")
@@ -636,7 +762,7 @@ class CollectBoxActionStore:
         if persisted is not None:
             self._require_public_identity(persisted, identity)
             return persisted
-        return self._empty_projection(identity)
+        return self._empty_projection(identity, tuple(plan["targets"]))
 
     def status(self, *, plan_id: str) -> dict[str, Any] | None:
         clean_plan_id = _nonempty_text(plan_id, "plan_id")
@@ -693,7 +819,7 @@ class CollectBoxActionStore:
                 rows = list(
                     connection.execute(
                         f"""
-                        SELECT action_id, platform
+                        SELECT action_id, platform, receipt_json
                         FROM {platform_table}
                         WHERE status = ?
                         ORDER BY action_id, platform
@@ -715,6 +841,11 @@ class CollectBoxActionStore:
                         "schema_version": "collectbox-platform-receipt/v1",
                         "status": RECONCILIATION_REQUIRED,
                         "outcome": None,
+                        "targets": _targets_from_receipt(
+                            row["receipt_json"],
+                            platform,
+                            status=RECONCILIATION_REQUIRED,
+                        ),
                         "platform_detail_id_digest": None,
                         "external_writes": [_WRITE_CLASS[platform]],
                         "external_write_count": None,
@@ -791,7 +922,7 @@ class CollectBoxActionStore:
                     )
                     for row in connection.execute(
                         """
-                        SELECT platform
+                        SELECT platform, receipt_json
                         FROM collectbox_action_batch_platforms
                         WHERE action_id = ? AND status = ?
                         ORDER BY platform
@@ -804,6 +935,11 @@ class CollectBoxActionStore:
                             ),
                             "status": FAILED_RETRYABLE,
                             "outcome": None,
+                            "targets": _targets_from_receipt(
+                                row["receipt_json"],
+                                row["platform"],
+                                status=FAILED_RETRYABLE,
+                            ),
                             "platform_detail_id_digest": None,
                             "external_writes": [],
                             "external_write_count": 0,
@@ -881,7 +1017,13 @@ class CollectBoxActionStore:
             identity["plan_id"],
             common_collect_box_detail_id,
         )
-        self._ensure_action(identity, common_digest, now())
+        approved_targets = tuple(plan["targets"])
+        self._ensure_action(
+            identity,
+            common_digest,
+            now(),
+            approved_targets,
+        )
         batched = False
         action_id = self._action_id(identity["plan_id"])
         if restart_existing:
@@ -890,6 +1032,7 @@ class CollectBoxActionStore:
                 common_digest,
                 self._validated_restart_request_id(restart_request_id),
                 float(now()),
+                approved_targets,
             )
             batched = True
             if not self._claim_restart_batch(action_id, float(now())):
@@ -1041,6 +1184,7 @@ class CollectBoxActionStore:
         identity: Mapping[str, Any],
         common_digest: str,
         now: float,
+        approved_targets: tuple[str, ...],
     ) -> None:
         action_id = self._action_id(identity["plan_id"])
         with self._connect() as connection:
@@ -1074,10 +1218,21 @@ class CollectBoxActionStore:
                 connection.executemany(
                     """
                     INSERT INTO collectbox_action_platforms (
-                        action_id, platform, status, updated_at
-                    ) VALUES (?, ?, 'PENDING', ?)
+                        action_id, platform, status, receipt_json, updated_at
+                    ) VALUES (?, ?, 'PENDING', ?, ?)
                     """,
-                    [(action_id, platform, now) for platform in PLATFORMS],
+                    [
+                        (
+                            action_id,
+                            platform,
+                            _pending_target_receipt(
+                                platform,
+                                approved_targets,
+                            ),
+                            now,
+                        )
+                        for platform in PLATFORMS
+                    ],
                 )
             else:
                 durable = {
@@ -1103,6 +1258,7 @@ class CollectBoxActionStore:
         common_digest: str,
         request_id: str,
         now: float,
+        approved_targets: tuple[str, ...],
     ) -> tuple[str, bool]:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1192,10 +1348,21 @@ class CollectBoxActionStore:
             connection.executemany(
                 """
                 INSERT INTO collectbox_action_batch_platforms (
-                    action_id, platform, status, updated_at
-                ) VALUES (?, ?, 'PENDING', ?)
+                    action_id, platform, status, receipt_json, updated_at
+                ) VALUES (?, ?, 'PENDING', ?, ?)
                 """,
-                [(action_id, platform, now) for platform in PLATFORMS],
+                [
+                    (
+                        action_id,
+                        platform,
+                        _pending_target_receipt(
+                            platform,
+                            approved_targets,
+                        ),
+                        now,
+                    )
+                    for platform in PLATFORMS
+                ],
             )
             connection.commit()
             return action_id, True
@@ -1289,7 +1456,7 @@ class CollectBoxActionStore:
                     platform_detail_id_digest = NULL,
                     external_writes_json = '[]',
                     external_write_count = 0,
-                    receipt_json = NULL, receipt_digest = NULL,
+                    receipt_digest = NULL,
                     error_json = NULL, last_invoked_at = ?, updated_at = ?
                 WHERE action_id = ? AND platform = ?
                 """.format(platform_table=platform_table),
@@ -1339,6 +1506,26 @@ class CollectBoxActionStore:
         ):
             raise ValueError("collect-box write class is invalid")
         evidence = _assert_redacted_evidence(result.receipt_evidence)
+        selected_targets = tuple(
+            target
+            for target in approved_targets
+            if target in _COLLECTBOX_TARGETS[platform]
+        )
+        if result.target_statuses:
+            if tuple(
+                target for target, _status in result.target_statuses
+            ) != selected_targets:
+                raise ValueError("collect-box target result identity drifted")
+            target_rows = [
+                {"target_label": target, "status": status}
+                for target, status in result.target_statuses
+            ]
+        else:
+            target_rows = _platform_target_rows(
+                platform,
+                approved_targets,
+                status=result.status,
+            )
         platform_detail_id = (
             _canonical_positive_identifier(
                 result.platform_detail_id,
@@ -1372,6 +1559,7 @@ class CollectBoxActionStore:
             "schema_version": "collectbox-platform-receipt/v1",
             "status": result.status,
             "outcome": result.outcome,
+            "targets": target_rows,
             "platform_detail_id_digest": platform_detail_digest,
             "external_writes": list(result.external_writes),
             "external_write_count": result.external_write_count,
@@ -1481,7 +1669,10 @@ class CollectBoxActionStore:
             raise ValueError("collect-box approved plan identity drifted")
 
     @staticmethod
-    def _empty_projection(identity: Mapping[str, Any]) -> dict[str, Any]:
+    def _empty_projection(
+        identity: Mapping[str, Any],
+        approved_targets: tuple[str, ...],
+    ) -> dict[str, Any]:
         return {
             "schema_version": SCHEMA_VERSION,
             "ok": True,
@@ -1497,6 +1688,10 @@ class CollectBoxActionStore:
                 "platforms": [
                     {
                         "platform": platform,
+                        "targets": _platform_target_rows(
+                            platform,
+                            approved_targets,
+                        ),
                         "status": PENDING,
                         "outcome": None,
                         "attempt_count": 0,
@@ -1550,6 +1745,10 @@ class CollectBoxActionStore:
             (action["action_id"],),
         ):
             classes = json.loads(row["external_writes_json"] or "[]")
+            targets = _projected_targets(
+                row["receipt_json"],
+                row["platform"],
+            )
             for value in classes:
                 if value not in union_writes:
                     union_writes.append(value)
@@ -1563,6 +1762,7 @@ class CollectBoxActionStore:
             platforms.append(
                 {
                     "platform": row["platform"],
+                    "targets": targets,
                     "status": row["status"],
                     "outcome": row["outcome"],
                     "attempt_count": int(row["attempt_count"]),

@@ -595,6 +595,119 @@ def test_collectbox_tiktok_writes_each_selected_country_and_approved_price():
     assert all("save_move_collect_task" not in path for path, _ in calls)
 
 
+def test_collectbox_tiktok_first_target_unknown_does_not_skip_later_countries():
+    """One target fault must not truncate the approved storefront set."""
+
+    targets = (
+        "tiktok:LH_PH",
+        "tiktok:LH_MY",
+        "tiktok:LH_TH",
+        "tiktok:LH_VN",
+        "tiktok:MX",
+        "tiktok:GB",
+    )
+    payload = _plan_payload(targets[0])
+    payload["listing_copy"]["candidates"] = [
+        {
+            "channel": "tiktok",
+            "site": miaoshou.DIRECT_STORE_CONFIG[target]["region"],
+            "policy_check": "passed",
+            "title": f"Approved {target} title",
+        }
+        for target in targets
+    ]
+    payload["pricing"]["selected_targets"] = {
+        target: {
+            "store_prices": [{
+                "target_key": miaoshou.DIRECT_STORE_CONFIG[target]["key"],
+                "list_price": "33",
+                "currency": _expected(target)["currency"],
+            }]
+        }
+        for target in targets
+    }
+    calls = []
+    detail_ids = {target: 77 + index for index, target in enumerate(targets)}
+    details = {}
+    for target in targets:
+        detail = _detail(target)
+        detail["detailId"] = detail_ids[target]
+        details[str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])] = detail
+    created_by_serial = {
+        index + 1: detail_ids[target]
+        for index, target in enumerate(targets)
+        if index > 0
+    }
+
+    def post(path, body):
+        calls.append((path, deepcopy(body)))
+        if path == miaoshou.DETAIL_CREATE_PATH:
+            serial = body["detailSerialNumberPlatformList"][0]["serialNumber"]
+            return {
+                "result": "success",
+                "data": {
+                    "platformCollectBoxDetailIdMap": {
+                        "tiktok": {"7": created_by_serial[serial]}
+                    }
+                },
+            }
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            return {"result": "success"}
+        if path.endswith("get_shop_collect_item_info"):
+            shop_id = str(body["shopId"])
+            return {
+                "result": "success",
+                "data": {
+                    "shopCollectItemInfo": deepcopy(details[shop_id]),
+                    "ossMd5": "md5",
+                },
+            }
+        if path.endswith("save_shop_collect_item_info"):
+            shop_id = str(body["shopId"])
+            if shop_id == str(
+                miaoshou.DIRECT_STORE_CONFIG["tiktok:LH_PH"]["shop_id"]
+            ):
+                raise RuntimeError("fixture unknown after first target update")
+            details[shop_id] = deepcopy(body["shopCollectItemInfo"])
+            details[shop_id]["detailId"] = int(body["detailId"])
+            details[shop_id]["shopId"] = shop_id
+            return {"result": "success"}
+        raise AssertionError(path)
+
+    result = miaoshou.prepare_selected_platform_collectbox(
+        platform="tiktok",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=targets,
+        post=post,
+    )
+
+    assert result["target_results"] == [
+        {
+            "target_label": "tiktok:LH_PH",
+            "status": "RECONCILIATION_REQUIRED",
+        },
+        *(
+            {"target_label": target, "status": "SUCCEEDED"}
+            for target in targets[1:]
+        ),
+    ]
+    attempted_shop_ids = {
+        str(shop_id)
+        for path, body in calls
+        if path == miaoshou.SHOP_CLAIM_PATH
+        for shop_id in body["shopIds"]
+    }
+    assert attempted_shop_ids == {
+        str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])
+        for target in targets
+    }
+    assert result["external_write_count"] is None
+    assert all("save_move_collect_task" not in path for path, _ in calls)
+
+
 def test_collectbox_invalid_approved_price_preserves_prior_claim_write():
     target = "tiktok:MX"
     payload = _plan_payload(target)

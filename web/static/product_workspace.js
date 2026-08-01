@@ -785,6 +785,7 @@
     if (
       !exactObjectKeys(row, [
         "platform",
+        "targets",
         "status",
         "outcome",
         "attempt_count",
@@ -795,6 +796,17 @@
         "error",
       ])
       || row.platform !== expectedPlatform
+      || !Array.isArray(row.targets)
+      || row.targets.some((target) => (
+        !exactObjectKeys(target, ["target_label", "status"])
+        || typeof target.target_label !== "string"
+        || !target.target_label.startsWith(
+          expectedPlatform === "TIKTOK" ? "tiktok:" : "shopee:",
+        )
+        || !COLLECTBOX_PLATFORM_STATUSES.has(target.status)
+      ))
+      || new Set(row.targets.map((target) => target.target_label)).size
+        !== row.targets.length
       || !COLLECTBOX_PLATFORM_STATUSES.has(row.status)
       || !Number.isInteger(row.attempt_count)
       || row.attempt_count < 0

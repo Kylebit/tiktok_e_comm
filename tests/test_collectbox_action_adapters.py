@@ -66,6 +66,7 @@ def contract(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
         error_category: str | None = None
         error_code: str | None = None
         error_detail: str | None = None
+        target_statuses: tuple[tuple[str, str], ...] = ()
 
     module.common_collectbox_identity_digest = common_collectbox_identity_digest
     module.CollectBoxPlatformRequest = CollectBoxPlatformRequest

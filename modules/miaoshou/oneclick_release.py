@@ -270,10 +270,12 @@ class MiaoshouCollectBoxPreparationError(RuntimeError):
         *,
         writes: tuple[str, ...],
         write_count: int | None,
+        target_results: tuple[tuple[str, str], ...] = (),
     ) -> None:
         super().__init__(detail)
         self.external_writes = writes
         self.external_write_count = write_count
+        self.target_results = target_results
 
 
 @dataclass(frozen=True)
@@ -1258,37 +1260,38 @@ def prepare_selected_platform_collectbox(
 
     client = post or _prepare_post()
     writes: list[str] = []
+    write_count_unknown = False
     if initial_claim_written:
         writes.append(f"miaoshou:collectbox:claim:{platform}")
 
+    def add_write(write_class: str) -> None:
+        if write_class not in writes:
+            writes.append(write_class)
+
     def fail(detail: str, *, current_unknown: str | None = None) -> None:
+        nonlocal write_count_unknown
         if current_unknown is not None:
-            raise MiaoshouCollectBoxPreparationError(
-                detail,
-                writes=tuple([*writes, current_unknown]),
-                write_count=None,
-            )
+            add_write(current_unknown)
+            write_count_unknown = True
         raise MiaoshouCollectBoxPreparationError(
-            detail, writes=tuple(writes), write_count=len(writes)
+            detail,
+            writes=tuple(writes),
+            write_count=None if write_count_unknown else len(writes),
         )
 
-    expected_by_target: dict[str, dict[str, object]] = {}
-    for target in selected:
+    def prepare_target(target: str, index: int) -> int:
+        config = DIRECT_STORE_CONFIG[target]
         try:
             expected = _approved_site(
                 approved_plan_payload,
                 target=target,
-                config=DIRECT_STORE_CONFIG[target],
+                config=config,
                 source_offer_id=common_id,
             )
             expected["common_detail_id"] = common_id
-            expected_by_target[target] = expected
         except Exception:
             fail("approved platform draft is invalid")
 
-    detail_ids: list[int] = []
-    for index, target in enumerate(selected):
-        config = DIRECT_STORE_CONFIG[target]
         detail_id = primary_detail_id
         if platform == "tiktok" and index > 0:
             create_class = (
@@ -1319,7 +1322,7 @@ def prepare_selected_platform_collectbox(
                 )
             if not _success(created):
                 fail("TikTok platform-detail creation was rejected")
-            writes.append(create_class)
+            add_write(create_class)
             try:
                 detail_id = _created_detail_id(
                     created, common_id, platform=platform
@@ -1349,9 +1352,8 @@ def prepare_selected_platform_collectbox(
                 )
             if not _accepted(claimed):
                 fail("TikTok shop claim was rejected")
-            writes.append(claim_class)
+            add_write(claim_class)
 
-        expected = expected_by_target[target]
         try:
             detail, oss_md5 = _read_shop(
                 client,
@@ -1396,7 +1398,7 @@ def prepare_selected_platform_collectbox(
             )
         if not _accepted(saved):
             fail(f"{platform} draft update was rejected")
-        writes.append(update_class)
+        add_write(update_class)
         try:
             readback, _ = _read_shop(
                 client,
@@ -1407,7 +1409,27 @@ def prepare_selected_platform_collectbox(
             _verify_expected_detail(readback, expected, platform=platform)
         except Exception:
             fail(f"{platform} draft readback did not match approved plan")
-        detail_ids.append(detail_id)
+        return detail_id
+
+    detail_ids: list[int] = []
+    target_results: list[tuple[str, str]] = []
+    failures: list[MiaoshouCollectBoxPreparationError] = []
+    for index, target in enumerate(selected):
+        try:
+            detail_ids.append(prepare_target(target, index))
+        except MiaoshouCollectBoxPreparationError as error:
+            failures.append(error)
+            target_results.append((target, "RECONCILIATION_REQUIRED"))
+            continue
+        target_results.append((target, "SUCCEEDED"))
+
+    if failures and not detail_ids:
+        raise MiaoshouCollectBoxPreparationError(
+            "all approved platform drafts failed preparation",
+            writes=tuple(writes),
+            write_count=None if write_count_unknown else len(writes),
+            target_results=tuple(target_results),
+        )
 
     return {
         "schema_version": "miaoshou-platform-collectbox-preparation/v1",
@@ -1416,12 +1438,18 @@ def prepare_selected_platform_collectbox(
         "target_count": len(selected),
         "platform_detail_count": len(set(detail_ids)),
         "external_writes": tuple(writes),
-        "external_write_count": len(writes),
+        "external_write_count": (
+            None if write_count_unknown else len(writes)
+        ),
+        "target_results": [
+            {"target_label": target, "status": status}
+            for target, status in target_results
+        ],
         "checks": {
             "approved_targets_exact": True,
             "approved_prices_exact": True,
             "approved_content_exact": True,
-            "readback_exact": True,
+            "readback_exact": not failures,
             "publish_not_invoked": True,
         },
     }

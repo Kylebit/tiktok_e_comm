@@ -162,6 +162,7 @@ def execute_collectbox_platform(request):
             status=status,
             external_writes=writes,
             external_write_count=count,
+            target_statuses=tuple(error.target_results),
             receipt_evidence={
                 "schema_version": "collectbox-platform-preparation-evidence/v1",
                 "platform": platform,
@@ -178,7 +179,49 @@ def execute_collectbox_platform(request):
         )
 
     writes = tuple(prepared["external_writes"])
-    count = int(prepared["external_write_count"])
+    raw_count = prepared["external_write_count"]
+    count = int(raw_count) if raw_count is not None else None
+    prepared_targets = prepared.get("target_results")
+    target_statuses = (
+        tuple(
+            (row["target_label"], row["status"])
+            for row in prepared_targets
+        )
+        if isinstance(prepared_targets, list)
+        else tuple(
+            (target, "SUCCEEDED")
+            for target in request.approved_targets
+            if target.startswith(f"{platform}:")
+        )
+    )
+    partial = any(status != "SUCCEEDED" for _target, status in target_statuses)
+    if partial:
+        status = (
+            contract["FAILED_RETRYABLE"]
+            if count == 0 and not writes
+            else contract["RECONCILIATION_REQUIRED"]
+        )
+        return contract["CollectBoxPlatformResult"](
+            status=status,
+            external_writes=writes,
+            external_write_count=count,
+            target_statuses=target_statuses,
+            receipt_evidence={
+                "schema_version": "collectbox-platform-preparation-evidence/v1",
+                "platform": platform,
+                "target_count": prepared["target_count"],
+                "platform_detail_count": prepared["platform_detail_count"],
+                "checks": prepared["checks"],
+                "claim_result_digest": claim_evidence["result"]["evidence_digest"],
+            },
+            error_category=(
+                "CHANNEL"
+                if status == contract["FAILED_RETRYABLE"]
+                else "UNKNOWN"
+            ),
+            error_code="collectbox_platform_preparation_partial",
+            error_detail="one or more Miaoshou target drafts failed preparation",
+        )
     return contract["CollectBoxPlatformResult"](
         status=contract["SUCCEEDED"],
         outcome=(
@@ -189,6 +232,7 @@ def execute_collectbox_platform(request):
         platform_detail_id=str(prepared["primary_platform_detail_id"]),
         external_writes=writes,
         external_write_count=count,
+        target_statuses=target_statuses,
         receipt_evidence={
             "schema_version": "collectbox-platform-preparation-evidence/v1",
             "platform": platform,

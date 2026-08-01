@@ -1196,6 +1196,18 @@ def _approved_tiktok_category_id(
     payload: Mapping[str, object], *, target: str
 ) -> str | None:
     decisions = payload.get("approved_tiktok_category_decisions")
+    if decisions is None:
+        # Legacy approved plans predate the explicit category-decision field.
+        # Recover it only from that immutable plan's own category and exact
+        # target set; malformed or explicitly supplied decisions still fail
+        # closed below.
+        facts = payload.get("product_facts")
+        targets = payload.get("targets")
+        if isinstance(facts, Mapping) and isinstance(targets, list):
+            decisions = approved_tiktok_category_decisions(
+                facts.get("category"),
+                targets=tuple(targets),
+            )
     if not isinstance(decisions, Mapping):
         return None
     decision = decisions.get(target)

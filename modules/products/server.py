@@ -3387,6 +3387,32 @@ def _approved_plan_matches_current_payload(
     current_payload = dict(current_preview.get("payload") or {})
     persisted_payload.pop("product_revision", None)
     current_payload.pop("product_revision", None)
+    if (
+        "approved_tiktok_category_decisions" not in persisted_payload
+        and "approved_tiktok_category_decisions" in current_payload
+    ):
+        # Plans approved before the TikTok category-binding contract was
+        # introduced can be upgraded in memory only when the exact binding is
+        # deterministically recoverable from that immutable legacy payload.
+        # Never accept a present-but-different stored binding, and never use
+        # the mutable current dashboard as the source of compatibility facts.
+        from modules.miaoshou.oneclick_release import (
+            approved_tiktok_category_decisions,
+        )
+
+        product_facts = persisted_payload.get("product_facts")
+        targets = persisted_payload.get("targets")
+        if isinstance(product_facts, dict) and isinstance(targets, list):
+            recovered = approved_tiktok_category_decisions(
+                product_facts.get("category"),
+                targets=tuple(targets),
+            )
+            if recovered == current_payload.get(
+                "approved_tiktok_category_decisions"
+            ):
+                persisted_payload["approved_tiktok_category_decisions"] = (
+                    recovered
+                )
     return persisted_payload == current_payload
 
 

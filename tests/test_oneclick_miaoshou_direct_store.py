@@ -200,6 +200,7 @@ def _plan_payload(target):
     return {
         "product_id": "7",
         "seller_sku": "0954",
+        "targets": ["miaoshou:COMMON", target],
         "product_facts": {
             "title": "Approved source title",
             "category": {"name": "wall sticker"},
@@ -240,6 +241,42 @@ def _plan_payload(target):
             else {}
         ),
     }
+
+
+def test_legacy_plan_derives_exact_tiktok_category_from_its_own_payload():
+    target = "tiktok:GB"
+    payload = _plan_payload(target)
+    payload.pop("approved_tiktok_category_decisions")
+
+    assert miaoshou._approved_tiktok_category_id(
+        payload,
+        target=target,
+    ) == "600338"
+
+    payload["product_facts"]["category"] = {"name": "unmapped"}
+    assert miaoshou._approved_tiktok_category_id(
+        payload,
+        target=target,
+    ) is None
+
+
+def test_present_invalid_tiktok_category_binding_never_uses_legacy_fallback():
+    target = "tiktok:GB"
+    payload = _plan_payload(target)
+    payload["approved_tiktok_category_decisions"][target][
+        "category_id"
+    ] = "600339"
+
+    assert miaoshou._approved_tiktok_category_id(
+        payload,
+        target=target,
+    ) == "600339"
+
+    payload["approved_tiktok_category_decisions"] = {target: {}}
+    assert miaoshou._approved_tiktok_category_id(
+        payload,
+        target=target,
+    ) is None
 
 
 def test_collectbox_tiktok_repairs_vendor_auto_converted_price_once_then_reads_exact():

@@ -691,6 +691,31 @@ def test_legacy_approved_plan_accepts_deterministic_tiktok_category_backfill():
     )
 
 
+def test_legacy_tiktok_category_backfill_rejects_present_or_business_drift():
+    dashboard = _six_tiktok_category_dashboard("wall sticker")
+    current_payload, blockers = product_server._release_plan_payload_from_dashboard(
+        dashboard
+    )
+    legacy_payload = deepcopy(current_payload)
+    legacy_payload.pop("approved_tiktok_category_decisions")
+    wrong_binding = deepcopy(current_payload)
+    wrong_binding["approved_tiktok_category_decisions"]["tiktok:GB"][
+        "category_id"
+    ] = "600339"
+    wrong_category = deepcopy(current_payload)
+    wrong_category["product_facts"]["category"] = {"name": "other"}
+
+    assert blockers == []
+    assert not product_server._approved_plan_matches_current_payload(
+        {"payload": legacy_payload},
+        {"payload": wrong_binding},
+    )
+    assert not product_server._approved_plan_matches_current_payload(
+        {"payload": legacy_payload},
+        {"payload": wrong_category},
+    )
+
+
 def test_release_plan_unmapped_product_category_fails_closed_without_guessing():
     dashboard = _six_tiktok_category_dashboard("未映射的新商品类目")
 

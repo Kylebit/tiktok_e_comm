@@ -290,6 +290,78 @@ def _tiktok_category_decisions(targets):
     return decisions
 
 
+def _gb_category_metadata_response(
+    *, mandatory=True, values=None
+):
+    return {
+        "result": "success",
+        "data": {
+            "categoryMetadata": {
+                "categoryConfig": {},
+                "categorySaleAttrList": [],
+                "categoryProductAttrList": [
+                    {
+                        "attrId": "102255",
+                        "name": "Batch Number",
+                        "attributeNameAlias": "生产批次号",
+                        "attributeType": 3,
+                        "isMandatory": mandatory,
+                        "isMultipleSelected": False,
+                        "isCustomized": True,
+                        "values": (
+                            [
+                                {
+                                    "id": "1000256",
+                                    "name": "1",
+                                    "valueNameAlias": "1",
+                                }
+                            ]
+                            if values is None
+                            else values
+                        ),
+                    }
+                ],
+            }
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "metadata_response",
+    [
+        _gb_category_metadata_response(mandatory=False),
+        _gb_category_metadata_response(values=[]),
+        _gb_category_metadata_response(
+            values=[
+                {"id": "1000256", "name": "1", "valueNameAlias": "1"},
+                {"id": "1000257", "name": "2", "valueNameAlias": "2"},
+            ]
+        ),
+        {
+            "result": "success",
+            "data": {
+                "categoryMetadata": {"categoryProductAttrList": []}
+            },
+        },
+    ],
+    ids=("not-mandatory", "no-value", "multiple-values", "missing-rule"),
+)
+def test_tiktok_gb_batch_number_metadata_fails_closed(metadata_response):
+    expected = _expected("tiktok:GB")
+    expected["category_id"] = "600338"
+
+    with pytest.raises(
+        miaoshou.MiaoshouOneClickPreDispatchError,
+        match="GB Batch Number",
+    ):
+        miaoshou._tiktok_category_product_attributes(
+            lambda _path, _body: deepcopy(metadata_response),
+            current={},
+            expected=expected,
+            shop_endpoint_id=10204699,
+        )
+
+
 def test_legacy_missing_category_field_backfills_but_present_malformed_fails():
     target = "tiktok:GB"
     payload = _plan_payload(target)
@@ -673,6 +745,8 @@ def test_collectbox_tiktok_blank_gb_category_fails_target_and_continues_next_sit
 
     def post(path, body):
         calls.append((path, deepcopy(body)))
+        if path == miaoshou.CATEGORY_METADATA_PATH:
+            return _gb_category_metadata_response()
         if path == miaoshou.DETAIL_CREATE_PATH:
             return {
                 "result": "success",
@@ -774,6 +848,8 @@ def test_collectbox_tiktok_failed_bounded_price_repair_continues_next_site():
 
     def post(path, body):
         calls.append((path, deepcopy(body)))
+        if path == miaoshou.CATEGORY_METADATA_PATH:
+            return _gb_category_metadata_response()
         if path == miaoshou.DETAIL_CREATE_PATH:
             return {
                 "result": "success",
@@ -915,6 +991,8 @@ def test_collectbox_tiktok_restores_proven_per_site_price_and_category_without_w
     def post(path, body):
         nonlocal detail
         calls.append((path, deepcopy(body)))
+        if path == miaoshou.CATEGORY_METADATA_PATH:
+            return _gb_category_metadata_response()
         if path == miaoshou.SHOP_CLAIM_PATH:
             return {"result": "success"}
         if path.endswith("get_shop_warehouse_list"):
@@ -956,6 +1034,26 @@ def test_collectbox_tiktok_restores_proven_per_site_price_and_category_without_w
                 if config["draft_mode"] == "site"
                 else str(candidate.get("brandId") or "") == "0"
             )
+            product_attributes_exact = (
+                candidate.get("productAttributes")
+                == [
+                    {
+                        "attributeId": "102255",
+                        "attributeName": "Batch Number",
+                        "attributeNameAlias": "生产批次号",
+                        "attributeValues": [
+                            {
+                                "valueName": "1",
+                                "valueId": "1000256",
+                                "valueNameAlias": "1",
+                            }
+                        ],
+                    }
+                ]
+                if target == "tiktok:GB"
+                else candidate.get("productAttributes")
+                == detail.get("productAttributes")
+            )
             complete_legacy_contract = all((
                 candidate.get("isCodOpen") == "0",
                 candidate.get("sizeChart") == "",
@@ -971,8 +1069,7 @@ def test_collectbox_tiktok_restores_proven_per_site_price_and_category_without_w
                 == detail.get("manufacturerIds"),
                 candidate.get("responsiblePersonIds")
                 == detail.get("responsiblePersonIds"),
-                candidate.get("productAttributes")
-                == detail.get("productAttributes"),
+                product_attributes_exact,
                 candidate.get("productCertifications")
                 == detail.get("productCertifications"),
                 brand_exact,
@@ -1069,14 +1166,7 @@ def test_collectbox_gb_uses_numeric_shop_identity_for_write_and_readback(
                 },
             }
         if path == miaoshou.CATEGORY_METADATA_PATH:
-            return {
-                "result": "success",
-                "data": {
-                    "categoryMetadata": {
-                        "categoryProductAttrList": []
-                    }
-                },
-            }
+            return _gb_category_metadata_response()
         if path == config["save_path"]:
             candidate = deepcopy(body["shopCollectItemInfo"])
             # A success envelope is not persistence proof.  This deliberately
@@ -1142,7 +1232,8 @@ def test_collectbox_gb_resolves_unique_required_category_attribute_before_save(
         _tiktok_category_decisions((target,))
     )
     detail = _detail(target)
-    detail.update({"cid": "", "isCodOpen": "1", "productAttributes": []})
+    detail.update({"cid": "", "isCodOpen": "1"})
+    detail.pop("productAttributes", None)
     detail["skuMap"]["default"].update(
         {"price": 1.1, "priceIncludeVat": 1.1}
     )
@@ -1338,6 +1429,8 @@ def _run_live_six_site_tiktok_drift(
     def post(path, body):
         nonlocal create_count
         calls.append((path, deepcopy(body)))
+        if path == miaoshou.CATEGORY_METADATA_PATH:
+            return _gb_category_metadata_response()
         if path == miaoshou.DETAIL_CREATE_PATH:
             create_count += 1
             return {
@@ -1716,6 +1809,8 @@ class DirectStoreFake:
 
     def post(self, path, body):
         self.calls.append((path, deepcopy(body)))
+        if path == miaoshou.CATEGORY_METADATA_PATH:
+            return _gb_category_metadata_response()
         if path == self.config["search_path"]:
             rows = (
                 [{
@@ -1939,6 +2034,8 @@ def test_collectbox_tiktok_writes_each_selected_country_and_approved_price():
 
     def post(path, body):
         calls.append((path, deepcopy(body)))
+        if path == miaoshou.CATEGORY_METADATA_PATH:
+            return _gb_category_metadata_response()
         if path == miaoshou.DETAIL_CREATE_PATH:
             return {
                 "result": "success",
@@ -2266,6 +2363,169 @@ def test_shopee_and_ozon_dispatch_only_miaoshou_and_wait_for_manual(target):
     assert not any("modules.shopee" in path for path, _ in fake.calls)
 
 
+def test_tiktok_gb_restart_dispatch_keeps_numeric_identity_and_required_attribute():
+    """The durable dispatch path must preserve the same GB draft contract."""
+
+    target = "tiktok:GB"
+    command = _command(target)
+    command["expected"].update(
+        {"category_id": "600338", "price": "15", "currency": "GBP"}
+    )
+    fake = DirectStoreFake(target)
+    fake.detail.update({"cid": "", "isCodOpen": "1"})
+    fake.detail.pop("productAttributes", None)
+    fake.detail["skuMap"]["default"].update(
+        {"price": 1.1, "priceIncludeVat": 1.1}
+    )
+    command["observed_snapshot_digest"] = miaoshou._digest(
+        miaoshou._detail_snapshot(fake.detail)
+    )
+    required = _gb_category_metadata_response()["data"][
+        "categoryMetadata"
+    ]["categoryProductAttrList"]
+    command["expected"]["product_attributes"] = [
+        {
+            "attributeId": required[0]["attrId"],
+            "attributeName": required[0]["name"],
+            "attributeNameAlias": required[0]["attributeNameAlias"],
+            "attributeValues": [
+                {
+                    "valueName": "1",
+                    "valueId": "1000256",
+                    "valueNameAlias": "1",
+                }
+            ],
+        }
+    ]
+
+    def post(path, body):
+        if path == miaoshou.CATEGORY_METADATA_PATH:
+            fake.calls.append((path, deepcopy(body)))
+            return _gb_category_metadata_response()
+        if path == miaoshou.WAREHOUSE_GET_PATH:
+            fake.calls.append((path, deepcopy(body)))
+            return {
+                "result": "success",
+                "data": {
+                    "shopWarehouseList": [
+                        {
+                            "shopId": "10204699",
+                            "warehouseList": [
+                                {
+                                    "warehouseId": "WAREHOUSE-1",
+                                    "warehouseEffectStatus": "1",
+                                    "isDefault": "1",
+                                }
+                            ],
+                        }
+                    ]
+                },
+            }
+        if path == fake.config["save_path"]:
+            fake.calls.append((path, deepcopy(body)))
+            candidate = deepcopy(body["shopCollectItemInfo"])
+            selected = candidate.get("productAttributes")
+            expected_selected = [
+                {
+                    "attributeId": required[0]["attrId"],
+                    "attributeName": required[0]["name"],
+                    "attributeNameAlias": required[0]["attributeNameAlias"],
+                    "attributeValues": [
+                        {
+                            "valueName": "1",
+                            "valueId": "1000256",
+                            "valueNameAlias": "1",
+                        }
+                    ],
+                }
+            ]
+            # Reproduce the vendor's dangerous accepted-but-not-persisted
+            # response unless both the numeric identity and required
+            # attribute are present.
+            if type(body.get("shopId")) is int and selected == expected_selected:
+                fake.detail = candidate
+                fake.detail["detailId"] = 77
+                fake.detail["shopId"] = "10204699"
+                fake.detail["sourceOfferId"] = "986159122616"
+                fake.detail.pop("itemNum", None)
+            return {"result": "success"}
+        return fake.post(path, body)
+
+    miaoshou.configure_runtime_transport_factory(
+        lambda: miaoshou.MiaoshouRuntimeTransport(post=post)
+    )
+
+    result = miaoshou.dispatch_tiktok_miaoshou_prepared_target(
+        _dispatch_request(command)
+    )
+
+    assert result["canonical_status"] == "SUBMITTED_UNVERIFIED"
+    endpoint_calls = [
+        (path, body)
+        for path, body in fake.calls
+        if path
+        in {
+            fake.config["get_path"],
+            fake.config["save_path"],
+            fake.config["publish_path"],
+            miaoshou.CATEGORY_METADATA_PATH,
+        }
+    ]
+    for path, body in endpoint_calls:
+        if path == fake.config["publish_path"]:
+            assert type(body["shopIds"][0]) is int
+        elif path == miaoshou.CATEGORY_METADATA_PATH:
+            assert type(body["shopIds"][0]) is int
+        else:
+            assert type(body["shopId"]) is int
+    assert fake.detail["cid"] == "600338"
+    assert fake.detail["skuMap"]["default"]["price"] == 15
+    assert fake.detail["productAttributes"][0]["attributeId"] == "102255"
+
+
+def test_tiktok_gb_official_readback_requires_the_bound_batch_number():
+    expected = _expected("tiktok:GB")
+    expected.update(
+        {
+            "category_id": "600338",
+            "price": "15",
+            "currency": "GBP",
+            "product_attributes": [
+                {
+                    "attributeId": "102255",
+                    "attributeName": "Batch Number",
+                    "attributeNameAlias": "生产批次号",
+                    "attributeValues": [
+                        {
+                            "valueName": "1",
+                            "valueId": "1000256",
+                            "valueNameAlias": "1",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    readback = _detail("tiktok:GB")
+    readback["cid"] = "600338"
+    readback["skuMap"]["default"].update(
+        {"price": 15, "priceIncludeVat": 15}
+    )
+    readback.pop("productAttributes", None)
+
+    with pytest.raises(
+        miaoshou.MiaoshouOneClickPreDispatchError,
+        match="official Miaoshou readback",
+    ):
+        miaoshou._verify_expected_detail(
+            readback,
+            expected,
+            platform="tiktok",
+            strict_collectbox_tiktok=True,
+            draft_mode="shop",
+        )
+
+
 def test_malformed_publish_preserves_confirmed_update_and_unknown_submission():
     target = "shopee:MY"
     command = _command(target)
@@ -2307,7 +2567,9 @@ def test_stored_idempotency_or_shop_drift_stops_before_transport():
     assert called == []
 
 
-@pytest.mark.parametrize("target", ["tiktok:MX", "shopee:PH", "ozon:RU"])
+@pytest.mark.parametrize(
+    "target", ["tiktok:MX", "tiktok:GB", "shopee:PH", "ozon:RU"]
+)
 def test_prepare_is_read_only_json_only_and_binds_server_identity(target):
     fake = DirectStoreFake(target)
     miaoshou.configure_prepare_post_factory(lambda: fake.post)
@@ -2334,11 +2596,31 @@ def test_prepare_is_read_only_json_only_and_binds_server_identity(target):
         "payload_digest": "b" * 64,
         "adapter_policy_digest": "c" * 64,
     }
+    if target == "tiktok:GB":
+        assert command["expected"]["product_attributes"] == [
+            {
+                "attributeId": "102255",
+                "attributeName": "Batch Number",
+                "attributeNameAlias": "生产批次号",
+                "attributeValues": [
+                    {
+                        "valueName": "1",
+                        "valueId": "1000256",
+                        "valueNameAlias": "1",
+                    }
+                ],
+            }
+        ]
     assert all(
         path
         in {
             miaoshou.DIRECT_STORE_CONFIG[target]["search_path"],
             miaoshou.DIRECT_STORE_CONFIG[target]["get_path"],
+            *(
+                [miaoshou.CATEGORY_METADATA_PATH]
+                if target == "tiktok:GB"
+                else []
+            ),
         }
         for path, _ in fake.calls
     )

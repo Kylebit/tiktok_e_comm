@@ -71,6 +71,8 @@ WEB_BATCH_SET_PRICE_PATH = (
 TIKTOK_CATEGORY_DECISION_SCHEMA = "approved-tiktok-category-decision/v1"
 TIKTOK_NO_BRAND_ID = "0"
 TIKTOK_NO_BRAND_NAME = "No Brand"
+TIKTOK_GB_BATCH_CATEGORY_ID = "600338"
+TIKTOK_GB_BATCH_ATTRIBUTE_ID = "102255"
 _TIKTOK_CATEGORY_BY_APPROVED_PRODUCT_CATEGORY = {
     "贴饰>墙贴": "600338",
     "墙贴": "600338",
@@ -106,6 +108,9 @@ def _direct_store_config(
         "site": site,
         "platform": platform,
         "draft_mode": draft_mode,
+        "requires_category_attributes": (
+            platform == "tiktok" and site == "GB"
+        ),
         # Every direct-store target is intentionally API-less from the
         # marketplace perspective.  Acceptance is Miaoshou submission only.
         "api": False,
@@ -153,6 +158,38 @@ def _direct_store_config(
             )
         ),
     }
+
+
+def _shop_endpoint_id(
+    config: Mapping[str, object], raw_shop_id: object
+) -> object:
+    """Return the exact JSON type required by the selected draft endpoint."""
+
+    draft_mode = str(config.get("draft_mode") or "shop")
+    if (
+        str(config.get("platform") or "") == "tiktok"
+        and draft_mode == "shop"
+    ):
+        if isinstance(raw_shop_id, bool) or not str(raw_shop_id).isdigit():
+            raise MiaoshouOneClickPreDispatchError(
+                "TikTok shop endpoint identity is invalid"
+            )
+        endpoint_id = int(str(raw_shop_id))
+        if endpoint_id <= 0:
+            raise MiaoshouOneClickPreDispatchError(
+                "TikTok shop endpoint identity is invalid"
+            )
+        return endpoint_id
+    if type(raw_shop_id) not in {str, int} or isinstance(raw_shop_id, bool):
+        raise MiaoshouOneClickPreDispatchError(
+            "Miaoshou shop endpoint identity is invalid"
+        )
+    endpoint_id = str(raw_shop_id).strip()
+    if not endpoint_id:
+        raise MiaoshouOneClickPreDispatchError(
+            "Miaoshou shop endpoint identity is invalid"
+        )
+    return endpoint_id
 
 
 DIRECT_STORE_CONFIG: dict[str, dict[str, object]] = {
@@ -711,6 +748,7 @@ def _prepare_site(
     post: Callable[[str, Mapping[str, object]], object],
 ) -> tuple[dict[str, object], dict[str, object]]:
     config = SITE_CONFIG[target]
+    shop_endpoint_id = _shop_endpoint_id(config, config["shop_id"])
     expected = _approved_site(
         payload,
         target=target,
@@ -736,11 +774,12 @@ def _prepare_site(
     )
     action = "USE_EXISTING" if detail_id is not None else "CREATE_AND_CLAIM"
     snapshot_digest = None
+    detail: Mapping[str, object] = {}
     if detail_id is not None:
         detail, _oss_md5 = _read_shop(
             post,
             detail_id,
-            expected["shop_id"],
+            shop_endpoint_id,
             target=target,
         )
         _verify_shop_identity(
@@ -750,6 +789,13 @@ def _prepare_site(
         )
         _verify_site_variants(detail, expected)
         snapshot_digest = _digest(_detail_snapshot(detail))
+    if config.get("requires_category_attributes") is True:
+        expected["product_attributes"] = _tiktok_category_product_attributes(
+            post,
+            current=detail,
+            expected=expected,
+            shop_endpoint_id=shop_endpoint_id,
+        )
     command = {
         "schema_version": "oneclick-miaoshou-direct-store-command/v1",
         "kind": "DIRECT_STORE",
@@ -882,6 +928,8 @@ def _dispatch_site(
     target = str(command["target_label"])
     config = DIRECT_STORE_CONFIG[target]
     platform = str(config["platform"])
+    draft_mode = str(config.get("draft_mode") or "shop")
+    shop_endpoint_id = _shop_endpoint_id(config, command["shop_id"])
     expected = _mapping(
         command.get("expected"), "Miaoshou direct-store expected payload"
     )
@@ -969,7 +1017,7 @@ def _dispatch_site(
                     SHOP_CLAIM_PATH,
                     {
                         "detailIds": [detail_id],
-                        "shopIds": [str(command["shop_id"])],
+                        "shopIds": [shop_endpoint_id],
                     },
                 )
             except Exception as error:
@@ -1016,7 +1064,7 @@ def _dispatch_site(
         detail, oss_md5 = _read_shop(
             post,
             detail_id,
-            str(command["shop_id"]),
+            shop_endpoint_id,
             target=target,
         )
         _verify_shop_identity(
@@ -1038,17 +1086,38 @@ def _dispatch_site(
             detail,
             expected,
             platform=platform,
-            draft_mode=str(config.get("draft_mode") or "shop"),
+            draft_mode=draft_mode,
             warehouse_id=warehouse_id,
         )
+        if config.get("requires_category_attributes") is True:
+            prepared_attributes = expected.get("product_attributes")
+            if not isinstance(prepared_attributes, list) or any(
+                not isinstance(row, Mapping) for row in prepared_attributes
+            ):
+                raise MiaoshouOneClickPreDispatchError(
+                    "prepared TikTok category attributes are unavailable"
+                )
+            current_attributes = _tiktok_category_product_attributes(
+                post,
+                current=detail,
+                expected=expected,
+                shop_endpoint_id=shop_endpoint_id,
+            )
+            if current_attributes != prepared_attributes:
+                raise MiaoshouOneClickPreDispatchError(
+                    "TikTok category attributes changed after preparation"
+                )
+            updated["productAttributes"] = [
+                dict(row) for row in prepared_attributes
+            ]
         body = _save_body(
             platform=platform,
             site=str(config["site"]),
             detail_id=detail_id,
-            shop_id=str(command["shop_id"]),
+            shop_id=shop_endpoint_id,
             updated=updated,
             oss_md5=oss_md5,
-            draft_mode=str(config.get("draft_mode") or "shop"),
+            draft_mode=draft_mode,
         )
     except Exception as error:
         if occurrence_state.external_write_count:
@@ -1109,20 +1178,28 @@ def _dispatch_site(
     )
     try:
         if transport.audit_detail is not None:
-            if transport.audit_detail(str(detail_id), str(command["shop_id"])) is not True:
+            if (
+                transport.audit_detail(str(detail_id), shop_endpoint_id)
+                is not True
+            ):
                 raise ValueError("injected draft audit mismatch")
         else:
             readback, _ = _read_shop(
                 post,
                 detail_id,
-                str(command["shop_id"]),
+                shop_endpoint_id,
                 target=target,
             )
             _verify_expected_detail(
                 readback,
                 expected,
                 platform=platform,
-                draft_mode=str(config.get("draft_mode") or "shop"),
+                strict_collectbox_tiktok=(
+                    platform == "tiktok"
+                    and type(expected.get("category_id")) is str
+                    and bool(str(expected.get("category_id") or ""))
+                ),
+                draft_mode=draft_mode,
             )
     except Exception as error:
         raise MiaoshouOneClickDispatchError(
@@ -1147,13 +1224,13 @@ def _dispatch_site(
     )
     try:
         submitted = (
-            transport.publish(str(detail_id), str(command["shop_id"]))
+            transport.publish(str(detail_id), shop_endpoint_id)
             if transport.publish is not None
             else post(
                 str(config["publish_path"]),
                 {
                     "detailIds": [detail_id],
-                    "shopIds": [str(command["shop_id"])],
+                    "shopIds": [shop_endpoint_id],
                 },
             )
         )
@@ -1518,15 +1595,7 @@ def _prepare_selected_platform_collectbox(
         nonlocal write_count_unknown
         config = DIRECT_STORE_CONFIG[target]
         draft_mode = str(config.get("draft_mode") or "shop")
-        # The proven MX/GB shop-draft endpoints use a JSON integer shopId.
-        # Stringifying it is dangerous: GB may return success without applying
-        # the draft update.  Site-mode TikTok and other platforms retain their
-        # existing string identity contract.
-        shop_endpoint_id: object = (
-            config["shop_id"]
-            if platform == "tiktok" and draft_mode == "shop"
-            else str(config["shop_id"])
-        )
+        shop_endpoint_id = _shop_endpoint_id(config, config["shop_id"])
         try:
             expected = _approved_site(
                 approved_plan_payload,
@@ -1632,12 +1701,8 @@ def _prepare_selected_platform_collectbox(
                 draft_mode=draft_mode,
                 warehouse_id=warehouse_id,
             )
-            if (
-                platform == "tiktok"
-                and draft_mode == "shop"
-                and "productAttributes" in detail
-            ):
-                updated["productAttributes"] = (
+            if config.get("requires_category_attributes") is True:
+                expected["product_attributes"] = (
                     _tiktok_category_product_attributes(
                         client,
                         current=detail,
@@ -1645,6 +1710,9 @@ def _prepare_selected_platform_collectbox(
                         shop_endpoint_id=shop_endpoint_id,
                     )
                 )
+                updated["productAttributes"] = [
+                    dict(row) for row in expected["product_attributes"]
+                ]
             body = _save_body(
                 platform=platform,
                 site=str(config["site"]),
@@ -2257,6 +2325,7 @@ def _tiktok_category_product_attributes(
 
     resolved: list[dict[str, object]] = []
     seen_rule_ids: set[str] = set()
+    gb_batch_rule_seen = False
     for rule in rules:
         raw_attr_id = rule.get("attrId")
         raw_name = rule.get("name")
@@ -2282,6 +2351,20 @@ def _tiktok_category_product_attributes(
                 "TikTok product attribute rules are ambiguous"
             )
         seen_rule_ids.add(attr_id)
+        is_gb_batch_rule = (
+            site.strip().upper() == "GB"
+            and category_id == TIKTOK_GB_BATCH_CATEGORY_ID
+            and attr_id == TIKTOK_GB_BATCH_ATTRIBUTE_ID
+        )
+        if is_gb_batch_rule:
+            gb_batch_rule_seen = True
+            if (
+                mandatory is not True
+                or rule.get("isMultipleSelected") is not False
+            ):
+                raise MiaoshouOneClickPreDispatchError(
+                    "TikTok GB Batch Number rule is not exact"
+                )
 
         official_values: list[dict[str, str]] = []
         official_by_id: dict[str, dict[str, str]] = {}
@@ -2311,6 +2394,11 @@ def _tiktok_category_product_attributes(
             }
             official_values.append(normalized)
             official_by_id[value_id] = normalized
+
+        if is_gb_batch_rule and len(official_values) != 1:
+            raise MiaoshouOneClickPreDispatchError(
+                "TikTok GB Batch Number requires one official value"
+            )
 
         selected: list[dict[str, str]] = []
         current_row = current_by_id.get(attr_id)
@@ -2350,6 +2438,14 @@ def _tiktok_category_product_attributes(
                 "attributeNameAlias": raw_alias,
                 "attributeValues": selected,
             }
+        )
+    if (
+        site.strip().upper() == "GB"
+        and category_id == TIKTOK_GB_BATCH_CATEGORY_ID
+        and not gb_batch_rule_seen
+    ):
+        raise MiaoshouOneClickPreDispatchError(
+            "TikTok GB Batch Number rule is unavailable"
         )
     return resolved
 
@@ -2517,6 +2613,10 @@ def _verify_expected_detail(
             type(expected_category) is str
             and bool(expected_category)
             and str(detail.get("cid") or "") == expected_category
+        )
+    if "product_attributes" in expected:
+        checks.append(
+            detail.get("productAttributes") == expected["product_attributes"]
         )
     if platform == "tiktok" and draft_mode == "site":
         shop_rows = detail.get("collectBoxDetailShopList")

@@ -5184,6 +5184,65 @@ function collectboxActionProjection(state) {
       },
     };
   }
+  if (state === "TARGET_MIXED") {
+    return {
+      ...base,
+      persisted: true,
+      action: {
+        action_id: "collectbox-action:target-mixed",
+        status: "PARTIAL_FAILED",
+        start_allowed: true,
+        retry_allowed: false,
+        terminal: true,
+        error: null,
+        platforms: [
+          platform({
+            name: "TIKTOK",
+            status: "RECONCILIATION_REQUIRED",
+            attempts: 1,
+            receiptDigest: "e".repeat(64),
+            writeCount: null,
+            writeClasses: [
+              "miaoshou:collectbox:claim:tiktok",
+              "miaoshou:collectbox:tiktok:shop:claim:tiktok:LH_PH",
+              "miaoshou:collectbox:tiktok:detail:update:tiktok:LH_PH",
+            ],
+            error: {
+              category: "UNKNOWN",
+              code: "collectbox_platform_preparation_failed",
+              detail_digest: "f".repeat(64),
+            },
+            targets: [
+              { target_label: "tiktok:LH_PH", status: "SUCCEEDED" },
+              { target_label: "tiktok:LH_MY", status: "SUCCEEDED" },
+              { target_label: "tiktok:LH_TH", status: "FAILED_RETRYABLE" },
+              { target_label: "tiktok:LH_VN", status: "SUCCEEDED" },
+              { target_label: "tiktok:MX", status: "RECONCILIATION_REQUIRED" },
+              { target_label: "tiktok:GB", status: "SUCCEEDED" },
+            ],
+          }),
+          platform({
+            name: "SHOPEE",
+            status: "SUCCEEDED",
+            outcome: "ALREADY_PRESENT",
+            attempts: 1,
+            receiptDigest: "6".repeat(64),
+            detailDigest: "7".repeat(64),
+          }),
+        ],
+      },
+      external_writes_performed: [
+        "miaoshou:collectbox:claim:tiktok",
+        "miaoshou:collectbox:tiktok:shop:claim:tiktok:LH_PH",
+        "miaoshou:collectbox:tiktok:detail:update:tiktok:LH_PH",
+      ],
+      external_write_count: null,
+      canonical_next_action: {
+        action: "restart_collectbox_action",
+        target_focus: null,
+      },
+    };
+  }
   if (state === "INVALID_WRITE_CLASS") {
     return {
       ...base,
@@ -5542,6 +5601,49 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
         reconciliationPendingState,
         label: await primary.innerText(),
         message: await optionalText("#collectboxActionMessage"),
+      },
+    );
+
+    requests.length = 0;
+    previewState = "TARGET_MIXED";
+    await page.goto(pageUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(300);
+    const targetRows = page.locator(
+      '[data-collectbox-platform="TIKTOK"] [data-collectbox-target]',
+    );
+    const targetLabels = await targetRows.evaluateAll((rows) => (
+      rows.map((row) => row.getAttribute("data-collectbox-target"))
+    ));
+    const targetStateText = await optionalText(
+      '[data-collectbox-platform="TIKTOK"]',
+    );
+    check(
+      JSON.stringify(targetLabels) === JSON.stringify([
+        "tiktok:LH_PH",
+        "tiktok:LH_MY",
+        "tiktok:LH_TH",
+        "tiktok:LH_VN",
+        "tiktok:MX",
+        "tiktok:GB",
+      ]),
+      `collectbox ${viewport.width}: all six TikTok targets render through the final target`,
+      { targetLabels, targetStateText },
+    );
+    check(
+      targetStateText.includes("成功")
+        && targetStateText.includes("修正后成功")
+        && targetStateText.includes("失败原因")
+        && await primary.isEnabled()
+        && (await primary.innerText()).includes("重新导入")
+        && requests.every((row) => (
+          row.method !== "POST"
+          || row.path !== "/api/product-workspace/publish"
+        )),
+      `collectbox ${viewport.width}: per-target result copy preserves one reimport action and never publishes`,
+      {
+        targetStateText,
+        label: await primary.innerText(),
+        requests,
       },
     );
 

@@ -923,8 +923,6 @@ def _dispatch_common(
 def _dispatch_site(
     request: object, command: Mapping[str, object]
 ) -> dict[str, object]:
-    transport = _runtime_transport()
-    post = _required_post(transport)
     target = str(command["target_label"])
     config = DIRECT_STORE_CONFIG[target]
     platform = str(config["platform"])
@@ -933,6 +931,16 @@ def _dispatch_site(
     expected = _mapping(
         command.get("expected"), "Miaoshou direct-store expected payload"
     )
+    prepared_attributes: list[dict[str, object]] | None = None
+    if config.get("requires_category_attributes") is True:
+        prepared_attributes = _validated_prepared_product_attributes(
+            expected.get("product_attributes")
+        )
+    # Required immutable evidence is validated before constructing a client,
+    # reading source pages, or opening any external write occurrence.  This
+    # keeps old persisted commands fail-closed at exactly zero transport.
+    transport = _runtime_transport()
+    post = _required_post(transport)
     occurrence_state = WriteOccurrenceState()
     external_id: str | None = None
 
@@ -1090,13 +1098,7 @@ def _dispatch_site(
             warehouse_id=warehouse_id,
         )
         if config.get("requires_category_attributes") is True:
-            prepared_attributes = expected.get("product_attributes")
-            if not isinstance(prepared_attributes, list) or any(
-                not isinstance(row, Mapping) for row in prepared_attributes
-            ):
-                raise MiaoshouOneClickPreDispatchError(
-                    "prepared TikTok category attributes are unavailable"
-                )
+            assert prepared_attributes is not None
             current_attributes = _tiktok_category_product_attributes(
                 post,
                 current=detail,
@@ -2448,6 +2450,102 @@ def _tiktok_category_product_attributes(
             "TikTok GB Batch Number rule is unavailable"
         )
     return resolved
+
+
+def _validated_prepared_product_attributes(
+    raw_attributes: object,
+) -> list[dict[str, object]]:
+    """Validate the JSON-only category evidence stored by prepare."""
+
+    if not isinstance(raw_attributes, list) or not raw_attributes:
+        raise MiaoshouOneClickPreDispatchError(
+            "prepared TikTok category attributes are unavailable"
+        )
+    normalized: list[dict[str, object]] = []
+    seen_ids: set[str] = set()
+    batch_rows = 0
+    for raw_row in raw_attributes:
+        if not isinstance(raw_row, Mapping) or set(raw_row) != {
+            "attributeId",
+            "attributeName",
+            "attributeNameAlias",
+            "attributeValues",
+        }:
+            raise MiaoshouOneClickPreDispatchError(
+                "prepared TikTok category attributes are invalid"
+            )
+        attr_id = raw_row.get("attributeId")
+        name = raw_row.get("attributeName")
+        alias = raw_row.get("attributeNameAlias")
+        raw_values = raw_row.get("attributeValues")
+        if (
+            type(attr_id) is not str
+            or not attr_id.strip()
+            or attr_id != attr_id.strip()
+            or attr_id in seen_ids
+            or type(name) is not str
+            or not name.strip()
+            or type(alias) is not str
+            or not isinstance(raw_values, list)
+            or any(not isinstance(value, Mapping) for value in raw_values)
+        ):
+            raise MiaoshouOneClickPreDispatchError(
+                "prepared TikTok category attributes are invalid"
+            )
+        seen_ids.add(attr_id)
+        values: list[dict[str, str]] = []
+        seen_value_ids: set[str] = set()
+        for raw_value in raw_values:
+            if set(raw_value) != {
+                "valueName",
+                "valueId",
+                "valueNameAlias",
+            }:
+                raise MiaoshouOneClickPreDispatchError(
+                    "prepared TikTok category attributes are invalid"
+                )
+            value_id = raw_value.get("valueId")
+            value_name = raw_value.get("valueName")
+            value_alias = raw_value.get("valueNameAlias")
+            if (
+                type(value_id) is not str
+                or not value_id.strip()
+                or value_id != value_id.strip()
+                or value_id in seen_value_ids
+                or type(value_name) is not str
+                or not value_name.strip()
+                or type(value_alias) is not str
+            ):
+                raise MiaoshouOneClickPreDispatchError(
+                    "prepared TikTok category attributes are invalid"
+                )
+            seen_value_ids.add(value_id)
+            values.append(
+                {
+                    "valueName": value_name,
+                    "valueId": value_id,
+                    "valueNameAlias": value_alias,
+                }
+            )
+        if attr_id == TIKTOK_GB_BATCH_ATTRIBUTE_ID:
+            batch_rows += 1
+            if len(values) != 1:
+                raise MiaoshouOneClickPreDispatchError(
+                    "prepared TikTok GB Batch Number is invalid"
+                )
+        normalized.append(
+            {
+                "attributeId": attr_id,
+                "attributeName": name,
+                "attributeNameAlias": alias,
+                "attributeValues": values,
+            }
+        )
+    if batch_rows != 1:
+        raise MiaoshouOneClickPreDispatchError(
+            "prepared TikTok GB Batch Number is unavailable"
+        )
+    return normalized
 
 
 def _apply_expected(

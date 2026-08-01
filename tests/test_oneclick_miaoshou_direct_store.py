@@ -2526,6 +2526,28 @@ def test_tiktok_gb_official_readback_requires_the_bound_batch_number():
         )
 
 
+def test_tiktok_gb_legacy_create_without_bound_attributes_is_zero_transport():
+    command = _command("tiktok:GB")
+    command["action"] = "CREATE_AND_CLAIM"
+    command["detail_id"] = None
+    command["observed_snapshot_digest"] = None
+    command["expected"].update(
+        {"category_id": "600338", "price": "15", "currency": "GBP"}
+    )
+    command["expected"].pop("product_attributes", None)
+    fake = DirectStoreFake("tiktok:GB", existing=False)
+    miaoshou.configure_runtime_transport_factory(
+        lambda: miaoshou.MiaoshouRuntimeTransport(post=fake.post)
+    )
+
+    with pytest.raises(miaoshou.MiaoshouOneClickPreDispatchError):
+        miaoshou.dispatch_tiktok_miaoshou_prepared_target(
+            _dispatch_request(command)
+        )
+
+    assert fake.calls == []
+
+
 def test_malformed_publish_preserves_confirmed_update_and_unknown_submission():
     target = "shopee:MY"
     command = _command(target)

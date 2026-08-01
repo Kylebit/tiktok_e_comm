@@ -5144,6 +5144,106 @@ function collectboxActionProjection(state) {
       },
     };
   }
+  if (
+    state === "REPAIRED_SUCCESS_COUNT"
+    || state === "INVALID_WRITE_COUNT_LOW"
+    || state === "INVALID_WRITE_CLASS_DUPLICATE"
+  ) {
+    const writeClasses = [
+      "miaoshou:collectbox:claim:tiktok",
+      "miaoshou:collectbox:tiktok:shop:claim:tiktok:LH_PH",
+      "miaoshou:collectbox:tiktok:detail:update:tiktok:LH_PH",
+    ];
+    if (state === "INVALID_WRITE_CLASS_DUPLICATE") {
+      writeClasses[2] = writeClasses[1];
+    }
+    const writeCount = state === "INVALID_WRITE_COUNT_LOW" ? 2 : 4;
+    const externalClasses = [...new Set(writeClasses)];
+    return {
+      ...base,
+      persisted: true,
+      action: {
+        action_id: `collectbox-action:${state.toLowerCase()}`,
+        status: "SUCCEEDED",
+        start_allowed: true,
+        retry_allowed: false,
+        terminal: true,
+        error: null,
+        platforms: [
+          platform({
+            name: "TIKTOK",
+            status: "SUCCEEDED",
+            outcome: "IMPORTED",
+            attempts: 1,
+            receiptDigest: "8".repeat(64),
+            detailDigest: "9".repeat(64),
+            writeCount,
+            writeClasses,
+            targets: [
+              { target_label: "tiktok:LH_PH", status: "SUCCEEDED" },
+              { target_label: "tiktok:LH_MY", status: "SUCCEEDED" },
+              { target_label: "tiktok:LH_TH", status: "SUCCEEDED" },
+              { target_label: "tiktok:LH_VN", status: "SUCCEEDED" },
+              { target_label: "tiktok:MX", status: "SUCCEEDED" },
+              { target_label: "tiktok:GB", status: "SUCCEEDED" },
+            ],
+            targetOutcomes: [
+              {
+                target_label: "tiktok:LH_PH",
+                status: "SUCCEEDED",
+                error_code: null,
+                detail_digest: null,
+              },
+              {
+                target_label: "tiktok:LH_MY",
+                status: "REPAIRED_SUCCEEDED",
+                error_code: null,
+                detail_digest: null,
+              },
+              {
+                target_label: "tiktok:LH_TH",
+                status: "SUCCEEDED",
+                error_code: null,
+                detail_digest: null,
+              },
+              {
+                target_label: "tiktok:LH_VN",
+                status: "SUCCEEDED",
+                error_code: null,
+                detail_digest: null,
+              },
+              {
+                target_label: "tiktok:MX",
+                status: "SUCCEEDED",
+                error_code: null,
+                detail_digest: null,
+              },
+              {
+                target_label: "tiktok:GB",
+                status: "SUCCEEDED",
+                error_code: null,
+                detail_digest: null,
+              },
+            ],
+          }),
+          platform({
+            name: "SHOPEE",
+            status: "SUCCEEDED",
+            outcome: "ALREADY_PRESENT",
+            attempts: 1,
+            receiptDigest: "6".repeat(64),
+            detailDigest: "7".repeat(64),
+          }),
+        ],
+      },
+      external_writes_performed: externalClasses,
+      external_write_count: writeCount,
+      canonical_next_action: {
+        action: "restart_collectbox_action",
+        target_focus: null,
+      },
+    };
+  }
   if (state === "RECONCILIATION_PENDING") {
     return {
       ...base,
@@ -5594,6 +5694,48 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
           ),
         `collectbox ${viewport.width}: one explicit restart sends one full-batch POST`,
         restartPosts,
+      );
+    }
+
+    requests.length = 0;
+    previewState = "REPAIRED_SUCCESS_COUNT";
+    await page.goto(pageUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(300);
+    const repairedWriteState = await optionalText(
+      '[data-collectbox-platform="TIKTOK"]',
+    );
+    check(
+      repairedWriteState.includes("修正后成功")
+        && await primary.isEnabled()
+        && (await primary.innerText()).includes("重新导入"),
+      `collectbox ${viewport.width}: repaired target permits repeated write occurrences`,
+      {
+        repairedWriteState,
+        label: await primary.innerText(),
+        message: await optionalText("#collectboxActionMessage"),
+      },
+    );
+
+    for (const invalidState of [
+      "INVALID_WRITE_COUNT_LOW",
+      "INVALID_WRITE_CLASS_DUPLICATE",
+    ]) {
+      requests.length = 0;
+      previewState = invalidState;
+      await page.goto(pageUrl, { waitUntil: "domcontentloaded" });
+      await page.waitForTimeout(300);
+      const malformedState = await optionalText("#collectboxActionStatus");
+      const malformedMessage = await optionalText("#collectboxActionMessage");
+      check(
+        !(await primary.isEnabled())
+          && malformedState === ""
+          && malformedMessage.length > 0,
+        `collectbox ${viewport.width}: ${invalidState} fails closed`,
+        {
+          malformedState,
+          malformedMessage,
+          label: await primary.innerText(),
+        },
       );
     }
 

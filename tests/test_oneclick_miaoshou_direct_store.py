@@ -231,16 +231,23 @@ def _plan_payload(target):
             }
         },
         "approved_tiktok_category_decisions": (
-            {
-                target: {
-                    "category_id": "600338",
-                    "evidence_digest": "d" * 64,
-                }
-            }
+            miaoshou.approved_tiktok_category_decisions(
+                {"name": "wall sticker"},
+                targets=("miaoshou:COMMON", target),
+            )
             if target.startswith("tiktok:")
             else {}
         ),
     }
+
+
+def _tiktok_category_decisions(targets):
+    decisions = miaoshou.approved_tiktok_category_decisions(
+        {"name": "wall sticker"},
+        targets=("miaoshou:COMMON", *targets),
+    )
+    assert isinstance(decisions, dict)
+    return decisions
 
 
 def test_legacy_plan_derives_exact_tiktok_category_from_its_own_payload():
@@ -259,8 +266,23 @@ def test_legacy_plan_derives_exact_tiktok_category_from_its_own_payload():
         target=target,
     ) is None
 
+    payload = _plan_payload(target)
+    payload["approved_tiktok_category_decisions"][target][
+        "evidence_digest"
+    ] = "e" * 64
+    assert miaoshou._approved_tiktok_category_id(
+        payload,
+        target=target,
+    ) is None
 
-def test_present_invalid_tiktok_category_binding_never_uses_legacy_fallback():
+    payload["approved_tiktok_category_decisions"] = {target: {}}
+    assert miaoshou._approved_tiktok_category_id(
+        payload,
+        target=target,
+    ) is None
+
+
+def test_present_tiktok_category_semantic_drift_fails_closed():
     target = "tiktok:GB"
     payload = _plan_payload(target)
     payload["approved_tiktok_category_decisions"][target][
@@ -270,14 +292,39 @@ def test_present_invalid_tiktok_category_binding_never_uses_legacy_fallback():
     assert miaoshou._approved_tiktok_category_id(
         payload,
         target=target,
-    ) == "600339"
-
-    payload["approved_tiktok_category_decisions"] = {target: {}}
-    assert miaoshou._approved_tiktok_category_id(
-        payload,
-        target=target,
     ) is None
 
+
+def test_present_tiktok_category_semantic_drift_makes_zero_storefront_calls():
+    target = "tiktok:GB"
+    payload = _plan_payload(target)
+    payload["approved_tiktok_category_decisions"][target][
+        "category_id"
+    ] = "600339"
+    calls = []
+
+    result = miaoshou.prepare_selected_platform_collectbox(
+        platform="tiktok",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=False,
+        approved_plan_payload=payload,
+        approved_targets=(target,),
+        post=lambda path, body: calls.append((path, body)),
+    )
+
+    assert calls == []
+    assert result["external_writes"] == ()
+    assert result["external_write_count"] == 0
+    assert result["target_results"] == [
+        {
+            "target_label": target,
+            "status": "FAILED",
+            "error_code": "category_not_approved",
+            "detail_digest": result["target_results"][0]["detail_digest"],
+        }
+    ]
+    assert len(result["target_results"][0]["detail_digest"]) == 64
 
 def test_collectbox_tiktok_repairs_vendor_auto_converted_price_once_then_reads_exact():
     """A vendor CNY-auto-price readback gets one bounded repair, not success."""
@@ -287,9 +334,9 @@ def test_collectbox_tiktok_repairs_vendor_auto_converted_price_once_then_reads_e
     payload["pricing"]["selected_targets"][target]["store_prices"][0][
         "list_price"
     ] = "46"
-    payload["approved_tiktok_category_decisions"] = {
-        target: {"category_id": "600338", "evidence_digest": "d" * 64}
-    }
+    payload["approved_tiktok_category_decisions"] = (
+        _tiktok_category_decisions((target,))
+    )
     calls = []
     detail = _detail(target)
     detail["cid"] = "600338"
@@ -391,6 +438,7 @@ def test_collectbox_tiktok_blank_gb_category_fails_target_and_continues_next_sit
 
     targets = ("tiktok:GB", "tiktok:MX")
     payload = _plan_payload(targets[0])
+    payload["targets"] = ["miaoshou:COMMON", *targets]
     payload["listing_copy"]["candidates"].append(
         {
             "channel": "tiktok",
@@ -411,12 +459,10 @@ def test_collectbox_tiktok_blank_gb_category_fails_target_and_continues_next_sit
             ]
         },
     }
-    payload["approved_tiktok_category_decisions"] = {
-        "tiktok:MX": {
-            "category_id": "600338",
-            "evidence_digest": "d" * 64,
-        }
-    }
+    payload["approved_tiktok_category_decisions"] = (
+        _tiktok_category_decisions(targets)
+    )
+    payload["approved_tiktok_category_decisions"].pop("tiktok:GB")
     calls = []
     details = {
         str(miaoshou.DIRECT_STORE_CONFIG["tiktok:GB"]["shop_id"]): {
@@ -488,8 +534,7 @@ def test_collectbox_tiktok_blank_gb_category_fails_target_and_continues_next_sit
         if path == miaoshou.SHOP_CLAIM_PATH
     ]
     assert claimed_shop_ids == [
-        str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])
-        for target in targets
+        str(miaoshou.DIRECT_STORE_CONFIG["tiktok:MX"]["shop_id"])
     ]
     assert all("save_move_collect_task" not in path for path, _ in calls)
 
@@ -497,6 +542,7 @@ def test_collectbox_tiktok_blank_gb_category_fails_target_and_continues_next_sit
 def test_collectbox_tiktok_failed_bounded_price_repair_continues_next_site():
     targets = ("tiktok:LH_MY", "tiktok:LH_TH")
     payload = _plan_payload(targets[0])
+    payload["targets"] = ["miaoshou:COMMON", *targets]
     payload["listing_copy"]["candidates"].append(
         {
             "channel": "tiktok",
@@ -517,10 +563,9 @@ def test_collectbox_tiktok_failed_bounded_price_repair_continues_next_site():
             ]
         },
     }
-    payload["approved_tiktok_category_decisions"] = {
-        target: {"category_id": "600338", "evidence_digest": "d" * 64}
-        for target in targets
-    }
+    payload["approved_tiktok_category_decisions"] = (
+        _tiktok_category_decisions(targets)
+    )
     details = {}
     for index, target in enumerate(targets):
         detail = _detail(target)
@@ -654,6 +699,7 @@ def _run_live_six_site_tiktok_drift(
     }
 
     payload = _plan_payload(targets[0])
+    payload["targets"] = ["miaoshou:COMMON", *targets]
     payload["listing_copy"]["candidates"] = [
         {
             "channel": "tiktok",
@@ -793,13 +839,7 @@ def test_collectbox_tiktok_live_six_site_uses_effective_repair_and_continues():
 
     targets = LIVE_SIX_TIKTOK_TARGETS
     result, calls, web_calls, save_counts, _ = _run_live_six_site_tiktok_drift(
-        category_decisions={
-            target: {
-                "category_id": "600338",
-                "evidence_digest": "d" * 64,
-            }
-            for target in targets
-        },
+        category_decisions=_tiktok_category_decisions(targets),
         use_web_price_repair=True,
     )
 
@@ -852,13 +892,7 @@ def test_collectbox_tiktok_batch_price_failure_is_local_and_continues(
     targets = LIVE_SIX_TIKTOK_TARGETS
     result, calls, web_calls, save_counts, _ = (
         _run_live_six_site_tiktok_drift(
-            category_decisions={
-                target: {
-                    "category_id": "600338",
-                    "evidence_digest": "d" * 64,
-                }
-                for target in targets
-            },
+            category_decisions=_tiktok_category_decisions(targets),
             use_web_price_repair=True,
             price_batch_faults={"tiktok:LH_MY": fault},
         )
@@ -912,13 +946,7 @@ def test_collectbox_default_web_business_rejection_is_known_and_continues(
     )
     result, calls, web_calls, save_counts, _ = (
         _run_live_six_site_tiktok_drift(
-            category_decisions={
-                target: {
-                    "category_id": "600338",
-                    "evidence_digest": "d" * 64,
-                }
-                for target in targets
-            },
+            category_decisions=_tiktok_category_decisions(targets),
         )
     )
 
@@ -946,15 +974,8 @@ def test_collectbox_tiktok_live_six_site_missing_category_approval_is_local():
     )
 
     assert tuple(row["target_label"] for row in result["target_results"]) == targets
-    assert save_counts == {target: 1 for target in targets}
-    assert [
-        str(body["shopIds"][0])
-        for path, body in calls
-        if path == miaoshou.SHOP_CLAIM_PATH
-    ] == [
-        str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])
-        for target in targets
-    ]
+    assert save_counts == {target: 0 for target in targets}
+    assert calls == []
     assert {
         target: (row["status"], row["error_code"])
         for target, row in (
@@ -1252,6 +1273,10 @@ def test_collectbox_tiktok_rejects_opaque_variant_with_wrong_model_sku():
 def test_collectbox_tiktok_writes_each_selected_country_and_approved_price():
     targets = ("tiktok:MX", "tiktok:GB")
     payload = _plan_payload(targets[0])
+    payload["targets"] = ["miaoshou:COMMON", *targets]
+    payload["approved_tiktok_category_decisions"] = (
+        _tiktok_category_decisions(targets)
+    )
     payload["listing_copy"]["candidates"].append(
         {
             "channel": "tiktok",
@@ -1343,6 +1368,7 @@ def test_collectbox_tiktok_first_target_unknown_does_not_skip_later_countries():
         "tiktok:GB",
     )
     payload = _plan_payload(targets[0])
+    payload["targets"] = ["miaoshou:COMMON", *targets]
     payload["listing_copy"]["candidates"] = [
         {
             "channel": "tiktok",
@@ -1362,13 +1388,10 @@ def test_collectbox_tiktok_first_target_unknown_does_not_skip_later_countries():
         }
         for target in targets
     }
-    payload["approved_tiktok_category_decisions"] = {
-        target: {
-            "category_id": "600338",
-            "evidence_digest": "d" * 64,
-        }
-        for target in targets[:-1]
-    }
+    payload["approved_tiktok_category_decisions"] = (
+        _tiktok_category_decisions(targets)
+    )
+    payload["approved_tiktok_category_decisions"].pop(targets[-1])
     calls = []
     detail_ids = {target: 77 + index for index, target in enumerate(targets)}
     details = {}
@@ -1451,7 +1474,7 @@ def test_collectbox_tiktok_first_target_unknown_does_not_skip_later_countries():
     }
     assert attempted_shop_ids == {
         str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])
-        for target in targets
+        for target in targets[:-1]
     }
     assert result["external_write_count"] is None
     assert all("save_move_collect_task" not in path for path, _ in calls)

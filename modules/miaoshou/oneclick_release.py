@@ -1195,22 +1195,32 @@ def _approved_common(
 def _approved_tiktok_category_id(
     payload: Mapping[str, object], *, target: str
 ) -> str | None:
+    facts = payload.get("product_facts")
+    targets = payload.get("targets")
+    if not isinstance(facts, Mapping) or not isinstance(targets, list):
+        return None
+    expected = approved_tiktok_category_decisions(
+        facts.get("category"),
+        targets=tuple(targets),
+    )
+    if not isinstance(expected, Mapping):
+        return None
+    expected_decision = expected.get(target)
+    if not isinstance(expected_decision, Mapping):
+        return None
     decisions = payload.get("approved_tiktok_category_decisions")
     if decisions is None:
         # Legacy approved plans predate the explicit category-decision field.
         # Recover it only from that immutable plan's own category and exact
         # target set; malformed or explicitly supplied decisions still fail
         # closed below.
-        facts = payload.get("product_facts")
-        targets = payload.get("targets")
-        if isinstance(facts, Mapping) and isinstance(targets, list):
-            decisions = approved_tiktok_category_decisions(
-                facts.get("category"),
-                targets=tuple(targets),
-            )
-    if not isinstance(decisions, Mapping):
+        decision = expected_decision
+    elif not isinstance(decisions, Mapping):
         return None
-    decision = decisions.get(target)
+    else:
+        decision = decisions.get(target)
+        if decision != expected_decision:
+            return None
     if not isinstance(decision, Mapping) or set(decision) != {
         "category_id",
         "evidence_digest",
@@ -1400,6 +1410,13 @@ def prepare_selected_platform_collectbox(
             expected["common_detail_id"] = common_id
         except Exception:
             fail("approved platform draft is invalid")
+        if platform == "tiktok" and expected.get("category_id") is None:
+            return primary_detail_id, _target_result(
+                target,
+                "FAILED",
+                error_code="category_not_approved",
+                detail="approved site category evidence is unavailable",
+            )
 
         detail_id = primary_detail_id
         if platform == "tiktok" and index > 0:

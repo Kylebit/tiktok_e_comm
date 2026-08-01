@@ -4957,12 +4957,16 @@ function collectboxActionProjection(state) {
     writeClasses = [],
     error = null,
     targets = null,
+    targetOutcomes = null,
   }) => ({
     platform: name,
     targets: targets || [{
       target_label: name === "TIKTOK" ? "tiktok:LH_PH" : "shopee:MY",
       status,
     }],
+    ...(targetOutcomes === null ? {} : {
+      target_outcomes: targetOutcomes,
+    }),
     status,
     outcome,
     attempt_count: attempts,
@@ -5219,6 +5223,44 @@ function collectboxActionProjection(state) {
               { target_label: "tiktok:LH_VN", status: "SUCCEEDED" },
               { target_label: "tiktok:MX", status: "RECONCILIATION_REQUIRED" },
               { target_label: "tiktok:GB", status: "SUCCEEDED" },
+            ],
+            targetOutcomes: [
+              {
+                target_label: "tiktok:LH_PH",
+                status: "SUCCEEDED",
+                error_code: null,
+                detail_digest: null,
+              },
+              {
+                target_label: "tiktok:LH_MY",
+                status: "REPAIRED_SUCCEEDED",
+                error_code: null,
+                detail_digest: null,
+              },
+              {
+                target_label: "tiktok:LH_TH",
+                status: "FAILED",
+                error_code: "collectbox_target_preparation_failed",
+                detail_digest: "1".repeat(64),
+              },
+              {
+                target_label: "tiktok:LH_VN",
+                status: "SUCCEEDED",
+                error_code: null,
+                detail_digest: null,
+              },
+              {
+                target_label: "tiktok:MX",
+                status: "FAILED",
+                error_code: "collectbox_target_write_unknown",
+                detail_digest: "2".repeat(64),
+              },
+              {
+                target_label: "tiktok:GB",
+                status: "SUCCEEDED",
+                error_code: null,
+                detail_digest: null,
+              },
             ],
           }),
           platform({
@@ -5609,10 +5651,10 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
     await page.goto(pageUrl, { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(300);
     const targetRows = page.locator(
-      '[data-collectbox-platform="TIKTOK"] [data-collectbox-target]',
+      '[data-collectbox-platform="TIKTOK"] [data-collectbox-target-outcome]',
     );
     const targetLabels = await targetRows.evaluateAll((rows) => (
-      rows.map((row) => row.getAttribute("data-collectbox-target"))
+      rows.map((row) => row.getAttribute("data-collectbox-target-outcome"))
     ));
     const targetStateText = await optionalText(
       '[data-collectbox-platform="TIKTOK"]',
@@ -5633,6 +5675,10 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
       targetStateText.includes("成功")
         && targetStateText.includes("修正后成功")
         && targetStateText.includes("失败原因")
+        && !targetStateText.includes("collectbox_target_preparation_failed")
+        && !targetStateText.includes("collectbox_target_write_unknown")
+        && !targetStateText.includes("1111111111111111")
+        && !targetStateText.includes("2222222222222222")
         && await primary.isEnabled()
         && (await primary.innerText()).includes("重新导入")
         && requests.every((row) => (

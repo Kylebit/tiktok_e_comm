@@ -12,6 +12,8 @@ Every consumed record must contain:
 
 Reject clipped or masked identifiers. Keep excluded records outside inventory totals until their complete identities are recovered.
 
+When both a canonical four-digit row and its approved country-prefixed alias exist in the same warehouse, sum their quantity fields into one canonical inventory position and preserve both complete source aliases. Never merge across warehouses or countries.
+
 An alias mapping must contain the complete source SKU, complete canonical SKU, country, warehouse, evidence source, and approval/reference. Suffix stripping and title matching are not alias evidence.
 
 Current user-confirmed Seaya PH8807 mappings:

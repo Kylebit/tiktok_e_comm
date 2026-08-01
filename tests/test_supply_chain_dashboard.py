@@ -55,7 +55,7 @@ def test_dashboard_has_four_country_isolated_facts_and_policies():
     assert {
         region: len([row for row in rows if row["kind"] == "existing"])
         for region, rows in data["countries"].items()
-    } == {"MY": 24, "TH": 23, "VN": 10, "PH": 4}
+    } == {"MY": 24, "TH": 24, "VN": 10, "PH": 6}
 
     for region, rows in data["countries"].items():
         for row in rows:
@@ -74,16 +74,16 @@ def test_thailand_truncated_codes_are_normalized_without_fuzzy_merging():
     data = _data()
 
     assert _row(data, "TH", "0400")["inventory"] == {
-        "stock": 111,
-        "available": 111,
+        "stock": 103,
+        "available": 103,
         "allocated": 0,
         "frozen": 0,
         "inbound": 0,
         "warehouse": "TH8806",
     }
     assert _row(data, "TH", "0401")["inventory"] == {
-        "stock": 51,
-        "available": 51,
+        "stock": 36,
+        "available": 36,
         "allocated": 0,
         "frozen": 0,
         "inbound": 100,
@@ -99,8 +99,8 @@ def test_thailand_truncated_codes_are_normalized_without_fuzzy_merging():
 def test_vietnam_and_philippines_use_complete_shopee_settlement_snapshots():
     data = _data()
 
-    assert sum(row["inventory"]["available"] for row in data["countries"]["VN"]) == 345
-    assert sum(row["inventory"]["available"] for row in data["countries"]["PH"]) == 33
+    assert sum(row["inventory"]["available"] for row in data["countries"]["VN"]) == 341
+    assert sum(row["inventory"]["available"] for row in data["countries"]["PH"]) == 30
     assert _row(data, "VN", "0004")["sourceAliases"] == ["0004", "880004"]
     assert _row(data, "VN", "0004")["kind"] == "existing"
     assert _row(data, "VN", "0004")["inventory"] == {
@@ -343,10 +343,10 @@ def test_dashboard_uses_complete_new_order_snapshots_for_quantity():
         "PH": 133,
     }
     expected = {
-        "MY": {"tiktok": (692, 531), "shopee": (133, 101)},
-        "TH": {"tiktok": (2229, 1917), "shopee": (1175, 999)},
-        "VN": {"tiktok": (359, 283), "shopee": (48, 32)},
-        "PH": {"tiktok": (384, 321), "shopee": (98, 77)},
+        "MY": {"tiktok": (697, 534), "shopee": (132, 101)},
+        "TH": {"tiktok": (2227, 1906), "shopee": (1172, 997)},
+        "VN": {"tiktok": (357, 283), "shopee": (48, 32)},
+        "PH": {"tiktok": (383, 318), "shopee": (99, 78)},
     }
     for region, platforms in expected.items():
         evidence = data["config"][region]["orderDemandEvidence"]
@@ -355,6 +355,24 @@ def test_dashboard_uses_complete_new_order_snapshots_for_quantity():
             assert evidence[platform]["ordersIncluded"] == included
             assert evidence[platform]["itemLinesUnresolved"] == 0
             assert len(evidence[platform]["digest"]) == 64
+
+
+def test_dashboard_records_current_seaya_inventory_lineage():
+    data = _data()
+    expected = {
+        "MY": (24, 24),
+        "TH": (34, 24),
+        "VN": (10, 10),
+        "PH": (6, 6),
+    }
+
+    for region, (raw_rows, canonical_skus) in expected.items():
+        evidence = data["config"][region]["inventoryEvidence"]
+        assert evidence["capturedAt"] == "2026-08-01T15:35:58+08:00"
+        assert evidence["source"] == "seaya_oms_stockWarehouse_logged_in_readonly"
+        assert evidence["rawRows"] == raw_rows
+        assert evidence["canonicalSkuCount"] == canonical_skus
+        assert len(evidence["digest"]) == 64
 
 
 def test_blocked_logistics_rows_have_local_manual_completion_controls():

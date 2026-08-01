@@ -2,10 +2,10 @@
   "sha256": {
     "dashboard/README.md": "4535e58192e3a044395c30312987eab4aaa119709bdc96b81dca171e4a1af479",
     "dashboard/app.js": "fe87af6fb3153c4b53ee7c67f0300d3477f69ed745928e6c46160320bab90355",
-    "dashboard/data.js": "6fbcdf1d4c452426812b816b1bc6e71cbf7259e3216906471bc34f13e4c2f0e5",
+    "dashboard/data.js": "3ec1445135ef35bc7d3aee7aa48423293ecaecef8fd557cf339995d77cbebda1",
     "dashboard/index.html": "36d82d60653ad5539fe4cce4aa28f980e801f8c99240358ca975461836be152b",
     "dashboard/styles.css": "4e413260f8135118348d494634d04ffb6ac8e60522f6d7c0f6bea7a6c6855ecc",
-    "skills/manage-seaya-replenishment/SKILL.md": "6fbad18bd3bfe09a6447ce2196d4c36c2ccd0534f0439c81497ae66971dd00a5",
-    "skills/manage-seaya-replenishment/references/decision-contract.md": "8de0d012f1c0873b07733d1308dad2c5c227def727ffcf5c1248e0c3f1b2e840"
+    "skills/manage-seaya-replenishment/SKILL.md": "924a9713ed9968b676c9f56e0e6d55ded2eaf010fa1ce41fc6d4c79801d34dfd",
+    "skills/manage-seaya-replenishment/references/decision-contract.md": "886a86f1e5699e009480beb87a6ea74619fadd95bf95251ed391db66a0cf7ee6"
   }
 }

@@ -85,6 +85,22 @@ def contract(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
     monkeypatch.setitem(sys.modules, module.__name__, module)
     from domains.channel_operations import collectbox_action_adapters
 
+    class WebAuthUnavailable(RuntimeError):
+        pass
+
+    monkeypatch.setattr(
+        collectbox_action_adapters,
+        "MiaoshouWebAuthUnavailableError",
+        WebAuthUnavailable,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        collectbox_action_adapters,
+        "ensure_web_batch_price_auth_available",
+        lambda: None,
+        raising=False,
+    )
+
     def prepare_fixture(**kwargs):
         written = bool(kwargs["initial_claim_written"])
         platform = kwargs["platform"]
@@ -222,6 +238,43 @@ def test_known_business_rejection_maps_to_retryable_zero_write(
     assert result.external_write_count == 0
     assert result.error_category == "CHANNEL"
     assert result.error_code == "productNotFound"
+
+
+def test_tiktok_missing_web_auth_stops_before_claim_or_target_write(
+    contract: types.ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from domains.channel_operations import collectbox_action_adapters
+
+    calls = 0
+
+    def post(_path: str, _body: dict[str, object]) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return _success("tiktok", 71001)
+
+    def missing_auth():
+        raise collectbox_action_adapters.MiaoshouWebAuthUnavailableError(
+            "Miaoshou web auth is unavailable"
+        )
+
+    monkeypatch.setattr("modules.miaoshou.client.post_open", post)
+    monkeypatch.setattr(
+        collectbox_action_adapters,
+        "ensure_web_batch_price_auth_available",
+        missing_auth,
+    )
+
+    result = collectbox_action_adapters.execute_collectbox_platform(
+        _request(contract)
+    )
+
+    assert calls == 0
+    assert result.status == "FAILED_RETRYABLE"
+    assert result.external_writes == ()
+    assert result.external_write_count == 0
+    assert result.error_category == "AUTH"
+    assert result.error_code == "miaoshou_web_auth_unavailable"
 
 
 @pytest.mark.parametrize(

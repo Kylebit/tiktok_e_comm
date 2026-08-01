@@ -92,6 +92,25 @@ class MiaoshouClientTests(unittest.TestCase):
 
         self.assertIn("session expired", str(ctx.exception))
 
+    def test_request_web_business_rejection_is_typed_not_unknown(self):
+        def fake_urlopen(_req, timeout=0):
+            return _FakeResponse(
+                {
+                    "success": False,
+                    "code": "PRICE_REJECTED",
+                    "message": "price was rejected",
+                }
+            )
+
+        with patch("modules.miaoshou.client._load_config", return_value={}), patch(
+            "urllib.request.urlopen", side_effect=fake_urlopen
+        ):
+            with self.assertRaises(MiaoshouBusinessRejectedError) as ctx:
+                request_web("POST", "/api/example", form="{}")
+
+        self.assertEqual(ctx.exception.code, "PRICE_REJECTED")
+        self.assertTrue(ctx.exception.business_rejected)
+
     def test_web_claim_to_shop_uses_indexed_fields(self):
         seen = {}
 

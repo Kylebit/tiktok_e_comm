@@ -10,13 +10,10 @@ from modules.miaoshou.collectbox_claim import (
     CollectBoxPlatformClaimRequest,
     claim_common_collectbox_platform,
 )
-from modules.miaoshou.client import (
-    MiaoshouWebAuthUnavailableError,
-    ensure_web_batch_price_auth_available,
-)
 from modules.miaoshou.oneclick_release import (
     MiaoshouCollectBoxPreparationError,
-    prepare_selected_platform_collectbox,
+    prepare_shopee_collectbox,
+    prepare_tiktok_collectbox,
 )
 
 
@@ -98,43 +95,56 @@ def _identity_failure(contract, *, code: str, detail: str):
 
 
 def execute_collectbox_platform(request):
-    """Claim and configure selected platform drafts; never publish them."""
+    """Route one platform request to its channel-owned implementation."""
 
     contract = _contract()
     request_type = contract["CollectBoxPlatformRequest"]
     if type(request) is not request_type:
         raise TypeError("collect-box platform request type is invalid")
-
-    platform = {"TIKTOK": "tiktok", "SHOPEE": "shopee"}.get(
-        request.platform
+    if request.platform == "TIKTOK":
+        return _execute_tiktok_collectbox_platform(request, contract)
+    if request.platform == "SHOPEE":
+        return _execute_shopee_collectbox_platform(request, contract)
+    return _identity_failure(
+        contract,
+        code="collectbox_platform_identity_invalid",
+        detail="collect-box platform identity is invalid",
     )
-    if platform is None:
+
+
+def _execute_tiktok_collectbox_platform(request, contract):
+    return _execute_known_collectbox_platform(
+        request,
+        contract,
+        platform="tiktok",
+        prepare=prepare_tiktok_collectbox,
+    )
+
+
+def _execute_shopee_collectbox_platform(request, contract):
+    return _execute_known_collectbox_platform(
+        request,
+        contract,
+        platform="shopee",
+        prepare=prepare_shopee_collectbox,
+    )
+
+
+def _execute_known_collectbox_platform(
+    request,
+    contract,
+    *,
+    platform: str,
+    prepare,
+):
+    """Claim and configure one known platform; never publish it."""
+
+    if platform not in {"tiktok", "shopee"}:
         return _identity_failure(
             contract,
             code="collectbox_platform_identity_invalid",
             detail="collect-box platform identity is invalid",
         )
-    if platform == "tiktok":
-        try:
-            ensure_web_batch_price_auth_available()
-        except MiaoshouWebAuthUnavailableError:
-            return contract["CollectBoxPlatformResult"](
-                status=contract["FAILED_RETRYABLE"],
-                external_writes=(),
-                external_write_count=0,
-                receipt_evidence={
-                    "schema_version": (
-                        "collectbox-channel-auth-evidence/v1"
-                    ),
-                    "platform": platform,
-                    "web_auth_available": False,
-                },
-                error_category="AUTH",
-                error_code="miaoshou_web_auth_unavailable",
-                error_detail=(
-                    "Miaoshou Web login is required before TikTok import"
-                ),
-            )
     try:
         expected_common_digest = contract[
             "common_collectbox_identity_digest"
@@ -205,8 +215,7 @@ def execute_collectbox_platform(request):
         raise ValueError("collect-box platform result is not mappable")
 
     try:
-        prepared = prepare_selected_platform_collectbox(
-            platform=platform,
+        prepared = prepare(
             common_detail_id=request.common_collect_box_detail_id,
             initial_platform_detail_id=str(result.platform_detail_id),
             initial_claim_written=initial_claim_written,

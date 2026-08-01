@@ -127,12 +127,7 @@ def test_real_channel_adapter_preserves_six_tiktok_target_outcomes(
     )
     monkeypatch.setattr(
         collectbox_action_adapters,
-        "ensure_web_batch_price_auth_available",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        collectbox_action_adapters,
-        "prepare_selected_platform_collectbox",
+        "prepare_tiktok_collectbox",
         lambda **_kwargs: {
             "primary_platform_detail_id": 71001,
             "target_count": len(targets),

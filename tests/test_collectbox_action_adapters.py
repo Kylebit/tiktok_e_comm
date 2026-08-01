@@ -125,6 +125,19 @@ def contract(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
         collectbox_action_adapters,
         "prepare_selected_platform_collectbox",
         prepare_fixture,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        collectbox_action_adapters,
+        "prepare_tiktok_collectbox",
+        lambda **kwargs: prepare_fixture(platform="tiktok", **kwargs),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        collectbox_action_adapters,
+        "prepare_shopee_collectbox",
+        lambda **kwargs: prepare_fixture(platform="shopee", **kwargs),
+        raising=False,
     )
     return module
 
@@ -240,7 +253,7 @@ def test_known_business_rejection_maps_to_retryable_zero_write(
     assert result.error_code == "productNotFound"
 
 
-def test_tiktok_missing_web_auth_stops_before_claim_or_target_write(
+def test_tiktok_openapi_import_does_not_require_miaoshou_web_session(
     contract: types.ModuleType,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -269,12 +282,11 @@ def test_tiktok_missing_web_auth_stops_before_claim_or_target_write(
         _request(contract)
     )
 
-    assert calls == 0
-    assert result.status == "FAILED_RETRYABLE"
-    assert result.external_writes == ()
-    assert result.external_write_count == 0
-    assert result.error_category == "AUTH"
-    assert result.error_code == "miaoshou_web_auth_unavailable"
+    assert calls == 1
+    assert result.status == "SUCCEEDED"
+    assert result.outcome == "IMPORTED"
+    assert result.external_writes == ("miaoshou:collectbox:claim:tiktok",)
+    assert result.external_write_count == 1
 
 
 @pytest.mark.parametrize(

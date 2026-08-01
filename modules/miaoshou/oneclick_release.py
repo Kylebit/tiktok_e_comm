@@ -1311,6 +1311,54 @@ def _approved_site(
     return result
 
 
+def prepare_tiktok_collectbox(
+    *,
+    common_detail_id: str,
+    initial_platform_detail_id: str,
+    initial_claim_written: bool,
+    approved_plan_payload: Mapping[str, object],
+    approved_targets: tuple[str, ...],
+    post: Callable[[str, Mapping[str, object]], object] | None = None,
+    web_post: Callable[[str, Mapping[str, object]], object] | None = None,
+) -> dict[str, object]:
+    """Populate only approved TikTok drafts; never publish them."""
+
+    return _prepare_selected_platform_collectbox(
+        platform="tiktok",
+        common_detail_id=common_detail_id,
+        initial_platform_detail_id=initial_platform_detail_id,
+        initial_claim_written=initial_claim_written,
+        approved_plan_payload=approved_plan_payload,
+        approved_targets=approved_targets,
+        post=post,
+        web_post=web_post,
+    )
+
+
+def prepare_shopee_collectbox(
+    *,
+    common_detail_id: str,
+    initial_platform_detail_id: str,
+    initial_claim_written: bool,
+    approved_plan_payload: Mapping[str, object],
+    approved_targets: tuple[str, ...],
+    post: Callable[[str, Mapping[str, object]], object] | None = None,
+    web_post: Callable[[str, Mapping[str, object]], object] | None = None,
+) -> dict[str, object]:
+    """Populate only approved Shopee drafts; never publish them."""
+
+    return _prepare_selected_platform_collectbox(
+        platform="shopee",
+        common_detail_id=common_detail_id,
+        initial_platform_detail_id=initial_platform_detail_id,
+        initial_claim_written=initial_claim_written,
+        approved_plan_payload=approved_plan_payload,
+        approved_targets=approved_targets,
+        post=post,
+        web_post=web_post,
+    )
+
+
 def prepare_selected_platform_collectbox(
     *,
     platform: str,
@@ -1322,7 +1370,39 @@ def prepare_selected_platform_collectbox(
     post: Callable[[str, Mapping[str, object]], object] | None = None,
     web_post: Callable[[str, Mapping[str, object]], object] | None = None,
 ) -> dict[str, object]:
-    """Populate approved platform drafts without moving/publishing them."""
+    """Compatibility router for callers that still pass a platform name."""
+
+    prepare = {
+        "tiktok": prepare_tiktok_collectbox,
+        "shopee": prepare_shopee_collectbox,
+    }.get(platform)
+    if prepare is None:
+        raise MiaoshouCollectBoxPreparationError(
+            "collect-box platform is unsupported", writes=(), write_count=0
+        )
+    return prepare(
+        common_detail_id=common_detail_id,
+        initial_platform_detail_id=initial_platform_detail_id,
+        initial_claim_written=initial_claim_written,
+        approved_plan_payload=approved_plan_payload,
+        approved_targets=approved_targets,
+        post=post,
+        web_post=web_post,
+    )
+
+
+def _prepare_selected_platform_collectbox(
+    *,
+    platform: str,
+    common_detail_id: str,
+    initial_platform_detail_id: str,
+    initial_claim_written: bool,
+    approved_plan_payload: Mapping[str, object],
+    approved_targets: tuple[str, ...],
+    post: Callable[[str, Mapping[str, object]], object] | None = None,
+    web_post: Callable[[str, Mapping[str, object]], object] | None = None,
+) -> dict[str, object]:
+    """Shared mechanics after the caller has selected one channel."""
 
     if platform not in {"tiktok", "shopee"}:
         raise MiaoshouCollectBoxPreparationError(

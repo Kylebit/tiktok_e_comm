@@ -853,6 +853,52 @@ def test_collectbox_tiktok_batch_price_failure_is_local_and_continues(
     assert all("save_move_collect_task" not in path for path, _ in calls)
 
 
+def test_collectbox_default_web_business_rejection_is_known_and_continues(
+    monkeypatch,
+):
+    from modules.miaoshou.client import MiaoshouBusinessRejectedError
+
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    monkeypatch.setattr(
+        "modules.miaoshou.client.ensure_web_batch_price_auth_available",
+        lambda: None,
+    )
+
+    def rejected_request_web(_method, _path, **_kwargs):
+        raise MiaoshouBusinessRejectedError(
+            "price rejected", code="PRICE_REJECTED"
+        )
+
+    monkeypatch.setattr(
+        "modules.miaoshou.client.request_web",
+        rejected_request_web,
+    )
+    result, calls, web_calls, save_counts, _ = (
+        _run_live_six_site_tiktok_drift(
+            category_decisions={
+                target: {
+                    "category_id": "600338",
+                    "evidence_digest": "d" * 64,
+                }
+                for target in targets
+            },
+        )
+    )
+
+    assert web_calls == []
+    assert save_counts == {target: 1 for target in targets}
+    assert tuple(
+        row["target_label"] for row in result["target_results"]
+    ) == targets
+    assert all(
+        row["status"] == "FAILED"
+        and row["error_code"] == "approved_price_batch_repair_rejected"
+        for row in result["target_results"]
+    )
+    assert result["external_write_count"] is not None
+    assert all("save_move_collect_task" not in path for path, _ in calls)
+
+
 def test_collectbox_tiktok_live_six_site_missing_category_approval_is_local():
     """Missing approvals fail every site without aborting the whole batch."""
 

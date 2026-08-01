@@ -668,6 +668,29 @@ def test_release_plan_binds_approved_wall_sticker_category_to_six_tiktok_sites()
         assert all(character in "0123456789abcdef" for character in digest)
 
 
+def test_legacy_approved_plan_accepts_deterministic_tiktok_category_backfill():
+    """A derived execution binding must not strand a pre-feature approval."""
+
+    dashboard = _six_tiktok_category_dashboard("贴饰 > 墙贴")
+    current_payload, blockers = product_server._release_plan_payload_from_dashboard(
+        dashboard
+    )
+    legacy_payload = deepcopy(current_payload)
+    legacy_payload.pop("approved_tiktok_category_decisions")
+
+    persisted_plan = {"payload": legacy_payload}
+    current_preview = {"payload": current_payload}
+
+    assert blockers == []
+    assert legacy_payload["product_facts"]["category"] == (
+        current_payload["product_facts"]["category"]
+    )
+    assert product_server._approved_plan_matches_current_payload(
+        persisted_plan,
+        current_preview,
+    )
+
+
 def test_release_plan_unmapped_product_category_fails_closed_without_guessing():
     dashboard = _six_tiktok_category_dashboard("未映射的新商品类目")
 

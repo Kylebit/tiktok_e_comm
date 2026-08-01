@@ -56,6 +56,7 @@ SHOP_SAVE_PATH = (
 PUBLISH_PATH = (
     "/open/v1/product/collect_box/tiktok/collect_box/save_move_collect_task"
 )
+from modules.miaoshou.client import MiaoshouBusinessRejectedError
 WEB_BATCH_SET_PRICE_PATH = (
     "/api/platform/tiktok/move/collect_box/batchSetPrice"
 )
@@ -1546,6 +1547,13 @@ def prepare_selected_platform_collectbox(
                         site=str(config["site"]),
                         price=expected["price"],
                     ),
+                )
+            except MiaoshouBusinessRejectedError:
+                return detail_id, _target_result(
+                    target,
+                    "FAILED",
+                    error_code="approved_price_batch_repair_rejected",
+                    detail="Miaoshou batch price repair was rejected",
                 )
             except Exception:
                 add_write(

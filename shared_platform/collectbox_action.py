@@ -26,6 +26,8 @@ RUNNING = "RUNNING"
 SUCCEEDED = "SUCCEEDED"
 FAILED_RETRYABLE = "FAILED_RETRYABLE"
 RECONCILIATION_REQUIRED = "RECONCILIATION_REQUIRED"
+REPAIRED_SUCCEEDED = "REPAIRED_SUCCEEDED"
+FAILED = "FAILED"
 IMPORTED = "IMPORTED"
 ALREADY_PRESENT = "ALREADY_PRESENT"
 MIN_PLATFORM_SPACING_SECONDS = 3.0
@@ -63,6 +65,9 @@ _COLLECTBOX_TARGET_OPERATIONS = {
 _SHA256_EMPTY_LIST = hashlib.sha256(b"[]").hexdigest()
 _TARGET_TERMINAL_STATUSES = frozenset(
     {SUCCEEDED, FAILED_RETRYABLE, RECONCILIATION_REQUIRED}
+)
+_PUBLIC_TARGET_OUTCOME_STATUSES = frozenset(
+    {SUCCEEDED, REPAIRED_SUCCEEDED, FAILED}
 )
 
 
@@ -199,6 +204,56 @@ def _projected_targets(raw_receipt: object, platform: str) -> list[dict[str, str
             raise ValueError("collect-box target receipt identity is invalid")
         seen.add(label)
         projected.append({"target_label": label, "status": status})
+    return projected
+
+
+def _projected_target_outcomes(
+    raw_receipt: object,
+    platform: str,
+    expected_targets: list[dict[str, str]],
+) -> list[dict[str, str | None]]:
+    try:
+        receipt = json.loads(raw_receipt) if type(raw_receipt) is str else {}
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            "collect-box target outcome receipt is malformed"
+        ) from error
+    rows = (
+        receipt.get("target_outcomes")
+        if isinstance(receipt, Mapping)
+        else None
+    )
+    if rows is None:
+        return []
+    if not isinstance(rows, list):
+        raise ValueError("collect-box target outcomes are invalid")
+    projected: list[dict[str, str | None]] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, Mapping) or set(row) != {
+            "target_label",
+            "status",
+            "error_code",
+            "detail_digest",
+        }:
+            raise ValueError("collect-box target outcome row is invalid")
+        outcome = CollectBoxTargetOutcome(
+            target_label=row.get("target_label"),
+            status=row.get("status"),
+            error_code=row.get("error_code"),
+            detail_digest=row.get("detail_digest"),
+        )
+        if (
+            outcome.target_label not in _COLLECTBOX_TARGETS[platform]
+            or outcome.target_label in seen
+        ):
+            raise ValueError("collect-box target outcome identity is invalid")
+        seen.add(outcome.target_label)
+        projected.append(outcome.public_payload())
+    if projected and [row["target_label"] for row in projected] != [
+        row["target_label"] for row in expected_targets
+    ]:
+        raise ValueError("collect-box target outcome membership drifted")
     return projected
 
 
@@ -384,6 +439,7 @@ def invalid_plan_projection(
                         platform,
                         targets if isinstance(targets, list) else [],
                     ),
+                    "target_outcomes": [],
                     "status": PENDING,
                     "outcome": None,
                     "attempt_count": 0,
@@ -495,6 +551,45 @@ class CollectBoxPlatformRequest:
 
 
 @dataclass(frozen=True)
+class CollectBoxTargetOutcome:
+    target_label: str
+    status: str
+    error_code: str | None = None
+    detail_digest: str | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.target_label) is not str or not self.target_label.strip():
+            raise ValueError("target outcome label is invalid")
+        if self.target_label != self.target_label.strip():
+            raise ValueError("target outcome label must be canonical")
+        if self.status not in _PUBLIC_TARGET_OUTCOME_STATUSES:
+            raise ValueError("target outcome status is invalid")
+        if self.status == FAILED:
+            if (
+                type(self.error_code) is not str
+                or not self.error_code
+                or len(self.error_code) > 128
+                or not self.error_code.isascii()
+                or any(
+                    char not in "abcdefghijklmnopqrstuvwxyz0123456789_"
+                    for char in self.error_code
+                )
+                or not _is_sha256(self.detail_digest)
+            ):
+                raise ValueError("failed target outcome evidence is invalid")
+        elif self.error_code is not None or self.detail_digest is not None:
+            raise ValueError("successful target outcome error must be null")
+
+    def public_payload(self) -> dict[str, str | None]:
+        return {
+            "target_label": self.target_label,
+            "status": self.status,
+            "error_code": self.error_code,
+            "detail_digest": self.detail_digest,
+        }
+
+
+@dataclass(frozen=True)
 class CollectBoxPlatformResult:
     status: str
     outcome: str | None = None
@@ -506,6 +601,7 @@ class CollectBoxPlatformResult:
     error_code: str | None = None
     error_detail: str | None = None
     target_statuses: tuple[tuple[str, str], ...] = ()
+    target_outcomes: tuple[CollectBoxTargetOutcome, ...] = ()
 
     def __post_init__(self) -> None:
         if self.status not in {
@@ -543,6 +639,20 @@ class CollectBoxPlatformResult:
             != len(self.target_statuses)
         ):
             raise ValueError("target_statuses are invalid")
+        if (
+            type(self.target_outcomes) is not tuple
+            or any(
+                type(value) is not CollectBoxTargetOutcome
+                for value in self.target_outcomes
+            )
+            or len({value.target_label for value in self.target_outcomes})
+            != len(self.target_outcomes)
+        ):
+            raise ValueError("target_outcomes are invalid")
+        if self.target_statuses and self.target_outcomes:
+            raise ValueError(
+                "legacy target_statuses and target_outcomes are exclusive"
+            )
         if self.status == SUCCEEDED:
             if self.outcome not in {IMPORTED, ALREADY_PRESENT}:
                 raise ValueError("success requires an exact outcome")
@@ -569,6 +679,10 @@ class CollectBoxPlatformResult:
                 for _target, status in self.target_statuses
             ):
                 raise ValueError("platform success requires target success")
+            if self.target_outcomes and any(
+                outcome.status == FAILED for outcome in self.target_outcomes
+            ):
+                raise ValueError("platform success cannot contain target failure")
         else:
             if self.outcome is not None or self.platform_detail_id is not None:
                 raise ValueError("non-success result cannot carry an outcome")
@@ -582,6 +696,12 @@ class CollectBoxPlatformResult:
             ):
                 raise ValueError(
                     "FAILED_RETRYABLE must prove zero external writes"
+                )
+            if self.target_outcomes and not any(
+                outcome.status == FAILED for outcome in self.target_outcomes
+            ):
+                raise ValueError(
+                    "platform failure requires an exact failed target outcome"
                 )
 
 
@@ -846,6 +966,7 @@ class CollectBoxActionStore:
                             platform,
                             status=RECONCILIATION_REQUIRED,
                         ),
+                        "target_outcomes": [],
                         "platform_detail_id_digest": None,
                         "external_writes": [_WRITE_CLASS[platform]],
                         "external_write_count": None,
@@ -940,6 +1061,7 @@ class CollectBoxActionStore:
                                 row["platform"],
                                 status=FAILED_RETRYABLE,
                             ),
+                            "target_outcomes": [],
                             "platform_detail_id_digest": None,
                             "external_writes": [],
                             "external_write_count": 0,
@@ -1526,6 +1648,17 @@ class CollectBoxActionStore:
                 approved_targets,
                 status=result.status,
             )
+        if result.target_outcomes:
+            if tuple(
+                outcome.target_label for outcome in result.target_outcomes
+            ) != selected_targets:
+                raise ValueError("collect-box target outcome identity drifted")
+            target_outcome_rows = [
+                outcome.public_payload()
+                for outcome in result.target_outcomes
+            ]
+        else:
+            target_outcome_rows = []
         platform_detail_id = (
             _canonical_positive_identifier(
                 result.platform_detail_id,
@@ -1560,6 +1693,7 @@ class CollectBoxActionStore:
             "status": result.status,
             "outcome": result.outcome,
             "targets": target_rows,
+            "target_outcomes": target_outcome_rows,
             "platform_detail_id_digest": platform_detail_digest,
             "external_writes": list(result.external_writes),
             "external_write_count": result.external_write_count,
@@ -1692,6 +1826,7 @@ class CollectBoxActionStore:
                             platform,
                             approved_targets,
                         ),
+                        "target_outcomes": [],
                         "status": PENDING,
                         "outcome": None,
                         "attempt_count": 0,
@@ -1749,6 +1884,11 @@ class CollectBoxActionStore:
                 row["receipt_json"],
                 row["platform"],
             )
+            target_outcomes = _projected_target_outcomes(
+                row["receipt_json"],
+                row["platform"],
+                targets,
+            )
             for value in classes:
                 if value not in union_writes:
                     union_writes.append(value)
@@ -1763,6 +1903,7 @@ class CollectBoxActionStore:
                 {
                     "platform": row["platform"],
                     "targets": targets,
+                    "target_outcomes": target_outcomes,
                     "status": row["status"],
                     "outcome": row["outcome"],
                     "attempt_count": int(row["attempt_count"]),

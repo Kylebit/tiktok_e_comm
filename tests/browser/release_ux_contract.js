@@ -4964,9 +4964,7 @@ function collectboxActionProjection(state) {
       target_label: name === "TIKTOK" ? "tiktok:LH_PH" : "shopee:MY",
       status,
     }],
-    ...(targetOutcomes === null ? {} : {
-      target_outcomes: targetOutcomes,
-    }),
+    target_outcomes: targetOutcomes || [],
     status,
     outcome,
     attempt_count: attempts,
@@ -5659,6 +5657,8 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
     const targetStateText = await optionalText(
       '[data-collectbox-platform="TIKTOK"]',
     );
+    const finalTarget = targetRows.last();
+    await finalTarget.scrollIntoViewIfNeeded();
     check(
       JSON.stringify(targetLabels) === JSON.stringify([
         "tiktok:LH_PH",
@@ -5679,6 +5679,7 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
         && !targetStateText.includes("collectbox_target_write_unknown")
         && !targetStateText.includes("1111111111111111")
         && !targetStateText.includes("2222222222222222")
+        && await finalTarget.isVisible()
         && await primary.isEnabled()
         && (await primary.innerText()).includes("重新导入")
         && requests.every((row) => (

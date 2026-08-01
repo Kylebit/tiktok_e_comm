@@ -137,6 +137,11 @@
     "FAILED_RETRYABLE",
     "RECONCILIATION_REQUIRED",
   ]);
+  const COLLECTBOX_TARGET_OUTCOME_STATUSES = new Set([
+    "SUCCEEDED",
+    "REPAIRED_SUCCEEDED",
+    "FAILED",
+  ]);
   const COLLECTBOX_ACTION_POLL_INTERVAL_MS = 400;
   const SHOPEE_GLOBAL_READ_TIMEOUT_MS = 180000;
   const ONECLICK_DEPENDENCY_POLICY_VERSION =
@@ -786,6 +791,7 @@
       !exactObjectKeys(row, [
         "platform",
         "targets",
+        "target_outcomes",
         "status",
         "outcome",
         "attempt_count",
@@ -807,6 +813,32 @@
       ))
       || new Set(row.targets.map((target) => target.target_label)).size
         !== row.targets.length
+      || !Array.isArray(row.target_outcomes)
+      || row.target_outcomes.some((target) => (
+        !exactObjectKeys(target, [
+          "target_label",
+          "status",
+          "error_code",
+          "detail_digest",
+        ])
+        || typeof target.target_label !== "string"
+        || !target.target_label.startsWith(
+          expectedPlatform === "TIKTOK" ? "tiktok:" : "shopee:",
+        )
+        || !COLLECTBOX_TARGET_OUTCOME_STATUSES.has(target.status)
+        || (
+          target.status === "FAILED"
+            ? (
+              typeof target.error_code !== "string"
+              || !target.error_code
+              || !oneClickDigest(target.detail_digest)
+            )
+            : target.error_code !== null || target.detail_digest !== null
+        )
+      ))
+      || new Set(
+        row.target_outcomes.map((target) => target.target_label),
+      ).size !== row.target_outcomes.length
       || !COLLECTBOX_PLATFORM_STATUSES.has(row.status)
       || !Number.isInteger(row.attempt_count)
       || row.attempt_count < 0
@@ -836,6 +868,21 @@
       throw oneClickContractError(
         "妙手采集箱平台状态不完整，请刷新后重试。",
       );
+    }
+    const selectedTargetOrder = row.targets.map(
+      (target) => target.target_label,
+    );
+    let previousTargetIndex = -1;
+    for (const outcome of row.target_outcomes) {
+      const currentTargetIndex = selectedTargetOrder.indexOf(
+        outcome.target_label,
+      );
+      if (currentTargetIndex <= previousTargetIndex) {
+        throw oneClickContractError(
+          "妙手采集箱逐站结果顺序不完整，请刷新后重试。",
+        );
+      }
+      previousTargetIndex = currentTargetIndex;
     }
     const writeClass = collectboxWriteClass(expectedPlatform);
     const successExact = row.status === "SUCCEEDED" && (
@@ -1098,6 +1145,45 @@
     return "等待导入";
   }
 
+  function collectboxTargetOutcomeState(row) {
+    if (row.status === "SUCCEEDED") return "成功";
+    if (row.status === "REPAIRED_SUCCEEDED") return "修正后成功";
+    return "失败";
+  }
+
+  function collectboxTargetFailureText(row) {
+    const messages = {
+      collectbox_target_preparation_failed:
+        "失败原因：站点草稿未完成，请检查类目、售价和必填项后重新导入。",
+      collectbox_target_write_unknown:
+        "失败原因：写入结果待确认，请检查妙手中的站点草稿后重新导入。",
+    };
+    return messages[row.error_code]
+      || "失败原因：该站点未完成，请检查妙手中的站点草稿后重新导入。";
+  }
+
+  function renderCollectboxTargetOutcomes(row) {
+    if (row.platform !== "TIKTOK" || row.target_outcomes.length === 0) {
+      return "";
+    }
+    return `
+      <div class="collectbox-target-outcomes" role="list"
+        aria-label="TikTok 逐站导入结果">
+        ${row.target_outcomes.map((target) => `
+          <div class="collectbox-target-outcome ${esc(target.status.toLowerCase())}"
+            role="listitem"
+            data-collectbox-target-outcome="${esc(target.target_label)}">
+            <span>${esc(targetDisplayName(target.target_label))}</span>
+            <strong>${esc(collectboxTargetOutcomeState(target))}</strong>
+            ${target.status === "FAILED" ? `
+              <small>${esc(collectboxTargetFailureText(target))}</small>
+            ` : ""}
+          </div>
+        `).join("")}
+      </div>
+    `;
+  }
+
   function renderCollectboxAction(data) {
     const panel = $("#collectboxActionPanel");
     const status = $("#collectboxActionStatus");
@@ -1135,6 +1221,7 @@
           data-collectbox-platform="${esc(row.platform)}">
           <strong>${row.platform === "TIKTOK" ? "TikTok" : "Shopee"}</strong>
           <span>${esc(collectboxPlatformState(row))}</span>
+          ${renderCollectboxTargetOutcomes(row)}
         </article>
       `;
     }).join("");

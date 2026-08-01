@@ -1807,9 +1807,56 @@ section { scroll-margin-top: 20px; }
   border-color: rgba(181, 88, 56, .32);
   background: rgba(181, 88, 56, .08);
 }
+.collectbox-target-outcomes {
+  display: grid;
+  gap: 6px;
+  margin-top: 4px;
+}
+.collectbox-target-outcome {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px 10px;
+  align-items: start;
+  padding: 7px 8px;
+  border: 1px solid rgba(35, 118, 107, .16);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .62);
+}
+.collectbox-target-outcome > span {
+  color: var(--ink);
+  font-size: 10px;
+}
+.collectbox-target-outcome > strong {
+  color: #1e6b58;
+  font-size: 10px;
+  text-align: right;
+}
+.collectbox-target-outcome.repaired_succeeded > strong {
+  color: #82631d;
+}
+.collectbox-target-outcome.failed {
+  border-color: rgba(181, 88, 56, .28);
+  background: rgba(181, 88, 56, .06);
+}
+.collectbox-target-outcome.failed > strong,
+.collectbox-target-outcome.failed > small {
+  color: #9a4c35;
+}
+.collectbox-target-outcome > small {
+  grid-column: 1 / -1;
+  font-size: 9px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
 @media (max-width: 520px) {
   .collectbox-action-status {
     grid-template-columns: 1fr;
+  }
+  .collectbox-target-outcome {
+    grid-template-columns: 1fr;
+  }
+  .collectbox-target-outcome > strong {
+    text-align: left;
   }
 }
 [hidden] {

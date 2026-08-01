@@ -2018,25 +2018,10 @@ def _apply_expected_for_platform(
             updated.update(
                 {
                     "isCodOpen": "0",
-                    "mainImgAppVideoId": "",
-                    "mainImgPlatformVideoId": "",
                     "sizeChart": "",
                     "sizeChartType": "",
                     "deliveryOptionSetType": str(
                         current.get("deliveryOptionSetType") or "default"
-                    ),
-                    "deliveryOptionIds": list(
-                        current.get("deliveryOptionIds") or []
-                    ),
-                    "manufacturerIds": list(
-                        current.get("manufacturerIds") or []
-                    ),
-                    "responsiblePersonIds": list(
-                        current.get("responsiblePersonIds") or []
-                    ),
-                    "productAttributes": [],
-                    "productCertifications": list(
-                        current.get("productCertifications") or []
                     ),
                 }
             )
@@ -2091,7 +2076,8 @@ def _apply_expected_for_platform(
                     ),
                     "deliveryOptionIds": list(
                         template.get("deliveryOptionIds")
-                        or updated["deliveryOptionIds"]
+                        or current.get("deliveryOptionIds")
+                        or []
                     ),
                     "manufacturerIds": list(
                         template.get("manufacturerIds") or []

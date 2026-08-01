@@ -202,6 +202,7 @@ def _plan_payload(target):
         "seller_sku": "0954",
         "product_facts": {
             "title": "Approved source title",
+            "category": {"name": "wall sticker"},
             "weight_kg": "0.2",
             "package_cm": [30, 20, 1],
             "selected_sku_keys": ["default"],
@@ -229,6 +230,182 @@ def _plan_payload(target):
             }
         },
     }
+
+
+def test_collectbox_tiktok_repairs_vendor_auto_converted_price_once_then_reads_exact():
+    """A vendor CNY-auto-price readback gets one bounded repair, not success."""
+
+    target = "tiktok:LH_MY"
+    payload = _plan_payload(target)
+    payload["pricing"]["selected_targets"][target]["store_prices"][0][
+        "list_price"
+    ] = "46"
+    calls = []
+    detail = _detail(target)
+    detail["cid"] = "600338"
+    save_count = 0
+
+    def post(path, body):
+        nonlocal detail, save_count
+        calls.append((path, deepcopy(body)))
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            return {"result": "success"}
+        if path.endswith("get_shop_collect_item_info"):
+            return {
+                "result": "success",
+                "data": {
+                    "shopCollectItemInfo": deepcopy(detail),
+                    "ossMd5": "md5",
+                },
+            }
+        if path.endswith("save_shop_collect_item_info"):
+            save_count += 1
+            detail = deepcopy(body["shopCollectItemInfo"])
+            detail["detailId"] = int(body["detailId"])
+            detail["shopId"] = str(body["shopId"])
+            detail["sourceOfferId"] = "986159122616"
+            detail["cid"] = "600338"
+            if save_count == 1:
+                # Sanitized live shape from Offer 3846511157: Miaoshou kept
+                # the common CNY 10 auto-conversion instead of approved MYR 46.
+                detail["skuMap"]["default"]["price"] = 6.05
+                detail["skuMap"]["default"]["priceIncludeVat"] = 6.05
+            return {"result": "success"}
+        raise AssertionError(path)
+
+    result = miaoshou.prepare_selected_platform_collectbox(
+        platform="tiktok",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=(target,),
+        post=post,
+    )
+
+    saves = [
+        body
+        for path, body in calls
+        if path.endswith("save_shop_collect_item_info")
+    ]
+    assert len(saves) == 2
+    assert all(
+        body["shopCollectItemInfo"]["skuMap"]["default"]["price"] == 46
+        and body["shopCollectItemInfo"]["skuMap"]["default"][
+            "priceIncludeVat"
+        ]
+        == 46
+        for body in saves
+    )
+    assert result["target_results"] == [
+        {
+            "target_label": target,
+            "status": "REPAIRED_SUCCEEDED",
+            "error_code": None,
+            "detail_digest": None,
+        }
+    ]
+    assert result["checks"]["approved_prices_exact"] is True
+    assert all("save_move_collect_task" not in path for path, _ in calls)
+
+
+def test_collectbox_tiktok_blank_gb_category_fails_target_and_continues_next_site():
+    """A blank GB cid is not guessed from another market and cannot stop MX."""
+
+    targets = ("tiktok:GB", "tiktok:MX")
+    payload = _plan_payload(targets[0])
+    payload["listing_copy"]["candidates"].append(
+        {
+            "channel": "tiktok",
+            "site": "MX",
+            "policy_check": "passed",
+            "title": "Approved MX title",
+        }
+    )
+    payload["pricing"]["selected_targets"] = {
+        "tiktok:GB": {
+            "store_prices": [
+                {"target_key": "gb", "list_price": "15", "currency": "GBP"}
+            ]
+        },
+        "tiktok:MX": {
+            "store_prices": [
+                {"target_key": "mx", "list_price": "286", "currency": "MXN"}
+            ]
+        },
+    }
+    calls = []
+    details = {
+        str(miaoshou.DIRECT_STORE_CONFIG["tiktok:GB"]["shop_id"]): {
+            **_detail("tiktok:GB"),
+            "cid": "",
+        },
+        str(miaoshou.DIRECT_STORE_CONFIG["tiktok:MX"]["shop_id"]): {
+            **_detail("tiktok:MX"),
+            "cid": "600338",
+        },
+    }
+
+    def post(path, body):
+        calls.append((path, deepcopy(body)))
+        if path == miaoshou.DETAIL_CREATE_PATH:
+            return {
+                "result": "success",
+                "data": {"platformCollectBoxDetailIdMap": {"tiktok": {"7": 78}}},
+            }
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            return {"result": "success"}
+        if path.endswith("get_shop_collect_item_info"):
+            shop_id = str(body["shopId"])
+            return {
+                "result": "success",
+                "data": {
+                    "shopCollectItemInfo": deepcopy(details[shop_id]),
+                    "ossMd5": "md5",
+                },
+            }
+        if path.endswith("save_shop_collect_item_info"):
+            shop_id = str(body["shopId"])
+            cid = details[shop_id].get("cid")
+            details[shop_id] = deepcopy(body["shopCollectItemInfo"])
+            details[shop_id]["detailId"] = int(body["detailId"])
+            details[shop_id]["shopId"] = shop_id
+            details[shop_id]["sourceOfferId"] = "986159122616"
+            # Vendor preserves blank GB category.  MX keeps its audited cid.
+            details[shop_id]["cid"] = cid
+            return {"result": "success"}
+        raise AssertionError(path)
+
+    result = miaoshou.prepare_selected_platform_collectbox(
+        platform="tiktok",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=targets,
+        post=post,
+    )
+
+    assert result["target_results"][0]["target_label"] == "tiktok:GB"
+    assert result["target_results"][0]["status"] == "FAILED"
+    assert result["target_results"][0]["error_code"] == "category_not_approved"
+    assert len(result["target_results"][0]["detail_digest"]) == 64
+    assert result["target_results"][1] == {
+        "target_label": "tiktok:MX",
+        "status": "SUCCEEDED",
+        "error_code": None,
+        "detail_digest": None,
+    }
+    claimed_shop_ids = [
+        str(body["shopIds"][0])
+        for path, body in calls
+        if path == miaoshou.SHOP_CLAIM_PATH
+    ]
+    assert claimed_shop_ids == [
+        str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])
+        for target in targets
+    ]
+    assert all("save_move_collect_task" not in path for path, _ in calls)
 
 
 def test_shopee_simple_description_preserves_approved_cnsc_master_text():

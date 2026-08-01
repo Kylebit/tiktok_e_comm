@@ -34,6 +34,44 @@ class MiaoshouBusinessRejectedError(RuntimeError):
         self.business_rejected = True
 
 
+class MiaoshouWebAuthUnavailableError(RuntimeError):
+    """The authenticated Miaoshou Web session is not configured."""
+
+
+def ensure_web_batch_price_auth_available(
+    cfg: dict[str, Any] | None = None,
+) -> None:
+    """Fail before writes unless a secure Web Cookie is available."""
+
+    try:
+        config = cfg or _load_config()
+    except (FileNotFoundError, KeyError, TypeError, ValueError) as error:
+        raise MiaoshouWebAuthUnavailableError(
+            "Miaoshou web auth is unavailable"
+        ) from error
+    cookie = str(
+        config.get("web_cookie")
+        or config.get("erp_cookie")
+        or os.environ.get("MIAOSHOU_WEB_COOKIE")
+        or ""
+    ).strip()
+    configured_headers = config.get("web_headers")
+    header_cookie = ""
+    if isinstance(configured_headers, dict):
+        header_cookie = next(
+            (
+                str(value).strip()
+                for key, value in configured_headers.items()
+                if str(key).strip().casefold() == "cookie" and value is not None
+            ),
+            "",
+        )
+    if not cookie and not header_cookie:
+        raise MiaoshouWebAuthUnavailableError(
+            "Miaoshou web auth is unavailable"
+        )
+
+
 def _load_config() -> dict[str, Any]:
     for path in CONFIG_CANDIDATES:
         if path.is_file():
@@ -216,14 +254,15 @@ def request_web(
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Miaoshou web network error: {exc}") from exc
     if not _web_ok(result):
-        raise RuntimeError(
+        raise MiaoshouBusinessRejectedError(
             str(
                 result.get("reason")
                 or result.get("msg")
                 or result.get("message")
                 or result.get("code")
                 or "Miaoshou web request failed"
-            )
+            ),
+            code=result.get("code"),
         )
     return result
 

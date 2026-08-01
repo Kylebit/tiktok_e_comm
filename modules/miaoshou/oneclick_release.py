@@ -1345,7 +1345,7 @@ def prepare_selected_platform_collectbox(
         ) from error
 
     client = post or _prepare_post()
-    price_client = web_post or _prepare_web_price_post()
+    price_client = web_post
     writes: list[str] = []
     write_count_unknown = False
     write_invocation_count = 0
@@ -1538,7 +1538,8 @@ def prepare_selected_platform_collectbox(
         )
         if repairable_price:
             try:
-                repaired = price_client(
+                active_price_client = price_client or _prepare_web_price_post()
+                repaired = active_price_client(
                     WEB_BATCH_SET_PRICE_PATH,
                     _tiktok_batch_price_body(
                         detail_id=detail_id,
@@ -2240,7 +2241,12 @@ def _prepare_post() -> Callable[[str, Mapping[str, object]], object]:
 
 
 def _prepare_web_price_post() -> Callable[[str, Mapping[str, object]], object]:
-    from modules.miaoshou.client import web_batch_set_tiktok_price
+    from modules.miaoshou.client import (
+        ensure_web_batch_price_auth_available,
+        web_batch_set_tiktok_price,
+    )
+
+    ensure_web_batch_price_auth_available()
 
     def post_price(path: str, body: Mapping[str, object]) -> object:
         if path != WEB_BATCH_SET_PRICE_PATH:

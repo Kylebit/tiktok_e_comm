@@ -10,6 +10,10 @@ from modules.miaoshou.collectbox_claim import (
     CollectBoxPlatformClaimRequest,
     claim_common_collectbox_platform,
 )
+from modules.miaoshou.client import (
+    MiaoshouWebAuthUnavailableError,
+    ensure_web_batch_price_auth_available,
+)
 from modules.miaoshou.oneclick_release import (
     MiaoshouCollectBoxPreparationError,
     prepare_selected_platform_collectbox,
@@ -110,6 +114,27 @@ def execute_collectbox_platform(request):
             code="collectbox_platform_identity_invalid",
             detail="collect-box platform identity is invalid",
         )
+    if platform == "tiktok":
+        try:
+            ensure_web_batch_price_auth_available()
+        except MiaoshouWebAuthUnavailableError:
+            return contract["CollectBoxPlatformResult"](
+                status=contract["FAILED_RETRYABLE"],
+                external_writes=(),
+                external_write_count=0,
+                receipt_evidence={
+                    "schema_version": (
+                        "collectbox-channel-auth-evidence/v1"
+                    ),
+                    "platform": platform,
+                    "web_auth_available": False,
+                },
+                error_category="AUTH",
+                error_code="miaoshou_web_auth_unavailable",
+                error_detail=(
+                    "Miaoshou Web login is required before TikTok import"
+                ),
+            )
     try:
         expected_common_digest = contract[
             "common_collectbox_identity_digest"

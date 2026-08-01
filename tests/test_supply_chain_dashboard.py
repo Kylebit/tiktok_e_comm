@@ -61,6 +61,13 @@ def test_dashboard_has_four_country_isolated_facts_and_policies():
         for row in rows:
             assert row["channels"]["tiktok"]["source"].startswith(f"TikTok {region}")
             assert row["channels"]["shopee"]["source"].startswith(f"Shopee {region}")
+            for channel in row["channels"].values():
+                assert channel["quantityBasis"] == "valid_order"
+                assert channel["economicsBasis"] in {
+                    "settlement",
+                    "settlement_unavailable",
+                }
+                assert type(channel["settlementUnits"]) is int
 
 
 def test_thailand_truncated_codes_are_normalized_without_fuzzy_merging():
@@ -139,8 +146,14 @@ def test_vietnam_and_philippines_use_complete_shopee_settlement_snapshots():
         "catalogResolvedItems": 193,
         "unmappedItemLines": 19,
     }
-    assert sum(row["channels"]["shopee"]["units"] for row in data["countries"]["VN"]) == 273
-    assert sum(row["channels"]["shopee"]["units"] for row in data["countries"]["PH"]) == 622
+    assert sum(
+        row["channels"]["shopee"]["settlementUnits"]
+        for row in data["countries"]["VN"]
+    ) == 273
+    assert sum(
+        row["channels"]["shopee"]["settlementUnits"]
+        for row in data["countries"]["PH"]
+    ) == 622
 
 
 def test_every_displayed_sku_has_a_local_main_image_and_both_channels():
@@ -235,7 +248,7 @@ def test_every_recent_30_day_sku_is_present_and_filterable_without_economic_gate
         recent_counts[region] = len(recent_rows)
         assert all((DASHBOARD / row["image"]).is_file() for row in recent_rows)
 
-    assert recent_counts == {"MY": 20, "TH": 47, "VN": 43, "PH": 76}
+    assert recent_counts == {"MY": 56, "TH": 91, "VN": 71, "PH": 99}
     assert 'filter === "RECENT30" && recent30Units > 0' in app
     assert 'status = item.kind === "first_stock" ? "FIRST_STOCK" : "REPLENISH"' in app
     assert '"REVIEW"' not in app
@@ -301,6 +314,9 @@ def test_dashboard_contains_no_remote_image_or_secret_dependency_and_marks_block
     assert "access_token" not in data_text
     assert "imageUrl" not in data_text
     assert 'channel.state !== "READY"' in app
+    assert 'channel.quantityBasis !== "valid_order"' in app
+    assert 'method: "BLOCKED_ORDER_DATA"' in app
+    assert "channel.settlementUnits" in app
     assert 'method: "COUNTRY_MISMATCH"' in app
     assert "BLOCKED_COUNTRY_SOURCE" in app
     assert "channelDemand(effectiveItem.channels.tiktok, region, \"TikTok\")" in app
@@ -312,6 +328,33 @@ def test_dashboard_contains_no_remote_image_or_secret_dependency_and_marks_block
     assert "unmappedItemLines" in app
     assert "082X" not in data_text
     assert 'typeof effectiveItem.costCny === "number"' in app
+
+
+def test_dashboard_uses_complete_new_order_snapshots_for_quantity():
+    data = _data()
+
+    assert data["quantityBasis"] == "valid_order"
+    assert data["economicsBasis"] == "settlement"
+    assert data["snapshotDate"] == "2026-08-01"
+    assert {region: len(rows) for region, rows in data["countries"].items()} == {
+        "MY": 78,
+        "TH": 97,
+        "VN": 98,
+        "PH": 133,
+    }
+    expected = {
+        "MY": {"tiktok": (692, 531), "shopee": (133, 101)},
+        "TH": {"tiktok": (2229, 1917), "shopee": (1175, 999)},
+        "VN": {"tiktok": (359, 283), "shopee": (48, 32)},
+        "PH": {"tiktok": (384, 321), "shopee": (98, 77)},
+    }
+    for region, platforms in expected.items():
+        evidence = data["config"][region]["orderDemandEvidence"]
+        for platform, (seen, included) in platforms.items():
+            assert evidence[platform]["ordersSeen"] == seen
+            assert evidence[platform]["ordersIncluded"] == included
+            assert evidence[platform]["itemLinesUnresolved"] == 0
+            assert len(evidence[platform]["digest"]) == 64
 
 
 def test_blocked_logistics_rows_have_local_manual_completion_controls():

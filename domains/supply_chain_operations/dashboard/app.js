@@ -67,6 +67,9 @@ function channelDemand(channel, region, platform) {
   if (channel.state && channel.state !== "READY") {
     return {daily: 0, method: "BLOCKED", trendClass: null, confidence: null, trend: null};
   }
+  if (channel.quantityBasis !== "valid_order") {
+    return {daily: 0, method: "BLOCKED_ORDER_DATA", trendClass: null, confidence: null, trend: null};
+  }
   if (validTrendDecision(channel.trendDecision, channel)) {
     return {
       daily: channel.trendDecision.dailyVelocity,
@@ -157,7 +160,7 @@ function calculateCountry(region) {
 
   const economics = item => {
     const channels = Object.values(item.channels);
-    const units = channels.reduce((sum, channel) => sum + number(channel.units), 0);
+    const units = channels.reduce((sum, channel) => sum + number(channel.settlementUnits), 0);
     const customerPayment = channels.reduce((sum, channel) => sum + number(channel.customerPayment), 0);
     const shipping = channels.reduce((sum, channel) => (
       sum + (typeof channel.actualShippingFee === "number" ? Math.abs(channel.actualShippingFee) : 0)
@@ -213,6 +216,9 @@ function channelBlock(label, channel, demand) {
       ? "授权不可用"
       : "SKU 映射待确认";
     return `<div class="channel-line blocked-channel"><b>${label}</b><span>${channel.state}</span><small>${reason} · 未计入需求</small></div>`;
+  }
+  if (demand.method === "BLOCKED_ORDER_DATA") {
+    return `<div class="channel-line blocked-channel"><b>${label}</b><span>BLOCKED_ORDER_DATA</span><small>缺少完整有效订单快照 · 结算数据未冒充需求</small></div>`;
   }
   const recent = channel.recent30Units === null || channel.recent30Units === undefined
     ? "无可安全拆分的近30天值"

@@ -4956,8 +4956,13 @@ function collectboxActionProjection(state) {
     writeCount = 0,
     writeClasses = [],
     error = null,
+    targets = null,
   }) => ({
     platform: name,
+    targets: targets || [{
+      target_label: name === "TIKTOK" ? "tiktok:LH_PH" : "shopee:MY",
+      status,
+    }],
     status,
     outcome,
     attempt_count: attempts,

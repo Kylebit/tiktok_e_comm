@@ -83,6 +83,11 @@ def _direct_store_config(
     cannot drift from one platform family to another after restart.
     """
 
+    draft_mode = (
+        "site"
+        if platform == "tiktok" and site in {"PH", "MY", "TH", "VN"}
+        else "shop"
+    )
     return {
         "key": key,
         "shop": shop,
@@ -90,6 +95,7 @@ def _direct_store_config(
         "region": site,
         "site": site,
         "platform": platform,
+        "draft_mode": draft_mode,
         # Every direct-store target is intentionally API-less from the
         # marketplace perspective.  Acceptance is Miaoshou submission only.
         "api": False,
@@ -100,7 +106,11 @@ def _direct_store_config(
         "get_path": (
             f"/open/v1/product/collect_box/{platform}/collect_box/"
             + (
-                "get_shop_collect_item_info"
+                (
+                    "get_site_collect_item_info"
+                    if draft_mode == "site"
+                    else "get_shop_collect_item_info"
+                )
                 if platform == "tiktok"
                 else (
                     "get_site_detail_simple_data"
@@ -112,7 +122,11 @@ def _direct_store_config(
         "save_path": (
             f"/open/v1/product/collect_box/{platform}/collect_box/"
             + (
-                "save_shop_collect_item_info"
+                (
+                    "save_site_collect_item_info"
+                    if draft_mode == "site"
+                    else "save_shop_collect_item_info"
+                )
                 if platform == "tiktok"
                 else "save_site_detail_data"
             )
@@ -1006,7 +1020,10 @@ def _dispatch_site(
             )
         _verify_site_variants(detail, expected)
         updated = _apply_expected_for_platform(
-            detail, expected, platform=platform
+            detail,
+            expected,
+            platform=platform,
+            draft_mode=str(config.get("draft_mode") or "shop"),
         )
         body = _save_body(
             platform=platform,
@@ -1015,6 +1032,7 @@ def _dispatch_site(
             shop_id=str(command["shop_id"]),
             updated=updated,
             oss_md5=oss_md5,
+            draft_mode=str(config.get("draft_mode") or "shop"),
         )
     except Exception as error:
         if occurrence_state.external_write_count:
@@ -1085,7 +1103,10 @@ def _dispatch_site(
                 target=target,
             )
             _verify_expected_detail(
-                readback, expected, platform=platform
+                readback,
+                expected,
+                platform=platform,
+                draft_mode=str(config.get("draft_mode") or "shop"),
             )
     except Exception as error:
         raise MiaoshouOneClickDispatchError(
@@ -1574,7 +1595,10 @@ def _prepare_selected_platform_collectbox(
             )
             _verify_site_variants(detail, expected)
             updated = _apply_expected_for_platform(
-                detail, expected, platform=platform
+                detail,
+                expected,
+                platform=platform,
+                draft_mode=str(config.get("draft_mode") or "shop"),
             )
             body = _save_body(
                 platform=platform,
@@ -1583,6 +1607,7 @@ def _prepare_selected_platform_collectbox(
                 shop_id=str(config["shop_id"]),
                 updated=updated,
                 oss_md5=oss_md5,
+                draft_mode=str(config.get("draft_mode") or "shop"),
             )
         except Exception:
             fail(f"{platform} draft preparation failed before update")
@@ -1621,6 +1646,7 @@ def _prepare_selected_platform_collectbox(
                 expected,
                 platform=platform,
                 strict_collectbox_tiktok=True,
+                draft_mode=str(config.get("draft_mode") or "shop"),
             )
             return detail_id, _target_result(target, "SUCCEEDED")
         except Exception:
@@ -1710,6 +1736,7 @@ def _prepare_selected_platform_collectbox(
                     expected,
                     platform=platform,
                     strict_collectbox_tiktok=True,
+                    draft_mode=str(config.get("draft_mode") or "shop"),
                 )
                 return detail_id, _target_result(
                     target, "REPAIRED_SUCCEEDED"
@@ -1819,8 +1846,20 @@ def _save_body(
     shop_id: str,
     updated: Mapping[str, object],
     oss_md5: str,
+    draft_mode: str = "shop",
 ) -> dict[str, object]:
     if platform == "tiktok":
+        if draft_mode == "site":
+            return {
+                "detailId": detail_id,
+                "site": site,
+                "siteCollectItemInfo": dict(updated),
+                "ossMd5": oss_md5,
+            }
+        if draft_mode != "shop":
+            raise MiaoshouOneClickPreDispatchError(
+                "TikTok draft mode is invalid"
+            )
         return {
             "detailId": detail_id,
             "shopId": shop_id,
@@ -1856,9 +1895,39 @@ def _apply_expected_for_platform(
     expected: Mapping[str, object],
     *,
     platform: str,
+    draft_mode: str = "shop",
 ) -> dict[str, object]:
     if platform in {"tiktok", "shopee"}:
-        return _apply_expected(current, expected)
+        updated = _apply_expected(current, expected)
+        if platform == "tiktok" and draft_mode == "site":
+            shop_id = str(expected["shop_id"])
+            current_rows = current.get("collectBoxDetailShopList")
+            rows = (
+                current_rows
+                if isinstance(current_rows, list)
+                and all(isinstance(row, Mapping) for row in current_rows)
+                else []
+            )
+            matching = [
+                dict(row)
+                for row in rows
+                if str(row.get("shopId") or "") == shop_id
+            ]
+            template = matching[0] if len(matching) == 1 else {}
+            template.update(
+                {
+                    "shopId": shop_id,
+                    "site": str(expected["region"]),
+                    "brandId": str(template.get("brandId") or "0"),
+                    "brandName": str(
+                        template.get("brandName") or "No Brand"
+                    ),
+                }
+            )
+            updated["site"] = str(expected["region"])
+            updated["editModel"] = "site"
+            updated["collectBoxDetailShopList"] = [template]
+        return updated
     if platform != "ozon":
         raise MiaoshouOneClickPreDispatchError(
             "Miaoshou platform detail is unsupported"
@@ -1961,6 +2030,7 @@ def _verify_expected_detail(
     *,
     platform: str = "tiktok",
     strict_collectbox_tiktok: bool = False,
+    draft_mode: str = "shop",
 ) -> None:
     sku_map = _sku_map(detail)
     bindings = _approved_variant_key_bindings(detail, expected)
@@ -2060,6 +2130,19 @@ def _verify_expected_detail(
             type(expected_category) is str
             and bool(expected_category)
             and str(detail.get("cid") or "") == expected_category
+        )
+    if platform == "tiktok" and draft_mode == "site":
+        shop_rows = detail.get("collectBoxDetailShopList")
+        checks.extend(
+            [
+                str(detail.get("site") or "") == str(expected["region"]),
+                str(detail.get("editModel") or "") == "site",
+                isinstance(shop_rows, list)
+                and len(shop_rows) == 1
+                and isinstance(shop_rows[0], Mapping)
+                and str(shop_rows[0].get("shopId") or "")
+                == str(expected["shop_id"]),
+            ]
         )
     if not all(checks):
         raise MiaoshouOneClickPreDispatchError(
@@ -2442,9 +2525,24 @@ def _read_shop(
         if isinstance(config, Mapping)
         else SHOP_GET_PATH
     )
-    if platform == "tiktok":
+    draft_mode = (
+        str(config.get("draft_mode") or "shop")
+        if isinstance(config, Mapping)
+        else "shop"
+    )
+    if platform == "tiktok" and draft_mode == "site":
+        body = {
+            "detailId": int(detail_id),
+            "site": str(config["site"]),
+        }
+        data_field = "siteCollectItemInfo"
+    elif platform == "tiktok" and draft_mode == "shop":
         body = {"detailId": int(detail_id), "shopId": str(shop_id)}
         data_field = "shopCollectItemInfo"
+    elif platform == "tiktok":
+        raise MiaoshouOneClickPreDispatchError(
+            "TikTok draft mode is invalid"
+        )
     elif platform == "shopee":
         body = {"detailId": int(detail_id), "site": str(config["site"])}
         data_field = "siteDetailSimpleData"
@@ -2970,6 +3068,9 @@ def _detail_snapshot(detail: Mapping[str, object]) -> dict[str, object]:
         or detail.get("collectBoxDetailId")
         or detail.get("commonCollectBoxDetailId"),
         "shop_id": detail.get("shopId"),
+        "site": detail.get("site"),
+        "edit_model": detail.get("editModel"),
+        "site_shops": detail.get("collectBoxDetailShopList"),
         "source_offer_id": detail.get("sourceOfferId")
         or detail.get("offerId")
         or detail.get("sourceProductId"),

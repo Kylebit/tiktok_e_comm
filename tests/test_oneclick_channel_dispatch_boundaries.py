@@ -111,7 +111,7 @@ def _miaoshou_expected(*, target="tiktok:MX", api_less=True):
 
 
 def _miaoshou_detail(expected, *, detail_id=77):
-    return {
+    detail = {
         "detailId": detail_id,
         "shopId": expected["shop_id"],
         "sourceOfferId": expected["source_offer_id"],
@@ -136,6 +136,18 @@ def _miaoshou_detail(expected, *, detail_id=77):
             }
         },
     }
+    config = miaoshou.DIRECT_STORE_CONFIG[expected["target_label"]]
+    if config["draft_mode"] == "site":
+        detail.pop("shopId")
+        detail["site"] = expected["region"]
+        detail["editModel"] = "site"
+        detail["collectBoxDetailShopList"] = [
+            {
+                "shopId": expected["shop_id"],
+                "site": expected["region"],
+            }
+        ]
+    return detail
 
 
 def _miaoshou_command(*, target="tiktok:MX", action="USE_EXISTING"):
@@ -164,6 +176,9 @@ class MiaoshouFake:
     def __init__(self, command, *, fail_shop_read=False):
         self.command = command
         self.expected = command["expected"]
+        self.config = miaoshou.DIRECT_STORE_CONFIG[
+            str(command["target_label"])
+        ]
         self.detail = _miaoshou_detail(self.expected)
         self.common_detail = deepcopy(self.detail)
         self.fail_shop_read = fail_shop_read
@@ -216,20 +231,34 @@ class MiaoshouFake:
             }
         if path == miaoshou.SHOP_CLAIM_PATH:
             return {"result": "success"}
-        if path == miaoshou.SHOP_GET_PATH:
+        if path == self.config["get_path"]:
             if self.fail_shop_read:
                 raise TimeoutError("read after claim failed")
+            field = (
+                "siteCollectItemInfo"
+                if self.config["draft_mode"] == "site"
+                else "shopCollectItemInfo"
+            )
             return {
                 "result": "success",
                 "data": {
-                    "shopCollectItemInfo": deepcopy(self.detail),
+                    field: deepcopy(self.detail),
                     "ossMd5": "fixture-md5",
                 },
             }
-        if path == miaoshou.SHOP_SAVE_PATH:
-            self.detail = deepcopy(body["shopCollectItemInfo"])
+        if path == self.config["save_path"]:
+            field = (
+                "siteCollectItemInfo"
+                if self.config["draft_mode"] == "site"
+                else "shopCollectItemInfo"
+            )
+            self.detail = deepcopy(body[field])
             self.detail["detailId"] = 77
-            self.detail["shopId"] = self.expected["shop_id"]
+            if self.config["draft_mode"] == "site":
+                self.detail["site"] = self.expected["region"]
+                self.detail["editModel"] = "site"
+            else:
+                self.detail["shopId"] = self.expected["shop_id"]
             self.detail["sourceOfferId"] = self.expected["source_offer_id"]
             return {"result": "success"}
         if path == miaoshou.PUBLISH_PATH:

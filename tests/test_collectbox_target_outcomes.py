@@ -38,6 +38,7 @@ def _canonical_digest(value):
 
 def test_real_channel_adapter_preserves_six_tiktok_target_outcomes(
     monkeypatch,
+    tmp_path,
 ):
     from domains.channel_operations import collectbox_action_adapters
 
@@ -133,7 +134,10 @@ def test_real_channel_adapter_preserves_six_tiktok_target_outcomes(
             "platform_detail_count": len(targets),
             "external_writes": (
                 "miaoshou:collectbox:claim:tiktok",
-                "miaoshou:collectbox:tiktok:detail:update",
+                *(
+                    f"miaoshou:collectbox:tiktok:detail:update:{target}"
+                    for target in targets
+                ),
             ),
             "external_write_count": 7,
             "target_results": prepared_outcomes,
@@ -168,6 +172,46 @@ def test_real_channel_adapter_preserves_six_tiktok_target_outcomes(
     assert [outcome.public_payload() for outcome in result.target_outcomes] == (
         prepared_outcomes
     )
+
+    def store_adapter(store_request):
+        if store_request.platform == "SHOPEE":
+            return _shopee_already_present()
+        return collectbox_action_adapters.execute_collectbox_platform(
+            store_request
+        )
+
+    projection = CollectBoxActionStore(
+        tmp_path / "real-adapter-target-outcomes.db"
+    ).start(
+        plan={
+            "plan_id": plan_id,
+            "product_id": "3846511157",
+            "payload_digest": "a" * 64,
+            "payload": {"product_revision": 31},
+            "targets": list(targets),
+            "status": "APPROVED",
+            "approval": {
+                "status": "APPROVED",
+                "approved_by": "Kyle",
+            },
+        },
+        common_collect_box_detail_id="3846511157",
+        adapter=store_adapter,
+        now=lambda: 100.0,
+        wait=lambda _seconds: None,
+    )
+    tiktok = next(
+        row
+        for row in projection["action"]["platforms"]
+        if row["platform"] == "TIKTOK"
+    )
+    assert tiktok["target_outcomes"] == prepared_outcomes
+    assert [row["target_label"] for row in tiktok["target_outcomes"]] == list(
+        targets
+    )
+    serialized = json.dumps(projection, ensure_ascii=False)
+    assert "redacted price mismatch" not in serialized
+    assert "redacted category evidence missing" not in serialized
 
 
 def _plan():

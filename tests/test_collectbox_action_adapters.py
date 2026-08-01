@@ -28,6 +28,8 @@ def _canonical_digest(value: object) -> str:
 def contract(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
     module = types.ModuleType("shared_platform.collectbox_action")
     module.SUCCEEDED = "SUCCEEDED"
+    module.REPAIRED_SUCCEEDED = "REPAIRED_SUCCEEDED"
+    module.FAILED = "FAILED"
     module.FAILED_RETRYABLE = "FAILED_RETRYABLE"
     module.RECONCILIATION_REQUIRED = "RECONCILIATION_REQUIRED"
     module.IMPORTED = "IMPORTED"
@@ -56,6 +58,13 @@ def contract(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
         approved_targets: tuple[str, ...]
 
     @dataclass(frozen=True)
+    class CollectBoxTargetOutcome:
+        target_label: str
+        status: str
+        error_code: str | None = None
+        detail_digest: str | None = None
+
+    @dataclass(frozen=True)
     class CollectBoxPlatformResult:
         status: str
         outcome: str | None = None
@@ -67,10 +76,12 @@ def contract(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
         error_code: str | None = None
         error_detail: str | None = None
         target_statuses: tuple[tuple[str, str], ...] = ()
+        target_outcomes: tuple[CollectBoxTargetOutcome, ...] = ()
 
     module.common_collectbox_identity_digest = common_collectbox_identity_digest
     module.CollectBoxPlatformRequest = CollectBoxPlatformRequest
     module.CollectBoxPlatformResult = CollectBoxPlatformResult
+    module.CollectBoxTargetOutcome = CollectBoxTargetOutcome
     monkeypatch.setitem(sys.modules, module.__name__, module)
     from domains.channel_operations import collectbox_action_adapters
 

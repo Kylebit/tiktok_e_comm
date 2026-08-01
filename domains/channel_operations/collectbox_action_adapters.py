@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from modules.miaoshou.collectbox_claim import (
     ACCEPTED,
     ALREADY_PRESENT as CLAIM_ALREADY_PRESENT,
@@ -17,27 +19,63 @@ from modules.miaoshou.oneclick_release import (
 def _contract():
     from shared_platform.collectbox_action import (
         ALREADY_PRESENT,
+        FAILED,
         FAILED_RETRYABLE,
         IMPORTED,
         RECONCILIATION_REQUIRED,
+        REPAIRED_SUCCEEDED,
         SUCCEEDED,
         CollectBoxPlatformRequest,
         CollectBoxPlatformResult,
+        CollectBoxTargetOutcome,
         common_collectbox_identity_digest,
     )
 
     return {
         "ALREADY_PRESENT": ALREADY_PRESENT,
+        "FAILED": FAILED,
         "FAILED_RETRYABLE": FAILED_RETRYABLE,
         "IMPORTED": IMPORTED,
         "RECONCILIATION_REQUIRED": RECONCILIATION_REQUIRED,
+        "REPAIRED_SUCCEEDED": REPAIRED_SUCCEEDED,
         "SUCCEEDED": SUCCEEDED,
         "CollectBoxPlatformRequest": CollectBoxPlatformRequest,
         "CollectBoxPlatformResult": CollectBoxPlatformResult,
+        "CollectBoxTargetOutcome": CollectBoxTargetOutcome,
         "common_collectbox_identity_digest": (
             common_collectbox_identity_digest
         ),
     }
+
+
+def _typed_target_outcomes(contract, prepared_targets, expected_targets):
+    if not isinstance(prepared_targets, list):
+        return ()
+    if not prepared_targets:
+        raise ValueError("prepared target outcomes are empty")
+    required_keys = {
+        "target_label",
+        "status",
+        "error_code",
+        "detail_digest",
+    }
+    if any(
+        not isinstance(row, Mapping) or set(row) != required_keys
+        for row in prepared_targets
+    ):
+        raise ValueError("prepared target outcomes are invalid")
+    outcomes = tuple(
+        contract["CollectBoxTargetOutcome"](
+            target_label=row["target_label"],
+            status=row["status"],
+            error_code=row["error_code"],
+            detail_digest=row["detail_digest"],
+        )
+        for row in prepared_targets
+    )
+    if tuple(outcome.target_label for outcome in outcomes) != expected_targets:
+        raise ValueError("prepared target outcome identity drifted")
+    return outcomes
 
 
 def _identity_failure(contract, *, code: str, detail: str):
@@ -182,27 +220,33 @@ def execute_collectbox_platform(request):
     raw_count = prepared["external_write_count"]
     count = int(raw_count) if raw_count is not None else None
     prepared_targets = prepared.get("target_results")
+    selected_targets = tuple(
+        target
+        for target in request.approved_targets
+        if target.startswith(f"{platform}:")
+    )
+    target_outcomes = _typed_target_outcomes(
+        contract, prepared_targets, selected_targets
+    )
     target_statuses = (
-        tuple(
-            (
-                row["target_label"],
-                (
-                    "SUCCEEDED"
-                    if row["status"]
-                    in {"SUCCEEDED", "REPAIRED_SUCCEEDED"}
-                    else "RECONCILIATION_REQUIRED"
-                ),
-            )
-            for row in prepared_targets
-        )
-        if isinstance(prepared_targets, list)
+        ()
+        if target_outcomes
         else tuple(
             (target, "SUCCEEDED")
-            for target in request.approved_targets
-            if target.startswith(f"{platform}:")
+            for target in selected_targets
         )
     )
-    partial = any(status != "SUCCEEDED" for _target, status in target_statuses)
+    partial = (
+        any(
+            outcome.status == contract["FAILED"]
+            for outcome in target_outcomes
+        )
+        if target_outcomes
+        else any(
+            status != contract["SUCCEEDED"]
+            for _target, status in target_statuses
+        )
+    )
     if partial:
         status = (
             contract["FAILED_RETRYABLE"]
@@ -214,6 +258,7 @@ def execute_collectbox_platform(request):
             external_writes=writes,
             external_write_count=count,
             target_statuses=target_statuses,
+            target_outcomes=target_outcomes,
             receipt_evidence={
                 "schema_version": "collectbox-platform-preparation-evidence/v1",
                 "platform": platform,
@@ -241,6 +286,7 @@ def execute_collectbox_platform(request):
         external_writes=writes,
         external_write_count=count,
         target_statuses=target_statuses,
+        target_outcomes=target_outcomes,
         receipt_evidence={
             "schema_version": "collectbox-platform-preparation-evidence/v1",
             "platform": platform,

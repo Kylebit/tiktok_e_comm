@@ -535,6 +535,220 @@ def test_collectbox_tiktok_failed_bounded_price_repair_continues_next_site():
     assert all("save_move_collect_task" not in path for path, _ in calls)
 
 
+LIVE_SIX_TIKTOK_TARGETS = (
+    "tiktok:LH_PH",
+    "tiktok:LH_MY",
+    "tiktok:LH_TH",
+    "tiktok:LH_VN",
+    "tiktok:MX",
+    "tiktok:GB",
+)
+
+
+def _run_live_six_site_tiktok_drift(*, category_decisions):
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    approved_prices = {
+        "tiktok:LH_PH": ("523", "PHP"),
+        "tiktok:LH_MY": ("46", "MYR"),
+        "tiktok:LH_TH": ("386", "THB"),
+        "tiktok:LH_VN": ("408000", "VND"),
+        "tiktok:MX": ("286", "MXN"),
+        "tiktok:GB": ("15", "GBP"),
+    }
+    vendor_cny10_prices = {
+        "tiktok:LH_PH": 90.66,
+        "tiktok:LH_MY": 6.05,
+        "tiktok:LH_TH": 49.47,
+        "tiktok:LH_VN": 38939.8,
+        "tiktok:MX": 25.66,
+        "tiktok:GB": 1.1,
+    }
+    observed_categories = {
+        target: ("" if target in {"tiktok:LH_VN", "tiktok:GB"} else "600338")
+        for target in targets
+    }
+
+    payload = _plan_payload(targets[0])
+    payload["listing_copy"]["candidates"] = [
+        {
+            "channel": "tiktok",
+            "site": str(miaoshou.DIRECT_STORE_CONFIG[target]["region"]),
+            "policy_check": "passed",
+            "title": f"Approved {target} title",
+        }
+        for target in targets
+    ]
+    payload["pricing"]["selected_targets"] = {
+        target: {
+            "store_prices": [
+                {
+                    "target_key": str(
+                        miaoshou.DIRECT_STORE_CONFIG[target]["key"]
+                    ),
+                    "list_price": price,
+                    "currency": currency,
+                }
+            ]
+        }
+        for target, (price, currency) in approved_prices.items()
+    }
+    payload["approved_tiktok_category_decisions"] = category_decisions
+
+    details = {}
+    target_by_shop_id = {}
+    for index, target in enumerate(targets):
+        shop_id = str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])
+        detail = _detail(target)
+        detail["detailId"] = 77 + index
+        detail["cid"] = observed_categories[target]
+        details[shop_id] = detail
+        target_by_shop_id[shop_id] = target
+
+    calls = []
+    save_counts = {target: 0 for target in targets}
+    save_bodies = {target: [] for target in targets}
+    create_count = 0
+
+    def post(path, body):
+        nonlocal create_count
+        calls.append((path, deepcopy(body)))
+        if path == miaoshou.DETAIL_CREATE_PATH:
+            create_count += 1
+            return {
+                "result": "success",
+                "data": {
+                    "platformCollectBoxDetailIdMap": {
+                        "tiktok": {"7": 77 + create_count}
+                    }
+                },
+            }
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            return {"result": "success"}
+        if path.endswith("get_shop_collect_item_info"):
+            shop_id = str(body["shopId"])
+            return {
+                "result": "success",
+                "data": {
+                    "shopCollectItemInfo": deepcopy(details[shop_id]),
+                    "ossMd5": f"md5-{len(calls)}",
+                },
+            }
+        if path.endswith("save_shop_collect_item_info"):
+            shop_id = str(body["shopId"])
+            target = target_by_shop_id[shop_id]
+            save_counts[target] += 1
+            save_bodies[target].append(deepcopy(body))
+            details[shop_id] = deepcopy(body["shopCollectItemInfo"])
+            details[shop_id]["detailId"] = int(body["detailId"])
+            details[shop_id]["shopId"] = shop_id
+            details[shop_id]["sourceOfferId"] = "986159122616"
+            repeated_original_payload = (
+                save_counts[target] == 1
+                or body["shopCollectItemInfo"]
+                == save_bodies[target][0]["shopCollectItemInfo"]
+            )
+            if repeated_original_payload:
+                details[shop_id]["cid"] = observed_categories[target]
+                converted = vendor_cny10_prices[target]
+                details[shop_id]["skuMap"]["default"]["price"] = converted
+                details[shop_id]["skuMap"]["default"][
+                    "priceIncludeVat"
+                ] = converted
+            return {"result": "success"}
+        raise AssertionError(path)
+
+    result = miaoshou.prepare_selected_platform_collectbox(
+        platform="tiktok",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=targets,
+        post=post,
+    )
+    return result, calls, save_counts, save_bodies
+
+
+def test_collectbox_tiktok_live_six_site_uses_effective_repair_and_continues():
+    """A repair must change the rejected payload and process all six sites."""
+
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    result, calls, save_counts, save_bodies = _run_live_six_site_tiktok_drift(
+        category_decisions={
+            target: {
+                "category_id": "600338",
+                "evidence_digest": "d" * 64,
+            }
+            for target in targets
+        }
+    )
+
+    outcomes = {
+        row["target_label"]: row for row in result["target_results"]
+    }
+    assert tuple(row["target_label"] for row in result["target_results"]) == targets
+    assert save_counts == {target: 2 for target in targets}
+    claimed_shop_ids = [
+        str(body["shopIds"][0])
+        for path, body in calls
+        if path == miaoshou.SHOP_CLAIM_PATH
+    ]
+    assert claimed_shop_ids == [
+        str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])
+        for target in targets
+    ]
+    assert all("save_move_collect_task" not in path for path, _ in calls)
+    assert all(
+        save_bodies[target][1]["shopCollectItemInfo"]
+        != save_bodies[target][0]["shopCollectItemInfo"]
+        for target in targets
+    ), "bounded repair repeated the vendor-rejected payload unchanged"
+    assert {
+        target: (outcomes[target]["status"], outcomes[target]["error_code"])
+        for target in targets
+    } == {
+        "tiktok:LH_PH": ("REPAIRED_SUCCEEDED", None),
+        "tiktok:LH_MY": ("REPAIRED_SUCCEEDED", None),
+        "tiktok:LH_TH": ("REPAIRED_SUCCEEDED", None),
+        "tiktok:LH_VN": ("REPAIRED_SUCCEEDED", None),
+        "tiktok:MX": ("REPAIRED_SUCCEEDED", None),
+        "tiktok:GB": ("REPAIRED_SUCCEEDED", None),
+    }
+    assert all(
+        outcomes[target]["detail_digest"] is None
+        for target in targets
+    )
+
+
+def test_collectbox_tiktok_live_six_site_missing_category_approval_is_local():
+    """Missing approvals fail every site without aborting the whole batch."""
+
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    result, calls, save_counts, _ = _run_live_six_site_tiktok_drift(
+        category_decisions={}
+    )
+
+    assert tuple(row["target_label"] for row in result["target_results"]) == targets
+    assert save_counts == {target: 2 for target in targets}
+    assert [
+        str(body["shopIds"][0])
+        for path, body in calls
+        if path == miaoshou.SHOP_CLAIM_PATH
+    ] == [
+        str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])
+        for target in targets
+    ]
+    assert {
+        target: (row["status"], row["error_code"])
+        for target, row in (
+            (row["target_label"], row) for row in result["target_results"]
+        )
+    } == {
+        target: ("FAILED", "category_not_approved") for target in targets
+    }
+    assert all("save_move_collect_task" not in path for path, _ in calls)
+
+
 def test_shopee_simple_description_preserves_approved_cnsc_master_text():
     description = (
         "Product overview\n"

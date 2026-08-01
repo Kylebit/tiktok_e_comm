@@ -26,6 +26,19 @@ Current user-confirmed Seaya PH8807 mappings:
 
 Calculate per country and exact SKU. TikTok and Shopee may share one local warehouse within a country, but inventory and demand never cross countries. A channel fact whose declared source country differs from the decision country is ineligible. Cross-country templates may contribute presentation metadata only; discard their demand, inventory, warehouse binding, and aliases.
 
+Use two immutable evidence ledgers:
+
+- `quantity_basis=valid_order`: eligible paid or platform-confirmed order lines, using the order event time. Each fact carries country, channel, exact SKU, ordered units, lifecycle filter, window, captured-at time, completeness, source identity, and digest.
+- `economics_basis=settlement`: settled customer payment, tax, fees, and observed cross-border freight, using the settlement event time. Each fact carries its own window, captured-at time, completeness, source identity, and digest.
+
+Never substitute one ledger for the other. Settlement, escrow-release, payout, and remittance dates are ineligible for 7/15/30-day replenishment velocity because their lag distorts recent demand. Order facts are ineligible for realized savings unless the corresponding monetary fields are settled. If a current TikTok or Shopee channel has no complete eligible order snapshot, return `BLOCKED_ORDER_DATA` for quantity while retaining independently valid settlement economics.
+
+Eligible order status policy:
+
+- include paid or platform-confirmed orders, including ready-to-ship, shipped, and completed;
+- exclude unpaid, cancelled, fraudulent, failed, and test orders;
+- keep refunds and returns as a separate adjustment with explicit lineage; do not silently wait for settlement or subtract an undocumented rate.
+
 The combined MY/TH/VN/PH summary is a projection over completed country decisions, not a new inventory calculation. Include a row only when its country-specific `recommended` value is a built-in positive number strictly greater than 10. Keep country + SKU as the row identity; do not merge quantities for matching SKUs across countries.
 
 When recent 30-day demand exists:
@@ -53,9 +66,11 @@ Unavailable or pending channels remain visible and contribute no fabricated unit
 
 Every exact SKU with a positive `recent30Units` value in at least one READY channel must remain visible in the dashboard. Missing dimensions, weight, or cost must not remove the demand row or block the quantity.
 
-For Shopee settlement demand, a complete pull means every listed order page and every escrow detail succeeded for the declared window. Aggregate `quantity_purchased`, discounted customer payment, and allocated actual shipping fee by exact SKU. Approved channel aliases are only four digits, `77+four digits`, and `99+four digits`. Any other model SKU must resolve through the exact Shopee `(item_id, model_id)` catalog key. Unresolved lines remain excluded evidence and must never be matched by title or image similarity.
+For Shopee settlement economics, a complete pull means every listed settlement page and every escrow detail succeeded for the declared window. Aggregate discounted customer payment and allocated actual shipping fee by exact SKU, but never feed its `quantity_purchased` or release timestamp into replenishment demand. Approved channel aliases are only four digits, `77+four digits`, and `99+four digits`. Any other model SKU must resolve through the exact Shopee `(item_id, model_id)` catalog key. Unresolved lines remain excluded evidence and must never be matched by title or image similarity.
 
 ## Quantity
+
+Quantity is executable only when every in-scope channel is backed by a complete `quantity_basis=valid_order` snapshot. Settlement-only history may be displayed as legacy context but cannot produce a recommended quantity.
 
 - `lead_demand = ceil(v × lead_days)`
 - `arrival_stock = max(0, available + trusted_inbound - lead_demand)`

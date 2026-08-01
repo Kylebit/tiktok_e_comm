@@ -111,8 +111,25 @@ def test_skill_has_ui_metadata_and_hard_no_truncation_rule():
     assert "apply_shopee_demand.py" in {
         path.name for path in (SKILL / "scripts").iterdir()
     }
+    assert "install_local_skill.ps1" in {
+        path.name for path in (SKILL / "scripts").iterdir()
+    }
     assert "verify_dashboard_sync.py --check" in skill
     assert "$manage-seaya-replenishment" in ui
+
+
+def test_skill_separates_order_quantity_from_settlement_economics():
+    skill = (SKILL / "SKILL.md").read_text(encoding="utf-8")
+    contract = (SKILL / "references" / "decision-contract.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "quantity_basis=valid_order" in skill
+    assert "economics_basis=settlement" in skill
+    assert "BLOCKED_ORDER_DATA" in skill
+    assert "Never use settlement rows" in skill
+    assert "Settlement-only history" in contract
+    assert "escrow-release" in contract
 
 
 def test_dashboard_and_skill_sync_manifest_is_current():

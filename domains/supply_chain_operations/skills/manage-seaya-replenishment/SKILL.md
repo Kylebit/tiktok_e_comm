@@ -1,6 +1,6 @@
 ---
 name: manage-seaya-replenishment
-description: Audit Seaya/雅仓 inventory and inbound supply, combine TikTok and Shopee SKU demand, calculate country-level replenishment and first-stock recommendations, maintain the local supply-chain dashboard, and diagnose shortage orders. Use for Seaya inventory reads, complete SKU mapping, MY/TH/VN/PH replenishment, logistics data completion, landed-cost comparisons, or any update to domains/supply_chain_operations/dashboard.
+description: Audit Seaya/雅仓 inventory and inbound supply, combine valid TikTok and Shopee order demand, use settlement facts only for savings, calculate country-level replenishment and first-stock recommendations, maintain the local supply-chain dashboard, and diagnose shortage orders. Use for Seaya inventory reads, complete SKU mapping, MY/TH/VN/PH replenishment, logistics data completion, landed-cost comparisons, or any update to domains/supply_chain_operations/dashboard.
 ---
 
 # Manage Seaya Replenishment
@@ -25,11 +25,11 @@ Run `scripts/validate_inventory_snapshot.py SNAPSHOT.json` before consuming a ne
 2. Read inventory from the strongest available current source: audited read-only API, logged-in Seaya browser page, or official export.
 3. Capture complete identity and inventory fields. Read `references/decision-contract.md`.
 4. Reconcile exact aliases. Preserve source identifiers and mapping evidence.
-5. Join demand by exact country and SKU. Combine TikTok and Shopee only within the same country. Distinguish `PENDING_REFRESH` (mapping and refresh credential exist, access token expired, pull not run) from `BLOCKED_AUTH`; never interpret missing demand as zero. After a successful complete pull, every included channel fact must be `READY`, retain its exact window and coverage evidence, and replace pending placeholders rather than layering data on top of them.
+5. Build two separate ledgers by exact country and SKU: valid order facts determine quantity; settlement facts determine economics. Never use settlement rows, released escrow rows, or payout timing as demand velocity. Combine TikTok and Shopee order demand only within the same country. Distinguish `PENDING_REFRESH` (mapping and refresh credential exist, access token expired, pull not run) from `BLOCKED_AUTH`; never interpret missing order demand as zero. After a successful complete pull, every included channel fact must be `READY`, retain its exact event-time window and coverage evidence, and replace pending placeholders rather than layering data on top of them.
    - Reuse another country's row only for product presentation metadata such as name, image, dimensions, weight, and cost. Never copy its channel demand, inventory, warehouse binding, or SKU aliases.
    - Require each channel source identity to match the target country before calculation. Replace a mismatched country fact with an explicit local `no_sku_fact` record; never treat it as local demand.
 6. For Shopee demand, accept a canonical 4-digit SKU or the explicitly approved `77xxxx` / `99xxxx` aliases. When a model SKU has another shape, resolve it only through an exact `(item_id, model_id) -> catalog seller_sku` relation. Never use title or image similarity. Keep unresolved item lines visible as excluded evidence.
-7. Calculate lead-time demand, arrival stock, target coverage, recommended quantity, fixed head freight, handling cost, and known savings. Apply the current user-approved head-freight policy of CNY 1 per unit to every country, site, and SKU.
+7. Calculate lead-time demand, arrival stock, target coverage, and recommended quantity from eligible orders plus Seaya supply. Calculate fixed head freight, handling cost, and known savings from settlement economics. Apply the current user-approved head-freight policy of CNY 1 per unit to every country, site, and SKU.
 8. Keep quantity recommendations fail-closed when exact identity, inventory, demand, country lead-time policy, or the approved fixed-freight policy is unavailable. Dimensions, weight, cost, and profitability are presentation or execution-readiness evidence; they must not hide a SKU or block an otherwise valid demand-and-inventory quantity recommendation.
 9. Update the local dashboard without external business writes.
 10. Verify each country, SKU main image, source evidence, blockers, and batch totals in a browser.
@@ -44,6 +44,16 @@ Run `scripts/validate_inventory_snapshot.py SNAPSHOT.json` before consuming a ne
 - Provide a four-country summary view that first calculates each country independently and then includes only rows whose recommended quantity is strictly greater than 10. Preserve the country identity on every row; never aggregate the same SKU across countries.
 - When logistics fields are incomplete, display the SKU, image, demand, inventory and calculated quantity. Mark only the affected output as pending: dimensions affect volume, weight affects local handling and net benefit, and cost affects working capital.
 - Do not use known benefit as a readiness gate. Display positive or negative benefit alongside the demand-and-inventory recommendation.
+
+## Separate quantity from economics
+
+- Treat paid or platform-confirmed orders as demand only when their event time, country, channel, exact SKU, quantity, and lifecycle status are auditable.
+- Exclude unpaid, cancelled, fraudulent, failed, and test orders. Track refunds and returns separately; apply an explicit approved adjustment instead of waiting for settlement.
+- Use order creation/payment/confirmation event time for 7/15/30-day demand windows. Never use settlement, escrow release, payout, or remittance time for replenishment velocity.
+- Calculate quantity as `eligible order demand + Seaya available/trusted inbound`. Settlement facts must not contribute units to this calculation.
+- Calculate savings from settlement facts such as customer paid amount, tax, platform deductions, and observed cross-border freight. Order facts must not fabricate settled money.
+- Persist `quantity_basis=valid_order` and `economics_basis=settlement` with independent source identity, captured-at time, window, completeness, and digest.
+- When a current channel has settlement data but no eligible order snapshot, keep its economics visible and set quantity to `BLOCKED_ORDER_DATA`; do not present settlement-derived quantities as recommendations.
 
 ## Forecast volatile demand
 
@@ -68,6 +78,8 @@ Run `scripts/validate_inventory_snapshot.py SNAPSHOT.json` before consuming a ne
 
 Treat dashboard calculations, fields, policies, normalization, demand-source behavior, this skill, and its references as one change set.
 
+The installed Codex skill must be a directory junction to this repository folder, created by `scripts/install_local_skill.ps1`. Do not maintain a copied installation: the junction makes committed source updates immediately visible to Codex. Refuse to overwrite an unrelated existing skill path.
+
 After any such update:
 
 1. Update `SKILL.md` and the relevant reference.
@@ -78,7 +90,8 @@ python scripts/verify_dashboard_sync.py --update
 python scripts/verify_dashboard_sync.py --check
 ```
 
-3. Commit the dashboard and skill changes together.
+3. Run `scripts/install_local_skill.ps1` to verify the linked installation still targets this canonical source.
+4. Commit the dashboard and skill changes together.
 
 Do not declare the feature complete when the sync check fails.
 

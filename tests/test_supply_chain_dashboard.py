@@ -197,6 +197,8 @@ def test_dashboard_loads_facts_before_calculation_code_and_has_four_country_tabs
     assert 'id="firstStockRows"' not in html
     assert '<option value="RECENT30">近30天有动销</option>' in html
     assert "待核经济性" not in html
+    assert "正式建议件数只使用 TikTok 与 Shopee 的有效订单事实" in html
+    assert "结算口径销量仅为旧版参考，不构成正式补货数量" in html
 
 
 def test_dashboard_has_strict_four_country_over_ten_summary():

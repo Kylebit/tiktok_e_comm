@@ -891,7 +891,7 @@
           Number.isInteger(row.external_writes.count)
           && row.external_writes.count > 0
           && row.external_writes.count
-            === row.external_writes.classes.length
+            >= row.external_writes.classes.length
           && row.external_writes.classes.every(
             (value) => collectboxWriteClassAllowed(
               expectedPlatform,

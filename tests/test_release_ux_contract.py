@@ -610,7 +610,7 @@ def test_approved_release_primary_action_is_collectbox_step_one_only():
     assert 'id="collectboxActionPanel"' in html
     assert 'id="collectboxActionMessage"' in html
     assert 'id="collectboxActionStatus"' in html
-    assert "product_workspace.js?v=20260801-v32" in html
+    assert "product_workspace.js?v=20260801-v33" in html
     assert 'COLLECTBOX_ACTION_SCHEMA = "collectbox-action-status/v1"' in script
     assert "/api/product-workspace/collectbox-action/preview?" in script
     assert "/api/product-workspace/collectbox-action/status?" in script
@@ -623,6 +623,7 @@ def test_approved_release_primary_action_is_collectbox_step_one_only():
     assert "function renderCollectboxTargetOutcomes(" in script
     assert "data-collectbox-target-outcome" in script
     assert "collectboxTargetFailureText" in script
+    assert ">= row.external_writes.classes.length" in script
     assert '"miaoshou:collectbox:claim:tiktok"' in script
     assert '"miaoshou:collectbox:claim:shopee"' in script
     assert (
@@ -747,7 +748,7 @@ def test_oneclick_manual_review_forms_keep_warning_and_apiless_contracts_separat
     apiless_submit = _function_body(script, "submitManualTargetVerification")
 
     assert "product_workspace.css?v=20260801-v20" in html
-    assert "product_workspace.js?v=20260801-v32" in html
+    assert "product_workspace.js?v=20260801-v33" in html
     assert '"SUCCEEDED_MANUAL_REVIEW"' in script
     assert '"review_verified_observation_warning"' in script
     assert "oneclick-observation-review-form" in script

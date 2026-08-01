@@ -49,6 +49,10 @@ WAREHOUSE_GET_PATH = (
     "/open/v1/product/collect_box/tiktok/collect_box/"
     "get_shop_warehouse_list"
 )
+CATEGORY_METADATA_PATH = (
+    "/open/v1/product/collect_box/tiktok/collect_box/"
+    "get_category_metadata"
+)
 SHOP_GET_PATH = (
     "/open/v1/product/collect_box/tiktok/collect_box/"
     "get_shop_collect_item_info"
@@ -1513,6 +1517,16 @@ def _prepare_selected_platform_collectbox(
     ) -> tuple[int, dict[str, object]]:
         nonlocal write_count_unknown
         config = DIRECT_STORE_CONFIG[target]
+        draft_mode = str(config.get("draft_mode") or "shop")
+        # The proven MX/GB shop-draft endpoints use a JSON integer shopId.
+        # Stringifying it is dangerous: GB may return success without applying
+        # the draft update.  Site-mode TikTok and other platforms retain their
+        # existing string identity contract.
+        shop_endpoint_id: object = (
+            config["shop_id"]
+            if platform == "tiktok" and draft_mode == "shop"
+            else str(config["shop_id"])
+        )
         try:
             expected = _approved_site(
                 approved_plan_payload,
@@ -1576,7 +1590,7 @@ def _prepare_selected_platform_collectbox(
                     SHOP_CLAIM_PATH,
                     {
                         "detailIds": [detail_id],
-                        "shopIds": [str(config["shop_id"])],
+                        "shopIds": [shop_endpoint_id],
                     },
                 )
             except Exception:
@@ -1597,7 +1611,7 @@ def _prepare_selected_platform_collectbox(
             detail, oss_md5 = _read_shop(
                 client,
                 detail_id,
-                str(config["shop_id"]),
+                shop_endpoint_id,
                 target=target,
             )
             _verify_shop_identity(
@@ -1615,17 +1629,30 @@ def _prepare_selected_platform_collectbox(
                 detail,
                 expected,
                 platform=platform,
-                draft_mode=str(config.get("draft_mode") or "shop"),
+                draft_mode=draft_mode,
                 warehouse_id=warehouse_id,
             )
+            if (
+                platform == "tiktok"
+                and draft_mode == "shop"
+                and "productAttributes" in detail
+            ):
+                updated["productAttributes"] = (
+                    _tiktok_category_product_attributes(
+                        client,
+                        current=detail,
+                        expected=expected,
+                        shop_endpoint_id=shop_endpoint_id,
+                    )
+                )
             body = _save_body(
                 platform=platform,
                 site=str(config["site"]),
                 detail_id=detail_id,
-                shop_id=str(config["shop_id"]),
+                shop_id=shop_endpoint_id,
                 updated=updated,
                 oss_md5=oss_md5,
-                draft_mode=str(config.get("draft_mode") or "shop"),
+                draft_mode=draft_mode,
             )
         except Exception:
             fail(f"{platform} draft preparation failed before update")
@@ -1655,7 +1682,7 @@ def _prepare_selected_platform_collectbox(
             readback, readback_oss_md5 = _read_shop(
                 client,
                 detail_id,
-                str(config["shop_id"]),
+                shop_endpoint_id,
                 target=target,
             )
             readback_available = True
@@ -1664,7 +1691,7 @@ def _prepare_selected_platform_collectbox(
                 expected,
                 platform=platform,
                 strict_collectbox_tiktok=True,
-                draft_mode=str(config.get("draft_mode") or "shop"),
+                draft_mode=draft_mode,
             )
             return detail_id, _target_result(target, "SUCCEEDED")
         except Exception:
@@ -1745,7 +1772,7 @@ def _prepare_selected_platform_collectbox(
                 readback, _ = _read_shop(
                     client,
                     detail_id,
-                    str(config["shop_id"]),
+                    shop_endpoint_id,
                     target=target,
                 )
                 repair_readback_available = True
@@ -1754,7 +1781,7 @@ def _prepare_selected_platform_collectbox(
                     expected,
                     platform=platform,
                     strict_collectbox_tiktok=True,
-                    draft_mode=str(config.get("draft_mode") or "shop"),
+                    draft_mode=draft_mode,
                 )
                 return detail_id, _target_result(
                     target, "REPAIRED_SUCCEEDED"
@@ -1861,7 +1888,7 @@ def _save_body(
     platform: str,
     site: str,
     detail_id: int,
-    shop_id: str,
+    shop_id: object,
     updated: Mapping[str, object],
     oss_md5: str,
     draft_mode: str = "shop",
@@ -2147,6 +2174,186 @@ def _apply_expected_for_platform(
     return updated
 
 
+def _tiktok_category_product_attributes(
+    post: Callable[[str, Mapping[str, object]], object],
+    *,
+    current: Mapping[str, object],
+    expected: Mapping[str, object],
+    shop_endpoint_id: object,
+) -> list[dict[str, object]]:
+    """Build the exact TikTok product-attribute payload from official rules.
+
+    Miaoshou validates price, category, and category attributes in one save.
+    A missing mandatory attribute therefore rejects the whole update.  We may
+    deterministically select an official value only when it is the sole legal
+    value; multi-choice business decisions remain fail-closed.
+    """
+
+    category_id = expected.get("category_id")
+    site = expected.get("region")
+    if (
+        type(category_id) is not str
+        or not category_id.isdigit()
+        or int(category_id) <= 0
+        or type(site) is not str
+        or not site.strip()
+        or isinstance(shop_endpoint_id, bool)
+        or not str(shop_endpoint_id).isdigit()
+        or int(shop_endpoint_id) <= 0
+    ):
+        raise MiaoshouOneClickPreDispatchError(
+            "TikTok category metadata identity is unavailable"
+        )
+    response = post(
+        CATEGORY_METADATA_PATH,
+        {
+            "site": site.strip().upper(),
+            "cid": int(category_id),
+            "shopIds": [int(shop_endpoint_id)],
+        },
+    )
+    if not isinstance(response, Mapping) or not _accepted(response):
+        raise MiaoshouOneClickPreDispatchError(
+            "TikTok category metadata request was rejected"
+        )
+    data = response.get("data")
+    if not isinstance(data, Mapping):
+        raise MiaoshouOneClickPreDispatchError(
+            "TikTok category metadata response is malformed"
+        )
+    metadata = data.get("categoryMetadata")
+    if not isinstance(metadata, Mapping):
+        raise MiaoshouOneClickPreDispatchError(
+            "TikTok category metadata response is malformed"
+        )
+    rules = metadata.get("categoryProductAttrList")
+    if not isinstance(rules, list) or any(
+        not isinstance(row, Mapping) for row in rules
+    ):
+        raise MiaoshouOneClickPreDispatchError(
+            "TikTok product attribute rules are malformed"
+        )
+
+    current_rows = current.get("productAttributes", [])
+    if not isinstance(current_rows, list) or any(
+        not isinstance(row, Mapping) for row in current_rows
+    ):
+        raise MiaoshouOneClickPreDispatchError(
+            "TikTok current product attributes are malformed"
+        )
+    current_by_id: dict[str, Mapping[str, object]] = {}
+    for row in current_rows:
+        raw_id = row.get("attributeId")
+        if type(raw_id) is not str or not raw_id.strip():
+            raise MiaoshouOneClickPreDispatchError(
+                "TikTok current product attributes are malformed"
+            )
+        attr_id = raw_id.strip()
+        if attr_id in current_by_id:
+            raise MiaoshouOneClickPreDispatchError(
+                "TikTok current product attributes are ambiguous"
+            )
+        current_by_id[attr_id] = row
+
+    resolved: list[dict[str, object]] = []
+    seen_rule_ids: set[str] = set()
+    for rule in rules:
+        raw_attr_id = rule.get("attrId")
+        raw_name = rule.get("name")
+        raw_alias = rule.get("attributeNameAlias")
+        mandatory = rule.get("isMandatory")
+        values = rule.get("values")
+        if (
+            type(raw_attr_id) is not str
+            or not raw_attr_id.strip()
+            or type(raw_name) is not str
+            or not raw_name.strip()
+            or type(raw_alias) is not str
+            or type(mandatory) is not bool
+            or not isinstance(values, list)
+            or any(not isinstance(value, Mapping) for value in values)
+        ):
+            raise MiaoshouOneClickPreDispatchError(
+                "TikTok product attribute rules are malformed"
+            )
+        attr_id = raw_attr_id.strip()
+        if attr_id in seen_rule_ids:
+            raise MiaoshouOneClickPreDispatchError(
+                "TikTok product attribute rules are ambiguous"
+            )
+        seen_rule_ids.add(attr_id)
+
+        official_values: list[dict[str, str]] = []
+        official_by_id: dict[str, dict[str, str]] = {}
+        for value in values:
+            raw_value_id = value.get("id")
+            raw_value_name = value.get("name")
+            raw_value_alias = value.get("valueNameAlias")
+            if (
+                type(raw_value_id) is not str
+                or not raw_value_id.strip()
+                or type(raw_value_name) is not str
+                or not raw_value_name.strip()
+                or type(raw_value_alias) is not str
+            ):
+                raise MiaoshouOneClickPreDispatchError(
+                    "TikTok product attribute values are malformed"
+                )
+            value_id = raw_value_id.strip()
+            if value_id in official_by_id:
+                raise MiaoshouOneClickPreDispatchError(
+                    "TikTok product attribute values are ambiguous"
+                )
+            normalized = {
+                "valueName": raw_value_name,
+                "valueId": value_id,
+                "valueNameAlias": raw_value_alias,
+            }
+            official_values.append(normalized)
+            official_by_id[value_id] = normalized
+
+        selected: list[dict[str, str]] = []
+        current_row = current_by_id.get(attr_id)
+        if current_row is not None:
+            current_values = current_row.get("attributeValues")
+            if not isinstance(current_values, list) or any(
+                not isinstance(value, Mapping) for value in current_values
+            ):
+                raise MiaoshouOneClickPreDispatchError(
+                    "TikTok current product attributes are malformed"
+                )
+            selected_ids: set[str] = set()
+            for value in current_values:
+                raw_value_id = value.get("valueId")
+                if type(raw_value_id) is not str or not raw_value_id.strip():
+                    raise MiaoshouOneClickPreDispatchError(
+                        "TikTok current product attributes are malformed"
+                    )
+                value_id = raw_value_id.strip()
+                if value_id in selected_ids or value_id not in official_by_id:
+                    raise MiaoshouOneClickPreDispatchError(
+                        "TikTok current product attribute differs from official rules"
+                    )
+                selected_ids.add(value_id)
+                selected.append(dict(official_by_id[value_id]))
+
+        if mandatory and not selected:
+            if len(official_values) != 1:
+                raise MiaoshouOneClickPreDispatchError(
+                    "TikTok mandatory product attribute requires review"
+                )
+            selected = [dict(official_values[0])]
+        resolved.append(
+            {
+                "attributeId": attr_id,
+                "attributeName": raw_name,
+                "attributeNameAlias": raw_alias,
+                "attributeValues": selected,
+            }
+        )
+    return resolved
+
+
 def _apply_expected(
     current: Mapping[str, object], expected: Mapping[str, object]
 ) -> dict[str, object]:
@@ -2236,7 +2443,14 @@ def _verify_expected_detail(
         actual_weight = detail.get("weight")
     checks = [
         str(detail.get("title") or "") == expected["title"],
-        str(detail.get("itemNum") or "") == expected["item_num"],
+        (
+            str(detail.get("itemNum") or "") == expected["item_num"]
+            or (
+                platform == "tiktok"
+                and strict_collectbox_tiktok
+                and detail.get("itemNum") in (None, "")
+            )
+        ),
         _numbers_equal(actual_weight, expected["weight"]),
         all(
             _numbers_equal(actual, wanted_value)
@@ -2695,7 +2909,7 @@ def _read_common(post, common_detail_id: str) -> tuple[dict[str, object], str]:
 def _read_shop(
     post,
     detail_id: int,
-    shop_id: str,
+    shop_id: object,
     *,
     target: str | None = None,
 ) -> tuple[dict[str, object], str]:
@@ -2720,7 +2934,7 @@ def _read_shop(
         }
         data_field = "siteCollectItemInfo"
     elif platform == "tiktok" and draft_mode == "shop":
-        body = {"detailId": int(detail_id), "shopId": str(shop_id)}
+        body = {"detailId": int(detail_id), "shopId": shop_id}
         data_field = "shopCollectItemInfo"
     elif platform == "tiktok":
         raise MiaoshouOneClickPreDispatchError(

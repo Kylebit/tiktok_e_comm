@@ -1026,17 +1026,16 @@ def test_collectbox_tiktok_restores_proven_per_site_price_and_category_without_w
     assert all(path != miaoshou.WEB_BATCH_SET_PRICE_PATH for path, _ in calls)
 
 
-def test_collectbox_gb_restores_the_proven_minimal_shop_draft_update_contract(
+def test_collectbox_gb_uses_numeric_shop_identity_for_write_and_readback(
     monkeypatch,
 ):
-    """GB accepts the old minimal update but ignores broad optional-field resets.
+    """GB must preserve the numeric shop identity used by the proven path.
 
     Historical official readback proves detail 3231607651 persisted GBP 15 and
-    category 600338 through the shop-draft API.  The old update path changed the
-    approved listing fields plus the category-dependent COD flag, while leaving
-    unrelated optional/video/identity collections untouched.  Offer 3846511157
-    reproduced an accepted save envelope followed by unchanged price/category
-    after the newer implementation inserted and reset those unrelated fields.
+    category 600338.  That production path passed the integer ``10204699`` to
+    both the GET and SAVE endpoints.  Offer 3846511157 reproduced a dangerous
+    vendor behaviour after the new path stringified the identity: SAVE returned
+    success while the official readback retained GBP 1.10 and a blank category.
     """
 
     target = "tiktok:GB"
@@ -1049,17 +1048,7 @@ def test_collectbox_gb_restores_the_proven_minimal_shop_draft_update_contract(
         _tiktok_category_decisions((target,))
     )
     detail = _detail(target)
-    detail.update({
-        "cid": "",
-        "isCodOpen": "1",
-        "mainImgAppVideoId": None,
-        "mainImgPlatformVideoId": "vendor-video-id",
-        "deliveryOptionIds": ["delivery-1"],
-        "manufacturerIds": ["manufacturer-1"],
-        "responsiblePersonIds": ["responsible-1"],
-        "productAttributes": [{"attrId": "vendor-attribute"}],
-        "productCertifications": [{"certificateId": "vendor-certificate"}],
-    })
+    detail.update({"cid": "", "isCodOpen": "1"})
     detail["skuMap"]["default"].update(
         {"price": 1.1, "priceIncludeVat": 1.1}
     )
@@ -1071,6 +1060,7 @@ def test_collectbox_gb_restores_the_proven_minimal_shop_draft_update_contract(
         if path == miaoshou.SHOP_CLAIM_PATH:
             return {"result": "success"}
         if path == config["get_path"]:
+            assert type(body["shopId"]) is int
             return {
                 "result": "success",
                 "data": {
@@ -1078,26 +1068,21 @@ def test_collectbox_gb_restores_the_proven_minimal_shop_draft_update_contract(
                     "ossMd5": "gb-md5",
                 },
             }
+        if path == miaoshou.CATEGORY_METADATA_PATH:
+            return {
+                "result": "success",
+                "data": {
+                    "categoryMetadata": {
+                        "categoryProductAttrList": []
+                    }
+                },
+            }
         if path == config["save_path"]:
             candidate = deepcopy(body["shopCollectItemInfo"])
-            minimal_contract = all((
-                candidate.get("isCodOpen") == "0",
-                candidate.get("mainImgAppVideoId") is None,
-                candidate.get("mainImgPlatformVideoId") == "vendor-video-id",
-                candidate.get("deliveryOptionIds") == ["delivery-1"],
-                candidate.get("manufacturerIds") == ["manufacturer-1"],
-                candidate.get("responsiblePersonIds") == ["responsible-1"],
-                candidate.get("productAttributes") == [
-                    {"attrId": "vendor-attribute"}
-                ],
-                candidate.get("productCertifications") == [
-                    {"certificateId": "vendor-certificate"}
-                ],
-            ))
             # A success envelope is not persistence proof.  This deliberately
             # models the live accepted-but-unchanged response unless the proven
-            # minimal shop-draft contract is respected.
-            if minimal_contract:
+            # numeric shop identity contract is respected.
+            if type(body["shopId"]) is int:
                 detail = candidate
                 detail["detailId"] = int(body["detailId"])
             return {"result": "success"}
@@ -1131,16 +1116,150 @@ def test_collectbox_gb_restores_the_proven_minimal_shop_draft_update_contract(
         body for path, body in calls if path == config["save_path"]
     ]
     assert len(save_bodies) == 1
+    assert type(save_bodies[0]["shopId"]) is int
     saved = save_bodies[0]["shopCollectItemInfo"]
     assert saved["isCodOpen"] == "0"
-    assert saved["mainImgAppVideoId"] is None
-    assert saved["mainImgPlatformVideoId"] == "vendor-video-id"
-    assert saved["deliveryOptionIds"] == ["delivery-1"]
-    assert saved["manufacturerIds"] == ["manufacturer-1"]
-    assert saved["responsiblePersonIds"] == ["responsible-1"]
-    assert saved["productAttributes"] == [{"attrId": "vendor-attribute"}]
-    assert saved["productCertifications"] == [
-        {"certificateId": "vendor-certificate"}
+    assert saved["cid"] == "600338"
+    assert saved["skuMap"]["default"]["price"] == 15
+    assert saved["skuMap"]["default"]["priceIncludeVat"] == 15
+
+
+def test_collectbox_gb_resolves_unique_required_category_attribute_before_save(
+    monkeypatch,
+):
+    """The category's one official required value must accompany the save.
+
+    The live GB endpoint rejected the otherwise exact approved price/category
+    update with ``产品属性【生产批次号】必填``.  Official category metadata for
+    category 600338 exposes exactly one legal Batch Number value, so the
+    deterministic draft path may select it without inventing business data.
+    """
+
+    target = "tiktok:GB"
+    config = miaoshou.DIRECT_STORE_CONFIG[target]
+    payload = _plan_payload(target)
+    payload["approved_tiktok_category_decisions"] = (
+        _tiktok_category_decisions((target,))
+    )
+    detail = _detail(target)
+    detail.update({"cid": "", "isCodOpen": "1", "productAttributes": []})
+    detail["skuMap"]["default"].update(
+        {"price": 1.1, "priceIncludeVat": 1.1}
+    )
+    calls: list[tuple[str, dict[str, object]]] = []
+    category_metadata_path = (
+        "/open/v1/product/collect_box/tiktok/collect_box/"
+        "get_category_metadata"
+    )
+
+    def post(path, body):
+        nonlocal detail
+        calls.append((path, deepcopy(body)))
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            return {"result": "success"}
+        if path == config["get_path"]:
+            return {
+                "result": "success",
+                "data": {
+                    "shopCollectItemInfo": deepcopy(detail),
+                    "ossMd5": "gb-md5",
+                },
+            }
+        if path == category_metadata_path:
+            assert body == {
+                "site": "GB",
+                "cid": 600338,
+                "shopIds": [10204699],
+            }
+            return {
+                "result": "success",
+                "data": {
+                    "categoryMetadata": {
+                        "categoryConfig": {},
+                        "categorySaleAttrList": [],
+                        "categoryProductAttrList": [
+                            {
+                                "attrId": "102255",
+                                "name": "Batch Number",
+                                "attributeNameAlias": "生产批次号",
+                                "attributeType": 3,
+                                "isMandatory": True,
+                                "isMultipleSelected": False,
+                                "isCustomized": True,
+                                "values": [
+                                    {
+                                        "id": "1000256",
+                                        "name": "1",
+                                        "valueNameAlias": "1",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                },
+            }
+        if path == config["save_path"]:
+            candidate = deepcopy(body["shopCollectItemInfo"])
+            required = [
+                {
+                    "attributeId": "102255",
+                    "attributeName": "Batch Number",
+                    "attributeNameAlias": "生产批次号",
+                    "attributeValues": [
+                        {
+                            "valueName": "1",
+                            "valueId": "1000256",
+                            "valueNameAlias": "1",
+                        }
+                    ],
+                }
+            ]
+            if candidate.get("productAttributes") != required:
+                return {
+                    "result": "fail",
+                    "message": "产品属性【生产批次号】必填，请填写后重试",
+                }
+            detail = candidate
+            detail["detailId"] = int(body["detailId"])
+            # Live GB normalizes the top-level itemNum away while retaining
+            # the exact approved seller SKU on every selected model row.
+            detail.pop("itemNum", None)
+            return {"result": "success"}
+        if path == miaoshou.WAREHOUSE_GET_PATH:
+            return _warehouse_response(target)
+        raise AssertionError(path)
+
+    result = miaoshou.prepare_tiktok_collectbox(
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=(target,),
+        post=post,
+    )
+
+    assert result["target_results"] == [{
+        "target_label": target,
+        "status": "SUCCEEDED",
+        "error_code": None,
+        "detail_digest": None,
+    }]
+    save_body = next(
+        body for path, body in calls if path == config["save_path"]
+    )
+    assert save_body["shopCollectItemInfo"]["productAttributes"] == [
+        {
+            "attributeId": "102255",
+            "attributeName": "Batch Number",
+            "attributeNameAlias": "生产批次号",
+            "attributeValues": [
+                {
+                    "valueName": "1",
+                    "valueId": "1000256",
+                    "valueNameAlias": "1",
+                }
+            ],
+        }
     ]
 
 

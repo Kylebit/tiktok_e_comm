@@ -61,6 +61,8 @@ WEB_BATCH_SET_PRICE_PATH = (
     "/api/platform/tiktok/move/collect_box/batchSetPrice"
 )
 TIKTOK_CATEGORY_DECISION_SCHEMA = "approved-tiktok-category-decision/v1"
+TIKTOK_NO_BRAND_ID = "0"
+TIKTOK_NO_BRAND_NAME = "No Brand"
 _TIKTOK_CATEGORY_BY_APPROVED_PRODUCT_CATEGORY = {
     "贴饰>墙贴": "600338",
     "墙贴": "600338",
@@ -1918,10 +1920,8 @@ def _apply_expected_for_platform(
                 {
                     "shopId": shop_id,
                     "site": str(expected["region"]),
-                    "brandId": str(template.get("brandId") or "0"),
-                    "brandName": str(
-                        template.get("brandName") or "No Brand"
-                    ),
+                    "brandId": TIKTOK_NO_BRAND_ID,
+                    "brandName": TIKTOK_NO_BRAND_NAME,
                 }
             )
             updated["site"] = str(expected["region"])
@@ -2142,6 +2142,16 @@ def _verify_expected_detail(
                 and isinstance(shop_rows[0], Mapping)
                 and str(shop_rows[0].get("shopId") or "")
                 == str(expected["shop_id"]),
+                isinstance(shop_rows, list)
+                and len(shop_rows) == 1
+                and isinstance(shop_rows[0], Mapping)
+                and str(shop_rows[0].get("brandId") or "")
+                == TIKTOK_NO_BRAND_ID,
+                isinstance(shop_rows, list)
+                and len(shop_rows) == 1
+                and isinstance(shop_rows[0], Mapping)
+                and str(shop_rows[0].get("brandName") or "")
+                == TIKTOK_NO_BRAND_NAME,
             ]
         )
     if not all(checks):

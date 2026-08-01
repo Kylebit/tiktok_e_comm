@@ -532,6 +532,93 @@ def test_collectbox_tiktok_sea_uses_site_draft_payload_and_exact_readback():
     ]
 
 
+@pytest.mark.parametrize("target", ("tiktok:LH_MY", "tiktok:HB_MY"))
+def test_collectbox_tiktok_sea_replaces_existing_brand_with_no_brand(target):
+    payload = _plan_payload(target)
+    detail = _detail(target)
+    detail["cid"] = "600338"
+    detail["collectBoxDetailShopList"][0].update(
+        {"brandId": "999", "brandName": "Wrong Brand"}
+    )
+    saved = []
+
+    def post(path, body):
+        nonlocal detail
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            return {"result": "success"}
+        if path.endswith("get_site_collect_item_info"):
+            return {
+                "result": "success",
+                "data": {
+                    "siteCollectItemInfo": deepcopy(detail),
+                    "ossMd5": "site-md5",
+                },
+            }
+        if path.endswith("save_site_collect_item_info"):
+            saved.append(deepcopy(body))
+            detail = deepcopy(body["siteCollectItemInfo"])
+            detail["detailId"] = 77
+            return {"result": "success"}
+        raise AssertionError(path)
+
+    result = miaoshou.prepare_selected_platform_collectbox(
+        platform="tiktok",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=(target,),
+        post=post,
+    )
+
+    assert result["target_results"][0]["status"] == "SUCCEEDED"
+    shop_row = saved[0]["siteCollectItemInfo"][
+        "collectBoxDetailShopList"
+    ][0]
+    assert shop_row["brandId"] == "0"
+    assert shop_row["brandName"] == "No Brand"
+
+
+@pytest.mark.parametrize("target", ("tiktok:LH_MY", "tiktok:HB_MY"))
+def test_collectbox_tiktok_sea_wrong_brand_readback_never_succeeds(target):
+    payload = _plan_payload(target)
+    detail = _detail(target)
+    detail["cid"] = "600338"
+
+    def post(path, body):
+        nonlocal detail
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            return {"result": "success"}
+        if path.endswith("get_site_collect_item_info"):
+            return {
+                "result": "success",
+                "data": {
+                    "siteCollectItemInfo": deepcopy(detail),
+                    "ossMd5": "site-md5",
+                },
+            }
+        if path.endswith("save_site_collect_item_info"):
+            detail = deepcopy(body["siteCollectItemInfo"])
+            detail["detailId"] = 77
+            detail["collectBoxDetailShopList"][0].update(
+                {"brandId": "999", "brandName": "Wrong Brand"}
+            )
+            return {"result": "success"}
+        raise AssertionError(path)
+
+    result = miaoshou.prepare_selected_platform_collectbox(
+        platform="tiktok",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=(target,),
+        post=post,
+    )
+
+    assert result["target_results"][0]["status"] == "FAILED"
+
+
 def test_collectbox_tiktok_blank_gb_category_fails_target_and_continues_next_site():
     """A blank GB cid is not guessed from another market and cannot stop MX."""
 

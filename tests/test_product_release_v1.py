@@ -587,6 +587,99 @@ def _two_tiktok_dashboard() -> dict:
     return dashboard
 
 
+SIX_TIKTOK_CATEGORY_TARGETS = (
+    "tiktok:LH_PH",
+    "tiktok:LH_MY",
+    "tiktok:LH_TH",
+    "tiktok:LH_VN",
+    "tiktok:MX",
+    "tiktok:GB",
+)
+
+
+def _six_tiktok_category_dashboard(category_name: str) -> dict:
+    dashboard = _dashboard()
+    targets = ["miaoshou:COMMON", *SIX_TIKTOK_CATEGORY_TARGETS]
+    dashboard["product"]["category"] = {"name": category_name}
+    dashboard["publication_scope"]["selected_labels"] = targets
+    dashboard["pricing_review"]["target_pricing"] = {
+        target: {"status": "ready"} for target in targets
+    }
+    dashboard["omnichannel_preview"]["targets"] = [
+        {
+            "channel": "miaoshou",
+            "site": "COMMON",
+            "adapter": "new_product_workbench_miaoshou_commit",
+            "preflights": [
+                {
+                    "code": "audited_adapter_site",
+                    "passed": True,
+                    "detail": "audited common collect-box path",
+                }
+            ],
+        },
+        *[
+            {
+                "channel": "tiktok",
+                "site": target.split(":", 1)[1].removeprefix("LH_"),
+                "adapter": "miaoshou_tiktok_publish",
+                "preflights": [
+                    {
+                        "code": "audited_adapter_site",
+                        "passed": True,
+                        "detail": "audited TikTok collect-box path",
+                    }
+                ],
+            }
+            for target in SIX_TIKTOK_CATEGORY_TARGETS
+        ],
+    ]
+    dashboard["listing_copy"]["candidates"] = [
+        {
+            "channel": "tiktok",
+            "site": target.split(":", 1)[1].removeprefix("LH_"),
+            "language": "approved target language",
+            "limit": 255,
+            "title": dashboard["product"]["title"],
+            "policy_check": "passed",
+        }
+        for target in SIX_TIKTOK_CATEGORY_TARGETS
+    ]
+    return dashboard
+
+
+def test_release_plan_binds_approved_wall_sticker_category_to_six_tiktok_sites():
+    dashboard = _six_tiktok_category_dashboard("贴饰 > 墙贴")
+
+    payload, blockers = product_server._release_plan_payload_from_dashboard(
+        dashboard
+    )
+
+    assert blockers == []
+    decisions = payload["approved_tiktok_category_decisions"]
+    assert set(decisions) == set(SIX_TIKTOK_CATEGORY_TARGETS)
+    for target in SIX_TIKTOK_CATEGORY_TARGETS:
+        assert set(decisions[target]) == {"category_id", "evidence_digest"}
+        assert decisions[target]["category_id"] == "600338"
+        digest = decisions[target]["evidence_digest"]
+        assert type(digest) is str
+        assert len(digest) == 64
+        assert all(character in "0123456789abcdef" for character in digest)
+
+
+def test_release_plan_unmapped_product_category_fails_closed_without_guessing():
+    dashboard = _six_tiktok_category_dashboard("未映射的新商品类目")
+
+    payload, blockers = product_server._release_plan_payload_from_dashboard(
+        dashboard
+    )
+
+    assert "approved_tiktok_category_decisions" not in payload
+    assert blockers == [
+        "BLOCKED_TIKTOK_CATEGORY: approved product category has no mapping"
+    ]
+
+
 def _single_shopee_dashboard() -> dict:
     dashboard = _dashboard()
     targets = ["miaoshou:COMMON", "shopee:PH"]

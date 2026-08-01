@@ -545,7 +545,9 @@ LIVE_SIX_TIKTOK_TARGETS = (
 )
 
 
-def _run_live_six_site_tiktok_drift(*, category_decisions):
+def _run_live_six_site_tiktok_drift(
+    *, category_decisions, use_web_price_repair=False, price_batch_faults=None
+):
     targets = LIVE_SIX_TIKTOK_TARGETS
     approved_prices = {
         "tiktok:LH_PH": ("523", "PHP"),
@@ -605,9 +607,14 @@ def _run_live_six_site_tiktok_drift(*, category_decisions):
         target_by_shop_id[shop_id] = target
 
     calls = []
+    web_calls = []
     save_counts = {target: 0 for target in targets}
     save_bodies = {target: [] for target in targets}
     create_count = 0
+    target_by_site = {
+        str(miaoshou.DIRECT_STORE_CONFIG[target]["site"]): target
+        for target in targets
+    }
 
     def post(path, body):
         nonlocal create_count
@@ -642,13 +649,7 @@ def _run_live_six_site_tiktok_drift(*, category_decisions):
             details[shop_id]["detailId"] = int(body["detailId"])
             details[shop_id]["shopId"] = shop_id
             details[shop_id]["sourceOfferId"] = "986159122616"
-            repeated_original_payload = (
-                save_counts[target] == 1
-                or body["shopCollectItemInfo"]
-                == save_bodies[target][0]["shopCollectItemInfo"]
-            )
-            if repeated_original_payload:
-                details[shop_id]["cid"] = observed_categories[target]
+            if save_counts[target] == 1:
                 converted = vendor_cny10_prices[target]
                 details[shop_id]["skuMap"]["default"]["price"] = converted
                 details[shop_id]["skuMap"]["default"][
@@ -657,7 +658,39 @@ def _run_live_six_site_tiktok_drift(*, category_decisions):
             return {"result": "success"}
         raise AssertionError(path)
 
-    result = miaoshou.prepare_selected_platform_collectbox(
+    def web_post(path, body):
+        web_calls.append((path, deepcopy(body)))
+        assert path == (
+            "/api/platform/tiktok/move/collect_box/batchSetPrice"
+        )
+        target = target_by_site[str(body["site"])]
+        price, _currency = approved_prices[target]
+        detail_id = details[
+            str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])
+        ]["detailId"]
+        assert body == {
+            "collectBoxDetailIds": [detail_id],
+            "site": str(miaoshou.DIRECT_STORE_CONFIG[target]["site"]),
+            "priceConfig": {
+                "price": {
+                    "modifyMode": "newValue",
+                    "newValue": int(price),
+                }
+            },
+        }
+        fault = (price_batch_faults or {}).get(target)
+        if fault == "exception":
+            raise RuntimeError("sanitized batch price transport failure")
+        if fault == "rejected":
+            return {"success": False, "code": "REJECTED"}
+        shop_id = str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])
+        details[shop_id]["skuMap"]["default"]["price"] = int(price)
+        details[shop_id]["skuMap"]["default"]["priceIncludeVat"] = int(
+            price
+        )
+        return {"success": True}
+
+    arguments = dict(
         platform="tiktok",
         common_detail_id="7",
         initial_platform_detail_id="77",
@@ -666,28 +699,32 @@ def _run_live_six_site_tiktok_drift(*, category_decisions):
         approved_targets=targets,
         post=post,
     )
-    return result, calls, save_counts, save_bodies
+    if use_web_price_repair:
+        arguments["web_post"] = web_post
+    result = miaoshou.prepare_selected_platform_collectbox(**arguments)
+    return result, calls, web_calls, save_counts, save_bodies
 
 
 def test_collectbox_tiktok_live_six_site_uses_effective_repair_and_continues():
     """A repair must change the rejected payload and process all six sites."""
 
     targets = LIVE_SIX_TIKTOK_TARGETS
-    result, calls, save_counts, save_bodies = _run_live_six_site_tiktok_drift(
+    result, calls, web_calls, save_counts, _ = _run_live_six_site_tiktok_drift(
         category_decisions={
             target: {
                 "category_id": "600338",
                 "evidence_digest": "d" * 64,
             }
             for target in targets
-        }
+        },
+        use_web_price_repair=True,
     )
 
     outcomes = {
         row["target_label"]: row for row in result["target_results"]
     }
     assert tuple(row["target_label"] for row in result["target_results"]) == targets
-    assert save_counts == {target: 2 for target in targets}
+    assert save_counts == {target: 1 for target in targets}
     claimed_shop_ids = [
         str(body["shopIds"][0])
         for path, body in calls
@@ -698,11 +735,10 @@ def test_collectbox_tiktok_live_six_site_uses_effective_repair_and_continues():
         for target in targets
     ]
     assert all("save_move_collect_task" not in path for path, _ in calls)
-    assert all(
-        save_bodies[target][1]["shopCollectItemInfo"]
-        != save_bodies[target][0]["shopCollectItemInfo"]
+    assert [body["site"] for _path, body in web_calls] == [
+        str(miaoshou.DIRECT_STORE_CONFIG[target]["site"])
         for target in targets
-    ), "bounded repair repeated the vendor-rejected payload unchanged"
+    ]
     assert {
         target: (outcomes[target]["status"], outcomes[target]["error_code"])
         for target in targets
@@ -720,16 +756,68 @@ def test_collectbox_tiktok_live_six_site_uses_effective_repair_and_continues():
     )
 
 
+@pytest.mark.parametrize(
+    ("fault", "error_code"),
+    [
+        ("rejected", "approved_price_batch_repair_rejected"),
+        ("exception", "approved_price_batch_repair_unknown"),
+    ],
+)
+def test_collectbox_tiktok_batch_price_failure_is_local_and_continues(
+    fault, error_code
+):
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    result, calls, web_calls, save_counts, _ = (
+        _run_live_six_site_tiktok_drift(
+            category_decisions={
+                target: {
+                    "category_id": "600338",
+                    "evidence_digest": "d" * 64,
+                }
+                for target in targets
+            },
+            use_web_price_repair=True,
+            price_batch_faults={"tiktok:LH_MY": fault},
+        )
+    )
+
+    outcomes = {
+        row["target_label"]: row for row in result["target_results"]
+    }
+    assert tuple(row["target_label"] for row in result["target_results"]) == targets
+    assert save_counts == {target: 1 for target in targets}
+    assert outcomes["tiktok:LH_MY"]["status"] == "FAILED"
+    assert outcomes["tiktok:LH_MY"]["error_code"] == error_code
+    assert outcomes["tiktok:LH_TH"]["status"] == "REPAIRED_SUCCEEDED"
+    assert outcomes["tiktok:LH_VN"]["status"] == "REPAIRED_SUCCEEDED"
+    assert outcomes["tiktok:MX"]["status"] == "REPAIRED_SUCCEEDED"
+    assert outcomes["tiktok:GB"]["status"] == "REPAIRED_SUCCEEDED"
+    assert [body["site"] for _path, body in web_calls] == [
+        str(miaoshou.DIRECT_STORE_CONFIG[target]["site"])
+        for target in targets
+    ]
+    assert [
+        str(body["shopIds"][0])
+        for path, body in calls
+        if path == miaoshou.SHOP_CLAIM_PATH
+    ] == [
+        str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])
+        for target in targets
+    ]
+    assert all("save_move_collect_task" not in path for path, _ in calls)
+
+
 def test_collectbox_tiktok_live_six_site_missing_category_approval_is_local():
     """Missing approvals fail every site without aborting the whole batch."""
 
     targets = LIVE_SIX_TIKTOK_TARGETS
-    result, calls, save_counts, _ = _run_live_six_site_tiktok_drift(
-        category_decisions={}
+    result, calls, web_calls, save_counts, _ = _run_live_six_site_tiktok_drift(
+        category_decisions={},
+        use_web_price_repair=True,
     )
 
     assert tuple(row["target_label"] for row in result["target_results"]) == targets
-    assert save_counts == {target: 2 for target in targets}
+    assert save_counts == {target: 1 for target in targets}
     assert [
         str(body["shopIds"][0])
         for path, body in calls
@@ -747,6 +835,7 @@ def test_collectbox_tiktok_live_six_site_missing_category_approval_is_local():
         target: ("FAILED", "category_not_approved") for target in targets
     }
     assert all("save_move_collect_task" not in path for path, _ in calls)
+    assert web_calls == []
 
 
 def test_shopee_simple_description_preserves_approved_cnsc_master_text():

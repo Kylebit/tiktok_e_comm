@@ -10,13 +10,164 @@ from shared_platform.collectbox_action import (
     REPAIRED_SUCCEEDED,
     SUCCEEDED,
     CollectBoxActionStore,
+    CollectBoxPlatformRequest,
     CollectBoxPlatformResult,
     CollectBoxTargetOutcome,
+    common_collectbox_identity_digest,
+)
+from modules.miaoshou.collectbox_claim import (
+    ACCEPTED,
+    PlatformClaimReceipt,
+    PlatformClaimResult,
 )
 
 
 def _detail_digest(detail: str) -> str:
     return hashlib.sha256(detail.encode("utf-8")).hexdigest()
+
+
+def _canonical_digest(value):
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def test_real_channel_adapter_preserves_six_tiktok_target_outcomes(
+    monkeypatch,
+):
+    from domains.channel_operations import collectbox_action_adapters
+
+    targets = (
+        "tiktok:LH_PH",
+        "tiktok:LH_MY",
+        "tiktok:LH_TH",
+        "tiktok:LH_VN",
+        "tiktok:MX",
+        "tiktok:GB",
+    )
+    failure_digest = _detail_digest("redacted price mismatch")
+    category_digest = _detail_digest("redacted category evidence missing")
+
+    def claim(request):
+        result = PlatformClaimResult(
+            platform="tiktok",
+            status=ACCEPTED,
+            attempt_count=1,
+            dispatch_invoked=True,
+            outcome_unknown=False,
+            retry_safe=False,
+            reconciliation_required=False,
+            write_class="miaoshou:collectbox:claim:tiktok",
+            write_outcome="ACCEPTED",
+            reason_code="accepted",
+            platform_detail_id=71001,
+            platform_detail_identity_digest=_canonical_digest(
+                {
+                    "identity_kind": "miaoshou_platform_collectbox_detail",
+                    "platform": "tiktok",
+                    "platform_detail_id": 71001,
+                }
+            ),
+        )
+        return PlatformClaimReceipt(
+            request_digest=request.request_digest,
+            common_detail_identity_digest=(
+                request.common_detail_identity_digest
+            ),
+            result=result,
+        )
+
+    prepared_outcomes = [
+        {
+            "target_label": "tiktok:LH_PH",
+            "status": SUCCEEDED,
+            "error_code": None,
+            "detail_digest": None,
+        },
+        {
+            "target_label": "tiktok:LH_MY",
+            "status": REPAIRED_SUCCEEDED,
+            "error_code": None,
+            "detail_digest": None,
+        },
+        {
+            "target_label": "tiktok:LH_TH",
+            "status": FAILED,
+            "error_code": "approved_price_readback_mismatch",
+            "detail_digest": failure_digest,
+        },
+        {
+            "target_label": "tiktok:LH_VN",
+            "status": SUCCEEDED,
+            "error_code": None,
+            "detail_digest": None,
+        },
+        {
+            "target_label": "tiktok:MX",
+            "status": SUCCEEDED,
+            "error_code": None,
+            "detail_digest": None,
+        },
+        {
+            "target_label": "tiktok:GB",
+            "status": FAILED,
+            "error_code": "category_not_approved",
+            "detail_digest": category_digest,
+        },
+    ]
+    monkeypatch.setattr(
+        collectbox_action_adapters,
+        "claim_common_collectbox_platform",
+        claim,
+    )
+    monkeypatch.setattr(
+        collectbox_action_adapters,
+        "prepare_selected_platform_collectbox",
+        lambda **_kwargs: {
+            "primary_platform_detail_id": 71001,
+            "target_count": len(targets),
+            "platform_detail_count": len(targets),
+            "external_writes": (
+                "miaoshou:collectbox:claim:tiktok",
+                "miaoshou:collectbox:tiktok:detail:update",
+            ),
+            "external_write_count": 7,
+            "target_results": prepared_outcomes,
+            "checks": {
+                "approved_targets_exact": True,
+                "approved_prices_exact": True,
+                "approved_content_exact": True,
+                "readback_exact": False,
+                "publish_not_invoked": True,
+            },
+        },
+    )
+    plan_id = "omnichannel:real-adapter-target-outcomes"
+    request = CollectBoxPlatformRequest(
+        action_id="collectbox-action-real-adapter",
+        plan_id=plan_id,
+        platform="TIKTOK",
+        common_collect_box_detail_id="3846511157",
+        common_collectbox_identity_digest=(
+            common_collectbox_identity_digest(plan_id, "3846511157")
+        ),
+        payload_digest="a" * 64,
+        targets_digest=_canonical_digest(list(targets)),
+        idempotency_key="c" * 64,
+        approved_plan_payload={"product_revision": 31},
+        approved_targets=targets,
+    )
+
+    result = collectbox_action_adapters.execute_collectbox_platform(request)
+
+    assert result.target_statuses == ()
+    assert [outcome.public_payload() for outcome in result.target_outcomes] == (
+        prepared_outcomes
+    )
 
 
 def _plan():

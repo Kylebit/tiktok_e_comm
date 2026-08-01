@@ -92,6 +92,7 @@ def _dashboard() -> dict:
             "seller_sku_candidate": "0952",
             "revision": 41,
             "title": approved_title,
+            "category": {"name": "贴饰 > 墙贴"},
             "actual_product_approved": True,
             "actual_approval": {
                 "approval_id": "product-approval:v1",

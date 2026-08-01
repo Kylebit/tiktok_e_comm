@@ -8,6 +8,7 @@ from modules.miaoshou.client import (
     MiaoshouBusinessRejectedError,
     post_open,
     request_web,
+    web_batch_set_tiktok_price,
     web_claim_to_shop,
 )
 
@@ -116,6 +117,41 @@ class MiaoshouClientTests(unittest.TestCase):
                 ("shopIds[1]", 15173238),
             ],
         )
+
+    def test_web_batch_set_tiktok_price_posts_exact_json_contract(self):
+        seen = {}
+        payload = {
+            "collectBoxDetailIds": [77],
+            "site": "GB",
+            "priceConfig": {
+                "price": {
+                    "modifyMode": "newValue",
+                    "newValue": 15,
+                }
+            },
+        }
+
+        def fake_request_web(method, path, **kwargs):
+            seen.update(method=method, path=path, **kwargs)
+            return {"success": True}
+
+        with patch(
+            "modules.miaoshou.client.request_web",
+            side_effect=fake_request_web,
+        ):
+            result = web_batch_set_tiktok_price(payload)
+
+        self.assertIs(result["success"], True)
+        self.assertEqual(seen["method"], "POST")
+        self.assertEqual(
+            seen["path"],
+            "/api/platform/tiktok/move/collect_box/batchSetPrice",
+        )
+        self.assertEqual(
+            seen["headers"],
+            {"Content-Type": "application/json;charset=UTF-8"},
+        )
+        self.assertEqual(json.loads(seen["form"]), payload)
 
 
 if __name__ == "__main__":

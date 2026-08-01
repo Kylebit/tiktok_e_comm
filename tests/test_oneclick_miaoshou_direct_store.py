@@ -258,6 +258,7 @@ def test_collectbox_tiktok_repairs_vendor_auto_converted_price_once_then_reads_e
     detail["cid"] = "600338"
     save_count = 0
     get_count = 0
+    web_calls = []
 
     def post(path, body):
         nonlocal detail, save_count, get_count
@@ -288,6 +289,13 @@ def test_collectbox_tiktok_repairs_vendor_auto_converted_price_once_then_reads_e
             return {"result": "success"}
         raise AssertionError(path)
 
+    def web_post(path, body):
+        web_calls.append((path, deepcopy(body)))
+        assert path == miaoshou.WEB_BATCH_SET_PRICE_PATH
+        detail["skuMap"]["default"]["price"] = 46
+        detail["skuMap"]["default"]["priceIncludeVat"] = 46
+        return {"success": True}
+
     result = miaoshou.prepare_selected_platform_collectbox(
         platform="tiktok",
         common_detail_id="7",
@@ -296,6 +304,7 @@ def test_collectbox_tiktok_repairs_vendor_auto_converted_price_once_then_reads_e
         approved_plan_payload=payload,
         approved_targets=(target,),
         post=post,
+        web_post=web_post,
     )
 
     saves = [
@@ -303,9 +312,8 @@ def test_collectbox_tiktok_repairs_vendor_auto_converted_price_once_then_reads_e
         for path, body in calls
         if path.endswith("save_shop_collect_item_info")
     ]
-    assert len(saves) == 2
+    assert len(saves) == 1
     assert saves[0]["ossMd5"] == "md5-1"
-    assert saves[1]["ossMd5"] == "md5-2"
     assert all(
         body["shopCollectItemInfo"]["skuMap"]["default"]["price"] == 46
         and body["shopCollectItemInfo"]["skuMap"]["default"][
@@ -314,6 +322,21 @@ def test_collectbox_tiktok_repairs_vendor_auto_converted_price_once_then_reads_e
         == 46
         for body in saves
     )
+    assert web_calls == [
+        (
+            miaoshou.WEB_BATCH_SET_PRICE_PATH,
+            {
+                "collectBoxDetailIds": [77],
+                "site": "MY",
+                "priceConfig": {
+                    "price": {
+                        "modifyMode": "newValue",
+                        "newValue": 46,
+                    }
+                },
+            },
+        )
+    ]
     assert result["target_results"] == [
         {
             "target_label": target,
@@ -468,6 +491,11 @@ def test_collectbox_tiktok_failed_bounded_price_repair_continues_next_site():
         detail["cid"] = "600338"
         details[str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])] = detail
     calls = []
+    web_calls = []
+    target_by_site = {
+        str(miaoshou.DIRECT_STORE_CONFIG[target]["site"]): target
+        for target in targets
+    }
 
     def post(path, body):
         calls.append((path, deepcopy(body)))
@@ -506,6 +534,22 @@ def test_collectbox_tiktok_failed_bounded_price_repair_continues_next_site():
             return {"result": "success"}
         raise AssertionError(path)
 
+    def web_post(path, body):
+        web_calls.append((path, deepcopy(body)))
+        target = target_by_site[str(body["site"])]
+        shop_id = str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])
+        if target != "tiktok:LH_MY":
+            approved_price = int(
+                payload["pricing"]["selected_targets"][target][
+                    "store_prices"
+                ][0]["list_price"]
+            )
+            details[shop_id]["skuMap"]["default"]["price"] = approved_price
+            details[shop_id]["skuMap"]["default"][
+                "priceIncludeVat"
+            ] = approved_price
+        return {"success": True}
+
     result = miaoshou.prepare_selected_platform_collectbox(
         platform="tiktok",
         common_detail_id="7",
@@ -514,6 +558,7 @@ def test_collectbox_tiktok_failed_bounded_price_repair_continues_next_site():
         approved_plan_payload=payload,
         approved_targets=targets,
         post=post,
+        web_post=web_post,
     )
 
     assert result["target_results"][0]["status"] == "FAILED"
@@ -528,10 +573,11 @@ def test_collectbox_tiktok_failed_bounded_price_repair_continues_next_site():
     ]
     assert save_shop_ids.count(
         str(miaoshou.DIRECT_STORE_CONFIG["tiktok:LH_MY"]["shop_id"])
-    ) == 2
+    ) == 1
     assert save_shop_ids.count(
         str(miaoshou.DIRECT_STORE_CONFIG["tiktok:LH_TH"]["shop_id"])
     ) == 1
+    assert [body["site"] for _path, body in web_calls] == ["MY"]
     assert all("save_move_collect_task" not in path for path, _ in calls)
 
 

@@ -311,3 +311,18 @@ def web_save_shop_collect_item_info(shop_collect_item_info: dict[str, Any]) -> d
             )
         },
     )
+
+
+def web_batch_set_tiktok_price(payload: dict[str, Any]) -> dict[str, Any]:
+    """Apply an exact local TikTok price through Miaoshou's web protocol."""
+
+    return request_web(
+        "POST",
+        "/api/platform/tiktok/move/collect_box/batchSetPrice",
+        form=json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        headers={"Content-Type": "application/json;charset=UTF-8"},
+    )

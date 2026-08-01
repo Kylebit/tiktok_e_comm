@@ -2252,6 +2252,28 @@ def _release_plan_payload_from_dashboard(
             )
         ),
     }
+    tiktok_targets = tuple(
+        label
+        for label in targets
+        if type(label) is str and label.startswith("tiktok:")
+    )
+    if tiktok_targets:
+        from modules.miaoshou.oneclick_release import (
+            approved_tiktok_category_decisions,
+        )
+
+        tiktok_category_decisions = approved_tiktok_category_decisions(
+            payload["product_facts"].get("category"),
+            targets=tiktok_targets,
+        )
+        if tiktok_category_decisions is None:
+            blockers.append(
+                "BLOCKED_TIKTOK_CATEGORY: approved product category has no mapping"
+            )
+        else:
+            payload["approved_tiktok_category_decisions"] = (
+                tiktok_category_decisions
+            )
     has_shopee_target = any(
         type(label) is str and label.startswith("shopee:")
         for label in targets

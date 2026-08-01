@@ -56,6 +56,16 @@ SHOP_SAVE_PATH = (
 PUBLISH_PATH = (
     "/open/v1/product/collect_box/tiktok/collect_box/save_move_collect_task"
 )
+WEB_BATCH_SET_PRICE_PATH = (
+    "/api/platform/tiktok/move/collect_box/batchSetPrice"
+)
+TIKTOK_CATEGORY_DECISION_SCHEMA = "approved-tiktok-category-decision/v1"
+_TIKTOK_CATEGORY_BY_APPROVED_PRODUCT_CATEGORY = {
+    "贴饰>墙贴": "600338",
+    "墙贴": "600338",
+    "wallsticker": "600338",
+    "wallstickers": "600338",
+}
 
 def _direct_store_config(
     *,
@@ -1208,6 +1218,48 @@ def _approved_tiktok_category_id(
     return category_id
 
 
+def approved_tiktok_category_decisions(
+    product_category: object,
+    *,
+    targets: tuple[str, ...],
+) -> dict[str, dict[str, str]] | None:
+    """Project one approved product category into exact TikTok site evidence."""
+
+    if not isinstance(product_category, Mapping):
+        return None
+    raw_name = product_category.get("name")
+    if type(raw_name) is not str or not raw_name.strip():
+        return None
+    normalized = "".join(raw_name.split()).lower()
+    category_id = _TIKTOK_CATEGORY_BY_APPROVED_PRODUCT_CATEGORY.get(normalized)
+    if category_id is None:
+        return None
+    selected = tuple(
+        target
+        for target in targets
+        if type(target) is str and target.startswith("tiktok:")
+    )
+    if not selected:
+        return {}
+    result: dict[str, dict[str, str]] = {}
+    for target in selected:
+        config = DIRECT_STORE_CONFIG.get(target)
+        if not isinstance(config, Mapping) or config.get("platform") != "tiktok":
+            return None
+        evidence = {
+            "schema_version": TIKTOK_CATEGORY_DECISION_SCHEMA,
+            "approved_product_category": raw_name.strip(),
+            "target_label": target,
+            "site": str(config["site"]),
+            "category_id": category_id,
+        }
+        result[target] = {
+            "category_id": category_id,
+            "evidence_digest": _digest(evidence),
+        }
+    return result
+
+
 def _approved_site(
     payload: Mapping[str, object],
     *,
@@ -1245,6 +1297,7 @@ def prepare_selected_platform_collectbox(
     approved_plan_payload: Mapping[str, object],
     approved_targets: tuple[str, ...],
     post: Callable[[str, Mapping[str, object]], object] | None = None,
+    web_post: Callable[[str, Mapping[str, object]], object] | None = None,
 ) -> dict[str, object]:
     """Populate approved platform drafts without moving/publishing them."""
 
@@ -1292,6 +1345,7 @@ def prepare_selected_platform_collectbox(
         ) from error
 
     client = post or _prepare_post()
+    price_client = web_post or _prepare_web_price_post()
     writes: list[str] = []
     write_count_unknown = False
     write_invocation_count = 0
@@ -1321,6 +1375,7 @@ def prepare_selected_platform_collectbox(
     def prepare_target(
         target: str, index: int
     ) -> tuple[int, dict[str, object]]:
+        nonlocal write_count_unknown
         config = DIRECT_STORE_CONFIG[target]
         try:
             expected = _approved_site(
@@ -1462,42 +1517,67 @@ def prepare_selected_platform_collectbox(
             if platform != "tiktok":
                 fail(f"{platform} draft readback did not match approved plan")
 
-        # The official TikTok readback may retain the common-box CNY price
-        # conversion after an accepted site update.  Repeat the same exact
-        # approved body at most once; this is the only automatic repair.
+        category_error = _tiktok_category_error_code(readback, expected)
+        if category_error is not None:
+            return detail_id, _target_result(
+                target,
+                "FAILED",
+                error_code=category_error,
+                detail=(
+                    "approved site category evidence is unavailable"
+                    if category_error == "category_not_approved"
+                    else "official category readback differs from approved site category"
+                ),
+            )
+
+        # Miaoshou's OpenAPI detail-save normalizes the local site price from
+        # the common-box CNY origin price.  The web batch-price endpoint is
+        # the authoritative persisted local-price operation used by the UI.
         repairable_price = readback_available and not _tiktok_prices_exact(
             readback, expected
         )
         if repairable_price:
             try:
-                repaired_updated = _apply_expected_for_platform(
-                    readback, expected, platform=platform
-                )
-                repair_body = _save_body(
-                    platform=platform,
-                    site=str(config["site"]),
-                    detail_id=detail_id,
-                    shop_id=str(config["shop_id"]),
-                    updated=repaired_updated,
-                    oss_md5=readback_oss_md5,
+                repaired = price_client(
+                    WEB_BATCH_SET_PRICE_PATH,
+                    _tiktok_batch_price_body(
+                        detail_id=detail_id,
+                        site=str(config["site"]),
+                        price=expected["price"],
+                    ),
                 )
             except Exception:
-                fail("TikTok bounded price repair could not be prepared")
-            try:
-                repaired = client(str(config["save_path"]), repair_body)
-            except Exception:
-                fail(
-                    "TikTok bounded price repair outcome is unknown",
-                    current_unknown=update_class,
+                add_write(
+                    f"miaoshou:collectbox:tiktok:price:update:{target}"
+                )
+                write_count_unknown = True
+                return detail_id, _target_result(
+                    target,
+                    "FAILED",
+                    error_code="approved_price_batch_repair_unknown",
+                    detail="Miaoshou batch price repair outcome is unknown",
                 )
             if not isinstance(repaired, Mapping):
-                fail(
-                    "TikTok bounded price repair response is malformed",
-                    current_unknown=update_class,
+                add_write(
+                    f"miaoshou:collectbox:tiktok:price:update:{target}"
+                )
+                write_count_unknown = True
+                return detail_id, _target_result(
+                    target,
+                    "FAILED",
+                    error_code="approved_price_batch_repair_unknown",
+                    detail="Miaoshou batch price repair response is malformed",
                 )
             if not _accepted(repaired):
-                fail("TikTok bounded price repair was rejected")
-            add_write(update_class)
+                return detail_id, _target_result(
+                    target,
+                    "FAILED",
+                    error_code="approved_price_batch_repair_rejected",
+                    detail="Miaoshou batch price repair was rejected",
+                )
+            add_write(
+                f"miaoshou:collectbox:tiktok:price:update:{target}"
+            )
             repair_readback_available = False
             try:
                 readback, _ = _read_shop(
@@ -1536,18 +1616,6 @@ def prepare_selected_platform_collectbox(
                 detail="official target draft readback is unavailable",
             )
 
-        category_error = _tiktok_category_error_code(readback, expected)
-        if category_error is not None:
-            return detail_id, _target_result(
-                target,
-                "FAILED",
-                error_code=category_error,
-                detail=(
-                    "approved site category evidence is unavailable"
-                    if category_error == "category_not_approved"
-                    else "official category readback differs from approved site category"
-                ),
-            )
         if not _tiktok_prices_exact(readback, expected):
             return detail_id, _target_result(
                 target,
@@ -1894,8 +1962,7 @@ def _tiktok_prices_exact(
         ):
             return False
         return all(
-            _numbers_equal(row.get("price"), expected["price"])
-            and _numbers_equal(
+            _numbers_equal(
                 row.get("priceIncludeVat"), expected["price"]
             )
             for row in rows
@@ -1913,6 +1980,27 @@ def _tiktok_category_error_code(
     if str(detail.get("cid") or "") != category_id:
         return "category_readback_mismatch"
     return None
+
+
+def _tiktok_batch_price_body(
+    *, detail_id: int, site: str, price: object
+) -> dict[str, object]:
+    approved_price = _positive_decimal(price, "approved TikTok price")
+    integral_price = approved_price.to_integral_value()
+    if approved_price != integral_price:
+        raise MiaoshouOneClickPreDispatchError(
+            "approved TikTok price must be an integer for batch repair"
+        )
+    return {
+        "collectBoxDetailIds": [detail_id],
+        "site": site,
+        "priceConfig": {
+            "price": {
+                "modifyMode": "newValue",
+                "newValue": int(integral_price),
+            }
+        },
+    }
 
 
 def _target_result(
@@ -2149,6 +2237,19 @@ def _prepare_post() -> Callable[[str, Mapping[str, object]], object]:
     from modules.miaoshou.client import post_open
 
     return post_open
+
+
+def _prepare_web_price_post() -> Callable[[str, Mapping[str, object]], object]:
+    from modules.miaoshou.client import web_batch_set_tiktok_price
+
+    def post_price(path: str, body: Mapping[str, object]) -> object:
+        if path != WEB_BATCH_SET_PRICE_PATH:
+            raise MiaoshouOneClickPreDispatchError(
+                "unsupported Miaoshou web price operation"
+            )
+        return web_batch_set_tiktok_price(dict(body))
+
+    return post_price
 
 
 def _runtime_transport() -> MiaoshouRuntimeTransport:
@@ -3086,7 +3187,11 @@ def _success(value: object) -> bool:
 def _accepted(value: object) -> bool:
     return bool(
         isinstance(value, Mapping)
-        and (value.get("accepted") is True or value.get("result") == "success")
+        and (
+            value.get("accepted") is True
+            or value.get("result") == "success"
+            or value.get("success") is True
+        )
     )
 
 

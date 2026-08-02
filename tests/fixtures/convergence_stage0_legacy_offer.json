@@ -28,32 +28,38 @@
             {
               "target_label": "tiktok:LH_PH",
               "status": "SUCCEEDED",
-              "error_code": null
+              "error_code": null,
+              "detail_digest": null
             },
             {
               "target_label": "tiktok:LH_MY",
               "status": "SUCCEEDED",
-              "error_code": null
+              "error_code": null,
+              "detail_digest": null
             },
             {
               "target_label": "tiktok:LH_TH",
               "status": "SUCCEEDED",
-              "error_code": null
+              "error_code": null,
+              "detail_digest": null
             },
             {
               "target_label": "tiktok:LH_VN",
               "status": "SUCCEEDED",
-              "error_code": null
+              "error_code": null,
+              "detail_digest": null
             },
             {
               "target_label": "tiktok:MX",
               "status": "SUCCEEDED",
-              "error_code": null
+              "error_code": null,
+              "detail_digest": null
             },
             {
               "target_label": "tiktok:GB",
               "status": "FAILED",
-              "error_code": "target_preparation_failed"
+              "error_code": "target_preparation_failed",
+              "detail_digest": "0000000000000000000000000000000000000000000000000000000000000000"
             }
           ]
         },

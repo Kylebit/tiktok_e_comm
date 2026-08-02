@@ -8907,6 +8907,8 @@ def _collectbox_platform_succeeded(plan_id: str, platform: str) -> bool:
 
 
 def _collectbox_platform_row_publishable(row: dict, platform: str) -> bool:
+    from shared_platform.collectbox_action import CollectBoxTargetOutcome
+
     if row.get("status") == "SUCCEEDED":
         return True
     if platform != "TIKTOK" or row.get("status") not in {
@@ -8917,22 +8919,40 @@ def _collectbox_platform_row_publishable(row: dict, platform: str) -> bool:
     outcomes = row.get("target_outcomes")
     if not isinstance(outcomes, list) or not outcomes:
         return False
-    succeeded = 0
+    expected_keys = {
+        "target_label",
+        "status",
+        "error_code",
+        "detail_digest",
+    }
+    seen: set[str] = set()
+    gb_terminal = False
     for outcome in outcomes:
-        if not isinstance(outcome, dict):
+        if not isinstance(outcome, dict) or set(outcome) != expected_keys:
             return False
-        if outcome.get("status") == "SUCCEEDED":
-            succeeded += 1
-            continue
+        try:
+            typed_outcome = CollectBoxTargetOutcome(**outcome)
+        except (TypeError, ValueError):
+            return False
+        target_label = typed_outcome.target_label
+        status = typed_outcome.status
         if (
-            outcome.get("target_label") == "tiktok:GB"
-            and outcome.get("status") == "FAILED"
-            and outcome.get("error_code")
-            == "approved_detail_readback_mismatch"
+            target_label not in _GENERIC_TIKTOK_SAFE_RETRY_LABELS
+            or target_label in seen
         ):
+            return False
+        seen.add(target_label)
+        if target_label != "tiktok:GB":
+            if status != "SUCCEEDED":
+                return False
             continue
-        return False
-    return succeeded > 0
+        if status in {"SUCCEEDED", "REPAIRED_SUCCEEDED"}:
+            gb_terminal = True
+            continue
+        if status != "FAILED":
+            return False
+        gb_terminal = True
+    return gb_terminal
 
 
 def _with_collectbox_publishability(projection: dict) -> dict:

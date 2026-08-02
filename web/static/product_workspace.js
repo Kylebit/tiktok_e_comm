@@ -8619,6 +8619,28 @@
     await publishSelectedTargets();
   }
 
+  function platformPublishErrorMessage(payload, status, platformName) {
+    const structured = payload?.error;
+    const code = (
+      structured
+      && typeof structured === "object"
+      && !Array.isArray(structured)
+      && typeof structured.code === "string"
+    )
+      ? structured.code.trim()
+      : "";
+    if (code === "step1_collectbox_required") {
+      return `${platformName} 妙手采集箱尚未完成，请先重新导入后再发布（错误码：${code}）。`;
+    }
+    if (code) {
+      return `${platformName} 发布请求未被服务接受（错误码：${code}）。`;
+    }
+    if (typeof structured === "string" && structured.trim()) {
+      return structured.trim();
+    }
+    return `服务返回 HTTP ${status}`;
+  }
+
   async function publishPlatformBatch(endpoint, platformName) {
     const identity = oneClickExecution.identity;
     if (
@@ -8652,9 +8674,11 @@
       );
       if (response.status !== 202 || !response.ok || payload.ok === false) {
         const error = new Error(
-          response.status !== 202
-            ? `服务返回 HTTP ${response.status}，但本操作要求 HTTP 202`
-            : payload.error || `服务返回 HTTP ${response.status}`,
+          platformPublishErrorMessage(
+            payload,
+            response.status,
+            platformName,
+          ),
         );
         error.status = response.status;
         error.payload = payload;

@@ -5607,6 +5607,32 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
       "/api/product-workspace/publish-shopee-global",
       "/api/product-workspace/publish-ozon",
     ].includes(url.pathname)) {
+      if (url.pathname === "/api/product-workspace/publish-tiktok") {
+        return route.fulfill(jsonResponse({
+          ok: false,
+          error: {
+            category: "CAPABILITY",
+            code: "step1_collectbox_required",
+            detail_digest: "9".repeat(64),
+          },
+          canonical_next_action: {
+            action: "start_collectbox_action",
+            target_focus: null,
+          },
+          external_writes_performed: [],
+        }, 409));
+      }
+      if (url.pathname === "/api/product-workspace/publish-ozon") {
+        return route.fulfill(jsonResponse({
+          ok: false,
+          error: {
+            category: "INVENTORY",
+            code: "approved_inventory_required",
+            detail_digest: "7".repeat(64),
+          },
+          external_writes_performed: [],
+        }, 409));
+      }
       return route.fulfill(jsonResponse({
         ok: true,
         accepted: true,
@@ -5763,6 +5789,27 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
         `platform isolation ${viewport.width}: ${selector} posts only ${expectedPath}`,
         requests,
       );
+      if (expectedPath === "/api/product-workspace/publish-tiktok") {
+        const failureText = await optionalText("#oneClickExecutionMessage");
+        check(
+          failureText.includes("TikTok 妙手采集箱尚未完成")
+            && failureText.includes("重新导入后再发布")
+            && failureText.includes("step1_collectbox_required")
+            && await platformButton.isEnabled(),
+          `platform structured error ${viewport.width}: actionable reason and code stay visible with retry`,
+          { failureText, enabled: await platformButton.isEnabled() },
+        );
+      }
+      if (expectedPath === "/api/product-workspace/publish-ozon") {
+        const failureText = await optionalText("#oneClickExecutionMessage");
+        check(
+          failureText.includes("Ozon 发布请求未被服务接受")
+            && failureText.includes("approved_inventory_required")
+            && await platformButton.isEnabled(),
+          `platform structured error ${viewport.width}: unknown structured code is preserved with retry`,
+          { failureText, enabled: await platformButton.isEnabled() },
+        );
+      }
     }
     const platformPosts = requests.filter((row) => (
       row.method === "POST"

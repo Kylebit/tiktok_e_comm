@@ -266,6 +266,9 @@ def _plan_payload(target):
     config = miaoshou.DIRECT_STORE_CONFIG[target]
     return {
         "product_id": "7",
+        "source_product_identity": {
+            "source_offer_id": "986159122616",
+        },
         "seller_sku": "0954",
         "targets": ["miaoshou:COMMON", target],
         "product_facts": {
@@ -1408,6 +1411,7 @@ def _run_live_six_site_tiktok_drift(
     price_batch_faults=None,
     price_batch_noops=(),
     site_detail_echoes_approved_price=False,
+    plan_source_offer_id="986159122616",
 ):
     targets = LIVE_SIX_TIKTOK_TARGETS
     approved_prices = {
@@ -1458,6 +1462,12 @@ def _run_live_six_site_tiktok_drift(
         for target, (price, currency) in approved_prices.items()
     }
     payload["approved_tiktok_category_decisions"] = category_decisions
+    if plan_source_offer_id is None:
+        payload.pop("source_product_identity", None)
+    else:
+        payload["source_product_identity"] = {
+            "source_offer_id": plan_source_offer_id,
+        }
 
     details = {}
     target_by_shop_id = {}
@@ -1694,6 +1704,53 @@ def test_collectbox_tiktok_sea_batch_success_without_price_mutation_is_not_succe
     ]
 
 
+def test_tiktok_sea_price_authority_uses_approved_source_not_common_detail_id():
+    """COMMON detail ID 7 is not the approved source offer identity."""
+
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    result, _calls, _web_calls, _save_counts, _save_bodies = (
+        _run_live_six_site_tiktok_drift(
+            category_decisions=_tiktok_category_decisions(targets),
+            use_web_price_repair=True,
+            site_detail_echoes_approved_price=True,
+            plan_source_offer_id="986159122616",
+        )
+    )
+    outcomes = {
+        row["target_label"]: row for row in result["target_results"]
+    }
+    assert outcomes["tiktok:LH_PH"]["status"] == "SUCCEEDED"
+
+
+@pytest.mark.parametrize("plan_source_offer_id", (None, "986159122617"))
+def test_tiktok_sea_price_authority_requires_exact_approved_plan_source(
+    plan_source_offer_id,
+):
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    arguments = {
+        "category_decisions": _tiktok_category_decisions(targets),
+        "use_web_price_repair": True,
+        "site_detail_echoes_approved_price": True,
+        "plan_source_offer_id": plan_source_offer_id,
+    }
+    if plan_source_offer_id is None:
+        with pytest.raises(
+            miaoshou.MiaoshouCollectBoxPreparationError,
+            match="all approved platform drafts failed preparation",
+        ):
+            _run_live_six_site_tiktok_drift(**arguments)
+        return
+    result, _calls, _web_calls, _save_counts, _save_bodies = (
+        _run_live_six_site_tiktok_drift(
+            **arguments,
+        )
+    )
+    outcomes = {
+        row["target_label"]: row for row in result["target_results"]
+    }
+    assert outcomes["tiktok:LH_PH"]["status"] == "FAILED"
+
+
 def test_tiktok_authoritative_list_price_follows_bounded_pagination():
     target = "tiktok:LH_PH"
     expected = _expected(target)
@@ -1788,6 +1845,60 @@ def test_tiktok_authoritative_list_price_rejects_nonmapping_mixed_page():
             },
             detail=_detail(target),
             expected=_expected(target),
+            detail_id=77,
+            target=target,
+        )
+
+
+@pytest.mark.parametrize(
+    "identity_fault",
+    (
+        "missing_row_source",
+        "exact_site_wrong_shop",
+        "wrong_site_exact_shop",
+        "exact_shop_with_extra_shop",
+        "detail_and_row_source_drift",
+    ),
+)
+def test_tiktok_authoritative_list_price_requires_exact_complete_identity(
+    identity_fault,
+):
+    target = "tiktok:LH_PH"
+    expected = _expected(target)
+    detail = _detail(target)
+    row = _tiktok_list_response(target, detail, price="33")["data"][
+        "detailList"
+    ][0]
+
+    if identity_fault == "missing_row_source":
+        row.pop("sourceOfferId")
+    elif identity_fault == "exact_site_wrong_shop":
+        row["collectBoxDetailShopList"] = [
+            {"shopId": "99999999", "site": "PH"}
+        ]
+    elif identity_fault == "wrong_site_exact_shop":
+        row["site"] = "MY"
+        row["collectBoxDetailShopList"] = [
+            {"shopId": expected["shop_id"], "site": "PH"}
+        ]
+    elif identity_fault == "exact_shop_with_extra_shop":
+        row["collectBoxDetailShopList"].append(
+            {"shopId": "99999999", "site": "PH"}
+        )
+    elif identity_fault == "detail_and_row_source_drift":
+        detail["sourceOfferId"] = "986159122617"
+        row["sourceOfferId"] = "986159122617"
+    else:  # pragma: no cover - the parameter table is exhaustive
+        raise AssertionError(identity_fault)
+
+    with pytest.raises(miaoshou.MiaoshouOneClickPreDispatchError):
+        miaoshou._authoritative_tiktok_list_price_exact(
+            lambda _path, _body: {
+                "result": "success",
+                "data": {"detailList": [row], "totalCount": 1},
+            },
+            detail=detail,
+            expected=expected,
             detail_id=77,
             target=target,
         )
@@ -2114,6 +2225,7 @@ class DirectStoreFake:
                 [{
                     "collectBoxDetailId": 77,
                     "commonCollectBoxDetailId": 7,
+                    "sourceOfferId": "986159122616",
                     "site": self.config["site"],
                     "price": next(iter(self.detail["skuMap"].values()))[
                         "price"
@@ -3157,6 +3269,9 @@ def test_source_result_common_identity_mismatch_or_ambiguity_fails_closed():
     def mismatched_source(path, body):
         result = original_post(path, body)
         if path == fake.config["search_path"]:
+            result["data"]["detailList"][0]["sourceOfferId"] = (
+                "111111111111"
+            )
             result["data"]["detailList"][0]["sourceList"] = [
                 {"sourceItemId": "111111111111"}
             ]

@@ -423,12 +423,22 @@ def _prepare_tiktok_miaoshou_target(seed, request) -> dict[str, object]:
         )
     source_offer_id = str(seed.command["source_query"]["source_offer_id"])
     target = str(seed.target_label)
-    post = _prepare_post()
     if target == "miaoshou:COMMON":
+        post = _prepare_post()
         command, proof = _prepare_common(
             payload, source_offer_id=source_offer_id, post=post
         )
+    elif (
+        target.startswith("tiktok:")
+        and hasattr(request, "prerequisite_context")
+    ):
+        command, proof = _prepare_persisted_collectbox_publish(
+            seed,
+            request,
+            target=target,
+        )
     elif target in SITE_CONFIG:
+        post = _prepare_post()
         command, proof = _prepare_site(
             payload,
             target=target,
@@ -472,6 +482,140 @@ def _prepare_tiktok_miaoshou_target(seed, request) -> dict[str, object]:
         "proof": proof,
         "external_writes_performed": [],
     }
+
+
+def _sha256(value: object, name: str) -> str:
+    if (
+        type(value) is not str
+        or len(value) != 64
+        or any(char not in "0123456789abcdef" for char in value)
+    ):
+        raise MiaoshouOneClickPrepareBlocked(
+            "collectbox_publish_proof_invalid",
+            f"{name} is invalid",
+            category="CAPABILITY",
+        )
+    return value
+
+
+def _dispatch_sha256(value: object, name: str) -> str:
+    try:
+        return _sha256(value, name)
+    except MiaoshouOneClickPrepareBlocked as error:
+        raise MiaoshouOneClickPreDispatchError(str(error)) from error
+
+
+def _prepare_persisted_collectbox_publish(
+    seed: object,
+    request: object,
+    *,
+    target: str,
+) -> tuple[dict[str, object], dict[str, object]]:
+    prerequisite = getattr(request, "prerequisite_context", None)
+    if not isinstance(prerequisite, Mapping):
+        raise MiaoshouOneClickPrepareBlocked(
+            "collectbox_publish_proof_missing",
+            "persisted TikTok collect-box proof is unavailable",
+            category="CAPABILITY",
+        )
+    if prerequisite.get("schema_version") != (
+        "collectbox-tiktok-publish-context/v1"
+    ):
+        raise MiaoshouOneClickPrepareBlocked(
+            "collectbox_publish_proof_invalid",
+            "persisted TikTok collect-box proof schema is invalid",
+            category="CAPABILITY",
+        )
+    binding = dict(prerequisite)
+    supplied_digest = binding.pop("publish_identity_digest", None)
+    if _sha256(supplied_digest, "publish_identity_digest") != _digest(binding):
+        raise MiaoshouOneClickPrepareBlocked(
+            "collectbox_publish_proof_drifted",
+            "persisted TikTok collect-box proof digest drifted",
+            category="CAPABILITY",
+        )
+    exact = {
+        "plan_id": str(getattr(request, "plan_id", "")),
+        "offer_id": str(
+            getattr(request, "immutable_plan_payload", {}).get(
+                "product_id", ""
+            )
+        ),
+        "product_revision": getattr(request, "product_revision", None),
+        "payload_digest": str(getattr(request, "payload_digest", "")),
+        "targets_digest": str(getattr(request, "targets_digest", "")),
+        "source_identity_digest": str(
+            getattr(request, "source_identity_digest", "")
+        ),
+        "platform": "TIKTOK",
+    }
+    if any(prerequisite.get(key) != value for key, value in exact.items()):
+        raise MiaoshouOneClickPrepareBlocked(
+            "collectbox_publish_proof_identity_mismatch",
+            "persisted TikTok collect-box proof does not match the plan",
+            category="CAPABILITY",
+        )
+    detail = prerequisite.get("target_detail_identity")
+    if not isinstance(detail, Mapping) or set(detail) != {
+        "schema_version",
+        "target_label",
+        "detail_id",
+        "shop_id",
+        "identity_digest",
+    }:
+        raise MiaoshouOneClickPrepareBlocked(
+            "collectbox_publish_detail_identity_invalid",
+            "persisted TikTok target detail identity is invalid",
+            category="CAPABILITY",
+        )
+    detail_binding = dict(detail)
+    detail_digest = detail_binding.pop("identity_digest", None)
+    if (
+        detail.get("schema_version")
+        != "collectbox-target-detail-identity/v1"
+        or detail.get("target_label") != target
+        or _sha256(detail_digest, "detail_identity_digest")
+        != _digest(detail_binding)
+    ):
+        raise MiaoshouOneClickPrepareBlocked(
+            "collectbox_publish_detail_identity_drifted",
+            "persisted TikTok target detail identity drifted",
+            category="CAPABILITY",
+        )
+    config = DIRECT_STORE_CONFIG[target]
+    detail_id = _positive_digit(detail.get("detail_id"), "detail_id")
+    shop_id = _positive_digit(detail.get("shop_id"), "shop_id")
+    if shop_id != str(config["shop_id"]):
+        raise MiaoshouOneClickPrepareBlocked(
+            "collectbox_publish_shop_binding_mismatch",
+            "persisted TikTok target shop binding drifted",
+            category="CAPABILITY",
+        )
+    command = {
+        "schema_version": (
+            "oneclick-miaoshou-prepared-collectbox-publish-command/v1"
+        ),
+        "kind": "PUBLISH_PREPARED_COLLECTBOX",
+        "target_label": target,
+        "platform": "tiktok",
+        "detail_id": detail_id,
+        "shop_id": shop_id,
+        "collectbox_receipt_digest": _sha256(
+            prerequisite.get("receipt_digest"), "receipt_digest"
+        ),
+        "publish_identity_digest": supplied_digest,
+    }
+    proof = {
+        "schema_version": (
+            "oneclick-miaoshou-prepared-collectbox-publish-proof/v1"
+        ),
+        "target_label": target,
+        "detail_identity_digest": detail_digest,
+        "collectbox_receipt_digest": command["collectbox_receipt_digest"],
+        "publish_identity_digest": supplied_digest,
+        "shop_binding_exact": True,
+    }
+    return command, proof
 
 
 def read_source_offer_pages(
@@ -585,7 +729,11 @@ def dispatch_tiktok_miaoshou_prepared_target(request) -> dict[str, object]:
     kind = command.get("kind")
     if kind == "COMMON":
         return _dispatch_common(request, command)
-    if kind in {"TIKTOK_SITE", "DIRECT_STORE"}:
+    if kind in {
+        "TIKTOK_SITE",
+        "DIRECT_STORE",
+        "PUBLISH_PREPARED_COLLECTBOX",
+    }:
         return _dispatch_site(request, command)
     raise MiaoshouOneClickPreDispatchError(
         "prepared Miaoshou command is incomplete"
@@ -619,6 +767,27 @@ def _verify_stored_command_identity(
             raise MiaoshouOneClickPreDispatchError(
                 "stored Miaoshou COMMON identity is invalid"
             )
+        return
+    if kind == "PUBLISH_PREPARED_COLLECTBOX":
+        if (
+            target not in SITE_CONFIG
+            or command.get("schema_version")
+            != "oneclick-miaoshou-prepared-collectbox-publish-command/v1"
+            or command.get("platform") != "tiktok"
+            or command.get("shop_id")
+            != str(SITE_CONFIG[target]["shop_id"])
+        ):
+            raise MiaoshouOneClickPreDispatchError(
+                "stored collect-box publish identity is invalid"
+            )
+        _positive_digit(command.get("detail_id"), "detail_id")
+        _dispatch_sha256(
+            command.get("collectbox_receipt_digest"), "receipt_digest"
+        )
+        _dispatch_sha256(
+            command.get("publish_identity_digest"),
+            "publish_identity_digest",
+        )
         return
     if kind not in {"TIKTOK_SITE", "DIRECT_STORE"} or target not in SITE_CONFIG:
         raise MiaoshouOneClickPreDispatchError(
@@ -930,6 +1099,12 @@ def _dispatch_site(
 ) -> dict[str, object]:
     target = str(command["target_label"])
     config = DIRECT_STORE_CONFIG[target]
+    if command.get("kind") == "PUBLISH_PREPARED_COLLECTBOX":
+        return _dispatch_prepared_collectbox_publish(
+            request,
+            command,
+            config=config,
+        )
     platform = str(config["platform"])
     draft_mode = str(config.get("draft_mode") or "shop")
     shop_endpoint_id = _shop_endpoint_id(config, command["shop_id"])
@@ -1288,6 +1463,105 @@ def _dispatch_site(
         occurrence_state.external_writes,
         False,
         "miaoshou_submission_recorded",
+        write_count=occurrence_state.external_write_count,
+    )
+
+
+def _dispatch_prepared_collectbox_publish(
+    request: object,
+    command: Mapping[str, object],
+    *,
+    config: Mapping[str, object],
+) -> dict[str, object]:
+    if command.get("schema_version") != (
+        "oneclick-miaoshou-prepared-collectbox-publish-command/v1"
+    ):
+        raise MiaoshouOneClickPreDispatchError(
+            "prepared collect-box publish command schema is invalid"
+        )
+    target = str(command.get("target_label") or "")
+    if target not in DIRECT_STORE_CONFIG or config.get("platform") != "tiktok":
+        raise MiaoshouOneClickPreDispatchError(
+            "prepared collect-box publish target is invalid"
+        )
+    detail_id = _positive_digit(command.get("detail_id"), "detail_id")
+    shop_id = _positive_digit(command.get("shop_id"), "shop_id")
+    if shop_id != str(config["shop_id"]):
+        raise MiaoshouOneClickPreDispatchError(
+            "prepared collect-box publish shop binding drifted"
+        )
+    _dispatch_sha256(
+        command.get("collectbox_receipt_digest"), "receipt_digest"
+    )
+    _dispatch_sha256(
+        command.get("publish_identity_digest"), "publish_identity_digest"
+    )
+    shop_endpoint_id = _shop_endpoint_id(config, shop_id)
+    transport = _runtime_transport()
+    post = (
+        _required_post(transport)
+        if transport.publish is None
+        else None
+    )
+    occurrence_state = WriteOccurrenceState()
+    external_id = f"{detail_id}:{shop_id}"
+    occurrence = _open_write(
+        request,
+        occurrence_state,
+        "publish_submit-1",
+        _platform_write("tiktok", "publish:submission"),
+        external_id=external_id,
+    )
+    try:
+        submitted = (
+            transport.publish(detail_id, shop_endpoint_id)
+            if transport.publish is not None
+            else post(
+                PUBLISH_PATH,
+                {
+                    "detailIds": [int(detail_id)],
+                    "shopIds": [shop_endpoint_id],
+                },
+            )
+        )
+    except Exception as error:
+        raise _unknown_write_error(
+            occurrence_state,
+            occurrence,
+            "Miaoshou TikTok publish outcome is unknown",
+            external_id=external_id,
+        ) from error
+    if not isinstance(submitted, Mapping):
+        raise _unknown_write_error(
+            occurrence_state,
+            occurrence,
+            "Miaoshou TikTok publish response is malformed",
+            external_id=external_id,
+        )
+    if not _accepted(submitted):
+        _reject_write(
+            request,
+            occurrence_state,
+            occurrence,
+            external_id=external_id,
+        )
+        raise _rejected_write_error(
+            occurrence_state,
+            "Miaoshou TikTok publish was not accepted",
+            external_id=external_id,
+        )
+    _confirm_write(
+        request,
+        occurrence_state,
+        occurrence,
+        external_id=external_id,
+    )
+    return _receipt(
+        "SUBMITTED_UNVERIFIED",
+        external_id,
+        occurrence_state.external_writes,
+        False,
+        "miaoshou_submission_accepted",
         write_count=occurrence_state.external_write_count,
     )
 
@@ -2007,11 +2281,19 @@ def _prepare_selected_platform_collectbox(
 
     detail_ids: list[int] = []
     target_results: list[dict[str, object]] = []
+    target_detail_identities: list[dict[str, object]] = []
     for index, target in enumerate(selected):
         try:
             detail_id, target_result = prepare_target(target, index)
             detail_ids.append(detail_id)
             target_results.append(target_result)
+            target_detail_identities.append(
+                {
+                    "target_label": target,
+                    "detail_id": str(detail_id),
+                    "shop_id": str(DIRECT_STORE_CONFIG[target]["shop_id"]),
+                }
+            )
         except MiaoshouCollectBoxPreparationError as error:
             target_results.append(
                 _target_result(
@@ -2047,6 +2329,7 @@ def _prepare_selected_platform_collectbox(
             None if write_count_unknown else write_invocation_count
         ),
         "target_results": target_results,
+        "target_detail_identities": target_detail_identities,
         "checks": {
             "approved_targets_exact": True,
             "approved_prices_exact": True,

@@ -602,6 +602,7 @@ class CollectBoxPlatformResult:
     error_detail: str | None = None
     target_statuses: tuple[tuple[str, str], ...] = ()
     target_outcomes: tuple[CollectBoxTargetOutcome, ...] = ()
+    target_detail_identities: tuple["CollectBoxTargetDetailIdentity", ...] = ()
 
     def __post_init__(self) -> None:
         if self.status not in {
@@ -653,6 +654,18 @@ class CollectBoxPlatformResult:
             raise ValueError(
                 "legacy target_statuses and target_outcomes are exclusive"
             )
+        if (
+            type(self.target_detail_identities) is not tuple
+            or any(
+                type(value) is not CollectBoxTargetDetailIdentity
+                for value in self.target_detail_identities
+            )
+            or len(
+                {value.target_label for value in self.target_detail_identities}
+            )
+            != len(self.target_detail_identities)
+        ):
+            raise ValueError("target detail identities are invalid")
         if self.status == SUCCEEDED:
             if self.outcome not in {IMPORTED, ALREADY_PRESENT}:
                 raise ValueError("success requires an exact outcome")
@@ -703,6 +716,42 @@ class CollectBoxPlatformResult:
                 raise ValueError(
                     "platform failure requires an exact failed target outcome"
                 )
+
+
+@dataclass(frozen=True, repr=False)
+class CollectBoxTargetDetailIdentity:
+    """Server-internal draft identity; never included in public projections."""
+
+    target_label: str
+    detail_id: str
+    shop_id: str
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.target_label) is not str
+            or not self.target_label
+            or self.target_label != self.target_label.strip()
+        ):
+            raise ValueError("target detail label is invalid")
+        object.__setattr__(
+            self,
+            "detail_id",
+            _canonical_positive_identifier(self.detail_id, "detail_id"),
+        )
+        object.__setattr__(
+            self,
+            "shop_id",
+            _canonical_positive_identifier(self.shop_id, "shop_id"),
+        )
+
+    def internal_payload(self) -> dict[str, str]:
+        identity = {
+            "schema_version": "collectbox-target-detail-identity/v1",
+            "target_label": self.target_label,
+            "detail_id": self.detail_id,
+            "shop_id": self.shop_id,
+        }
+        return {**identity, "identity_digest": _digest(identity)}
 
 
 _SCHEMA_SQL = """
@@ -1301,6 +1350,104 @@ class CollectBoxActionStore:
                 )
             }
 
+    def internal_tiktok_publish_contexts(
+        self,
+        *,
+        plan_id: str,
+    ) -> dict[str, dict[str, Any]]:
+        """Return exact internal TikTok draft identities for one latest batch.
+
+        Raw Miaoshou identifiers are intentionally available only through this
+        server-internal accessor.  The public projection exposes receipt and
+        identity digests instead.
+        """
+
+        clean_plan_id = _nonempty_text(plan_id, "plan_id")
+        if not self.path.is_file():
+            return {}
+        with self._connect() as connection:
+            if not self._tables_exist(connection):
+                return {}
+            action = None
+            platform_table = "collectbox_action_platforms"
+            if self._batch_tables_exist(connection):
+                action = connection.execute(
+                    """
+                    SELECT * FROM collectbox_action_batches
+                    WHERE plan_id = ?
+                    ORDER BY batch_sequence DESC
+                    LIMIT 1
+                    """,
+                    (clean_plan_id,),
+                ).fetchone()
+                if action is not None:
+                    platform_table = "collectbox_action_batch_platforms"
+            if action is None:
+                action = connection.execute(
+                    "SELECT * FROM collectbox_actions WHERE plan_id = ?",
+                    (clean_plan_id,),
+                ).fetchone()
+            if action is None:
+                return {}
+            row = connection.execute(
+                f"""
+                SELECT receipt_json, receipt_digest
+                FROM {platform_table}
+                WHERE action_id = ? AND platform = 'TIKTOK'
+                """,
+                (action["action_id"],),
+            ).fetchone()
+            if row is None or not row["receipt_json"]:
+                return {}
+            receipt = json.loads(row["receipt_json"])
+            if (
+                not isinstance(receipt, dict)
+                or receipt.get("schema_version")
+                != "collectbox-platform-receipt/v1"
+                or _digest(receipt) != row["receipt_digest"]
+            ):
+                raise ValueError("collect-box TikTok receipt identity drifted")
+            raw_identities = receipt.get("internal_target_details")
+            if not isinstance(raw_identities, list):
+                return {}
+            contexts: dict[str, dict[str, Any]] = {}
+            for raw in raw_identities:
+                if not isinstance(raw, dict) or set(raw) != {
+                    "schema_version",
+                    "target_label",
+                    "detail_id",
+                    "shop_id",
+                    "identity_digest",
+                }:
+                    raise ValueError("collect-box target detail proof is invalid")
+                identity = CollectBoxTargetDetailIdentity(
+                    target_label=raw["target_label"],
+                    detail_id=raw["detail_id"],
+                    shop_id=raw["shop_id"],
+                ).internal_payload()
+                if identity != raw or raw["target_label"] in contexts:
+                    raise ValueError("collect-box target detail proof drifted")
+                contexts[raw["target_label"]] = {
+                    "schema_version": "collectbox-tiktok-publish-context/v1",
+                    "plan_id": action["plan_id"],
+                    "offer_id": action["offer_id"],
+                    "product_revision": int(action["product_revision"]),
+                    "payload_digest": action["payload_digest"],
+                    "targets_digest": action["targets_digest"],
+                    "action_id": action["action_id"],
+                    "platform": "TIKTOK",
+                    "common_identity_digest": action[
+                        "common_identity_digest"
+                    ],
+                    "receipt_digest": row["receipt_digest"],
+                    "target_detail_identity": identity,
+                }
+                binding = dict(contexts[raw["target_label"]])
+                contexts[raw["target_label"]][
+                    "publish_identity_digest"
+                ] = _digest(binding)
+            return contexts
+
     def _ensure_action(
         self,
         identity: Mapping[str, Any],
@@ -1659,6 +1806,22 @@ class CollectBoxActionStore:
             ]
         else:
             target_outcome_rows = []
+        internal_target_details = [
+            identity.internal_payload()
+            for identity in result.target_detail_identities
+        ]
+        internal_labels = tuple(
+            row["target_label"] for row in internal_target_details
+        )
+        if any(label not in selected_targets for label in internal_labels) or (
+            internal_labels
+            != tuple(
+                label
+                for label in selected_targets
+                if label in internal_labels
+            )
+        ):
+            raise ValueError("collect-box target detail identity drifted")
         platform_detail_id = (
             _canonical_positive_identifier(
                 result.platform_detail_id,
@@ -1694,6 +1857,7 @@ class CollectBoxActionStore:
             "outcome": result.outcome,
             "targets": target_rows,
             "target_outcomes": target_outcome_rows,
+            "internal_target_details": internal_target_details,
             "platform_detail_id_digest": platform_detail_digest,
             "external_writes": list(result.external_writes),
             "external_write_count": result.external_write_count,

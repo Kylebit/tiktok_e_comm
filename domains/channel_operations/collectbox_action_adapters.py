@@ -18,6 +18,8 @@ from modules.miaoshou.oneclick_release import (
 
 
 def _contract():
+    import shared_platform.collectbox_action as action_contract
+
     from shared_platform.collectbox_action import (
         ALREADY_PRESENT,
         FAILED,
@@ -42,6 +44,9 @@ def _contract():
         "SUCCEEDED": SUCCEEDED,
         "CollectBoxPlatformRequest": CollectBoxPlatformRequest,
         "CollectBoxPlatformResult": CollectBoxPlatformResult,
+        "CollectBoxTargetDetailIdentity": getattr(
+            action_contract, "CollectBoxTargetDetailIdentity", None
+        ),
         "CollectBoxTargetOutcome": CollectBoxTargetOutcome,
         "common_collectbox_identity_digest": (
             common_collectbox_identity_digest
@@ -77,6 +82,41 @@ def _typed_target_outcomes(contract, prepared_targets, expected_targets):
     if tuple(outcome.target_label for outcome in outcomes) != expected_targets:
         raise ValueError("prepared target outcome identity drifted")
     return outcomes
+
+
+def _typed_target_detail_identities(contract, prepared, expected_targets):
+    raw = prepared.get("target_detail_identities")
+    if not isinstance(raw, list):
+        return ()
+    if contract["CollectBoxTargetDetailIdentity"] is None:
+        raise ValueError("target detail identity contract is unavailable")
+    identities = tuple(
+        contract["CollectBoxTargetDetailIdentity"](
+            target_label=row["target_label"],
+            detail_id=str(row["detail_id"]),
+            shop_id=str(row["shop_id"]),
+        )
+        for row in raw
+        if isinstance(row, Mapping)
+        and set(row) == {"target_label", "detail_id", "shop_id"}
+    )
+    if len(identities) != len(raw):
+        raise ValueError("prepared target detail identities are invalid")
+    labels = tuple(value.target_label for value in identities)
+    if labels != tuple(
+        label for label in expected_targets if label in labels
+    ):
+        raise ValueError("prepared target detail identity drifted")
+    return identities
+
+
+def _platform_result(contract, **values):
+    result_type = contract["CollectBoxPlatformResult"]
+    if "target_detail_identities" not in getattr(
+        result_type, "__dataclass_fields__", {}
+    ):
+        values.pop("target_detail_identities", None)
+    return result_type(**values)
 
 
 def _identity_failure(contract, *, code: str, detail: str):
@@ -187,7 +227,8 @@ def _execute_known_collectbox_platform(
             raise ValueError("existing collect-box result has no identity")
         initial_claim_written = False
     elif result.retry_safe and not result.reconciliation_required:
-        return contract["CollectBoxPlatformResult"](
+        return _platform_result(
+            contract,
             status=contract["FAILED_RETRYABLE"],
             external_writes=(),
             external_write_count=0,
@@ -198,7 +239,8 @@ def _execute_known_collectbox_platform(
         )
     elif result.reconciliation_required:
         unknown = result.write_outcome == "UNKNOWN"
-        return contract["CollectBoxPlatformResult"](
+        return _platform_result(
+            contract,
             status=contract["RECONCILIATION_REQUIRED"],
             external_writes=(expected_write_class,) if unknown else (),
             external_write_count=None if unknown else 0,
@@ -230,7 +272,8 @@ def _execute_known_collectbox_platform(
             if count == 0 and not writes
             else contract["RECONCILIATION_REQUIRED"]
         )
-        return contract["CollectBoxPlatformResult"](
+        return _platform_result(
+            contract,
             status=status,
             external_writes=writes,
             external_write_count=count,
@@ -261,6 +304,9 @@ def _execute_known_collectbox_platform(
     )
     target_outcomes = _typed_target_outcomes(
         contract, prepared_targets, selected_targets
+    )
+    target_detail_identities = _typed_target_detail_identities(
+        contract, prepared, selected_targets
     )
     target_statuses = (
         ()
@@ -293,6 +339,7 @@ def _execute_known_collectbox_platform(
             external_write_count=count,
             target_statuses=target_statuses,
             target_outcomes=target_outcomes,
+            target_detail_identities=target_detail_identities,
             receipt_evidence={
                 "schema_version": "collectbox-platform-preparation-evidence/v1",
                 "platform": platform,
@@ -309,7 +356,8 @@ def _execute_known_collectbox_platform(
             error_code="collectbox_platform_preparation_partial",
             error_detail="one or more Miaoshou target drafts failed preparation",
         )
-    return contract["CollectBoxPlatformResult"](
+    return _platform_result(
+        contract,
         status=contract["SUCCEEDED"],
         outcome=(
             contract["IMPORTED"]
@@ -321,6 +369,7 @@ def _execute_known_collectbox_platform(
         external_write_count=count,
         target_statuses=target_statuses,
         target_outcomes=target_outcomes,
+        target_detail_identities=target_detail_identities,
         receipt_evidence={
             "schema_version": "collectbox-platform-preparation-evidence/v1",
             "platform": platform,

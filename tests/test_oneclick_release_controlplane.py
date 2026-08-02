@@ -1016,6 +1016,34 @@ def test_all_targets_prepare_before_first_atomic_claim(tmp_path):
     assert calls == targets
 
 
+def test_non_tiktok_prepare_does_not_read_tiktok_collectbox_proof(
+    tmp_path, monkeypatch
+):
+    from shared_platform.collectbox_action import CollectBoxActionStore
+
+    targets = ["shopee:PH", "ozon:RU"]
+    _release, plan, run = _approved_context(tmp_path, targets=targets)
+    registry = _registry(targets)
+    control = OneClickReleaseStore(tmp_path / "release.db")
+    job = control.ensure_job(
+        plan=plan, run=run, product_revision=31, registry=registry
+    )
+    reads = []
+
+    def unexpected_read(self, *, plan_id):
+        reads.append(plan_id)
+        raise AssertionError("non-TikTok preparation read TikTok proof")
+
+    monkeypatch.setattr(
+        CollectBoxActionStore,
+        "internal_tiktok_publish_contexts",
+        unexpected_read,
+    )
+
+    control.prepare_job(job["job_id"], registry)
+    assert reads == []
+
+
 def test_shopee_global_uses_explicit_approved_image_selection_not_all_images(
     tmp_path,
 ):

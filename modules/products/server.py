@@ -8334,6 +8334,26 @@ def _collectbox_action_store():
     return CollectBoxActionStore(default_release_store().path)
 
 
+def _tiktok_collectbox_publish_proof_available(plan: dict) -> bool:
+    targets = tuple(
+        target
+        for target in plan.get("targets", ())
+        if isinstance(target, str) and target.startswith("tiktok:")
+    )
+    if not targets:
+        return False
+    try:
+        contexts = _collectbox_action_store().internal_tiktok_publish_contexts(
+            plan_id=str(plan.get("plan_id") or "")
+        )
+    except (TypeError, ValueError):
+        return False
+    # One exact target proof is sufficient to start the isolated TikTok
+    # batch. Missing target proofs remain per-target blockers so a GB-only
+    # gap cannot prevent the other five approved drafts from publishing.
+    return any(target in contexts for target in targets)
+
+
 def _collectbox_action_timing():
     return time.monotonic, time.sleep
 
@@ -9020,6 +9040,26 @@ def _start_oneclick_release(
                 "target_focus": None,
             },
         }
+    if (
+        require_collectbox_platform == "TIKTOK"
+        and not _tiktok_collectbox_publish_proof_available(context["plan"])
+    ):
+        return 409, {
+            "ok": False,
+            "error": _collectbox_public_error(
+                category="CAPABILITY",
+                code="step1_collectbox_publish_proof_required",
+                detail=(
+                    "reimport TikTok collect-box drafts to persist exact "
+                    "per-target publication identities"
+                ),
+            ),
+            "external_writes_performed": [],
+            "canonical_next_action": {
+                "action": "restart_collectbox_action",
+                "target_focus": None,
+            },
+        }
     with _release_execution_lock:
         context, failure = _oneclick_approved_context(data)
         if failure:
@@ -9041,6 +9081,22 @@ def _start_oneclick_release(
                     detail=(
                         f"complete the {require_collectbox_platform} "
                         "collect-box action before starting this platform"
+                    ),
+                ),
+                "external_writes_performed": [],
+            }
+        if (
+            require_collectbox_platform == "TIKTOK"
+            and not _tiktok_collectbox_publish_proof_available(plan)
+        ):
+            return 409, {
+                "ok": False,
+                "error": _collectbox_public_error(
+                    category="CAPABILITY",
+                    code="step1_collectbox_publish_proof_required",
+                    detail=(
+                        "TikTok collect-box publication proof changed before "
+                        "the release batch was created"
                     ),
                 ),
                 "external_writes_performed": [],

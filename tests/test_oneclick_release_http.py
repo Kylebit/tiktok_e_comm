@@ -90,7 +90,10 @@ def test_publish_http_is_short_202_job_start_not_legacy_loop(
 
 def test_publish_post_cannot_reopen_legacy_job_before_collectbox_step(monkeypatch):
     calls = []
-    plan = {"plan_id": "omnichannel:test"}
+    plan = {
+        "plan_id": "omnichannel:test",
+        "targets": ["tiktok:MX", "tiktok:LH_MY"],
+    }
 
     class ReleaseStore:
         @staticmethod
@@ -197,7 +200,10 @@ def test_tiktok_publish_after_collectbox_success_creates_only_tiktok_batch(
     monkeypatch,
 ):
     calls = []
-    plan = {"plan_id": "omnichannel:test"}
+    plan = {
+        "plan_id": "omnichannel:test",
+        "targets": ["tiktok:MX", "tiktok:LH_MY"],
+    }
 
     class ReleaseStore:
         @staticmethod
@@ -224,6 +230,11 @@ def test_tiktok_publish_after_collectbox_success_creates_only_tiktok_batch(
                     ],
                 }
             }
+
+        @staticmethod
+        def internal_tiktok_publish_contexts(*, plan_id):
+            assert plan_id == plan["plan_id"]
+            return {"tiktok:MX": {"fixture": "server-internal-proof"}}
 
     class ControlStore:
         @staticmethod

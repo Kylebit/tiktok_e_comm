@@ -1631,6 +1631,25 @@ class OneClickReleaseStore:
         context = self._load_exact_context(job_id, registry)
         if context["job"]["status"] in _JOB_TERMINAL_STATUSES:
             return self.get_job(job_id=job_id) or {}
+        tiktok_contexts: dict[str, Any] = {}
+        if any(
+            row["target_label"].startswith("tiktok:")
+            for row in context["targets"]
+        ):
+            from shared_platform.collectbox_action import CollectBoxActionStore
+
+            # Pin one immutable collect-box receipt for the entire preparation
+            # transaction. A concurrent reimport may become the next explicit
+            # batch, but it cannot mix target identities into this batch.
+            tiktok_contexts = CollectBoxActionStore(
+                self.path
+            ).internal_tiktok_publish_contexts(
+                plan_id=context["job"]["plan_id"]
+            )
+        context = {
+            **context,
+            "tiktok_collectbox_publish_contexts": tiktok_contexts,
+        }
         with self._transaction() as connection:
             connection.execute(
                 """
@@ -4094,7 +4113,20 @@ class OneClickReleaseStore:
                 "adapter requires read-only prepare and governed dispatch seams",
             )
         prerequisite_context = None
-        if is_postpublish_promotion_target(label):
+        if label.startswith("tiktok:"):
+            prerequisite_context = context.get(
+                "tiktok_collectbox_publish_contexts", {}
+            ).get(label)
+            if prerequisite_context is not None:
+                prerequisite_context = dict(prerequisite_context)
+                prerequisite_context["source_identity_digest"] = context[
+                    "job"
+                ]["source_identity_digest"]
+                prerequisite_context.pop("publish_identity_digest", None)
+                prerequisite_context["publish_identity_digest"] = (
+                    _digest_json(prerequisite_context)
+                )
+        elif is_postpublish_promotion_target(label):
             try:
                 prerequisite_context = _promotion_prerequisite_context(
                     context,

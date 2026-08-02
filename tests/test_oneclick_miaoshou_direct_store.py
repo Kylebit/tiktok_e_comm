@@ -17,6 +17,9 @@ from domains.channel_operations.oneclick_release_adapters import (
 from modules.miaoshou import oneclick_release as miaoshou
 
 
+_REAL_PREPARE_WEB_PRICE_POST = miaoshou._prepare_web_price_post
+
+
 EXPECTED_STOREFRONTS = {
     "tiktok:LH_PH": ("tiktok", "PH", 7676267),
     "tiktok:LH_MY": ("tiktok", "MY", 13295169),
@@ -37,9 +40,14 @@ EXPECTED_STOREFRONTS = {
 
 
 @pytest.fixture(autouse=True)
-def _reset_miaoshou_factories():
+def _reset_miaoshou_factories(monkeypatch):
     miaoshou.configure_prepare_post_factory(None)
     miaoshou.configure_runtime_transport_factory(None)
+    monkeypatch.setattr(
+        miaoshou,
+        "_prepare_web_price_post",
+        lambda: (lambda _path, _body: {"success": True}),
+    )
     yield
     miaoshou.configure_prepare_post_factory(None)
     miaoshou.configure_runtime_transport_factory(None)
@@ -608,6 +616,7 @@ def test_collectbox_tiktok_sea_uses_site_draft_payload_and_exact_readback():
         miaoshou.DIRECT_STORE_CONFIG[target]["get_path"],
         miaoshou.DIRECT_STORE_CONFIG[target]["save_path"],
         miaoshou.DIRECT_STORE_CONFIG[target]["get_path"],
+        miaoshou.DIRECT_STORE_CONFIG[target]["get_path"],
     ]
 
 
@@ -942,8 +951,8 @@ LIVE_SIX_TIKTOK_TARGETS = (
 )
 
 
-@pytest.mark.parametrize("target", LIVE_SIX_TIKTOK_TARGETS)
-def test_collectbox_tiktok_restores_proven_per_site_price_and_category_without_web(
+@pytest.mark.parametrize("target", ("tiktok:MX", "tiktok:GB"))
+def test_collectbox_tiktok_shop_draft_persists_price_and_category_without_web(
     target, monkeypatch
 ):
     """The legacy complete per-site draft contract must persist both fields.
@@ -1355,7 +1364,11 @@ def test_collectbox_gb_resolves_unique_required_category_attribute_before_save(
 
 
 def _run_live_six_site_tiktok_drift(
-    *, category_decisions, use_web_price_repair=False, price_batch_faults=None
+    *,
+    category_decisions,
+    use_web_price_repair=False,
+    price_batch_faults=None,
+    site_detail_echoes_approved_price=False,
 ):
     targets = LIVE_SIX_TIKTOK_TARGETS
     approved_prices = {
@@ -1471,7 +1484,7 @@ def _run_live_six_site_tiktok_drift(
             details[shop_id]["detailId"] = int(body["detailId"])
             details[shop_id]["shopId"] = shop_id
             details[shop_id]["sourceOfferId"] = "986159122616"
-            if save_counts[target] == 1:
+            if save_counts[target] == 1 and not site_detail_echoes_approved_price:
                 converted = vendor_cny10_prices[target]
                 details[shop_id]["skuMap"]["default"]["price"] = converted
                 details[shop_id]["skuMap"]["default"][
@@ -1537,6 +1550,102 @@ def _run_live_six_site_tiktok_drift(
     return result, calls, web_calls, save_counts, save_bodies
 
 
+def test_collectbox_tiktok_sea_site_price_uses_authoritative_batch_write_even_when_detail_echoes_approved():
+    """SEA site-detail price is not the authoritative list/display price.
+
+    The live vendor accepts ``save_site_collect_item_info`` and its subsequent
+    site-detail read can echo the approved SKU price even while the Miaoshou
+    collect-box list continues to display the COMMON CNY-10 conversion.  The
+    only authoritative local-price mutation is the web ``batchSetPrice`` call.
+    MX/GB shop drafts already persist their local price and must not use it.
+    """
+
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    result, _calls, web_calls, save_counts, _save_bodies = (
+        _run_live_six_site_tiktok_drift(
+            category_decisions=_tiktok_category_decisions(targets),
+            use_web_price_repair=True,
+            site_detail_echoes_approved_price=True,
+        )
+    )
+
+    assert save_counts == {target: 1 for target in targets}
+    assert [body["site"] for _path, body in web_calls] == [
+        "PH",
+        "MY",
+        "TH",
+        "VN",
+    ]
+    assert [
+        body["priceConfig"]["price"]["newValue"]
+        for _path, body in web_calls
+    ] == [523, 46, 386, 408000]
+    assert all(
+        path == miaoshou.WEB_BATCH_SET_PRICE_PATH for path, _body in web_calls
+    )
+    outcomes = {
+        row["target_label"]: row for row in result["target_results"]
+    }
+    assert all(
+        outcomes[target]["status"] == "SUCCEEDED"
+        for target in targets
+    )
+    assert {
+        write
+        for write in result["external_writes"]
+        if ":price:update:" in write
+    } == {
+        f"miaoshou:collectbox:tiktok:price:update:{target}"
+        for target in targets[:4]
+    }
+
+
+@pytest.mark.parametrize(
+    ("fault", "error_code"),
+    [
+        ("rejected", "approved_price_batch_repair_rejected"),
+        ("exception", "approved_price_batch_repair_unknown"),
+    ],
+)
+def test_collectbox_tiktok_sea_price_failure_is_local_and_later_sites_continue(
+    fault, error_code
+):
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    result, _calls, web_calls, save_counts, _save_bodies = (
+        _run_live_six_site_tiktok_drift(
+            category_decisions=_tiktok_category_decisions(targets),
+            use_web_price_repair=True,
+            price_batch_faults={"tiktok:LH_PH": fault},
+            site_detail_echoes_approved_price=True,
+        )
+    )
+
+    outcomes = {
+        row["target_label"]: row for row in result["target_results"]
+    }
+    assert save_counts == {target: 1 for target in targets}
+    assert outcomes["tiktok:LH_PH"]["status"] == "FAILED"
+    assert outcomes["tiktok:LH_PH"]["error_code"] == error_code
+    assert all(
+        outcomes[target]["status"] == "SUCCEEDED"
+        for target in targets[1:]
+    )
+    assert [body["site"] for _path, body in web_calls] == [
+        "PH",
+        "MY",
+        "TH",
+        "VN",
+    ]
+    if fault == "exception":
+        assert result["external_write_count"] is None
+        assert (
+            "miaoshou:collectbox:tiktok:price:update:tiktok:LH_PH"
+            in result["external_writes"]
+        )
+    else:
+        assert result["external_write_count"] is not None
+
+
 def test_collectbox_tiktok_live_six_site_uses_effective_repair_and_continues():
     """A repair must change the rejected payload and process all six sites."""
 
@@ -1563,7 +1672,7 @@ def test_collectbox_tiktok_live_six_site_uses_effective_repair_and_continues():
     assert all("save_move_collect_task" not in path for path, _ in calls)
     assert [body["site"] for _path, body in web_calls] == [
         str(miaoshou.DIRECT_STORE_CONFIG[target]["site"])
-        for target in ("tiktok:MX", "tiktok:GB")
+        for target in targets
     ]
     assert {
         target: (outcomes[target]["status"], outcomes[target]["error_code"])
@@ -1614,7 +1723,7 @@ def test_collectbox_tiktok_batch_price_failure_is_local_and_continues(
     assert outcomes["tiktok:GB"]["status"] == "REPAIRED_SUCCEEDED"
     assert [body["site"] for _path, body in web_calls] == [
         str(miaoshou.DIRECT_STORE_CONFIG[target]["site"])
-        for target in ("tiktok:MX", "tiktok:GB")
+        for target in targets
     ]
     assert [
         str(body["shopIds"][0])
@@ -1633,6 +1742,9 @@ def test_collectbox_default_web_business_rejection_is_known_and_continues(
     from modules.miaoshou.client import MiaoshouBusinessRejectedError
 
     targets = LIVE_SIX_TIKTOK_TARGETS
+    monkeypatch.setattr(
+        miaoshou, "_prepare_web_price_post", _REAL_PREPARE_WEB_PRICE_POST
+    )
     monkeypatch.setattr(
         "modules.miaoshou.client.ensure_web_batch_price_auth_available",
         lambda: None,
@@ -1662,14 +1774,10 @@ def test_collectbox_default_web_business_rejection_is_known_and_continues(
         row["target_label"]: row for row in result["target_results"]
     }
     assert all(
-        outcomes[target]["status"] == "SUCCEEDED"
-        for target in targets[:4]
-    )
-    assert all(
         outcomes[target]["status"] == "FAILED"
         and outcomes[target]["error_code"]
         == "approved_price_batch_repair_rejected"
-        for target in targets[4:]
+        for target in targets
     )
     assert result["external_write_count"] is not None
     assert all("save_move_collect_task" not in path for path, _ in calls)

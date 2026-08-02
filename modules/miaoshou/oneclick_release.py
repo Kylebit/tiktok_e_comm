@@ -1763,7 +1763,14 @@ def _prepare_selected_platform_collectbox(
                 strict_collectbox_tiktok=True,
                 draft_mode=draft_mode,
             )
-            return detail_id, _target_result(target, "SUCCEEDED")
+            # A TikTok SEA site-detail GET can echo the submitted SKU price
+            # while Miaoshou's collect-box list still displays the automatic
+            # COMMON-CNY conversion.  It is therefore not authoritative for
+            # the persisted local display price.  SEA site drafts must always
+            # pass through the web batch-price operation below.  MX/GB shop
+            # drafts do persist their submitted price and remain unchanged.
+            if not (platform == "tiktok" and draft_mode == "site"):
+                return detail_id, _target_result(target, "SUCCEEDED")
         except Exception:
             if platform != "tiktok":
                 fail(f"{platform} draft readback did not match approved plan")
@@ -1784,8 +1791,9 @@ def _prepare_selected_platform_collectbox(
         # Miaoshou's OpenAPI detail-save normalizes the local site price from
         # the common-box CNY origin price.  The web batch-price endpoint is
         # the authoritative persisted local-price operation used by the UI.
-        repairable_price = readback_available and not _tiktok_prices_exact(
-            readback, expected
+        repairable_price = readback_available and (
+            draft_mode == "site"
+            or not _tiktok_prices_exact(readback, expected)
         )
         if repairable_price:
             try:
@@ -1854,7 +1862,12 @@ def _prepare_selected_platform_collectbox(
                     draft_mode=draft_mode,
                 )
                 return detail_id, _target_result(
-                    target, "REPAIRED_SUCCEEDED"
+                    target,
+                    (
+                        "SUCCEEDED"
+                        if draft_mode == "site"
+                        else "REPAIRED_SUCCEEDED"
+                    ),
                 )
             except Exception:
                 pass

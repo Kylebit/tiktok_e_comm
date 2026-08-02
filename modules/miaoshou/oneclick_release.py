@@ -2867,16 +2867,11 @@ def _authoritative_tiktok_list_price_exact(
             "approved TikTok source identity is unavailable"
         )
     source_offer_id = str(int(expected_source_offer_id))
-    detail_source_offer_id = detail.get("sourceOfferId")
-    if (
-        isinstance(detail_source_offer_id, bool)
-        or not str(detail_source_offer_id or "").isdecimal()
-        or int(detail_source_offer_id) <= 0
-        or str(int(detail_source_offer_id)) != source_offer_id
-    ):
-        raise MiaoshouOneClickPreDispatchError(
-            "authoritative TikTok detail source identity drifted"
-        )
+    # Miaoshou's live site/shop detail payloads do not echo the upstream
+    # source offer.  Validate it when the vendor supplies it, but bind an
+    # opaque response through the exact source-filtered query below plus the
+    # server-owned COMMON/detail/shop identities.
+    _verify_tiktok_detail_source_identity(detail, expected)
     pages = read_source_offer_pages(
         source_offer_id,
         post=post,
@@ -2927,15 +2922,18 @@ def _authoritative_tiktok_list_price_exact(
                         "authoritative TikTok list source identity is malformed"
                     )
                 observed_sources.add(str(int(value)))
-            if observed_sources != {source_offer_id}:
+            if observed_sources and observed_sources != {source_offer_id}:
                 raise MiaoshouOneClickPreDispatchError(
                     "authoritative TikTok list source identity drifted"
                 )
 
             expected_site = str(expected["region"]).upper()
-            observed_site = str(
-                row.get("site") or row.get("region") or ""
-            ).upper()
+            raw_observed_site = row.get("site") or row.get("region")
+            observed_site = (
+                str(raw_observed_site).upper()
+                if raw_observed_site is not None
+                else None
+            )
             shop_rows = row.get("collectBoxDetailShopList")
             if not isinstance(shop_rows, list) or any(
                 not isinstance(item, Mapping) for item in shop_rows
@@ -2944,14 +2942,19 @@ def _authoritative_tiktok_list_price_exact(
                     "authoritative TikTok list shop identity is malformed"
                 )
             shop_ids = [str(item.get("shopId") or "") for item in shop_rows]
+            observed_shop_sites = {
+                str(item.get("site")).upper()
+                for item in shop_rows
+                if item.get("site") is not None
+            }
             if (
-                observed_site != expected_site
+                (observed_site is not None and observed_site != expected_site)
                 or len(shop_ids) != 1
                 or len(set(shop_ids)) != 1
                 or set(shop_ids) != {str(expected["shop_id"])}
-                or any(
-                    str(item.get("site") or "").upper() != expected_site
-                    for item in shop_rows
+                or (
+                    observed_shop_sites
+                    and observed_shop_sites != {expected_site}
                 )
             ):
                 raise MiaoshouOneClickPreDispatchError(
@@ -3575,8 +3578,15 @@ def _verify_tiktok_detail_source_identity(
         or not expected_source.isascii()
         or not expected_source.isdecimal()
         or int(expected_source) <= 0
-        or isinstance(observed_source, bool)
-        or not str(observed_source or "").isdecimal()
+    ):
+        raise MiaoshouOneClickPreDispatchError(
+            "approved TikTok source offer identity is invalid"
+        )
+    if observed_source is None:
+        return
+    if (
+        isinstance(observed_source, bool)
+        or not str(observed_source).isdecimal()
         or int(observed_source) <= 0
         or str(int(observed_source)) != expected_source
     ):

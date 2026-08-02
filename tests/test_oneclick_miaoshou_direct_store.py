@@ -1412,6 +1412,7 @@ def _run_live_six_site_tiktok_drift(
     price_batch_noops=(),
     site_detail_echoes_approved_price=False,
     plan_source_offer_id="986159122616",
+    opaque_vendor_identity=False,
     probe=None,
 ):
     targets = LIVE_SIX_TIKTOK_TARGETS
@@ -1475,6 +1476,8 @@ def _run_live_six_site_tiktok_drift(
     for index, target in enumerate(targets):
         shop_id = str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])
         detail = _detail(target)
+        if opaque_vendor_identity:
+            detail.pop("sourceOfferId", None)
         detail["detailId"] = 77 + index
         detail["cid"] = observed_categories[target]
         details[shop_id] = detail
@@ -1521,13 +1524,18 @@ def _run_live_six_site_tiktok_drift(
             for listed_target in targets:
                 listed_config = miaoshou.DIRECT_STORE_CONFIG[listed_target]
                 listed_shop_id = str(listed_config["shop_id"])
-                rows.extend(
-                    _tiktok_list_response(
-                        listed_target,
-                        details[listed_shop_id],
-                        price=display_prices[listed_target],
-                    )["data"]["detailList"]
-                )
+                listed_rows = _tiktok_list_response(
+                    listed_target,
+                    details[listed_shop_id],
+                    price=display_prices[listed_target],
+                )["data"]["detailList"]
+                if opaque_vendor_identity:
+                    for row in listed_rows:
+                        row.pop("sourceOfferId", None)
+                        row.pop("site", None)
+                        for shop_row in row["collectBoxDetailShopList"]:
+                            shop_row.pop("site", None)
+                rows.extend(listed_rows)
             return {
                 "result": "success",
                 "data": {"detailList": rows, "totalCount": len(rows)},
@@ -1559,7 +1567,8 @@ def _run_live_six_site_tiktok_drift(
             details[shop_id] = deepcopy(body["shopCollectItemInfo"])
             details[shop_id]["detailId"] = int(body["detailId"])
             details[shop_id]["shopId"] = shop_id
-            details[shop_id]["sourceOfferId"] = "986159122616"
+            if not opaque_vendor_identity:
+                details[shop_id]["sourceOfferId"] = "986159122616"
             if save_counts[target] == 1 and not site_detail_echoes_approved_price:
                 converted = vendor_cny10_prices[target]
                 details[shop_id]["skuMap"]["default"]["price"] = converted
@@ -1575,7 +1584,8 @@ def _run_live_six_site_tiktok_drift(
             details[shop_id] = deepcopy(body["siteCollectItemInfo"])
             details[shop_id]["detailId"] = int(body["detailId"])
             details[shop_id]["site"] = str(body["site"])
-            details[shop_id]["sourceOfferId"] = "986159122616"
+            if not opaque_vendor_identity:
+                details[shop_id]["sourceOfferId"] = "986159122616"
             return {"result": "success"}
         raise AssertionError(path)
 
@@ -1677,6 +1687,38 @@ def test_collectbox_tiktok_sea_site_price_uses_authoritative_batch_write_even_wh
         f"miaoshou:collectbox:tiktok:price:update:{target}"
         for target in targets[:4]
     }
+
+
+def test_collectbox_tiktok_live_opaque_responses_persist_all_six_prices():
+    """The captured live response shape omits source/site echoes."""
+
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    result, _calls, web_calls, save_counts, save_bodies = (
+        _run_live_six_site_tiktok_drift(
+            category_decisions=_tiktok_category_decisions(targets),
+            use_web_price_repair=True,
+            site_detail_echoes_approved_price=True,
+            opaque_vendor_identity=True,
+        )
+    )
+
+    outcomes = {
+        row["target_label"]: row for row in result["target_results"]
+    }
+    assert save_counts == {target: 1 for target in targets}
+    assert all(outcomes[target]["status"] == "SUCCEEDED" for target in targets)
+    assert [body["priceConfig"]["price"]["newValue"] for _, body in web_calls] == [
+        523,
+        46,
+        386,
+        408000,
+    ]
+    assert save_bodies["tiktok:MX"][0]["shopCollectItemInfo"]["skuMap"][
+        "default"
+    ]["price"] == 286
+    assert save_bodies["tiktok:GB"][0]["shopCollectItemInfo"]["skuMap"][
+        "default"
+    ]["price"] == 15
 
 
 def test_collectbox_tiktok_sea_batch_success_without_price_mutation_is_not_success():
@@ -1877,10 +1919,48 @@ def test_tiktok_authoritative_list_price_rejects_nonmapping_mixed_page():
         )
 
 
+def test_tiktok_live_detail_identity_allows_missing_vendor_source_echo():
+    """Real Miaoshou site/shop detail payloads do not echo sourceOfferId."""
+
+    target = "tiktok:LH_PH"
+    detail = _detail(target)
+    detail.pop("sourceOfferId")
+
+    miaoshou._verify_tiktok_detail_source_identity(
+        detail,
+        _expected(target),
+    )
+
+
+def test_tiktok_authoritative_list_price_accepts_live_opaque_identity_shape():
+    """Bind the real list row by queried source, COMMON, detail and shop."""
+
+    target = "tiktok:LH_PH"
+    expected = _expected(target)
+    detail = _detail(target)
+    detail.pop("sourceOfferId")
+    row = _tiktok_list_response(target, detail, price="33")["data"][
+        "detailList"
+    ][0]
+    row.pop("sourceOfferId")
+    row.pop("site")
+    row["collectBoxDetailShopList"][0].pop("site")
+
+    assert miaoshou._authoritative_tiktok_list_price_exact(
+        lambda _path, _body: {
+            "result": "success",
+            "data": {"detailList": [row], "totalCount": 1},
+        },
+        detail=detail,
+        expected=expected,
+        detail_id=77,
+        target=target,
+    ) is True
+
+
 @pytest.mark.parametrize(
     "identity_fault",
     (
-        "missing_row_source",
         "exact_site_wrong_shop",
         "wrong_site_exact_shop",
         "exact_shop_with_extra_shop",
@@ -1897,9 +1977,7 @@ def test_tiktok_authoritative_list_price_requires_exact_complete_identity(
         "detailList"
     ][0]
 
-    if identity_fault == "missing_row_source":
-        row.pop("sourceOfferId")
-    elif identity_fault == "exact_site_wrong_shop":
+    if identity_fault == "exact_site_wrong_shop":
         row["collectBoxDetailShopList"] = [
             {"shopId": "99999999", "site": "PH"}
         ]

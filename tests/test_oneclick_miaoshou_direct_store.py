@@ -661,6 +661,7 @@ def test_collectbox_tiktok_sea_uses_site_then_shop_payload_and_exact_readback():
         miaoshou.SHOP_GET_PATH,
         miaoshou.SHOP_SAVE_PATH,
         miaoshou.SHOP_GET_PATH,
+        miaoshou.SOURCE_LIST_PATH,
     ]
 
 
@@ -1438,6 +1439,8 @@ def _run_live_six_site_tiktok_drift(
     price_batch_faults=None,
     price_batch_noops=(),
     site_detail_echoes_approved_price=False,
+    shop_save_updates_display=True,
+    shop_save_faults=None,
     plan_source_offer_id="986159122616",
     opaque_vendor_identity=False,
     probe=None,
@@ -1510,6 +1513,12 @@ def _run_live_six_site_tiktok_drift(
         details[shop_id] = detail
         target_by_shop_id[shop_id] = target
 
+    # Miaoshou persists site and shop drafts in distinct layers.  Keep the
+    # fixture independent too, otherwise a site save can accidentally make a
+    # later shop readback look successful without proving list persistence.
+    site_details = deepcopy(details)
+    shop_details = deepcopy(details)
+
     calls = []
     web_calls = []
     save_counts = {target: 0 for target in targets}
@@ -1553,7 +1562,7 @@ def _run_live_six_site_tiktok_drift(
                 listed_shop_id = str(listed_config["shop_id"])
                 listed_rows = _tiktok_list_response(
                     listed_target,
-                    details[listed_shop_id],
+                    shop_details[listed_shop_id],
                     price=display_prices[listed_target],
                 )["data"]["detailList"]
                 if opaque_vendor_identity:
@@ -1572,7 +1581,7 @@ def _run_live_six_site_tiktok_drift(
             return {
                 "result": "success",
                 "data": {
-                    "shopCollectItemInfo": deepcopy(details[shop_id]),
+                    "shopCollectItemInfo": deepcopy(shop_details[shop_id]),
                     "ossMd5": f"md5-{len(calls)}",
                 },
             }
@@ -1582,7 +1591,7 @@ def _run_live_six_site_tiktok_drift(
             return {
                 "result": "success",
                 "data": {
-                    "siteCollectItemInfo": deepcopy(details[shop_id]),
+                    "siteCollectItemInfo": deepcopy(site_details[shop_id]),
                     "ossMd5": f"md5-{len(calls)}",
                 },
             }
@@ -1591,28 +1600,38 @@ def _run_live_six_site_tiktok_drift(
             target = target_by_shop_id[shop_id]
             save_counts[target] += 1
             save_bodies[target].append(deepcopy(body))
-            details[shop_id] = deepcopy(body["shopCollectItemInfo"])
-            details[shop_id]["detailId"] = int(body["detailId"])
-            details[shop_id]["shopId"] = shop_id
+            fault = (shop_save_faults or {}).get(target)
+            if fault == "exception":
+                raise RuntimeError("sanitized shop save transport failure")
+            if fault == "nonmapping":
+                return []
+            if fault == "rejected":
+                return {"result": "fail", "message": "rejected"}
+            shop_details[shop_id] = deepcopy(body["shopCollectItemInfo"])
+            shop_details[shop_id]["detailId"] = int(body["detailId"])
+            shop_details[shop_id]["shopId"] = shop_id
             if not opaque_vendor_identity:
-                details[shop_id]["sourceOfferId"] = "986159122616"
+                shop_details[shop_id]["sourceOfferId"] = "986159122616"
             if save_counts[target] == 1 and not site_detail_echoes_approved_price:
                 converted = vendor_cny10_prices[target]
-                details[shop_id]["skuMap"]["default"]["price"] = converted
-                details[shop_id]["skuMap"]["default"][
+                shop_details[shop_id]["skuMap"]["default"]["price"] = converted
+                shop_details[shop_id]["skuMap"]["default"][
                     "priceIncludeVat"
                 ] = converted
+            if shop_save_updates_display:
+                price, _currency = approved_prices[target]
+                display_prices[target] = int(price)
             return {"result": "success"}
         if path.endswith("save_site_collect_item_info"):
             target = target_by_site[str(body["site"])]
             shop_id = str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])
             save_counts[target] += 1
             save_bodies[target].append(deepcopy(body))
-            details[shop_id] = deepcopy(body["siteCollectItemInfo"])
-            details[shop_id]["detailId"] = int(body["detailId"])
-            details[shop_id]["site"] = str(body["site"])
+            site_details[shop_id] = deepcopy(body["siteCollectItemInfo"])
+            site_details[shop_id]["detailId"] = int(body["detailId"])
+            site_details[shop_id]["site"] = str(body["site"])
             if not opaque_vendor_identity:
-                details[shop_id]["sourceOfferId"] = "986159122616"
+                site_details[shop_id]["sourceOfferId"] = "986159122616"
             return {"result": "success"}
         raise AssertionError(path)
 
@@ -1623,7 +1642,7 @@ def _run_live_six_site_tiktok_drift(
         )
         target = target_by_site[str(body["site"])]
         price, _currency = approved_prices[target]
-        detail_id = details[
+        detail_id = shop_details[
             str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])
         ]["detailId"]
         assert body == {
@@ -1645,8 +1664,8 @@ def _run_live_six_site_tiktok_drift(
             return {"success": True}
         shop_id = str(miaoshou.DIRECT_STORE_CONFIG[target]["shop_id"])
         display_prices[target] = int(price)
-        details[shop_id]["skuMap"]["default"]["price"] = int(price)
-        details[shop_id]["skuMap"]["default"]["priceIncludeVat"] = int(
+        shop_details[shop_id]["skuMap"]["default"]["price"] = int(price)
+        shop_details[shop_id]["skuMap"]["default"]["priceIncludeVat"] = int(
             price
         )
         return {"success": True}
@@ -1729,6 +1748,98 @@ def test_collectbox_tiktok_sea_persists_site_then_shop_without_changing_mx_gb():
         assert final_body["shopCollectItemInfo"]["skuMap"]["default"][
             "price"
         ] == approved_price
+
+
+def test_collectbox_tiktok_sea_fails_when_shop_detail_echoes_but_list_price_stays_old():
+    """The list/display authority must agree after the SEA shop save."""
+
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    result, _calls, _web_calls, _save_counts, _save_bodies = (
+        _run_live_six_site_tiktok_drift(
+            category_decisions=_tiktok_category_decisions(targets),
+            site_detail_echoes_approved_price=True,
+            shop_save_updates_display=False,
+        )
+    )
+
+    outcomes = {
+        row["target_label"]: row for row in result["target_results"]
+    }
+    assert outcomes["tiktok:LH_PH"]["status"] == "FAILED"
+    assert outcomes["tiktok:LH_PH"]["error_code"] == (
+        "approved_shop_list_price_readback_mismatch"
+    )
+    assert outcomes["tiktok:MX"]["status"] == "SUCCEEDED"
+    assert outcomes["tiktok:GB"]["status"] == "SUCCEEDED"
+
+
+@pytest.mark.parametrize("fault", ["exception", "nonmapping"])
+def test_collectbox_tiktok_sea_shop_save_unknown_preserves_second_write_and_continues(
+    fault,
+):
+    """An ambiguous shop save keeps both writes and cannot stop later sites."""
+
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    result, _calls, _web_calls, _save_counts, _save_bodies = (
+        _run_live_six_site_tiktok_drift(
+            category_decisions=_tiktok_category_decisions(targets),
+            site_detail_echoes_approved_price=True,
+            shop_save_faults={"tiktok:LH_PH": fault},
+        )
+    )
+
+    outcomes = {
+        row["target_label"]: row for row in result["target_results"]
+    }
+    assert outcomes["tiktok:LH_PH"] == {
+        "target_label": "tiktok:LH_PH",
+        "status": "FAILED",
+        "error_code": "approved_shop_price_update_unknown",
+        "detail_digest": outcomes["tiktok:LH_PH"]["detail_digest"],
+    }
+    assert outcomes["tiktok:LH_MY"]["status"] == "SUCCEEDED"
+    assert result["external_write_count"] is None
+    assert (
+        "miaoshou:collectbox:tiktok:detail:update:tiktok:LH_PH"
+        in result["external_writes"]
+    )
+    assert (
+        "miaoshou:collectbox:tiktok:shop:update:tiktok:LH_PH"
+        in result["external_writes"]
+    )
+    assert all("publish" not in write for write in result["external_writes"])
+
+
+def test_collectbox_tiktok_sea_shop_save_rejection_keeps_only_known_first_write():
+    """A rejected shop save must not invent the second write."""
+
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    result, _calls, _web_calls, _save_counts, _save_bodies = (
+        _run_live_six_site_tiktok_drift(
+            category_decisions=_tiktok_category_decisions(targets),
+            site_detail_echoes_approved_price=True,
+            shop_save_faults={"tiktok:LH_PH": "rejected"},
+        )
+    )
+
+    outcomes = {
+        row["target_label"]: row for row in result["target_results"]
+    }
+    assert outcomes["tiktok:LH_PH"]["status"] == "FAILED"
+    assert outcomes["tiktok:LH_PH"]["error_code"] == (
+        "approved_shop_price_update_rejected"
+    )
+    assert outcomes["tiktok:LH_MY"]["status"] == "SUCCEEDED"
+    assert result["external_write_count"] is not None
+    assert (
+        "miaoshou:collectbox:tiktok:detail:update:tiktok:LH_PH"
+        in result["external_writes"]
+    )
+    assert (
+        "miaoshou:collectbox:tiktok:shop:update:tiktok:LH_PH"
+        not in result["external_writes"]
+    )
+    assert all("publish" not in write for write in result["external_writes"])
 
 
 def test_collectbox_tiktok_live_opaque_responses_persist_all_six_prices():

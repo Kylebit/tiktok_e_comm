@@ -1905,12 +1905,25 @@ def _prepare_selected_platform_collectbox(
                     strict_collectbox_tiktok=True,
                     draft_mode="shop",
                 )
+                if not _authoritative_tiktok_list_price_exact(
+                    client,
+                    detail=shop_readback,
+                    expected=expected,
+                    detail_id=detail_id,
+                    target=target,
+                ):
+                    raise MiaoshouOneClickPreDispatchError(
+                        "Miaoshou collect-box list price differs from approved price"
+                    )
             except Exception:
                 return detail_id, _target_result(
                     target,
                     "FAILED",
-                    error_code="approved_shop_price_readback_mismatch",
-                    detail="Miaoshou shop price differs from approved price",
+                    error_code="approved_shop_list_price_readback_mismatch",
+                    detail=(
+                        "Miaoshou shop or collect-box list price differs "
+                        "from approved price"
+                    ),
                 )
             return detail_id, _target_result(target, "SUCCEEDED")
 

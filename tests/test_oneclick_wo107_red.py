@@ -4,6 +4,7 @@ These tests intentionally describe the required product behaviour before the
 production fix exists.  Keep them in the permanent regression suite.
 """
 
+from copy import deepcopy
 import sqlite3
 
 import pytest
@@ -17,6 +18,13 @@ from shared_platform.oneclick_release_controlplane import (
 from tests.test_oneclick_release_controlplane import (
     _approved_context,
     _mvp_miaoshou_registry,
+)
+from modules.miaoshou import oneclick_release as miaoshou
+from tests.test_oneclick_miaoshou_direct_store import (
+    DirectStoreFake,
+    _detail,
+    _expected,
+    _plan_payload,
 )
 
 
@@ -212,3 +220,92 @@ def test_tiktok_partial_collectbox_allows_five_successes_and_gb_waiver(
         "omnichannel:tiktok-partial",
         "TIKTOK",
     ) is True
+
+
+def test_gb_collectbox_waives_copy_category_attributes_but_keeps_exact_price():
+    """Kyle's GB waiver is narrow: preserve vendor fields, enforce GBP price.
+
+    The GB shop draft may retain its current title, category and product
+    attributes.  Those three fields must be copied unchanged into the update
+    payload and must not make the target ineligible when the approved price is
+    exact.  MX and SEA remain strict; this is not a platform-wide waiver.
+    """
+
+    target = "tiktok:GB"
+    payload = _plan_payload(target)
+    payload["pricing"]["selected_targets"][target]["store_prices"][0].update(
+        {"list_price": "42", "currency": "GBP"}
+    )
+    fake = DirectStoreFake(target)
+    current_title = "Vendor current GB title"
+    current_category = "VENDOR-GB-CATEGORY"
+    current_attributes = [
+        {
+            "attributeId": "vendor-attribute",
+            "attributeName": "Vendor retained attribute",
+            "attributeValues": [{"valueId": "vendor-value"}],
+        }
+    ]
+    fake.detail["title"] = current_title
+    fake.detail["cid"] = current_category
+    fake.detail["productAttributes"] = deepcopy(current_attributes)
+    saved = []
+
+    def post(path, body):
+        if path == miaoshou.SHOP_CLAIM_PATH:
+            fake.calls.append((path, deepcopy(body)))
+            return {"result": "success"}
+        if path == fake.config["save_path"]:
+            saved.append(deepcopy(body["shopCollectItemInfo"]))
+            # Reproduce GB retaining these vendor-controlled fields while
+            # persisting the exact approved price from the submitted update.
+            candidate = deepcopy(body["shopCollectItemInfo"])
+            candidate["title"] = current_title
+            candidate["cid"] = current_category
+            candidate["productAttributes"] = deepcopy(current_attributes)
+            fake.detail = candidate
+            fake.detail["detailId"] = 77
+            fake.detail["shopId"] = str(fake.config["shop_id"])
+            fake.detail["sourceOfferId"] = "986159122616"
+            return {"result": "success"}
+        return fake.post(path, body)
+
+    result = miaoshou.prepare_selected_platform_collectbox(
+        platform="tiktok",
+        common_detail_id="7",
+        initial_platform_detail_id="77",
+        initial_claim_written=True,
+        approved_plan_payload=payload,
+        approved_targets=(target,),
+        post=post,
+        web_post=fake.web_post,
+    )
+
+    assert result["target_results"] == [
+        {
+            "target_label": target,
+            "status": "SUCCEEDED",
+            "error_code": None,
+            "detail_digest": None,
+        }
+    ]
+    assert len(saved) == 1
+    assert saved[0]["title"] == current_title
+    assert saved[0]["cid"] == current_category
+    assert saved[0]["productAttributes"] == current_attributes
+    assert saved[0]["skuMap"]["default"]["price"] == 42
+
+    # The waiver must not leak to MX or SEA verification.
+    for strict_target in ("tiktok:MX", "tiktok:LH_PH"):
+        strict_readback = _detail(strict_target)
+        strict_readback["title"] = "mismatched title"
+        with pytest.raises(miaoshou.MiaoshouOneClickPreDispatchError):
+            miaoshou._verify_expected_detail(
+                strict_readback,
+                _expected(strict_target),
+                platform="tiktok",
+                strict_collectbox_tiktok=True,
+                draft_mode=miaoshou.DIRECT_STORE_CONFIG[strict_target][
+                    "draft_mode"
+                ],
+            )

@@ -4278,19 +4278,25 @@ class OneClickReleaseStore:
         _require_job_identity(job, identity)
         targets = _run_targets(run)
         source_identity = _resolve_plan_source_identity(plan["payload"])
-        raw_targets = self._raw_targets(job_id)
+        stored_targets = self._raw_targets(job_id, active_only=False)
         expected_labels = identity["execution_targets"]
         if (
-            [row["target_label"] for row in raw_targets] != expected_labels
+            [row["target_label"] for row in stored_targets]
+            != expected_labels
             or sum(
                 row["target_label"] == SHOPEE_GLOBAL_TARGET
-                for row in raw_targets
+                for row in stored_targets
             )
             > 1
         ):
             raise SystemicIdentityError(
                 "one-click control target identity drifted"
             )
+        active_targets = [
+            row
+            for row in stored_targets
+            if int(row.get("active_for_batch") or 0) == 1
+        ]
         return {
             "job": job,
             "plan": plan,
@@ -4327,7 +4333,7 @@ class OneClickReleaseStore:
                         )
                     ),
                 }
-                for row in raw_targets
+                for row in active_targets
             ],
         }
 
@@ -4888,15 +4894,23 @@ class OneClickReleaseStore:
         finally:
             connection.close()
 
-    def _raw_targets(self, job_id: str) -> list[dict[str, Any]]:
+    def _raw_targets(
+        self,
+        job_id: str,
+        *,
+        active_only: bool = True,
+    ) -> list[dict[str, Any]]:
         connection = self._connect()
         try:
+            active_clause = (
+                " AND active_for_batch = 1" if active_only else ""
+            )
             return [
                 dict(row)
                 for row in connection.execute(
-                    """
+                    f"""
                     SELECT * FROM oneclick_release_targets
-                    WHERE job_id = ? AND active_for_batch = 1
+                    WHERE job_id = ?{active_clause}
                     ORDER BY ordinal
                     """,
                     (job_id,),

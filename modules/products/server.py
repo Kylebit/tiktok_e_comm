@@ -8991,6 +8991,30 @@ def _start_oneclick_release(
             job["job_id"],
             target_labels=target_labels,
         )
+        active_scope = tuple(job.get("batch_scope_targets") or ())
+        if active_scope != target_labels:
+            return 409, {
+                "ok": False,
+                "error": {
+                    "category": "CAPABILITY",
+                    "code": "platform_dispatch_in_progress",
+                    "detail_digest": _server_canonical_digest(
+                        {
+                            "requested_scope": list(target_labels),
+                            "active_scope": list(active_scope),
+                            "job_id": job["job_id"],
+                        }
+                    ),
+                },
+                "batch_scope": batch_scope,
+                "external_writes_performed": [],
+                "canonical_next_action": {
+                    "action": "wait_for_platform_dispatch",
+                    "target_focus": (
+                        active_scope[0] if active_scope else None
+                    ),
+                },
+            }
         _wake_oneclick_worker(job["job_id"])
     return 202, {
         "ok": True,

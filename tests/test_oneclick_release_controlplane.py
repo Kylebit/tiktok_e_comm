@@ -562,6 +562,62 @@ def test_explicit_batch_can_activate_only_one_platform_scope(tmp_path):
     ]
 
 
+@pytest.mark.parametrize(
+    "scope_label",
+    ["tiktok:MX", SHOPEE_GLOBAL_TARGET, "ozon:RU"],
+)
+def test_explicit_platform_scope_prepares_and_claims_only_itself(
+    tmp_path,
+    scope_label,
+):
+    targets = ["tiktok:MX", "shopee:MY", "ozon:RU"]
+    release, plan, run = _approved_context(
+        tmp_path,
+        targets=targets,
+        inventory_ready=False,
+    )
+    prepare_calls = []
+
+    def prepare(request):
+        prepare_calls.append(request.target_label)
+        if request.target_label == SHOPEE_GLOBAL_TARGET:
+            return _ensure_new_global_prepare(request)
+        return PrepareTargetResult(
+            classification=EXACT_READY_AUTOMATIC,
+            reason_category="CAPABILITY",
+            reason_scope="TARGET",
+            reason_code="platform_command_ready",
+            reason_detail="the isolated platform command is ready",
+            command={"kind": "isolated-platform", "target": request.target_label},
+            proof={"kind": "approved-plan-only", "target": request.target_label},
+        )
+
+    registry = _mvp_miaoshou_registry(
+        [*targets, SHOPEE_GLOBAL_TARGET],
+        prepare_override=prepare,
+    )
+    control = OneClickReleaseStore(release.path)
+    job = control.ensure_job(
+        plan=plan,
+        run=run,
+        product_revision=31,
+        registry=registry,
+    )
+    started = control.start_explicit_batch(
+        job["job_id"],
+        target_labels=(scope_label,),
+    )
+
+    assert started["batch_scope_targets"] == [scope_label]
+    prepared = control.prepare_job(job["job_id"], registry)
+    request = control.claim_next_dispatch(job["job_id"], registry)
+
+    assert prepare_calls == [scope_label]
+    assert prepared["batch_scope_targets"] == [scope_label]
+    assert request is not None
+    assert request.target_label == scope_label
+
+
 def test_mvp_explicit_click_starts_new_batch_after_partial_reconciliation(
     tmp_path,
 ):

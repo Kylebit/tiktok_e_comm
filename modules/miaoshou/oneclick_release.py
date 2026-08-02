@@ -1845,6 +1845,39 @@ def _prepare_selected_platform_collectbox(
             add_write(
                 f"miaoshou:collectbox:tiktok:price:update:{target}"
             )
+            if draft_mode == "site":
+                try:
+                    authoritative_price_exact = (
+                        _authoritative_tiktok_list_price_exact(
+                            client,
+                            detail=readback,
+                            expected=expected,
+                            detail_id=detail_id,
+                            target=target,
+                        )
+                    )
+                except Exception:
+                    return detail_id, _target_result(
+                        target,
+                        "FAILED",
+                        error_code=(
+                            "approved_price_authoritative_readback_unavailable"
+                        ),
+                        detail=(
+                            "Miaoshou list/display price could not be read exactly"
+                        ),
+                    )
+                if not authoritative_price_exact:
+                    return detail_id, _target_result(
+                        target,
+                        "FAILED",
+                        error_code=(
+                            "approved_price_authoritative_readback_mismatch"
+                        ),
+                        detail=(
+                            "Miaoshou list/display price differs from approved price"
+                        ),
+                    )
             repair_readback_available = False
             try:
                 readback, _ = _read_shop(
@@ -1860,6 +1893,7 @@ def _prepare_selected_platform_collectbox(
                     platform=platform,
                     strict_collectbox_tiktok=True,
                     draft_mode=draft_mode,
+                    verify_price=(draft_mode != "site"),
                 )
                 return detail_id, _target_result(
                     target,
@@ -2618,6 +2652,7 @@ def _verify_expected_detail(
     platform: str = "tiktok",
     strict_collectbox_tiktok: bool = False,
     draft_mode: str = "shop",
+    verify_price: bool = True,
 ) -> None:
     sku_map = _sku_map(detail)
     bindings = _approved_variant_key_bindings(detail, expected)
@@ -2696,7 +2731,7 @@ def _verify_expected_detail(
                 for key in wanted
             )
         )
-    if "price" in expected:
+    if "price" in expected and verify_price:
         checks.append(
             all(
                 _numbers_equal(
@@ -2778,6 +2813,142 @@ def _tiktok_prices_exact(
         )
     except (KeyError, TypeError, ValueError, MiaoshouOneClickPreDispatchError):
         return False
+
+
+def _authoritative_tiktok_list_price_exact(
+    post: Callable[[str, Mapping[str, object]], object],
+    *,
+    detail: Mapping[str, object],
+    expected: Mapping[str, object],
+    detail_id: int,
+    target: str,
+) -> bool:
+    """Compare the approved price with Miaoshou's list/display authority.
+
+    The site-detail endpoint can echo the submitted SKU price without changing
+    the price displayed by Miaoshou's collect-box list.  The documented
+    ``search_collect_box_detail_list`` row ``price`` is therefore required
+    after the web batch mutation.  Identity is bound before the price is read;
+    no title, ordering, or fuzzy matching is permitted.
+    """
+
+    source_offer_id = detail.get("sourceOfferId")
+    if (
+        isinstance(source_offer_id, bool)
+        or not str(source_offer_id or "").isdecimal()
+        or int(source_offer_id) <= 0
+    ):
+        raise MiaoshouOneClickPreDispatchError(
+            "authoritative TikTok list source identity is unavailable"
+        )
+    source_offer_id = str(int(source_offer_id))
+    pages = read_source_offer_pages(
+        source_offer_id,
+        post=post,
+        target=target,
+    )
+    matches: list[Mapping[str, object]] = []
+    for page in pages:
+        for row in page["data"]["detailList"]:
+            raw_detail_id = row.get("collectBoxDetailId") or row.get(
+                "detailId"
+            )
+            if (
+                isinstance(raw_detail_id, bool)
+                or not str(raw_detail_id or "").isdecimal()
+                or int(raw_detail_id) <= 0
+            ):
+                raise MiaoshouOneClickPreDispatchError(
+                    "authoritative TikTok list detail identity is malformed"
+                )
+            if int(raw_detail_id) != detail_id:
+                continue
+
+            raw_common_id = row.get("commonCollectBoxDetailId")
+            if (
+                isinstance(raw_common_id, bool)
+                or not str(raw_common_id or "").isdecimal()
+                or str(int(raw_common_id))
+                != str(expected["common_detail_id"])
+            ):
+                raise MiaoshouOneClickPreDispatchError(
+                    "authoritative TikTok list COMMON identity drifted"
+                )
+            observed_sources: set[str] = set()
+            for field in (
+                "sourceOfferId",
+                "sourceItemId",
+                "sourceProductId",
+            ):
+                value = row.get(field)
+                if value is None:
+                    continue
+                if (
+                    isinstance(value, bool)
+                    or not str(value).isdecimal()
+                    or int(value) <= 0
+                ):
+                    raise MiaoshouOneClickPreDispatchError(
+                        "authoritative TikTok list source identity is malformed"
+                    )
+                observed_sources.add(str(int(value)))
+            if observed_sources and observed_sources != {source_offer_id}:
+                raise MiaoshouOneClickPreDispatchError(
+                    "authoritative TikTok list source identity drifted"
+                )
+
+            expected_site = str(expected["region"]).upper()
+            observed_site = str(
+                row.get("site") or row.get("region") or ""
+            ).upper()
+            shop_rows = row.get("collectBoxDetailShopList")
+            shop_identity_exact = False
+            if shop_rows is not None:
+                if not isinstance(shop_rows, list) or any(
+                    not isinstance(item, Mapping) for item in shop_rows
+                ):
+                    raise MiaoshouOneClickPreDispatchError(
+                        "authoritative TikTok list shop identity is malformed"
+                    )
+                shop_identity_exact = any(
+                    str(item.get("shopId") or "")
+                    == str(expected["shop_id"])
+                    and str(item.get("site") or expected_site).upper()
+                    == expected_site
+                    for item in shop_rows
+                )
+            if observed_site != expected_site and not shop_identity_exact:
+                raise MiaoshouOneClickPreDispatchError(
+                    "authoritative TikTok list target identity drifted"
+                )
+            matches.append(row)
+
+    if len(matches) != 1:
+        raise MiaoshouOneClickPreDispatchError(
+            "authoritative TikTok list row is unavailable or ambiguous"
+        )
+    raw_price = matches[0].get("price")
+    if isinstance(raw_price, bool) or raw_price is None:
+        raise MiaoshouOneClickPreDispatchError(
+            "authoritative TikTok list price is malformed"
+        )
+    try:
+        observed_price = Decimal(str(raw_price))
+        approved_price = Decimal(str(expected["price"]))
+    except (InvalidOperation, TypeError, ValueError) as error:
+        raise MiaoshouOneClickPreDispatchError(
+            "authoritative TikTok list price is malformed"
+        ) from error
+    if (
+        not observed_price.is_finite()
+        or observed_price <= 0
+        or not approved_price.is_finite()
+        or approved_price <= 0
+    ):
+        raise MiaoshouOneClickPreDispatchError(
+            "authoritative TikTok list price is malformed"
+        )
+    return observed_price == approved_price
 
 
 def _tiktok_category_error_code(

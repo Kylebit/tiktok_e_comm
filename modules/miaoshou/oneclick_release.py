@@ -1788,15 +1788,23 @@ def _prepare_selected_platform_collectbox(
                 strict_collectbox_tiktok=True,
                 draft_mode=draft_mode,
             )
-            # A TikTok SEA site-detail GET can echo the submitted SKU price
-            # while Miaoshou's collect-box list still displays the automatic
-            # COMMON-CNY conversion.  It is therefore not authoritative for
-            # the persisted local display price.  SEA site drafts must always
-            # pass through the web batch-price operation below.  MX/GB shop
-            # drafts do persist their submitted price and remain unchanged.
+            # SEA continues below to validate its category and then accepts
+            # this exact site draft as the final publish input.  MX/GB keep
+            # their existing shop-draft return/repair behavior unchanged.
             if not (platform == "tiktok" and draft_mode == "site"):
                 return detail_id, _target_result(target, "SUCCEEDED")
         except Exception:
+            # The historical SEA publish input is the site draft itself, so
+            # every approved field in that readback must be exact before the
+            # draft can be submitted.  Only MX/GB shop drafts retain the
+            # separate price-repair fallback below.
+            if platform == "tiktok" and draft_mode == "site":
+                return detail_id, _target_result(
+                    target,
+                    "FAILED",
+                    error_code="approved_site_draft_readback_mismatch",
+                    detail="Miaoshou site draft differs from approved plan",
+                )
             if platform != "tiktok":
                 fail(f"{platform} draft readback did not match approved plan")
 
@@ -1814,117 +1822,13 @@ def _prepare_selected_platform_collectbox(
             )
 
         if platform == "tiktok" and draft_mode == "site":
-            # SEA has two distinct Miaoshou draft layers.  The site layer owns
-            # category/content, while the historical shop layer is what makes
-            # the approved local price visible in the collect-box list.  Both
-            # operations are Open API calls and survive a service restart; no
-            # browser cookie or web-only batch endpoint is involved.
-            shop_update_class = (
-                f"miaoshou:collectbox:tiktok:shop:update:{target}"
-            )
-            try:
-                shop_detail, shop_oss_md5 = _read_shop(
-                    client,
-                    detail_id,
-                    int(str(config["shop_id"])),
-                )
-                _verify_shop_identity(
-                    shop_detail,
-                    detail_id=detail_id,
-                    shop_id=str(config["shop_id"]),
-                )
-                _verify_tiktok_detail_source_identity(shop_detail, expected)
-                _verify_site_variants(shop_detail, expected)
-                shop_updated = _apply_expected_for_platform(
-                    shop_detail,
-                    expected,
-                    platform="tiktok",
-                    draft_mode="shop",
-                    warehouse_id=warehouse_id,
-                )
-                shop_body = _save_body(
-                    platform="tiktok",
-                    site=str(config["site"]),
-                    detail_id=detail_id,
-                    shop_id=int(str(config["shop_id"])),
-                    updated=shop_updated,
-                    oss_md5=shop_oss_md5,
-                    draft_mode="shop",
-                )
-            except Exception:
-                return detail_id, _target_result(
-                    target,
-                    "FAILED",
-                    error_code="approved_shop_price_preparation_failed",
-                    detail="Miaoshou shop draft could not be prepared exactly",
-                )
-            try:
-                shop_saved = client(SHOP_SAVE_PATH, shop_body)
-            except Exception:
-                add_write(shop_update_class)
-                write_count_unknown = True
-                return detail_id, _target_result(
-                    target,
-                    "FAILED",
-                    error_code="approved_shop_price_update_unknown",
-                    detail="Miaoshou shop price update outcome is unknown",
-                )
-            if not isinstance(shop_saved, Mapping):
-                add_write(shop_update_class)
-                write_count_unknown = True
-                return detail_id, _target_result(
-                    target,
-                    "FAILED",
-                    error_code="approved_shop_price_update_unknown",
-                    detail="Miaoshou shop price update response is malformed",
-                )
-            if not _accepted(shop_saved):
-                return detail_id, _target_result(
-                    target,
-                    "FAILED",
-                    error_code="approved_shop_price_update_rejected",
-                    detail="Miaoshou shop price update was rejected",
-                )
-            add_write(shop_update_class)
-            try:
-                shop_readback, _ = _read_shop(
-                    client,
-                    detail_id,
-                    int(str(config["shop_id"])),
-                )
-                _verify_shop_identity(
-                    shop_readback,
-                    detail_id=detail_id,
-                    shop_id=str(config["shop_id"]),
-                )
-                _verify_tiktok_detail_source_identity(shop_readback, expected)
-                _verify_expected_detail(
-                    shop_readback,
-                    expected,
-                    platform="tiktok",
-                    strict_collectbox_tiktok=True,
-                    draft_mode="shop",
-                )
-                if not _authoritative_tiktok_list_price_exact(
-                    client,
-                    detail=shop_readback,
-                    expected=expected,
-                    detail_id=detail_id,
-                    target=target,
-                ):
-                    raise MiaoshouOneClickPreDispatchError(
-                        "Miaoshou collect-box list price differs from approved price"
-                    )
-            except Exception:
-                return detail_id, _target_result(
-                    target,
-                    "FAILED",
-                    error_code="approved_shop_list_price_readback_mismatch",
-                    detail=(
-                        "Miaoshou shop or collect-box list price differs "
-                        "from approved price"
-                    ),
-                )
+            # The proven SEA dispatch path consumes this exact site draft via
+            # ``save_move_collect_task``.  Miaoshou's intermediate list card
+            # may continue to show an automatic COMMON-CNY conversion; that
+            # card is neither the submitted payload nor a prerequisite for
+            # final publication.  Keep the exact site-detail readback above as
+            # the hard gate and leave final price verification to the channel
+            # publication/readback stage.
             return detail_id, _target_result(target, "SUCCEEDED")
 
         # Miaoshou's OpenAPI detail-save normalizes the local site price from

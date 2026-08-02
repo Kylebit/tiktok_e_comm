@@ -8858,7 +8858,46 @@ def _oneclick_release_status(data: dict) -> tuple[int, dict]:
     }
 
 
-def _start_oneclick_release(data: dict) -> tuple[int, dict]:
+def _oneclick_scope_target_labels(
+    job: dict,
+    batch_scope: str,
+) -> tuple[str, ...]:
+    rows = [
+        *(job.get("shared_controls") or []),
+        *(job.get("targets") or []),
+    ]
+    labels = [
+        str(row.get("target_label") or "")
+        for row in rows
+        if isinstance(row, dict)
+    ]
+    if batch_scope == "TIKTOK":
+        return tuple(label for label in labels if label.startswith("tiktok:"))
+    if batch_scope == "SHOPEE_GLOBAL":
+        return tuple(label for label in labels if label == "shopee:GLOBAL")
+    if batch_scope == "OZON":
+        return tuple(label for label in labels if label == "ozon:RU")
+    return ()
+
+
+def _collectbox_platform_succeeded(plan_id: str, platform: str) -> bool:
+    projection = _collectbox_action_store().status(plan_id=plan_id)
+    action = projection.get("action") if isinstance(projection, dict) else None
+    rows = action.get("platforms") if isinstance(action, dict) else None
+    return any(
+        isinstance(row, dict)
+        and row.get("platform") == platform
+        and row.get("status") == "SUCCEEDED"
+        for row in (rows or [])
+    )
+
+
+def _start_oneclick_release(
+    data: dict,
+    *,
+    batch_scope: str = "TIKTOK",
+    require_collectbox_platform: str | None = "TIKTOK",
+) -> tuple[int, dict]:
     """Create/wake one durable job and return without channel I/O."""
 
     if data.get("confirm_publish") is not True:
@@ -8870,44 +8909,121 @@ def _start_oneclick_release(data: dict) -> tuple[int, dict]:
     if failure:
         return failure
     assert context is not None
-    collectbox = _collectbox_action_store().status(
-        plan_id=context["plan"]["plan_id"]
-    )
-    collectbox_status = (
-        (collectbox.get("action") or {}).get("status")
-        if isinstance(collectbox, dict)
-        else None
-    )
-    error_code = (
-        "store_publish_not_yet_enabled"
-        if collectbox_status == "SUCCEEDED"
-        else "step1_collectbox_required"
-    )
-    return 409, {
-        "ok": False,
-        "error": _collectbox_public_error(
-            category="CAPABILITY",
-            code=error_code,
-            detail=(
-                "store publishing is not enabled in collect-box Step 1"
-                if collectbox_status == "SUCCEEDED"
-                else "complete the plan-bound collect-box action first"
-            ),
-        ),
-        "external_writes_performed": [],
-        "canonical_next_action": (
-            None
-            if collectbox_status == "SUCCEEDED"
-            else {
-                "action": (
-                    "read_collectbox_status"
-                    if collectbox_status == "RUNNING"
-                    else "start_collectbox_action"
+    if (
+        require_collectbox_platform
+        and not _collectbox_platform_succeeded(
+            context["plan"]["plan_id"],
+            require_collectbox_platform,
+        )
+    ):
+        return 409, {
+            "ok": False,
+            "error": _collectbox_public_error(
+                category="CAPABILITY",
+                code="step1_collectbox_required",
+                detail=(
+                    f"complete the {require_collectbox_platform} collect-box "
+                    "action before starting this platform"
                 ),
+            ),
+            "external_writes_performed": [],
+            "canonical_next_action": {
+                "action": "start_collectbox_action",
                 "target_focus": None,
+            },
+        }
+    with _release_execution_lock:
+        context, failure = _oneclick_approved_context(data)
+        if failure:
+            return failure
+        assert context is not None
+        plan = context["plan"]
+        if (
+            require_collectbox_platform
+            and not _collectbox_platform_succeeded(
+                plan["plan_id"],
+                require_collectbox_platform,
+            )
+        ):
+            return 409, {
+                "ok": False,
+                "error": _collectbox_public_error(
+                    category="CAPABILITY",
+                    code="step1_collectbox_required",
+                    detail=(
+                        f"complete the {require_collectbox_platform} "
+                        "collect-box action before starting this platform"
+                    ),
+                ),
+                "external_writes_performed": [],
             }
-        ),
+        run = context["store"].start_run(plan["plan_id"])
+        registry = _oneclick_adapter_registry()
+        control_store = _oneclick_control_store()
+        job = control_store.ensure_job(
+            plan=context["store"].get_plan(plan["plan_id"]),
+            run=run,
+            product_revision=int(context["payload"]["product_revision"]),
+            registry=registry,
+        )
+        target_labels = _oneclick_scope_target_labels(job, batch_scope)
+        if not target_labels:
+            return 409, {
+                "ok": False,
+                "error": {
+                    "category": "CAPABILITY",
+                    "code": "platform_target_not_selected",
+                    "detail_digest": _server_canonical_digest(
+                        {
+                            "batch_scope": batch_scope,
+                            "plan_id": plan["plan_id"],
+                        }
+                    ),
+                },
+                "external_writes_performed": [],
+            }
+        dispatch_capability = _oneclick_dispatch_capability()
+        job = control_store.set_dispatch_capability(
+            job["job_id"],
+            enabled=dispatch_capability["enabled"],
+        )
+        job = control_store.start_explicit_batch(
+            job["job_id"],
+            target_labels=target_labels,
+        )
+        _wake_oneclick_worker(job["job_id"])
+    return 202, {
+        "ok": True,
+        "accepted": True,
+        "idempotent": False,
+        "batch_scope": batch_scope,
+        "external_writes_performed": [],
+        "job": _project_oneclick_dispatch_capability(job),
     }
+
+
+def _start_tiktok_release(data: dict) -> tuple[int, dict]:
+    return _start_oneclick_release(
+        data,
+        batch_scope="TIKTOK",
+        require_collectbox_platform="TIKTOK",
+    )
+
+
+def _start_shopee_global_release(data: dict) -> tuple[int, dict]:
+    return _start_oneclick_release(
+        data,
+        batch_scope="SHOPEE_GLOBAL",
+        require_collectbox_platform=None,
+    )
+
+
+def _start_ozon_release(data: dict) -> tuple[int, dict]:
+    return _start_oneclick_release(
+        data,
+        batch_scope="OZON",
+        require_collectbox_platform=None,
+    )
 def _publish_selected_release(data: dict) -> tuple[int, dict]:
     """Execute the approved plan once through durable per-target adapters."""
     from domains.channel_operations.release_executor import AdapterExecutionRequest
@@ -12405,6 +12521,9 @@ class Handler(BaseHTTPRequestHandler):
             "/api/product-workspace/miaoshou-draft/commit",
             "/api/product-workspace/collectbox-action/start",
             "/api/product-workspace/publish",
+            "/api/product-workspace/publish-tiktok",
+            "/api/product-workspace/publish-shopee-global",
+            "/api/product-workspace/publish-ozon",
             "/api/product-workspace/release-target/manual-verify",
             "/api/product-workspace/release-target/shopee-price-repair",
             (
@@ -12479,6 +12598,15 @@ class Handler(BaseHTTPRequestHandler):
                 status, payload = _prepare_miaoshou_release(data)
             elif path == "/api/product-workspace/collectbox-action/start":
                 status, payload = _start_collectbox_action(data)
+            elif path in {
+                "/api/product-workspace/publish",
+                "/api/product-workspace/publish-tiktok",
+            }:
+                status, payload = _start_tiktok_release(data)
+            elif path == "/api/product-workspace/publish-shopee-global":
+                status, payload = _start_shopee_global_release(data)
+            elif path == "/api/product-workspace/publish-ozon":
+                status, payload = _start_ozon_release(data)
             elif path == "/api/product-workspace/release-target/manual-verify":
                 status, payload = _manually_verify_release_target(data)
             elif (
@@ -12507,7 +12635,10 @@ class Handler(BaseHTTPRequestHandler):
             ):
                 status, payload = _execute_target_scoped_reconciliation(data)
             else:
-                status, payload = _start_oneclick_release(data)
+                return self._json(
+                    404,
+                    {"ok": False, "error": "unknown product workflow write"},
+                )
             return self._json(status, payload)
         if self._handle_product_flow_proxy("POST"):
             return

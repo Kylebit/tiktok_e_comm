@@ -1033,7 +1033,12 @@ class OneClickReleaseStore:
                 identity["job_id"],
             )
 
-    def start_explicit_batch(self, job_id: str) -> dict[str, Any]:
+    def start_explicit_batch(
+        self,
+        job_id: str,
+        *,
+        target_labels: tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         """Start a fresh user-requested attempt without erasing prior receipts.
 
         The one-click outcome and write-occurrence tables remain append-only.
@@ -1063,6 +1068,46 @@ class OneClickReleaseStore:
                 (job_id,),
             ).fetchone():
                 return self._project_job_in_transaction(connection, job_id)
+
+            if target_labels is not None:
+                if (
+                    type(target_labels) is not tuple
+                    or not target_labels
+                    or any(
+                        type(label) is not str or not label
+                        for label in target_labels
+                    )
+                    or len(target_labels) != len(set(target_labels))
+                ):
+                    raise OneClickControlPlaneError(
+                        "explicit batch target scope is invalid"
+                    )
+                available_labels = {
+                    row["target_label"]
+                    for row in connection.execute(
+                        """
+                        SELECT target_label FROM oneclick_release_targets
+                        WHERE job_id = ?
+                        """,
+                        (job_id,),
+                    )
+                }
+                if any(label not in available_labels for label in target_labels):
+                    raise OneClickControlPlaneError(
+                        "explicit batch target scope is unavailable"
+                    )
+                placeholders = ", ".join("?" for _ in target_labels)
+                connection.execute(
+                    f"""
+                    UPDATE oneclick_release_targets
+                    SET active_for_batch = CASE
+                        WHEN target_label IN ({placeholders}) THEN 1 ELSE 0
+                    END,
+                    updated_at = ?
+                    WHERE job_id = ?
+                    """,
+                    (*target_labels, now, job_id),
+                )
 
             sequence = int(job["batch_sequence"] or 0) + 1
             connection.execute(
@@ -4397,6 +4442,9 @@ class OneClickReleaseStore:
                     json.loads(plan["target_labels_json"]),
                     plan_payload,
                     mvp_unblocked=_mvp_registry_enabled(registry),
+                    isolate_shopee_global=(
+                        _isolated_platform_registry_enabled(registry)
+                    ),
                 ),
                 registry,
             )
@@ -4760,6 +4808,9 @@ class OneClickReleaseStore:
             "plan_id": job["plan_id"],
             "run_id": job["run_id"],
             "batch_sequence": int(job["batch_sequence"] or 0),
+            "batch_scope_targets": [
+                target["target_label"] for target in all_targets
+            ],
             "phase": job["status"],
             "requires_human": job["status"] == "WAITING_MANUAL_ACCEPTANCE",
             "product_revision": job["product_revision"],
@@ -5489,6 +5540,7 @@ def _batch_identity(
         targets,
         payload,
         mvp_unblocked=_mvp_registry_enabled(registry),
+        isolate_shopee_global=_isolated_platform_registry_enabled(registry),
     )
     registry_digest = _registry_digest(execution_targets, registry)
     identity = {
@@ -5662,6 +5714,7 @@ def _execution_target_labels(
     immutable_plan_payload: Mapping[str, Any] | None = None,
     *,
     mvp_unblocked: bool = False,
+    isolate_shopee_global: bool = False,
 ) -> list[str]:
     """Add server-owned controls without changing approved storefront identity."""
 
@@ -5669,6 +5722,22 @@ def _execution_target_labels(
         raise SystemicIdentityError(
             "server-owned promotion action cannot be a storefront target"
         )
+    if mvp_unblocked and isolate_shopee_global:
+        if SHOPEE_GLOBAL_TARGET in targets:
+            raise SystemicIdentityError(
+                "server-owned Shopee GLOBAL cannot be a storefront target"
+            )
+        shopee_selected = any(
+            label.startswith("shopee:") for label in targets
+        )
+        result = [
+            label
+            for label in targets
+            if label != _COMMON_LABEL and not label.startswith("shopee:")
+        ]
+        if shopee_selected:
+            result.insert(0, SHOPEE_GLOBAL_TARGET)
+        return result
     if mvp_unblocked:
         return [label for label in targets if label != _COMMON_LABEL]
     result = list(targets)
@@ -6151,6 +6220,8 @@ def _adapter_name_for_target(
     label: str,
     registry: Mapping[str, AdapterRegistration] | None = None,
 ) -> str:
+    if label == SHOPEE_GLOBAL_TARGET:
+        return "shopee_cnsc_publish"
     if (
         registry is not None
         and _mvp_registry_enabled(registry)
@@ -6468,18 +6539,6 @@ def _stored_shared_resource(
 
 def _validate_job_shared_resource_rows(rows: object) -> None:
     materialized = list(rows)
-    if _mvp_rows(materialized):
-        if any(
-            row["control_target"]
-            or row["target_label"] == SHOPEE_GLOBAL_TARGET
-            or _stored_shared_resource(row, context=False)
-            or _stored_shared_resource(row, context=True)
-            for row in materialized
-        ):
-            raise SystemicIdentityError(
-                "Miaoshou MVP storefront rows cannot own shared controls"
-            )
-        return
     globals_ = [
         row for row in materialized
         if row["target_label"] == SHOPEE_GLOBAL_TARGET
@@ -6490,13 +6549,20 @@ def _validate_job_shared_resource_rows(rows: object) -> None:
         if str(row["target_label"]).startswith("shopee:")
         and row["target_label"] != SHOPEE_GLOBAL_TARGET
     ]
+    if _mvp_rows(materialized) and not globals_:
+        if any(
+            row["control_target"]
+            or _stored_shared_resource(row, context=False)
+            or _stored_shared_resource(row, context=True)
+            for row in materialized
+        ):
+            raise SystemicIdentityError(
+                "Miaoshou MVP storefront rows cannot own shared controls"
+            )
+        return
     if regions and len(globals_) != 1:
         raise SystemicIdentityError(
             "Shopee regions require exactly one server-owned GLOBAL target"
-        )
-    if not regions and globals_:
-        raise SystemicIdentityError(
-            "Shopee GLOBAL exists without approved regional targets"
         )
     for row in materialized:
         is_global = row["target_label"] == SHOPEE_GLOBAL_TARGET
@@ -7617,12 +7683,24 @@ def _attach_shared_control_dependency_summaries(
 
 def _mvp_rows(rows: object) -> bool:
     materialized = list(rows)
+    storefront_rows = [row for row in materialized if row["storefront"]]
     return bool(
-        materialized
+        storefront_rows
         and all(
             row["adapter_name"] == MIAOSHOU_DIRECT_STORE_ADAPTER
-            for row in materialized
+            for row in storefront_rows
         )
+    )
+
+
+def _isolated_platform_registry_enabled(
+    registry: Mapping[str, AdapterRegistration],
+) -> bool:
+    registration = registry.get("shopee_cnsc_publish")
+    return bool(
+        _mvp_registry_enabled(registry)
+        and isinstance(registration, AdapterRegistration)
+        and registration.target_labels == (SHOPEE_GLOBAL_TARGET,)
     )
 
 

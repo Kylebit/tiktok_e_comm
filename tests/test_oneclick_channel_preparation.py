@@ -288,7 +288,10 @@ def test_final_typed_registry_is_owned_by_channel_operations():
     registry = adapter_subject.production_adapter_registry(
         provider_factory=lambda: _provider()
     )
-    assert set(registry) == {"miaoshou-direct-store/v1"}
+    assert set(registry) == {
+        "miaoshou-direct-store/v1",
+        "shopee_cnsc_publish",
+    }
     direct = registry["miaoshou-direct-store/v1"]
     assert direct.preparation_available is True
     assert direct.dispatch_available is True

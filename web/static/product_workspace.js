@@ -1188,7 +1188,7 @@
     const panel = $("#collectboxActionPanel");
     const status = $("#collectboxActionStatus");
     const message = $("#collectboxActionMessage");
-    const button = $("#releasePrimaryActionButton");
+    const button = $("#collectboxActionButton");
     const approved = Boolean(data?.release_v1?.plan_approved);
     if (!panel || !status || !message || !button) return;
     panel.hidden = !approved;
@@ -7406,6 +7406,8 @@
     const approved = Boolean(release.plan_approved);
     const panel = $("#releasePrimaryActionPanel");
     const button = $("#releasePrimaryActionButton");
+    const shopeeButton = $("#shopeeGlobalReleaseButton");
+    const ozonButton = $("#ozonReleaseButton");
     const message = $("#releasePrimaryActionMessage");
     const approvalButton = $("#approveReleasePlanButton");
     const legacyPanels = $("#legacyReleaseActionPanels");
@@ -7416,6 +7418,8 @@
     if (
       !panel
       || !button
+      || !shopeeButton
+      || !ozonButton
       || !message
       || !approvalButton
       || !legacyPanels
@@ -7436,18 +7440,35 @@
     legacyPanels.setAttribute("aria-hidden", String(unifiedAuthority));
     legacyRunLedger.hidden = unifiedAuthority;
     legacyRunLedger.setAttribute("aria-hidden", String(unifiedAuthority));
-    oneClickPreview.hidden = unifiedAuthority;
+    oneClickPreview.hidden = !unifiedAuthority;
     collectboxPanel.hidden = !unifiedAuthority;
     if (!unifiedAuthority) {
       button.disabled = true;
-      button.textContent = "一键发布已选店铺";
+      shopeeButton.disabled = true;
+      ozonButton.disabled = true;
+      button.textContent = "发布 TikTok";
       message.textContent = approved
         ? "当前旧版计划不具备统一控制面，继续使用原有受治理入口。"
         : "批准当前发布计划后，系统会显示唯一可执行的下一步。";
       return;
     }
+    const posting = releaseSubmitting || oneClickExecution.posting;
+    const tiktokCollected = Boolean(
+      collectboxAction.projection?.action?.platforms?.some(
+        (row) => row.platform === "TIKTOK" && row.status === "SUCCEEDED",
+      ),
+    );
+    button.disabled = posting || !tiktokCollected;
+    shopeeButton.disabled = posting;
+    ozonButton.disabled = posting;
+    button.textContent = "发布 TikTok";
+    shopeeButton.textContent = "发布 Shopee 全球商品";
+    ozonButton.textContent = "发布 Ozon";
+    button.dataset.disabledReason = tiktokCollected
+      ? ""
+      : "请先完成 TikTok 妙手采集箱导入。";
     message.textContent =
-      "先完成 TikTok 与 Shopee 妙手采集箱导入；本步骤不会发布任何店铺。";
+      "TikTok、Shopee 全球商品和 Ozon 为三个独立任务；一个平台的状态不会阻挡另外两个。";
     renderCollectboxAction(data);
   }
 
@@ -8596,14 +8617,13 @@
     await publishSelectedTargets();
   }
 
-  async function publishSelectedTargets() {
+  async function publishPlatformBatch(endpoint, platformName) {
     const identity = oneClickExecution.identity;
     if (
       !currentData
       || releaseSubmitting
       || oneClickExecution.posting
       || !identity
-      || !$("#publishAllCheckbox").checked
     ) return;
     const generation = oneClickExecution.generation;
     const body = currentReleaseBody({ confirm_publish: true });
@@ -8616,7 +8636,7 @@
     $("#publishRunMessage").textContent = "正在创建唯一持久任务；不会在浏览器中循环调用发布。";
     try {
       const { response, payload } = await boundedJsonFetch(
-        "/api/product-workspace/publish",
+        endpoint,
         {
           method: "POST",
           headers: {
@@ -8626,7 +8646,7 @@
           body: JSON.stringify(body),
         },
         ONECLICK_LOCAL_POST_TIMEOUT_MS,
-        "统一发布任务创建",
+        `${platformName} 发布任务创建`,
       );
       if (response.status !== 202 || !response.ok || payload.ok === false) {
         const error = new Error(
@@ -8644,7 +8664,7 @@
         || !Array.isArray(payload.external_writes_performed)
         || payload.external_writes_performed.length
       ) {
-        throw new Error("统一发布任务未返回安全的接受回执。");
+        throw new Error(`${platformName} 发布任务未返回安全的接受回执。`);
       }
       const job = validateOneClickProjection(
         payload.job,
@@ -8656,9 +8676,9 @@
       oneClickExecution.job = job;
       oneClickExecution.error = "";
       oneClickExecution.statusWarning =
-        "妙手发布批次已提交；各店铺结果如下，需要时可再次一键发布。";
+        `${platformName} 独立发布批次已提交；其他平台不会被联动执行。`;
       $("#publishRunMessage").textContent =
-        "妙手发布批次已接受；正在读取各店铺提交结果。";
+        `${platformName} 发布批次已接受；正在读取该平台结果。`;
       showError("");
       scheduleOneClickStatusPoll(generation, 0);
     } catch (error) {
@@ -8677,6 +8697,34 @@
         updateReleaseControls(currentData || {});
       }
     }
+  }
+
+  async function publishSelectedTargets() {
+    await publishPlatformBatch(
+      "/api/product-workspace/publish-tiktok",
+      "TikTok",
+    );
+  }
+
+  async function runTiktokReleaseAction() {
+    if (!currentData?.release_v1?.plan_approved) return;
+    await publishSelectedTargets();
+  }
+
+  async function runShopeeGlobalReleaseAction() {
+    if (!currentData?.release_v1?.plan_approved) return;
+    await publishPlatformBatch(
+      "/api/product-workspace/publish-shopee-global",
+      "Shopee 全球商品",
+    );
+  }
+
+  async function runOzonReleaseAction() {
+    if (!currentData?.release_v1?.plan_approved) return;
+    await publishPlatformBatch(
+      "/api/product-workspace/publish-ozon",
+      "Ozon",
+    );
   }
 
   function render(data) {
@@ -8699,6 +8747,11 @@
       Boolean(data.actual_release_gate?.ready),
     );
     renderReleaseV1(data);
+    // ReleasePlan rendering and one-click execution are separate projections.
+    // Initialise the immutable execution identity on every authoritative
+    // dashboard render so the three platform buttons cannot be visible while
+    // their click handlers still have a null identity and silently do nothing.
+    ensureOneClickExecution(data);
 
     const offer = data.product?.offer_id || $("#offerId").value.trim();
     const studioUrl = `/ai-image-studio?offer_id=${encodeURIComponent(offer)}`;
@@ -9139,10 +9192,13 @@
     updateReleaseControls(currentData || {});
   });
   $("#commonOverwriteButton").addEventListener("click", overwriteMiaoshou);
-  $("#releasePrimaryActionButton").addEventListener(
+  $("#collectboxActionButton").addEventListener(
     "click",
     runCollectboxPrimaryAction,
   );
+  $("#releasePrimaryActionButton").addEventListener("click", runTiktokReleaseAction);
+  $("#shopeeGlobalReleaseButton").addEventListener("click", runShopeeGlobalReleaseAction);
+  $("#ozonReleaseButton").addEventListener("click", runOzonReleaseAction);
   $("#publishAllCheckbox").addEventListener("change", () => {
     updateReleaseControls(currentData || {});
   });

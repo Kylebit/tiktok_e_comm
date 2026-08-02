@@ -5566,11 +5566,27 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
         collectboxActionProjection(previewState),
       ));
     }
-    if (url.pathname === "/api/product-workspace/publish") {
+    if ([
+      "/api/product-workspace/publish-tiktok",
+      "/api/product-workspace/publish-shopee-global",
+      "/api/product-workspace/publish-ozon",
+    ].includes(url.pathname)) {
       return route.fulfill(jsonResponse({
-        ok: false,
-        error: "step1_collectbox_required",
-      }, 409));
+        ok: true,
+        accepted: true,
+        external_writes_performed: [],
+        job: oneClickPendingJobProjection(),
+      }, 202));
+    }
+    if (url.pathname === "/api/product-workspace/publish-status") {
+      return route.fulfill(jsonResponse({
+        ok: true,
+        job: oneClickProjection(
+          "oneclick-release-status/v2",
+          "terminal",
+          "SUCCEEDED",
+        ),
+      }));
     }
     const fixture = apiFixture(
       url,
@@ -5582,8 +5598,15 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
   try {
     const pageUrl = `${baseUrl}/product-workspace?offer_id=3828540231`;
     await page.goto(pageUrl, { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(400);
-    const primary = page.locator("#releasePrimaryActionButton");
+    await page.waitForFunction(() => {
+      const button = document.querySelector("#collectboxActionButton");
+      const status = document.querySelector("#collectboxActionStatus");
+      return button
+        && !button.textContent.includes("正在读取")
+        && status?.textContent?.includes("TikTok")
+        && status?.textContent?.includes("Shopee");
+    });
+    const primary = page.locator("#collectboxActionButton");
     const initialPosts = requests.filter((row) => row.method === "POST");
     check(
       requests.some((row) => (
@@ -5599,10 +5622,13 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
         && (await primary.innerText()).includes(
           "导入 TikTok / Shopee 妙手采集箱",
         )
-        && await page.locator(
-          "#releasePlan button:visible:enabled",
-        ).count() === 1,
-      `collectbox ${viewport.width}: exactly one approved-plan action is available`,
+        && await page.locator("#releasePrimaryActionButton").isVisible()
+        && !(await page.locator("#releasePrimaryActionButton").isEnabled())
+        && await page.locator("#shopeeGlobalReleaseButton").isVisible()
+        && await page.locator("#shopeeGlobalReleaseButton").isEnabled()
+        && await page.locator("#ozonReleaseButton").isVisible()
+        && await page.locator("#ozonReleaseButton").isEnabled(),
+      `collectbox ${viewport.width}: TikTok waits only for TikTok collectbox while Shopee and Ozon remain actionable`,
       {
         label: await primary.innerText(),
         enabled: await primary.isEnabled(),
@@ -5625,7 +5651,7 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
     await initialStartRequest;
     try {
       await page.waitForFunction(() => {
-        const button = document.querySelector("#releasePrimaryActionButton");
+        const button = document.querySelector("#collectboxActionButton");
         const message = document.querySelector("#collectboxActionMessage");
         return button?.textContent?.includes("正在导入")
           || message?.textContent?.includes("正在");
@@ -5648,7 +5674,9 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
       )).length === 1
         && requests.filter((row) => (
           row.method === "POST"
-          && row.path === "/api/product-workspace/publish"
+          && row.path.startsWith("/api/product-workspace/publish")
+          && !row.path.endsWith("-preview")
+          && !row.path.endsWith("-status")
         )).length === 0,
       `collectbox ${viewport.width}: click sends exactly one collectbox POST`,
       requests,
@@ -5678,6 +5706,37 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
         && (await primary.innerText()).includes("重新导入"),
       `collectbox ${viewport.width}: terminal success offers one explicit full restart`,
       { successState, label: await primary.innerText() },
+    );
+    const platformButtons = [
+      ["#releasePrimaryActionButton", "/api/product-workspace/publish-tiktok"],
+      ["#shopeeGlobalReleaseButton", "/api/product-workspace/publish-shopee-global"],
+      ["#ozonReleaseButton", "/api/product-workspace/publish-ozon"],
+    ];
+    for (const [selector, expectedPath] of platformButtons) {
+      const platformButton = page.locator(selector);
+      check(
+        await platformButton.isVisible() && await platformButton.isEnabled(),
+        `platform isolation ${viewport.width}: ${selector} is independently actionable`,
+      );
+      await platformButton.click();
+      await page.waitForTimeout(250);
+      check(
+        requests.some((row) => (
+          row.method === "POST" && row.path === expectedPath
+        )),
+        `platform isolation ${viewport.width}: ${selector} posts only ${expectedPath}`,
+        requests,
+      );
+    }
+    const platformPosts = requests.filter((row) => (
+      row.method === "POST"
+      && row.path.startsWith("/api/product-workspace/publish-")
+    ));
+    check(
+      platformPosts.length === 3
+        && new Set(platformPosts.map((row) => row.path)).size === 3,
+      `platform isolation ${viewport.width}: each button calls only its endpoint`,
+      platformPosts,
     );
     if (restartEnabled) {
       await primary.click();
@@ -6772,7 +6831,7 @@ async function oneClickOfferSwitchCancelsStalePreviewContract(browser) {
     });
     await page.locator("#offerId").fill(secondOffer);
     await page.locator("#lookupForm").evaluate((form) => form.requestSubmit());
-    const primary = page.locator("#releasePrimaryActionButton");
+    const primary = page.locator("#collectboxActionButton");
     const collectboxStatus = page.locator("#collectboxActionStatus");
     try {
       await collectboxStatus.getByText("Shopee", { exact: true }).waitFor({
@@ -7787,7 +7846,12 @@ async function legacyStateSafety(browser) {
 }
 
 (async () => {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({
+    headless: true,
+    ...(process.env.ORBIT_CHROMIUM_BIN
+      ? { executablePath: process.env.ORBIT_CHROMIUM_BIN }
+      : {}),
+  });
   try {
     if (
       process.env.ORBIT_BROWSER_CONTRACT_ONLY
@@ -7808,6 +7872,19 @@ async function legacyStateSafety(browser) {
         browser,
         { width: 390, height: 844 },
       );
+      process.stdout.write(`${JSON.stringify({
+        ok: failures.length === 0,
+        failures,
+        results,
+      }, null, 2)}\n`);
+      if (failures.length) process.exitCode = 1;
+      return;
+    }
+    if (
+      process.env.ORBIT_BROWSER_CONTRACT_ONLY
+        === "collectbox-offer-switch"
+    ) {
+      await oneClickOfferSwitchCancelsStalePreviewContract(browser);
       process.stdout.write(`${JSON.stringify({
         ok: failures.length === 0,
         failures,

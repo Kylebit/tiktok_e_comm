@@ -1984,7 +1984,7 @@ def test_shopee_miaoshou_publish_unknown_never_invents_global_write():
     )
 
 
-def test_shopee_miaoshou_worker_restart_never_repeats_submission(
+def test_shopee_region_selection_never_dispatches_direct_store_submission(
     tmp_path,
 ):
     target = "shopee:MY"
@@ -2012,21 +2012,21 @@ def test_shopee_miaoshou_worker_restart_never_repeats_submission(
             break
 
     public = control.get_job(job_id=job["job_id"])
-    assert public["shared_controls"] == []
-    target_row = public["targets"][0]
-    assert target_row["target_label"] == target
-    assert target_row["status"] == "SUBMITTED_UNVERIFIED"
-    assert target_row["manual_after_submit"] is True
+    assert public["targets"] == []
+    assert len(public["shared_controls"]) == 1
+    target_row = public["shared_controls"][0]
+    assert target_row["target_label"] == "shopee:GLOBAL"
+    assert target_row["status"] == "BLOCKED_CAPABILITY"
     publish_path = miaoshou.DIRECT_STORE_CONFIG[target]["publish_path"]
-    assert sum(path == publish_path for path, _body in fake.calls) == 1
+    assert sum(path == publish_path for path, _body in fake.calls) == 0
     canonical = release.get_run(run["run_id"])
     my_target = next(
         row
         for row in canonical["targets"]
         if row["target_label"] == target
     )
-    assert my_target["status"] == "SUBMITTED_UNVERIFIED"
-    assert my_target["attempts"] == 1
+    assert my_target["status"] == "PENDING"
+    assert my_target["attempts"] == 0
 
     calls_before_restart = len(fake.calls)
     restarted = OneClickReleaseStore(release.path)

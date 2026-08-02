@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#173b36">
   <title>Orbit · 商品发布中心</title>
   <link rel="stylesheet" href="/static/product_workspace.css?v=20260801-v20">
-  <script src="/static/product_workspace.js?v=20260801-v33" defer></script>
+  <script src="/static/product_workspace.js?v=20260802-v34" defer></script>
   <script src="/static/disabled_control_hints.js?v=20260729-v2" defer></script>
 </head>
 <body>
@@ -388,10 +388,6 @@
             批准后，系统会按照服务端给出的唯一下一步继续执行。
           </p>
         </div>
-        <button id="releasePrimaryActionButton" class="button button-primary"
-          type="button" disabled>
-          一键发布已选店铺
-        </button>
         <section id="collectboxActionPanel" class="collectbox-action-panel"
           aria-labelledby="collectboxActionTitle" hidden>
           <h4 id="collectboxActionTitle">妙手采集箱导入状态</h4>
@@ -399,7 +395,25 @@
             正在读取 TikTok 与 Shopee 妙手采集箱状态。
           </p>
           <div id="collectboxActionStatus" class="collectbox-action-status"></div>
+          <button id="collectboxActionButton" class="button button-secondary"
+            type="button" disabled>
+            导入 TikTok / Shopee 妙手采集箱
+          </button>
         </section>
+        <div class="release-platform-actions" aria-label="独立平台发布操作">
+          <button id="releasePrimaryActionButton" class="button button-primary"
+            type="button" disabled>
+            发布 TikTok
+          </button>
+          <button id="shopeeGlobalReleaseButton" class="button button-primary"
+            type="button" disabled>
+            发布 Shopee 全球商品
+          </button>
+          <button id="ozonReleaseButton" class="button button-primary"
+            type="button" disabled>
+            发布 Ozon
+          </button>
+        </div>
         <section id="oneClickExecutionPreview" class="oneclick-execution-preview"
           aria-labelledby="oneClickExecutionTitle">
           <h4 id="oneClickExecutionTitle">本轮执行状态</h4>

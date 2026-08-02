@@ -64,7 +64,7 @@ def test_publish_http_is_short_202_job_start_not_legacy_loop(
             },
         }
 
-    monkeypatch.setattr(product_server, "_start_oneclick_release", start)
+    monkeypatch.setattr(product_server, "_start_tiktok_release", start)
     monkeypatch.setattr(
         product_server,
         "_publish_selected_release",
@@ -170,12 +170,19 @@ def test_publish_post_cannot_reopen_legacy_job_before_collectbox_step(monkeypatc
         "_project_oneclick_dispatch_capability",
         lambda job: job,
     )
+    monkeypatch.setattr(
+        product_server,
+        "_collectbox_platform_succeeded",
+        lambda _plan_id, _platform: False,
+    )
 
     status, response = product_server._start_oneclick_release(
         {
             "confirm_publish": True,
             "plan_id": plan["plan_id"],
-        }
+        },
+        batch_scope="TIKTOK",
+        require_collectbox_platform="TIKTOK",
     )
 
     assert status == 409
@@ -184,6 +191,169 @@ def test_publish_post_cannot_reopen_legacy_job_before_collectbox_step(monkeypatc
         "start_collectbox_action"
     )
     assert calls == []
+
+
+def test_tiktok_publish_after_collectbox_success_creates_only_tiktok_batch(
+    monkeypatch,
+):
+    calls = []
+    plan = {"plan_id": "omnichannel:test"}
+
+    class ReleaseStore:
+        @staticmethod
+        def start_run(plan_id):
+            assert plan_id == plan["plan_id"]
+            calls.append("start_run")
+            return {"run_id": "release-run:test"}
+
+        @staticmethod
+        def get_plan(plan_id):
+            assert plan_id == plan["plan_id"]
+            return plan
+
+    class CollectboxStore:
+        @staticmethod
+        def status(*, plan_id):
+            assert plan_id == plan["plan_id"]
+            return {
+                "action": {
+                    "status": "SUCCEEDED",
+                    "platforms": [
+                        {"platform": "TIKTOK", "status": "SUCCEEDED"},
+                        {"platform": "SHOPEE", "status": "SUCCEEDED"},
+                    ],
+                }
+            }
+
+    class ControlStore:
+        @staticmethod
+        def ensure_job(**_kwargs):
+            calls.append("ensure_job")
+            return {
+                "job_id": "oneclick-job:test",
+                "phase": "PENDING",
+                "targets": [
+                    {"target_label": "tiktok:MX"},
+                    {"target_label": "tiktok:LH_MY"},
+                    {"target_label": "shopee:GLOBAL"},
+                    {"target_label": "ozon:RU"},
+                ],
+            }
+
+        @staticmethod
+        def set_dispatch_capability(job_id, *, enabled):
+            assert job_id == "oneclick-job:test"
+            assert enabled is True
+            calls.append("set_dispatch_capability")
+            return ControlStore.ensure_job()
+
+        @staticmethod
+        def start_explicit_batch(job_id, *, target_labels):
+            assert job_id == "oneclick-job:test"
+            assert target_labels == ("tiktok:MX", "tiktok:LH_MY")
+            calls.append("start_tiktok_batch")
+            return {
+                **ControlStore.ensure_job(),
+                "batch_scope": "TIKTOK",
+            }
+
+    context = {
+        "plan": plan,
+        "payload": {"product_revision": 31},
+        "store": ReleaseStore(),
+    }
+    monkeypatch.setattr(
+        product_server,
+        "_oneclick_approved_context",
+        lambda _data: (context, None),
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_collectbox_action_store",
+        lambda: CollectboxStore(),
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_oneclick_adapter_registry",
+        lambda: {"miaoshou-direct-store/v1": object()},
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_oneclick_control_store",
+        lambda: ControlStore(),
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_oneclick_dispatch_capability",
+        lambda: {"enabled": True},
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_wake_oneclick_worker",
+        lambda job_id: calls.append(f"wake:{job_id}"),
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_project_oneclick_dispatch_capability",
+        lambda job: job,
+    )
+
+    status, response = product_server._start_tiktok_release(
+        {
+            "confirm_publish": True,
+            "plan_id": plan["plan_id"],
+        }
+    )
+
+    assert status == 202
+    assert response["accepted"] is True
+    assert response["batch_scope"] == "TIKTOK"
+    assert response["external_writes_performed"] == []
+    assert "start_tiktok_batch" in calls
+    assert "wake:oneclick-job:test" in calls
+
+
+@pytest.mark.parametrize(
+    ("starter_name", "scope", "expected_labels"),
+    [
+        (
+            "_start_shopee_global_release",
+            "SHOPEE_GLOBAL",
+            ("shopee:GLOBAL",),
+        ),
+        ("_start_ozon_release", "OZON", ("ozon:RU",)),
+    ],
+)
+def test_platform_publish_starters_select_only_their_server_owned_scope(
+    monkeypatch,
+    starter_name,
+    scope,
+    expected_labels,
+):
+    captured = []
+
+    def start(data, *, batch_scope, require_collectbox_platform=None):
+        captured.append(
+            (data, batch_scope, require_collectbox_platform)
+        )
+        return 202, {
+            "ok": True,
+            "accepted": True,
+            "batch_scope": batch_scope,
+            "external_writes_performed": [],
+            "job": {"targets": list(expected_labels)},
+        }
+
+    monkeypatch.setattr(product_server, "_start_oneclick_release", start)
+    starter = getattr(product_server, starter_name)
+
+    status, response = starter({"confirm_publish": True})
+
+    assert status == 202
+    assert response["batch_scope"] == scope
+    assert captured == [
+        ({"confirm_publish": True}, scope, None)
+    ]
 
 
 def test_shared_control_v2_is_canonical_action_without_storefront_count(

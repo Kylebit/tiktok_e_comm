@@ -769,7 +769,10 @@ def test_promotion_transport_unknown_is_consistent_across_terminal_ledgers(
 
 def test_promotion_targets_are_not_registered_in_direct_store_mvp():
     registry = production_adapter_registry()
-    assert set(registry) == {"miaoshou-direct-store/v1"}
+    assert set(registry) == {
+        "miaoshou-direct-store/v1",
+        "shopee_cnsc_publish",
+    }
     assert all(
         not target.startswith("promotion:")
         for target in registry["miaoshou-direct-store/v1"].target_labels

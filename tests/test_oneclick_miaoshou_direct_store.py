@@ -45,15 +45,23 @@ def _reset_miaoshou_factories():
     miaoshou.configure_runtime_transport_factory(None)
 
 
-def test_all_storefronts_use_one_miaoshou_direct_store_registration():
+def test_platform_owners_are_registered_without_cross_platform_aliasing():
     registry = production_adapter_registry()
 
-    assert set(registry) == {"miaoshou-direct-store/v1"}
+    assert set(registry) == {
+        "miaoshou-direct-store/v1",
+        "shopee_cnsc_publish",
+    }
     registration = registry["miaoshou-direct-store/v1"]
     assert registration.adapter_name == "miaoshou-direct-store/v1"
     assert set(registration.target_labels) == set(EXPECTED_STOREFRONTS)
     assert registration.preparation_available is True
     assert registration.dispatch_available is True
+    shopee_global = registry["shopee_cnsc_publish"]
+    assert shopee_global.adapter_name == "shopee_cnsc_publish"
+    assert shopee_global.target_labels == ("shopee:GLOBAL",)
+    assert shopee_global.prepare is not registration.prepare
+    assert shopee_global.dispatch is not registration.dispatch
 
 
 def test_fixed_miaoshou_storefront_and_endpoint_matrix_is_exact():

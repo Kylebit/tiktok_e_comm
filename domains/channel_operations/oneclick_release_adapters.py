@@ -731,7 +731,29 @@ def production_adapter_registry(
             consumes_prepared_command=True,
             preserves_idempotency_key=True,
             reports_truthful_receipt=True,
-        )
+        ),
+        "shopee_cnsc_publish": AdapterRegistration(
+            adapter_name="shopee_cnsc_publish",
+            target_labels=(SHOPEE_GLOBAL_TARGET,),
+            prepare=lambda request, factory=factory: prepare_oneclick_target(
+                request, provider_factory=factory
+            ),
+            dispatch=lambda request, factory=factory: dispatch_oneclick_target(
+                request, provider_factory=factory
+            ),
+            policy_digest=_digest(
+                {
+                    "schema_version": "shopee-global-owner-policy/v1",
+                    "target": SHOPEE_GLOBAL_TARGET,
+                    "regional_publish": "disabled",
+                    "provider": "official-shopee-global",
+                }
+            ),
+            prepare_is_read_only=True,
+            consumes_prepared_command=True,
+            preserves_idempotency_key=True,
+            reports_truthful_receipt=True,
+        ),
     }
     return registry
 
@@ -823,13 +845,15 @@ def _production_provider_factory() -> OneClickProvider:
         dispatch_tiktok_miaoshou_prepared_target,
         prepare_tiktok_miaoshou_target,
     )
+    from modules.shopee.oneclick_release import (
+        dispatch_plan_native_target,
+        prepare_plan_native_target,
+    )
     return OneClickProvider(
         prepare_tiktok_miaoshou=prepare_tiktok_miaoshou_target,
         dispatch_tiktok_miaoshou=dispatch_tiktok_miaoshou_prepared_target,
-        # Kept only for the injectable dataclass ABI; direct-store routing
-        # never reaches official Shopee primitives.
-        prepare_shopee=prepare_tiktok_miaoshou_target,
-        dispatch_shopee=dispatch_tiktok_miaoshou_prepared_target,
+        prepare_shopee=prepare_plan_native_target,
+        dispatch_shopee=dispatch_plan_native_target,
     )
 
 

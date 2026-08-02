@@ -375,10 +375,12 @@ def _mvp_miaoshou_registry(
             evidence={"checks": {"miaoshou_submission_accepted": True}},
         )
 
-    return {
+    registry = {
         "miaoshou-direct-store/v1": AdapterRegistration(
             adapter_name="miaoshou-direct-store/v1",
-            target_labels=tuple(targets),
+            target_labels=tuple(
+                label for label in targets if label != SHOPEE_GLOBAL_TARGET
+            ),
             prepare=prepare,
             dispatch=dispatch,
             policy_digest=_digest("miaoshou-direct-store/v1"),
@@ -388,6 +390,19 @@ def _mvp_miaoshou_registry(
             reports_truthful_receipt=True,
         )
     }
+    if SHOPEE_GLOBAL_TARGET in targets:
+        registry["shopee_cnsc_publish"] = AdapterRegistration(
+            adapter_name="shopee_cnsc_publish",
+            target_labels=(SHOPEE_GLOBAL_TARGET,),
+            prepare=prepare,
+            dispatch=dispatch,
+            policy_digest=_digest("shopee_cnsc_publish"),
+            prepare_is_read_only=True,
+            consumes_prepared_command=True,
+            preserves_idempotency_key=True,
+            reports_truthful_receipt=True,
+        )
+    return registry
 
 
 def _ensure_new_global_prepare(request):
@@ -481,6 +496,70 @@ def test_mvp_preview_is_startable_without_prepare_calls_or_prerequisites(
         and row["runnable_now"] is False
         for row in preview["targets"]
     )
+
+
+def test_mvp_execution_replaces_shopee_regions_with_global_owner_only(
+    tmp_path,
+):
+    targets = [
+        "tiktok:MX",
+        "shopee:MY",
+        "shopee:PH",
+        "ozon:RU",
+    ]
+    _release, plan, run = _approved_context(
+        tmp_path,
+        targets=targets,
+        inventory_ready=False,
+    )
+    registry = _mvp_miaoshou_registry(
+        [*targets, SHOPEE_GLOBAL_TARGET],
+    )
+
+    preview = build_batch_preview(
+        plan=plan,
+        run=run,
+        product_revision=31,
+        registry=registry,
+    )
+
+    labels = [row["target_label"] for row in preview["targets"]]
+    assert labels == ["tiktok:MX", "ozon:RU"]
+    assert [
+        row["target_label"] for row in preview["shared_controls"]
+    ] == [SHOPEE_GLOBAL_TARGET]
+    assert "shopee:MY" not in labels
+    assert "shopee:PH" not in labels
+
+
+def test_explicit_batch_can_activate_only_one_platform_scope(tmp_path):
+    targets = ["tiktok:MX", "shopee:MY", "ozon:RU"]
+    release, plan, run = _approved_context(
+        tmp_path,
+        targets=targets,
+        inventory_ready=False,
+    )
+    registry = _mvp_miaoshou_registry(
+        [*targets, SHOPEE_GLOBAL_TARGET],
+    )
+    control = OneClickReleaseStore(release.path)
+    job = control.ensure_job(
+        plan=plan,
+        run=run,
+        product_revision=31,
+        registry=registry,
+    )
+
+    started = control.start_explicit_batch(
+        job["job_id"],
+        target_labels=(SHOPEE_GLOBAL_TARGET,),
+    )
+
+    assert started["batch_scope_targets"] == [SHOPEE_GLOBAL_TARGET]
+    assert started["targets"] == []
+    assert [row["target_label"] for row in started["shared_controls"]] == [
+        SHOPEE_GLOBAL_TARGET
+    ]
 
 
 def test_mvp_explicit_click_starts_new_batch_after_partial_reconciliation(

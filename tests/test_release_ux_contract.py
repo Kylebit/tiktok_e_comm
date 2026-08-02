@@ -186,7 +186,7 @@ def test_every_formal_async_action_has_loading_success_and_failure_feedback():
                 "catch (error)",
                 "finally",
             ],
-            "publishSelectedTargets": [
+            "publishPlatformBatch": [
                 "releaseSubmitting = true",
                 "try {",
                 "catch (error)",
@@ -522,7 +522,7 @@ def test_oneclick_release_ui_uses_only_the_async_server_controlplane():
     style = (ROOT / "web/static/product_workspace.css").read_text(
         encoding="utf-8"
     )
-    publish = _function_body(script, "publishSelectedTargets")
+    publish = _function_body(script, "publishPlatformBatch")
     preview = _function_body(script, "requestOneClickPreview")
     status = _function_body(script, "pollOneClickStatus")
 
@@ -536,7 +536,7 @@ def test_oneclick_release_ui_uses_only_the_async_server_controlplane():
     assert 'id="oneClickReadRetryButton"' not in html
     assert "/api/product-workspace/publish-preview?" in preview
     assert "/api/product-workspace/publish-status?" in status
-    assert '"/api/product-workspace/publish"' in publish
+    assert "boundedJsonFetch(\n        endpoint," in publish
     assert 'ONECLICK_PREVIEW_SCHEMA = "release-batch-preparation/v2"' in script
     assert 'ONECLICK_STATUS_SCHEMA = "oneclick-release-status/v2"' in script
     assert "projection.shared_controls" in script
@@ -583,8 +583,8 @@ def test_oneclick_release_ui_uses_only_the_async_server_controlplane():
     assert ".oneclick-target-card:focus-visible" in style
 
 
-def test_approved_release_flow_has_one_server_driven_primary_action():
-    """Permanent regression: approval must not open a maze of action buttons."""
+def test_approved_release_flow_has_three_isolated_platform_actions():
+    """Each platform has one explicit button and one server-owned endpoint."""
 
     html = (ROOT / "web/product_workspace.html").read_text(encoding="utf-8")
     script = (ROOT / "web/static/product_workspace.js").read_text(
@@ -592,6 +592,9 @@ def test_approved_release_flow_has_one_server_driven_primary_action():
     )
 
     assert 'id="releasePrimaryActionButton"' in html
+    assert 'id="shopeeGlobalReleaseButton"' in html
+    assert 'id="ozonReleaseButton"' in html
+    assert 'id="collectboxActionButton"' in html
     assert 'id="legacyReleaseActionPanels"' in html
     primary_projection = script[
         script.index("function updateReleasePrimaryAction("):
@@ -600,7 +603,7 @@ def test_approved_release_flow_has_one_server_driven_primary_action():
     assert "legacyPanels.hidden = unifiedAuthority" in primary_projection
 
 
-def test_approved_release_primary_action_is_collectbox_step_one_only():
+def test_collectbox_and_platform_release_actions_are_not_cross_wired():
     html = (ROOT / "web/product_workspace.html").read_text(encoding="utf-8")
     script = (ROOT / "web/static/product_workspace.js").read_text(
         encoding="utf-8"
@@ -610,7 +613,7 @@ def test_approved_release_primary_action_is_collectbox_step_one_only():
     assert 'id="collectboxActionPanel"' in html
     assert 'id="collectboxActionMessage"' in html
     assert 'id="collectboxActionStatus"' in html
-    assert "product_workspace.js?v=20260801-v33" in html
+    assert "product_workspace.js?v=20260802-v34" in html
     assert 'COLLECTBOX_ACTION_SCHEMA = "collectbox-action-status/v1"' in script
     assert "/api/product-workspace/collectbox-action/preview?" in script
     assert "/api/product-workspace/collectbox-action/status?" in script
@@ -627,17 +630,32 @@ def test_approved_release_primary_action_is_collectbox_step_one_only():
     assert '"miaoshou:collectbox:claim:tiktok"' in script
     assert '"miaoshou:collectbox:claim:shopee"' in script
     assert (
-        '$("#releasePrimaryActionButton").addEventListener(\n'
+        '$("#collectboxActionButton").addEventListener(\n'
         '    "click",\n'
         "    runCollectboxPrimaryAction,"
     ) in script
-    assert "oneClickPreview.hidden = unifiedAuthority" in script
+    assert "oneClickPreview.hidden = !unifiedAuthority" in script
     assert "collectboxPanel.hidden = !unifiedAuthority" in script
     action = _function_body(script, "runCollectboxPrimaryAction")
     assert "/api/product-workspace/collectbox-action/start" in action
     assert "/api/product-workspace/publish" not in action
     assert "prepareMiaoshou" not in action
     assert "publishSelectedTargets" not in action
+    assert '"/api/product-workspace/publish-tiktok"' in script
+    assert '"/api/product-workspace/publish-shopee-global"' in script
+    assert '"/api/product-workspace/publish-ozon"' in script
+    assert (
+        '$("#releasePrimaryActionButton").addEventListener('
+        '"click", runTiktokReleaseAction)'
+    ) in script
+    assert (
+        '$("#shopeeGlobalReleaseButton").addEventListener('
+        '"click", runShopeeGlobalReleaseAction)'
+    ) in script
+    assert (
+        '$("#ozonReleaseButton").addEventListener('
+        '"click", runOzonReleaseAction)'
+    ) in script
 
 
 def test_oneclick_mvp_keeps_legacy_reads_idle_and_allows_explicit_resubmit():
@@ -674,7 +692,7 @@ def test_oneclick_mvp_keeps_legacy_reads_idle_and_allows_explicit_resubmit():
     assert "data-target-scoped-action='preview'" in router
     assert "restore_channel_authorization" in router
     assert "Shopee 授权管理入口" in router
-    publish = _function_body(script, "publishSelectedTargets")
+    publish = _function_body(script, "publishPlatformBatch")
     primary = _function_body(script, "runReleasePrimaryAction")
     render = script[
         script.index("function renderOneClickExecution("):
@@ -748,7 +766,7 @@ def test_oneclick_manual_review_forms_keep_warning_and_apiless_contracts_separat
     apiless_submit = _function_body(script, "submitManualTargetVerification")
 
     assert "product_workspace.css?v=20260801-v20" in html
-    assert "product_workspace.js?v=20260801-v33" in html
+    assert "product_workspace.js?v=20260802-v34" in html
     assert '"SUCCEEDED_MANUAL_REVIEW"' in script
     assert '"review_verified_observation_warning"' in script
     assert "oneclick-observation-review-form" in script

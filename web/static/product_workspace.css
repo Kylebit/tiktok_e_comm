@@ -1742,9 +1742,6 @@ section { scroll-margin-top: 20px; }
   margin-top: 14px;
 }
 
-#releasePlan.oneclick-unified-action button:not(#releasePrimaryActionButton) {
-  display: none !important;
-}
 .external-action-card {
   display: grid;
   align-content: start;
@@ -1779,6 +1776,16 @@ section { scroll-margin-top: 20px; }
   margin: 0;
   color: var(--forest);
   font: 750 14px/1.35 Georgia, "Songti SC", serif;
+}
+.release-platform-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+@media (max-width: 720px) {
+  .release-platform-actions {
+    grid-template-columns: 1fr;
+  }
 }
 .collectbox-action-status {
   display: grid;

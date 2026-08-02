@@ -1188,45 +1188,48 @@ def _dispatch_site(
         occurrence,
         external_id=external_id,
     )
-    try:
-        if transport.audit_detail is not None:
-            if (
-                transport.audit_detail(str(detail_id), shop_endpoint_id)
-                is not True
-            ):
-                raise ValueError("injected draft audit mismatch")
-        else:
-            readback, _ = _read_shop(
-                post,
-                detail_id,
-                shop_endpoint_id,
-                target=target,
-            )
-            _verify_target_readback(
-                target,
-                readback,
-                expected,
-                platform=platform,
-                strict_collectbox_tiktok=(
-                    platform == "tiktok"
-                    and type(expected.get("category_id")) is str
-                    and bool(str(expected.get("category_id") or ""))
-                ),
-                draft_mode=draft_mode,
-            )
-    except Exception as error:
-        raise MiaoshouOneClickDispatchError(
-            f"Miaoshou {platform} detail update readback is unknown",
-            writes=occurrence_state.external_writes,
-            # The update itself is already confirmed and no later write was
-            # invoked.  Reconciliation is required for readback, but the
-            # external write count is exact rather than dispatch-unknown.
-            unknown=False,
-            external_id=external_id,
-            external_write_count=occurrence_state.external_write_count,
-            confirmed_lower_bound=occurrence_state.external_write_count,
-            possible_upper_bound=occurrence_state.external_write_count,
-        ) from error
+    if config.get("verification_policy") != (
+        "submit_without_readback_validation"
+    ):
+        try:
+            if transport.audit_detail is not None:
+                if (
+                    transport.audit_detail(str(detail_id), shop_endpoint_id)
+                    is not True
+                ):
+                    raise ValueError("injected draft audit mismatch")
+            else:
+                readback, _ = _read_shop(
+                    post,
+                    detail_id,
+                    shop_endpoint_id,
+                    target=target,
+                )
+                _verify_target_readback(
+                    target,
+                    readback,
+                    expected,
+                    platform=platform,
+                    strict_collectbox_tiktok=(
+                        platform == "tiktok"
+                        and type(expected.get("category_id")) is str
+                        and bool(str(expected.get("category_id") or ""))
+                    ),
+                    draft_mode=draft_mode,
+                )
+        except Exception as error:
+            raise MiaoshouOneClickDispatchError(
+                f"Miaoshou {platform} detail update readback is unknown",
+                writes=occurrence_state.external_writes,
+                # The update itself is already confirmed and no later write was
+                # invoked.  Reconciliation is required for readback, but the
+                # external write count is exact rather than dispatch-unknown.
+                unknown=False,
+                external_id=external_id,
+                external_write_count=occurrence_state.external_write_count,
+                confirmed_lower_bound=occurrence_state.external_write_count,
+                possible_upper_bound=occurrence_state.external_write_count,
+            ) from error
 
     occurrence = _open_write(
         request,

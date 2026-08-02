@@ -22,7 +22,9 @@ from tests.test_oneclick_release_controlplane import (
 from modules.miaoshou import oneclick_release as miaoshou
 from tests.test_oneclick_miaoshou_direct_store import (
     DirectStoreFake,
+    _command,
     _detail,
+    _dispatch_request,
     _expected,
     _plan_payload,
 )
@@ -309,3 +311,104 @@ def test_gb_collectbox_waives_copy_category_attributes_but_keeps_exact_price():
                     "draft_mode"
                 ],
             )
+
+
+def test_gb_dispatch_skips_post_write_readback_and_submits_directly():
+    """The explicit GB waiver must remove the readback transport dependency."""
+
+    target = "tiktok:GB"
+    command = _command(target)
+    fake = DirectStoreFake(target)
+    audit_calls = []
+    publish_calls = []
+
+    def unavailable_audit(*_args):
+        audit_calls.append(True)
+        raise RuntimeError("post-save GET unavailable")
+
+    def publish(detail_id, shop_id):
+        publish_calls.append((detail_id, shop_id))
+        return {"result": "success"}
+
+    miaoshou.configure_runtime_transport_factory(
+        lambda: miaoshou.MiaoshouRuntimeTransport(
+            post=fake.post,
+            audit_detail=unavailable_audit,
+            publish=publish,
+        )
+    )
+
+    result = miaoshou.dispatch_tiktok_miaoshou_prepared_target(
+        _dispatch_request(command)
+    )
+
+    assert result["canonical_status"] == "SUBMITTED_UNVERIFIED"
+    assert audit_calls == []
+    assert len(publish_calls) == 1
+    assert result["external_writes"] == (
+        "miaoshou:tiktok_detail:update",
+        "miaoshou:tiktok_publish:submission",
+    )
+
+
+def test_collectbox_start_response_exposes_canonical_publishability(monkeypatch):
+    """POST and GET projections must obey the same strict UI contract."""
+
+    identity = {
+        "offer_id": "3846511157",
+        "plan_id": "omnichannel:collectbox-post",
+        "product_revision": 31,
+        "payload_digest": "a" * 64,
+        "targets_digest": "b" * 64,
+    }
+    context = {
+        "approved_plan_identity": identity,
+        "plan": {"plan_id": identity["plan_id"]},
+        "common_collect_box_detail_id": "7",
+    }
+    projection = {
+        "schema_version": "collectbox-action-status/v1",
+        "ok": True,
+        "persisted": True,
+        "action": {
+            "status": "SUCCEEDED",
+            "platforms": [
+                {
+                    "platform": "TIKTOK",
+                    "status": "SUCCEEDED",
+                    "target_outcomes": [],
+                }
+            ],
+        },
+    }
+
+    class Store:
+        @staticmethod
+        def start(**_kwargs):
+            return deepcopy(projection)
+
+    monkeypatch.setattr(
+        product_server,
+        "_collectbox_identity_context",
+        lambda _data, require_token: (context, None),
+    )
+    monkeypatch.setattr(
+        product_server, "_collectbox_platform_adapter", lambda: object()
+    )
+    monkeypatch.setattr(
+        product_server, "_collectbox_action_timing", lambda: (1, lambda: None)
+    )
+    monkeypatch.setattr(
+        product_server, "_collectbox_action_store", lambda: Store()
+    )
+
+    status, body = product_server._start_collectbox_action(
+        {
+            **identity,
+            "confirm_collectbox_action": True,
+            "approved_by": "Kyle",
+        }
+    )
+
+    assert status == 200
+    assert body["action"]["platforms"][0]["publishable"] is True

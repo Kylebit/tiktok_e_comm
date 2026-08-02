@@ -8501,7 +8501,7 @@ def _preview_collectbox_action(data: dict) -> tuple[int, dict]:
             ),
         )
     )
-    return 200, projection
+    return 200, _with_collectbox_publishability(projection)
 
 
 def _collectbox_action_status(data: dict) -> tuple[int, dict]:
@@ -8682,7 +8682,7 @@ def _start_collectbox_action(data: dict) -> tuple[int, dict]:
             "external_writes_performed": [],
             "external_write_count": 0,
         }
-    return 200, projection
+    return 200, _with_collectbox_publishability(projection)
 
 
 def _oneclick_approved_context(

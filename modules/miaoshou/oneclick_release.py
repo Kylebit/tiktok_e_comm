@@ -1813,6 +1813,107 @@ def _prepare_selected_platform_collectbox(
                 ),
             )
 
+        if platform == "tiktok" and draft_mode == "site":
+            # SEA has two distinct Miaoshou draft layers.  The site layer owns
+            # category/content, while the historical shop layer is what makes
+            # the approved local price visible in the collect-box list.  Both
+            # operations are Open API calls and survive a service restart; no
+            # browser cookie or web-only batch endpoint is involved.
+            shop_update_class = (
+                f"miaoshou:collectbox:tiktok:shop:update:{target}"
+            )
+            try:
+                shop_detail, shop_oss_md5 = _read_shop(
+                    client,
+                    detail_id,
+                    int(str(config["shop_id"])),
+                )
+                _verify_shop_identity(
+                    shop_detail,
+                    detail_id=detail_id,
+                    shop_id=str(config["shop_id"]),
+                )
+                _verify_tiktok_detail_source_identity(shop_detail, expected)
+                _verify_site_variants(shop_detail, expected)
+                shop_updated = _apply_expected_for_platform(
+                    shop_detail,
+                    expected,
+                    platform="tiktok",
+                    draft_mode="shop",
+                    warehouse_id=warehouse_id,
+                )
+                shop_body = _save_body(
+                    platform="tiktok",
+                    site=str(config["site"]),
+                    detail_id=detail_id,
+                    shop_id=int(str(config["shop_id"])),
+                    updated=shop_updated,
+                    oss_md5=shop_oss_md5,
+                    draft_mode="shop",
+                )
+            except Exception:
+                return detail_id, _target_result(
+                    target,
+                    "FAILED",
+                    error_code="approved_shop_price_preparation_failed",
+                    detail="Miaoshou shop draft could not be prepared exactly",
+                )
+            try:
+                shop_saved = client(SHOP_SAVE_PATH, shop_body)
+            except Exception:
+                add_write(shop_update_class)
+                write_count_unknown = True
+                return detail_id, _target_result(
+                    target,
+                    "FAILED",
+                    error_code="approved_shop_price_update_unknown",
+                    detail="Miaoshou shop price update outcome is unknown",
+                )
+            if not isinstance(shop_saved, Mapping):
+                add_write(shop_update_class)
+                write_count_unknown = True
+                return detail_id, _target_result(
+                    target,
+                    "FAILED",
+                    error_code="approved_shop_price_update_unknown",
+                    detail="Miaoshou shop price update response is malformed",
+                )
+            if not _accepted(shop_saved):
+                return detail_id, _target_result(
+                    target,
+                    "FAILED",
+                    error_code="approved_shop_price_update_rejected",
+                    detail="Miaoshou shop price update was rejected",
+                )
+            add_write(shop_update_class)
+            try:
+                shop_readback, _ = _read_shop(
+                    client,
+                    detail_id,
+                    int(str(config["shop_id"])),
+                )
+                _verify_shop_identity(
+                    shop_readback,
+                    detail_id=detail_id,
+                    shop_id=str(config["shop_id"]),
+                )
+                _verify_tiktok_detail_source_identity(shop_readback, expected)
+                _verify_expected_detail(
+                    shop_readback,
+                    expected,
+                    platform="tiktok",
+                    strict_collectbox_tiktok=True,
+                    draft_mode="shop",
+                )
+            except Exception:
+                return detail_id, _target_result(
+                    target,
+                    "FAILED",
+                    error_code="approved_shop_price_readback_mismatch",
+                    detail="Miaoshou shop price differs from approved price",
+                )
+            return detail_id, _target_result(target, "SUCCEEDED")
+
         # Miaoshou's OpenAPI detail-save normalizes the local site price from
         # the common-box CNY origin price.  The web batch-price endpoint is
         # the authoritative persisted local-price operation used by the UI.

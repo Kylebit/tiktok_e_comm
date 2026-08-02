@@ -1713,6 +1713,8 @@ def _prepare_selected_platform_collectbox(
                 detail_id=detail_id,
                 shop_id=str(config["shop_id"]),
             )
+            if platform == "tiktok":
+                _verify_tiktok_detail_source_identity(detail, expected)
             _verify_site_variants(detail, expected)
             warehouse_id = (
                 _tiktok_warehouse_id(client, detail, expected)
@@ -3561,6 +3563,26 @@ def _verify_shop_identity(
         )
     if observed_shop is not None and str(observed_shop) != str(shop_id):
         raise MiaoshouOneClickPreDispatchError("TikTok shop identity drifted")
+
+
+def _verify_tiktok_detail_source_identity(
+    detail: Mapping[str, object], expected: Mapping[str, object]
+) -> None:
+    expected_source = expected.get("source_offer_id")
+    observed_source = detail.get("sourceOfferId")
+    if (
+        type(expected_source) is not str
+        or not expected_source.isascii()
+        or not expected_source.isdecimal()
+        or int(expected_source) <= 0
+        or isinstance(observed_source, bool)
+        or not str(observed_source or "").isdecimal()
+        or int(observed_source) <= 0
+        or str(int(observed_source)) != expected_source
+    ):
+        raise MiaoshouOneClickPreDispatchError(
+            "TikTok source offer identity drifted before update"
+        )
 
 
 def _verify_site_variants(

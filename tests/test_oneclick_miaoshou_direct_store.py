@@ -1412,6 +1412,7 @@ def _run_live_six_site_tiktok_drift(
     price_batch_noops=(),
     site_detail_echoes_approved_price=False,
     plan_source_offer_id="986159122616",
+    probe=None,
 ):
     targets = LIVE_SIX_TIKTOK_TARGETS
     approved_prices = {
@@ -1483,6 +1484,12 @@ def _run_live_six_site_tiktok_drift(
     web_calls = []
     save_counts = {target: 0 for target in targets}
     save_bodies = {target: [] for target in targets}
+    if probe is not None:
+        probe.update({
+            "calls": calls,
+            "web_calls": web_calls,
+            "save_counts": save_counts,
+        })
     create_count = 0
     target_by_site = {
         str(miaoshou.DIRECT_STORE_CONFIG[target]["site"]): target
@@ -1733,22 +1740,42 @@ def test_tiktok_sea_price_authority_requires_exact_approved_plan_source(
         "site_detail_echoes_approved_price": True,
         "plan_source_offer_id": plan_source_offer_id,
     }
-    if plan_source_offer_id is None:
-        with pytest.raises(
-            miaoshou.MiaoshouCollectBoxPreparationError,
-            match="all approved platform drafts failed preparation",
-        ):
-            _run_live_six_site_tiktok_drift(**arguments)
-        return
-    result, _calls, _web_calls, _save_counts, _save_bodies = (
+    with pytest.raises(
+        miaoshou.MiaoshouCollectBoxPreparationError,
+        match="all approved platform drafts failed preparation",
+    ):
+        _run_live_six_site_tiktok_drift(**arguments)
+
+
+def test_tiktok_six_sites_reject_wrong_approved_source_before_business_writes():
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    probe = {}
+    with pytest.raises(
+        miaoshou.MiaoshouCollectBoxPreparationError,
+        match="all approved platform drafts failed preparation",
+    ) as captured:
         _run_live_six_site_tiktok_drift(
-            **arguments,
+            category_decisions=_tiktok_category_decisions(targets),
+            use_web_price_repair=True,
+            site_detail_echoes_approved_price=True,
+            plan_source_offer_id="986159122617",
+            probe=probe,
         )
+    error = captured.value
+    assert error.target_results == tuple(
+        (target, "RECONCILIATION_REQUIRED") for target in targets
     )
-    outcomes = {
-        row["target_label"]: row for row in result["target_results"]
-    }
-    assert outcomes["tiktok:LH_PH"]["status"] == "FAILED"
+    assert probe["save_counts"] == {target: 0 for target in targets}
+    assert probe["web_calls"] == []
+    assert all(
+        "save_shop_collect_item_info" not in path
+        and "save_site_collect_item_info" not in path
+        for path, _body in probe["calls"]
+    )
+    assert all(
+        ":detail:update:" not in write and ":price:update:" not in write
+        for write in error.external_writes
+    )
 
 
 def test_tiktok_authoritative_list_price_follows_bounded_pagination():

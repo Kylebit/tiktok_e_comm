@@ -846,6 +846,14 @@ def test_mvp_explicit_click_counts_legacy_terminal_job_as_prior_batch(
         for row in started["targets"]
     )
 
+    # Historical rows remain append-only in SQLite, but they are inactive and
+    # must not make the current isolated platform batch fail identity loading.
+    prepared = control.prepare_job(rebound["job_id"], mvp_registry)
+    claimed = control.claim_next_dispatch(rebound["job_id"], mvp_registry)
+    assert prepared["phase"] == "READY"
+    assert claimed is not None
+    assert claimed.target_label in set(mvp_targets)
+
 
 @pytest.mark.parametrize(
     ("blocked_target", "classification", "category"),

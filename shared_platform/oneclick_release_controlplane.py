@@ -1109,6 +1109,21 @@ class OneClickReleaseStore:
                     (*target_labels, now, job_id),
                 )
 
+            executable_scope = connection.execute(
+                """
+                SELECT 1
+                FROM oneclick_release_targets
+                WHERE job_id = ? AND active_for_batch = 1
+                  AND target_label != ?
+                LIMIT 1
+                """,
+                (job_id, _COMMON_LABEL),
+            ).fetchone()
+            if executable_scope is None:
+                raise OneClickControlPlaneError(
+                    "explicit batch target scope is empty"
+                )
+
             sequence = int(job["batch_sequence"] or 0) + 1
             connection.execute(
                 """
@@ -4280,23 +4295,22 @@ class OneClickReleaseStore:
         source_identity = _resolve_plan_source_identity(plan["payload"])
         stored_targets = self._raw_targets(job_id, active_only=False)
         expected_labels = identity["execution_targets"]
-        if (
-            [row["target_label"] for row in stored_targets]
-            != expected_labels
-            or sum(
-                row["target_label"] == SHOPEE_GLOBAL_TARGET
-                for row in stored_targets
-            )
-            > 1
-        ):
-            raise SystemicIdentityError(
-                "one-click control target identity drifted"
-            )
+        stored_labels = [row["target_label"] for row in stored_targets]
         active_targets = [
             row
             for row in stored_targets
             if int(row.get("active_for_batch") or 0) == 1
         ]
+        active_labels = [row["target_label"] for row in active_targets]
+        if (
+            len(stored_labels) != len(set(stored_labels))
+            or any(label not in stored_labels for label in expected_labels)
+            or any(label not in expected_labels for label in active_labels)
+            or sum(label == SHOPEE_GLOBAL_TARGET for label in stored_labels) > 1
+        ):
+            raise SystemicIdentityError(
+                "one-click control target identity drifted"
+            )
         return {
             "job": job,
             "plan": plan,
@@ -4992,7 +5006,10 @@ class OneClickReleaseWorker:
         if not job:
             return False
         if job["phase"] in {"PENDING", "PREPARING"}:
-            self.store.prepare_job(job_id, registry)
+            try:
+                self.store.prepare_job(job_id, registry)
+            except SystemicIdentityError as error:
+                self.store.record_systemic_stop(job_id, error)
             if not self.dispatch_enabled():
                 self.store.set_dispatch_capability(
                     job_id,

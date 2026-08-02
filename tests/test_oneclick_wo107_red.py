@@ -185,7 +185,7 @@ def test_tiktok_partial_collectbox_allows_five_successes_and_gb_waiver(
                     "platforms": [
                         {
                             "platform": "TIKTOK",
-                            "status": "PARTIAL_FAILED",
+                            "status": "RECONCILIATION_REQUIRED",
                             "target_outcomes": [
                                 *(
                                     {

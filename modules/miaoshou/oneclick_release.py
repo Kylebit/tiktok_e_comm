@@ -87,6 +87,7 @@ def _direct_store_config(
     shop_id: int,
     platform: str,
     site: str,
+    verification_policy: str = "exact",
 ) -> dict[str, object]:
     """Build one immutable Miaoshou Open API storefront binding.
 
@@ -108,8 +109,11 @@ def _direct_store_config(
         "site": site,
         "platform": platform,
         "draft_mode": draft_mode,
+        "verification_policy": verification_policy,
         "requires_category_attributes": (
-            platform == "tiktok" and site == "GB"
+            platform == "tiktok"
+            and site == "GB"
+            and verification_policy == "exact"
         ),
         # Every direct-store target is intentionally API-less from the
         # marketplace perspective.  Acceptance is Miaoshou submission only.
@@ -216,6 +220,7 @@ DIRECT_STORE_CONFIG: dict[str, dict[str, object]] = {
     "tiktok:GB": _direct_store_config(
         key="gb", shop="LivelyHive", shop_id=10204699,
         platform="tiktok", site="GB",
+        verification_policy="submit_without_readback_validation",
     ),
     "tiktok:HB_PH": _direct_store_config(
         key="hb_ph", shop="HomeBloom", shop_id=15173238,
@@ -1097,6 +1102,11 @@ def _dispatch_site(
             draft_mode=draft_mode,
             warehouse_id=warehouse_id,
         )
+        updated = _apply_target_verification_policy(
+            detail,
+            updated,
+            config,
+        )
         if config.get("requires_category_attributes") is True:
             assert prepared_attributes is not None
             current_attributes = _tiktok_category_product_attributes(
@@ -1192,7 +1202,8 @@ def _dispatch_site(
                 shop_endpoint_id,
                 target=target,
             )
-            _verify_expected_detail(
+            _verify_target_readback(
+                target,
                 readback,
                 expected,
                 platform=platform,
@@ -1728,6 +1739,11 @@ def _prepare_selected_platform_collectbox(
                 draft_mode=draft_mode,
                 warehouse_id=warehouse_id,
             )
+            updated = _apply_target_verification_policy(
+                detail,
+                updated,
+                config,
+            )
             if config.get("requires_category_attributes") is True:
                 expected["product_attributes"] = (
                     _tiktok_category_product_attributes(
@@ -1781,7 +1797,8 @@ def _prepare_selected_platform_collectbox(
                 target=target,
             )
             readback_available = True
-            _verify_expected_detail(
+            _verify_target_readback(
+                target,
                 readback,
                 expected,
                 platform=platform,
@@ -1808,7 +1825,11 @@ def _prepare_selected_platform_collectbox(
             if platform != "tiktok":
                 fail(f"{platform} draft readback did not match approved plan")
 
-        category_error = _tiktok_category_error_code(readback, expected)
+        category_error = (
+            _tiktok_category_error_code(readback, expected)
+            if config.get("verification_policy") == "exact"
+            else None
+        )
         if category_error is not None:
             return detail_id, _target_result(
                 target,
@@ -1930,7 +1951,8 @@ def _prepare_selected_platform_collectbox(
                     target=target,
                 )
                 repair_readback_available = True
-                _verify_expected_detail(
+                _verify_target_readback(
+                    target,
                     readback,
                     expected,
                     platform=platform,
@@ -2334,6 +2356,24 @@ def _apply_expected_for_platform(
     return updated
 
 
+def _apply_target_verification_policy(
+    current: Mapping[str, object],
+    updated: Mapping[str, object],
+    config: Mapping[str, object],
+) -> dict[str, object]:
+    """Keep explicitly waived GB fields untouched while updating price/copy."""
+
+    result = dict(updated)
+    if config.get("verification_policy") != "submit_without_readback_validation":
+        return result
+    for field in ("title", "cid", "productAttributes"):
+        if field in current:
+            result[field] = current[field]
+        else:
+            result.pop(field, None)
+    return result
+
+
 def _tiktok_category_product_attributes(
     post: Callable[[str, Mapping[str, object]], object],
     *,
@@ -2686,6 +2726,22 @@ def _apply_expected(
                 in set(expected["selected_sku_keys"])
             }
     return updated
+
+
+def _verify_target_readback(
+    target: str,
+    detail: Mapping[str, object],
+    expected: Mapping[str, object],
+    **kwargs: object,
+) -> None:
+    config = DIRECT_STORE_CONFIG.get(target)
+    if (
+        isinstance(config, Mapping)
+        and config.get("verification_policy")
+        == "submit_without_readback_validation"
+    ):
+        return
+    _verify_expected_detail(detail, expected, **kwargs)
 
 
 def _verify_expected_detail(

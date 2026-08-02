@@ -800,6 +800,7 @@
         "platform_detail_id_digest",
         "external_writes",
         "error",
+        "publishable",
       ])
       || row.platform !== expectedPlatform
       || !Array.isArray(row.targets)
@@ -840,6 +841,7 @@
         row.target_outcomes.map((target) => target.target_label),
       ).size !== row.target_outcomes.length
       || !COLLECTBOX_PLATFORM_STATUSES.has(row.status)
+      || typeof row.publishable !== "boolean"
       || !Number.isInteger(row.attempt_count)
       || row.attempt_count < 0
       || typeof row.retry_allowed !== "boolean"
@@ -7455,7 +7457,7 @@
     const posting = releaseSubmitting || oneClickExecution.posting;
     const tiktokCollected = Boolean(
       collectboxAction.projection?.action?.platforms?.some(
-        (row) => row.platform === "TIKTOK" && row.status === "SUCCEEDED",
+        (row) => row.platform === "TIKTOK" && row.publishable === true,
       ),
     );
     button.disabled = posting || !tiktokCollected;

@@ -4958,6 +4958,7 @@ function collectboxActionProjection(state) {
     error = null,
     targets = null,
     targetOutcomes = null,
+    publishable = status === "SUCCEEDED",
   }) => ({
     platform: name,
     targets: targets || [{
@@ -4976,6 +4977,7 @@ function collectboxActionProjection(state) {
       classes: writeClasses,
     },
     error,
+    publishable,
   });
   const base = {
     schema_version: "collectbox-action-status/v1",
@@ -5382,6 +5384,40 @@ function collectboxActionProjection(state) {
         target_focus: null,
       },
     };
+  }
+  if (state === "GB_WAIVED") {
+    const projection = collectboxActionProjection("TARGET_MIXED");
+    const row = projection.action.platforms[0];
+    const successfulTargets = [
+      "tiktok:LH_PH",
+      "tiktok:LH_MY",
+      "tiktok:LH_TH",
+      "tiktok:LH_VN",
+      "tiktok:MX",
+    ];
+    row.publishable = true;
+    row.targets = [
+      ...successfulTargets.map((target_label) => ({
+        target_label,
+        status: "SUCCEEDED",
+      })),
+      { target_label: "tiktok:GB", status: "FAILED_RETRYABLE" },
+    ];
+    row.target_outcomes = [
+      ...successfulTargets.map((target_label) => ({
+        target_label,
+        status: "SUCCEEDED",
+        error_code: null,
+        detail_digest: null,
+      })),
+      {
+        target_label: "tiktok:GB",
+        status: "FAILED",
+        error_code: "approved_detail_readback_mismatch",
+        detail_digest: "8".repeat(64),
+      },
+    ];
+    return projection;
   }
   if (state === "INVALID_WRITE_CLASS") {
     return {
@@ -5891,6 +5927,23 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
       {
         targetStateText,
         label: await primary.innerText(),
+        requests,
+      },
+    );
+
+    requests.length = 0;
+    previewState = "GB_WAIVED";
+    await page.goto(pageUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(300);
+    const tiktokPublish = page.locator("#releasePrimaryActionButton");
+    check(
+      await tiktokPublish.isVisible()
+        && await tiktokPublish.isEnabled()
+        && requests.every((row) => row.method === "GET"),
+      `collectbox ${viewport.width}: exact GB-only waiver keeps TikTok publishing actionable`,
+      {
+        label: await tiktokPublish.innerText(),
+        enabled: await tiktokPublish.isEnabled(),
         requests,
       },
     );

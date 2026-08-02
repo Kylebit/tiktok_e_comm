@@ -162,7 +162,9 @@ def _apply_oneclick_release_authority(release_v1: dict) -> dict:
         plan = {**plan, "targets_digest": identity["targets_digest"]}
         result["plan"] = plan
         collectbox = _collectbox_action_store().status(plan_id=plan_id)
-        collectbox_action = collectbox or ready_projection(plan)
+        collectbox_action = _with_collectbox_publishability(
+            collectbox or ready_projection(plan)
+        )
         result["collectbox_action"] = collectbox_action
         result["oneclick_controlplane"] = None
         result["target_recovery_actions"] = []
@@ -8190,7 +8192,17 @@ def _oneclick_worker_loop() -> None:
                 job = store.get_job(job_id=job_id)
             except Exception:
                 progressed = False
-                job = None
+                try:
+                    store.record_systemic_stop(
+                        job_id,
+                        RuntimeError(
+                            "one-click worker stopped after an unexpected "
+                            "internal error"
+                        ),
+                    )
+                except Exception:
+                    pass
+                job = store.get_job(job_id=job_id)
             phase = str((job or {}).get("phase") or "")
             if progressed and phase in {"PENDING", "PREPARING", "READY", "RUNNING"}:
                 _oneclick_worker_wake.set()
@@ -8478,14 +8490,16 @@ def _preview_collectbox_action(data: dict) -> tuple[int, dict]:
         return failure
     assert context is not None
     identity = context["approved_plan_identity"]
-    projection = _collectbox_action_store().preview(
-        plan=context["plan"],
-        common_collectbox_identity_digest=(
-            common_collectbox_identity_digest(
-                identity["plan_id"],
-                context["common_collect_box_detail_id"],
-            )
-        ),
+    projection = _with_collectbox_publishability(
+        _collectbox_action_store().preview(
+            plan=context["plan"],
+            common_collectbox_identity_digest=(
+                common_collectbox_identity_digest(
+                    identity["plan_id"],
+                    context["common_collect_box_detail_id"],
+                )
+            ),
+        )
     )
     return 200, projection
 
@@ -8537,7 +8551,7 @@ def _collectbox_action_status(data: dict) -> tuple[int, dict]:
             "external_writes_performed": [],
             "external_write_count": 0,
         }
-    return 200, projection
+    return 200, _with_collectbox_publishability(projection)
 
 
 def _start_collectbox_action(data: dict) -> tuple[int, dict]:
@@ -8887,9 +8901,63 @@ def _collectbox_platform_succeeded(plan_id: str, platform: str) -> bool:
     return any(
         isinstance(row, dict)
         and row.get("platform") == platform
-        and row.get("status") == "SUCCEEDED"
+        and _collectbox_platform_row_publishable(row, platform)
         for row in (rows or [])
     )
+
+
+def _collectbox_platform_row_publishable(row: dict, platform: str) -> bool:
+    if row.get("status") == "SUCCEEDED":
+        return True
+    if platform != "TIKTOK" or row.get("status") not in {
+        "PARTIAL_FAILED",
+        "RECONCILIATION_REQUIRED",
+    }:
+        return False
+    outcomes = row.get("target_outcomes")
+    if not isinstance(outcomes, list) or not outcomes:
+        return False
+    succeeded = 0
+    for outcome in outcomes:
+        if not isinstance(outcome, dict):
+            return False
+        if outcome.get("status") == "SUCCEEDED":
+            succeeded += 1
+            continue
+        if (
+            outcome.get("target_label") == "tiktok:GB"
+            and outcome.get("status") == "FAILED"
+            and outcome.get("error_code")
+            == "approved_detail_readback_mismatch"
+        ):
+            continue
+        return False
+    return succeeded > 0
+
+
+def _with_collectbox_publishability(projection: dict) -> dict:
+    if not isinstance(projection, dict):
+        return projection
+    action = projection.get("action")
+    platforms = action.get("platforms") if isinstance(action, dict) else None
+    if not isinstance(platforms, list) or not platforms:
+        return projection
+    public_platforms = [
+        {
+            **row,
+            "publishable": _collectbox_platform_row_publishable(
+                row,
+                str(row.get("platform") or ""),
+            ),
+        }
+        if isinstance(row, dict)
+        else row
+        for row in platforms
+    ]
+    return {
+        **projection,
+        "action": {**action, "platforms": public_platforms},
+    }
 
 
 def _start_oneclick_release(
@@ -8972,7 +9040,7 @@ def _start_oneclick_release(
                 "ok": False,
                 "error": {
                     "category": "CAPABILITY",
-                    "code": "platform_target_not_selected",
+                    "code": "legacy_oneclick_job_requires_successor",
                     "detail_digest": _server_canonical_digest(
                         {
                             "batch_scope": batch_scope,
@@ -8981,6 +9049,10 @@ def _start_oneclick_release(
                     ),
                 },
                 "external_writes_performed": [],
+                "canonical_next_action": {
+                    "action": "create_platform_successor_job",
+                    "target_focus": None,
+                },
             }
         dispatch_capability = _oneclick_dispatch_capability()
         job = control_store.set_dispatch_capability(

@@ -283,7 +283,8 @@ stateDiagram-v2
 
 ### 8.1 命令与查询分离
 
-命令：三个 POST 平台入口、一个采集箱重新导入入口。  
+命令：三个 POST 平台入口、一个采集箱重新导入入口。
+
 查询：按平台读取当前 attempt，按平台分页读取历史。
 
 建议查询接口：
@@ -323,4 +324,3 @@ stateDiagram-v2
 4. 不把旧 `RECONCILIATION_REQUIRED`、`FAILED`、`SUCCEEDED` 导入为 V2 gate。
 5. 最新 TikTok 采集箱若无逐目标内部 proof，只标记当前输入 `DRAFT_PROOF_MISSING`；用户重新导入一次后解除。
 6. 三个平台逐一迁移，先 TikTok，再 Shopee 全球商品，再 Ozon；每一小步经 Kyle 浏览器测试后继续。
-

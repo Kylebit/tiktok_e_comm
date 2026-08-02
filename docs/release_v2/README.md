@@ -1,8 +1,11 @@
 # 自动上品发布 V2 规范评审索引
 
-状态：`DRAFT_FOR_KYLE_REVIEW`  
-基线：`88309c7239f9c2a413a5f2965fb2b7c45fcc1dad`  
-范围：批准 `ReleasePlan` 之后，经妙手提交 TikTok、Shopee 全球商品和 Ozon 的流程  
+状态：`DRAFT_FOR_KYLE_REVIEW`
+
+基线：`88309c7239f9c2a413a5f2965fb2b7c45fcc1dad`
+
+范围：批准 `ReleasePlan` 之后，经妙手提交 TikTok、Shopee 全球商品和 Ozon 的流程
+
 本轮性质：仅文档固化，不修改生产代码，不执行外部写入
 
 ## 为什么重写这套规范
@@ -62,4 +65,3 @@
 3. 同一商品的 TikTok、Shopee 全球商品、Ozon 三个平台互不依赖、互不禁用。
 4. 当前正在执行的同平台批次可以暂时阻止并发重复点击；其他历史状态不可以。
 5. 页面必须把“当前操作”与“历史结果”分区，不能再用“上次结果未确认”占据主操作入口。
-

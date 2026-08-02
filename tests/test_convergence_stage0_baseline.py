@@ -102,7 +102,9 @@ def test_fixture_is_redacted_and_matches_observed_legacy_topology(
         "collectbox_batch_count": 14,
         "oneclick_job_count": 1,
     }
-    assert legacy_topology["source_offer"] != "3846511157"
+    assert legacy_topology["source_offer"] == (
+        "redacted-production-shaped-offer"
+    )
     serialized = json.dumps(legacy_topology, sort_keys=True)
     for forbidden in (
         "confirmation_token",

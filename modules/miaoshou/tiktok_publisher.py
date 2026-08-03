@@ -132,6 +132,8 @@ class MiaoshouTikTokTransport:
         info["skuMap"] = updated_skus
         if label == "tiktok:GB":
             info["isCodOpen"] = "0"
+            info["sizeChart"] = ""
+            info["sizeChartType"] = ""
             info["deliveryOptionSetType"] = str(
                 info.get("deliveryOptionSetType") or "default"
             )

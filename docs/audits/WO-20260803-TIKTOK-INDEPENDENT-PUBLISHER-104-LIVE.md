@@ -37,15 +37,25 @@ one-field correction, the next single GB save was explicitly rejected with a
 new safe reason: the size-chart image URL format was unsupported. Work stopped
 again without calling GB submit or changing another target.
 
-- Additional mutation requests: 2 (one per controlled GB draft-save attempt).
-- Additional confirmed external writes: 0.
+The final GB contract audit proved that this product does not use a size chart:
+the inherited draft carried an unsupported image-shaped value while the
+approved product facts required neither an image nor a size-chart type. A
+before-change regression reproduced that exact leak. The corrected GB payload
+now clears both fields while retaining the already-valid no-brand, stock,
+warehouse, category, mandatory category-attribute, and approved-price facts.
+The single authorized GB-only L3 then returned explicit provider success for
+both draft save and `save_move_collect_task` submission.
+
+- Additional mutation requests: 4 (two rejected GB draft-save attempts, then
+  one accepted draft save and one accepted submission).
+- Additional confirmed external writes: 2.
 - Additional unknown outcomes: 0.
 
 ## Cumulative external activity
 
-- Read requests: 25.
-- Mutation requests: 8.
-- Confirmed external writes: 5.
+- Read requests: 27.
+- Mutation requests: 10.
+- Confirmed external writes: 7.
 - Unknown business outcomes: 0.
 - Delete requests: 0.
 - Shopee/Ozon requests: 0.

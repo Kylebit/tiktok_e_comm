@@ -449,6 +449,8 @@ def test_red_gb_save_uses_official_required_category_attribute():
                         "detailId": int(row["detail_id"]),
                         "cid": "",
                         "isCodOpen": "1",
+                        "sizeChart": "https://provider.example/size-chart.gif",
+                        "sizeChartType": "image",
                         "deliveryOptionSetType": "",
                         "skuMap": {
                             "default": {"price": 1.1, "priceIncludeVat": 1.1}
@@ -492,6 +494,8 @@ def test_red_gb_save_uses_official_required_category_attribute():
     assert saved["shopCollectItemInfo"]["cid"] == "600338"
     assert saved["shopCollectItemInfo"]["isCodOpen"] == "0"
     assert saved["shopCollectItemInfo"]["deliveryOptionSetType"] == "default"
+    assert saved["shopCollectItemInfo"]["sizeChart"] == ""
+    assert saved["shopCollectItemInfo"]["sizeChartType"] == ""
     assert saved["shopCollectItemInfo"]["productAttributes"] == [
         {
             "attributeId": "102255",

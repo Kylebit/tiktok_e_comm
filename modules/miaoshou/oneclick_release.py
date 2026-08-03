@@ -126,7 +126,6 @@ def _direct_store_config(
         "requires_category_attributes": (
             platform == "tiktok"
             and site == "GB"
-            and verification_policy == "exact"
         ),
         # Every direct-store target is intentionally API-less from the
         # marketplace perspective.  Acceptance is Miaoshou submission only.
@@ -2771,12 +2770,17 @@ def _apply_target_verification_policy(
     updated: Mapping[str, object],
     config: Mapping[str, object],
 ) -> dict[str, object]:
-    """Keep explicitly waived GB fields untouched while updating price/copy."""
+    """Apply only fields that are explicitly waived from GB draft updates.
+
+    GB still requires the approved category and its mandatory official
+    attribute in the write request.  The waiver applies only to the title and
+    to post-save readback; it must never erase category facts before SAVE.
+    """
 
     result = dict(updated)
     if config.get("verification_policy") != "submit_without_readback_validation":
         return result
-    for field in ("title", "cid", "productAttributes"):
+    for field in ("title",):
         if field in current:
             result[field] = current[field]
         else:

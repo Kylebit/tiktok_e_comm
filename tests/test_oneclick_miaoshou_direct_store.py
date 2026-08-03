@@ -1273,13 +1273,13 @@ def test_collectbox_gb_uses_numeric_shop_identity_for_write_and_readback(
     assert type(save_bodies[0]["shopId"]) is int
     saved = save_bodies[0]["shopCollectItemInfo"]
     assert saved["isCodOpen"] == "0"
-    assert saved["cid"] == ""
+    assert saved["cid"] == "600338"
     assert saved["skuMap"]["default"]["price"] == 15
     assert saved["skuMap"]["default"]["priceIncludeVat"] == 15
-    assert all(path != miaoshou.CATEGORY_METADATA_PATH for path, _ in calls)
+    assert any(path == miaoshou.CATEGORY_METADATA_PATH for path, _ in calls)
 
 
-def test_collectbox_gb_preserves_vendor_category_and_skips_attribute_lookup(
+def test_collectbox_gb_writes_approved_category_and_required_attribute(
     monkeypatch,
 ):
     """The category's one official required value must accompany the save.
@@ -1407,9 +1407,7 @@ def test_collectbox_gb_preserves_vendor_category_and_skips_attribute_lookup(
     save_body = next(
         body for path, body in calls if path == config["save_path"]
     )
-    assert (
-        "productAttributes" not in save_body["shopCollectItemInfo"]
-        or save_body["shopCollectItemInfo"]["productAttributes"] == [
+    assert save_body["shopCollectItemInfo"]["productAttributes"] == [
         {
             "attributeId": "102255",
             "attributeName": "Batch Number",
@@ -1422,11 +1420,9 @@ def test_collectbox_gb_preserves_vendor_category_and_skips_attribute_lookup(
                 }
             ],
         }
-        ]
-    )
-    assert "productAttributes" not in save_body["shopCollectItemInfo"]
-    assert save_body["shopCollectItemInfo"]["cid"] == ""
-    assert all(path != category_metadata_path for path, _ in calls)
+    ]
+    assert save_body["shopCollectItemInfo"]["cid"] == "600338"
+    assert any(path == category_metadata_path for path, _ in calls)
 
 
 def _run_live_six_site_tiktok_drift(
@@ -2178,6 +2174,44 @@ def test_gb_waived_update_failure_preserves_publish_identity_warning():
     assert outcomes["tiktok:MX"]["error_code"] == (
         "approved_price_batch_repair_unknown"
     )
+
+
+def test_gb_policy_keeps_approved_category_and_required_batch_attribute():
+    current = {
+        "title": "Existing GB draft",
+        "cid": "",
+    }
+    required_attributes = [
+        {
+            "attributeId": "102255",
+            "attributeName": "Batch Number",
+            "attributeNameAlias": "生产批次号",
+            "attributeValues": [
+                {
+                    "valueName": "1",
+                    "valueId": "1000256",
+                    "valueNameAlias": "1",
+                }
+            ],
+        }
+    ]
+    approved = {
+        **current,
+        "cid": "600338",
+        "productAttributes": required_attributes,
+    }
+
+    actual = miaoshou._apply_target_verification_policy(
+        current,
+        approved,
+        miaoshou.DIRECT_STORE_CONFIG["tiktok:GB"],
+    )
+
+    assert miaoshou.DIRECT_STORE_CONFIG["tiktok:GB"][
+        "requires_category_attributes"
+    ] is True
+    assert actual["cid"] == "600338"
+    assert actual["productAttributes"] == required_attributes
 
 
 @pytest.mark.parametrize(
@@ -3027,7 +3061,7 @@ def test_shopee_and_ozon_dispatch_only_miaoshou_and_wait_for_manual(target):
     assert not any("modules.shopee" in path for path, _ in fake.calls)
 
 
-def test_tiktok_gb_restart_dispatch_keeps_numeric_identity_and_waives_metadata():
+def test_tiktok_gb_restart_dispatch_keeps_numeric_identity_and_required_attribute():
     """The durable dispatch path must preserve the same GB draft contract."""
 
     target = "tiktok:GB"
@@ -3146,11 +3180,13 @@ def test_tiktok_gb_restart_dispatch_keeps_numeric_identity_and_waives_metadata()
         body for path, body in fake.calls if path == fake.config["save_path"]
     )
     saved = save_body["shopCollectItemInfo"]
-    assert saved["cid"] == fake.detail["cid"]
+    assert saved["cid"] == "600338"
     assert saved["skuMap"]["default"]["price"] == 15
-    assert "productAttributes" not in saved
-    assert all(
-        path != miaoshou.CATEGORY_METADATA_PATH for path, _ in fake.calls
+    assert saved["productAttributes"] == command["expected"][
+        "product_attributes"
+    ]
+    assert any(
+        path == miaoshou.CATEGORY_METADATA_PATH for path, _ in fake.calls
     )
 
 
@@ -3197,7 +3233,7 @@ def test_tiktok_gb_official_readback_requires_the_bound_batch_number():
         )
 
 
-def test_tiktok_gb_legacy_create_without_bound_attributes_can_submit():
+def test_tiktok_gb_legacy_create_without_bound_attributes_is_zero_transport():
     command = _command("tiktok:GB")
     command["action"] = "CREATE_AND_CLAIM"
     command["detail_id"] = None
@@ -3220,12 +3256,15 @@ def test_tiktok_gb_legacy_create_without_bound_attributes_can_submit():
         lambda: miaoshou.MiaoshouRuntimeTransport(post=post)
     )
 
-    result = miaoshou.dispatch_tiktok_miaoshou_prepared_target(
-        _dispatch_request(command)
-    )
+    with pytest.raises(
+        miaoshou.MiaoshouOneClickPreDispatchError,
+        match="category attributes are unavailable",
+    ):
+        miaoshou.dispatch_tiktok_miaoshou_prepared_target(
+            _dispatch_request(command)
+        )
 
-    assert result["canonical_status"] == "SUBMITTED_UNVERIFIED"
-    assert all(path != miaoshou.CATEGORY_METADATA_PATH for path, _ in fake.calls)
+    assert fake.calls == []
 
 
 def test_malformed_publish_preserves_confirmed_update_and_unknown_submission():
@@ -3299,9 +3338,7 @@ def test_prepare_is_read_only_json_only_and_binds_server_identity(target):
         "adapter_policy_digest": "c" * 64,
     }
     if target == "tiktok:GB":
-        assert (
-            "product_attributes" not in command["expected"]
-            or command["expected"]["product_attributes"] == [
+        assert command["expected"]["product_attributes"] == [
             {
                 "attributeId": "102255",
                 "attributeName": "Batch Number",
@@ -3314,14 +3351,17 @@ def test_prepare_is_read_only_json_only_and_binds_server_identity(target):
                     }
                 ],
             }
-            ]
-        )
-        assert "product_attributes" not in command["expected"]
+        ]
     assert all(
         path
         in {
             miaoshou.DIRECT_STORE_CONFIG[target]["search_path"],
             miaoshou.DIRECT_STORE_CONFIG[target]["get_path"],
+            *(
+                [miaoshou.CATEGORY_METADATA_PATH]
+                if target == "tiktok:GB"
+                else []
+            ),
         }
         for path, _ in fake.calls
     )

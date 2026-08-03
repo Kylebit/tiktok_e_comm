@@ -9063,7 +9063,10 @@ def _complete_oneclick_platform_batch(
 
     rows = {
         str(row.get("target_label") or ""): row
-        for row in ((job or {}).get("targets") or ())
+        for row in (
+            *((job or {}).get("shared_controls") or ()),
+            *((job or {}).get("targets") or ()),
+        )
         if str(row.get("target_label") or "") in target_labels
     }
     successful = [

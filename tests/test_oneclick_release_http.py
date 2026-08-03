@@ -302,12 +302,44 @@ def test_tiktok_publish_after_collectbox_success_creates_only_tiktok_batch(
     monkeypatch.setattr(
         product_server,
         "_wake_oneclick_worker",
-        lambda job_id: calls.append(f"wake:{job_id}"),
+        lambda _job_id: (_ for _ in ()).throw(
+            AssertionError("the final HTTP result must not use a background wake")
+        ),
     )
     monkeypatch.setattr(
         product_server,
         "_project_oneclick_dispatch_capability",
         lambda job: job,
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_complete_oneclick_platform_batch",
+        lambda **kwargs: (
+            calls.append(
+                (
+                    "complete_tiktok_batch",
+                    kwargs["job_id"],
+                    kwargs["target_labels"],
+                    kwargs["batch_scope"],
+                )
+            )
+            or (
+                200,
+                {
+                    "schema_version": (
+                        "miaoshou-platform-publish-result/v1"
+                    ),
+                    "ok": True,
+                    "platform": "TIKTOK",
+                    "success": True,
+                    "message": "TikTok published",
+                    "target_count": 2,
+                    "successful_target_count": 2,
+                    "failed_targets": [],
+                    "retryable": True,
+                },
+            )
+        ),
     )
 
     status, response = product_server._start_tiktok_release(
@@ -317,12 +349,17 @@ def test_tiktok_publish_after_collectbox_success_creates_only_tiktok_batch(
         }
     )
 
-    assert status == 202
-    assert response["accepted"] is True
-    assert response["batch_scope"] == "TIKTOK"
-    assert response["external_writes_performed"] == []
+    assert status == 200
+    assert response["success"] is True
+    assert response["platform"] == "TIKTOK"
+    assert response["successful_target_count"] == 2
     assert "start_tiktok_batch" in calls
-    assert "wake:oneclick-job:test" in calls
+    assert (
+        "complete_tiktok_batch",
+        "oneclick-job:test",
+        ("tiktok:MX", "tiktok:LH_MY"),
+        "TIKTOK",
+    ) in calls
 
 
 @pytest.mark.parametrize(

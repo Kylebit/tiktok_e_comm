@@ -20,6 +20,7 @@ import urllib.request
 from modules.miaoshou import oneclick_release as miaoshou
 from modules.products import server as product_server
 from shared_platform import release_store as release_store_module
+from shared_platform import oneclick_release_controlplane as oneclick_controlplane
 from shared_platform.collectbox_action import CollectBoxActionStore
 from tests.test_tiktok_collectbox_publish_bridge import (
     _approved_tiktok_context,
@@ -122,6 +123,57 @@ def test_tiktok_button_response_is_the_final_miaoshou_result(
         "retryable": True,
     }
     assert len(publish_calls) == 6
+
+
+def test_shopee_global_success_is_read_from_shared_controls(monkeypatch):
+    """The global master is a shared control, not a storefront target row."""
+
+    class FakeStore:
+        def get_job(self, *, job_id):
+            assert job_id == "job-shopee-global"
+            return {
+                "targets": [],
+                "shared_controls": [
+                    {
+                        "target_label": "shopee:GLOBAL",
+                        "status": "SUCCEEDED",
+                    }
+                ],
+            }
+
+    class FakeWorker:
+        def __init__(self, *_args, **_kwargs):
+            self.advanced = False
+
+        def advance_once(self, job_id):
+            assert job_id == "job-shopee-global"
+            if self.advanced:
+                return False
+            self.advanced = True
+            return True
+
+    monkeypatch.setattr(
+        oneclick_controlplane,
+        "OneClickReleaseWorker",
+        FakeWorker,
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_consume_oneclick_outcome_receipts",
+        lambda _store: None,
+    )
+
+    status, body = product_server._complete_oneclick_platform_batch(
+        control_store=FakeStore(),
+        job_id="job-shopee-global",
+        target_labels=("shopee:GLOBAL",),
+        batch_scope="SHOPEE_GLOBAL",
+    )
+
+    assert status == 200
+    assert body["success"] is True
+    assert body["successful_target_count"] == 1
+    assert body["failed_targets"] == []
 
 
 def test_frontend_uses_only_four_simple_states_and_never_polls_after_post():

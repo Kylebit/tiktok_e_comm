@@ -211,7 +211,7 @@
 
   <h2 class="section-title">真实测试截图</h2>
   <section class="panel">
-    <p>以下图片由真实 Chromium 点击页面按钮后自动生成，不是设计稿。测试同时验证：平台互不阻断、失败后可重新点击、成功后本次结束、没有发布后的轮询。</p>
+    <p>以下图片由真实 Chromium 点击页面按钮后自动生成，不是设计稿。测试验证：各平台结果互不继承、失败后可重新点击、成功后本次结束、没有发布后的轮询。为避免同一商品的妙手写入互相覆盖，服务端会串行处理同时发起的外部写请求。</p>
     <div class="evidence-grid">
       <figure class="evidence">
         <img src="assets/simple-platform-publish/1440x900-initial.png" alt="桌面端三个独立发布按钮的初始状态">
@@ -223,7 +223,7 @@
       </figure>
       <figure class="evidence">
         <img src="assets/simple-platform-publish/1440x900-failure-and-independent-success.png" alt="TikTok 失败但 Shopee 独立成功">
-        <figcaption>独立结果：TikTok 失败可重试，Shopee 同时可以成功，不互相阻断。</figcaption>
+        <figcaption>独立结果：TikTok 失败可重试，Shopee 之后仍可成功，两个平台不继承彼此的结果。</figcaption>
       </figure>
       <figure class="evidence">
         <img src="assets/simple-platform-publish/1440x900-all-success-after-retry.png" alt="失败重试后三个平台均发布成功">

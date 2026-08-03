@@ -9000,6 +9000,100 @@ def _with_collectbox_publishability(projection: dict) -> dict:
     }
 
 
+_MIAOSHOU_PLATFORM_SUCCESS_STATUSES = {
+    "SUCCEEDED",
+    "SUBMITTED_UNVERIFIED",
+    "SUCCEEDED_MANUAL_REVIEW",
+}
+_MIAOSHOU_PLATFORM_NAMES = {
+    "TIKTOK": "TikTok",
+    "SHOPEE_GLOBAL": "Shopee 全球商品",
+    "OZON": "Ozon",
+}
+
+
+def _complete_oneclick_platform_batch(
+    *,
+    control_store,
+    job_id: str,
+    target_labels: tuple[str, ...],
+    batch_scope: str,
+) -> tuple[int, dict]:
+    """Run one explicit platform batch and return its final Miaoshou result.
+
+    The HTTP request is the product boundary: the browser does not poll the
+    internal control-plane ledger and does not interpret reconciliation or
+    manual-acceptance states.  Those durable facts may remain available for
+    diagnostics, but a Miaoshou-accepted submission is a successful button
+    result for this stage of the product.
+    """
+
+    from shared_platform.oneclick_release_controlplane import (
+        OneClickReleaseWorker,
+    )
+
+    display_name = _MIAOSHOU_PLATFORM_NAMES[batch_scope]
+    worker = OneClickReleaseWorker(
+        control_store,
+        _oneclick_adapter_registry,
+        dispatch_enabled=_oneclick_dispatch_enabled,
+    )
+    # Preparation and dispatch are separate transitions.  This bound is
+    # deliberately derived from the selected platform scope and contains no
+    # sleep/retry loop against the external API.
+    transition_limit = max(16, (len(target_labels) * 6) + 8)
+    try:
+        for _ in range(transition_limit):
+            if not worker.advance_once(job_id):
+                break
+        _consume_oneclick_outcome_receipts(control_store)
+        job = control_store.get_job(job_id=job_id)
+    except Exception:
+        return 500, {
+            "schema_version": "miaoshou-platform-publish-result/v1",
+            "ok": False,
+            "platform": batch_scope,
+            "success": False,
+            "message": f"{display_name} 发布失败",
+            "target_count": len(target_labels),
+            "successful_target_count": 0,
+            "failed_targets": list(target_labels),
+            "retryable": True,
+        }
+
+    rows = {
+        str(row.get("target_label") or ""): row
+        for row in ((job or {}).get("targets") or ())
+        if str(row.get("target_label") or "") in target_labels
+    }
+    successful = [
+        label
+        for label in target_labels
+        if (rows.get(label) or {}).get("status")
+        in _MIAOSHOU_PLATFORM_SUCCESS_STATUSES
+    ]
+    failed = [label for label in target_labels if label not in successful]
+    result = {
+        "schema_version": "miaoshou-platform-publish-result/v1",
+        "ok": not failed,
+        "platform": batch_scope,
+        "success": not failed,
+        "message": (
+            f"{display_name} 发布成功"
+            if not failed
+            else f"{display_name} 发布失败"
+        ),
+        "target_count": len(target_labels),
+        "successful_target_count": len(successful),
+        "failed_targets": failed,
+        "retryable": True,
+    }
+    # Business rejection is still a completed request/response interaction.
+    # Keep HTTP 200 and let the explicit ``success`` field drive the four-state
+    # UI, avoiding browser-level transport noise for a normal vendor refusal.
+    return 200, result
+
+
 def _start_oneclick_release(
     data: dict,
     *,
@@ -9163,15 +9257,17 @@ def _start_oneclick_release(
                     ),
                 },
             }
-        _wake_oneclick_worker(job["job_id"])
-    return 202, {
-        "ok": True,
-        "accepted": True,
-        "idempotent": False,
-        "batch_scope": batch_scope,
-        "external_writes_performed": [],
-        "job": _project_oneclick_dispatch_capability(job),
-    }
+        job_id = str(job["job_id"])
+        # Serialize use of the shared durable ledger, but do not reject a
+        # second platform.  A concurrent button waits here and then starts its
+        # own fresh explicit batch; it never inherits the first platform's
+        # result or receives platform_dispatch_in_progress.
+        return _complete_oneclick_platform_batch(
+            control_store=control_store,
+            job_id=job_id,
+            target_labels=target_labels,
+            batch_scope=batch_scope,
+        )
 
 
 def _start_tiktok_release(data: dict) -> tuple[int, dict]:
@@ -13735,7 +13831,6 @@ def serve(
         print(f"  [WARN] orders-pull 调度未启动: {e}")
 
     _recover_collectbox_actions()
-    _start_oneclick_background_worker()
 
     if open_browser:
         import webbrowser

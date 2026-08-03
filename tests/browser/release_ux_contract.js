@@ -1,6 +1,8 @@
 "use strict";
 
 const { chromium } = require("playwright");
+const fs = require("fs");
+const path = require("path");
 
 const baseUrl = process.argv[2];
 if (!baseUrl) throw new Error("base URL argument is required");
@@ -5790,10 +5792,10 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
         requests,
       );
       if (expectedPath === "/api/product-workspace/publish-tiktok") {
-        const failureText = await optionalText("#oneClickExecutionMessage");
+        const failureText = await optionalText("#oneClickExecutionPreview");
         check(
-          failureText.includes("TikTok 妙手采集箱尚未完成")
-            && failureText.includes("重新导入后再发布")
+          failureText.includes("TikTok")
+            && failureText.includes("发布失败")
             && failureText.includes("step1_collectbox_required")
             && await platformButton.isEnabled(),
           `platform structured error ${viewport.width}: actionable reason and code stay visible with retry`,
@@ -5801,9 +5803,10 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
         );
       }
       if (expectedPath === "/api/product-workspace/publish-ozon") {
-        const failureText = await optionalText("#oneClickExecutionMessage");
+        const failureText = await optionalText("#oneClickExecutionPreview");
         check(
-          failureText.includes("Ozon 发布请求未被服务接受")
+          failureText.includes("Ozon")
+            && failureText.includes("发布失败")
             && failureText.includes("approved_inventory_required")
             && await platformButton.isEnabled(),
           `platform structured error ${viewport.width}: unknown structured code is preserved with retry`,
@@ -8046,6 +8049,174 @@ async function legacyStateSafety(browser) {
   }
 }
 
+async function simplifiedPlatformPublishContract(browser, viewport) {
+  const context = await browser.newContext({ viewport });
+  const page = await context.newPage();
+  const requests = [];
+  const errors = [];
+  const artifactRoot = process.env.ORBIT_BROWSER_ARTIFACT_DIR || "";
+  const suffix = `${viewport.width}x${viewport.height}`;
+  let tiktokAttempt = 0;
+  let releaseFirstTiktok;
+  const firstTiktokGate = new Promise((resolve) => {
+    releaseFirstTiktok = resolve;
+  });
+  const screenshot = async (name) => {
+    if (!artifactRoot) return;
+    fs.mkdirSync(artifactRoot, { recursive: true });
+    await page.locator("#releasePrimaryActionPanel").screenshot({
+      path: path.join(artifactRoot, `${suffix}-${name}.png`),
+    });
+  };
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+  });
+  await page.route("**/*", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.origin !== baseUrl) return route.abort("blockedbyclient");
+    if (!url.pathname.startsWith("/api/")) return route.continue();
+    requests.push({ method: request.method(), path: url.pathname });
+    if (url.pathname === "/api/product-workspace/dashboard") {
+      return route.fulfill(jsonResponse(oneClickDashboard()));
+    }
+    if (url.pathname === "/api/product-workspace/collectbox-action/preview") {
+      return route.fulfill(jsonResponse(collectboxActionProjection("SUCCEEDED")));
+    }
+    if (url.pathname === "/api/product-workspace/publish-tiktok") {
+      tiktokAttempt += 1;
+      if (tiktokAttempt === 1) {
+        await firstTiktokGate;
+        return route.fulfill(jsonResponse({
+          schema_version: "miaoshou-platform-publish-result/v1",
+          ok: false,
+          platform: "TIKTOK",
+          success: false,
+          message: "TikTok 发布失败：妙手拒绝了本次请求",
+          target_count: 6,
+          successful_target_count: 0,
+          failed_targets: ["tiktok:LH_PH"],
+          retryable: true,
+        }));
+      }
+      return route.fulfill(jsonResponse({
+        schema_version: "miaoshou-platform-publish-result/v1",
+        ok: true,
+        platform: "TIKTOK",
+        success: true,
+        message: "TikTok 发布成功",
+        target_count: 6,
+        successful_target_count: 6,
+        failed_targets: [],
+        retryable: true,
+      }));
+    }
+    if (url.pathname === "/api/product-workspace/publish-shopee-global") {
+      return route.fulfill(jsonResponse({
+        schema_version: "miaoshou-platform-publish-result/v1",
+        ok: true,
+        platform: "SHOPEE_GLOBAL",
+        success: true,
+        message: "Shopee 全球商品 发布成功",
+        target_count: 1,
+        successful_target_count: 1,
+        failed_targets: [],
+        retryable: true,
+      }));
+    }
+    if (url.pathname === "/api/product-workspace/publish-ozon") {
+      return route.fulfill(jsonResponse({
+        schema_version: "miaoshou-platform-publish-result/v1",
+        ok: true,
+        platform: "OZON",
+        success: true,
+        message: "Ozon 发布成功",
+        target_count: 1,
+        successful_target_count: 1,
+        failed_targets: [],
+        retryable: true,
+      }));
+    }
+    return route.fulfill(jsonResponse({ ok: false }, 404));
+  });
+  try {
+    await page.goto(`${baseUrl}/product-workspace?offer_id=3828540231`, {
+      waitUntil: "domcontentloaded",
+    });
+    const tiktok = page.locator("#releasePrimaryActionButton");
+    const shopee = page.locator("#shopeeGlobalReleaseButton");
+    const ozon = page.locator("#ozonReleaseButton");
+    await page.waitForFunction(() => (
+      document.querySelector("#releasePrimaryActionButton")?.disabled === false
+      && document.querySelector("#shopeeGlobalReleaseButton")?.disabled === false
+      && document.querySelector("#ozonReleaseButton")?.disabled === false
+    ));
+    await screenshot("initial");
+
+    const firstClick = tiktok.click();
+    await page.waitForFunction(() => (
+      document.querySelector('[data-platform-publish-result="TIKTOK"]')
+        ?.textContent?.includes("发布中")
+    ));
+    check(
+      await shopee.isEnabled() && await ozon.isEnabled(),
+      `simple publish ${suffix}: TikTok loading does not disable other platforms`,
+    );
+    await screenshot("publishing");
+
+    await shopee.click();
+    await page.waitForFunction(() => (
+      document.querySelector('[data-platform-publish-result="SHOPEE_GLOBAL"]')
+        ?.textContent?.includes("发布成功")
+    ));
+    releaseFirstTiktok();
+    await firstClick;
+    await page.waitForFunction(() => (
+      document.querySelector('[data-platform-publish-result="TIKTOK"]')
+        ?.textContent?.includes("发布失败")
+    ));
+    const combined = await page.locator("#oneClickExecutionGroups").innerText();
+    check(
+      combined.includes("TikTok")
+        && combined.includes("发布失败")
+        && combined.includes("Shopee 全球商品")
+        && combined.includes("发布成功"),
+      `simple publish ${suffix}: independent success and failure remain visible`,
+      combined,
+    );
+    check(await tiktok.isEnabled(), `simple publish ${suffix}: failed TikTok can retry`);
+    await screenshot("failure-and-independent-success");
+
+    await tiktok.click();
+    await page.waitForFunction(() => (
+      document.querySelector('[data-platform-publish-result="TIKTOK"]')
+        ?.textContent?.includes("发布成功")
+    ));
+    await ozon.click();
+    await page.waitForFunction(() => (
+      document.querySelector('[data-platform-publish-result="OZON"]')
+        ?.textContent?.includes("发布成功")
+    ));
+    await screenshot("all-success-after-retry");
+
+    const statusReads = requests.filter((row) => (
+      row.path === "/api/product-workspace/publish-status"
+      || row.path === "/api/product-workspace/publish-preview"
+    ));
+    const finalText = await page.locator("#oneClickExecutionPreview").innerText();
+    check(statusReads.length === 0, `simple publish ${suffix}: zero post/publish polling`, statusReads);
+    check(
+      !/(人工验收|对账|结果未确认|SUBMITTED_UNVERIFIED|RECONCILIATION_REQUIRED)/.test(finalText),
+      `simple publish ${suffix}: obsolete workflow text is absent`,
+      finalText,
+    );
+    check(errors.length === 0, `simple publish ${suffix}: no browser errors`, errors);
+  } finally {
+    await context.close();
+  }
+}
+
 (async () => {
   const browser = await chromium.launch({
     headless: true,
@@ -8054,6 +8225,26 @@ async function legacyStateSafety(browser) {
       : {}),
   });
   try {
+    if (
+      process.env.ORBIT_BROWSER_CONTRACT_ONLY
+        === "simplified-platform-publish"
+    ) {
+      await simplifiedPlatformPublishContract(
+        browser,
+        { width: 1440, height: 900 },
+      );
+      await simplifiedPlatformPublishContract(
+        browser,
+        { width: 390, height: 844 },
+      );
+      process.stdout.write(`${JSON.stringify({
+        ok: failures.length === 0,
+        failures,
+        results,
+      }, null, 2)}\n`);
+      if (failures.length) process.exitCode = 1;
+      return;
+    }
     if (
       process.env.ORBIT_BROWSER_CONTRACT_ONLY
         === "shopee-global-approval"

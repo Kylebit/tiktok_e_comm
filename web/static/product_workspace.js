@@ -335,6 +335,16 @@
     controller: null,
     finalDashboardRefreshed: false,
   };
+  const platformPublish = {
+    TIKTOK: { state: "IDLE", message: "", failedTargets: [] },
+    SHOPEE_GLOBAL: { state: "IDLE", message: "", failedTargets: [] },
+    OZON: { state: "IDLE", message: "", failedTargets: [] },
+  };
+  const platformPublishNames = {
+    TIKTOK: "TikTok",
+    SHOPEE_GLOBAL: "Shopee 全球商品",
+    OZON: "Ozon",
+  };
   const collectboxAction = {
     generation: 0,
     contextKey: "",
@@ -717,6 +727,11 @@
     oneClickExecution.failureAction = null;
     oneClickExecution.controller = null;
     oneClickExecution.finalDashboardRefreshed = false;
+    Object.values(platformPublish).forEach((result) => {
+      result.state = "IDLE";
+      result.message = "";
+      result.failedTargets = [];
+    });
     if (wasPosting) releaseSubmitting = false;
     resetShopeeGlobalPlanReview();
   }
@@ -4280,89 +4295,43 @@
     const container = $("#oneClickExecutionGroups");
     const message = $("#oneClickExecutionMessage");
     if (!container || !message) return;
-    const identity = oneClickIdentity(data);
-    const projection = isCurrentOneClickAttempt(oneClickExecution.job)
-      ? oneClickExecution.job
-      : null;
-    const headings = {
-      automatic: "等待妙手提交",
-      manual: "妙手已接受",
-      dependency: "本次依赖未完成",
-      preSubmit: "本次发布失败",
-      reconciliation: "本次结果未确认",
-      blocked: "本次未发布",
-      terminal: "本次妙手已接受",
+    const stateLabels = {
+      IDLE: "未发布",
+      PUBLISHING: "发布中",
+      SUCCEEDED: "发布成功",
+      FAILED: "发布失败",
     };
-    const groups = {
-      automatic: [],
-      manual: [],
-      dependency: [],
-      preSubmit: [],
-      reconciliation: [],
-      blocked: [],
-      terminal: [],
-    };
-    for (const target of (projection?.targets || []).filter(
-      (candidate) => candidate.storefront === true,
-    )) {
-      groups[oneClickTargetBucket(target)].push(target);
-    }
-    container.innerHTML = Object.entries(groups)
-      .filter(([, targets]) => targets.length)
-      .map(([bucket, targets]) => `
-        <section class="oneclick-execution-group oneclick-${esc(bucket)}">
-           <h5>${esc(headings[bucket])}</h5>
-           <div class="oneclick-target-list">
-             ${targets.map((target) => `
-               <div class="oneclick-target-control">
-                 <article class="oneclick-target-card"
-                   data-oneclick-target="${esc(target.target_label)}" tabindex="-1">
-                   <strong>${esc(targetDisplayName(target.target_label))}</strong>
-                   <span>${esc(oneClickStatusText(target.status))}</span>
-                   <small>${esc(oneClickReasonText(target))}</small>
-                 </article>
-               </div>
-             `).join("")}
-           </div>
-        </section>
-      `).join("") || "<p>尚无服务端店铺状态。</p>";
-
-    if (!identity) {
-      message.textContent = "批准不可变发布计划后，系统会读取服务端批次预览。";
-    } else if (oneClickExecution.previewBusy) {
-      message.textContent = "正在读取上次妙手提交结果…";
-    } else if (oneClickExecution.posting) {
-      message.textContent = "正在向妙手 API 提交所选 TikTok、Shopee 和 Ozon 店铺…";
-    } else if (oneClickExecution.error) {
-      message.textContent =
-        `${oneClickExecution.error} 本次已结束；可以再次点击一键发布。`;
-    } else if (oneClickExecution.statusWarning) {
-      message.textContent = oneClickExecution.statusWarning;
-    } else if (isCurrentOneClickAttempt(oneClickExecution.job)) {
-      message.textContent =
-        "正在显示本次妙手提交状态。";
-    } else if (oneClickExecution.preview) {
-      const count = Number(
-        oneClickExecution.preview.preparation_pending_count || 0,
-      );
-      const manual = (oneClickExecution.preview.summary?.manual_after_submit || []).length;
-      message.textContent =
-        `当前发布条件已读取：${count} 个目标可准备，${manual} 个目标提交后需人工验收。`;
+    container.innerHTML = Object.entries(platformPublish).map(
+      ([platform, result]) => `
+        <article class="oneclick-target-card"
+          data-platform-publish-result="${esc(platform)}">
+          <strong>${esc(platformPublishNames[platform])}</strong>
+          <span>${esc(stateLabels[result.state])}</span>
+          <small>${esc(result.message || "尚未点击发布")}</small>
+        </article>
+      `,
+    ).join("");
+    const publishing = Object.values(platformPublish).filter(
+      (result) => result.state === "PUBLISHING",
+    ).length;
+    const succeeded = Object.values(platformPublish).filter(
+      (result) => result.state === "SUCCEEDED",
+    ).length;
+    const failed = Object.values(platformPublish).filter(
+      (result) => result.state === "FAILED",
+    ).length;
+    if (!oneClickIdentity(data)) {
+      message.textContent = "请先批准当前发布计划。";
+    } else if (publishing) {
+      message.textContent = `正在发布 ${publishing} 个平台；各平台互不阻断。`;
+    } else if (succeeded || failed) {
+      message.textContent = `本轮结果：${succeeded} 个成功，${failed} 个失败。失败平台可直接重试。`;
     } else {
-      message.textContent = "当前没有执行中的发布任务；请选择平台开始新一轮。";
-    }
-    if (identity) {
-      $("#publishAllNote").textContent =
-        "所有所选 TikTok、Shopee 和 Ozon 店铺统一通过妙手 API 提交；"
-        + "上一轮失败不会阻止再次显式发布。";
+      message.textContent = "尚未发布。请选择一个平台开始。";
     }
     $("#oneClickExecutionPreview").setAttribute(
       "aria-busy",
-      String(Boolean(
-        oneClickExecution.previewBusy
-        || oneClickExecution.posting
-        || oneClickExecution.statusBusy
-      )),
+      String(Boolean(publishing)),
     );
     updateReleasePrimaryAction(data);
   }
@@ -4922,32 +4891,8 @@
     } else {
       oneClickExecution.identity = identity;
     }
-    const generation = oneClickExecution.generation;
-    const serverJob = data?.release_v1?.oneclick_controlplane;
-    if (serverJob && !oneClickExecution.job) {
-      try {
-        const validatedJob = validateOneClickProjection(
-          serverJob,
-          identity,
-          ONECLICK_STATUS_SCHEMA,
-        );
-        oneClickExecution.job = isCurrentOneClickAttempt(validatedJob)
-          ? validatedJob
-          : null;
-      } catch (error) {
-        oneClickExecution.error = friendlyError(error.message);
-        oneClickExecution.failureAction =
-          data?.release_v1?.canonical_next_action || null;
-        return;
-      }
-    }
-    if (isCurrentOneClickAttempt(oneClickExecution.job)) {
-      if (!ONECLICK_TERMINAL_PHASES.has(oneClickExecution.job.phase)) {
-        scheduleOneClickStatusPoll(generation, 0);
-      }
-      return;
-    }
-    requestOneClickPreview(generation);
+    // Publishing is now a request/response interaction.  Historical jobs are
+    // diagnostics only and never become the state of a new button click.
   }
 
   async function postProductWorkspace(path, body) {
@@ -7471,15 +7416,18 @@
         : "批准当前发布计划后，系统会显示唯一可执行的下一步。";
       return;
     }
-    const posting = releaseSubmitting || oneClickExecution.posting;
     const tiktokCollected = Boolean(
       collectboxAction.projection?.action?.platforms?.some(
         (row) => row.platform === "TIKTOK" && row.publishable === true,
       ),
     );
-    button.disabled = posting || !tiktokCollected;
-    shopeeButton.disabled = posting;
-    ozonButton.disabled = posting;
+    button.disabled = (
+      platformPublish.TIKTOK.state === "PUBLISHING" || !tiktokCollected
+    );
+    shopeeButton.disabled = (
+      platformPublish.SHOPEE_GLOBAL.state === "PUBLISHING"
+    );
+    ozonButton.disabled = platformPublish.OZON.state === "PUBLISHING";
     button.textContent = "发布 TikTok";
     shopeeButton.textContent = "发布 Shopee 全球商品";
     ozonButton.textContent = "发布 Ozon";
@@ -8658,23 +8606,22 @@
     return `服务返回 HTTP ${status}`;
   }
 
-  async function publishPlatformBatch(endpoint, platformName) {
+  async function publishPlatformBatch(endpoint, platformName, platformKey) {
     const identity = oneClickExecution.identity;
     if (
       !currentData
-      || releaseSubmitting
-      || oneClickExecution.posting
       || !identity
+      || platformPublish[platformKey]?.state === "PUBLISHING"
     ) return;
     const generation = oneClickExecution.generation;
     const body = currentReleaseBody({ confirm_publish: true });
-    releaseSubmitting = true;
-    oneClickExecution.posting = true;
-    oneClickExecution.postAttempted = true;
-    oneClickExecution.error = "";
+    const result = platformPublish[platformKey];
+    result.state = "PUBLISHING";
+    result.message = `${platformName} 发布中`;
+    result.failedTargets = [];
     updateReleaseControls(currentData);
     renderOneClickExecution(currentData);
-    $("#publishRunMessage").textContent = "正在创建唯一持久任务；不会在浏览器中循环调用发布。";
+    $("#publishRunMessage").textContent = `${platformName} 发布中`;
     try {
       const { response, payload } = await boundedJsonFetch(
         endpoint,
@@ -8689,53 +8636,40 @@
         ONECLICK_LOCAL_POST_TIMEOUT_MS,
         `${platformName} 发布任务创建`,
       );
-      if (response.status !== 202 || !response.ok || payload.ok === false) {
+      if (
+        response.status !== 200
+        || !response.ok
+        || payload.ok === false
+        || payload.success !== true
+      ) {
         const error = new Error(
-          platformPublishErrorMessage(
-            payload,
-            response.status,
-            platformName,
-          ),
+          String(payload?.message || "").trim()
+          || platformPublishErrorMessage(payload, response.status, platformName),
         );
         error.status = response.status;
         error.payload = payload;
-        error.responseOutcomeUnknown = response.status >= 500;
         throw error;
       }
-      if (
-        payload.accepted !== true
-        || !Array.isArray(payload.external_writes_performed)
-        || payload.external_writes_performed.length
-      ) {
-        throw new Error(`${platformName} 发布任务未返回安全的接受回执。`);
-      }
-      const job = validateOneClickProjection(
-        payload.job,
-        identity,
-        ONECLICK_STATUS_SCHEMA,
-        null,
-      );
       if (generation !== oneClickExecution.generation) return;
-      oneClickExecution.job = job;
-      oneClickExecution.error = "";
-      oneClickExecution.statusWarning =
-        `${platformName} 独立发布批次已提交；其他平台不会被联动执行。`;
-      $("#publishRunMessage").textContent =
-        `${platformName} 发布批次已接受；正在读取该平台结果。`;
+      result.state = "SUCCEEDED";
+      result.message = String(payload.message || `${platformName} 发布成功`);
+      result.failedTargets = [];
+      $("#publishRunMessage").textContent = result.message;
       showError("");
-      scheduleOneClickStatusPoll(generation, 0);
     } catch (error) {
       if (generation !== oneClickExecution.generation) return;
       const message = friendlyError(error.message);
-      oneClickExecution.error = message;
+      result.state = "FAILED";
+      result.message = message.startsWith(platformName)
+        ? message
+        : `${platformName} 发布失败：${message}`;
+      result.failedTargets = Array.isArray(error.payload?.failed_targets)
+        ? [...error.payload.failed_targets]
+        : [];
       showError(message);
-      $("#publishRunMessage").textContent =
-        `${message} 本次已结束；可以再次点击一键发布。`;
+      $("#publishRunMessage").textContent = result.message;
     } finally {
       if (generation === oneClickExecution.generation) {
-        releaseSubmitting = false;
-        oneClickExecution.posting = false;
-        oneClickExecution.postAttempted = false;
         renderOneClickExecution(currentData);
         updateReleaseControls(currentData || {});
       }
@@ -8746,6 +8680,7 @@
     await publishPlatformBatch(
       "/api/product-workspace/publish-tiktok",
       "TikTok",
+      "TIKTOK",
     );
   }
 
@@ -8759,6 +8694,7 @@
     await publishPlatformBatch(
       "/api/product-workspace/publish-shopee-global",
       "Shopee 全球商品",
+      "SHOPEE_GLOBAL",
     );
   }
 
@@ -8767,6 +8703,7 @@
     await publishPlatformBatch(
       "/api/product-workspace/publish-ozon",
       "Ozon",
+      "OZON",
     );
   }
 

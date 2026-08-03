@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>商品发布按钮行为说明</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #173630;
+      --muted: #60716d;
+      --paper: #f7f3e9;
+      --card: #fffdf7;
+      --line: #cbdcd6;
+      --green: #123f37;
+      --mint: #e8f4ef;
+      --orange: #ef6c3f;
+      --orange-soft: #fff0e8;
+      --red: #a94432;
+      --shadow: 0 18px 50px rgba(24, 54, 48, .08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: Inter, "Noto Sans SC", "Microsoft YaHei", sans-serif;
+      line-height: 1.68;
+    }
+    main { width: min(1120px, calc(100% - 32px)); margin: 0 auto; padding: 36px 0 72px; }
+    .hero, .panel, .button-card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+    }
+    .hero { padding: clamp(28px, 6vw, 64px); background: linear-gradient(135deg, #fffdf7, #edf7f1); }
+    .eyebrow { margin: 0 0 8px; color: #0e7c6f; font-size: 13px; font-weight: 800; letter-spacing: .16em; }
+    h1 { margin: 0; font-family: Georgia, "Noto Serif SC", serif; font-size: clamp(36px, 7vw, 72px); line-height: 1.08; }
+    .lead { max-width: 840px; margin: 22px 0 0; font-size: 20px; color: var(--muted); }
+    .one-rule { margin-top: 28px; padding: 18px 22px; border-radius: 16px; background: var(--green); color: white; font-size: 18px; font-weight: 700; }
+    .meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+    .pill { padding: 7px 12px; border-radius: 999px; background: var(--mint); color: #17685d; font-size: 13px; font-weight: 750; }
+    .section-title { margin: 54px 0 18px; font-size: 30px; }
+    .panel { padding: clamp(20px, 4vw, 36px); margin-top: 18px; }
+    .screen { width: 100%; display: block; border-radius: 18px; border: 1px solid var(--line); }
+    .button-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+    .button-card { overflow: hidden; }
+    .button-image { padding: 22px; background: #f2f6f3; border-bottom: 1px solid var(--line); }
+    .button-image img { width: 100%; display: block; border-radius: 12px; }
+    .button-copy { padding: 26px; }
+    .button-copy h3 { margin: 0 0 8px; font-size: 24px; }
+    .button-copy h4 { margin: 24px 0 8px; font-size: 16px; }
+    ol, ul { margin: 8px 0 0; padding-left: 24px; }
+    .boundary { margin-top: 18px; padding: 14px 16px; border-left: 4px solid var(--orange); background: var(--orange-soft); border-radius: 10px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 14px; }
+    th, td { padding: 14px 16px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { background: var(--mint); }
+    .flow { display: grid; grid-template-columns: repeat(7, auto); gap: 10px; align-items: center; justify-content: center; overflow-x: auto; padding: 12px 0; }
+    .node { min-width: 140px; padding: 16px; border-radius: 14px; background: var(--mint); text-align: center; font-weight: 750; }
+    .node.hot { background: var(--orange); color: white; }
+    .arrow { font-size: 24px; color: var(--muted); }
+    .cancelled { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 24px; }
+    .cancelled span::before { content: "×"; margin-right: 8px; color: var(--red); font-weight: 900; }
+    .status-samples { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 16px; }
+    .status { padding: 18px; border-radius: 14px; background: #f2f4ef; border: 1px solid var(--line); }
+    .status strong { display: block; margin-bottom: 4px; }
+    .status.success { background: #e5f5ed; }
+    .status.failure { background: #fff0e8; }
+    .evidence-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 18px; }
+    .evidence { margin: 0; padding: 14px; border: 1px solid var(--line); border-radius: 16px; background: #f7faf7; }
+    .evidence img { width: 100%; display: block; border-radius: 10px; }
+    .evidence figcaption { margin-top: 10px; color: var(--muted); font-size: 14px; }
+    .footnote { color: var(--muted); font-size: 14px; }
+    code { padding: 2px 6px; border-radius: 6px; background: #eef2ed; }
+    @media (max-width: 780px) {
+      main { width: min(100% - 20px, 1120px); padding-top: 10px; }
+      .hero, .panel, .button-card { border-radius: 18px; }
+      .button-grid, .status-samples, .cancelled, .evidence-grid { grid-template-columns: 1fr; }
+      .flow { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); text-align: center; }
+      table { display: block; overflow-x: auto; white-space: nowrap; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header class="hero">
+    <p class="eyebrow">APPROVED RELEASE · BUTTON GUIDE</p>
+    <h1>商品发布按钮<br>行为说明</h1>
+    <p class="lead">Kyle 只需要知道每个按钮长什么样、点击以后系统做什么，以及妙手返回成功或失败时页面显示什么。</p>
+    <div class="one-rule">唯一规则：请求妙手发布 API；妙手返回成功，就显示“发布成功”并结束。</div>
+    <div class="meta">
+      <span class="pill">2026-08-03</span>
+      <span class="pill">Kyle 已确认</span>
+      <span class="pill">TikTok / Shopee / Ozon 相互独立</span>
+    </div>
+  </header>
+
+  <h2 class="section-title">当前真实页面</h2>
+  <section class="panel">
+    <img class="screen" src="assets/release-buttons-current-viewport.png" alt="当前真实商品发布按钮区域">
+    <p class="footnote">截图来自当前运行中的商品发布页面，不是示意图。</p>
+  </section>
+
+  <h2 class="section-title">四个按钮逐一说明</h2>
+  <section class="button-grid">
+    <article class="button-card">
+      <div class="button-image"><img src="assets/button-reimport-collectbox.png" alt="重新导入 TikTok / Shopee 妙手采集箱按钮"></div>
+      <div class="button-copy">
+        <h3>重新导入采集箱</h3>
+        <ol>
+          <li>读取当前批准的标题、SKU、图片、描述、类目、国家和价格。</li>
+          <li>创建一个新的 TikTok / Shopee 妙手采集箱批次。</li>
+          <li>旧草稿保留，妙手使用最新草稿。</li>
+          <li>页面只显示“导入成功”或“导入失败：原因”。</li>
+        </ol>
+        <div class="boundary">它只导入草稿，不发布任何店铺；旧草稿存在也不能阻止重新导入。</div>
+      </div>
+    </article>
+
+    <article class="button-card">
+      <div class="button-image"><img src="assets/button-publish-tiktok.png" alt="发布 TikTok 按钮"></div>
+      <div class="button-copy">
+        <h3>发布 TikTok</h3>
+        <ol>
+          <li>读取当前选择的 TikTok 国家和店铺。</li>
+          <li>带上各站点已经批准的标题、类目和价格。</li>
+          <li>调用对应的妙手 TikTok 发布 API。</li>
+          <li>所有站点返回成功：显示“TikTok 发布成功”。</li>
+          <li>存在失败站点：显示失败站点和妙手返回原因；按钮恢复可点击。</li>
+        </ol>
+        <div class="boundary">再次点击就是一次全新发布请求，不受上一次成功、失败或不确定结果影响。</div>
+      </div>
+    </article>
+
+    <article class="button-card">
+      <div class="button-image"><img src="assets/button-publish-shopee-global.png" alt="发布 Shopee 全球商品按钮"></div>
+      <div class="button-copy">
+        <h3>发布 Shopee 全球商品</h3>
+        <ol>
+          <li>读取批准的标题、英语母版描述、SKU、图片、类目和价格资料。</li>
+          <li>调用妙手 Shopee 全球商品发布 API。</li>
+          <li>妙手返回成功：显示“Shopee 全球商品发布成功”。</li>
+          <li>妙手返回失败：显示失败原因；按钮恢复可点击。</li>
+        </ol>
+        <div class="boundary">当前只发布全球商品，不继续发布 PH、MY、TH、VN 等区域站点，也不依赖 TikTok。</div>
+      </div>
+    </article>
+
+    <article class="button-card">
+      <div class="button-image"><img src="assets/button-publish-ozon.png" alt="发布 Ozon 按钮"></div>
+      <div class="button-copy">
+        <h3>发布 Ozon</h3>
+        <ol>
+          <li>读取当前已经批准的 Ozon 商品资料。</li>
+          <li>调用独立的 Ozon 妙手发布 API。</li>
+          <li>妙手返回成功：显示“Ozon 发布成功”。</li>
+          <li>妙手返回失败：显示失败原因；按钮恢复可点击。</li>
+        </ol>
+        <div class="boundary">Ozon 不依赖 TikTok 或 Shopee，也不会被另外两个平台的历史状态禁用。</div>
+      </div>
+    </article>
+  </section>
+
+  <h2 class="section-title">页面只保留四种状态</h2>
+  <section class="panel">
+    <div class="status-samples">
+      <div class="status"><strong>未发布</strong>本轮还没有请求妙手 API；按钮可点。</div>
+      <div class="status"><strong>发布中</strong>正在等待妙手 API 返回；当前按钮暂时不可重复点。</div>
+      <div class="status success"><strong>发布成功</strong>妙手 API 返回成功；本次结束，按钮可以再次点。</div>
+      <div class="status failure"><strong>发布失败</strong>显示妙手返回原因；按钮可以再次点。</div>
+    </div>
+    <p>“本轮执行状态”只显示刚才点击的平台处于上面哪一种状态，不再展示“可准备目标数”“服务端店铺状态”“待确认”“人工验收”或“对账”。</p>
+  </section>
+
+  <h2 class="section-title">按钮背后的完整流程</h2>
+  <section class="panel">
+    <div class="flow" aria-label="发布按钮流程">
+      <div class="node">点击按钮</div><div class="arrow">→</div>
+      <div class="node">显示发布中</div><div class="arrow">→</div>
+      <div class="node hot">请求妙手 API</div><div class="arrow">→</div>
+      <div class="node">成功或失败<br>本次结束</div>
+    </div>
+    <h3>明确取消</h3>
+    <div class="cancelled">
+      <span>官方平台回读</span><span>人工验收</span><span>对账流程</span><span>禁止重试</span>
+      <span>历史结果阻断</span><span>跨平台依赖</span><span>主页面历史批次</span><span>“结果待确认”</span>
+    </div>
+  </section>
+
+  <h2 class="section-title">真实浏览器测试要求</h2>
+  <section class="panel">
+    <ol>
+      <li>真实点击三个平台按钮，不允许只调用函数代替点击。</li>
+      <li>每个平台都测试“妙手成功”和“妙手失败”。</li>
+      <li>截图保存“发布中、发布成功、发布失败”三个画面。</li>
+      <li>证明一个平台失败时，另外两个平台仍可点击。</li>
+      <li>证明成功和失败后都能再次发布。</li>
+      <li>桌面和手机宽度都不能有横向溢出，控制台不能出现错误。</li>
+    </ol>
+    <table>
+      <thead><tr><th>按钮</th><th>必须测试</th><th>正确结果</th></tr></thead>
+      <tbody>
+        <tr><td>发布 TikTok</td><td>成功 / 失败 / 再次点击</td><td>只显示成功或失败，不出现验收与对账</td></tr>
+        <tr><td>发布 Shopee 全球商品</td><td>成功 / 失败 / 再次点击</td><td>只影响 Shopee 全球商品</td></tr>
+        <tr><td>发布 Ozon</td><td>成功 / 失败 / 再次点击</td><td>只影响 Ozon</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <h2 class="section-title">真实测试截图</h2>
+  <section class="panel">
+    <p>以下图片由真实 Chromium 点击页面按钮后自动生成，不是设计稿。测试同时验证：平台互不阻断、失败后可重新点击、成功后本次结束、没有发布后的轮询。</p>
+    <div class="evidence-grid">
+      <figure class="evidence">
+        <img src="assets/simple-platform-publish/1440x900-initial.png" alt="桌面端三个独立发布按钮的初始状态">
+        <figcaption>桌面端：三个按钮均可独立点击，初始状态均为“尚未点击发布”。</figcaption>
+      </figure>
+      <figure class="evidence">
+        <img src="assets/simple-platform-publish/1440x900-publishing.png" alt="桌面端 TikTok 发布中，其他按钮仍可用">
+        <figcaption>发布中：TikTok 正在请求妙手，Shopee 与 Ozon 仍可点击。</figcaption>
+      </figure>
+      <figure class="evidence">
+        <img src="assets/simple-platform-publish/1440x900-failure-and-independent-success.png" alt="TikTok 失败但 Shopee 独立成功">
+        <figcaption>独立结果：TikTok 失败可重试，Shopee 同时可以成功，不互相阻断。</figcaption>
+      </figure>
+      <figure class="evidence">
+        <img src="assets/simple-platform-publish/1440x900-all-success-after-retry.png" alt="失败重试后三个平台均发布成功">
+        <figcaption>重试后：三个平台都显示“发布成功”，没有人工验收或对账步骤。</figcaption>
+      </figure>
+      <figure class="evidence">
+        <img src="assets/simple-platform-publish/390x844-all-success-after-retry.png" alt="手机端三个平台发布成功">
+        <figcaption>手机端：相同逻辑，按钮和状态均完整可见，无横向溢出。</figcaption>
+      </figure>
+    </div>
+    <p class="footnote">未经 Kyle 书面确认，不得重新增加状态、依赖、确认步骤或自动阻断。</p>
+  </section>
+</main>
+</body>
+</html>

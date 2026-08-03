@@ -313,20 +313,13 @@ def test_persisted_collectbox_drafts_dispatch_six_tiktok_publish_tasks(
         server.server_close()
         thread.join(timeout=5)
 
-    assert status == 202
-    assert body["accepted"] is True
-    assert len(woken) == 1
+    assert status == 200
+    assert body["success"] is True
+    assert body["platform"] == "TIKTOK"
+    assert body["successful_target_count"] == 6
+    assert woken == []
 
-    worker = OneClickReleaseWorker(
-        control,
-        lambda: registry,
-        dispatch_enabled=lambda: True,
-    )
-    for _ in range(20):
-        if not worker.advance_once(woken[0]):
-            break
-
-    job = control.get_job(job_id=woken[0])
+    job = control.get_job(plan_id=plan["plan_id"])
     tiktok_rows = {
         row["target_label"]: row
         for row in job["targets"]
@@ -355,7 +348,7 @@ def test_persisted_collectbox_drafts_dispatch_six_tiktok_publish_tasks(
         lambda: registry,
         dispatch_enabled=lambda: True,
     )
-    assert restarted_worker.advance_once(woken[0]) is False
+    assert restarted_worker.advance_once(job["job_id"]) is False
     assert len(publish_calls) == 6
 
     proof_reads = []
@@ -364,7 +357,7 @@ def test_persisted_collectbox_drafts_dispatch_six_tiktok_publish_tasks(
         "internal_tiktok_publish_contexts",
         lambda self, *, plan_id: proof_reads.append(plan_id),
     )
-    control.prepare_job(woken[0], registry)
+    control.prepare_job(job["job_id"], registry)
     assert proof_reads == []
 
 
@@ -420,22 +413,16 @@ def test_publish_transport_ambiguity_records_one_possible_write_per_target(
     status, body, woken = _start_tiktok_through_handler(
         release, plan, monkeypatch
     )
-    assert status == 202
-    assert body["accepted"] is True
+    assert status == 200
+    assert body["success"] is False
+    assert body["successful_target_count"] == 0
+    assert woken == []
 
     control = OneClickReleaseStore(release.path)
-    worker = OneClickReleaseWorker(
-        control,
-        production_adapter_registry,
-        dispatch_enabled=lambda: True,
-    )
-    for _ in range(20):
-        if not worker.advance_once(woken[0]):
-            break
-
+    job = control.get_job(plan_id=plan["plan_id"])
     rows = {
         row["target_label"]: row
-        for row in control.get_job(job_id=woken[0])["targets"]
+        for row in job["targets"]
         if row["target_label"] in TIKTOK_TARGETS
     }
     assert len(attempts) == 6
@@ -493,22 +480,17 @@ def test_missing_gb_detail_proof_blocks_only_gb_and_publishes_other_five(
     status, body, woken = _start_tiktok_through_handler(
         release, plan, monkeypatch
     )
-    assert status == 202
-    assert body["accepted"] is True
-    assert len(woken) == 1
+    assert status == 200
+    assert body["success"] is False
+    assert body["successful_target_count"] == 5
+    assert body["failed_targets"] == ["tiktok:GB"]
+    assert woken == []
 
     control = OneClickReleaseStore(release.path)
-    worker = OneClickReleaseWorker(
-        control,
-        production_adapter_registry,
-        dispatch_enabled=lambda: True,
-    )
-    for _ in range(20):
-        if not worker.advance_once(woken[0]):
-            break
+    job = control.get_job(plan_id=plan["plan_id"])
     rows = {
         row["target_label"]: row
-        for row in control.get_job(job_id=woken[0])["targets"]
+        for row in job["targets"]
         if row["target_label"] in TIKTOK_TARGETS
     }
     assert len(publish_calls) == 5

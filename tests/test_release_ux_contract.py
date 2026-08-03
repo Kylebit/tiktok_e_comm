@@ -187,7 +187,7 @@ def test_every_formal_async_action_has_loading_success_and_failure_feedback():
                 "finally",
             ],
             "publishPlatformBatch": [
-                "releaseSubmitting = true",
+                'result.state = "PUBLISHING"',
                 "try {",
                 "catch (error)",
                 "finally",
@@ -514,7 +514,7 @@ def test_release_plan_failure_refreshes_the_current_gate_and_explains_reapproval
     assert '"dashboard": current_dashboard' in server
 
 
-def test_oneclick_release_ui_uses_only_the_async_server_controlplane():
+def test_platform_publish_ui_uses_the_final_http_result_without_polling():
     html = (ROOT / "web/product_workspace.html").read_text(encoding="utf-8")
     script = (ROOT / "web/static/product_workspace.js").read_text(
         encoding="utf-8"
@@ -523,8 +523,10 @@ def test_oneclick_release_ui_uses_only_the_async_server_controlplane():
         encoding="utf-8"
     )
     publish = _function_body(script, "publishPlatformBatch")
-    preview = _function_body(script, "requestOneClickPreview")
-    status = _function_body(script, "pollOneClickStatus")
+    ensure = script[
+        script.index("function ensureOneClickExecution("):
+        script.index("async function postProductWorkspace(")
+    ]
 
     for control_id in (
         "oneClickExecutionPreview",
@@ -534,51 +536,19 @@ def test_oneclick_release_ui_uses_only_the_async_server_controlplane():
         assert f'id="{control_id}"' in html
     assert 'id="oneClickNextActionButton"' not in html
     assert 'id="oneClickReadRetryButton"' not in html
-    assert "/api/product-workspace/publish-preview?" in preview
-    assert "/api/product-workspace/publish-status?" in status
     assert "boundedJsonFetch(\n        endpoint," in publish
-    assert 'ONECLICK_PREVIEW_SCHEMA = "release-batch-preparation/v2"' in script
-    assert 'ONECLICK_STATUS_SCHEMA = "oneclick-release-status/v2"' in script
-    assert "projection.shared_controls" in script
-    assert 'SHOPEE_GLOBAL_CONTROL_TARGET = "shopee:GLOBAL"' in script
-    assert "payload.persisted !== false" in preview
-    assert "payload.accepted !== true" in publish
-    assert "response.status !== 202" in publish
+    assert "payload.success !== true" in publish
+    assert "response.status !== 200" in publish
     assert "boundedJsonFetch" in publish
-    assert "oneClickExecution.postAttempted = true" in publish
-    assert "oneClickExecution.job" in publish
-    assert "scheduleOneClickStatusPoll(generation, 0)" in publish
-    assert "AbortController" in preview
-    assert "AbortController" in status
-    assert "generation !== oneClickExecution.generation" in preview
-    assert "generation !== oneClickExecution.generation" in status
-    assert "|| releasePlanApprovalSubmitting" in script
-    assert "projection?.canonical_next_action" in script
-    assert "error.oneClickContractError === true" in status
-    assert "ONECLICK_JOB_PHASES.has(projection.phase)" in script
-    assert "ONECLICK_TARGET_STATUSES.has(target.status)" in script
-    assert "ONECLICK_CLASSIFICATIONS.has(target.classification)" in script
-    assert "ONECLICK_DIGEST_KEYS.every" in script
-    assert "ONECLICK_TARGET_DIGEST_KEYS.every" in script
-    assert "oneClickDigest(reason.detail_digest)" in script
-    assert (
-        'ONECLICK_DEPENDENCY_POLICY_VERSION =\n'
-        '    "oneclick-target-dependency/mvp-unblocked-v1"'
-    ) in script
-    assert (
-        "dependency.policy_version !== ONECLICK_DEPENDENCY_POLICY_VERSION"
-        in script
-    )
-    assert "oneClickSourceIdentityDigest" in script
-    assert "oneClickPromotionPrerequisite" in script
-    assert "projection.postpublish_actions" in script
-    assert '"tiktok:LH_PH"' in script
-    assert '"shopee:VN"' in script
-    assert "dependency.prerequisite === undefined" in script
-    assert "reference.shared_controls" in script
-    assert "sameSortedValues(summary.will_dispatch" in script
-    assert "dashboardFromPayload" not in publish
-    assert "while (" not in publish
+    assert 'result.state = "PUBLISHING"' in publish
+    assert 'result.state = "SUCCEEDED"' in publish
+    assert 'result.state = "FAILED"' in publish
+    assert "scheduleOneClickStatusPoll" not in publish
+    assert "payload.accepted" not in publish
+    assert "payload.job" not in publish
+    assert "requestOneClickPreview" not in ensure
+    assert "pollOneClickStatus" not in ensure
+    assert "oneClickExecution.job" not in ensure
     assert ".oneclick-execution-group" in style
     assert ".oneclick-target-card:focus-visible" in style
 
@@ -613,7 +583,7 @@ def test_collectbox_and_platform_release_actions_are_not_cross_wired():
     assert 'id="collectboxActionPanel"' in html
     assert 'id="collectboxActionMessage"' in html
     assert 'id="collectboxActionStatus"' in html
-    assert "product_workspace.js?v=20260802-v34" in html
+    assert "product_workspace.js?v=20260803-v35" in html
     assert 'COLLECTBOX_ACTION_SCHEMA = "collectbox-action-status/v1"' in script
     assert "/api/product-workspace/collectbox-action/preview?" in script
     assert "/api/product-workspace/collectbox-action/status?" in script
@@ -702,7 +672,7 @@ def test_oneclick_mvp_keeps_legacy_reads_idle_and_allows_explicit_resubmit():
     assert "preview.start_allowed" not in publish
     assert "preview.preparation_pending_count" not in publish
     assert "reconcileOneClickAcceptance" not in publish
-    assert "oneClickExecution.postAttempted = false" in publish
+    assert 'result.state = "FAILED"' in publish
     assert "oneClickObservationWarningForm(target)" not in render
     assert "shopeeGlobalControlCard(control)" not in render
 
@@ -782,9 +752,9 @@ def test_release_v2_terminal_history_never_reenters_primary_operation():
     ):
         assert historical_copy not in render
 
-    assert "isCurrentOneClickAttempt(validatedJob)" in ensure
-    compact_controls = " ".join(controls.split())
-    assert "isCurrentOneClickAttempt( oneClickExecution.job," in compact_controls
+    assert "Historical jobs are" in ensure
+    assert "oneClickExecution.job" not in ensure
+    assert "requestOneClickPreview" not in ensure
     assert "本计划已有终态持久任务，不能再次提交" not in controls
 
     browser_contract = BROWSER_CONTRACT.read_text(encoding="utf-8")
@@ -808,7 +778,7 @@ def test_oneclick_manual_review_forms_keep_warning_and_apiless_contracts_separat
     apiless_submit = _function_body(script, "submitManualTargetVerification")
 
     assert "product_workspace.css?v=20260801-v20" in html
-    assert "product_workspace.js?v=20260802-v34" in html
+    assert "product_workspace.js?v=20260803-v35" in html
     assert '"SUCCEEDED_MANUAL_REVIEW"' in script
     assert '"review_verified_observation_warning"' in script
     assert "oneclick-observation-review-form" in script
@@ -855,6 +825,9 @@ def test_release_pages_in_real_chromium():
     node, modules = runtime
     environment = os.environ.copy()
     environment["NODE_PATH"] = str(modules)
+    local_chrome = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+    if not environment.get("ORBIT_CHROMIUM_BIN") and local_chrome.is_file():
+        environment["ORBIT_CHROMIUM_BIN"] = str(local_chrome)
     with _static_server() as base_url:
         result = subprocess.run(
             [str(node), str(BROWSER_CONTRACT), base_url],

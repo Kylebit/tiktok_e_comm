@@ -192,7 +192,7 @@ def test_fixture_is_redacted_and_matches_observed_legacy_topology(
         assert forbidden not in serialized
 
 
-def test_real_http_handler_accepts_observed_tiktok_partial_topology(
+def test_legacy_topology_without_exact_draft_proof_is_not_submitted(
     monkeypatch,
     legacy_topology,
     product_http_server,
@@ -209,12 +209,12 @@ def test_real_http_handler_accepts_observed_tiktok_partial_topology(
         },
     )
 
-    assert status == 202
-    assert body["accepted"] is True
-    assert body["batch_scope"] == "TIKTOK"
+    assert status == 409
+    assert body["ok"] is False
+    assert body["error"]["code"] == "step1_collectbox_publish_proof_required"
     assert body["external_writes_performed"] == []
-    assert "start_tiktok_batch" in calls
-    assert "wake:oneclick-job:stage1" in calls
+    assert "start_tiktok_batch" not in calls
+    assert not any(value.startswith("wake:") for value in calls)
 
 
 def test_five_tiktok_successes_plus_terminal_gb_failure_is_publishable(
@@ -382,11 +382,12 @@ def test_three_platform_http_routes_are_independent(
     def response(platform):
         def start(payload):
             calls.append((platform, deepcopy(payload)))
-            return 202, {
+            return 200, {
+                "schema_version": "miaoshou-platform-publish-result/v1",
                 "ok": True,
-                "accepted": True,
-                "external_writes_performed": [],
-                "job": {"phase": "PENDING", "targets": [platform]},
+                "platform": platform,
+                "success": True,
+                "message": f"{platform} 发布成功",
             }
 
         return start
@@ -421,8 +422,8 @@ def test_three_platform_http_routes_are_independent(
             product_http_server + endpoint,
             {"confirm_publish": True, "plan_id": "stage0-plan"},
         )
-        assert status == 202
-        assert body["accepted"] is True
+        assert status == 200
+        assert body["success"] is True
         assert len(calls) == before + 1
         assert calls[-1][0] == expected
 

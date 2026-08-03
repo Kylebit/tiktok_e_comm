@@ -2148,6 +2148,38 @@ def test_collectbox_tiktok_live_six_site_uses_effective_repair_and_continues():
     )
 
 
+def test_gb_waived_update_failure_preserves_publish_identity_warning():
+    targets = LIVE_SIX_TIKTOK_TARGETS
+    result, _calls, _web_calls, save_counts, _save_bodies = (
+        _run_live_six_site_tiktok_drift(
+            category_decisions=_tiktok_category_decisions(targets),
+            shop_save_faults={"tiktok:GB": "exception"},
+        )
+    )
+
+    outcomes = {
+        row["target_label"]: row for row in result["target_results"]
+    }
+    identities = {
+        row["target_label"]: row
+        for row in result["target_detail_identities"]
+    }
+    assert save_counts["tiktok:GB"] == 1
+    assert outcomes["tiktok:GB"]["status"] == "FAILED"
+    assert outcomes["tiktok:GB"]["error_code"] == (
+        "gb_draft_update_unknown_waived"
+    )
+    assert identities["tiktok:GB"]["shop_id"] == "10204699"
+    assert identities["tiktok:GB"]["detail_id"].isdigit()
+    assert all(
+        outcomes[target]["status"] == "SUCCEEDED"
+        for target in targets[:4]
+    )
+    assert outcomes["tiktok:MX"]["error_code"] == (
+        "approved_price_batch_repair_unknown"
+    )
+
+
 @pytest.mark.parametrize(
     ("fault", "error_code"),
     [

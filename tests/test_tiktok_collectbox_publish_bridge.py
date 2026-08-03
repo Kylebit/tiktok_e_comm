@@ -361,6 +361,77 @@ def test_persisted_collectbox_drafts_dispatch_six_tiktok_publish_tasks(
     assert proof_reads == []
 
 
+def test_six_tiktok_publish_retries_exact_qps_rejection_without_unknown(
+    tmp_path, monkeypatch
+):
+    release, plan = _approved_tiktok_context(tmp_path)
+    _persist_collectbox_result(CollectBoxActionStore(release.path), plan)
+    attempts: dict[int, int] = {}
+    attempt_times: list[float] = []
+    waits: list[float] = []
+    clock = [0.0]
+
+    def fake_wait(seconds: float) -> None:
+        waits.append(seconds)
+        clock[0] += seconds
+
+    def fake_post(path, body):
+        assert path == miaoshou.PUBLISH_PATH
+        attempt_times.append(clock[0])
+        detail_id = int(body["detailIds"][0])
+        attempts[detail_id] = attempts.get(detail_id, 0) + 1
+        if attempts[detail_id] == 1:
+            raise miaoshou.MiaoshouBusinessRejectedError(
+                "rate limited", code="accountQpsRateLimit"
+            )
+        return {"result": "success", "data": {"accepted": True}}
+
+    monkeypatch.setattr(miaoshou, "_publish_wait", fake_wait, raising=False)
+    monkeypatch.setattr(
+        miaoshou, "_publish_now", lambda: clock[0], raising=False
+    )
+    monkeypatch.setattr(
+        miaoshou, "_last_publish_attempt_at", None, raising=False
+    )
+    miaoshou.configure_runtime_transport_factory(
+        lambda: miaoshou.MiaoshouRuntimeTransport(
+            post=fake_post,
+            enforce_publish_pacing=True,
+        )
+    )
+
+    status, body, woken = _start_tiktok_through_handler(
+        release, plan, monkeypatch
+    )
+
+    assert status == 200
+    assert body["success"] is True
+    assert body["successful_target_count"] == 6
+    assert woken == []
+    assert sorted(attempts.values()) == [2, 2, 2, 2, 2, 2]
+    assert len(waits) >= 6
+    assert all(
+        current - previous + 1e-9
+        >= miaoshou.PUBLISH_MIN_INTERVAL_SECONDS
+        for previous, current in zip(attempt_times, attempt_times[1:])
+    )
+
+    job = OneClickReleaseStore(release.path).get_job(plan_id=plan["plan_id"])
+    rows = {
+        row["target_label"]: row
+        for row in job["targets"]
+        if row["target_label"] in TIKTOK_TARGETS
+    }
+    assert all(
+        row["status"] == "SUBMITTED_UNVERIFIED" for row in rows.values()
+    )
+    assert all(
+        "UNKNOWN"
+        not in row["dispatch_ledger"]["cumulative_external_write_classes"]
+        for row in rows.values()
+    )
+
+
 def test_old_collectbox_receipt_without_internal_proof_is_409_zero_mutation(
     tmp_path, monkeypatch
 ):

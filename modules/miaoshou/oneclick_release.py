@@ -13,6 +13,9 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
+import logging
+import threading
+import time
 from typing import Any
 
 from domains.channel_operations.oneclick_write_occurrences import (
@@ -26,6 +29,16 @@ DETAIL_CREATE_WRITE = "miaoshou:tiktok_detail:create"
 SHOP_CLAIM_WRITE = "miaoshou:tiktok_shop:claim"
 DETAIL_UPDATE_WRITE = "miaoshou:tiktok_detail:update"
 PUBLISH_WRITE = "miaoshou:tiktok_publish:submission"
+PUBLISH_RATE_LIMIT_CODES = frozenset(
+    {"accountApiQpsRateLimit", "accountQpsRateLimit"}
+)
+PUBLISH_MIN_INTERVAL_SECONDS = 1.1
+PUBLISH_RATE_LIMIT_RETRY_DELAY_SECONDS = 3.0
+_LOGGER = logging.getLogger(__name__)
+_publish_lock = threading.Lock()
+_publish_wait: Callable[[float], None] = time.sleep
+_publish_now: Callable[[], float] = time.monotonic
+_last_publish_attempt_at: float | None = None
 
 COMMON_GET_PATH = (
     "/open/v1/product/common_collect_box/common_collect_box/"
@@ -368,6 +381,7 @@ class MiaoshouRuntimeTransport:
     update_detail: Callable[[Mapping[str, object]], object] | None = None
     audit_detail: Callable[[str, str], bool] | None = None
     publish: Callable[[str, str], object] | None = None
+    enforce_publish_pacing: bool = False
 
 
 _runtime_transport_factory: Callable[[], MiaoshouRuntimeTransport] | None = None
@@ -1467,6 +1481,32 @@ def _dispatch_site(
     )
 
 
+def _safe_business_code(error: MiaoshouBusinessRejectedError) -> str:
+    code = str(error.code or "business_rejected").strip()
+    if not code or len(code) > 80 or not all(
+        character.isalnum() or character in {"_", "-"}
+        for character in code
+    ):
+        return "business_rejected"
+    return code
+
+
+def _pace_publish_attempt(*, enabled: bool) -> None:
+    global _last_publish_attempt_at
+    if not enabled:
+        return
+    now = _publish_now()
+    if _last_publish_attempt_at is not None:
+        remaining = (
+            PUBLISH_MIN_INTERVAL_SECONDS
+            - (now - _last_publish_attempt_at)
+        )
+        if remaining > 0:
+            _publish_wait(remaining)
+            now = _publish_now()
+    _last_publish_attempt_at = now
+
+
 def _dispatch_prepared_collectbox_publish(
     request: object,
     command: Mapping[str, object],
@@ -1505,32 +1545,79 @@ def _dispatch_prepared_collectbox_publish(
     )
     occurrence_state = WriteOccurrenceState()
     external_id = f"{detail_id}:{shop_id}"
-    occurrence = _open_write(
-        request,
-        occurrence_state,
-        "publish_submit-1",
-        _platform_write("tiktok", "publish:submission"),
-        external_id=external_id,
-    )
-    try:
-        submitted = (
-            transport.publish(detail_id, shop_endpoint_id)
-            if transport.publish is not None
-            else post(
-                PUBLISH_PATH,
-                {
-                    "detailIds": [int(detail_id)],
-                    "shopIds": [shop_endpoint_id],
-                },
+    with _publish_lock:
+        for attempt in (1, 2):
+            _pace_publish_attempt(
+                enabled=transport.enforce_publish_pacing
             )
-        )
-    except Exception as error:
-        raise _unknown_write_error(
-            occurrence_state,
-            occurrence,
-            "Miaoshou TikTok publish outcome is unknown",
-            external_id=external_id,
-        ) from error
+            occurrence = _open_write(
+                request,
+                occurrence_state,
+                f"publish_submit-{attempt}",
+                _platform_write("tiktok", "publish:submission"),
+                external_id=external_id,
+            )
+            try:
+                submitted = (
+                    transport.publish(detail_id, shop_endpoint_id)
+                    if transport.publish is not None
+                    else post(
+                        PUBLISH_PATH,
+                        {
+                            "detailIds": [int(detail_id)],
+                            "shopIds": [shop_endpoint_id],
+                        },
+                    )
+                )
+                break
+            except MiaoshouBusinessRejectedError as error:
+                _reject_write(
+                    request,
+                    occurrence_state,
+                    occurrence,
+                    external_id=external_id,
+                )
+                code = _safe_business_code(error)
+                _LOGGER.warning(
+                    "miaoshou_tiktok_publish_rejected "
+                    "target=%s attempt=%s code=%s",
+                    target,
+                    attempt,
+                    code,
+                )
+                if code in PUBLISH_RATE_LIMIT_CODES and attempt == 1:
+                    _LOGGER.info(
+                        "miaoshou_tiktok_publish_rate_retry "
+                        "target=%s delay_seconds=%s",
+                        target,
+                        PUBLISH_RATE_LIMIT_RETRY_DELAY_SECONDS,
+                    )
+                    _publish_wait(
+                        PUBLISH_RATE_LIMIT_RETRY_DELAY_SECONDS
+                    )
+                    continue
+                raise _rejected_write_error(
+                    occurrence_state,
+                    f"Miaoshou TikTok publish rejected: {code}",
+                    external_id=external_id,
+                ) from error
+            except Exception as error:
+                _LOGGER.error(
+                    "miaoshou_tiktok_publish_unknown "
+                    "target=%s attempt=%s",
+                    target,
+                    attempt,
+                )
+                raise _unknown_write_error(
+                    occurrence_state,
+                    occurrence,
+                    "Miaoshou TikTok publish outcome is unknown",
+                    external_id=external_id,
+                ) from error
+        else:  # pragma: no cover - the bounded loop always exits explicitly
+            raise MiaoshouOneClickPreDispatchError(
+                "Miaoshou TikTok publish retry state is invalid"
+            )
     if not isinstance(submitted, Mapping):
         raise _unknown_write_error(
             occurrence_state,
@@ -1555,6 +1642,11 @@ def _dispatch_prepared_collectbox_publish(
         occurrence_state,
         occurrence,
         external_id=external_id,
+    )
+    _LOGGER.info(
+        "miaoshou_tiktok_publish_accepted target=%s attempt=%s",
+        target,
+        attempt,
     )
     return _receipt(
         "SUBMITTED_UNVERIFIED",
@@ -2050,7 +2142,39 @@ def _prepare_selected_platform_collectbox(
         )
         try:
             saved = client(str(config["save_path"]), body)
+        except MiaoshouBusinessRejectedError:
+            if (
+                target == "tiktok:GB"
+                and config.get("verification_policy")
+                == "submit_without_readback_validation"
+            ):
+                return detail_id, _target_result(
+                    target,
+                    "FAILED",
+                    error_code="gb_draft_update_rejected_waived",
+                    detail=(
+                        "GB draft update was rejected; existing exact draft "
+                        "identity remains eligible for direct submission"
+                    ),
+                )
+            fail(f"{platform} draft update was rejected")
         except Exception:
+            if (
+                target == "tiktok:GB"
+                and config.get("verification_policy")
+                == "submit_without_readback_validation"
+            ):
+                add_write(update_class)
+                write_count_unknown = True
+                return detail_id, _target_result(
+                    target,
+                    "FAILED",
+                    error_code="gb_draft_update_unknown_waived",
+                    detail=(
+                        "GB draft update result is unknown; existing exact "
+                        "draft identity remains eligible for direct submission"
+                    ),
+                )
             fail(
                 f"{platform} draft update outcome is unknown",
                 current_unknown=update_class,
@@ -3643,7 +3767,10 @@ def _runtime_transport() -> MiaoshouRuntimeTransport:
             return value
     from modules.miaoshou.client import post_open
 
-    return MiaoshouRuntimeTransport(post=post_open)
+    return MiaoshouRuntimeTransport(
+        post=post_open,
+        enforce_publish_pacing=True,
+    )
 
 
 def _required_post(

@@ -26,10 +26,10 @@
 | PRD-020 | 如实区分本地接受、妙手接受、失败、未知 | 当前 `SUBMITTED_UNVERIFIED` 文案基本正确；分组仍混入上次状态 | `PARTIAL` | 文案与状态表精确测试 |
 | PRD-021 | 单目标失败继续 | 现有 worker 有继续执行测试 | `CURRENT/KEEP` | 首/中/尾失败参数化 |
 | PRD-030 | 再次点击是新 attempt，不是自动重试 | 当前是重置同 job 可变投影 | `GAP` | attempt_number 和不可变历史测试 |
-| PRD-031 | 同平台防双击，不跨平台锁 | 当前前后端存在全局 posting/lock | `GAP` | 同平台双击 + 跨平台并发 |
+| PRD-031 | 同平台防双击，不跨平台锁；重复点击只提示、不跳转 | 当前前后端存在全局 posting/lock | `GAP` | 同平台双击仅一 attempt + 可见提示 + 无聚焦/跳转 + 跨平台并发 |
 | PRD-040 | 三个平台独立按钮 | 当前页面已有三个按钮 | `CURRENT/KEEP` | computed visibility/click 请求路径 |
 | PRD-041 | 禁用必须有提示 | 部分控件有 `data-disabled-reason`；平台按钮存在 silent return 路径 | `PARTIAL/GAP` | 所有不可用原因可见；可用点击有反馈 |
-| PRD-042 | 当前与历史分离 | 当前 `renderOneClickExecution()` 用“上次...”分组渲染主区 | `GAP` | 历史变化不影响主区与 disabled |
+| PRD-042 | 当前与历史分离；主页面不提示或计数历史 | 当前 `renderOneClickExecution()` 用“上次...”分组渲染主区 | `GAP` | 主页面无历史条数/横幅；历史变化不影响主区与 disabled |
 | PRD-043 | 刷新/重启恢复 | durable job 和轮询存在；终态/历史边界混合 | `PARTIAL` | 重启恢复 + 终态后开放 |
 
 ## 3. 当前代码位置

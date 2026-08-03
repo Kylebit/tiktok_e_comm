@@ -13,22 +13,28 @@
 
 ### 2.1 主操作布局
 
-```text
-发布已批准计划
-├─ 采集箱状态
-│  ├─ TikTok：当前草稿批次摘要
-│  ├─ Shopee：当前全球商品草稿摘要
-│  └─ [重新导入妙手采集箱]
-├─ 平台操作
-│  ├─ [发布 TikTok]          当前状态/禁用原因
-│  ├─ [发布 Shopee 全球商品] 当前状态/禁用原因
-│  └─ [发布 Ozon]            当前状态/禁用原因
-├─ 当前执行
-│  ├─ TikTok attempt #N
-│  ├─ Shopee attempt #M
-│  └─ Ozon attempt #K
-└─ 发布历史（默认折叠）
+```mermaid
+flowchart TB
+    Plan["已批准 ReleasePlan 摘要"]
+    Import["重新导入 TikTok / Shopee 妙手采集箱"]
+    T["发布 TikTok"]
+    S["发布 Shopee 全球商品"]
+    O["发布 Ozon"]
+    TC["TikTok 当前 attempt"]
+    SC["Shopee 当前 attempt"]
+    OC["Ozon 当前 attempt"]
+    Audit["审计历史：默认不提示、不计数、不进入主操作区"]
+
+    Plan --> Import
+    Plan --> T --> TC
+    Plan --> S --> SC
+    Plan --> O --> OC
+    TC -. "终态后追加" .-> Audit
+    SC -. "终态后追加" .-> Audit
+    OC -. "终态后追加" .-> Audit
 ```
+
+主页面只有批准计划、必要的两步采集箱动作、三个独立平台按钮和三个当前 attempt 投影。历史完整保留，但不在主页面主动提示。
 
 ### 2.2 前端状态
 
@@ -153,7 +159,7 @@ HTTP `409`：
 }
 ```
 
-UI 聚焦现有 attempt；不得清空页面，也不得改变其他平台按钮。
+UI 只显示“该平台正在执行，请等待本次结束”的可见提示；不得聚焦、跳转、打开详情、清空页面，也不得改变其他平台按钮。
 
 ### 3.4 当前输入缺失
 
@@ -174,10 +180,22 @@ GET /api/product-workspace/platform-publish-current
 
 ```http
 GET /api/product-workspace/platform-publish-history
-    ?plan_id={plan_id}&platform=TIKTOK&limit=10
+    ?plan_id={plan_id}&platform=TIKTOK&limit={explicit_audit_limit}
 ```
 
-按 `attempt_number DESC` 返回终态尝试。历史接口不返回 `start_allowed`，避免 UI 把历史当准入权威。
+按 `attempt_number DESC` 返回终态尝试。历史接口不返回 `start_allowed`，避免 UI 把历史当准入权威。主发布页面默认不调用此接口来显示历史条数或提示。
+
+### 4.3 查询与命令的页面关系
+
+```mermaid
+flowchart LR
+    Page["主发布页面"] --> CurrentT["查询 TikTok 当前 attempt"]
+    Page --> CurrentS["查询 Shopee 当前 attempt"]
+    Page --> CurrentO["查询 Ozon 当前 attempt"]
+    Page --> Commands["三个独立 POST 命令"]
+    AuditAction["明确进入审计"] --> History["分页查询历史"]
+    History -. "不返回 start_allowed" .-> Page
+```
 
 ## 5. 服务端创建尝试算法
 
@@ -202,6 +220,46 @@ start_platform_attempt(request, platform):
 ```
 
 禁止步骤：读取上一终态并据此拒绝；重置上一 attempt 的目标行；把上一 attempt 改回 `PENDING`。
+
+```mermaid
+sequenceDiagram
+    actor Kyle
+    participant UI
+    participant API
+    participant DB as Attempt Store
+    participant Worker
+
+    Kyle->>UI: 点击某个平台发布
+    UI->>API: POST + 新 request_id
+    API->>DB: BEGIN IMMEDIATE
+    DB-->>API: 同平台无非终态 attempt
+    API->>DB: 插入 Attempt #N 与目标行
+    API->>DB: COMMIT
+    API-->>UI: 202 QUEUED（外部写入 0）
+    API->>Worker: wake(attempt_id)
+    Worker->>DB: claim 单目标
+```
+
+### 5.1 同平台重复点击
+
+```mermaid
+sequenceDiagram
+    actor Kyle
+    participant UI
+    participant API
+    participant DB as Attempt Store
+
+    Kyle->>UI: 第一次点击 TikTok
+    UI->>API: request_id=A
+    API->>DB: 创建 Attempt #4
+    API-->>UI: 202 QUEUED
+    Kyle->>UI: Attempt #4 未终态时再次点击
+    UI->>API: request_id=B
+    API->>DB: 查到 TikTok Attempt #4 非终态
+    API-->>UI: 409 PLATFORM_ATTEMPT_IN_PROGRESS
+    UI-->>Kyle: 仅提示“TikTok 正在执行，请等待本次结束”
+    Note over UI: 不聚焦、不跳转、不创建 Attempt #5
+```
 
 ## 6. TikTok 执行设计
 
@@ -233,7 +291,30 @@ start_platform_attempt(request, platform):
 
 command 必须 JSON 可序列化，不能包含 callback、client、token 或原始响应。
 
-### 6.3 GB 特例
+### 6.3 TikTok 严格两步流程
+
+```mermaid
+sequenceDiagram
+    actor Kyle
+    participant UI
+    participant Import as Collectbox Import API
+    participant Store as Import/Proof Store
+    participant Publish as TikTok Publish API
+
+    Kyle->>UI: 点击重新导入妙手采集箱
+    UI->>Import: 创建新 ImportBatch
+    Import->>Store: 持久化逐目标 proof
+    Import-->>UI: 导入完成 / 目标级结果
+    Note over UI: 此时尚未发布 TikTok
+    Kyle->>UI: 点击发布 TikTok
+    UI->>Publish: 创建 TikTok Attempt
+    Publish->>Store: 读取最新 exact proof
+    Publish-->>UI: 202 QUEUED
+```
+
+若 proof 缺失，“发布 TikTok”只说明先完成重新导入；不得自动执行导入，也不得在一次点击中串联导入和发布。
+
+### 6.4 GB 特例
 
 GB 暂时跳过草稿与批准内容的价格、类目和内容一致性比较；仍校验：
 
@@ -244,7 +325,7 @@ GB 暂时跳过草稿与批准内容的价格、类目和内容一致性比较�
 
 GB 不得因“上一次未发布”被排除在新 attempt 之外。
 
-### 6.4 Worker 循环
+### 6.5 Worker 循环
 
 ```text
 for target in attempt.targets ordered by ordinal:
@@ -302,7 +383,14 @@ finalize attempt aggregate
 
 ## 10. 历史展示设计
 
-历史卡片标题必须包含：
+历史是持久审计能力，不是主发布页面的默认组成部分。主发布页面：
+
+- 不显示历史条数；
+- 不弹出历史提示；
+- 不用“上次失败/上次未确认”占据当前执行区；
+- 不因历史变化重新计算按钮。
+
+当用户明确进入审计视图时，历史卡片标题必须包含：
 
 - 平台；
 - attempt number；
@@ -312,6 +400,15 @@ finalize attempt aggregate
 - “仅历史记录，不影响新发布”。
 
 历史中的目标可分组为“妙手接受”“未提交”“结果未知”，但这些分组不得复用到主操作区。
+
+```mermaid
+flowchart TB
+    Current["主操作区：只看当前计划、当前输入、当前 attempt"]
+    History["审计视图：不可变终态记录"]
+    Button["平台按钮可用性"]
+    Current --> Button
+    History -. "禁止参与 disabled / start_allowed" .-> Button
+```
 
 ## 11. 错误码
 

@@ -42,6 +42,29 @@ flowchart LR
     Attempts --> UI
 ```
 
+### 2.1 V2 相对当前实现的结构变化
+
+```mermaid
+flowchart LR
+    subgraph Current["当前混合模型"]
+        CButton["三个按钮"] --> CBusy["共享 posting 状态"]
+        CBusy --> CJob["一个可反复重置的 job"]
+        CHistory["上次结果"] --> CJob
+        CJob --> CTargets["混合平台目标"]
+    end
+
+    subgraph V2["V2 隔离模型"]
+        TButton["发布 TikTok"] --> TAttempt["TikTok Attempt"]
+        SButton["发布 Shopee 全球商品"] --> SAttempt["Shopee Attempt"]
+        OButton["发布 Ozon"] --> OAttempt["Ozon Attempt"]
+        Audit["不可变审计历史"] -. "只查询，不准入" .-> TAttempt
+        Audit -. "只查询，不准入" .-> SAttempt
+        Audit -. "只查询，不准入" .-> OAttempt
+    end
+```
+
+这张图表达唯一关键变化：历史不再和当前执行共用一个可变对象，三个平台也不再共用业务 busy 状态。
+
 ## 3. 组件职责
 
 ### 3.1 Product Workspace UI
@@ -162,6 +185,40 @@ flowchart TB
     Plan --> OButton --> OAttempt --> OWorker
 ```
 
+### 4.1 并行点击与故障半径
+
+```mermaid
+sequenceDiagram
+    actor Kyle
+    participant UI as Product Workspace
+    participant T as TikTok API/Worker
+    participant S as Shopee API/Worker
+    participant O as Ozon API/Worker
+
+    Kyle->>UI: 点击发布 TikTok
+    UI->>T: 创建 TikTok attempt
+    T-->>UI: 202 QUEUED
+    Kyle->>UI: 点击发布 Shopee 全球商品
+    UI->>S: 创建 Shopee attempt
+    S-->>UI: 202 QUEUED
+    T-->>UI: 某 TikTok 目标失败
+    Note over UI,S: Shopee 按钮和 Shopee attempt 不受影响
+    Kyle->>UI: 点击发布 Ozon
+    UI->>O: 创建 Ozon attempt
+    O-->>UI: 202 QUEUED
+```
+
+```mermaid
+flowchart TB
+    TFault["TikTok 失败或结果未知"] --> TOnly["只改变 TikTok 当前 attempt"]
+    SFault["Shopee 失败或结果未知"] --> SOnly["只改变 Shopee 当前 attempt"]
+    OFault["Ozon 失败或结果未知"] --> OOnly["只改变 Ozon 当前 attempt"]
+    TOnly -. "不得影响" .-> SButton["Shopee 按钮"]
+    TOnly -. "不得影响" .-> OButton["Ozon 按钮"]
+    SOnly -. "不得影响" .-> TButton["TikTok 按钮"]
+    OFault -. "不得影响" .-> TButton
+```
+
 允许共享已批准输入和底层数据库连接，但禁止共享以下运行控制：
 
 - `posting` 锁；
@@ -210,6 +267,46 @@ flowchart TB
 
 主键：`(attempt_id, target_label)`，终态后不可修改。保存红化事实、写入计数、结果类别和证据摘要，不保存凭据、原始响应、标题、图片 URL 或妙手内部 ID。
 
+### 5.4 数据所有权关系
+
+```mermaid
+erDiagram
+    RELEASE_PLAN ||--o{ PLATFORM_PUBLISH_ATTEMPT : "被显式点击引用"
+    PLATFORM_PUBLISH_ATTEMPT ||--|{ TARGET_ATTEMPT : "包含"
+    PLATFORM_PUBLISH_ATTEMPT ||--o{ ATTEMPT_EVENT : "追加"
+    TARGET_ATTEMPT ||--o| OUTCOME_RECEIPT : "终态事实"
+    COLLECTBOX_IMPORT_BATCH ||--o{ TIKTOK_DRAFT_PROOF : "产生"
+    TIKTOK_DRAFT_PROOF }o--|| PLATFORM_PUBLISH_ATTEMPT : "仅 TikTok 当前输入"
+
+    RELEASE_PLAN {
+      string plan_id
+      string payload_digest
+    }
+    PLATFORM_PUBLISH_ATTEMPT {
+      string attempt_id
+      string platform
+      int attempt_number
+      string status
+    }
+    TARGET_ATTEMPT {
+      string target_label
+      string status
+      string command_digest
+    }
+    OUTCOME_RECEIPT {
+      string outcome_class
+      int external_write_count
+    }
+    COLLECTBOX_IMPORT_BATCH {
+      string import_batch_id
+      string plan_digest
+    }
+    TIKTOK_DRAFT_PROOF {
+      string target_label
+      string proof_digest
+    }
+```
+
 ## 6. 状态模型
 
 ### 6.1 Attempt 状态
@@ -253,6 +350,15 @@ stateDiagram-v2
 
 不得读取历史终态作为布尔 gate。
 
+```mermaid
+flowchart LR
+    Click1["第一次显式点击"] --> A1["Attempt #1"] --> H1["终态后进入审计历史"]
+    Click2["第二次显式点击"] --> Gate{"同平台此刻仍有非终态 attempt?"}
+    Gate -- "是" --> Prompt["仅提示正在执行；不创建、不跳转"]
+    Gate -- "否" --> A2["Attempt #2"]
+    H1 -. "不得参与 gate" .-> Gate
+```
+
 ## 7. 并发与幂等
 
 ### 7.1 锁粒度
@@ -269,6 +375,8 @@ stateDiagram-v2
 - 新 `request_id` 且无执行中 attempt：创建新 attempt；
 - 新 `request_id` 但同平台仍执行：返回 `409 PLATFORM_ATTEMPT_IN_PROGRESS` 和现有 attempt；
 - 历史 attempt 不参与上述判断。
+
+前端收到 `PLATFORM_ATTEMPT_IN_PROGRESS` 后只显示可见提示；不聚焦、不跳转、不打开历史或详情。响应中的 attempt 引用仅用于诊断和后续状态刷新。
 
 ### 7.3 Worker 恢复
 
@@ -290,9 +398,11 @@ stateDiagram-v2
 建议查询接口：
 
 - `GET /api/product-workspace/platform-publish-current?plan_id=...&platform=...`
-- `GET /api/product-workspace/platform-publish-history?plan_id=...&platform=...&limit=10`
+- `GET /api/product-workspace/platform-publish-history?plan_id=...&platform=...&limit=...`
 
 当前 `/publish-status` 的混合 job 投影可在兼容期保留，但不得继续作为 V2 UI 的唯一状态源。
+
+历史接口属于审计能力。主发布页面默认不调用它来显示条数、横幅或“上次”分组；只有明确进入审计视图时才查询。
 
 ## 9. 安全和审计
 

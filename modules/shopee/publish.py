@@ -1334,6 +1334,7 @@ def update_global_master(
     title: str,
     description: str,
     ref: dict | None,
+    original_price: float | None = None,
 ) -> dict:
     """Update the English master and remove reference-product fact leakage."""
 
@@ -1354,6 +1355,10 @@ def update_global_master(
             detail=detail,
         ),
     }
+    if original_price is not None:
+        if float(original_price) <= 0:
+            raise ValueError("Shopee global original price must be positive CNY")
+        body["original_price"] = float(original_price)
     if len(body["description"]) < 500:
         raise ValueError("Shopee global master description must be at least 500 characters")
     try:
@@ -1392,6 +1397,14 @@ def update_global_master(
         verified = (
             str(item.get("global_item_name") or "") == body["global_item_name"]
             and str(item.get("description") or "") == body["description"]
+            and (
+                "original_price" not in body
+                or abs(
+                    float(item.get("original_price") or 0)
+                    - float(body["original_price"])
+                )
+                < 0.000001
+            )
         )
         if not verified:
             raise ValueError("global master copy readback mismatch")
@@ -1429,11 +1442,17 @@ def ensure_global_master(
     title: str,
     description: str,
     ref: dict | None,
+    original_price: float | None = None,
 ) -> dict:
     """Update copy once only when strict official readback proves drift."""
 
     expected_title = _shopee_title(title, "", max_len=120)
     expected_description = str(description or "").strip()[:3000]
+    expected_price = (
+        float(original_price) if original_price is not None else None
+    )
+    if expected_price is not None and expected_price <= 0:
+        raise ValueError("Shopee global original price must be positive CNY")
     current = merchant_get(
         "/api/v2/global_product/get_global_item_info",
         merchant_id,
@@ -1468,6 +1487,11 @@ def ensure_global_master(
     if (
         item["global_item_name"] == expected_title
         and item["description"] == expected_description
+        and (
+            expected_price is None
+            or abs(float(item.get("original_price") or 0) - expected_price)
+            < 0.000001
+        )
     ):
         return {
             "source": "official_shopee_partner_api",
@@ -1484,6 +1508,7 @@ def ensure_global_master(
         title=expected_title,
         description=expected_description,
         ref=ref,
+        original_price=expected_price,
     )
     return {
         **updated,
@@ -1968,6 +1993,7 @@ def publish_match_key(
                     title=title_override,
                     description=description_override,
                     ref=ref,
+                    original_price=global_original_price_cny_override,
                 )
             try:
                 result = _publish_existing_global(
@@ -1998,10 +2024,29 @@ def publish_match_key(
                     ) from error
                 raise
         elif existing_gid and global_only:
+            if not (
+                str(title_override).strip()
+                and str(description_override).strip()
+                and global_original_price_cny_override is not None
+            ):
+                raise ValueError(
+                    "approved Shopee global title, description, and price are required"
+                )
+            global_master_receipt = ensure_global_master(
+                global_item_id=int(existing_gid),
+                merchant_id=merchant_id,
+                merchant_token=merchant_token,
+                detail=detail,
+                title=title_override,
+                description=description_override,
+                ref=ref,
+                original_price=global_original_price_cny_override,
+            )
             return {
                 "ok": True,
                 "flow": "existing_global",
                 "global_item_id": int(existing_gid),
+                "global_master": global_master_receipt,
                 "region": reg,
                 "shop_id": shop_id,
                 "match_key": key,

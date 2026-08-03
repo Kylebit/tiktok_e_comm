@@ -176,6 +176,289 @@ def test_shopee_global_success_is_read_from_shared_controls(monkeypatch):
     assert body["failed_targets"] == []
 
 
+def test_shopee_button_uses_approved_plan_for_global_only_publish(monkeypatch):
+    """Shopee is independent and creates only one CNSC global product.
+
+    The approved ReleasePlan is already the user's approval boundary.  The
+    button must not require a second Shopee-global approval/job, and must
+    never start TikTok, Ozon, or Shopee regional publication.
+    """
+
+    payload = {
+        "product_id": "3846511157",
+        "seller_sku": "0959",
+        "product_facts": {
+            "title": "Approved Shopee title",
+        },
+        "listing_copy": {
+            "shopee_description_en": "Approved Shopee description",
+            "candidates": [
+                {
+                    "channel": "shopee",
+                    "site": "CNSC",
+                    "policy_check": "passed",
+                    "title": "Approved Shopee title",
+                }
+            ],
+        },
+        "pricing": {
+            "master_price_source": {
+                "region": "PH",
+                "target_key": "lh_ph",
+            },
+            "selected_targets": {
+                "shopee:PH": {
+                    "source": {"target_key": "lh_ph"},
+                    "derived_preview": {
+                        "global_original_price_cny": 61.71,
+                    },
+                }
+            },
+        },
+    }
+    monkeypatch.setattr(
+        product_server,
+        "_oneclick_approved_context",
+        lambda _data: (
+            {
+                "payload": payload,
+                "plan": {
+                    "plan_id": "approved-plan",
+                    "seller_sku": "0959",
+                    "payload": payload,
+                },
+                "store": object(),
+                "dashboard": {},
+            },
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_start_oneclick_release",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Shopee must not enter the shared platform job")
+        ),
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_publish(match_key, region, **kwargs):
+        calls.append(
+            {"match_key": match_key, "region": region, **kwargs}
+        )
+        return {
+            "ok": True,
+            "flow": "global_only",
+            "global_item_id": 123456,
+        }
+
+    monkeypatch.setattr(
+        "modules.shopee.publish.publish_match_key",
+        fake_publish,
+    )
+
+    status, body = product_server._start_shopee_global_release(
+        {
+            "confirm_publish": True,
+            "offer_id": "3846511157",
+            "plan_id": "approved-plan",
+            "confirmation_token": "token",
+        }
+    )
+
+    assert status == 200
+    assert body["success"] is True
+    assert body["platform"] == "SHOPEE_GLOBAL"
+    assert body["target_count"] == 1
+    assert body["successful_target_count"] == 1
+    assert calls == [
+        {
+            "match_key": "0959",
+            "region": "PH",
+            "dry_run": False,
+            "global_only": True,
+            "publish_shops": False,
+            "title_override": "Approved Shopee title",
+            "description_override": "Approved Shopee description",
+            "global_original_price_cny_override": 61.71,
+        }
+    ]
+
+
+def test_platform_publish_error_redacts_json_style_credentials():
+    detail = product_server._safe_platform_publish_error(
+        RuntimeError(
+            '{"access_token":"access-123",'
+            '"partner_key":"partner-456",'
+            '"signature":"signature-789",'
+            '"url":"https://secret.example/path"}'
+        )
+    )
+
+    assert "access-123" not in detail
+    assert "partner-456" not in detail
+    assert "signature-789" not in detail
+    assert "secret.example" not in detail
+
+    bearer = product_server._safe_platform_publish_error(
+        RuntimeError(
+            "Authorization: Bearer bearer-real-token https://secret.example/path"
+        )
+    )
+    assert "bearer-real-token" not in bearer
+    assert "secret.example" not in bearer
+
+
+def test_ozon_button_uses_isolated_official_import_path(monkeypatch):
+    """Ozon must use its proven Seller API import, not Miaoshou or another job."""
+
+    payload = {
+        "product_id": "3846511157",
+        "seller_sku": "0959",
+        "product_facts": {
+            "package_cm": [38, 85, 0.1],
+        },
+        "listing_copy": {
+            "candidates": [
+                {
+                    "channel": "ozon",
+                    "site": "RU",
+                    "policy_check": "passed",
+                    "title": "Approved Russian Ozon title",
+                }
+            ],
+        },
+        "images": [
+            {"position": 1, "image_url": "https://images.example/1.jpg"},
+            {"position": 2, "image_url": "https://images.example/2.jpg"},
+        ],
+        "pricing": {
+            "selected_targets": {
+                "ozon:RU": {
+                    "derived_preview": {
+                        "price_cny": 62,
+                        "old_price_cny": 81,
+                    }
+                }
+            }
+        },
+    }
+    monkeypatch.setattr(
+        product_server,
+        "_oneclick_approved_context",
+        lambda _data: (
+            {
+                "payload": payload,
+                "plan": {
+                    "plan_id": "approved-plan",
+                    "seller_sku": "0959",
+                    "payload": payload,
+                },
+                "store": object(),
+                "dashboard": {},
+            },
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_start_oneclick_release",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Ozon must not enter the shared/Miaoshou job")
+        ),
+    )
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def fake_migrate(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {
+            "ok": True,
+            "offer_id": "0959",
+            "task_id": "ozon-task-1",
+            "import_request_attempted": True,
+            "import_dispatch_outcome": "accepted",
+        }
+
+    monkeypatch.setattr(
+        "modules.ozon.migrate_batch.migrate_one",
+        fake_migrate,
+    )
+
+    status, body = product_server._start_ozon_release(
+        {
+            "confirm_publish": True,
+            "offer_id": "3846511157",
+            "plan_id": "approved-plan",
+            "confirmation_token": "token",
+        }
+    )
+
+    assert status == 200
+    assert body["success"] is True
+    assert body["platform"] == "OZON"
+    assert calls == [
+        (
+            ("0959",),
+            {
+                "allow_deepseek": False,
+                "title_candidate": "Approved Russian Ozon title",
+                "product_size_cm": (38.0, 85.0),
+                "quantity": 1,
+                "price_cny_override": 62,
+                "old_price_cny_override": 81,
+                "price_source_override": "approved_release_plan",
+                "price_label_override": "ozon:RU",
+                "image_urls_override": [
+                    "https://images.example/1.jpg",
+                    "https://images.example/2.jpg",
+                ],
+                "process_images": False,
+                "wait_for_import": False,
+                "skip_rich_content": True,
+                "skip_mapping_write": True,
+            },
+        )
+    ]
+
+
+def test_ozon_button_rejects_vendor_errors_even_when_result_says_ok(monkeypatch):
+    context = {"payload": {}, "plan": {}, "store": object(), "dashboard": {}}
+    monkeypatch.setattr(
+        product_server,
+        "_oneclick_approved_context",
+        lambda _data: (context, None),
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_approved_ozon_publish_facts",
+        lambda _payload: {
+            "seller_sku": "0959",
+            "title": "Approved title",
+            "size": (38.0, 85.0),
+            "price": 62,
+            "old_price": 81,
+            "images": ["https://images.example/1.jpg"],
+        },
+    )
+    monkeypatch.setattr(
+        "modules.ozon.migrate_batch.migrate_one",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "status": "imported",
+            "task_id": "task-with-error",
+            "errors": [{"code": "invalid_attribute"}],
+            "import_dispatch_outcome": "accepted",
+        },
+    )
+
+    status, body = product_server._start_ozon_release(
+        {"confirm_publish": True, "offer_id": "3846511157"}
+    )
+
+    assert status == 409
+    assert body["success"] is False
+
+
 def test_frontend_uses_only_four_simple_states_and_never_polls_after_post():
     script = (
         product_server.ROOT / "web/static/product_workspace.js"

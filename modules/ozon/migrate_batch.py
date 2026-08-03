@@ -42,6 +42,7 @@ def migrate_one(
     skip_rich_content: bool = False,
     skip_mapping_write: bool = False,
     process_images: bool = True,
+    wait_for_import: bool = True,
     category_id_override: int | None = None,
     type_id_override: int | None = None,
     migrate_profile_override: str = "",
@@ -153,10 +154,21 @@ def migrate_one(
         }
 
     import_status = result.get("status")
-    if import_status == "pending":
+    if import_status == "pending" and wait_for_import:
         import_status = _poll_imported(offer_id, on_progress=on_progress)
 
-    ok = import_status == "imported"
+    accepted_without_wait = bool(
+        not wait_for_import
+        and import_status == "pending"
+        and result.get("task_id")
+        and not result.get("errors")
+    )
+    if accepted_without_wait:
+        import_status = "accepted"
+    ok = (
+        import_status in {"imported", "accepted"}
+        and not result.get("errors")
+    )
     return {
         "seller_sku": seller_sku,
         "offer_id": offer_id,
@@ -166,8 +178,12 @@ def migrate_one(
         "import_request_attempted": True,
         "import_dispatch_outcome": (
             "accepted"
-            if result.get("task_id")
-            else "ambiguous_missing_task_id"
+            if ok and result.get("task_id")
+            else (
+                "rejected_or_unknown"
+                if result.get("errors")
+                else "ambiguous_missing_task_id"
+            )
         ),
         "rich_status": result.get("rich_status"),
         "errors": result.get("errors") or [],

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import ipaddress
+import logging
 import mimetypes
+import re
 import socket
 import threading
 import time
@@ -64,6 +66,9 @@ _READONLY_SHOPEE_RECONCILE_CHECKS = frozenset(
 )
 _product_approval_lock = threading.Lock()
 _release_execution_lock = threading.Lock()
+_shopee_global_publish_lock = threading.Lock()
+_ozon_publish_lock = threading.Lock()
+_PLATFORM_PUBLISH_LOGGER = logging.getLogger("product_workspace.platform_publish")
 _product_workbench_locks_guard = threading.Lock()
 _product_workbench_locks: dict[str, threading.Lock] = {}
 
@@ -9281,20 +9286,331 @@ def _start_tiktok_release(data: dict) -> tuple[int, dict]:
     )
 
 
-def _start_shopee_global_release(data: dict) -> tuple[int, dict]:
-    return _start_oneclick_release(
-        data,
-        batch_scope="SHOPEE_GLOBAL",
-        require_collectbox_platform=None,
+def _approved_shopee_global_publish_facts(payload: dict) -> dict:
+    seller_sku = payload.get("seller_sku")
+    listing_copy = payload.get("listing_copy")
+    pricing = payload.get("pricing")
+    if (
+        not isinstance(seller_sku, str)
+        or not seller_sku.strip()
+        or not isinstance(listing_copy, dict)
+        or not isinstance(pricing, dict)
+    ):
+        raise ValueError("approved Shopee global facts are incomplete")
+    candidates = [
+        row
+        for row in listing_copy.get("candidates") or []
+        if isinstance(row, dict)
+        and str(row.get("channel") or "").lower() == "shopee"
+        and str(row.get("site") or "").upper() in {"CNSC", "GLOBAL"}
+        and row.get("policy_check") == "passed"
+    ]
+    description = listing_copy.get("shopee_description_en")
+    if (
+        len(candidates) != 1
+        or not isinstance(candidates[0].get("title"), str)
+        or not candidates[0]["title"].strip()
+        or not isinstance(description, str)
+        or not description.strip()
+    ):
+        raise ValueError("approved Shopee global copy is not exact")
+    source = pricing.get("master_price_source")
+    selected = pricing.get("selected_targets")
+    if not isinstance(source, dict) or not isinstance(selected, dict):
+        raise ValueError("approved Shopee global price source is unavailable")
+    region = source.get("region")
+    target_key = source.get("target_key")
+    selected_target = selected.get(f"shopee:{region}")
+    if not isinstance(selected_target, dict):
+        raise ValueError("approved Shopee global price target is unavailable")
+    selected_source = selected_target.get("source")
+    derived = selected_target.get("derived_preview")
+    try:
+        global_price = Decimal(str(derived.get("global_original_price_cny")))
+    except (AttributeError, InvalidOperation, TypeError, ValueError):
+        raise ValueError("approved Shopee global price is invalid") from None
+    if (
+        not isinstance(region, str)
+        or region not in {"PH", "MY", "TH", "VN"}
+        or not isinstance(target_key, str)
+        or not target_key
+        or not isinstance(selected_source, dict)
+        or selected_source.get("target_key") != target_key
+        or not global_price.is_finite()
+        or global_price <= 0
+    ):
+        raise ValueError("approved Shopee global price binding is invalid")
+    return {
+        "seller_sku": seller_sku.strip(),
+        "region": region,
+        "title": candidates[0]["title"].strip(),
+        # Preserve the approved description byte-for-byte.
+        "description": description,
+        "global_original_price_cny": float(global_price),
+    }
+
+
+def _approved_ozon_publish_facts(payload: dict) -> dict:
+    seller_sku = payload.get("seller_sku")
+    product_facts = payload.get("product_facts")
+    listing_copy = payload.get("listing_copy")
+    images = payload.get("images")
+    pricing = payload.get("pricing")
+    if (
+        not isinstance(seller_sku, str)
+        or not seller_sku.strip()
+        or not isinstance(product_facts, dict)
+        or not isinstance(listing_copy, dict)
+        or not isinstance(images, list)
+        or not isinstance(pricing, dict)
+    ):
+        raise ValueError("approved Ozon facts are incomplete")
+    candidates = [
+        row
+        for row in listing_copy.get("candidates") or []
+        if isinstance(row, dict)
+        and str(row.get("channel") or "").lower() == "ozon"
+        and str(row.get("site") or "").upper() == "RU"
+        and row.get("policy_check") == "passed"
+    ]
+    package = product_facts.get("package_cm")
+    selected = pricing.get("selected_targets")
+    target = selected.get("ozon:RU") if isinstance(selected, dict) else None
+    derived = target.get("derived_preview") if isinstance(target, dict) else None
+    try:
+        size = (float(package[0]), float(package[1]))
+        price = int(Decimal(str(derived.get("price_cny"))))
+        old_price = int(Decimal(str(derived.get("old_price_cny"))))
+    except (IndexError, InvalidOperation, TypeError, ValueError, AttributeError):
+        raise ValueError("approved Ozon size or price is invalid") from None
+    ordered_images = sorted(
+        (
+            row
+            for row in images
+            if isinstance(row, dict)
+            and isinstance(row.get("position"), int)
+            and isinstance(row.get("image_url"), str)
+            and row["image_url"].startswith("https://")
+        ),
+        key=lambda row: row["position"],
     )
+    if (
+        len(candidates) != 1
+        or not isinstance(candidates[0].get("title"), str)
+        or not candidates[0]["title"].strip()
+        or len(ordered_images) != len(images)
+        or len({row["position"] for row in ordered_images}) != len(images)
+        or any(value <= 0 or not math.isfinite(value) for value in size)
+        or price <= 0
+        or old_price <= price
+    ):
+        raise ValueError("approved Ozon publication facts are invalid")
+    return {
+        "seller_sku": seller_sku.strip(),
+        "title": candidates[0]["title"].strip(),
+        "size": size,
+        "price": price,
+        "old_price": old_price,
+        "images": [row["image_url"] for row in ordered_images],
+    }
+
+
+def _safe_platform_publish_error(error: Exception) -> str:
+    """Return a useful reason without exposing credentials or raw URLs."""
+
+    detail = " ".join(str(error).split())
+    detail = re.sub(r'''https?://[^\s"'<>]+''', "[url]", detail)
+    detail = re.sub(
+        r'''(?i)(["']?(?:access[_-]?token|refresh[_-]?token|partner[_-]?key|api[_-]?key|client[_-]?secret|secret|signature|token|key)["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,}\]]+)''',
+        r'\1"[redacted]"',
+        detail,
+    )
+    detail = re.sub(
+        r"(?i)(authorization\s*[:=]\s*)(?:bearer\s+)?[^\s,}\]]+",
+        r"\1[redacted]",
+        detail,
+    )
+    detail = re.sub(
+        r"(?i)(bearer\s+)[^\s,}\]]+",
+        r"\1[redacted]",
+        detail,
+    )
+    return (detail or type(error).__name__)[:300]
+
+
+def _start_shopee_global_release(data: dict) -> tuple[int, dict]:
+    """Create or update only the approved Shopee CNSC global product."""
+
+    if data.get("confirm_publish") is not True:
+        return 400, {
+            "ok": False,
+            "success": False,
+            "platform": "SHOPEE_GLOBAL",
+            "message": "Shopee 全球商品发布失败：需要确认发布",
+            "retryable": True,
+        }
+    context, failure = _oneclick_approved_context(data)
+    if failure:
+        return failure
+    try:
+        facts = _approved_shopee_global_publish_facts(context["payload"])
+    except (TypeError, ValueError) as error:
+        return 409, {
+            "ok": False,
+            "success": False,
+            "platform": "SHOPEE_GLOBAL",
+            "message": f"Shopee 全球商品发布失败：{_safe_platform_publish_error(error)}",
+            "retryable": True,
+        }
+    with _shopee_global_publish_lock:
+        refreshed, failure = _oneclick_approved_context(data)
+        if failure:
+            return failure
+        try:
+            current_facts = _approved_shopee_global_publish_facts(
+                refreshed["payload"]
+            )
+            if current_facts != facts:
+                raise ValueError("approved Shopee global facts changed before dispatch")
+            from modules.shopee.publish import publish_match_key
+
+            result = publish_match_key(
+                facts["seller_sku"],
+                facts["region"],
+                dry_run=False,
+                global_only=True,
+                publish_shops=False,
+                title_override=facts["title"],
+                description_override=facts["description"],
+                global_original_price_cny_override=(
+                    facts["global_original_price_cny"]
+                ),
+            )
+            if not isinstance(result, dict) or result.get("ok") is not True:
+                raise RuntimeError("Miaoshou/Shopee did not accept the global product")
+        except Exception as error:
+            reason = _safe_platform_publish_error(error)
+            _PLATFORM_PUBLISH_LOGGER.warning(
+                "platform_publish_failed platform=SHOPEE_GLOBAL offer_id=%s reason=%s",
+                str(data.get("offer_id") or ""),
+                reason,
+            )
+            return 409, {
+                "schema_version": "official-platform-publish-result/v1",
+                "ok": False,
+                "success": False,
+                "platform": "SHOPEE_GLOBAL",
+                "message": f"Shopee 全球商品发布失败：{reason}",
+                "target_count": 1,
+                "successful_target_count": 0,
+                "failed_targets": ["shopee:GLOBAL"],
+                "retryable": True,
+            }
+    return 200, {
+        "schema_version": "official-platform-publish-result/v1",
+        "ok": True,
+        "success": True,
+        "platform": "SHOPEE_GLOBAL",
+        "message": "Shopee 全球商品发布成功",
+        "target_count": 1,
+        "successful_target_count": 1,
+        "failed_targets": [],
+        "retryable": True,
+    }
 
 
 def _start_ozon_release(data: dict) -> tuple[int, dict]:
-    return _start_oneclick_release(
-        data,
-        batch_scope="OZON",
-        require_collectbox_platform=None,
-    )
+    """Submit only the approved Ozon product through the official API path."""
+
+    if data.get("confirm_publish") is not True:
+        return 400, {
+            "ok": False,
+            "success": False,
+            "platform": "OZON",
+            "message": "Ozon 发布失败：需要确认发布",
+            "retryable": True,
+        }
+    context, failure = _oneclick_approved_context(data)
+    if failure:
+        return failure
+    try:
+        facts = _approved_ozon_publish_facts(context["payload"])
+    except (TypeError, ValueError) as error:
+        return 409, {
+            "ok": False,
+            "success": False,
+            "platform": "OZON",
+            "message": f"Ozon 发布失败：{_safe_platform_publish_error(error)}",
+            "retryable": True,
+        }
+    with _ozon_publish_lock:
+        refreshed, failure = _oneclick_approved_context(data)
+        if failure:
+            return failure
+        try:
+            current_facts = _approved_ozon_publish_facts(refreshed["payload"])
+            if current_facts != facts:
+                raise ValueError("approved Ozon facts changed before dispatch")
+            from modules.ozon.migrate_batch import migrate_one
+
+            result = migrate_one(
+                facts["seller_sku"],
+                allow_deepseek=False,
+                title_candidate=facts["title"],
+                product_size_cm=facts["size"],
+                quantity=1,
+                price_cny_override=facts["price"],
+                old_price_cny_override=facts["old_price"],
+                price_source_override="approved_release_plan",
+                price_label_override="ozon:RU",
+                image_urls_override=facts["images"],
+                process_images=False,
+                wait_for_import=False,
+                skip_rich_content=True,
+                skip_mapping_write=True,
+            )
+            accepted = (
+                isinstance(result, dict)
+                and not result.get("errors")
+                and (
+                    result.get("ok") is True
+                    or (
+                        bool(result.get("task_id"))
+                        and result.get("import_dispatch_outcome") == "accepted"
+                    )
+                )
+            )
+            if not accepted:
+                raise RuntimeError("Ozon official API did not accept the import")
+        except Exception as error:
+            reason = _safe_platform_publish_error(error)
+            _PLATFORM_PUBLISH_LOGGER.warning(
+                "platform_publish_failed platform=OZON offer_id=%s reason=%s",
+                str(data.get("offer_id") or ""),
+                reason,
+            )
+            return 409, {
+                "schema_version": "official-platform-publish-result/v1",
+                "ok": False,
+                "success": False,
+                "platform": "OZON",
+                "message": f"Ozon 发布失败：{reason}",
+                "target_count": 1,
+                "successful_target_count": 0,
+                "failed_targets": ["ozon:RU"],
+                "retryable": True,
+            }
+    return 200, {
+        "schema_version": "official-platform-publish-result/v1",
+        "ok": True,
+        "success": True,
+        "platform": "OZON",
+        "message": "Ozon API 已接受发布",
+        "target_count": 1,
+        "successful_target_count": 1,
+        "failed_targets": [],
+        "retryable": True,
+    }
 def _publish_selected_release(data: dict) -> tuple[int, dict]:
     """Execute the approved plan once through durable per-target adapters."""
     from domains.channel_operations.release_executor import AdapterExecutionRequest

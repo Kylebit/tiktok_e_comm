@@ -91,6 +91,46 @@ def test_copy_drift_is_updated_once_then_read_back(monkeypatch):
     ]
 
 
+def test_existing_global_price_is_updated_from_approved_cny_price(monkeypatch):
+    description = ("Approved factual description. " * 30).strip()
+    old = _row("Approved title", description)
+    old["response"]["global_item_list"][0]["original_price"] = 10.0
+    current = _row("Approved title", description)
+    current["response"]["global_item_list"][0]["original_price"] = 40.0
+    reads = iter([old, current])
+    posts = []
+    monkeypatch.setattr(
+        publish,
+        "merchant_get",
+        lambda *_args, **_kwargs: next(reads),
+    )
+    monkeypatch.setattr(
+        publish,
+        "merchant_post",
+        lambda *args, **kwargs: posts.append((args, kwargs))
+        or {"error": "", "response": {}},
+    )
+    monkeypatch.setattr(
+        publish,
+        "_global_attribute_list",
+        lambda *_args, **_kwargs: [],
+    )
+
+    receipt = publish.ensure_global_master(
+        global_item_id=51465029034,
+        merchant_id=100,
+        merchant_token="runtime-only",
+        detail={},
+        title="Approved title",
+        description=description,
+        ref={},
+        original_price=40.0,
+    )
+
+    assert posts[0][0][3]["original_price"] == 40.0
+    assert receipt["updated"] is True
+
+
 def test_global_update_transport_ambiguity_preserves_write_class(monkeypatch):
     description = ("Approved factual description. " * 30).strip()
     monkeypatch.setattr(
@@ -697,6 +737,80 @@ def test_active_global_identity_never_creates_replacement(monkeypatch):
 
     assert result["global_item_id"] == 51465029034
     assert result["global_master"]["updated"] is False
+
+
+def test_global_only_existing_item_applies_current_approved_master(monkeypatch):
+    detail = {
+        "title": "Source title",
+        "description": "Source description",
+        "main_images": [{"urls": ["https://example.test/image.jpg"]}],
+        "skus": [{"price": {"sale_price": 12.34}}],
+    }
+    captured = {}
+    monkeypatch.setattr(publish, "sync_shop_ids", lambda: {"PH": 1})
+    monkeypatch.setattr(
+        publish,
+        "_find_tk_for_global",
+        lambda *_args, **_kwargs: ({"seller_sku": "0956"}, detail, "PH"),
+    )
+    monkeypatch.setattr(
+        publish,
+        "_find_tk_row",
+        lambda *_args, **_kwargs: {"seller_sku": "0956"},
+    )
+    monkeypatch.setattr(publish, "_fetch_tk_detail", lambda _row: detail)
+    monkeypatch.setattr(
+        publish,
+        "_collect_image_urls",
+        lambda _detail: ["https://example.test/image.jpg"],
+    )
+    monkeypatch.setattr(publish, "ensure_shop_token", lambda _shop: "token")
+    monkeypatch.setattr(
+        publish,
+        "global_item_id_for_match_key",
+        lambda _key: "51465029034",
+    )
+    monkeypatch.setattr(publish, "_reference_item", lambda *_args: {})
+    monkeypatch.setattr(
+        publish,
+        "_shop_meta",
+        lambda *_args: {"is_cb": True, "merchant_id": 100},
+    )
+    monkeypatch.setattr(
+        publish,
+        "_merchant_token",
+        lambda *_args: "merchant-token",
+    )
+    monkeypatch.setattr(
+        publish,
+        "_official_global_item_status",
+        lambda **_kwargs: "NORMAL",
+    )
+
+    def _ensure(**kwargs):
+        captured.update(kwargs)
+        return {
+            "verified": True,
+            "updated": True,
+            "external_writes_performed": ["shopee:global_master:update"],
+        }
+
+    monkeypatch.setattr(publish, "ensure_global_master", _ensure)
+
+    result = publish.publish_match_key(
+        "0956",
+        "PH",
+        global_only=True,
+        global_original_price_cny_override=40.0,
+        title_override="Approved title",
+        description_override="Approved description",
+    )
+
+    assert captured["global_item_id"] == 51465029034
+    assert captured["title"] == "Approved title"
+    assert captured["description"] == "Approved description"
+    assert captured["original_price"] == 40.0
+    assert result["global_master"]["updated"] is True
 
 
 def test_deleted_global_is_replaced_once_then_reused_across_all_regions(

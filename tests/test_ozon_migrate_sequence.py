@@ -66,3 +66,95 @@ def test_migrate_one_returns_stable_import_task_identity(monkeypatch):
     assert result["task_id"] == "task-0953"
     assert result["import_request_attempted"] is True
     assert result["import_dispatch_outcome"] == "accepted"
+
+
+def test_migrate_one_can_finish_when_official_api_accepts_task(monkeypatch):
+    """The simple Ozon button ends at API acceptance, without moderation polling."""
+
+    monkeypatch.setattr(catalog_draft, "build_draft", lambda *_a, **_k: _draft())
+    monkeypatch.setattr(
+        migrate_batch,
+        "proxy_json",
+        lambda *_a, **_k: (
+            200,
+            {
+                "status": "pending",
+                "task_id": "task-0953",
+                "errors": [],
+                "rich_status": "skipped_by_audited_release",
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        migrate_batch,
+        "_poll_imported",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("the simple button must not wait for moderation")
+        ),
+    )
+
+    result = migrate_batch.migrate_one(
+        "0953",
+        allow_deepseek=False,
+        process_images=False,
+        wait_for_import=False,
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "accepted"
+    assert result["task_id"] == "task-0953"
+    assert result["import_dispatch_outcome"] == "accepted"
+
+
+def test_migrate_one_does_not_accept_pending_task_with_vendor_errors(monkeypatch):
+    monkeypatch.setattr(catalog_draft, "build_draft", lambda *_a, **_k: _draft())
+    monkeypatch.setattr(
+        migrate_batch,
+        "proxy_json",
+        lambda *_a, **_k: (
+            200,
+            {
+                "status": "pending",
+                "task_id": "task-0953",
+                "errors": [{"code": "invalid_attribute"}],
+            },
+        ),
+    )
+
+    result = migrate_batch.migrate_one(
+        "0953",
+        allow_deepseek=False,
+        process_images=False,
+        wait_for_import=False,
+    )
+
+    assert result["ok"] is False
+    assert result["import_dispatch_outcome"] == "rejected_or_unknown"
+
+
+def test_migrate_one_does_not_accept_imported_status_with_vendor_errors(
+    monkeypatch,
+):
+    monkeypatch.setattr(catalog_draft, "build_draft", lambda *_a, **_k: _draft())
+    monkeypatch.setattr(
+        migrate_batch,
+        "proxy_json",
+        lambda *_a, **_k: (
+            200,
+            {
+                "status": "imported",
+                "task_id": "task-0953",
+                "errors": [{"code": "invalid_attribute"}],
+            },
+        ),
+    )
+
+    result = migrate_batch.migrate_one(
+        "0953",
+        allow_deepseek=False,
+        process_images=False,
+        wait_for_import=False,
+    )
+
+    assert result["ok"] is False
+    assert result["import_dispatch_outcome"] == "rejected_or_unknown"

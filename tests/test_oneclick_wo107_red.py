@@ -26,6 +26,7 @@ from tests.test_oneclick_miaoshou_direct_store import (
     _detail,
     _dispatch_request,
     _expected,
+    _gb_category_metadata_response,
     _plan_payload,
 )
 
@@ -40,12 +41,12 @@ from tests.test_oneclick_miaoshou_direct_store import (
         ("_start_ozon_release", ["ozon:promotion:RU"]),
     ],
 )
-def test_legacy_job_requires_explicit_successor_instead_of_silent_pending(
+def test_isolated_platform_button_ignores_legacy_oneclick_job(
     monkeypatch,
     starter,
     legacy_targets,
 ):
-    """A persisted pre-isolation job must never look newly accepted."""
+    """Shopee and Ozon buttons never inherit a pre-isolation shared job."""
 
     plan = {"plan_id": "omnichannel:legacy-job"}
     wakes = []
@@ -92,16 +93,20 @@ def test_legacy_job_requires_explicit_successor_instead_of_silent_pending(
         "_wake_oneclick_worker",
         lambda job_id: wakes.append(job_id),
     )
+    monkeypatch.setattr(
+        product_server,
+        "_start_oneclick_release",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("isolated platform buttons must ignore legacy jobs")
+        ),
+    )
 
     status, body = getattr(product_server, starter)(
         {"confirm_publish": True, "plan_id": plan["plan_id"]}
     )
 
     assert status == 409
-    assert body["error"]["code"] == "legacy_oneclick_job_requires_successor"
-    assert body["canonical_next_action"]["action"] == (
-        "create_platform_successor_job"
-    )
+    assert body["success"] is False
     assert wakes == []
 
 
@@ -224,14 +229,8 @@ def test_tiktok_partial_collectbox_allows_five_successes_and_gb_waiver(
     ) is True
 
 
-def test_gb_collectbox_waives_copy_category_attributes_but_keeps_exact_price():
-    """Kyle's GB waiver is narrow: preserve vendor fields, enforce GBP price.
-
-    The GB shop draft may retain its current title, category and product
-    attributes.  Those three fields must be copied unchanged into the update
-    payload and must not make the target ineligible when the approved price is
-    exact.  MX and SEA remain strict; this is not a platform-wide waiver.
-    """
+def test_gb_collectbox_keeps_title_but_writes_approved_category_and_price():
+    """GB skips post-save validation, not approved category preparation."""
 
     target = "tiktok:GB"
     payload = _plan_payload(target)
@@ -293,8 +292,8 @@ def test_gb_collectbox_waives_copy_category_attributes_but_keeps_exact_price():
     ]
     assert len(saved) == 1
     assert saved[0]["title"] == current_title
-    assert saved[0]["cid"] == current_category
-    assert saved[0]["productAttributes"] == current_attributes
+    assert saved[0]["cid"] == "600338"
+    assert saved[0]["productAttributes"] != current_attributes
     assert saved[0]["skuMap"]["default"]["price"] == 42
 
     # The waiver must not leak to MX or SEA verification.
@@ -318,6 +317,28 @@ def test_gb_dispatch_skips_post_write_readback_and_submits_directly():
 
     target = "tiktok:GB"
     command = _command(target)
+    required = _gb_category_metadata_response()["data"][
+        "categoryMetadata"
+    ]["categoryProductAttrList"][0]
+    command["expected"].update(
+        {
+            "category_id": "600338",
+            "product_attributes": [
+                {
+                    "attributeId": required["attrId"],
+                    "attributeName": required["name"],
+                    "attributeNameAlias": required["attributeNameAlias"],
+                    "attributeValues": [
+                        {
+                            "valueName": "1",
+                            "valueId": "1000256",
+                            "valueNameAlias": "1",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
     fake = DirectStoreFake(target)
     audit_calls = []
     publish_calls = []
@@ -330,9 +351,32 @@ def test_gb_dispatch_skips_post_write_readback_and_submits_directly():
         publish_calls.append((detail_id, shop_id))
         return {"result": "success"}
 
+    def post(path, body):
+        if path == miaoshou.CATEGORY_METADATA_PATH:
+            return _gb_category_metadata_response()
+        if path == miaoshou.WAREHOUSE_GET_PATH:
+            return {
+                "result": "success",
+                "data": {
+                    "shopWarehouseList": [
+                        {
+                            "shopId": "10204699",
+                            "warehouseList": [
+                                {
+                                    "warehouseId": "WAREHOUSE-1",
+                                    "warehouseEffectStatus": "1",
+                                    "isDefault": "1",
+                                }
+                            ],
+                        }
+                    ]
+                },
+            }
+        return fake.post(path, body)
+
     miaoshou.configure_runtime_transport_factory(
         lambda: miaoshou.MiaoshouRuntimeTransport(
-            post=fake.post,
+            post=post,
             audit_detail=unavailable_audit,
             publish=publish,
         )

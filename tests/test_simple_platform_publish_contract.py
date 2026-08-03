@@ -152,6 +152,21 @@ def test_server_startup_never_resumes_historical_publish_jobs():
     assert "_start_oneclick_background_worker()" not in startup
 
 
+def test_authoritative_dashboard_render_initializes_four_state_cards():
+    """An already-approved real dashboard must not wait for an auxiliary GET."""
+
+    script = (
+        product_server.ROOT / "web/static/product_workspace.js"
+    ).read_text(encoding="utf-8")
+    start = script.index("function render(data) {")
+    end = script.index("function clearCurrentApprovalContext()", start)
+    render = script[start:end]
+
+    identity_position = render.index("ensureOneClickExecution(data);")
+    cards_position = render.index("renderOneClickExecution(data);")
+    assert cards_position > identity_position
+
+
 def test_real_chromium_covers_all_simple_publish_paths_with_screenshots(
     tmp_path,
 ):

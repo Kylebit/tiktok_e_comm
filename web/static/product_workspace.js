@@ -8732,6 +8732,11 @@
     // dashboard render so the three platform buttons cannot be visible while
     // their click handlers still have a null identity and silently do nothing.
     ensureOneClickExecution(data);
+    // Render the four-state cards from the authoritative dashboard itself.
+    // Do not rely on a later collectbox/category preview request to happen to
+    // repaint this panel: a fully persisted approved product may require no
+    // auxiliary request at all.
+    renderOneClickExecution(data);
 
     const offer = data.product?.offer_id || $("#offerId").value.trim();
     const studioUrl = `/ai-image-studio?offer_id=${encodeURIComponent(offer)}`;

@@ -754,6 +754,48 @@ def test_shopee_global_plan_ui_is_redacted_and_fail_closed():
     assert "requestShopeeCategoryDecisionPreview(identity)" in script
 
 
+def test_release_v2_terminal_history_never_reenters_primary_operation():
+    """PRD-002/031/042: completed attempts are audit-only UI facts."""
+
+    script = (ROOT / "web/static/product_workspace.js").read_text(
+        encoding="utf-8"
+    )
+    render = script[
+        script.index("function renderOneClickExecution("):
+        script.index("function focusOneClickTarget(")
+    ]
+    ensure = script[
+        script.index("function ensureOneClickExecution("):
+        script.index("async function postProductWorkspace(")
+    ]
+    controls = script[
+        script.index("function updateReleaseControls("):
+        script.index("function renderReleaseV1(")
+    ]
+
+    for historical_copy in (
+        "上次未完成",
+        "上次发布失败",
+        "上次结果未确认",
+        "上次未发布",
+        "已显示上一轮妙手提交结果",
+    ):
+        assert historical_copy not in render
+
+    assert "isCurrentOneClickAttempt(validatedJob)" in ensure
+    compact_controls = " ".join(controls.split())
+    assert "isCurrentOneClickAttempt( oneClickExecution.job," in compact_controls
+    assert "本计划已有终态持久任务，不能再次提交" not in controls
+
+    browser_contract = BROWSER_CONTRACT.read_text(encoding="utf-8")
+    assert (
+        "async function releaseV2TerminalHistoryIsolationContract("
+        in browser_contract
+    )
+    assert '=== "release-v2-terminal-history"' in browser_contract
+    assert "await releaseV2TerminalHistoryIsolationContract(" in browser_contract
+
+
 def test_oneclick_manual_review_forms_keep_warning_and_apiless_contracts_separate():
     html = (ROOT / "web/product_workspace.html").read_text(encoding="utf-8")
     script = (ROOT / "web/static/product_workspace.js").read_text(

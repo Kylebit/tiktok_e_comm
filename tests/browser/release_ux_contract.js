@@ -6689,6 +6689,107 @@ async function oneClickAsyncControlPlaneContract(browser, viewport) {
   }
 }
 
+async function releaseV2TerminalHistoryIsolationContract(browser, viewport) {
+  const context = await browser.newContext({ viewport });
+  const page = await context.newPage();
+  const errors = [];
+  const requests = [];
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+  });
+  await page.route("**/*", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.origin !== baseUrl) return route.abort("blockedbyclient");
+    if (!url.pathname.startsWith("/api/")) return route.continue();
+    requests.push({ method: request.method(), path: url.pathname });
+    if (url.pathname === "/api/product-workspace/dashboard") {
+      return route.fulfill(jsonResponse(oneClickDashboard({ terminal: true })));
+    }
+    if (url.pathname === "/api/product-workspace/publish-preview") {
+      return route.fulfill(jsonResponse({
+        ok: true,
+        persisted: false,
+        external_writes_performed: [],
+        preview: oneClickProjection(
+          "release-batch-preparation/v2",
+          "preview",
+        ),
+      }));
+    }
+    if (url.pathname === "/api/product-workspace/collectbox-action/preview") {
+      return route.fulfill(jsonResponse(
+        collectboxActionProjection("SUCCEEDED"),
+      ));
+    }
+    if (
+      request.method() === "POST"
+      && url.pathname === "/api/product-workspace/publish-shopee-global"
+    ) {
+      return route.fulfill(jsonResponse({
+        ok: true,
+        accepted: true,
+        external_writes_performed: [],
+        job: oneClickPendingJobProjection(),
+      }, 202));
+    }
+    const fixture = apiFixture(
+      url,
+      request.method(),
+      { delayWeekly: false, delaySku: false, pending: {} },
+    );
+    return route.fulfill(fixture || jsonResponse({ ok: false }, 404));
+  });
+  try {
+    await page.goto(
+      `${baseUrl}/product-workspace?offer_id=3828540231`,
+      { waitUntil: "domcontentloaded" },
+    );
+    await page.waitForFunction(() => {
+      const shopee = document.querySelector("#shopeeGlobalReleaseButton");
+      const ozon = document.querySelector("#ozonReleaseButton");
+      return shopee && ozon && !shopee.disabled && !ozon.disabled;
+    });
+    const primaryGroups = await page.locator(
+      "#oneClickExecutionGroups",
+    ).innerText();
+    const primaryMessage = await page.locator(
+      "#oneClickExecutionMessage",
+    ).innerText();
+    check(
+      !primaryGroups.includes("涓婃")
+        && !primaryMessage.includes("涓婃")
+        && !primaryMessage.includes("鍘嗗彶"),
+      `release-v2 ${viewport.width}: terminal history never re-enters the primary operation`,
+      { primaryGroups, primaryMessage },
+    );
+    check(
+      await page.locator("#releasePrimaryActionButton").isEnabled()
+        && await page.locator("#shopeeGlobalReleaseButton").isEnabled()
+        && await page.locator("#ozonReleaseButton").isEnabled(),
+      `release-v2 ${viewport.width}: a terminal attempt does not disable a fresh platform attempt`,
+    );
+    await page.locator("#shopeeGlobalReleaseButton").click();
+    await page.waitForTimeout(250);
+    check(
+      requests.filter((row) => (
+        row.method === "POST"
+        && row.path === "/api/product-workspace/publish-shopee-global"
+      )).length === 1,
+      `release-v2 ${viewport.width}: fresh Shopee attempt posts exactly once after terminal history`,
+      requests,
+    );
+    check(
+      unexpectedInteractionErrors(errors).length === 0,
+      `release-v2 ${viewport.width}: terminal-history isolation has no console/page errors`,
+      errors,
+    );
+  } finally {
+    await context.close();
+  }
+}
+
 async function oneClickContentRecoveryContract(browser, viewport) {
   const context = await browser.newContext({ viewport });
   const page = await context.newPage();
@@ -7993,6 +8094,26 @@ async function legacyStateSafety(browser) {
       if (failures.length) process.exitCode = 1;
       return;
     }
+    if (
+      process.env.ORBIT_BROWSER_CONTRACT_ONLY
+        === "release-v2-terminal-history"
+    ) {
+      await releaseV2TerminalHistoryIsolationContract(
+        browser,
+        { width: 1440, height: 900 },
+      );
+      await releaseV2TerminalHistoryIsolationContract(
+        browser,
+        { width: 390, height: 844 },
+      );
+      process.stdout.write(`${JSON.stringify({
+        ok: failures.length === 0,
+        failures,
+        results,
+      }, null, 2)}\n`);
+      if (failures.length) process.exitCode = 1;
+      return;
+    }
     const pages = [
       {
         name: "Orbit 首页",
@@ -8064,6 +8185,14 @@ async function legacyStateSafety(browser) {
       { width: 390, height: 844 },
     );
     await oneClickOfferSwitchCancelsStalePreviewContract(browser);
+    await releaseV2TerminalHistoryIsolationContract(
+      browser,
+      { width: 1440, height: 900 },
+    );
+    await releaseV2TerminalHistoryIsolationContract(
+      browser,
+      { width: 390, height: 844 },
+    );
     await shopeeCategoryDecisionContract(browser, { width: 1440, height: 900 });
     await shopeeCategoryDecisionContract(browser, { width: 390, height: 844 });
     await profitAsyncAndNoFalseSuccess(browser);

@@ -2304,13 +2304,13 @@
       SUCCEEDED: "妙手已接受提交",
       SUCCEEDED_MANUAL_REVIEW: "妙手已接受提交",
       SUBMITTED_UNVERIFIED: "妙手已接受提交",
-      FAILED_PRE_SUBMIT: "上次发布失败，可再次发布",
-      RECONCILIATION_REQUIRED: "上次结果未确认，可再次发布",
-      BLOCKED_AUTH: "上次发布失败，可再次发布",
-      BLOCKED_INVENTORY: "上次发布失败，可再次发布",
-      BLOCKED_CAPABILITY: "上次发布失败，可再次发布",
-      BLOCKED_SOURCE_IDENTITY: "上次发布失败，可再次发布",
-      BLOCKED_SKU_LINEAGE: "上次发布失败，可再次发布",
+      FAILED_PRE_SUBMIT: "本次发布失败，可再次发布",
+      RECONCILIATION_REQUIRED: "本次结果未确认，可再次发布",
+      BLOCKED_AUTH: "本次未发布，可再次发布",
+      BLOCKED_INVENTORY: "本次未发布，可再次发布",
+      BLOCKED_CAPABILITY: "本次未发布，可再次发布",
+      BLOCKED_SOURCE_IDENTITY: "本次未发布，可再次发布",
+      BLOCKED_SKU_LINEAGE: "本次未发布，可再次发布",
     };
     return labels[String(status || "")] || "状态由服务端核定";
   }
@@ -2344,7 +2344,7 @@
     if (String(target?.status || "") === "DISPATCHING") {
       return "妙手 API 正在处理该店铺。";
     }
-    return "该店铺上次未完成；点击上方按钮可重新发起妙手发布。";
+    return "该店铺本次未完成；本次结束后可重新发起妙手发布。";
   }
 
   function oneClickTargetBucket(target) {
@@ -2368,8 +2368,17 @@
     return "blocked";
   }
 
+  function isCurrentOneClickAttempt(projection) {
+    return Boolean(
+      projection
+      && !ONECLICK_TERMINAL_PHASES.has(String(projection.phase || "")),
+    );
+  }
+
   function oneClickProjection() {
-    return oneClickExecution.job || oneClickExecution.preview;
+    return isCurrentOneClickAttempt(oneClickExecution.job)
+      ? oneClickExecution.job
+      : oneClickExecution.preview;
   }
 
   function currentOneClickNextAction(data) {
@@ -4272,15 +4281,17 @@
     const message = $("#oneClickExecutionMessage");
     if (!container || !message) return;
     const identity = oneClickIdentity(data);
-    const projection = oneClickProjection();
+    const projection = isCurrentOneClickAttempt(oneClickExecution.job)
+      ? oneClickExecution.job
+      : null;
     const headings = {
       automatic: "等待妙手提交",
       manual: "妙手已接受",
-      dependency: "上次未完成",
-      preSubmit: "上次发布失败",
-      reconciliation: "上次结果未确认",
-      blocked: "上次未发布",
-      terminal: "妙手已接受",
+      dependency: "本次依赖未完成",
+      preSubmit: "本次发布失败",
+      reconciliation: "本次结果未确认",
+      blocked: "本次未发布",
+      terminal: "本次妙手已接受",
     };
     const groups = {
       automatic: [],
@@ -4327,18 +4338,18 @@
         `${oneClickExecution.error} 本次已结束；可以再次点击一键发布。`;
     } else if (oneClickExecution.statusWarning) {
       message.textContent = oneClickExecution.statusWarning;
-    } else if (oneClickExecution.job) {
+    } else if (isCurrentOneClickAttempt(oneClickExecution.job)) {
       message.textContent =
-        "已显示上一轮妙手提交结果；需要时可再次点击一键发布。";
+        "正在显示本次妙手提交状态。";
     } else if (oneClickExecution.preview) {
       const count = Number(
         oneClickExecution.preview.preparation_pending_count || 0,
       );
       const manual = (oneClickExecution.preview.summary?.manual_after_submit || []).length;
       message.textContent =
-        `服务端预览完成：${count} 个目标等待后台正式准备，${manual} 个提交后等待人工验收。`;
+        `当前发布条件已读取：${count} 个目标可准备，${manual} 个目标提交后需人工验收。`;
     } else {
-      message.textContent = "等待服务端只读批次预览。";
+      message.textContent = "当前没有执行中的发布任务；请选择平台开始新一轮。";
     }
     if (identity) {
       $("#publishAllNote").textContent =
@@ -4667,6 +4678,9 @@
         generation === oneClickExecution.generation
         && productKey(latest?.product?.offer_id) === productKey(identity.offerId)
       ) {
+        oneClickExecution.job = null;
+        oneClickExecution.preview = null;
+        oneClickExecution.previewAttempted = false;
         adoptWorkflowDashboard(latest);
       }
     } catch (_error) {
@@ -4912,11 +4926,14 @@
     const serverJob = data?.release_v1?.oneclick_controlplane;
     if (serverJob && !oneClickExecution.job) {
       try {
-        oneClickExecution.job = validateOneClickProjection(
+        const validatedJob = validateOneClickProjection(
           serverJob,
           identity,
           ONECLICK_STATUS_SCHEMA,
         );
+        oneClickExecution.job = isCurrentOneClickAttempt(validatedJob)
+          ? validatedJob
+          : null;
       } catch (error) {
         oneClickExecution.error = friendlyError(error.message);
         oneClickExecution.failureAction =
@@ -4924,7 +4941,7 @@
         return;
       }
     }
-    if (oneClickExecution.job) {
+    if (isCurrentOneClickAttempt(oneClickExecution.job)) {
       if (!ONECLICK_TERMINAL_PHASES.has(oneClickExecution.job.phase)) {
         scheduleOneClickStatusPoll(generation, 0);
       }
@@ -7554,7 +7571,9 @@
 
     const hasOneClickAuthority = oneClickAuthorityAvailable(data);
     const oneClickView = oneClickProjection();
-    const oneClickJobExists = Boolean(oneClickExecution.job);
+    const oneClickJobExists = isCurrentOneClickAttempt(
+      oneClickExecution.job,
+    );
     const oneClickDispatchEnabled = (
       oneClickView?.dispatch_capability?.enabled !== false
     );
@@ -7603,9 +7622,7 @@
         "统一发布执行能力当前关闭；请按服务端唯一下一步处理。";
     } else if (hasOneClickAuthority && oneClickJobExists) {
       publishAllCheckbox.dataset.disabledReason =
-        ONECLICK_TERMINAL_PHASES.has(oneClickExecution.job.phase)
-          ? "本计划已有终态持久任务，不能再次提交。"
-          : "本计划已有持久任务正在执行；系统只读轮询，不能再次提交。";
+        "本平台当前任务正在执行；系统只读轮询，暂不创建并发任务。";
     } else if (!publishReady) {
       publishAllCheckbox.dataset.disabledReason =
         $("#publishAllNote").textContent || "发布前条件尚未全部通过。";

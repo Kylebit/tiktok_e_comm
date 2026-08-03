@@ -8113,6 +8113,10 @@ async function simplifiedPlatformPublishContract(browser, viewport) {
       }));
     }
     if (url.pathname === "/api/product-workspace/publish-shopee-global") {
+      // Production serializes writes for one approved product. The second
+      // platform may be clicked and remain publishing, but its response is
+      // released only after the first request leaves the shared ledger.
+      await firstTiktokGate;
       return route.fulfill(jsonResponse({
         schema_version: "miaoshou-platform-publish-result/v1",
         ok: true,
@@ -8165,13 +8169,14 @@ async function simplifiedPlatformPublishContract(browser, viewport) {
     );
     await screenshot("publishing");
 
-    await shopee.click();
+    const shopeeClick = shopee.click();
+    releaseFirstTiktok();
+    await firstClick;
+    await shopeeClick;
     await page.waitForFunction(() => (
       document.querySelector('[data-platform-publish-result="SHOPEE_GLOBAL"]')
         ?.textContent?.includes("发布成功")
     ));
-    releaseFirstTiktok();
-    await firstClick;
     await page.waitForFunction(() => (
       document.querySelector('[data-platform-publish-result="TIKTOK"]')
         ?.textContent?.includes("发布失败")

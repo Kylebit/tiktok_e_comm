@@ -27,6 +27,31 @@
       font-family: Inter, "Noto Sans SC", "Microsoft YaHei", sans-serif;
       line-height: 1.68;
     }
+    .toc {
+      position: sticky;
+      top: 10px;
+      z-index: 20;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 0 auto 18px;
+      padding: 10px;
+      border: 1px solid rgba(203, 220, 214, .92);
+      border-radius: 16px;
+      background: rgba(255, 253, 247, .94);
+      box-shadow: 0 10px 28px rgba(24, 54, 48, .08);
+      backdrop-filter: blur(12px);
+    }
+    .toc a {
+      padding: 7px 11px;
+      border-radius: 999px;
+      color: var(--green);
+      background: var(--mint);
+      font-size: 13px;
+      font-weight: 800;
+      text-decoration: none;
+    }
+    .toc a:hover, .toc a:focus-visible { color: white; background: var(--green); }
     main { width: min(1120px, calc(100% - 32px)); margin: 0 auto; padding: 36px 0 72px; }
     .hero, .panel, .button-card {
       background: var(--card);
@@ -47,7 +72,7 @@
     .button-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
     .button-card { overflow: hidden; }
     .button-image { padding: 22px; background: #f2f6f3; border-bottom: 1px solid var(--line); }
-    .button-image img { width: 100%; display: block; border-radius: 12px; }
+    .button-image img { width: 100%; display: block; border-radius: 12px; border: 1px solid var(--line); }
     .button-copy { padding: 26px; }
     .button-copy h3 { margin: 0 0 8px; font-size: 24px; }
     .button-copy h4 { margin: 24px 0 8px; font-size: 16px; }
@@ -85,6 +110,14 @@
 </head>
 <body>
 <main>
+  <nav class="toc" aria-label="页面目录">
+    <a href="#real-page">真实页面</a>
+    <a href="#buttons">按钮行为</a>
+    <a href="#states">状态变体</a>
+    <a href="#flow">执行流程</a>
+    <a href="#tests">测试要求</a>
+    <a href="#evidence">真实截图</a>
+  </nav>
   <header class="hero">
     <p class="eyebrow">APPROVED RELEASE · BUTTON GUIDE</p>
     <h1>商品发布按钮<br>行为说明</h1>
@@ -97,16 +130,16 @@
     </div>
   </header>
 
-  <h2 class="section-title">当前真实页面</h2>
+  <h2 class="section-title" id="real-page">当前真实页面</h2>
   <section class="panel">
-    <img class="screen" src="assets/release-buttons-current-viewport.png" alt="当前真实商品发布按钮区域">
+    <img class="screen" src="assets/live-approved-release-current-state.png" alt="当前真实商品发布页面">
     <p class="footnote">截图来自当前运行中的商品发布页面，不是示意图。</p>
   </section>
 
-  <h2 class="section-title">四个按钮逐一说明</h2>
+  <h2 class="section-title" id="buttons">四个按钮逐一说明</h2>
   <section class="button-grid">
     <article class="button-card">
-      <div class="button-image"><img src="assets/button-reimport-collectbox.png" alt="重新导入 TikTok / Shopee 妙手采集箱按钮"></div>
+      <div class="button-image"><img src="assets/live-collectbox-and-import.png" alt="真实页面中的重新导入 TikTok / Shopee 妙手采集箱区域"></div>
       <div class="button-copy">
         <h3>重新导入采集箱</h3>
         <ol>
@@ -120,7 +153,7 @@
     </article>
 
     <article class="button-card">
-      <div class="button-image"><img src="assets/button-publish-tiktok.png" alt="发布 TikTok 按钮"></div>
+      <div class="button-image"><img src="assets/live-platform-buttons-and-status.png" alt="真实页面中的发布 TikTok、Shopee 全球商品和 Ozon 按钮"></div>
       <div class="button-copy">
         <h3>发布 TikTok</h3>
         <ol>
@@ -135,7 +168,7 @@
     </article>
 
     <article class="button-card">
-      <div class="button-image"><img src="assets/button-publish-shopee-global.png" alt="发布 Shopee 全球商品按钮"></div>
+      <div class="button-image"><img src="assets/live-platform-buttons-and-status.png" alt="真实页面中的发布 TikTok、Shopee 全球商品和 Ozon 按钮"></div>
       <div class="button-copy">
         <h3>发布 Shopee 全球商品</h3>
         <ol>
@@ -149,7 +182,7 @@
     </article>
 
     <article class="button-card">
-      <div class="button-image"><img src="assets/button-publish-ozon.png" alt="发布 Ozon 按钮"></div>
+      <div class="button-image"><img src="assets/live-platform-buttons-and-status.png" alt="真实页面中的发布 TikTok、Shopee 全球商品和 Ozon 按钮"></div>
       <div class="button-copy">
         <h3>发布 Ozon</h3>
         <ol>
@@ -163,7 +196,7 @@
     </article>
   </section>
 
-  <h2 class="section-title">页面只保留四种状态</h2>
+  <h2 class="section-title" id="states">页面只保留四种状态</h2>
   <section class="panel">
     <div class="status-samples">
       <div class="status"><strong>未发布</strong>本轮还没有请求妙手 API；按钮可点。</div>
@@ -174,7 +207,7 @@
     <p>“本轮执行状态”只显示刚才点击的平台处于上面哪一种状态，不再展示“可准备目标数”“服务端店铺状态”“待确认”“人工验收”或“对账”。</p>
   </section>
 
-  <h2 class="section-title">按钮背后的完整流程</h2>
+  <h2 class="section-title" id="flow">按钮背后的完整流程</h2>
   <section class="panel">
     <div class="flow" aria-label="发布按钮流程">
       <div class="node">点击按钮</div><div class="arrow">→</div>
@@ -189,7 +222,7 @@
     </div>
   </section>
 
-  <h2 class="section-title">真实浏览器测试要求</h2>
+  <h2 class="section-title" id="tests">真实浏览器测试要求</h2>
   <section class="panel">
     <ol>
       <li>真实点击三个平台按钮，不允许只调用函数代替点击。</li>
@@ -209,7 +242,7 @@
     </table>
   </section>
 
-  <h2 class="section-title">真实测试截图</h2>
+  <h2 class="section-title" id="evidence">真实测试截图</h2>
   <section class="panel">
     <p>以下图片由真实 Chromium 点击页面按钮后自动生成，不是设计稿。测试验证：各平台结果互不继承、失败后可重新点击、成功后本次结束、没有发布后的轮询。为避免同一商品的妙手写入互相覆盖，服务端会串行处理同时发起的外部写请求。</p>
     <div class="evidence-grid">

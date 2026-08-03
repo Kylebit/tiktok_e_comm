@@ -31,6 +31,7 @@
 | PRD-041 | 禁用必须有提示 | 部分控件有 `data-disabled-reason`；平台按钮存在 silent return 路径 | `PARTIAL/GAP` | 所有不可用原因可见；可用点击有反馈 |
 | PRD-042 | 当前与历史分离；主页面不提示或计数历史 | 当前 `renderOneClickExecution()` 用“上次...”分组渲染主区 | `GAP` | 主页面无历史条数/横幅；历史变化不影响主区与 disabled |
 | PRD-043 | 刷新/重启恢复 | durable job 和轮询存在；终态/历史边界混合 | `PARTIAL` | 重启恢复 + 终态后开放 |
+| PRD-044 | 每条按钮/状态路径有真实点击与截图证据 | 现有 Chromium fixture 覆盖部分页面，但未为每个 phase 生成路径证据包 | `GAP` | `VISUAL_TEST_PLAN.md` 全矩阵；双视口截图与 `path.json` |
 
 ## 3. 当前代码位置
 
@@ -74,6 +75,7 @@
 4. `tests/test_release_ux_contract.py`
 5. `tests/browser/release_ux_contract.js`
 6. V2 新增的历史不阻断、平台隔离、目标继续执行、真实文案测试
+7. `VISUAL_TEST_PLAN.md` 中 BTN/状态全矩阵，并保留每条路径的真实截图证据包
 
 不能只跑 adapter 单元测试后宣称页面可用；不能只跑浏览器 fake fixture 后宣称真实 server contract 可用。纵向测试必须覆盖：
 
@@ -87,6 +89,17 @@
  -> 持久结果
  -> status API
  -> 页面渲染
+```
+
+浏览器门禁还必须输出：
+
+```text
+真实按钮 click
+ -> 点击后即时反馈截图
+ -> HTTP 接受/拒绝截图
+ -> 每个不同 phase 截图
+ -> 最终反馈截图
+ -> path.json（请求摘要、状态序列、最终文案、console/pageerror）
 ```
 
 ## 6. 变更单模板

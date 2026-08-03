@@ -341,7 +341,7 @@ stateDiagram-v2
 
 ### 6.3 “上一次”与“下一次”
 
-`latest completed attempt` 只服务历史展示。新尝试准入只读取：
+最近一次 completed attempt 在下一次 attempt 创建前，仍作为“本轮结果”投影给主页面；它只用于展示，不参与新尝试准入。更早的 completed attempts 只服务历史展示。新尝试准入只读取：
 
 - 当前计划；
 - 当前平台目标；
@@ -352,11 +352,12 @@ stateDiagram-v2
 
 ```mermaid
 flowchart LR
-    Click1["第一次显式点击"] --> A1["Attempt #1"] --> H1["终态后进入审计历史"]
+    Click1["第一次显式点击"] --> A1["Attempt #1"] --> C1["终态后仍显示为本轮结果"]
     Click2["第二次显式点击"] --> Gate{"同平台此刻仍有非终态 attempt?"}
     Gate -- "是" --> Prompt["仅提示正在执行；不创建、不跳转"]
     Gate -- "否" --> A2["Attempt #2"]
-    H1 -. "不得参与 gate" .-> Gate
+    C1 --> H1["Attempt #2 创建后，#1 转入审计历史"]
+    C1 -. "不得参与 gate" .-> Gate
 ```
 
 ## 7. 并发与幂等

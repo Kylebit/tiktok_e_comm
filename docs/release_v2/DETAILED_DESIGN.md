@@ -585,3 +585,339 @@ Worker 对 active scope 执行：
 | UI 显示“上次...”分组 | 视觉上强烈影响 | 当前/历史混排，属于 V2 明确差距 |
 
 因此，“上次结果影响下一次”不是 Kyle 的需求。当前实现中，终态历史在后端原则上已经允许新 batch，但数据模型和 UI 仍把上一轮投影带入当前主流程，形成了相反的产品感受和部分跨平台副作用。
+
+## 15. 真实页面基线与控件编号
+
+以下图片直接截取自 `http://127.0.0.1:8765/new-product?offer_id=3846511157` 的真实页面，不是设计稿。
+
+[查看完整真实视口截图](assets/live-approved-release-current-state.png)
+
+### 15.1 妙手采集箱区域
+
+![当前真实妙手采集箱与重新导入按钮](assets/live-collectbox-and-import.png)
+
+### 15.2 三个平台按钮与“本轮执行状态”
+
+![当前真实三个发布按钮与本轮执行状态](assets/live-platform-buttons-and-status.png)
+
+当前截图中的“尚无服务端店铺状态”是已确认的现状缺陷：最近一次 TikTok attempt 已有服务端终态结果，但前端把终态 job 排除后又退回 preview 文案。
+
+### 15.3 控件编号
+
+| 编号 | 当前可见文字 | DOM | 类型 | 所属阶段 |
+| --- | --- | --- | --- | --- |
+| BTN-PLAN-APPROVE | 批准当前发布计划 | `#approveReleasePlanButton` | 命令 | 上游批准 |
+| BTN-COLLECTBOX | 导入/重新导入 TikTok / Shopee 妙手采集箱 | `#collectboxActionButton` | 命令 | 两步流程第 1 步 |
+| BTN-PUBLISH-TK | 发布 TikTok | `#releasePrimaryActionButton` | 命令 | 两步流程第 2 步 |
+| BTN-PUBLISH-SP | 发布 Shopee 全球商品 | `#shopeeGlobalReleaseButton` | 命令 | Shopee 独立发布 |
+| BTN-PUBLISH-OZ | 发布 Ozon | `#ozonReleaseButton` | 命令 | Ozon 独立发布 |
+| BTN-CATEGORY-SAVE | 保存当前类目决定 | `.channel-category-decision-form button[type=submit]` | 本地批准 | 动态恢复控件 |
+| BTN-GLOBAL-APPROVE | 批准 Shopee Global 计划 | `.shopee-global-plan-approval-form button[type=submit]` | 本地批准 | 动态恢复控件 |
+| BTN-OBSERVE-ACCEPT | 记录已验证观察警告 | `.oneclick-observation-review-form button[type=submit]` | 本地结案 | 动态结果控件 |
+| BTN-MANUAL-VERIFY | 记录 Kyle 人工验收 | `.manual-verification-form button[type=submit]` | 本地结案 | 动态结果控件 |
+| BTN-READ-RETRY | 重新读取状态/发布条件 | 由 `canonical_next_action` 动态生成 | 只读查询 | 读取失败恢复 |
+
+本轮评审必须覆盖上述所有按钮。任何以后新增的发布区域按钮都必须先加入本表，再允许实现。
+
+## 16. 每个按钮背后的完整代码逻辑
+
+### 16.1 通用调用分层
+
+```mermaid
+flowchart LR
+    B["可见按钮"] --> L["DOM click/submit listener"]
+    L --> V["前端本地校验"]
+    V --> H["HTTP 请求"]
+    H --> S["modules/products/server.py 路由"]
+    S --> D["服务端身份与计划复核"]
+    D --> TX["SQLite 事务/持久 attempt"]
+    TX --> W["worker / adapter"]
+    W --> M["妙手 API 或本地结案"]
+    M --> R["持久 receipt/status"]
+    R --> Q["GET status 轮询"]
+    Q --> UI["本轮执行状态"]
+```
+
+任何按钮文档必须同时说明 `B/L/V/H/S/D/TX/W/M/R/Q/UI`；只说明路由或只说明 UI 均不算完整。
+
+### 16.2 BTN-PLAN-APPROVE：批准当前发布计划
+
+| 项 | 当前实现 |
+| --- | --- |
+| 监听器 | `#releasePlanForm submit` → `approveReleasePlan()` |
+| 点击前条件 | `eligible_for_plan_approval=true`；存在 `plan.plan_id`；未在提交 |
+| 请求 | `POST /api/product-workspace/release-plan/approve` |
+| body | `currentReleaseBody({approved_by:"Kyle", user_approved:true})`；含 offer、seller SKU、精确 targets、plan ID、confirmation token |
+| 服务端入口 | `modules/products/server.py::_approve_release_plan_locally` |
+| 外部写入 | `0`；只保存本地不可变计划批准事实 |
+| 成功反馈 | dashboard 重载；“当前 ReleasePlan 已由 Kyle 批准并持久化；没有发生外部写入。” |
+| 失败反馈 | 使用服务端 dashboard 重载 blocker；显示具体错误和“刷新后重新核对计划” |
+| 对其他按钮影响 | 成功后显示 BTN-COLLECTBOX、BTN-PUBLISH-TK、BTN-PUBLISH-SP、BTN-PUBLISH-OZ |
+
+禁用原因依次为：已批准无需重复操作、正在批准、计划当前 blocker。禁用控件必须把原因显示在可见状态区；不能只写入 `data-disabled-reason`。
+
+### 16.3 BTN-COLLECTBOX：导入/重新导入采集箱
+
+```mermaid
+sequenceDiagram
+    actor Kyle
+    participant UI as "runCollectboxPrimaryAction"
+    participant API as "/collectbox-action/start"
+    participant Store as "Collectbox action ledger"
+    participant Miaoshou as "妙手采集箱 API"
+    Kyle->>UI: 点击导入或重新导入
+    UI->>API: POST exact plan identity
+    API->>Store: 创建新 action/batch
+    API-->>UI: RUNNING projection
+    loop 直到终态
+      UI->>API: GET /collectbox-action/status
+      API-->>UI: TikTok/Shopee 与逐站结果
+    end
+    Note over Miaoshou: 允许保留旧草稿；新批次使用最新草稿
+```
+
+| 项 | 当前实现 |
+| --- | --- |
+| 监听器 | click → `runCollectboxPrimaryAction()` |
+| 前端准入 | 有 identity、projection；不在 posting；`start_allowed=true`；next action 为 `start_collectbox_action` 或 `restart_collectbox_action` |
+| 首次 body | `confirm_collectbox_action=true`、`approved_by=Kyle`、offer、plan、revision、payload digest、confirmation token、targets digest |
+| 重开 body 增量 | `restart_collectbox_action=true`、浏览器生成 `reimport_request_id` |
+| 请求 | `POST /api/product-workspace/collectbox-action/start` |
+| 服务端入口 | `_start_collectbox_action()` |
+| 状态读取 | `GET /collectbox-action/preview`；RUNNING 后轮询 `GET /collectbox-action/status` |
+| 外部动作 | 分别创建/更新 TikTok 与 Shopee 妙手采集箱草稿；不是正式发布到店铺 |
+| 成功后 | 按平台显示结果；TikTok 额外显示逐站成功/失败；按钮变为“重新导入…” |
+| 部分失败 | 成功站点保留；失败站点显示原因；允许明确创建下一批次 |
+| 读取失败 | 显示“导入状态读取失败”；继续只读轮询，不伪造终态 |
+| 快速双击 | `posting=true` 时第二次不发 POST；必须有可见“正在导入”反馈 |
+
+按钮文字完整变体：
+
+| 条件 | 文字 | 是否可点 | 辅助状态 |
+| --- | --- | --- | --- |
+| 尚未取得 preview | 正在读取妙手采集箱状态 | 否 | 正在读取 TikTok 与 Shopee 状态 |
+| READY | 导入 TikTok / Shopee 妙手采集箱 | 是 | 点击一次，分别导入 |
+| RUNNING | 正在导入妙手采集箱 | 否 | 页面只读同一持久任务 |
+| SUCCEEDED/PARTIAL_FAILED 且可重开 | 重新导入 TikTok / Shopee 妙手采集箱 | 是 | 新批次；旧草稿保留 |
+| 合同/身份阻断 | 暂不可导入妙手采集箱 | 否 | 服务端稳定错误码对应文案 |
+
+### 16.4 三个平台发布按钮的公共当前代码
+
+三个按钮目前都进入 `publishPlatformBatch(endpoint, platformName)`：
+
+1. 读取 `oneClickExecution.identity`。
+2. `currentReleaseBody({confirm_publish:true})` 生成请求体。
+3. 设置全局 `releaseSubmitting=true`、`oneClickExecution.posting=true`。
+4. `boundedJsonFetch()` 发送 POST。
+5. 只接受 HTTP `202`、`accepted=true`、`external_writes_performed=[]`。
+6. 校验 `oneclick-release-status/v1` job。
+7. 保存到全局 `oneClickExecution.job`。
+8. 立即调用 `scheduleOneClickStatusPoll()`。
+9. POST 错误时显示“本次已结束；可以再次点击一键发布”。
+
+当前缺陷：第 3、7、8 步是三个平台共享的前端状态；目标设计必须改为每平台独立状态对象。
+
+公共请求体当前字段：
+
+| 字段 | 来源 | 客户端能否自定义业务内容 |
+| --- | --- | --- |
+| `offer_id` | dashboard product | 否 |
+| `seller_sku` | dashboard candidate | 否 |
+| `publication_targets` | 当前本地选择 | 只能回显；服务端必须收窄到按钮平台 |
+| `plan_id` | approved ReleasePlan | 否 |
+| `confirmation_token` | approved ReleasePlan | 否 |
+| `confirm_publish` | 固定 literal `true` | 否 |
+
+客户端不得传入妙手 detail ID、shop ID、API payload、价格覆盖、类目覆盖、adapter command 或 receipt。
+
+### 16.5 BTN-PUBLISH-TK：发布 TikTok
+
+| 项 | 当前实现/目标约束 |
+| --- | --- |
+| 监听器 | click → `runTiktokReleaseAction()` → `publishSelectedTargets()` |
+| 请求 | `POST /api/product-workspace/publish-tiktok` |
+| 服务端入口 | `_start_tiktok_release()` |
+| 当前额外准入 | 最新 collectbox projection 中 `TIKTOK publishable=true` |
+| 服务端精确目标 | 当前已批准 TikTok 六站；不得混入 Shopee/Ozon |
+| attempt | 每次明确点击创建新的 TikTok attempt；同平台非终态时只返回当前 attempt |
+| worker | 按目标独立准备与提交；单站失败继续下一站 |
+| 外部动作 | 妙手站点草稿/正式任务及 `save_move_collect_task` 路径，按批准计划写价格、类目等已绑定字段 |
+| 结果 | 每站独立：妙手接受、提交前失败、结果不确定、未提交 |
+| 官方回读 | 当前版本不等待；“妙手接受”不等于店铺上架成功 |
+| 其他平台 | TikTok posting/status 不得禁用 Shopee/Ozon |
+
+按钮可用公式目标：
+
+```text
+enabled = plan_approved
+       && selected_tiktok_target_count > 0
+       && current_tiktok_collectbox_proof_ready
+       && !tiktok_current_attempt_nonterminal
+```
+
+历史状态与最近终态结果不得进入该公式。
+
+### 16.6 BTN-PUBLISH-SP：发布 Shopee 全球商品
+
+| 项 | 当前实现/目标约束 |
+| --- | --- |
+| 监听器 | click → `runShopeeGlobalReleaseAction()` |
+| 请求 | `POST /api/product-workspace/publish-shopee-global` |
+| 服务端入口 | `_start_shopee_global_release()` |
+| 精确范围 | 只创建 Shopee 全球商品；不发布各国家站点 |
+| 输入 | approved Shopee title/description/images/models/logistics/price/policy 的 server-owned command |
+| attempt | 每次点击是新的 Shopee attempt；与 TikTok/Ozon 分离 |
+| 外部动作 | 当前版本通过妙手创建/更新全球商品，不调用原 Shopee direct publish 路径 |
+| 结果文案 | 只能说妙手已接受全球商品任务；不得说各站点已发布 |
+| 其他平台 | Shopee 任意结果不得禁用 TikTok/Ozon |
+
+### 16.7 BTN-PUBLISH-OZ：发布 Ozon
+
+| 项 | 当前实现/目标约束 |
+| --- | --- |
+| 监听器 | click → `runOzonReleaseAction()` |
+| 请求 | `POST /api/product-workspace/publish-ozon` |
+| 服务端入口 | `_start_ozon_release()` |
+| 精确范围 | 只包含 `ozon:RU` |
+| attempt | 每次点击是新的 Ozon attempt；与 TikTok/Shopee 分离 |
+| 外部动作 | 通过妙手 Ozon 发布路径；不调用 TikTok/Shopee |
+| 输入缺失 | 只禁用 Ozon 并给出下一步；不得扩大为整页阻断 |
+| 其他平台 | Ozon posting/status 不得禁用 TikTok/Shopee |
+
+### 16.8 动态本地批准与结案按钮
+
+| 控件 | 触发函数 | HTTP | 外部写入 | 结果 |
+| --- | --- | --- | --- | --- |
+| BTN-CATEGORY-SAVE | `submitShopeeCategoryDecision()` | channel category approval route | 0 | 保存当前类目决定；重新计算当前输入 |
+| BTN-GLOBAL-APPROVE | `submitShopeeGlobalPlanApproval()` | `/shopee-global-plan-approval` | 0 | 保存当前 Global 计划批准 |
+| BTN-OBSERVE-ACCEPT | `submitOneClickObservationAcceptance()` | `/release-target/manual-verify` | 0 | 把已验证 warning 从人工待验收结案；不重发 |
+| BTN-MANUAL-VERIFY | `submitManualTargetVerification()` | `/release-target/manual-verify` | 0 | 保存 Kyle 的店铺人工核对；不重发 |
+| BTN-READ-RETRY | `retryOneClickReadOnly()` 或 preview/status GET | GET only | 0 | 重新读取，不创建 attempt |
+
+这些按钮不得被三个平台发布按钮隐式代点。发布、批准、人工验收、只读刷新必须保持可区分的审计动作。
+
+## 17. “本轮执行状态”完整变体
+
+### 17.1 “本轮”归属规则
+
+```mermaid
+stateDiagram-v2
+    [*] --> NoAttempt: 页面尚未显式点击
+    NoAttempt --> CurrentNonterminal: 点击并创建 attempt N
+    CurrentNonterminal --> CurrentTerminal: attempt N 结束
+    CurrentTerminal --> CurrentNonterminal: 再次点击创建 attempt N+1
+    CurrentTerminal --> History: N+1 创建成功时
+    History --> [*]: 只在审计入口读取
+```
+
+关键规则：`CurrentTerminal` 仍必须显示在“本轮执行状态”。当前代码的 `isCurrentOneClickAttempt()` 把 terminal 判为非本轮，是本次已确认 Bug 的直接前端根因。
+
+### 17.2 顶部摘要变体
+
+| 编号 | 页面条件 | 必须显示的摘要 | 禁止显示 |
+| --- | --- | --- | --- |
+| ST-000 | 没有 attempt | 尚未开始发布；请选择平台 | “尚无服务端店铺状态”作为含糊终态 |
+| ST-010 | POST 发送中 | 正在创建 `{platform}` 发布任务 | 已发布成功 |
+| ST-020 | 202 已接受 | `{platform}` 批次已接受，正在读取结果 | 店铺已上架 |
+| ST-030 | 有 PENDING/PREPARING | 本轮正在准备：`n/m` | 历史失败提示 |
+| ST-040 | 有 DISPATCHING | 本轮正在提交到妙手：`n/m` | 自动重试承诺 |
+| ST-100 | 全部妙手接受 | 本轮已结束：`n` 个妙手已接受 | `n` 个店铺发布成功 |
+| ST-110 | 混合终态 | 本轮已结束：`a` 接受、`b` 未确认、`c` 未发布 | 尚无服务端状态 |
+| ST-120 | 全部提交前失败 | 本轮已结束：`n` 个未发布 | 店铺失败但可以误认为未点击 |
+| ST-130 | 全部结果未知 | 本轮已结束：`n` 个结果未确认 | 自动重发中 |
+| ST-200 | POST 明确未创建 | 本次未创建发布任务：`reason` | 把旧 attempt 当本轮 |
+| ST-210 | POST 响应未知、GET 找到 | 已恢复本轮 `{platform}` 批次 | 再创建一个 attempt |
+| ST-220 | POST 响应未知、GET 未找到 | 暂无法确认任务是否创建；只读复核中 | “未发送任何请求” |
+| ST-230 | status GET 失败 | 暂时无法读取本轮状态；下面为最后已知状态 | 清空所有卡片 |
+| ST-300 | 同平台仍执行又点击 | `{platform}` 当前批次仍在执行，请等待本轮结束 | 跳转、聚焦或创建第二批次 |
+
+### 17.3 单目标卡片变体
+
+| 服务端 status | 标题 | 解释 | 是否代表店铺上架 |
+| --- | --- | --- | --- |
+| `PENDING` | 等待准备 | worker 尚未准备 command | 否 |
+| `PREPARING` | 准备中 | 正在生成/校验 server-owned command | 否 |
+| `READY` | 可执行 | 已具备当前 attempt 输入 | 否 |
+| `DISPATCHING` | 正在提交到妙手 | 外部调用边界已进入 | 否 |
+| `SUCCEEDED` | 妙手已接受提交 | 仅表示妙手返回接受且本地 receipt 已保存 | 否 |
+| `SUCCEEDED_MANUAL_REVIEW` | 妙手已接受，待人工核对 | 有 warning；不自动重发 | 否 |
+| `SUBMITTED_UNVERIFIED` | 妙手已接受，未做官方回读 | 当前 API-less 目标常见终态 | 否 |
+| `FAILED_PRE_SUBMIT` | 本次未发布 | 已证明外部写入为 0 | 否 |
+| `RECONCILIATION_REQUIRED` | 本次结果未确认 | 可能已经写入；本轮不自动重发 | 未知 |
+| `BLOCKED_AUTH` | 本次未发布：认证不可用 | 该目标 0 写 | 否 |
+| `BLOCKED_CAPABILITY` | 本次未发布：能力/输入不可用 | 该目标 0 写 | 否 |
+| `BLOCKED_SOURCE_IDENTITY` | 本次未发布：来源身份不成立 | 该目标 0 写 | 否 |
+| `BLOCKED_SKU_LINEAGE` | 本次未发布：SKU 血缘不成立 | 该目标 0 写 | 否 |
+
+### 17.4 当前 Offer 的真实对照
+
+当前服务端最近 TikTok attempt 的事实是：
+
+| 目标 | 终态 | 真正含义 |
+| --- | --- | --- |
+| `tiktok:LH_PH` | `SUBMITTED_UNVERIFIED` | 妙手接受；未证明店铺上架 |
+| `tiktok:MX` | `SUBMITTED_UNVERIFIED` | 妙手接受；未证明店铺上架 |
+| `tiktok:LH_MY` | `RECONCILIATION_REQUIRED` | 调用后结果不确定 |
+| `tiktok:LH_TH` | `RECONCILIATION_REQUIRED` | 调用后结果不确定 |
+| `tiktok:LH_VN` | `RECONCILIATION_REQUIRED` | 调用后结果不确定 |
+| `tiktok:GB` | `BLOCKED_CAPABILITY` | 本轮未提交 |
+
+因此真实摘要应是：**本轮已结束：2 个妙手已接受，3 个结果未确认，1 个未发布。** 当前页面显示“尚无服务端店铺状态”不符合已知事实。
+
+## 18. 可视化测试实现要求
+
+完整用例表见 [VISUAL_TEST_PLAN.md](VISUAL_TEST_PLAN.md)。这里冻结测试架构。
+
+```mermaid
+flowchart TB
+    Fixture["场景 fixture：API 响应序列"] --> Server["真实本地 HTTP handler"]
+    Server --> TempDB["每用例独立 SQLite"]
+    Browser["真实 Chromium"] --> Click["点击真实可见按钮"]
+    Click --> Server
+    Browser --> Shot["每个状态变化截图"]
+    Browser --> Assert["文字/可用性/ARIA/布局断言"]
+    Server --> Manifest["请求、响应、持久状态摘要"]
+    Shot --> Evidence["证据包"]
+    Assert --> Evidence
+    Manifest --> Evidence
+```
+
+### 18.1 不允许替代真实点击的测试方式
+
+以下测试可以保留，但不能单独作为页面验收：
+
+- 直接调用 `runTiktokReleaseAction()`；
+- 直接修改 `oneClickExecution.job`；
+- 只执行 jsdom；
+- 只断言 HTML 中存在按钮；
+- 只测 server handler；
+- 只测 adapter 返回值。
+
+真实浏览器必须通过按钮的可访问名称定位并 `click()`，再观察实际 HTTP 和页面变化。
+
+### 18.2 截图门禁
+
+每个用例、每个视口至少保存：
+
+1. 点击前；
+2. 点击后立即反馈；
+3. HTTP 接受或拒绝后；
+4. 每个不同 phase；
+5. 最终页面。
+
+相同 phase 的重复轮询不重复截图，避免无意义证据膨胀。截图文件与 `path.json` 中的 phase 顺序必须一一对应。
+
+### 18.3 永久红测
+
+本次已确认缺陷必须先形成：
+
+```text
+Given 最近一次 TikTok attempt 已终态且含 2 接受/3 未确认/1 未发布
+When 页面加载并读取 preview/status
+Then “本轮执行状态”显示精确 2/3/1
+And 六个目标卡片都可见
+And 不显示“尚无服务端店铺状态”
+And 三个平台按钮按各自输入独立可用
+```
+
+该测试修复前必须失败；修复后与发布相关的每次改动都必须重复运行。

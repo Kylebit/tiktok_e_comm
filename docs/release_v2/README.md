@@ -26,7 +26,8 @@
 1. [PRODUCT_REQUIREMENTS.md](PRODUCT_REQUIREMENTS.md)：用户要得到什么、什么明确不做、如何验收。
 2. [ARCHITECTURE.md](ARCHITECTURE.md)：系统边界、平台隔离、数据所有权和状态模型。
 3. [DETAILED_DESIGN.md](DETAILED_DESIGN.md)：按钮、接口、批次、目标状态、错误和并发的精确行为。
-4. [TRACEABILITY.md](TRACEABILITY.md)：每条需求对应的实现位置、测试门禁和当前差距。
+4. [VISUAL_TEST_PLAN.md](VISUAL_TEST_PLAN.md)：真实点击、每条状态路径、截图证据和浏览器门禁。
+5. [TRACEABILITY.md](TRACEABILITY.md)：每条需求对应的实现位置、测试门禁和当前差距。
 
 ## 规范优先级
 
@@ -71,3 +72,5 @@
 1. 同平台 attempt 仍在执行时，重复点击只显示提示；不跳转、不聚焦、不创建第二个并发 attempt。
 2. TikTok 草稿 proof 缺失时保留两步：先重新导入采集箱，再显式点击发布 TikTok。
 3. 历史完整持久化用于审计，但主发布页面不主动提示历史，也不显示历史条数。
+4. 最近一次 attempt 即使已终态仍属于“本轮”；下一次 attempt 创建后才转入历史。
+5. 每个按钮与每个状态变体都必须有真实浏览器点击和截图路径证据。

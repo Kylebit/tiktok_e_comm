@@ -8084,6 +8084,9 @@ async function simplifiedPlatformPublishContract(browser, viewport) {
     if (url.pathname === "/api/product-workspace/collectbox-action/preview") {
       return route.fulfill(jsonResponse(collectboxActionProjection("SUCCEEDED")));
     }
+    if (url.pathname === "/api/product-workspace/collectbox-action/start") {
+      return route.fulfill(jsonResponse(collectboxActionProjection("SUCCEEDED")));
+    }
     if (url.pathname === "/api/product-workspace/publish-tiktok") {
       tiktokAttempt += 1;
       if (tiktokAttempt === 1) {
@@ -8193,17 +8196,68 @@ async function simplifiedPlatformPublishContract(browser, viewport) {
     check(await tiktok.isEnabled(), `simple publish ${suffix}: failed TikTok can retry`);
     await screenshot("failure-and-independent-success");
 
+    const siblingsBeforeTiktokRetry = await page.evaluate(() => ({
+      shopee: document.querySelector(
+        '[data-platform-publish-result="SHOPEE_GLOBAL"]',
+      )?.outerHTML,
+      ozon: document.querySelector(
+        '[data-platform-publish-result="OZON"]',
+      )?.outerHTML,
+    }));
     await tiktok.click();
     await page.waitForFunction(() => (
       document.querySelector('[data-platform-publish-result="TIKTOK"]')
         ?.textContent?.includes("发布成功")
     ));
+    const siblingsAfterTiktokRetry = await page.evaluate(() => ({
+      shopee: document.querySelector(
+        '[data-platform-publish-result="SHOPEE_GLOBAL"]',
+      )?.outerHTML,
+      ozon: document.querySelector(
+        '[data-platform-publish-result="OZON"]',
+      )?.outerHTML,
+    }));
+    check(
+      JSON.stringify(siblingsAfterTiktokRetry)
+        === JSON.stringify(siblingsBeforeTiktokRetry),
+      `simple publish ${suffix}: TikTok retry leaves sibling cards byte-for-byte unchanged`,
+      { siblingsBeforeTiktokRetry, siblingsAfterTiktokRetry },
+    );
     await ozon.click();
     await page.waitForFunction(() => (
       document.querySelector('[data-platform-publish-result="OZON"]')
         ?.textContent?.includes("发布成功")
     ));
     await screenshot("all-success-after-retry");
+
+    const siblingsBeforeTiktokReimport = await page.evaluate(() => ({
+      shopee: document.querySelector(
+        '[data-platform-publish-result="SHOPEE_GLOBAL"]',
+      )?.outerHTML,
+      ozon: document.querySelector(
+        '[data-platform-publish-result="OZON"]',
+      )?.outerHTML,
+    }));
+    const collectboxReimport = page.locator("#collectboxActionButton");
+    await collectboxReimport.click();
+    await page.waitForFunction(() => (
+      document.querySelector("#collectboxActionButton")?.disabled === false
+    ));
+    const siblingsAfterTiktokReimport = await page.evaluate(() => ({
+      shopee: document.querySelector(
+        '[data-platform-publish-result="SHOPEE_GLOBAL"]',
+      )?.outerHTML,
+      ozon: document.querySelector(
+        '[data-platform-publish-result="OZON"]',
+      )?.outerHTML,
+    }));
+    check(
+      JSON.stringify(siblingsAfterTiktokReimport)
+        === JSON.stringify(siblingsBeforeTiktokReimport),
+      `simple publish ${suffix}: collectbox reimport leaves sibling cards byte-for-byte unchanged`,
+      { siblingsBeforeTiktokReimport, siblingsAfterTiktokReimport },
+    );
+    await screenshot("sibling-cards-stable-after-reimport");
 
     const statusReads = requests.filter((row) => (
       row.path === "/api/product-workspace/publish-status"

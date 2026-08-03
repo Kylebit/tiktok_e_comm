@@ -549,6 +549,7 @@ def test_real_chromium_covers_all_simple_publish_paths_with_screenshots(
             "publishing",
             "failure-and-independent-success",
             "all-success-after-retry",
+            "sibling-cards-stable-after-reimport",
         )
     }
     assert {path.name for path in artifacts.glob("*.png")} == expected

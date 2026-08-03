@@ -336,9 +336,33 @@
     finalDashboardRefreshed: false,
   };
   const platformPublish = {
-    TIKTOK: { state: "IDLE", message: "", failedTargets: [] },
-    SHOPEE_GLOBAL: { state: "IDLE", message: "", failedTargets: [] },
-    OZON: { state: "IDLE", message: "", failedTargets: [] },
+    TIKTOK: {
+      state: "IDLE",
+      message: "",
+      failedTargets: [],
+      generation: 0,
+      contextKey: "",
+      identity: null,
+      controller: null,
+    },
+    SHOPEE_GLOBAL: {
+      state: "IDLE",
+      message: "",
+      failedTargets: [],
+      generation: 0,
+      contextKey: "",
+      identity: null,
+      controller: null,
+    },
+    OZON: {
+      state: "IDLE",
+      message: "",
+      failedTargets: [],
+      generation: 0,
+      contextKey: "",
+      identity: null,
+      controller: null,
+    },
   };
   const platformPublishNames = {
     TIKTOK: "TikTok",
@@ -727,13 +751,48 @@
     oneClickExecution.failureAction = null;
     oneClickExecution.controller = null;
     oneClickExecution.finalDashboardRefreshed = false;
-    Object.values(platformPublish).forEach((result) => {
-      result.state = "IDLE";
-      result.message = "";
-      result.failedTargets = [];
-    });
     if (wasPosting) releaseSubmitting = false;
     resetShopeeGlobalPlanReview();
+  }
+
+  // The three platform buttons share only this immutable approved-product
+  // snapshot identity. Their request generations, controllers and visible
+  // results remain platform-owned and never inherit one-click job state.
+  function approvedPublishSnapshotIdentity(data) {
+    return oneClickIdentity(data);
+  }
+
+  function resetPlatformPublish(platformKey) {
+    const result = platformPublish[platformKey];
+    if (!result) return;
+    result.generation += 1;
+    if (result.controller) result.controller.abort();
+    result.state = "IDLE";
+    result.message = "";
+    result.failedTargets = [];
+    result.contextKey = "";
+    result.identity = null;
+    result.controller = null;
+  }
+
+  function resetAllPlatformPublish() {
+    Object.keys(platformPublish).forEach(resetPlatformPublish);
+  }
+
+  function ensureApprovedPublishSnapshotContexts(data) {
+    const identity = approvedPublishSnapshotIdentity(data);
+    Object.keys(platformPublish).forEach((platformKey) => {
+      const result = platformPublish[platformKey];
+      if (!identity) {
+        if (result.contextKey) resetPlatformPublish(platformKey);
+        return;
+      }
+      if (result.contextKey !== identity.key) {
+        resetPlatformPublish(platformKey);
+        result.contextKey = identity.key;
+      }
+      result.identity = identity;
+    });
   }
 
   function collectboxActionIdentity(data) {
@@ -8607,15 +8666,19 @@
   }
 
   async function publishPlatformBatch(endpoint, platformName, platformKey) {
-    const identity = oneClickExecution.identity;
+    const result = platformPublish[platformKey];
+    const identity = result?.identity;
     if (
       !currentData
       || !identity
-      || platformPublish[platformKey]?.state === "PUBLISHING"
+      || result?.state === "PUBLISHING"
     ) return;
-    const generation = oneClickExecution.generation;
+    result.generation += 1;
+    const generation = result.generation;
+    if (result.controller) result.controller.abort();
+    const controller = new AbortController();
+    result.controller = controller;
     const body = currentReleaseBody({ confirm_publish: true });
-    const result = platformPublish[platformKey];
     result.state = "PUBLISHING";
     result.message = `${platformName} 发布中`;
     result.failedTargets = [];
@@ -8632,6 +8695,7 @@
             "Content-Type": "application/json",
           },
           body: JSON.stringify(body),
+          controller,
         },
         ONECLICK_LOCAL_POST_TIMEOUT_MS,
         `${platformName} 发布任务创建`,
@@ -8650,14 +8714,14 @@
         error.payload = payload;
         throw error;
       }
-      if (generation !== oneClickExecution.generation) return;
+      if (generation !== result.generation) return;
       result.state = "SUCCEEDED";
       result.message = String(payload.message || `${platformName} 发布成功`);
       result.failedTargets = [];
       $("#publishRunMessage").textContent = result.message;
       showError("");
     } catch (error) {
-      if (generation !== oneClickExecution.generation) return;
+      if (generation !== result.generation) return;
       const message = friendlyError(error.message);
       result.state = "FAILED";
       result.message = message.startsWith(platformName)
@@ -8669,7 +8733,8 @@
       showError(message);
       $("#publishRunMessage").textContent = result.message;
     } finally {
-      if (generation === oneClickExecution.generation) {
+      if (generation === result.generation) {
+        if (result.controller === controller) result.controller = null;
         renderOneClickExecution(currentData);
         updateReleaseControls(currentData || {});
       }
@@ -8732,6 +8797,7 @@
     // dashboard render so the three platform buttons cannot be visible while
     // their click handlers still have a null identity and silently do nothing.
     ensureOneClickExecution(data);
+    ensureApprovedPublishSnapshotContexts(data);
     // Render the four-state cards from the authoritative dashboard itself.
     // Do not rely on a later collectbox/category preview request to happen to
     // repaint this panel: a fully persisted approved product may require no
@@ -8747,6 +8813,7 @@
 
   function clearCurrentApprovalContext() {
     resetOneClickExecution();
+    resetAllPlatformPublish();
     resetCollectboxAction();
     currentData = null;
     loadedQueueKey = "";

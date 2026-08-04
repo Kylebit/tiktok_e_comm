@@ -7506,14 +7506,9 @@
         : "批准当前发布计划后，系统会显示唯一可执行的下一步。";
       return;
     }
-    const tiktokCollected = Boolean(
-      collectboxAction.projection?.action?.platforms?.some(
-        (row) => row.platform === "TIKTOK" && row.publishable === true,
-      ),
-    );
-    button.disabled = (
-      platformPublish.TIKTOK.state === "PUBLISHING" || !tiktokCollected
-    );
+    // The server owns the final publish precondition. A terminal import
+    // warning must remain actionable so retry can return the precise reason.
+    button.disabled = platformPublish.TIKTOK.state === "PUBLISHING";
     shopeeButton.disabled = (
       platformPublish.SHOPEE_GLOBAL.state === "PUBLISHING"
     );
@@ -7521,9 +7516,7 @@
     button.textContent = "发布 TikTok";
     shopeeButton.textContent = "发布 Shopee 全球商品";
     ozonButton.textContent = "发布 Ozon";
-    button.dataset.disabledReason = tiktokCollected
-      ? ""
-      : "请先完成 TikTok 妙手采集箱导入。";
+    button.dataset.disabledReason = "";
     message.textContent =
       "TikTok、Shopee 全球商品和 Ozon 为三个独立任务；一个平台的状态不会阻挡另外两个。";
     renderCollectboxAction(data);

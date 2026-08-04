@@ -5779,12 +5779,12 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
           "导入 TikTok / Shopee 妙手采集箱",
         )
         && await page.locator("#releasePrimaryActionButton").isVisible()
-        && !(await page.locator("#releasePrimaryActionButton").isEnabled())
+        && await page.locator("#releasePrimaryActionButton").isEnabled()
         && await page.locator("#shopeeGlobalReleaseButton").isVisible()
         && await page.locator("#shopeeGlobalReleaseButton").isEnabled()
         && await page.locator("#ozonReleaseButton").isVisible()
         && await page.locator("#ozonReleaseButton").isEnabled(),
-      `collectbox ${viewport.width}: TikTok waits only for TikTok collectbox while Shopee and Ozon remain actionable`,
+      `collectbox ${viewport.width}: all platform buttons stay actionable while the server owns preconditions`,
       {
         label: await primary.innerText(),
         enabled: await primary.isEnabled(),
@@ -8400,6 +8400,79 @@ async function simplifiedPlatformPublishContract(browser, viewport) {
   }
 }
 
+async function tiktokTerminalCollectboxRemainsActionableContract(browser) {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await context.newPage();
+  const requests = [];
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+  });
+  await page.route("**/*", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.origin !== baseUrl) return route.abort("blockedbyclient");
+    if (!url.pathname.startsWith("/api/")) return route.continue();
+    requests.push({ method: request.method(), path: url.pathname });
+    if (url.pathname === "/api/product-workspace/dashboard") {
+      return route.fulfill(jsonResponse(oneClickDashboard({ offerId: "3838619319" })));
+    }
+    if (url.pathname === "/api/product-workspace/collectbox-action/preview") {
+      return route.fulfill(jsonResponse(collectboxActionProjection("RECONCILIATION_PENDING")));
+    }
+    if (url.pathname === "/api/product-workspace/publish-tiktok") {
+      return route.fulfill(jsonResponse({
+        ok: false,
+        success: false,
+        platform: "TIKTOK",
+        message: "TikTok 妙手采集身份不完整，请先重新导入后重试发布。",
+        retryable: true,
+      }, 409));
+    }
+    return route.fulfill(jsonResponse({ ok: false }, 404));
+  });
+  try {
+    await page.goto(`${baseUrl}/product-workspace?offer_id=3838619319`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page.waitForFunction(() => (
+      document.querySelector("#releasePrimaryActionPanel")?.hidden === false
+    ));
+    const tiktok = page.locator("#releasePrimaryActionButton");
+    const enabled = await tiktok.isEnabled();
+    check(
+      enabled,
+      "terminal collectbox evidence warning must not make the TikTok button inert",
+    );
+    if (enabled) {
+      await tiktok.click();
+      await page.waitForFunction(() => (
+        document.querySelector('[data-platform-publish-result="TIKTOK"]')
+          ?.textContent?.includes("重新导入")
+      ));
+      check(
+        requests.some((row) => (
+          row.method === "POST"
+          && row.path === "/api/product-workspace/publish-tiktok"
+        )),
+        "actionable TikTok button delegates the final decision to the server",
+        requests,
+      );
+    }
+    const unexpectedErrors = errors.filter(
+      (entry) => !entry.includes("status of 409 (Conflict)"),
+    );
+    check(
+      unexpectedErrors.length === 0,
+      "terminal collectbox actionability has no unexpected browser errors",
+      unexpectedErrors,
+    );
+  } finally {
+    await context.close();
+  }
+}
+
 (async () => {
   const browser = await chromium.launch({
     headless: true,
@@ -8420,6 +8493,19 @@ async function simplifiedPlatformPublishContract(browser, viewport) {
         browser,
         { width: 390, height: 844 },
       );
+      process.stdout.write(`${JSON.stringify({
+        ok: failures.length === 0,
+        failures,
+        results,
+      }, null, 2)}\n`);
+      if (failures.length) process.exitCode = 1;
+      return;
+    }
+    if (
+      process.env.ORBIT_BROWSER_CONTRACT_ONLY
+        === "tiktok-terminal-collectbox-actionable"
+    ) {
+      await tiktokTerminalCollectboxRemainsActionableContract(browser);
       process.stdout.write(`${JSON.stringify({
         ok: failures.length === 0,
         failures,

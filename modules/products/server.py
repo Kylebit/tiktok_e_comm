@@ -9614,6 +9614,71 @@ def _approved_shopee_global_publish_facts(payload: dict) -> dict:
         or not math.isfinite(resolved_weight_kg)
     ):
         raise ValueError("approved Shopee images or parcel facts are invalid")
+    selected_skus = product_facts.get("selected_skus")
+    selected_keys = product_facts.get("selected_sku_keys")
+    label_overrides = product_facts.get("sku_label_overrides")
+    sku_lineage = payload.get("sku_lineage")
+    assignment = (
+        sku_lineage.get("assignment")
+        if isinstance(sku_lineage, dict)
+        else None
+    )
+    model_rows = (
+        assignment.get("model_skus")
+        if isinstance(assignment, dict)
+        else None
+    )
+    if (
+        not isinstance(selected_skus, list)
+        or not selected_skus
+        or not isinstance(selected_keys, list)
+        or not isinstance(label_overrides, dict)
+        or not isinstance(model_rows, list)
+        or len(selected_skus) != len(selected_keys)
+        or len(model_rows) != len(selected_keys)
+    ):
+        raise ValueError("approved Shopee variant facts are incomplete")
+    model_by_key: dict[str, str] = {}
+    for row in model_rows:
+        if not isinstance(row, dict):
+            raise ValueError("approved Shopee model lineage is invalid")
+        key = row.get("variant_key")
+        model_sku = row.get("model_sku")
+        if (
+            type(key) is not str
+            or not key.strip()
+            or type(model_sku) is not str
+            or not model_sku.strip()
+            or key in model_by_key
+        ):
+            raise ValueError("approved Shopee model lineage is invalid")
+        model_by_key[key] = model_sku.strip()
+    variants: list[dict[str, str]] = []
+    for index, row in enumerate(selected_skus):
+        if not isinstance(row, dict):
+            raise ValueError("approved Shopee variant facts are invalid")
+        key = row.get("key")
+        label = row.get("label")
+        if (
+            type(key) is not str
+            or key != selected_keys[index]
+            or type(label) is not str
+            or not label.strip()
+            or label_overrides.get(key) != label
+            or key not in model_by_key
+            or (
+                row.get("model_sku") is not None
+                and row.get("model_sku") != model_by_key[key]
+            )
+        ):
+            raise ValueError("approved Shopee variant binding is invalid")
+        variants.append({
+            "variant_key": key,
+            "option_label": label,
+            "model_sku": model_by_key[key],
+        })
+    if len({row["model_sku"] for row in variants}) != len(variants):
+        raise ValueError("approved Shopee model SKUs are not unique")
     return {
         "seller_sku": seller_sku.strip(),
         "region": region,
@@ -9624,6 +9689,7 @@ def _approved_shopee_global_publish_facts(payload: dict) -> dict:
         "images": [row["image_url"] for row in ordered_images],
         "package_cm": package_cm,
         "weight_kg": resolved_weight_kg,
+        "variants": variants,
         # The immutable plan does not yet carry a stock policy.  CNSC accepts
         # a positive seller stock; use one rather than fabricating a larger
         # commercial quantity from an unrelated TikTok draft.

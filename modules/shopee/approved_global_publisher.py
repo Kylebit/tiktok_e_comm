@@ -53,6 +53,23 @@ def approved_global_detail(facts: Mapping[str, object]) -> dict[str, object]:
     dimensions = [_positive_number(value, "package dimension") for value in package_cm]
     if isinstance(quantity, bool) or type(quantity) is not int or quantity <= 0:
         raise ValueError("approved Shopee quantity is invalid")
+    raw_variants = facts.get("variants")
+    if raw_variants is None:
+        raw_variants = [{
+            "model_sku": seller_sku,
+            "option_label": seller_sku,
+        }]
+    if not isinstance(raw_variants, list) or not raw_variants:
+        raise ValueError("approved Shopee variants are invalid")
+    variants: list[tuple[str, str]] = []
+    for row in raw_variants:
+        if not isinstance(row, Mapping):
+            raise ValueError("approved Shopee variants are invalid")
+        model_sku = _text(row.get("model_sku"), "model SKU")
+        option_label = _text(row.get("option_label"), "variation option")
+        variants.append((model_sku, option_label))
+    if len({model_sku for model_sku, _label in variants}) != len(variants):
+        raise ValueError("approved Shopee model SKUs are not unique")
     return {
         "title": title,
         "description": description,
@@ -65,7 +82,8 @@ def approved_global_detail(facts: Mapping[str, object]) -> dict[str, object]:
         },
         "skus": [
             {
-                "seller_sku": seller_sku,
+                "seller_sku": model_sku,
+                "variation_option": option_label,
                 "inventory": [{"quantity": quantity}],
                 "sku_weight": {"value": weight_kg, "unit": "KILOGRAM"},
                 "sku_dimensions": {
@@ -74,6 +92,7 @@ def approved_global_detail(facts: Mapping[str, object]) -> dict[str, object]:
                     "height": dimensions[2],
                 },
             }
+            for model_sku, option_label in variants
         ],
     }
 
@@ -88,11 +107,15 @@ def publish_approved_global(facts: Mapping[str, object]) -> dict[str, object]:
     from modules.shopee.auth import ensure_shop_token
     from modules.shopee.publish import (
         _create_global_item,
+        _merchant_token,
         _reference_item,
+        _shop_meta,
         _upload_images,
+        ensure_global_models,
     )
     from modules.shopee.global_sku_map import (
         global_item_id_for_match_key,
+        replace_inexact_global_entry,
         upsert_global_entry,
     )
     from modules.shopee.shops import sync_shop_ids
@@ -109,7 +132,8 @@ def publish_approved_global(facts: Mapping[str, object]) -> dict[str, object]:
     existing_global_item_id = global_item_id_for_match_key(
         _text(facts.get("seller_sku"), "seller SKU")
     )
-    if existing_global_item_id:
+    replaced_inexact_global_item_id: int | None = None
+    if existing_global_item_id and len(detail["skus"]) == 1:
         # A previous click already obtained a Shopee global identity.  The
         # product rule for this button is *create the global product*, not a
         # secondary synchronization system.  Do not turn a safe repeat into
@@ -121,6 +145,38 @@ def publish_approved_global(facts: Mapping[str, object]) -> dict[str, object]:
             "global_item_id": int(existing_global_item_id),
             "model_sku": _text(facts.get("seller_sku"), "seller SKU"),
         }
+    if existing_global_item_id:
+        merchant_id = int(_shop_meta(shop_id, token).get("merchant_id") or 0)
+        if merchant_id <= 0:
+            raise RuntimeError("Shopee merchant context is unavailable")
+        merchant_token = _merchant_token(shop_id, token)
+        first_sku = detail["skus"][0]
+        stock = sum(
+            int(row.get("quantity") or 0)
+            for row in first_sku.get("inventory") or []
+        ) or 1
+        try:
+            ensure_global_models(
+                global_item_id=int(existing_global_item_id),
+                merchant_id=merchant_id,
+                merchant_token=merchant_token,
+                detail=detail,
+                original_price=_positive_number(
+                    facts.get("global_original_price_cny"), "global price"
+                ),
+                stock=stock,
+                create_when_missing=False,
+            )
+        except RuntimeError:
+            replaced_inexact_global_item_id = int(existing_global_item_id)
+        else:
+            return {
+                "ok": True,
+                "flow": "already_created",
+                "global_item_id": int(existing_global_item_id),
+                "model_sku": _text(facts.get("seller_sku"), "seller SKU"),
+                "model_count": len(detail["skus"]),
+            }
     reference = _reference_item(region, shop_id, token)
     image_ids = _upload_images(list(detail["main_images"]))
     if not image_ids:
@@ -144,11 +200,28 @@ def publish_approved_global(facts: Mapping[str, object]) -> dict[str, object]:
     global_item_id = result.get("global_item_id")
     if isinstance(global_item_id, bool) or not str(global_item_id or "").isdigit():
         raise RuntimeError("Shopee did not return a global product identity")
-    upsert_global_entry(
-        str(global_item_id),
-        match_key=_text(facts.get("seller_sku"), "seller SKU"),
-        global_model_sku=_text(facts.get("seller_sku"), "seller SKU"),
-        title=_text(facts.get("title"), "title"),
-        published_regions=[],
-    )
-    return result
+    mapping_kwargs = {
+        "match_key": _text(facts.get("seller_sku"), "seller SKU"),
+        "global_model_sku": _text(facts.get("seller_sku"), "seller SKU"),
+        "title": _text(facts.get("title"), "title"),
+    }
+    if replaced_inexact_global_item_id is not None:
+        replace_inexact_global_entry(
+            str(replaced_inexact_global_item_id),
+            str(global_item_id),
+            **mapping_kwargs,
+        )
+    else:
+        upsert_global_entry(
+            str(global_item_id),
+            **mapping_kwargs,
+            published_regions=[],
+        )
+    return {
+        **result,
+        **(
+            {"replaced_inexact_global_item_id": replaced_inexact_global_item_id}
+            if replaced_inexact_global_item_id is not None
+            else {}
+        ),
+    }

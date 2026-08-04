@@ -1195,18 +1195,40 @@ def _single_variant_label(detail: dict) -> str:
     return "Standard"
 
 
-def ensure_single_global_model(
+def ensure_global_models(
     *,
     global_item_id: int,
     merchant_id: int,
     merchant_token: str,
     detail: dict,
-    model_sku: str,
     original_price: float,
     stock: int,
     create_when_missing: bool = True,
+    tier_name: str = "Variation",
 ) -> dict:
-    """Ensure even a one-option global product has an auditable Model SKU."""
+    """Bind every approved SKU and option label to one Shopee global model."""
+
+    raw_skus = detail.get("skus")
+    if not isinstance(raw_skus, list) or not raw_skus:
+        raise ValueError("Shopee global model variants are unavailable")
+    expected: list[dict[str, object]] = []
+    for index, sku in enumerate(raw_skus):
+        if not isinstance(sku, dict):
+            raise ValueError("Shopee global model variant is invalid")
+        model_sku = str(sku.get("seller_sku") or "").strip()
+        option = str(sku.get("variation_option") or "").strip()
+        if not option:
+            option = _single_variant_label({**detail, "skus": [sku]})
+        if not model_sku or not option:
+            raise ValueError("Shopee global model SKU or option is unavailable")
+        expected.append({
+            "model_sku": model_sku,
+            "option": option[:30],
+            "tier_index": [index],
+        })
+    expected_skus = [str(row["model_sku"]) for row in expected]
+    if len(set(expected_skus)) != len(expected_skus):
+        raise ValueError("Shopee global model SKUs are not unique")
 
     existing = merchant_get(
         "/api/v2/global_product/get_global_model_list",
@@ -1216,44 +1238,46 @@ def ensure_single_global_model(
     )
     models = (existing.get("response") or {}).get("global_model") or []
     if models:
-        model_skus = {
-            str(model.get("global_model_sku") or "").strip()
+        by_sku = {
+            str(model.get("global_model_sku") or "").strip(): model
             for model in models
+            if isinstance(model, dict)
         }
-        if model_skus != {model_sku} or len(models) != 1:
+        if set(by_sku) != set(expected_skus) or len(models) != len(expected):
             raise RuntimeError(
-                f"global item {global_item_id} model SKU mismatch: {sorted(model_skus)}"
+                f"global item {global_item_id} model SKU mismatch: {sorted(by_sku)}"
             )
-        tier_index = models[0].get("tier_index")
-        if (
-            not isinstance(tier_index, (list, tuple))
-            or not tier_index
-            or any(not isinstance(value, int) for value in tier_index)
-        ):
-            raise RuntimeError(
-                f"global item {global_item_id} model tier index is unavailable"
-            )
+        publish_models = []
+        for row in expected:
+            model_sku = str(row["model_sku"])
+            tier_index = by_sku[model_sku].get("tier_index")
+            if (
+                not isinstance(tier_index, (list, tuple))
+                or not tier_index
+                or any(not isinstance(value, int) for value in tier_index)
+            ):
+                raise RuntimeError(
+                    f"global item {global_item_id} model tier index is unavailable"
+                )
+            publish_models.append({
+                "global_model_sku": model_sku,
+                "tier_index": list(tier_index),
+            })
         return {
             "created": False,
             "global_item_id": int(global_item_id),
-            "model_skus": sorted(model_skus),
-            "publish_models": [
-                {
-                    "global_model_sku": model_sku,
-                    "tier_index": list(tier_index),
-                }
-            ],
-            "variant_label": _single_variant_label(detail),
+            "model_skus": expected_skus,
+            "publish_models": publish_models,
+            "variant_labels": [str(row["option"]) for row in expected],
             "legacy_item_sku": False,
         }
 
-    label = _single_variant_label(detail)
     if not create_when_missing:
         return {
             "created": False,
             "global_item_id": int(global_item_id),
             "model_skus": [],
-            "variant_label": label,
+            "variant_labels": [str(row["option"]) for row in expected],
             "legacy_item_sku": True,
         }
     response = merchant_post(
@@ -1262,24 +1286,23 @@ def ensure_single_global_model(
         merchant_token,
         {
             "global_item_id": int(global_item_id),
-            "tier_variation": [
-                {
-                    "name": "Size",
-                    "option_list": [{"option": label}],
-                }
-            ],
+            "tier_variation": [{
+                "name": str(tier_name or "Variation")[:14],
+                "option_list": [
+                    {"option": str(row["option"])} for row in expected
+                ],
+            }],
             "global_model": [
                 {
-                    "tier_index": [0],
-                    "global_model_sku": _english_safe_sku(model_sku),
+                    "tier_index": list(row["tier_index"]),
+                    "global_model_sku": _english_safe_sku(str(row["model_sku"])),
                     "original_price": float(original_price),
-                    "seller_stock": [
-                        {
-                            "location_id": "CNZ",
-                            "stock": int(stock),
-                        }
-                    ],
+                    "seller_stock": [{
+                        "location_id": "CNZ",
+                        "stock": int(stock),
+                    }],
                 }
+                for row in expected
             ],
         },
     )
@@ -1293,36 +1316,73 @@ def ensure_single_global_model(
         {"global_item_id": int(global_item_id)},
     )
     models = (verified.get("response") or {}).get("global_model") or []
-    model_skus = {
-        str(model.get("global_model_sku") or "").strip()
+    by_sku = {
+        str(model.get("global_model_sku") or "").strip(): model
         for model in models
+        if isinstance(model, dict)
     }
-    if model_skus != {model_sku} or len(models) != 1:
+    if set(by_sku) != set(expected_skus) or len(models) != len(expected):
         raise RuntimeError(
-            f"global item {global_item_id} did not expose Model SKU {model_sku}"
+            f"global item {global_item_id} did not expose all approved Model SKUs"
         )
-    tier_index = models[0].get("tier_index")
-    if (
-        not isinstance(tier_index, (list, tuple))
-        or not tier_index
-        or any(not isinstance(value, int) for value in tier_index)
-    ):
-        raise RuntimeError(
-            f"global item {global_item_id} did not expose a model tier index"
-        )
+    publish_models = []
+    for model_sku in expected_skus:
+        tier_index = by_sku[model_sku].get("tier_index")
+        if (
+            not isinstance(tier_index, (list, tuple))
+            or not tier_index
+            or any(not isinstance(value, int) for value in tier_index)
+        ):
+            raise RuntimeError(
+                f"global item {global_item_id} did not expose a model tier index"
+            )
+        publish_models.append({
+            "global_model_sku": model_sku,
+            "tier_index": list(tier_index),
+        })
     return {
         "created": True,
         "global_item_id": int(global_item_id),
-        "model_skus": sorted(model_skus),
-        "publish_models": [
-            {
-                "global_model_sku": model_sku,
-                "tier_index": list(tier_index),
-            }
-        ],
-        "variant_label": label,
+        "model_skus": expected_skus,
+        "publish_models": publish_models,
+        "variant_labels": [str(row["option"]) for row in expected],
         "legacy_item_sku": False,
     }
+
+
+def ensure_single_global_model(
+    *,
+    global_item_id: int,
+    merchant_id: int,
+    merchant_token: str,
+    detail: dict,
+    model_sku: str,
+    original_price: float,
+    stock: int,
+    create_when_missing: bool = True,
+) -> dict:
+    """Ensure even a one-option global product has an auditable Model SKU."""
+    single_detail = {
+        **detail,
+        "skus": [{
+            **((detail.get("skus") or [{}])[0]),
+            "seller_sku": model_sku,
+            "variation_option": _single_variant_label(detail),
+        }],
+    }
+    result = ensure_global_models(
+        global_item_id=global_item_id,
+        merchant_id=merchant_id,
+        merchant_token=merchant_token,
+        detail=single_detail,
+        original_price=original_price,
+        stock=stock,
+        create_when_missing=create_when_missing,
+        tier_name="Size",
+    )
+    result["variant_label"] = result["variant_labels"][0]
+    result.pop("variant_labels", None)
+    return result
 
 
 def update_global_master(
@@ -1703,12 +1763,11 @@ def _create_global_item(
     if not global_item_id:
         raise RuntimeError(f"add_global_item 无 global_item_id: {g_resp}")
     try:
-        global_model = ensure_single_global_model(
+        global_model = ensure_global_models(
             global_item_id=int(global_item_id),
             merchant_id=merchant_id,
             merchant_token=mtoken,
             detail=detail,
-            model_sku=model_sku,
             original_price=price,
             stock=stock,
         )

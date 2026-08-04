@@ -462,6 +462,63 @@ def replace_deleted_global_entry(
     save_map(data)
 
 
+def replace_inexact_global_entry(
+    inexact_global_item_id: str,
+    replacement_global_item_id: str,
+    *,
+    match_key: str,
+    global_model_sku: str,
+    title: str = "",
+) -> None:
+    """Retire a mapped global item whose approved variant matrix is stale."""
+
+    data = load_map()
+    old_gid = str(inexact_global_item_id or "").strip()
+    new_gid = str(replacement_global_item_id or "").strip()
+    key = parse_search_key(match_key)
+    old = data.get(old_gid)
+    if (
+        not old_gid
+        or not new_gid
+        or old_gid == new_gid
+        or not key
+        or not global_model_sku
+        or not isinstance(old, dict)
+        or isinstance(data.get(new_gid), dict)
+    ):
+        raise ValueError("inexact global replacement identity is invalid")
+    old_keys = {
+        parse_search_key(str(old.get("match_key") or "")),
+        *{
+            parse_search_key(str(value))
+            for value in (old.get("match_keys") or ())
+        },
+    }
+    old_keys.discard("")
+    if key not in old_keys:
+        raise ValueError("inexact global mapping does not match the seller SKU")
+    retired = dict(old)
+    retired["retired_match_key"] = key
+    retired["match_key"] = ""
+    retired["match_keys"] = []
+    retired["retired_reason"] = "approved_variant_matrix_inexact"
+    retired["replacement_global_item_id"] = new_gid
+    data[old_gid] = retired
+    data[new_gid] = {
+        "match_key": key,
+        "title": str(title or "").strip(),
+        "global_item_sku": "",
+        "models": [{
+            "model_name": "Default",
+            "global_model_sku": str(global_model_sku),
+        }],
+        "published_regions": [],
+        "shop_items": {},
+        "replaces_inexact_global_item_id": old_gid,
+    }
+    save_map(data)
+
+
 def upsert_global_group_entry(
     global_item_id: str,
     *,

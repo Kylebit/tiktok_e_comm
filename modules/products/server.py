@@ -1499,8 +1499,6 @@ def _shopee_global_plan_seed(
     )
 
     package = product_facts.get("package_cm")
-    source_category = product_facts.get("category")
-    weight_kg = product_facts.get("weight_kg")
     weight = product_facts.get("weight_kg")
     if (
         type(package) is not list
@@ -9620,6 +9618,8 @@ def _approved_ozon_publish_facts(payload: dict) -> dict:
         and row.get("policy_check") == "passed"
     ]
     package = product_facts.get("package_cm")
+    source_category = product_facts.get("category")
+    weight_kg = product_facts.get("weight_kg")
     selected = pricing.get("selected_targets")
     target = selected.get("ozon:RU") if isinstance(selected, dict) else None
     derived = target.get("derived_preview") if isinstance(target, dict) else None

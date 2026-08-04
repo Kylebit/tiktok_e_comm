@@ -1499,6 +1499,8 @@ def _shopee_global_plan_seed(
     )
 
     package = product_facts.get("package_cm")
+    source_category = product_facts.get("category")
+    weight_kg = product_facts.get("weight_kg")
     weight = product_facts.get("weight_kg")
     if (
         type(package) is not list
@@ -9622,7 +9624,9 @@ def _approved_ozon_publish_facts(payload: dict) -> dict:
     target = selected.get("ozon:RU") if isinstance(selected, dict) else None
     derived = target.get("derived_preview") if isinstance(target, dict) else None
     try:
-        size = (float(package[0]), float(package[1]))
+        package_cm = [float(package[index]) for index in range(3)]
+        size = (package_cm[0], package_cm[1])
+        resolved_weight_kg = float(weight_kg)
         price = int(Decimal(str(derived.get("price_cny"))))
         old_price = int(Decimal(str(derived.get("old_price_cny"))))
     except (IndexError, InvalidOperation, TypeError, ValueError, AttributeError):
@@ -9644,7 +9648,12 @@ def _approved_ozon_publish_facts(payload: dict) -> dict:
         or not candidates[0]["title"].strip()
         or len(ordered_images) != len(images)
         or len({row["position"] for row in ordered_images}) != len(images)
-        or any(value <= 0 or not math.isfinite(value) for value in size)
+        or any(value <= 0 or not math.isfinite(value) for value in package_cm)
+        or resolved_weight_kg <= 0
+        or not math.isfinite(resolved_weight_kg)
+        or not isinstance(source_category, dict)
+        or not str(source_category.get("id") or "").strip()
+        or not str(source_category.get("name") or "").strip()
         or price <= 0
         or old_price <= price
     ):
@@ -9653,6 +9662,13 @@ def _approved_ozon_publish_facts(payload: dict) -> dict:
         "seller_sku": seller_sku.strip(),
         "title": candidates[0]["title"].strip(),
         "size": size,
+        "package_cm": package_cm,
+        "weight_kg": resolved_weight_kg,
+        "quantity": 1,
+        "source_category": {
+            "id": str(source_category["id"]).strip(),
+            "name": str(source_category["name"]).strip(),
+        },
         "price": price,
         "old_price": old_price,
         "images": [row["image_url"] for row in ordered_images],
@@ -9847,6 +9863,17 @@ def _start_ozon_release(data: dict) -> tuple[int, dict]:
                 price_source_override="approved_release_plan",
                 price_label_override="ozon:RU",
                 image_urls_override=facts["images"],
+                approved_snapshot={
+                    "seller_sku": facts["seller_sku"],
+                    "title": facts["title"],
+                    "package_cm": facts["package_cm"],
+                    "weight_kg": facts["weight_kg"],
+                    "quantity": facts["quantity"],
+                    "price_cny": facts["price"],
+                    "old_price_cny": facts["old_price"],
+                    "images": facts["images"],
+                    "source_category": facts["source_category"],
+                },
                 process_images=False,
                 wait_for_import=False,
                 skip_rich_content=True,

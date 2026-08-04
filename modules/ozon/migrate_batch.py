@@ -46,26 +46,36 @@ def migrate_one(
     category_id_override: int | None = None,
     type_id_override: int | None = None,
     migrate_profile_override: str = "",
+    approved_snapshot: dict | None = None,
 ) -> dict:
     """seller_sku: 6位 TK 货号；migrate  payload 用 draft 返回的 4位 offer_id。"""
     _progress(on_progress, f"  {seller_sku}: 生成俄语草稿…")
-    from modules.ozon.catalog_draft import build_draft
+    from modules.ozon.catalog_draft import (
+        build_draft,
+        build_draft_from_approved_snapshot,
+    )
 
-    draft = build_draft(
-        seller_sku,
-        allow_deepseek=allow_deepseek,
-        title_candidate=title_candidate,
-        product_size_cm=product_size_cm,
-        quantity=quantity,
-        color_name_override=color_name_override,
-        price_cny_override=price_cny_override,
-        old_price_cny_override=old_price_cny_override,
-        price_source_override=price_source_override,
-        price_label_override=price_label_override,
-        image_urls_override=image_urls_override,
-        category_id_override=category_id_override,
-        type_id_override=type_id_override,
-        migrate_profile_override=migrate_profile_override,
+    draft = (
+        build_draft_from_approved_snapshot(
+            approved_snapshot, seller_sku=seller_sku
+        )
+        if approved_snapshot is not None
+        else build_draft(
+            seller_sku,
+            allow_deepseek=allow_deepseek,
+            title_candidate=title_candidate,
+            product_size_cm=product_size_cm,
+            quantity=quantity,
+            color_name_override=color_name_override,
+            price_cny_override=price_cny_override,
+            old_price_cny_override=old_price_cny_override,
+            price_source_override=price_source_override,
+            price_label_override=price_label_override,
+            image_urls_override=image_urls_override,
+            category_id_override=category_id_override,
+            type_id_override=type_id_override,
+            migrate_profile_override=migrate_profile_override,
+        )
     )
     if not isinstance(draft, dict) or (draft.get("error") and not draft.get("draft_title")):
         return {"seller_sku": seller_sku, "ok": False, "step": "draft", "error": draft}

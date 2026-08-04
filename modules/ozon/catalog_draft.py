@@ -159,6 +159,157 @@ def _invoke_deepseek(
     )
 
 
+def build_draft_from_approved_snapshot(
+    snapshot: dict,
+    *,
+    seller_sku: str,
+) -> dict:
+    """Build an Ozon import draft from the immutable approved product facts.
+
+    This deliberately does *not* read the historical TikTok catalog.  That
+    catalog is an optional research source for the legacy batch migrator, not
+    an authority for a product the release workflow already approved.
+    """
+
+    if not isinstance(snapshot, dict):
+        raise ValueError("approved Ozon snapshot must be an object")
+    approved_sku = snapshot.get("seller_sku")
+    title = snapshot.get("title")
+    package_cm = snapshot.get("package_cm")
+    images = snapshot.get("images")
+    source_category = snapshot.get("source_category")
+    if (
+        not isinstance(approved_sku, str)
+        or approved_sku.strip() != str(seller_sku).strip()
+        or not isinstance(title, str)
+        or not title.strip()
+        or not isinstance(package_cm, (list, tuple))
+        or len(package_cm) != 3
+        or not isinstance(images, (list, tuple))
+        or not images
+        or not isinstance(source_category, dict)
+    ):
+        raise ValueError("approved Ozon snapshot is incomplete")
+    try:
+        dimensions = [float(value) for value in package_cm]
+        weight_g = round(float(snapshot.get("weight_kg")) * 1000)
+        price = int(snapshot.get("price_cny"))
+        old_price = int(snapshot.get("old_price_cny"))
+        quantity = int(snapshot.get("quantity"))
+    except (TypeError, ValueError):
+        raise ValueError("approved Ozon snapshot contains invalid numbers") from None
+    if (
+        any(value <= 0 for value in dimensions)
+        or weight_g <= 0
+        or price <= 0
+        or old_price <= price
+        or quantity <= 0
+    ):
+        raise ValueError("approved Ozon snapshot contains non-positive facts")
+    normalized_images = [
+        str(url).strip()
+        for url in images
+        if isinstance(url, str) and url.strip().startswith("https://")
+    ]
+    if len(normalized_images) != len(images):
+        raise ValueError("approved Ozon snapshot contains invalid image URLs")
+
+    translate = _ozon_translate()
+    template = translate.CATEGORY_TEMPLATES["default"]
+    category = match_category(
+        title=title.strip(),
+        tk_path=str(source_category.get("name") or "").strip(),
+        tk_leaf=str(source_category.get("name") or "").strip(),
+        tk_category_id=str(source_category.get("id") or "").strip(),
+    )
+    if category.get("match_method") in {"tk_category_map", "title_tablecloth"}:
+        category_id = int(category["category_id"])
+        type_id = int(category["type_id"])
+        migrate_profile = _effective_profile(
+            type_id, str(category.get("migrate_profile") or "") or None
+        )
+    else:
+        category_id = int(template["category_id"])
+        type_id = int(template["type_id"])
+        migrate_profile = _effective_profile(type_id)
+
+    len_cm = str(int(max(dimensions)))
+    wid_cm = str(int(sorted(dimensions)[-2]))
+    depth = str(round(dimensions[0] * 10))
+    width = str(round(dimensions[1] * 10))
+    height = str(round(dimensions[2] * 10))
+    kit = russian_piece_label(quantity)
+    material_name = (
+        "Полиэстер" if migrate_profile == "tablecloth" else "ПВХ (поливинилхлорид)"
+    )
+    material_dict_id, material = _lookup_material(
+        material_name, category_id, type_id
+    )
+    color_dict_id, color = _lookup_color(
+        template["color"][0], category_id, type_id
+    )
+    category_names = lookup_category_names(category_id, type_id)
+    offer_id = to_4digit_offer_id(approved_sku.strip())
+    rule_title = translate.draft_title(title.strip(), offer_id, len_cm=len_cm, wid_cm=wid_cm)
+    rule_description = translate.draft_description(
+        title.strip(), len_cm=len_cm, wid_cm=wid_cm, kit=kit
+    )
+    return {
+        "offer_id": offer_id,
+        "seller_sku": approved_sku.strip(),
+        "title_ms": title.strip(),
+        "images": normalized_images,
+        "draft_title": polish_ozon_title(
+            rule_title, len_cm=len_cm, wid_cm=wid_cm, migrate_profile=migrate_profile
+        ),
+        "draft_description": polish_ozon_description(rule_description),
+        "hashtags": (
+            tablecloth_hashtags()
+            if migrate_profile == "tablecloth"
+            else "#декордлядома"
+        ),
+        "material": material,
+        "material_dict_id": material_dict_id,
+        "category_id": category_id,
+        "type_id": type_id,
+        "category_name_zh": category_names["category_name_zh"],
+        "type_name_zh": category_names["type_name_zh"],
+        "migrate_profile": migrate_profile,
+        "color_name": color,
+        "color_dict_id": color_dict_id,
+        "kit": kit,
+        "weight": weight_g,
+        "depth": depth,
+        "width": width,
+        "height": height,
+        "len_cm": len_cm,
+        "wid_cm": wid_cm,
+        "price": str(price),
+        "old_price": str(old_price),
+        "source": "approved_snapshot",
+        "title_source": "approved_snapshot",
+        "desc_source": "rule_fallback",
+        "deepseek_used": False,
+        "price_source": "approved_release_plan",
+        "price_label": f"Approved Ozon release price {price} CNY",
+        "price_local": None,
+        "price_currency": "",
+        "price_cny_computed": price,
+        "tk_category_id": str(source_category.get("id") or ""),
+        "tk_category_path": str(source_category.get("name") or ""),
+        "tk_category_leaf": str(source_category.get("name") or ""),
+        "category_match_method": category.get("match_method"),
+        "category_match_score": category.get("best_score"),
+        "variant_label": "",
+        "tk_group_id": "",
+        "tk_group_keys": [],
+        "weight_source": "approved_snapshot",
+        "dimensions_source": "approved_snapshot",
+        "dimensions_missing": False,
+        "error": None,
+    }
+
+
 def build_draft(
     seller_sku: str,
     *,

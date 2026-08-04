@@ -9534,11 +9534,15 @@ def _approved_shopee_global_publish_facts(payload: dict) -> dict:
     seller_sku = payload.get("seller_sku")
     listing_copy = payload.get("listing_copy")
     pricing = payload.get("pricing")
+    product_facts = payload.get("product_facts")
+    images = payload.get("images")
     if (
         not isinstance(seller_sku, str)
         or not seller_sku.strip()
         or not isinstance(listing_copy, dict)
         or not isinstance(pricing, dict)
+        or not isinstance(product_facts, dict)
+        or not isinstance(images, list)
     ):
         raise ValueError("approved Shopee global facts are incomplete")
     candidates = [
@@ -9584,6 +9588,32 @@ def _approved_shopee_global_publish_facts(payload: dict) -> dict:
         or global_price <= 0
     ):
         raise ValueError("approved Shopee global price binding is invalid")
+    package = product_facts.get("package_cm")
+    weight_kg = product_facts.get("weight_kg")
+    ordered_images = sorted(
+        (
+            row
+            for row in images
+            if isinstance(row, dict)
+            and isinstance(row.get("position"), int)
+            and isinstance(row.get("image_url"), str)
+            and row["image_url"].startswith("https://")
+        ),
+        key=lambda row: row["position"],
+    )
+    try:
+        package_cm = [float(package[index]) for index in range(3)]
+        resolved_weight_kg = float(weight_kg)
+    except (IndexError, TypeError, ValueError):
+        raise ValueError("approved Shopee parcel facts are invalid") from None
+    if (
+        len(ordered_images) != len(images)
+        or len({row["position"] for row in ordered_images}) != len(images)
+        or any(value <= 0 or not math.isfinite(value) for value in package_cm)
+        or resolved_weight_kg <= 0
+        or not math.isfinite(resolved_weight_kg)
+    ):
+        raise ValueError("approved Shopee images or parcel facts are invalid")
     return {
         "seller_sku": seller_sku.strip(),
         "region": region,
@@ -9591,6 +9621,13 @@ def _approved_shopee_global_publish_facts(payload: dict) -> dict:
         # Preserve the approved description byte-for-byte.
         "description": description,
         "global_original_price_cny": float(global_price),
+        "images": [row["image_url"] for row in ordered_images],
+        "package_cm": package_cm,
+        "weight_kg": resolved_weight_kg,
+        # The immutable plan does not yet carry a stock policy.  CNSC accepts
+        # a positive seller stock; use one rather than fabricating a larger
+        # commercial quantity from an unrelated TikTok draft.
+        "quantity": 1,
     }
 
 
@@ -9770,20 +9807,11 @@ def _start_shopee_global_release(data: dict) -> tuple[int, dict]:
             )
             if current_facts != facts:
                 raise ValueError("approved Shopee global facts changed before dispatch")
-            from modules.shopee.publish import publish_match_key
-
-            result = publish_match_key(
-                facts["seller_sku"],
-                facts["region"],
-                dry_run=False,
-                global_only=True,
-                publish_shops=False,
-                title_override=facts["title"],
-                description_override=facts["description"],
-                global_original_price_cny_override=(
-                    facts["global_original_price_cny"]
-                ),
+            from modules.shopee.approved_global_publisher import (
+                publish_approved_global,
             )
+
+            result = publish_approved_global(facts)
             if not isinstance(result, dict) or result.get("ok") is not True:
                 raise RuntimeError("Miaoshou/Shopee did not accept the global product")
         except Exception as error:

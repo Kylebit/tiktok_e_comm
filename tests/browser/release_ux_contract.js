@@ -252,6 +252,32 @@ function apiFixture(url, method, state) {
     });
   }
   if (path === "/api/product-flow/preview") return jsonResponse(state.aiPreview || aiPreview);
+  if (path === "/api/product-flow/content-package/finalize" && method === "POST") {
+    const approved = JSON.parse(JSON.stringify(state.productDashboard || productDashboard));
+    approved.content = {
+      ...approved.content,
+      approved: true,
+      approval_status: "approved",
+      blockers: [],
+    };
+    approved.workflow_next_action = {
+      schema_version: "product-workflow-next-action/v1",
+      code: "approve_product_facts",
+      phase: "approval",
+      label: "批准并锁定商品事实",
+      detail: "内容已批准。",
+      kind: "control",
+      actionable: true,
+      terminal: false,
+      control_id: "approvalButton",
+      reason_codes: ["product_approval_required"],
+    };
+    state.productDashboard = approved;
+    return jsonResponse({
+      ok: true,
+      content_package: { content_approved: true },
+    });
+  }
   if (path === "/api/profit-center/weekly") {
     if (state.delayWeekly) return null;
     return jsonResponse({
@@ -333,6 +359,12 @@ async function installApiRoutes(page, state, requests) {
     }
     if (!url.pathname.startsWith("/api/")) return route.continue();
     requests.push({ method: request.method(), url: request.url(), external: false });
+    if (
+      url.pathname === "/api/product-flow/content-package/finalize"
+      && request.method() === "POST"
+    ) {
+      state.contentFinalizeBodies.push(request.postDataJSON());
+    }
     const fixture = apiFixture(url, request.method(), state);
     if (fixture === null) {
       const kind = url.pathname.includes("weekly") ? "weekly" : "sku";
@@ -365,6 +397,7 @@ async function openScenario(browser, path, viewport, options = {}) {
     pending: {},
     aiPreview: options.aiPreview || null,
     productDashboard: options.productDashboard || null,
+    contentFinalizeBodies: [],
   };
   page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
   page.on("console", (message) => {
@@ -3509,6 +3542,65 @@ async function productWorkflowNextActionContract(browser, viewport) {
     check(
       unexpectedInteractionErrors(errors).length === 0,
       `workflow ${viewport.width}: no console/page errors`,
+      errors,
+    );
+  } finally {
+    await context.close();
+  }
+}
+
+async function productContentFinalizeContract(browser, viewport) {
+  const dashboard = JSON.parse(JSON.stringify(productDashboard));
+  dashboard.product.offer_id = "3838619319";
+  dashboard.product.revision = 86;
+  dashboard.product.actual_product_approved = false;
+  dashboard.content = {
+    approved: false,
+    approval_status: "pending",
+    image_count: 9,
+    images: [],
+    blockers: ["content fact-card and a current adopted storyboard recipe are required"],
+  };
+  dashboard.workflow_next_action = {
+    schema_version: "product-workflow-next-action/v1",
+    code: "complete_content_review",
+    phase: "content",
+    label: "完成内容与图片审核",
+    detail: "批准当前已审核的最终图片、顺序与视频决定。",
+    kind: "content_finalize",
+    actionable: true,
+    terminal: false,
+    control_id: "nextStepActionButton",
+    reason_codes: ["content_review_incomplete"],
+  };
+  const scenario = await openScenario(
+    browser,
+    "/product-workspace?offer_id=3838619319",
+    viewport,
+    { productDashboard: dashboard },
+  );
+  const { page, context, errors, state } = scenario;
+  try {
+    const button = page.locator("#nextStepActionButton");
+    check(
+      await button.isVisible() && await button.isEnabled(),
+      `content finalization ${viewport.width}: exact completion action is available`,
+    );
+    await button.click();
+    await page.waitForFunction(() => (
+      document.querySelector("#contentBadge")?.textContent.includes("已批准")
+    ));
+    check(
+      state.contentFinalizeBodies.length === 1
+      && state.contentFinalizeBodies[0]?.offer_id === "3838619319"
+      && state.contentFinalizeBodies[0]?.approval?.expected_revision === 86
+      && state.contentFinalizeBodies[0]?.approval?.approved_by === "Kyle",
+      `content finalization ${viewport.width}: one exact governed approval is posted`,
+      state.contentFinalizeBodies,
+    );
+    check(
+      unexpectedInteractionErrors(errors).length === 0,
+      `content finalization ${viewport.width}: no console/page errors`,
       errors,
     );
   } finally {
@@ -8438,6 +8530,8 @@ async function simplifiedPlatformPublishContract(browser, viewport) {
     await aiMissingPackageFeedback(browser, { width: 390, height: 844 });
     await productWorkflowNextActionContract(browser, { width: 1440, height: 900 });
     await productWorkflowNextActionContract(browser, { width: 390, height: 844 });
+    await productContentFinalizeContract(browser, { width: 1440, height: 900 });
+    await productContentFinalizeContract(browser, { width: 390, height: 844 });
     await mixedReleaseDispositionContract(browser, { width: 1440, height: 900 });
     await mixedReleaseDispositionContract(browser, { width: 390, height: 844 });
     await blockedCapabilityNextActionContract(browser, { width: 1440, height: 900 });

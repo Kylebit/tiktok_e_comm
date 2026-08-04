@@ -195,8 +195,8 @@ def test_unapproved_plan_preview_cannot_hide_missing_content_action():
     action = project_product_workflow_next_action(view)
 
     assert action["code"] == "complete_content_review"
-    assert action["kind"] == "link"
-    assert action["href"] == "/ai-image-studio?offer_id=3845133620"
+    assert action["kind"] == "content_finalize"
+    assert action["control_id"] == "nextStepActionButton"
     assert_no_dead_end(action)
 
 

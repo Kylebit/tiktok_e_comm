@@ -12237,6 +12237,7 @@ class Handler(BaseHTTPRequestHandler):
             "content-package/prepare",
             "content-package/vision-proposal",
             "content-package/review",
+            "content-package/finalize",
             "content-package/source-only/review",
             "content-package/suite-images-preflight",
             "content-package/remaining-images-generate",

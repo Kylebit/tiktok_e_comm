@@ -1223,6 +1223,126 @@ def _completed_ai_suite_evidence(
     )
 
 
+def _ai_assisted_final_review_ready(
+    review: dict[str, Any],
+    content: dict[str, Any],
+    generated: list[dict[str, Any]],
+) -> bool:
+    """Return whether the exact current AI-assisted final set is review-complete.
+
+    This deliberately ignores the earlier storyboard-adoption flag.  Once every
+    current generated artifact and every source image has an explicit final
+    decision, and the retained URLs have one exact saved order, the user can
+    explicitly approve that final set without regenerating a proposal.
+    """
+
+    if not (
+        _content_strategy(content) == "ai_assisted"
+        and content.get("fact_card_approved")
+        and content.get("planning_scope_approved")
+        and generated
+    ):
+        return False
+    source_actions = [
+        row for row in (review.get("image_actions") or []) if isinstance(row, dict)
+    ]
+    if not source_actions or any(
+        str(row.get("action") or "review") not in {"keep", "remove"}
+        for row in source_actions
+    ):
+        return False
+    if any(
+        str(row.get("miaoshou_action") or "review") not in {"keep", "remove"}
+        or str(row.get("miaoshou_sync_status") or "") != "reviewed_locally"
+        for row in generated
+    ):
+        return False
+    asset_decisions = (
+        content.get("asset_decisions")
+        if isinstance(content.get("asset_decisions"), dict)
+        else {}
+    )
+    for row in generated:
+        artifact_id = str(row.get("artifact_id") or "").strip()
+        expected = (
+            "approved"
+            if str(row.get("miaoshou_action") or "") == "keep"
+            else "rejected"
+        )
+        decision = asset_decisions.get(artifact_id)
+        if not isinstance(decision, dict) or decision.get("decision") != expected:
+            return False
+    retained_urls = [
+        str(row.get("url") or row.get("output_url") or "").strip()
+        for row in source_actions
+        if str(row.get("action") or "") == "keep"
+    ] + [
+        str(row.get("url") or "").strip()
+        for row in generated
+        if str(row.get("miaoshou_action") or "") == "keep"
+    ]
+    order = [
+        str(value or "").strip()
+        for value in (review.get("image_order") or [])
+        if str(value or "").strip()
+    ]
+    return bool(
+        len(retained_urls) >= 3
+        and all(retained_urls)
+        and len(retained_urls) == len(set(retained_urls))
+        and len(order) == len(set(order))
+        and set(order) == set(retained_urls)
+        and str(review.get("video_action") or "none")
+        in {"keep", "remove", "none"}
+    )
+
+
+def _ai_assisted_final_approval_valid(
+    review: dict[str, Any],
+    content: dict[str, Any],
+) -> bool:
+    """Validate that final approval still binds the exact current review set."""
+
+    approval = (
+        content.get("final_content_approval")
+        if isinstance(content.get("final_content_approval"), dict)
+        else {}
+    )
+    if not (
+        _content_strategy(content) == "ai_assisted"
+        and content.get("suite_approved") is True
+        and approval.get("schema_version")
+        == "ai-assisted-final-content-approval/v1"
+        and approval.get("status") == "approved"
+        and approval.get("approved_by") == "Kyle"
+        and str(approval.get("approved_at") or "").strip()
+    ):
+        return False
+    expected_payload = {
+        "schema_version": "ai-assisted-final-content-approval/v1",
+        "status": "approved",
+        "approved_by": "Kyle",
+        "image_order": list(review.get("image_order") or []),
+        "video_action": str(review.get("video_action") or "none"),
+        "asset_decisions": content.get("asset_decisions") or {},
+        "generated_image_decisions": (
+            content.get("generated_image_miaoshou_decisions") or {}
+        ),
+    }
+    expected_digest = hashlib.sha256(
+        json.dumps(
+            expected_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return bool(
+        all(approval.get(key) == value for key, value in expected_payload.items())
+        and approval.get("approval_digest") == expected_digest
+    )
+
+
 def _product_workflow_summary(
     *,
     source: dict[str, Any],
@@ -1239,10 +1359,17 @@ def _product_workflow_summary(
     source_only_final_approved = (
         source_only and source_only_final_approval_valid(content, review)
     )
+    ai_final_approved = bool(
+        not source_only
+        and (
+            content.get("final_content_approval_valid") is True
+            or _ai_assisted_final_approval_valid(review, content)
+        )
+    )
     requested_images = _requested_image_count(content)
     generated = list(content.get("generated_review_images") or [])
     generation = content.get("remaining_images_generation") or {}
-    generation_done = source_only or requested_images == 0 or (
+    generation_done = source_only or ai_final_approved or requested_images == 0 or (
         str(generation.get("status") or "") in {"completed_waiting_human_review", "completed_with_errors"}
         and len(generated) >= requested_images
     )
@@ -1272,14 +1399,17 @@ def _product_workflow_summary(
             content.get("package_found")
             and content.get("fact_card_approved")
             and content.get("planning_scope_approved")
-            and (ai_plan_valid or completed_ai_suite)
+            and (ai_plan_valid or completed_ai_suite or ai_final_approved)
             and content.get("suite_approved")
         )
         image_review_ready = bool(
-            generation_done
-            and not pending_source
-            and not pending_generated
-            and len(kept_source) + len(kept_generated) >= 3
+            ai_final_approved
+            or (
+                generation_done
+                and not pending_source
+                and not pending_generated
+                and len(kept_source) + len(kept_generated) >= 3
+            )
         )
     commercial_blockers = []
     if not _english_title_ready(str(review.get("title") or "")):
@@ -1425,6 +1555,18 @@ def content_package_summary(offer_id_or_url: str) -> dict[str, Any]:
             generated_review_images,
         )
     )
+    final_content_approval_valid = bool(
+        strategy == "ai_assisted"
+        and _ai_assisted_final_approval_valid(state_review, saved)
+    )
+    final_content_approval_ready = bool(
+        strategy == "ai_assisted"
+        and _ai_assisted_final_review_ready(
+            state_review,
+            saved,
+            generated_review_images,
+        )
+    )
     storyboard_reviews = (
         saved.get("storyboard_reviews")
         if isinstance(saved.get("storyboard_reviews"), dict)
@@ -1489,10 +1631,13 @@ def content_package_summary(offer_id_or_url: str) -> dict[str, Any]:
                     and (
                         (model_proposal_valid and saved.get("suite_approved"))
                         or completed_ai_suite
+                        or final_content_approval_valid
                     )
                 )
             )
         ),
+        "final_content_approval_ready": final_content_approval_ready,
+        "final_content_approval_valid": final_content_approval_valid,
         "completed_ai_suite_evidence": completed_ai_suite,
         "source_only_ready": bool(
             strategy == "source_only" and source_only_selection["ready"]
@@ -3622,6 +3767,76 @@ def save_content_package_review(offer_id_or_url: str, review: dict[str, Any]) ->
     else:
         content["suite_revision"] = max(1, int(content.get("suite_revision") or 1))
     content["updated_at"] = _now()
+    save_state(offer_id, state)
+    return content_package_summary(offer_id)
+
+
+def finalize_content_package_review(
+    offer_id_or_url: str,
+    approval: dict[str, Any],
+) -> dict[str, Any]:
+    """Approve the exact current AI-assisted final image set.
+
+    This is the missing terminal action for content stage 02.  It does not call
+    a model, regenerate images, or write Miaoshou.  It only closes the review
+    after every current source/generated image has an explicit decision and the
+    retained set has one exact saved order.
+    """
+
+    offer_id = resolve_offer_key(offer_id_or_url)
+    state = load_state(offer_id)
+    expected_revision = approval.get("expected_revision")
+    current_revision = max(0, int(state.get("_revision") or 0))
+    if type(expected_revision) is not int or expected_revision != current_revision:
+        raise ValueError("content approval is stale; refresh before approving")
+    approved_by = str(approval.get("approved_by") or "").strip()
+    if approved_by != "Kyle":
+        raise ValueError("final content approval must be approved by Kyle")
+    content = (
+        state.get("content_package")
+        if isinstance(state.get("content_package"), dict)
+        else {}
+    )
+    if _content_strategy(content) != "ai_assisted":
+        raise ValueError(
+            "source-only content must use its source-only final approval action"
+        )
+    current = content_package_summary(offer_id)
+    if current.get("final_content_approval_ready") is not True:
+        raise ValueError(
+            "current final images are not fully reviewed and ordered; "
+            "complete every keep/remove decision before approval"
+        )
+    review = state.get("review") if isinstance(state.get("review"), dict) else {}
+    approval_payload = {
+        "schema_version": "ai-assisted-final-content-approval/v1",
+        "status": "approved",
+        "approved_by": approved_by,
+        "image_order": list(review.get("image_order") or []),
+        "video_action": str(review.get("video_action") or "none"),
+        "asset_decisions": content.get("asset_decisions") or {},
+        "generated_image_decisions": (
+            content.get("generated_image_miaoshou_decisions") or {}
+        ),
+    }
+    approval_digest = hashlib.sha256(
+        json.dumps(
+            approval_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    content["suite_approved"] = True
+    content["storyboard_recipe_adopted_at"] = _now()
+    content["storyboard_recipe_signature"] = _planning_recipe_signature(content)
+    content["final_content_approval"] = {
+        **approval_payload,
+        "approval_digest": approval_digest,
+        "approved_at": _now(),
+    }
+    content["updated_at"] = _now()
+    state["content_package"] = content
     save_state(offer_id, state)
     return content_package_summary(offer_id)
 

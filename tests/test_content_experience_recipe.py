@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 
@@ -503,3 +504,149 @@ def test_matching_legacy_proposal_migrates_then_builds_local_suite_preflight_onl
     assert subprocess_calls == []
     assert package_path.read_bytes() == before_package
     assert len(saved) == 2
+
+
+def test_completed_ai_image_review_can_be_finalized_as_the_content_approval(
+    monkeypatch,
+):
+    """The user's final approval must close stage 02 without regenerating images."""
+
+    state = {
+        "offer_id": "3838619319",
+        "_revision": 86,
+        "content_package": {
+            "content_strategy": "ai_assisted",
+            "fact_card_approved": True,
+            "planning_scope_approved": True,
+            "planning_review_mode": EXPERIENCE_RECIPE_REVIEW_MODE,
+            "suite_approved": False,
+            "asset_decisions": {
+                "sc1_r3": {"decision": "approved"},
+                "sp1_r3": {"decision": "rejected"},
+            },
+            "generated_image_miaoshou_decisions": {
+                "sc1_r3": {
+                    "action": "keep",
+                    "status": "reviewed_locally",
+                },
+                "sp1_r3": {
+                    "action": "remove",
+                    "status": "reviewed_locally",
+                },
+            },
+        },
+        "review": {
+            "image_actions": [
+                {"url": "https://assets.example/source.jpg", "action": "keep"},
+            ],
+            "image_order": [
+                "https://assets.example/source.jpg",
+                "https://assets.example/sc1.png",
+            ],
+            "video_action": "none",
+        },
+    }
+    saved: list[dict] = []
+    monkeypatch.setattr(workbench, "resolve_offer_key", lambda _value: "3838619319")
+    monkeypatch.setattr(workbench, "load_state", lambda _offer: state)
+    monkeypatch.setattr(
+        workbench,
+        "content_package_summary",
+        lambda _offer: {
+            "content_strategy": "ai_assisted",
+            "final_content_approval_ready": True,
+            "completed_ai_suite_evidence": True,
+            "content_approved": bool(
+                state["content_package"].get("suite_approved")
+            ),
+        },
+    )
+    monkeypatch.setattr(
+        workbench,
+        "save_state",
+        lambda _offer, value: saved.append(copy.deepcopy(value)) or value,
+    )
+
+    result = workbench.finalize_content_package_review(
+        "3838619319",
+        {
+            "expected_revision": 86,
+            "approved_by": "Kyle",
+        },
+    )
+
+    assert result["content_approved"] is True
+    assert state["content_package"]["suite_approved"] is True
+    assert state["content_package"]["final_content_approval"]["status"] == "approved"
+    assert state["content_package"]["final_content_approval"]["approved_by"] == "Kyle"
+    assert saved
+
+
+def test_valid_ai_final_approval_closes_the_content_workflow_stage() -> None:
+    review = {
+        "title": "Waterproof PVC Floor Sticker",
+        "image_actions": [
+            {"url": "https://assets.example/source.jpg", "action": "keep"},
+        ],
+        "image_order": [
+            "https://assets.example/source.jpg",
+            "https://assets.example/generated.png",
+        ],
+        "video_action": "none",
+        "weight_kg": 1,
+        "package_cm": [10, 10, 10],
+        "selected_sites": ["tiktok:PH"],
+        "cost_cny": 10,
+    }
+    content = {
+        "content_strategy": "ai_assisted",
+        "package_found": True,
+        "fact_card_approved": True,
+        "planning_scope_approved": True,
+        "suite_approved": True,
+        "asset_decisions": {
+            "sc1": {"decision": "approved"},
+        },
+        "generated_image_miaoshou_decisions": {
+            "sc1": {"action": "keep", "status": "reviewed_locally"},
+        },
+    }
+    approval_payload = {
+        "schema_version": "ai-assisted-final-content-approval/v1",
+        "status": "approved",
+        "approved_by": "Kyle",
+        "image_order": list(review["image_order"]),
+        "video_action": "none",
+        "asset_decisions": content["asset_decisions"],
+        "generated_image_decisions": content[
+            "generated_image_miaoshou_decisions"
+        ],
+    }
+    content["final_content_approval"] = {
+        **approval_payload,
+        "approval_digest": hashlib.sha256(
+            json.dumps(
+                approval_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
+        "approved_at": "2026-08-04T00:00:00+00:00",
+    }
+
+    workflow = workbench._product_workflow_summary(
+        source={
+            "title_source": "PVC Floor Sticker",
+            "images": ["https://assets.example/source.jpg"],
+            "cost_cny": 10,
+        },
+        review=review,
+        content=content,
+        miaoshou_draft={},
+        tiktok_claim={},
+        site_drafts={},
+    )
+
+    assert workflow["content_ready"] is True
+    assert workflow["current_stage"] != "content"

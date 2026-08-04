@@ -380,6 +380,18 @@ class NewProductHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 return self._json(400, {"ok": False, "error": str(exc)})
 
+        if path == "/api/new-product/content-package/finalize":
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            try:
+                package = np_mod.finalize_content_package_review(
+                    raw,
+                    data.get("approval") or {},
+                )
+                return self._json(200, {"ok": True, "content_package": package})
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+
         if path == "/api/new-product/content-package/source-only/review":
             if not raw:
                 return self._json(400, {"ok": False, "error": "missing offer_id"})

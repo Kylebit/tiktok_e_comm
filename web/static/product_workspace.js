@@ -6252,13 +6252,44 @@
     );
   }
 
-  function runWorkflowNextAction() {
+  async function runWorkflowNextAction() {
     const action = currentData?.workflow_next_action || {};
     if (
       action.schema_version !== "product-workflow-next-action/v1"
       || action.actionable !== true
       || action.terminal === true
     ) return;
+    if (action.kind === "content_finalize") {
+      const actionButton = $("#nextStepActionButton");
+      const offerId = String(currentData?.product?.offer_id || "").trim();
+      const revision = currentData?.product?.revision;
+      if (!offerId || !Number.isInteger(revision)) {
+        showError("无法确认当前内容版本，请重新读取商品后再批准。");
+        return;
+      }
+      actionButton.disabled = true;
+      actionButton.textContent = "正在批准最终内容…";
+      showError("");
+      try {
+        await postProductWorkspace(
+          "/api/product-flow/content-package/finalize",
+          {
+            offer_id: offerId,
+            approval: {
+              expected_revision: revision,
+              approved_by: "Kyle",
+            },
+          },
+        );
+        const item = queueItem(currentQueueKey);
+        if (item) await refreshQueueProduct(item);
+      } catch (error) {
+        showError(`内容审批未完成：${friendlyError(error.message)}`);
+        actionButton.disabled = false;
+        actionButton.textContent = action.label || "完成内容与图片审核";
+      }
+      return;
+    }
     if (action.kind === "link" && action.href) {
       window.open(action.href, "_blank", "noopener");
       return;

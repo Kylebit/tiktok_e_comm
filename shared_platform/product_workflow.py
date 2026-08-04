@@ -133,9 +133,9 @@ def project_product_workflow_next_action(view: dict[str, Any]) -> dict[str, Any]
             "complete_content_review",
             "content",
             "完成内容与图片审核",
-            "在内容工作室保存来源图、视频和最终图片决定，再返回本页继续。",
-            kind="link",
-            href=f"/ai-image-studio?offer_id={offer_id}",
+            "批准当前已审核的最终图片、顺序与视频决定；若仍有未完成项，系统会明确提示并保留内容工作室入口。",
+            kind="content_finalize",
+            control_id="nextStepActionButton",
             reason_codes=("content_review_incomplete",),
         )
 

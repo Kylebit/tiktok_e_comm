@@ -17,14 +17,15 @@ import threading
 import urllib.error
 import urllib.request
 
-from modules.miaoshou import oneclick_release as miaoshou
 from modules.products import server as product_server
-from shared_platform import release_store as release_store_module
 from shared_platform import oneclick_release_controlplane as oneclick_controlplane
-from shared_platform.collectbox_action import CollectBoxActionStore
-from tests.test_tiktok_collectbox_publish_bridge import (
-    _approved_tiktok_context,
-    _persist_collectbox_result,
+from tests.test_tiktok_independent_http import (
+    _approved_plan,
+    _CollectBoxStore,
+    _Publisher,
+    _publish_contexts,
+    _ReleaseStore,
+    _request_body,
 )
 from tests.test_release_ux_contract import (
     BROWSER_CONTRACT,
@@ -51,39 +52,23 @@ def _post_json(url: str, payload: dict[str, object]):
 def test_tiktok_button_response_is_the_final_miaoshou_result(
     tmp_path, monkeypatch
 ):
-    release, plan = _approved_tiktok_context(tmp_path)
-    _persist_collectbox_result(CollectBoxActionStore(release.path), plan)
-    publish_calls: list[dict[str, object]] = []
-
-    def fake_post(path, body):
-        if path == miaoshou.PUBLISH_PATH:
-            publish_calls.append(dict(body))
-            return {"result": "success", "data": {"accepted": True}}
-        raise AssertionError(f"unexpected Miaoshou call: {path}")
-
-    miaoshou.configure_runtime_transport_factory(
-        lambda: miaoshou.MiaoshouRuntimeTransport(post=fake_post)
+    plan = _approved_plan()
+    contexts = _publish_contexts(plan)
+    publisher = _Publisher()
+    monkeypatch.setattr(
+        product_server, "_tiktok_release_store", lambda: _ReleaseStore(plan)
     )
     monkeypatch.setattr(
-        release_store_module, "default_release_store", lambda: release
+        product_server, "_collectbox_action_store", lambda: _CollectBoxStore(contexts)
+    )
+    monkeypatch.setattr(
+        product_server, "_tiktok_publisher", lambda: publisher
     )
     monkeypatch.setattr(
         product_server,
-        "_release_dashboard_for_request",
-        lambda _data: ({"fixture": "approved-current-facts"}, None),
-    )
-    monkeypatch.setattr(
-        product_server,
-        "_release_plan_payload_from_dashboard",
-        lambda _dashboard, **_kwargs: (dict(plan["payload"]), []),
-    )
-    # The old implementation only woke a background worker and returned 202.
-    # The simplified contract must complete through the request instead.
-    monkeypatch.setattr(
-        product_server,
-        "_wake_oneclick_worker",
-        lambda _job_id: (_ for _ in ()).throw(
-            AssertionError("the HTTP result must not depend on a background wake")
+        "_start_oneclick_release",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("TikTok must not enter the shared platform job")
         ),
     )
 
@@ -97,13 +82,7 @@ def test_tiktok_button_response_is_the_final_miaoshou_result(
                 f"http://127.0.0.1:{server.server_address[1]}"
                 "/api/product-workspace/publish-tiktok"
             ),
-            {
-                "offer_id": plan["payload"]["product_id"],
-                "plan_id": plan["plan_id"],
-                "confirmation_token": plan["confirmation_token"],
-                "publication_targets": list(plan["targets"]),
-                "confirm_publish": True,
-            },
+            _request_body(plan),
         )
     finally:
         server.shutdown()
@@ -111,18 +90,14 @@ def test_tiktok_button_response_is_the_final_miaoshou_result(
         thread.join(timeout=5)
 
     assert status == 200
-    assert body == {
-        "schema_version": "miaoshou-platform-publish-result/v1",
-        "ok": True,
-        "platform": "TIKTOK",
-        "success": True,
-        "message": "TikTok 发布成功",
-        "target_count": 6,
-        "successful_target_count": 6,
-        "failed_targets": [],
-        "retryable": True,
-    }
-    assert len(publish_calls) == 6
+    assert body["schema_version"] == "miaoshou-platform-publish-result/v1"
+    assert body["success"] is True
+    assert body["target_count"] == 6
+    assert body["successful_target_count"] == 6
+    assert body["failed_targets"] == []
+    assert body["write_request_count"] == 6
+    assert body["external_write_count"] == 6
+    assert len(publisher.snapshots) == 1
 
 
 def test_shopee_global_success_is_read_from_shared_controls(monkeypatch):

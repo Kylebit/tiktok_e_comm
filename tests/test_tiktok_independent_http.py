@@ -52,7 +52,7 @@ def _digest(value):
     ).hexdigest()
 
 
-def _approved_plan():
+def _approved_plan(*, persist_category_decisions=True):
     targets = [
         "miaoshou:COMMON",
         *TIKTOK_TARGETS,
@@ -72,7 +72,6 @@ def _approved_plan():
         "product_revision": 15,
         "targets": targets,
         "product_facts": {"category": category},
-        "approved_tiktok_category_decisions": decisions,
         "pricing": {
             "selected_targets": {
                 target: {
@@ -86,6 +85,8 @@ def _approved_plan():
             }
         },
     }
+    if persist_category_decisions:
+        payload["approved_tiktok_category_decisions"] = decisions
     return {
         "plan_id": "omnichannel:tiktok-independent",
         "product_id": "3846511157",
@@ -159,31 +160,22 @@ class _CollectBoxStore:
 class _Publisher:
     def __init__(self, receipt=None):
         self.snapshots = []
-        self.preflights = []
         self.receipt = receipt
 
-    def preflight(self, snapshot):
+    def publish(self, snapshot):
         self.snapshots.append(snapshot)
-        return {
-            "schema_version": "tiktok-publish-preflight/v1",
-            "offer_id": snapshot["offer_id"],
-            "plan_id": snapshot["plan_id"],
-            "snapshot_digest": _digest(snapshot),
-            "targets": [
-                {"target_label": row["target_label"], "status": "READY"}
-                for row in snapshot["targets"]
-            ],
-        }
-
-    def publish(self, snapshot, preflight):
-        self.preflights.append(preflight)
         if self.receipt is not None:
-            return self.receipt
+            return {
+                **self.receipt,
+                "offer_id": snapshot["offer_id"],
+                "plan_id": snapshot["plan_id"],
+                "snapshot_digest": _digest(snapshot),
+            }
         return {
             "schema_version": "tiktok-publish-receipt/v1",
             "offer_id": snapshot["offer_id"],
             "plan_id": snapshot["plan_id"],
-            "snapshot_digest": preflight["snapshot_digest"],
+            "snapshot_digest": _digest(snapshot),
             "accepted_target_count": 6,
             "rejected_target_count": 0,
             "unknown_target_count": 0,
@@ -317,9 +309,55 @@ def test_missing_collectbox_target_fails_before_publisher_call(
     assert publisher.snapshots == []
 
 
+def test_legacy_plan_projects_category_only_from_immutable_product_snapshot(
+    monkeypatch,
+    product_http_server,
+):
+    plan = _approved_plan(persist_category_decisions=False)
+    contexts = _publish_contexts(plan)
+    publisher = _Publisher()
+    _install_server_fakes(monkeypatch, plan, contexts, publisher)
+
+    status, response = _post(
+        product_http_server + "/api/product-workspace/publish-tiktok",
+        _request_body(plan),
+    )
+
+    assert status == 200
+    assert response["success"] is True
+    assert publisher.snapshots[0]["targets"][-1][
+        "category_evidence_digest"
+    ] == "24eb8b5d3f5dedeac07212c600140510f408e5479e9e1b80251f4e1af36a1486"
+
+
+def test_persisted_category_decision_drift_fails_before_publisher_call(
+    monkeypatch,
+    product_http_server,
+):
+    plan = _approved_plan()
+    plan["payload"]["approved_tiktok_category_decisions"]["tiktok:GB"][
+        "category_id"
+    ] = "999999"
+    plan["payload_digest"] = _digest(plan["payload"])
+    contexts = _publish_contexts(plan)
+    publisher = _Publisher()
+    _install_server_fakes(monkeypatch, plan, contexts, publisher)
+
+    status, response = _post(
+        product_http_server + "/api/product-workspace/publish-tiktok",
+        _request_body(plan),
+    )
+
+    assert status == 409
+    assert response["error"]["code"] == "tiktok_approved_snapshot_invalid"
+    assert response["external_write_count"] == 0
+    assert publisher.snapshots == []
+
+
 def test_provider_rejection_reason_survives_http_projection(
     monkeypatch,
     product_http_server,
+    caplog,
 ):
     plan = _approved_plan()
     contexts = _publish_contexts(plan)
@@ -354,6 +392,7 @@ def test_provider_rejection_reason_survives_http_projection(
         "targets": [*accepted, rejected],
     })
     _install_server_fakes(monkeypatch, plan, contexts, publisher)
+    caplog.set_level("INFO", logger="product_workspace.platform_publish")
 
     status, response = _post(
         product_http_server + "/api/product-workspace/publish-tiktok",
@@ -368,3 +407,55 @@ def test_provider_rejection_reason_survives_http_projection(
         "GB category attribute is required"
     )
     assert "GB category attribute is required" in response["message"]
+    assert response["write_request_count"] == 6
+    assert response["external_write_count"] == 5
+    assert "target=tiktok:GB" in caplog.text
+    assert "provider_code=category_required" in caplog.text
+    assert "provider_reason=GB category attribute is required" in caplog.text
+
+
+def test_http_handler_executes_the_real_independent_publisher_contract(
+    monkeypatch,
+    product_http_server,
+):
+    from modules.miaoshou.tiktok_publisher import (
+        PUBLISH_PATH,
+        READ_SHOP_DRAFT_PATH,
+        READ_SITE_DRAFT_PATH,
+    )
+    from tests.test_tiktok_independent_publisher import _publisher
+
+    plan = _approved_plan(persist_category_decisions=False)
+    contexts = _publish_contexts(plan)
+    server_snapshot = product_server._build_approved_tiktok_publish_snapshot
+    monkeypatch.setattr(
+        product_server, "_tiktok_release_store", lambda: _ReleaseStore(plan)
+    )
+    monkeypatch.setattr(
+        product_server,
+        "_collectbox_action_store",
+        lambda: _CollectBoxStore(contexts),
+    )
+    snapshot = server_snapshot(_request_body(plan))
+    publisher, transport = _publisher(snapshot)
+    monkeypatch.setattr(product_server, "_tiktok_publisher", lambda: publisher)
+    monkeypatch.setattr(
+        product_server,
+        "_start_oneclick_release",
+        lambda *_args, **_kwargs: pytest.fail("legacy one-click path was called"),
+    )
+
+    status, response = _post(
+        product_http_server + "/api/product-workspace/publish-tiktok",
+        _request_body(plan),
+    )
+
+    assert status == 200
+    assert response["success"] is True
+    assert response["successful_target_count"] == 6
+    assert response["failed_targets"] == []
+    assert response["write_request_count"] == 7
+    assert response["external_write_count"] == 7
+    read_paths = {READ_SITE_DRAFT_PATH, READ_SHOP_DRAFT_PATH}
+    assert len([call for call in transport.calls if call[0] in read_paths]) == 6
+    assert len([call for call in transport.calls if call[0] == PUBLISH_PATH]) == 6

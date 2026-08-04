@@ -18,6 +18,12 @@ from domains.channel_operations.oneclick_release_adapters import (
     production_adapter_registry,
 )
 from modules.miaoshou import oneclick_release as miaoshou
+from modules.miaoshou.tiktok_publisher import (
+    PUBLISH_PATH as INDEPENDENT_PUBLISH_PATH,
+    READ_SHOP_DRAFT_PATH,
+    READ_SITE_DRAFT_PATH,
+    MiaoshouTikTokTransport,
+)
 from modules.products import server as product_server
 from shared_platform import release_store as release_store_module
 from shared_platform.collectbox_action import (
@@ -28,6 +34,7 @@ from shared_platform.collectbox_action import (
     CollectBoxPlatformResult,
     CollectBoxTargetDetailIdentity,
     CollectBoxTargetOutcome,
+    approved_plan_identity,
 )
 from shared_platform.oneclick_release_controlplane import (
     OneClickReleaseStore,
@@ -41,6 +48,11 @@ from tests.test_oneclick_miaoshou_direct_store import (
     _plan_payload as _miaoshou_plan_payload,
     _tiktok_category_decisions,
 )
+from tests.test_tiktok_independent_publisher import (
+    FakeLowestTransport,
+    _publisher as _independent_publisher,
+)
+from domains.channel_operations.tiktok_publisher import TikTokPublisher
 
 
 TIKTOK_TARGETS = (
@@ -191,26 +203,50 @@ def _persist_collectbox_result(
     return projection
 
 
-def _start_tiktok_through_handler(release, plan, monkeypatch):
+def _start_tiktok_through_handler(
+    release,
+    plan,
+    monkeypatch,
+    *,
+    publisher_factory=None,
+):
     woken: list[str] = []
     monkeypatch.setattr(
         release_store_module, "default_release_store", lambda: release
     )
     monkeypatch.setattr(
         product_server,
-        "_release_dashboard_for_request",
-        lambda _data: ({"fixture": "approved-current-facts"}, None),
-    )
-    monkeypatch.setattr(
-        product_server,
-        "_release_plan_payload_from_dashboard",
-        lambda _dashboard, **_kwargs: (dict(plan["payload"]), []),
-    )
-    monkeypatch.setattr(
-        product_server,
         "_wake_oneclick_worker",
         lambda job_id: woken.append(job_id),
     )
+    identity = approved_plan_identity(plan)
+    request_body = {
+        "offer_id": identity["offer_id"],
+        "plan_id": identity["plan_id"],
+        "product_revision": identity["product_revision"],
+        "payload_digest": identity["payload_digest"],
+        "targets_digest": identity["targets_digest"],
+        "confirmation_token": plan["confirmation_token"],
+        "publication_targets": list(plan["targets"]),
+        "confirm_publish": True,
+    }
+    transport = None
+    try:
+        snapshot = product_server._build_approved_tiktok_publish_snapshot(
+            request_body
+        )
+    except ValueError:
+        monkeypatch.setattr(
+            product_server,
+            "_tiktok_publisher",
+            lambda: pytest.fail("invalid snapshot must not reach publisher"),
+        )
+    else:
+        factory = publisher_factory or _independent_publisher
+        publisher, transport = factory(snapshot)
+        monkeypatch.setattr(
+            product_server, "_tiktok_publisher", lambda: publisher
+        )
     server = ThreadingHTTPServer(("127.0.0.1", 0), product_server.Handler)
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -221,19 +257,13 @@ def _start_tiktok_through_handler(release, plan, monkeypatch):
                 f"http://127.0.0.1:{server.server_address[1]}"
                 "/api/product-workspace/publish-tiktok"
             ),
-            {
-                "offer_id": plan["payload"]["product_id"],
-                "plan_id": plan["plan_id"],
-                "confirmation_token": plan["confirmation_token"],
-                "publication_targets": list(plan["targets"]),
-                "confirm_publish": True,
-            },
+            request_body,
         )
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
-    return status, body, woken
+    return status, body, woken, transport
 
 
 def test_persisted_collectbox_drafts_dispatch_six_tiktok_publish_tasks(
@@ -245,96 +275,30 @@ def test_persisted_collectbox_drafts_dispatch_six_tiktok_publish_tasks(
     public_text = json.dumps(projection, ensure_ascii=False, sort_keys=True)
     assert all(str(91000 + index) not in public_text for index in range(1, 7))
 
-    control = OneClickReleaseStore(release.path)
-    registry = production_adapter_registry()
-    publish_calls: list[dict[str, object]] = []
-
-    def fake_post(path, body):
-        if path == miaoshou.PUBLISH_PATH:
-            publish_calls.append(dict(body))
-            return {"result": "success", "data": {"accepted": True}}
-        if path.endswith("search_collect_box_detail_list"):
-            return {
-                "result": "success",
-                "data": {
-                    "detailList": [],
-                    "totalCount": 0,
-                    "hasNextPage": False,
-                },
-            }
-        return {"result": "success", "data": {}}
-
-    miaoshou.configure_prepare_post_factory(lambda: fake_post)
-    miaoshou.configure_runtime_transport_factory(
-        lambda: miaoshou.MiaoshouRuntimeTransport(post=fake_post)
+    status, body, woken, transport = _start_tiktok_through_handler(
+        release, plan, monkeypatch
     )
-
-    woken: list[str] = []
-    monkeypatch.setattr(
-        release_store_module, "default_release_store", lambda: release
-    )
-    monkeypatch.setattr(
-        product_server,
-        "_release_dashboard_for_request",
-        lambda _data: ({"fixture": "approved-current-facts"}, None),
-    )
-    monkeypatch.setattr(
-        product_server,
-        "_release_plan_payload_from_dashboard",
-        lambda _dashboard, **_kwargs: (dict(plan["payload"]), []),
-    )
-    monkeypatch.delenv("ORBIT_ONECLICK_EXTERNAL_DISPATCH", raising=False)
-    monkeypatch.setattr(
-        product_server,
-        "_wake_oneclick_worker",
-        lambda job_id: woken.append(job_id),
-    )
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), product_server.Handler)
-    server.daemon_threads = True
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        status, body = _post_json(
-            (
-                f"http://127.0.0.1:{server.server_address[1]}"
-                "/api/product-workspace/publish-tiktok"
-            ),
-            {
-                "offer_id": plan["payload"]["product_id"],
-                "plan_id": plan["plan_id"],
-                "confirmation_token": plan["confirmation_token"],
-                "publication_targets": list(plan["targets"]),
-                "confirm_publish": True,
-            },
-        )
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
 
     assert status == 200
     assert body["success"] is True
     assert body["platform"] == "TIKTOK"
     assert body["successful_target_count"] == 6
     assert woken == []
-
-    job = control.get_job(plan_id=plan["plan_id"])
-    tiktok_rows = {
-        row["target_label"]: row
-        for row in job["targets"]
-        if row["target_label"] in TIKTOK_TARGETS
-    }
-
-    observed = {
-        label: (row.get("reason") or {}).get("code")
-        for label, row in tiktok_rows.items()
-    }
-    assert (observed, len(publish_calls)) == (
-        {label: "miaoshou_submission_accepted" for label in TIKTOK_TARGETS},
-        6,
-    )
-    assert all(row["status"] == "SUBMITTED_UNVERIFIED" for row in tiktok_rows.values())
+    assert body["external_write_count"] == 7
+    assert body["write_request_count"] == 7
+    assert transport is not None
+    read_calls = [
+        call
+        for call in transport.calls
+        if call[0] in {READ_SITE_DRAFT_PATH, READ_SHOP_DRAFT_PATH}
+    ]
+    publish_calls = [
+        body
+        for path, body in transport.calls
+        if path == INDEPENDENT_PUBLISH_PATH
+    ]
+    assert len(read_calls) == 6
+    assert len(publish_calls) == 6
     assert {
         (int(body["detailIds"][0]), int(body["shopIds"][0]))
         for body in publish_calls
@@ -343,64 +307,13 @@ def test_persisted_collectbox_drafts_dispatch_six_tiktok_publish_tasks(
         for index, label in enumerate(TIKTOK_TARGETS, start=1)
     }
 
-    restarted_worker = OneClickReleaseWorker(
-        OneClickReleaseStore(release.path),
-        lambda: registry,
-        dispatch_enabled=lambda: True,
-    )
-    assert restarted_worker.advance_once(job["job_id"]) is False
-    assert len(publish_calls) == 6
 
-    proof_reads = []
-    monkeypatch.setattr(
-        CollectBoxActionStore,
-        "internal_tiktok_publish_contexts",
-        lambda self, *, plan_id: proof_reads.append(plan_id),
-    )
-    control.prepare_job(job["job_id"], registry)
-    assert proof_reads == []
-
-
-def test_six_tiktok_publish_retries_exact_qps_rejection_without_unknown(
+def test_six_tiktok_publish_calls_each_target_once_without_oneclick_job(
     tmp_path, monkeypatch
 ):
     release, plan = _approved_tiktok_context(tmp_path)
     _persist_collectbox_result(CollectBoxActionStore(release.path), plan)
-    attempts: dict[int, int] = {}
-    attempt_times: list[float] = []
-    waits: list[float] = []
-    clock = [0.0]
-
-    def fake_wait(seconds: float) -> None:
-        waits.append(seconds)
-        clock[0] += seconds
-
-    def fake_post(path, body):
-        assert path == miaoshou.PUBLISH_PATH
-        attempt_times.append(clock[0])
-        detail_id = int(body["detailIds"][0])
-        attempts[detail_id] = attempts.get(detail_id, 0) + 1
-        if attempts[detail_id] == 1:
-            raise miaoshou.MiaoshouBusinessRejectedError(
-                "rate limited", code="accountQpsRateLimit"
-            )
-        return {"result": "success", "data": {"accepted": True}}
-
-    monkeypatch.setattr(miaoshou, "_publish_wait", fake_wait, raising=False)
-    monkeypatch.setattr(
-        miaoshou, "_publish_now", lambda: clock[0], raising=False
-    )
-    monkeypatch.setattr(
-        miaoshou, "_last_publish_attempt_at", None, raising=False
-    )
-    miaoshou.configure_runtime_transport_factory(
-        lambda: miaoshou.MiaoshouRuntimeTransport(
-            post=fake_post,
-            enforce_publish_pacing=True,
-        )
-    )
-
-    status, body, woken = _start_tiktok_through_handler(
+    status, body, woken, transport = _start_tiktok_through_handler(
         release, plan, monkeypatch
     )
 
@@ -408,28 +321,11 @@ def test_six_tiktok_publish_retries_exact_qps_rejection_without_unknown(
     assert body["success"] is True
     assert body["successful_target_count"] == 6
     assert woken == []
-    assert sorted(attempts.values()) == [2, 2, 2, 2, 2, 2]
-    assert len(waits) >= 6
-    assert all(
-        current - previous + 1e-9
-        >= miaoshou.PUBLISH_MIN_INTERVAL_SECONDS
-        for previous, current in zip(attempt_times, attempt_times[1:])
-    )
-
-    job = OneClickReleaseStore(release.path).get_job(plan_id=plan["plan_id"])
-    rows = {
-        row["target_label"]: row
-        for row in job["targets"]
-        if row["target_label"] in TIKTOK_TARGETS
-    }
-    assert all(
-        row["status"] == "SUBMITTED_UNVERIFIED" for row in rows.values()
-    )
-    assert all(
-        "UNKNOWN"
-        not in row["dispatch_ledger"]["cumulative_external_write_classes"]
-        for row in rows.values()
-    )
+    assert transport is not None
+    assert len(
+        [call for call in transport.calls if call[0] == INDEPENDENT_PUBLISH_PATH]
+    ) == 6
+    assert OneClickReleaseStore(release.path).get_job(plan_id=plan["plan_id"]) is None
 
 
 def test_old_collectbox_receipt_without_internal_proof_is_409_zero_mutation(
@@ -447,15 +343,13 @@ def test_old_collectbox_receipt_without_internal_proof_is_409_zero_mutation(
             (plan["plan_id"],),
         ).fetchone()[0]
 
-    status, body, woken = _start_tiktok_through_handler(
+    status, body, woken, _transport = _start_tiktok_through_handler(
         release, plan, monkeypatch
     )
 
     assert status == 409
-    assert body["error"]["code"] == (
-        "step1_collectbox_publish_proof_required"
-    )
-    assert body["external_writes_performed"] == []
+    assert body["error"]["code"] == "tiktok_approved_snapshot_invalid"
+    assert body["external_write_count"] == 0
     assert woken == []
     with sqlite3.connect(release.path) as connection:
         assert connection.execute(
@@ -471,64 +365,37 @@ def test_publish_transport_ambiguity_records_one_possible_write_per_target(
 ):
     release, plan = _approved_tiktok_context(tmp_path)
     _persist_collectbox_result(CollectBoxActionStore(release.path), plan)
-    attempts: list[dict[str, object]] = []
+    def ambiguous_factory(snapshot):
+        fake = FakeLowestTransport(snapshot)
 
-    def ambiguous_post(path, body):
-        assert path == miaoshou.PUBLISH_PATH
-        attempts.append(dict(body))
-        raise TimeoutError("response lost after submission")
+        def ambiguous_post(path, payload):
+            response = fake(path, payload)
+            if path == INDEPENDENT_PUBLISH_PATH:
+                raise TimeoutError("response lost after submission")
+            return response
 
-    miaoshou.configure_runtime_transport_factory(
-        lambda: miaoshou.MiaoshouRuntimeTransport(post=ambiguous_post)
-    )
-    status, body, woken = _start_tiktok_through_handler(
-        release, plan, monkeypatch
+        return TikTokPublisher(
+            transport=MiaoshouTikTokTransport(post=ambiguous_post)
+        ), fake
+
+    status, body, woken, transport = _start_tiktok_through_handler(
+        release, plan, monkeypatch, publisher_factory=ambiguous_factory
     )
     assert status == 200
     assert body["success"] is False
     assert body["successful_target_count"] == 0
+    assert body["unknown_target_count"] == 6
+    assert body["external_write_count"] is None
+    assert body["write_request_count"] == 7
     assert woken == []
-
-    control = OneClickReleaseStore(release.path)
-    job = control.get_job(plan_id=plan["plan_id"])
-    rows = {
-        row["target_label"]: row
-        for row in job["targets"]
-        if row["target_label"] in TIKTOK_TARGETS
-    }
-    assert len(attempts) == 6
-    actual = {
-        (
-            row["status"],
-            tuple(
-                row["dispatch_ledger"][
-                    "cumulative_external_write_classes"
-                ]
-            ),
-            row["dispatch_ledger"][
-                "cumulative_external_write_count"
-            ],
-            row["dispatch_ledger"][
-                "confirmed_external_write_count_lower_bound"
-            ],
-            row["dispatch_ledger"][
-                "possible_external_write_count_upper_bound"
-            ],
-        )
-        for row in rows.values()
-    }
-    assert actual == {
-        (
-            "RECONCILIATION_REQUIRED",
-            ("miaoshou:tiktok_publish:submission", "UNKNOWN"),
-            None,
-            0,
-            1,
-        )
-    }
+    assert transport is not None
+    assert len(
+        [call for call in transport.calls if call[0] == INDEPENDENT_PUBLISH_PATH]
+    ) == 6
+    assert OneClickReleaseStore(release.path).get_job(plan_id=plan["plan_id"]) is None
 
 
-def test_missing_gb_detail_proof_blocks_only_gb_and_publishes_other_five(
+def test_missing_gb_detail_proof_blocks_exact_six_target_snapshot_prewrite(
     tmp_path, monkeypatch
 ):
     release, plan = _approved_tiktok_context(tmp_path)
@@ -537,43 +404,16 @@ def test_missing_gb_detail_proof_blocks_only_gb_and_publishes_other_five(
         plan,
         omit_detail_targets=("tiktok:GB",),
     )
-    publish_calls: list[dict[str, object]] = []
-
-    def fake_post(path, body):
-        if path == miaoshou.PUBLISH_PATH:
-            publish_calls.append(dict(body))
-            return {"result": "success", "data": {"accepted": True}}
-        raise AssertionError(f"unexpected Miaoshou call: {path}")
-
-    miaoshou.configure_runtime_transport_factory(
-        lambda: miaoshou.MiaoshouRuntimeTransport(post=fake_post)
-    )
-    status, body, woken = _start_tiktok_through_handler(
+    status, body, woken, transport = _start_tiktok_through_handler(
         release, plan, monkeypatch
     )
-    assert status == 200
+    assert status == 409
     assert body["success"] is False
-    assert body["successful_target_count"] == 5
-    assert body["failed_targets"] == ["tiktok:GB"]
+    assert body["error"]["code"] == "tiktok_approved_snapshot_invalid"
+    assert body["external_write_count"] == 0
     assert woken == []
-
-    control = OneClickReleaseStore(release.path)
-    job = control.get_job(plan_id=plan["plan_id"])
-    rows = {
-        row["target_label"]: row
-        for row in job["targets"]
-        if row["target_label"] in TIKTOK_TARGETS
-    }
-    assert len(publish_calls) == 5
-    assert rows["tiktok:GB"]["status"] == "BLOCKED_CAPABILITY"
-    assert rows["tiktok:GB"]["reason"]["code"] == (
-        "collectbox_publish_proof_missing"
-    )
-    assert all(
-        rows[label]["status"] == "SUBMITTED_UNVERIFIED"
-        for label in TIKTOK_TARGETS
-        if label != "tiktok:GB"
-    )
+    assert transport is None
+    assert OneClickReleaseStore(release.path).get_job(plan_id=plan["plan_id"]) is None
 
 
 def test_prepare_job_pins_one_collectbox_receipt_during_concurrent_reimport(

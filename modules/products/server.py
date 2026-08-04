@@ -26,6 +26,7 @@ from uuid import uuid4
 
 from core.config import ROOT
 from modules.products import costs as cost_mod
+from shared_platform.product_snapshot import TIKTOK_PUBLISH_TARGETS
 from shared_platform.registry import http_registry
 
 WEB_DIR = ROOT / "web"
@@ -66,6 +67,7 @@ _READONLY_SHOPEE_RECONCILE_CHECKS = frozenset(
 )
 _product_approval_lock = threading.Lock()
 _release_execution_lock = threading.Lock()
+_tiktok_publish_lock = threading.Lock()
 _shopee_global_publish_lock = threading.Lock()
 _ozon_publish_lock = threading.Lock()
 _PLATFORM_PUBLISH_LOGGER = logging.getLogger("product_workspace.platform_publish")
@@ -9278,12 +9280,254 @@ def _start_oneclick_release(
         )
 
 
-def _start_tiktok_release(data: dict) -> tuple[int, dict]:
-    return _start_oneclick_release(
-        data,
-        batch_scope="TIKTOK",
-        require_collectbox_platform="TIKTOK",
+_INDEPENDENT_TIKTOK_TARGETS = TIKTOK_PUBLISH_TARGETS
+
+
+def _tiktok_release_store():
+    from shared_platform.release_store import default_release_store
+
+    return default_release_store()
+
+
+def _tiktok_publisher():
+    from modules.miaoshou.tiktok_publisher import production_tiktok_publisher
+
+    return production_tiktok_publisher()
+
+
+def _tiktok_snapshot_failure(detail: str) -> tuple[int, dict]:
+    return 409, {
+        "schema_version": "miaoshou-platform-publish-result/v1",
+        "ok": False,
+        "success": False,
+        "platform": "TIKTOK",
+        "message": "TikTok 发布失败：批准快照或妙手草稿身份不完整",
+        "error": {
+            "category": "IDENTITY",
+            "code": "tiktok_approved_snapshot_invalid",
+            "detail_digest": _server_canonical_digest(detail),
+        },
+        "external_write_count": 0,
+        "target_count": len(_INDEPENDENT_TIKTOK_TARGETS),
+        "successful_target_count": 0,
+        "failed_targets": list(_INDEPENDENT_TIKTOK_TARGETS),
+        "retryable": True,
+    }
+
+
+def _build_approved_tiktok_publish_snapshot(data: dict) -> dict:
+    from shared_platform.collectbox_action import approved_plan_identity
+    from shared_platform.product_snapshot import (
+        build_approved_tiktok_publish_snapshot,
     )
+
+    if type(data.get("plan_id")) is not str or not data["plan_id"].strip():
+        raise ValueError("plan_id is required")
+    plan = _tiktok_release_store().get_plan(data["plan_id"].strip())
+    identity = approved_plan_identity(plan)
+    request_identity = {
+        "plan_id": data.get("plan_id"),
+        "offer_id": str(data.get("offer_id")),
+        "product_revision": data.get("product_revision"),
+        "payload_digest": data.get("payload_digest"),
+        "targets_digest": data.get("targets_digest"),
+    }
+    if request_identity != identity:
+        raise ValueError("request does not match the approved plan identity")
+    if (
+        type(data.get("confirmation_token")) is not str
+        or data["confirmation_token"] != plan.get("confirmation_token")
+        or data.get("publication_targets") != plan.get("targets")
+    ):
+        raise ValueError("request does not match the approved plan authority")
+    contexts = _collectbox_action_store().internal_tiktok_publish_contexts(
+        plan_id=identity["plan_id"]
+    )
+    return build_approved_tiktok_publish_snapshot(
+        plan,
+        collectbox_contexts=contexts,
+    )
+
+
+def _safe_tiktok_provider_field(value: object, fallback: str) -> str:
+    if type(value) is not str or not value.strip():
+        return fallback
+    return _safe_platform_publish_error(RuntimeError(value.strip()))
+
+
+def _project_tiktok_publish_receipt(
+    *, snapshot: dict, receipt: object
+) -> tuple[bool, dict]:
+    if not isinstance(receipt, dict):
+        raise ValueError("TikTok publisher returned a non-mapping receipt")
+    if (
+        receipt.get("schema_version") != "tiktok-publish-receipt/v1"
+        or receipt.get("offer_id") != snapshot["offer_id"]
+        or receipt.get("plan_id") != snapshot["plan_id"]
+        or receipt.get("snapshot_digest") != _server_canonical_digest(snapshot)
+    ):
+        raise ValueError("TikTok publisher receipt identity drifted")
+    rows = receipt.get("targets")
+    if not isinstance(rows, list) or [
+        row.get("target_label") if isinstance(row, dict) else None for row in rows
+    ] != list(_INDEPENDENT_TIKTOK_TARGETS):
+        raise ValueError("TikTok publisher receipt targets drifted")
+    counts = {"ACCEPTED": 0, "REJECTED": 0, "UNKNOWN": 0, "NOT_ATTEMPTED": 0}
+    public_rows = []
+    external_write_counts: list[int | None] = []
+    write_request_counts: list[int] = []
+    for row in rows:
+        outcome = row.get("outcome")
+        if outcome not in counts:
+            raise ValueError("TikTok publisher receipt outcome is invalid")
+        external_write_count = row.get("external_write_count")
+        write_request_count = row.get("write_request_count")
+        if (
+            (
+                external_write_count is not None
+                and (
+                    type(external_write_count) is not int
+                    or external_write_count < 0
+                )
+            )
+            or type(write_request_count) is not int
+            or write_request_count < 0
+        ):
+            raise ValueError("TikTok publisher write counts are invalid")
+        counts[outcome] += 1
+        external_write_counts.append(external_write_count)
+        write_request_counts.append(write_request_count)
+        public_row = {
+            "target_label": row["target_label"],
+            "outcome": outcome,
+            "provider_code": _safe_tiktok_provider_field(
+                row.get("provider_code"), "provider_result_unavailable"
+            ),
+            "provider_reason": _safe_tiktok_provider_field(
+                row.get("provider_reason"), "妙手未返回具体原因"
+            ),
+            "external_write_count": external_write_count,
+            "write_request_count": write_request_count,
+        }
+        public_rows.append(public_row)
+        _PLATFORM_PUBLISH_LOGGER.info(
+            "platform_publish_target platform=TIKTOK offer_id=%s "
+            "target=%s outcome=%s provider_code=%s provider_reason=%s "
+            "write_request_count=%s external_write_count=%s",
+            snapshot["offer_id"],
+            public_row["target_label"],
+            public_row["outcome"],
+            public_row["provider_code"],
+            public_row["provider_reason"],
+            public_row["write_request_count"],
+            public_row["external_write_count"],
+        )
+    expected_counts = {
+        "accepted_target_count": counts["ACCEPTED"],
+        "rejected_target_count": counts["REJECTED"],
+        "unknown_target_count": counts["UNKNOWN"],
+        "not_attempted_target_count": counts["NOT_ATTEMPTED"],
+    }
+    if any(receipt.get(key) != value for key, value in expected_counts.items()):
+        raise ValueError("TikTok publisher receipt counts drifted")
+    success = counts["ACCEPTED"] == len(_INDEPENDENT_TIKTOK_TARGETS)
+    failed = [
+        row["target_label"] for row in public_rows if row["outcome"] != "ACCEPTED"
+    ]
+    first_failure = next(
+        (row for row in public_rows if row["outcome"] != "ACCEPTED"), None
+    )
+    message = "TikTok 发布成功"
+    error = None
+    if first_failure is not None:
+        message = f"TikTok 发布未全部成功：{first_failure['provider_reason']}"
+        error = {
+            "category": "PROVIDER",
+            "code": "tiktok_target_not_accepted",
+            "provider_code": first_failure["provider_code"],
+            "provider_reason": first_failure["provider_reason"],
+            "detail_digest": _server_canonical_digest(first_failure),
+        }
+    return success, {
+        "schema_version": "miaoshou-platform-publish-result/v1",
+        "ok": success,
+        "success": success,
+        "platform": "TIKTOK",
+        "message": message,
+        "target_count": len(_INDEPENDENT_TIKTOK_TARGETS),
+        "successful_target_count": counts["ACCEPTED"],
+        "accepted_target_count": counts["ACCEPTED"],
+        "rejected_target_count": counts["REJECTED"],
+        "unknown_target_count": counts["UNKNOWN"],
+        "not_attempted_target_count": counts["NOT_ATTEMPTED"],
+        "failed_targets": failed,
+        "write_request_count": sum(write_request_counts),
+        "external_write_count": (
+            sum(external_write_counts)
+            if all(value is not None for value in external_write_counts)
+            else None
+        ),
+        "retryable": True,
+        "targets": public_rows,
+        **({"error": error} if error is not None else {}),
+    }
+
+
+def _start_tiktok_release(data: dict) -> tuple[int, dict]:
+    if data.get("confirm_publish") is not True:
+        return 400, {
+            "ok": False,
+            "success": False,
+            "platform": "TIKTOK",
+            "message": "TikTok 发布失败：需要明确确认发布",
+            "retryable": True,
+        }
+    try:
+        snapshot = _build_approved_tiktok_publish_snapshot(data)
+    except (TypeError, ValueError) as error:
+        return _tiktok_snapshot_failure(str(error))
+    try:
+        publisher = _tiktok_publisher()
+    except (ImportError, RuntimeError) as error:
+        return 503, {
+            "ok": False,
+            "success": False,
+            "platform": "TIKTOK",
+            "message": "TikTok 发布失败：独立发布器暂不可用",
+            "error": {
+                "category": "CAPABILITY",
+                "code": "tiktok_publisher_unavailable",
+                "detail_digest": _server_canonical_digest(str(error)),
+            },
+            "external_write_count": 0,
+            "retryable": True,
+        }
+    with _tiktok_publish_lock:
+        try:
+            receipt = publisher.publish(snapshot)
+            success, result = _project_tiktok_publish_receipt(
+                snapshot=snapshot,
+                receipt=receipt,
+            )
+        except Exception as error:
+            reason = _safe_platform_publish_error(error)
+            _PLATFORM_PUBLISH_LOGGER.warning(
+                "platform_publish_failed platform=TIKTOK offer_id=%s reason=%s",
+                snapshot["offer_id"],
+                reason,
+            )
+            return 200, {
+                "schema_version": "miaoshou-platform-publish-result/v1",
+                "ok": False,
+                "success": False,
+                "platform": "TIKTOK",
+                "message": f"TikTok 发布失败：{reason}",
+                "target_count": len(_INDEPENDENT_TIKTOK_TARGETS),
+                "successful_target_count": 0,
+                "failed_targets": list(_INDEPENDENT_TIKTOK_TARGETS),
+                "retryable": True,
+            }
+    return 200, result
 
 
 def _approved_shopee_global_publish_facts(payload: dict) -> dict:

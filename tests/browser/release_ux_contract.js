@@ -8077,7 +8077,14 @@ async function simplifiedPlatformPublishContract(browser, viewport) {
     const url = new URL(request.url());
     if (url.origin !== baseUrl) return route.abort("blockedbyclient");
     if (!url.pathname.startsWith("/api/")) return route.continue();
-    requests.push({ method: request.method(), path: url.pathname });
+    const requestBody = request.method() === "POST"
+      ? request.postDataJSON()
+      : null;
+    requests.push({
+      method: request.method(),
+      path: url.pathname,
+      body: requestBody,
+    });
     if (url.pathname === "/api/product-workspace/dashboard") {
       return route.fulfill(jsonResponse(oneClickDashboard()));
     }
@@ -8096,7 +8103,14 @@ async function simplifiedPlatformPublishContract(browser, viewport) {
           ok: false,
           platform: "TIKTOK",
           success: false,
-          message: "TikTok 发布失败：妙手拒绝了本次请求",
+          message: "",
+          error: {
+            category: "PROVIDER",
+            code: "tiktok_target_not_accepted",
+            provider_code: "category_required",
+            provider_reason: "GB category attribute is required",
+            detail_digest: "f".repeat(64),
+          },
           target_count: 6,
           successful_target_count: 0,
           failed_targets: ["tiktok:LH_PH"],
@@ -8188,6 +8202,8 @@ async function simplifiedPlatformPublishContract(browser, viewport) {
     check(
       combined.includes("TikTok")
         && combined.includes("发布失败")
+        && combined.includes("GB category attribute is required")
+        && combined.includes("category_required")
         && combined.includes("Shopee 全球商品")
         && combined.includes("发布成功"),
       `simple publish ${suffix}: independent success and failure remain visible`,
@@ -8263,6 +8279,22 @@ async function simplifiedPlatformPublishContract(browser, viewport) {
       row.path === "/api/product-workspace/publish-status"
       || row.path === "/api/product-workspace/publish-preview"
     ));
+    const tiktokPosts = requests.filter(
+      (row) => row.path === "/api/product-workspace/publish-tiktok",
+    );
+    check(
+      tiktokPosts.length === 2
+        && tiktokPosts.every((row) => (
+          row.body?.offer_id === "3828540231"
+          && row.body?.plan_id === "omnichannel:oneclick-ui"
+          && row.body?.product_revision === 31
+          && row.body?.payload_digest === "a".repeat(64)
+          && row.body?.targets_digest === "b".repeat(64)
+          && row.body?.confirm_publish === true
+        )),
+      `simple publish ${suffix}: TikTok POST binds the approved snapshot identity`,
+      tiktokPosts,
+    );
     const finalText = await page.locator("#oneClickExecutionPreview").innerText();
     check(statusReads.length === 0, `simple publish ${suffix}: zero post/publish polling`, statusReads);
     check(

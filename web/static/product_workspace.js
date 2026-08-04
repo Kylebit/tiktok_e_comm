@@ -7898,6 +7898,9 @@
     return {
       offer_id: currentData?.product?.offer_id,
       seller_sku: currentData?.product?.seller_sku_candidate,
+      product_revision: currentData?.product?.revision,
+      payload_digest: plan.payload_digest,
+      targets_digest: plan.targets_digest,
       publication_targets: [...(currentData?.publication_scope?.selected_labels || [])],
       plan_id: plan.plan_id,
       confirmation_token: plan.confirmation_token,
@@ -8645,6 +8648,27 @@
 
   function platformPublishErrorMessage(payload, status, platformName) {
     const structured = payload?.error;
+    const providerCode = (
+      structured
+      && typeof structured === "object"
+      && !Array.isArray(structured)
+      && typeof structured.provider_code === "string"
+    )
+      ? structured.provider_code.trim()
+      : "";
+    const providerReason = (
+      structured
+      && typeof structured === "object"
+      && !Array.isArray(structured)
+      && typeof structured.provider_reason === "string"
+    )
+      ? structured.provider_reason.trim()
+      : "";
+    if (providerReason) {
+      return providerCode
+        ? `${platformName} 发布失败：${providerReason}（妙手代码：${providerCode}）`
+        : `${platformName} 发布失败：${providerReason}`;
+    }
     const code = (
       structured
       && typeof structured === "object"

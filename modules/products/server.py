@@ -9682,6 +9682,33 @@ def _safe_platform_publish_error(error: Exception) -> str:
     return (detail or type(error).__name__)[:300]
 
 
+def _safe_ozon_import_reason(result: object) -> str:
+    """Project a provider rejection without leaking raw Ozon/API payloads."""
+
+    if not isinstance(result, dict):
+        return "Ozon official API returned an invalid import response"
+
+    candidates: list[object] = []
+    errors = result.get("errors")
+    if isinstance(errors, (list, tuple)):
+        for item in errors:
+            if isinstance(item, dict):
+                candidates.extend(item.get(key) for key in ("code", "message"))
+            else:
+                candidates.append(item)
+    elif errors is not None:
+        candidates.append(errors)
+    candidates.extend(result.get(key) for key in ("error", "message", "step"))
+    text = "; ".join(
+        str(value).strip()
+        for value in candidates
+        if isinstance(value, (str, int, float)) and str(value).strip()
+    )
+    if not text:
+        text = "Ozon official API did not accept the import"
+    return _safe_platform_publish_error(RuntimeError(text))
+
+
 def _start_shopee_global_release(data: dict) -> tuple[int, dict]:
     """Create or update only the approved Shopee CNSC global product."""
 
@@ -9825,7 +9852,7 @@ def _start_ozon_release(data: dict) -> tuple[int, dict]:
                 )
             )
             if not accepted:
-                raise RuntimeError("Ozon official API did not accept the import")
+                raise RuntimeError(_safe_ozon_import_reason(result))
         except Exception as error:
             reason = _safe_platform_publish_error(error)
             _PLATFORM_PUBLISH_LOGGER.warning(

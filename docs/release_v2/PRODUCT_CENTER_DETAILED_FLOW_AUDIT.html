@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>商品发布中心 · 超细粒度流程图审计</title>
+  <title>商品发布中心 · 需求与架构流程审计</title>
   <style>
     :root {
       color-scheme: light;
@@ -88,6 +88,37 @@
     td.yes { color: #176b5b; font-weight: 700; }
     td.no { color: #a2443e; font-weight: 700; }
     .cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .three-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+    .audience-card, .requirement-card, .layer-card {
+      padding: 15px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: white;
+    }
+    .audience-card h3, .requirement-card h3, .layer-card h3 { margin: 0 0 6px; font-size: 17px; }
+    .audience-card p, .requirement-card p, .layer-card p { margin: 4px 0; color: var(--muted); }
+    .business-outcome {
+      margin: 18px 0;
+      padding: 20px;
+      border: 1px solid #8dc7b9;
+      border-radius: 14px;
+      background: linear-gradient(135deg, #e9f8f3, #f7fcfa);
+    }
+    .business-outcome h3 { margin: 0 0 7px; color: #12594c; }
+    .business-outcome p { margin: 5px 0; }
+    .reading-path { display: flex; flex-wrap: wrap; gap: 10px; margin: 14px 0; }
+    .reading-path a { padding: 9px 12px; border: 1px solid #8fb9ae; border-radius: 9px; background: white; color: #175d50; text-decoration: none; font-weight: 700; }
+    .rule-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; counter-reset: rule; }
+    .rule { position: relative; padding: 12px 12px 12px 56px; border: 1px solid var(--line); border-radius: 10px; background: white; }
+    .rule::before { counter-increment: rule; content: "BR-" counter(rule, decimal-leading-zero); position: absolute; left: 11px; top: 12px; color: #176b5b; font-weight: 800; font-size: 12px; }
+    .rule strong { display: block; }
+    .rule small { display: block; color: var(--muted); margin-top: 3px; }
+    .architecture-band { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 12px; margin: 10px 0; align-items: stretch; }
+    .architecture-band > strong { display: grid; place-items: center; padding: 12px; color: white; background: #28685c; border-radius: 10px; text-align: center; }
+    .architecture-band > div { padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: white; }
+    .architecture-band p { margin: 3px 0; color: var(--muted); }
+    .plain-language { margin: 12px 0; padding: 10px 13px; background: #edf7ff; border-left: 4px solid var(--read-border); border-radius: 5px; }
+    .tech-layer-label { display: inline-block; margin-left: 8px; padding: 2px 7px; border-radius: 999px; background: #eef0f0; color: #63706d; font-size: 11px; vertical-align: middle; }
     ul.compact { margin: 8px 0; padding-left: 20px; }
     .source { margin-top: 12px; padding-top: 9px; border-top: 1px dashed var(--line); color: #657571; font-size: 12px; }
     .back { float: right; font-size: 12px; font-weight: normal; }
@@ -98,12 +129,14 @@
       aside h2 { column-span: all; }
       main { padding-top: 20px; }
       .cols { grid-template-columns: 1fr; }
+      .three-cols, .rule-list { grid-template-columns: 1fr; }
     }
     @media (max-width: 560px) {
       aside { column-count: 1; }
       .flow { flex-direction: column; overflow: visible; }
       .node { max-width: none; width: 100%; }
       .arrow { transform: rotate(90deg); min-height: 22px; }
+      .architecture-band { grid-template-columns: 1fr; }
     }
     @media print {
       aside { display: none; }
@@ -116,8 +149,8 @@
 <body>
   <header id="top">
     <p>WO-20260804-PRODUCT-CENTER-FLOW-AUDIT-105 · 00 共享平台 · 源码只读审计</p>
-    <h1>商品发布中心：超细粒度流程图审计</h1>
-    <p>本页只陈述当前提交中的代码调用、合同、持久化与按钮连线，不验证功能是否正确，也不代表线上状态。每张图只覆盖一个模块或一段跨模块关系。</p>
+    <h1>商品发布中心：需求与架构流程审计</h1>
+    <p>先用业务语言回答“谁在什么条件下做什么、系统应留下什么结果”，再下钻到按钮、模块、接口和存储。适合功能需求工程师、系统工程师和研发人员按不同深度阅读。</p>
     <div class="snapshot">
       <code>代码快照：125a8e78e8b7444fae9da1b3e0da7d1e44d533ef</code>
       <span class="pill">审计日期：2026-08-04</span>
@@ -129,21 +162,25 @@
   <div class="layout">
     <aside aria-label="文档目录">
       <h2>目录</h2>
-      <a class="group" href="#scope">0. 范围与图例</a>
-      <a class="group" href="#surface">1. 页面与聚合</a>
-      <a href="#d1">1.1 页面入口</a><a href="#d2">1.2 本地并行队列</a><a href="#d3">1.3 Dashboard 聚合</a><a href="#d4">1.4 七阶段投影</a>
+      <a class="group" href="#business-view">A. 业务需求总览</a>
+      <a href="#reader-path">A.1 怎么读</a><a href="#actors">A.2 角色与职责</a><a href="#business-journey">A.3 端到端旅程</a><a href="#definition-done">A.4 完成定义</a><a href="#business-rules">A.5 业务规则</a><a href="#exceptions">A.6 异常旅程</a>
+      <a class="group" href="#architecture-view">B. 系统架构总览</a>
+      <a href="#system-context">B.1 系统边界</a><a href="#functional-map">B.2 功能分层</a><a href="#responsibilities">B.3 模块职责</a><a href="#truth-model">B.4 状态真相</a><a href="#current-shape">B.5 当前代码形态</a><a href="#glossary">B.6 术语翻译</a>
+      <a class="group" href="#scope">0. 实现追踪说明</a>
+      <a class="group" href="#surface">1. 用户工作台与进度</a>
+      <a href="#d1">1.1 页面入口</a><a href="#d2">1.2 商品队列</a><a href="#d3">1.3 统一工作视图</a><a href="#d4">1.4 七阶段进度</a>
       <a class="group" href="#product">2. 商品事实</a>
-      <a href="#d5">2.1 首次采集</a><a href="#d6">2.2 事实编辑</a><a href="#d7">2.3 标题草稿</a><a href="#d8">2.4 标题采用</a><a href="#d9">2.5 多规格</a><a href="#d10">2.6 SKU 血缘</a><a href="#d11">2.7 商品审批</a>
+      <a href="#d5">2.1 建立档案</a><a href="#d6">2.2 事实编辑</a><a href="#d7">2.3 标题候选</a><a href="#d8">2.4 采用标题</a><a href="#d9">2.5 多规格</a><a href="#d10">2.6 SKU 继承/分配</a><a href="#d11">2.7 商品审批</a>
       <a class="group" href="#content">3. 内容审核</a>
-      <a href="#d12">3.1 source_only</a><a href="#d13">3.2 ai_assisted</a><a href="#d14">3.3 ContentPackage</a>
+      <a href="#d12">3.1 只用来源图</a><a href="#d13">3.2 AI 辅助内容</a><a href="#d14">3.3 最终内容包</a>
       <a class="group" href="#scope-price">4. 目标、价格与类目</a>
       <a href="#d15">4.1 固定 16 目标</a><a href="#d16">4.2 默认选择</a><a href="#d17">4.3 用户选择</a><a href="#d18">4.4 价格来源</a><a href="#d19">4.5 类目决策</a><a href="#d20">4.6 Shopee Global 计划</a>
-      <a class="group" href="#plan">5. ReleasePlan</a>
-      <a href="#d21">5.1 不可变载荷</a><a href="#d22">5.2 批准与存储</a>
+      <a class="group" href="#plan">5. 冻结发布方案</a>
+      <a href="#d21">5.1 方案包含什么</a><a href="#d22">5.2 批准与留档</a>
       <a class="group" href="#execute">6. 妙手与渠道执行</a>
-      <a href="#d23">6.1 采集箱动作</a><a href="#d24">6.2 三个可见发布按钮</a><a href="#d25">6.3 TikTok 6 目标</a><a href="#d26">6.4 HomeBloom / 固定店铺</a><a href="#d27">6.5 Shopee Global</a><a href="#d28">6.6 Ozon</a><a href="#d29">6.7 兼容 COMMON</a><a href="#d30">6.8 控制面模型</a><a href="#d31">6.9 后台 Worker</a><a href="#d42">6.10 发布后促销动作</a>
+      <a href="#d23">6.1 采集箱动作</a><a href="#d24">6.2 三个可见发布按钮</a><a href="#d25">6.3 TikTok 6 目标</a><a href="#d26">6.4 HomeBloom / 固定店铺</a><a href="#d27">6.5 Shopee Global</a><a href="#d28">6.6 Ozon</a><a href="#d29">6.7 兼容 COMMON</a><a href="#d30">6.8 批次执行控制</a><a href="#d31">6.9 后台任务接线</a><a href="#d42">6.10 发布后促销动作</a>
       <a class="group" href="#result">7. 账本、重试与结果</a>
-      <a href="#d32">7.1 双账本</a><a href="#d33">7.2 状态机</a><a href="#d34">7.3 安全重试</a><a href="#d35">7.4 只读对账</a><a href="#d36">7.5 Shopee 修价</a><a href="#d37">7.6 人工验收</a><a href="#d38">7.7 页面结果</a>
+      <a href="#d32">7.1 任务账与结果账</a><a href="#d33">7.2 统一业务状态</a><a href="#d34">7.3 安全重试</a><a href="#d35">7.4 只读对账</a><a href="#d36">7.5 Shopee 修价</a><a href="#d37">7.6 人工验收</a><a href="#d38">7.7 页面结果</a>
       <a class="group" href="#dependencies">8. 依赖与集合差异</a>
       <a href="#d39">8.1 只读输入 vs 执行依赖</a><a href="#d40">8.2 当前/兼容依赖</a><a href="#d41">8.3 集合差异</a>
       <a class="group" href="#inventory">9. 按钮、入口与持久化清单</a>
@@ -151,8 +188,137 @@
     </aside>
 
     <main>
+      <section id="business-view" class="chapter">
+        <h2>A. 业务需求总览</h2>
+        <p class="lead">这一部分不要求读者理解 API、SQLite 或 digest。它先定义商品发布中心要解决的业务问题、参与者、主流程、完成标准和异常处理原则。</p>
+
+        <div class="business-outcome">
+          <h3>一句话目标</h3>
+          <p><strong>让运营人员把一个已选定的来源商品，经过事实核对、内容审核、店铺与价格选择、正式批准后，安全地发布到指定渠道，并能明确知道每个目标“成功、待人工确认、可安全重试、必须对账或被什么条件阻断”。</strong></p>
+          <p>系统的价值不只是“发出去”，还要保证同一商品不会因刷新、超时或部分失败而被重复发布。</p>
+        </div>
+
+        <article id="reader-path" class="diagram"><h3>A.1 三类读者怎么读</h3><div class="three-cols">
+          <div class="audience-card"><h3>功能需求工程师</h3><p>先读 A 章，确认角色、主旅程、业务规则、完成定义与异常结果；再读 4、6、7 章核对渠道差异。</p></div>
+          <div class="audience-card"><h3>系统工程师</h3><p>先读 B 章，确认系统边界、组件职责、状态真相与执行控制；再读 5、6、7、9 章追踪接口和持久化。</p></div>
+          <div class="audience-card"><h3>研发 / 测试</h3><p>从每张详细图的“证据”定位代码，按输入、前置条件、状态变化、外部动作和结果验证实现。</p></div>
+        </div><div class="reading-path"><a href="#business-journey">看业务主流程</a><a href="#business-rules">看不可违反的规则</a><a href="#architecture-view">看系统分层</a><a href="#current-shape">看当前代码事实差异</a><a href="#inventory">查按钮/API/存储</a></div></article>
+
+        <article id="actors" class="diagram"><h3>A.2 角色与职责</h3><div class="table-wrap"><table><thead><tr><th>角色</th><th>在发布中心做什么</th><th>不负责什么</th><th>系统必须提供的证据</th></tr></thead><tbody>
+          <tr><td><strong>Kyle / 最终批准人</strong></td><td>批准商品事实、内容结果、ReleasePlan；对专用覆盖、修复、人工验收作明确确认</td><td>不需要手填内部 token、平台对象 ID 或命令参数</td><td>当前版本、精确目标、价格、阻断项、风险与动作影响</td></tr>
+          <tr><td><strong>商品运营</strong></td><td>采集商品、核对标题/成本/重量/包装、选择规格、确认 SKU 血缘</td><td>不直接操作渠道发布 API</td><td>来源依据、revision、SKU 占用/继承结果</td></tr>
+          <tr><td><strong>内容运营</strong></td><td>审核原图或 AI 内容，确定顺序、视频和最终 ContentPackage</td><td>不决定目标店铺、库存或渠道执行</td><td>每个资产的来源、版本、决定和最终顺序</td></tr>
+          <tr><td><strong>渠道运营</strong></td><td>选择目标、确认类目/渠道计划、执行发布、处理对账与修复</td><td>不修改已批准商品事实与内容</td><td>每目标准备状态、写入事实、官方回读和唯一下一步</td></tr>
+          <tr><td><strong>系统</strong></td><td>聚合事实、计算版本指纹、阻断漂移、持久化任务、避免重复发布、投影结果</td><td>不猜业务事实，不把未知结果当成功或零写入</td><td>不可变计划、幂等任务、逐目标账本、错误分类</td></tr>
+        </tbody></table></div></article>
+
+        <article id="business-journey" class="diagram"><h3>A.3 端到端业务旅程</h3><p>主旅程按“准备事实 → 两次批准 → 分渠道执行 → 结果闭环”推进。</p><div class="flow">
+          <div class="node read"><strong>1. 建立商品档案</strong><small>输入 Offer ID；读取来源商品与已有工作台</small></div><div class="arrow">→</div>
+          <div class="node approval"><strong>2. 核对商品事实</strong><small>标题、成本、包装、多规格、Seller/Model SKU</small></div><div class="arrow">→</div>
+          <div class="node approval"><strong>3. 完成内容审核</strong><small>原图或 AI 内容；图片顺序与视频决定</small></div><div class="arrow">→</div>
+          <div class="node approval"><strong>4. 锁定商品版本</strong><small>Kyle 批准当前 revision</small></div>
+        </div><div class="flow">
+          <div class="node contract"><strong>5. 选择发布范围</strong><small>店铺、国家、价格、类目与渠道计划</small></div><div class="arrow">→</div>
+          <div class="node approval"><strong>6. 批准 ReleasePlan</strong><small>冻结本次发布的全部输入</small></div><div class="arrow">→</div>
+          <div class="node external"><strong>7. 分渠道执行</strong><small>妙手采集箱、TikTok、Shopee Global、Ozon</small></div><div class="arrow">→</div>
+          <div class="node local"><strong>8. 结果闭环</strong><small>成功、待人工、可安全重试、对账或阻断</small></div>
+        </div></article>
+
+        <article id="definition-done" class="diagram"><h3>A.4 什么叫“发布完成”</h3><p>“按钮返回成功”不是全流程完成。每个目标都必须有可解释终态。</p><div class="three-cols">
+          <div class="requirement-card"><h3>业务完成</h3><p>所有已批准目标均进入终态，没有仍在“准备中/执行中”的目标。</p></div>
+          <div class="requirement-card"><h3>证据完成</h3><p>成功目标有提交和官方回读；待人工目标有受理凭据；未知结果有对账证据。</p></div>
+          <div class="requirement-card"><h3>安全完成</h3><p>刷新、重启和重复点击不会再次提交已成功、已受理或结果未知的目标。</p></div>
+        </div><div class="table-wrap"><table><thead><tr><th>业务结果</th><th>对运营人员的含义</th><th>允许的下一步</th></tr></thead><tbody>
+          <tr><td>成功</td><td>目标已创建/更新，并有满足合同的回读证据</td><td>无需动作；可进入后续促销或结果分析</td></tr>
+          <tr><td>已提交，待人工确认</td><td>平台/妙手已受理，但没有足够官方回读</td><td>人工在平台核验，不自动重发</td></tr>
+          <tr><td>提交前失败，可安全重试</td><td>可证明没有发生外部写入</td><td>修复条件后显式重试该目标</td></tr>
+          <tr><td>需要对账</td><td>已经写入、可能写入或回读不确定</td><td>只读查询/人工核对，禁止重发</td></tr>
+          <tr><td>被阻断</td><td>缺授权、库存、内容、类目、来源或执行能力</td><td>按服务端唯一下一步修复前置条件</td></tr>
+        </tbody></table></div></article>
+
+        <article id="business-rules" class="diagram"><h3>A.5 不可违反的核心业务规则</h3><div class="rule-list">
+          <div class="rule"><strong>先批准，后执行</strong><small>商品事实、内容和 ReleasePlan 缺一不可；读取和选择不能自动发布。</small></div>
+          <div class="rule"><strong>发布使用冻结版本</strong><small>标题、规格、图片、目标、价格或类目变化后，旧计划不得继续执行。</small></div>
+          <div class="rule"><strong>同一来源多规格仍是一个商品</strong><small>多个规格进入一个商品组和一套 Seller/Model SKU 血缘，不拆成多个来源链接。</small></div>
+          <div class="rule"><strong>浏览器不能决定内部命令</strong><small>客户端只回显批准身份；命令、proof 和版本指纹由服务端生成。</small></div>
+          <div class="rule"><strong>批次先准备、再写入</strong><small>系统性身份错误必须在第一个目标开始前阻断整批。</small></div>
+          <div class="rule"><strong>逐目标记录真实写入</strong><small>组合式写入后续失败时必须保留之前已经发生的全部写入类别。</small></div>
+          <div class="rule"><strong>未知不等于失败前</strong><small>请求超时或响应解析失败可能已经写入，必须进入对账，不能盲重试。</small></div>
+          <div class="rule"><strong>只有明确零写入才可重试</strong><small>FAILED_PRE_SUBMIT 是唯一通用安全重试入口。</small></div>
+          <div class="rule"><strong>每个非终态只有一个下一步</strong><small>服务端给出动作和目标聚焦，前端不解析错误文本猜动作。</small></div>
+          <div class="rule"><strong>敏感信息不进入公共投影</strong><small>token、原文、URL、内部/外部对象 ID 与原始响应只保留必要内部证据或摘要。</small></div>
+          <div class="rule"><strong>目标选择不等于执行集合</strong><small>页面 16 目标、平台控制目标和具体按钮的执行集合必须分别说明。</small></div>
+          <div class="rule"><strong>成功后才允许后置动作</strong><small>促销等动作依赖对应 storefront 的正式成功与回读，不能先行。</small></div>
+        </div></article>
+
+        <article id="exceptions" class="diagram"><h3>A.6 四条关键异常旅程</h3><div class="table-wrap"><table><thead><tr><th>场景</th><th>系统应如何处理</th><th>系统绝不能做什么</th></tr></thead><tbody>
+          <tr><td>审批后事实变化</td><td>废止旧审批/计划，要求重新核对与批准</td><td>沿用旧 token 发布新事实</td></tr>
+          <tr><td>部分目标成功、部分失败</td><td>保留成功目标；失败目标按零写入/对账分类独立处理</td><td>为了重试一个目标而重发全部目标</td></tr>
+          <tr><td>外部请求超时</td><td>记录可能写入，进入 RECONCILIATION_REQUIRED</td><td>报告 writes=[] 或自动重试</td></tr>
+          <tr><td>服务重启时存在执行中目标</td><td>恢复为需要对账，保持已知写入事实</td><td>把 RUNNING 重新改为 PENDING 后再次发送</td></tr>
+        </tbody></table></div></article>
+      </section>
+
+      <section id="architecture-view" class="chapter">
+        <h2>B. 系统架构总览</h2>
+        <p class="lead">这一部分把商品发布中心看作“事实与审批控制面 + 渠道执行面 + 结果账本”，说明各模块的责任与数据流。</p>
+
+        <article id="system-context" class="diagram"><h3>B.1 系统边界图</h3><div class="flow">
+          <div class="node read"><strong>运营人员</strong><small>录入、选择、批准、发起、核验</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>商品发布中心</strong><small>统一视图、业务规则、版本与任务控制</small></div><div class="arrow">⇄</div>
+          <div class="node local"><strong>本地事实与账本</strong><small>工作台 JSON + ReleaseStore SQLite</small></div><div class="arrow">⇄</div>
+          <div class="node external"><strong>渠道执行适配器</strong><small>妙手、Shopee、Ozon 的受控读写</small></div><div class="arrow">⇄</div>
+          <div class="node read"><strong>外部平台</strong><small>官方对象、提交结果、回读事实</small></div>
+        </div><p class="plain-language"><strong>架构原则：</strong>发布中心负责“是否允许做、做哪一个目标、记录什么事实”；渠道适配器只负责“如何调用该平台”，不能自行修改平台账本或猜业务输入。</p></article>
+
+        <article id="functional-map" class="diagram"><h3>B.2 五层功能架构</h3>
+          <div class="architecture-band"><strong>1. 交互层</strong><div><b>商品发布中心页面、内容工作室</b><p>展示事实、阻断、目标和结果；收集明确批准。页面不是业务真相来源。</p></div></div>
+          <div class="architecture-band"><strong>2. 业务编排层</strong><div><b>server.py、release_control、oneclick control plane</b><p>聚合五域事实，生成唯一下一步，执行版本/权限/依赖检查，驱动任务状态。</p></div></div>
+          <div class="architecture-band"><strong>3. 领域合同层</strong><div><b>Product / Content / Channel / Supply Chain / Data contracts</b><p>定义 Product facts、ContentPackage、目标命令、库存决定、结果事实的稳定结构。</p></div></div>
+          <div class="architecture-band"><strong>4. 渠道执行层</strong><div><b>03-owned adapters</b><p>执行官方只读 proof 与一次受控写；返回 typed receipt，不直接写 ReleaseStore。</p></div></div>
+          <div class="architecture-band"><strong>5. 事实存储层</strong><div><b>workbench JSON、ReleaseStore、collectbox/oneclick ledger</b><p>保存 revision、审批、计划、逐目标 attempt、submission、readback、failure 与 outcome。</p></div></div>
+        </article>
+
+        <article id="responsibilities" class="diagram"><h3>B.3 组件责任分配</h3><div class="table-wrap"><table><thead><tr><th>组件</th><th>输入</th><th>输出</th><th>责任边界</th></tr></thead><tbody>
+          <tr><td>Product Workspace UI</td><td>公开 Dashboard / status</td><td>用户选择与显式确认</td><td>不生成内部命令，不根据错误字符串判断重试</td></tr>
+          <tr><td>Dashboard Builder</td><td>商品、内容、价格、计划、run 的只读事实</td><td>统一页面模型、阻断与准备状态</td><td>不做渠道写入</td></tr>
+          <tr><td>ReleasePlan / Approval</td><td>当前已核对事实</td><td>不可变计划、token、版本指纹</td><td>不启动发布</td></tr>
+          <tr><td>Execution Control Plane</td><td>批准计划、适配器能力、目标状态</td><td>prepared command、job、claim、next action</td><td>不导入渠道 client；逐目标且幂等</td></tr>
+          <tr><td>Channel Adapter</td><td>服务端生成的 typed request</td><td>proof / dispatch receipt</td><td>不写平台 SQLite，不猜来源/价格/库存</td></tr>
+          <tr><td>ReleaseStore</td><td>通过验证的计划和 receipt</td><td>canonical target/run/submission/readback/failure</td><td>事务内保持事实一致</td></tr>
+          <tr><td>Outcome Producer</td><td>已终结的 canonical receipt</td><td>05 可消费的红化结果事实</td><td>失败不改变发布终态，不触发自动重试</td></tr>
+        </tbody></table></div></article>
+
+        <article id="truth-model" class="diagram"><h3>B.4 哪个状态才算“真相”</h3><p>不同存储各有用途，不能互相替代。</p><div class="flow">
+          <div class="node local"><strong>工作台事实</strong><small>当前商品/内容 revision；可编辑但需重新审批</small></div><div class="arrow">→</div>
+          <div class="node approval"><strong>不可变 ReleasePlan</strong><small>一次批准动作的权威输入快照</small></div><div class="arrow">→</div>
+          <div class="node local"><strong>Canonical target ledger</strong><small>每目标 attempt、写入、提交、回读与失败事实</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>公开状态投影</strong><small>运营可读状态与唯一下一步</small></div>
+        </div><p class="plain-language">浏览器中的“发布中/成功/失败”临时卡片适合即时反馈，但刷新后仍应以服务端 canonical target ledger 为准。</p></article>
+
+        <article id="current-shape" class="diagram"><h3>B.5 当前代码形态：目标模型与按钮执行不是同一集合</h3><p>这是理解现状最重要的架构事实。</p><div class="table-wrap"><table><thead><tr><th>视角</th><th>它表达什么</th><th>当前范围</th></tr></thead><tbody>
+          <tr><td>目标选择模型</td><td>运营希望本次覆盖哪些 storefront</td><td>固定 16 项：COMMON + TikTok 10 + Shopee 区域4 + Ozon</td></tr>
+          <tr><td>三个独立按钮</td><td>当前页面实际发起的平台动作</td><td>TikTok 固定6；Shopee Global 1；Ozon 1</td></tr>
+          <tr><td>Durable oneclick 模型</td><td>面向批次准备、后台 worker、逐目标 canonical receipt 的控制面</td><td>代码和 GET 状态面存在；当前可见 POST 未接到其 start</td></tr>
+          <tr><td>兼容执行区</td><td>COMMON prepare/overwrite、旧逐目标 run 与修复/对账</td><td>仍保留在同一页面和 ReleaseStore</td></tr>
+        </tbody></table></div><div class="finding"><strong>需求阅读提醒：</strong>“用户勾选了 16 目标”不能直接推导“当前某个按钮会执行这 16 个目标”。验收每个按钮时必须以它绑定的服务端入口和固定执行集合为准。</div></article>
+
+        <article id="glossary" class="diagram"><h3>B.6 技术术语的业务语言翻译</h3><div class="table-wrap"><table><thead><tr><th>技术术语</th><th>本文优先使用的业务说法</th><th>实际含义</th></tr></thead><tbody>
+          <tr><td>revision</td><td>商品工作版本</td><td>每次本地事实保存后的递增版本号</td></tr>
+          <tr><td>digest / signature</td><td>版本指纹</td><td>用于判断两组事实是否精确相同的不可逆摘要</td></tr>
+          <tr><td>ReleasePlan</td><td>已冻结发布方案</td><td>一次发布所用商品、内容、目标、价格和规则快照</td></tr>
+          <tr><td>proof / preflight</td><td>发布前证据 / 前置检查</td><td>写入前通过只读方式证明身份、能力和条件</td></tr>
+          <tr><td>claim</td><td>原子领取一个目标</td><td>同一目标只允许一个 worker 进入执行</td></tr>
+          <tr><td>receipt</td><td>执行结果凭据</td><td>记录是否受理、是否回读、写入类别和不确定性</td></tr>
+          <tr><td>reconciliation</td><td>只读对账</td><td>已经或可能写入后，仅查询官方状态并收敛本地账本</td></tr>
+          <tr><td>canonical status</td><td>服务端统一业务状态</td><td>不依赖 UI 文案或底层 FAILED 字段的对外真相</td></tr>
+          <tr><td>TOCTOU recheck</td><td>执行前再次核对</td><td>防止预览后、写入前事实发生变化</td></tr>
+        </tbody></table></div></article>
+      </section>
+
       <section id="scope" class="chapter">
-        <h2>0. 审计范围与读图规则</h2>
+        <h2>0. 实现追踪说明</h2>
+        <p class="plain-language"><strong>下面进入实现层。</strong>每张小图用于回答“这个需求当前由哪个按钮、服务端入口、模块和存储实现”。不熟悉技术术语的读者可先阅读上面的 A、B 两章，再按业务问题选择性下钻。</p>
         <p class="lead">“共享只读输入”表示只用于组装预览/合同；“执行依赖”表示 claim 或外部动作之前必须满足。两者在图中不会混用。</p>
         <div class="legend">
           <span class="read">共享只读输入 / GET / 本地读取</span>
@@ -166,8 +332,8 @@
       </section>
 
       <section id="surface" class="chapter">
-        <h2>1. 页面入口、队列与聚合</h2>
-        <p class="lead">页面是一个聚合面：JSON 工作台、内容包、SQLite 发布账本与只读商品/财务事实被服务端合并后一次返回。</p>
+        <h2>1. 用户工作台与发布进度 <span class="tech-layer-label">实现追踪</span></h2>
+        <p class="lead">运营人员在一个页面中管理多个商品、查看七阶段进度并获得唯一下一步。系统在后台合并商品档案、内容审核和发布结果。</p>
 
         <article id="d1" class="diagram"><h3>1.1 页面入口</h3><p>两个 URL 复用同一 HTML；内容审核使用独立页面。</p><div class="flow">
           <div class="node read"><strong>/new-product</strong><small>商品发布中心入口</small></div><div class="arrow">→</div>
@@ -176,14 +342,14 @@
           <div class="node read"><strong>/ai-image-studio</strong><small>内容与图片工作室，新窗口</small></div>
         </div><p class="source">证据：modules/products/server.py 静态路由；web/product_workspace.html。</p></article>
 
-        <article id="d2" class="diagram"><h3>1.2 浏览器本地并行队列</h3><p>队列不是服务端业务状态；最多 50 项，并发刷新上限 4。</p><div class="flow">
+        <article id="d2" class="diagram"><h3>1.2 多商品工作队列</h3><p>帮助运营人员同时关注多个商品；它只是浏览器工作清单，不代表商品已进入服务端发布任务。</p><div class="flow">
           <div class="node read"><strong>输入 Offer ID</strong><small>“加入队列并打开”</small></div><div class="arrow">→</div>
           <div class="node local"><strong>localStorage</strong><small>orbit.productWorkspace.releaseQueue.v1</small></div><div class="arrow">→</div>
           <div class="node read"><strong>并发 GET Dashboard</strong><small>最多 4 个；刷新不发布</small></div><div class="arrow">→</div>
           <div class="node contract"><strong>队列摘要卡</strong><small>阶段、阻断数、图片数、审批状态</small></div>
         </div><p class="source">证据：web/static/product_workspace.js 的队列常量、refreshQueueProduct、queueSummary。</p></article>
 
-        <article id="d3" class="diagram"><h3>1.3 Dashboard 聚合边界</h3><p>GET 接受 Offer ID 和可选 target 列表；选择只影响当前聚合结果。</p><div class="flow">
+        <article id="d3" class="diagram"><h3>1.3 统一工作视图如何形成</h3><p>页面看到的商品、内容、价格和发布状态来自多个权威来源的合并，不由浏览器自行拼装。</p><div class="flow">
           <div class="node read"><strong>工作台 JSON</strong><small>商品事实、review、内容状态、revision</small></div><div class="arrow">↘</div>
           <div class="node read"><strong>只读数据库/报表</strong><small>SKU 占用、汇率、定价、周利润摘要</small></div><div class="arrow">→</div>
           <div class="node contract"><strong>build_release_dashboard</strong><small>五域合同聚合；本函数自述不持久化</small></div><div class="arrow">←</div>
@@ -191,7 +357,7 @@
           <div class="node contract"><strong>_product_workspace_view</strong><small>裁剪为浏览器公开投影</small></div>
         </div><p class="source">证据：shared_platform/release_control.py::build_release_dashboard；modules/products/server.py GET dashboard。</p></article>
 
-        <article id="d4" class="diagram"><h3>1.4 七阶段仅是页面投影</h3><p>阶段由 Dashboard 字段与 release_v1 run 计算，不是独立状态机表。</p><div class="flow">
+        <article id="d4" class="diagram"><h3>1.4 七阶段进度的业务含义</h3><p>七阶段用于告诉运营人员当前卡在哪里；它是对真实事实的汇总，不是另一套独立审批记录。</p><div class="flow">
           <div class="node contract"><strong>01 商品事实</strong><small>必填事实 + 站点 + 规格</small></div><div class="arrow">→</div>
           <div class="node contract"><strong>02 内容审批</strong><small>approved + image_count</small></div><div class="arrow">→</div>
           <div class="node contract"><strong>03 商品审批</strong><small>actual_product_approved</small></div><div class="arrow">→</div>
@@ -204,9 +370,9 @@
       </section>
 
       <section id="product" class="chapter">
-        <h2>2. 商品事实、标题、多规格与审批</h2>
+        <h2>2. 商品事实、标题、多规格与审批 <span class="tech-layer-label">实现追踪</span></h2>
 
-        <article id="d5" class="diagram"><h3>2.1 首次采集</h3><p>只有本地工作台缺失时才读取一次妙手预采集；已有工作台直接幂等返回。</p><div class="flow">
+        <article id="d5" class="diagram"><h3>2.1 建立本地商品档案</h3><p>首次打开尚未建档的 Offer 时，系统读取来源商品并保存为可审核的本地工作版本；再次打开不会重复采集。</p><div class="flow">
           <div class="node read"><strong>POST /collect</strong><small>Offer ID；同源 JSON 写保护</small></div><div class="arrow">→</div>
           <div class="node read"><strong>Miaoshou precollect_preview</strong><small>仅首次：1 次上游读取</small></div><div class="arrow">→</div>
           <div class="node contract"><strong>build_preview</strong><small>来源标题、属性、SKU、图片、默认站点</small></div><div class="arrow">→</div>
@@ -221,7 +387,7 @@
           <div class="node read"><strong>重建 Dashboard</strong><small>重算价格、预检、阻断</small></div>
         </div><p class="source">证据：modules/products/server.py::_save_product_workspace_facts_locally。</p></article>
 
-        <article id="d7" class="diagram"><h3>2.3 AI 标题草稿</h3><p>模型只产出候选；不会直接改商品事实或渠道。</p><div class="flow">
+        <article id="d7" class="diagram"><h3>2.3 生成平台标题候选</h3><p>AI 只提供建议，候选在 Kyle 采用前不改变正式商品事实，也不会进入渠道。</p><div class="flow">
           <div class="node read"><strong>当前事实快照</strong><small>中文源标题、类目、成本、重量、包装、所选规格</small></div><div class="arrow">→</div>
           <div class="node external"><strong>ToAPI 标题模型</strong><small>生成平台标题与 Shopee 英文描述候选</small></div><div class="arrow">→</div>
           <div class="node contract"><strong>政策/输入签名</strong><small>fact snapshot + model input digest</small></div><div class="arrow">→</div>
@@ -243,7 +409,7 @@
           <div class="node external"><strong>妙手单草稿多规格</strong><small>过滤未选规格；保留一个商品关系</small></div>
         </div><p class="source">证据：new_product_workbench.py 的 selectedSkuKeys、skuLabelOverrides、prepare_miaoshou_draft。</p></article>
 
-        <article id="d10" class="diagram"><h3>2.6 Seller SKU / Model SKU 血缘</h3><p>浏览器不能手填 Seller SKU；审批与计划绑定 durable reservation。</p><div class="flow">
+        <article id="d10" class="diagram"><h3>2.6 Seller SKU / Model SKU 的继承与分配</h3><p>同一来源优先继承已有编号；新来源才分配新编号。浏览器不能手填，系统要防止不同商品争用同一个 SKU。</p><div class="flow">
           <div class="node read"><strong>SourceProductIdentity</strong><small>canonical source offer + provenance digest</small></div><div class="arrow">→</div>
           <div class="node read"><strong>前序计划/预留账本</strong><small>同源继承或 NEW_SOURCE</small></div><div class="arrow">→</div>
           <div class="node contract"><strong>resolve_sku_lineage</strong><small>seller SKU + 每规格 model SKU</small></div><div class="arrow">→</div>
@@ -260,9 +426,9 @@
       </section>
 
       <section id="content" class="chapter">
-        <h2>3. 内容审核与 ContentPackage</h2>
+        <h2>3. 内容审核与最终内容包 <span class="tech-layer-label">实现追踪</span></h2>
 
-        <article id="d12" class="diagram"><h3>3.1 source_only 内容路径</h3><p>原图审核以“每张 keep/remove + 精确顺序 + 最终批准”构成合同。</p><div class="flow">
+        <article id="d12" class="diagram"><h3>3.1 只使用来源图</h3><p>运营逐张决定保留或删除，再确定最终展示顺序；只有整个集合被最终批准后才能交给发布方案。</p><div class="flow">
           <div class="node read"><strong>来源图片 / 可选视频</strong><small>HTTPS、来源 lineage</small></div><div class="arrow">→</div>
           <div class="node local"><strong>keep / remove</strong><small>每张显式决定</small></div><div class="arrow">→</div>
           <div class="node local"><strong>image_order</strong><small>只含 keep 集合，连续且精确</small></div><div class="arrow">→</div>
@@ -270,7 +436,7 @@
           <div class="node contract"><strong>有序 source lineage</strong><small>ContentPackage 图片顺序</small></div>
         </div><p class="source">证据：content_package_adapter.py::source_only_final_approval_valid、_source_only_order_lineage。</p></article>
 
-        <article id="d13" class="diagram"><h3>3.2 ai_assisted 内容路径</h3><p>当前版本按 shot 只选一个最新技术验证 artifact；旧 keep 不会批准新版本。</p><div class="flow">
+        <article id="d13" class="diagram"><h3>3.2 AI 辅助内容</h3><p>每个画面只认当前最新且通过技术检查的版本；旧版本的“保留”决定不会自动批准后来生成的新图。</p><div class="flow">
           <div class="node read"><strong>fact card / storyboard</strong><small>规划范围、suite、shot 选择</small></div><div class="arrow">→</div>
           <div class="node external"><strong>AI 生成 artifact</strong><small>generation audit + 技术验证</small></div><div class="arrow">→</div>
           <div class="node approval"><strong>每个当前 artifact 审核</strong><small>最终 keep/reject；旧版本 superseded</small></div><div class="arrow">→</div>
@@ -278,7 +444,7 @@
           <div class="node contract"><strong>AI lineage</strong><small>缺 shot/审核则 pending</small></div>
         </div><p class="source">证据：content_package_adapter.py::_current_audits_by_shot、_order_lineage。</p></article>
 
-        <article id="d14" class="diagram"><h3>3.3 ContentPackage 交接</h3><p>商品中心只消费红化后的内容合同；写妙手的历史图片集合若与当前不符，只形成 stale blocker。</p><div class="flow">
+        <article id="d14" class="diagram"><h3>3.3 形成最终内容包</h3><p>系统把已批准文案、图片、顺序和视频合成一个稳定交接物；历史上写入妙手的图片若不同，只能提示过期，不能冒充当前内容。</p><div class="flow">
           <div class="node contract"><strong>内容 strategy</strong><small>source_only / ai_assisted</small></div><div class="arrow">+</div>
           <div class="node contract"><strong>copy + ordered assets</strong><small>图片、视频、lineage、blockers</small></div><div class="arrow">→</div>
           <div class="node contract"><strong>ContentPackage</strong><small>package_id、product_id、ApprovalRecord</small></div><div class="arrow">→</div>
@@ -288,7 +454,7 @@
       </section>
 
       <section id="scope-price" class="chapter">
-        <h2>4. 目标选择、价格、类目与 Shopee Global 计划</h2>
+        <h2>4. 目标选择、价格、类目与 Shopee Global 计划 <span class="tech-layer-label">实现追踪</span></h2>
 
         <article id="d15" class="diagram"><h3>4.1 固定 16 个 storefront 目标</h3><p>顺序与 allowlist 固定；浏览器不能注入未知 adapter/站点。</p>
           <div class="table-wrap"><table><thead><tr><th>组</th><th>固定标签</th><th>数量</th></tr></thead><tbody>
@@ -339,16 +505,16 @@
       </section>
 
       <section id="plan" class="chapter">
-        <h2>5. 不可变 ReleasePlan</h2>
+        <h2>5. 冻结本次发布方案 <span class="tech-layer-label">实现追踪</span></h2>
 
-        <article id="d21" class="diagram"><h3>5.1 ReleasePlan 载荷</h3><p>浏览器只回显身份；服务端从当前 Dashboard 构造完整 payload。</p><div class="flow">
+        <article id="d21" class="diagram"><h3>5.1 发布方案需要冻结哪些内容</h3><p>批准时系统把商品、内容、目标、价格、类目与 SKU 关系冻结成同一个版本；浏览器只负责确认，不能替换内部字段。</p><div class="flow">
           <div class="node contract"><strong>商品 revision + SKU 血缘</strong><small>来源 identity、reservation、规格/model SKU</small></div><div class="arrow">+</div>
           <div class="node contract"><strong>内容 / 文案 / 图片 / 视频</strong><small>精确版本、顺序、digests</small></div><div class="arrow">+</div>
           <div class="node contract"><strong>目标 / 类目 / 价格</strong><small>selected labels、Global approval、成本/FX/费率</small></div><div class="arrow">→</div>
           <div class="node contract"><strong>payload_digest + plan_id</strong><small>同一事实确定性身份</small></div>
         </div><p class="source">证据：server.py::_release_plan_payload_from_dashboard；release_store.py::preview_plan。</p></article>
 
-        <article id="d22" class="diagram"><h3>5.2 批准与本地持久化</h3><p>计划批准不自动创建外部草稿或执行 run。</p><div class="flow">
+        <article id="d22" class="diagram"><h3>5.2 批准并留档</h3><p>Kyle 批准只代表“允许按这个版本执行”，不会在批准瞬间自动创建渠道商品。</p><div class="flow">
           <div class="node contract"><strong>preview plan/token</strong><small>当前 Dashboard 重算精确相等</small></div><div class="arrow">→</div>
           <div class="node approval"><strong>批准当前发布计划</strong><small>Kyle + literal user_approved</small></div><div class="arrow">→</div>
           <div class="node local"><strong>release_plans</strong><small>payload_json、digest、targets、status</small></div><div class="arrow">+</div>
@@ -358,7 +524,7 @@
       </section>
 
       <section id="execute" class="chapter">
-        <h2>6. 妙手采集箱与渠道执行</h2>
+        <h2>6. 妙手采集箱与渠道执行 <span class="tech-layer-label">实现追踪</span></h2>
         <div class="finding"><strong>当前代码存在两套相邻执行表达：</strong>可见的三个独立平台按钮使用同步请求/响应 publisher；另有 durable oneclick preview/status/store/worker，但当前 <code>do_POST</code> 未把 <code>/publish</code> 接到 <code>_start_oneclick_release</code>，JS 也把历史 job 标注为 diagnostics。下列图分开描述。</div>
 
         <article id="d23" class="diagram"><h3>6.1 妙手采集箱导入动作</h3><p>采集箱动作是批准计划后的独立显式步骤；按平台持久化批次与目标结果。</p><div class="flow">
@@ -417,7 +583,7 @@
           <div class="node external"><strong>单次 COMMON edit + readback</strong><small>未知结果进入 reconciliation</small></div>
         </div><p class="source">证据：server.py::_prepare_miaoshou_release；release_store.py common overwrite review；HTML commonOverwritePanel。</p></article>
 
-        <article id="d30" class="diagram"><h3>6.8 Durable oneclick 控制面模型</h3><p>该模型先全批 prepare，再允许单目标 claim；公共 GET 已注册。</p><div class="flow">
+        <article id="d30" class="diagram"><h3>6.8 可恢复的批次执行控制</h3><p>理想的批次控制先检查完所有目标，再逐个原子领取和执行；这样系统性错误能在第一笔写入前阻断。</p><div class="flow">
           <div class="node read"><strong>GET publish-preview</strong><small>计划/运行/registry 纯预览</small></div><div class="arrow">→</div>
           <div class="node contract"><strong>prepare all targets</strong><small>systemic identity 错误整批 0 claim</small></div><div class="arrow">→</div>
           <div class="node local"><strong>oneclick job/targets</strong><small>prepared command、proof、digests</small></div><div class="arrow">→</div>
@@ -425,7 +591,7 @@
           <div class="node external"><strong>03 dispatch seam</strong><small>typed result，随后双账本终结</small></div>
         </div><p class="source">证据：oneclick_release_controlplane.py；server.py::_preview_oneclick_release。</p></article>
 
-        <article id="d31" class="diagram"><h3>6.9 后台 Worker 与当前接线事实</h3><p>源码包含 worker start/wake/recovery；但本快照可见 POST 分派未调用 durable start。</p><div class="flow">
+        <article id="d31" class="diagram"><h3>6.9 后台任务与当前接线事实</h3><p>源码已经有后台任务、唤醒和恢复能力；但当前页面实际发布按钮仍走同步平台入口，尚未接到 durable start。</p><div class="flow">
           <div class="node legacy"><strong>_start_oneclick_release</strong><small>建 job、start batch；代码存在</small></div><div class="arrow">→</div>
           <div class="node legacy"><strong>_wake_oneclick_worker</strong><small>daemon 线程、事件唤醒；无生产调用点</small></div><div class="arrow">→</div>
           <div class="node legacy"><strong>advance_once</strong><small>prepare/claim/dispatch/recovery</small></div><div class="arrow">≠</div>
@@ -441,16 +607,16 @@
       </section>
 
       <section id="result" class="chapter">
-        <h2>7. 状态持久化、重试、对账与结果展示</h2>
+        <h2>7. 结果、重试与对账 <span class="tech-layer-label">实现追踪</span></h2>
 
-        <article id="d32" class="diagram"><h3>7.1 Canonical ReleaseStore 与 oneclick 双账本</h3><p>控制面任务状态和正式 target/run 事实分表，终结合同要求原子同步。</p><div class="flow">
+        <article id="d32" class="diagram"><h3>7.1 任务账与正式结果账</h3><p>一套账记录后台任务推进到哪里，另一套账记录目标实际上发生了什么；每次终结必须同时保持一致。</p><div class="flow">
           <div class="node local"><strong>oneclick job/target</strong><small>PREPARING/READY/DISPATCHING/terminal</small></div><div class="arrow">⇄</div>
           <div class="node local"><strong>release run/target</strong><small>PENDING/RUNNING/SUCCEEDED/FAILED</small></div><div class="arrow">+</div>
           <div class="node local"><strong>submission/readback/failure</strong><small>外部 ID、回读、失败证据（内部）</small></div><div class="arrow">→</div>
           <div class="node local"><strong>release-outcome receipt</strong><small>按 attempt 追加；供 05 消费</small></div>
         </div><p class="source">证据：release_store.py schema；oneclick_release_controlplane.py schema/terminal receipt。</p></article>
 
-        <article id="d33" class="diagram"><h3>7.2 公开 canonical 状态机</h3><p>页面不应解析存储层错误字符串；状态与 next action 由服务端投影。</p><div class="flow">
+        <article id="d33" class="diagram"><h3>7.2 对运营公开的统一业务状态</h3><p>页面只展示服务端定义的状态和下一步，不从底层 FAILED 或错误文本猜测是否能重试。</p><div class="flow">
           <div class="node contract"><strong>PENDING / PREPARING</strong><small>只读 proof 尚未完成</small></div><div class="arrow">→</div>
           <div class="node contract"><strong>READY</strong><small>prepared command 已绑定，可 claim</small></div><div class="arrow">→</div>
           <div class="node contract"><strong>DISPATCHING</strong><small>外部调用边界已进入</small></div><div class="arrow">→</div>
@@ -494,7 +660,7 @@
       </section>
 
       <section id="dependencies" class="chapter">
-        <h2>8. 共享只读输入与执行依赖</h2>
+        <h2>8. 数据参考关系与真正执行依赖 <span class="tech-layer-label">实现追踪</span></h2>
 
         <article id="d39" class="diagram"><h3>8.1 两种依赖不能混写</h3><div class="cols">
           <div><h4>共享只读输入</h4><ul class="compact"><li>TikTok 店价 → Shopee/Ozon 定价来源</li><li>来源商品/预采集 → SourceProductIdentity</li><li>内容审批 → ContentPackage</li><li>官方类目候选 → Kyle 本地决策</li><li>周利润 → Dashboard 摘要（不触发发布）</li></ul></div>
@@ -523,7 +689,7 @@
       </section>
 
       <section id="inventory" class="chapter">
-        <h2>9. 按钮、服务端入口与存储清单</h2>
+        <h2>9. 按钮、服务端入口与存储清单 <span class="tech-layer-label">查阅附录</span></h2>
 
         <article id="buttons" class="diagram"><h3>9.1 页面按钮字典</h3>
           <div class="table-wrap"><table><thead><tr><th>按钮/控件</th><th>入口</th><th>本地写</th><th>外部写可能</th></tr></thead><tbody>

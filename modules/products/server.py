@@ -9689,16 +9689,28 @@ def _safe_ozon_import_reason(result: object) -> str:
         return "Ozon official API returned an invalid import response"
 
     candidates: list[object] = []
+    def collect(value: object, *, depth: int = 0) -> None:
+        """Collect a bounded, human-facing reason from a nested adapter error."""
+
+        if depth > 3 or value is None:
+            return
+        if isinstance(value, (str, int, float)):
+            candidates.append(value)
+            return
+        if isinstance(value, dict):
+            # Prefer structured provider fields; never stringify an entire
+            # raw response (which may contain identifiers or URLs).
+            for key in ("code", "message", "error", "detail", "reason"):
+                collect(value.get(key), depth=depth + 1)
+            return
+        if isinstance(value, (list, tuple)):
+            for item in value[:10]:
+                collect(item, depth=depth + 1)
+
     errors = result.get("errors")
-    if isinstance(errors, (list, tuple)):
-        for item in errors:
-            if isinstance(item, dict):
-                candidates.extend(item.get(key) for key in ("code", "message"))
-            else:
-                candidates.append(item)
-    elif errors is not None:
-        candidates.append(errors)
-    candidates.extend(result.get(key) for key in ("error", "message", "step"))
+    collect(errors)
+    for key in ("error", "message", "step"):
+        collect(result.get(key))
     text = "; ".join(
         str(value).strip()
         for value in candidates

@@ -9652,7 +9652,6 @@ def _approved_ozon_publish_facts(payload: dict) -> dict:
         or resolved_weight_kg <= 0
         or not math.isfinite(resolved_weight_kg)
         or not isinstance(source_category, dict)
-        or not str(source_category.get("id") or "").strip()
         or not str(source_category.get("name") or "").strip()
         or price <= 0
         or old_price <= price

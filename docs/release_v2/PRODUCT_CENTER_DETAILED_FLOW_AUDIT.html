@@ -1,0 +1,587 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>商品发布中心 · 超细粒度流程图审计</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #18312d;
+      --muted: #60726e;
+      --paper: #f7faf8;
+      --card: #ffffff;
+      --line: #d8e4df;
+      --read: #e8f2ff;
+      --read-border: #6d9fd8;
+      --contract: #f2eaff;
+      --contract-border: #8a68bd;
+      --local: #e9f8ef;
+      --local-border: #55a570;
+      --approval: #fff4d8;
+      --approval-border: #c48a22;
+      --external: #ffe9e7;
+      --external-border: #c85a52;
+      --warn: #fff8e8;
+      --warn-border: #d99b22;
+      --legacy: #f2f2f2;
+      --legacy-border: #858585;
+      --accent: #176b5b;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font: 15px/1.65 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+    header {
+      padding: 34px clamp(20px, 5vw, 70px) 26px;
+      color: white;
+      background: linear-gradient(125deg, #123d35, #176b5b 60%, #274f48);
+    }
+    header h1 { margin: 4px 0 8px; font-size: clamp(27px, 4vw, 46px); line-height: 1.15; }
+    header p { max-width: 1050px; margin: 8px 0; color: #d9eee8; }
+    .snapshot { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+    .snapshot code, .pill { padding: 5px 9px; border-radius: 999px; background: rgba(255,255,255,.12); color: #fff; }
+    .layout { display: grid; grid-template-columns: minmax(220px, 280px) minmax(0, 1fr); align-items: start; }
+    aside { position: sticky; top: 0; max-height: 100vh; overflow: auto; padding: 22px 18px 32px; border-right: 1px solid var(--line); background: #edf4f1; }
+    aside h2 { margin: 0 0 12px; font-size: 18px; }
+    aside a { display: block; padding: 4px 8px; border-radius: 6px; color: #28534b; text-decoration: none; }
+    aside a:hover { background: white; }
+    aside .group { margin-top: 12px; font-weight: 750; color: #173f37; }
+    main { min-width: 0; padding: 26px clamp(18px, 4vw, 56px) 80px; }
+    section.chapter { margin: 0 auto 44px; max-width: 1180px; }
+    section.chapter > h2 { margin: 0 0 8px; font-size: 29px; }
+    .lead { margin: 0 0 20px; color: var(--muted); }
+    .audit-note, .finding { margin: 14px 0; padding: 12px 15px; border-left: 4px solid var(--warn-border); background: var(--warn); border-radius: 5px; }
+    .finding strong { color: #7a4f00; }
+    .diagram { margin: 18px 0; padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); box-shadow: 0 4px 18px rgba(20,60,50,.05); scroll-margin-top: 20px; }
+    .diagram h3 { margin: 0 0 3px; font-size: 19px; }
+    .diagram > p { margin: 3px 0 13px; color: var(--muted); }
+    .flow { display: flex; align-items: stretch; gap: 8px; overflow-x: auto; padding: 5px 2px 9px; }
+    .node { flex: 0 1 195px; min-width: 145px; max-width: 215px; padding: 11px 12px; border: 1px solid; border-radius: 10px; background: white; }
+    .node strong { display: block; line-height: 1.3; }
+    .node small { display: block; margin-top: 5px; color: #4c5f5b; line-height: 1.45; }
+    .node.read { background: var(--read); border-color: var(--read-border); }
+    .node.contract { background: var(--contract); border-color: var(--contract-border); }
+    .node.local { background: var(--local); border-color: var(--local-border); }
+    .node.approval { background: var(--approval); border-color: var(--approval-border); }
+    .node.external { background: var(--external); border-color: var(--external-border); }
+    .node.legacy { background: var(--legacy); border-color: var(--legacy-border); }
+    .arrow { display: grid; place-items: center; flex: 0 0 24px; color: #6b7774; font-weight: 800; font-size: 19px; }
+    .edge-note { margin: 7px 0 0; color: #5c6d69; font-size: 13px; }
+    .edge-note code, td code, li code, p code { color: #6b287e; background: #f4edf8; padding: 1px 4px; border-radius: 4px; }
+    .legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 22px; }
+    .legend span { padding: 7px 10px; border: 1px solid; border-radius: 8px; font-size: 13px; }
+    .legend .read { background: var(--read); border-color: var(--read-border); }
+    .legend .contract { background: var(--contract); border-color: var(--contract-border); }
+    .legend .local { background: var(--local); border-color: var(--local-border); }
+    .legend .approval { background: var(--approval); border-color: var(--approval-border); }
+    .legend .external { background: var(--external); border-color: var(--external-border); }
+    .legend .legacy { background: var(--legacy); border-color: var(--legacy-border); }
+    .table-wrap { overflow-x: auto; margin: 12px 0; }
+    table { width: 100%; border-collapse: collapse; background: white; }
+    th, td { padding: 9px 10px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { background: #eaf2ef; }
+    td.yes { color: #176b5b; font-weight: 700; }
+    td.no { color: #a2443e; font-weight: 700; }
+    .cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    ul.compact { margin: 8px 0; padding-left: 20px; }
+    .source { margin-top: 12px; padding-top: 9px; border-top: 1px dashed var(--line); color: #657571; font-size: 12px; }
+    .back { float: right; font-size: 12px; font-weight: normal; }
+    footer { padding: 24px; text-align: center; color: #667874; border-top: 1px solid var(--line); }
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; }
+      aside { position: static; max-height: none; border-right: 0; border-bottom: 1px solid var(--line); column-count: 2; }
+      aside h2 { column-span: all; }
+      main { padding-top: 20px; }
+      .cols { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 560px) {
+      aside { column-count: 1; }
+      .flow { flex-direction: column; overflow: visible; }
+      .node { max-width: none; width: 100%; }
+      .arrow { transform: rotate(90deg); min-height: 22px; }
+    }
+    @media print {
+      aside { display: none; }
+      .layout { display: block; }
+      .diagram { box-shadow: none; break-inside: avoid; }
+      .flow { overflow: visible; }
+    }
+  </style>
+</head>
+<body>
+  <header id="top">
+    <p>WO-20260804-PRODUCT-CENTER-FLOW-AUDIT-105 · 00 共享平台 · 源码只读审计</p>
+    <h1>商品发布中心：超细粒度流程图审计</h1>
+    <p>本页只陈述当前提交中的代码调用、合同、持久化与按钮连线，不验证功能是否正确，也不代表线上状态。每张图只覆盖一个模块或一段跨模块关系。</p>
+    <div class="snapshot">
+      <code>代码快照：125a8e78e8b7444fae9da1b3e0da7d1e44d533ef</code>
+      <span class="pill">审计日期：2026-08-04</span>
+      <span class="pill">外部请求：0</span>
+      <span class="pill">生产数据写入：0</span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside aria-label="文档目录">
+      <h2>目录</h2>
+      <a class="group" href="#scope">0. 范围与图例</a>
+      <a class="group" href="#surface">1. 页面与聚合</a>
+      <a href="#d1">1.1 页面入口</a><a href="#d2">1.2 本地并行队列</a><a href="#d3">1.3 Dashboard 聚合</a><a href="#d4">1.4 七阶段投影</a>
+      <a class="group" href="#product">2. 商品事实</a>
+      <a href="#d5">2.1 首次采集</a><a href="#d6">2.2 事实编辑</a><a href="#d7">2.3 标题草稿</a><a href="#d8">2.4 标题采用</a><a href="#d9">2.5 多规格</a><a href="#d10">2.6 SKU 血缘</a><a href="#d11">2.7 商品审批</a>
+      <a class="group" href="#content">3. 内容审核</a>
+      <a href="#d12">3.1 source_only</a><a href="#d13">3.2 ai_assisted</a><a href="#d14">3.3 ContentPackage</a>
+      <a class="group" href="#scope-price">4. 目标、价格与类目</a>
+      <a href="#d15">4.1 固定 16 目标</a><a href="#d16">4.2 默认选择</a><a href="#d17">4.3 用户选择</a><a href="#d18">4.4 价格来源</a><a href="#d19">4.5 类目决策</a><a href="#d20">4.6 Shopee Global 计划</a>
+      <a class="group" href="#plan">5. ReleasePlan</a>
+      <a href="#d21">5.1 不可变载荷</a><a href="#d22">5.2 批准与存储</a>
+      <a class="group" href="#execute">6. 妙手与渠道执行</a>
+      <a href="#d23">6.1 采集箱动作</a><a href="#d24">6.2 三个可见发布按钮</a><a href="#d25">6.3 TikTok 6 目标</a><a href="#d26">6.4 HomeBloom / 固定店铺</a><a href="#d27">6.5 Shopee Global</a><a href="#d28">6.6 Ozon</a><a href="#d29">6.7 兼容 COMMON</a><a href="#d30">6.8 控制面模型</a><a href="#d31">6.9 后台 Worker</a><a href="#d42">6.10 发布后促销动作</a>
+      <a class="group" href="#result">7. 账本、重试与结果</a>
+      <a href="#d32">7.1 双账本</a><a href="#d33">7.2 状态机</a><a href="#d34">7.3 安全重试</a><a href="#d35">7.4 只读对账</a><a href="#d36">7.5 Shopee 修价</a><a href="#d37">7.6 人工验收</a><a href="#d38">7.7 页面结果</a>
+      <a class="group" href="#dependencies">8. 依赖与集合差异</a>
+      <a href="#d39">8.1 只读输入 vs 执行依赖</a><a href="#d40">8.2 当前/兼容依赖</a><a href="#d41">8.3 集合差异</a>
+      <a class="group" href="#inventory">9. 按钮、入口与持久化清单</a>
+      <a href="#buttons">9.1 按钮字典</a><a href="#apis">9.2 API 字典</a><a href="#stores">9.3 存储字典</a><a href="#evidence">9.4 证据索引</a>
+    </aside>
+
+    <main>
+      <section id="scope" class="chapter">
+        <h2>0. 审计范围与读图规则</h2>
+        <p class="lead">“共享只读输入”表示只用于组装预览/合同；“执行依赖”表示 claim 或外部动作之前必须满足。两者在图中不会混用。</p>
+        <div class="legend">
+          <span class="read">共享只读输入 / GET / 本地读取</span>
+          <span class="contract">纯合同 / 预览 / digest</span>
+          <span class="local">本地持久化</span>
+          <span class="approval">Kyle 明确批准</span>
+          <span class="external">可能产生外部平台写入</span>
+          <span class="legacy">兼容或当前未接入可见 POST 的代码路径</span>
+        </div>
+        <div class="audit-note"><strong>边界：</strong>没有运行 pytest、浏览器、正式 HTTP、数据库写或渠道请求；文中“成功/失败”只指代码状态名称，不是本次审计验证结果。</div>
+      </section>
+
+      <section id="surface" class="chapter">
+        <h2>1. 页面入口、队列与聚合</h2>
+        <p class="lead">页面是一个聚合面：JSON 工作台、内容包、SQLite 发布账本与只读商品/财务事实被服务端合并后一次返回。</p>
+
+        <article id="d1" class="diagram"><h3>1.1 页面入口</h3><p>两个 URL 复用同一 HTML；内容审核使用独立页面。</p><div class="flow">
+          <div class="node read"><strong>/new-product</strong><small>商品发布中心入口</small></div><div class="arrow">→</div>
+          <div class="node read"><strong>/product-workspace</strong><small>兼容入口，同一页面</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>product_workspace.html</strong><small>加载 CSS、JS、disabled hints</small></div><div class="arrow">↗</div>
+          <div class="node read"><strong>/ai-image-studio</strong><small>内容与图片工作室，新窗口</small></div>
+        </div><p class="source">证据：modules/products/server.py 静态路由；web/product_workspace.html。</p></article>
+
+        <article id="d2" class="diagram"><h3>1.2 浏览器本地并行队列</h3><p>队列不是服务端业务状态；最多 50 项，并发刷新上限 4。</p><div class="flow">
+          <div class="node read"><strong>输入 Offer ID</strong><small>“加入队列并打开”</small></div><div class="arrow">→</div>
+          <div class="node local"><strong>localStorage</strong><small>orbit.productWorkspace.releaseQueue.v1</small></div><div class="arrow">→</div>
+          <div class="node read"><strong>并发 GET Dashboard</strong><small>最多 4 个；刷新不发布</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>队列摘要卡</strong><small>阶段、阻断数、图片数、审批状态</small></div>
+        </div><p class="source">证据：web/static/product_workspace.js 的队列常量、refreshQueueProduct、queueSummary。</p></article>
+
+        <article id="d3" class="diagram"><h3>1.3 Dashboard 聚合边界</h3><p>GET 接受 Offer ID 和可选 target 列表；选择只影响当前聚合结果。</p><div class="flow">
+          <div class="node read"><strong>工作台 JSON</strong><small>商品事实、review、内容状态、revision</small></div><div class="arrow">↘</div>
+          <div class="node read"><strong>只读数据库/报表</strong><small>SKU 占用、汇率、定价、周利润摘要</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>build_release_dashboard</strong><small>五域合同聚合；本函数自述不持久化</small></div><div class="arrow">←</div>
+          <div class="node read"><strong>ReleaseStore</strong><small>审批、计划、run、目标账本</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>_product_workspace_view</strong><small>裁剪为浏览器公开投影</small></div>
+        </div><p class="source">证据：shared_platform/release_control.py::build_release_dashboard；modules/products/server.py GET dashboard。</p></article>
+
+        <article id="d4" class="diagram"><h3>1.4 七阶段仅是页面投影</h3><p>阶段由 Dashboard 字段与 release_v1 run 计算，不是独立状态机表。</p><div class="flow">
+          <div class="node contract"><strong>01 商品事实</strong><small>必填事实 + 站点 + 规格</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>02 内容审批</strong><small>approved + image_count</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>03 商品审批</strong><small>actual_product_approved</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>04 发布计划</strong><small>plan_approved</small></div>
+        </div><div class="flow">
+          <div class="node contract"><strong>05 妙手待发布</strong><small>miaoshou_prepared</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>06 渠道执行</strong><small>run 目标离开 PENDING/RUNNING</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>07 回读对账</strong><small>run/targets 终态一致</small></div>
+        </div><p class="source">证据：web/static/product_workspace.js::stageModel。</p></article>
+      </section>
+
+      <section id="product" class="chapter">
+        <h2>2. 商品事实、标题、多规格与审批</h2>
+
+        <article id="d5" class="diagram"><h3>2.1 首次采集</h3><p>只有本地工作台缺失时才读取一次妙手预采集；已有工作台直接幂等返回。</p><div class="flow">
+          <div class="node read"><strong>POST /collect</strong><small>Offer ID；同源 JSON 写保护</small></div><div class="arrow">→</div>
+          <div class="node read"><strong>Miaoshou precollect_preview</strong><small>仅首次：1 次上游读取</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>build_preview</strong><small>来源标题、属性、SKU、图片、默认站点</small></div><div class="arrow">→</div>
+          <div class="node local"><strong>{offer_id}.json</strong><small>revision=1；无 claim/发布/图片写</small></div>
+        </div><p class="source">证据：modules/products/server.py::_collect_product_workspace_locally；modules/sourcing/new_product_workbench.py。</p></article>
+
+        <article id="d6" class="diagram"><h3>2.2 商品事实编辑</h3><p>保存是 revision CAS；审批锁定后拒绝普通编辑。</p><div class="flow">
+          <div class="node read"><strong>标题 / 成本 / 重量 / 包装</strong><small>标题 1–220；正数；包装 3 维</small></div><div class="arrow">+</div>
+          <div class="node read"><strong>来源规格多选</strong><small>至少 1 个真实来源 SKU；可改展示名</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>expected_revision 校验</strong><small>锁内重读；冲突 409</small></div><div class="arrow">→</div>
+          <div class="node local"><strong>workbench JSON +1</strong><small>listing_copy 事实签名变化则 superseded</small></div><div class="arrow">→</div>
+          <div class="node read"><strong>重建 Dashboard</strong><small>重算价格、预检、阻断</small></div>
+        </div><p class="source">证据：modules/products/server.py::_save_product_workspace_facts_locally。</p></article>
+
+        <article id="d7" class="diagram"><h3>2.3 AI 标题草稿</h3><p>模型只产出候选；不会直接改商品事实或渠道。</p><div class="flow">
+          <div class="node read"><strong>当前事实快照</strong><small>中文源标题、类目、成本、重量、包装、所选规格</small></div><div class="arrow">→</div>
+          <div class="node external"><strong>ToAPI 标题模型</strong><small>生成平台标题与 Shopee 英文描述候选</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>政策/输入签名</strong><small>fact snapshot + model input digest</small></div><div class="arrow">→</div>
+          <div class="node local"><strong>listing_copy</strong><small>draft_pending_kyle_review；revision +1</small></div>
+        </div><p class="edge-note">这是非渠道模型调用；错误响应明确记录 marketplace_writes_performed=[]。</p><p class="source">证据：modules/products/server.py::_generate_product_workspace_title_draft；domains/content_operations/listing_title_candidates.py。</p></article>
+
+        <article id="d8" class="diagram"><h3>2.4 采用英文主标题</h3><p>采用要求 Kyle、精确候选与当前事实签名；标题变化会废止旧审批/计划。</p><div class="flow">
+          <div class="node approval"><strong>采用候选</strong><small>Kyle + user_approved=true + revision</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>候选/事实精确复核</strong><small>英文、无中文、≤180、签名当前</small></div><div class="arrow">→</div>
+          <div class="node local"><strong>supersede active plan</strong><small>若存在；ReleaseStore 本地写</small></div><div class="arrow">→</div>
+          <div class="node local"><strong>更新 title / unlock</strong><small>标题变化时商品审批 superseded</small></div>
+        </div><p class="source">证据：modules/products/server.py::_adopt_product_workspace_title_candidate。</p></article>
+
+        <article id="d9" class="diagram"><h3>2.5 多 SKU / 多规格</h3><p>同一来源链接保留为一个商品组；规格被筛选而非拆成多个商品。</p><div class="flow">
+          <div class="node read"><strong>source.skus</strong><small>真实 key/name/采购价</small></div><div class="arrow">→</div>
+          <div class="node local"><strong>selected_sku_keys</strong><small>一个或多个；至少一个</small></div><div class="arrow">→</div>
+          <div class="node local"><strong>sku_label_overrides</strong><small>只允许所选真实 key；唯一名称</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>单一商品组</strong><small>seller SKU + 多 model SKU</small></div><div class="arrow">→</div>
+          <div class="node external"><strong>妙手单草稿多规格</strong><small>过滤未选规格；保留一个商品关系</small></div>
+        </div><p class="source">证据：new_product_workbench.py 的 selectedSkuKeys、skuLabelOverrides、prepare_miaoshou_draft。</p></article>
+
+        <article id="d10" class="diagram"><h3>2.6 Seller SKU / Model SKU 血缘</h3><p>浏览器不能手填 Seller SKU；审批与计划绑定 durable reservation。</p><div class="flow">
+          <div class="node read"><strong>SourceProductIdentity</strong><small>canonical source offer + provenance digest</small></div><div class="arrow">→</div>
+          <div class="node read"><strong>前序计划/预留账本</strong><small>同源继承或 NEW_SOURCE</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>resolve_sku_lineage</strong><small>seller SKU + 每规格 model SKU</small></div><div class="arrow">→</div>
+          <div class="node local"><strong>reservation 表</strong><small>唯一约束、plan link、ACTIVE</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>ReleasePlan 身份</strong><small>审批、preview、dispatch 重核</small></div>
+        </div><p class="source">证据：domains/product_operations source/SKU contracts；release_control.py；release_store.py reservation 表。</p></article>
+
+        <article id="d11" class="diagram"><h3>2.7 商品事实审批</h3><p>只锁本地 revision，不建立渠道草稿。</p><div class="flow">
+          <div class="node contract"><strong>approval rehearsal</strong><small>事实、内容、SKU、唯一性阻断</small></div><div class="arrow">→</div>
+          <div class="node approval"><strong>批准并锁定 revision</strong><small>approved_by=Kyle</small></div><div class="arrow">→</div>
+          <div class="node local"><strong>product_approval</strong><small>approval_id、revision、locked facts</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>actual_product_approved</strong><small>Dashboard 真实门禁</small></div>
+        </div><p class="edge-note">外部写入：无；ReleasePlan 批准是后续独立步骤。</p><p class="source">证据：modules/products/server.py::_approve_product_workspace_locally。</p></article>
+      </section>
+
+      <section id="content" class="chapter">
+        <h2>3. 内容审核与 ContentPackage</h2>
+
+        <article id="d12" class="diagram"><h3>3.1 source_only 内容路径</h3><p>原图审核以“每张 keep/remove + 精确顺序 + 最终批准”构成合同。</p><div class="flow">
+          <div class="node read"><strong>来源图片 / 可选视频</strong><small>HTTPS、来源 lineage</small></div><div class="arrow">→</div>
+          <div class="node local"><strong>keep / remove</strong><small>每张显式决定</small></div><div class="arrow">→</div>
+          <div class="node local"><strong>image_order</strong><small>只含 keep 集合，连续且精确</small></div><div class="arrow">→</div>
+          <div class="node approval"><strong>source-only final approval</strong><small>Kyle；review/video digest</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>有序 source lineage</strong><small>ContentPackage 图片顺序</small></div>
+        </div><p class="source">证据：content_package_adapter.py::source_only_final_approval_valid、_source_only_order_lineage。</p></article>
+
+        <article id="d13" class="diagram"><h3>3.2 ai_assisted 内容路径</h3><p>当前版本按 shot 只选一个最新技术验证 artifact；旧 keep 不会批准新版本。</p><div class="flow">
+          <div class="node read"><strong>fact card / storyboard</strong><small>规划范围、suite、shot 选择</small></div><div class="arrow">→</div>
+          <div class="node external"><strong>AI 生成 artifact</strong><small>generation audit + 技术验证</small></div><div class="arrow">→</div>
+          <div class="node approval"><strong>每个当前 artifact 审核</strong><small>最终 keep/reject；旧版本 superseded</small></div><div class="arrow">→</div>
+          <div class="node local"><strong>image_order / video_action</strong><small>有序最终集合</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>AI lineage</strong><small>缺 shot/审核则 pending</small></div>
+        </div><p class="source">证据：content_package_adapter.py::_current_audits_by_shot、_order_lineage。</p></article>
+
+        <article id="d14" class="diagram"><h3>3.3 ContentPackage 交接</h3><p>商品中心只消费红化后的内容合同；写妙手的历史图片集合若与当前不符，只形成 stale blocker。</p><div class="flow">
+          <div class="node contract"><strong>内容 strategy</strong><small>source_only / ai_assisted</small></div><div class="arrow">+</div>
+          <div class="node contract"><strong>copy + ordered assets</strong><small>图片、视频、lineage、blockers</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>ContentPackage</strong><small>package_id、product_id、ApprovalRecord</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>Dashboard content</strong><small>approved、image_count、images、stale write</small></div><div class="arrow">→</div>
+          <div class="node approval"><strong>ReleasePlan 输入</strong><small>精确内容版本与顺序</small></div>
+        </div><p class="source">证据：domains/content_operations/content_package_adapter.py；shared_platform/contracts.py。</p></article>
+      </section>
+
+      <section id="scope-price" class="chapter">
+        <h2>4. 目标选择、价格、类目与 Shopee Global 计划</h2>
+
+        <article id="d15" class="diagram"><h3>4.1 固定 16 个 storefront 目标</h3><p>顺序与 allowlist 固定；浏览器不能注入未知 adapter/站点。</p>
+          <div class="table-wrap"><table><thead><tr><th>组</th><th>固定标签</th><th>数量</th></tr></thead><tbody>
+            <tr><td>共享控制</td><td><code>miaoshou:COMMON</code></td><td>1</td></tr>
+            <tr><td>TikTok LivelyHive</td><td>LH_PH / LH_MY / LH_TH / LH_VN / MX / GB</td><td>6</td></tr>
+            <tr><td>TikTok HomeBloom</td><td>HB_PH / HB_MY / HB_TH / HB_VN</td><td>4</td></tr>
+            <tr><td>Shopee 区域</td><td>PH / MY / TH / VN</td><td>4</td></tr>
+            <tr><td>Ozon</td><td>RU</td><td>1</td></tr>
+          </tbody></table></div><p class="source">证据：release_control.py::PUBLICATION_TARGET_ALLOWLIST。</p></article>
+
+        <article id="d16" class="diagram"><h3>4.2 默认目标算法</h3><p>“默认”来自商品 review.selected_sites，不等于全选。</p><div class="flow">
+          <div class="node read"><strong>selected_sites</strong><small>默认启用 LH SEA4；HB 默认关闭</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>TikTok SEA 映射</strong><small>只选工作台已选 store key</small></div><div class="arrow">+</div>
+          <div class="node contract"><strong>强加 MX + GB</strong><small>未来默认/恢复默认包含</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>Shopee 同国</strong><small>仅按所选 SEA TikTok 国家</small></div><div class="arrow">+</div>
+          <div class="node contract"><strong>COMMON + Ozon RU</strong><small>始终在默认集合</small></div>
+        </div><p class="source">证据：release_control.py::_default_omnichannel_targets；new_product_workbench.py::SEA_MARKETS。</p></article>
+
+        <article id="d17" class="diagram"><h3>4.3 用户选择只重建预览</h3><p>“全选 / 恢复默认 / 应用选择”不直接持久化到渠道；GET query 重新计算计划身份。</p><div class="flow">
+          <div class="node read"><strong>16 个 checkbox</strong><small>用户选择 target labels</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>allowlist + 去重 + 固定排序</strong><small>至少 1 个；未知值拒绝</small></div><div class="arrow">→</div>
+          <div class="node read"><strong>GET dashboard?target=...</strong><small>当前页面重新读取</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>新预检/价格/token</strong><small>selection_applied_to_plan=true</small></div>
+        </div><p class="source">证据：release_control.py::_publication_scope；product_workspace.js publication scope handlers。</p></article>
+
+        <article id="d18" class="diagram"><h3>4.4 价格输入与跨店“读取依赖”</h3><p>这里是确定性定价来源，不代表执行顺序。</p><div class="flow">
+          <div class="node read"><strong>成本/重量/包装/FX/费率</strong><small>旧反向定价完整保留</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>10 个 TikTok 店铺价</strong><small>未选店也保留审查行</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>Shopee 同国来源</strong><small>优先 LH，再 HB；要求同国已选 TikTok 店</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>Ozon 来源</strong><small>PH→MY→TH→VN→MX→GB，LH 优先</small></div>
+        </div><p class="edge-note"><strong>只读输入：</strong>“Shopee/Ozon 价格源自某 TikTok 店价”不自动建立渠道执行 prerequisite。</p><p class="source">证据：release_control.py::_release_pricing_review、_apply_store_level_pricing。</p></article>
+
+        <article id="d19" class="diagram"><h3>4.5 Shopee 类目 / 属性决策</h3><p>类目选项来自 03 的只读观察；Kyle 选择后落本地 ReleaseStore。</p><div class="flow">
+          <div class="node read"><strong>GET category preview</strong><small>offer_id + target_label</small></div><div class="arrow">→</div>
+          <div class="node read"><strong>官方只读候选</strong><small>类目、属性 schema、证据 digest</small></div><div class="arrow">→</div>
+          <div class="node approval"><strong>选择类目/属性</strong><small>Kyle + 精确候选 identity</small></div><div class="arrow">→</div>
+          <div class="node local"><strong>category decision tables</strong><small>active decision + attribute selection</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>Global 计划输入</strong><small>缺失则 BLOCKED_CONTENT/CAPABILITY</small></div>
+        </div><p class="source">证据：server.py category preview/approval；release_store.py category tables。</p></article>
+
+        <article id="d20" class="diagram"><h3>4.6 Shopee Global 计划审批</h3><p>Global 是服务端控制目标，不在“16 个 storefront”分母内。</p><div class="flow">
+          <div class="node read"><strong>GET global-plan-preview</strong><small>只传 offer_id</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>NEW_GLOBAL / EXISTING_GLOBAL</strong><small>v1/v2 候选；官方事实 + 本地批准事实</small></div><div class="arrow">→</div>
+          <div class="node approval"><strong>Kyle 批准候选</strong><small>confirm_approved_shopee_global_plan</small></div><div class="arrow">→</div>
+          <div class="node local"><strong>global plan approval</strong><small>ReleaseStore，active exact record</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>shopee:GLOBAL</strong><small>一键控制面内的 control target</small></div>
+        </div><p class="source">证据：server.py::_preview/_approve_shopee_global_plan；shopee_global_plan.py。</p></article>
+      </section>
+
+      <section id="plan" class="chapter">
+        <h2>5. 不可变 ReleasePlan</h2>
+
+        <article id="d21" class="diagram"><h3>5.1 ReleasePlan 载荷</h3><p>浏览器只回显身份；服务端从当前 Dashboard 构造完整 payload。</p><div class="flow">
+          <div class="node contract"><strong>商品 revision + SKU 血缘</strong><small>来源 identity、reservation、规格/model SKU</small></div><div class="arrow">+</div>
+          <div class="node contract"><strong>内容 / 文案 / 图片 / 视频</strong><small>精确版本、顺序、digests</small></div><div class="arrow">+</div>
+          <div class="node contract"><strong>目标 / 类目 / 价格</strong><small>selected labels、Global approval、成本/FX/费率</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>payload_digest + plan_id</strong><small>同一事实确定性身份</small></div>
+        </div><p class="source">证据：server.py::_release_plan_payload_from_dashboard；release_store.py::preview_plan。</p></article>
+
+        <article id="d22" class="diagram"><h3>5.2 批准与本地持久化</h3><p>计划批准不自动创建外部草稿或执行 run。</p><div class="flow">
+          <div class="node contract"><strong>preview plan/token</strong><small>当前 Dashboard 重算精确相等</small></div><div class="arrow">→</div>
+          <div class="node approval"><strong>批准当前发布计划</strong><small>Kyle + literal user_approved</small></div><div class="arrow">→</div>
+          <div class="node local"><strong>release_plans</strong><small>payload_json、digest、targets、status</small></div><div class="arrow">+</div>
+          <div class="node local"><strong>release_approvals</strong><small>approval_id、Kyle、APPROVED</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>执行 authority</strong><small>plan/token/revision/payload/targets exact</small></div>
+        </div><p class="source">证据：server.py::_approve_release_plan_locally；release_store.py。</p></article>
+      </section>
+
+      <section id="execute" class="chapter">
+        <h2>6. 妙手采集箱与渠道执行</h2>
+        <div class="finding"><strong>当前代码存在两套相邻执行表达：</strong>可见的三个独立平台按钮使用同步请求/响应 publisher；另有 durable oneclick preview/status/store/worker，但当前 <code>do_POST</code> 未把 <code>/publish</code> 接到 <code>_start_oneclick_release</code>，JS 也把历史 job 标注为 diagnostics。下列图分开描述。</div>
+
+        <article id="d23" class="diagram"><h3>6.1 妙手采集箱导入动作</h3><p>采集箱动作是批准计划后的独立显式步骤；按平台持久化批次与目标结果。</p><div class="flow">
+          <div class="node read"><strong>GET preview/status</strong><small>offer_id + plan_id；不信任浏览器 detail ID</small></div><div class="arrow">→</div>
+          <div class="node approval"><strong>导入 TikTok / Shopee</strong><small>Kyle + confirm_collectbox_action</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>approved plan identity</strong><small>product_id 作为 COMMON detail ID；来源仅旁证</small></div><div class="arrow">→</div>
+          <div class="node external"><strong>03 collectbox adapter</strong><small>平台分组动作、受控间隔、结果分类</small></div><div class="arrow">→</div>
+          <div class="node local"><strong>collectbox_* 表</strong><small>action/platform/batch/target outcomes</small></div>
+        </div><p class="source">证据：server.py::_preview/_start_collectbox_action；collectbox_action.py。</p></article>
+
+        <article id="d24" class="diagram"><h3>6.2 当前可见三个平台按钮</h3><p>三个按钮互相独立，各自维护四态 UI（未发布/发布中/成功/失败）。</p><div class="flow">
+          <div class="node approval"><strong>发布 TikTok</strong><small>POST /publish-tiktok</small></div><div class="arrow">|</div>
+          <div class="node approval"><strong>发布 Shopee Global</strong><small>POST /publish-shopee-global</small></div><div class="arrow">|</div>
+          <div class="node approval"><strong>发布 Ozon</strong><small>POST /publish-ozon</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>平台结果卡</strong><small>只按 HTTP 200 + success=true 判成功</small></div>
+        </div><p class="edge-note">HTML 中“发布已批准计划”区域展示三按钮；旧“ 一键发布已选店铺”按钮也调用 TikTok 同一 endpoint。</p><p class="source">证据：product_workspace.js::publishPlatformBatch、run*ReleaseAction、publishSelectedTargets；server.py do_POST。</p></article>
+
+        <article id="d25" class="diagram"><h3>6.3 当前独立 TikTok 快照固定为 6 目标</h3><p>服务端不按页面任意 16 目标循环，而是构造固定批准快照。</p><div class="flow">
+          <div class="node contract"><strong>Approved ReleasePlan</strong><small>plan/token/targets 精确回显</small></div><div class="arrow">+</div>
+          <div class="node read"><strong>采集箱 per-target context</strong><small>已持久妙手 draft 身份</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>固定 6 目标快照</strong><small>LH_PH/MY/TH/VN + MX + GB</small></div><div class="arrow">→</div>
+          <div class="node external"><strong>production_tiktok_publisher</strong><small>每目标妙手提交；收集 write count/outcome</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>6 行 receipt</strong><small>ACCEPTED/REJECTED/UNKNOWN/NOT_ATTEMPTED</small></div>
+        </div><p class="source">证据：product_snapshot.py::TIKTOK_PUBLISH_TARGETS；server.py::_start_tiktok_release；miaoshou/tiktok_publisher.py。</p></article>
+
+        <article id="d26" class="diagram"><h3>6.4 HomeBloom 四店的当前位置</h3><p>HB 是真实固定店铺配置，但不在上图独立 TikTok 6 目标快照中。</p><div class="flow">
+          <div class="node contract"><strong>16 目标选择器</strong><small>HB_PH/MY/TH/VN 可选</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>定价 / ReleasePlan</strong><small>HB store-level 价格与 target identity</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>直连 adapter registry</strong><small>四个固定 Miaoshou shop binding</small></div><div class="arrow">≠</div>
+          <div class="node external"><strong>独立 TikTok publisher</strong><small>当前固定 6 目标，不含 HB</small></div>
+        </div><div class="table-wrap"><table><thead><tr><th>目标</th><th>品牌/区域</th><th>固定 Miaoshou shop_id</th><th>direct-store draft mode</th></tr></thead><tbody>
+          <tr><td>LH_PH</td><td>LivelyHive / PH</td><td>7676267</td><td>site</td></tr><tr><td>LH_MY</td><td>LivelyHive / MY</td><td>13295169</td><td>site</td></tr><tr><td>LH_TH</td><td>LivelyHive / TH</td><td>13295228</td><td>site</td></tr><tr><td>LH_VN</td><td>LivelyHive / VN</td><td>13295291</td><td>site</td></tr>
+          <tr><td>MX</td><td>LivelyHive / MX</td><td>16265910</td><td>shop</td></tr><tr><td>GB</td><td>LivelyHive / GB</td><td>10204699</td><td>shop；submit_without_readback_validation</td></tr>
+          <tr><td>HB_PH</td><td>HomeBloom / PH</td><td>15173238</td><td>site</td></tr><tr><td>HB_MY</td><td>HomeBloom / MY</td><td>16770639</td><td>site</td></tr><tr><td>HB_TH</td><td>HomeBloom / TH</td><td>16770557</td><td>site</td></tr><tr><td>HB_VN</td><td>HomeBloom / VN</td><td>16783702</td><td>site</td></tr>
+        </tbody></table></div><p class="source">证据：release_control.py；miaoshou/oneclick_release.py::DIRECT_STORE_CONFIG；product_snapshot.py。</p></article>
+
+        <article id="d27" class="diagram"><h3>6.5 Shopee 全球商品独立发布</h3><p>当前按钮直接从批准 payload 提取 CNSC facts，调用 approved global publisher。</p><div class="flow">
+          <div class="node contract"><strong>批准 payload</strong><small>seller/model SKU、CNSC title/description、图片、包裹、价格</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>锁内 TOCTOU 重算</strong><small>current_facts 必须完全相等</small></div><div class="arrow">→</div>
+          <div class="node external"><strong>publish_approved_global</strong><small>只创建/更新 approved Shopee CNSC global</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>HTTP 结果</strong><small>1 个 shopee:GLOBAL；成功/失败</small></div>
+        </div><p class="edge-note">区域 Shopee PH/MY/TH/VN 是 16 目标与直连注册；当前独立按钮发布的是服务端控制目标 <code>shopee:GLOBAL</code>。</p><p class="source">证据：server.py::_approved_shopee_global_publish_facts、_start_shopee_global_release。</p></article>
+
+        <article id="d28" class="diagram"><h3>6.6 Ozon 独立发布</h3><p>当前按钮仍进入 migrate_one 的受限参数路径；该路径与一键控制面的 Ozon inventory-gated adapter 是不同代码面。</p><div class="flow">
+          <div class="node contract"><strong>批准 Ozon facts</strong><small>SKU、title、size、weight、price/old price、images</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>锁内 TOCTOU 重算</strong><small>facts 不得漂移</small></div><div class="arrow">→</div>
+          <div class="node external"><strong>migrate_one</strong><small>quantity=1；禁 DeepSeek/图片处理/rich/mapping write</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>accepted 判定</strong><small>ok 或 task_id + accepted；不等待 import</small></div>
+        </div><p class="source">证据：server.py::_approved_ozon_publish_facts、_start_ozon_release。</p></article>
+
+        <article id="d29" class="diagram"><h3>6.7 兼容 COMMON prepare / overwrite</h3><p>旧 STEP 1 面板仍在页面并有正式 POST；普通 prepare 不自动覆盖不一致草稿。</p><div class="flow">
+          <div class="node approval"><strong>同步到妙手待发布</strong><small>confirm + exact plan identity</small></div><div class="arrow">→</div>
+          <div class="node read"><strong>COMMON 只读 prepare/diff</strong><small>title/SKU/spec/weight/package/images/desc/video</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>exact / mismatch</strong><small>exact 可复用；mismatch 普通路径 0 overwrite</small></div><div class="arrow">→</div>
+          <div class="node approval"><strong>独立 overwrite consent</strong><small>Kyle + token/revision/digests</small></div><div class="arrow">→</div>
+          <div class="node external"><strong>单次 COMMON edit + readback</strong><small>未知结果进入 reconciliation</small></div>
+        </div><p class="source">证据：server.py::_prepare_miaoshou_release；release_store.py common overwrite review；HTML commonOverwritePanel。</p></article>
+
+        <article id="d30" class="diagram"><h3>6.8 Durable oneclick 控制面模型</h3><p>该模型先全批 prepare，再允许单目标 claim；公共 GET 已注册。</p><div class="flow">
+          <div class="node read"><strong>GET publish-preview</strong><small>计划/运行/registry 纯预览</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>prepare all targets</strong><small>systemic identity 错误整批 0 claim</small></div><div class="arrow">→</div>
+          <div class="node local"><strong>oneclick job/targets</strong><small>prepared command、proof、digests</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>atomic claim one</strong><small>同事务 canonical target PENDING→RUNNING</small></div><div class="arrow">→</div>
+          <div class="node external"><strong>03 dispatch seam</strong><small>typed result，随后双账本终结</small></div>
+        </div><p class="source">证据：oneclick_release_controlplane.py；server.py::_preview_oneclick_release。</p></article>
+
+        <article id="d31" class="diagram"><h3>6.9 后台 Worker 与当前接线事实</h3><p>源码包含 worker start/wake/recovery；但本快照可见 POST 分派未调用 durable start。</p><div class="flow">
+          <div class="node legacy"><strong>_start_oneclick_release</strong><small>建 job、start batch；代码存在</small></div><div class="arrow">→</div>
+          <div class="node legacy"><strong>_wake_oneclick_worker</strong><small>daemon 线程、事件唤醒；无生产调用点</small></div><div class="arrow">→</div>
+          <div class="node legacy"><strong>advance_once</strong><small>prepare/claim/dispatch/recovery</small></div><div class="arrow">≠</div>
+          <div class="node external"><strong>当前 /publish POST</strong><small>do_POST 映射到 _start_tiktok_release</small></div>
+        </div><p class="edge-note">JS 注释：“Publishing is now a request/response interaction. Historical jobs are diagnostics only”。这只是接线事实，不是本审计的功能结论。</p><p class="source">证据：server.py::_start_oneclick_background_worker、_start_oneclick_release、do_POST；product_workspace.js::ensureOneClickExecution。</p></article>
+
+        <article id="d42" class="diagram"><h3>6.10 发布后促销动作（控制面模型）</h3><p>促销不是 16 个 storefront 目标；它是服务端生成、依赖已验证目标回读的后置 action。</p><div class="flow">
+          <div class="node local"><strong>storefront SUCCEEDED</strong><small>必须有 canonical official readback</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>promotion prerequisite</strong><small>绑定 target result identity 与 policy digest</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>promotion:* action</strong><small>server-owned；不能由浏览器当 storefront 注入</small></div><div class="arrow">→</div>
+          <div class="node external"><strong>一次促销写 + 回读</strong><small>独立 write occurrence；失败不重发商品</small></div>
+        </div><p class="source">证据：shared_platform/postpublish_promotions.py；oneclick_release_controlplane.py promotion claim/result。</p></article>
+      </section>
+
+      <section id="result" class="chapter">
+        <h2>7. 状态持久化、重试、对账与结果展示</h2>
+
+        <article id="d32" class="diagram"><h3>7.1 Canonical ReleaseStore 与 oneclick 双账本</h3><p>控制面任务状态和正式 target/run 事实分表，终结合同要求原子同步。</p><div class="flow">
+          <div class="node local"><strong>oneclick job/target</strong><small>PREPARING/READY/DISPATCHING/terminal</small></div><div class="arrow">⇄</div>
+          <div class="node local"><strong>release run/target</strong><small>PENDING/RUNNING/SUCCEEDED/FAILED</small></div><div class="arrow">+</div>
+          <div class="node local"><strong>submission/readback/failure</strong><small>外部 ID、回读、失败证据（内部）</small></div><div class="arrow">→</div>
+          <div class="node local"><strong>release-outcome receipt</strong><small>按 attempt 追加；供 05 消费</small></div>
+        </div><p class="source">证据：release_store.py schema；oneclick_release_controlplane.py schema/terminal receipt。</p></article>
+
+        <article id="d33" class="diagram"><h3>7.2 公开 canonical 状态机</h3><p>页面不应解析存储层错误字符串；状态与 next action 由服务端投影。</p><div class="flow">
+          <div class="node contract"><strong>PENDING / PREPARING</strong><small>只读 proof 尚未完成</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>READY</strong><small>prepared command 已绑定，可 claim</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>DISPATCHING</strong><small>外部调用边界已进入</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>终态</strong><small>SUCCEEDED / SUBMITTED_UNVERIFIED / FAILED_PRE_SUBMIT / RECONCILIATION_REQUIRED / BLOCKED_*</small></div>
+        </div><p class="source">证据：oneclick_release_controlplane.py 状态常量、_public_target、next action policy。</p></article>
+
+        <article id="d34" class="diagram"><h3>7.3 唯一可安全重试分支</h3><p>只有精确证明零写入的 pre-submit 失败可重新准备；未知/历史写证据不得重发。</p><div class="flow">
+          <div class="node contract"><strong>FAILED_PRE_SUBMIT</strong><small>writes=()、no external_id、not accepted</small></div><div class="arrow">→</div>
+          <div class="node approval"><strong>显式 resume</strong><small>同 plan、同目标、下一 attempt</small></div><div class="arrow">→</div>
+          <div class="node local"><strong>新 attempt</strong><small>旧 outcome append-only 保留</small></div><div class="arrow">≠</div>
+          <div class="node contract"><strong>RECONCILIATION_REQUIRED</strong><small>UNKNOWN/已写/已受理：只对账，不 retry</small></div>
+        </div><p class="source">证据：oneclick_release_controlplane.py retry eligibility/outcome schema；release_store.py retry operations。</p></article>
+
+        <article id="d35" class="diagram"><h3>7.4 只读对账与 durable close</h3><p>GET preview 只读；专用 POST 允许官方 GET 后写本地账本，但不再发平台写。</p><div class="flow">
+          <div class="node local"><strong>RECONCILIATION_REQUIRED operation</strong><small>已有 external_id + prior writes</small></div><div class="arrow">→</div>
+          <div class="node read"><strong>GET-only official proof</strong><small>plan/proof/global ID/logistics/price/copy/image exact</small></div><div class="arrow">→</div>
+          <div class="node approval"><strong>confirm reconciliation</strong><small>Kyle + exact digests</small></div><div class="arrow">→</div>
+          <div class="node local"><strong>operation/target→SUCCEEDED</strong><small>reconciliation_external_writes=[]；保留 prior write</small></div>
+        </div><p class="source">证据：target_scoped_release_contracts.py；server.py target-scoped reconciliation routes。</p></article>
+
+        <article id="d36" class="diagram"><h3>7.5 Shopee PH/TH 单目标修价</h3><p>修价与只读结案是专用合同，不复用普通发布。</p><div class="flow">
+          <div class="node read"><strong>修价 preview GET</strong><small>FAILED + external_id + PH/TH；local price/non-price preflight</small></div><div class="arrow">→</div>
+          <div class="node approval"><strong>专用确认</strong><small>confirm_shopee_price_repair=true + Kyle</small></div><div class="arrow">→</div>
+          <div class="node external"><strong>一次 update_price</strong><small>regional original_price；随后官方 GET</small></div><div class="arrow">→</div>
+          <div class="node local"><strong>repair 账本</strong><small>SUCCEEDED 或 RECONCILIATION_REQUIRED；SIP 仅 warning</small></div>
+        </div><p class="source">证据：server.py Shopee price repair/reconciliation；release_store.py release_target_repairs。</p></article>
+
+        <article id="d37" class="diagram"><h3>7.6 人工验收</h3><p>平台只受理但无官方精确 readback 时，不能标 SUCCEEDED。</p><div class="flow">
+          <div class="node contract"><strong>SUBMITTED_UNVERIFIED</strong><small>submission accepted + write evidence + external ID</small></div><div class="arrow">→</div>
+          <div class="node approval"><strong>人工验收表单</strong><small>目标聚焦；marketplace product evidence</small></div><div class="arrow">→</div>
+          <div class="node local"><strong>manual acceptance</strong><small>resolution + consumer receipt</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>页面终态</strong><small>已验收或仍待核验；不自动重发</small></div>
+        </div><p class="source">证据：server.py::_manually_verify_release_target；oneclick_release_controlplane.py manual acceptance。</p></article>
+
+        <article id="d38" class="diagram"><h3>7.7 页面结果展示来源</h3><p>当前页面同时展示“本次按钮结果”和“历史 release_v1 账本”。</p><div class="flow">
+          <div class="node contract"><strong>platformPublish 内存态</strong><small>TikTok / Shopee Global / Ozon 四态卡；刷新即重置</small></div><div class="arrow">|</div>
+          <div class="node contract"><strong>release_v1.run</strong><small>逐目标执行/回读账本；来自 SQLite</small></div><div class="arrow">|</div>
+          <div class="node contract"><strong>oneclick preview/status</strong><small>schema 校验与 next action 代码仍在 JS</small></div><div class="arrow">→</div>
+          <div class="node read"><strong>七阶段/下一步</strong><small>组合以上投影，不是单一数据库字段</small></div>
+        </div><p class="source">证据：product_workspace.js::renderOneClickExecution、renderReleaseV1、stageModel。</p></article>
+      </section>
+
+      <section id="dependencies" class="chapter">
+        <h2>8. 共享只读输入与执行依赖</h2>
+
+        <article id="d39" class="diagram"><h3>8.1 两种依赖不能混写</h3><div class="cols">
+          <div><h4>共享只读输入</h4><ul class="compact"><li>TikTok 店价 → Shopee/Ozon 定价来源</li><li>来源商品/预采集 → SourceProductIdentity</li><li>内容审批 → ContentPackage</li><li>官方类目候选 → Kyle 本地决策</li><li>周利润 → Dashboard 摘要（不触发发布）</li></ul></div>
+          <div><h4>执行前硬依赖</h4><ul class="compact"><li>当前 APPROVED ReleasePlan/token/digests</li><li>有效 SKU reservation 与 source identity</li><li>采集箱 per-target publication proof（独立 TikTok）</li><li>Global plan/category approval（Shopee Global）</li><li>prepared proof/command exact（durable 控制面）</li><li>已写/未知结果必须 reconciliation，禁止重发</li></ul></div>
+        </div><p class="source">证据：release_control.py、server.py execution gates、oneclick_release_controlplane.py。</p></article>
+
+        <article id="d40" class="diagram"><h3>8.2 当前直连策略 vs 兼容依赖策略</h3><p>执行控制面按 registry 能力选择依赖政策，不应仅按页面“COMMON→TikTok→派生”文案推断。</p><div class="flow">
+          <div class="node contract"><strong>MVP direct-store registry</strong><small>所有 storefront 使用 miaoshou-direct-store/v1</small></div><div class="arrow">→</div>
+          <div class="node contract"><strong>mvp_unblocked</strong><small>COMMON 从 execution targets 移除；普通 storefront 独立</small></div><div class="arrow">|</div>
+          <div class="node legacy"><strong>legacy policy</strong><small>TikTok 依赖 COMMON；regional Shopee 依赖 GLOBAL</small></div><div class="arrow">|</div>
+          <div class="node contract"><strong>promotion target</strong><small>始终依赖对应 storefront verified readback</small></div>
+        </div><p class="source">证据：oneclick_release_controlplane.py::_mvp_rows、dependency state、promotion prerequisite。</p></article>
+
+        <article id="d41" class="diagram"><h3>8.3 当前固定集合差异总表</h3>
+          <div class="table-wrap"><table><thead><tr><th>集合/入口</th><th>包含</th><th>不包含/特别说明</th></tr></thead><tbody>
+            <tr><td>页面 16 目标</td><td>COMMON + TikTok 10 + Shopee 区域 4 + Ozon</td><td>Shopee Global 是控制目标，不计入 16</td></tr>
+            <tr><td>默认选择</td><td>COMMON、已选 SEA TikTok、MX、GB、同国 Shopee、Ozon</td><td>HomeBloom 默认不开，除非商品 review 已选</td></tr>
+            <tr><td>独立 TikTok 按钮</td><td>LH SEA4 + MX + GB（固定 6）</td><td>不含 HomeBloom 四店；不按任意勾选子集缩减</td></tr>
+            <tr><td>Miaoshou direct-store config</td><td>TikTok 10 + Shopee 区域4 + Ozon</td><td>COMMON 是独立控制；另有 Shopee Global 控制目标</td></tr>
+            <tr><td>独立 Shopee 按钮</td><td>shopee:GLOBAL / CNSC</td><td>不是区域 PH/MY/TH/VN 循环</td></tr>
+            <tr><td>独立 Ozon 按钮</td><td>ozon:RU 1 个</td><td>当前走受限 migrate_one 路径</td></tr>
+          </tbody></table></div>
+        </article>
+
+        <div class="finding"><strong>可读性结论：</strong>页面的“16 目标选择”“三个独立平台按钮”“兼容 COMMON/逐目标账本”“durable oneclick 控制面”是四个不同粒度的模型。审阅某一按钮时必须沿其实际 JS endpoint 回溯，不能用 16 目标表替代该按钮的执行集合。</div>
+      </section>
+
+      <section id="inventory" class="chapter">
+        <h2>9. 按钮、服务端入口与存储清单</h2>
+
+        <article id="buttons" class="diagram"><h3>9.1 页面按钮字典</h3>
+          <div class="table-wrap"><table><thead><tr><th>按钮/控件</th><th>入口</th><th>本地写</th><th>外部写可能</th></tr></thead><tbody>
+            <tr><td>加入队列并打开</td><td>GET dashboard；缺失时 POST collect</td><td>localStorage；首次工作台 JSON</td><td class="no">无渠道写；首次仅来源读</td></tr>
+            <tr><td>刷新全部 / 重新检查 / 刷新预检</td><td>GET dashboard</td><td>无</td><td class="no">无</td></tr>
+            <tr><td>下一步（服务端动作路由）</td><td>按 workflow_next_action / canonical_next_action 聚焦内容、审批、恢复或对账控件</td><td>单纯聚焦时无</td><td>只有最终路由到专用确认按钮后才可能写</td></tr>
+            <tr><td>AI 生成平台标题</td><td>POST title-draft</td><td>listing_copy、revision</td><td>模型调用；无渠道写</td></tr>
+            <tr><td>采用标题候选（动态）</td><td>POST title-adopt</td><td>工作台；可能 supersede plan</td><td class="no">无渠道写</td></tr>
+            <tr><td>保存商品事实</td><td>POST facts</td><td>工作台 JSON、revision</td><td class="no">无</td></tr>
+            <tr><td>批准并锁定 revision</td><td>POST approve</td><td>product_approval</td><td class="no">无</td></tr>
+            <tr><td>内容与图片工作室</td><td>打开 /ai-image-studio</td><td>由内容页独立处理</td><td>由内容页自身二次确认控制</td></tr>
+            <tr><td>全选/恢复默认/应用目标</td><td>GET dashboard?target=...</td><td>当前浏览器上下文</td><td class="no">无</td></tr>
+            <tr><td>选择类目/属性（动态）</td><td>GET preview + POST category decision</td><td>ReleaseStore decision</td><td class="no">官方 preview 只读</td></tr>
+            <tr><td>批准 Shopee Global 计划（动态）</td><td>GET preview + POST approval</td><td>ReleaseStore approval</td><td class="no">无</td></tr>
+            <tr><td>批准当前发布计划</td><td>POST release-plan/approve</td><td>plan + approval + reservation</td><td class="no">无</td></tr>
+            <tr><td>导入 TikTok/Shopee 妙手采集箱</td><td>POST collectbox-action/start</td><td>collectbox action/batch</td><td class="yes">妙手动作</td></tr>
+            <tr><td>发布 TikTok</td><td>POST publish-tiktok</td><td>当前接口主要返回 receipt</td><td class="yes">妙手固定 6 目标</td></tr>
+            <tr><td>发布 Shopee 全球商品</td><td>POST publish-shopee-global</td><td>当前接口主要返回结果</td><td class="yes">Shopee/CNSC publisher</td></tr>
+            <tr><td>发布 Ozon</td><td>POST publish-ozon</td><td>当前接口主要返回结果</td><td class="yes">Ozon import path</td></tr>
+            <tr><td>同步到妙手待发布</td><td>POST miaoshou-draft/commit</td><td>overwrite review/readback 账本</td><td class="yes">COMMON edit（exact/确认后）</td></tr>
+            <tr><td>按 ReleasePlan 覆盖 COMMON</td><td>同 endpoint + dedicated confirm</td><td>review/reconciliation evidence</td><td class="yes">最多一次 COMMON edit</td></tr>
+            <tr><td>一键发布已选店铺（旧面板）</td><td>JS 实际 POST publish-tiktok</td><td>浏览器四态</td><td class="yes">实际同独立 TikTok 6 目标</td></tr>
+            <tr><td>单目标恢复/只读结案/修价/人工验收（动态）</td><td>各 release-target 专用 endpoint</td><td>operation/repair/submission/readback</td><td>按专用合同；只读结案 0 平台写</td></tr>
+          </tbody></table></div>
+        </article>
+
+        <article id="apis" class="diagram"><h3>9.2 商品发布中心 API 字典</h3>
+          <div class="cols"><div><h4>GET / 只读</h4><ul class="compact">
+            <li><code>/api/product-workspace/dashboard</code></li><li>collectbox-action preview / status</li><li>publish-preview / publish-status</li><li>channel-category-decision-preview</li><li>shopee-global-plan-preview</li><li>reconcile-target</li><li>Shopee price repair/reconciliation preview</li><li>target-scoped action/reconciliation preview</li>
+          </ul></div><div><h4>POST / 本地或外部动作</h4><ul class="compact">
+            <li>collect / facts / title-draft / title-adopt / approve</li><li>release-plan/approve</li><li>channel-category-decision</li><li>shopee-global-plan-approval</li><li>miaoshou-draft/commit</li><li>collectbox-action/start</li><li>publish 与 publish-tiktok（同 handler）</li><li>publish-shopee-global / publish-ozon</li><li>manual-verify</li><li>Shopee price repair/reconciliation</li><li>target-scoped action/reconciliation</li>
+          </ul></div></div>
+          <p class="edge-note">所有列入 product workflow write allowlist 的 POST 均要求同源 Origin（如有）、<code>application/json</code> 与 body size gate。</p>
+          <p class="source">证据：modules/products/server.py::do_GET / do_POST。</p>
+        </article>
+
+        <article id="stores" class="diagram"><h3>9.3 状态持久化字典</h3>
+          <div class="table-wrap"><table><thead><tr><th>存储</th><th>拥有的事实</th><th>不应承担</th></tr></thead><tbody>
+            <tr><td>浏览器 localStorage</td><td>并行队列、当前页面选择体验</td><td>审批/发布权威</td></tr>
+            <tr><td>workbench JSON</td><td>商品事实、review、revision、内容状态、listing_copy、product_approval</td><td>渠道终态</td></tr>
+            <tr><td>release_plans / approvals</td><td>不可变计划、Kyle approval、confirmation token</td><td>浏览器可变 selection</td></tr>
+            <tr><td>release_runs / target_runs</td><td>canonical run/target attempt/status</td><td>UI 临时四态</td></tr>
+            <tr><td>readbacks / failures / submissions / repairs</td><td>外部写事实、回读、对账、修复证据</td><td>自动猜测重试安全性</td></tr>
+            <tr><td>retry_proofs / retry_operations</td><td>单目标 proof、claim、reconciliation 状态</td><td>全局 generic retry</td></tr>
+            <tr><td>SKU reservation / source lineage</td><td>seller/model SKU 唯一血缘与计划链接</td><td>客户端自报 SKU</td></tr>
+            <tr><td>category / Global approval</td><td>类目属性与 Shopee Global 候选批准</td><td>官方写操作</td></tr>
+            <tr><td>collectbox_action*</td><td>采集箱 action/platform/batch/target outcome</td><td>正式 release target 的替代账本</td></tr>
+            <tr><td>oneclick_release_*</td><td>job/target/event/outcome/manual acceptance/write occurrence</td><td>脱离 canonical ReleaseStore 独立宣称成功</td></tr>
+          </tbody></table></div>
+        </article>
+
+        <article id="evidence" class="diagram"><h3>9.4 源码证据索引</h3><div class="cols">
+          <div><h4>页面 / 服务端</h4><ul class="compact"><li>web/product_workspace.html</li><li>web/static/product_workspace.js</li><li>web/static/product_workspace.css</li><li>modules/products/server.py</li></ul><h4>商品 / 内容</h4><ul class="compact"><li>modules/sourcing/new_product_workbench.py</li><li>domains/content_operations/content_package_adapter.py</li><li>domains/product_operations/*</li></ul></div>
+          <div><h4>共享平台</h4><ul class="compact"><li>shared_platform/release_control.py</li><li>shared_platform/release_store.py</li><li>shared_platform/oneclick_release_controlplane.py</li><li>shared_platform/collectbox_action.py</li><li>shared_platform/target_scoped_release_contracts.py</li></ul><h4>渠道</h4><ul class="compact"><li>domains/channel_operations/oneclick_release_adapters.py</li><li>modules/miaoshou/oneclick_release.py</li><li>modules/miaoshou/tiktok_publisher.py</li><li>modules/shopee/approved_global_publisher.py</li><li>modules/ozon/migrate_batch.py</li></ul></div>
+        </div><p class="source">行号会随后续提交漂移，因此正文以“文件 + 符号/路由”作为稳定定位。</p></article>
+      </section>
+    </main>
+  </div>
+  <footer>源码只读审计 · 未执行功能测试、浏览器验证或外部请求 · <a href="#top">返回顶部</a></footer>
+</body>
+</html>

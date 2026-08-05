@@ -41,6 +41,10 @@ EXPECTED_SHOP_ID_BY_TARGET = {
     "tiktok:LH_VN": "13295291",
     "tiktok:MX": "16265910",
     "tiktok:GB": "10204699",
+    "tiktok:HB_PH": "15173238",
+    "tiktok:HB_MY": "16770639",
+    "tiktok:HB_TH": "16770557",
+    "tiktok:HB_VN": "16783702",
 }
 
 _SITE_BY_TARGET = {
@@ -50,12 +54,20 @@ _SITE_BY_TARGET = {
     "tiktok:LH_VN": "VN",
     "tiktok:MX": "MX",
     "tiktok:GB": "GB",
+    "tiktok:HB_PH": "PH",
+    "tiktok:HB_MY": "MY",
+    "tiktok:HB_TH": "TH",
+    "tiktok:HB_VN": "VN",
 }
 _SITE_DRAFT_TARGETS = {
     "tiktok:LH_PH",
     "tiktok:LH_MY",
     "tiktok:LH_TH",
     "tiktok:LH_VN",
+    "tiktok:HB_PH",
+    "tiktok:HB_MY",
+    "tiktok:HB_TH",
+    "tiktok:HB_VN",
 }
 
 

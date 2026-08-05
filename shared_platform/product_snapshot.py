@@ -19,6 +19,10 @@ TIKTOK_PUBLISH_TARGETS = (
     "tiktok:LH_VN",
     "tiktok:MX",
     "tiktok:GB",
+    "tiktok:HB_PH",
+    "tiktok:HB_MY",
+    "tiktok:HB_TH",
+    "tiktok:HB_VN",
 )
 
 _TIKTOK_TARGET_SITES = {
@@ -28,6 +32,10 @@ _TIKTOK_TARGET_SITES = {
     "tiktok:LH_VN": "VN",
     "tiktok:MX": "MX",
     "tiktok:GB": "GB",
+    "tiktok:HB_PH": "PH",
+    "tiktok:HB_MY": "MY",
+    "tiktok:HB_TH": "TH",
+    "tiktok:HB_VN": "VN",
 }
 _TIKTOK_CATEGORY_IDS = {
     "贴饰>墙贴": "600338",
@@ -42,6 +50,10 @@ _TIKTOK_PRICE_BINDINGS = {
     "tiktok:LH_VN": ("lh_vn", "VND"),
     "tiktok:MX": ("mx", "MXN"),
     "tiktok:GB": ("gb", "GBP"),
+    "tiktok:HB_PH": ("hb_ph", "PHP"),
+    "tiktok:HB_MY": ("hb_my", "MYR"),
+    "tiktok:HB_TH": ("hb_th", "THB"),
+    "tiktok:HB_VN": ("hb_vn", "VND"),
 }
 
 
@@ -135,13 +147,15 @@ def _approved_price(payload: Mapping[str, object], target: str) -> tuple[str, st
     return normalized, expected_currency
 
 
-def _approved_categories(payload: Mapping[str, object]) -> dict[str, dict[str, str]]:
+def _approved_categories(
+    payload: Mapping[str, object], targets: tuple[str, ...]
+) -> dict[str, dict[str, str]]:
     product_facts = payload.get("product_facts")
     if not isinstance(product_facts, Mapping):
         raise ValueError("approved TikTok category inputs are incomplete")
     expected = project_approved_tiktok_category_decisions(
         product_facts.get("category"),
-        targets=TIKTOK_PUBLISH_TARGETS,
+        targets=targets,
     )
     supplied = payload.get("approved_tiktok_category_decisions")
     if supplied is not None and supplied != expected:
@@ -231,16 +245,28 @@ def build_approved_tiktok_publish_snapshot(
         for target in plan.get("targets", [])
         if type(target) is str and target.startswith("tiktok:")
     ]
-    if tiktok_targets != list(TIKTOK_PUBLISH_TARGETS):
-        raise ValueError("approved TikTok target set or order drifted")
-    if not isinstance(collectbox_contexts, Mapping) or set(
-        collectbox_contexts
-    ) != set(TIKTOK_PUBLISH_TARGETS):
-        raise ValueError("exact six-target collect-box identity is unavailable")
-    categories = _approved_categories(payload)
+    if (
+        not tiktok_targets
+        or len(tiktok_targets) != len(set(tiktok_targets))
+        or any(target not in TIKTOK_PUBLISH_TARGETS for target in tiktok_targets)
+    ):
+        raise ValueError("approved TikTok targets are invalid")
+    if not isinstance(collectbox_contexts, Mapping):
+        raise ValueError("collect-box identities are unavailable")
+    selected_targets = tuple(tiktok_targets)
+    categories = _approved_categories(payload, selected_targets)
     targets: list[dict[str, object]] = []
-    for target in TIKTOK_PUBLISH_TARGETS:
+    unavailable_targets: list[dict[str, str]] = []
+    for target in selected_targets:
         price, currency = _approved_price(payload, target)
+        if target not in collectbox_contexts:
+            unavailable_targets.append(
+                {
+                    "target_label": target,
+                    "reason_code": "draft_identity_unavailable",
+                }
+            )
+            continue
         draft = _approved_target_context(
             context=collectbox_contexts[target],
             target=target,
@@ -265,6 +291,7 @@ def build_approved_tiktok_publish_snapshot(
         "product_revision": identity["product_revision"],
         "payload_digest": identity["payload_digest"],
         "targets": targets,
+        "unavailable_targets": unavailable_targets,
     }
 
 

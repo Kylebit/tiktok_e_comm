@@ -171,26 +171,38 @@ class _Publisher:
                 "plan_id": snapshot["plan_id"],
                 "snapshot_digest": _digest(snapshot),
             }
+        accepted = [
+            {
+                "target_label": row["target_label"],
+                "outcome": "ACCEPTED",
+                "provider_code": "200",
+                "provider_reason": "Success",
+                "external_write_count": 1,
+                "write_request_count": 1,
+            }
+            for row in snapshot["targets"]
+        ]
+        unavailable = [
+            {
+                "target_label": row["target_label"],
+                "outcome": "NOT_ATTEMPTED",
+                "provider_code": row["reason_code"],
+                "provider_reason": "Miaoshou draft identity is unavailable",
+                "external_write_count": 0,
+                "write_request_count": 0,
+            }
+            for row in snapshot.get("unavailable_targets", [])
+        ]
         return {
             "schema_version": "tiktok-publish-receipt/v1",
             "offer_id": snapshot["offer_id"],
             "plan_id": snapshot["plan_id"],
             "snapshot_digest": _digest(snapshot),
-            "accepted_target_count": 6,
+            "accepted_target_count": len(accepted),
             "rejected_target_count": 0,
             "unknown_target_count": 0,
-            "not_attempted_target_count": 0,
-            "targets": [
-                {
-                    "target_label": row["target_label"],
-                    "outcome": "ACCEPTED",
-                    "provider_code": "200",
-                    "provider_reason": "Success",
-                    "external_write_count": 1,
-                    "write_request_count": 1,
-                }
-                for row in snapshot["targets"]
-            ],
+            "not_attempted_target_count": len(unavailable),
+            "targets": [*accepted, *unavailable],
         }
 
 
@@ -287,7 +299,7 @@ def test_http_builds_exact_six_target_snapshot_without_common(
     assert all(len(row["receipt_digest"]) == 64 for row in snapshot["targets"])
 
 
-def test_missing_collectbox_target_fails_before_publisher_call(
+def test_missing_collectbox_target_reports_only_that_store_unavailable(
     monkeypatch,
     product_http_server,
 ):
@@ -302,11 +314,13 @@ def test_missing_collectbox_target_fails_before_publisher_call(
         _request_body(plan),
     )
 
-    assert status == 409
+    assert status == 200
     assert response["success"] is False
-    assert response["error"]["code"] == "tiktok_approved_snapshot_invalid"
-    assert response["external_write_count"] == 0
-    assert publisher.snapshots == []
+    assert response["successful_target_count"] == 5
+    assert response["not_attempted_target_count"] == 1
+    assert response["failed_targets"] == ["tiktok:GB"]
+    assert response["external_write_count"] == 5
+    assert len(publisher.snapshots) == 1
 
 
 def test_legacy_plan_projects_category_only_from_immutable_product_snapshot(

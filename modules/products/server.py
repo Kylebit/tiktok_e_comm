@@ -9367,10 +9367,22 @@ def _project_tiktok_publish_receipt(
         or receipt.get("snapshot_digest") != _server_canonical_digest(snapshot)
     ):
         raise ValueError("TikTok publisher receipt identity drifted")
+    expected_labels = [
+        *[
+            row.get("target_label")
+            for row in snapshot.get("targets", [])
+            if isinstance(row, dict)
+        ],
+        *[
+            row.get("target_label")
+            for row in snapshot.get("unavailable_targets", [])
+            if isinstance(row, dict)
+        ],
+    ]
     rows = receipt.get("targets")
     if not isinstance(rows, list) or [
         row.get("target_label") if isinstance(row, dict) else None for row in rows
-    ] != list(_INDEPENDENT_TIKTOK_TARGETS):
+    ] != expected_labels:
         raise ValueError("TikTok publisher receipt targets drifted")
     counts = {"ACCEPTED": 0, "REJECTED": 0, "UNKNOWN": 0, "NOT_ATTEMPTED": 0}
     public_rows = []
@@ -9430,7 +9442,7 @@ def _project_tiktok_publish_receipt(
     }
     if any(receipt.get(key) != value for key, value in expected_counts.items()):
         raise ValueError("TikTok publisher receipt counts drifted")
-    success = counts["ACCEPTED"] == len(_INDEPENDENT_TIKTOK_TARGETS)
+    success = bool(expected_labels) and counts["ACCEPTED"] == len(expected_labels)
     failed = [
         row["target_label"] for row in public_rows if row["outcome"] != "ACCEPTED"
     ]
@@ -9444,6 +9456,7 @@ def _project_tiktok_publish_receipt(
         error = {
             "category": "PROVIDER",
             "code": "tiktok_target_not_accepted",
+            "safe_message": first_failure["provider_reason"],
             "provider_code": first_failure["provider_code"],
             "provider_reason": first_failure["provider_reason"],
             "detail_digest": _server_canonical_digest(first_failure),
@@ -9454,7 +9467,7 @@ def _project_tiktok_publish_receipt(
         "success": success,
         "platform": "TIKTOK",
         "message": message,
-        "target_count": len(_INDEPENDENT_TIKTOK_TARGETS),
+        "target_count": len(expected_labels),
         "successful_target_count": counts["ACCEPTED"],
         "accepted_target_count": counts["ACCEPTED"],
         "rejected_target_count": counts["REJECTED"],
@@ -9516,15 +9529,27 @@ def _start_tiktok_release(data: dict) -> tuple[int, dict]:
                 snapshot["offer_id"],
                 reason,
             )
+            snapshot_labels = [
+                *[
+                    row.get("target_label")
+                    for row in snapshot.get("targets", [])
+                    if isinstance(row, dict)
+                ],
+                *[
+                    row.get("target_label")
+                    for row in snapshot.get("unavailable_targets", [])
+                    if isinstance(row, dict)
+                ],
+            ]
             return 200, {
                 "schema_version": "miaoshou-platform-publish-result/v1",
                 "ok": False,
                 "success": False,
                 "platform": "TIKTOK",
                 "message": f"TikTok 发布失败：{reason}",
-                "target_count": len(_INDEPENDENT_TIKTOK_TARGETS),
+                "target_count": len(snapshot_labels),
                 "successful_target_count": 0,
-                "failed_targets": list(_INDEPENDENT_TIKTOK_TARGETS),
+                "failed_targets": snapshot_labels,
                 "retryable": True,
             }
     return 200, result

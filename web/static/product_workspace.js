@@ -8672,6 +8672,14 @@
 
   function platformPublishErrorMessage(payload, status, platformName) {
     const structured = payload?.error;
+    const safeMessage = (
+      structured
+      && typeof structured === "object"
+      && !Array.isArray(structured)
+      && typeof structured.safe_message === "string"
+    )
+      ? structured.safe_message.trim()
+      : "";
     const providerCode = (
       structured
       && typeof structured === "object"
@@ -8688,6 +8696,11 @@
     )
       ? structured.provider_reason.trim()
       : "";
+    if (safeMessage) {
+      return providerCode
+        ? `${platformName} 发布失败：${safeMessage}（妙手代码：${providerCode}）`
+        : `${platformName} 发布失败：${safeMessage}`;
+    }
     if (providerReason) {
       return providerCode
         ? `${platformName} 发布失败：${providerReason}（妙手代码：${providerCode}）`

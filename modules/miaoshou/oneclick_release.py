@@ -360,11 +360,13 @@ class MiaoshouCollectBoxPreparationError(RuntimeError):
         writes: tuple[str, ...],
         write_count: int | None,
         target_results: tuple[tuple[str, str], ...] = (),
+        target_detail_identities: tuple[Mapping[str, object], ...] = (),
     ) -> None:
         super().__init__(detail)
         self.external_writes = writes
         self.external_write_count = write_count
         self.target_results = target_results
+        self.target_detail_identities = target_detail_identities
 
 
 @dataclass(frozen=True)
@@ -1968,6 +1970,7 @@ def _prepare_selected_platform_collectbox(
     writes: list[str] = []
     write_count_unknown = False
     write_invocation_count = 0
+    known_target_detail_identities: list[dict[str, object]] = []
     if initial_claim_written:
         writes.append(f"miaoshou:collectbox:claim:{platform}")
         write_invocation_count = 1
@@ -1977,6 +1980,27 @@ def _prepare_selected_platform_collectbox(
         write_invocation_count += 1
         if write_class not in writes:
             writes.append(write_class)
+
+    def remember_target_detail(target: str, detail_id: int) -> None:
+        """Persist a provider-issued target identity before later validation.
+
+        Creation/claim establishes the identity.  Content validation may fail
+        afterwards, but must not erase the only exact handle needed by a later
+        retry or an independent target publication.
+        """
+
+        if any(
+            row["target_label"] == target
+            for row in known_target_detail_identities
+        ):
+            return
+        known_target_detail_identities.append(
+            {
+                "target_label": target,
+                "detail_id": str(detail_id),
+                "shop_id": str(DIRECT_STORE_CONFIG[target]["shop_id"]),
+            }
+        )
 
     def fail(detail: str, *, current_unknown: str | None = None) -> None:
         nonlocal write_count_unknown
@@ -2079,6 +2103,7 @@ def _prepare_selected_platform_collectbox(
             if not _accepted(claimed):
                 fail("TikTok shop claim was rejected")
             add_write(claim_class)
+            remember_target_detail(target, detail_id)
 
         try:
             detail, oss_md5 = _read_shop(
@@ -2404,19 +2429,13 @@ def _prepare_selected_platform_collectbox(
 
     detail_ids: list[int] = []
     target_results: list[dict[str, object]] = []
-    target_detail_identities: list[dict[str, object]] = []
     for index, target in enumerate(selected):
         try:
             detail_id, target_result = prepare_target(target, index)
             detail_ids.append(detail_id)
             target_results.append(target_result)
-            target_detail_identities.append(
-                {
-                    "target_label": target,
-                    "detail_id": str(detail_id),
-                    "shop_id": str(DIRECT_STORE_CONFIG[target]["shop_id"]),
-                }
-            )
+            if platform != "tiktok":
+                remember_target_detail(target, detail_id)
         except MiaoshouCollectBoxPreparationError as error:
             target_results.append(
                 _target_result(
@@ -2439,6 +2458,9 @@ def _prepare_selected_platform_collectbox(
                 (str(row["target_label"]), "RECONCILIATION_REQUIRED")
                 for row in target_results
             ),
+            target_detail_identities=tuple(
+                known_target_detail_identities
+            ),
         )
 
     return {
@@ -2446,13 +2468,18 @@ def _prepare_selected_platform_collectbox(
         "platform": platform,
         "primary_platform_detail_id": str(primary_detail_id),
         "target_count": len(selected),
-        "platform_detail_count": len(set(detail_ids)),
+        "platform_detail_count": len(
+            {
+                row["detail_id"]
+                for row in known_target_detail_identities
+            }
+        ),
         "external_writes": tuple(writes),
         "external_write_count": (
             None if write_count_unknown else write_invocation_count
         ),
         "target_results": target_results,
-        "target_detail_identities": target_detail_identities,
+        "target_detail_identities": known_target_detail_identities,
         "checks": {
             "approved_targets_exact": True,
             "approved_prices_exact": True,
@@ -4097,11 +4124,13 @@ def _approved_variant_key_bindings(
 ) -> dict[str, object]:
     """Bind Miaoshou's raw SKU-map keys to approved variants exactly.
 
-    Some claimed TikTok drafts replace the human-readable variant key with an
-    opaque Miaoshou key.  The model SKU survives that transformation.  Exact
-    raw-key matching remains preferred; otherwise every observed and approved
-    model SKU must be a unique built-in string and the two sets must match.
-    No title, position, or fuzzy matching is permitted.
+    Some claimed TikTok drafts replace the human-readable variant key with
+    opaque attrValue IDs and temporarily repeat the source offer ID in every
+    ``itemNum``.  Exact raw-key matching remains preferred.  The next
+    authority is the draft's own skuPropertyList, which losslessly maps those
+    opaque IDs back to the approved variant labels.  Unique model SKU matching
+    is retained only as the final exact fallback.  Position, title and fuzzy
+    matching are never used.
     """
 
     sku_map = _sku_map(detail)
@@ -4132,6 +4161,58 @@ def _approved_variant_key_bindings(
             variant: raw_by_normalized[variant]
             for variant in variants
         }
+
+    property_labels: dict[str, str] = {}
+    raw_properties = detail.get("skuPropertyList")
+    if isinstance(raw_properties, list) and all(
+        isinstance(prop, Mapping) for prop in raw_properties
+    ):
+        for prop in raw_properties:
+            raw_values = prop.get("attrValueList")
+            if not isinstance(raw_values, list) or any(
+                not isinstance(value, Mapping) for value in raw_values
+            ):
+                property_labels = {}
+                break
+            for value in raw_values:
+                value_id = value.get("attrValueId")
+                label = value.get("attrValue")
+                if (
+                    type(value_id) is not str
+                    or not value_id.strip()
+                    or type(label) is not str
+                    or not label.strip()
+                    or value_id.strip() in property_labels
+                ):
+                    property_labels = {}
+                    break
+                property_labels[value_id.strip()] = label.strip()
+            if not property_labels:
+                break
+    if property_labels:
+        raw_by_property_signature: dict[str, object] = {}
+        for raw_key in sku_map:
+            if type(raw_key) is not str:
+                raw_by_property_signature = {}
+                break
+            value_ids = [value for value in raw_key.split(";") if value]
+            if not value_ids or any(
+                value_id not in property_labels for value_id in value_ids
+            ):
+                raw_by_property_signature = {}
+                break
+            signature = _normalize_variant(
+                ";".join(property_labels[value_id] for value_id in value_ids)
+            )
+            if not signature or signature in raw_by_property_signature:
+                raw_by_property_signature = {}
+                break
+            raw_by_property_signature[signature] = raw_key
+        if set(raw_by_property_signature) == set(variants):
+            return {
+                variant: raw_by_property_signature[variant]
+                for variant in variants
+            }
 
     expected_by_model: dict[str, str] = {}
     for variant in variants:

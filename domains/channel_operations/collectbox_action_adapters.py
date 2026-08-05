@@ -272,12 +272,27 @@ def _execute_known_collectbox_platform(
             if count == 0 and not writes
             else contract["RECONCILIATION_REQUIRED"]
         )
+        selected_targets = tuple(
+            target
+            for target in request.approved_targets
+            if target.startswith(f"{platform}:")
+        )
+        target_detail_identities = _typed_target_detail_identities(
+            contract,
+            {
+                "target_detail_identities": list(
+                    error.target_detail_identities
+                )
+            },
+            selected_targets,
+        )
         return _platform_result(
             contract,
             status=status,
             external_writes=writes,
             external_write_count=count,
             target_statuses=tuple(error.target_results),
+            target_detail_identities=target_detail_identities,
             receipt_evidence={
                 "schema_version": "collectbox-platform-preparation-evidence/v1",
                 "platform": platform,

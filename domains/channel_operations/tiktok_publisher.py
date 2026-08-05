@@ -2,7 +2,7 @@
 
 This module deliberately knows nothing about the release control plane, Shopee,
 or Ozon.  It consumes one approved, read-only product snapshot and returns one
-redacted receipt for the six selected TikTok targets.
+redacted receipt for whichever TikTok stores the approved plan selected.
 """
 
 from __future__ import annotations
@@ -29,6 +29,10 @@ TIKTOK_TARGETS = (
     "tiktok:LH_VN",
     "tiktok:MX",
     "tiktok:GB",
+    "tiktok:HB_PH",
+    "tiktok:HB_MY",
+    "tiktok:HB_TH",
+    "tiktok:HB_VN",
 )
 
 _CURRENCY_BY_TARGET = {
@@ -38,6 +42,10 @@ _CURRENCY_BY_TARGET = {
     "tiktok:LH_VN": "VND",
     "tiktok:MX": "MXN",
     "tiktok:GB": "GBP",
+    "tiktok:HB_PH": "PHP",
+    "tiktok:HB_MY": "MYR",
+    "tiktok:HB_TH": "THB",
+    "tiktok:HB_VN": "VND",
 }
 _LOGGER = logging.getLogger(__name__)
 
@@ -108,7 +116,7 @@ def _validate_snapshot(snapshot: Mapping[str, object]) -> dict[str, object]:
     ):
         raise TikTokPublishContractError("payload_digest is invalid")
     raw_targets = snapshot.get("targets")
-    if not isinstance(raw_targets, list) or not raw_targets:
+    if not isinstance(raw_targets, list):
         raise TikTokPublishContractError("targets are invalid")
     targets: list[dict[str, object]] = []
     labels: set[str] = set()
@@ -151,6 +159,30 @@ def _validate_snapshot(snapshot: Mapping[str, object]) -> dict[str, object]:
                 ),
             }
         )
+    raw_unavailable = snapshot.get("unavailable_targets", [])
+    if not isinstance(raw_unavailable, list):
+        raise TikTokPublishContractError("unavailable_targets are invalid")
+    unavailable_targets: list[dict[str, str]] = []
+    for raw in raw_unavailable:
+        if not isinstance(raw, Mapping):
+            raise TikTokPublishContractError("unavailable target is invalid")
+        label = raw.get("target_label")
+        if (
+            type(label) is not str
+            or label not in TIKTOK_TARGETS
+            or label in labels
+            or raw.get("reason_code") != "draft_identity_unavailable"
+        ):
+            raise TikTokPublishContractError("unavailable target is invalid")
+        labels.add(label)
+        unavailable_targets.append(
+            {
+                "target_label": label,
+                "reason_code": "draft_identity_unavailable",
+            }
+        )
+    if not labels:
+        raise TikTokPublishContractError("targets are invalid")
     normalized = {
         "schema_version": APPROVED_TIKTOK_PUBLISH_SNAPSHOT_SCHEMA,
         "offer_id": offer_id,
@@ -158,6 +190,7 @@ def _validate_snapshot(snapshot: Mapping[str, object]) -> dict[str, object]:
         "product_revision": revision,
         "payload_digest": payload_digest,
         "targets": targets,
+        "unavailable_targets": unavailable_targets,
     }
     return normalized
 
@@ -250,6 +283,15 @@ class TikTokPublisher:
                         "provider_reason": "Miaoshou draft read outcome is unknown",
                     }
                 )
+        results.extend(
+            {
+                "target_label": row["target_label"],
+                "status": "IDENTITY_UNAVAILABLE",
+                "provider_code": row["reason_code"],
+                "provider_reason": "Miaoshou draft identity is unavailable",
+            }
+            for row in approved["unavailable_targets"]
+        )
         return {
             "schema_version": TIKTOK_PREFLIGHT_RECEIPT_SCHEMA,
             "offer_id": approved["offer_id"],
@@ -280,7 +322,13 @@ class TikTokPublisher:
             if not isinstance(preflight_targets, list) or [
                 row.get("target_label") if isinstance(row, Mapping) else None
                 for row in preflight_targets
-            ] != [row["target_label"] for row in approved["targets"]]:
+            ] != [
+                *[row["target_label"] for row in approved["targets"]],
+                *[
+                    row["target_label"]
+                    for row in approved["unavailable_targets"]
+                ],
+            ]:
                 raise TikTokPublishContractError(
                     "preflight target coverage is invalid"
                 )
@@ -288,6 +336,17 @@ class TikTokPublisher:
         results: list[dict[str, object]] = []
         for target in approved["targets"]:
             results.append(self._publish_target(target))
+        results.extend(
+            {
+                "target_label": row["target_label"],
+                "outcome": "NOT_ATTEMPTED",
+                "provider_code": row["reason_code"],
+                "provider_reason": "Miaoshou draft identity is unavailable",
+                "external_write_count": 0,
+                "write_request_count": 0,
+            }
+            for row in approved["unavailable_targets"]
+        )
         counts = {
             outcome: sum(row["outcome"] == outcome for row in results)
             for outcome in ("ACCEPTED", "REJECTED", "UNKNOWN", "NOT_ATTEMPTED")

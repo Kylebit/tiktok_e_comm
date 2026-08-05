@@ -328,7 +328,7 @@ def test_six_tiktok_publish_calls_each_target_once_without_oneclick_job(
     assert OneClickReleaseStore(release.path).get_job(plan_id=plan["plan_id"]) is None
 
 
-def test_old_collectbox_receipt_without_internal_proof_is_409_zero_mutation(
+def test_old_collectbox_receipt_without_internal_proof_reports_each_store_without_writes(
     tmp_path, monkeypatch
 ):
     release, plan = _approved_tiktok_context(tmp_path)
@@ -347,8 +347,9 @@ def test_old_collectbox_receipt_without_internal_proof_is_409_zero_mutation(
         release, plan, monkeypatch
     )
 
-    assert status == 409
-    assert body["error"]["code"] == "tiktok_approved_snapshot_invalid"
+    assert status == 200
+    assert body["success"] is False
+    assert body["not_attempted_target_count"] == 6
     assert body["external_write_count"] == 0
     assert woken == []
     with sqlite3.connect(release.path) as connection:
@@ -395,7 +396,7 @@ def test_publish_transport_ambiguity_records_one_possible_write_per_target(
     assert OneClickReleaseStore(release.path).get_job(plan_id=plan["plan_id"]) is None
 
 
-def test_missing_gb_detail_proof_blocks_exact_six_target_snapshot_prewrite(
+def test_missing_gb_detail_proof_does_not_block_other_five_targets(
     tmp_path, monkeypatch
 ):
     release, plan = _approved_tiktok_context(tmp_path)
@@ -407,12 +408,14 @@ def test_missing_gb_detail_proof_blocks_exact_six_target_snapshot_prewrite(
     status, body, woken, transport = _start_tiktok_through_handler(
         release, plan, monkeypatch
     )
-    assert status == 409
+    assert status == 200
     assert body["success"] is False
-    assert body["error"]["code"] == "tiktok_approved_snapshot_invalid"
-    assert body["external_write_count"] == 0
+    assert body["successful_target_count"] == 5
+    assert body["not_attempted_target_count"] == 1
+    assert body["failed_targets"] == ["tiktok:GB"]
+    assert body["external_write_count"] == 5
     assert woken == []
-    assert transport is None
+    assert transport is not None
     assert OneClickReleaseStore(release.path).get_job(plan_id=plan["plan_id"]) is None
 
 

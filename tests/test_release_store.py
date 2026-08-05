@@ -924,3 +924,49 @@ def test_concurrent_same_source_reservation_has_one_durable_owner(tmp_path):
         ]["identity_digest"],
     )
     assert len(context["existing_reservations"]) <= 1
+
+
+def test_active_reserved_sku_keys_include_every_model_sku(tmp_path):
+    """A multi-variant plan owns its complete Seller/model SKU namespace."""
+
+    source = resolve_source_product_identity(
+        collect_box={"source_item_id": "899978827487"},
+        source_authority="1688",
+    )
+    assert source.ready and source.identity is not None
+    assignment = SkuAssignment(
+        seller_sku="0960",
+        model_skus=(
+            ModelSkuAssignment(variant_key="variant-a", model_sku="0960"),
+            ModelSkuAssignment(variant_key="variant-b", model_sku="0961"),
+            ModelSkuAssignment(variant_key="variant-c", model_sku="0962"),
+        ),
+    )
+    unresolved = resolve_sku_lineage_reservation(
+        source_identity=source.identity,
+        predecessor_records=[],
+    )
+    finalized = finalize_new_source_sku_reservation(
+        source_identity=source.identity,
+        assignment=assignment,
+    )
+    assert unresolved.ready and finalized.ready
+    store = ReleaseStore(tmp_path / "release.db")
+    store.create_plan(
+        _plan(
+            plan_id="omnichannel:multi-sku-owner",
+            product_id="3838619319",
+            seller_sku="0960",
+            product_package_id="product:3838619319:0960",
+            content_package_id="content:3838619319:r1",
+            product_revision=1,
+            source_product_identity=source.identity.payload(),
+            sku_lineage={
+                **unresolved.payload(),
+                "assignment": assignment.payload(),
+                "reservation": finalized.reservation.payload(),
+            },
+        )
+    )
+
+    assert store.active_reserved_sku_keys() == ("0960", "0961", "0962")

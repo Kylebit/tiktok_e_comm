@@ -61,14 +61,62 @@ def approved_global_detail(facts: Mapping[str, object]) -> dict[str, object]:
         }]
     if not isinstance(raw_variants, list) or not raw_variants:
         raise ValueError("approved Shopee variants are invalid")
-    variants: list[tuple[str, str]] = []
+    raw_sku_commercial_facts = facts.get("sku_commercial_facts")
+    raw_sku_prices = facts.get("sku_prices")
+    if raw_sku_commercial_facts is not None and not isinstance(
+        raw_sku_commercial_facts, Mapping
+    ):
+        raise ValueError("approved Shopee per-SKU parcel facts are invalid")
+    if raw_sku_prices is not None and not isinstance(raw_sku_prices, Mapping):
+        raise ValueError("approved Shopee per-SKU prices are invalid")
+    raw_default_price = facts.get("global_original_price_cny")
+    default_price = (
+        _positive_number(raw_default_price, "global price")
+        if raw_default_price is not None
+        else None
+    )
+    variants: list[dict[str, object]] = []
     for row in raw_variants:
         if not isinstance(row, Mapping):
             raise ValueError("approved Shopee variants are invalid")
         model_sku = _text(row.get("model_sku"), "model SKU")
         option_label = _text(row.get("option_label"), "variation option")
-        variants.append((model_sku, option_label))
-    if len({model_sku for model_sku, _label in variants}) != len(variants):
+        variant_key = str(row.get("variant_key") or model_sku).strip()
+        commercial_row = (
+            raw_sku_commercial_facts.get(variant_key)
+            if isinstance(raw_sku_commercial_facts, Mapping)
+            else None
+        )
+        if commercial_row is None:
+            sku_weight = weight_kg
+            sku_dimensions = dimensions
+        else:
+            if not isinstance(commercial_row, Mapping):
+                raise ValueError("approved Shopee per-SKU parcel facts are invalid")
+            sku_weight = _positive_number(
+                commercial_row.get("weight_kg"), "SKU weight"
+            )
+            raw_dimensions = commercial_row.get("package_cm")
+            if not isinstance(raw_dimensions, list) or len(raw_dimensions) != 3:
+                raise ValueError("approved Shopee per-SKU parcel facts are invalid")
+            sku_dimensions = [
+                _positive_number(value, "SKU package dimension")
+                for value in raw_dimensions
+            ]
+        sku_price = (
+            _positive_number(raw_sku_prices.get(variant_key), "SKU price")
+            if isinstance(raw_sku_prices, Mapping)
+            else default_price
+        )
+        variants.append({
+            "variant_key": variant_key,
+            "model_sku": model_sku,
+            "option_label": option_label,
+            "weight_kg": sku_weight,
+            "dimensions": sku_dimensions,
+            "original_price": sku_price,
+        })
+    if len({str(row["model_sku"]) for row in variants}) != len(variants):
         raise ValueError("approved Shopee model SKUs are not unique")
     return {
         "title": title,
@@ -82,17 +130,25 @@ def approved_global_detail(facts: Mapping[str, object]) -> dict[str, object]:
         },
         "skus": [
             {
-                "seller_sku": model_sku,
-                "variation_option": option_label,
+                "seller_sku": row["model_sku"],
+                "variation_option": row["option_label"],
+                **(
+                    {"original_price": row["original_price"]}
+                    if row["original_price"] is not None
+                    else {}
+                ),
                 "inventory": [{"quantity": quantity}],
-                "sku_weight": {"value": weight_kg, "unit": "KILOGRAM"},
+                "sku_weight": {
+                    "value": row["weight_kg"],
+                    "unit": "KILOGRAM",
+                },
                 "sku_dimensions": {
-                    "length": dimensions[0],
-                    "width": dimensions[1],
-                    "height": dimensions[2],
+                    "length": row["dimensions"][0],
+                    "width": row["dimensions"][1],
+                    "height": row["dimensions"][2],
                 },
             }
-            for model_sku, option_label in variants
+            for row in variants
         ],
     }
 

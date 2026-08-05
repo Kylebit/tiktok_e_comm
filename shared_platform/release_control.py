@@ -361,7 +361,7 @@ def _commercial_approval_facts(
     pricing_review: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     category = review.get("category")
-    return {
+    facts = {
         "cost_cny": review.get("cost_cny"),
         "weight_kg": review.get("weight_kg"),
         "package_cm": list(review.get("package_cm") or ()),
@@ -391,6 +391,24 @@ def _commercial_approval_facts(
             (pricing_review or {}).get("selected_store_prices") or ()
         ),
     }
+    raw_sku_facts = review.get("sku_commercial_facts")
+    if isinstance(raw_sku_facts, Mapping):
+        # Preserve the exact historical approval fingerprint for legacy
+        # single-SKU reviews.  SKU-only fields enter the fingerprint only when
+        # the canonical SKU-keyed contract is actually present.
+        facts["sku_commercial_facts"] = {
+            str(key): {
+                "cost_cny": row.get("cost_cny"),
+                "weight_kg": row.get("weight_kg"),
+                "package_cm": list(row.get("package_cm") or ()),
+            }
+            for key, row in sorted(raw_sku_facts.items())
+            if isinstance(row, Mapping)
+        }
+        facts["sku_pricing"] = list(
+            (pricing_review or {}).get("sku_pricing") or ()
+        )
+    return facts
 
 
 def _commercial_release_blockers(review: Mapping[str, Any]) -> list[str]:
@@ -403,13 +421,14 @@ def _commercial_release_blockers(review: Mapping[str, Any]) -> list[str]:
 
     blockers: list[str] = []
     title = str(review.get("title") or "").strip()
+    raw_sku_facts = review.get("sku_commercial_facts")
     if not title:
         blockers.append("请确认商品标题")
     try:
         weight = float(review.get("weight_kg") or 0)
     except (TypeError, ValueError):
         weight = 0
-    if weight <= 0:
+    if raw_sku_facts is None and weight <= 0:
         blockers.append("请确认商品重量")
     package = (
         list(review.get("package_cm") or ())
@@ -420,7 +439,7 @@ def _commercial_release_blockers(review: Mapping[str, Any]) -> list[str]:
         package_ready = len(package) == 3 and all(float(value or 0) > 0 for value in package)
     except (TypeError, ValueError):
         package_ready = False
-    if not package_ready:
+    if raw_sku_facts is None and not package_ready:
         blockers.append("请确认完整包装尺寸")
     if not review.get("selected_sites"):
         blockers.append("请至少选择一个目标站点")
@@ -428,8 +447,37 @@ def _commercial_release_blockers(review: Mapping[str, Any]) -> list[str]:
         cost = float(review.get("cost_cny") or 0)
     except (TypeError, ValueError):
         cost = 0
-    if cost <= 0:
+    if raw_sku_facts is None and cost <= 0:
         blockers.append("请确认来源成本")
+    selected_sku_keys = tuple(
+        str(value or "").strip()
+        for value in (review.get("selected_sku_keys") or ())
+        if str(value or "").strip()
+    )
+    if raw_sku_facts is not None:
+        if not isinstance(raw_sku_facts, Mapping) or set(raw_sku_facts) != set(
+            selected_sku_keys
+        ):
+            blockers.append("请确认每个已选 SKU 的成本、重量和包装尺寸")
+        else:
+            for sku_key in selected_sku_keys:
+                row = raw_sku_facts.get(sku_key)
+                if not isinstance(row, Mapping):
+                    blockers.append("请确认每个已选 SKU 的成本、重量和包装尺寸")
+                    break
+                try:
+                    sku_package = list(row.get("package_cm") or ())
+                    valid = (
+                        float(row.get("cost_cny") or 0) > 0
+                        and float(row.get("weight_kg") or 0) > 0
+                        and len(sku_package) == 3
+                        and all(float(value or 0) > 0 for value in sku_package)
+                    )
+                except (TypeError, ValueError):
+                    valid = False
+                if not valid:
+                    blockers.append("请确认每个已选 SKU 的成本、重量和包装尺寸")
+                    break
     return blockers
 
 
@@ -712,26 +760,15 @@ def _release_pricing_review(
     review: Mapping[str, Any],
     *,
     selected_site_keys: object | None = None,
+    sku_commercial_facts: object = (),
+    model_skus_by_variant: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Replay the persisted legacy pricing inputs without fetching live FX."""
 
-    cost = float(_decimal(review.get("cost_cny")))
-    weight = float(_decimal(review.get("weight_kg")))
-    raw_package = review.get("package_cm")
-    package = list(raw_package) if isinstance(raw_package, (list, tuple)) else []
-    package_cm = [float(_decimal(value)) for value in package[:3]]
-    while len(package_cm) < 3:
-        package_cm.append(0.0)
     fx_rates = (
         dict(review.get("fx_rates") or {})
         if isinstance(review.get("fx_rates"), Mapping)
         else {}
-    )
-    legacy = price_review(
-        cost,
-        weight,
-        package_cm,
-        fx_rates=fx_rates,
     )
     currencies = ("PHP", "MYR", "THB", "VND", "GBP", "MXN")
     shopee_rates: dict[str, float] = {}
@@ -739,16 +776,74 @@ def _release_pricing_review(
         rate = exchange_rate_for(currency)
         if rate > 0:
             shopee_rates[currency] = rate
-    return build_channel_pricing_preview(
-        legacy,
-        selected_site_keys=(
-            review.get("selected_sites") or ()
-            if selected_site_keys is None
-            else selected_site_keys
-        ),
-        shopee_exchange_rates=shopee_rates,
-        ozon_exchange_rates=ozon_exchange_rates(),
+    effective_site_keys = (
+        review.get("selected_sites") or ()
+        if selected_site_keys is None
+        else selected_site_keys
     )
+
+    def build_one(cost_value: object, weight_value: object, package_value: object):
+        cost = float(_decimal(cost_value))
+        weight = float(_decimal(weight_value))
+        package = (
+            list(package_value)
+            if isinstance(package_value, (list, tuple))
+            else []
+        )
+        package_cm = [float(_decimal(value)) for value in package[:3]]
+        while len(package_cm) < 3:
+            package_cm.append(0.0)
+        legacy = price_review(
+            cost,
+            weight,
+            package_cm,
+            fx_rates=fx_rates,
+        )
+        return build_channel_pricing_preview(
+            legacy,
+            selected_site_keys=effective_site_keys,
+            shopee_exchange_rates=shopee_rates,
+            ozon_exchange_rates=ozon_exchange_rates(),
+        )
+
+    result = build_one(
+        review.get("cost_cny"),
+        review.get("weight_kg"),
+        review.get("package_cm"),
+    )
+    assignments = dict(model_skus_by_variant or {})
+    variant_rows = [
+        row for row in (sku_commercial_facts or ()) if isinstance(row, Mapping)
+    ]
+    sku_pricing: list[dict[str, Any]] = []
+    for row in variant_rows:
+        variant_key = str(
+            row.get("selected_key") or row.get("source_key") or ""
+        ).strip()
+        if not variant_key:
+            continue
+        variant_pricing = build_one(
+            row.get("cost_cny"),
+            row.get("weight_kg"),
+            row.get("package_cm"),
+        )
+        sku_pricing.append(
+            {
+                "variant_key": variant_key,
+                "source_key": str(row.get("source_key") or variant_key),
+                "label": str(row.get("label") or variant_key),
+                "model_sku": assignments.get(variant_key),
+                "input": dict(variant_pricing.get("input") or {}),
+                "selected_store_prices": list(
+                    variant_pricing.get("selected_store_prices") or ()
+                ),
+                "target_pricing": dict(
+                    variant_pricing.get("target_pricing") or {}
+                ),
+            }
+        )
+    result["sku_pricing"] = sku_pricing
+    return result
 
 
 def _pricing_site_keys_for_scope(
@@ -792,6 +887,28 @@ def _apply_store_level_pricing(
         if str(row.get("target_key") or "").strip()
     }
 
+    def sku_prices_for(target_label: str) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for variant in pricing.get("sku_pricing") or ():
+            if not isinstance(variant, Mapping):
+                continue
+            per_target = variant.get("target_pricing")
+            price_row = (
+                per_target.get(target_label)
+                if isinstance(per_target, Mapping)
+                else None
+            )
+            if not isinstance(price_row, Mapping):
+                continue
+            rows.append({
+                "variant_key": variant.get("variant_key"),
+                "source_key": variant.get("source_key"),
+                "label": variant.get("label"),
+                "model_sku": variant.get("model_sku"),
+                **dict(price_row),
+            })
+        return rows
+
     for site in site_selection.get("tiktok", ()):
         target_key, shop, country = TIKTOK_STORE_TARGETS[site]
         row = rows_by_key.get(target_key)
@@ -806,6 +923,31 @@ def _apply_store_level_pricing(
                 "country": country,
             },
             "write_fields": ["skuMap.*.price", "skuMap.*.priceIncludeVat"],
+            "sku_prices": [
+                {
+                    "variant_key": variant.get("variant_key"),
+                    "source_key": variant.get("source_key"),
+                    "label": variant.get("label"),
+                    "model_sku": variant.get("model_sku"),
+                    **dict(price_row),
+                }
+                for variant in (pricing.get("sku_pricing") or ())
+                if isinstance(variant, Mapping)
+                for price_row in (
+                    next(
+                        (
+                            row
+                            for row in (
+                                variant.get("selected_store_prices") or ()
+                            )
+                            if isinstance(row, Mapping)
+                            and str(row.get("target_key") or "") == target_key
+                        ),
+                        None,
+                    ),
+                )
+                if isinstance(price_row, Mapping)
+            ],
             **(
                 {}
                 if row
@@ -840,6 +982,7 @@ def _apply_store_level_pricing(
         chosen_key = str((existing.get("source") or {}).get("target_key") or "")
         target_pricing[f"shopee:{country}"] = {
             **dict(existing),
+            "sku_prices": sku_prices_for(f"shopee:{country}"),
             "source_policy": "prefer_livelyhive_then_homebloom_within_country",
             "source_candidates": [
                 {
@@ -863,6 +1006,7 @@ def _apply_store_level_pricing(
         chosen_key = str((ozon.get("source") or {}).get("target_key") or "")
         target_pricing["ozon:RU"] = {
             **dict(ozon),
+            "sku_prices": sku_prices_for("ozon:RU"),
             "source_policy": (
                 "country_priority_PH_MY_TH_VN_MX_GB_then_"
                 "prefer_livelyhive_then_homebloom"
@@ -957,6 +1101,7 @@ def build_release_dashboard(
                 "status": str(row.get("status") or "").strip().lower(),
             }
         )
+    durable_reserved_sku_keys = release_store.active_reserved_sku_keys()
     reserved_skus = tuple(
         sorted(
             {
@@ -972,7 +1117,7 @@ def build_release_dashboard(
     )
     next_seller_skus = _next_available_seller_skus(
         tiktok_skus,
-        reserved_skus,
+        (*reserved_skus, *durable_reserved_sku_keys),
         requested_count=requested_sku_count,
         additional_occupied_skus=known_skus,
     )
@@ -1075,6 +1220,19 @@ def build_release_dashboard(
             "cost_cny": review.get("cost_cny"),
             "weight_kg": review.get("weight_kg"),
             "package_cm": list(review.get("package_cm") or ()),
+            "sku_commercial_facts": {
+                str(key): {
+                    "cost_cny": row.get("cost_cny"),
+                    "weight_kg": row.get("weight_kg"),
+                    "package_cm": list(row.get("package_cm") or ()),
+                }
+                for key, row in sorted(
+                    (review.get("sku_commercial_facts") or {}).items()
+                    if isinstance(review.get("sku_commercial_facts"), Mapping)
+                    else ()
+                )
+                if isinstance(row, Mapping)
+            },
             "selected_skus": [
                 {
                     "key": str(row.get("key") or row.get("name") or ""),
@@ -1432,7 +1590,29 @@ def build_release_dashboard(
         review,
         effective_publication_targets,
     )
-    base_release_pricing = _release_pricing_review(review)
+    product_facts = build_product_facts_snapshot(
+        product_id=clean_offer_id,
+        source=source,
+        review=review,
+    )
+    commercial_rows = [
+        fact.payload()
+        for fact in product_facts.selected_sku_commercial_facts
+    ]
+    model_skus_by_variant = {
+        str(row.get("variant_key") or ""): str(row.get("model_sku") or "")
+        for row in (
+            (sku_lineage_payload.get("assignment") or {}).get("model_skus")
+            if isinstance(sku_lineage_payload.get("assignment"), Mapping)
+            else ()
+        )
+        if isinstance(row, Mapping)
+    }
+    base_release_pricing = _release_pricing_review(
+        review,
+        sku_commercial_facts=commercial_rows,
+        model_skus_by_variant=model_skus_by_variant,
+    )
     scope_site_keys = _pricing_site_keys_for_scope(
         review,
         omnichannel_selection,
@@ -1441,6 +1621,8 @@ def build_release_dashboard(
     release_pricing = _release_pricing_review(
         review,
         selected_site_keys=scope_site_keys,
+        sku_commercial_facts=commercial_rows,
+        model_skus_by_variant=model_skus_by_variant,
     )
     _apply_store_level_pricing(release_pricing, omnichannel_selection)
     release_pricing["selection_source"] = publication_scope["source"]
@@ -1449,11 +1631,6 @@ def build_release_dashboard(
     )
     release_pricing["workbench_selected_store_prices"] = list(
         base_release_pricing["selected_store_prices"]
-    )
-    product_facts = build_product_facts_snapshot(
-        product_id=clean_offer_id,
-        source=source,
-        review=review,
     )
     approval_preview = preview_product_approval_lock(
         state=simulation_state,
@@ -1682,6 +1859,10 @@ def build_release_dashboard(
         )
         if isinstance(row, Mapping)
     }
+    commercial_by_key = {
+        str(row.get("selected_key") or row.get("source_key") or ""): row
+        for row in commercial_rows
+    }
     sku_label_overrides = (
         review.get("sku_label_overrides")
         if isinstance(review.get("sku_label_overrides"), Mapping)
@@ -1706,6 +1887,8 @@ def build_release_dashboard(
         }
         if inherited_model_skus.get(key):
             source_sku["model_sku"] = inherited_model_skus[key]
+        if isinstance(commercial_by_key.get(key), Mapping):
+            source_sku["commercial_facts"] = dict(commercial_by_key[key])
         source_skus.append(source_sku)
     return {
         "ok": True,
@@ -1756,6 +1939,14 @@ def build_release_dashboard(
             "cost_cny": review.get("cost_cny"),
             "weight_kg": review.get("weight_kg"),
             "package_cm": list(review.get("package_cm") or ()),
+            "sku_commercial_facts": {
+                str(row.get("selected_key") or row.get("source_key") or ""): {
+                    "cost_cny": row.get("cost_cny"),
+                    "weight_kg": row.get("weight_kg"),
+                    "package_cm": list(row.get("package_cm") or ()),
+                }
+                for row in commercial_rows
+            },
             "selected_sites": list(review.get("selected_sites") or ()),
             "selected_sku_keys": list(review.get("selected_sku_keys") or ()),
             "sku_label_overrides": {

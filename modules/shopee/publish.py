@@ -1221,10 +1221,20 @@ def ensure_global_models(
             option = _single_variant_label({**detail, "skus": [sku]})
         if not model_sku or not option:
             raise ValueError("Shopee global model SKU or option is unavailable")
+        raw_price = sku.get("original_price", original_price)
+        if isinstance(raw_price, bool):
+            raise ValueError("Shopee global model price is invalid")
+        try:
+            model_price = float(raw_price)
+        except (TypeError, ValueError):
+            raise ValueError("Shopee global model price is invalid") from None
+        if model_price <= 0:
+            raise ValueError("Shopee global model price is invalid")
         expected.append({
             "model_sku": model_sku,
             "option": option[:30],
             "tier_index": [index],
+            "original_price": model_price,
         })
     expected_skus = [str(row["model_sku"]) for row in expected]
     if len(set(expected_skus)) != len(expected_skus):
@@ -1296,7 +1306,7 @@ def ensure_global_models(
                 {
                     "tier_index": list(row["tier_index"]),
                     "global_model_sku": _english_safe_sku(str(row["model_sku"])),
-                    "original_price": float(original_price),
+                    "original_price": float(row["original_price"]),
                     "seller_stock": [{
                         "location_id": "CNZ",
                         "stock": int(stock),

@@ -1671,6 +1671,43 @@ def _approved_common(
     video = _video(payload)
     selected = _selected_variants(facts)
     model_skus = _model_skus(payload, selected, seller_sku)
+    raw_commercial = facts.get("sku_commercial_facts")
+    sku_commercial_facts: dict[str, dict[str, object]] = {}
+    if raw_commercial is not None:
+        if not isinstance(raw_commercial, Mapping) or set(raw_commercial) != set(
+            selected
+        ):
+            raise MiaoshouOneClickPrepareBlocked(
+                "approved_sku_commercial_facts_mismatch",
+                "approved SKU commercial facts do not match selected variants",
+            )
+        for variant in selected:
+            row = _mapping(raw_commercial.get(variant), "SKU commercial facts")
+            sku_weight = str(_positive_decimal(row.get("weight_kg"), "SKU weight"))
+            sku_package = row.get("package_cm")
+            if not isinstance(sku_package, list) or len(sku_package) != 3:
+                raise MiaoshouOneClickPrepareBlocked(
+                    "approved_sku_parcel_missing",
+                    "approved SKU parcel is unavailable",
+                )
+            sku_commercial_facts[variant] = {
+                "cost_cny": str(
+                    _positive_decimal(row.get("cost_cny"), "SKU cost")
+                ),
+                "weight": sku_weight,
+                "package_cm": [
+                    str(_positive_decimal(value, "SKU package dimension"))
+                    for value in sku_package
+                ],
+            }
+    else:
+        sku_commercial_facts = {
+            variant: {
+                "weight": weight,
+                "package_cm": list(package),
+            }
+            for variant in selected
+        }
     description = _description(payload)
     return {
         "common_detail_id": product_id,
@@ -1685,6 +1722,7 @@ def _approved_common(
         "video_url": video,
         "selected_sku_keys": selected,
         "model_skus": model_skus,
+        "sku_commercial_facts": sku_commercial_facts,
         "product_category": facts.get("category"),
     }
 
@@ -1811,6 +1849,44 @@ def _approved_site(
     common = _approved_common(payload, source_offer_id)
     title = _candidate_title(payload, target)
     price, currency = _price(payload, target, str(config["key"]))
+    pricing = _mapping(payload.get("pricing"), "pricing")
+    selected_pricing = _mapping(
+        pricing.get("selected_targets"), "selected pricing"
+    )
+    target_pricing = _mapping(selected_pricing.get(target), "target pricing")
+    raw_sku_prices = target_pricing.get("sku_prices")
+    sku_prices: dict[str, str] = {}
+    if raw_sku_prices is not None:
+        if not isinstance(raw_sku_prices, list) or any(
+            not isinstance(row, Mapping) for row in raw_sku_prices
+        ):
+            raise MiaoshouOneClickPrepareBlocked(
+                "approved_sku_prices_invalid",
+                "approved SKU prices are invalid",
+            )
+        for row in raw_sku_prices:
+            variant = _normalize_variant(row.get("variant_key"))
+            if (
+                variant in sku_prices
+                or str(row.get("target_key") or "") != str(config["key"])
+                or _text(row.get("currency"), "SKU currency") != currency
+            ):
+                raise MiaoshouOneClickPrepareBlocked(
+                    "approved_sku_prices_mismatch",
+                    "approved SKU prices do not match the storefront",
+                )
+            sku_prices[variant] = str(
+                _positive_decimal(row.get("list_price"), "SKU list price")
+            )
+        if set(sku_prices) != set(common["selected_sku_keys"]):
+            raise MiaoshouOneClickPrepareBlocked(
+                "approved_sku_prices_mismatch",
+                "approved SKU prices do not match selected variants",
+            )
+    else:
+        sku_prices = {
+            variant: price for variant in common["selected_sku_keys"]
+        }
     result = {
         **common,
         "target_label": target,
@@ -1820,6 +1896,7 @@ def _approved_site(
         "platform": str(config["platform"]),
         "title": title,
         "price": price,
+        "sku_prices": sku_prices,
         "currency": currency,
     }
     if str(config["platform"]) == "tiktok":
@@ -2286,14 +2363,31 @@ def _prepare_selected_platform_collectbox(
         )
         if repairable_price:
             try:
+                price_body = _tiktok_batch_price_body(
+                    detail_id=detail_id,
+                    site=str(config["site"]),
+                    price=expected["price"],
+                    sku_prices=expected.get("sku_prices"),
+                )
+            except MiaoshouOneClickPreDispatchError:
+                # Miaoshou's batch-price endpoint exposes one listing-wide
+                # value.  It is safe only when every approved SKU has the
+                # same price; otherwise invoking it would silently flatten a
+                # valid multi-SKU price matrix.
+                return detail_id, _target_result(
+                    target,
+                    "FAILED",
+                    error_code="approved_sku_price_batch_repair_unsupported",
+                    detail=(
+                        "Miaoshou batch price repair cannot preserve distinct "
+                        "approved SKU prices"
+                    ),
+                )
+            try:
                 active_price_client = price_client or _prepare_web_price_post()
                 repaired = active_price_client(
                     WEB_BATCH_SET_PRICE_PATH,
-                    _tiktok_batch_price_body(
-                        detail_id=detail_id,
-                        site=str(config["site"]),
-                        price=expected["price"],
-                    ),
+                    price_body,
                 )
             except MiaoshouBusinessRejectedError:
                 return detail_id, _target_result(
@@ -3146,14 +3240,35 @@ def _apply_expected(
     for variant in expected["selected_sku_keys"]:
         raw_key = bindings[variant]
         row = dict(_mapping(current_skus[raw_key], "sku row"))
+        raw_sku_commercial = expected.get("sku_commercial_facts")
+        sku_commercial = (
+            _mapping(raw_sku_commercial.get(variant), "SKU commercial fact")
+            if isinstance(raw_sku_commercial, Mapping)
+            and variant in raw_sku_commercial
+            else {}
+        )
+        sku_weight = sku_commercial.get("weight", expected["weight"])
+        sku_package = sku_commercial.get(
+            "package_cm", expected["package_cm"]
+        )
+        if not isinstance(sku_package, list) or len(sku_package) != 3:
+            raise MiaoshouOneClickPreDispatchError(
+                "prepared SKU parcel is invalid"
+            )
         row["itemNum"] = expected["model_skus"][variant]
-        row["weight"] = float(str(expected["weight"]))
-        row["packageLength"] = float(str(expected["package_cm"][0]))
-        row["packageWidth"] = float(str(expected["package_cm"][1]))
-        row["packageHeight"] = float(str(expected["package_cm"][2]))
+        row["weight"] = float(str(sku_weight))
+        row["packageLength"] = float(str(sku_package[0]))
+        row["packageWidth"] = float(str(sku_package[1]))
+        row["packageHeight"] = float(str(sku_package[2]))
         if "price" in expected:
-            row["price"] = float(str(expected["price"]))
-            row["priceIncludeVat"] = float(str(expected["price"]))
+            raw_sku_prices = expected.get("sku_prices")
+            sku_price = (
+                raw_sku_prices.get(variant, expected["price"])
+                if isinstance(raw_sku_prices, Mapping)
+                else expected["price"]
+            )
+            row["price"] = float(str(sku_price))
+            row["priceIncludeVat"] = float(str(sku_price))
         updated_skus[raw_key] = row
     updated["skuMap"] = updated_skus
     selected_raw_keys = set(bindings.values())
@@ -3252,6 +3367,45 @@ def _verify_expected_detail(
             for key in wanted
         ),
     ]
+    expected_sku_commercial = expected.get("sku_commercial_facts")
+    if isinstance(expected_sku_commercial, Mapping):
+        checks.extend(
+            [
+                all(
+                    _numbers_equal(
+                        _mapping(normalized[key], "sku row").get("weight"),
+                        _mapping(
+                            expected_sku_commercial.get(key),
+                            "SKU commercial fact",
+                        ).get("weight"),
+                    )
+                    for key in wanted
+                ),
+                all(
+                    all(
+                        _numbers_equal(actual, wanted_value)
+                        for actual, wanted_value in zip(
+                            (
+                                _mapping(normalized[key], "sku row").get(
+                                    "packageLength"
+                                ),
+                                _mapping(normalized[key], "sku row").get(
+                                    "packageWidth"
+                                ),
+                                _mapping(normalized[key], "sku row").get(
+                                    "packageHeight"
+                                ),
+                            ),
+                            _mapping(
+                                expected_sku_commercial.get(key),
+                                "SKU commercial fact",
+                            ).get("package_cm") or (),
+                        )
+                    )
+                    for key in wanted
+                ),
+            ]
+        )
     if platform == "shopee":
         checks.append(
             str(detail.get("notesText") or "")
@@ -3272,11 +3426,16 @@ def _verify_expected_detail(
             )
         )
     if "price" in expected and verify_price:
+        expected_sku_prices = expected.get("sku_prices")
         checks.append(
             all(
                 _numbers_equal(
                     _mapping(normalized[key], "sku row").get("price"),
-                    expected["price"],
+                    (
+                        expected_sku_prices.get(key, expected["price"])
+                        if isinstance(expected_sku_prices, Mapping)
+                        else expected["price"]
+                    ),
                 )
                 for key in wanted
             )
@@ -3288,7 +3447,11 @@ def _verify_expected_detail(
                         _mapping(normalized[key], "sku row").get(
                             "priceIncludeVat"
                         ),
-                        expected["price"],
+                        (
+                            expected_sku_prices.get(key, expected["price"])
+                            if isinstance(expected_sku_prices, Mapping)
+                            else expected["price"]
+                        ),
                     )
                     for key in wanted
                 )
@@ -3345,11 +3508,17 @@ def _tiktok_prices_exact(
             or any(not isinstance(row, Mapping) for row in rows)
         ):
             return False
+        expected_sku_prices = expected.get("sku_prices")
         return all(
             _numbers_equal(
-                row.get("priceIncludeVat"), expected["price"]
+                row.get("priceIncludeVat"),
+                (
+                    expected_sku_prices.get(variant, expected["price"])
+                    if isinstance(expected_sku_prices, Mapping)
+                    else expected["price"]
+                ),
             )
-            for row in rows
+            for variant, row in zip(bindings, rows)
         )
     except (KeyError, TypeError, ValueError, MiaoshouOneClickPreDispatchError):
         return False
@@ -3517,9 +3686,27 @@ def _tiktok_category_error_code(
 
 
 def _tiktok_batch_price_body(
-    *, detail_id: int, site: str, price: object
+    *,
+    detail_id: int,
+    site: str,
+    price: object,
+    sku_prices: object = None,
 ) -> dict[str, object]:
     approved_price = _positive_decimal(price, "approved TikTok price")
+    if sku_prices is not None:
+        if not isinstance(sku_prices, Mapping) or not sku_prices:
+            raise MiaoshouOneClickPreDispatchError(
+                "approved TikTok SKU prices are malformed"
+            )
+        approved_sku_prices = {
+            _positive_decimal(value, "approved TikTok SKU price")
+            for value in sku_prices.values()
+        }
+        if len(approved_sku_prices) != 1:
+            raise MiaoshouOneClickPreDispatchError(
+                "Miaoshou batch price repair cannot preserve distinct SKU prices"
+            )
+        approved_price = next(iter(approved_sku_prices))
     integral_price = approved_price.to_integral_value()
     if approved_price != integral_price:
         raise MiaoshouOneClickPreDispatchError(
@@ -3700,12 +3887,40 @@ def _default_tiktok_readback(expected: Mapping[str, object]) -> bool:
         or any(not isinstance(row, Mapping) for row in images)
     ):
         return False
-    prices_ok = all(
-        _numbers_equal(
-            (_mapping(row.get("price"), "price").get("sale_price")),
-            expected["price"],
-        )
+    raw_model_skus = expected.get("model_skus")
+    raw_sku_prices = expected.get("sku_prices")
+    if not isinstance(raw_model_skus, Mapping):
+        return False
+    if raw_sku_prices is not None:
+        if not isinstance(raw_sku_prices, Mapping) or set(raw_sku_prices) != set(
+            raw_model_skus
+        ):
+            return False
+        approved_price_by_model_sku = {
+            str(raw_model_skus[variant]): raw_sku_prices[variant]
+            for variant in raw_model_skus
+        }
+    else:
+        approved_price_by_model_sku = {
+            str(model_sku): expected["price"]
+            for model_sku in raw_model_skus.values()
+        }
+    if len(approved_price_by_model_sku) != len(raw_model_skus):
+        return False
+    observed_price_by_model_sku = {
+        str(row.get("seller_sku") or ""): _mapping(
+            row.get("price"), "price"
+        ).get("sale_price")
         for row in skus
+    }
+    prices_ok = set(observed_price_by_model_sku) == set(
+        approved_price_by_model_sku
+    ) and all(
+        _numbers_equal(
+            observed_price_by_model_sku[model_sku],
+            approved_price,
+        )
+        for model_sku, approved_price in approved_price_by_model_sku.items()
     )
     parcel_exact = _official_tiktok_parcel_exact(detail, expected)
     image_shape_exact = all(

@@ -204,7 +204,7 @@ def test_explicit_supersede_rejects_missing_or_stale_revision(
     assert "state" not in captured
 
 
-def test_first_lock_is_blocked_by_conflicting_selected_sku_prices(monkeypatch):
+def test_first_lock_is_blocked_by_selected_custom_placeholder(monkeypatch):
     state = {
         "_revision": 3,
         "review": {
@@ -219,7 +219,7 @@ def test_first_lock_is_blocked_by_conflicting_selected_sku_prices(monkeypatch):
         source=_source(conflicting=True),
     )
 
-    with pytest.raises(ValueError, match="selected SKU prices conflict"):
+    with pytest.raises(ValueError, match="customer-service/custom placeholder"):
         workbench.save_review(
             "product-1",
             {

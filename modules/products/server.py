@@ -549,35 +549,12 @@ def _save_product_workspace_facts_locally(data: dict) -> tuple[int, dict]:
             )
         return value, None
 
-    cost_cny, failure = positive_number("cost_cny")
-    if failure:
-        return failure
-    weight_kg, failure = positive_number("weight_kg")
-    if failure:
-        return failure
-    package_raw = data.get("package_cm")
-    if not isinstance(package_raw, list) or len(package_raw) != 3:
-        return 400, {
-            "ok": False,
-            "error_code": "invalid_package_cm",
-            "error": "package_cm must contain exactly three positive numbers",
-        }
+    # The SKU-keyed payload is the canonical contract.  Link-level fields are
+    # accepted only for backward compatibility with old single-SKU clients and
+    # are validated later if the canonical map is absent.
+    cost_cny: float | None = None
+    weight_kg: float | None = None
     package_cm: list[float] = []
-    for raw in package_raw:
-        if isinstance(raw, bool):
-            value = 0.0
-        else:
-            try:
-                value = float(raw)
-            except (TypeError, ValueError):
-                value = 0.0
-        if not math.isfinite(value) or value <= 0:
-            return 400, {
-                "ok": False,
-                "error_code": "invalid_package_cm",
-                "error": "package_cm must contain exactly three positive numbers",
-            }
-        package_cm.append(value)
     raw_sku_keys = data.get("selected_sku_keys")
     if not isinstance(raw_sku_keys, list):
         return 400, {
@@ -722,6 +699,125 @@ def _save_product_workspace_facts_locally(data: dict) -> tuple[int, dict]:
             if label != source_label_by_key.get(key)
         }
 
+        raw_sku_commercial_facts = data.get("sku_commercial_facts")
+        if raw_sku_commercial_facts is None:
+            # Backward compatibility for older single-SKU clients.  The
+            # canonical stored shape is still SKU-keyed so every later stage
+            # can use one contract.
+            cost_cny, failure = positive_number("cost_cny")
+            if failure:
+                return failure
+            weight_kg, failure = positive_number("weight_kg")
+            if failure:
+                return failure
+            package_raw = data.get("package_cm")
+            if not isinstance(package_raw, list) or len(package_raw) != 3:
+                return 400, {
+                    "ok": False,
+                    "error_code": "invalid_package_cm",
+                    "error": "package_cm must contain exactly three positive numbers",
+                }
+            for raw in package_raw:
+                if isinstance(raw, bool):
+                    value = 0.0
+                else:
+                    try:
+                        value = float(raw)
+                    except (TypeError, ValueError):
+                        value = 0.0
+                if not math.isfinite(value) or value <= 0:
+                    return 400, {
+                        "ok": False,
+                        "error_code": "invalid_package_cm",
+                        "error": "package_cm must contain exactly three positive numbers",
+                    }
+                package_cm.append(value)
+            raw_sku_commercial_facts = {
+                key: {
+                    "cost_cny": cost_cny,
+                    "weight_kg": weight_kg,
+                    "package_cm": list(package_cm),
+                }
+                for key in selected_sku_keys
+            }
+        if not isinstance(raw_sku_commercial_facts, dict):
+            return 400, {
+                "ok": False,
+                "error_code": "invalid_sku_commercial_facts",
+                "error": "sku_commercial_facts must be an object keyed by selected source SKU",
+            }
+        commercial_keys = {
+            str(key or "").strip() for key in raw_sku_commercial_facts
+        }
+        if commercial_keys != set(selected_sku_keys):
+            return 400, {
+                "ok": False,
+                "error_code": "sku_commercial_facts_key_mismatch",
+                "error": "sku_commercial_facts must contain exactly the selected source SKUs",
+                "missing_sku_keys": sorted(set(selected_sku_keys) - commercial_keys),
+                "extra_sku_keys": sorted(commercial_keys - set(selected_sku_keys)),
+            }
+        sku_commercial_facts: dict[str, dict[str, object]] = {}
+        for sku_key in selected_sku_keys:
+            row = raw_sku_commercial_facts.get(sku_key)
+            if not isinstance(row, dict):
+                return 400, {
+                    "ok": False,
+                    "error_code": "invalid_sku_commercial_fact",
+                    "error": f"commercial facts for {sku_key} must be an object",
+                }
+
+            def sku_positive(field: str) -> float | None:
+                raw = row.get(field)
+                if isinstance(raw, bool):
+                    return None
+                try:
+                    value = float(raw)
+                except (TypeError, ValueError):
+                    return None
+                return value if math.isfinite(value) and value > 0 else None
+
+            sku_cost = sku_positive("cost_cny")
+            sku_weight = sku_positive("weight_kg")
+            sku_package_raw = row.get("package_cm")
+            sku_package: list[float] = []
+            if isinstance(sku_package_raw, list) and len(sku_package_raw) == 3:
+                for raw in sku_package_raw:
+                    if isinstance(raw, bool):
+                        sku_package = []
+                        break
+                    try:
+                        value = float(raw)
+                    except (TypeError, ValueError):
+                        sku_package = []
+                        break
+                    if not math.isfinite(value) or value <= 0:
+                        sku_package = []
+                        break
+                    sku_package.append(value)
+            if sku_cost is None or sku_weight is None or len(sku_package) != 3:
+                return 400, {
+                    "ok": False,
+                    "error_code": "invalid_sku_commercial_fact",
+                    "error": (
+                        f"commercial facts for {sku_key} require positive cost_cny, "
+                        "weight_kg, and three package_cm dimensions"
+                    ),
+                }
+            sku_commercial_facts[sku_key] = {
+                "cost_cny": sku_cost,
+                "weight_kg": sku_weight,
+                "package_cm": sku_package,
+            }
+
+        # Keep the historical link-level fields as a deterministic mirror of
+        # the first selected SKU.  New pricing and release paths consume the
+        # SKU-keyed facts below.
+        first_commercial = sku_commercial_facts[selected_sku_keys[0]]
+        cost_cny = float(first_commercial["cost_cny"])
+        weight_kg = float(first_commercial["weight_kg"])
+        package_cm = list(first_commercial["package_cm"])
+
         next_state = dict(state)
         next_review = dict(review)
         next_review.update(
@@ -732,6 +828,7 @@ def _save_product_workspace_facts_locally(data: dict) -> tuple[int, dict]:
                 "package_cm": package_cm,
                 "selected_sku_keys": selected_sku_keys,
                 "sku_label_overrides": sku_label_overrides,
+                "sku_commercial_facts": sku_commercial_facts,
             }
         )
         next_state["review"] = next_review
@@ -2217,6 +2314,19 @@ def _release_plan_payload_from_dashboard(
             "weight_kg": product.get("weight_kg"),
             "package_cm": list(product.get("package_cm") or ()),
             "selected_sku_keys": list(product.get("selected_sku_keys") or ()),
+            "sku_commercial_facts": {
+                str(key): {
+                    "cost_cny": row.get("cost_cny"),
+                    "weight_kg": row.get("weight_kg"),
+                    "package_cm": list(row.get("package_cm") or ()),
+                }
+                for key, row in (
+                    (product.get("sku_commercial_facts") or {}).items()
+                    if isinstance(product.get("sku_commercial_facts"), dict)
+                    else ()
+                )
+                if isinstance(row, dict)
+            },
             "sku_label_overrides": dict(
                 product.get("sku_label_overrides") or {}
             ),
@@ -2226,6 +2336,7 @@ def _release_plan_payload_from_dashboard(
                     "label": str(row.get("label") or ""),
                     "price_cny": row.get("price_cny"),
                     "model_sku": row.get("model_sku"),
+                    "commercial_facts": dict(row.get("commercial_facts") or {}),
                 }
                 for row in (product.get("source_skus") or ())
                 if isinstance(row, dict)
@@ -2242,6 +2353,11 @@ def _release_plan_payload_from_dashboard(
         "pricing": {
             "schema_version": pricing.get("schema_version"),
             "selected_targets": selected_target_pricing,
+            "sku_pricing": [
+                dict(row)
+                for row in (pricing.get("sku_pricing") or ())
+                if isinstance(row, dict)
+            ],
             "master_price_source": dict(
                 pricing.get("master_price_source") or {}
             ),
@@ -9678,7 +9794,29 @@ def _approved_shopee_global_publish_facts(payload: dict) -> dict:
         ):
             raise ValueError("approved Shopee model lineage is invalid")
         model_by_key[key] = model_sku.strip()
+    raw_commercial_by_key = product_facts.get("sku_commercial_facts")
+    if raw_commercial_by_key is not None and (
+        not isinstance(raw_commercial_by_key, dict)
+        or set(raw_commercial_by_key) != set(selected_keys)
+    ):
+        raise ValueError("approved Shopee per-SKU parcel facts are incomplete")
+    raw_sku_prices = selected_target.get("sku_prices")
+    price_rows_by_key: dict[str, dict] = {}
+    if raw_sku_prices is not None:
+        if not isinstance(raw_sku_prices, list):
+            raise ValueError("approved Shopee per-SKU prices are invalid")
+        for price_row in raw_sku_prices:
+            if not isinstance(price_row, dict):
+                raise ValueError("approved Shopee per-SKU prices are invalid")
+            key = price_row.get("variant_key")
+            if type(key) is not str or key in price_rows_by_key:
+                raise ValueError("approved Shopee per-SKU prices are invalid")
+            price_rows_by_key[key] = price_row
+        if price_rows_by_key and set(price_rows_by_key) != set(selected_keys):
+            raise ValueError("approved Shopee per-SKU prices are incomplete")
     variants: list[dict[str, str]] = []
+    sku_commercial_facts: dict[str, dict[str, object]] = {}
+    sku_prices: dict[str, float] = {}
     for index, row in enumerate(selected_skus):
         if not isinstance(row, dict):
             raise ValueError("approved Shopee variant facts are invalid")
@@ -9702,6 +9840,51 @@ def _approved_shopee_global_publish_facts(payload: dict) -> dict:
             "option_label": label,
             "model_sku": model_by_key[key],
         })
+        commercial_row = (
+            raw_commercial_by_key.get(key)
+            if isinstance(raw_commercial_by_key, dict)
+            else {
+                "cost_cny": product_facts.get("cost_cny"),
+                "weight_kg": resolved_weight_kg,
+                "package_cm": package_cm,
+            }
+        )
+        if not isinstance(commercial_row, dict):
+            raise ValueError("approved Shopee per-SKU parcel facts are invalid")
+        try:
+            sku_cost = float(commercial_row.get("cost_cny"))
+            sku_weight = float(commercial_row.get("weight_kg"))
+            raw_package = commercial_row.get("package_cm")
+            sku_package = [float(raw_package[position]) for position in range(3)]
+        except (IndexError, TypeError, ValueError):
+            raise ValueError("approved Shopee per-SKU parcel facts are invalid") from None
+        if (
+            not all(math.isfinite(value) and value > 0 for value in (
+                sku_cost, sku_weight, *sku_package
+            ))
+        ):
+            raise ValueError("approved Shopee per-SKU parcel facts are invalid")
+        sku_commercial_facts[key] = {
+            "cost_cny": sku_cost,
+            "weight_kg": sku_weight,
+            "package_cm": sku_package,
+        }
+        price_row = price_rows_by_key.get(key)
+        if price_row is None:
+            sku_price = global_price
+        else:
+            if price_row.get("model_sku") not in (None, model_by_key[key]):
+                raise ValueError("approved Shopee per-SKU price binding is invalid")
+            per_sku_derived = price_row.get("derived_preview")
+            try:
+                sku_price = Decimal(
+                    str(per_sku_derived.get("global_original_price_cny"))
+                )
+            except (AttributeError, InvalidOperation, TypeError, ValueError):
+                raise ValueError("approved Shopee per-SKU price is invalid") from None
+        if not sku_price.is_finite() or sku_price <= 0:
+            raise ValueError("approved Shopee per-SKU price is invalid")
+        sku_prices[key] = float(sku_price)
     if len({row["model_sku"] for row in variants}) != len(variants):
         raise ValueError("approved Shopee model SKUs are not unique")
     return {
@@ -9715,6 +9898,8 @@ def _approved_shopee_global_publish_facts(payload: dict) -> dict:
         "package_cm": package_cm,
         "weight_kg": resolved_weight_kg,
         "variants": variants,
+        "sku_commercial_facts": sku_commercial_facts,
+        "sku_prices": sku_prices,
         # The immutable plan does not yet carry a stock policy.  CNSC accepts
         # a positive seller stock; use one rather than fabricating a larger
         # commercial quantity from an unrelated TikTok draft.

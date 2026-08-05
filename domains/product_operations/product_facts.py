@@ -63,12 +63,41 @@ class SelectedSkuPriceFact:
 
 
 @dataclass(frozen=True)
+class SelectedSkuCommercialFact:
+    """Approved logistics and cost inputs for one selected variant."""
+
+    selected_key: str
+    source_key: str
+    label: str
+    cost_cny: Decimal
+    weight_kg: Decimal
+    package_cm: tuple[Decimal, Decimal, Decimal]
+    source_price_cny: Decimal | None
+    source: str
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "selected_key": self.selected_key,
+            "source_key": self.source_key,
+            "label": self.label,
+            "cost_cny": _decimal_text(self.cost_cny),
+            "weight_kg": _decimal_text(self.weight_kg),
+            "package_cm": [
+                _decimal_text(value) for value in self.package_cm
+            ],
+            "source_price_cny": _decimal_text(self.source_price_cny),
+            "source": self.source,
+        }
+
+
+@dataclass(frozen=True)
 class ProductFactsSnapshot:
     """Immutable, JSON-ready evidence used before product approval."""
 
     product_id: str
     fields: tuple[FieldSourceEvidence, ...]
     selected_sku_prices: tuple[SelectedSkuPriceFact, ...]
+    selected_sku_commercial_facts: tuple[SelectedSkuCommercialFact, ...] = ()
     blockers: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
 
@@ -93,6 +122,10 @@ class ProductFactsSnapshot:
             },
             "selected_sku_prices": [
                 fact.payload() for fact in self.selected_sku_prices
+            ],
+            "selected_sku_commercial_facts": [
+                fact.payload()
+                for fact in self.selected_sku_commercial_facts
             ],
             "blockers": list(self.blockers),
             "warnings": list(self.warnings),
@@ -216,8 +249,14 @@ def build_product_facts_snapshot(
         ]
 
     sku_facts: list[SelectedSkuPriceFact] = []
+    commercial_facts: list[SelectedSkuCommercialFact] = []
     blockers: list[str] = []
     warnings: list[str] = []
+    reviewed_commercial = (
+        review.get("sku_commercial_facts")
+        if isinstance(review.get("sku_commercial_facts"), Mapping)
+        else {}
+    )
     for selected_key in dict.fromkeys(selected_keys):
         matching = [
             row
@@ -262,6 +301,60 @@ def build_product_facts_snapshot(
                     f"selected SKU {selected_key!r} has no valid positive source price"
                 )
 
+            reviewed_row = reviewed_commercial.get(selected_key)
+            has_reviewed_row = isinstance(reviewed_row, Mapping)
+            commercial_row = reviewed_row if has_reviewed_row else {}
+            cost = _positive_decimal(
+                commercial_row.get("cost_cny")
+                if has_reviewed_row
+                else (price if price is not None else review.get("cost_cny"))
+            )
+            weight = _positive_decimal(
+                commercial_row.get("weight_kg")
+                if has_reviewed_row
+                else (row.get("weight_kg") or review.get("weight_kg") or source.get("weight_kg"))
+            )
+            raw_package = (
+                commercial_row.get("package_cm")
+                if has_reviewed_row
+                else (row.get("package_cm") or review.get("package_cm") or source.get("package_cm"))
+            )
+            package = _positive_package(raw_package)
+            if cost is None:
+                blockers.append(
+                    f"selected SKU {selected_key!r} has no valid positive cost_cny"
+                )
+            if weight is None:
+                blockers.append(
+                    f"selected SKU {selected_key!r} has no valid positive weight_kg"
+                )
+            if package is None:
+                blockers.append(
+                    f"selected SKU {selected_key!r} has no complete positive package_cm"
+                )
+            if cost is not None and weight is not None and package is not None:
+                commercial_facts.append(
+                    SelectedSkuCommercialFact(
+                        selected_key=selected_key,
+                        source_key=source_key,
+                        label=label,
+                        cost_cny=cost,
+                        weight_kg=weight,
+                        package_cm=package,
+                        source_price_cny=price,
+                        source=(
+                            "review.sku_commercial_facts"
+                            if has_reviewed_row
+                            else "legacy_per_sku_materialization"
+                        ),
+                    )
+                )
+                if price is not None and cost != price:
+                    warnings.append(
+                        f"SKU {selected_key!r} cost_cny does not match its source price: "
+                        f"{_decimal_text(cost)} CNY vs {_decimal_text(price)} CNY"
+                    )
+
     valid_prices = sorted(
         {
             fact.price_cny
@@ -269,12 +362,7 @@ def build_product_facts_snapshot(
             if fact.price_cny is not None and fact.price_cny > 0
         }
     )
-    if len(valid_prices) > 1:
-        blockers.append(
-            "selected SKU prices conflict: "
-            + ", ".join(f"{_decimal_text(price)} CNY" for price in valid_prices)
-        )
-    elif len(valid_prices) == 1:
+    if len(valid_prices) == 1 and len(commercial_facts) <= 1:
         cost_evidence = next(
             evidence for evidence in fields if evidence.field_name == "cost_cny"
         )
@@ -298,6 +386,7 @@ def build_product_facts_snapshot(
         product_id=clean_product_id,
         fields=fields,
         selected_sku_prices=tuple(sku_facts),
+        selected_sku_commercial_facts=tuple(commercial_facts),
         blockers=tuple(dict.fromkeys(blockers)),
         warnings=tuple(dict.fromkeys(warnings)),
     )
@@ -349,6 +438,22 @@ def _decimal(value: Any) -> Decimal | None:
     except (InvalidOperation, ValueError):
         return None
     return parsed if parsed.is_finite() else None
+
+
+def _positive_decimal(value: Any) -> Decimal | None:
+    parsed = _decimal(value)
+    return parsed if parsed is not None and parsed > 0 else None
+
+
+def _positive_package(
+    value: Any,
+) -> tuple[Decimal, Decimal, Decimal] | None:
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        return None
+    parsed = tuple(_positive_decimal(item) for item in value)
+    if any(item is None for item in parsed):
+        return None
+    return parsed  # type: ignore[return-value]
 
 
 def _decimal_text(value: Decimal | None) -> str | None:

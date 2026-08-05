@@ -29,7 +29,7 @@ def _source(*, prices=("8.1", "0.2")):
     }
 
 
-def test_snapshot_blocks_selected_price_conflict_and_custom_placeholder_without_rewriting_cost():
+def test_snapshot_allows_distinct_sku_costs_but_blocks_custom_placeholder():
     source = _source()
     review = {
         "cost_cny": 0.2,
@@ -48,7 +48,7 @@ def test_snapshot_blocks_selected_price_conflict_and_custom_placeholder_without_
     )
 
     assert snapshot.ready is False
-    assert any("selected SKU prices conflict" in blocker for blocker in snapshot.blockers)
+    assert not any("selected SKU prices conflict" in blocker for blocker in snapshot.blockers)
     assert any("customer-service/custom placeholder" in blocker for blocker in snapshot.blockers)
     cost = snapshot.field("cost_cny")
     assert cost is not None
@@ -115,4 +115,80 @@ def test_snapshot_uses_all_source_skus_when_legacy_review_has_no_selection():
     )
 
     assert len(snapshot.selected_sku_prices) == 2
-    assert any("selected SKU prices conflict" in blocker for blocker in snapshot.blockers)
+    assert not any("selected SKU prices conflict" in blocker for blocker in snapshot.blockers)
+    assert any("customer-service/custom placeholder" in blocker for blocker in snapshot.blockers)
+
+
+def test_selected_variants_keep_independent_commercial_facts():
+    source = {
+        "title_source": "Three-size wall decor",
+        "skus": [
+            {"key": "a", "name": "35 x 140", "price": "15"},
+            {"key": "b", "name": "35 x 200", "price": "18"},
+            {"key": "c", "name": "35 x 300", "price": "22"},
+        ],
+    }
+    review = {
+        "selected_sku_keys": ["a", "b", "c"],
+        "sku_commercial_facts": {
+            "a": {
+                "cost_cny": 15,
+                "weight_kg": 0.1,
+                "package_cm": [20, 20, 3],
+            },
+            "b": {
+                "cost_cny": 18,
+                "weight_kg": 0.4,
+                "package_cm": [35, 20, 10],
+            },
+            "c": {
+                "cost_cny": 22,
+                "weight_kg": 0.8,
+                "package_cm": [45, 30, 15],
+            },
+        },
+    }
+
+    payload = build_product_facts_snapshot(
+        product_id="3838599504",
+        source=source,
+        review=review,
+    ).payload()
+
+    assert payload["ready"] is True
+    assert not any(
+        "selected SKU prices conflict" in blocker
+        for blocker in payload["blockers"]
+    )
+    assert payload["selected_sku_commercial_facts"] == [
+        {
+            "selected_key": "a",
+            "source_key": "a",
+            "label": "35 x 140",
+            "cost_cny": "15",
+            "weight_kg": "0.1",
+            "package_cm": ["20", "20", "3"],
+            "source_price_cny": "15",
+            "source": "review.sku_commercial_facts",
+        },
+        {
+            "selected_key": "b",
+            "source_key": "b",
+            "label": "35 x 200",
+            "cost_cny": "18",
+            "weight_kg": "0.4",
+            "package_cm": ["35", "20", "10"],
+            "source_price_cny": "18",
+            "source": "review.sku_commercial_facts",
+        },
+        {
+            "selected_key": "c",
+            "source_key": "c",
+            "label": "35 x 300",
+            "cost_cny": "22",
+            "weight_kg": "0.8",
+            "package_cm": ["45", "30", "15"],
+            "source_price_cny": "22",
+            "source": "review.sku_commercial_facts",
+        },
+    ]

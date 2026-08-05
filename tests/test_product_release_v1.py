@@ -668,6 +668,81 @@ def test_release_plan_binds_approved_wall_sticker_category_to_six_tiktok_sites()
         assert all(character in "0123456789abcdef" for character in digest)
 
 
+def test_release_plan_binds_each_sku_commercial_fact_and_target_price():
+    dashboard = _dashboard()
+    dashboard["product"].update(
+        {
+            "selected_sku_keys": ["short", "long"],
+            "sku_commercial_facts": {
+                "short": {
+                    "cost_cny": "15",
+                    "weight_kg": "0.1",
+                    "package_cm": ["20", "20", "3"],
+                },
+                "long": {
+                    "cost_cny": "22",
+                    "weight_kg": "0.8",
+                    "package_cm": ["45", "30", "15"],
+                },
+            },
+            "source_skus": [
+                {
+                    "key": "short",
+                    "label": "35 x 140 cm",
+                    "price_cny": 15,
+                    "model_sku": "0963",
+                    "commercial_facts": {
+                        "cost_cny": "15",
+                        "weight_kg": "0.1",
+                        "package_cm": ["20", "20", "3"],
+                    },
+                },
+                {
+                    "key": "long",
+                    "label": "35 x 300 cm",
+                    "price_cny": 22,
+                    "model_sku": "0964",
+                    "commercial_facts": {
+                        "cost_cny": "22",
+                        "weight_kg": "0.8",
+                        "package_cm": ["45", "30", "15"],
+                    },
+                },
+            ],
+        }
+    )
+    dashboard["pricing_review"]["target_pricing"]["tiktok:MX"][
+        "sku_prices"
+    ] = [
+        {"variant_key": "short", "list_price": "286", "currency": "MXN"},
+        {"variant_key": "long", "list_price": "399", "currency": "MXN"},
+    ]
+    dashboard["pricing_review"]["sku_pricing"] = [
+        {"variant_key": "short", "model_sku": "0963"},
+        {"variant_key": "long", "model_sku": "0964"},
+    ]
+
+    payload, blockers = product_server._release_plan_payload_from_dashboard(
+        dashboard
+    )
+
+    assert blockers == []
+    assert payload["product_facts"]["sku_commercial_facts"] == (
+        dashboard["product"]["sku_commercial_facts"]
+    )
+    assert [
+        row["commercial_facts"]
+        for row in payload["product_facts"]["selected_skus"]
+    ] == [
+        dashboard["product"]["sku_commercial_facts"]["short"],
+        dashboard["product"]["sku_commercial_facts"]["long"],
+    ]
+    assert payload["pricing"]["selected_targets"]["tiktok:MX"][
+        "sku_prices"
+    ][1]["list_price"] == "399"
+    assert payload["pricing"]["sku_pricing"][1]["model_sku"] == "0964"
+
+
 def test_legacy_approved_plan_accepts_deterministic_tiktok_category_backfill():
     """A derived execution binding must not strand a pre-feature approval."""
 

@@ -21,6 +21,7 @@ from domains.content_operations.content_package_adapter import (
 )
 from shared_platform.release_control import (
     _catalog_sku_is_owned_by_release,
+    _commercial_approval_facts,
     _default_omnichannel_targets,
     build_weekly_profit_rehearsal,
     build_release_dashboard,
@@ -1235,6 +1236,183 @@ def test_real_cross_product_source_predecessor_is_inherited(tmp_path):
             {"variant_key": "size-large", "model_sku": "0957"}
         ],
     }
+
+
+def test_next_product_skips_all_active_model_sku_reservation_keys(tmp_path):
+    root, database = _release_fixture(tmp_path)
+    state_path = root / "data" / "new_product_workbench" / "3828811808.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["review"]["selected_sku_keys"] = ["variant-a", "variant-b", "variant-c"]
+    state["source"] = {
+        "title_source": "Three-size wall decor",
+        "source_authority": "1688",
+        "source_record": {"source_id": "16881"},
+        "skus": [
+            {"key": "variant-a", "name": "A", "price": 15},
+            {"key": "variant-b", "name": "B", "price": 18},
+            {"key": "variant-c", "name": "C", "price": 22},
+        ],
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    with sqlite3.connect(database) as connection:
+        connection.execute("INSERT INTO products VALUES ('0959')")
+
+    store = ReleaseStore(root / "data" / "orbit_platform.db")
+    previous_source = resolve_source_product_identity(
+        collect_box={"source_item_id": "899978827487"},
+        source_authority="1688",
+    )
+    assert previous_source.ready and previous_source.identity is not None
+    previous_assignment = SkuAssignment(
+        seller_sku="0960",
+        model_skus=(
+            ModelSkuAssignment(variant_key="old-a", model_sku="0960"),
+            ModelSkuAssignment(variant_key="old-b", model_sku="0961"),
+            ModelSkuAssignment(variant_key="old-c", model_sku="0962"),
+        ),
+    )
+    unresolved = resolve_sku_lineage_reservation(
+        source_identity=previous_source.identity,
+        predecessor_records=[],
+    )
+    finalized = finalize_new_source_sku_reservation(
+        source_identity=previous_source.identity,
+        assignment=previous_assignment,
+    )
+    store.create_plan(
+        {
+            "plan_id": "omnichannel:previous-three-sku-product",
+            "product_id": "3838619319",
+            "seller_sku": "0960",
+            "product_package_id": "product:3838619319:0960",
+            "content_package_id": "content:3838619319:r1",
+            "targets": ["tiktok:LH_PH"],
+            "product_revision": 1,
+            "source_product_identity": previous_source.identity.payload(),
+            "sku_lineage": {
+                **unresolved.payload(),
+                "assignment": previous_assignment.payload(),
+                "reservation": finalized.reservation.payload(),
+            },
+        }
+    )
+
+    dashboard = build_release_dashboard(
+        root=root,
+        database_path=database,
+        report_store_path=store.path,
+        offer_id="3828811808",
+    )
+
+    assert dashboard["product"]["seller_sku_candidate"] == "0963"
+    assert dashboard["product"]["seller_sku_governance"]["suggested_sku_range"] == [
+        "0963",
+        "0964",
+        "0965",
+    ]
+    assert [
+        row["model_sku"]
+        for row in dashboard["sku_lineage"]["assignment"]["model_skus"]
+    ] == ["0963", "0964", "0965"]
+
+
+def test_pricing_is_calculated_per_selected_variant(tmp_path):
+    root, database = _release_fixture(tmp_path)
+    state_path = root / "data" / "new_product_workbench" / "3828811808.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["review"].update(
+        {
+            "selected_sku_keys": ["variant-a", "variant-b", "variant-c"],
+            "sku_commercial_facts": {
+                "variant-a": {"cost_cny": 15, "weight_kg": 0.1, "package_cm": [20, 20, 3]},
+                "variant-b": {"cost_cny": 18, "weight_kg": 0.4, "package_cm": [35, 20, 10]},
+                "variant-c": {"cost_cny": 22, "weight_kg": 0.8, "package_cm": [45, 30, 15]},
+            },
+        }
+    )
+    state["source"] = {
+        "title_source": "Three-size wall decor",
+        "source_authority": "1688",
+        "source_record": {"source_id": "16881"},
+        "skus": [
+            {"key": "variant-a", "name": "A", "price": 15},
+            {"key": "variant-b", "name": "B", "price": 18},
+            {"key": "variant-c", "name": "C", "price": 22},
+        ],
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    dashboard = build_release_dashboard(
+        root=root,
+        database_path=database,
+        report_store_path=root / "data" / "orbit_platform.db",
+        offer_id="3828811808",
+    )
+
+    sku_pricing = dashboard["pricing_review"]["sku_pricing"]
+    assert [row["variant_key"] for row in sku_pricing] == [
+        "variant-a",
+        "variant-b",
+        "variant-c",
+    ]
+    assert [row["model_sku"] for row in sku_pricing] == ["0022", "0023", "0024"]
+    assert [row["input"]["cost_cny"] for row in sku_pricing] == [15.0, 18.0, 22.0]
+    assert len(
+        {
+            row["selected_store_prices"][0]["list_price"]
+            for row in sku_pricing
+        }
+    ) == 3
+    target = dashboard["pricing_review"]["target_pricing"]["tiktok:LH_TH"]
+    assert [row["variant_key"] for row in target["sku_prices"]] == [
+        "variant-a",
+        "variant-b",
+        "variant-c",
+    ]
+    shopee = dashboard["pricing_review"]["target_pricing"]["shopee:TH"]
+    assert [row["variant_key"] for row in shopee["sku_prices"]] == [
+        "variant-a",
+        "variant-b",
+        "variant-c",
+    ]
+    assert len(
+        {
+            row["derived_preview"]["global_original_price_cny"]
+            for row in shopee["sku_prices"]
+        }
+    ) == 3
+    ozon = dashboard["pricing_review"]["target_pricing"]["ozon:RU"]
+    assert [row["variant_key"] for row in ozon["sku_prices"]] == [
+        "variant-a",
+        "variant-b",
+        "variant-c",
+    ]
+    assert len(
+        {row["derived_preview"]["price_cny"] for row in ozon["sku_prices"]}
+    ) == 3
+
+
+def test_legacy_approval_fingerprint_does_not_gain_new_sku_only_fields():
+    review = {
+        "cost_cny": 15,
+        "weight_kg": 0.1,
+        "package_cm": [20, 20, 3],
+        "selected_sites": ["LH_TH"],
+        "selected_sku_keys": ["default"],
+        "sku_label_overrides": {},
+        "category": {"id": "1", "name": "wall sticker"},
+        "support_cod": True,
+        "video_action": "keep",
+        "fx_rates": {},
+    }
+
+    facts = _commercial_approval_facts(
+        review,
+        {"selected_store_prices": [], "sku_pricing": [{"variant_key": "default"}]},
+    )
+
+    assert "sku_commercial_facts" not in facts
+    assert "sku_pricing" not in facts
 
 
 def test_real_gate_requires_matching_approval_and_verified_current_image_order(tmp_path):

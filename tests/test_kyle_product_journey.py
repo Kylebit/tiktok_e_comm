@@ -247,6 +247,50 @@ def test_facts_save_updates_one_revision_and_preserves_unrelated_state(monkeypat
     assert payload["dashboard"]["product"]["revision"] == 5
 
 
+def test_facts_save_persists_commercial_facts_for_every_selected_sku(monkeypatch):
+    initial = {
+        "offer_id": OFFER_ID,
+        "_revision": 4,
+        "review": copy.deepcopy(_preview()["review"]),
+    }
+    state, saves = _memory_workbench(monkeypatch, initial)
+    monkeypatch.setattr(
+        new_product_workbench,
+        "_source_summary",
+        lambda *_args, **_kwargs: _preview()["source"],
+    )
+    per_sku = {
+        "30x90-2pcs": {
+            "cost_cny": 8.1,
+            "weight_kg": 0.14,
+            "package_cm": [30.0, 3.0, 3.0],
+        },
+        "30x90-custom": {
+            "cost_cny": 12.6,
+            "weight_kg": 0.22,
+            "package_cm": [36.0, 5.0, 4.0],
+        },
+    }
+
+    status, payload = product_server._save_product_workspace_facts_locally(
+        {
+            "offer_id": OFFER_ID,
+            "expected_revision": 4,
+            "title": "Edited butterfly wall decal",
+            "selected_sku_keys": ["30x90-2pcs", "30x90-custom"],
+            "sku_commercial_facts": per_sku,
+        }
+    )
+
+    assert status == 200
+    assert payload["ok"] is True
+    assert len(saves) == 1
+    assert state["review"]["sku_commercial_facts"] == per_sku
+    assert state["review"]["cost_cny"] == 8.1
+    assert state["review"]["weight_kg"] == 0.14
+    assert state["review"]["package_cm"] == [30.0, 3.0, 3.0]
+
+
 def test_facts_save_returns_pricing_recalculated_from_the_new_revision(monkeypatch):
     initial = {
         "offer_id": OFFER_ID,
@@ -482,7 +526,20 @@ def test_dashboard_opens_before_any_ai_suite_exists(tmp_path):
     assert result["product"]["offer_id"] == OFFER_ID
     assert result["product"]["revision"] == 1
     assert result["product"]["seller_sku_candidate"] == "0952"
-    assert result["product"]["source_skus"] == [
+    assert [
+        {
+            key: row.get(key)
+            for key in (
+                "key",
+                "label",
+                "name",
+                "source_label",
+                "label_overridden",
+                "price_cny",
+            )
+        }
+        for row in result["product"]["source_skus"]
+    ] == [
         {
             "key": "30x90-2pcs",
                 "label": "30*90cm*2pcs; translucent",
@@ -500,6 +557,13 @@ def test_dashboard_opens_before_any_ai_suite_exists(tmp_path):
                 "price_cny": 8.2,
         },
     ]
+    assert result["product"]["sku_commercial_facts"] == {
+        "30x90-2pcs": {
+            "cost_cny": "8.1",
+            "weight_kg": "0.14",
+            "package_cm": ["30", "3", "3"],
+        }
+    }
     assert isinstance(result["content"]["images"], list)
     assert result["safety"]["external_writes_performed"] == []
 
@@ -671,9 +735,23 @@ def test_formal_frontend_collects_first_and_has_an_inline_facts_editor():
     assert 'id="productSpecGrid"' in html
     assert "sku-label-input" in script
     assert "sku_label_overrides" in script
+    assert "sku-commercial-input" in script
+    assert "sku_commercial_facts" in script
+    assert "每个 SKU 独立填写采购成本、重量和包装尺寸" in html
     assert 'id="factsEditCostSource"' in html
     assert 'id="factsEditWeightSource"' in html
     assert 'id="factsEditPackageSource"' in html
+    for field_id in (
+        "factsEditCost",
+        "factsEditWeight",
+        "factsEditLength",
+        "factsEditWidth",
+        "factsEditHeight",
+    ):
+        field = html[html.index(f'id="{field_id}"'):]
+        field = field[:field.index(">")]
+        assert "disabled" in field
+        assert "required" not in field
     assert "保存并确认商品事实 · 刷新全部售价" in html
     assert "/api/product-workspace/collect" in script
     assert "/api/product-workspace/facts" in script

@@ -138,23 +138,23 @@
                      aria-describedby="factsEditSellerSkuNote">
               <small id="factsEditSellerSkuNote">不可手填；保存前会再次核对目录与预留占用。</small>
             </label>
-            <label>
+            <label hidden aria-hidden="true">
               <span>采购成本（CNY）</span>
               <input id="factsEditCost" name="cost_cny" type="number"
-                     min="0.01" step="0.01" inputmode="decimal" required>
+                     min="0.01" step="0.01" inputmode="decimal" disabled>
               <small id="factsEditCostSource">来源：读取中</small>
             </label>
-            <label>
+            <label hidden aria-hidden="true">
               <span>商品重量（kg）</span>
               <input id="factsEditWeight" name="weight_kg" type="number"
-                     min="0.001" step="0.001" inputmode="decimal" required>
+                     min="0.001" step="0.001" inputmode="decimal" disabled>
               <small id="factsEditWeightSource">来源：读取中</small>
             </label>
-            <fieldset class="dimension-editor">
+            <fieldset class="dimension-editor" hidden aria-hidden="true">
               <legend>包装尺寸（cm）</legend>
-              <label><span>长</span><input id="factsEditLength" name="package_length_cm" type="number" min="0.1" step="0.1" inputmode="decimal" required></label>
-              <label><span>宽</span><input id="factsEditWidth" name="package_width_cm" type="number" min="0.1" step="0.1" inputmode="decimal" required></label>
-              <label><span>高</span><input id="factsEditHeight" name="package_height_cm" type="number" min="0.1" step="0.1" inputmode="decimal" required></label>
+              <label><span>长</span><input id="factsEditLength" name="package_length_cm" type="number" min="0.1" step="0.1" inputmode="decimal" disabled></label>
+              <label><span>宽</span><input id="factsEditWidth" name="package_width_cm" type="number" min="0.1" step="0.1" inputmode="decimal" disabled></label>
+              <label><span>高</span><input id="factsEditHeight" name="package_height_cm" type="number" min="0.1" step="0.1" inputmode="decimal" disabled></label>
               <small id="factsEditPackageSource">来源：读取中</small>
             </fieldset>
           </div>
@@ -175,7 +175,7 @@
           </section>
           <fieldset class="source-spec-editor">
             <legend>本次保留的来源规格（可多选）</legend>
-            <p>来源规格键与采购价保持不变；你可以编辑“发布规格名称”，新名称会进入标题事实、审批指纹和渠道草稿。至少保留一个真实可采购规格。</p>
+            <p>每个 SKU 独立填写采购成本、重量和包装尺寸；系统会据此分别计算各站点售价。你也可以编辑“发布规格名称”。至少保留一个真实可采购规格。</p>
             <div id="productSpecGrid" class="source-spec-grid" aria-live="polite">
               <span class="source-spec-empty">采集完成后显示来源规格。</span>
             </div>

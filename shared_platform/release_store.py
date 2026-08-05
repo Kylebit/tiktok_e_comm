@@ -5274,6 +5274,37 @@ class ReleaseStore:
                 return []
         return [dict(row) for row in rows]
 
+    def active_reserved_sku_keys(self) -> tuple[str, ...]:
+        """Return every active key owned by legacy and source-lineage plans.
+
+        ``release_sku_reservations`` predates multi-variant source lineage and
+        normally contains only the base Seller SKU.  The complete namespace
+        for a source-lineage reservation lives in
+        ``release_source_sku_reservation_keys``.  Allocation must consume both
+        ledgers or later products can reuse an already-owned model SKU.
+        """
+
+        if not self.path.is_file():
+            return ()
+        with self._connect_readonly() as connection:
+            keys: set[str] = set()
+            for table in (
+                "release_sku_reservations",
+                "release_source_sku_reservation_keys",
+            ):
+                try:
+                    rows = connection.execute(
+                        f"SELECT sku_key FROM {table} WHERE status = 'ACTIVE'"
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    continue
+                keys.update(
+                    str(row["sku_key"] or "").strip()
+                    for row in rows
+                    if str(row["sku_key"] or "").strip()
+                )
+        return tuple(sorted(keys))
+
     def database_health(self) -> dict[str, Any]:
         """Return read-only SQLite integrity evidence for operations/tests."""
         if not self.path.is_file():

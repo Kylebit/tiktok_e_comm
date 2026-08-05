@@ -5399,6 +5399,7 @@
           ?? key,
         ).trim() || key,
         price_cny: source.price_cny ?? source.price ?? source.cost_cny ?? null,
+        commercial_facts: source.commercial_facts ?? null,
       });
     });
     (evidence.selected_sku_prices || []).forEach((row) => {
@@ -5410,6 +5411,7 @@
         label: String(row.label || key),
         source_label: String(row.source_label || row.label || key),
         price_cny: row.price_cny ?? null,
+        commercial_facts: row.commercial_facts ?? null,
       });
     });
     selected.forEach((key) => {
@@ -5420,6 +5422,7 @@
         label: key,
         source_label: key,
         price_cny: null,
+        commercial_facts: null,
       });
     });
     return options;
@@ -5451,12 +5454,27 @@
     $("#factsEditPackageSource").textContent = `来源：${sourceFor("package_cm")}`;
 
     const options = sourceSkuOptions(product);
+    const commercialBySku = (
+      product.sku_commercial_facts
+      && typeof product.sku_commercial_facts === "object"
+    ) ? product.sku_commercial_facts : {};
     $("#productSpecGrid").innerHTML = options.length
       ? options.map((option, index) => {
         const price = Number(option.price_cny);
         const priceLabel = Number.isFinite(price)
           ? `采购价 ¥${money(price)}`
           : "来源价待核对";
+        const commercial = (
+          commercialBySku[option.key]
+          || option.commercial_facts
+          || {}
+        );
+        const skuCost = commercial.cost_cny ?? option.price_cny ?? product.cost_cny ?? "";
+        const skuWeight = commercial.weight_kg ?? product.weight_kg ?? "";
+        const skuPackage = Array.isArray(commercial.package_cm)
+          ? commercial.package_cm
+          : dimensions;
+        const skuDisabled = selected.has(option.key) ? "" : "disabled";
         return `
           <div class="source-spec-option">
             <label class="source-spec-selector">
@@ -5477,6 +5495,34 @@
                      ${selected.has(option.key) ? "" : "disabled"}>
               <small>保留来源规格键和采购价，只修改各平台显示名称。</small>
             </label>
+            <fieldset class="sku-commercial-editor">
+              <legend>该 SKU 的采购与物流事实</legend>
+              <label><span>采购成本（CNY）</span>
+                <input class="sku-commercial-input" type="number" min="0.01" step="0.01"
+                       data-sku-key="${esc(option.key)}" data-commercial-field="cost_cny"
+                       value="${esc(skuCost)}" ${skuDisabled} required>
+              </label>
+              <label><span>重量（kg）</span>
+                <input class="sku-commercial-input" type="number" min="0.001" step="0.001"
+                       data-sku-key="${esc(option.key)}" data-commercial-field="weight_kg"
+                       value="${esc(skuWeight)}" ${skuDisabled} required>
+              </label>
+              <label><span>包装长（cm）</span>
+                <input class="sku-commercial-input" type="number" min="0.1" step="0.1"
+                       data-sku-key="${esc(option.key)}" data-commercial-field="length_cm"
+                       value="${esc(skuPackage[0] ?? "")}" ${skuDisabled} required>
+              </label>
+              <label><span>包装宽（cm）</span>
+                <input class="sku-commercial-input" type="number" min="0.1" step="0.1"
+                       data-sku-key="${esc(option.key)}" data-commercial-field="width_cm"
+                       value="${esc(skuPackage[1] ?? "")}" ${skuDisabled} required>
+              </label>
+              <label><span>包装高（cm）</span>
+                <input class="sku-commercial-input" type="number" min="0.1" step="0.1"
+                       data-sku-key="${esc(option.key)}" data-commercial-field="height_cm"
+                       value="${esc(skuPackage[2] ?? "")}" ${skuDisabled} required>
+              </label>
+            </fieldset>
           </div>
         `;
       }).join("")
@@ -5810,7 +5856,10 @@
       if (field.id === "factsEditSellerSku") {
         field.readOnly = true;
         field.disabled = !currentData;
-      } else if (field.classList.contains("sku-label-input")) {
+      } else if (
+        field.classList.contains("sku-label-input")
+        || field.classList.contains("sku-commercial-input")
+      ) {
         const selectedSku = [...form.querySelectorAll(
           'input[name="selected_sku_key"]',
         )].find((input) => input.value === (field.dataset.skuKey || ""));
@@ -5843,6 +5892,7 @@
       return;
     }
     const skuLabelOverrides = {};
+    const skuCommercialFacts = {};
     for (const key of selectedSkuKeys) {
       const input = [...form.querySelectorAll(".sku-label-input")].find(
         (field) => field.dataset.skuKey === key,
@@ -5854,6 +5904,28 @@
         return;
       }
       skuLabelOverrides[key] = label;
+      const commercialField = (name) => [...form.querySelectorAll(
+        `.sku-commercial-input[data-commercial-field="${name}"]`,
+      )].find((field) => field.dataset.skuKey === key);
+      const commercial = {
+        cost_cny: Number(commercialField("cost_cny")?.value),
+        weight_kg: Number(commercialField("weight_kg")?.value),
+        package_cm: [
+          Number(commercialField("length_cm")?.value),
+          Number(commercialField("width_cm")?.value),
+          Number(commercialField("height_cm")?.value),
+        ],
+      };
+      if (
+        !Number.isFinite(commercial.cost_cny) || commercial.cost_cny <= 0
+        || !Number.isFinite(commercial.weight_kg) || commercial.weight_kg <= 0
+        || commercial.package_cm.some((value) => !Number.isFinite(value) || value <= 0)
+      ) {
+        $("#factsEditMessage").textContent = `请完整填写 SKU ${key} 的成本、重量和包装尺寸。`;
+        commercialField("cost_cny")?.focus();
+        return;
+      }
+      skuCommercialFacts[key] = commercial;
     }
     const product = currentData.product || {};
     const key = productKey(product.offer_id);
@@ -5867,19 +5939,17 @@
       "正在核对来源规格、Seller SKU 占用和当前 revision…";
     updateFactsEditControls();
     try {
+      const firstCommercial = skuCommercialFacts[selectedSkuKeys[0]];
       const payload = await postProductWorkspace("/api/product-workspace/facts", {
         offer_id: product.offer_id,
         expected_revision: Number(form.dataset.revision),
         title: $("#factsEditTitle").value.trim(),
-        cost_cny: Number($("#factsEditCost").value),
-        weight_kg: Number($("#factsEditWeight").value),
-        package_cm: [
-          Number($("#factsEditLength").value),
-          Number($("#factsEditWidth").value),
-          Number($("#factsEditHeight").value),
-        ],
+        cost_cny: firstCommercial.cost_cny,
+        weight_kg: firstCommercial.weight_kg,
+        package_cm: firstCommercial.package_cm,
         selected_sku_keys: selectedSkuKeys,
         sku_label_overrides: skuLabelOverrides,
+        sku_commercial_facts: skuCommercialFacts,
       });
       const data = dashboardFromPayload(payload)
         || await fetchDashboard(product.offer_id);
@@ -9123,10 +9193,13 @@
   });
   $("#productFactsForm").addEventListener("change", (event) => {
     if (!event.target.matches('input[name="selected_sku_key"]')) return;
-    const labelInput = [...document.querySelectorAll(".sku-label-input")].find(
-      (field) => field.dataset.skuKey === event.target.value,
+    document.querySelectorAll(".sku-label-input, .sku-commercial-input").forEach(
+      (field) => {
+        if (field.dataset.skuKey === event.target.value) {
+          field.disabled = !event.target.checked;
+        }
+      },
     );
-    if (labelInput) labelInput.disabled = !event.target.checked;
   });
   $("#productFactsForm").addEventListener("submit", (event) => {
     event.preventDefault();

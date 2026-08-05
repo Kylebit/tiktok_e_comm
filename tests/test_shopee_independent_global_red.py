@@ -32,12 +32,22 @@ def _three_variant_approved_payload() -> dict:
                     "derived_preview": {
                         "global_original_price_cny": 119.65,
                     },
+                    "sku_prices": [
+                        {"variant_key": "variant-a", "model_sku": "0960", "derived_preview": {"global_original_price_cny": 89.5}},
+                        {"variant_key": "variant-b", "model_sku": "0961", "derived_preview": {"global_original_price_cny": 119.65}},
+                        {"variant_key": "variant-c", "model_sku": "0962", "derived_preview": {"global_original_price_cny": 159.25}},
+                    ],
                 },
             },
         },
         "product_facts": {
             "package_cm": [60, 7, 7],
             "weight_kg": 0.265,
+            "sku_commercial_facts": {
+                "variant-a": {"cost_cny": 15, "weight_kg": 0.15, "package_cm": [30, 7, 7]},
+                "variant-b": {"cost_cny": 18, "weight_kg": 0.265, "package_cm": [60, 7, 7]},
+                "variant-c": {"cost_cny": 22, "weight_kg": 0.4, "package_cm": [90, 7, 7]},
+            },
             "selected_sku_keys": ["variant-a", "variant-b", "variant-c"],
             "selected_skus": [
                 {"key": "variant-a", "label": "A：60cmx3m", "model_sku": "0960"},
@@ -114,6 +124,23 @@ def test_approved_global_facts_preserve_all_exact_approved_variants() -> None:
     ]
 
 
+def test_approved_global_facts_preserve_per_sku_price_and_parcel() -> None:
+    facts = product_server._approved_shopee_global_publish_facts(
+        _three_variant_approved_payload()
+    )
+
+    assert facts["sku_commercial_facts"] == {
+        "variant-a": {"cost_cny": 15.0, "weight_kg": 0.15, "package_cm": [30.0, 7.0, 7.0]},
+        "variant-b": {"cost_cny": 18.0, "weight_kg": 0.265, "package_cm": [60.0, 7.0, 7.0]},
+        "variant-c": {"cost_cny": 22.0, "weight_kg": 0.4, "package_cm": [90.0, 7.0, 7.0]},
+    }
+    assert facts["sku_prices"] == {
+        "variant-a": 89.5,
+        "variant-b": 119.65,
+        "variant-c": 159.25,
+    }
+
+
 def test_approved_global_detail_preserves_three_models_and_option_labels() -> None:
     """Regression: API detail must carry the exact approved model/label matrix."""
 
@@ -127,6 +154,15 @@ def test_approved_global_detail_preserves_three_models_and_option_labels() -> No
     ]
     assert [row["variation_option"] for row in detail["skus"]] == [
         "A：60cmx3m", "B：60cmx3m", "C：60cmx3m",
+    ]
+    assert [row["original_price"] for row in detail["skus"]] == [
+        89.5, 119.65, 159.25,
+    ]
+    assert [row["sku_weight"]["value"] for row in detail["skus"]] == [
+        0.15, 0.265, 0.4,
+    ]
+    assert [row["sku_dimensions"]["length"] for row in detail["skus"]] == [
+        30.0, 60.0, 90.0,
     ]
 
 
@@ -177,6 +213,9 @@ def test_shopee_init_tier_payload_contains_all_three_approved_models(
     }]
     assert [row["global_model_sku"] for row in writes[0][1]["global_model"]] == [
         "0960", "0961", "0962",
+    ]
+    assert [row["original_price"] for row in writes[0][1]["global_model"]] == [
+        89.5, 119.65, 159.25,
     ]
 
 

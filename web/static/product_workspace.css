@@ -937,6 +937,40 @@ section { scroll-margin-top: 20px; }
   background: white;
   font: 700 12px/1.35 var(--sans);
 }
+.sku-commercial-editor {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.sku-commercial-editor legend {
+  padding: 0 4px;
+  color: var(--ink);
+  font-size: 9px;
+  font-weight: 800;
+}
+.sku-commercial-editor label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.sku-commercial-editor label span {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 700;
+}
+.sku-commercial-editor input {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 7px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: #fff;
+}
 .source-spec-name > input:focus {
   border-color: var(--teal);
   box-shadow: 0 0 0 3px rgba(35, 118, 107, .12);

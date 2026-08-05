@@ -2352,6 +2352,171 @@ def test_shopee_simple_description_preserves_approved_cnsc_master_text():
     assert updated["notesText"] == description
 
 
+def test_tiktok_applies_distinct_price_and_parcel_to_each_approved_sku():
+    target = "tiktok:LH_MY"
+    payload = _plan_payload(target)
+    payload["seller_sku"] = "0963"
+    payload["product_facts"].update(
+        {
+            "selected_sku_keys": ["short", "long"],
+            "sku_commercial_facts": {
+                "short": {
+                    "cost_cny": 15,
+                    "weight_kg": 0.1,
+                    "package_cm": [20, 20, 3],
+                },
+                "long": {
+                    "cost_cny": 22,
+                    "weight_kg": 0.8,
+                    "package_cm": [45, 30, 15],
+                },
+            },
+        }
+    )
+    payload["sku_lineage"] = {
+        "assignment": {
+            "seller_sku": "0963",
+            "model_skus": [
+                {"variant_key": "short", "model_sku": "0963"},
+                {"variant_key": "long", "model_sku": "0964"},
+            ],
+        }
+    }
+    payload["pricing"]["selected_targets"][target]["sku_prices"] = [
+        {
+            "variant_key": "short",
+            "target_key": "lh_my",
+            "list_price": "30.5",
+            "currency": "MYR",
+        },
+        {
+            "variant_key": "long",
+            "target_key": "lh_my",
+            "list_price": "49.9",
+            "currency": "MYR",
+        },
+    ]
+    expected = miaoshou._approved_site(
+        payload,
+        target=target,
+        config=miaoshou.DIRECT_STORE_CONFIG[target],
+        source_offer_id="986159122616",
+    )
+    current = _detail(target)
+    template = current["skuMap"].pop("default")
+    current["skuMap"] = {
+        "short": deepcopy(template),
+        "long": deepcopy(template),
+    }
+
+    updated = miaoshou._apply_expected(current, expected)
+
+    assert updated["skuMap"]["short"]["itemNum"] == "0963"
+    assert updated["skuMap"]["short"]["price"] == 30.5
+    assert updated["skuMap"]["short"]["weight"] == 0.1
+    assert updated["skuMap"]["short"]["packageLength"] == 20
+    assert updated["skuMap"]["long"]["itemNum"] == "0964"
+    assert updated["skuMap"]["long"]["price"] == 49.9
+    assert updated["skuMap"]["long"]["weight"] == 0.8
+    assert updated["skuMap"]["long"]["packageLength"] == 45
+
+
+def test_tiktok_official_readback_compares_each_model_sku_price(monkeypatch):
+    """Official readback must not compare every model with one listing price."""
+
+    from core import api_client, auth, shops
+
+    target = "tiktok:LH_MY"
+    expected = _expected(target)
+    expected.update(
+        {
+            "selected_sku_keys": ["short", "long"],
+            "model_skus": {"short": "0963", "long": "0964"},
+            "sku_prices": {"short": "30.5", "long": "49.9"},
+            # The first SKU remains the backward-compatible listing summary.
+            "price": "30.5",
+        }
+    )
+    monkeypatch.setattr(auth, "access_token", lambda: "token")
+    monkeypatch.setattr(
+        shops,
+        "list_shops",
+        lambda _token: [
+            {
+                "id": expected["shop_id"],
+                "region": expected["region"],
+                "name": expected["shop_name"],
+                "cipher": "cipher",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        api_client,
+        "post",
+        lambda *_args, **_kwargs: {
+            "code": 0,
+            "data": {
+                "products": [
+                    {
+                        "id": "product-1",
+                        "skus": [
+                            {"seller_sku": "0964"},
+                            {"seller_sku": "0963"},
+                        ],
+                    }
+                ],
+                "total_count": 1,
+                "next_page_token": "",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        api_client,
+        "get",
+        lambda *_args, **_kwargs: {
+            "code": 0,
+            "data": {
+                "title": expected["title"],
+                "status": "LIVE",
+                # Reverse order proves identity, not list position, binds price.
+                "skus": [
+                    {
+                        "seller_sku": "0964",
+                        "price": {"sale_price": "49.9"},
+                    },
+                    {
+                        "seller_sku": "0963",
+                        "price": {"sale_price": "30.5"},
+                    },
+                ],
+                "main_images": [{"uri": "image-1"}],
+                "package_weight": {"unit": "KG", "value": "0.2"},
+                "package_dimensions": {
+                    "unit": "CM",
+                    "length": "30",
+                    "width": "20",
+                    "height": "1",
+                },
+            },
+        },
+    )
+
+    assert miaoshou._default_tiktok_readback(expected) is True
+
+
+def test_tiktok_batch_price_repair_refuses_to_flatten_distinct_sku_prices():
+    with pytest.raises(
+        miaoshou.MiaoshouOneClickPreDispatchError,
+        match="distinct SKU prices",
+    ):
+        miaoshou._tiktok_batch_price_body(
+            detail_id=77,
+            site="MY",
+            price="30.5",
+            sku_prices={"short": "30.5", "long": "49.9"},
+        )
+
+
 def _live_shaped_plan_payload(target):
     """Sanitized shape captured from approved Offer 3846511157.
 

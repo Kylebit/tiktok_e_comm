@@ -8942,6 +8942,104 @@ def _oneclick_approved_context(
     }, None
 
 
+def _platform_approved_context(
+    data: dict,
+) -> tuple[dict | None, tuple[int, dict] | None]:
+    """Load one immutable approved plan for an independent platform button.
+
+    Shopee Global and Ozon are not continuations of the durable one-click
+    authoring workflow.  Their only shared input is the already-approved
+    ReleasePlan, so this seam deliberately does not rebuild the current
+    dashboard, inspect another platform, or inherit a previous run/job.
+    """
+
+    from shared_platform.collectbox_action import approved_plan_identity
+    from shared_platform.release_store import default_release_store
+
+    store = default_release_store()
+    plan_id = str(data.get("plan_id") or "").strip()
+    plan = store.get_plan(plan_id)
+    try:
+        identity = approved_plan_identity(plan)
+    except (TypeError, ValueError):
+        identity = None
+    payload = (
+        plan.get("payload")
+        if isinstance(plan, dict) and isinstance(plan.get("payload"), dict)
+        else None
+    )
+    approval = (
+        plan.get("approval")
+        if isinstance(plan, dict) and isinstance(plan.get("approval"), dict)
+        else {}
+    )
+    targets = list(plan.get("targets") or ()) if isinstance(plan, dict) else []
+    request_targets = data.get("publication_targets")
+    reservation = plan.get("sku_reservation") if isinstance(plan, dict) else None
+    source_reservation = (
+        plan.get("source_sku_reservation") if isinstance(plan, dict) else None
+    )
+    reservation_is_active = bool(
+        (
+            isinstance(reservation, dict)
+            and reservation.get("status") == "ACTIVE"
+            and reservation.get("plan_id") == plan_id
+            and reservation.get("seller_sku") == plan.get("seller_sku")
+        )
+        or (
+            isinstance(source_reservation, dict)
+            and source_reservation.get("status") == "ACTIVE"
+            and (source_reservation.get("assignment") or {}).get("seller_sku")
+            == plan.get("seller_sku")
+        )
+    )
+    exact_identity = bool(
+        identity
+        and payload is not None
+        and plan_id == identity["plan_id"]
+        and str(data.get("offer_id") or "") == identity["offer_id"]
+        and data.get("product_revision") == identity["product_revision"]
+        and data.get("payload_digest") == identity["payload_digest"]
+        and data.get("targets_digest") == identity["targets_digest"]
+        and type(request_targets) is list
+        and request_targets == targets
+        and str(data.get("confirmation_token") or "")
+        == str(plan.get("confirmation_token") or "")
+        and str(payload.get("product_id") or "") == identity["offer_id"]
+        and list(payload.get("targets") or ()) == targets
+        and approval.get("user_approved") is True
+        and approval.get("plan_id") == plan_id
+        and approval.get("payload_digest") == plan.get("payload_digest")
+        and approval.get("confirmation_token") == plan.get("confirmation_token")
+        and reservation_is_active
+    )
+    request_seller_sku = data.get("seller_sku")
+    if request_seller_sku not in (None, ""):
+        exact_identity = bool(
+            exact_identity
+            and str(request_seller_sku) == str(plan.get("seller_sku") or "")
+        )
+    if not exact_identity:
+        return None, (
+            409,
+            {
+                "ok": False,
+                "success": False,
+                "error": "approved platform snapshot identity is stale or invalid",
+                "message": "批准的商品快照身份不一致，请刷新后重试",
+                "external_writes_performed": [],
+                "external_write_count": 0,
+                "retryable": True,
+            },
+        )
+    return {
+        "dashboard": None,
+        "payload": payload,
+        "plan": plan,
+        "store": store,
+    }, None
+
+
 def _preview_oneclick_release(data: dict) -> tuple[int, dict]:
     from shared_platform.oneclick_release_controlplane import (
         SystemicIdentityError,
@@ -10056,7 +10154,7 @@ def _start_shopee_global_release(data: dict) -> tuple[int, dict]:
             "message": "Shopee 全球商品发布失败：需要确认发布",
             "retryable": True,
         }
-    context, failure = _oneclick_approved_context(data)
+    context, failure = _platform_approved_context(data)
     if failure:
         return failure
     try:
@@ -10070,7 +10168,7 @@ def _start_shopee_global_release(data: dict) -> tuple[int, dict]:
             "retryable": True,
         }
     with _shopee_global_publish_lock:
-        refreshed, failure = _oneclick_approved_context(data)
+        refreshed, failure = _platform_approved_context(data)
         if failure:
             return failure
         try:
@@ -10128,7 +10226,7 @@ def _start_ozon_release(data: dict) -> tuple[int, dict]:
             "message": "Ozon 发布失败：需要确认发布",
             "retryable": True,
         }
-    context, failure = _oneclick_approved_context(data)
+    context, failure = _platform_approved_context(data)
     if failure:
         return failure
     try:
@@ -10142,13 +10240,33 @@ def _start_ozon_release(data: dict) -> tuple[int, dict]:
             "retryable": True,
         }
     with _ozon_publish_lock:
-        refreshed, failure = _oneclick_approved_context(data)
+        refreshed, failure = _platform_approved_context(data)
         if failure:
             return failure
         try:
             current_facts = _approved_ozon_publish_facts(refreshed["payload"])
             if current_facts != facts:
                 raise ValueError("approved Ozon facts changed before dispatch")
+            from modules.ozon.target_scoped import read_existing_product
+
+            existing = read_existing_product(offer_id=facts["seller_sku"])
+            checks = existing.get("checks") if isinstance(existing, dict) else {}
+            if isinstance(checks, dict) and all(
+                checks.get(key) is True
+                for key in ("created", "approved", "title", "price", "images")
+            ):
+                return 200, {
+                    "schema_version": "official-platform-publish-result/v1",
+                    "ok": True,
+                    "success": True,
+                    "platform": "OZON",
+                    "message": "Ozon 商品已存在且官方回读成功",
+                    "target_count": 1,
+                    "successful_target_count": 1,
+                    "failed_targets": [],
+                    "retryable": True,
+                    "already_published": True,
+                }
             from modules.ozon.migrate_batch import migrate_one
 
             result = migrate_one(

@@ -193,7 +193,7 @@ def test_shopee_button_uses_approved_plan_for_global_only_publish(monkeypatch):
     }
     monkeypatch.setattr(
         product_server,
-        "_oneclick_approved_context",
+        "_platform_approved_context",
         lambda _data: (
             {
                 "payload": payload,
@@ -215,12 +215,29 @@ def test_shopee_button_uses_approved_plan_for_global_only_publish(monkeypatch):
             AssertionError("Shopee must not enter the shared platform job")
         ),
     )
+    approved_facts = {
+        "seller_sku": "0959",
+        "title": "Approved Shopee title",
+        "description": "Approved Shopee description",
+        "region": "PH",
+        "global_original_price_cny": 61.71,
+        "images": ["https://images.example/1.jpg"],
+        "package_cm": [38.0, 85.0, 0.1],
+        "weight_kg": 0.2,
+        "variants": [{"seller_sku": "0959", "name": "Default"}],
+        "sku_commercial_facts": {"0959": {}},
+        "sku_prices": {"0959": 61.71},
+        "quantity": 1,
+    }
+    monkeypatch.setattr(
+        product_server,
+        "_approved_shopee_global_publish_facts",
+        lambda _payload: approved_facts,
+    )
     calls: list[dict[str, object]] = []
 
-    def fake_publish(match_key, region, **kwargs):
-        calls.append(
-            {"match_key": match_key, "region": region, **kwargs}
-        )
+    def fake_publish(facts):
+        calls.append(facts)
         return {
             "ok": True,
             "flow": "global_only",
@@ -228,7 +245,7 @@ def test_shopee_button_uses_approved_plan_for_global_only_publish(monkeypatch):
         }
 
     monkeypatch.setattr(
-        "modules.shopee.publish.publish_match_key",
+        "modules.shopee.approved_global_publisher.publish_approved_global",
         fake_publish,
     )
 
@@ -246,18 +263,7 @@ def test_shopee_button_uses_approved_plan_for_global_only_publish(monkeypatch):
     assert body["platform"] == "SHOPEE_GLOBAL"
     assert body["target_count"] == 1
     assert body["successful_target_count"] == 1
-    assert calls == [
-        {
-            "match_key": "0959",
-            "region": "PH",
-            "dry_run": False,
-            "global_only": True,
-            "publish_shops": False,
-            "title_override": "Approved Shopee title",
-            "description_override": "Approved Shopee description",
-            "global_original_price_cny_override": 61.71,
-        }
-    ]
+    assert calls == [approved_facts]
 
 
 def test_platform_publish_error_redacts_json_style_credentials():
@@ -320,7 +326,7 @@ def test_ozon_button_uses_isolated_official_import_path(monkeypatch):
     }
     monkeypatch.setattr(
         product_server,
-        "_oneclick_approved_context",
+        "_platform_approved_context",
         lambda _data: (
             {
                 "payload": payload,
@@ -341,6 +347,30 @@ def test_ozon_button_uses_isolated_official_import_path(monkeypatch):
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("Ozon must not enter the shared/Miaoshou job")
         ),
+    )
+    approved_facts = {
+        "seller_sku": "0959",
+        "title": "Approved Russian Ozon title",
+        "size": (38.0, 85.0),
+        "package_cm": [38.0, 85.0, 0.1],
+        "weight_kg": 0.2,
+        "quantity": 1,
+        "source_category": {"id": "wall-decor", "name": "Wall decor"},
+        "price": 62,
+        "old_price": 81,
+        "images": [
+            "https://images.example/1.jpg",
+            "https://images.example/2.jpg",
+        ],
+    }
+    monkeypatch.setattr(
+        product_server,
+        "_approved_ozon_publish_facts",
+        lambda _payload: approved_facts,
+    )
+    monkeypatch.setattr(
+        "modules.ozon.target_scoped.read_existing_product",
+        lambda **_kwargs: {"checks": {}},
     )
     calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
@@ -387,6 +417,23 @@ def test_ozon_button_uses_isolated_official_import_path(monkeypatch):
                     "https://images.example/1.jpg",
                     "https://images.example/2.jpg",
                 ],
+                "approved_snapshot": {
+                    "seller_sku": "0959",
+                    "title": "Approved Russian Ozon title",
+                    "package_cm": [38.0, 85.0, 0.1],
+                    "weight_kg": 0.2,
+                    "quantity": 1,
+                    "price_cny": 62,
+                    "old_price_cny": 81,
+                    "images": [
+                        "https://images.example/1.jpg",
+                        "https://images.example/2.jpg",
+                    ],
+                    "source_category": {
+                        "id": "wall-decor",
+                        "name": "Wall decor",
+                    },
+                },
                 "process_images": False,
                 "wait_for_import": False,
                 "skip_rich_content": True,
@@ -400,7 +447,7 @@ def test_ozon_button_rejects_vendor_errors_even_when_result_says_ok(monkeypatch)
     context = {"payload": {}, "plan": {}, "store": object(), "dashboard": {}}
     monkeypatch.setattr(
         product_server,
-        "_oneclick_approved_context",
+        "_platform_approved_context",
         lambda _data: (context, None),
     )
     monkeypatch.setattr(
@@ -414,6 +461,10 @@ def test_ozon_button_rejects_vendor_errors_even_when_result_says_ok(monkeypatch)
             "old_price": 81,
             "images": ["https://images.example/1.jpg"],
         },
+    )
+    monkeypatch.setattr(
+        "modules.ozon.target_scoped.read_existing_product",
+        lambda **_kwargs: {"checks": {}},
     )
     monkeypatch.setattr(
         "modules.ozon.migrate_batch.migrate_one",

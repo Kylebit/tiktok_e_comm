@@ -87,7 +87,7 @@ def test_shopee_global_button_does_not_call_legacy_tiktok_alignment_publisher(
         "description": "Approved English description", "global_original_price_cny": 10.0,
     }
     legacy_called = []
-    monkeypatch.setattr(product_server, "_oneclick_approved_context", lambda _data: ({"payload": {}}, None))
+    monkeypatch.setattr(product_server, "_platform_approved_context", lambda _data: ({"payload": {}}, None))
     monkeypatch.setattr(product_server, "_approved_shopee_global_publish_facts", lambda _payload: facts)
     monkeypatch.setattr("modules.shopee.publish.publish_match_key", lambda *args, **kwargs: legacy_called.append((args, kwargs)) or {"ok": True})
     monkeypatch.setattr("modules.shopee.approved_global_publisher.publish_approved_global", lambda received: {"ok": received is facts})

@@ -1839,6 +1839,59 @@ def approved_tiktok_category_decisions(
     return result
 
 
+def _official_tiktok_draft_category_candidate(
+    post: Callable[[str, Mapping[str, object]], object],
+    *,
+    current: Mapping[str, object],
+    expected: dict[str, object],
+    shop_endpoint_id: object,
+) -> str:
+    """Resolve one site independently from its current official draft.
+
+    The product's main category is confirmed once with the product facts.
+    When that human-readable category has no local static TikTok ID, the
+    Miaoshou-created site draft is the site-specific candidate.  It is accepted
+    only after the official category-metadata endpoint recognizes the exact
+    site/category/shop tuple.  No result from another site is consulted.
+    """
+
+    raw_category_id = current.get("cid")
+    category_id = str(raw_category_id or "").strip()
+    site = str(expected.get("region") or "").strip().upper()
+    shop_id = str(shop_endpoint_id or "").strip()
+    if (
+        not category_id.isascii()
+        or not category_id.isdigit()
+        or int(category_id) <= 0
+        or not site
+        or not shop_id.isdigit()
+        or int(shop_id) <= 0
+    ):
+        raise MiaoshouOneClickPreDispatchError(
+            "TikTok site draft has no official category candidate"
+        )
+    response = post(
+        CATEGORY_METADATA_PATH,
+        {
+            "site": site,
+            "cid": int(category_id),
+            "shopIds": [int(shop_id)],
+        },
+    )
+    if not isinstance(response, Mapping) or not _accepted(response):
+        raise MiaoshouOneClickPreDispatchError(
+            "TikTok official category candidate was rejected"
+        )
+    data = response.get("data")
+    metadata = data.get("categoryMetadata") if isinstance(data, Mapping) else None
+    if not isinstance(metadata, Mapping):
+        raise MiaoshouOneClickPreDispatchError(
+            "TikTok official category candidate is unavailable"
+        )
+    expected["category_id"] = category_id
+    return category_id
+
+
 def _approved_site(
     payload: Mapping[str, object],
     *,
@@ -2111,14 +2164,6 @@ def _prepare_selected_platform_collectbox(
             expected["common_detail_id"] = common_id
         except Exception:
             fail("approved platform draft is invalid")
-        if platform == "tiktok" and expected.get("category_id") is None:
-            return primary_detail_id, _target_result(
-                target,
-                "FAILED",
-                error_code="category_not_approved",
-                detail="approved site category evidence is unavailable",
-            )
-
         detail_id = primary_detail_id
         if platform == "tiktok" and index > 0:
             create_class = (
@@ -2197,6 +2242,23 @@ def _prepare_selected_platform_collectbox(
             if platform == "tiktok":
                 _verify_tiktok_detail_source_identity(detail, expected)
             _verify_site_variants(detail, expected)
+            if platform == "tiktok" and expected.get("category_id") is None:
+                try:
+                    _official_tiktok_draft_category_candidate(
+                        client,
+                        current=detail,
+                        expected=expected,
+                        shop_endpoint_id=shop_endpoint_id,
+                    )
+                except MiaoshouOneClickPreDispatchError:
+                    return detail_id, _target_result(
+                        target,
+                        "FAILED",
+                        error_code="official_category_candidate_unavailable",
+                        detail=(
+                            "this site has no exact official category candidate"
+                        ),
+                    )
             warehouse_id = (
                 _tiktok_warehouse_id(client, detail, expected)
                 if platform == "tiktok"

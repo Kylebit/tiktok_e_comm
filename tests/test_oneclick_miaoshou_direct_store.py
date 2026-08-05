@@ -2304,8 +2304,8 @@ def test_collectbox_default_web_business_rejection_is_known_and_continues(
     assert all("save_move_collect_task" not in path for path, _ in calls)
 
 
-def test_collectbox_tiktok_live_six_site_missing_category_approval_is_local():
-    """Missing approvals fail every site without aborting the whole batch."""
+def test_collectbox_tiktok_live_six_site_auto_maps_each_official_draft_category():
+    """Each site may adopt its own exact official draft candidate."""
 
     targets = LIVE_SIX_TIKTOK_TARGETS
     result, calls, web_calls, save_counts, _ = _run_live_six_site_tiktok_drift(
@@ -2314,18 +2314,28 @@ def test_collectbox_tiktok_live_six_site_missing_category_approval_is_local():
     )
 
     assert tuple(row["target_label"] for row in result["target_results"]) == targets
-    assert save_counts == {target: 0 for target in targets}
-    assert calls == []
-    assert {
-        target: (row["status"], row["error_code"])
-        for target, row in (
-            (row["target_label"], row) for row in result["target_results"]
-        )
-    } == {
-        target: ("FAILED", "category_not_approved") for target in targets
+    outcomes = {
+        row["target_label"]: (row["status"], row["error_code"])
+        for row in result["target_results"]
     }
+    for target in ("tiktok:LH_PH", "tiktok:LH_MY", "tiktok:LH_TH", "tiktok:MX"):
+        assert outcomes[target][0] in {"SUCCEEDED", "REPAIRED_SUCCEEDED"}
+        assert outcomes[target][1] is None
+        assert save_counts[target] >= 1
+    for target in ("tiktok:LH_VN", "tiktok:GB"):
+        assert outcomes[target] == (
+            "FAILED",
+            "official_category_candidate_unavailable",
+        )
+        assert save_counts[target] == 0
+    metadata_sites = {
+        body["site"]
+        for path, body in calls
+        if path == miaoshou.CATEGORY_METADATA_PATH
+    }
+    assert metadata_sites == {"PH", "MY", "TH", "MX"}
     assert all("save_move_collect_task" not in path for path, _ in calls)
-    assert web_calls == []
+    assert {body["site"] for _path, body in web_calls} <= {"MX"}
 
 
 def test_shopee_simple_description_preserves_approved_cnsc_master_text():

@@ -791,7 +791,7 @@ def test_legacy_tiktok_category_backfill_rejects_present_or_business_drift():
     )
 
 
-def test_release_plan_unmapped_product_category_fails_closed_without_guessing():
+def test_release_plan_unmapped_product_category_is_deferred_to_each_tiktok_target():
     dashboard = _six_tiktok_category_dashboard("未映射的新商品类目")
 
     payload, blockers = product_server._release_plan_payload_from_dashboard(
@@ -799,9 +799,7 @@ def test_release_plan_unmapped_product_category_fails_closed_without_guessing():
     )
 
     assert "approved_tiktok_category_decisions" not in payload
-    assert blockers == [
-        "BLOCKED_TIKTOK_CATEGORY: approved product category has no mapping"
-    ]
+    assert blockers == []
 
 
 def _single_shopee_dashboard() -> dict:

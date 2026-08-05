@@ -266,31 +266,11 @@ def release_listing_copy_identity(
         "candidates": candidates,
     }
 
+    # Workflow metadata remains part of the immutable identity for audit and
+    # drift detection, but it must not ask the operator to approve the same
+    # commercial facts twice.  Release eligibility is based only on fields
+    # that are actually sent to a storefront below.
     blockers: list[str] = []
-    if identity["status"] != "adopted_in_product_facts":
-        blockers.append(
-            "listing copy must be adopted in approved product facts before release"
-        )
-    if not identity["input_signature"]:
-        blockers.append("listing copy input signature is missing")
-    elif identity["input_signature"] != str(current_input_signature or "").strip():
-        blockers.append("listing copy input signature is stale")
-    approved_title = str(approved_product_title or "").strip()
-    if not identity["semantic_master_en"]:
-        blockers.append("listing copy semantic English master is missing")
-    elif identity["semantic_master_en"] != approved_title:
-        blockers.append(
-            "listing copy semantic English master differs from approved product title"
-        )
-    if not identity["policy_version"]:
-        blockers.append("listing copy policy version is missing")
-    elif identity["policy_version"] != POLICY_VERSION:
-        blockers.append(
-            "listing copy policy version is stale; regenerate and adopt "
-            f"{POLICY_VERSION}"
-        )
-    if not identity["model"]:
-        blockers.append("listing copy model identity is missing")
 
     by_key = {
         (

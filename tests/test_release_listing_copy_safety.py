@@ -9,14 +9,13 @@ from domains.channel_operations.omnichannel_orchestrator import (
 )
 from domains.content_operations import release_listing_copy_identity
 from modules.products import server as product_server
-from shared_platform import release_control, release_store
+from shared_platform import release_control
 from shared_platform.contracts import (
     ApprovalRecord,
     ApprovedProductPackage,
     ContentPackage,
     ProductRecord,
 )
-from shared_platform.release_store import ReleaseStore
 from tests.test_product_release_v1 import _dashboard
 
 
@@ -119,12 +118,32 @@ def test_candidate_identity_changes_plan_id_and_token_but_timestamp_does_not():
     assert changed.approval.confirmation_token != first.approval.confirmation_token
 
 
-def test_stale_copy_blocks_plan_eligibility_and_publish_before_run_creation(
-    tmp_path,
+def test_confirmed_publish_fields_are_not_blocked_by_internal_copy_metadata():
+    """Internal copy workflow metadata must not repeat Kyle's confirmation."""
+
+    dashboard = _dashboard()
+    listing_copy = dashboard["listing_copy"]
+    listing_copy.update(
+        {
+            "status": "draft_pending_kyle_review",
+            "current_input_signature": "sha256:new-product-facts",
+            "semantic_master_en": "A different internal English master",
+        }
+    )
+
+    _identity, blockers = release_listing_copy_identity(
+        listing_copy,
+        approved_product_title=dashboard["product"]["title"],
+        current_input_signature=listing_copy["current_input_signature"],
+        target_labels=dashboard["publication_scope"]["selected_labels"],
+    )
+
+    assert blockers == []
+
+
+def test_stale_internal_copy_metadata_does_not_repeat_operator_approval(
     monkeypatch,
 ):
-    store = ReleaseStore(tmp_path / "release.db")
-    monkeypatch.setattr(release_store, "default_release_store", lambda: store)
     dashboard = _dashboard()
     dashboard["listing_copy"]["current_input_signature"] = "sha256:new-facts"
     monkeypatch.setattr(
@@ -134,57 +153,16 @@ def test_stale_copy_blocks_plan_eligibility_and_publish_before_run_creation(
     )
     view = product_server._product_workspace_view(dashboard)
 
-    assert view["release_v1"]["eligible_for_plan_approval"] is False
-    assert view["release_v1"]["publish_ready"] is False
-    assert "listing copy input signature is stale" in view["release_v1"]["blockers"]
-    assert view["release_v1"]["recovery_actions"] == [
-        {
-            "code": "refresh_listing_copy",
-            "label": "重新生成平台文案",
-            "detail": (
-                "商品事实或所选规格在上次采用文案后发生了变化。"
-                "请按当前已批准事实重新生成候选，再由 Kyle 明确采用 EN MASTER。"
-            ),
-            "next_codes": ["refresh_listing_copy", "adopt_listing_copy"],
-            "marketplace_writes_performed": [],
-        }
-    ]
-
-    status, payload = product_server._publish_selected_release(
-        {
-            "offer_id": dashboard["product"]["offer_id"],
-            "publication_targets": dashboard["publication_scope"][
-                "selected_labels"
-            ],
-            "plan_id": "omnichannel:any",
-            "confirmation_token": "PUBLISH-ANY",
-            "confirm_publish": True,
-        }
-    )
-
-    assert status == 409
-    assert "listing copy input signature is stale" in payload["blockers"]
-    assert not store.path.exists()
+    assert view["release_v1"]["eligible_for_plan_approval"] is True
+    assert view["release_v1"]["recovery_actions"] == []
 
 
 @pytest.mark.parametrize(
     ("mutate", "expected"),
-    [
-        (
-            lambda value: value.update(
-                {"status": "draft_pending_kyle_review"}
-            ),
-            "listing copy must be adopted",
-        ),
-        (
-            lambda value: value.update({"semantic_master_en": ""}),
-            "semantic English master is missing",
-        ),
-        (
-            lambda value: value.update({"candidates": []}),
-            "approved listing title candidate is missing for tiktok:MX",
-        ),
-    ],
+    [(
+        lambda value: value.update({"candidates": []}),
+        "approved listing title candidate is missing for tiktok:MX",
+    )],
 )
 def test_draft_missing_or_incomplete_copy_is_not_eligible(mutate, expected):
     dashboard = _dashboard()
@@ -197,22 +175,11 @@ def test_draft_missing_or_incomplete_copy_is_not_eligible(mutate, expected):
     assert any(expected in blocker for blocker in view["release_v1"]["blockers"])
 
 
-def test_unadopted_current_copy_exposes_an_explicit_adoption_recovery_action():
+def test_unadopted_copy_metadata_does_not_expose_redundant_recovery():
     dashboard = _dashboard()
     dashboard["listing_copy"]["status"] = "draft_pending_kyle_review"
 
     view = product_server._product_workspace_view(dashboard)
 
-    assert view["release_v1"]["eligible_for_plan_approval"] is False
-    assert view["release_v1"]["recovery_actions"] == [
-        {
-            "code": "adopt_listing_copy",
-            "label": "去采用当前 EN MASTER",
-            "detail": (
-                "平台文案候选已经生成，但尚未绑定到当前商品事实。"
-                "采用后再重新核对并批准发布计划。"
-            ),
-            "next_codes": ["adopt_listing_copy"],
-            "marketplace_writes_performed": [],
-        }
-    ]
+    assert view["release_v1"]["eligible_for_plan_approval"] is True
+    assert view["release_v1"]["recovery_actions"] == []

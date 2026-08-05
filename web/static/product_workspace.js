@@ -5330,7 +5330,13 @@
         "建议连续 SKU",
         (skuGovernance.suggested_sku_range || []).join(" → ") || "—",
       ],
-      ["商品类目", category || "—"],
+      ["主站点推荐类目", category || "—"],
+      [
+        "类目确认",
+        product.actual_product_approved
+          ? "已随商品事实确认"
+          : "批准商品事实时一并确认",
+      ],
       ["目标站点", (product.selected_sites || []).map((site) => siteNames[site] || site).join(" · ") || "—"],
       [
         "当前规格价格证据",

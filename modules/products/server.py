@@ -2391,11 +2391,7 @@ def _release_plan_payload_from_dashboard(
             payload["product_facts"].get("category"),
             targets=tiktok_targets,
         )
-        if tiktok_category_decisions is None:
-            blockers.append(
-                "BLOCKED_TIKTOK_CATEGORY: approved product category has no mapping"
-            )
-        else:
+        if tiktok_category_decisions is not None:
             payload["approved_tiktok_category_decisions"] = (
                 tiktok_category_decisions
             )

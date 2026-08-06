@@ -9,10 +9,10 @@ Keep TikTok, Shopee, and Ozon execution independent. Never use one platform's se
 
 ## Workflow
 
-1. Resolve one platform and one closed reporting period.
-2. Read [references/report-contract.md](references/report-contract.md).
-3. When obtaining current platform data, read the matching section in [references/platform-sources.md](references/platform-sources.md).
-4. Pull only official settled/released finance records. Reject pending, processing, cancelled, delivered-but-unsettled, or unknown states.
+1. Accept an explicit platform, site, inclusive start date, and inclusive end date. Confirm the period is closed in the site's reporting timezone.
+2. Read [references/report-contract.md](references/report-contract.md) and the matching platform section in [references/platform-sources.md](references/platform-sources.md).
+3. Pull and save settlement evidence before doing any profit calculation. Run `scripts/pull_settlement_evidence.py --platform PLATFORM --site SITE --start YYYY-MM-DD --end YYYY-MM-DD --project-root ROOT --output OUTPUT`. Pull only official settled/released finance records; reject pending, processing, cancelled, delivered-but-unsettled, or unknown states.
+4. Review the saved `settlement-evidence/v1` JSON and HTML with the user. Verify period/timezone, source counts, financial component names, detail failures, snapshot checksum, redaction, and `external_writes_performed=[]`. If the user requested only this first stage, stop here.
 5. Keep API results in memory or an explicitly named redacted snapshot. Never run a legacy wrapper that cleans directories or overwrites CSV/HTML during a report preview.
 6. Build a versioned cost snapshot keyed by canonical seller SKU and one immutable FX snapshot for the whole run.
 7. For TikTok/Shopee weekly reports, default the advertising fraction to `0.22` (22%) unless the user supplies an explicit platform/region override. Apply it to buyer-paid product amount after seller discount, excluding buyer shipping. Preserve the rate and basis as an estimate in every report; never label it as actual spend.
@@ -25,6 +25,7 @@ Keep TikTok, Shopee, and Ozon execution independent. Never use one platform's se
 ## Safety gates
 
 - Treat platform reads as external reads, never writes. Require `external_writes_performed=[]` from an injected live adapter receipt.
+- Never refresh or exchange credentials during a report run. Save a blocked receipt when the current read credential is missing or expired.
 - Do not persist previews, mutate production databases, refresh credentials, send notifications, retry payments, or modify platform orders.
 - Preserve raw fee names and normalized codes. Subtract only costs not already included in net settlement.
 - Represent missing money as a quality issue, never numeric zero.

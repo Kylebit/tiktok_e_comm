@@ -15,3 +15,7 @@ Use finance transaction list and group operations by posting. Include only posti
 ## Live adapter receipt
 
 Require a redacted receipt containing platform, period, snapshot ID/checksum, fetched-at time, source row count, normalized settled row count, excluded unsettled count, rejected count, API cursor/page summary, and `external_writes_performed=[]`. Never include credentials or raw API bodies.
+
+The stage-1 artifact schema is `settlement-evidence/v1`. A `ready` evidence artifact means the official settlement read and redacted normalization completed; it does not mean profit is ready. A missing/expired credential or API failure must produce a `blocked` receipt rather than a cached report presented as current.
+
+Preserve every numeric settlement component with its source code. Until a platform-specific reconciliation contract classifies the component, set `included_in_net_settlement` to `unknown`; never infer fee arithmetic from the component name alone.

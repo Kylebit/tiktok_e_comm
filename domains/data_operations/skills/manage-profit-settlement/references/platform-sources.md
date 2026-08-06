@@ -12,6 +12,8 @@ TikTok Finance statement query bounds are inclusive UTC calendar days, matching 
 
 Use payment escrow list filtered by `escrow_release_time`, then escrow detail. Normalize only released escrow rows to settled. Preserve the release timestamp, payout/escrow amount, item quantity, item price, platform/service/commission/shipping/refund components, and item allocation method. Do not treat an ordinary completed order as settled without released escrow evidence.
 
+Shopee may release many older orders in one settlement batch, so a weekly report can legitimately contain only one release date. Treat this as valid only when every included timestamp comes directly from `escrow_release_time`, remains inside the requested period, and the evidence reports the parent-order and expanded item-line counts. Never replace the release date with order creation, completion, API request, or pull time merely to spread rows across the week.
+
 ## Ozon
 
 Use finance transaction list and group operations by posting. Include only postings satisfying the existing official settled predicate. Preserve every operation/service line and whether it contributes to net settlement. Do not include pending postings merely because fulfillment or delivery completed.

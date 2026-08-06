@@ -103,7 +103,7 @@ def build_weekly_report(
             "advertising":{"mode":"estimated_rate","rate":rate_value,"basis":"buyer_paid_product_amount","basis_amount_local":paid,"amount_local":ad_local,"amount_cny":ad_cny},
             "fee_items":fees,"external_costs_cny":external,"profit_cny":settlement_cny-product_cost-ad_cny-external,"source_snapshot_id":_text(row.get("source_snapshot_id")),
         })
-    lines.sort(key=lambda item:(item["identity"]["order_id"],item["identity"]["order_line_id"]))
+    lines.sort(key=_line_settlement_sort_key)
     source_checksum=_checksum(sorted((_ready(row) for row in source_rows),key=_canonical));fingerprint=_checksum({"schema":SCHEMA_VERSION,"period_kind":"weekly","period":[start.isoformat(),end.isoformat()],"source":source_checksum,"costs":costs.snapshot_id,"fx":fx.snapshot_id,"ad_rate":str(rate_value),"code_version":code_version})
     return ShopeeProfitReport(report_id=f"shopee-profit-{fingerprint[:16]}",idempotency_key=f"{SCHEMA_VERSION}:{fingerprint}",calculation_kind="realized_settlement_with_estimated_ads",period_kind="weekly",period={"start":start.isoformat(),"end":end.isoformat(),"timezone":"source_local_date"},status="ready" if not issues else "needs_review",totals=_totals(lines),order_lines=tuple(lines),quality_issues=tuple(issues),source={"input_checksum":source_checksum,"raw_row_count":len(source_rows),"calculated_row_count":len(lines),"rejected_row_count":rejected,"out_of_period_row_count":out_of_period,"unsettled_row_count":unsettled,"cost_snapshot":costs.payload(),"fx_snapshot":fx.payload()},advertising={"mode":"estimated_rate","rate":rate_value,"basis":"buyer_paid_product_amount"},generated_at=generated_at or datetime.now(timezone.utc),code_version=code_version)
 
@@ -155,7 +155,7 @@ def build_monthly_report(
         if fees is None:
             rejected += 1; continue
         prepared.append({"row": row, "record_id": record_id, "occurred": _datetime(row.get("occurred_at")), "settled_at": settled_at, "sku": sku, "cost": cost, "currency": currency, "fx_rate": fx_rate, "quantity": quantity, "settlement": settlement, "paid": paid, "paid_cny": paid * fx_rate, "fees": fees, "external": external})
-    prepared.sort(key=lambda item: (_text(item["row"].get("order_id")), item["record_id"]))
+    prepared.sort(key=_prepared_settlement_sort_key)
 
     advertising = _advertising(actual_advertising, issues)
     allocations = _allocate(advertising.get("total_cny") if advertising else None, prepared)
@@ -248,6 +248,21 @@ def _datetime(value):
     try: parsed=datetime.fromisoformat(text.replace("Z","+00:00"))
     except ValueError:return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _prepared_settlement_sort_key(item):
+    settled_at = item["settled_at"]
+    if settled_at.tzinfo is None:
+        settled_at = settled_at.replace(tzinfo=timezone.utc)
+    return (-settled_at.timestamp(), _text(item["row"].get("order_id")), _text(item.get("record_id")))
+
+
+def _line_settlement_sort_key(item):
+    settled_at = item["settled_at"]
+    if settled_at.tzinfo is None:
+        settled_at = settled_at.replace(tzinfo=timezone.utc)
+    identity = item["identity"]
+    return (-settled_at.timestamp(), _text(identity.get("order_id")), _text(identity.get("order_line_id")))
 
 
 def _decimal(value):

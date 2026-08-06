@@ -34,7 +34,7 @@ Rows rejected for missing cost, SKU mapping, quantity, FX, settlement, or advert
 
 Weekly TikTok/Shopee reports use `realized_settlement_with_estimated_ads`. Their default advertising fraction is `0.22`; an explicit platform/region input may override it. Monthly TikTok/Shopee reports use `realized_settlement_with_actual_ads`. Current Ozon weekly and monthly V1 reports use `realized_settlement_with_estimated_ads` with fixed `0.22` policy. Every estimated payload must retain both the rate and buyer-paid product basis so it cannot be confused with actual advertising spend.
 
-HTML is a display projection: show every platform fee component as an independent column and format all price/cost values to exactly two decimal places. JSON remains the audit artifact and retains full Decimal precision.
+Order lines are sorted by settlement timestamp descending, with order ID and order-line ID as deterministic ascending tie-breakers. HTML is a display projection: show every platform fee component as an independent column and format all price/cost values to exactly two decimal places. JSON remains the audit artifact and retains full Decimal precision.
 
 ## Knowledge
 

@@ -18,7 +18,9 @@ Use finance transaction list and group operations by posting. Include only posti
 
 For local credential discovery, check `config/ozon.local.json`, then `modules/ozon/legacy_webapp/data/credentials.local.json`; inject the credential in memory and never copy it. Re-filter returned operations by the requested inclusive business-date range because the finance endpoint can return boundary rows outside the requested local dates.
 
-Finance transaction items may expose only an Ozon platform SKU and omit quantity. For profit calculation, resolve the platform SKU to the authoritative `offer_id`/seller SKU with the read-only `/v3/product/info/list` endpoint and resolve fulfilled quantity with `/v3/posting/fbs/get`. Never infer quantity as one. Record requested/mapped SKU counts, requested postings, quantity keys, and typed failures; retain no raw API response. These reads do not satisfy the separate requirement for actual Ozon advertising evidence.
+Finance transaction items may expose only an Ozon platform SKU and omit quantity. For profit calculation, resolve the platform SKU to the authoritative `offer_id`/seller SKU with the read-only `/v3/product/info/list` endpoint and resolve fulfilled quantity with `/v3/posting/fbs/get`. Never infer quantity as one. Record requested/mapped SKU counts, requested postings, quantity keys, and typed failures; retain no raw API response.
+
+For the current operator-approved Ozon V1 estimate, sum positive `OperationAgentDeliveredToCustomer` components per posting as buyer-paid product advertising basis and apply fixed rate `0.22`. Missing sale components remain blocking. Preserve the policy version and never describe the result as actual advertising spend.
 
 ## Live adapter receipt
 

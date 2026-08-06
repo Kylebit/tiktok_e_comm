@@ -15,6 +15,7 @@ from domains.data_operations.profit_settlement.shared_inputs import CostSnapshot
 
 PLATFORM = "ozon"
 SCHEMA_VERSION = "profit-report/ozon/v1"
+OZON_AD_RATE = Decimal("0.22")
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,7 @@ class OzonProfitReport:
     order_lines: tuple[Mapping[str, Any], ...]
     quality_issues: tuple[OzonQualityIssue, ...]
     source: Mapping[str, Any]
+    advertising: Mapping[str, Any]
     generated_at: datetime
     code_version: str
 
@@ -54,6 +56,7 @@ class OzonProfitReport:
             "order_lines": self.order_lines,
             "quality_issues": self.quality_issues,
             "source": self.source,
+            "advertising": self.advertising,
             "generated_at": self.generated_at,
             "code_version": self.code_version,
         })
@@ -91,7 +94,7 @@ def build_weekly_report(
     generated_at: datetime | None = None,
     code_version: str = "unknown",
 ) -> OzonProfitReport:
-    """Build an Ozon week using actual order advertising only."""
+    """Build an Ozon week using the operator-approved fixed advertising rate."""
     return _build_report(
         rows,
         period_start=period_start,
@@ -115,6 +118,7 @@ def _build_report(
     generated_at: datetime | None,
     code_version: str,
 ) -> OzonProfitReport:
+    rate_value = OZON_AD_RATE
     start, end = _period(period_start, period_end)
     source_rows = [dict(row) for row in rows]
     issues: list[OzonQualityIssue] = []
@@ -132,14 +136,14 @@ def _build_report(
             out_of_period += 1; continue
         sku = _text(row.get("canonical_sku")); cost = costs.get(sku)
         currency = _text(row.get("currency")).upper(); rate = fx.get(currency)
-        quantity = _decimal(row.get("quantity")); settlement = _decimal(row.get("net_settlement_amount")); paid = _decimal(row.get("buyer_paid_product_amount")); ads = _decimal(row.get("actual_ad_cost_cny"))
+        quantity = _decimal(row.get("quantity")); settlement = _decimal(row.get("net_settlement_amount")); paid = _decimal(row.get("buyer_paid_product_amount"))
         invalid = False
         for missing, field, code in (
             (not sku or cost is None, "canonical_sku", "missing_cost"),
             (not currency or rate is None, "currency", "missing_fx"),
             (quantity is None or quantity <= 0, "quantity", "invalid_quantity"),
             (settlement is None, "net_settlement_amount", "missing_settlement"),
-            (ads is None or ads < 0, "actual_ad_cost_cny", "missing_actual_advertising"),
+            (paid is None or paid < 0, "buyer_paid_product_amount", "missing_ad_basis"),
         ):
             if missing: issues.append(_issue(code, record_id, field)); invalid = True
         if invalid:
@@ -149,7 +153,7 @@ def _build_report(
         fees, external = _fees(row.get("fee_items"), currency, fx, issues, record_id)
         if fees is None:
             rejected += 1; continue
-        settlement_cny=settlement*rate; product_cost=cost.unit_cost_cny*quantity
+        settlement_cny=settlement*rate; product_cost=cost.unit_cost_cny*quantity; ad_local=paid*rate_value; ad_cny=ad_local*rate
         lines.append({
             "identity":{"platform":PLATFORM,"shop_id":_text(row.get("shop_id")),"region":_text(row.get("region")).upper(),"order_id":_text(row.get("order_id")),"order_line_id":record_id},
             "product":{"platform_sku":_text(row.get("platform_sku")),"seller_sku":_text(row.get("seller_sku")),"canonical_sku":sku,"product_name":_text(row.get("product_name")),"variant_name":_text(row.get("variant_name")),"image_url":_text(row.get("image_url")),"quantity":quantity,"unit_weight_g":_decimal(row.get("unit_weight_g")),"package_weight_g":_decimal(row.get("package_weight_g")),"billable_weight_g":_decimal(row.get("billable_weight_g")),"weight_source":_text(row.get("weight_source"))},
@@ -157,16 +161,16 @@ def _build_report(
             "settlement":{"currency":currency,"net_amount_local":settlement,"net_amount_cny":settlement_cny,"buyer_paid_product_amount_local":paid},
             "fx":{"rate_cny_per_local":rate,**fx.payload()},
             "cost":{"unit_cost_cny":cost.unit_cost_cny,"quantity":quantity,"total_cny":product_cost,"version":cost.version,"effective_at":cost.effective_at,"source":cost.source,"snapshot_id":costs.snapshot_id},
-            "advertising":{"mode":"actual_order_ads","amount_cny":ads,"source":_text(row.get("ad_source")) or "ozon_finance_row","as_of":_text(row.get("ad_as_of")) or _text(row.get("settled_at")),"snapshot_id":_text(row.get("ad_snapshot_id")) or _text(row.get("source_snapshot_id"))},
-            "fee_items":fees,"external_costs_cny":external,"profit_cny":settlement_cny-product_cost-ads-external,"source_snapshot_id":_text(row.get("source_snapshot_id")),
+            "advertising":{"mode":"estimated_rate","rate":rate_value,"basis":"buyer_paid_product_amount","basis_amount_local":paid,"amount_local":ad_local,"amount_cny":ad_cny,"policy_version":"ozon-fixed-ad-rate/v1"},
+            "fee_items":fees,"external_costs_cny":external,"profit_cny":settlement_cny-product_cost-ad_cny-external,"source_snapshot_id":_text(row.get("source_snapshot_id")),
         })
     lines.sort(key=lambda item:(item["identity"]["order_id"],item["identity"]["order_line_id"]))
     totals=_totals(lines); source_checksum=_checksum(sorted((_ready(row) for row in source_rows),key=_canonical))
-    fingerprint=_checksum({"schema":SCHEMA_VERSION,"period_kind":period_kind,"period":[start.isoformat(),end.isoformat()],"source":source_checksum,"costs":costs.snapshot_id,"fx":fx.snapshot_id,"code_version":code_version})
+    fingerprint=_checksum({"schema":SCHEMA_VERSION,"period_kind":period_kind,"period":[start.isoformat(),end.isoformat()],"source":source_checksum,"costs":costs.snapshot_id,"fx":fx.snapshot_id,"ad_rate":str(rate_value),"code_version":code_version})
     return OzonProfitReport(
-        report_id=f"ozon-profit-{fingerprint[:16]}",idempotency_key=f"{SCHEMA_VERSION}:{fingerprint}",calculation_kind="realized_settlement_with_actual_ads",period_kind=period_kind,
+        report_id=f"ozon-profit-{fingerprint[:16]}",idempotency_key=f"{SCHEMA_VERSION}:{fingerprint}",calculation_kind="realized_settlement_with_estimated_ads",period_kind=period_kind,
         period={"start":start.isoformat(),"end":end.isoformat(),"timezone":"source_local_date"},status="ready" if not issues else "needs_review",totals=totals,order_lines=tuple(lines),quality_issues=tuple(issues),
-        source={"input_checksum":source_checksum,"raw_row_count":len(source_rows),"calculated_row_count":len(lines),"rejected_row_count":rejected,"out_of_period_row_count":out_of_period,"unsettled_row_count":unsettled,"cost_snapshot":costs.payload(),"fx_snapshot":fx.payload()},
+        source={"input_checksum":source_checksum,"raw_row_count":len(source_rows),"calculated_row_count":len(lines),"rejected_row_count":rejected,"out_of_period_row_count":out_of_period,"unsettled_row_count":unsettled,"cost_snapshot":costs.payload(),"fx_snapshot":fx.payload()},advertising={"mode":"estimated_rate","rate":rate_value,"basis":"buyer_paid_product_amount","policy_version":"ozon-fixed-ad-rate/v1"},
         generated_at=generated_at or datetime.now(timezone.utc),code_version=code_version,
     )
 

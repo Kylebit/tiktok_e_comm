@@ -25,6 +25,7 @@ class CatalogQualityIssue:
 class LocalCatalogSnapshot:
     seller_sku_by_platform_sku: Mapping[str, str]
     costs_by_sku: Mapping[str, Decimal]
+    cost_candidates_by_sku: Mapping[str, tuple[Decimal, ...]]
     product_by_platform_sku: Mapping[str, Mapping[str, Any]]
     product_by_seller_sku: Mapping[str, Mapping[str, Any]]
     weight_by_seller_sku: Mapping[str, Mapping[str, Any]]
@@ -136,7 +137,10 @@ def load_local_catalog(database_path: str | Path) -> LocalCatalogSnapshot:
     }
     digest = sha256(json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     effective_at = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
-    return LocalCatalogSnapshot(mapping, costs, by_platform, by_seller, weight_by_seller, f"shop-db-catalog:{digest}", effective_at, tuple(issues))
+    candidates = {
+        sku: tuple(sorted(values)) for sku, values in sorted(cost_candidates.items())
+    }
+    return LocalCatalogSnapshot(mapping, costs, candidates, by_platform, by_seller, weight_by_seller, f"shop-db-catalog:{digest}", effective_at, tuple(issues))
 
 
 def enrich_settlement_row(row: Mapping[str, Any], catalog: LocalCatalogSnapshot) -> dict[str, Any]:

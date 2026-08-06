@@ -111,12 +111,13 @@ def adapt_settlement_evidence(
         buyer_paid = (
             _shopee_product_total(record)
             if platform == "shopee"
+            else _ozon_product_total(record)
+            if platform == "ozon"
             else _decimal(record.get("buyer_total_amount"))
         )
         if buyer_paid is None:
             buyer_paid = Decimal("0")
-            if platform in {"tiktok", "shopee"}:
-                issues.append(_issue("missing_ad_basis", record_id, "buyer_total_amount"))
+            issues.append(_issue("missing_ad_basis", record_id, "buyer_paid_product_amount"))
 
         weights, allocation_basis = _allocation_weights(platform, items, record_id, issues, quantity_overrides)
         settlement_allocations = _allocate(amount, weights)
@@ -253,6 +254,19 @@ def _shopee_product_total(record):
         return None
     product_total = buyer_total - shipping
     return product_total if product_total >= 0 else None
+
+
+def _ozon_product_total(record):
+    values = []
+    for component in record.get("financial_components") or []:
+        if not isinstance(component, Mapping):
+            continue
+        if _text(component.get("code")) != "OperationAgentDeliveredToCustomer":
+            continue
+        amount = _decimal(component.get("amount"))
+        if amount is not None and amount > 0:
+            values.append(amount)
+    return sum(values, Decimal("0")) if values else None
 
 
 def _allocate(total: Decimal, weights: Sequence[Decimal]) -> list[Decimal]:

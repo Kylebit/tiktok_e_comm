@@ -24,6 +24,10 @@ from domains.data_operations.profit_settlement.local_catalog import (
     enrich_settlement_row,
     load_local_catalog,
 )
+from domains.data_operations.profit_settlement.cost_policy import (
+    POLICY_VERSION,
+    resolve_temporary_cost_policy,
+)
 from domains.data_operations.profit_settlement.settlement_evidence_adapter import (
     adapt_settlement_evidence,
 )
@@ -584,7 +588,7 @@ def test_stage_two_rejects_evidence_that_claims_external_writes():
     assert {issue.code for issue in result.issues} == {"external_write_claimed"}
 
 
-def test_stage_two_bundle_keeps_platforms_independent_and_ozon_fails_closed_on_ads():
+def test_stage_two_bundle_keeps_platforms_independent_with_fixed_22_percent_ozon_ads():
     def evidence(platform, site, source_sku):
         item_key = "platform_sku" if platform != "shopee" else "seller_sku"
         return {
@@ -604,7 +608,7 @@ def test_stage_two_bundle_keeps_platforms_independent_and_ozon_fails_closed_on_a
                 "net_settlement_amount": "100",
                 "buyer_total_amount": "120",
                 "items": [{item_key: source_sku, "quantity": "1", "discounted_price": "120"}],
-                "financial_components": [{"code": "fee", "amount": "-2"}, {"code": "buyer_paid_shipping_fee", "amount": "0"}],
+                "financial_components": ([{"code": "OperationAgentDeliveredToCustomer", "amount": "120"}] if platform == "ozon" else [{"code": "fee", "amount": "-2"}, {"code": "buyer_paid_shipping_fee", "amount": "0"}]),
             }],
         }
 
@@ -625,16 +629,23 @@ def test_stage_two_bundle_keeps_platforms_independent_and_ozon_fails_closed_on_a
             {"THB": "0.2", "RUB": "0.08"}, source="fixture-fx", as_of="2026-08-03"
         ),
         seller_sku_by_ozon_sku={"ozon-1": "1"},
+        ad_rate=Decimal("0.15"),
         generated_at=NOW,
         code_version="stage-two-test",
     )
 
-    assert bundle["status"] == "needs_review"
+    assert bundle["status"] == "ready"
     assert bundle["reports"]["tiktok"]["status"] == "ready"
     assert bundle["reports"]["shopee"]["status"] == "ready"
-    assert bundle["reports"]["ozon"]["status"] == "needs_review"
-    assert bundle["reports"]["ozon"]["report"]["order_lines"] == []
-    assert {item["code"] for item in bundle["reports"]["ozon"]["report"]["quality_issues"]} == {"missing_actual_advertising"}
+    assert bundle["reports"]["ozon"]["status"] == "ready"
+    assert bundle["reports"]["ozon"]["report"]["order_lines"][0]["advertising"] == {
+        "mode": "estimated_rate", "rate": "0.22", "basis": "buyer_paid_product_amount",
+        "basis_amount_local": "120", "amount_local": "26.40", "amount_cny": "2.1120",
+        "policy_version": "ozon-fixed-ad-rate/v1",
+    }
+    assert bundle["reports"]["tiktok"]["report"]["order_lines"][0]["advertising"]["rate"] == "0.15"
+    assert bundle["reports"]["shopee"]["report"]["order_lines"][0]["advertising"]["rate"] == "0.15"
+    assert bundle["advertising"]["ozon"]["rate"] == "0.22"
     assert bundle["external_writes_performed"] == []
 
 
@@ -643,7 +654,7 @@ def test_ozon_read_enrichment_supplies_mapping_and_quantity_without_inference():
         "schema_version": "settlement-evidence/v1", "status": "ready", "platform": "ozon", "site": "RU",
         "snapshot_id": "ozon-settlement:fixture", "checksum": "fixture", "net_settlement_total_local": "10",
         "receipt": {"external_writes_performed": []},
-        "orders": [{"order_id": "posting-1", "transaction_type": "Order", "settled_at": "2026-07-27T00:00:00+03:00", "currency": "RUB", "net_settlement_amount": "10", "buyer_total_amount": "12", "items": [{"platform_sku": "ozon-1"}], "financial_components": []}],
+        "orders": [{"order_id": "posting-1", "transaction_type": "Order", "settled_at": "2026-07-27T00:00:00+03:00", "currency": "RUB", "net_settlement_amount": "10", "items": [{"platform_sku": "ozon-1"}], "financial_components": [{"code": "OperationAgentDeliveredToCustomer", "amount": "12"}]}],
     }
 
     result = adapt_settlement_evidence(
@@ -729,7 +740,7 @@ def test_shopee_monthly_actual_ads_are_deterministically_allocated_by_paid_gmv()
     assert first.payload() == reordered.payload()
 
 
-def test_ozon_monthly_requires_actual_advertising_and_preserves_platform_fees():
+def test_ozon_monthly_uses_fixed_22_percent_advertising_and_preserves_platform_fees():
     row = {
         **_row("OZ-1", paid="1000", settlement="1000"),
         "region": "RU",
@@ -745,7 +756,7 @@ def test_ozon_monthly_requires_actual_advertising_and_preserves_platform_fees():
             }
         ],
     }
-    missing = build_ozon_monthly_report(
+    report = build_ozon_monthly_report(
         [row],
         period_start="2026-08-01",
         period_end="2026-08-31",
@@ -754,22 +765,11 @@ def test_ozon_monthly_requires_actual_advertising_and_preserves_platform_fees():
         generated_at=NOW,
         code_version="test-v1",
     )
-    assert missing.status == "needs_review"
-    assert "missing_actual_advertising" in {issue.code for issue in missing.quality_issues}
-
-    ready = build_ozon_monthly_report(
-        [{**row, "actual_ad_cost_cny": "5"}],
-        period_start="2026-08-01",
-        period_end="2026-08-31",
-        costs=_costs(),
-        fx=_fx(),
-        generated_at=NOW,
-        code_version="test-v1",
-    )
-    assert ready.status == "ready"
-    assert ready.order_lines[0]["fee_items"][0]["code"] == "sale_commission"
-    # 80 settlement - 10 goods - 5 actual ads; commission is already netted.
-    assert ready.order_lines[0]["profit_cny"] == Decimal("65.00")
+    assert report.status == "ready"
+    assert report.order_lines[0]["fee_items"][0]["code"] == "sale_commission"
+    # 80 settlement - 10 goods - (1000 RUB * 22% * 0.08 FX); commission is already netted.
+    assert report.order_lines[0]["profit_cny"] == Decimal("52.4000")
+    assert report.advertising["policy_version"] == "ozon-fixed-ad-rate/v1"
 
 
 def test_missing_cost_and_fx_fail_closed_without_zero_profit_fabrication():
@@ -948,8 +948,28 @@ def test_detailed_html_renders_main_image_weight_cost_ads_fees_and_profit():
         costs=_costs(), fx=_fx(), ad_rate="0.20", generated_at=NOW, code_version="test-v1",
     ).payload()
     html = render_profit_report_html(report)
-    for expected in ("商品主图", "Detailed product", "SKU-1", "125.5g", "Platform commission", "广告成本", "利润 CNY", "查看费用（2 项）"):
+    for expected in ("商品主图", "Detailed product", "SKU-1", "125.50", "Platform commission [commission]", "广告成本", "利润 CNY", "单件成本(CNY)", "12.00 THB", "CNY 2.40"):
         assert expected in html
+
+
+def test_temporary_cost_policy_defaults_missing_to_5_and_selects_highest_conflict():
+    catalog = SimpleNamespace(
+        costs_by_sku={"0001": Decimal("4"), "0002": Decimal("8")},
+        cost_candidates_by_sku={"0001": (Decimal("4"), Decimal("6")), "0002": (Decimal("8"),)},
+        snapshot_id="catalog:test", effective_at="2026-08-06T00:00:00+00:00",
+    )
+
+    result = resolve_temporary_cost_policy(catalog, {"0001", "0002", "0003"})
+
+    assert result.values["0001"]["unit_cost_cny"] == "6"
+    assert result.values["0003"]["unit_cost_cny"] == "5"
+    assert {item.code for item in result.warnings} == {
+        "conflicting_cost_high_selected", "missing_cost_default_5_selected",
+    }
+    assert all(item.policy_version == POLICY_VERSION for item in result.warnings)
+    messages = {item.code: item.message for item in result.warnings}
+    assert messages["conflicting_cost_high_selected"].endswith("CNY 6.00")
+    assert messages["missing_cost_default_5_selected"].endswith("CNY 5.00")
 
 
 def test_platform_engines_do_not_import_each_other():

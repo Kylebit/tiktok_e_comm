@@ -28,9 +28,13 @@ Net settlement may already include commissions, transaction fees, platform logis
 - `ready`: all included lines have settlement, positive quantity, cost, FX, and required advertising evidence.
 - `needs_review`: any required evidence is missing or invalid. Never approve this state.
 
+Operator-approved cost assumptions are non-blocking warnings, not silent catalog facts. Under `temporary-cost-policy/default-5-conflict-high/v1`, a missing positive unit cost becomes CNY 5 and conflicting positive costs resolve to the highest candidate. The report must retain selected value, candidates, affected canonical SKU, and policy version.
+
 Rows rejected for missing cost, SKU mapping, quantity, FX, settlement, or advertising evidence must not contribute numeric profit. Any aggregate over the remaining calculated rows is a partial diagnostic total, not a complete period result. Report calculated and rejected row counts and identify the blocking seller SKU whenever it is known.
 
-Weekly TikTok/Shopee reports use `realized_settlement_with_estimated_ads`. Their default advertising fraction is `0.22`; an explicit platform/region input may override it. The payload must retain both the rate and `buyer_paid_product_amount` basis so the estimate cannot be confused with actual advertising spend. Monthly TikTok/Shopee and all V1 Ozon reports use `realized_settlement_with_actual_ads`.
+Weekly TikTok/Shopee reports use `realized_settlement_with_estimated_ads`. Their default advertising fraction is `0.22`; an explicit platform/region input may override it. Monthly TikTok/Shopee reports use `realized_settlement_with_actual_ads`. Current Ozon weekly and monthly V1 reports use `realized_settlement_with_estimated_ads` with fixed `0.22` policy. Every estimated payload must retain both the rate and buyer-paid product basis so it cannot be confused with actual advertising spend.
+
+HTML is a display projection: show every platform fee component as an independent column and format all price/cost values to exactly two decimal places. JSON remains the audit artifact and retains full Decimal precision.
 
 ## Knowledge
 

@@ -4,7 +4,9 @@
 
 Use Finance statements and statement transactions. A statement transaction is settlement evidence; normalize its statement timestamp as the settled/occurred date. Expand an order transaction to order-item rows without duplicating the transaction total. Preserve commission, transaction, affiliate, shipping, tax, refund, and adjustment fields. Do not call file cleanup or legacy report-generation helpers during preview.
 
-For local credential discovery, check the configured token file first, then `tiktok_tokens_livelyhive.json`. Skip missing or empty files. Do not silently restore a backup or refresh an expired access token during a report run; report the usable refresh credential as a human-decision blocker without exposing it.
+For local credential discovery, check the configured token file first, then `tiktok_tokens_livelyhive.json`. Skip missing or empty files. Do not silently restore a backup or refresh an expired access token. With explicit operator approval, copy the selected token into a disposable directory, temporarily bind `core.auth.token_path()` to that copy, call `tiktok_settlement.load_token()`, and keep the binding for the read session. Record whether refresh occurred, delete the disposable copy, and never overwrite either source file.
+
+TikTok Finance statement query bounds are inclusive UTC calendar days, matching `tiktok_settlement.pull_period()`. Convert each returned `statement_time` to the site's reporting timezone for `settled_at`, then re-filter the requested local date range. Group expanded item rows by statement ID, transaction type, and order/adjustment ID; sum allocated money and fee components while retaining every item row. Report settled order, adjustment, and item-line counts separately.
 
 ## Shopee
 

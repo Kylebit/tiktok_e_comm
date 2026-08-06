@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import ast
 import importlib.util
+import json
 from pathlib import Path
 import sqlite3
 
@@ -281,6 +282,134 @@ def test_stage_one_uses_nonempty_tiktok_fallback_when_configured_file_is_empty(t
 
     assert credentials["access_token"] == "access-test"
     assert source == "tiktok_tokens_livelyhive.json"
+
+
+def test_stage_one_tiktok_refresh_uses_disposable_copy_and_preserves_source(tmp_path):
+    module = _settlement_pull_module()
+    configured = tmp_path / "tiktok_tokens.json"
+    configured.write_text("", encoding="utf-8")
+    source = tmp_path / "tiktok_tokens_livelyhive.json"
+    source_payload = (
+        '{"access_token":"expired-access","refresh_token":"valid-refresh",'
+        '"access_token_expire_in":1,"refresh_token_expire_in":4102444800}'
+    )
+    source.write_text(source_payload, encoding="utf-8")
+    observed = {}
+
+    class FakeAuth:
+        @staticmethod
+        def token_path():
+            raise AssertionError("temporary token path was not installed")
+
+    class FakeConfig:
+        _cache = None
+
+    def fake_load_token():
+        temporary_path = FakeAuth.token_path()
+        observed["temporary_path"] = temporary_path
+        payload = json.loads(temporary_path.read_text(encoding="utf-8"))
+        payload["access_token"] = "refreshed-access"
+        payload["access_token_expire_in"] = 4102444800
+        temporary_path.write_text(json.dumps(payload), encoding="utf-8")
+        return payload
+
+    with module._tiktok_credential_session(
+        tmp_path,
+        {"token_file": "tiktok_tokens.json"},
+        allow_refresh=True,
+        token_loader=fake_load_token,
+        auth_module=FakeAuth,
+        config_module=FakeConfig,
+    ) as (credentials, credential_source, refreshed):
+        assert credentials["access_token"] == "refreshed-access"
+        assert credential_source == "tiktok_tokens_livelyhive.json"
+        assert refreshed is True
+        assert observed["temporary_path"].exists()
+    assert source.read_text(encoding="utf-8") == source_payload
+    assert configured.read_text(encoding="utf-8") == ""
+    assert not observed["temporary_path"].exists()
+
+
+def test_stage_one_tiktok_normalizes_statement_time_and_product_item():
+    module = _settlement_pull_module()
+    utc_time = datetime(2026, 7, 26, 18, 30, tzinfo=timezone.utc)
+    settled_at = module._tiktok_statement_times(
+        [{"id": "statement-1", "statement_time": int(utc_time.timestamp())}],
+        module.SITE_TIMEZONES[("tiktok", "TH")],
+    )["statement-1"]
+    order = module._tiktok_row(
+        "TH",
+        {
+            "Statement Date": "2026/07/26",
+            "Statement ID": "statement-1",
+            "Currency": "THB",
+            "Type ": "Order",
+            "Order/adjustment ID  ": "order-1",
+            "Total settlement amount": "10.25",
+            "SKU ID": "platform-sku-1",
+            "Quantity": "2",
+            "Product name": "Widget",
+            "SKU name": "Blue",
+        },
+        0,
+        settled_at,
+    )
+
+    assert settled_at == "2026-07-27T01:30:00+07:00"
+    assert order["settled_at"] == settled_at
+    assert order["transaction_type"] == "Order"
+    assert order["items"] == [
+        {
+            "platform_sku": "platform-sku-1",
+            "quantity": Decimal("2"),
+            "product_name": "Widget",
+            "variant_name": "Blue",
+        }
+    ]
+
+
+def test_stage_one_tiktok_queries_inclusive_utc_statement_days():
+    module = _settlement_pull_module()
+    start, end = module._tiktok_period_bounds(
+        datetime(2026, 7, 27).date(), datetime(2026, 8, 2).date()
+    )
+
+    assert start == datetime(2026, 7, 27, tzinfo=timezone.utc)
+    assert end == datetime(2026, 8, 3, tzinfo=timezone.utc)
+
+
+def test_stage_one_tiktok_groups_item_rows_into_one_settled_order():
+    module = _settlement_pull_module()
+    settled_at = "2026-07-27T07:00:00+07:00"
+    rows = []
+    for index, sku in enumerate(("sku-1", "sku-2")):
+        rows.append(
+            module._tiktok_row(
+                "TH",
+                {
+                    "Statement ID": "statement-1",
+                    "Currency": "THB",
+                    "Type ": "Order",
+                    "Order/adjustment ID  ": "order-1",
+                    "Total settlement amount": "10.25",
+                    "Subtotal after seller discounts": "12.00",
+                    "SKU ID": sku,
+                    "Quantity": "1",
+                    "Product name": f"Widget {index}",
+                    "SKU name": "Blue",
+                },
+                index,
+                settled_at,
+            )
+        )
+
+    records = module._aggregate_tiktok_records(rows)
+
+    assert len(records) == 1
+    assert records[0]["net_settlement_amount"] == Decimal("20.50")
+    assert records[0]["buyer_total_amount"] == Decimal("24.00")
+    assert len(records[0]["items"]) == 2
+    assert records[0]["source_row_indices"] == [0, 1]
 
 
 @pytest.mark.parametrize(

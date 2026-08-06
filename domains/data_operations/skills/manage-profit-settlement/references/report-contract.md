@@ -1,0 +1,35 @@
+# Profit report contract
+
+## Inclusion
+
+Include only rows normalized to `settlement_status=settled`. Use the settlement/release date for the reporting period. Do not infer settlement from order creation, shipment, delivery, or completion alone.
+
+## Formula
+
+`profit_cny = net_settlement_cny - product_cost_cny - advertising_cny - external_costs_cny`
+
+Net settlement may already include commissions, transaction fees, platform logistics, refunds, taxes, and adjustments. Preserve all fee lines for display, but subtract a fee again only when `included_in_net_settlement=false`.
+
+## Required order-line evidence
+
+- platform, shop, region, order and order-line identities
+- platform SKU, seller SKU, canonical cost SKU, product/variant names, main image
+- quantity, unit/package/billable weight and weight source when available
+- occurred/settled timestamps and settlement status
+- buyer-paid product amount, net settlement, currency
+- every source fee code/label/amount and net-settlement inclusion flag
+- unit and total product cost, cost version/effective time/source/snapshot
+- advertising amount, mode, basis/source/as-of/snapshot/allocation version
+- FX rate/source/as-of/snapshot
+- external costs, profit, source snapshot identity, quality issues
+
+## Status
+
+- `ready`: all included lines have settlement, positive quantity, cost, FX, and required advertising evidence.
+- `needs_review`: any required evidence is missing or invalid. Never approve this state.
+
+Weekly TikTok/Shopee reports use `realized_settlement_with_estimated_ads`. Their default advertising fraction is `0.22`; an explicit platform/region input may override it. The payload must retain both the rate and `buyer_paid_product_amount` basis so the estimate cannot be confused with actual advertising spend. Monthly TikTok/Shopee and all V1 Ozon reports use `realized_settlement_with_actual_ads`.
+
+## Knowledge
+
+Store only explicitly approved monthly reports. Keep immutable JSON artifacts under platform/year/month plus a local index. Reject secret/raw-response fields. Corrections produce a new report and approval; never overwrite an approved artifact.

@@ -350,6 +350,7 @@ def test_stage_one_tiktok_normalizes_statement_time_and_product_item():
             "Quantity": "2",
             "Product name": "Widget",
             "SKU name": "Blue",
+            "Related order ID": "related-order-9",
         },
         0,
         settled_at,
@@ -358,6 +359,10 @@ def test_stage_one_tiktok_normalizes_statement_time_and_product_item():
     assert settled_at == "2026-07-27T01:30:00+07:00"
     assert order["settled_at"] == settled_at
     assert order["transaction_type"] == "Order"
+    assert order["related_order_id"] == "related-order-9"
+    assert "related_order_id" not in {
+        component["code"] for component in order["financial_components"]
+    }
     assert order["items"] == [
         {
             "platform_sku": "platform-sku-1",

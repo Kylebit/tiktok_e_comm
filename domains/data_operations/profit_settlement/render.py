@@ -9,20 +9,14 @@ from typing import Any
 
 def render_profit_report_html(report: Mapping[str, Any]) -> str:
     platform = _text(report.get("platform")).upper()
-    period = report.get("period") if isinstance(report.get("period"), Mapping) else {}
-    totals = report.get("totals") if isinstance(report.get("totals"), Mapping) else {}
+    period = _map(report.get("period")); totals = _map(report.get("totals"))
     issues = report.get("quality_issues") if isinstance(report.get("quality_issues"), list) else []
     lines = report.get("order_lines") if isinstance(report.get("order_lines"), list) else []
-    cards = "".join(
-        _card(label, totals.get(field))
-        for field, label in (
-            ("settlement_cny", "净结算 CNY"),
-            ("product_cost_cny", "商品成本 CNY"),
-            ("advertising_cny", "广告成本 CNY"),
-            ("external_costs_cny", "额外费用 CNY"),
-            ("profit_cny", "利润 CNY"),
-        )
-    )
+    cards = "".join(_card(label, totals.get(field)) for field, label in (
+        ("settlement_cny", "净结算 CNY"), ("product_cost_cny", "商品成本 CNY"),
+        ("advertising_cny", "广告成本 CNY"), ("external_costs_cny", "额外费用 CNY"),
+        ("profit_cny", "利润 CNY"),
+    ))
     issue_html = "".join(
         f"<li><code>{escape(_text(item.get('code')))}</code> · {escape(_text(item.get('record_id')))} · {escape(_text(item.get('message')))}</li>"
         for item in issues if isinstance(item, Mapping)
@@ -45,12 +39,18 @@ def _card(label: str, value: object) -> str:
 
 
 def _order_row(line: Mapping[str, Any]) -> str:
-    identity=_map(line.get("identity"));product=_map(line.get("product"));settlement=_map(line.get("settlement"));cost=_map(line.get("cost"));ads=_map(line.get("advertising"));fx=_map(line.get("fx"))
-    image=_text(product.get("image_url")); image_html=f'<img src="{escape(image,quote=True)}" alt="商品主图" loading="lazy">' if image.lower().startswith("https://") else '<span class="meta">无主图</span>'
-    fees="".join(f"<li>{escape(_text(fee.get('label') or fee.get('code')))}: {escape(_text(fee.get('amount')))} {escape(_text(fee.get('currency')))} / CNY {escape(_text(fee.get('amount_cny')))} · {'已含于净结算' if fee.get('included_in_net_settlement') else '额外扣除'}</li>" for fee in line.get("fee_items",[]) if isinstance(fee,Mapping)) or "<li>无费用明细</li>"
-    weights=f"单件 {escape(_text(product.get('unit_weight_g')))}g<br>包裹 {escape(_text(product.get('package_weight_g')))}g<br>计费 {escape(_text(product.get('billable_weight_g')))}g<br><small>{escape(_text(product.get('weight_source')))}</small>"
-    evidence=f"成本 {escape(_text(cost.get('version')))}<br>FX {escape(_text(fx.get('source')))} @ {escape(_text(fx.get('as_of')))}<br>结算 {escape(_text(line.get('source_snapshot_id')))}"
-    return f'''<tr><td>{image_html}</td><td><strong>{escape(_text(identity.get('order_id')))}</strong><br>{escape(_text(identity.get('order_line_id')))}<br>{escape(_text(identity.get('shop_id')))} · {escape(_text(identity.get('region')))}<br><small>{escape(_text(line.get('settled_at')))}</small></td><td><strong>{escape(_text(product.get('seller_sku')))}</strong><br>{escape(_text(product.get('canonical_sku')))} / {escape(_text(product.get('platform_sku')))}<br>{escape(_text(product.get('product_name')))}<br><small>{escape(_text(product.get('variant_name')))}</small></td><td>{escape(_text(product.get('quantity')))}<br>{weights}</td><td class="num">{escape(_text(settlement.get('net_amount_local')))} {escape(_text(settlement.get('currency')))}<br>CNY {escape(_text(settlement.get('net_amount_cny')))}</td><td class="num">{escape(_text(cost.get('unit_cost_cny')))} × {escape(_text(cost.get('quantity')))}<br>CNY {escape(_text(cost.get('total_cny')))}</td><td class="num">CNY {escape(_text(ads.get('amount_cny')))}<br><small>{escape(_text(ads.get('mode')))}</small></td><td class="num">CNY {escape(_text(line.get('external_costs_cny')))}</td><td class="num"><strong>CNY {escape(_text(line.get('profit_cny')))}</strong></td><td><details><summary>查看费用</summary><ul>{fees}</ul></details></td><td>{evidence}</td></tr>'''
+    identity = _map(line.get("identity")); product = _map(line.get("product")); settlement = _map(line.get("settlement"))
+    cost = _map(line.get("cost")); ads = _map(line.get("advertising")); fx = _map(line.get("fx"))
+    image = _text(product.get("image_url"))
+    image_html = f'<img src="{escape(image, quote=True)}" alt="商品主图" loading="lazy">' if image.lower().startswith("https://") else '<span class="meta">无主图</span>'
+    fee_items = line.get("fee_items", []) if isinstance(line.get("fee_items"), list) else []
+    fees = "".join(
+        f"<li>{escape(_text(fee.get('label') or fee.get('code')))}: {escape(_text(fee.get('amount')))} {escape(_text(fee.get('currency')))} / CNY {escape(_text(fee.get('amount_cny')))} · {'已含于净结算' if fee.get('included_in_net_settlement') else '额外扣除'}</li>"
+        for fee in fee_items if isinstance(fee, Mapping)
+    ) or "<li>源结算记录未提供费用拆分</li>"
+    weights = f"单件 {escape(_text(product.get('unit_weight_g')))}g<br>包装 {escape(_text(product.get('package_weight_g')))}g<br>计费 {escape(_text(product.get('billable_weight_g')))}g<br><small>{escape(_text(product.get('weight_source')))}</small>"
+    evidence = f"成本 {escape(_text(cost.get('version')))}<br>FX {escape(_text(fx.get('source')))} @ {escape(_text(fx.get('as_of')))}<br>结算 {escape(_text(line.get('source_snapshot_id')))}"
+    return f'''<tr><td>{image_html}</td><td><strong>{escape(_text(identity.get('order_id')))}</strong><br>{escape(_text(identity.get('order_line_id')))}<br>{escape(_text(identity.get('shop_id')))} · {escape(_text(identity.get('region')))}<br><small>{escape(_text(line.get('settled_at')))}</small></td><td><strong>{escape(_text(product.get('seller_sku')))}</strong><br>{escape(_text(product.get('canonical_sku')))} / {escape(_text(product.get('platform_sku')))}<br>{escape(_text(product.get('product_name')))}<br><small>{escape(_text(product.get('variant_name')))}</small></td><td>{escape(_text(product.get('quantity')))}<br>{weights}</td><td class="num">{escape(_text(settlement.get('net_amount_local')))} {escape(_text(settlement.get('currency')))}<br>CNY {escape(_text(settlement.get('net_amount_cny')))}</td><td class="num">{escape(_text(cost.get('unit_cost_cny')))} × {escape(_text(cost.get('quantity')))}<br>CNY {escape(_text(cost.get('total_cny')))}</td><td class="num">CNY {escape(_text(ads.get('amount_cny')))}<br><small>{escape(_text(ads.get('mode')))}</small></td><td class="num">CNY {escape(_text(line.get('external_costs_cny')))}</td><td class="num"><strong>CNY {escape(_text(line.get('profit_cny')))}</strong></td><td><details><summary>查看费用（{len(fee_items)} 项）</summary><ul>{fees}</ul></details></td><td>{evidence}</td></tr>'''
 
 
 def _map(value: object) -> Mapping[str, Any]:

@@ -28,6 +28,8 @@ Net settlement may already include commissions, transaction fees, platform logis
 - `ready`: all included lines have settlement, positive quantity, cost, FX, and required advertising evidence.
 - `needs_review`: any required evidence is missing or invalid. Never approve this state.
 
+Rows rejected for missing cost, SKU mapping, quantity, FX, settlement, or advertising evidence must not contribute numeric profit. Any aggregate over the remaining calculated rows is a partial diagnostic total, not a complete period result. Report calculated and rejected row counts and identify the blocking seller SKU whenever it is known.
+
 Weekly TikTok/Shopee reports use `realized_settlement_with_estimated_ads`. Their default advertising fraction is `0.22`; an explicit platform/region input may override it. The payload must retain both the rate and `buyer_paid_product_amount` basis so the estimate cannot be confused with actual advertising spend. Monthly TikTok/Shopee and all V1 Ozon reports use `realized_settlement_with_actual_ads`.
 
 ## Knowledge

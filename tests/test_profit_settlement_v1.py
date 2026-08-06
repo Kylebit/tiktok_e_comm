@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 import ast
+import importlib.util
 from pathlib import Path
 import sqlite3
 
@@ -36,6 +37,23 @@ from domains.data_operations.profit_settlement.ozon import (
 
 
 NOW = datetime(2026, 8, 6, 8, 0, tzinfo=timezone.utc)
+
+
+def _settlement_pull_module():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "domains"
+        / "data_operations"
+        / "skills"
+        / "manage-profit-settlement"
+        / "scripts"
+        / "pull_settlement_evidence.py"
+    )
+    spec = importlib.util.spec_from_file_location("profit_settlement_evidence_script", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
 
 
 def _costs() -> CostSnapshot:
@@ -173,6 +191,62 @@ def test_local_catalog_is_read_only_versioned_and_enriches_weight_and_image(tmp_
     assert enriched["unit_weight_g"] == 188
     # A mode=ro read cannot create SQLite sidecar files.
     assert sorted(item.name for item in tmp_path.iterdir()) == ["shop.db"]
+
+
+def test_stage_one_shopee_evidence_preserves_components_without_guessing_net_inclusion():
+    module = _settlement_pull_module()
+    release = int(datetime(2026, 7, 31, 12, tzinfo=timezone.utc).timestamp())
+    order = module._shopee_order(
+        "TH",
+        "ORDER-1",
+        {"escrow_release_time": release, "payout_amount": "80"},
+        {
+            "order_income": {
+                "escrow_amount_after_adjustment": "80",
+                "buyer_total_amount": "100",
+                "commission_fee": "-10",
+                "service_fee": "-5",
+                "items": [
+                    {
+                        "line_item_id": 11,
+                        "model_sku": "0021",
+                        "item_name": "Widget",
+                        "quantity_purchased": 2,
+                        "discounted_price": "50",
+                    }
+                ],
+            }
+        },
+        module.SITE_TIMEZONES[("shopee", "TH")],
+    )
+
+    components = {item["code"]: item for item in order["financial_components"]}
+    assert order["settlement_status"] == "settled"
+    assert order["net_settlement_amount"] == Decimal("80")
+    assert components["commission_fee"]["amount"] == Decimal("-10")
+    assert components["service_fee"]["included_in_net_settlement"] == "unknown"
+    assert order["items"][0]["quantity"] == Decimal("2")
+
+
+def test_stage_one_blocked_receipt_never_claims_reads_writes_or_refresh():
+    module = _settlement_pull_module()
+    payload = module.failure_payload(
+        "tiktok",
+        "TH",
+        datetime(2026, 7, 27).date(),
+        datetime(2026, 8, 2).date(),
+        module.SITE_TIMEZONES[("tiktok", "TH")],
+        RuntimeError("token missing"),
+    )
+
+    assert payload["status"] == "blocked"
+    assert payload["orders"] == []
+    assert payload["receipt"] == {
+        "external_reads_performed": [],
+        "external_writes_performed": [],
+        "credential_refresh_performed": False,
+        "raw_response_retained": False,
+    }
 
 
 @pytest.mark.parametrize(

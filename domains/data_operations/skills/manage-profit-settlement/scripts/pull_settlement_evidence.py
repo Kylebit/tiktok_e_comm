@@ -1,20 +1,24 @@
 """Pull one closed period of redacted, read-only settlement evidence.
 
-This is stage 1 only: it does not calculate profit, refresh credentials, write
-production data, or retain raw API responses.
+This is stage 1 only: it does not calculate profit, write production data, or
+retain raw API responses. TikTok credential refresh is allowed only when the
+operator explicitly opts in; it runs against a disposable token copy.
 """
 
 from __future__ import annotations
 
 import argparse
 from collections import defaultdict
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 from html import escape
 import json
 from pathlib import Path
+import shutil
 import sys
+import tempfile
 import time
 from typing import Any, Mapping
 
@@ -46,6 +50,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--end", required=True, type=date.fromisoformat)
     parser.add_argument("--project-root", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument(
+        "--allow-credential-refresh",
+        action="store_true",
+        help="allow TikTok auth refresh against a disposable token copy",
+    )
     args = parser.parse_args(argv)
     if args.end < args.start:
         parser.error("--end must not be before --start")
@@ -57,7 +66,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.platform == "shopee":
             payload = pull_shopee(args.project_root, args.site.upper(), args.start, args.end, zone)
         elif args.platform == "tiktok":
-            payload = pull_tiktok(args.project_root, args.site.upper(), args.start, args.end, zone)
+            payload = pull_tiktok(
+                args.project_root,
+                args.site.upper(),
+                args.start,
+                args.end,
+                zone,
+                allow_credential_refresh=args.allow_credential_refresh,
+            )
         else:
             payload = pull_ozon(args.project_root, args.site.upper(), args.start, args.end, zone)
     except Exception as exc:  # fail closed while still retaining an audit receipt
@@ -118,28 +134,62 @@ def pull_shopee(root: Path, site: str, start: date, end: date, zone) -> dict[str
     return payload
 
 
-def pull_tiktok(root: Path, site: str, start: date, end: date, zone) -> dict[str, Any]:
+def pull_tiktok(
+    root: Path,
+    site: str,
+    start: date,
+    end: date,
+    zone,
+    *,
+    allow_credential_refresh: bool = False,
+) -> dict[str, Any]:
     from core.shops import list_shops
     from tiktok_settlement import collect_shop_rows
 
     settings = _settings(root)
-    token_data, credential_source = _tiktok_credentials(root, settings)
-    token = str(token_data.get("access_token") or "")
-    expires = int(token_data.get("access_token_expire_in") or 0)
-    if not token:
-        raise RuntimeError("missing TikTok access token")
-    if expires and expires < int(time.time()) + 120:
-        raise RuntimeError("TikTok access token is expired; credential refresh is prohibited by the Skill")
-    shops = list_shops(token)
-    shop = next((item for item in shops if str(item.get("region") or "").upper() == site), None)
-    if shop is None:
-        raise RuntimeError(f"no authorized TikTok shop for site {site}")
-    period_start, period_end = _period_bounds(start, end, zone)
-    region, rows, statements = collect_shop_rows(token, shop, int(period_start.timestamp()), int(period_end.timestamp()))
-    orders = [_tiktok_row(region, row, index) for index, row in enumerate(rows)]
-    payload = _success_payload("tiktok", site, start, end, zone, orders, len(rows), len(rows), [], "finance statements + statement transactions") | {"statement_count": len(statements)}
-    payload["receipt"]["credential_source"] = credential_source
-    return payload
+    with _tiktok_credential_session(
+        root, settings, allow_refresh=allow_credential_refresh
+    ) as (token_data, credential_source, credential_refresh_performed):
+        token = str(token_data.get("access_token") or "")
+        if not token:
+            raise RuntimeError("missing TikTok access token")
+        shops = list_shops(token)
+        shop = next((item for item in shops if str(item.get("region") or "").upper() == site), None)
+        if shop is None:
+            raise RuntimeError(f"no authorized TikTok shop for site {site}")
+        period_start, period_end = _tiktok_period_bounds(start, end)
+        region, rows, statements = collect_shop_rows(token, shop, int(period_start.timestamp()), int(period_end.timestamp()))
+        statement_times = _tiktok_statement_times(statements, zone)
+        normalized_rows = []
+        issues = []
+        out_of_period_rows = 0
+        for index, row in enumerate(rows):
+            statement_id = str(row.get("Statement ID") or "")
+            settled_at = statement_times.get(statement_id)
+            if not settled_at:
+                issues.append(_issue("missing_settlement_time", statement_id or str(index), "statement_time"))
+                continue
+            if not start <= datetime.fromisoformat(settled_at).date() <= end:
+                out_of_period_rows += 1
+                continue
+            normalized = _tiktok_row(region, row, index, settled_at)
+            if normalized["transaction_type"] == "Order" and normalized["quantity"] is None:
+                issues.append(_issue("missing_quantity", normalized["order_id"] or str(index), "quantity"))
+            normalized_rows.append(normalized)
+        orders = _aggregate_tiktok_records(normalized_rows)
+        payload = _success_payload("tiktok", site, start, end, zone, orders, len(rows), len(orders), issues, "finance statements + statement transactions") | {
+            "statement_count": len(statements),
+            "out_of_period_row_count": out_of_period_rows,
+        }
+        payload["row_counts"]["normalized_settled_orders"] = sum(
+            order.get("transaction_type") == "Order" for order in orders
+        )
+        payload["row_counts"]["normalized_adjustments"] = sum(
+            order.get("transaction_type") != "Order" for order in orders
+        )
+        payload["receipt"]["credential_source"] = credential_source
+        payload["receipt"]["credential_refresh_performed"] = credential_refresh_performed
+        return payload
 
 
 def pull_ozon(root: Path, site: str, start: date, end: date, zone) -> dict[str, Any]:
@@ -211,8 +261,92 @@ def _shopee_order(site, order_sn, list_row, detail, zone):
     return {"order_id": order_sn, "settlement_status": "settled", "settled_at": release_at.isoformat(), "currency": _currency(site), "net_settlement_amount": settlement, "buyer_total_amount": _decimal(income.get("buyer_total_amount")), "financial_components": components, "items": items, "return_order_count": len(detail.get("return_order_sn_list") or [])}
 
 
-def _tiktok_row(region, row, index):
-    return {"order_id": str(row.get("Order/adjustment ID  ") or ""), "statement_id": str(row.get("Statement ID") or ""), "settlement_status": "settled", "settled_at": str(row.get("Statement Date") or ""), "currency": str(row.get("Currency") or ""), "platform_sku": str(row.get("SKU ID") or ""), "quantity": _decimal(row.get("Quantity")), "product_name": str(row.get("Product name") or ""), "variant_name": str(row.get("SKU name") or ""), "net_settlement_amount": _decimal(row.get("Total settlement amount")), "buyer_total_amount": _decimal(row.get("Subtotal after seller discounts")), "financial_components": [{"code": key.strip().lower().replace(" ", "_"), "amount": _decimal(value), "currency": str(row.get("Currency") or ""), "classification": _component_class(key), "included_in_net_settlement": "unknown"} for key, value in row.items() if key not in {"Order/adjustment ID  ", "Statement ID", "Statement Date", "Currency", "SKU ID", "Quantity", "Product name", "SKU name", "Type "} and _decimal(value) is not None], "source_row_index": index, "region": region}
+def _tiktok_row(region, row, index, settled_at):
+    platform_sku = str(row.get("SKU ID") or "")
+    quantity = _decimal(row.get("Quantity"))
+    product_name = str(row.get("Product name") or "")
+    variant_name = str(row.get("SKU name") or "")
+    items = []
+    if platform_sku and platform_sku != "/":
+        items.append({"platform_sku": platform_sku, "quantity": quantity, "product_name": product_name, "variant_name": variant_name})
+    return {"order_id": str(row.get("Order/adjustment ID  ") or ""), "statement_id": str(row.get("Statement ID") or ""), "transaction_type": str(row.get("Type ") or "Unknown"), "settlement_status": "settled", "settled_at": settled_at, "currency": str(row.get("Currency") or ""), "platform_sku": platform_sku, "quantity": quantity, "product_name": product_name, "variant_name": variant_name, "net_settlement_amount": _decimal(row.get("Total settlement amount")), "buyer_total_amount": _decimal(row.get("Subtotal after seller discounts")), "financial_components": [{"code": key.strip().lower().replace(" ", "_"), "amount": _decimal(value), "currency": str(row.get("Currency") or ""), "classification": _component_class(key), "included_in_net_settlement": "unknown"} for key, value in row.items() if key not in {"Order/adjustment ID  ", "Statement ID", "Statement Date", "Currency", "SKU ID", "Quantity", "Product name", "SKU name", "Type "} and _decimal(value) is not None], "items": items, "source_row_index": index, "region": region}
+
+
+def _tiktok_statement_times(statements, zone):
+    result = {}
+    for statement in statements:
+        statement_id = str(statement.get("id") or "")
+        timestamp = statement.get("statement_time")
+        if not statement_id or timestamp in (None, ""):
+            continue
+        try:
+            result[statement_id] = datetime.fromtimestamp(
+                int(timestamp), tz=timezone.utc
+            ).astimezone(zone).isoformat()
+        except (TypeError, ValueError, OSError, OverflowError):
+            continue
+    return result
+
+
+def _aggregate_tiktok_records(rows):
+    grouped = {}
+    for row in rows:
+        key = (
+            str(row.get("statement_id") or ""),
+            str(row.get("transaction_type") or ""),
+            str(row.get("order_id") or ""),
+        )
+        existing = grouped.get(key)
+        if existing is None:
+            existing = dict(row)
+            existing["items"] = [dict(item) for item in row.get("items") or []]
+            existing["financial_components"] = [
+                dict(component) for component in row.get("financial_components") or []
+            ]
+            existing["source_row_indices"] = [row.get("source_row_index")]
+            existing.pop("source_row_index", None)
+            grouped[key] = existing
+            continue
+
+        for money_field in ("net_settlement_amount", "buyer_total_amount"):
+            left = existing.get(money_field)
+            right = row.get(money_field)
+            if left is None:
+                existing[money_field] = right
+            elif right is not None:
+                existing[money_field] = Decimal(str(left)) + Decimal(str(right))
+        existing["items"].extend(dict(item) for item in row.get("items") or [])
+        existing["source_row_indices"].append(row.get("source_row_index"))
+        components = {
+            (
+                item.get("code"),
+                item.get("currency"),
+                item.get("classification"),
+                item.get("included_in_net_settlement"),
+            ): item
+            for item in existing["financial_components"]
+        }
+        for component in row.get("financial_components") or []:
+            component_key = (
+                component.get("code"),
+                component.get("currency"),
+                component.get("classification"),
+                component.get("included_in_net_settlement"),
+            )
+            current = components.get(component_key)
+            if current is None:
+                current = dict(component)
+                existing["financial_components"].append(current)
+                components[component_key] = current
+            elif component.get("amount") is not None:
+                current["amount"] = Decimal(str(current.get("amount") or "0")) + Decimal(
+                    str(component["amount"])
+                )
+        existing["platform_sku"] = ""
+        existing["quantity"] = None
+        existing["product_name"] = ""
+        existing["variant_name"] = ""
+    return [grouped[key] for key in sorted(grouped)]
 
 
 def _ozon_order(posting, rows):
@@ -258,6 +392,13 @@ def _period_bounds(start, end, zone):
     return datetime.combine(start, datetime.min.time(), tzinfo=zone), datetime.combine(end + timedelta(days=1), datetime.min.time(), tzinfo=zone)
 
 
+def _tiktok_period_bounds(start, end):
+    return (
+        datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc),
+        datetime.combine(end + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc),
+    )
+
+
 def _component_class(code):
     value = str(code).lower()
     for word, label in (("refund", "refund"), ("tax", "tax"), ("shipping", "shipping"), ("commission", "commission"), ("fee", "fee"), ("discount", "discount"), ("voucher", "voucher"), ("coin", "coin"), ("amount", "amount"), ("price", "price")):
@@ -291,6 +432,11 @@ def _ozon_credentials(root):
 
 
 def _tiktok_credentials(root, settings):
+    path, label = _tiktok_credential_path(root, settings)
+    return _json_object(path), label
+
+
+def _tiktok_credential_path(root, settings):
     configured = _resolve(root, settings.get("token_file") or "tiktok_tokens.json")
     candidates = (
         (configured, configured.name),
@@ -304,8 +450,60 @@ def _tiktok_credentials(root, settings):
         seen.add(resolved)
         value = _json_object(path)
         if str(value.get("access_token") or "").strip():
-            return value, label
+            return path, label
     raise RuntimeError("TikTok token files are missing or empty; authorization is required")
+
+
+@contextmanager
+def _tiktok_credential_session(
+    root,
+    settings,
+    *,
+    allow_refresh=False,
+    token_loader=None,
+    auth_module=None,
+    config_module=None,
+):
+    source_path, label = _tiktok_credential_path(root, settings)
+    original = _json_object(source_path)
+    expires = int(original.get("access_token_expire_in") or 0)
+    if not expires or expires >= int(time.time()) + 120:
+        yield original, label, False
+        return
+    if not allow_refresh:
+        raise RuntimeError(
+            "TikTok access token is expired; rerun with explicit "
+            "--allow-credential-refresh approval"
+        )
+    if not str(original.get("refresh_token") or "").strip():
+        raise RuntimeError("TikTok refresh token is missing")
+
+    if auth_module is None:
+        from core import auth as auth_module
+    if config_module is None:
+        from core import config as config_module
+    if token_loader is None:
+        from tiktok_settlement import load_token as token_loader
+
+    previous_token_path = auth_module.token_path
+    previous_settings = config_module._cache
+    with tempfile.TemporaryDirectory(prefix="profit-settlement-tiktok-auth-") as temp_dir:
+        temporary_path = Path(temp_dir) / source_path.name
+        shutil.copyfile(source_path, temporary_path)
+        try:
+            auth_module.token_path = lambda: temporary_path
+            config_module._cache = dict(settings)
+            refreshed = token_loader()
+            if not isinstance(refreshed, dict) or not str(refreshed.get("access_token") or "").strip():
+                raise RuntimeError("TikTok credential refresh returned no access token")
+            refresh_performed = any(
+                refreshed.get(key) != original.get(key)
+                for key in ("access_token", "refresh_token", "access_token_expire_in")
+            )
+            yield refreshed, label, refresh_performed
+        finally:
+            auth_module.token_path = previous_token_path
+            config_module._cache = previous_settings
 
 
 def _json_object(path):

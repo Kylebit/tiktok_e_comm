@@ -11,7 +11,7 @@ Keep TikTok, Shopee, and Ozon execution independent. Never use one platform's se
 
 1. Accept an explicit platform, site, inclusive start date, and inclusive end date. Confirm the period is closed in the site's reporting timezone.
 2. Read [references/report-contract.md](references/report-contract.md) and the matching platform section in [references/platform-sources.md](references/platform-sources.md).
-3. Pull and save settlement evidence before doing any profit calculation. Run `scripts/pull_settlement_evidence.py --platform PLATFORM --site SITE --start YYYY-MM-DD --end YYYY-MM-DD --project-root ROOT --output OUTPUT`. Pull only official settled/released finance records; reject pending, processing, cancelled, delivered-but-unsettled, or unknown states.
+3. Pull and save settlement evidence before doing any profit calculation. Run `scripts/pull_settlement_evidence.py --platform PLATFORM --site SITE --start YYYY-MM-DD --end YYYY-MM-DD --project-root ROOT --output OUTPUT`. Pull only official settled/released finance records; reject pending, processing, cancelled, delivered-but-unsettled, or unknown states. For an expired TikTok access token, add `--allow-credential-refresh` only after explicit operator approval; refresh a disposable token copy and leave every production credential file unchanged.
 4. Review the saved `settlement-evidence/v1` JSON and HTML with the user. Verify period/timezone, source counts, financial component names, detail failures, snapshot checksum, redaction, and `external_writes_performed=[]`. If the user requested only this first stage, stop here.
 5. Keep API results in memory or an explicitly named redacted snapshot. Never run a legacy wrapper that cleans directories or overwrites CSV/HTML during a report preview.
 6. Build a versioned cost snapshot keyed by canonical seller SKU and one immutable FX snapshot for the whole run.
@@ -25,8 +25,8 @@ Keep TikTok, Shopee, and Ozon execution independent. Never use one platform's se
 ## Safety gates
 
 - Treat platform reads as external reads, never writes. Require `external_writes_performed=[]` from an injected live adapter receipt.
-- Never refresh or exchange credentials during a report run. Save a blocked receipt when the current read credential is missing or expired.
-- Do not persist previews, mutate production databases, refresh credentials, send notifications, retry payments, or modify platform orders.
+- Default to no credential refresh and save a blocked receipt when a read credential is missing or expired. After explicit operator approval, TikTok may refresh only a disposable copy for that read run; record `credential_refresh_performed=true` and never overwrite the configured or fallback token source.
+- Do not persist previews, mutate production databases, silently refresh credentials, send notifications, retry payments, or modify platform orders.
 - Preserve raw fee names and normalized codes. Subtract only costs not already included in net settlement.
 - Represent missing money as a quality issue, never numeric zero.
 - Keep approved knowledge artifacts immutable. Create a new report version for corrections.

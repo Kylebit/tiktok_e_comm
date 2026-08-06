@@ -1,6 +1,6 @@
 ---
 name: manage-profit-settlement
-description: Build, audit, approve, and retrieve detailed settled-order profit reports for TikTok, Shopee, or Ozon. Use when Codex must pull or adapt the latest settlement evidence, calculate weekly profit with an explicit or default advertising rate, calculate monthly profit with actual advertising spend, inspect order/SKU cost waterfalls, or store and query an explicitly approved monthly report in the local profit knowledge base.
+description: Build, audit, approve, and retrieve detailed settled-order profit reports for TikTok, Shopee, or Ozon. Use when Codex must pull or adapt the latest settlement evidence, calculate weekly profit with an explicit or default advertising rate, calculate TikTok/Shopee monthly profit with actual advertising spend, apply the temporary Ozon 22% advertising rule, inspect order/SKU cost waterfalls, or store and query an explicitly approved monthly report in the local profit knowledge base.
 ---
 
 # Manage Profit Settlement
@@ -19,12 +19,12 @@ Keep TikTok, Shopee, and Ozon execution independent. Never use one platform's se
 
 ### Stage 2: order-level profit
 
-6. Build a versioned cost snapshot keyed by canonical seller SKU and one immutable FX snapshot for the whole run.
+6. Build a versioned cost snapshot keyed by canonical seller SKU and one immutable FX snapshot for the whole run. Apply temporary cost policy `temporary-cost-policy/default-5-conflict-high/v1`: use CNY 5 per unit when no positive cost exists and select the highest positive value when catalog costs conflict. Retain an assumption warning on every affected report/SKU; never present either selection as catalog fact.
 7. Adapt only reviewed `settlement-evidence/v1` artifacts. Run `scripts/build_weekly_from_evidence.py --evidence-dir EVIDENCE --project-root ROOT --output OUTPUT --start YYYY-MM-DD --end YYYY-MM-DD --ad-rate 0.22`. The script reads `shop.db` with SQLite `mode=ro`, requires a live FX source, and writes report artifacts only.
 8. For TikTok/Shopee weekly reports, default the advertising fraction to `0.22` (22%) unless the user supplies an explicit platform/region override. Apply it to buyer-paid product amount after seller discount, excluding buyer shipping. Preserve the rate and basis as an estimate in every report; never label it as actual spend. Exclude an actual TikTok advertising adjustment from the weekly order-settlement basis before applying the estimate, and reconcile the exclusion separately so advertising is never deducted twice.
 9. For TikTok/Shopee monthly reports, require actual advertising evidence. Prefer order attribution; otherwise allocate an auditable actual total by buyer-paid GMV. Never silently fall back to zero or the weekly rate.
-10. For Ozon, require actual advertising on every included order in V1. When the finance artifact contains only platform SKU and no quantity, `--allow-ozon-read-enrichment` may read `/v3/product/info/list` and `/v3/posting/fbs/get` to obtain seller SKU and fulfilled quantity. Retain only redacted mappings/counts, never raw responses or credentials.
-11. Generate one independent JSON/HTML report per platform. Review totals, every quality issue, negative-profit lines, fee inclusion semantics, source counts, settlement reconciliation, cost conflicts, and rejected rows. A partial total that excludes rejected rows is diagnostic only and is never final profit.
+10. Use fixed estimated advertising rate `0.22` for Ozon weekly and monthly V1 reports. Derive the advertising basis from positive `OperationAgentDeliveredToCustomer` product-sale components and label it `ozon-fixed-ad-rate/v1`; never label it actual spend. When the finance artifact contains only platform SKU and no quantity, `--allow-ozon-read-enrichment` may read `/v3/product/info/list` and `/v3/posting/fbs/get` to obtain seller SKU and fulfilled quantity. Retain only redacted mappings/counts, never raw responses or credentials.
+11. Generate one independent JSON/HTML report per platform. Follow the legacy order-profit table pattern: render order/product/quantity, buyer-paid amount, settlement, FX, unit and total cost, advertising basis/rate/amount, external cost, profit, margin, and every fee component as its own column. Show all price and cost values to two decimal places in HTML while retaining full Decimal precision in JSON. Review totals, every quality issue and assumption warning, negative-profit lines, fee inclusion semantics, source counts, settlement reconciliation, cost conflicts, and rejected rows.
 12. Perform two audit passes from each JSON artifact. Recompute totals from order lines and confirm only settled rows were included. Iterate with a failing fixture/test when an issue is reproducible.
 13. Approve only a ready monthly report after explicit human confirmation. Use `scripts/profit_report.py approve-monthly`; never approve a weekly or needs-review report.
 
@@ -34,7 +34,7 @@ Keep TikTok, Shopee, and Ozon execution independent. Never use one platform's se
 - Default to no credential refresh and save a blocked receipt when a read credential is missing or expired. After explicit operator approval, TikTok may refresh only a disposable copy for that read run; record `credential_refresh_performed=true` and never overwrite the configured or fallback token source.
 - Do not persist previews, mutate production databases, silently refresh credentials, send notifications, retry payments, or modify platform orders.
 - Preserve raw fee names and normalized codes. Subtract only costs not already included in net settlement.
-- Represent missing money as a quality issue, never numeric zero.
+- Represent missing money as a quality issue, never numeric zero. The only current exception is the explicit temporary missing-cost policy, which uses CNY 5 and must emit an assumption warning.
 - Keep approved knowledge artifacts immutable. Create a new report version for corrections.
 - Do not store tokens, cookies, authorization headers, API keys, or raw responses in reports or knowledge artifacts.
 

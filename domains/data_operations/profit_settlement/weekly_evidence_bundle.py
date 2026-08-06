@@ -27,6 +27,7 @@ def build_weekly_evidence_bundle(
     ad_rate: Decimal | str = Decimal("0.22"),
     seller_sku_by_ozon_sku: Mapping[str, str] | None = None,
     quantity_by_ozon_order_sku: Mapping[str, object] | None = None,
+    cost_assumption_warnings: tuple[object, ...] = (),
     generated_at: datetime | None = None,
     code_version: str = "unknown",
 ) -> dict[str, Any]:
@@ -65,6 +66,15 @@ def build_weekly_evidence_bundle(
             code_version=code_version,
         )
         payload = report.payload()
+        used_skus = {
+            str(row.get("canonical_sku") or "") for row in adapted.rows
+        }
+        report_warnings = [
+            warning.payload()
+            for warning in cost_assumption_warnings
+            if str(getattr(warning, "canonical_sku", "")) in used_skus
+        ]
+        payload["assumption_warnings"] = report_warnings
         first_audit = audit_profit_report(payload).payload()
         second_audit = audit_profit_report(payload).payload()
         reports[platform] = {
@@ -83,13 +93,14 @@ def build_weekly_evidence_bundle(
         "advertising": {
             "tiktok": {"mode": "estimated_rate", "rate": str(ad_rate), "basis": "buyer_paid_product_amount"},
             "shopee": {"mode": "estimated_rate", "rate": str(ad_rate), "basis": "buyer_paid_product_amount"},
-            "ozon": {"mode": "actual_order_ads", "required": True},
+            "ozon": {"mode": "estimated_rate", "rate": "0.22", "basis": "buyer_paid_product_amount", "policy_version": "ozon-fixed-ad-rate/v1"},
         },
         "cost_snapshot": costs.payload(),
         "fx_snapshot": fx.payload(),
         "reports": reports,
         "quality_issues": bundle_issues,
         "quality_issue_counts": dict(sorted(Counter(item["code"] for item in bundle_issues).items())),
+        "assumption_warnings": [warning.payload() for warning in cost_assumption_warnings],
         "generated_at": now.isoformat(),
         "code_version": code_version,
         "external_writes_performed": [],

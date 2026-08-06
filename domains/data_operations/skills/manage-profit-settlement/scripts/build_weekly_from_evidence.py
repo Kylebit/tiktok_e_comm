@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from dataclasses import replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
 import json
@@ -24,7 +25,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from domains.data_operations.profit_settlement.local_catalog import load_local_catalog
+from domains.data_operations.profit_settlement.cost_policy import resolve_temporary_cost_policy
 from domains.data_operations.profit_settlement.render import render_profit_report_html
+from domains.data_operations.profit_settlement.settlement_evidence_adapter import adapt_settlement_evidence
 from domains.data_operations.profit_settlement.shared_inputs import CostSnapshot, FxSnapshot
 from domains.data_operations.profit_settlement.weekly_evidence_bundle import build_weekly_evidence_bundle
 
@@ -43,13 +46,6 @@ def main() -> int:
 
     evidence = _load_evidence(args.evidence_dir, args.start, args.end)
     catalog = load_local_catalog(args.project_root / "data" / "shop.db")
-    costs = CostSnapshot.from_mapping(
-        catalog.costs_by_sku,
-        snapshot_id=catalog.snapshot_id,
-        default_version=catalog.snapshot_id,
-        default_effective_at=catalog.effective_at,
-        source="shop.db:sku_costs:sqlite-mode-ro",
-    )
     live_fx = _live_fx()
     fx = FxSnapshot.from_mapping(live_fx["rates"], source=live_fx["provider"], as_of=live_fx["as_of"])
     ozon_map = _load_mapping(args.ozon_sku_map)
@@ -60,9 +56,25 @@ def main() -> int:
             args.project_root, evidence["ozon"]
         )
         ozon_map = {**live_map, **ozon_map}
+    required_skus = set()
+    for platform, platform_evidence in evidence.items():
+        preview = adapt_settlement_evidence(
+            platform_evidence,
+            catalog,
+            period_kind="weekly",
+            seller_sku_by_platform_sku=ozon_map if platform == "ozon" else None,
+            quantity_by_order_platform_sku=ozon_quantities if platform == "ozon" else None,
+        )
+        required_skus.update(str(row.get("canonical_sku") or "") for row in preview.rows)
+    cost_policy = resolve_temporary_cost_policy(catalog, required_skus)
+    resolved_costs = {
+        sku: Decimal(str(value["unit_cost_cny"])) for sku, value in cost_policy.values.items()
+    }
+    resolved_catalog = replace(catalog, costs_by_sku=resolved_costs)
+    costs = CostSnapshot.from_mapping(cost_policy.values)
     bundle = build_weekly_evidence_bundle(
         evidence,
-        catalog,
+        resolved_catalog,
         period_start=args.start,
         period_end=args.end,
         costs=costs,
@@ -70,6 +82,7 @@ def main() -> int:
         ad_rate=Decimal(args.ad_rate),
         seller_sku_by_ozon_sku=ozon_map,
         quantity_by_ozon_order_sku=ozon_quantities,
+        cost_assumption_warnings=cost_policy.warnings,
         generated_at=datetime.now(timezone.utc),
         code_version="profit-settlement-v1-stage2",
     )
@@ -83,8 +96,6 @@ def main() -> int:
     ]
     bundle["ozon_enrichment"] = ozon_enrichment
     bundle["external_writes_performed"] = []
-    if catalog_issues:
-        bundle["status"] = "needs_review"
 
     args.output.mkdir(parents=True, exist_ok=True)
     for platform, item in bundle["reports"].items():
@@ -104,6 +115,7 @@ def main() -> int:
         "reports": {platform: item["status"] for platform, item in bundle["reports"].items()},
         "quality_issue_counts": dict(sorted(Counter(item["code"] for item in bundle["quality_issues"]).items())),
         "catalog_quality_issue_counts": dict(sorted(Counter(item["code"] for item in catalog_issues).items())),
+        "assumption_warning_counts": dict(sorted(Counter(item.code for item in cost_policy.warnings).items())),
         "external_writes_performed": [],
     }, ensure_ascii=False, indent=2))
     return 0 if bundle["status"] == "ready" else 2

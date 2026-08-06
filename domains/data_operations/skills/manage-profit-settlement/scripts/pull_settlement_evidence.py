@@ -123,10 +123,7 @@ def pull_tiktok(root: Path, site: str, start: date, end: date, zone) -> dict[str
     from tiktok_settlement import collect_shop_rows
 
     settings = _settings(root)
-    token_path = _resolve(root, settings.get("token_file") or "tiktok_tokens.json")
-    if not token_path.is_file() or token_path.stat().st_size == 0:
-        raise RuntimeError("TikTok token file is missing or empty; authorization is required")
-    token_data = _json_object(token_path)
+    token_data, credential_source = _tiktok_credentials(root, settings)
     token = str(token_data.get("access_token") or "")
     expires = int(token_data.get("access_token_expire_in") or 0)
     if not token:
@@ -140,20 +137,33 @@ def pull_tiktok(root: Path, site: str, start: date, end: date, zone) -> dict[str
     period_start, period_end = _period_bounds(start, end, zone)
     region, rows, statements = collect_shop_rows(token, shop, int(period_start.timestamp()), int(period_end.timestamp()))
     orders = [_tiktok_row(region, row, index) for index, row in enumerate(rows)]
-    return _success_payload("tiktok", site, start, end, zone, orders, len(rows), len(rows), [], "finance statements + statement transactions") | {"statement_count": len(statements)}
+    payload = _success_payload("tiktok", site, start, end, zone, orders, len(rows), len(rows), [], "finance statements + statement transactions") | {"statement_count": len(statements)}
+    payload["receipt"]["credential_source"] = credential_source
+    return payload
 
 
 def pull_ozon(root: Path, site: str, start: date, end: date, zone) -> dict[str, Any]:
-    from modules.ozon.config import ozon_credentials
+    from modules.ozon import client as ozon_client
     from modules.ozon.settlement import fetch_transactions
 
-    client_id, api_key = ozon_credentials()
+    client_id, api_key, credential_source = _ozon_credentials(root)
     if not client_id or not api_key:
         raise RuntimeError("missing Ozon Client-Id/API-Key")
+    # Inject the explicitly discovered read credential in memory only. The
+    # platform client remains unchanged on disk and receives no write request.
+    ozon_client.ozon_credentials = lambda: (client_id, api_key)
     period_start, period_end = _period_bounds(start, end, zone)
     operations = fetch_transactions(period_start.astimezone(timezone.utc).replace(tzinfo=None), period_end.astimezone(timezone.utc).replace(tzinfo=None))
-    groups: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    in_period_operations = []
+    out_of_period_operations = 0
     for operation in operations:
+        business_date = _date_value(operation.get("operation_date"))
+        if business_date is None or not start <= business_date <= end:
+            out_of_period_operations += 1
+            continue
+        in_period_operations.append(operation)
+    groups: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for operation in in_period_operations:
         posting = str((operation.get("posting") or {}).get("posting_number") or "")
         groups[posting or "(no-posting)"].append(operation)
     orders = []
@@ -164,7 +174,14 @@ def pull_ozon(root: Path, site: str, start: date, end: date, zone) -> dict[str, 
             excluded += 1
             continue
         orders.append(_ozon_order(posting, rows))
-    return _success_payload("ozon", site, start, end, zone, orders, len(operations), len(groups), [], "finance/transaction/list") | {"excluded_unsettled_posting_count": excluded}
+    payload = _success_payload("ozon", site, start, end, zone, orders, len(operations), len(groups), [], "finance/transaction/list") | {"excluded_unsettled_posting_count": excluded, "out_of_period_operation_count": out_of_period_operations}
+    payload["receipt"]["credential_source"] = credential_source
+    payload["receipt"]["request_summary"] = {
+        "finance_page_size": 1000,
+        "finance_page_count": "not_exposed_by_legacy_iterator",
+        "returned_operation_count": len(operations),
+    }
+    return payload
 
 
 def _shopee_order(site, order_sn, list_row, detail, zone):
@@ -204,7 +221,7 @@ def _ozon_order(posting, rows):
     dates = []
     for row in rows:
         dates.append(str(row.get("operation_date") or ""))
-        components.append({"code": str(row.get("operation_type") or ""), "label": str(row.get("operation_type_name") or ""), "amount": _decimal(row.get("amount")), "currency": "RUB", "classification": _component_class(str(row.get("operation_type_name") or row.get("operation_type") or "")), "included_in_net_settlement": "unknown"})
+        components.append({"code": str(row.get("operation_type") or ""), "label": str(row.get("operation_type_name") or ""), "occurred_at": str(row.get("operation_date") or ""), "amount": _decimal(row.get("amount")), "currency": "RUB", "classification": _component_class(str(row.get("operation_type_name") or row.get("operation_type") or "")), "included_in_net_settlement": "unknown"})
         for item in row.get("items") or []:
             sku = str(item.get("sku") or "")
             items[sku] = {"platform_sku": sku, "product_name": str(item.get("name") or "")}
@@ -257,6 +274,40 @@ def _settings(root):
     return _json_object(root / "config" / "settings.json")
 
 
+def _ozon_credentials(root):
+    candidates = (
+        (root / "config" / "ozon.local.json", "config/ozon.local.json"),
+        (root / "modules" / "ozon" / "legacy_webapp" / "data" / "credentials.local.json", "legacy_webapp/data/credentials.local.json"),
+    )
+    for path, label in candidates:
+        if not path.is_file() or path.stat().st_size == 0:
+            continue
+        value = _json_object(path)
+        client_id = str(value.get("client_id") or "").strip()
+        api_key = str(value.get("api_key") or "").strip()
+        if client_id and api_key:
+            return client_id, api_key, label
+    return "", "", "missing"
+
+
+def _tiktok_credentials(root, settings):
+    configured = _resolve(root, settings.get("token_file") or "tiktok_tokens.json")
+    candidates = (
+        (configured, configured.name),
+        (root / "tiktok_tokens_livelyhive.json", "tiktok_tokens_livelyhive.json"),
+    )
+    seen = set()
+    for path, label in candidates:
+        resolved = path.resolve()
+        if resolved in seen or not path.is_file() or path.stat().st_size == 0:
+            continue
+        seen.add(resolved)
+        value = _json_object(path)
+        if str(value.get("access_token") or "").strip():
+            return value, label
+    raise RuntimeError("TikTok token files are missing or empty; authorization is required")
+
+
 def _json_object(path):
     if not path.is_file():
         raise FileNotFoundError(path)
@@ -277,6 +328,16 @@ def _decimal(value):
     try:
         return Decimal(str(value))
     except (InvalidOperation, ValueError):
+        return None
+
+
+def _date_value(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw[:10])
+    except ValueError:
         return None
 
 

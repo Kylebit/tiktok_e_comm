@@ -249,6 +249,40 @@ def test_stage_one_blocked_receipt_never_claims_reads_writes_or_refresh():
     }
 
 
+def test_stage_one_discovers_ozon_local_credentials_without_copying_them(tmp_path):
+    module = _settlement_pull_module()
+    path = tmp_path / "config" / "ozon.local.json"
+    path.parent.mkdir()
+    path.write_text(
+        '{"client_id":"client-test","api_key":"secret-test"}',
+        encoding="utf-8",
+    )
+
+    client_id, api_key, source = module._ozon_credentials(tmp_path)
+
+    assert (client_id, api_key) == ("client-test", "secret-test")
+    assert source == "config/ozon.local.json"
+    assert sorted(item.name for item in path.parent.iterdir()) == ["ozon.local.json"]
+
+
+def test_stage_one_uses_nonempty_tiktok_fallback_when_configured_file_is_empty(tmp_path):
+    module = _settlement_pull_module()
+    (tmp_path / "tiktok_tokens.json").write_text("", encoding="utf-8")
+    fallback = tmp_path / "tiktok_tokens_livelyhive.json"
+    fallback.write_text(
+        '{"access_token":"access-test","refresh_token":"refresh-test",'
+        '"access_token_expire_in":1}',
+        encoding="utf-8",
+    )
+
+    credentials, source = module._tiktok_credentials(
+        tmp_path, {"token_file": "tiktok_tokens.json"}
+    )
+
+    assert credentials["access_token"] == "access-test"
+    assert source == "tiktok_tokens_livelyhive.json"
+
+
 @pytest.mark.parametrize(
     "builder",
     (build_tiktok_weekly_report, build_shopee_weekly_report),

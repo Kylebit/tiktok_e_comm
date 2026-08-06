@@ -4,6 +4,8 @@
 
 Use Finance statements and statement transactions. A statement transaction is settlement evidence; normalize its statement timestamp as the settled/occurred date. Expand an order transaction to order-item rows without duplicating the transaction total. Preserve commission, transaction, affiliate, shipping, tax, refund, and adjustment fields. Do not call file cleanup or legacy report-generation helpers during preview.
 
+For local credential discovery, check the configured token file first, then `tiktok_tokens_livelyhive.json`. Skip missing or empty files. Do not silently restore a backup or refresh an expired access token during a report run; report the usable refresh credential as a human-decision blocker without exposing it.
+
 ## Shopee
 
 Use payment escrow list filtered by `escrow_release_time`, then escrow detail. Normalize only released escrow rows to settled. Preserve the release timestamp, payout/escrow amount, item quantity, item price, platform/service/commission/shipping/refund components, and item allocation method. Do not treat an ordinary completed order as settled without released escrow evidence.
@@ -11,6 +13,8 @@ Use payment escrow list filtered by `escrow_release_time`, then escrow detail. N
 ## Ozon
 
 Use finance transaction list and group operations by posting. Include only postings satisfying the existing official settled predicate. Preserve every operation/service line and whether it contributes to net settlement. Do not include pending postings merely because fulfillment or delivery completed.
+
+For local credential discovery, check `config/ozon.local.json`, then `modules/ozon/legacy_webapp/data/credentials.local.json`; inject the credential in memory and never copy it. Re-filter returned operations by the requested inclusive business-date range because the finance endpoint can return boundary rows outside the requested local dates.
 
 ## Live adapter receipt
 

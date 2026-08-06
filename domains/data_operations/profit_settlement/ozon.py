@@ -164,7 +164,7 @@ def _build_report(
             "advertising":{"mode":"estimated_rate","rate":rate_value,"basis":"buyer_paid_product_amount","basis_amount_local":paid,"amount_local":ad_local,"amount_cny":ad_cny,"policy_version":"ozon-fixed-ad-rate/v1"},
             "fee_items":fees,"external_costs_cny":external,"profit_cny":settlement_cny-product_cost-ad_cny-external,"source_snapshot_id":_text(row.get("source_snapshot_id")),
         })
-    lines.sort(key=lambda item:(item["identity"]["order_id"],item["identity"]["order_line_id"]))
+    lines.sort(key=_line_settlement_sort_key)
     totals=_totals(lines); source_checksum=_checksum(sorted((_ready(row) for row in source_rows),key=_canonical))
     fingerprint=_checksum({"schema":SCHEMA_VERSION,"period_kind":period_kind,"period":[start.isoformat(),end.isoformat()],"source":source_checksum,"costs":costs.snapshot_id,"fx":fx.snapshot_id,"ad_rate":str(rate_value),"code_version":code_version})
     return OzonProfitReport(
@@ -198,6 +198,11 @@ def _datetime(value):
     try:parsed=datetime.fromisoformat(text.replace("Z","+00:00"))
     except ValueError:return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+def _line_settlement_sort_key(item):
+    settled_at=item["settled_at"]
+    if settled_at.tzinfo is None:settled_at=settled_at.replace(tzinfo=timezone.utc)
+    identity=item["identity"]
+    return (-settled_at.timestamp(),_text(identity.get("order_id")),_text(identity.get("order_line_id")))
 def _decimal(value):
     if value is None or isinstance(value,bool) or str(value).strip()=="":return None
     try:return Decimal(str(value))

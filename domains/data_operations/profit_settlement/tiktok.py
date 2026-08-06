@@ -118,7 +118,7 @@ def build_monthly_report(
         fees,external=_fees(row.get("fee_items"),currency,fx,issues,record_id)
         if fees is None:rejected+=1;continue
         prepared.append({"row":row,"record_id":record_id,"occurred":_datetime(row.get("occurred_at")),"settled_at":settled_at,"sku":sku,"cost":cost,"currency":currency,"fx_rate":fx_rate,"quantity":quantity,"settlement":settlement,"paid":paid,"paid_cny":paid*fx_rate,"fees":fees,"external":external})
-    prepared.sort(key=lambda item:(_text(item["row"].get("order_id")),item["record_id"]))
+    prepared.sort(key=_prepared_settlement_sort_key)
     ad=_actual_advertising(actual_advertising,issues);allocations=_allocate_ads(ad.get("total_cny") if ad else None,prepared);lines=[]
     if ad:
         for index,item in enumerate(prepared):
@@ -254,7 +254,7 @@ def _build_report(
                 "source_snapshot_id": _text(row.get("source_snapshot_id")),
             }
         )
-    calculated.sort(key=lambda item: (item["identity"]["order_id"], item["identity"]["order_line_id"]))
+    calculated.sort(key=_line_settlement_sort_key)
     totals = _totals(calculated)
     source_fingerprint = _checksum(sorted((_json_ready(row) for row in source_rows), key=_canonical))
     fingerprint = _checksum(
@@ -365,6 +365,29 @@ def _datetime(value: object) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _prepared_settlement_sort_key(item: Mapping[str, Any]) -> tuple[float, str, str]:
+    settled_at = item["settled_at"]
+    if settled_at.tzinfo is None:
+        settled_at = settled_at.replace(tzinfo=timezone.utc)
+    return (
+        -settled_at.timestamp(),
+        _text(item["row"].get("order_id")),
+        _text(item.get("record_id")),
+    )
+
+
+def _line_settlement_sort_key(item: Mapping[str, Any]) -> tuple[float, str, str]:
+    settled_at = item["settled_at"]
+    if settled_at.tzinfo is None:
+        settled_at = settled_at.replace(tzinfo=timezone.utc)
+    identity = item["identity"]
+    return (
+        -settled_at.timestamp(),
+        _text(identity.get("order_id")),
+        _text(identity.get("order_line_id")),
+    )
 
 
 def _decimal(value: object) -> Decimal | None:

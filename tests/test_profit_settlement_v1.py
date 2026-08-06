@@ -826,6 +826,34 @@ def test_reporting_period_uses_settlement_date_not_order_date():
     assert report.order_lines[0]["settled_at"].date().isoformat() == "2026-08-05"
 
 
+@pytest.mark.parametrize(
+    "builder",
+    (build_tiktok_weekly_report, build_shopee_weekly_report, build_ozon_weekly_report),
+)
+def test_order_lines_sort_by_settlement_time_descending_with_stable_identity_tie_break(builder):
+    rows = [
+        {**_row("ORDER-Z"), "settled_at": "2026-08-04T12:00:00+07:00"},
+        {**_row("ORDER-B"), "settled_at": "2026-08-06T12:00:00+07:00"},
+        {**_row("ORDER-A"), "settled_at": "2026-08-06T12:00:00+07:00"},
+    ]
+
+    report = builder(
+        rows,
+        period_start="2026-08-03",
+        period_end="2026-08-09",
+        costs=_costs(),
+        fx=_fx(),
+        generated_at=NOW,
+        code_version="test-v1",
+    )
+
+    assert [line["identity"]["order_id"] for line in report.order_lines] == [
+        "ORDER-A",
+        "ORDER-B",
+        "ORDER-Z",
+    ]
+
+
 def test_all_platforms_offer_weekly_and_monthly_without_cross_platform_inputs():
     actual_ads = {
         "total_cny": "4",

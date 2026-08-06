@@ -1,0 +1,4 @@
+interface:
+  display_name: "Profit Settlement Manager"
+  short_description: "Audit detailed settled-order profit reports"
+  default_prompt: "Use $manage-profit-settlement to build and audit a settled-order profit report."

@@ -55,7 +55,7 @@ def test_dashboard_has_four_country_isolated_facts_and_policies():
     assert {
         region: len([row for row in rows if row["kind"] == "existing"])
         for region, rows in data["countries"].items()
-    } == {"MY": 24, "TH": 24, "VN": 10, "PH": 6}
+    } == {"MY": 24, "TH": 26, "VN": 11, "PH": 11}
 
     for region, rows in data["countries"].items():
         for row in rows:
@@ -74,24 +74,25 @@ def test_thailand_truncated_codes_are_normalized_without_fuzzy_merging():
     data = _data()
 
     assert _row(data, "TH", "0400")["inventory"] == {
-        "stock": 103,
-        "available": 103,
+        "stock": 86,
+        "available": 86,
         "allocated": 0,
         "frozen": 0,
         "inbound": 0,
         "warehouse": "TH8806",
     }
     assert _row(data, "TH", "0401")["inventory"] == {
-        "stock": 36,
-        "available": 36,
-        "allocated": 0,
+        "stock": 98,
+        "available": 94,
+        "allocated": 4,
         "frozen": 0,
-        "inbound": 100,
+        "inbound": 60,
         "warehouse": "TH8806",
     }
     assert _row(data, "TH", "0401")["sourceAliases"] == ["0401", "990401"]
+    assert _row(data, "TH", "0026")["inventory"]["inbound"] == 800
     assert _row(data, "TH", "0604")["inventory"]["available"] == 0
-    assert _row(data, "TH", "0605")["inventory"]["available"] == 13
+    assert _row(data, "TH", "0605")["inventory"]["available"] == 8
     assert _row(data, "TH", "0605")["sourceAliases"] == ["0605", "990605"]
     assert _row(data, "TH", "0613")["inventory"]["available"] == 20
 
@@ -99,13 +100,13 @@ def test_thailand_truncated_codes_are_normalized_without_fuzzy_merging():
 def test_vietnam_and_philippines_use_complete_shopee_settlement_snapshots():
     data = _data()
 
-    assert sum(row["inventory"]["available"] for row in data["countries"]["VN"]) == 341
+    assert sum(row["inventory"]["available"] for row in data["countries"]["VN"]) == 290
     assert sum(row["inventory"]["available"] for row in data["countries"]["PH"]) == 30
     assert _row(data, "VN", "0004")["sourceAliases"] == ["0004", "880004"]
     assert _row(data, "VN", "0004")["kind"] == "existing"
     assert _row(data, "VN", "0004")["inventory"] == {
-        "stock": 47,
-        "available": 47,
+        "stock": 46,
+        "available": 46,
         "allocated": 0,
         "frozen": 0,
         "inbound": 0,
@@ -113,10 +114,17 @@ def test_vietnam_and_philippines_use_complete_shopee_settlement_snapshots():
     }
     assert _row(data, "PH", "0820")["sourceAliases"] == ["0820", "770820"]
     assert _row(data, "PH", "0820")["inventory"]["available"] == 0
+    assert _row(data, "PH", "0820")["inventory"]["inbound"] == 40
     assert _row(data, "PH", "0821")["sourceAliases"] == ["0821", "770821"]
     assert _row(data, "PH", "0821")["inventory"]["available"] == 2
+    assert _row(data, "PH", "0821")["inventory"]["inbound"] == 20
     assert _row(data, "PH", "0822")["sourceAliases"] == ["0822", "770822"]
     assert _row(data, "PH", "0822")["inventory"]["available"] == 0
+    assert _row(data, "PH", "0822")["inventory"]["inbound"] == 40
+    assert {
+        region: sum(row["inventory"]["inbound"] for row in data["countries"][region])
+        for region in ("MY", "TH", "VN", "PH")
+    } == {"MY": 1000, "TH": 3350, "VN": 330, "PH": 510}
     assert "inventoryIdentityBlocker" not in data["config"]["PH"]
     assert "inventoryIdentityBlocker" not in data["config"]["VN"]
     assert "880004→0004" in data["config"]["VN"]["inventoryIdentityEvidence"]
@@ -248,7 +256,7 @@ def test_every_recent_30_day_sku_is_present_and_filterable_without_economic_gate
         recent_counts[region] = len(recent_rows)
         assert all((DASHBOARD / row["image"]).is_file() for row in recent_rows)
 
-    assert recent_counts == {"MY": 56, "TH": 91, "VN": 71, "PH": 99}
+    assert recent_counts == {"MY": 55, "TH": 94, "VN": 72, "PH": 89}
     assert 'filter === "RECENT30" && recent30Units > 0' in app
     assert 'status = item.kind === "first_stock" ? "FIRST_STOCK" : "REPLENISH"' in app
     assert '"REVIEW"' not in app
@@ -335,18 +343,18 @@ def test_dashboard_uses_complete_new_order_snapshots_for_quantity():
 
     assert data["quantityBasis"] == "valid_order"
     assert data["economicsBasis"] == "settlement"
-    assert data["snapshotDate"] == "2026-08-01"
+    assert data["snapshotDate"] == "2026-08-09"
     assert {region: len(rows) for region, rows in data["countries"].items()} == {
-        "MY": 78,
-        "TH": 97,
-        "VN": 98,
-        "PH": 133,
+        "MY": 83,
+        "TH": 104,
+        "VN": 102,
+        "PH": 139,
     }
     expected = {
-        "MY": {"tiktok": (697, 534), "shopee": (132, 101)},
-        "TH": {"tiktok": (2227, 1906), "shopee": (1172, 997)},
-        "VN": {"tiktok": (357, 283), "shopee": (48, 32)},
-        "PH": {"tiktok": (383, 318), "shopee": (99, 78)},
+        "MY": {"tiktok": (707, 545), "shopee": (132, 96)},
+        "TH": {"tiktok": (2137, 1805), "shopee": (1170, 963)},
+        "VN": {"tiktok": (367, 288), "shopee": (47, 32)},
+        "PH": {"tiktok": (340, 293), "shopee": (84, 63)},
     }
     for region, platforms in expected.items():
         evidence = data["config"][region]["orderDemandEvidence"]
@@ -360,15 +368,15 @@ def test_dashboard_uses_complete_new_order_snapshots_for_quantity():
 def test_dashboard_records_current_seaya_inventory_lineage():
     data = _data()
     expected = {
-        "MY": (24, 24),
-        "TH": (34, 24),
-        "VN": (10, 10),
-        "PH": (6, 6),
+        "MY": (31, 24),
+        "TH": (39, 26),
+        "VN": (15, 11),
+        "PH": (17, 11),
     }
 
     for region, (raw_rows, canonical_skus) in expected.items():
         evidence = data["config"][region]["inventoryEvidence"]
-        assert evidence["capturedAt"] == "2026-08-01T15:35:58+08:00"
+        assert evidence["capturedAt"] == "2026-08-09T09:42:43+08:00"
         assert evidence["source"] == "seaya_oms_stockWarehouse_logged_in_readonly"
         assert evidence["rawRows"] == raw_rows
         assert evidence["canonicalSkuCount"] == canonical_skus

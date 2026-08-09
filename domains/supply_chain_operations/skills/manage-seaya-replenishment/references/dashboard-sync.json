@@ -2,7 +2,7 @@
   "sha256": {
     "dashboard/README.md": "4535e58192e3a044395c30312987eab4aaa119709bdc96b81dca171e4a1af479",
     "dashboard/app.js": "fe87af6fb3153c4b53ee7c67f0300d3477f69ed745928e6c46160320bab90355",
-    "dashboard/data.js": "3ec1445135ef35bc7d3aee7aa48423293ecaecef8fd557cf339995d77cbebda1",
+    "dashboard/data.js": "08aa2f95d1336dac66d0ae15fcaa27d4c9226cd13bee5174652cf285a02b8937",
     "dashboard/index.html": "36d82d60653ad5539fe4cce4aa28f980e801f8c99240358ca975461836be152b",
     "dashboard/styles.css": "4e413260f8135118348d494634d04ffb6ac8e60522f6d7c0f6bea7a6c6855ecc",
     "skills/manage-seaya-replenishment/SKILL.md": "924a9713ed9968b676c9f56e0e6d55ded2eaf010fa1ce41fc6d4c79801d34dfd",

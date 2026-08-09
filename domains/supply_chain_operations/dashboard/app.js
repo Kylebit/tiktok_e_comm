@@ -5,7 +5,7 @@ let activeRegion = "MY";
 let calculated = [];
 let batch = {};
 const MANUAL_INPUT_KEY = "supply-chain-manual-logistics-v1";
-const INBOUND_ETA_KEY = "supply-chain-inbound-eta-v1";
+const INBOUND_ETA_KEY = "supply-chain-inbound-batch-eta-v2";
 let manualInputs = loadManualInputs();
 let inboundEtaOverrides = loadLocalObject(INBOUND_ETA_KEY);
 
@@ -40,7 +40,54 @@ function saveInboundEtaOverrides() {
 }
 
 const manualInputId = (region, sku) => `${region}:${sku}`;
-const inboundEtaId = (region, sku) => `${region}:${sku}`;
+const inboundEtaId = (region, batchId) => `${region}:${batchId}`;
+
+function inboundBatchEvents(region, item) {
+  const regionPlan = INBOUND_PLAN.regions[region];
+  const batches = regionPlan.batches || [];
+  if (item.inventory.inbound <= 0) {
+    return {batches: [], events: [], reconciled: true, unmatchedInbound: 0};
+  }
+
+  let candidates = [];
+  if (regionPlan.allocationPolicy === "SINGLE_ACTIVE_BATCH" && batches.length === 1) {
+    candidates = [{...batches[0], quantity: item.inventory.inbound, quantitySource: "SINGLE_ACTIVE_BATCH"}];
+  } else {
+    candidates = batches
+      .filter(batch => Object.prototype.hasOwnProperty.call(batch.skuQuantities || {}, item.sku))
+      .map(batch => ({
+        ...batch,
+        quantity: batch.skuQuantities[item.sku],
+        quantitySource: "EXACT_BATCH_SKU"
+      }));
+  }
+
+  const datedBatches = candidates.map(batch => {
+    const override = inboundEtaOverrides[inboundEtaId(region, batch.batchId)];
+    return {
+      ...batch,
+      estimatedSellableDate: override?.estimatedSellableDate || batch.estimatedSellableDate,
+      etaOverride: override || null
+    };
+  });
+  const quantitiesValid = datedBatches.length > 0 && datedBatches.every(
+    batch => Number.isInteger(batch.quantity) && batch.quantity >= 0
+  );
+  const matchedInbound = quantitiesValid
+    ? datedBatches.reduce((sum, batch) => sum + batch.quantity, 0)
+    : 0;
+  const reconciled = quantitiesValid && matchedInbound === item.inventory.inbound;
+  return {
+    batches: datedBatches,
+    events: reconciled ? datedBatches.map(batch => ({
+      batchId: batch.batchId,
+      quantity: batch.quantity,
+      estimatedSellableDate: batch.estimatedSellableDate
+    })) : [],
+    reconciled,
+    unmatchedInbound: reconciled ? 0 : item.inventory.inbound
+  };
+}
 
 function outboundFee(weightG) {
   if (weightG <= 50) return 1.8;
@@ -137,18 +184,14 @@ function calculateCountry(region) {
     const leadDemand = Math.ceil(dailyVelocity * config.leadDays);
     const arrivalTarget = Math.ceil(dailyVelocity * targetCoverageDays);
     const inboundPlan = INBOUND_PLAN.regions[region];
-    const inboundEtaOverride = inboundEtaOverrides[inboundEtaId(region, effectiveItem.sku)];
-    const estimatedSellableDate = inboundEtaOverride?.estimatedSellableDate
-      || inboundPlan.estimatedSellableDate;
+    const inboundAllocation = inboundBatchEvents(region, effectiveItem);
     const nextArrivalDate = TIMELINE.addDays(DATA.snapshotDate, config.leadDays);
     const supplyProjection = TIMELINE.projectSupply({
       snapshotDate: DATA.snapshotDate,
       nextArrivalDate,
       available: effectiveItem.inventory.available,
       dailyVelocity,
-      inboundEvents: effectiveItem.inventory.inbound > 0
-        ? [{quantity: effectiveItem.inventory.inbound, estimatedSellableDate}]
-        : []
+      inboundEvents: inboundAllocation.events
     });
     const projectedAtArrival = supplyProjection.projectedStock;
     const recommended = Math.max(0, arrivalTarget - projectedAtArrival);
@@ -165,7 +208,9 @@ function calculateCountry(region) {
       tiktokDemand, shopeeDemand, tiktokDaily, shopeeDaily, dailyVelocity,
       spikeProtection, targetCoverageDays, leadDemand, arrivalTarget,
       projectedAtArrival, recommended, volumeM3, chargeableUnitM3,
-      inboundPlan, inboundEtaOverride, estimatedSellableDate, nextArrivalDate,
+      inboundPlan, inboundBatches: inboundAllocation.batches,
+      inboundReconciled: inboundAllocation.reconciled,
+      unmatchedInbound: inboundAllocation.unmatchedInbound, nextArrivalDate,
       countedInbound: supplyProjection.countedInbound,
       pendingInbound: supplyProjection.pendingInbound};
   });
@@ -299,9 +344,13 @@ function rowHtml(item, config, region = activeRegion) {
     !item.weightReady ? "本土处理和收益" : "",
     !item.costReady ? "占款" : ""
   ].filter(Boolean).join("、");
-  const inboundEtaSource = item.inboundEtaOverride ? "手工日期" : "系统估算";
+  const inboundBatchLines = item.inboundBatches.map(batch => {
+    const quantity = Number.isInteger(batch.quantity) ? `${batch.quantity}件` : "数量待核对";
+    const source = batch.etaOverride ? "手工日期" : "系统估算";
+    return `<span class="inbound-batch-line"><b>${escapeHtml(batch.batchId)}</b> · ${quantity} · ${escapeHtml(batch.estimatedSellableDate)} · ${source}<button class="inbound-eta-button" type="button" data-action="inbound-eta" data-region="${escapeHtml(region)}" data-batch-id="${escapeHtml(batch.batchId)}">修改批次时间</button></span>`;
+  }).join("");
   const inboundTiming = item.inventory.inbound > 0
-    ? `<span>预计可售<b>${escapeHtml(item.estimatedSellableDate)}</b></span><span>时点口径<b>${inboundEtaSource}</b></span><span>新货到仓前计入<b>${item.countedInbound}</b></span><button class="inbound-eta-button" type="button" data-action="inbound-eta" data-region="${escapeHtml(region)}" data-sku="${escapeHtml(item.sku)}">修改到货时间</button>`
+    ? `${inboundBatchLines || "<span>尚未绑定到完整批次明细</span>"}<span>新货到仓前计入<b>${item.countedInbound}</b></span>${item.inboundReconciled ? "" : `<span class="pending-data">批次分摊未对平：${item.unmatchedInbound}件暂不计入供应</span>`}`
     : "";
   return `<tr>
     <td><div class="product-cell"><img src="./${escapeHtml(item.image)}" alt="SKU ${escapeHtml(item.sku)} 主图"><div>${activeRegion === "SUMMARY" ? `<small class="region-badge">${escapeHtml(region)} · ${escapeHtml(config.name)}</small>` : ""}<strong>${escapeHtml(item.sku)}</strong><span>${escapeHtml(item.name)}</span><small>${physicalLabel}</small></div></div></td>
@@ -444,6 +493,11 @@ function renderCountry() {
     demand => demand.method === "SEGMENTED_TREND"
   ).length;
   const spikeProtectedCount = calculated.filter(item => item.spikeProtection).length;
+  const regionBatches = INBOUND_PLAN.regions[activeRegion].batches || [];
+  const batchDateSummary = regionBatches.map(batch =>
+    `${batch.batchId} → ${(inboundEtaOverrides[inboundEtaId(activeRegion, batch.batchId)] || {}).estimatedSellableDate || batch.estimatedSellableDate}`
+  ).join("；");
+  const unreconciledInbound = calculated.reduce((sum, item) => sum + item.unmatchedInbound, 0);
 
   document.querySelector("#snapshotDate").textContent = DATA.snapshotDate;
   document.querySelector("#countryEyebrow").textContent = `${activeRegion} · ${config.freightMode.toUpperCase()} · ${config.warehouse}`;
@@ -501,11 +555,11 @@ function renderCountry() {
     : "";
   document.querySelector("#evidenceGrid").innerHTML = `
     <article class="${demandEvidenceClass}"><strong>${shopeeState ? "Shopee 需求暂未纳入" : "双平台需求已合并"}</strong><p>${demandEvidenceText}</p></article>
-    <article class="ok"><strong>库存按国家和时间隔离</strong><p>${config.warehouse} 当前可用 ${available} 件、在途 ${inbound} 件；在途按 ${INBOUND_PLAN.regions[activeRegion].estimatedSellableDate} 的系统估算逐时点计入，可在每个 SKU 行手工修改。</p></article>
+    <article class="${unreconciledInbound ? "warn" : "ok"}"><strong>在途按批次和时间隔离</strong><p>${config.warehouse} 当前可用 ${available} 件、在途 ${inbound} 件；${batchDateSummary || "当前无在途批次"}。日期按批次修改并同步影响该批次内全部 SKU。${unreconciledInbound ? `尚有 ${unreconciledInbound} 件聚合在途未与批次 SKU 数量对平，已暂不计入供应。` : "批次 SKU 数量已对平。"}</p></article>
     ${identityEvidence}
     ${unmappedEvidence}
     <article class="${segmentedChannelCount ? "ok" : "warn"}"><strong>趋势算法数据覆盖</strong><p>${segmentedChannelCount} / ${readyChannelDemands.length} 个可用渠道具备精确7/8/15天分段；其余明确使用30日+长窗或长窗降级，不伪造趋势。当前短期爆量首批保护 ${spikeProtectedCount} 款。</p></article>
-    <article class="ok"><strong>数量与物流资料已解耦</strong><p>${firstCount} 款海外仓尚无的候选进入台账；缺尺寸、重量或成本不阻断数量。系统估算到货日可修改，修改只保存在当前浏览器。</p></article>
+    <article class="ok"><strong>数量与物流资料已解耦</strong><p>${firstCount} 款海外仓尚无的候选进入台账；缺尺寸、重量或成本不阻断数量。批次预计可售日可修改，修改只保存在当前浏览器。</p></article>
     <article class="${activeRegion === "TH" ? "warn" : "ok"}"><strong>运费证据范围</strong><p>${config.shippingCoverage}。</p></article>
     <article class="neutral"><strong>固定头程口径</strong><p>本页按用户批准口径对所有国家、站点和 SKU 统一使用 ${money(config.fixedHeadFreightUnitCny, 2)}/件；实际发货报价差异不在本轮建议中调整。</p></article>
     <article class="neutral"><strong>外部写入为 0</strong><p>该页面是本地只读决策制品，不会写雅仓、TikTok、Shopee 或业务数据库，也不会自动下采购单。</p></article>`;
@@ -554,17 +608,16 @@ document.addEventListener("click", event => {
   const button = event.target.closest("[data-action='inbound-eta']");
   if (!button) return;
   const region = button.dataset.region || activeRegion;
-  const sku = button.dataset.sku;
-  const sourceItem = DATA.countries[region].find(item => item.sku === sku);
-  if (!sourceItem || sourceItem.inventory.inbound <= 0) return;
-  const plan = INBOUND_PLAN.regions[region];
-  const saved = inboundEtaOverrides[inboundEtaId(region, sku)];
+  const batchId = button.dataset.batchId;
+  const batchPlan = (INBOUND_PLAN.regions[region].batches || []).find(batch => batch.batchId === batchId);
+  if (!batchPlan) return;
+  const saved = inboundEtaOverrides[inboundEtaId(region, batchId)];
   inboundEtaForm.elements.region.value = region;
-  inboundEtaForm.elements.sku.value = sku;
-  inboundEtaForm.elements.estimatedSellableDate.value = saved?.estimatedSellableDate || plan.estimatedSellableDate;
+  inboundEtaForm.elements.batchId.value = batchId;
+  inboundEtaForm.elements.estimatedSellableDate.value = saved?.estimatedSellableDate || batchPlan.estimatedSellableDate;
   inboundEtaForm.elements.sourceNote.value = saved?.sourceNote || "";
-  document.querySelector("#inboundEtaDialogTitle").textContent = `${region} · SKU ${sku} 在途到货时间`;
-  document.querySelector("#inboundEtaAssumption").textContent = `系统估算：${plan.anchorDate} 起算 + ${plan.transportDays} 天运输 + ${plan.shelvingDays} 天签收上架 = ${plan.estimatedSellableDate}；当前在途 ${sourceItem.inventory.inbound} 件。`;
+  document.querySelector("#inboundEtaDialogTitle").textContent = `${region} · 批次 ${batchId} 到货时间`;
+  document.querySelector("#inboundEtaAssumption").textContent = `系统估算：${batchPlan.anchorDate} 起算 + ${batchPlan.transportDays} 天运输 + ${batchPlan.shelvingDays} 天签收上架 = ${batchPlan.estimatedSellableDate}；批次总计 ${batchPlan.totalUnits} 件。修改后会同步影响该批次内所有 SKU，不会改变其他批次。`;
   document.querySelector("#clearInboundEta").hidden = !saved;
   inboundEtaError.textContent = "";
   inboundEtaDialog.showModal();
@@ -620,7 +673,7 @@ document.querySelector("#cancelInboundEtaBottom").addEventListener("click", () =
 inboundEtaForm.addEventListener("submit", event => {
   event.preventDefault();
   const region = inboundEtaForm.elements.region.value;
-  const sku = inboundEtaForm.elements.sku.value;
+  const batchId = inboundEtaForm.elements.batchId.value;
   const estimatedSellableDate = inboundEtaForm.elements.estimatedSellableDate.value;
   try {
     if (TIMELINE.daysBetween(DATA.snapshotDate, estimatedSellableDate) === 0
@@ -631,7 +684,7 @@ inboundEtaForm.addEventListener("submit", event => {
     inboundEtaError.textContent = `预计可售日期必须是 ${DATA.snapshotDate} 或之后的有效日期。`;
     return;
   }
-  inboundEtaOverrides[inboundEtaId(region, sku)] = {
+  inboundEtaOverrides[inboundEtaId(region, batchId)] = {
     estimatedSellableDate,
     sourceNote: inboundEtaForm.elements.sourceNote.value.trim(),
     updatedAt: new Date().toISOString()
@@ -648,8 +701,8 @@ inboundEtaForm.addEventListener("submit", event => {
 
 document.querySelector("#clearInboundEta").addEventListener("click", () => {
   const region = inboundEtaForm.elements.region.value;
-  const sku = inboundEtaForm.elements.sku.value;
-  delete inboundEtaOverrides[inboundEtaId(region, sku)];
+  const batchId = inboundEtaForm.elements.batchId.value;
+  delete inboundEtaOverrides[inboundEtaId(region, batchId)];
   try {
     saveInboundEtaOverrides();
   } catch {

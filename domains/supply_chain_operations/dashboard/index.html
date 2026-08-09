@@ -46,7 +46,7 @@
 
     <section class="kpi-strip">
       <article><small id="warehouseLabel">海外仓</small><strong id="inventoryUnits">—</strong><span>当前可用库存</span></article>
-      <article><small>有日期的在途</small><strong id="inboundUnits">—</strong><span>只在预计可售日后计入</span></article>
+      <article><small>雅仓聚合在途</small><strong id="inboundUnits">—</strong><span>仅批次 SKU 数量对平后按日期计入</span></article>
       <article><small>需求观察窗</small><strong id="demandWindow">—</strong><span>TikTok + Shopee 分渠道合并</span></article>
       <article><small>当前结论</small><strong id="decisionHeadline">—</strong><span>建议量按需求与库存判定</span></article>
     </section>
@@ -54,7 +54,7 @@
     <section class="section ledger" id="sku-plan">
       <div class="section-heading">
         <div><span class="eyebrow">SKU-BY-SKU LEDGER</span><h2>逐款展示需求、库存、公式与收益</h2></div>
-        <p>正式建议件数只使用 TikTok 与 Shopee 的有效订单事实；结算口径销量仅为旧版参考，不构成正式补货数量。雅仓现货从今天开始消耗，在途到预计可售日才加入投影库存。预计日期可以逐 SKU 手工修正，节省金额只使用结算事实，各国绝不混算。</p>
+        <p>正式建议件数只使用 TikTok 与 Shopee 的有效订单事实；结算口径销量仅为旧版参考，不构成正式补货数量。雅仓现货从今天开始消耗，在途按各自批次的预计可售日才加入投影库存。预计日期按批次手工修正，节省金额只使用结算事实，各国绝不混算。</p>
       </div>
       <div class="toolbar">
         <label>搜索 SKU / 商品<input id="searchInput" type="search" placeholder="例如 0007、墙贴"></label>
@@ -77,7 +77,7 @@
         <p class="formula-note">v = TikTok 趋势日均 + Shopee 趋势日均。具备逐日事实时，单渠道采用最近7天60% + 第8–15天30% + 第16–30天10%；短期爆量且海外仓尚无时，首批只覆盖15天。缺逐日分段时明确降级，不伪造趋势。</p>
       </div>
       <div class="rules">
-        <article><b>库存</b><p>雅仓可用库存立即参与消耗；在途只有到预计可售日才加入。占用、冻结不重复计入。系统估算日期可逐 SKU 修改，海外仓没有该 SKU 时按 0 开始。</p></article>
+        <article><b>库存</b><p>雅仓可用库存立即参与消耗；在途按“批次 + SKU 数量 + 预计可售日”逐条加入。占用、冻结不重复计入。系统估算日期按批次修改，同批次全部 SKU 同步变化。</p></article>
         <article><b>头程</b><p id="freightRule">—</p></article>
         <article><b>收益</b><p id="economicsRule">—</p></article>
       </div>
@@ -125,10 +125,10 @@
         <div><span class="eyebrow">INBOUND TIMELINE</span><h2 id="inboundEtaDialogTitle">修改在途预计可售日期</h2></div>
         <button id="cancelInboundEta" class="dialog-close" type="button" aria-label="关闭">×</button>
       </div>
-      <p class="manual-intro">日期覆盖只保存在当前浏览器，不会修改雅仓入库单。到货后还需要签收和上架，因此这里填写“预计可售日期”，不是车辆或船舶抵达日期。</p>
+      <p class="manual-intro">日期覆盖只保存在当前浏览器，不会修改雅仓入库单。修改对象是完整批次，同一批次里的全部 SKU 会使用同一个预计可售日期；其他批次不受影响。</p>
       <p id="inboundEtaAssumption" class="eta-assumption"></p>
       <input name="region" type="hidden">
-      <input name="sku" type="hidden">
+      <input name="batchId" type="hidden">
       <label>预计可售日期<input name="estimatedSellableDate" type="date" required></label>
       <label>来源备注（可选）<input name="sourceNote" type="text" maxlength="120" placeholder="例如：物流商确认 8 月 22 日到仓，预计 24 日上架"></label>
       <p id="inboundEtaError" class="manual-error" role="alert"></p>
@@ -142,9 +142,9 @@
   </dialog>
 
   <footer><span>Supply Chain Operations · Read-only decision artifact</span><span>这是决策建议，不是采购或发货指令；正式发货前复核采购可得量与当期头程报价。</span></footer>
-  <script src="./data.js?v=20260809-eta1"></script>
-  <script src="./inbound-plan.js?v=20260809-eta1"></script>
-  <script src="./inbound-timeline.js?v=20260809-eta1"></script>
-  <script src="./app.js?v=20260809-eta1"></script>
+  <script src="./data.js?v=20260809-batch2"></script>
+  <script src="./inbound-plan.js?v=20260809-batch2"></script>
+  <script src="./inbound-timeline.js?v=20260809-batch2"></script>
+  <script src="./app.js?v=20260809-batch2"></script>
 </body>
 </html>

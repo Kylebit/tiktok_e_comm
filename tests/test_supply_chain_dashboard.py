@@ -410,12 +410,17 @@ def test_inbound_eta_is_estimated_time_phased_and_locally_editable():
     for date in ("2026-09-03", "2026-08-24"):
         assert date in plan
     assert 'anchorType: "MARKED_SHIPPED"' in plan
-    assert 'anchorType: "LATEST_CREATED_FALLBACK"' in plan
+    assert 'anchorType: "CREATED_FALLBACK"' in plan
+    assert 'batchId: "THML4038-58701"' in plan
+    assert 'batchId: "THSL4038-59557"' in plan
+    assert 'allocationPolicy: "EXACT_BATCH_SKU_REQUIRED"' in plan
     assert "function projectSupply" in timeline
     assert "stock = consume(stock, dailyVelocity, event.day - lastDay)" in timeline
     assert "if (event.day > horizonDays)" in timeline
-    assert 'supply-chain-inbound-eta-v1' in app
+    assert 'supply-chain-inbound-batch-eta-v2' in app
+    assert "inboundEtaId(region, batchId)" in app
     assert 'data-action="inbound-eta"' in app
+    assert "修改批次时间" in app
     assert 'id="inboundEtaDialog"' in html
     assert "预计可售日期" in html
     assert "不会修改雅仓入库单" in html

@@ -35,6 +35,9 @@
     parseDate(nextArrivalDate);
     const horizonDays = daysBetween(snapshotDate, nextArrivalDate);
     const events = (inboundEvents || []).map(event => {
+      if (typeof event.batchId !== "string" || !event.batchId.trim()) {
+        throw new TypeError("inbound batchId must be a nonempty string");
+      }
       if (!Number.isInteger(event.quantity) || event.quantity < 0) {
         throw new TypeError("inbound quantity must be a nonnegative integer");
       }

@@ -9,6 +9,7 @@ from math import ceil, floor, isfinite
 
 @dataclass(frozen=True)
 class InboundEvent:
+    batch_id: str
     quantity: int
     estimated_sellable_date: date
 
@@ -47,6 +48,8 @@ def project_supply(
     horizon_days = (next_arrival_date - snapshot_date).days
     normalized: list[tuple[int, InboundEvent]] = []
     for event in inbound_events:
+        if type(event.batch_id) is not str or not event.batch_id.strip():
+            raise TypeError("inbound batch_id must be a nonempty built-in string")
         if type(event.quantity) is not int or event.quantity < 0:
             raise TypeError("inbound quantity must be a nonnegative built-in int")
         day = max(0, (event.estimated_sellable_date - snapshot_date).days)

@@ -409,17 +409,19 @@ def test_inbound_eta_is_estimated_time_phased_and_locally_editable():
     plan = (DASHBOARD / "inbound-plan.js").read_text(encoding="utf-8")
     timeline = (DASHBOARD / "inbound-timeline.js").read_text(encoding="utf-8")
 
-    for date in ("2026-09-03", "2026-08-24"):
-        assert date in plan
-    assert 'anchorType: "MARKED_SHIPPED"' in plan
-    assert 'anchorType: "CREATED_FALLBACK"' in plan
+    assert 'anchorAt: "2026-08-04T15:39:15+08:00"' in plan
+    assert 'estimatedSellableDate: "2026-08-21"' in plan
+    assert 'anchorType: "REACHED_DOMESTIC_WAREHOUSE"' in plan
+    assert 'anchorType: "REACHED_DOMESTIC_WAREHOUSE_REQUIRED"' in plan
+    assert 'anchorType: "MARKED_SHIPPED"' not in plan
+    assert 'anchorType: "CREATED_FALLBACK"' not in plan
     assert 'batchId: "THML4038-58701"' in plan
     assert 'batchId: "THSL4038-59557"' in plan
     assert 'allocationPolicy: "EXACT_BATCH_SKU_REQUIRED"' in plan
     assert "function projectSupply" in timeline
     assert "stock = consume(stock, dailyVelocity, event.day - lastDay)" in timeline
     assert "if (event.day > horizonDays)" in timeline
-    assert 'supply-chain-inbound-batch-eta-v2' in app
+    assert 'supply-chain-inbound-batch-timing-v3' in app
     assert "const inboundEtaId = (region, batchId)" in app
     assert 'href="./inbound-batches.html"' in html
     assert 'id="inboundEtaDialog"' not in html
@@ -428,3 +430,7 @@ def test_inbound_eta_is_estimated_time_phased_and_locally_editable():
     assert "确认批次时间" in batch_app
     assert "overrideId(region, batchId)" in batch_app
     assert "localStorage.setItem(INBOUND_ETA_KEY" in batch_app
+    assert 'name="anchorAt"' in batch_app
+    assert 'type="datetime-local"' in batch_app
+    assert "batch.transportDays + batch.shelvingDays" in batch_app
+    assert "已入库（Reach the domestic warehouse）" in batch_html

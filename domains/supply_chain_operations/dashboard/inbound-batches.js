@@ -1,7 +1,7 @@
 const DATA = window.SUPPLY_CHAIN_DATA;
 const INBOUND_PLAN = window.SUPPLY_CHAIN_INBOUND_PLAN;
 const TIMELINE = window.SUPPLY_CHAIN_TIMELINE;
-const INBOUND_ETA_KEY = "supply-chain-inbound-batch-eta-v2";
+const INBOUND_ETA_KEY = "supply-chain-inbound-batch-timing-v3";
 const REGION_NAMES = {MY: "马来西亚", TH: "泰国", VN: "越南", PH: "菲律宾"};
 let activeRegion = new URLSearchParams(location.hash.slice(1)).get("region") || "ALL";
 let overrides = loadOverrides();
@@ -48,19 +48,22 @@ function allocationState(batch) {
 }
 
 function anchorLabel(type) {
-  return type === "MARKED_SHIPPED" ? "雅仓标记发货" : "创建日期回退估算";
+  return type === "REACHED_DOMESTIC_WAREHOUSE" ? "雅仓已入库日志" : "已入库时间待确认";
 }
 
 function rowHtml(batch) {
   const saved = overrides[overrideId(batch.region, batch.batchId)];
-  const effectiveDate = saved?.estimatedSellableDate || batch.estimatedSellableDate;
+  const effectiveAnchorAt = saved?.anchorAt || (batch.anchorAt ? batch.anchorAt.slice(0, 16) : "");
+  const effectiveAnchorDate = effectiveAnchorAt ? effectiveAnchorAt.slice(0, 10) : "";
+  const effectiveDate = saved?.estimatedSellableDate
+    || (effectiveAnchorDate ? TIMELINE.addDays(effectiveAnchorDate, batch.transportDays + batch.shelvingDays) : "");
   const allocation = allocationState(batch);
   return `<tr data-region="${escapeHtml(batch.region)}" data-batch-id="${escapeHtml(batch.batchId)}">
     <td><div class="batch-identity"><small>${escapeHtml(batch.region)} · ${escapeHtml(REGION_NAMES[batch.region])}</small><strong>${escapeHtml(batch.batchId)}</strong><span>${escapeHtml(DATA.config[batch.region].warehouse)}</span></div></td>
     <td><div class="batch-facts"><span>批次总量 <b>${batch.totalUnits.toLocaleString("zh-CN")} 件</b></span><span>运输周期 <b>${batch.transportDays} 天</b></span><span>签收上架 <b>${batch.shelvingDays} 天</b></span></div></td>
-    <td><div class="batch-facts"><span>起算日 <b>${escapeHtml(batch.anchorDate)}</b></span><span>锚点 <b>${anchorLabel(batch.anchorType)}</b></span><span>系统预计可售 <b>${escapeHtml(batch.estimatedSellableDate)}</b></span></div></td>
-    <td><label class="batch-date-field">预计可售日期<input name="estimatedSellableDate" type="date" min="${escapeHtml(DATA.snapshotDate)}" value="${escapeHtml(effectiveDate)}"></label><label class="batch-note-field">确认依据<input name="sourceNote" type="text" maxlength="120" value="${escapeHtml(saved?.sourceNote || "")}" placeholder="例如：物流商确认到仓时间"></label><small class="batch-save-state">${saved ? `已确认 · ${escapeHtml(saved.updatedAt?.slice(0, 10) || "本地")}` : "尚未人工确认，当前使用系统估算"}</small></td>
-    <td><span class="pill ${allocation.pending ? "blocked" : "hold"}">${allocation.pending ? "待核对" : "可归属"}</span><small class="reason"><b>${escapeHtml(allocation.label)}</b><br>${escapeHtml(allocation.detail)}</small></td>
+    <td><div class="batch-facts"><span>建单时间 <b>${escapeHtml(batch.createdAt.replace("T", " ").slice(0, 19))}</b></span><span>已入库起算 <b>${escapeHtml(batch.anchorAt ? batch.anchorAt.replace("T", " ").slice(0, 19) : "待确认")}</b></span><span>证据 <b>${anchorLabel(batch.anchorType)}</b></span><span>系统预计可售 <b>${escapeHtml(batch.estimatedSellableDate || "待起算")}</b></span></div></td>
+    <td><label class="batch-date-field">已入库时间（统一起算）<input name="anchorAt" type="datetime-local" min="${escapeHtml(batch.createdAt.slice(0, 16))}" value="${escapeHtml(effectiveAnchorAt)}"></label><label class="batch-date-field">预计可售日期<input name="estimatedSellableDate" type="date" value="${escapeHtml(effectiveDate)}" ${effectiveAnchorDate ? "" : "disabled"}></label><label class="batch-note-field">确认依据<input name="sourceNote" type="text" maxlength="120" value="${escapeHtml(saved?.sourceNote || "")}" placeholder="例如：雅仓日志显示已入库 2026-08-04 15:39:15"></label><small class="batch-save-state">${saved ? `已人工确认 · ${escapeHtml(saved.updatedAt?.slice(0, 10) || "本地")}` : batch.anchorAt ? "已读取雅仓已入库日志" : "缺少已入库时间，暂不计算到货"}</small></td>
+    <td><span class="pill ${allocation.pending || !effectiveAnchorDate ? "blocked" : "hold"}">${allocation.pending || !effectiveAnchorDate ? "待核对" : "可归属"}</span><small class="reason"><b>${escapeHtml(!effectiveAnchorDate ? "已入库起算日待确认" : allocation.label)}</b><br>${escapeHtml(!effectiveAnchorDate ? "没有已入库时间，不生成供应事件" : allocation.detail)}</small></td>
     <td><div class="batch-actions"><button class="primary" type="button" data-action="save">确认批次时间</button><button class="secondary" type="button" data-action="clear" ${saved ? "" : "disabled"}>恢复系统估算</button></div></td>
   </tr>`;
 }
@@ -71,8 +74,8 @@ function render() {
   document.querySelector("#snapshotDate").textContent = DATA.snapshotDate;
   document.querySelector("#batchCount").textContent = `${batches.length} 批`;
   document.querySelector("#batchUnits").textContent = `${batches.reduce((sum, batch) => sum + batch.totalUnits, 0).toLocaleString("zh-CN")} 件`;
-  document.querySelector("#confirmedCount").textContent = `${batches.filter(batch => overrides[overrideId(batch.region, batch.batchId)]).length} 批`;
-  document.querySelector("#pendingCount").textContent = `${batches.filter(batch => allocationState(batch).pending).length} 批`;
+  document.querySelector("#confirmedCount").textContent = `${batches.filter(batch => overrides[overrideId(batch.region, batch.batchId)]?.anchorAt || batch.anchorAt).length} 批`;
+  document.querySelector("#pendingCount").textContent = `${batches.filter(batch => allocationState(batch).pending || !(overrides[overrideId(batch.region, batch.batchId)]?.anchorAt || batch.anchorAt)).length} 批`;
   document.querySelector("#batchRows").innerHTML = visible.map(rowHtml).join("");
   document.querySelector("#batchEmpty").hidden = visible.length > 0;
   document.querySelectorAll("[data-region]").forEach(button => {
@@ -97,16 +100,24 @@ document.querySelector("#batchRows").addEventListener("click", event => {
   if (button.dataset.action === "clear") {
     delete overrides[key];
   } else {
+    const anchorAt = row.querySelector("[name='anchorAt']").value;
+    const anchorDate = anchorAt.slice(0, 10);
     const estimatedSellableDate = row.querySelector("[name='estimatedSellableDate']").value;
     try {
+      const minimumAnchorAt = row.querySelector("[name='anchorAt']").min;
+      TIMELINE.daysBetween(minimumAnchorAt.slice(0, 10), anchorDate);
       TIMELINE.daysBetween(DATA.snapshotDate, estimatedSellableDate);
-      if (estimatedSellableDate < DATA.snapshotDate) throw new TypeError("past date");
+      if (!anchorAt || anchorAt < minimumAnchorAt || estimatedSellableDate < anchorDate) {
+        throw new TypeError("invalid batch timing");
+      }
     } catch {
-      message.textContent = `预计可售日期必须是 ${DATA.snapshotDate} 或之后的有效日期。`;
+      message.textContent = "必须填写有效的已入库起算日；预计可售日期不得早于起算日。";
       message.classList.add("error-text");
       return;
     }
     overrides[key] = {
+      anchorAt,
+      anchorDate,
       estimatedSellableDate,
       sourceNote: row.querySelector("[name='sourceNote']").value.trim(),
       updatedAt: new Date().toISOString()
@@ -124,6 +135,24 @@ document.querySelector("#batchRows").addEventListener("click", event => {
     : `${batchId} 已按完整批次保存；补货看板将使用新日期。`;
   message.classList.remove("error-text");
   render();
+});
+
+document.querySelector("#batchRows").addEventListener("change", event => {
+  if (event.target.name !== "anchorAt") return;
+  const row = event.target.closest("tr");
+  const region = row.dataset.region;
+  const batchId = row.dataset.batchId;
+  const batch = (INBOUND_PLAN.regions[region].batches || []).find(item => item.batchId === batchId);
+  const etaInput = row.querySelector("[name='estimatedSellableDate']");
+  if (!event.target.value || !batch) {
+    etaInput.value = "";
+    etaInput.disabled = true;
+    return;
+  }
+  etaInput.disabled = false;
+  const anchorDate = event.target.value.slice(0, 10);
+  etaInput.min = anchorDate;
+  etaInput.value = TIMELINE.addDays(anchorDate, batch.transportDays + batch.shelvingDays);
 });
 
 render();

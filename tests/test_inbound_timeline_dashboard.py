@@ -90,13 +90,15 @@ def test_dashboard_uses_batch_level_overrides_and_never_sku_level_eta():
     batch_app = open("domains/supply_chain_operations/dashboard/inbound-batches.js", encoding="utf-8").read()
     plan = open("domains/supply_chain_operations/dashboard/inbound-plan.js", encoding="utf-8").read()
 
-    assert "supply-chain-inbound-batch-eta-v2" in app
+    assert "supply-chain-inbound-batch-timing-v3" in app
     assert "const inboundEtaId = (region, batchId)" in app
     assert "data-sku=\"${escapeHtml(item.sku)}\">修改到货时间" not in app
     assert "inboundEtaDialog" not in app
     assert "overrideId(region, batchId)" in batch_app
     assert "data-action=\"save\"" in batch_app
+    assert "REACHED_DOMESTIC_WAREHOUSE_REQUIRED" in plan
+    assert "timingsValid" in app
     assert 'batchId: "THML4038-58701"' in plan
     assert 'batchId: "THSL4038-59557"' in plan
     assert 'skuQuantities: {"0021": null}' in plan
-    assert "批次分摊未对平" in app
+    assert "批次分摊或已入库起算未就绪" in app

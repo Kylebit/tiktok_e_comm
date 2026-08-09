@@ -156,7 +156,9 @@ def test_skill_time_phases_inbound_and_preserves_manual_override_lineage():
 
     assert "Never treat `inbound` as available on the snapshot date" in skill
     assert "expected_sellable_at" in skill
-    assert "`标记发货`" in skill
+    assert "`已入库（Reach the domestic warehouse）`" in skill
+    assert "none may replace it" in skill
     assert "reversible browser `localStorage`" in skill
     assert "time_phased_projected_stock_at_new_replenishment_arrival" in contract
-    assert "Creation date is a labeled fallback" in contract
+    assert "Missing exact inbound time is `BLOCKED_ANCHOR`" in contract
+    assert "Creation, marked-shipped, verification" in contract

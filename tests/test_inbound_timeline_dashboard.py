@@ -75,18 +75,18 @@ def test_th_0021_exact_paginated_batch_split_changes_arrival_stock():
     daily_velocity = 37.280833333333
     result = project_supply(
         snapshot_date=date(2026, 8, 9),
-        next_arrival_date=date(2026, 8, 31),
+        next_arrival_date=date(2026, 9, 5),
         available=0,
         daily_velocity=daily_velocity,
         inbound_events=(
-            InboundEvent("THML4038-58701", 200, date(2026, 8, 21)),
-            InboundEvent("THSL4038-59557", 600, date(2026, 8, 28)),
+            InboundEvent("THML4038-58701", 200, date(2026, 8, 24)),
+            InboundEvent("THSL4038-59557", 600, date(2026, 8, 31)),
         ),
     )
 
-    assert result.projected_stock == 488
+    assert result.projected_stock == 413
     assert result.counted_inbound == 800
-    assert ceil(daily_velocity * 33) - result.projected_stock == 743
+    assert ceil(daily_velocity * 33) - result.projected_stock == 818
 
 
 def test_batch_identity_is_required():

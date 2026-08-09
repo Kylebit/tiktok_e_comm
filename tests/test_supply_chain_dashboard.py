@@ -208,6 +208,7 @@ def test_dashboard_loads_facts_before_calculation_code_and_has_four_country_tabs
     html = (DASHBOARD / "index.html").read_text(encoding="utf-8")
 
     assert html.index('src="./data.js?') < html.index('src="./app.js?')
+    assert html.index('src="./transport-history.js?') < html.index('src="./app.js?')
     assert html.index('src="./inbound-plan.js?') < html.index('src="./app.js?')
     assert html.index('src="./inbound-timeline.js?') < html.index('src="./app.js?')
     for region in ("MY", "TH", "VN", "PH"):
@@ -289,11 +290,14 @@ def test_quantity_is_independent_from_dimensions_weight_and_cost():
     html = (DASHBOARD / "index.html").read_text(encoding="utf-8")
 
     assert "const recommended = Math.max(0, arrivalTarget - projectedAtArrival)" in app
-    assert "const NEW_REPLENISHMENT_PREPARATION_DAYS = 7" in app
-    assert "const effectiveLeadDays = NEW_REPLENISHMENT_PREPARATION_DAYS + config.leadDays" in app
+    assert "const NEW_REPLENISHMENT_PREPARATION_DAYS = 3" in app
+    assert "const NEW_REPLENISHMENT_DOMESTIC_WAREHOUSE_DAYS = 4" in app
+    assert "const transportPolicy = TRANSPORT_HISTORY.regions[region]" in app
+    assert "+ NEW_REPLENISHMENT_DOMESTIC_WAREHOUSE_DAYS" in app
+    assert "+ effectiveTransportDays" in app
     assert "Math.ceil(dailyVelocity * effectiveLeadDays)" in app
     assert "TIMELINE.addDays(DATA.snapshotDate, effectiveLeadDays)" in app
-    assert "7天备货 + ${config.leadDays}天运输" in app
+    assert "3天备货 + 4天到国内仓 + ${item.effectiveTransportDays}天海外运输" in app
     assert "TIMELINE.projectSupply" in app
     assert "countedInbound: supplyProjection.countedInbound" in app
     assert "calculationReady" not in app
@@ -306,7 +310,7 @@ def test_quantity_is_independent_from_dimensions_weight_and_cost():
     assert 'filter === "MISSING_DATA" && item.dataIncomplete' in app
     assert '<option value="MISSING_DATA">资料待补</option>' in html
     assert "两类建议按同一规则排序并在同一张表中展示" in html
-    assert "本次新货预计可售日按 7 天备货准备 + 国家运输周期计算" in html
+    assert "本次新货预计可售日按 3 天备货 + 4 天到国内仓 + 当前国家海外运输周期计算" in html
 
 
 def test_dashboard_consumes_segmented_trend_and_discloses_fallbacks():
@@ -416,12 +420,12 @@ def test_inbound_eta_is_estimated_time_phased_and_locally_editable():
     timeline = (DASHBOARD / "inbound-timeline.js").read_text(encoding="utf-8")
 
     assert 'anchorAt: "2026-08-04T15:39:15+08:00"' in plan
-    assert 'estimatedSellableDate: "2026-08-21"' in plan
+    assert 'estimatedSellableDate: "2026-08-24"' in plan
     assert 'anchorType: "REACHED_DOMESTIC_WAREHOUSE"' in plan
     assert 'anchorType: "CREATED_PLUS_4_DAYS_ESTIMATE"' in plan
     assert 'inboundStatus: "NOT_YET_INBOUND"' in plan
     assert 'estimatedAnchorAt: "2026-08-11T16:41:32+08:00"' in plan
-    assert 'estimatedSellableDate: "2026-08-28"' in plan
+    assert 'estimatedSellableDate: "2026-08-31"' in plan
     assert 'anchorType: "MARKED_SHIPPED"' not in plan
     assert 'anchorType: "CREATED_FALLBACK"' not in plan
     assert 'batchId: "THML4038-58701"' in plan
@@ -443,7 +447,9 @@ def test_inbound_eta_is_estimated_time_phased_and_locally_editable():
     assert "localStorage.setItem(INBOUND_ETA_KEY" in batch_app
     assert 'name="anchorAt"' in batch_app
     assert 'type="datetime-local"' in batch_app
-    assert "batch.transportDays + batch.shelvingDays" in batch_app
+    assert "batch.transportDays + batch.shelvingDays" not in batch_app
+    assert "TIMELINE.addDays(effectiveAnchorDate, batch.transportDays)" in batch_app
+    assert "签收上架缓冲 <b>0 天（已取消）</b>" in batch_app
     assert "有“已入库”日志时使用实际时间" in batch_html
     assert "尚未入库时明确标记“未入库”" in batch_html
     assert "未入库 · 建单时间 + 4 天估算" in batch_app

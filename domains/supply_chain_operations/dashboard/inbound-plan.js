@@ -15,8 +15,7 @@ window.SUPPLY_CHAIN_INBOUND_PLAN = {
         anchorType: "CREATED_PLUS_4_DAYS_ESTIMATE",
         inboundStatus: "NOT_YET_INBOUND",
         transportDays: 25,
-        shelvingDays: 2,
-        estimatedSellableDate: "2026-09-07",
+        estimatedSellableDate: "2026-09-05",
         confidence: "USER_APPROVED_ESTIMATED_ANCHOR"
       }]
     },
@@ -32,9 +31,8 @@ window.SUPPLY_CHAIN_INBOUND_PLAN = {
         estimatedAnchorAt: null,
         anchorType: "REACHED_DOMESTIC_WAREHOUSE",
         inboundStatus: "INBOUND_CONFIRMED",
-        transportDays: 15,
-        shelvingDays: 2,
-        estimatedSellableDate: "2026-08-21",
+        transportDays: 20,
+        estimatedSellableDate: "2026-08-24",
         confidence: "VERIFIED_ANCHOR_ESTIMATED_ETA",
         anchorEvidence: "user_supplied_seaya_inbound_log_screenshot_2026-08-09",
         skuQuantities: {"0021": 200}
@@ -47,9 +45,8 @@ window.SUPPLY_CHAIN_INBOUND_PLAN = {
         estimatedAnchorAt: "2026-08-11T16:41:32+08:00",
         anchorType: "CREATED_PLUS_4_DAYS_ESTIMATE",
         inboundStatus: "NOT_YET_INBOUND",
-        transportDays: 15,
-        shelvingDays: 2,
-        estimatedSellableDate: "2026-08-28",
+        transportDays: 20,
+        estimatedSellableDate: "2026-08-31",
         confidence: "USER_APPROVED_ESTIMATED_ANCHOR",
         skuQuantities: {"0021": 600}
       }]
@@ -67,8 +64,7 @@ window.SUPPLY_CHAIN_INBOUND_PLAN = {
         anchorType: "CREATED_PLUS_4_DAYS_ESTIMATE",
         inboundStatus: "NOT_YET_INBOUND",
         transportDays: 15,
-        shelvingDays: 2,
-        estimatedSellableDate: "2026-08-28",
+        estimatedSellableDate: "2026-08-26",
         confidence: "USER_APPROVED_ESTIMATED_ANCHOR"
       }]
     },
@@ -85,8 +81,7 @@ window.SUPPLY_CHAIN_INBOUND_PLAN = {
         anchorType: "CREATED_PLUS_4_DAYS_ESTIMATE",
         inboundStatus: "NOT_YET_INBOUND",
         transportDays: 25,
-        shelvingDays: 2,
-        estimatedSellableDate: "2026-09-07",
+        estimatedSellableDate: "2026-09-05",
         confidence: "USER_APPROVED_ESTIMATED_ANCHOR"
       }]
     }

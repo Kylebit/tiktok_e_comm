@@ -1,7 +1,9 @@
 const DATA = window.SUPPLY_CHAIN_DATA;
 const INBOUND_PLAN = window.SUPPLY_CHAIN_INBOUND_PLAN;
 const TIMELINE = window.SUPPLY_CHAIN_TIMELINE;
-const NEW_REPLENISHMENT_PREPARATION_DAYS = 7;
+const TRANSPORT_HISTORY = window.SUPPLY_CHAIN_TRANSPORT_HISTORY;
+const NEW_REPLENISHMENT_PREPARATION_DAYS = 3;
+const NEW_REPLENISHMENT_DOMESTIC_WAREHOUSE_DAYS = 4;
 let activeRegion = "MY";
 let calculated = [];
 let batch = {};
@@ -65,7 +67,7 @@ function inboundBatchEvents(region, item) {
     const anchorAt = actualAnchorAt || batch.estimatedAnchorAt;
     const anchorDate = anchorAt ? anchorAt.slice(0, 10) : null;
     const estimatedSellableDate = override?.estimatedSellableDate
-      || (anchorDate ? TIMELINE.addDays(anchorDate, batch.transportDays + batch.shelvingDays) : null);
+      || (anchorDate ? TIMELINE.addDays(anchorDate, batch.transportDays) : null);
     return {
       ...batch,
       anchorAt,
@@ -190,7 +192,11 @@ function calculateCountry(region) {
       demand => demand.trendClass === "SPIKE"
     );
     const targetCoverageDays = spikeProtection ? 15 : config.targetDays + config.safetyDays;
-    const effectiveLeadDays = NEW_REPLENISHMENT_PREPARATION_DAYS + config.leadDays;
+    const transportPolicy = TRANSPORT_HISTORY.regions[region];
+    const effectiveTransportDays = transportPolicy.effectiveTransportDays;
+    const effectiveLeadDays = NEW_REPLENISHMENT_PREPARATION_DAYS
+      + NEW_REPLENISHMENT_DOMESTIC_WAREHOUSE_DAYS
+      + effectiveTransportDays;
     const leadDemand = Math.ceil(dailyVelocity * effectiveLeadDays);
     const arrivalTarget = Math.ceil(dailyVelocity * targetCoverageDays);
     const inboundPlan = INBOUND_PLAN.regions[region];
@@ -216,7 +222,8 @@ function calculateCountry(region) {
       : null;
     return {...effectiveItem, dimensionsReady, weightReady, costReady, dataIncomplete,
       tiktokDemand, shopeeDemand, tiktokDaily, shopeeDaily, dailyVelocity,
-      spikeProtection, targetCoverageDays, effectiveLeadDays, leadDemand, arrivalTarget,
+      spikeProtection, targetCoverageDays, effectiveTransportDays, transportPolicy,
+      effectiveLeadDays, leadDemand, arrivalTarget,
       projectedAtArrival, recommended, volumeM3, chargeableUnitM3,
       inboundPlan, inboundBatches: inboundAllocation.batches,
       inboundReconciled: inboundAllocation.reconciled,
@@ -369,7 +376,7 @@ function rowHtml(item, config, region = activeRegion) {
     <td><div class="product-cell"><img src="./${escapeHtml(item.image)}" alt="SKU ${escapeHtml(item.sku)} 主图"><div>${activeRegion === "SUMMARY" ? `<small class="region-badge">${escapeHtml(region)} · ${escapeHtml(config.name)}</small>` : ""}<strong>${escapeHtml(item.sku)}</strong><span>${escapeHtml(item.name)}</span><small>${physicalLabel}</small></div></div></td>
     <td><div class="channel-stack">${channelBlock("TikTok", item.channels.tiktok, item.tiktokDemand)}${channelBlock("Shopee", item.channels.shopee, item.shopeeDemand)}<em>合并需求 ${item.dailyVelocity.toFixed(2)} 件/天${item.spikeProtection ? " · 短期爆量首批仅覆盖15天" : ""}</em></div></td>
     <td><div class="inventory-grid"><span>库存<b>${item.inventory.stock}</b></span><span>可用<b>${item.inventory.available}</b></span><span>占用<b>${item.inventory.allocated}</b></span><span>冻结<b>${item.inventory.frozen}</b></span><span>在途<b>${item.inventory.inbound}</b></span><span>绑定<b>${inventoryLabel}</b></span>${inboundTiming}</div></td>
-    <td><div class="calc-lines"><span>本次新货预计可售 <b>${item.nextArrivalDate}</b></span><span>7天备货 + ${config.leadDays}天运输</span><span>${item.effectiveLeadDays}天需求 <b>${item.leadDemand}</b></span><span>分时点到仓剩余 <b>${item.projectedAtArrival}</b></span><span>${item.targetCoverageDays}天目标 <b>${item.arrivalTarget}</b></span><code>先耗现货 → 到日加在途 → 再耗需求</code><code>max(0, ${item.arrivalTarget} − ${item.projectedAtArrival})</code></div></td>
+    <td><div class="calc-lines"><span>本次新货预计可售 <b>${item.nextArrivalDate}</b></span><span>3天备货 + 4天到国内仓 + ${item.effectiveTransportDays}天海外运输</span><span>${item.transportPolicy.eligibleSamples}批历史样本 · ${item.transportPolicy.state}</span><span>${item.effectiveLeadDays}天需求 <b>${item.leadDemand}</b></span><span>分时点到仓剩余 <b>${item.projectedAtArrival}</b></span><span>${item.targetCoverageDays}天目标 <b>${item.arrivalTarget}</b></span><code>先耗现货 → 到日加在途 → 再耗需求</code><code>max(0, ${item.arrivalTarget} − ${item.projectedAtArrival})</code></div></td>
     <td class="recommend"><strong>${item.recommended}</strong><span>件</span><small>${volumeLabel}</small></td>
     <td><div class="economics-mini"><span>用户结算价 <b>${local}${item.customerPaymentLocal.toFixed(2)}</b></span><span>税费节省 ${Math.round(config.taxSavingRate * 100)}% <b class="gain">${money(item.taxSavingUnit, 2)}</b></span><span>跨境运费节省 20% <b class="gain">${money(item.shippingSavingUnit, 2)}</b></span><span>本土处理 + 头程 <b>${handlingLabel}</b></span><em>${benefitLabel} ${shippingEvidence}</em></div></td>
     <td><span class="pill ${item.status.toLowerCase()}">${statusLabel(item.status)}</span><small class="reason">${item.dataIncomplete ? `建议件数已生成；${missingFields}待补充，仅影响${affectedOutputs}展示。` : item.kind === "first_stock" ? "当前仓库为0；平台需求与商品资料齐全，收益单独展示。" : item.status === "HOLD" ? "现货与按预计日期到达的在途已覆盖目标。" : item.status === "NO_DEMAND" ? "没有足够的SKU级需求事实。" : "需求缺口成立；收益仅展示，不拦截补货建议。"}</small>${item.dataIncomplete || item.manualInput ? `<button class="manual-entry-button" type="button" data-action="manual-entry" data-region="${escapeHtml(region)}" data-sku="${escapeHtml(item.sku)}">${item.manualInput ? "修改已补资料" : "手动补齐"}</button>` : ""}</td>
@@ -515,12 +522,13 @@ function renderCountry() {
   document.querySelector("#snapshotDate").textContent = DATA.snapshotDate;
   document.querySelector("#countryEyebrow").textContent = `${activeRegion} · ${config.freightMode.toUpperCase()} · ${config.warehouse}`;
   document.querySelector("#countryName").textContent = config.name;
-  document.querySelector("#heroDescription").textContent = `把 TikTok ${activeRegion} 与 Shopee ${activeRegion} 的 SKU 需求相加；现货从今天开始消耗，在途只有到了预计可售日才加入库存，再按 7 天备货准备 + ${config.leadDays} 天运输计算缺口。`;
+  const transportPolicy = TRANSPORT_HISTORY.regions[activeRegion];
+  document.querySelector("#heroDescription").textContent = `把 TikTok ${activeRegion} 与 Shopee ${activeRegion} 的 SKU 需求相加；现货从今天开始消耗，在途只有到了预计可售日才加入库存，再按 3 天备货 + 4 天到国内仓 + ${transportPolicy.effectiveTransportDays} 天海外运输计算缺口。`;
   const taxChip = config.taxSavingRate > 0
     ? `税费节省 = 用户结算价 × ${Math.round(config.taxSavingRate * 100)}%`
     : "税费优势尚未批准，按 0";
   document.querySelector("#sourceChips").innerHTML = `<span>雅仓 ${existingCount} SKU</span><span>${config.demandCoverage}</span><span>${config.freightMode}</span><span>${taxChip}</span>`;
-  document.querySelector("#coverageLabel").textContent = `7天备货 + ${config.leadDays}天运输 · 在途分时点 · 常规${config.targetDays + config.safetyDays}天`;
+  document.querySelector("#coverageLabel").textContent = `3天备货 + 4天到国内仓 + ${transportPolicy.effectiveTransportDays}天海外运输 · 在途分时点 · 常规${config.targetDays + config.safetyDays}天`;
   document.querySelector("#batchQty").textContent = qty.toLocaleString("zh-CN");
   document.querySelector("#batchSkuCount").textContent = `${approved.length} 款`;
   document.querySelector("#batchVolume").textContent = missingVolumeCount
@@ -546,7 +554,7 @@ function renderCountry() {
   document.querySelector("#decisionHeadline").textContent = approved.length ? `备 ${approved.length} 款` : "暂缓备货";
   document.querySelector("#ledgerTitle").textContent = "全部 SKU 备货建议";
   document.querySelector("#ledgerDescription").textContent = "“建议补货”表示海外仓已有该 SKU；“建议首批”表示海外仓当前没有该 SKU。两类建议按同一规则排序并在同一张表中展示。";
-  document.querySelector("#formulaText").textContent = `Q = max[0, 目标库存 − 分时点投影库存]；现货先消耗，在途到预计可售日才加入，再消耗至第 ${NEW_REPLENISHMENT_PREPARATION_DAYS + config.leadDays} 天（7天备货 + ${config.leadDays}天运输）`;
+  document.querySelector("#formulaText").textContent = `Q = max[0, 目标库存 − 分时点投影库存]；现货先消耗，在途到预计可售日才加入，再消耗至第 ${NEW_REPLENISHMENT_PREPARATION_DAYS + NEW_REPLENISHMENT_DOMESTIC_WAREHOUSE_DAYS + transportPolicy.effectiveTransportDays} 天（3天备货 + 4天到国内仓 + ${transportPolicy.effectiveTransportDays}天海外运输）`;
   document.querySelector("#freightRule").textContent = `所有国家、站点和 SKU 的头程统一按 ${money(config.fixedHeadFreightUnitCny, 2)}/件计入；体积只用于装运规划，不参与本页头程金额。`;
   const taxRule = config.taxSavingRate > 0
     ? `税费节省按用户结算价的 ${Math.round(config.taxSavingRate * 100)}%`

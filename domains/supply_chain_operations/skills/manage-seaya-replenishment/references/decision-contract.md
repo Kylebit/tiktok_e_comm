@@ -74,8 +74,9 @@ For Shopee settlement economics, a complete pull means every listed settlement p
 
 Quantity is executable only when every in-scope channel is backed by a complete `quantity_basis=valid_order` snapshot. Settlement-only history may be displayed as legacy context but cannot produce a recommended quantity.
 
-- `preparation_days = 7` (current user-approved policy for the newly recommended shipment)
-- `new_replenishment_lead_days = preparation_days + country_transit_days`
+- `preparation_days = 3` (current user-approved policy for the newly recommended shipment)
+- `domestic_warehouse_days = 4` (current user-approved policy for every country)
+- `new_replenishment_lead_days = preparation_days + domestic_warehouse_days + country_transport_days`
 - `lead_demand = ceil(v × new_replenishment_lead_days)`
 - Project supply chronologically: consume available stock to the first inbound `expected_sellable_at`, add that inbound quantity, then repeat until the new replenishment arrival.
 - `new_replenishment_expected_sellable_at = snapshot_date + new_replenishment_lead_days`
@@ -91,9 +92,11 @@ Inbound detail pagination is part of completeness. Read every page and sum every
 
 A manual override is keyed by country + complete `batch_id`, not SKU. It changes only the local decision projection, applies consistently to every SKU in the batch, and never changes the supplier record or another batch.
 
-Current estimated-sellable policy is `effective_anchor_date + approved country transit days + 2-day sign-and-shelve buffer`, where `effective_anchor = reached_domestic_warehouse_at ?? created_at + 4 days`. A fallback batch remains visibly not yet inbound. Missing multi-batch SKU allocation is a separate reconciliation blocker, not permission to invent one aggregate arrival date.
+Current estimated-sellable policy is `effective_anchor_date + approved country transport days`, where `effective_anchor = reached_domestic_warehouse_at ?? created_at + 4 days`. The former 2-day sign-and-shelve buffer is cancelled. A fallback batch remains visibly not yet inbound. Missing multi-batch SKU allocation is a separate reconciliation blocker, not permission to invent one aggregate arrival date.
 
-The 7-day preparation period applies only to the newly recommended shipment. Existing Seaya inbound events keep their batch-specific estimated-sellable policy and must not receive the preparation period again.
+The 3-day preparation and 4-day domestic-warehouse stages apply only to the newly recommended shipment. Existing Seaya inbound events keep their batch-specific estimated-sellable policy and must not receive those stages again because their anchor is already the domestic-warehouse event or its explicit fallback.
+
+Historical transport policy uses complete, non-abnormal Seaya batches with a named first-mile carrier. For each country, calculate nearest-rank P80 over integer ceiling days from `created_at` to `signed_at`, derive `historical_transport_days = max(1, p80_total_days - 3 - 4)`, and choose `effective_transport_days = max(baseline_transport_days, historical_transport_days)`. Require at least five eligible samples; otherwise use the baseline with `FALLBACK_INSUFFICIENT_SAMPLE`. Current redacted evidence is MY `n=2, fallback=25`; TH `n=9, P80 total=27, derived/effective=20`; VN `n=5, P80 total=12, derived=5, baseline floor=15`; PH `n=1, fallback=25`.
 
 Quantity is valid without dimensions, weight, or unit cost. Those fields affect separate outputs:
 
@@ -103,10 +106,10 @@ Quantity is valid without dimensions, weight, or unit cost. Those fields affect 
 
 Known portions may be shown with an explicit pending-item count, but a partial amount must never be presented as the complete batch total.
 
-| Country | Lead | Target | Safety | Mode |
+| Country | Effective overseas transport | Target | Safety | Mode |
 |---|---:|---:|---:|---|
 | MY | 25 days | 30 days | 5 days | West Malaysia sea |
-| TH | 15 days | 30 days | 3 days | Thailand land |
+| TH | 20 days | 30 days | 3 days | Thailand land, historical P80 uplift |
 | VN | 15 days | 30 days | 3 days | Vietnam south land, conservative until warehouse city confirmed |
 | PH | 25 days | 30 days | 5 days | Manila sea |
 

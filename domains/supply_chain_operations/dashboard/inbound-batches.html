@@ -31,7 +31,7 @@
       </div>
       <aside class="batch-policy">
         <strong>计算口径</strong>
-        <p>预计可售日 = 起算日期 + 国家运输周期 + 2 天签收上架。实际已入库优先；没有实际时间时采用用户批准的建单 + 4 天回退，但绝不标成已入库。</p>
+        <p>预计可售日 = 起算日期 + 当前国家海外运输周期，不再增加签收上架缓冲。实际已入库优先；没有实际时间时采用用户批准的建单 + 4 天回退，但绝不标成已入库。</p>
       </aside>
     </section>
 
@@ -66,9 +66,9 @@
   </main>
 
   <footer><span>Supply Chain Operations · Batch-level ETA control</span><span>这是本地决策确认，不是物流商或仓库到货承诺。</span></footer>
-  <script src="./data.js?v=20260809-fallback5"></script>
-  <script src="./inbound-plan.js?v=20260809-fallback5"></script>
-  <script src="./inbound-timeline.js?v=20260809-fallback5"></script>
-  <script src="./inbound-batches.js?v=20260809-fallback5"></script>
+  <script src="./data.js?v=20260809-leadtime-history"></script>
+  <script src="./inbound-plan.js?v=20260809-leadtime-history"></script>
+  <script src="./inbound-timeline.js?v=20260809-leadtime-history"></script>
+  <script src="./inbound-batches.js?v=20260809-leadtime-history"></script>
 </body>
 </html>

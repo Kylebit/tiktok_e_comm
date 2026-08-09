@@ -22,6 +22,8 @@ TRACKED = (
     DOMAIN_ROOT / "dashboard" / "inbound-timeline.js",
     DOMAIN_ROOT / "dashboard" / "index.html",
     DOMAIN_ROOT / "dashboard" / "styles.css",
+    DOMAIN_ROOT / "dashboard" / "transport-history.js",
+    DOMAIN_ROOT / "transport_history.py",
     SKILL_ROOT / "SKILL.md",
     SKILL_ROOT / "references" / "decision-contract.md",
 )

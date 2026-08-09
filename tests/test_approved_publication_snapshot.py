@@ -27,6 +27,53 @@ def _sha(value):
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
+def _category_decision(target, category_id, name, parent_id, parent_name):
+    platform, store = target.split(":", 1)
+    return {
+        "target_label": target,
+        "platform": platform,
+        "site": store,
+        "store": store,
+        "category": {
+            "id": category_id,
+            "name": name,
+            "path": [
+                {"id": parent_id, "name": parent_name},
+                {"id": category_id, "name": name},
+            ],
+        },
+        "decision": {
+            "status": "APPROVED",
+            "decision_digest": _sha({"target": target, "id": category_id}),
+        },
+    }
+
+
+def _target_categories():
+    return {
+        "tiktok:LH_PH": _category_decision(
+            "tiktok:LH_PH", "600338", "Wall Stickers", "600001", "Home Decor"
+        ),
+        "tiktok:LH_MY": _category_decision(
+            "tiktok:LH_MY",
+            "600339",
+            "Decorative Wall Decals",
+            "600001",
+            "Home Decor",
+        ),
+        "shopee:PH": _category_decision(
+            "shopee:PH",
+            "101944",
+            "Wall Stickers & Decals",
+            "100636",
+            "Home & Living",
+        ),
+        "ozon:RU": _category_decision(
+            "ozon:RU", "17028913", "Interior Stickers", "14500", "Home"
+        ),
+    }
+
+
 def _approved_plan():
     source_resolution = resolve_source_product_identity(
         collect_box={
@@ -44,7 +91,7 @@ def _approved_plan():
     category_digest = _sha({"category": "wall-stickers"})
     pricing_digest = _sha({"pricing": "r42"})
     lineage_digest = _sha({"lineage": "0958-0959"})
-    targets = ["tiktok:LH_PH", "shopee:PH", "ozon:RU"]
+    targets = ["tiktok:LH_PH", "tiktok:LH_MY", "shopee:PH", "ozon:RU"]
     payload = {
         "plan_id": "release-plan:3838616043:r42",
         "product_id": "3838616043",
@@ -76,6 +123,7 @@ def _approved_plan():
                 "id": "wall-stickers",
                 "name": "Home > Wall Stickers",
             },
+            "categories_by_target": _target_categories(),
             "selected_sku_keys": ["blue-38x45", "pink-38x45"],
             "sku_commercial_facts": {
                 "blue-38x45": {
@@ -100,6 +148,12 @@ def _approved_plan():
                     "sku_prices": [
                         {"model_sku": "0958", "list_price": "129", "currency": "PHP"},
                         {"model_sku": "0959", "list_price": "132", "currency": "PHP"},
+                    ]
+                },
+                "tiktok:LH_MY": {
+                    "sku_prices": [
+                        {"model_sku": "0958", "list_price": "39", "currency": "MYR"},
+                        {"model_sku": "0959", "list_price": "41", "currency": "MYR"},
                     ]
                 },
                 "shopee:PH": {
@@ -166,12 +220,14 @@ def test_builds_self_contained_multisku_approved_snapshot():
     assert [row["model_sku"] for row in document["skus"]] == ["0958", "0959"]
     assert set(document["skus"][0]["prices"]) == {
         "tiktok:LH_PH",
+        "tiktok:LH_MY",
         "shopee:PH",
         "ozon:RU",
     }
     assert document["skus"][0]["parcel"]["package_cm"] == ["38", "45", "0.2"]
     assert document["skus"][1]["variant_images"] == ["https://img.example/pink.jpg"]
-    assert document["product"]["category"]["id"] == "wall-stickers"
+    assert document["product"]["main_category"]["id"] == "wall-stickers"
+    assert document["categories_by_target"]["tiktok:LH_PH"]["category"]["id"] == "600338"
     assert document["product"]["source_identity"]["source_offer_id"] == "986159122616"
     assert document["product"]["source_identity"]["source_item_code"] == (
         "JD5047（38*45cm）"
@@ -358,3 +414,148 @@ def test_snapshot_payload_is_plain_json_without_runtime_contract_dependencies():
     assert "ContentPackage" not in encoded
     assert "986159122616" in encoded
     assert "approved-publication-snapshot/v4" in encoded
+
+
+def test_freezes_distinct_provider_categories_for_each_publication_target():
+    plan = _approved_plan()
+    plan["payload"]["product_facts"]["categories_by_target"] = (
+        _target_categories()
+    )
+    _rebind(plan)
+
+    document = build_approved_publication_snapshot(plan).payload()
+
+    assert document["product"]["main_category"]["id"] == "wall-stickers"
+    assert document["categories_by_target"]["tiktok:LH_PH"]["category"]["id"] == "600338"
+    assert document["categories_by_target"]["tiktok:LH_MY"]["category"]["id"] == "600339"
+    assert document["categories_by_target"]["shopee:PH"]["category"]["id"] == "101944"
+    assert document["categories_by_target"]["ozon:RU"]["category"]["id"] == "17028913"
+    assert document["product"]["main_category"]["id"] not in {
+        document["categories_by_target"][target]["category"]["id"]
+        for target in plan["payload"]["targets"]
+    }
+
+
+@pytest.mark.parametrize(
+    "mutate,error",
+    [
+        (
+            lambda categories: categories.pop("shopee:PH"),
+            "target category coverage conflicts.*missing=shopee:PH",
+        ),
+        (
+            lambda categories: categories.update(
+                {"tiktok:EXTRA": deepcopy(categories["tiktok:LH_PH"])}
+            ),
+            "target category coverage conflicts.*extra=tiktok:EXTRA",
+        ),
+        (
+            lambda categories: categories["shopee:PH"].update(
+                target_label="tiktok:LH_PH",
+                platform="tiktok",
+                site="LH_PH",
+                store="LH_PH",
+            ),
+            "target category identity conflicts",
+        ),
+    ],
+)
+def test_target_category_coverage_and_identity_are_exact(mutate, error):
+    plan = _approved_plan()
+    mutate(plan["payload"]["product_facts"]["categories_by_target"])
+    _rebind(plan)
+
+    with pytest.raises(ApprovedPublicationSnapshotError, match=error):
+        build_approved_publication_snapshot(plan)
+
+
+def test_control_only_target_has_explicit_not_applicable_category_without_fake_id():
+    plan = _approved_plan()
+    plan["payload"]["targets"].append("miaoshou:COMMON")
+    plan["payload"]["pricing"]["selected_targets"]["miaoshou:COMMON"] = {
+        "sku_prices": [
+            {"model_sku": "0958", "list_price": "29", "currency": "CNY"},
+            {"model_sku": "0959", "list_price": "31", "currency": "CNY"},
+        ]
+    }
+    plan["payload"]["product_facts"]["categories_by_target"][
+        "miaoshou:COMMON"
+    ] = {
+        "target_label": "miaoshou:COMMON",
+        "platform": "miaoshou",
+        "site": "COMMON",
+        "store": "COMMON",
+        "category": None,
+        "decision": {
+            "status": "NOT_APPLICABLE",
+            "decision_digest": _sha(
+                {"target": "miaoshou:COMMON", "category": "not-applicable"}
+            ),
+        },
+    }
+    _rebind(plan)
+
+    document = build_approved_publication_snapshot(plan).payload()
+
+    control = document["categories_by_target"]["miaoshou:COMMON"]
+    assert control["category"] is None
+    assert control["decision"]["status"] == "NOT_APPLICABLE"
+
+    fake = deepcopy(plan)
+    fake["payload"]["product_facts"]["categories_by_target"][
+        "miaoshou:COMMON"
+    ]["category"] = {
+        "id": "fake",
+        "name": "Fake",
+        "path": [{"id": "fake", "name": "Fake"}],
+    }
+    _rebind(fake)
+    with pytest.raises(ApprovedPublicationSnapshotError, match="control-only"):
+        build_approved_publication_snapshot(fake)
+
+
+def test_successor_category_decision_digest_drift_produces_new_snapshot():
+    plan = _approved_plan()
+    first = build_approved_publication_snapshot(plan)
+    successor = deepcopy(plan)
+    successor["payload"]["product_revision"] = 43
+    successor["payload"]["plan_id"] = "release-plan:3838616043:r43-category"
+    successor["payload"]["product_facts"]["categories_by_target"][
+        "tiktok:LH_PH"
+    ]["decision"]["decision_digest"] = _sha(
+        {"target": "tiktok:LH_PH", "id": "600338", "decision": "successor"}
+    )
+    _rebind(successor)
+
+    second = build_approved_publication_snapshot(successor)
+
+    assert second.snapshot_digest != first.snapshot_digest
+    assert second.payload()["categories_by_target"]["tiktok:LH_PH"][
+        "decision"
+    ]["decision_digest"] != first.payload()["categories_by_target"][
+        "tiktok:LH_PH"
+    ]["decision"]["decision_digest"]
+
+
+def test_target_category_tamper_and_path_identity_drift_fail_closed():
+    document = build_approved_publication_snapshot(_approved_plan()).payload()
+    document["categories_by_target"]["ozon:RU"]["category"]["id"] = "tampered"
+    document["categories_by_target"]["ozon:RU"]["category"]["path"][-1][
+        "id"
+    ] = "tampered"
+    with pytest.raises(ApprovedPublicationSnapshotError, match="tampered"):
+        approved_publication_snapshot_from_payload(document)
+
+    structurally_invalid = build_approved_publication_snapshot(
+        _approved_plan()
+    ).payload()
+    structurally_invalid.pop("snapshot_digest")
+    structurally_invalid["categories_by_target"]["shopee:PH"]["category"][
+        "path"
+    ][-1]["id"] = "different-terminal-id"
+    structurally_invalid["snapshot_digest"] = _sha(structurally_invalid)
+    with pytest.raises(
+        ApprovedPublicationSnapshotError,
+        match="provider category path identity conflicts",
+    ):
+        approved_publication_snapshot_from_payload(structurally_invalid)

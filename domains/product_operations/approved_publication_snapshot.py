@@ -25,6 +25,7 @@ APPROVED_PUBLICATION_SNAPSHOT_SCHEMA_VERSION = (
 _DIGEST = re.compile(r"(?:sha256:)?[0-9a-f]{64}\Z")
 _DIGITS = re.compile(r"[0-9]{1,32}\Z")
 _CURRENCY = re.compile(r"[A-Z]{3}\Z")
+_CONTROL_ONLY_TARGETS = frozenset({"miaoshou:COMMON"})
 _BODY_KEYS = {
     "schema_version",
     "offer_id",
@@ -35,6 +36,7 @@ _BODY_KEYS = {
     "publication_targets",
     "bindings",
     "product",
+    "categories_by_target",
     "skus",
     "digests",
 }
@@ -143,6 +145,10 @@ def build_approved_publication_snapshot(
         raise ApprovedPublicationSnapshotError(
             "approved category requires id and name"
         )
+    categories_by_target = _target_categories(
+        product_facts.get("categories_by_target"),
+        targets=targets,
+    )
 
     source = _mapping(
         payload.get("source_product_identity"), "source_product_identity"
@@ -259,9 +265,10 @@ def build_approved_publication_snapshot(
             "title": title,
             "description": description,
             "images": images,
-            "category": category,
+            "main_category": category,
             "source_identity": source_contract.payload(),
         },
+        "categories_by_target": categories_by_target,
         "skus": skus,
         "digests": digests,
     }
@@ -328,12 +335,20 @@ def _validate_frozen_body(body: Mapping[str, Any]) -> None:
     _text(bindings.get("content_package_id"), "content package binding")
 
     product = _mapping(body.get("product"), "snapshot product")
-    if set(product) != {"title", "description", "images", "category", "source_identity"}:
+    if set(product) != {
+        "title",
+        "description",
+        "images",
+        "main_category",
+        "source_identity",
+    }:
         raise ApprovedPublicationSnapshotError("snapshot product fields are invalid")
     _text(product.get("title"), "snapshot title")
     _text(product.get("description"), "snapshot description")
     _text_list(product.get("images"), "snapshot images")
-    category = _string_mapping(product.get("category"), "snapshot category")
+    category = _string_mapping(
+        product.get("main_category"), "snapshot main category"
+    )
     if not category.get("id") or not category.get("name"):
         raise ApprovedPublicationSnapshotError("snapshot category is incomplete")
     source = _mapping(product.get("source_identity"), "snapshot source identity")
@@ -347,6 +362,7 @@ def _validate_frozen_body(body: Mapping[str, Any]) -> None:
     }:
         raise ApprovedPublicationSnapshotError("snapshot source identity fields are invalid")
     source_digest = _source_identity(source).identity_digest
+    _target_categories(body.get("categories_by_target"), targets=targets)
 
     digests = _mapping(body.get("digests"), "snapshot digests")
     required_digests = {
@@ -447,6 +463,127 @@ def _prices(
     return result
 
 
+def _target_categories(
+    value: Any,
+    *,
+    targets: list[dict[str, str]],
+) -> dict[str, dict[str, Any]]:
+    rows = _mapping(value, "categories_by_target")
+    expected = {row["target_label"]: row for row in targets}
+    if set(rows) != set(expected):
+        missing = sorted(set(expected) - set(rows))
+        extra = sorted(set(rows) - set(expected))
+        detail = []
+        if missing:
+            detail.append("missing=" + ",".join(missing))
+        if extra:
+            detail.append("extra=" + ",".join(extra))
+        raise ApprovedPublicationSnapshotError(
+            "target category coverage conflicts"
+            + (": " + "; ".join(detail) if detail else "")
+        )
+    result: dict[str, dict[str, Any]] = {}
+    seen_identities: set[tuple[str, str, str, str]] = set()
+    for label, target in expected.items():
+        row = _mapping(rows[label], f"{label} category decision")
+        if set(row) != {
+            "target_label",
+            "platform",
+            "site",
+            "store",
+            "category",
+            "decision",
+        }:
+            raise ApprovedPublicationSnapshotError(
+                f"{label} category decision fields are invalid"
+            )
+        target_label = _text(row.get("target_label"), f"{label} target_label")
+        platform = _text(row.get("platform"), f"{label} platform")
+        site = _text(row.get("site"), f"{label} site")
+        store = _text(row.get("store"), f"{label} store")
+        identity = (target_label, platform, site, store)
+        expected_identity = (
+            label,
+            target["platform"],
+            target["site"],
+            target["store"],
+        )
+        if identity != expected_identity or identity in seen_identities:
+            raise ApprovedPublicationSnapshotError(
+                f"{label} target category identity conflicts"
+            )
+        seen_identities.add(identity)
+        decision = _mapping(row.get("decision"), f"{label} category decision audit")
+        if set(decision) != {"status", "decision_digest"}:
+            raise ApprovedPublicationSnapshotError(
+                f"{label} category decision audit fields are invalid"
+            )
+        status = _text(decision.get("status"), f"{label} category status")
+        decision_digest = _digest(
+            decision.get("decision_digest"), f"{label} category decision_digest"
+        )
+        if label in _CONTROL_ONLY_TARGETS:
+            if row.get("category") is not None or status != "NOT_APPLICABLE":
+                raise ApprovedPublicationSnapshotError(
+                    f"{label} control-only category must be explicitly NOT_APPLICABLE"
+                )
+            category: dict[str, Any] | None = None
+        else:
+            if status != "APPROVED":
+                raise ApprovedPublicationSnapshotError(
+                    f"{label} provider category is not approved"
+                )
+            raw_category = _mapping(row.get("category"), f"{label} provider category")
+            if set(raw_category) != {"id", "name", "path"}:
+                raise ApprovedPublicationSnapshotError(
+                    f"{label} provider category fields are invalid"
+                )
+            category_id = _text(raw_category.get("id"), f"{label} category id")
+            category_name = _text(
+                raw_category.get("name"), f"{label} category name"
+            )
+            raw_path = _mapping_list(
+                raw_category.get("path"), f"{label} category path"
+            )
+            if not raw_path:
+                raise ApprovedPublicationSnapshotError(
+                    f"{label} provider category path is empty"
+                )
+            path: list[dict[str, str]] = []
+            for node in raw_path:
+                if set(node) != {"id", "name"}:
+                    raise ApprovedPublicationSnapshotError(
+                        f"{label} category path fields are invalid"
+                    )
+                path.append(
+                    {
+                        "id": _text(node.get("id"), f"{label} path id"),
+                        "name": _text(node.get("name"), f"{label} path name"),
+                    }
+                )
+            if path[-1] != {"id": category_id, "name": category_name}:
+                raise ApprovedPublicationSnapshotError(
+                    f"{label} provider category path identity conflicts"
+                )
+            category = {
+                "id": category_id,
+                "name": category_name,
+                "path": path,
+            }
+        result[label] = {
+            "target_label": target_label,
+            "platform": platform,
+            "site": site,
+            "store": store,
+            "category": category,
+            "decision": {
+                "status": status,
+                "decision_digest": decision_digest,
+            },
+        }
+    return result
+
+
 def _source_identity(value: Mapping[str, Any]) -> SourceProductIdentity:
     if value.get("schema_version") != SOURCE_IDENTITY_SCHEMA_VERSION:
         raise ApprovedPublicationSnapshotError("source identity schema is invalid")
@@ -482,10 +619,11 @@ def _targets(value: Any, *, already_projected: bool = False) -> list[dict[str, s
     for raw in value:
         if already_projected:
             row = _mapping(raw, "publication target")
-            if set(row) != {"target_label", "platform", "store"}:
+            if set(row) != {"target_label", "platform", "site", "store"}:
                 raise ApprovedPublicationSnapshotError("publication target fields are invalid")
             label = _text(row.get("target_label"), "target_label")
             platform = _text(row.get("platform"), "target platform")
+            site = _text(row.get("site"), "target site")
             store = _text(row.get("store"), "target store")
         else:
             label = _text(raw, "target_label")
@@ -494,10 +632,16 @@ def _targets(value: Any, *, already_projected: bool = False) -> list[dict[str, s
             platform, store = label.split(":", 1)
             platform = _text(platform, "target platform")
             store = _text(store, "target store")
-        if label != f"{platform}:{store}":
+            site = store
+        if label != f"{platform}:{site}" or site != store:
             raise ApprovedPublicationSnapshotError("target identity conflicts")
         projected.append(
-            {"target_label": label, "platform": platform, "store": store}
+            {
+                "target_label": label,
+                "platform": platform,
+                "site": site,
+                "store": store,
+            }
         )
     labels = [row["target_label"] for row in projected]
     if len(labels) != len(set(labels)):

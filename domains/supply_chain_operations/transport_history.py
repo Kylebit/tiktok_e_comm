@@ -30,24 +30,44 @@ def derive_transport_policy(
     preparation_days: int = 3,
     domestic_warehouse_days: int = 4,
     minimum_samples: int = 5,
+    approved_override_days: int | None = None,
 ) -> HistoricalTransportPolicy:
-    """Use a conservative nearest-rank P80 without lowering the approved baseline."""
+    """Use a conservative P80 unless an explicit business override is supplied."""
 
     baseline = _positive_int(baseline_transport_days, "baseline_transport_days")
     preparation = _positive_int(preparation_days, "preparation_days")
     domestic = _positive_int(domestic_warehouse_days, "domestic_warehouse_days")
     minimum = _positive_int(minimum_samples, "minimum_samples")
+    override = (
+        _positive_int(approved_override_days, "approved_override_days")
+        if approved_override_days is not None
+        else None
+    )
     samples = sorted(
         _positive_int(value, "observed_created_to_sign_days")
         for value in observed_created_to_sign_days
     )
     if not samples:
         return HistoricalTransportPolicy(
-            baseline, 0, None, None, baseline, "FALLBACK_NO_SAMPLE"
+            baseline,
+            0,
+            None,
+            None,
+            override if override is not None else baseline,
+            "USER_APPROVED_OVERRIDE" if override is not None else "FALLBACK_NO_SAMPLE",
         )
 
     p80_total = samples[ceil(0.8 * len(samples)) - 1]
     derived = max(1, p80_total - preparation - domestic)
+    if override is not None:
+        return HistoricalTransportPolicy(
+            baseline,
+            len(samples),
+            p80_total,
+            derived,
+            override,
+            "USER_APPROVED_OVERRIDE",
+        )
     if len(samples) < minimum:
         return HistoricalTransportPolicy(
             baseline,

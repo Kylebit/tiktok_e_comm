@@ -420,12 +420,12 @@ def test_inbound_eta_is_estimated_time_phased_and_locally_editable():
     timeline = (DASHBOARD / "inbound-timeline.js").read_text(encoding="utf-8")
 
     assert 'anchorAt: "2026-08-04T15:39:15+08:00"' in plan
-    assert 'estimatedSellableDate: "2026-08-24"' in plan
+    assert 'estimatedSellableDate: "2026-08-19"' in plan
     assert 'anchorType: "REACHED_DOMESTIC_WAREHOUSE"' in plan
     assert 'anchorType: "CREATED_PLUS_4_DAYS_ESTIMATE"' in plan
     assert 'inboundStatus: "NOT_YET_INBOUND"' in plan
     assert 'estimatedAnchorAt: "2026-08-11T16:41:32+08:00"' in plan
-    assert 'estimatedSellableDate: "2026-08-31"' in plan
+    assert 'estimatedSellableDate: "2026-08-26"' in plan
     assert 'anchorType: "MARKED_SHIPPED"' not in plan
     assert 'anchorType: "CREATED_FALLBACK"' not in plan
     assert 'batchId: "THML4038-58701"' in plan

@@ -96,7 +96,7 @@ Current estimated-sellable policy is `effective_anchor_date + approved country t
 
 The 3-day preparation and 4-day domestic-warehouse stages apply only to the newly recommended shipment. Existing Seaya inbound events keep their batch-specific estimated-sellable policy and must not receive those stages again because their anchor is already the domestic-warehouse event or its explicit fallback.
 
-Historical transport policy uses complete, non-abnormal Seaya batches with a named first-mile carrier. For each country, calculate nearest-rank P80 over integer ceiling days from `created_at` to `signed_at`, derive `historical_transport_days = max(1, p80_total_days - 3 - 4)`, and choose `effective_transport_days = max(baseline_transport_days, historical_transport_days)`. Require at least five eligible samples; otherwise use the baseline with `FALLBACK_INSUFFICIENT_SAMPLE`. Current redacted evidence is MY `n=2, fallback=25`; TH `n=9, P80 total=27, derived/effective=20`; VN `n=5, P80 total=12, derived=5, baseline floor=15`; PH `n=1, fallback=25`.
+Historical transport policy uses complete, non-abnormal Seaya batches with a named first-mile carrier. For each country, calculate nearest-rank P80 over integer ceiling days from `created_at` to `signed_at`, derive `historical_transport_days = max(1, p80_total_days - 3 - 4)`, and choose `effective_transport_days = max(baseline_transport_days, historical_transport_days)` unless an explicit later country approval supplies `approved_override_days`. Require at least five eligible samples; otherwise use the baseline with `FALLBACK_INSUFFICIENT_SAMPLE`. An approved override returns `USER_APPROVED_OVERRIDE`, remains digest/audit bound, and preserves the historical result as advisory evidence. Current redacted evidence is MY `n=2, fallback=25`; TH `n=9, P80 total=27, historical=20, approved override/effective=15`; VN `n=5, P80 total=12, derived=5, baseline floor=15`; PH `n=1, fallback=25`.
 
 Quantity is valid without dimensions, weight, or unit cost. Those fields affect separate outputs:
 
@@ -109,7 +109,7 @@ Known portions may be shown with an explicit pending-item count, but a partial a
 | Country | Effective overseas transport | Target | Safety | Mode |
 |---|---:|---:|---:|---|
 | MY | 25 days | 30 days | 5 days | West Malaysia sea |
-| TH | 20 days | 30 days | 3 days | Thailand land, historical P80 uplift |
+| TH | 15 days | 30 days | 3 days | Thailand land, user-approved override; historical P80 advisory is 20 |
 | VN | 15 days | 30 days | 3 days | Vietnam south land, conservative until warehouse city confirmed |
 | PH | 25 days | 30 days | 5 days | Manila sea |
 

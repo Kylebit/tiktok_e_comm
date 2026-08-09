@@ -28,6 +28,19 @@ def test_history_never_shortens_approved_baseline():
     assert policy.state == "BASELINE_FLOOR"
 
 
+def test_explicit_country_override_has_priority_but_preserves_history():
+    policy = derive_transport_policy(
+        [12, 15, 19, 22, 24, 24, 24, 27, 30],
+        baseline_transport_days=15,
+        approved_override_days=15,
+    )
+
+    assert policy.p80_total_days == 27
+    assert policy.derived_transport_days == 20
+    assert policy.effective_transport_days == 15
+    assert policy.state == "USER_APPROVED_OVERRIDE"
+
+
 def test_small_sample_falls_back_to_baseline_even_when_observed_is_slower():
     policy = derive_transport_policy(
         [24, 33],
@@ -43,3 +56,13 @@ def test_small_sample_falls_back_to_baseline_even_when_observed_is_slower():
 def test_history_rejects_invalid_day_values(invalid):
     with pytest.raises(TypeError):
         derive_transport_policy([invalid], baseline_transport_days=15)
+
+
+@pytest.mark.parametrize("invalid", [True, 2.5, "15", 0, -1])
+def test_history_rejects_invalid_approved_override(invalid):
+    with pytest.raises(TypeError):
+        derive_transport_policy(
+            [12, 15, 19, 22, 24],
+            baseline_transport_days=15,
+            approved_override_days=invalid,
+        )

@@ -166,5 +166,7 @@ def test_skill_time_phases_inbound_and_preserves_manual_override_lineage():
     assert "new_replenishment_lead_days = preparation_days + domestic_warehouse_days + country_transport_days" in contract
     assert "nearest-rank P80" in contract
     assert "FALLBACK_INSUFFICIENT_SAMPLE" in contract
+    assert "USER_APPROVED_OVERRIDE" in contract
+    assert "historical=20, approved override/effective=15" in contract
     assert "inbound_status=NOT_YET_INBOUND" in contract
     assert "created_at + 4 days" in contract

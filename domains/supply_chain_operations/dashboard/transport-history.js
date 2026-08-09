@@ -5,7 +5,7 @@ window.SUPPLY_CHAIN_TRANSPORT_HISTORY = {
   domesticWarehouseDays: 4,
   minimumSamples: 5,
   percentile: 0.8,
-  method: "max(baseline, nearest-rank P80(created-to-sign days) - preparation - domestic-warehouse)",
+  method: "approved country override, else max(baseline, nearest-rank P80(created-to-sign days) - preparation - domestic-warehouse)",
   completedRows: 21,
   excludedRows: 4,
   exclusionPolicy: "exclude Seaya rows marked abnormal and rows without a named first-mile carrier",
@@ -25,8 +25,9 @@ window.SUPPLY_CHAIN_TRANSPORT_HISTORY = {
       observedTotalDays: [12, 15, 19, 22, 24, 24, 24, 27, 30],
       p80TotalDays: 27,
       derivedTransportDays: 20,
-      effectiveTransportDays: 20,
-      state: "HISTORICAL_P80_UPLIFT"
+      effectiveTransportDays: 15,
+      state: "USER_APPROVED_OVERRIDE",
+      approvalReference: "Kyle confirmed Thailand overseas transport = 15 days on 2026-08-09"
     },
     VN: {
       baselineTransportDays: 15,

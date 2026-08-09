@@ -75,12 +75,12 @@ def test_th_0021_exact_paginated_batch_split_changes_arrival_stock():
     daily_velocity = 37.280833333333
     result = project_supply(
         snapshot_date=date(2026, 8, 9),
-        next_arrival_date=date(2026, 9, 5),
+        next_arrival_date=date(2026, 8, 31),
         available=0,
         daily_velocity=daily_velocity,
         inbound_events=(
-            InboundEvent("THML4038-58701", 200, date(2026, 8, 24)),
-            InboundEvent("THSL4038-59557", 600, date(2026, 8, 31)),
+            InboundEvent("THML4038-58701", 200, date(2026, 8, 19)),
+            InboundEvent("THSL4038-59557", 600, date(2026, 8, 26)),
         ),
     )
 

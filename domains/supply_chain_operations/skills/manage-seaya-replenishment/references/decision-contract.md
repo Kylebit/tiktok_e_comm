@@ -87,6 +87,8 @@ Every inbound event must retain a complete nonempty `batch_id`, quantity, comple
 
 For each country + SKU, `sum(batch_sku_quantity)` must equal the Seaya aggregate `inbound`. Batch identity and quantity must be exact built-in values; null, boolean, string, negative, masked, or clipped values are ineligible. If a multi-batch allocation is incomplete or does not reconcile, show the unmatched aggregate but count zero of it in projected supply. Never assign a multi-batch aggregate to one latest date. A sole active batch may consume the aggregate only with explicit `SINGLE_ACTIVE_BATCH` lineage.
 
+Inbound detail pagination is part of completeness. Read every page and sum every exact-SKU box row within the same complete batch. Current read-only Seaya evidence for TH8806 SKU 0021 is `THML4038-58701 = 200` and `THSL4038-59557 = 600`; the 800 total reconciles to the inventory aggregate.
+
 A manual override is keyed by country + complete `batch_id`, not SKU. It changes only the local decision projection, applies consistently to every SKU in the batch, and never changes the supplier record or another batch.
 
 Current estimated-sellable policy is `effective_anchor_date + approved country transit days + 2-day sign-and-shelve buffer`, where `effective_anchor = reached_domestic_warehouse_at ?? created_at + 4 days`. A fallback batch remains visibly not yet inbound. Missing multi-batch SKU allocation is a separate reconciliation blocker, not permission to invent one aggregate arrival date.

@@ -426,6 +426,8 @@ def test_inbound_eta_is_estimated_time_phased_and_locally_editable():
     assert 'anchorType: "CREATED_FALLBACK"' not in plan
     assert 'batchId: "THML4038-58701"' in plan
     assert 'batchId: "THSL4038-59557"' in plan
+    assert 'skuQuantities: {"0021": 200}' in plan
+    assert 'skuQuantities: {"0021": 600}' in plan
     assert 'allocationPolicy: "EXACT_BATCH_SKU_REQUIRED"' in plan
     assert "function projectSupply" in timeline
     assert "stock = consume(stock, dailyVelocity, event.day - lastDay)" in timeline

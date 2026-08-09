@@ -37,7 +37,7 @@ window.SUPPLY_CHAIN_INBOUND_PLAN = {
         estimatedSellableDate: "2026-08-21",
         confidence: "VERIFIED_ANCHOR_ESTIMATED_ETA",
         anchorEvidence: "user_supplied_seaya_inbound_log_screenshot_2026-08-09",
-        skuQuantities: {"0021": null}
+        skuQuantities: {"0021": 200}
       }, {
         batchId: "THSL4038-59557",
         totalUnits: 1250,
@@ -51,7 +51,7 @@ window.SUPPLY_CHAIN_INBOUND_PLAN = {
         shelvingDays: 2,
         estimatedSellableDate: "2026-08-28",
         confidence: "USER_APPROVED_ESTIMATED_ANCHOR",
-        skuQuantities: {"0021": null}
+        skuQuantities: {"0021": 600}
       }]
     },
     VN: {

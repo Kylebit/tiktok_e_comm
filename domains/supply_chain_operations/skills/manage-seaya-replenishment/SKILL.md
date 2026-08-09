@@ -85,6 +85,7 @@ Run `scripts/validate_inventory_snapshot.py SNAPSHOT.json` before consuming a ne
 - Consume current available stock until each inbound event's expected sellable date, add only that event's quantity on that date, then continue consuming demand until the new replenishment arrival date.
 - Exclude an inbound event from stock projected at the new replenishment arrival when its expected sellable date is later than that arrival.
 - Bind every inbound event to one complete batch identity and one exact SKU quantity. A SKU may have multiple simultaneous inbound events with different dates.
+- Read every page of each inbound-batch detail. Repeated exact SKU rows may represent separate boxes; sum all eligible rows within that same complete batch before reconciling the SKU aggregate. Never stop at the first page.
 - Require the sum of exact batch-SKU quantities to equal the SKU's aggregate `inbound`. If a multi-batch allocation is missing, non-integer, or does not reconcile, fail closed: display the unmatched quantity but do not count it as supply. Never collapse it onto one SKU-level date.
 - When exactly one active inbound batch exists for a country, the SKU aggregate may be bound to that sole batch with explicit `SINGLE_ACTIVE_BATCH` lineage.
 - Allow a per-country + exact-batch manual expected-sellable-date override with an optional source note. The override applies to every SKU line in that batch, persists only in reversible browser `localStorage`, can be cleared, and never writes to Seaya or a database.

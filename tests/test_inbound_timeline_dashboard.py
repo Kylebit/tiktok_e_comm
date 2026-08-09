@@ -1,4 +1,5 @@
 from datetime import date
+from math import ceil
 
 from domains.supply_chain_operations.inbound_timeline import (
     InboundEvent,
@@ -70,6 +71,24 @@ def test_same_sku_can_receive_two_batches_on_different_dates():
     assert result.pending_inbound == 0
 
 
+def test_th_0021_exact_paginated_batch_split_changes_arrival_stock():
+    daily_velocity = 37.280833333333
+    result = project_supply(
+        snapshot_date=date(2026, 8, 9),
+        next_arrival_date=date(2026, 8, 31),
+        available=0,
+        daily_velocity=daily_velocity,
+        inbound_events=(
+            InboundEvent("THML4038-58701", 200, date(2026, 8, 21)),
+            InboundEvent("THSL4038-59557", 600, date(2026, 8, 28)),
+        ),
+    )
+
+    assert result.projected_stock == 488
+    assert result.counted_inbound == 800
+    assert ceil(daily_velocity * 33) - result.projected_stock == 743
+
+
 def test_batch_identity_is_required():
     try:
         project_supply(
@@ -101,6 +120,7 @@ def test_dashboard_uses_batch_level_overrides_and_never_sku_level_eta():
     assert "timingsValid" in app
     assert 'batchId: "THML4038-58701"' in plan
     assert 'batchId: "THSL4038-59557"' in plan
-    assert 'skuQuantities: {"0021": null}' in plan
+    assert 'skuQuantities: {"0021": 200}' in plan
+    assert 'skuQuantities: {"0021": 600}' in plan
     assert "批次 SKU 分摊未对平" in app
     assert "未入库 · 建单+4天估算" in app

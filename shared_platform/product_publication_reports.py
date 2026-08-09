@@ -37,7 +37,7 @@ STATUS_LABELS = {
 }
 _PLATFORMS = frozenset({"TIKTOK", "SHOPEE", "OZON"})
 _SAFE_RUN_PART = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-_HEX_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+_HEX_DIGEST = re.compile(r"^(?:sha256:)?[0-9a-f]{64}$")
 _REPORT_FIELDS = frozenset(
     {
         "schema_version",
@@ -169,10 +169,10 @@ def _run_id(value: object) -> str:
 
 
 def _sha256(value: object, name: str) -> str:
-    digest = _exact_text(value, name, max_length=64)
+    digest = _exact_text(value, name, max_length=71)
     if not _HEX_DIGEST.fullmatch(digest):
         raise ValueError(f"{name} must be a lowercase sha256 digest")
-    return digest
+    return "sha256:" + digest.removeprefix("sha256:")
 
 
 def _exact_fields(value: Mapping[str, Any], expected: frozenset[str], name: str) -> None:

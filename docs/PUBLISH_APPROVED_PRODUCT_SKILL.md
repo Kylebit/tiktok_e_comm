@@ -48,3 +48,41 @@ provider responses, copy, URLs, and external IDs.
 
 WP1 intentionally provides no POST endpoint, runner, process launch, channel
 adapter call, or change to existing publication buttons.
+
+## Approved snapshot persistence follow-up
+
+`approved_publication_snapshots` is an additive table in the shared
+ReleaseStore database. A ReleasePlan that declares
+`approved-publication-snapshot/v4` is approved and frozen in one
+`BEGIN IMMEDIATE` transaction: approval insert, plan status transition, typed
+snapshot validation, and immutable snapshot insert either all commit or all
+roll back. Reopening the database revalidates the canonical JSON against the
+01 product-owned contract and the exact ReleasePlan digest.
+
+The Product Center summary endpoint is read-only:
+
+`GET /api/product-workspace/publication-snapshot?offer_id=...&plan_id=...`
+
+It also accepts `snapshot_digest` instead of `plan_id`. The HTTP response
+contains identity, digests and coverage counts only. The full self-contained
+snapshot is available exclusively through the server-owned internal runner
+seam.
+
+Plans approved before this migration remain immutable and project
+`SNAPSHOT_UNAVAILABLE`; they are never rebuilt from a current dashboard. The
+strict projector can activate v4 automatically when server-owned upstream
+inputs provide every required fact. As of this integration, the historical
+production-shaped plan fixture is still missing:
+
+- Product Operations: approved description, structured per-SKU specification,
+  and per-SKU image binding;
+- Content Operations: the approved description/variant-image hand-off;
+- Channel Operations: target-exact official category ID/name/path and decision
+  digest for every selected storefront (the product main category is never a
+  provider fallback);
+- Shared approval evidence: content, policy, category, pricing and SKU-lineage
+  digests in the immutable plan payload.
+
+Until those facts are present, the old plan remains readable as
+`SNAPSHOT_UNAVAILABLE`; the platform neither guesses them nor retroactively
+modifies the approval.

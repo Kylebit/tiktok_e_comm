@@ -88,10 +88,47 @@ def _product_publication_report_store():
     return default_product_publication_report_store()
 
 
+def _release_store():
+    """Late-bound shared ReleaseStore seam for snapshot read APIs."""
+    from shared_platform.release_store import default_release_store
+
+    return default_release_store()
+
+
 def _publication_report_api_view(report: dict) -> dict:
     from shared_platform.product_publication_reports import public_publication_report
 
     return public_publication_report(report)
+
+
+def _publication_snapshot_plan_projection(
+    plan_payload: dict,
+    *,
+    approved_inputs: dict | None = None,
+):
+    """Strict, pure v4 field projection; never reads mutable workbench state."""
+    from shared_platform.approved_publication_snapshot_projection import (
+        project_release_plan_for_publication_snapshot,
+    )
+
+    return project_release_plan_for_publication_snapshot(
+        plan_payload,
+        approved_inputs=approved_inputs,
+    )
+
+
+def _approved_publication_snapshot_internal(
+    *,
+    offer_id: str,
+    plan_id: str | None = None,
+    snapshot_digest: str | None = None,
+) -> dict | None:
+    """Server-owned full-document seam reserved for the future Skill runner."""
+    return _release_store().approved_publication_snapshot(
+        offer_id=offer_id,
+        plan_id=plan_id,
+        snapshot_digest=snapshot_digest,
+    )
 
 
 def _product_workspace_view(payload: dict) -> dict:
@@ -105,6 +142,7 @@ def _product_workspace_view(payload: dict) -> dict:
     view_payload.pop("_source_product_identity", None)
     view_payload.pop("_source_identity_inputs", None)
     view_payload.pop("_sku_lineage", None)
+    view_payload.pop("_approved_publication_snapshot_inputs", None)
     product = payload.get("product") if isinstance(payload.get("product"), dict) else {}
     listing_copy = (
         dict(payload.get("listing_copy"))
@@ -2573,6 +2611,15 @@ def _release_plan_payload_from_dashboard(
                 "review_shopee_global_plan: current exact Shopee global "
                 "plan approval is required"
             )
+    snapshot_inputs = dashboard.get("_approved_publication_snapshot_inputs")
+    snapshot_projection = _publication_snapshot_plan_projection(
+        payload,
+        approved_inputs=(
+            snapshot_inputs if isinstance(snapshot_inputs, dict) else None
+        ),
+    )
+    if snapshot_projection.ready:
+        payload = snapshot_projection.payload
     return payload, list(dict.fromkeys(value for value in blockers if value))
 
 
@@ -13466,6 +13513,46 @@ class Handler(BaseHTTPRequestHandler):
                     "count": len(public_reports),
                 },
             )
+        if path == "/api/product-workspace/publication-snapshot":
+            from shared_platform.release_store import ImmutableReleaseError
+
+            q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+            offer_id = (q.get("offer_id") or [""])[0]
+            plan_id = (q.get("plan_id") or [""])[0]
+            snapshot_digest = (q.get("snapshot_digest") or [""])[0]
+            if not offer_id or bool(plan_id) == bool(snapshot_digest):
+                return self._json(
+                    400,
+                    {
+                        "ok": False,
+                        "error": (
+                            "offer_id and exactly one of plan_id or "
+                            "snapshot_digest are required"
+                        ),
+                    },
+                )
+            try:
+                projection = _release_store().publication_snapshot_projection(
+                    offer_id=offer_id,
+                    plan_id=plan_id or None,
+                    snapshot_digest=snapshot_digest or None,
+                )
+            except (TypeError, ValueError) as error:
+                return self._json(400, {"ok": False, "error": str(error)})
+            except ImmutableReleaseError:
+                return self._json(
+                    409,
+                    {
+                        "ok": False,
+                        "error": "approved publication snapshot integrity check failed",
+                    },
+                )
+            if projection is None:
+                return self._json(
+                    404,
+                    {"ok": False, "error": "approved publication snapshot not found"},
+                )
+            return self._json(200, {"ok": True, **projection})
         if path == "/api/workbench/dashboard":
             from shared_platform.workbench_store import default_workbench_store
 

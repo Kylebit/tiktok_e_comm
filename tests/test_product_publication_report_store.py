@@ -88,6 +88,22 @@ def test_store_is_idempotent_and_reopens_with_canonical_path(tmp_path):
     assert reopened.latest_report(offer_id="3838616043", revision=31) == report
 
 
+@pytest.mark.parametrize("snapshot_digest", ["b" * 64, "sha256:" + "b" * 64])
+def test_store_accepts_and_canonicalizes_v4_snapshot_digest(
+    tmp_path, snapshot_digest
+):
+    payload = _report_payload()
+    payload["snapshot"]["digest"] = snapshot_digest
+
+    stored = _store(tmp_path).store_report(payload)
+    report = _store(tmp_path).get_report(
+        report_id=stored.report_id,
+        offer_id=payload["offer_id"],
+    )
+
+    assert report["snapshot"]["digest"] == "sha256:" + "b" * 64
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

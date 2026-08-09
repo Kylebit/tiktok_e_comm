@@ -19,6 +19,7 @@ from typing import Any
 
 from core.config import ROOT
 from domains.product_operations import (
+    APPROVED_PUBLICATION_SNAPSHOT_SCHEMA_VERSION,
     NEW_SOURCE_SKU_RESERVATION_SCHEMA_VERSION,
     SKU_LINEAGE_SCHEMA_VERSION,
     ModelSkuAssignment,
@@ -144,6 +145,31 @@ CREATE TABLE IF NOT EXISTS release_approvals (
 );
 CREATE INDEX IF NOT EXISTS idx_release_approvals_status
     ON release_approvals(status, approved_at DESC);
+
+CREATE TABLE IF NOT EXISTS approved_publication_snapshots (
+    plan_id TEXT NOT NULL,
+    product_revision INTEGER NOT NULL,
+    offer_id TEXT NOT NULL,
+    schema_version TEXT NOT NULL,
+    snapshot_digest TEXT NOT NULL UNIQUE,
+    release_payload_digest TEXT NOT NULL,
+    snapshot_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (plan_id, product_revision),
+    FOREIGN KEY (plan_id) REFERENCES release_plans(plan_id)
+);
+CREATE INDEX IF NOT EXISTS idx_approved_publication_snapshots_offer_revision
+    ON approved_publication_snapshots(offer_id, product_revision, created_at DESC);
+CREATE TRIGGER IF NOT EXISTS trg_approved_publication_snapshot_immutable
+BEFORE UPDATE ON approved_publication_snapshots
+BEGIN
+    SELECT RAISE(ABORT, 'approved publication snapshot is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_approved_publication_snapshot_append_only
+BEFORE DELETE ON approved_publication_snapshots
+BEGIN
+    SELECT RAISE(ABORT, 'approved publication snapshots are append-only');
+END;
 
 CREATE TABLE IF NOT EXISTS release_runs (
     run_id TEXT PRIMARY KEY,
@@ -747,6 +773,17 @@ def _validated_plan(payload: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError(
                 "product_revision must be a non-negative built-in int"
             )
+    snapshot_schema = plan.get(
+        "approved_publication_snapshot_schema_version"
+    )
+    if (
+        snapshot_schema is not None
+        and snapshot_schema
+        != APPROVED_PUBLICATION_SNAPSHOT_SCHEMA_VERSION
+    ):
+        raise ValueError(
+            "approved publication snapshot schema declaration is invalid"
+        )
     return plan
 
 
@@ -812,6 +849,132 @@ def _approval_from_row(row: sqlite3.Row) -> dict[str, Any]:
         type(value) is int and value == 1
     )
     return approval
+
+
+def _validated_publication_snapshot_row(
+    row: sqlite3.Row,
+    *,
+    plan: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Rehydrate and bind one internal full snapshot to its ReleasePlan."""
+
+    from domains.product_operations import (
+        approved_publication_snapshot_from_payload,
+    )
+
+    try:
+        document = json.loads(row["snapshot_json"])
+        snapshot = approved_publication_snapshot_from_payload(document)
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ImmutableReleaseError(
+            "stored approved publication snapshot is invalid"
+        ) from error
+    payload = snapshot.payload()
+    if (
+        row["schema_version"]
+        != APPROVED_PUBLICATION_SNAPSHOT_SCHEMA_VERSION
+        or payload["schema_version"] != row["schema_version"]
+        or payload["snapshot_digest"] != row["snapshot_digest"]
+        or payload["plan_id"] != row["plan_id"]
+        or payload["offer_id"] != row["offer_id"]
+        or payload["product_revision"] != row["product_revision"]
+        or payload["bindings"]["release_payload_digest"]
+        != "sha256:" + row["release_payload_digest"]
+        or plan["plan_id"] != row["plan_id"]
+        or plan["product_id"] != row["offer_id"]
+        or plan["payload_digest"] != row["release_payload_digest"]
+        or plan["payload"].get("product_revision")
+        != row["product_revision"]
+        or _canonical_json(payload) != row["snapshot_json"]
+    ):
+        raise ImmutableReleaseError(
+            "stored approved publication snapshot identity drifted"
+        )
+    return payload
+
+
+def _persist_publication_snapshot_in_transaction(
+    connection: sqlite3.Connection,
+    *,
+    plan_row: sqlite3.Row,
+    approval_row: sqlite3.Row,
+    now: str,
+) -> dict[str, Any] | None:
+    """Build and persist a declared v4 snapshot in the approval transaction."""
+
+    from domains.product_operations import build_approved_publication_snapshot
+
+    plan = _plan_from_row(plan_row)
+    if (
+        plan["payload"].get(
+            "approved_publication_snapshot_schema_version"
+        )
+        is None
+    ):
+        return None
+    if (
+        plan["payload"].get(
+            "approved_publication_snapshot_schema_version"
+        )
+        != APPROVED_PUBLICATION_SNAPSHOT_SCHEMA_VERSION
+    ):
+        raise ImmutableReleaseError(
+            "declared approved publication snapshot schema is invalid"
+        )
+    approval = _approval_from_row(approval_row)
+    approved_plan = {
+        **plan,
+        "approval": approval,
+    }
+    snapshot = build_approved_publication_snapshot(approved_plan)
+    document = snapshot.payload()
+    serialized = _canonical_json(document)
+    revision = document["product_revision"]
+    existing = connection.execute(
+        """
+        SELECT * FROM approved_publication_snapshots
+        WHERE plan_id = ? AND product_revision = ?
+        """,
+        (plan["plan_id"], revision),
+    ).fetchone()
+    if existing:
+        stored = _validated_publication_snapshot_row(existing, plan=plan)
+        if stored != document:
+            raise ImmutableReleaseError(
+                "approval already has a different publication snapshot"
+            )
+        return stored
+    digest_conflict = connection.execute(
+        """
+        SELECT plan_id, product_revision
+        FROM approved_publication_snapshots
+        WHERE snapshot_digest = ?
+        """,
+        (snapshot.snapshot_digest,),
+    ).fetchone()
+    if digest_conflict:
+        raise ImmutableReleaseError(
+            "publication snapshot digest belongs to a different approval"
+        )
+    connection.execute(
+        """
+        INSERT INTO approved_publication_snapshots (
+            plan_id, product_revision, offer_id, schema_version,
+            snapshot_digest, release_payload_digest, snapshot_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            plan["plan_id"],
+            revision,
+            plan["product_id"],
+            APPROVED_PUBLICATION_SNAPSHOT_SCHEMA_VERSION,
+            snapshot.snapshot_digest,
+            plan["payload_digest"],
+            serialized,
+            now,
+        ),
+    )
+    return document
 
 
 def _source_sku_reservation_from_row(
@@ -2083,6 +2246,151 @@ class ReleaseStore:
         )
         return result
 
+    def approved_publication_snapshot(
+        self,
+        *,
+        offer_id: object,
+        plan_id: object | None = None,
+        snapshot_digest: object | None = None,
+    ) -> dict[str, Any] | None:
+        """Return the full verified v4 document for server-internal runners."""
+
+        clean_offer_id = _text(offer_id)
+        clean_plan_id = _text(plan_id)
+        clean_snapshot_digest = (
+            "sha256:"
+            + _sha256_text(snapshot_digest, field="snapshot_digest")
+            if snapshot_digest is not None
+            else ""
+        )
+        if not clean_offer_id:
+            raise ValueError("offer_id is required")
+        if bool(clean_plan_id) == bool(clean_snapshot_digest):
+            raise ValueError("exactly one of plan_id or snapshot_digest is required")
+        if not self.path.is_file():
+            return None
+        clauses = ["snapshot.offer_id = ?"]
+        parameters: list[object] = [clean_offer_id]
+        if clean_plan_id:
+            clauses.append("snapshot.plan_id = ?")
+            parameters.append(clean_plan_id)
+        else:
+            clauses.append("snapshot.snapshot_digest = ?")
+            parameters.append(clean_snapshot_digest)
+        with self._connect_readonly() as connection:
+            try:
+                row = connection.execute(
+                    f"""
+                    SELECT snapshot.*
+                    FROM approved_publication_snapshots AS snapshot
+                    WHERE {' AND '.join(clauses)}
+                    """,
+                    tuple(parameters),
+                ).fetchone()
+                if not row:
+                    return None
+                plan_row = connection.execute(
+                    "SELECT * FROM release_plans WHERE plan_id = ?",
+                    (row["plan_id"],),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return None
+        if not plan_row:
+            raise ImmutableReleaseError(
+                "approved publication snapshot lost its ReleasePlan"
+            )
+        return _validated_publication_snapshot_row(
+            row,
+            plan=_plan_from_row(plan_row),
+        )
+
+    def publication_snapshot_projection(
+        self,
+        *,
+        offer_id: object,
+        plan_id: object | None = None,
+        snapshot_digest: object | None = None,
+    ) -> dict[str, Any] | None:
+        """Return the redacted Product Center snapshot status/coverage."""
+
+        clean_offer_id = _text(offer_id)
+        clean_plan_id = _text(plan_id)
+        if not clean_offer_id:
+            raise ValueError("offer_id is required")
+        if not clean_plan_id and snapshot_digest is None:
+            raise ValueError("plan_id or snapshot_digest is required")
+        document = self.approved_publication_snapshot(
+            offer_id=clean_offer_id,
+            plan_id=clean_plan_id or None,
+            snapshot_digest=snapshot_digest,
+        )
+        if document is None:
+            if not clean_plan_id:
+                return None
+            plan = self.get_plan(clean_plan_id)
+            if plan is None or plan["product_id"] != clean_offer_id:
+                return None
+            if (
+                plan["status"] == PLAN_APPROVED
+                and plan["payload"].get(
+                    "approved_publication_snapshot_schema_version"
+                )
+                == APPROVED_PUBLICATION_SNAPSHOT_SCHEMA_VERSION
+            ):
+                raise ImmutableReleaseError(
+                    "declared v4 approval is missing its durable snapshot"
+                )
+            return {
+                "schema_version": "approved-publication-snapshot-summary/v1",
+                "status": "SNAPSHOT_UNAVAILABLE",
+                "reason_code": (
+                    "legacy_approval_without_v4_snapshot"
+                    if plan["status"] == PLAN_APPROVED
+                    else "release_plan_not_approved"
+                ),
+                "identity": {
+                    "offer_id": plan["product_id"],
+                    "plan_id": plan["plan_id"],
+                    "product_revision": plan["payload"].get(
+                        "product_revision"
+                    ),
+                    "snapshot_digest": None,
+                },
+                "coverage": None,
+            }
+        provider_category_count = sum(
+            1
+            for row in document["categories_by_target"].values()
+            if row["category"] is not None
+        )
+        return {
+            "schema_version": "approved-publication-snapshot-summary/v1",
+            "status": "AVAILABLE",
+            "reason_code": None,
+            "identity": {
+                "offer_id": document["offer_id"],
+                "plan_id": document["plan_id"],
+                "product_revision": document["product_revision"],
+                "snapshot_digest": document["snapshot_digest"],
+                "snapshot_schema_version": document["schema_version"],
+            },
+            "bindings": {
+                "release_payload_digest": document["bindings"][
+                    "release_payload_digest"
+                ]
+            },
+            "coverage": {
+                "publication_target_count": len(
+                    document["publication_targets"]
+                ),
+                "provider_category_count": provider_category_count,
+                "sku_count": len(document["skus"]),
+                "approved_image_count": len(document["product"]["images"]),
+            },
+            "approved_at": document["approved_at"],
+            "approved_by": document["approved_by"],
+        }
+
     def active_plan_for_product(self, product_id: str) -> dict[str, Any] | None:
         """Return the newest non-superseded plan without creating the store."""
         if not self.path.is_file():
@@ -2429,7 +2737,35 @@ class ReleaseStore:
                     raise ImmutableReleaseError(
                         "release plan already has a different approval"
                     )
-                return {**_approval_from_row(existing), "created": False}
+                snapshot_projection = None
+                if json.loads(plan["payload_json"]).get(
+                    "approved_publication_snapshot_schema_version"
+                ) == APPROVED_PUBLICATION_SNAPSHOT_SCHEMA_VERSION:
+                    snapshot_row = connection.execute(
+                        """
+                        SELECT * FROM approved_publication_snapshots
+                        WHERE plan_id = ?
+                        """,
+                        (plan["plan_id"],),
+                    ).fetchone()
+                    if not snapshot_row:
+                        raise ImmutableReleaseError(
+                            "declared v4 approval is missing its durable snapshot"
+                        )
+                    snapshot = _validated_publication_snapshot_row(
+                        snapshot_row,
+                        plan=_plan_from_row(plan),
+                    )
+                    snapshot_projection = {
+                        "schema_version": snapshot["schema_version"],
+                        "snapshot_digest": snapshot["snapshot_digest"],
+                        "product_revision": snapshot["product_revision"],
+                    }
+                return {
+                    **_approval_from_row(existing),
+                    "created": False,
+                    "publication_snapshot": snapshot_projection,
+                }
 
             now = _utc_now()
             approval_id = f"release-approval:{plan['payload_digest'][:24]}"
@@ -2460,7 +2796,29 @@ class ReleaseStore:
                 "SELECT * FROM release_approvals WHERE approval_id = ?",
                 (approval_id,),
             ).fetchone()
-            return {**_approval_from_row(row), "created": True}
+            approved_plan_row = connection.execute(
+                "SELECT * FROM release_plans WHERE plan_id = ?",
+                (plan["plan_id"],),
+            ).fetchone()
+            snapshot = _persist_publication_snapshot_in_transaction(
+                connection,
+                plan_row=approved_plan_row,
+                approval_row=row,
+                now=now,
+            )
+            return {
+                **_approval_from_row(row),
+                "created": True,
+                "publication_snapshot": (
+                    {
+                        "schema_version": snapshot["schema_version"],
+                        "snapshot_digest": snapshot["snapshot_digest"],
+                        "product_revision": snapshot["product_revision"],
+                    }
+                    if snapshot is not None
+                    else None
+                ),
+            }
 
     def start_run(
         self,

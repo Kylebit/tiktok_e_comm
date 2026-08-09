@@ -2,6 +2,14 @@
 
 from shared_platform.contracts import ApprovedProductPackage, ProductRecord
 
+from .approved_publication_snapshot import (
+    APPROVED_PUBLICATION_SNAPSHOT_SCHEMA_VERSION,
+    ApprovedPublicationSnapshot,
+    ApprovedPublicationSnapshotError,
+    approved_publication_snapshot_from_payload,
+    build_approved_publication_snapshot,
+    validate_approved_publication_snapshot,
+)
 from .adapters import approved_product_package_from_facts, product_record_from_legacy_row
 from .approval_lock import ProductApprovalLockPreview, preview_product_approval_lock
 from .catalog_update_preview import (
@@ -41,6 +49,9 @@ from .sku_lineage import (
 )
 
 __all__ = [
+    "APPROVED_PUBLICATION_SNAPSHOT_SCHEMA_VERSION",
+    "ApprovedPublicationSnapshot",
+    "ApprovedPublicationSnapshotError",
     "ApprovedProductPackage",
     "ProductRecord",
     "approved_product_package_from_facts",
@@ -74,4 +85,7 @@ __all__ = [
     "finalize_new_source_sku_reservation",
     "new_source_sku_reservation_digest",
     "resolve_sku_lineage_reservation",
+    "approved_publication_snapshot_from_payload",
+    "build_approved_publication_snapshot",
+    "validate_approved_publication_snapshot",
 ]

@@ -11,6 +11,11 @@ from .omnichannel_orchestrator import (
 )
 from .publication_planner import ChannelPublicationPlan, build_publication_plan
 from .pricing_preview import build_channel_pricing_preview
+from .tiktok_v4_execution import (
+    TikTokV4ExecutionContractError,
+    execute_tiktok_v4_plan,
+    project_tiktok_v4_execution_plan,
+)
 
 __all__ = [
     "ChannelListing",
@@ -22,4 +27,7 @@ __all__ = [
     "SingleApprovalSummary",
     "build_omnichannel_publication_plan",
     "build_channel_pricing_preview",
+    "TikTokV4ExecutionContractError",
+    "execute_tiktok_v4_plan",
+    "project_tiktok_v4_execution_plan",
 ]

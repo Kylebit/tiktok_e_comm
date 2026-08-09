@@ -19,6 +19,7 @@
     <button class="country-tab" data-region="TH">泰国 <small>TH</small></button>
     <button class="country-tab" data-region="VN">越南 <small>VN</small></button>
     <button class="country-tab" data-region="PH">菲律宾 <small>PH</small></button>
+    <a class="country-tab page-link" href="./inbound-batches.html">批次时间确认 <small>ETA</small></a>
   </nav>
 
   <main>
@@ -114,28 +115,6 @@
         <button id="clearManualInput" class="secondary danger" type="button" hidden>清除已补资料</button>
         <span></span>
         <button id="cancelManualInputBottom" class="secondary" type="button">取消</button>
-        <button class="primary" type="submit">保存并重新计算</button>
-      </div>
-    </form>
-  </dialog>
-
-  <dialog id="inboundEtaDialog" class="manual-dialog">
-    <form id="inboundEtaForm" class="manual-form" novalidate>
-      <div class="manual-dialog-head">
-        <div><span class="eyebrow">INBOUND TIMELINE</span><h2 id="inboundEtaDialogTitle">修改在途预计可售日期</h2></div>
-        <button id="cancelInboundEta" class="dialog-close" type="button" aria-label="关闭">×</button>
-      </div>
-      <p class="manual-intro">日期覆盖只保存在当前浏览器，不会修改雅仓入库单。修改对象是完整批次，同一批次里的全部 SKU 会使用同一个预计可售日期；其他批次不受影响。</p>
-      <p id="inboundEtaAssumption" class="eta-assumption"></p>
-      <input name="region" type="hidden">
-      <input name="batchId" type="hidden">
-      <label>预计可售日期<input name="estimatedSellableDate" type="date" required></label>
-      <label>来源备注（可选）<input name="sourceNote" type="text" maxlength="120" placeholder="例如：物流商确认 8 月 22 日到仓，预计 24 日上架"></label>
-      <p id="inboundEtaError" class="manual-error" role="alert"></p>
-      <div class="manual-actions">
-        <button id="clearInboundEta" class="secondary danger" type="button" hidden>恢复系统估算</button>
-        <span></span>
-        <button id="cancelInboundEtaBottom" class="secondary" type="button">取消</button>
         <button class="primary" type="submit">保存并重新计算</button>
       </div>
     </form>

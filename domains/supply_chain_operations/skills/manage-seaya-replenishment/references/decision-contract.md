@@ -118,6 +118,12 @@ The dashboard is a local decision artifact:
 
 `domains/supply_chain_operations/dashboard/index.html`
 
+Batch ETA confirmation is a separate local control surface:
+
+`domains/supply_chain_operations/dashboard/inbound-batches.html`
+
+The batch page must key every override by country + complete batch identity, show the system estimate beside the effective local confirmation, expose allocation blockers, and provide a reversible clear action. The SKU ledger must consume the same local override but must not embed ETA edit fields or dialogs.
+
 Render `REPLENISH` and `FIRST_STOCK` rows in one sortable/filterable SKU ledger. The status label preserves the inventory distinction; separate tables must not fragment the recommendation view.
 
 It may write reversible manual logistics overrides to browser `localStorage`. It must not write Seaya, TikTok, Shopee, order systems, or business databases.

@@ -404,6 +404,8 @@ def test_blocked_logistics_rows_have_local_manual_completion_controls():
 def test_inbound_eta_is_estimated_time_phased_and_locally_editable():
     app = (DASHBOARD / "app.js").read_text(encoding="utf-8")
     html = (DASHBOARD / "index.html").read_text(encoding="utf-8")
+    batch_html = (DASHBOARD / "inbound-batches.html").read_text(encoding="utf-8")
+    batch_app = (DASHBOARD / "inbound-batches.js").read_text(encoding="utf-8")
     plan = (DASHBOARD / "inbound-plan.js").read_text(encoding="utf-8")
     timeline = (DASHBOARD / "inbound-timeline.js").read_text(encoding="utf-8")
 
@@ -418,9 +420,11 @@ def test_inbound_eta_is_estimated_time_phased_and_locally_editable():
     assert "stock = consume(stock, dailyVelocity, event.day - lastDay)" in timeline
     assert "if (event.day > horizonDays)" in timeline
     assert 'supply-chain-inbound-batch-eta-v2' in app
-    assert "inboundEtaId(region, batchId)" in app
-    assert 'data-action="inbound-eta"' in app
-    assert "修改批次时间" in app
-    assert 'id="inboundEtaDialog"' in html
-    assert "预计可售日期" in html
-    assert "不会修改雅仓入库单" in html
+    assert "const inboundEtaId = (region, batchId)" in app
+    assert 'href="./inbound-batches.html"' in html
+    assert 'id="inboundEtaDialog"' not in html
+    assert "前往批次时间确认页" in app
+    assert 'id="batchRows"' in batch_html
+    assert "确认批次时间" in batch_app
+    assert "overrideId(region, batchId)" in batch_app
+    assert "localStorage.setItem(INBOUND_ETA_KEY" in batch_app

@@ -35,10 +35,6 @@ function saveManualInputs() {
   localStorage.setItem(MANUAL_INPUT_KEY, JSON.stringify(manualInputs));
 }
 
-function saveInboundEtaOverrides() {
-  localStorage.setItem(INBOUND_ETA_KEY, JSON.stringify(inboundEtaOverrides));
-}
-
 const manualInputId = (region, sku) => `${region}:${sku}`;
 const inboundEtaId = (region, batchId) => `${region}:${batchId}`;
 
@@ -347,10 +343,10 @@ function rowHtml(item, config, region = activeRegion) {
   const inboundBatchLines = item.inboundBatches.map(batch => {
     const quantity = Number.isInteger(batch.quantity) ? `${batch.quantity}件` : "数量待核对";
     const source = batch.etaOverride ? "手工日期" : "系统估算";
-    return `<span class="inbound-batch-line"><b>${escapeHtml(batch.batchId)}</b> · ${quantity} · ${escapeHtml(batch.estimatedSellableDate)} · ${source}<button class="inbound-eta-button" type="button" data-action="inbound-eta" data-region="${escapeHtml(region)}" data-batch-id="${escapeHtml(batch.batchId)}">修改批次时间</button></span>`;
+    return `<span class="inbound-batch-line"><b>${escapeHtml(batch.batchId)}</b> · ${quantity} · ${escapeHtml(batch.estimatedSellableDate)} · ${source}</span>`;
   }).join("");
   const inboundTiming = item.inventory.inbound > 0
-    ? `${inboundBatchLines || "<span>尚未绑定到完整批次明细</span>"}<span>新货到仓前计入<b>${item.countedInbound}</b></span>${item.inboundReconciled ? "" : `<span class="pending-data">批次分摊未对平：${item.unmatchedInbound}件暂不计入供应</span>`}`
+    ? `${inboundBatchLines || "<span>尚未绑定到完整批次明细</span>"}<span>新货到仓前计入<b>${item.countedInbound}</b></span>${item.inboundReconciled ? "" : `<span class="pending-data">批次分摊未对平：${item.unmatchedInbound}件暂不计入供应</span>`}<a class="inbound-eta-button" href="./inbound-batches.html#region=${escapeHtml(region)}">前往批次时间确认页</a>`
     : "";
   return `<tr>
     <td><div class="product-cell"><img src="./${escapeHtml(item.image)}" alt="SKU ${escapeHtml(item.sku)} 主图"><div>${activeRegion === "SUMMARY" ? `<small class="region-badge">${escapeHtml(region)} · ${escapeHtml(config.name)}</small>` : ""}<strong>${escapeHtml(item.sku)}</strong><span>${escapeHtml(item.name)}</span><small>${physicalLabel}</small></div></div></td>
@@ -577,9 +573,6 @@ document.querySelector("#statusFilter").addEventListener("change", renderRows);
 const manualDialog = document.querySelector("#manualInputDialog");
 const manualForm = document.querySelector("#manualInputForm");
 const manualError = document.querySelector("#manualInputError");
-const inboundEtaDialog = document.querySelector("#inboundEtaDialog");
-const inboundEtaForm = document.querySelector("#inboundEtaForm");
-const inboundEtaError = document.querySelector("#inboundEtaError");
 
 document.addEventListener("click", event => {
   const button = event.target.closest("[data-action='manual-entry']");
@@ -602,25 +595,6 @@ document.addEventListener("click", event => {
   document.querySelector("#clearManualInput").hidden = !saved;
   manualError.textContent = "";
   manualDialog.showModal();
-});
-
-document.addEventListener("click", event => {
-  const button = event.target.closest("[data-action='inbound-eta']");
-  if (!button) return;
-  const region = button.dataset.region || activeRegion;
-  const batchId = button.dataset.batchId;
-  const batchPlan = (INBOUND_PLAN.regions[region].batches || []).find(batch => batch.batchId === batchId);
-  if (!batchPlan) return;
-  const saved = inboundEtaOverrides[inboundEtaId(region, batchId)];
-  inboundEtaForm.elements.region.value = region;
-  inboundEtaForm.elements.batchId.value = batchId;
-  inboundEtaForm.elements.estimatedSellableDate.value = saved?.estimatedSellableDate || batchPlan.estimatedSellableDate;
-  inboundEtaForm.elements.sourceNote.value = saved?.sourceNote || "";
-  document.querySelector("#inboundEtaDialogTitle").textContent = `${region} · 批次 ${batchId} 到货时间`;
-  document.querySelector("#inboundEtaAssumption").textContent = `系统估算：${batchPlan.anchorDate} 起算 + ${batchPlan.transportDays} 天运输 + ${batchPlan.shelvingDays} 天签收上架 = ${batchPlan.estimatedSellableDate}；批次总计 ${batchPlan.totalUnits} 件。修改后会同步影响该批次内所有 SKU，不会改变其他批次。`;
-  document.querySelector("#clearInboundEta").hidden = !saved;
-  inboundEtaError.textContent = "";
-  inboundEtaDialog.showModal();
 });
 
 document.querySelector("#cancelManualInput").addEventListener("click", () => manualDialog.close());
@@ -667,49 +641,9 @@ document.querySelector("#clearManualInput").addEventListener("click", () => {
   renderCountry();
 });
 
-document.querySelector("#cancelInboundEta").addEventListener("click", () => inboundEtaDialog.close());
-document.querySelector("#cancelInboundEtaBottom").addEventListener("click", () => inboundEtaDialog.close());
-
-inboundEtaForm.addEventListener("submit", event => {
-  event.preventDefault();
-  const region = inboundEtaForm.elements.region.value;
-  const batchId = inboundEtaForm.elements.batchId.value;
-  const estimatedSellableDate = inboundEtaForm.elements.estimatedSellableDate.value;
-  try {
-    if (TIMELINE.daysBetween(DATA.snapshotDate, estimatedSellableDate) === 0
-      && estimatedSellableDate < DATA.snapshotDate) {
-      throw new TypeError("past date");
-    }
-  } catch {
-    inboundEtaError.textContent = `预计可售日期必须是 ${DATA.snapshotDate} 或之后的有效日期。`;
-    return;
-  }
-  inboundEtaOverrides[inboundEtaId(region, batchId)] = {
-    estimatedSellableDate,
-    sourceNote: inboundEtaForm.elements.sourceNote.value.trim(),
-    updatedAt: new Date().toISOString()
-  };
-  try {
-    saveInboundEtaOverrides();
-  } catch {
-    inboundEtaError.textContent = "浏览器本地存储不可用，到货时间尚未保存。";
-    return;
-  }
-  inboundEtaDialog.close();
-  renderCountry();
-});
-
-document.querySelector("#clearInboundEta").addEventListener("click", () => {
-  const region = inboundEtaForm.elements.region.value;
-  const batchId = inboundEtaForm.elements.batchId.value;
-  delete inboundEtaOverrides[inboundEtaId(region, batchId)];
-  try {
-    saveInboundEtaOverrides();
-  } catch {
-    inboundEtaError.textContent = "浏览器本地存储不可用，无法恢复系统估算。";
-    return;
-  }
-  inboundEtaDialog.close();
+window.addEventListener("storage", event => {
+  if (event.key !== INBOUND_ETA_KEY) return;
+  inboundEtaOverrides = loadLocalObject(INBOUND_ETA_KEY);
   renderCountry();
 });
 renderCountry();

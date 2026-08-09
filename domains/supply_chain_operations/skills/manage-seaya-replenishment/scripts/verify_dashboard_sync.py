@@ -16,6 +16,8 @@ TRACKED = (
     DOMAIN_ROOT / "dashboard" / "README.md",
     DOMAIN_ROOT / "dashboard" / "app.js",
     DOMAIN_ROOT / "dashboard" / "data.js",
+    DOMAIN_ROOT / "dashboard" / "inbound-batches.html",
+    DOMAIN_ROOT / "dashboard" / "inbound-batches.js",
     DOMAIN_ROOT / "dashboard" / "inbound-plan.js",
     DOMAIN_ROOT / "dashboard" / "inbound-timeline.js",
     DOMAIN_ROOT / "dashboard" / "index.html",

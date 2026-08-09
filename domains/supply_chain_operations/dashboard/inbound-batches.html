@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>雅仓批次时间确认</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">SC</span><div><strong>供应链运营</strong><small>INBOUND BATCH ETA CONTROL</small></div></div>
+    <div class="snapshot"><span class="pulse"></span>只读快照 <strong id="snapshotDate">—</strong></div>
+  </header>
+
+  <nav class="country-tabs" aria-label="批次页面导航">
+    <a class="country-tab page-link" href="./index.html">← 返回补货看板</a>
+    <button class="country-tab active" data-region="ALL">全部批次 <small>ALL</small></button>
+    <button class="country-tab" data-region="MY">马来西亚 <small>MY</small></button>
+    <button class="country-tab" data-region="TH">泰国 <small>TH</small></button>
+    <button class="country-tab" data-region="VN">越南 <small>VN</small></button>
+    <button class="country-tab" data-region="PH">菲律宾 <small>PH</small></button>
+  </nav>
+
+  <main>
+    <section class="batch-hero">
+      <div>
+        <span class="eyebrow">BATCH-LEVEL ETA</span>
+        <h1>批次时间确认</h1>
+        <p>每一行对应一个完整雅仓入库批次。确认日期后，该批次内所有 SKU 同步使用同一个预计可售日；不会修改雅仓，也不会影响其他批次。</p>
+      </div>
+      <aside class="batch-policy">
+        <strong>计算口径</strong>
+        <p>预计可售日 = 发货锚点 + 国家运输周期 + 2 天签收上架。创建日期回退只是估算，人工确认值会保存在当前浏览器。</p>
+      </aside>
+    </section>
+
+    <section class="kpi-strip batch-kpis">
+      <article><small>运输中批次</small><strong id="batchCount">—</strong><span>按完整批次身份管理</span></article>
+      <article><small>批次总件数</small><strong id="batchUnits">—</strong><span>雅仓入库计划总量</span></article>
+      <article><small>已人工确认</small><strong id="confirmedCount">—</strong><span>浏览器本地覆盖</span></article>
+      <article><small>分摊待核对</small><strong id="pendingCount">—</strong><span>未对平前不计入供应</span></article>
+    </section>
+
+    <section class="section batch-control-section">
+      <div class="section-heading">
+        <div><span class="eyebrow">ETA CONFIRMATION LEDGER</span><h2>逐批确认预计可售时间</h2></div>
+        <p id="pageMessage">保存后，已打开的补货看板会自动接收更新；重新打开看板也会读取同一份本地确认数据。</p>
+      </div>
+      <div class="table-wrap batch-table-wrap">
+        <table class="batch-table">
+          <thead><tr><th>国家 / 批次</th><th>批次供应事实</th><th>系统估算</th><th>人工确认</th><th>分摊状态</th><th>操作</th></tr></thead>
+          <tbody id="batchRows"></tbody>
+        </table>
+      </div>
+      <div class="empty-state" id="batchEmpty" hidden>当前国家没有运输中批次。</div>
+    </section>
+
+    <section class="section evidence">
+      <div class="evidence-grid">
+        <article class="ok"><strong>批次是唯一修改单位</strong><p>不再以 SKU 保存日期。同一 SKU 横跨两批时保留两条独立事件。</p></article>
+        <article class="warn"><strong>数量必须对平</strong><p>多批次 SKU 数量不完整时，即使日期已确认，也不会把聚合在途提前计入供应。</p></article>
+        <article class="neutral"><strong>外部写入为 0</strong><p>本页仅使用浏览器 localStorage；不会写雅仓、平台或数据库。</p></article>
+      </div>
+    </section>
+  </main>
+
+  <footer><span>Supply Chain Operations · Batch-level ETA control</span><span>这是本地决策确认，不是物流商或仓库到货承诺。</span></footer>
+  <script src="./data.js?v=20260809-batch-page1"></script>
+  <script src="./inbound-plan.js?v=20260809-batch-page1"></script>
+  <script src="./inbound-timeline.js?v=20260809-batch-page1"></script>
+  <script src="./inbound-batches.js?v=20260809-batch-page1"></script>
+</body>
+</html>

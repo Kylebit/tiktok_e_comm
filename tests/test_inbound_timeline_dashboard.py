@@ -87,12 +87,15 @@ def test_batch_identity_is_required():
 
 def test_dashboard_uses_batch_level_overrides_and_never_sku_level_eta():
     app = open("domains/supply_chain_operations/dashboard/app.js", encoding="utf-8").read()
+    batch_app = open("domains/supply_chain_operations/dashboard/inbound-batches.js", encoding="utf-8").read()
     plan = open("domains/supply_chain_operations/dashboard/inbound-plan.js", encoding="utf-8").read()
 
     assert "supply-chain-inbound-batch-eta-v2" in app
-    assert "data-batch-id" in app
-    assert "inboundEtaId(region, batchId)" in app
+    assert "const inboundEtaId = (region, batchId)" in app
     assert "data-sku=\"${escapeHtml(item.sku)}\">修改到货时间" not in app
+    assert "inboundEtaDialog" not in app
+    assert "overrideId(region, batchId)" in batch_app
+    assert "data-action=\"save\"" in batch_app
     assert 'batchId: "THML4038-58701"' in plan
     assert 'batchId: "THSL4038-59557"' in plan
     assert 'skuQuantities: {"0021": null}' in plan

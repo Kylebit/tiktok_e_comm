@@ -87,6 +87,7 @@ Run `scripts/validate_inventory_snapshot.py SNAPSHOT.json` before consuming a ne
 - Require the sum of exact batch-SKU quantities to equal the SKU's aggregate `inbound`. If a multi-batch allocation is missing, non-integer, or does not reconcile, fail closed: display the unmatched quantity but do not count it as supply. Never collapse it onto one SKU-level date.
 - When exactly one active inbound batch exists for a country, the SKU aggregate may be bound to that sole batch with explicit `SINGLE_ACTIVE_BATCH` lineage.
 - Allow a per-country + exact-batch manual expected-sellable-date override with an optional source note. The override applies to every SKU line in that batch, persists only in reversible browser `localStorage`, can be cleared, and never writes to Seaya or a database.
+- Maintain batch ETA confirmation on the dedicated `dashboard/inbound-batches.html` page. Keep the SKU replenishment ledger read-only for ETA editing: show effective batch dates and link to the confirmation page instead of embedding per-row date controls.
 
 ## Keep the skill synchronized
 

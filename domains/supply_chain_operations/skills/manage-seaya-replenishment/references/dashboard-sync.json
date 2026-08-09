@@ -1,13 +1,15 @@
 {
   "sha256": {
-    "dashboard/README.md": "f4d2c1643554c8424f2c945f896ea15ccd288bf4a189f2ed08846e55e7823463",
-    "dashboard/app.js": "52f8a2ac1ba4a49ff1ec23d6996b7750343c0b71d5f101837289dd76c9bcee6e",
+    "dashboard/README.md": "c1e8da31d34cd6a76a3e8b18abc66c023278ea08c591774e76f1facb5f6f0f06",
+    "dashboard/app.js": "24bd1eeb7c303247c5b74b5b2e2d817950f41ccfb679818c83fb681e9fa838a8",
     "dashboard/data.js": "08aa2f95d1336dac66d0ae15fcaa27d4c9226cd13bee5174652cf285a02b8937",
+    "dashboard/inbound-batches.html": "598957d24d27b868a490414f710478475644f096f7fc40856a670424712802af",
+    "dashboard/inbound-batches.js": "8aa5848db175fab1cf43c4fd5f7120e5d3e2ad027533c55074345a3a9883c226",
     "dashboard/inbound-plan.js": "3a66d0ead5a92bf869eea6cce9f2e039accc3b360aaec6d921b84e40b22415f0",
     "dashboard/inbound-timeline.js": "e15d21b4c752e3ee813a06ee38eac75416c8101c3529e6a69c27ed4e792b8665",
-    "dashboard/index.html": "1cf9a90bf777db603870a64ca92246ab19b7b9adddba3e4bb7a38a8d03e4b031",
-    "dashboard/styles.css": "9bc261411a19ae8f114ea258e5682f073c126c743612d502f008e181021a725c",
-    "skills/manage-seaya-replenishment/SKILL.md": "8f644f0f7496f18a64e34a1b1f08ffd729ce333ee9f31a6122615392ef662abd",
-    "skills/manage-seaya-replenishment/references/decision-contract.md": "a31d94c5da5160bcbb9aa8a693c4f33513655a6337749abd629cb9c6d7d8d0e0"
+    "dashboard/index.html": "5f7ba6c422e554517f7265c7674542c30df545308bf65a9d7df872c6ade34f8b",
+    "dashboard/styles.css": "c910cf381132b9c85b87453811c7be3367c7e546c47e12b7bbb181c23198e77d",
+    "skills/manage-seaya-replenishment/SKILL.md": "3d3272b0df04248c952edab9cdd4d34c5305e6a8cb08418151eb7cf04d068e1c",
+    "skills/manage-seaya-replenishment/references/decision-contract.md": "31377b211279bb23a63d819d16b4b40d5eef720c1ea87a8edc94ba612ebabb66"
   }
 }

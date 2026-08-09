@@ -191,8 +191,10 @@ function calculateCountry(region) {
     const spikeProtection = effectiveItem.kind === "first_stock" && [tiktokDemand, shopeeDemand].some(
       demand => demand.trendClass === "SPIKE"
     );
-    const targetCoverageDays = spikeProtection ? 15 : config.targetDays + config.safetyDays;
     const transportPolicy = TRANSPORT_HISTORY.regions[region];
+    const standardCoverageDays = transportPolicy.approvedTargetCoverageDays
+      ?? config.targetDays + config.safetyDays;
+    const targetCoverageDays = spikeProtection ? 15 : standardCoverageDays;
     const effectiveTransportDays = transportPolicy.effectiveTransportDays;
     const effectiveLeadDays = NEW_REPLENISHMENT_PREPARATION_DAYS
       + NEW_REPLENISHMENT_DOMESTIC_WAREHOUSE_DAYS
@@ -229,7 +231,9 @@ function calculateCountry(region) {
       inboundReconciled: inboundAllocation.reconciled,
       unmatchedInbound: inboundAllocation.unmatchedInbound, nextArrivalDate,
       countedInbound: supplyProjection.countedInbound,
-      pendingInbound: supplyProjection.pendingInbound};
+      pendingInbound: supplyProjection.pendingInbound,
+      supplySteps: supplyProjection.steps,
+      projectionMethod: supplyProjection.projectionMethod};
   });
 
   const batchMetrics = items => {
@@ -329,6 +333,25 @@ function channelBlock(label, channel, demand) {
   return `<div class="channel-line"><b>${label}</b><span>${channel.units.toLocaleString("zh-CN")} 件 / ${channel.orders.toLocaleString("zh-CN")} 单</span><small>${recent} · ${fallback} · 日均 ${demand.daily.toFixed(2)}</small></div>`;
 }
 
+function shortDate(value) {
+  return typeof value === "string" && value.length >= 10 ? value.slice(5, 10) : value;
+}
+
+function projectionAuditHtml(item) {
+  const velocity = item.dailyVelocity.toFixed(6);
+  const stepLines = item.supplySteps.map(step => {
+    if (step.kind === "INBOUND") {
+      return `<li><b>${shortDate(step.date)}</b> 批次 ${escapeHtml(step.batchId)} 到达 +${step.quantity}件；库存 ${step.stockBefore} → ${step.stockAfter}</li>`;
+    }
+    const unmet = step.unmetDemand > 0
+      ? `；缺口 ${step.unmetDemand}（不形成负库存）`
+      : "";
+    return `<li><b>${shortDate(step.fromDate)}→${shortDate(step.toDate)}</b> ${step.days}天需求 ceil(${velocity}×${step.days})=${step.demand}；库存 ${step.stockBefore} → ${step.stockAfter}${unmet}</li>`;
+  }).join("");
+  const open = item.inventory.inbound > 0 ? " open" : "";
+  return `<details class="calc-audit"${open}><summary>逐步计算 · ${item.projectionMethod}</summary><ol><li>双平台预测日均：${item.tiktokDaily.toFixed(6)} + ${item.shopeeDaily.toFixed(6)} = <b>${velocity}件/天</b></li><li>新补货提前期：3 + 4 + ${item.effectiveTransportDays} = <b>${item.effectiveLeadDays}天</b>；提前期需求 ceil(${velocity}×${item.effectiveLeadDays})=${item.leadDemand}</li><li>快照日 ${DATA.snapshotDate} 初始可用库存：<b>${item.inventory.available}件</b></li>${stepLines}<li>${item.targetCoverageDays}天目标：ceil(${velocity}×${item.targetCoverageDays})=<b>${item.arrivalTarget}</b></li><li>建议件数：max(0, ${item.arrivalTarget}−${item.projectedAtArrival})=<b>${item.recommended}</b></li></ol></details>`;
+}
+
 function rowHtml(item, config, region = activeRegion) {
   const local = config.currencySymbol;
   const inventoryLabel = item.kind === "first_stock" ? "海外仓尚无" : config.warehouse;
@@ -376,7 +399,7 @@ function rowHtml(item, config, region = activeRegion) {
     <td><div class="product-cell"><img src="./${escapeHtml(item.image)}" alt="SKU ${escapeHtml(item.sku)} 主图"><div>${activeRegion === "SUMMARY" ? `<small class="region-badge">${escapeHtml(region)} · ${escapeHtml(config.name)}</small>` : ""}<strong>${escapeHtml(item.sku)}</strong><span>${escapeHtml(item.name)}</span><small>${physicalLabel}</small></div></div></td>
     <td><div class="channel-stack">${channelBlock("TikTok", item.channels.tiktok, item.tiktokDemand)}${channelBlock("Shopee", item.channels.shopee, item.shopeeDemand)}<em>合并需求 ${item.dailyVelocity.toFixed(2)} 件/天${item.spikeProtection ? " · 短期爆量首批仅覆盖15天" : ""}</em></div></td>
     <td><div class="inventory-grid"><span>库存<b>${item.inventory.stock}</b></span><span>可用<b>${item.inventory.available}</b></span><span>占用<b>${item.inventory.allocated}</b></span><span>冻结<b>${item.inventory.frozen}</b></span><span>在途<b>${item.inventory.inbound}</b></span><span>绑定<b>${inventoryLabel}</b></span>${inboundTiming}</div></td>
-    <td><div class="calc-lines"><span>本次新货预计可售 <b>${item.nextArrivalDate}</b></span><span>3天备货 + 4天到国内仓 + ${item.effectiveTransportDays}天海外运输</span><span>${item.transportPolicy.eligibleSamples}批历史样本 · ${item.transportPolicy.state}</span><span>${item.effectiveLeadDays}天需求 <b>${item.leadDemand}</b></span><span>分时点到仓剩余 <b>${item.projectedAtArrival}</b></span><span>${item.targetCoverageDays}天目标 <b>${item.arrivalTarget}</b></span><code>先耗现货 → 到日加在途 → 再耗需求</code><code>max(0, ${item.arrivalTarget} − ${item.projectedAtArrival})</code></div></td>
+    <td><div class="calc-lines"><span>本次新货预计可售 <b>${item.nextArrivalDate}</b></span><span>3天备货 + 4天到国内仓 + ${item.effectiveTransportDays}天海外运输</span><span>${item.transportPolicy.eligibleSamples}批历史样本 · ${item.transportPolicy.state}</span><span>${item.effectiveLeadDays}天需求 <b>${item.leadDemand}</b></span><span>分时点到仓剩余 <b>${item.projectedAtArrival}</b></span><span>${item.targetCoverageDays}天目标 <b>${item.arrivalTarget}</b></span>${projectionAuditHtml(item)}</div></td>
     <td class="recommend"><strong>${item.recommended}</strong><span>件</span><small>${volumeLabel}</small></td>
     <td><div class="economics-mini"><span>用户结算价 <b>${local}${item.customerPaymentLocal.toFixed(2)}</b></span><span>税费节省 ${Math.round(config.taxSavingRate * 100)}% <b class="gain">${money(item.taxSavingUnit, 2)}</b></span><span>跨境运费节省 20% <b class="gain">${money(item.shippingSavingUnit, 2)}</b></span><span>本土处理 + 头程 <b>${handlingLabel}</b></span><em>${benefitLabel} ${shippingEvidence}</em></div></td>
     <td><span class="pill ${item.status.toLowerCase()}">${statusLabel(item.status)}</span><small class="reason">${item.dataIncomplete ? `建议件数已生成；${missingFields}待补充，仅影响${affectedOutputs}展示。` : item.kind === "first_stock" ? "当前仓库为0；平台需求与商品资料齐全，收益单独展示。" : item.status === "HOLD" ? "现货与按预计日期到达的在途已覆盖目标。" : item.status === "NO_DEMAND" ? "没有足够的SKU级需求事实。" : "需求缺口成立；收益仅展示，不拦截补货建议。"}</small>${item.dataIncomplete || item.manualInput ? `<button class="manual-entry-button" type="button" data-action="manual-entry" data-region="${escapeHtml(region)}" data-sku="${escapeHtml(item.sku)}">${item.manualInput ? "修改已补资料" : "手动补齐"}</button>` : ""}</td>

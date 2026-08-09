@@ -26,6 +26,22 @@
     return Math.max(0, stock - Math.ceil(dailyVelocity * days));
   }
 
+  function consumptionStep({snapshotDate, startDay, endDay, stock, dailyVelocity}) {
+    const days = endDay - startDay;
+    const demand = Math.ceil(dailyVelocity * days);
+    const stockAfter = consume(stock, dailyVelocity, days);
+    return {
+      kind: "CONSUMPTION",
+      fromDate: addDays(snapshotDate, startDay),
+      toDate: addDays(snapshotDate, endDay),
+      days,
+      stockBefore: stock,
+      demand,
+      stockAfter,
+      unmetDemand: Math.max(0, demand - stock)
+    };
+  }
+
   function projectSupply({snapshotDate, nextArrivalDate, available, dailyVelocity, inboundEvents}) {
     if (!Number.isInteger(available) || available < 0) throw new TypeError("available must be a nonnegative integer");
     if (typeof dailyVelocity !== "number" || !Number.isFinite(dailyVelocity) || dailyVelocity < 0) {
@@ -49,23 +65,47 @@
     let lastDay = 0;
     let countedInbound = 0;
     let pendingInbound = 0;
+    const steps = [];
     events.forEach(event => {
       if (event.day > horizonDays) {
         pendingInbound += event.quantity;
         return;
       }
-      stock = consume(stock, dailyVelocity, event.day - lastDay);
+      if (event.day > lastDay) {
+        const step = consumptionStep({
+          snapshotDate, startDay: lastDay, endDay: event.day, stock, dailyVelocity
+        });
+        steps.push(step);
+        stock = step.stockAfter;
+      }
+      const stockBefore = stock;
       stock += event.quantity;
       countedInbound += event.quantity;
+      steps.push({
+        kind: "INBOUND",
+        date: event.estimatedSellableDate,
+        batchId: event.batchId,
+        quantity: event.quantity,
+        stockBefore,
+        stockAfter: stock
+      });
       lastDay = event.day;
     });
-    stock = consume(stock, dailyVelocity, horizonDays - lastDay);
+    if (horizonDays > lastDay) {
+      const step = consumptionStep({
+        snapshotDate, startDay: lastDay, endDay: horizonDays, stock, dailyVelocity
+      });
+      steps.push(step);
+      stock = step.stockAfter;
+    }
     return {
       projectedStock: Math.max(0, Math.floor(stock)),
       countedInbound,
       pendingInbound,
       horizonDays,
-      events
+      events,
+      steps,
+      projectionMethod: "TIME_PHASED_BATCH_EVENTS_V1"
     };
   }
 

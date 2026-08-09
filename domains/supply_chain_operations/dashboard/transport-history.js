@@ -27,7 +27,9 @@ window.SUPPLY_CHAIN_TRANSPORT_HISTORY = {
       derivedTransportDays: 20,
       effectiveTransportDays: 15,
       state: "USER_APPROVED_OVERRIDE",
-      approvalReference: "Kyle confirmed Thailand overseas transport = 15 days on 2026-08-09"
+      approvalReference: "Kyle confirmed Thailand overseas transport = 15 days on 2026-08-09",
+      approvedTargetCoverageDays: 33,
+      coverageApprovalReference: "Kyle confirmed Thailand target coverage = 33 days on 2026-08-09"
     },
     VN: {
       baselineTransportDays: 15,

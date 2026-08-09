@@ -316,10 +316,14 @@ def test_quantity_is_independent_from_dimensions_weight_and_cost():
 def test_dashboard_consumes_segmented_trend_and_discloses_fallbacks():
     app = (DASHBOARD / "app.js").read_text(encoding="utf-8")
     html = (DASHBOARD / "index.html").read_text(encoding="utf-8")
+    transport = (DASHBOARD / "transport-history.js").read_text(encoding="utf-8")
 
     assert 'trend.method !== "segmented_7_8_15_v1"' in app
     assert 'demand.trendClass === "SPIKE"' in app
     assert "const targetCoverageDays = spikeProtection ? 15" in app
+    assert "transportPolicy.approvedTargetCoverageDays" in app
+    assert "approvedTargetCoverageDays: 33" in transport
+    assert "Thailand target coverage = 33 days" in transport
     assert "缺逐日分段，按30日+长窗降级" in app
     assert "趋势算法数据覆盖" in app
     assert "最近7天60% + 第8–15天30% + 第16–30天10%" in html
@@ -430,12 +434,18 @@ def test_inbound_eta_is_estimated_time_phased_and_locally_editable():
     assert 'anchorType: "CREATED_FALLBACK"' not in plan
     assert 'batchId: "THML4038-58701"' in plan
     assert 'batchId: "THSL4038-59557"' in plan
-    assert 'skuQuantities: {"0021": 200}' in plan
-    assert 'skuQuantities: {"0021": 600}' in plan
+    assert '"0021": 200' in plan
+    assert '"0021": 600' in plan
+    assert '"0026": 600' in plan
+    assert '"0026": 200' in plan
     assert 'allocationPolicy: "EXACT_BATCH_SKU_REQUIRED"' in plan
     assert "function projectSupply" in timeline
-    assert "stock = consume(stock, dailyVelocity, event.day - lastDay)" in timeline
+    assert "const steps = []" in timeline
+    assert 'projectionMethod: "TIME_PHASED_BATCH_EVENTS_V1"' in timeline
     assert "if (event.day > horizonDays)" in timeline
+    assert "supplySteps: supplyProjection.steps" in app
+    assert "function projectionAuditHtml(item)" in app
+    assert 'item.sku === "0021"' not in app
     assert 'supply-chain-inbound-batch-timing-v3' in app
     assert "const inboundEtaId = (region, batchId)" in app
     assert 'href="./inbound-batches.html"' in html

@@ -35,7 +35,21 @@ window.SUPPLY_CHAIN_INBOUND_PLAN = {
         estimatedSellableDate: "2026-08-19",
         confidence: "VERIFIED_ANCHOR_ESTIMATED_ETA",
         anchorEvidence: "user_supplied_seaya_inbound_log_screenshot_2026-08-09",
-        skuQuantities: {"0021": 200}
+        skuQuantities: {
+          "0003": 100,
+          "0007": 100,
+          "0008": 100,
+          "0015": 400,
+          "0016": 50,
+          "0018": 50,
+          "0021": 200,
+          "0023": 50,
+          "0026": 600,
+          "0140": 200,
+          "0178": 100,
+          "0198": 100,
+          "0223": 50
+        }
       }, {
         batchId: "THSL4038-59557",
         totalUnits: 1250,
@@ -48,7 +62,16 @@ window.SUPPLY_CHAIN_INBOUND_PLAN = {
         transportDays: 15,
         estimatedSellableDate: "2026-08-26",
         confidence: "USER_APPROVED_ESTIMATED_ANCHOR",
-        skuQuantities: {"0021": 600}
+        skuQuantities: {
+          "0017": 200,
+          "0021": 600,
+          "0023": 100,
+          "0026": 200,
+          "0160": 30,
+          "0401": 60,
+          "0927": 50,
+          "0935": 10
+        }
       }]
     },
     VN: {

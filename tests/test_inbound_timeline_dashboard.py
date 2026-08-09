@@ -1,10 +1,27 @@
+import json
+import re
 from datetime import date
 from math import ceil
+from pathlib import Path
 
 from domains.supply_chain_operations.inbound_timeline import (
     InboundEvent,
     project_supply,
 )
+
+
+DASHBOARD = (
+    Path(__file__).resolve().parents[1]
+    / "domains"
+    / "supply_chain_operations"
+    / "dashboard"
+)
+
+
+def _th_batch_quantities() -> tuple[dict[str, int], dict[str, int]]:
+    plan = (DASHBOARD / "inbound-plan.js").read_text(encoding="utf-8")
+    maps = [json.loads(value) for value in re.findall(r"skuQuantities:\s*(\{.*?\})", plan, re.S)]
+    return maps[0], maps[1]
 
 def test_inbound_arriving_midway_is_not_available_before_its_date():
     result = project_supply(
@@ -86,7 +103,32 @@ def test_th_0021_exact_paginated_batch_split_changes_arrival_stock():
 
     assert result.projected_stock == 413
     assert result.counted_inbound == 800
+    assert [step.kind for step in result.steps] == [
+        "CONSUMPTION",
+        "INBOUND",
+        "CONSUMPTION",
+        "INBOUND",
+        "CONSUMPTION",
+    ]
+    assert [step.demand for step in result.steps if step.kind == "CONSUMPTION"] == [373, 261, 187]
+    assert [step.stock_after for step in result.steps] == [0, 200, 0, 600, 413]
+    assert result.projection_method == "TIME_PHASED_BATCH_EVENTS_V1"
     assert ceil(daily_velocity * 33) - result.projected_stock == 818
+
+
+def test_every_thailand_inbound_sku_reconciles_to_complete_paginated_batches():
+    old_batch, new_batch = _th_batch_quantities()
+    data_text = (DASHBOARD / "data.js").read_text(encoding="utf-8")
+    payload = data_text.removeprefix("window.SUPPLY_CHAIN_DATA = ").strip().removesuffix(";")
+    thailand = json.loads(payload)["countries"]["TH"]
+
+    assert sum(old_batch.values()) == 2100
+    assert sum(new_batch.values()) == 1250
+    assert old_batch["0021"] == 200
+    assert new_batch["0021"] == 600
+    for row in thailand:
+        if row["inventory"]["inbound"] > 0:
+            assert old_batch.get(row["sku"], 0) + new_batch.get(row["sku"], 0) == row["inventory"]["inbound"]
 
 
 def test_batch_identity_is_required():
@@ -120,7 +162,10 @@ def test_dashboard_uses_batch_level_overrides_and_never_sku_level_eta():
     assert "timingsValid" in app
     assert 'batchId: "THML4038-58701"' in plan
     assert 'batchId: "THSL4038-59557"' in plan
-    assert 'skuQuantities: {"0021": 200}' in plan
-    assert 'skuQuantities: {"0021": 600}' in plan
+    old_batch, new_batch = _th_batch_quantities()
+    assert old_batch["0021"] == 200
+    assert new_batch["0021"] == 600
+    assert len(old_batch) == 13
+    assert len(new_batch) == 8
     assert "批次 SKU 分摊未对平" in app
     assert "未入库 · 建单+4天估算" in app

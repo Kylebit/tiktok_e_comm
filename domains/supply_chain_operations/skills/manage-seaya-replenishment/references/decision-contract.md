@@ -75,9 +75,14 @@ For Shopee settlement economics, a complete pull means every listed settlement p
 Quantity is executable only when every in-scope channel is backed by a complete `quantity_basis=valid_order` snapshot. Settlement-only history may be displayed as legacy context but cannot produce a recommended quantity.
 
 - `lead_demand = ceil(v × lead_days)`
-- `arrival_stock = max(0, available + trusted_inbound - lead_demand)`
+- Project supply chronologically: consume available stock to the first inbound `expected_sellable_at`, add that inbound quantity, then repeat until the new replenishment arrival.
+- `arrival_stock = floor(time_phased_projected_stock_at_new_replenishment_arrival)`
 - `target = ceil(v × (target_days + safety_days))`
 - `recommended = max(0, target - arrival_stock)`
+
+Every inbound event must retain quantity, complete country + SKU identity, shipment anchor date/type, estimated sellable date, estimate policy, source capture time, and manual-override lineage when present. `标记发货` is the preferred anchor. Creation date is a labeled fallback and must never be presented as an actual shipment date. A manual override changes only the local decision projection and never the supplier record.
+
+Current estimated-sellable policy uses the approved country transit days plus a 2-day sign-and-shelve buffer. For a multi-batch aggregate that lacks exact SKU-level batch allocation, use the latest plausible date so future supply is not credited too early.
 
 Quantity is valid without dimensions, weight, or unit cost. Those fields affect separate outputs:
 

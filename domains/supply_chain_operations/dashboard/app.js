@@ -1,9 +1,13 @@
 const DATA = window.SUPPLY_CHAIN_DATA;
+const INBOUND_PLAN = window.SUPPLY_CHAIN_INBOUND_PLAN;
+const TIMELINE = window.SUPPLY_CHAIN_TIMELINE;
 let activeRegion = "MY";
 let calculated = [];
 let batch = {};
 const MANUAL_INPUT_KEY = "supply-chain-manual-logistics-v1";
+const INBOUND_ETA_KEY = "supply-chain-inbound-eta-v1";
 let manualInputs = loadManualInputs();
+let inboundEtaOverrides = loadLocalObject(INBOUND_ETA_KEY);
 
 const number = value => Number(value || 0);
 const money = (value, digits = 0) => {
@@ -15,8 +19,12 @@ const escapeHtml = value => String(value ?? "").replace(/[&<>"']/g, char => ({
 })[char]);
 
 function loadManualInputs() {
+  return loadLocalObject(MANUAL_INPUT_KEY);
+}
+
+function loadLocalObject(key) {
   try {
-    const value = JSON.parse(localStorage.getItem(MANUAL_INPUT_KEY) || "{}");
+    const value = JSON.parse(localStorage.getItem(key) || "{}");
     return value && typeof value === "object" && !Array.isArray(value) ? value : {};
   } catch {
     return {};
@@ -27,7 +35,12 @@ function saveManualInputs() {
   localStorage.setItem(MANUAL_INPUT_KEY, JSON.stringify(manualInputs));
 }
 
+function saveInboundEtaOverrides() {
+  localStorage.setItem(INBOUND_ETA_KEY, JSON.stringify(inboundEtaOverrides));
+}
+
 const manualInputId = (region, sku) => `${region}:${sku}`;
+const inboundEtaId = (region, sku) => `${region}:${sku}`;
 
 function outboundFee(weightG) {
   if (weightG <= 50) return 1.8;
@@ -123,8 +136,21 @@ function calculateCountry(region) {
     const targetCoverageDays = spikeProtection ? 15 : config.targetDays + config.safetyDays;
     const leadDemand = Math.ceil(dailyVelocity * config.leadDays);
     const arrivalTarget = Math.ceil(dailyVelocity * targetCoverageDays);
-    const trusted = number(effectiveItem.inventory.available) + number(effectiveItem.inventory.inbound);
-    const projectedAtArrival = Math.max(0, trusted - leadDemand);
+    const inboundPlan = INBOUND_PLAN.regions[region];
+    const inboundEtaOverride = inboundEtaOverrides[inboundEtaId(region, effectiveItem.sku)];
+    const estimatedSellableDate = inboundEtaOverride?.estimatedSellableDate
+      || inboundPlan.estimatedSellableDate;
+    const nextArrivalDate = TIMELINE.addDays(DATA.snapshotDate, config.leadDays);
+    const supplyProjection = TIMELINE.projectSupply({
+      snapshotDate: DATA.snapshotDate,
+      nextArrivalDate,
+      available: effectiveItem.inventory.available,
+      dailyVelocity,
+      inboundEvents: effectiveItem.inventory.inbound > 0
+        ? [{quantity: effectiveItem.inventory.inbound, estimatedSellableDate}]
+        : []
+    });
+    const projectedAtArrival = supplyProjection.projectedStock;
     const recommended = Math.max(0, arrivalTarget - projectedAtArrival);
     const volumeM3 = dimensionsReady
       ? effectiveItem.dimensionsCm.reduce((a, b) => a * number(b), 1) / 1e6
@@ -138,7 +164,10 @@ function calculateCountry(region) {
     return {...effectiveItem, dimensionsReady, weightReady, costReady, dataIncomplete,
       tiktokDemand, shopeeDemand, tiktokDaily, shopeeDaily, dailyVelocity,
       spikeProtection, targetCoverageDays, leadDemand, arrivalTarget,
-      projectedAtArrival, recommended, volumeM3, chargeableUnitM3};
+      projectedAtArrival, recommended, volumeM3, chargeableUnitM3,
+      inboundPlan, inboundEtaOverride, estimatedSellableDate, nextArrivalDate,
+      countedInbound: supplyProjection.countedInbound,
+      pendingInbound: supplyProjection.pendingInbound};
   });
 
   const batchMetrics = items => {
@@ -270,14 +299,18 @@ function rowHtml(item, config, region = activeRegion) {
     !item.weightReady ? "本土处理和收益" : "",
     !item.costReady ? "占款" : ""
   ].filter(Boolean).join("、");
+  const inboundEtaSource = item.inboundEtaOverride ? "手工日期" : "系统估算";
+  const inboundTiming = item.inventory.inbound > 0
+    ? `<span>预计可售<b>${escapeHtml(item.estimatedSellableDate)}</b></span><span>时点口径<b>${inboundEtaSource}</b></span><span>新货到仓前计入<b>${item.countedInbound}</b></span><button class="inbound-eta-button" type="button" data-action="inbound-eta" data-region="${escapeHtml(region)}" data-sku="${escapeHtml(item.sku)}">修改到货时间</button>`
+    : "";
   return `<tr>
     <td><div class="product-cell"><img src="./${escapeHtml(item.image)}" alt="SKU ${escapeHtml(item.sku)} 主图"><div>${activeRegion === "SUMMARY" ? `<small class="region-badge">${escapeHtml(region)} · ${escapeHtml(config.name)}</small>` : ""}<strong>${escapeHtml(item.sku)}</strong><span>${escapeHtml(item.name)}</span><small>${physicalLabel}</small></div></div></td>
     <td><div class="channel-stack">${channelBlock("TikTok", item.channels.tiktok, item.tiktokDemand)}${channelBlock("Shopee", item.channels.shopee, item.shopeeDemand)}<em>合并需求 ${item.dailyVelocity.toFixed(2)} 件/天${item.spikeProtection ? " · 短期爆量首批仅覆盖15天" : ""}</em></div></td>
-    <td><div class="inventory-grid"><span>库存<b>${item.inventory.stock}</b></span><span>可用<b>${item.inventory.available}</b></span><span>占用<b>${item.inventory.allocated}</b></span><span>冻结<b>${item.inventory.frozen}</b></span><span>在途<b>${item.inventory.inbound}</b></span><span>绑定<b>${inventoryLabel}</b></span></div></td>
-    <td><div class="calc-lines"><span>${config.leadDays}天需求 <b>${item.leadDemand}</b></span><span>到仓剩余 <b>${item.projectedAtArrival}</b></span><span>${item.targetCoverageDays}天目标 <b>${item.arrivalTarget}</b></span><code>max(0, ${item.arrivalTarget} − ${item.projectedAtArrival})</code></div></td>
+    <td><div class="inventory-grid"><span>库存<b>${item.inventory.stock}</b></span><span>可用<b>${item.inventory.available}</b></span><span>占用<b>${item.inventory.allocated}</b></span><span>冻结<b>${item.inventory.frozen}</b></span><span>在途<b>${item.inventory.inbound}</b></span><span>绑定<b>${inventoryLabel}</b></span>${inboundTiming}</div></td>
+    <td><div class="calc-lines"><span>本次新货预计可售 <b>${item.nextArrivalDate}</b></span><span>${config.leadDays}天需求 <b>${item.leadDemand}</b></span><span>分时点到仓剩余 <b>${item.projectedAtArrival}</b></span><span>${item.targetCoverageDays}天目标 <b>${item.arrivalTarget}</b></span><code>先耗现货 → 到日加在途 → 再耗需求</code><code>max(0, ${item.arrivalTarget} − ${item.projectedAtArrival})</code></div></td>
     <td class="recommend"><strong>${item.recommended}</strong><span>件</span><small>${volumeLabel}</small></td>
     <td><div class="economics-mini"><span>用户结算价 <b>${local}${item.customerPaymentLocal.toFixed(2)}</b></span><span>税费节省 ${Math.round(config.taxSavingRate * 100)}% <b class="gain">${money(item.taxSavingUnit, 2)}</b></span><span>跨境运费节省 20% <b class="gain">${money(item.shippingSavingUnit, 2)}</b></span><span>本土处理 + 头程 <b>${handlingLabel}</b></span><em>${benefitLabel} ${shippingEvidence}</em></div></td>
-    <td><span class="pill ${item.status.toLowerCase()}">${statusLabel(item.status)}</span><small class="reason">${item.dataIncomplete ? `建议件数已生成；${missingFields}待补充，仅影响${affectedOutputs}展示。` : item.kind === "first_stock" ? "当前仓库为0；平台需求与商品资料齐全，收益单独展示。" : item.status === "HOLD" ? "现货与在途已覆盖到仓目标。" : item.status === "NO_DEMAND" ? "没有足够的SKU级需求事实。" : "需求缺口成立；收益仅展示，不拦截补货建议。"}</small>${item.dataIncomplete || item.manualInput ? `<button class="manual-entry-button" type="button" data-action="manual-entry" data-region="${escapeHtml(region)}" data-sku="${escapeHtml(item.sku)}">${item.manualInput ? "修改已补资料" : "手动补齐"}</button>` : ""}</td>
+    <td><span class="pill ${item.status.toLowerCase()}">${statusLabel(item.status)}</span><small class="reason">${item.dataIncomplete ? `建议件数已生成；${missingFields}待补充，仅影响${affectedOutputs}展示。` : item.kind === "first_stock" ? "当前仓库为0；平台需求与商品资料齐全，收益单独展示。" : item.status === "HOLD" ? "现货与按预计日期到达的在途已覆盖目标。" : item.status === "NO_DEMAND" ? "没有足够的SKU级需求事实。" : "需求缺口成立；收益仅展示，不拦截补货建议。"}</small>${item.dataIncomplete || item.manualInput ? `<button class="manual-entry-button" type="button" data-action="manual-entry" data-region="${escapeHtml(region)}" data-sku="${escapeHtml(item.sku)}">${item.manualInput ? "修改已补资料" : "手动补齐"}</button>` : ""}</td>
   </tr>`;
 }
 
@@ -368,7 +401,7 @@ function renderSummary() {
   document.querySelector("#decisionHeadline").textContent = `备 ${calculated.length} 款`;
   document.querySelector("#ledgerTitle").textContent = "四国建议备货数 >10 件汇总";
   document.querySelector("#ledgerDescription").textContent = "每行带国家标识；同一 SKU 在不同国家分别成行，因为需求、库存和补货周期互不混算。";
-  document.querySelector("#formulaText").textContent = "每国独立计算 Q；本页仅保留 Q > 10，再按建议件数从高到低排序";
+  document.querySelector("#formulaText").textContent = "每国先按在途预计可售日逐时点投影，再计算 Q；本页仅保留 Q > 10";
   document.querySelector("#freightRule").textContent = "每个国家仍按各自库存、交期和处理规则计算；头程统一按 ¥1.00/件展示。";
   document.querySelector("#economicsRule").textContent = "收益按各国已批准税费比例和本国结算事实分别计算，仅展示、不拦截数量建议。";
   document.querySelector("#evidenceGrid").innerHTML = `
@@ -415,12 +448,12 @@ function renderCountry() {
   document.querySelector("#snapshotDate").textContent = DATA.snapshotDate;
   document.querySelector("#countryEyebrow").textContent = `${activeRegion} · ${config.freightMode.toUpperCase()} · ${config.warehouse}`;
   document.querySelector("#countryName").textContent = config.name;
-  document.querySelector("#heroDescription").textContent = `把 TikTok ${activeRegion} 与 Shopee ${activeRegion} 的 SKU 需求相加，再扣除 ${config.warehouse} 的可用库存和在途；按 ${config.leadDays} 天补货周期算到仓缺口，并单独展示税费、跨境运费、本土处理和固定头程后的收益。`;
+  document.querySelector("#heroDescription").textContent = `把 TikTok ${activeRegion} 与 Shopee ${activeRegion} 的 SKU 需求相加；现货从今天开始消耗，在途只有到了预计可售日才加入库存，再按 ${config.leadDays} 天补货周期计算缺口。`;
   const taxChip = config.taxSavingRate > 0
     ? `税费节省 = 用户结算价 × ${Math.round(config.taxSavingRate * 100)}%`
     : "税费优势尚未批准，按 0";
   document.querySelector("#sourceChips").innerHTML = `<span>雅仓 ${existingCount} SKU</span><span>${config.demandCoverage}</span><span>${config.freightMode}</span><span>${taxChip}</span>`;
-  document.querySelector("#coverageLabel").textContent = `${config.leadDays}天交期 · 常规${config.targetDays + config.safetyDays}天 · 爆量首批15天`;
+  document.querySelector("#coverageLabel").textContent = `${config.leadDays}天交期 · 在途分时点 · 常规${config.targetDays + config.safetyDays}天`;
   document.querySelector("#batchQty").textContent = qty.toLocaleString("zh-CN");
   document.querySelector("#batchSkuCount").textContent = `${approved.length} 款`;
   document.querySelector("#batchVolume").textContent = missingVolumeCount
@@ -446,7 +479,7 @@ function renderCountry() {
   document.querySelector("#decisionHeadline").textContent = approved.length ? `备 ${approved.length} 款` : "暂缓备货";
   document.querySelector("#ledgerTitle").textContent = "全部 SKU 备货建议";
   document.querySelector("#ledgerDescription").textContent = "“建议补货”表示海外仓已有该 SKU；“建议首批”表示海外仓当前没有该 SKU。两类建议按同一规则排序并在同一张表中展示。";
-  document.querySelector("#formulaText").textContent = `Q = max[0, ceil(v × 目标覆盖天数) − max(0, 可用 + 在途 − ceil(v × ${config.leadDays}))]`;
+  document.querySelector("#formulaText").textContent = `Q = max[0, 目标库存 − 分时点投影库存]；现货先消耗，在途到预计可售日才加入，再消耗至第 ${config.leadDays} 天`;
   document.querySelector("#freightRule").textContent = `所有国家、站点和 SKU 的头程统一按 ${money(config.fixedHeadFreightUnitCny, 2)}/件计入；体积只用于装运规划，不参与本页头程金额。`;
   const taxRule = config.taxSavingRate > 0
     ? `税费节省按用户结算价的 ${Math.round(config.taxSavingRate * 100)}%`
@@ -468,11 +501,11 @@ function renderCountry() {
     : "";
   document.querySelector("#evidenceGrid").innerHTML = `
     <article class="${demandEvidenceClass}"><strong>${shopeeState ? "Shopee 需求暂未纳入" : "双平台需求已合并"}</strong><p>${demandEvidenceText}</p></article>
-    <article class="ok"><strong>库存按国家隔离</strong><p>${config.warehouse} 当前可用 ${available} 件、在途 ${inbound} 件；不使用其他国家仓库存抵扣本国需求。</p></article>
+    <article class="ok"><strong>库存按国家和时间隔离</strong><p>${config.warehouse} 当前可用 ${available} 件、在途 ${inbound} 件；在途按 ${INBOUND_PLAN.regions[activeRegion].estimatedSellableDate} 的系统估算逐时点计入，可在每个 SKU 行手工修改。</p></article>
     ${identityEvidence}
     ${unmappedEvidence}
     <article class="${segmentedChannelCount ? "ok" : "warn"}"><strong>趋势算法数据覆盖</strong><p>${segmentedChannelCount} / ${readyChannelDemands.length} 个可用渠道具备精确7/8/15天分段；其余明确使用30日+长窗或长窗降级，不伪造趋势。当前短期爆量首批保护 ${spikeProtectedCount} 款。</p></article>
-    <article class="ok"><strong>数量与物流资料已解耦</strong><p>${firstCount} 款海外仓尚无的候选进入台账；缺尺寸、重量或成本仍按需求、库存、在途生成建议件数，相关体积、占款或收益显示待补充。</p></article>
+    <article class="ok"><strong>数量与物流资料已解耦</strong><p>${firstCount} 款海外仓尚无的候选进入台账；缺尺寸、重量或成本不阻断数量。系统估算到货日可修改，修改只保存在当前浏览器。</p></article>
     <article class="${activeRegion === "TH" ? "warn" : "ok"}"><strong>运费证据范围</strong><p>${config.shippingCoverage}。</p></article>
     <article class="neutral"><strong>固定头程口径</strong><p>本页按用户批准口径对所有国家、站点和 SKU 统一使用 ${money(config.fixedHeadFreightUnitCny, 2)}/件；实际发货报价差异不在本轮建议中调整。</p></article>
     <article class="neutral"><strong>外部写入为 0</strong><p>该页面是本地只读决策制品，不会写雅仓、TikTok、Shopee 或业务数据库，也不会自动下采购单。</p></article>`;
@@ -490,6 +523,9 @@ document.querySelector("#statusFilter").addEventListener("change", renderRows);
 const manualDialog = document.querySelector("#manualInputDialog");
 const manualForm = document.querySelector("#manualInputForm");
 const manualError = document.querySelector("#manualInputError");
+const inboundEtaDialog = document.querySelector("#inboundEtaDialog");
+const inboundEtaForm = document.querySelector("#inboundEtaForm");
+const inboundEtaError = document.querySelector("#inboundEtaError");
 
 document.addEventListener("click", event => {
   const button = event.target.closest("[data-action='manual-entry']");
@@ -512,6 +548,26 @@ document.addEventListener("click", event => {
   document.querySelector("#clearManualInput").hidden = !saved;
   manualError.textContent = "";
   manualDialog.showModal();
+});
+
+document.addEventListener("click", event => {
+  const button = event.target.closest("[data-action='inbound-eta']");
+  if (!button) return;
+  const region = button.dataset.region || activeRegion;
+  const sku = button.dataset.sku;
+  const sourceItem = DATA.countries[region].find(item => item.sku === sku);
+  if (!sourceItem || sourceItem.inventory.inbound <= 0) return;
+  const plan = INBOUND_PLAN.regions[region];
+  const saved = inboundEtaOverrides[inboundEtaId(region, sku)];
+  inboundEtaForm.elements.region.value = region;
+  inboundEtaForm.elements.sku.value = sku;
+  inboundEtaForm.elements.estimatedSellableDate.value = saved?.estimatedSellableDate || plan.estimatedSellableDate;
+  inboundEtaForm.elements.sourceNote.value = saved?.sourceNote || "";
+  document.querySelector("#inboundEtaDialogTitle").textContent = `${region} · SKU ${sku} 在途到货时间`;
+  document.querySelector("#inboundEtaAssumption").textContent = `系统估算：${plan.anchorDate} 起算 + ${plan.transportDays} 天运输 + ${plan.shelvingDays} 天签收上架 = ${plan.estimatedSellableDate}；当前在途 ${sourceItem.inventory.inbound} 件。`;
+  document.querySelector("#clearInboundEta").hidden = !saved;
+  inboundEtaError.textContent = "";
+  inboundEtaDialog.showModal();
 });
 
 document.querySelector("#cancelManualInput").addEventListener("click", () => manualDialog.close());
@@ -555,6 +611,52 @@ document.querySelector("#clearManualInput").addEventListener("click", () => {
     return;
   }
   manualDialog.close();
+  renderCountry();
+});
+
+document.querySelector("#cancelInboundEta").addEventListener("click", () => inboundEtaDialog.close());
+document.querySelector("#cancelInboundEtaBottom").addEventListener("click", () => inboundEtaDialog.close());
+
+inboundEtaForm.addEventListener("submit", event => {
+  event.preventDefault();
+  const region = inboundEtaForm.elements.region.value;
+  const sku = inboundEtaForm.elements.sku.value;
+  const estimatedSellableDate = inboundEtaForm.elements.estimatedSellableDate.value;
+  try {
+    if (TIMELINE.daysBetween(DATA.snapshotDate, estimatedSellableDate) === 0
+      && estimatedSellableDate < DATA.snapshotDate) {
+      throw new TypeError("past date");
+    }
+  } catch {
+    inboundEtaError.textContent = `预计可售日期必须是 ${DATA.snapshotDate} 或之后的有效日期。`;
+    return;
+  }
+  inboundEtaOverrides[inboundEtaId(region, sku)] = {
+    estimatedSellableDate,
+    sourceNote: inboundEtaForm.elements.sourceNote.value.trim(),
+    updatedAt: new Date().toISOString()
+  };
+  try {
+    saveInboundEtaOverrides();
+  } catch {
+    inboundEtaError.textContent = "浏览器本地存储不可用，到货时间尚未保存。";
+    return;
+  }
+  inboundEtaDialog.close();
+  renderCountry();
+});
+
+document.querySelector("#clearInboundEta").addEventListener("click", () => {
+  const region = inboundEtaForm.elements.region.value;
+  const sku = inboundEtaForm.elements.sku.value;
+  delete inboundEtaOverrides[inboundEtaId(region, sku)];
+  try {
+    saveInboundEtaOverrides();
+  } catch {
+    inboundEtaError.textContent = "浏览器本地存储不可用，无法恢复系统估算。";
+    return;
+  }
+  inboundEtaDialog.close();
   renderCountry();
 });
 renderCountry();

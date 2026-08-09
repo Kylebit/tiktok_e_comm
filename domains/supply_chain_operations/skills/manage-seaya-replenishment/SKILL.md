@@ -31,7 +31,7 @@ Run `scripts/validate_inventory_snapshot.py SNAPSHOT.json` before consuming a ne
    - Require each channel source identity to match the target country before calculation. Replace a mismatched country fact with an explicit local `no_sku_fact` record; never treat it as local demand.
    - Pull the current 31-day order snapshot with `scripts/pull_order_demand.py`, then merge it with `scripts/apply_order_demand.py SNAPSHOT`. The pull output is ignored runtime data and contains no order IDs or buyer fields; the dashboard keeps only SKU aggregates and local main images.
 6. For Shopee demand, accept a canonical 4-digit SKU or the explicitly approved `77xxxx` / `99xxxx` aliases. When a model SKU has another shape, resolve it only through an exact `(item_id, model_id) -> catalog seller_sku` relation. Never use title or image similarity. Keep unresolved item lines visible as excluded evidence.
-7. Calculate lead-time demand, arrival stock, target coverage, and recommended quantity from eligible orders plus Seaya supply. Calculate fixed head freight, handling cost, and known savings from settlement economics. Apply the current user-approved head-freight policy of CNY 1 per unit to every country, site, and SKU.
+7. Calculate lead-time demand, time-phased arrival stock, target coverage, and recommended quantity from eligible orders plus Seaya supply. Read each inbound batch's `标记发货` operation-log time when available, estimate its sellable date from the country transit policy plus shelving buffer, and let a user override the estimated sellable date locally. Calculate fixed head freight, handling cost, and known savings from settlement economics. Apply the current user-approved head-freight policy of CNY 1 per unit to every country, site, and SKU.
 8. Keep quantity recommendations fail-closed when exact identity, inventory, demand, country lead-time policy, or the approved fixed-freight policy is unavailable. Dimensions, weight, cost, and profitability are presentation or execution-readiness evidence; they must not hide a SKU or block an otherwise valid demand-and-inventory quantity recommendation.
 9. Update the local dashboard without external business writes.
 10. Verify each country, SKU main image, source evidence, blockers, and batch totals in a browser.
@@ -75,6 +75,16 @@ Run `scripts/validate_inventory_snapshot.py SNAPSHOT.json` before consuming a ne
 - Do not use logistics entry to resolve an identity or alias blocker.
 - Show the manual source and allow clearing the override.
 - Never require these manual fields before calculating a quantity. They are required only before relying on the affected volume, handling, benefit, or capital output.
+
+## Time-phase inbound supply
+
+- Never treat `inbound` as available on the snapshot date.
+- Prefer the exact Seaya operation-log event `标记发货` as the batch clock. Keep creation date, sign date, and shelving date distinct.
+- Estimate `expected_sellable_at = shipment_anchor + country_transit_days + shelving_buffer_days`. Label creation-date fallback and every derived date as an estimate, not a warehouse commitment.
+- Consume current available stock until each inbound event's expected sellable date, add only that event's quantity on that date, then continue consuming demand until the new replenishment arrival date.
+- Exclude an inbound event from stock projected at the new replenishment arrival when its expected sellable date is later than that arrival.
+- When SKU-level quantities cannot be split across multiple batches, use the latest plausible batch date for the aggregate quantity and disclose the conservative fallback.
+- Allow a per-country + exact-SKU manual expected-sellable-date override with an optional source note. Persist it only in reversible browser `localStorage`, allow clearing it, and never write the override to Seaya or a database.
 
 ## Keep the skill synchronized
 

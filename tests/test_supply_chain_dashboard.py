@@ -207,7 +207,9 @@ def test_every_displayed_sku_has_a_local_main_image_and_both_channels():
 def test_dashboard_loads_facts_before_calculation_code_and_has_four_country_tabs():
     html = (DASHBOARD / "index.html").read_text(encoding="utf-8")
 
-    assert html.index('src="./data.js"') < html.index('src="./app.js"')
+    assert html.index('src="./data.js?') < html.index('src="./app.js?')
+    assert html.index('src="./inbound-plan.js?') < html.index('src="./app.js?')
+    assert html.index('src="./inbound-timeline.js?') < html.index('src="./app.js?')
     for region in ("MY", "TH", "VN", "PH"):
         assert f'data-region="{region}"' in html
     assert 'data-region="SUMMARY"' in html
@@ -287,6 +289,8 @@ def test_quantity_is_independent_from_dimensions_weight_and_cost():
     html = (DASHBOARD / "index.html").read_text(encoding="utf-8")
 
     assert "const recommended = Math.max(0, arrivalTarget - projectedAtArrival)" in app
+    assert "TIMELINE.projectSupply" in app
+    assert "countedInbound: supplyProjection.countedInbound" in app
     assert "calculationReady" not in app
     assert "const handlingUnit = item.weightReady" in app
     assert "const netTotal = netUnit === null ? null" in app
@@ -395,3 +399,23 @@ def test_blocked_logistics_rows_have_local_manual_completion_controls():
     assert "localStorage.setItem" in app
     assert "clearManualInput" in app
     assert "保存并重新计算" in html
+
+
+def test_inbound_eta_is_estimated_time_phased_and_locally_editable():
+    app = (DASHBOARD / "app.js").read_text(encoding="utf-8")
+    html = (DASHBOARD / "index.html").read_text(encoding="utf-8")
+    plan = (DASHBOARD / "inbound-plan.js").read_text(encoding="utf-8")
+    timeline = (DASHBOARD / "inbound-timeline.js").read_text(encoding="utf-8")
+
+    for date in ("2026-09-03", "2026-08-24"):
+        assert date in plan
+    assert 'anchorType: "MARKED_SHIPPED"' in plan
+    assert 'anchorType: "LATEST_CREATED_FALLBACK"' in plan
+    assert "function projectSupply" in timeline
+    assert "stock = consume(stock, dailyVelocity, event.day - lastDay)" in timeline
+    assert "if (event.day > horizonDays)" in timeline
+    assert 'supply-chain-inbound-eta-v1' in app
+    assert 'data-action="inbound-eta"' in app
+    assert 'id="inboundEtaDialog"' in html
+    assert "预计可售日期" in html
+    assert "不会修改雅仓入库单" in html

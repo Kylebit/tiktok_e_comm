@@ -146,3 +146,17 @@ def test_dashboard_and_skill_sync_manifest_is_current():
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_skill_time_phases_inbound_and_preserves_manual_override_lineage():
+    skill = (SKILL / "SKILL.md").read_text(encoding="utf-8")
+    contract = (SKILL / "references" / "decision-contract.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Never treat `inbound` as available on the snapshot date" in skill
+    assert "expected_sellable_at" in skill
+    assert "`标记发货`" in skill
+    assert "reversible browser `localStorage`" in skill
+    assert "time_phased_projected_stock_at_new_replenishment_arrival" in contract
+    assert "Creation date is a labeled fallback" in contract

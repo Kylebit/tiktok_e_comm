@@ -119,6 +119,12 @@ class StoredPublicationReport:
     created: bool
 
 
+def publication_report_id(run_id: object) -> str:
+    """Derive the one server-owned report identity for a validated run."""
+
+    return f"publication-report:{_run_id(run_id)}"
+
+
 def _canonical_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -496,6 +502,28 @@ class ProductPublicationReportStore:
                 row = conn.execute(
                     "SELECT * FROM product_publication_reports WHERE report_id = ? AND offer_id = ?",
                     (safe_report_id, safe_offer_id),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return None
+        return self._row_to_report(row)
+
+    def get_report_by_run(self, *, run_id: str) -> dict[str, Any] | None:
+        """Read one globally unique run for a pre-dispatch replay check.
+
+        Unlike the offer-scoped public read API, this server-only lookup is
+        intentionally keyed by the database UNIQUE run identity.  It lets the
+        runner reject a cross-offer or changed-scope replay before invoking a
+        platform adapter.
+        """
+
+        safe_run_id = _run_id(run_id)
+        if not self.path.is_file():
+            return None
+        with self._connect_readonly() as conn:
+            try:
+                row = conn.execute(
+                    "SELECT * FROM product_publication_reports WHERE run_id = ?",
+                    (safe_run_id,),
                 ).fetchone()
             except sqlite3.OperationalError:
                 return None

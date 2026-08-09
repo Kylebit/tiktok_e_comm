@@ -79,6 +79,21 @@ _product_workbench_locks: dict[str, threading.Lock] = {}
 HTTP_DOMAIN_REGISTRY = http_registry()
 
 
+def _product_publication_report_store():
+    """Late-bound read-only report store seam for Product Center APIs."""
+    from shared_platform.product_publication_reports import (
+        default_product_publication_report_store,
+    )
+
+    return default_product_publication_report_store()
+
+
+def _publication_report_api_view(report: dict) -> dict:
+    from shared_platform.product_publication_reports import public_publication_report
+
+    return public_publication_report(report)
+
+
 def _product_workspace_view(payload: dict) -> dict:
     """Present governed evidence and durable V1 state as the formal workspace."""
     from shared_platform.product_workflow import (
@@ -13373,6 +13388,84 @@ class Handler(BaseHTTPRequestHandler):
                 target_label=(q.get("target_label") or [""])[0],
             )
             return self._json(status, payload)
+        if path == "/api/product-workspace/publication-report":
+            from shared_platform.product_publication_reports import (
+                API_SCHEMA_VERSION,
+                ProductPublicationReportIntegrityError,
+            )
+
+            q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+            offer_id = (q.get("offer_id") or [""])[0]
+            report_id = (q.get("report_id") or [""])[0]
+            if not offer_id or not report_id:
+                return self._json(
+                    400,
+                    {"ok": False, "error": "offer_id and report_id are required"},
+                )
+            try:
+                report = _product_publication_report_store().get_report(
+                    report_id=report_id,
+                    offer_id=offer_id,
+                )
+            except (TypeError, ValueError) as error:
+                return self._json(400, {"ok": False, "error": str(error)})
+            except ProductPublicationReportIntegrityError:
+                return self._json(
+                    409,
+                    {"ok": False, "error": "publication report integrity check failed"},
+                )
+            if report is None:
+                return self._json(
+                    404, {"ok": False, "error": "publication report not found"}
+                )
+            return self._json(
+                200,
+                {
+                    "ok": True,
+                    "schema_version": API_SCHEMA_VERSION,
+                    "report": _publication_report_api_view(report),
+                },
+            )
+        if path == "/api/product-workspace/publication-reports":
+            from shared_platform.product_publication_reports import (
+                API_SCHEMA_VERSION,
+                ProductPublicationReportIntegrityError,
+            )
+
+            q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+            offer_id = (q.get("offer_id") or [""])[0]
+            revision_raw = (q.get("revision") or [""])[0]
+            limit_raw = (q.get("limit") or ["20"])[0]
+            if not offer_id:
+                return self._json(400, {"ok": False, "error": "offer_id is required"})
+            try:
+                revision = int(revision_raw) if revision_raw else None
+                limit = int(limit_raw)
+                reports = _product_publication_report_store().list_reports(
+                    offer_id=offer_id,
+                    revision=revision,
+                    limit=limit,
+                )
+            except (TypeError, ValueError) as error:
+                return self._json(400, {"ok": False, "error": str(error)})
+            except ProductPublicationReportIntegrityError:
+                return self._json(
+                    409,
+                    {"ok": False, "error": "publication report integrity check failed"},
+                )
+            public_reports = [_publication_report_api_view(report) for report in reports]
+            return self._json(
+                200,
+                {
+                    "ok": True,
+                    "schema_version": API_SCHEMA_VERSION,
+                    "offer_id": offer_id,
+                    "revision": revision,
+                    "latest": public_reports[0] if public_reports else None,
+                    "items": public_reports,
+                    "count": len(public_reports),
+                },
+            )
         if path == "/api/workbench/dashboard":
             from shared_platform.workbench_store import default_workbench_store
 

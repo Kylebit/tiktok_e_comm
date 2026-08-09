@@ -1,0 +1,72 @@
+# Confirmed incident knowledge
+
+Permanent rules enter this file only through this gate:
+
+1. Stabilize reproduction.
+2. Capture code or provider evidence.
+3. Confirm one root cause.
+4. Add a failing regression test.
+5. Fix and verify the focused and related tests.
+6. Record the confirmed pattern in the platform reference.
+
+Do not turn a one-off timeout, guessed cause, malformed screenshot, or stale UI
+message into a permanent Skill rule. Keep unconfirmed observations in the
+current execution report only.
+
+## Confirmed patterns
+
+- Shopee: a stale local global-item mapping can point to official `DELETED`;
+  local mapping alone is never success.
+- Shopee: master images and a complete Model-SKU set do not prove variation
+  images. Bind each option to an uploaded image ID and verify it from
+  `get_global_model_list.tier_variation.option_list`.
+- Ozon: current identity/state facts are `item.id` and `item.statuses`.
+- TikTok: store draft identity is target-specific; positional or first-draft
+  matching breaks when the selected store set changes.
+- TikTok: store-level pricing must not overwrite approved per-model-SKU prices.
+- TikTok: opaque draft keys must be decoded through `skuPropertyList`; repeated
+  source `itemNum` values are not model identities, and a local binding failure
+  is a confirmed zero-write rejection rather than an unknown outcome.
+- TikTok GB: a category with no mandatory attributes is valid; optional-only
+  metadata must not block draft repair, and metadata preparation failures are
+  zero-write rejections.
+- TikTok GB: the independent approved snapshot and repair payload must retain
+  the approved parent parcel plus every SKU's exact weight and dimensions;
+  omitting them causes a deterministic zero-write provider rejection such as
+  `shopCollectItemInfo.packageLength` required.
+- TikTok Skill: preserve an explicit per-target `UNKNOWN`; never convert it to
+  `REJECTED` or advertise a safe retry.
+- TikTok Skill: a scoped store dispatch must read back only the target labels
+  returned by that dispatch, not every TikTok target in the approved plan.
+- TikTok Skill: a pristine `READY` plan with a `PENDING`, zero-attempt,
+  zero-write TikTok row is the first batch. Start it without
+  `restart_collectbox_action` or `reimport_request_id`; requesting a reimport
+  before the first batch finishes deterministically returns HTTP 409.
+- TikTok: a local Miaoshou `SUCCEEDED` ledger is not storefront verification.
+- TikTok: post-submit Miaoshou reads may normalize the empty size-chart and
+  delivery fields and omit all per-model dimensions; only a dedicated
+  post-submit matcher may accept those confirmed omissions while retaining
+  exact category, parent parcel, SKU, model price and model weight checks.
+- Ozon: approved `table runner`/`table flag` copy is table-textile evidence and
+  must win before a stale festive-decoration-to-sticker category mapping.
+- Ozon: the approved generic platform title must not be regenerated from
+  shipping `package_cm`; that changes approved wording and can advertise the
+  parcel size instead of the product size.
+- Ozon: the existing-product shortcut must compare approved title, price and
+  image count exactly; merely finding non-empty fields must never return
+  `already_published` or suppress a required convergent update.
+- Ozon: selecting the tablecloth profile is not enough; table-textile title and
+  description must bypass the legacy sticker generator, and product dimensions
+  come from the approved per-SKU variant label rather than the shipping parcel.
+- Ozon: a declined wrong-category item must be archived by official `item.id`
+  before it can be deleted by offer ID; direct delete returns
+  `ITEM_IS_NOT_ARCHIVED` and must not be retried blindly.
+- All platforms: provider acceptance and official verification are separate
+  facts.
+- All platforms: an exact readback mismatch is not merely a reason to repair
+  the current item. It must identify the deterministic boundary that admitted
+  the drift, gain a red regression there, and become a pre-dispatch or
+  convergence invariant for every later Offer ID.
+- All platforms: local submission ledgers can prove that a request was sent or
+  accepted; they cannot prove exact title, variants, prices, parcel, images or
+  final provider state.

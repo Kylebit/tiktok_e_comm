@@ -238,6 +238,21 @@ def test_production_release_plan_builds_v4_inputs_without_test_only_injection():
     ]["status"] == "DEFERRED_TO_SKILL"
 
 
+def test_v4_successor_uses_a_new_stable_plan_identity():
+    dashboard = _production_dashboard_with_exact_v4_inputs()
+    base_plan_id = dashboard["omnichannel_preview"]["plan_id"]
+
+    first, blockers = product_server._release_plan_payload_from_dashboard(dashboard)
+    second, repeated_blockers = product_server._release_plan_payload_from_dashboard(
+        deepcopy(dashboard)
+    )
+
+    assert blockers == repeated_blockers == []
+    assert first["plan_id"] != base_plan_id
+    assert first["plan_id"] == second["plan_id"]
+    assert first["plan_id"].startswith("omnichannel:")
+
+
 def test_real_server_approval_path_atomically_freezes_and_reopens_v4(
     tmp_path, monkeypatch
 ):

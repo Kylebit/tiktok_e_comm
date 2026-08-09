@@ -117,6 +117,21 @@ def _publication_snapshot_plan_projection(
     )
 
 
+def _v4_release_plan_id(plan_payload: dict) -> str:
+    """Derive a successor identity from every frozen fact except itself."""
+
+    identity_payload = dict(plan_payload)
+    identity_payload.pop("plan_id", None)
+    encoded = json.dumps(
+        identity_payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return "omnichannel:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 def _approved_publication_snapshot_internal(
     *,
     offer_id: str,
@@ -2636,6 +2651,7 @@ def _release_plan_payload_from_dashboard(
     )
     if snapshot_projection.ready:
         payload = snapshot_projection.payload
+        payload["plan_id"] = _v4_release_plan_id(payload)
     elif isinstance(snapshot_inputs, dict):
         blockers.extend(
             "freeze_approved_publication_snapshot: " + field

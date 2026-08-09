@@ -2612,6 +2612,22 @@ def _release_plan_payload_from_dashboard(
                 "plan approval is required"
             )
     snapshot_inputs = dashboard.get("_approved_publication_snapshot_inputs")
+    if not isinstance(snapshot_inputs, dict):
+        from domains.product_operations import (
+            ApprovedPublicationSnapshotError,
+            build_approved_publication_snapshot_inputs,
+        )
+
+        try:
+            snapshot_inputs = build_approved_publication_snapshot_inputs(
+                dashboard=dashboard,
+                release_plan_payload=payload,
+            )
+        except (ApprovedPublicationSnapshotError, TypeError, ValueError) as error:
+            snapshot_inputs = None
+            blockers.append(
+                "freeze_approved_publication_snapshot: " + str(error)
+            )
     snapshot_projection = _publication_snapshot_plan_projection(
         payload,
         approved_inputs=(
@@ -2620,6 +2636,11 @@ def _release_plan_payload_from_dashboard(
     )
     if snapshot_projection.ready:
         payload = snapshot_projection.payload
+    elif isinstance(snapshot_inputs, dict):
+        blockers.extend(
+            "freeze_approved_publication_snapshot: " + field
+            for field in snapshot_projection.missing_fields
+        )
     return payload, list(dict.fromkeys(value for value in blockers if value))
 
 

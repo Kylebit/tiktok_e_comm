@@ -189,6 +189,70 @@ def test_bridge_freezes_complete_v4_inputs_without_provider_category_guessing(
             assert row["decision"]["status"] == "DEFERRED_TO_SKILL"
 
 
+def test_bridge_does_not_treat_title_workflow_status_as_description_approval():
+    """A frozen, exact description is valid even when title workflow metadata drifted."""
+
+    dashboard, payload = _raw_approval_inputs(sku_count=1)
+    dashboard["listing_copy"]["status"] = "superseded_product_facts_changed"
+    payload["listing_copy"]["status"] = "superseded_product_facts_changed"
+
+    inputs = build_approved_publication_snapshot_inputs(
+        dashboard=dashboard,
+        release_plan_payload=payload,
+    )
+
+    assert inputs["description"] == "Approved factual product description."
+
+
+def test_bridge_freezes_provider_price_lineage_from_real_derived_rows():
+    dashboard, payload = _raw_approval_inputs(sku_count=1)
+    payload["pricing"]["selected_targets"]["shopee:PH"]["sku_prices"] = [
+        {
+            "model_sku": "0958",
+            "derived_preview": {
+                "global_original_price_cny": "40.12",
+                "local_original_price": "340",
+                "source_currency": "PHP",
+            },
+        }
+    ]
+    payload["pricing"]["selected_targets"]["ozon:RU"]["sku_prices"] = [
+        {
+            "model_sku": "0958",
+            "derived_preview": {
+                "price_cny": "40",
+                "old_price_cny": "52",
+                "source_currency": "CNY",
+            },
+        }
+    ]
+
+    inputs = build_approved_publication_snapshot_inputs(
+        dashboard=dashboard,
+        release_plan_payload=payload,
+    )
+    projection = project_release_plan_for_publication_snapshot(
+        payload,
+        approved_inputs=inputs,
+    )
+
+    assert projection.ready is True, projection.missing_fields
+    snapshot = build_approved_publication_snapshot(
+        _approved_from_projected(projection.payload)
+    ).payload()
+    prices = snapshot["skus"][0]["prices"]
+    assert prices["shopee:PH"] == {
+        "amount": "340",
+        "currency": "PHP",
+        "global_original_price_cny": "40.12",
+    }
+    assert prices["ozon:RU"] == {
+        "amount": "40",
+        "currency": "CNY",
+        "old_price_cny": "52",
+    }
+
+
 @pytest.mark.parametrize("sku_count", [1, 2])
 def test_sku_without_narrower_image_fact_binds_frozen_approved_product_images(
     sku_count,

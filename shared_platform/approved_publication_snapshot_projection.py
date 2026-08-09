@@ -104,6 +104,8 @@ def _candidate_payload(
                     )
     if isinstance(inputs.get("digests"), Mapping):
         candidate["digests"] = inputs["digests"]
+    if isinstance(inputs.get("pricing"), Mapping):
+        candidate["pricing"] = inputs["pricing"]
 
     if not _text(product_facts.get("description")):
         missing.append("product_facts.description")

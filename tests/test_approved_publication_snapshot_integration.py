@@ -97,6 +97,9 @@ def _production_dashboard_with_exact_v4_inputs() -> dict:
             ],
         },
     }
+    dashboard["listing_copy"]["shopee_description_en"] = (
+        "Approved removable PVC wall sticker for indoor decor."
+    )
     initial, blockers = product_server._release_plan_payload_from_dashboard(
         dashboard
     )
@@ -179,7 +182,9 @@ def test_current_production_projection_reports_exact_missing_owned_facts(
     payload, blockers = product_server._release_plan_payload_from_dashboard(
         _dashboard()
     )
-    assert blockers == []
+    assert blockers == [
+        "freeze_approved_publication_snapshot: approved description must be non-empty text"
+    ]
     projection = product_server._publication_snapshot_plan_projection(payload)
     assert projection.ready is False
     assert "product_facts.description" in projection.missing_fields
@@ -206,6 +211,31 @@ def test_current_production_projection_reports_exact_missing_owned_facts(
     )
     assert summary["status"] == "SNAPSHOT_UNAVAILABLE"
     assert summary["reason_code"] == "legacy_approval_without_v4_snapshot"
+
+
+def test_production_release_plan_builds_v4_inputs_without_test_only_injection():
+    """A new approval must freeze v4 from the exact dashboard being approved."""
+
+    dashboard = _production_dashboard_with_exact_v4_inputs()
+    dashboard["listing_copy"]["shopee_description_en"] = (
+        "Approved removable PVC wall sticker for indoor decor."
+    )
+    dashboard.pop("_approved_publication_snapshot_inputs")
+
+    payload, blockers = product_server._release_plan_payload_from_dashboard(
+        dashboard
+    )
+
+    assert blockers == []
+    assert payload["approved_publication_snapshot_schema_version"] == (
+        "approved-publication-snapshot/v4"
+    )
+    assert payload["product_facts"]["description"] == (
+        "Approved removable PVC wall sticker for indoor decor."
+    )
+    assert payload["product_facts"]["categories_by_target"]["tiktok:MX"][
+        "decision"
+    ]["status"] == "DEFERRED_TO_SKILL"
 
 
 def test_real_server_approval_path_atomically_freezes_and_reopens_v4(
@@ -305,7 +335,9 @@ def test_main_category_never_backfills_target_provider_category():
     payload, blockers = product_server._release_plan_payload_from_dashboard(
         _dashboard()
     )
-    assert blockers == []
+    assert blockers == [
+        "freeze_approved_publication_snapshot: approved description must be non-empty text"
+    ]
     payload["product_facts"]["category"] = {
         "id": "main-taxonomy-only",
         "name": "Product taxonomy",
@@ -358,7 +390,9 @@ def test_declared_v4_with_missing_facts_fails_approval_atomically(tmp_path):
     payload, blockers = product_server._release_plan_payload_from_dashboard(
         _dashboard()
     )
-    assert blockers == []
+    assert blockers == [
+        "freeze_approved_publication_snapshot: approved description must be non-empty text"
+    ]
     payload["approved_publication_snapshot_schema_version"] = (
         "approved-publication-snapshot/v4"
     )

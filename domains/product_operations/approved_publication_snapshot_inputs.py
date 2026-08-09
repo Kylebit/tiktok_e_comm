@@ -85,9 +85,6 @@ def build_approved_publication_snapshot_inputs(
         listing_copy.get("shopee_description_en"), "dashboard approved description"
     ):
         raise ApprovedPublicationSnapshotError("approved description identity conflicts")
-    if plan_copy.get("status") != "adopted_in_product_facts":
-        raise ApprovedPublicationSnapshotError("approved description is not adopted")
-
     image_urls = _ordered_image_urls(payload.get("images"), "approved images")
     dashboard_image_urls = _ordered_image_urls(
         content.get("images"), "dashboard approved images"
@@ -224,6 +221,11 @@ def build_approved_publication_snapshot_inputs(
         source.get("identity_digest"), "source identity digest"
     )
     lineage_digest = _lineage_digest(lineage)
+    normalized_pricing = _normalized_pricing(
+        payload.get("pricing"),
+        targets=targets,
+        model_skus=list(lineage_models.values()),
+    )
     digests = {
         "source": source_digest,
         "content": _digest(
@@ -257,9 +259,7 @@ def build_approved_publication_snapshot_inputs(
                 "categories_by_target": categories_by_target,
             }
         ),
-        "pricing": _digest(
-            _mapping(payload.get("pricing"), "approved pricing")
-        ),
+        "pricing": _digest(normalized_pricing),
         "sku_lineage": lineage_digest,
     }
     return {
@@ -267,6 +267,7 @@ def build_approved_publication_snapshot_inputs(
         "description": description,
         "categories_by_target": categories_by_target,
         "sku_details_by_key": sku_details,
+        "pricing": normalized_pricing,
         "digests": digests,
     }
 
@@ -302,6 +303,86 @@ def _deferred_categories(targets: list[str]) -> dict[str, dict[str, Any]]:
             },
         }
     return rows
+
+
+def _normalized_pricing(
+    value: Any,
+    *,
+    targets: list[str],
+    model_skus: list[str],
+) -> dict[str, Any]:
+    pricing = _json_object(_mapping(value, "approved pricing"), "approved pricing")
+    selected = _mapping(pricing.get("selected_targets"), "selected target pricing")
+    if set(selected) != set(targets):
+        raise ApprovedPublicationSnapshotError("pricing target coverage conflicts")
+    expected_models = set(model_skus)
+    normalized_targets: dict[str, dict[str, Any]] = {}
+    for target in targets:
+        target_row = _json_object(
+            _mapping(selected[target], f"{target} pricing"),
+            f"{target} pricing",
+        )
+        if target == "miaoshou:COMMON":
+            target_row.pop("sku_prices", None)
+            normalized_targets[target] = target_row
+            continue
+        raw_rows = target_row.get("sku_prices")
+        if type(raw_rows) is not list:
+            raise ApprovedPublicationSnapshotError(
+                f"{target} SKU prices must be a list"
+            )
+        by_model: dict[str, dict[str, Any]] = {}
+        for raw in raw_rows:
+            row = _mapping(raw, f"{target} SKU price")
+            model = _text(row.get("model_sku"), f"{target} model_sku")
+            if model not in expected_models or model in by_model:
+                raise ApprovedPublicationSnapshotError(
+                    f"{target} SKU price identity conflicts"
+                )
+            derived = row.get("derived_preview")
+            if row.get("list_price") is not None and row.get("currency") is not None:
+                normalized = {
+                    "model_sku": model,
+                    "list_price": row.get("list_price"),
+                    "currency": row.get("currency"),
+                }
+                if target.startswith("shopee:") and row.get(
+                    "global_original_price_cny"
+                ) is not None:
+                    normalized["global_original_price_cny"] = row.get(
+                        "global_original_price_cny"
+                    )
+                if target == "ozon:RU" and row.get("old_price_cny") is not None:
+                    normalized["old_price_cny"] = row.get("old_price_cny")
+            elif target.startswith("shopee:") and isinstance(derived, Mapping):
+                normalized = {
+                    "model_sku": model,
+                    "list_price": derived.get("local_original_price"),
+                    "currency": derived.get("source_currency"),
+                    "global_original_price_cny": derived.get(
+                        "global_original_price_cny"
+                    ),
+                }
+            elif target == "ozon:RU" and isinstance(derived, Mapping):
+                normalized = {
+                    "model_sku": model,
+                    "list_price": derived.get("price_cny"),
+                    "currency": "CNY",
+                    "old_price_cny": derived.get("old_price_cny"),
+                }
+            else:
+                raise ApprovedPublicationSnapshotError(
+                    f"{target} provider price facts are missing"
+                )
+            by_model[model] = normalized
+        if set(by_model) != expected_models:
+            raise ApprovedPublicationSnapshotError(
+                f"{target} SKU price coverage conflicts"
+            )
+        target_row["sku_prices"] = [by_model[model] for model in model_skus]
+        normalized_targets[target] = target_row
+    pricing["selected_targets"] = normalized_targets
+    return pricing
 
 
 def _rows_by_key(value: Any, name: str) -> dict[str, Mapping[str, Any]]:

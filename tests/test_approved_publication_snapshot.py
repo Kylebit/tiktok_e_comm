@@ -473,10 +473,8 @@ def test_control_only_target_has_explicit_not_applicable_category_without_fake_i
     plan = _approved_plan()
     plan["payload"]["targets"].append("miaoshou:COMMON")
     plan["payload"]["pricing"]["selected_targets"]["miaoshou:COMMON"] = {
-        "sku_prices": [
-            {"model_sku": "0958", "list_price": "29", "currency": "CNY"},
-            {"model_sku": "0959", "list_price": "31", "currency": "CNY"},
-        ]
+        "status": "ready",
+        "role": "control_only",
     }
     plan["payload"]["product_facts"]["categories_by_target"][
         "miaoshou:COMMON"
@@ -500,6 +498,9 @@ def test_control_only_target_has_explicit_not_applicable_category_without_fake_i
     control = document["categories_by_target"]["miaoshou:COMMON"]
     assert control["category"] is None
     assert control["decision"]["status"] == "NOT_APPLICABLE"
+    assert all(
+        "miaoshou:COMMON" not in sku["prices"] for sku in document["skus"]
+    )
 
     fake = deepcopy(plan)
     fake["payload"]["product_facts"]["categories_by_target"][

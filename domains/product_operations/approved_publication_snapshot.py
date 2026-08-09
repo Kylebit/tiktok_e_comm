@@ -353,6 +353,9 @@ def _validate_frozen_body(body: Mapping[str, Any]) -> None:
     _text(body.get("approved_by"), "snapshot approved_by")
     targets = _targets(body.get("publication_targets"), already_projected=True)
     target_labels = [row["target_label"] for row in targets]
+    price_target_labels = [
+        label for label in target_labels if label not in _CONTROL_ONLY_TARGETS
+    ]
 
     bindings = _mapping(body.get("bindings"), "snapshot bindings")
     if set(bindings) != {
@@ -444,10 +447,10 @@ def _validate_frozen_body(body: Mapping[str, Any]) -> None:
         _dimensions(parcel.get("package_cm"), "snapshot package")
         _text_list(row.get("variant_images"), "snapshot variant images")
         prices = _mapping(row.get("prices"), "snapshot prices")
-        if set(prices) != set(target_labels):
+        if set(prices) != set(price_target_labels):
             raise ApprovedPublicationSnapshotError("snapshot SKU price coverage drifted")
         for target, price in prices.items():
-            _money(price, f"snapshot {target} price")
+            _publication_price(price, f"snapshot {target} price", target=target)
     if len(sellers) != 1:
         raise ApprovedPublicationSnapshotError("snapshot seller SKU identity conflicts")
     if not offer_id:
@@ -467,6 +470,8 @@ def _prices(
     result = {model: {} for model in model_skus}
     for target in target_labels:
         target_pricing = _mapping(selected[target], f"{target} pricing")
+        if target in _CONTROL_ONLY_TARGETS:
+            continue
         rows = _mapping_list(target_pricing.get("sku_prices"), f"{target} SKU prices")
         seen: set[str] = set()
         currency: str | None = None
@@ -476,9 +481,12 @@ def _prices(
                 raise ApprovedPublicationSnapshotError(
                     f"{target} SKU price identity conflicts"
                 )
-            price = _money(
+            price = _publication_price(
                 {"amount": row.get("list_price"), "currency": row.get("currency")},
                 f"{target} price",
+                target=target,
+                global_original_price_cny=row.get("global_original_price_cny"),
+                old_price_cny=row.get("old_price_cny"),
             )
             if currency is not None and price["currency"] != currency:
                 raise ApprovedPublicationSnapshotError(
@@ -775,6 +783,47 @@ def _money(value: Any, name: str) -> dict[str, str]:
         "amount": _positive_decimal(row.get("amount"), f"{name} amount"),
         "currency": currency,
     }
+
+
+def _publication_price(
+    value: Any,
+    name: str,
+    *,
+    target: str,
+    global_original_price_cny: Any = None,
+    old_price_cny: Any = None,
+) -> dict[str, str]:
+    row = _mapping(value, name)
+    allowed = {"amount", "currency"}
+    if target.startswith("shopee:"):
+        allowed.add("global_original_price_cny")
+    if target == "ozon:RU":
+        allowed.add("old_price_cny")
+    if not set(row).issubset(allowed) or not {"amount", "currency"}.issubset(row):
+        raise ApprovedPublicationSnapshotError(f"{name} fields are invalid")
+    result = _money(
+        {"amount": row.get("amount"), "currency": row.get("currency")},
+        name,
+    )
+    global_value = (
+        row.get("global_original_price_cny")
+        if "global_original_price_cny" in row
+        else global_original_price_cny
+    )
+    if global_value is not None:
+        if not target.startswith("shopee:"):
+            raise ApprovedPublicationSnapshotError(f"{name} fields are invalid")
+        result["global_original_price_cny"] = _positive_decimal(
+            global_value, f"{name} global CNY amount"
+        )
+    old_value = row.get("old_price_cny") if "old_price_cny" in row else old_price_cny
+    if old_value is not None:
+        if target != "ozon:RU":
+            raise ApprovedPublicationSnapshotError(f"{name} fields are invalid")
+        result["old_price_cny"] = _positive_decimal(
+            old_value, f"{name} old CNY amount"
+        )
+    return result
 
 
 def _dimensions(value: Any, name: str) -> list[str]:

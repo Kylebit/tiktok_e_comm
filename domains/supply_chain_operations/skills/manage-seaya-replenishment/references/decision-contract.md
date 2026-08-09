@@ -74,9 +74,12 @@ For Shopee settlement economics, a complete pull means every listed settlement p
 
 Quantity is executable only when every in-scope channel is backed by a complete `quantity_basis=valid_order` snapshot. Settlement-only history may be displayed as legacy context but cannot produce a recommended quantity.
 
-- `lead_demand = ceil(v × lead_days)`
+- `preparation_days = 7` (current user-approved policy for the newly recommended shipment)
+- `new_replenishment_lead_days = preparation_days + country_transit_days`
+- `lead_demand = ceil(v × new_replenishment_lead_days)`
 - Project supply chronologically: consume available stock to the first inbound `expected_sellable_at`, add that inbound quantity, then repeat until the new replenishment arrival.
-- `arrival_stock = floor(time_phased_projected_stock_at_new_replenishment_arrival)`
+- `new_replenishment_expected_sellable_at = snapshot_date + new_replenishment_lead_days`
+- `arrival_stock = floor(time_phased_projected_stock_at_new_replenishment_expected_sellable_at)`
 - `target = ceil(v × (target_days + safety_days))`
 - `recommended = max(0, target - arrival_stock)`
 
@@ -87,6 +90,8 @@ For each country + SKU, `sum(batch_sku_quantity)` must equal the Seaya aggregate
 A manual override is keyed by country + complete `batch_id`, not SKU. It changes only the local decision projection, applies consistently to every SKU in the batch, and never changes the supplier record or another batch.
 
 Current estimated-sellable policy is `effective_anchor_date + approved country transit days + 2-day sign-and-shelve buffer`, where `effective_anchor = reached_domestic_warehouse_at ?? created_at + 4 days`. A fallback batch remains visibly not yet inbound. Missing multi-batch SKU allocation is a separate reconciliation blocker, not permission to invent one aggregate arrival date.
+
+The 7-day preparation period applies only to the newly recommended shipment. Existing Seaya inbound events keep their batch-specific estimated-sellable policy and must not receive the preparation period again.
 
 Quantity is valid without dimensions, weight, or unit cost. Those fields affect separate outputs:
 

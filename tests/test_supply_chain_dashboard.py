@@ -289,6 +289,11 @@ def test_quantity_is_independent_from_dimensions_weight_and_cost():
     html = (DASHBOARD / "index.html").read_text(encoding="utf-8")
 
     assert "const recommended = Math.max(0, arrivalTarget - projectedAtArrival)" in app
+    assert "const NEW_REPLENISHMENT_PREPARATION_DAYS = 7" in app
+    assert "const effectiveLeadDays = NEW_REPLENISHMENT_PREPARATION_DAYS + config.leadDays" in app
+    assert "Math.ceil(dailyVelocity * effectiveLeadDays)" in app
+    assert "TIMELINE.addDays(DATA.snapshotDate, effectiveLeadDays)" in app
+    assert "7天备货 + ${config.leadDays}天运输" in app
     assert "TIMELINE.projectSupply" in app
     assert "countedInbound: supplyProjection.countedInbound" in app
     assert "calculationReady" not in app
@@ -301,6 +306,7 @@ def test_quantity_is_independent_from_dimensions_weight_and_cost():
     assert 'filter === "MISSING_DATA" && item.dataIncomplete' in app
     assert '<option value="MISSING_DATA">资料待补</option>' in html
     assert "两类建议按同一规则排序并在同一张表中展示" in html
+    assert "本次新货预计可售日按 7 天备货准备 + 国家运输周期计算" in html
 
 
 def test_dashboard_consumes_segmented_trend_and_discloses_fallbacks():

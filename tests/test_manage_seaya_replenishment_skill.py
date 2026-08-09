@@ -160,6 +160,8 @@ def test_skill_time_phases_inbound_and_preserves_manual_override_lineage():
     assert "created_at + 4 days" in skill
     assert "never label that fallback as actual inbound" in skill
     assert "reversible browser `localStorage`" in skill
-    assert "time_phased_projected_stock_at_new_replenishment_arrival" in contract
+    assert "time_phased_projected_stock_at_new_replenishment_expected_sellable_at" in contract
+    assert "preparation_days = 7" in contract
+    assert "new_replenishment_lead_days = preparation_days + country_transit_days" in contract
     assert "inbound_status=NOT_YET_INBOUND" in contract
     assert "created_at + 4 days" in contract

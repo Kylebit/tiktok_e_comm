@@ -55,14 +55,19 @@ platform candidate can supply it.
 For every selected Shopee regional target, preserve both the CNSC
 `global_original_price_cny` and the regional `local_original_price` with its
 currency. Losing either price identity is a pre-dispatch contract failure.
+In the v4 frozen snapshot, the regional price row is
+`{amount: <local>, currency: <local ISO code>, global_original_price_cny: <CNY>}`
+for every Model SKU and selected region. The additional CNY field is Shopee
+specific; do not add it to TikTok or Ozon price rows.
 
 ## Dispatch and readback tools
 
-The seven tools are deterministic boundaries:
+The nine tools are deterministic boundaries:
 
 - `inspect_snapshot.py`
 - `dispatch_tiktok.py` / `readback_tiktok.py`
 - `dispatch_shopee.py` / `readback_shopee.py`
+- `dispatch_shopee_regions.py` / `readback_shopee_regions.py`
 - `dispatch_ozon.py` / `readback_ozon.py`
 
 Dispatch tools organize the approved request, call one endpoint, redact the
@@ -76,6 +81,14 @@ owns execution order, whether a confirmed recovery rule applies, result
 classification, user explanation and promotion of verified incidents into the
 platform references. Do not move provider payload assembly into agent prose,
 and do not hide policy decisions inside transport scripts.
+
+For Shopee, finish and verify the global product first. Then, only when the
+approved snapshot explicitly selects `shopee:PH`, `shopee:MY`, `shopee:TH`,
+or `shopee:VN`, run the regional dispatch and readback tools. Treat every
+selected region independently. A global-only run has zero regional targets.
+The regional dispatcher must never update `published_regions`; only exact
+official shop-item, model, price and global-linkage readback may record that a
+region is published.
 
 ## Unified command
 

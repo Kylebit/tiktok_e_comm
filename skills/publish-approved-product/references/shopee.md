@@ -69,6 +69,12 @@ chooses the recovery. A dispatcher or readback tool does not invent policy.
 Treat every PH/MY/TH/VN shop as an independent explicit task. A failure in one
 shop must not stop another shop and must not alter the global product.
 
+Use `dispatch_shopee_regions.py` only after the global product's official
+readback succeeds. Pass its immutable dispatch fact to
+`readback_shopee_regions.py`; never infer regional success from global-product
+creation or from an accepted regional task alone. Unselected regions are not
+called.
+
 For each selected shop:
 
 1. Read the exact global master and `get_global_model_list`; retain every
@@ -97,9 +103,34 @@ The approved snapshot must retain both price identities for every target:
 Never substitute the CNY amount for the regional amount and never drop the
 regional currency while projecting the approved snapshot.
 
+The frozen v4 representation is one per-model regional row:
+`{amount, currency, global_original_price_cny}`. `amount` and `currency` are
+the exact local publish values; `global_original_price_cny` is the exact CNSC
+model-price lineage. Missing either side blocks that region before any write.
+
 Do not reuse the legacy single-model regional helper for a multi-SKU product:
 it prepares one `model_sku` and one local model price. The regional Skill tool
 must expand the complete approved model set before this operation is enabled.
+
+## Confirmed incident: global mapping prefilled four regional successes
+
+Symptom: a newly created global item appeared locally as published in
+PH/MY/TH/VN before any regional `create_publish_task` or official shop-item
+readback had run.
+
+Confirmed cause: `upsert_global_entry` treated an explicit empty
+`published_regions=[]` as false and replaced it with all four regions; the
+multi-SKU group upsert also hard-coded all four regions.
+
+Permanent handling:
+
+1. A new global mapping always starts with an empty regional set.
+2. Regional dispatch never edits `global_sku_map`.
+3. An accepted `publish_task_id` is submission evidence, not publication.
+4. Add a region only after `get_publish_task_result` succeeds and official
+   item/model/global-linkage readback matches the approved SKU and price facts.
+5. Use `record_shop_item` as that sole verified mutation boundary.
+6. Global-only publication must leave `published_regions` empty.
 
 ## Confirmed incident: regional linkage readback used incomplete token metadata
 

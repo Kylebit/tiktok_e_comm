@@ -389,7 +389,9 @@ def upsert_global_entry(
         "title": title,
         "global_item_sku": "",
         "models": [{"model_name": model_name, "global_model_sku": global_model_sku}],
-        "published_regions": published_regions or ["MY", "TH", "PH", "VN"],
+        "published_regions": (
+            list(published_regions) if published_regions is not None else []
+        ),
         "shop_items": shop_items or {},
     }
     save_map(data)
@@ -557,7 +559,7 @@ def upsert_global_group_entry(
         "models": model_rows,
         "tk_product_id": tk_product_id,
         "tk_source_region": tk_source_region,
-        "published_regions": ["MY", "TH", "PH", "VN"],
+        "published_regions": [],
         "shop_items": {},
     }
     save_map(data)

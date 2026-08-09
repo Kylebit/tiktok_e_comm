@@ -11,9 +11,11 @@ REQUIRED_TOOLS = (
     "inspect_snapshot.py",
     "dispatch_tiktok.py",
     "dispatch_shopee.py",
+    "dispatch_shopee_regions.py",
     "dispatch_ozon.py",
     "readback_tiktok.py",
     "readback_shopee.py",
+    "readback_shopee_regions.py",
     "readback_ozon.py",
 )
 REQUIRED_REFERENCES = (
@@ -26,7 +28,7 @@ REQUIRED_REFERENCES = (
 
 
 class SkillArchitectureTests(unittest.TestCase):
-    def test_seven_thin_tools_exist(self) -> None:
+    def test_nine_thin_tools_exist(self) -> None:
         self.assertEqual(
             [name for name in REQUIRED_TOOLS if not (SCRIPTS / name).is_file()],
             [],
@@ -59,6 +61,17 @@ class SkillArchitectureTests(unittest.TestCase):
     def test_shopee_rule_requires_official_deleted_recovery(self) -> None:
         text = (ROOT / "references" / "shopee.md").read_text(encoding="utf-8")
         for required in ("DELETED", "global_item_id", "retire", "official readback"):
+            self.assertIn(required, text)
+
+    def test_shopee_regions_require_official_readback_before_mapping(self) -> None:
+        text = (ROOT / "references" / "shopee.md").read_text(encoding="utf-8")
+        for required in (
+            "published_regions=[]",
+            "record_shop_item",
+            "dispatch_shopee_regions.py",
+            "readback_shopee_regions.py",
+            "Global-only publication",
+        ):
             self.assertIn(required, text)
 
     def test_ozon_rule_uses_current_identity_and_statuses(self) -> None:

@@ -1,6 +1,35 @@
 from modules.shopee import global_sku_map
 
 
+def test_new_global_mappings_do_not_invent_regional_publications(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "shopee-map.json"
+    monkeypatch.setattr(global_sku_map, "map_path", lambda: path)
+
+    global_sku_map.upsert_global_entry(
+        "90000000001",
+        match_key="0967",
+        global_model_sku="0967",
+        published_regions=[],
+    )
+    global_sku_map.upsert_global_group_entry(
+        "90000000002",
+        match_keys=["0968", "0969"],
+        models=[
+            {"model_name": "small", "global_model_sku": "0968"},
+            {"model_name": "large", "global_model_sku": "0969"},
+        ],
+    )
+
+    data = global_sku_map.load_map()
+    assert data["90000000001"]["published_regions"] == []
+    assert data["90000000002"]["published_regions"] == []
+    assert data["90000000001"]["shop_items"] == {}
+    assert data["90000000002"]["shop_items"] == {}
+
+
 def test_replacement_preserves_retired_regional_item_history(
     tmp_path,
     monkeypatch,

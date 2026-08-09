@@ -1,6 +1,9 @@
 import pytest
 
-from domains.supply_chain_operations.demand_trend import calculate_segmented_trend
+from domains.supply_chain_operations.demand_trend import (
+    calculate_full_30_day_actual,
+    calculate_segmented_trend,
+)
 
 
 def test_recent_15_day_regime_forecasts_54_units_instead_of_30():
@@ -18,6 +21,24 @@ def test_recent_15_day_regime_forecasts_54_units_instead_of_30():
     assert decision["confidence"] == "HIGH"
     assert decision["denominatorBasis"] == "calendar_days_no_stockout_adjustment"
     assert decision["spikeProtectionTargetDays"] is None
+
+
+def test_full_30_day_actual_stays_unweighted_beside_trend():
+    actual = calculate_full_30_day_actual(tiktok_units=606, shopee_units=201)
+
+    assert actual == {
+        "method": "full_30_day_actual_v1",
+        "windowDays": 30,
+        "channelUnits": {"tiktok": 606, "shopee": 201},
+        "totalUnits": 807,
+        "dailyVelocity": 26.9,
+    }
+
+
+@pytest.mark.parametrize("invalid", [True, -1, 1.5, "30"])
+def test_full_30_day_actual_rejects_invalid_units(invalid):
+    with pytest.raises(ValueError):
+        calculate_full_30_day_actual(tiktok_units=invalid, shopee_units=0)
 
 
 def test_one_day_viral_burst_gets_15_day_first_stock_protection():

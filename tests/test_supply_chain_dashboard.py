@@ -230,7 +230,7 @@ def test_dashboard_has_strict_four_country_over_ten_summary():
     html = (DASHBOARD / "index.html").read_text(encoding="utf-8")
 
     assert "function renderSummary()" in app
-    assert ".filter(item => item.recommended > 10)" in app
+    assert ".filter(item => item.recommendationMax > 10)" in app
     assert 'region = activeRegion === "SUMMARY" ? item.region : activeRegion' in app
     assert 'class="region-badge"' in app
     assert "同一 SKU 在不同国家分别成行" in app
@@ -289,7 +289,15 @@ def test_quantity_is_independent_from_dimensions_weight_and_cost():
     app = (DASHBOARD / "app.js").read_text(encoding="utf-8")
     html = (DASHBOARD / "index.html").read_text(encoding="utf-8")
 
-    assert "const recommended = Math.max(0, arrivalTarget - projectedAtArrival)" in app
+    assert "recommended: Math.max(0, arrivalTarget - projectedAtArrival)" in app
+    assert "function channelRecent30Demand" in app
+    assert "Number.isInteger(channel.recent30Units)" in app
+    assert "daily: channel.recent30Units / 30" in app
+    assert 'method: "FULL_30_DAY_ACTUAL"' in app
+    assert "demandScenarios: {trend: trendScenario, recent30: recent30Scenario}" in app
+    assert "两套逐步计算" in app
+    assert "日期权重" in app
+    assert "30日实绩" in app
     assert "const NEW_REPLENISHMENT_PREPARATION_DAYS = 3" in app
     assert "const NEW_REPLENISHMENT_DOMESTIC_WAREHOUSE_DAYS = 4" in app
     assert "const transportPolicy = TRANSPORT_HISTORY.regions[region]" in app

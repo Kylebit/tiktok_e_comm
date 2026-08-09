@@ -8,6 +8,7 @@ from domains.supply_chain_operations.inbound_timeline import (
     InboundEvent,
     project_supply,
 )
+from domains.supply_chain_operations.demand_trend import calculate_full_30_day_actual
 
 
 DASHBOARD = (
@@ -114,6 +115,26 @@ def test_th_0021_exact_paginated_batch_split_changes_arrival_stock():
     assert [step.stock_after for step in result.steps] == [0, 200, 0, 600, 413]
     assert result.projection_method == "TIME_PHASED_BATCH_EVENTS_V1"
     assert ceil(daily_velocity * 33) - result.projected_stock == 818
+
+
+def test_th_0021_full_30_day_orders_get_a_separate_arrival_result():
+    actual = calculate_full_30_day_actual(tiktok_units=606, shopee_units=201)
+    result = project_supply(
+        snapshot_date=date(2026, 8, 9),
+        next_arrival_date=date(2026, 8, 31),
+        available=0,
+        daily_velocity=actual["dailyVelocity"],
+        inbound_events=(
+            InboundEvent("THML4038-58701", 200, date(2026, 8, 19)),
+            InboundEvent("THSL4038-59557", 600, date(2026, 8, 26)),
+        ),
+    )
+
+    assert actual["totalUnits"] == 807
+    assert actual["dailyVelocity"] == 26.9
+    assert result.projected_stock == 476
+    assert ceil(actual["dailyVelocity"] * 33) == 888
+    assert ceil(actual["dailyVelocity"] * 33) - result.projected_stock == 412
 
 
 def test_every_thailand_inbound_sku_reconciles_to_complete_paginated_batches():

@@ -163,6 +163,53 @@ function channelDemand(channel, region, platform) {
   };
 }
 
+function channelRecent30Demand(channel, region, platform) {
+  const expectedSource = `${platform} ${region}`;
+  if (typeof channel.source !== "string" || !channel.source.startsWith(expectedSource)) {
+    return {ready: false, daily: null, units: null, method: "COUNTRY_MISMATCH"};
+  }
+  if ((channel.state && channel.state !== "READY") || channel.quantityBasis !== "valid_order") {
+    return {ready: false, daily: null, units: null, method: "BLOCKED_ORDER_DATA"};
+  }
+  if (!Number.isInteger(channel.recent30Units) || channel.recent30Units < 0) {
+    return {ready: false, daily: null, units: null, method: "RECENT30_UNAVAILABLE"};
+  }
+  return {
+    ready: true,
+    daily: channel.recent30Units / 30,
+    units: channel.recent30Units,
+    method: "FULL_30_DAY_ACTUAL"
+  };
+}
+
+function calculateArrivalScenario({dailyVelocity, targetCoverageDays, effectiveLeadDays,
+  nextArrivalDate, available, inboundEvents, label, method}) {
+  const leadDemand = Math.ceil(dailyVelocity * effectiveLeadDays);
+  const arrivalTarget = Math.ceil(dailyVelocity * targetCoverageDays);
+  const supplyProjection = TIMELINE.projectSupply({
+    snapshotDate: DATA.snapshotDate,
+    nextArrivalDate,
+    available,
+    dailyVelocity,
+    inboundEvents
+  });
+  const projectedAtArrival = supplyProjection.projectedStock;
+  return {
+    ready: true,
+    label,
+    method,
+    dailyVelocity,
+    leadDemand,
+    arrivalTarget,
+    projectedAtArrival,
+    recommended: Math.max(0, arrivalTarget - projectedAtArrival),
+    countedInbound: supplyProjection.countedInbound,
+    pendingInbound: supplyProjection.pendingInbound,
+    supplySteps: supplyProjection.steps,
+    projectionMethod: supplyProjection.projectionMethod
+  };
+}
+
 function calculateCountry(region) {
   const config = DATA.config[region];
   const base = DATA.countries[region].map(item => {
@@ -181,6 +228,15 @@ function calculateCountry(region) {
     const tiktokDaily = tiktokDemand.daily;
     const shopeeDaily = shopeeDemand.daily;
     const dailyVelocity = tiktokDaily + shopeeDaily;
+    const tiktokRecent30Demand = channelRecent30Demand(effectiveItem.channels.tiktok, region, "TikTok");
+    const shopeeRecent30Demand = channelRecent30Demand(effectiveItem.channels.shopee, region, "Shopee");
+    const recent30Ready = tiktokRecent30Demand.ready && shopeeRecent30Demand.ready;
+    const recent30Units = recent30Ready
+      ? tiktokRecent30Demand.units + shopeeRecent30Demand.units
+      : null;
+    const recent30DailyVelocity = recent30Ready
+      ? tiktokRecent30Demand.daily + shopeeRecent30Demand.daily
+      : null;
     const dimensionsReady = Array.isArray(effectiveItem.dimensionsCm) && effectiveItem.dimensionsCm.length === 3
       && effectiveItem.dimensionsCm.every(value => typeof value === "number" && Number.isFinite(value) && value > 0)
     const weightReady = typeof effectiveItem.weightG === "number"
@@ -199,20 +255,47 @@ function calculateCountry(region) {
     const effectiveLeadDays = NEW_REPLENISHMENT_PREPARATION_DAYS
       + NEW_REPLENISHMENT_DOMESTIC_WAREHOUSE_DAYS
       + effectiveTransportDays;
-    const leadDemand = Math.ceil(dailyVelocity * effectiveLeadDays);
-    const arrivalTarget = Math.ceil(dailyVelocity * targetCoverageDays);
     const inboundPlan = INBOUND_PLAN.regions[region];
     const inboundAllocation = inboundBatchEvents(region, effectiveItem);
     const nextArrivalDate = TIMELINE.addDays(DATA.snapshotDate, effectiveLeadDays);
-    const supplyProjection = TIMELINE.projectSupply({
-      snapshotDate: DATA.snapshotDate,
+    const trendScenario = calculateArrivalScenario({
+      dailyVelocity,
+      targetCoverageDays,
+      effectiveLeadDays,
       nextArrivalDate,
       available: effectiveItem.inventory.available,
-      dailyVelocity,
-      inboundEvents: inboundAllocation.events
+      inboundEvents: inboundAllocation.events,
+      label: "日期权重趋势",
+      method: "SEGMENTED_OR_DECLARED_FALLBACK"
     });
-    const projectedAtArrival = supplyProjection.projectedStock;
-    const recommended = Math.max(0, arrivalTarget - projectedAtArrival);
+    const recent30Scenario = recent30Ready
+      ? calculateArrivalScenario({
+          dailyVelocity: recent30DailyVelocity,
+          targetCoverageDays,
+          effectiveLeadDays,
+          nextArrivalDate,
+          available: effectiveItem.inventory.available,
+          inboundEvents: inboundAllocation.events,
+          label: "过去30天完整订单",
+          method: "FULL_30_DAY_ACTUAL"
+        })
+      : {
+          ready: false,
+          label: "过去30天完整订单",
+          method: "RECENT30_UNAVAILABLE",
+          dailyVelocity: null,
+          leadDemand: null,
+          arrivalTarget: null,
+          projectedAtArrival: null,
+          recommended: null,
+          countedInbound: 0,
+          pendingInbound: effectiveItem.inventory.inbound,
+          supplySteps: [],
+          projectionMethod: "BLOCKED_ORDER_DATA"
+        };
+    const {leadDemand, arrivalTarget, projectedAtArrival, recommended} = trendScenario;
+    const recent30Recommended = recent30Scenario.recommended;
+    const recommendationMax = Math.max(recommended, recent30Recommended ?? 0);
     const volumeM3 = dimensionsReady
       ? effectiveItem.dimensionsCm.reduce((a, b) => a * number(b), 1) / 1e6
       : null;
@@ -224,26 +307,30 @@ function calculateCountry(region) {
       : null;
     return {...effectiveItem, dimensionsReady, weightReady, costReady, dataIncomplete,
       tiktokDemand, shopeeDemand, tiktokDaily, shopeeDaily, dailyVelocity,
+      tiktokRecent30Demand, shopeeRecent30Demand, recent30Ready,
+      recent30Units, recent30DailyVelocity,
       spikeProtection, targetCoverageDays, effectiveTransportDays, transportPolicy,
       effectiveLeadDays, leadDemand, arrivalTarget,
-      projectedAtArrival, recommended, volumeM3, chargeableUnitM3,
+      projectedAtArrival, recommended, recent30Recommended, recommendationMax,
+      demandScenarios: {trend: trendScenario, recent30: recent30Scenario},
+      volumeM3, chargeableUnitM3,
       inboundPlan, inboundBatches: inboundAllocation.batches,
       inboundReconciled: inboundAllocation.reconciled,
       unmatchedInbound: inboundAllocation.unmatchedInbound, nextArrivalDate,
-      countedInbound: supplyProjection.countedInbound,
-      pendingInbound: supplyProjection.pendingInbound,
-      supplySteps: supplyProjection.steps,
-      projectionMethod: supplyProjection.projectionMethod};
+      countedInbound: trendScenario.countedInbound,
+      pendingInbound: trendScenario.pendingInbound,
+      supplySteps: trendScenario.supplySteps,
+      projectionMethod: trendScenario.projectionMethod};
   });
 
-  const batchMetrics = items => {
+  const batchMetrics = (items, quantityField = "recommended") => {
     const rawChargeableM3 = items.reduce(
-      (sum, item) => sum + number(item.chargeableUnitM3) * item.recommended, 0
+      (sum, item) => sum + number(item.chargeableUnitM3) * number(item[quantityField]), 0
     );
     const physicalM3 = items.reduce(
-      (sum, item) => sum + number(item.volumeM3) * item.recommended, 0
+      (sum, item) => sum + number(item.volumeM3) * number(item[quantityField]), 0
     );
-    const recommendedUnits = items.reduce((sum, item) => sum + item.recommended, 0);
+    const recommendedUnits = items.reduce((sum, item) => sum + number(item[quantityField]), 0);
     return {
       rawChargeableM3,
       physicalM3,
@@ -272,27 +359,33 @@ function calculateCountry(region) {
       ? null
       : taxSavingUnit + shippingSavingUnit - handlingUnit - headFreightUnit;
     const netTotal = netUnit === null ? null : netUnit * item.recommended;
+    const netTotalRecent30 = netUnit === null || item.recent30Recommended === null
+      ? null
+      : netUnit * item.recent30Recommended;
     return {units, customerPaymentLocal, observedShippingLocal, taxSavingUnit,
-      shippingSavingUnit, handlingUnit, headFreightUnit, netUnit, netTotal};
+      shippingSavingUnit, handlingUnit, headFreightUnit, netUnit, netTotal, netTotalRecent30};
   };
 
-  const approvedItems = base.filter(
-    item => item.dailyVelocity > 0 && item.recommended > 0
+  const approvedItems = base.filter(item => item.dailyVelocity > 0 && item.recommended > 0);
+  const recent30ApprovedItems = base.filter(
+    item => item.recent30Ready && item.recent30DailyVelocity > 0 && item.recent30Recommended > 0
   );
   const approvedMetrics = batchMetrics(approvedItems);
+  const recent30Metrics = batchMetrics(recent30ApprovedItems, "recent30Recommended");
 
   const rows = base.map(item => {
     const itemEconomics = economics(item);
     let status = "NO_DEMAND";
-    if (item.dailyVelocity > 0 && item.recommended === 0) status = "HOLD";
-    if (item.dailyVelocity > 0 && item.recommended > 0) {
+    if (item.dailyVelocity > 0 && item.recommendationMax === 0) status = "HOLD";
+    if (item.dailyVelocity > 0 && item.recommendationMax > 0) {
       status = item.kind === "first_stock" ? "FIRST_STOCK" : "REPLENISH";
     }
     return {...item, ...itemEconomics, status};
   });
   return {
-    rows: rows.sort((a, b) => b.recommended - a.recommended || number(b.netTotal) - number(a.netTotal) || a.sku.localeCompare(b.sku)),
-    ...approvedMetrics
+    rows: rows.sort((a, b) => b.recommendationMax - a.recommendationMax || number(b.netTotal) - number(a.netTotal) || a.sku.localeCompare(b.sku)),
+    ...approvedMetrics,
+    recent30Metrics
   };
 }
 
@@ -337,9 +430,12 @@ function shortDate(value) {
   return typeof value === "string" && value.length >= 10 ? value.slice(5, 10) : value;
 }
 
-function projectionAuditHtml(item) {
-  const velocity = item.dailyVelocity.toFixed(6);
-  const stepLines = item.supplySteps.map(step => {
+function scenarioAuditHtml(item, scenario) {
+  if (!scenario.ready) {
+    return `<section class="scenario-audit blocked-scenario"><h4>${escapeHtml(scenario.label)}</h4><p>缺少完整30天有效订单事实，无法生成该口径。</p></section>`;
+  }
+  const velocity = scenario.dailyVelocity.toFixed(6);
+  const stepLines = scenario.supplySteps.map(step => {
     if (step.kind === "INBOUND") {
       return `<li><b>${shortDate(step.date)}</b> 批次 ${escapeHtml(step.batchId)} 到达 +${step.quantity}件；库存 ${step.stockBefore} → ${step.stockAfter}</li>`;
     }
@@ -348,8 +444,12 @@ function projectionAuditHtml(item) {
       : "";
     return `<li><b>${shortDate(step.fromDate)}→${shortDate(step.toDate)}</b> ${step.days}天需求 ceil(${velocity}×${step.days})=${step.demand}；库存 ${step.stockBefore} → ${step.stockAfter}${unmet}</li>`;
   }).join("");
+  return `<section class="scenario-audit"><h4>${escapeHtml(scenario.label)} · ${velocity}件/天</h4><ol><li>新补货提前期：3 + 4 + ${item.effectiveTransportDays} = <b>${item.effectiveLeadDays}天</b>；提前期需求 ceil(${velocity}×${item.effectiveLeadDays})=${scenario.leadDemand}</li><li>快照日 ${DATA.snapshotDate} 初始可用库存：<b>${item.inventory.available}件</b></li>${stepLines}<li>${item.targetCoverageDays}天目标：ceil(${velocity}×${item.targetCoverageDays})=<b>${scenario.arrivalTarget}</b></li><li>建议件数：max(0, ${scenario.arrivalTarget}−${scenario.projectedAtArrival})=<b>${scenario.recommended}</b></li></ol></section>`;
+}
+
+function projectionAuditHtml(item) {
   const open = item.inventory.inbound > 0 ? " open" : "";
-  return `<details class="calc-audit"${open}><summary>逐步计算 · ${item.projectionMethod}</summary><ol><li>双平台预测日均：${item.tiktokDaily.toFixed(6)} + ${item.shopeeDaily.toFixed(6)} = <b>${velocity}件/天</b></li><li>新补货提前期：3 + 4 + ${item.effectiveTransportDays} = <b>${item.effectiveLeadDays}天</b>；提前期需求 ceil(${velocity}×${item.effectiveLeadDays})=${item.leadDemand}</li><li>快照日 ${DATA.snapshotDate} 初始可用库存：<b>${item.inventory.available}件</b></li>${stepLines}<li>${item.targetCoverageDays}天目标：ceil(${velocity}×${item.targetCoverageDays})=<b>${item.arrivalTarget}</b></li><li>建议件数：max(0, ${item.arrivalTarget}−${item.projectedAtArrival})=<b>${item.recommended}</b></li></ol></details>`;
+  return `<details class="calc-audit"${open}><summary>两套逐步计算 · ${item.projectionMethod}</summary><div class="scenario-audit-grid">${scenarioAuditHtml(item, item.demandScenarios.trend)}${scenarioAuditHtml(item, item.demandScenarios.recent30)}</div></details>`;
 }
 
 function rowHtml(item, config, region = activeRegion) {
@@ -366,14 +466,14 @@ function rowHtml(item, config, region = activeRegion) {
     item.costReady ? `成本 ${money(item.costCny, 2)}` : "成本待补充"
   ].filter(Boolean).join(" · ") + manualSource;
   const volumeLabel = item.dimensionsReady
-    ? `${(item.volumeM3 * item.recommended).toFixed(3)} m³`
+    ? `趋势 ${(item.volumeM3 * item.recommended).toFixed(3)} · 30日 ${item.recent30Ready ? (item.volumeM3 * item.recent30Recommended).toFixed(3) : "—"} m³`
     : "体积待补充";
   const handlingLabel = item.handlingUnit === null
     ? "待补充（需重量）"
     : `−${money(item.handlingUnit + item.headFreightUnit, 2)}`;
   const benefitLabel = item.netUnit === null
     ? "单件收益待补充 · 本批收益待补充"
-    : `单件净优势 ${money(item.netUnit, 2)} · 本批 ${money(item.netTotal)}`;
+    : `单件净优势 ${money(item.netUnit, 2)} · 趋势本批 ${money(item.netTotal)} · 30日本批 ${item.netTotalRecent30 === null ? "待补充" : money(item.netTotalRecent30)}`;
   const missingFields = [
     !item.dimensionsReady ? "尺寸" : "",
     !item.weightReady ? "重量" : "",
@@ -397,10 +497,10 @@ function rowHtml(item, config, region = activeRegion) {
     : "";
   return `<tr>
     <td><div class="product-cell"><img src="./${escapeHtml(item.image)}" alt="SKU ${escapeHtml(item.sku)} 主图"><div>${activeRegion === "SUMMARY" ? `<small class="region-badge">${escapeHtml(region)} · ${escapeHtml(config.name)}</small>` : ""}<strong>${escapeHtml(item.sku)}</strong><span>${escapeHtml(item.name)}</span><small>${physicalLabel}</small></div></div></td>
-    <td><div class="channel-stack">${channelBlock("TikTok", item.channels.tiktok, item.tiktokDemand)}${channelBlock("Shopee", item.channels.shopee, item.shopeeDemand)}<em>合并需求 ${item.dailyVelocity.toFixed(2)} 件/天${item.spikeProtection ? " · 短期爆量首批仅覆盖15天" : ""}</em></div></td>
+    <td><div class="channel-stack">${channelBlock("TikTok", item.channels.tiktok, item.tiktokDemand)}${channelBlock("Shopee", item.channels.shopee, item.shopeeDemand)}<em>日期权重合并 ${item.dailyVelocity.toFixed(2)} 件/天${item.spikeProtection ? " · 短期爆量首批仅覆盖15天" : ""}</em><em class="actual-demand">30日完整订单 ${item.recent30Ready ? `${item.recent30Units}件 ÷ 30 = ${item.recent30DailyVelocity.toFixed(2)}件/天` : "不可用"}</em></div></td>
     <td><div class="inventory-grid"><span>库存<b>${item.inventory.stock}</b></span><span>可用<b>${item.inventory.available}</b></span><span>占用<b>${item.inventory.allocated}</b></span><span>冻结<b>${item.inventory.frozen}</b></span><span>在途<b>${item.inventory.inbound}</b></span><span>绑定<b>${inventoryLabel}</b></span>${inboundTiming}</div></td>
-    <td><div class="calc-lines"><span>本次新货预计可售 <b>${item.nextArrivalDate}</b></span><span>3天备货 + 4天到国内仓 + ${item.effectiveTransportDays}天海外运输</span><span>${item.transportPolicy.eligibleSamples}批历史样本 · ${item.transportPolicy.state}</span><span>${item.effectiveLeadDays}天需求 <b>${item.leadDemand}</b></span><span>分时点到仓剩余 <b>${item.projectedAtArrival}</b></span><span>${item.targetCoverageDays}天目标 <b>${item.arrivalTarget}</b></span>${projectionAuditHtml(item)}</div></td>
-    <td class="recommend"><strong>${item.recommended}</strong><span>件</span><small>${volumeLabel}</small></td>
+    <td><div class="calc-lines"><span>本次新货预计可售 <b>${item.nextArrivalDate}</b></span><span>3天备货 + 4天到国内仓 + ${item.effectiveTransportDays}天海外运输</span><span>${item.transportPolicy.eligibleSamples}批历史样本 · ${item.transportPolicy.state}</span><div class="scenario-summary"><section><b>日期权重</b><span>${item.effectiveLeadDays}天需求 ${item.demandScenarios.trend.leadDemand}</span><span>到仓剩余 ${item.demandScenarios.trend.projectedAtArrival}</span><span>${item.targetCoverageDays}天目标 ${item.demandScenarios.trend.arrivalTarget}</span></section><section><b>30日实绩</b>${item.recent30Ready ? `<span>${item.effectiveLeadDays}天需求 ${item.demandScenarios.recent30.leadDemand}</span><span>到仓剩余 ${item.demandScenarios.recent30.projectedAtArrival}</span><span>${item.targetCoverageDays}天目标 ${item.demandScenarios.recent30.arrivalTarget}</span>` : "<span>完整订单事实不可用</span>"}</section></div>${projectionAuditHtml(item)}</div></td>
+    <td class="recommend"><div class="recommend-dual"><span>日期权重<strong>${item.recommended}</strong><em>件</em></span><span>30日实绩<strong>${item.recent30Recommended ?? "—"}</strong><em>${item.recent30Recommended === null ? "" : "件"}</em></span></div><small>${volumeLabel}</small></td>
     <td><div class="economics-mini"><span>用户结算价 <b>${local}${item.customerPaymentLocal.toFixed(2)}</b></span><span>税费节省 ${Math.round(config.taxSavingRate * 100)}% <b class="gain">${money(item.taxSavingUnit, 2)}</b></span><span>跨境运费节省 20% <b class="gain">${money(item.shippingSavingUnit, 2)}</b></span><span>本土处理 + 头程 <b>${handlingLabel}</b></span><em>${benefitLabel} ${shippingEvidence}</em></div></td>
     <td><span class="pill ${item.status.toLowerCase()}">${statusLabel(item.status)}</span><small class="reason">${item.dataIncomplete ? `建议件数已生成；${missingFields}待补充，仅影响${affectedOutputs}展示。` : item.kind === "first_stock" ? "当前仓库为0；平台需求与商品资料齐全，收益单独展示。" : item.status === "HOLD" ? "现货与按预计日期到达的在途已覆盖目标。" : item.status === "NO_DEMAND" ? "没有足够的SKU级需求事实。" : "需求缺口成立；收益仅展示，不拦截补货建议。"}</small>${item.dataIncomplete || item.manualInput ? `<button class="manual-entry-button" type="button" data-action="manual-entry" data-region="${escapeHtml(region)}" data-sku="${escapeHtml(item.sku)}">${item.manualInput ? "修改已补资料" : "手动补齐"}</button>` : ""}</td>
   </tr>`;
@@ -433,20 +533,31 @@ function renderSummary() {
   calculated = regions.flatMap(region => calculateCountry(region).rows.map(item => ({
     ...item,
     region
-  }))).filter(item => item.recommended > 10)
-    .sort((left, right) => right.recommended - left.recommended || left.region.localeCompare(right.region) || left.sku.localeCompare(right.sku));
+  }))).filter(item => item.recommendationMax > 10)
+    .sort((left, right) => right.recommendationMax - left.recommendationMax || left.region.localeCompare(right.region) || left.sku.localeCompare(right.sku));
   batch = {rows: calculated};
 
   const qty = calculated.reduce((sum, item) => sum + item.recommended, 0);
+  const recent30Qty = calculated.reduce((sum, item) => sum + number(item.recent30Recommended), 0);
   const capital = calculated.reduce(
     (sum, item) => sum + (item.costReady ? item.costCny * item.recommended : 0), 0
   );
+  const recent30Capital = calculated.reduce(
+    (sum, item) => sum + (item.costReady ? item.costCny * number(item.recent30Recommended) : 0), 0
+  );
   const benefit = calculated.reduce((sum, item) => sum + number(item.netTotal), 0);
+  const recent30Benefit = calculated.reduce((sum, item) => sum + number(item.netTotalRecent30), 0);
   const physicalM3 = calculated.reduce(
     (sum, item) => sum + (item.dimensionsReady ? item.volumeM3 * item.recommended : 0), 0
   );
+  const recent30PhysicalM3 = calculated.reduce(
+    (sum, item) => sum + (item.dimensionsReady ? item.volumeM3 * number(item.recent30Recommended) : 0), 0
+  );
   const billableM3 = calculated.reduce(
     (sum, item) => sum + (item.chargeableUnitM3 === null ? 0 : item.chargeableUnitM3 * item.recommended), 0
+  );
+  const recent30BillableM3 = calculated.reduce(
+    (sum, item) => sum + (item.chargeableUnitM3 === null ? 0 : item.chargeableUnitM3 * number(item.recent30Recommended)), 0
   );
   const missingCostCount = calculated.filter(item => !item.costReady).length;
   const missingBenefitCount = calculated.filter(item => item.netTotal === null).length;
@@ -467,24 +578,24 @@ function renderSummary() {
   document.querySelector("#sourceChips").innerHTML = regions.map(
     region => `<span>${region} ${countryCounts[region]} 款</span>`
   ).join("") + "<span>门槛：建议数 &gt; 10</span>";
-  document.querySelector("#coverageLabel").textContent = "四国独立计算 · 仅汇总 >10件";
-  document.querySelector("#batchQty").textContent = qty.toLocaleString("zh-CN");
+  document.querySelector("#coverageLabel").textContent = "四国独立计算 · 日期权重 / 30日实绩双口径 · 任一建议 >10件";
+  document.querySelector("#batchQty").textContent = `趋势 ${qty.toLocaleString("zh-CN")} · 30日 ${recent30Qty.toLocaleString("zh-CN")}`;
   document.querySelector("#batchSkuCount").textContent = `${calculated.length} 款`;
   document.querySelector("#batchVolume").textContent = missingVolumeCount
-    ? `${physicalM3.toFixed(3)} m³ + ${missingVolumeCount}款待补`
-    : `${physicalM3.toFixed(3)} m³`;
+    ? `趋势 ${physicalM3.toFixed(3)} / 30日 ${recent30PhysicalM3.toFixed(3)} m³ + ${missingVolumeCount}款待补`
+    : `趋势 ${physicalM3.toFixed(3)} / 30日 ${recent30PhysicalM3.toFixed(3)} m³`;
   document.querySelector("#billableVolume").textContent = missingChargeableCount
-    ? `${billableM3.toFixed(3)} m³ + ${missingChargeableCount}款待补`
-    : `${billableM3.toFixed(3)} m³`;
+    ? `趋势 ${billableM3.toFixed(3)} / 30日 ${recent30BillableM3.toFixed(3)} m³ + ${missingChargeableCount}款待补`
+    : `趋势 ${billableM3.toFixed(3)} / 30日 ${recent30BillableM3.toFixed(3)} m³`;
   document.querySelector("#workingCapital").textContent = missingCostCount
-    ? `${money(capital)} + ${missingCostCount}款待补`
-    : money(capital);
+    ? `趋势 ${money(capital)} / 30日 ${money(recent30Capital)} + ${missingCostCount}款待补`
+    : `趋势 ${money(capital)} / 30日 ${money(recent30Capital)}`;
   document.querySelector("#knownBenefit").textContent = missingBenefitCount
-    ? `${money(benefit)} + ${missingBenefitCount}款待补`
-    : money(benefit);
-  document.querySelector("#headFreight").textContent = money(qty);
+    ? `趋势 ${money(benefit)} / 30日 ${money(recent30Benefit)} + ${missingBenefitCount}款待补`
+    : `趋势 ${money(benefit)} / 30日 ${money(recent30Benefit)}`;
+  document.querySelector("#headFreight").textContent = `趋势 ${money(qty)} / 30日 ${money(recent30Qty)}`;
   document.querySelector("#batchSentence").textContent = calculated.length
-    ? `数量最高：${calculated.slice(0, 6).map(item => `${item.region}-${item.sku} ${item.recommended}件`).join("、")}。`
+    ? `数量最高：${calculated.slice(0, 6).map(item => `${item.region}-${item.sku} 趋势${item.recommended}/30日${item.recent30Recommended ?? "—"}件`).join("、")}。`
     : "四国当前没有建议备货数大于10件的 SKU。";
   document.querySelector("#warehouseLabel").textContent = "覆盖国家";
   document.querySelector("#inventoryUnits").textContent = "4 国";
@@ -493,12 +604,12 @@ function renderSummary() {
   document.querySelector("#decisionHeadline").textContent = `备 ${calculated.length} 款`;
   document.querySelector("#ledgerTitle").textContent = "四国建议备货数 >10 件汇总";
   document.querySelector("#ledgerDescription").textContent = "每行带国家标识；同一 SKU 在不同国家分别成行，因为需求、库存和补货周期互不混算。";
-  document.querySelector("#formulaText").textContent = "每国先按在途预计可售日逐时点投影，再计算 Q；本页仅保留 Q > 10";
+  document.querySelector("#formulaText").textContent = "每国分别用日期权重日均和完整30天订单日均执行同一在途分时点投影；任一口径 Q > 10 即保留";
   document.querySelector("#freightRule").textContent = "每个国家仍按各自库存、交期和处理规则计算；头程统一按 ¥1.00/件展示。";
   document.querySelector("#economicsRule").textContent = "收益按各国已批准税费比例和本国结算事实分别计算，仅展示、不拦截数量建议。";
   document.querySelector("#evidenceGrid").innerHTML = `
     <article class="ok"><strong>四国严格隔离</strong><p>MY ${countryCounts.MY} 款、TH ${countryCounts.TH} 款、VN ${countryCounts.VN} 款、PH ${countryCounts.PH} 款。每国先独立计算，再汇总展示。</p></article>
-    <article class="ok"><strong>门槛严格大于10</strong><p>当前共 ${calculated.length} 款、${qty.toLocaleString("zh-CN")} 件；建议数等于10的记录不进入本页。</p></article>
+    <article class="ok"><strong>双口径门槛严格大于10</strong><p>当前共 ${calculated.length} 款；日期权重 ${qty.toLocaleString("zh-CN")} 件，30日实绩 ${recent30Qty.toLocaleString("zh-CN")} 件。任一口径超过10即进入本页。</p></article>
     <article class="neutral"><strong>建议类型</strong><p>已有海外仓库存的建议补货 ${replenishCount} 款；海外仓尚无的建议首批 ${firstStockCount} 款。</p></article>
     <article class="neutral"><strong>外部写入为0</strong><p>该汇总只读取本地决策快照，不会创建采购单、调整库存或写入任何平台。</p></article>`;
   renderRows();
@@ -515,10 +626,15 @@ function renderCountry() {
   const config = DATA.config[activeRegion];
   const approved = calculated.filter(item => ["REPLENISH", "FIRST_STOCK"].includes(item.status));
   const qty = approved.reduce((sum, item) => sum + item.recommended, 0);
+  const recent30Qty = approved.reduce((sum, item) => sum + number(item.recent30Recommended), 0);
   const capital = approved.reduce(
     (sum, item) => sum + (item.costReady ? item.costCny * item.recommended : 0), 0
   );
+  const recent30Capital = approved.reduce(
+    (sum, item) => sum + (item.costReady ? item.costCny * number(item.recent30Recommended) : 0), 0
+  );
   const benefit = approved.reduce((sum, item) => sum + number(item.netTotal), 0);
+  const recent30Benefit = approved.reduce((sum, item) => sum + number(item.netTotalRecent30), 0);
   const missingCostCount = approved.filter(item => !item.costReady).length;
   const missingBenefitCount = approved.filter(item => item.netTotal === null).length;
   const missingVolumeCount = approved.filter(item => !item.dimensionsReady).length;
@@ -551,24 +667,24 @@ function renderCountry() {
     ? `税费节省 = 用户结算价 × ${Math.round(config.taxSavingRate * 100)}%`
     : "税费优势尚未批准，按 0";
   document.querySelector("#sourceChips").innerHTML = `<span>雅仓 ${existingCount} SKU</span><span>${config.demandCoverage}</span><span>${config.freightMode}</span><span>${taxChip}</span>`;
-  document.querySelector("#coverageLabel").textContent = `3天备货 + 4天到国内仓 + ${transportPolicy.effectiveTransportDays}天海外运输 · 在途分时点 · 常规${config.targetDays + config.safetyDays}天`;
-  document.querySelector("#batchQty").textContent = qty.toLocaleString("zh-CN");
+  document.querySelector("#coverageLabel").textContent = `3天备货 + 4天到国内仓 + ${transportPolicy.effectiveTransportDays}天海外运输 · 两套需求共用在途分时点 · 常规${config.targetDays + config.safetyDays}天`;
+  document.querySelector("#batchQty").textContent = `趋势 ${qty.toLocaleString("zh-CN")} · 30日 ${recent30Qty.toLocaleString("zh-CN")}`;
   document.querySelector("#batchSkuCount").textContent = `${approved.length} 款`;
   document.querySelector("#batchVolume").textContent = missingVolumeCount
-    ? `${result.physicalM3.toFixed(3)} m³ + ${missingVolumeCount}款待补`
-    : `${result.physicalM3.toFixed(3)} m³`;
+    ? `趋势 ${result.physicalM3.toFixed(3)} / 30日 ${result.recent30Metrics.physicalM3.toFixed(3)} m³ + ${missingVolumeCount}款待补`
+    : `趋势 ${result.physicalM3.toFixed(3)} / 30日 ${result.recent30Metrics.physicalM3.toFixed(3)} m³`;
   document.querySelector("#billableVolume").textContent = missingChargeableCount
-    ? `${result.billableM3.toFixed(3)} m³ + ${missingChargeableCount}款待补`
-    : `${result.billableM3.toFixed(3)} m³`;
+    ? `趋势 ${result.billableM3.toFixed(3)} / 30日 ${result.recent30Metrics.billableM3.toFixed(3)} m³ + ${missingChargeableCount}款待补`
+    : `趋势 ${result.billableM3.toFixed(3)} / 30日 ${result.recent30Metrics.billableM3.toFixed(3)} m³`;
   document.querySelector("#workingCapital").textContent = missingCostCount
-    ? `${money(capital)} + ${missingCostCount}款待补`
-    : money(capital);
+    ? `趋势 ${money(capital)} / 30日 ${money(recent30Capital)} + ${missingCostCount}款待补`
+    : `趋势 ${money(capital)} / 30日 ${money(recent30Capital)}`;
   document.querySelector("#knownBenefit").textContent = missingBenefitCount
-    ? `${money(benefit)} + ${missingBenefitCount}款待补`
-    : money(benefit);
-  document.querySelector("#headFreight").textContent = money(result.freightTotal);
+    ? `趋势 ${money(benefit)} / 30日 ${money(recent30Benefit)} + ${missingBenefitCount}款待补`
+    : `趋势 ${money(benefit)} / 30日 ${money(recent30Benefit)}`;
+  document.querySelector("#headFreight").textContent = `趋势 ${money(result.freightTotal)} / 30日 ${money(result.recent30Metrics.freightTotal)}`;
   document.querySelector("#batchSentence").textContent = approved.length
-    ? `优先：${approved.slice(0, 6).map(item => item.sku).join("、")}；其中首批候选 ${approved.filter(item => item.kind === "first_stock").length} 款。`
+    ? `优先：${approved.slice(0, 6).map(item => `${item.sku}(趋势${item.recommended}/30日${item.recent30Recommended ?? "—"})`).join("、")}；其中首批候选 ${approved.filter(item => item.kind === "first_stock").length} 款。`
     : "当前没有需要补货且商品物流资料完整的 SKU。";
   document.querySelector("#warehouseLabel").textContent = `雅仓 ${config.warehouse}`;
   document.querySelector("#inventoryUnits").textContent = `${available.toLocaleString("zh-CN")} 件`;
@@ -577,7 +693,7 @@ function renderCountry() {
   document.querySelector("#decisionHeadline").textContent = approved.length ? `备 ${approved.length} 款` : "暂缓备货";
   document.querySelector("#ledgerTitle").textContent = "全部 SKU 备货建议";
   document.querySelector("#ledgerDescription").textContent = "“建议补货”表示海外仓已有该 SKU；“建议首批”表示海外仓当前没有该 SKU。两类建议按同一规则排序并在同一张表中展示。";
-  document.querySelector("#formulaText").textContent = `Q = max[0, 目标库存 − 分时点投影库存]；现货先消耗，在途到预计可售日才加入，再消耗至第 ${NEW_REPLENISHMENT_PREPARATION_DAYS + NEW_REPLENISHMENT_DOMESTIC_WAREHOUSE_DAYS + transportPolicy.effectiveTransportDays} 天（3天备货 + 4天到国内仓 + ${transportPolicy.effectiveTransportDays}天海外运输）`;
+  document.querySelector("#formulaText").textContent = `分别计算 Q趋势 与 Q30日 = max[0, 各自目标库存 − 各自分时点投影库存]；两套口径共用相同现货、批次到仓日期和第 ${NEW_REPLENISHMENT_PREPARATION_DAYS + NEW_REPLENISHMENT_DOMESTIC_WAREHOUSE_DAYS + transportPolicy.effectiveTransportDays} 天到仓日`;
   document.querySelector("#freightRule").textContent = `所有国家、站点和 SKU 的头程统一按 ${money(config.fixedHeadFreightUnitCny, 2)}/件计入；体积只用于装运规划，不参与本页头程金额。`;
   const taxRule = config.taxSavingRate > 0
     ? `税费节省按用户结算价的 ${Math.round(config.taxSavingRate * 100)}%`

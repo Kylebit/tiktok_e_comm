@@ -125,3 +125,26 @@ def calculate_segmented_trend(
         "maxDailyUnits30": max_daily,
         "spikeProtectionTargetDays": 15 if spike else None,
     }
+
+
+def calculate_full_30_day_actual(
+    *,
+    tiktok_units: object,
+    shopee_units: object,
+) -> dict[str, Any]:
+    """Return the unweighted daily velocity from a complete 30-day order window."""
+
+    if type(tiktok_units) is not int or tiktok_units < 0:
+        raise ValueError("tiktok_units must be a nonnegative built-in int")
+    if type(shopee_units) is not int or shopee_units < 0:
+        raise ValueError("shopee_units must be a nonnegative built-in int")
+    tiktok = tiktok_units
+    shopee = shopee_units
+    total = tiktok + shopee
+    return {
+        "method": "full_30_day_actual_v1",
+        "windowDays": 30,
+        "channelUnits": {"tiktok": tiktok, "shopee": shopee},
+        "totalUnits": total,
+        "dailyVelocity": round(total / 30, 6),
+    }

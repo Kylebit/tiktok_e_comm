@@ -26,6 +26,9 @@ _DIGEST = re.compile(r"(?:sha256:)?[0-9a-f]{64}\Z")
 _DIGITS = re.compile(r"[0-9]{1,32}\Z")
 _CURRENCY = re.compile(r"[A-Z]{3}\Z")
 _CONTROL_ONLY_TARGETS = frozenset({"miaoshou:COMMON"})
+_NON_PROVIDER_CATEGORY_DECISION_SCHEMA_VERSION = (
+    "publication-category-decision/v1"
+)
 _BODY_KEYS = {
     "schema_version",
     "offer_id",
@@ -44,6 +47,34 @@ _BODY_KEYS = {
 
 class ApprovedPublicationSnapshotError(ValueError):
     """Raised when approval inputs or a serialized snapshot fail closed."""
+
+
+def publication_category_decision_digest(
+    *,
+    target_label: str,
+    platform: str,
+    site: str,
+    store: str,
+    status: str,
+) -> str:
+    """Return the reproducible digest for a category-less target decision."""
+
+    if status not in {"DEFERRED_TO_SKILL", "NOT_APPLICABLE"}:
+        raise ApprovedPublicationSnapshotError(
+            "category-less decision status is invalid"
+        )
+    body = {
+        "schema_version": _NON_PROVIDER_CATEGORY_DECISION_SCHEMA_VERSION,
+        "target_label": _text(target_label, "category decision target_label"),
+        "platform": _text(platform, "category decision platform"),
+        "site": _text(site, "category decision site"),
+        "store": _text(store, "category decision store"),
+        "category": None,
+        "status": status,
+    }
+    return "sha256:" + hashlib.sha256(
+        _canonical_json(body).encode("utf-8")
+    ).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -529,47 +560,65 @@ def _target_categories(
                 )
             category: dict[str, Any] | None = None
         else:
-            if status != "APPROVED":
+            if status == "DEFERRED_TO_SKILL":
+                if row.get("category") is not None:
+                    raise ApprovedPublicationSnapshotError(
+                        f"{label} deferred provider category must be null"
+                    )
+                expected_digest = publication_category_decision_digest(
+                    target_label=target_label,
+                    platform=platform,
+                    site=site,
+                    store=store,
+                    status=status,
+                )
+                if decision_digest != expected_digest:
+                    raise ApprovedPublicationSnapshotError(
+                        f"{label} deferred category decision digest conflicts"
+                    )
+                category = None
+            elif status != "APPROVED":
                 raise ApprovedPublicationSnapshotError(
                     f"{label} provider category is not approved"
                 )
-            raw_category = _mapping(row.get("category"), f"{label} provider category")
-            if set(raw_category) != {"id", "name", "path"}:
-                raise ApprovedPublicationSnapshotError(
-                    f"{label} provider category fields are invalid"
-                )
-            category_id = _text(raw_category.get("id"), f"{label} category id")
-            category_name = _text(
-                raw_category.get("name"), f"{label} category name"
-            )
-            raw_path = _mapping_list(
-                raw_category.get("path"), f"{label} category path"
-            )
-            if not raw_path:
-                raise ApprovedPublicationSnapshotError(
-                    f"{label} provider category path is empty"
-                )
-            path: list[dict[str, str]] = []
-            for node in raw_path:
-                if set(node) != {"id", "name"}:
+            else:
+                raw_category = _mapping(row.get("category"), f"{label} provider category")
+                if set(raw_category) != {"id", "name", "path"}:
                     raise ApprovedPublicationSnapshotError(
-                        f"{label} category path fields are invalid"
+                        f"{label} provider category fields are invalid"
                     )
-                path.append(
-                    {
-                        "id": _text(node.get("id"), f"{label} path id"),
-                        "name": _text(node.get("name"), f"{label} path name"),
-                    }
+                category_id = _text(raw_category.get("id"), f"{label} category id")
+                category_name = _text(
+                    raw_category.get("name"), f"{label} category name"
                 )
-            if path[-1] != {"id": category_id, "name": category_name}:
-                raise ApprovedPublicationSnapshotError(
-                    f"{label} provider category path identity conflicts"
+                raw_path = _mapping_list(
+                    raw_category.get("path"), f"{label} category path"
                 )
-            category = {
-                "id": category_id,
-                "name": category_name,
-                "path": path,
-            }
+                if not raw_path:
+                    raise ApprovedPublicationSnapshotError(
+                        f"{label} provider category path is empty"
+                    )
+                path: list[dict[str, str]] = []
+                for node in raw_path:
+                    if set(node) != {"id", "name"}:
+                        raise ApprovedPublicationSnapshotError(
+                            f"{label} category path fields are invalid"
+                        )
+                    path.append(
+                        {
+                            "id": _text(node.get("id"), f"{label} path id"),
+                            "name": _text(node.get("name"), f"{label} path name"),
+                        }
+                    )
+                if path[-1] != {"id": category_id, "name": category_name}:
+                    raise ApprovedPublicationSnapshotError(
+                        f"{label} provider category path identity conflicts"
+                    )
+                category = {
+                    "id": category_id,
+                    "name": category_name,
+                    "path": path,
+                }
         result[label] = {
             "target_label": target_label,
             "platform": platform,
@@ -798,5 +847,6 @@ __all__ = [
     "ApprovedPublicationSnapshotError",
     "approved_publication_snapshot_from_payload",
     "build_approved_publication_snapshot",
+    "publication_category_decision_digest",
     "validate_approved_publication_snapshot",
 ]

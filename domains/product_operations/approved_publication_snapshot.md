@@ -62,12 +62,19 @@ Shopee, or Ozon. Each Skill selects only
 `categories_by_target[target_label].category` after validating the target's
 platform/store identity and decision digest.
 
-Every selected real publication target requires one `APPROVED` provider
-category with a non-empty official path whose terminal ID/name equals the
-category ID/name. Target coverage is exact: missing, extra, duplicated, or
-cross-target identities fail closed. `miaoshou:COMMON` is a control-only
-target and is represented explicitly by `category: null` and decision status
-`NOT_APPLICABLE`; a fabricated category is rejected.
+Every selected real publication target has exactly one target decision.  An
+already resolved official category uses status `APPROVED` and a non-empty
+official path whose terminal ID/name equals the category ID/name.  If provider
+candidate APIs have intentionally not been queried at approval time, the
+approval-time bridge freezes status `DEFERRED_TO_SKILL`, `category: null`, the
+exact target identity, and a deterministic decision digest.  This state is not
+permission to copy `main_category`: stages 05-07 must resolve and validate the
+official provider category for that exact target before dispatch.  Target
+coverage is exact: missing, extra, duplicated, cross-target identities, a
+category attached to a deferred decision, or a modified deferred digest fail
+closed. `miaoshou:COMMON` is a control-only target and is represented
+explicitly by `category: null` and decision status `NOT_APPLICABLE`; a
+fabricated category is rejected.
 
 The canonical digest is SHA-256 over UTF-8 JSON with sorted keys, compact
 separators, Unicode preserved, and non-finite numbers rejected. The digest is
@@ -78,9 +85,12 @@ not included in its own input.
 1. Complete the existing ProductPackage, ContentPackage, source identity, SKU
    lineage/reservation, category, pricing, and policy gates.
 2. Create the immutable ReleasePlan payload with all selected platform/store
-   targets, the approved main category, exact target category decisions, and
-   evidence digests. The product adapter freezes supplied decisions only; it
-   never invents or maps an official provider category.
+   targets and call `build_approved_publication_snapshot_inputs` from the same
+   approved dashboard facts before approval.  The bridge freezes description,
+   ordered images, per-SKU specifications/images, the approved main category,
+   six evidence digests, and exact target category decisions.  It preserves an
+   existing official decision or emits the explicit `DEFERRED_TO_SKILL` state;
+   it never maps the product main category to a provider category.
 3. Persist Kyle's existing ReleasePlan approval through the current CAS path.
 4. In the same approval unit of work, pass the approved plan returned by the
    Store to `build_approved_publication_snapshot`.

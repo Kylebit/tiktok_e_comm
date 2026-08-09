@@ -8,7 +8,11 @@ from .approved_publication_snapshot import (
     ApprovedPublicationSnapshotError,
     approved_publication_snapshot_from_payload,
     build_approved_publication_snapshot,
+    publication_category_decision_digest,
     validate_approved_publication_snapshot,
+)
+from .approved_publication_snapshot_inputs import (
+    build_approved_publication_snapshot_inputs,
 )
 from .adapters import approved_product_package_from_facts, product_record_from_legacy_row
 from .approval_lock import ProductApprovalLockPreview, preview_product_approval_lock
@@ -87,5 +91,7 @@ __all__ = [
     "resolve_sku_lineage_reservation",
     "approved_publication_snapshot_from_payload",
     "build_approved_publication_snapshot",
+    "build_approved_publication_snapshot_inputs",
+    "publication_category_decision_digest",
     "validate_approved_publication_snapshot",
 ]

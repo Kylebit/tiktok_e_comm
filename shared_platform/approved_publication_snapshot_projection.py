@@ -81,6 +81,8 @@ def _candidate_payload(
         return candidate, ["product_facts"]
 
     inputs = deepcopy(dict(approved_inputs or {}))
+    if isinstance(inputs.get("main_category"), Mapping):
+        product_facts["category"] = inputs["main_category"]
     if _text(inputs.get("description")):
         product_facts["description"] = inputs["description"]
     if isinstance(inputs.get("categories_by_target"), Mapping):

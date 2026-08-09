@@ -27,11 +27,11 @@
       <div>
         <span class="eyebrow">BATCH-LEVEL ETA</span>
         <h1>批次时间确认</h1>
-        <p>每一行对应一个完整雅仓入库批次。所有批次统一以雅仓日志中的“已入库（Reach the domestic warehouse）”时间起算；确认后，该批次内所有 SKU 同步使用同一个预计可售日。</p>
+        <p>每一行对应一个完整雅仓入库批次。有“已入库”日志时使用实际时间；尚未入库时明确标记“未入库”，计算暂按建单时间 + 4 天估算。</p>
       </div>
       <aside class="batch-policy">
         <strong>计算口径</strong>
-        <p>预计可售日 = 已入库日期 + 国家运输周期 + 2 天签收上架。建单、核验、装柜或报关日期都不能代替已入库时间。</p>
+        <p>预计可售日 = 起算日期 + 国家运输周期 + 2 天签收上架。实际已入库优先；没有实际时间时采用用户批准的建单 + 4 天回退，但绝不标成已入库。</p>
       </aside>
     </section>
 
@@ -39,7 +39,7 @@
       <article><small>运输中批次</small><strong id="batchCount">—</strong><span>按完整批次身份管理</span></article>
       <article><small>批次总件数</small><strong id="batchUnits">—</strong><span>雅仓入库计划总量</span></article>
       <article><small>已有已入库起算</small><strong id="confirmedCount">—</strong><span>日志事实或本地确认</span></article>
-      <article><small>仍待核对</small><strong id="pendingCount">—</strong><span>起算或分摊未就绪</span></article>
+      <article><small>尚未实际入库</small><strong id="pendingCount">—</strong><span>按建单 + 4 天估算</span></article>
     </section>
 
     <section class="section batch-control-section">
@@ -66,9 +66,9 @@
   </main>
 
   <footer><span>Supply Chain Operations · Batch-level ETA control</span><span>这是本地决策确认，不是物流商或仓库到货承诺。</span></footer>
-  <script src="./data.js?v=20260809-anchor4"></script>
-  <script src="./inbound-plan.js?v=20260809-anchor4"></script>
-  <script src="./inbound-timeline.js?v=20260809-anchor4"></script>
-  <script src="./inbound-batches.js?v=20260809-anchor4"></script>
+  <script src="./data.js?v=20260809-fallback5"></script>
+  <script src="./inbound-plan.js?v=20260809-fallback5"></script>
+  <script src="./inbound-timeline.js?v=20260809-fallback5"></script>
+  <script src="./inbound-batches.js?v=20260809-fallback5"></script>
 </body>
 </html>

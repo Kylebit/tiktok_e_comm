@@ -80,13 +80,13 @@ Quantity is executable only when every in-scope channel is backed by a complete 
 - `target = ceil(v × (target_days + safety_days))`
 - `recommended = max(0, target - arrival_stock)`
 
-Every inbound event must retain a complete nonempty `batch_id`, quantity, complete country + SKU identity, exact `reached_domestic_warehouse_at`, estimated sellable date, estimate policy, source capture time, and manual-confirmation lineage when present. The Seaya log event `已入库（Reach the domestic warehouse）` is the only eligible clock. Creation, marked-shipped, verification, loading, customs, sign, and shelving times are ineligible substitutes. One SKU may have multiple events when it belongs to multiple batches.
+Every inbound event must retain a complete nonempty `batch_id`, quantity, complete country + SKU identity, nullable exact `reached_domestic_warehouse_at`, `inbound_status`, effective anchor, estimated sellable date, estimate policy, source capture time, and manual-confirmation lineage when present. The Seaya log event `已入库（Reach the domestic warehouse）` has priority. If absent, set `inbound_status=NOT_YET_INBOUND` and derive `estimated_anchor_at = created_at + 4 days` under the user-approved fallback; never serialize that estimate as actual inbound. One SKU may have multiple events when it belongs to multiple batches.
 
 For each country + SKU, `sum(batch_sku_quantity)` must equal the Seaya aggregate `inbound`. Batch identity and quantity must be exact built-in values; null, boolean, string, negative, masked, or clipped values are ineligible. If a multi-batch allocation is incomplete or does not reconcile, show the unmatched aggregate but count zero of it in projected supply. Never assign a multi-batch aggregate to one latest date. A sole active batch may consume the aggregate only with explicit `SINGLE_ACTIVE_BATCH` lineage.
 
 A manual override is keyed by country + complete `batch_id`, not SKU. It changes only the local decision projection, applies consistently to every SKU in the batch, and never changes the supplier record or another batch.
 
-Current estimated-sellable policy is `reached_domestic_warehouse_date + approved country transit days + 2-day sign-and-shelve buffer`. Missing exact inbound time is `BLOCKED_ANCHOR`; do not generate an event or fall back to any other log date. Missing multi-batch SKU allocation is a separate reconciliation blocker, not permission to invent one aggregate arrival date.
+Current estimated-sellable policy is `effective_anchor_date + approved country transit days + 2-day sign-and-shelve buffer`, where `effective_anchor = reached_domestic_warehouse_at ?? created_at + 4 days`. A fallback batch remains visibly not yet inbound. Missing multi-batch SKU allocation is a separate reconciliation blocker, not permission to invent one aggregate arrival date.
 
 Quantity is valid without dimensions, weight, or unit cost. Those fields affect separate outputs:
 

@@ -11,11 +11,13 @@ window.SUPPLY_CHAIN_INBOUND_PLAN = {
         createdAt: "2026-08-07T16:54:05+08:00",
         anchorDate: null,
         anchorAt: null,
-        anchorType: "REACHED_DOMESTIC_WAREHOUSE_REQUIRED",
+        estimatedAnchorAt: "2026-08-11T16:54:05+08:00",
+        anchorType: "CREATED_PLUS_4_DAYS_ESTIMATE",
+        inboundStatus: "NOT_YET_INBOUND",
         transportDays: 25,
         shelvingDays: 2,
-        estimatedSellableDate: null,
-        confidence: "BLOCKED_ANCHOR"
+        estimatedSellableDate: "2026-09-07",
+        confidence: "USER_APPROVED_ESTIMATED_ANCHOR"
       }]
     },
     TH: {
@@ -27,7 +29,9 @@ window.SUPPLY_CHAIN_INBOUND_PLAN = {
         createdAt: "2026-07-29T09:20:43+08:00",
         anchorDate: "2026-08-04",
         anchorAt: "2026-08-04T15:39:15+08:00",
+        estimatedAnchorAt: null,
         anchorType: "REACHED_DOMESTIC_WAREHOUSE",
+        inboundStatus: "INBOUND_CONFIRMED",
         transportDays: 15,
         shelvingDays: 2,
         estimatedSellableDate: "2026-08-21",
@@ -40,11 +44,13 @@ window.SUPPLY_CHAIN_INBOUND_PLAN = {
         createdAt: "2026-08-07T16:41:32+08:00",
         anchorDate: null,
         anchorAt: null,
-        anchorType: "REACHED_DOMESTIC_WAREHOUSE_REQUIRED",
+        estimatedAnchorAt: "2026-08-11T16:41:32+08:00",
+        anchorType: "CREATED_PLUS_4_DAYS_ESTIMATE",
+        inboundStatus: "NOT_YET_INBOUND",
         transportDays: 15,
         shelvingDays: 2,
-        estimatedSellableDate: null,
-        confidence: "BLOCKED_ANCHOR",
+        estimatedSellableDate: "2026-08-28",
+        confidence: "USER_APPROVED_ESTIMATED_ANCHOR",
         skuQuantities: {"0021": null}
       }]
     },
@@ -57,11 +63,13 @@ window.SUPPLY_CHAIN_INBOUND_PLAN = {
         createdAt: "2026-08-07T13:30:11+08:00",
         anchorDate: null,
         anchorAt: null,
-        anchorType: "REACHED_DOMESTIC_WAREHOUSE_REQUIRED",
+        estimatedAnchorAt: "2026-08-11T13:30:11+08:00",
+        anchorType: "CREATED_PLUS_4_DAYS_ESTIMATE",
+        inboundStatus: "NOT_YET_INBOUND",
         transportDays: 15,
         shelvingDays: 2,
-        estimatedSellableDate: null,
-        confidence: "BLOCKED_ANCHOR"
+        estimatedSellableDate: "2026-08-28",
+        confidence: "USER_APPROVED_ESTIMATED_ANCHOR"
       }]
     },
     PH: {
@@ -73,11 +81,13 @@ window.SUPPLY_CHAIN_INBOUND_PLAN = {
         createdAt: "2026-08-07T16:27:07+08:00",
         anchorDate: null,
         anchorAt: null,
-        anchorType: "REACHED_DOMESTIC_WAREHOUSE_REQUIRED",
+        estimatedAnchorAt: "2026-08-11T16:27:07+08:00",
+        anchorType: "CREATED_PLUS_4_DAYS_ESTIMATE",
+        inboundStatus: "NOT_YET_INBOUND",
         transportDays: 25,
         shelvingDays: 2,
-        estimatedSellableDate: null,
-        confidence: "BLOCKED_ANCHOR"
+        estimatedSellableDate: "2026-09-07",
+        confidence: "USER_APPROVED_ESTIMATED_ANCHOR"
       }]
     }
   }

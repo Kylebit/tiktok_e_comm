@@ -412,7 +412,10 @@ def test_inbound_eta_is_estimated_time_phased_and_locally_editable():
     assert 'anchorAt: "2026-08-04T15:39:15+08:00"' in plan
     assert 'estimatedSellableDate: "2026-08-21"' in plan
     assert 'anchorType: "REACHED_DOMESTIC_WAREHOUSE"' in plan
-    assert 'anchorType: "REACHED_DOMESTIC_WAREHOUSE_REQUIRED"' in plan
+    assert 'anchorType: "CREATED_PLUS_4_DAYS_ESTIMATE"' in plan
+    assert 'inboundStatus: "NOT_YET_INBOUND"' in plan
+    assert 'estimatedAnchorAt: "2026-08-11T16:41:32+08:00"' in plan
+    assert 'estimatedSellableDate: "2026-08-28"' in plan
     assert 'anchorType: "MARKED_SHIPPED"' not in plan
     assert 'anchorType: "CREATED_FALLBACK"' not in plan
     assert 'batchId: "THML4038-58701"' in plan
@@ -433,4 +436,6 @@ def test_inbound_eta_is_estimated_time_phased_and_locally_editable():
     assert 'name="anchorAt"' in batch_app
     assert 'type="datetime-local"' in batch_app
     assert "batch.transportDays + batch.shelvingDays" in batch_app
-    assert "已入库（Reach the domestic warehouse）" in batch_html
+    assert "有“已入库”日志时使用实际时间" in batch_html
+    assert "尚未入库时明确标记“未入库”" in batch_html
+    assert "未入库 · 建单时间 + 4 天估算" in batch_app

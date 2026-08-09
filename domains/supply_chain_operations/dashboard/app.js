@@ -60,13 +60,16 @@ function inboundBatchEvents(region, item) {
 
   const datedBatches = candidates.map(batch => {
     const override = inboundEtaOverrides[inboundEtaId(region, batch.batchId)];
-    const anchorAt = override?.anchorAt || batch.anchorAt;
+    const actualAnchorAt = override?.anchorAt || batch.anchorAt;
+    const anchorAt = actualAnchorAt || batch.estimatedAnchorAt;
     const anchorDate = anchorAt ? anchorAt.slice(0, 10) : null;
     const estimatedSellableDate = override?.estimatedSellableDate
       || (anchorDate ? TIMELINE.addDays(anchorDate, batch.transportDays + batch.shelvingDays) : null);
     return {
       ...batch,
       anchorAt,
+      actualAnchorAt,
+      inboundStatus: actualAnchorAt ? "INBOUND_CONFIRMED" : "NOT_YET_INBOUND",
       anchorDate,
       estimatedSellableDate,
       etaOverride: override || null
@@ -351,12 +354,14 @@ function rowHtml(item, config, region = activeRegion) {
   ].filter(Boolean).join("、");
   const inboundBatchLines = item.inboundBatches.map(batch => {
     const quantity = Number.isInteger(batch.quantity) ? `${batch.quantity}件` : "数量待核对";
-    const source = batch.etaOverride ? "手工日期" : "系统估算";
+    const source = batch.actualAnchorAt
+      ? (batch.etaOverride ? "人工确认实际入库" : "雅仓实际已入库")
+      : "未入库 · 建单+4天估算";
     const timing = batch.estimatedSellableDate || "已入库时间待确认";
     return `<span class="inbound-batch-line"><b>${escapeHtml(batch.batchId)}</b> · ${quantity} · ${escapeHtml(timing)} · ${source}</span>`;
   }).join("");
   const inboundTiming = item.inventory.inbound > 0
-    ? `${inboundBatchLines || "<span>尚未绑定到完整批次明细</span>"}<span>新货到仓前计入<b>${item.countedInbound}</b></span>${item.inboundReconciled ? "" : `<span class="pending-data">批次分摊或已入库起算未就绪：${item.unmatchedInbound}件暂不计入供应</span>`}<a class="inbound-eta-button" href="./inbound-batches.html#region=${escapeHtml(region)}">前往批次时间确认页</a>`
+    ? `${inboundBatchLines || "<span>尚未绑定到完整批次明细</span>"}<span>新货到仓前计入<b>${item.countedInbound}</b></span>${item.inboundReconciled ? "" : `<span class="pending-data">批次 SKU 分摊未对平：${item.unmatchedInbound}件暂不计入供应</span>`}<a class="inbound-eta-button" href="./inbound-batches.html#region=${escapeHtml(region)}">前往批次时间确认页</a>`
     : "";
   return `<tr>
     <td><div class="product-cell"><img src="./${escapeHtml(item.image)}" alt="SKU ${escapeHtml(item.sku)} 主图"><div>${activeRegion === "SUMMARY" ? `<small class="region-badge">${escapeHtml(region)} · ${escapeHtml(config.name)}</small>` : ""}<strong>${escapeHtml(item.sku)}</strong><span>${escapeHtml(item.name)}</span><small>${physicalLabel}</small></div></div></td>

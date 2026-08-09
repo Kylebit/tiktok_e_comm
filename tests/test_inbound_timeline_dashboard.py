@@ -96,9 +96,11 @@ def test_dashboard_uses_batch_level_overrides_and_never_sku_level_eta():
     assert "inboundEtaDialog" not in app
     assert "overrideId(region, batchId)" in batch_app
     assert "data-action=\"save\"" in batch_app
-    assert "REACHED_DOMESTIC_WAREHOUSE_REQUIRED" in plan
+    assert "CREATED_PLUS_4_DAYS_ESTIMATE" in plan
+    assert "NOT_YET_INBOUND" in plan
     assert "timingsValid" in app
     assert 'batchId: "THML4038-58701"' in plan
     assert 'batchId: "THSL4038-59557"' in plan
     assert 'skuQuantities: {"0021": null}' in plan
-    assert "批次分摊或已入库起算未就绪" in app
+    assert "批次 SKU 分摊未对平" in app
+    assert "未入库 · 建单+4天估算" in app

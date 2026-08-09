@@ -78,7 +78,7 @@
         <p class="formula-note">v = TikTok 趋势日均 + Shopee 趋势日均。具备逐日事实时，单渠道采用最近7天60% + 第8–15天30% + 第16–30天10%；短期爆量且海外仓尚无时，首批只覆盖15天。缺逐日分段时明确降级，不伪造趋势。</p>
       </div>
       <div class="rules">
-        <article><b>库存</b><p>雅仓可用库存立即参与消耗；在途按“批次 + SKU 数量 + 预计可售日”逐条加入。所有批次只允许用雅仓“已入库”时间起算；没有该日志时间时不生成供应事件。</p></article>
+        <article><b>库存</b><p>雅仓可用库存立即参与消耗；在途按“批次 + SKU 数量 + 预计可售日”逐条加入。实际已入库时间优先；尚未入库的批次明确标记，并按用户批准的“建单 + 4 天”估算起算。</p></article>
         <article><b>头程</b><p id="freightRule">—</p></article>
         <article><b>收益</b><p id="economicsRule">—</p></article>
       </div>
@@ -121,9 +121,9 @@
   </dialog>
 
   <footer><span>Supply Chain Operations · Read-only decision artifact</span><span>这是决策建议，不是采购或发货指令；正式发货前复核采购可得量与当期头程报价。</span></footer>
-  <script src="./data.js?v=20260809-anchor4"></script>
-  <script src="./inbound-plan.js?v=20260809-anchor4"></script>
-  <script src="./inbound-timeline.js?v=20260809-anchor4"></script>
-  <script src="./app.js?v=20260809-anchor4"></script>
+  <script src="./data.js?v=20260809-fallback5"></script>
+  <script src="./inbound-plan.js?v=20260809-fallback5"></script>
+  <script src="./inbound-timeline.js?v=20260809-fallback5"></script>
+  <script src="./app.js?v=20260809-fallback5"></script>
 </body>
 </html>

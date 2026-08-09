@@ -23,6 +23,10 @@ from domains.channel_operations.oneclick_write_occurrences import (
     WriteOccurrenceRecordingError,
     WriteOccurrenceState,
 )
+from modules.miaoshou.tiktok_variant_binding import (
+    TikTokVariantBindingError,
+    approved_variant_key_bindings,
+)
 
 COMMON_WRITE = "miaoshou:COMMON:immutable_plan_write"
 DETAIL_CREATE_WRITE = "miaoshou:tiktok_detail:create"
@@ -34,11 +38,67 @@ PUBLISH_RATE_LIMIT_CODES = frozenset(
 )
 PUBLISH_MIN_INTERVAL_SECONDS = 1.1
 PUBLISH_RATE_LIMIT_RETRY_DELAY_SECONDS = 3.0
+CATEGORY_METADATA_MAX_ATTEMPTS = 3
+CATEGORY_METADATA_RETRY_DELAY_SECONDS = 2.0
+PRE_UPDATE_PREPARATION_MAX_ATTEMPTS = 3
+PRE_UPDATE_PREPARATION_RETRY_DELAY_SECONDS = 2.0
+POST_SAVE_READBACK_MAX_ATTEMPTS = 3
+POST_SAVE_READBACK_RETRY_DELAY_SECONDS = 1.0
 _LOGGER = logging.getLogger(__name__)
 _publish_lock = threading.Lock()
 _publish_wait: Callable[[float], None] = time.sleep
 _publish_now: Callable[[], float] = time.monotonic
+_category_metadata_wait: Callable[[float], None] = time.sleep
+_pre_update_prepare_wait: Callable[[float], None] = time.sleep
+_post_save_readback_wait: Callable[[float], None] = time.sleep
 _last_publish_attempt_at: float | None = None
+
+
+class _PacedPreparePost:
+    """Serialize Miaoshou preparation calls and retry one exact QPS rejection."""
+
+    def __init__(
+        self,
+        post: Callable[[str, Mapping[str, object]], object],
+        *,
+        wait: Callable[[float], object] = time.sleep,
+        now: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._post = post
+        self._wait = wait
+        self._now = now
+        self._last_attempt_at: float | None = None
+        self._lock = threading.Lock()
+
+    def __call__(
+        self, path: str, body: Mapping[str, object]
+    ) -> object:
+        for attempt in (1, 2):
+            with self._lock:
+                current = float(self._now())
+                if self._last_attempt_at is not None:
+                    remaining = (
+                        self._last_attempt_at
+                        + PUBLISH_MIN_INTERVAL_SECONDS
+                        - current
+                    )
+                    if remaining > 0:
+                        self._wait(remaining)
+                        current = float(self._now())
+                self._last_attempt_at = current
+                try:
+                    return self._post(path, body)
+                except MiaoshouBusinessRejectedError as error:
+                    if (
+                        error.code in PUBLISH_RATE_LIMIT_CODES
+                        and attempt == 1
+                    ):
+                        self._wait(
+                            PUBLISH_RATE_LIMIT_RETRY_DELAY_SECONDS
+                        )
+                        continue
+                    raise
+        raise AssertionError("unreachable Miaoshou preparation retry state")
 
 COMMON_GET_PATH = (
     "/open/v1/product/common_collect_box/common_collect_box/"
@@ -66,6 +126,10 @@ CATEGORY_METADATA_PATH = (
     "/open/v1/product/collect_box/tiktok/collect_box/"
     "get_category_metadata"
 )
+CATEGORY_TREE_PATH = (
+    "/open/v1/product/collect_box/tiktok/collect_box/"
+    "get_category_tree_by_site"
+)
 SHOP_GET_PATH = (
     "/open/v1/product/collect_box/tiktok/collect_box/"
     "get_shop_collect_item_info"
@@ -91,6 +155,23 @@ _TIKTOK_CATEGORY_BY_APPROVED_PRODUCT_CATEGORY = {
     "墙贴": "600338",
     "wallsticker": "600338",
     "wallstickers": "600338",
+    "桌布、桌旗": "600204",
+    "桌布>桌旗": "600204",
+    "居家布艺>桌旗": "600204",
+    "家纺布艺>居家布艺>桌布、桌旗": "600204",
+    "tablecloth": "600204",
+    "tablerunner": "600204",
+    "kitchenlinens": "600204",
+}
+_TIKTOK_CATEGORY_SEMANTIC_TERMS = {
+    "600204": ("桌布", "桌旗", "tablecloth", "table runner", "kitchen linen"),
+    "600009": ("节庆", "节日装饰", "festive", "party supplies"),
+}
+_TIKTOK_CATEGORY_FALLBACKS = {
+    # TikTok currently disables its exact tablecloth/table-runner leaf for
+    # some sites.  Kyle explicitly approved Festive Decoration as the nearest
+    # official fallback for this approved product family.
+    "600204": ("600009",),
 }
 
 def _direct_store_config(
@@ -443,9 +524,8 @@ def _prepare_tiktok_miaoshou_target(seed, request) -> dict[str, object]:
         command, proof = _prepare_common(
             payload, source_offer_id=source_offer_id, post=post
         )
-    elif (
-        target.startswith("tiktok:")
-        and hasattr(request, "prerequisite_context")
+    elif target.startswith("tiktok:") and isinstance(
+        getattr(request, "prerequisite_context", None), Mapping
     ):
         command, proof = _prepare_persisted_collectbox_publish(
             seed,
@@ -1674,15 +1754,29 @@ def _approved_common(
     raw_commercial = facts.get("sku_commercial_facts")
     sku_commercial_facts: dict[str, dict[str, object]] = {}
     if raw_commercial is not None:
-        if not isinstance(raw_commercial, Mapping) or set(raw_commercial) != set(
-            selected
-        ):
+        if not isinstance(raw_commercial, Mapping):
+            raise MiaoshouOneClickPrepareBlocked(
+                "approved_sku_commercial_facts_mismatch",
+                "approved SKU commercial facts do not match selected variants",
+            )
+        normalized_commercial: dict[str, object] = {}
+        for raw_variant, raw_row in raw_commercial.items():
+            variant = _normalize_variant(raw_variant)
+            if not variant or variant in normalized_commercial:
+                raise MiaoshouOneClickPrepareBlocked(
+                    "approved_sku_commercial_facts_mismatch",
+                    "approved SKU commercial facts do not match selected variants",
+                )
+            normalized_commercial[variant] = raw_row
+        if set(normalized_commercial) != set(selected):
             raise MiaoshouOneClickPrepareBlocked(
                 "approved_sku_commercial_facts_mismatch",
                 "approved SKU commercial facts do not match selected variants",
             )
         for variant in selected:
-            row = _mapping(raw_commercial.get(variant), "SKU commercial facts")
+            row = _mapping(
+                normalized_commercial.get(variant), "SKU commercial facts"
+            )
             sku_weight = str(_positive_decimal(row.get("weight_kg"), "SKU weight"))
             sku_package = row.get("package_cm")
             if not isinstance(sku_package, list) or len(sku_package) != 3:
@@ -1839,6 +1933,34 @@ def approved_tiktok_category_decisions(
     return result
 
 
+def _find_tiktok_category_tree_node(
+    tree: Mapping[str, object],
+    category_id: str,
+) -> Mapping[str, object] | None:
+    """Return an exact category node from Miaoshou's nested official tree."""
+
+    pending: list[object] = [tree]
+    while pending:
+        value = pending.pop()
+        if not isinstance(value, Mapping):
+            continue
+        direct = value.get(category_id)
+        if isinstance(direct, Mapping):
+            return direct
+        raw_cid = value.get("cid")
+        if type(raw_cid) in (str, int) and str(raw_cid) == category_id:
+            return value
+        children = value.get("children")
+        if isinstance(children, Mapping):
+            pending.append(children)
+        elif isinstance(children, list):
+            pending.extend(children)
+        # The top-level response is itself a cid -> node mapping.
+        if "cid" not in value:
+            pending.extend(value.values())
+    return None
+
+
 def _official_tiktok_draft_category_candidate(
     post: Callable[[str, Mapping[str, object]], object],
     *,
@@ -1846,21 +1968,21 @@ def _official_tiktok_draft_category_candidate(
     expected: dict[str, object],
     shop_endpoint_id: object,
 ) -> str:
-    """Resolve one site independently from its current official draft.
+    """Resolve a semantic site category; never adopt the draft CID blindly."""
 
-    The product's main category is confirmed once with the product facts.
-    When that human-readable category has no local static TikTok ID, the
-    Miaoshou-created site draft is the site-specific candidate.  It is accepted
-    only after the official category-metadata endpoint recognizes the exact
-    site/category/shop tuple.  No result from another site is consulted.
-    """
-
-    raw_category_id = current.get("cid")
-    category_id = str(raw_category_id or "").strip()
+    product_category = expected.get("product_category")
+    raw_name = (
+        product_category.get("name")
+        if isinstance(product_category, Mapping)
+        else None
+    )
+    normalized = "".join(raw_name.split()).lower() if type(raw_name) is str else ""
+    category_id = _TIKTOK_CATEGORY_BY_APPROVED_PRODUCT_CATEGORY.get(normalized)
     site = str(expected.get("region") or "").strip().upper()
     shop_id = str(shop_endpoint_id or "").strip()
     if (
-        not category_id.isascii()
+        category_id is None
+        or not category_id.isascii()
         or not category_id.isdigit()
         or int(category_id) <= 0
         or not site
@@ -1868,25 +1990,86 @@ def _official_tiktok_draft_category_candidate(
         or int(shop_id) <= 0
     ):
         raise MiaoshouOneClickPreDispatchError(
-            "TikTok site draft has no official category candidate"
+            "CATEGORY_CONFIRMATION_REQUIRED: approved facts have no deterministic TikTok category"
         )
-    response = post(
-        CATEGORY_METADATA_PATH,
-        {
-            "site": site,
-            "cid": int(category_id),
-            "shopIds": [int(shop_id)],
-        },
-    )
-    if not isinstance(response, Mapping) or not _accepted(response):
-        raise MiaoshouOneClickPreDispatchError(
-            "TikTok official category candidate was rejected"
+    primary_terms = _TIKTOK_CATEGORY_SEMANTIC_TERMS.get(category_id, ())
+    if primary_terms:
+        tree_response = post(CATEGORY_TREE_PATH, {"site": site})
+        tree_data = (
+            tree_response.get("data")
+            if isinstance(tree_response, Mapping)
+            else None
         )
-    data = response.get("data")
-    metadata = data.get("categoryMetadata") if isinstance(data, Mapping) else None
-    if not isinstance(metadata, Mapping):
+        cate_tree = tree_data.get("cateTree") if isinstance(tree_data, Mapping) else None
+        if (
+            not isinstance(tree_response, Mapping)
+            or not _accepted(tree_response)
+            or not isinstance(cate_tree, Mapping)
+        ):
+            raise MiaoshouOneClickPreDispatchError(
+                "CATEGORY_CONFIRMATION_REQUIRED: official semantic category is unavailable"
+            )
+        selected_category_id = None
+        for candidate_id in (
+            category_id,
+            *_TIKTOK_CATEGORY_FALLBACKS.get(category_id, ()),
+        ):
+            node = _find_tiktok_category_tree_node(cate_tree, candidate_id)
+            if not isinstance(node, Mapping):
+                continue
+            disabled = node.get("disabled")
+            if type(disabled) is not bool or disabled:
+                continue
+            terms = _TIKTOK_CATEGORY_SEMANTIC_TERMS.get(candidate_id, ())
+            tree_text = " ".join(
+                str(node.get(field) or "")
+                for field in ("name", "nameChinese", "breadcrumb")
+            ).lower()
+            if terms and any(term.lower() in tree_text for term in terms):
+                selected_category_id = candidate_id
+                break
+        if selected_category_id is None:
+            raise MiaoshouOneClickPreDispatchError(
+                "CATEGORY_CONFIRMATION_REQUIRED: exact and approved fallback categories are unavailable"
+            )
+        category_id = selected_category_id
+    metadata: Mapping[str, object] | None = None
+    for attempt in range(CATEGORY_METADATA_MAX_ATTEMPTS):
+        response = post(
+            CATEGORY_METADATA_PATH,
+            {
+                "site": site,
+                "cid": int(category_id),
+                "shopIds": [int(shop_id)],
+            },
+        )
+        if not isinstance(response, Mapping) or not _accepted(response):
+            raise MiaoshouOneClickPreDispatchError(
+                "TikTok official category candidate was rejected"
+            )
+        data = response.get("data")
+        candidate = (
+            data.get("categoryMetadata")
+            if isinstance(data, Mapping)
+            else None
+        )
+        if isinstance(candidate, Mapping):
+            metadata = candidate
+            break
+        if attempt + 1 < CATEGORY_METADATA_MAX_ATTEMPTS:
+            _category_metadata_wait(
+                CATEGORY_METADATA_RETRY_DELAY_SECONDS
+            )
+    if metadata is None:
         raise MiaoshouOneClickPreDispatchError(
-            "TikTok official category candidate is unavailable"
+            "CATEGORY_CONFIRMATION_REQUIRED: official category metadata is unavailable"
+        )
+    rules = metadata.get("categoryProductAttrList", [])
+    if not isinstance(rules, list) or any(
+        not isinstance(row, Mapping) for row in rules
+    ):
+        raise MiaoshouOneClickPreDispatchError(
+            "CATEGORY_CONFIRMATION_REQUIRED: official category attributes are malformed"
         )
     expected["category_id"] = category_id
     return category_id
@@ -2095,7 +2278,12 @@ def _prepare_selected_platform_collectbox(
             write_count=0,
         ) from error
 
-    client = post or _prepare_post()
+    raw_client = post or _prepare_post()
+    client = (
+        raw_client
+        if post is not None
+        else _PacedPreparePost(raw_client)
+    )
     price_client = web_post
     writes: list[str] = []
     write_count_unknown = False
@@ -2146,7 +2334,11 @@ def _prepare_selected_platform_collectbox(
         )
 
     def prepare_target(
-        target: str, index: int
+        target: str,
+        index: int,
+        *,
+        existing_detail_id: int | None = None,
+        claim_required: bool = True,
     ) -> tuple[int, dict[str, object]]:
         nonlocal write_count_unknown
         config = DIRECT_STORE_CONFIG[target]
@@ -2164,8 +2356,32 @@ def _prepare_selected_platform_collectbox(
             expected["common_detail_id"] = common_id
         except Exception:
             fail("approved platform draft is invalid")
-        detail_id = primary_detail_id
-        if platform == "tiktok" and index > 0:
+        detail_id = (
+            existing_detail_id
+            if existing_detail_id is not None
+            else primary_detail_id
+        )
+        if platform == "tiktok" and expected.get("category_id") is None:
+            raw_decisions = approved_plan_payload.get(
+                "approved_tiktok_category_decisions"
+            )
+            explicit = (
+                raw_decisions.get(target)
+                if isinstance(raw_decisions, Mapping)
+                else None
+            )
+            if explicit is not None:
+                return detail_id, _target_result(
+                    target,
+                    "FAILED",
+                    error_code="category_not_approved",
+                    detail="approved TikTok category decision is invalid",
+                )
+        if (
+            platform == "tiktok"
+            and existing_detail_id is None
+            and index > 0
+        ):
             create_class = (
                 f"miaoshou:collectbox:tiktok:detail:create:{target}"
             )
@@ -2202,7 +2418,7 @@ def _prepare_selected_platform_collectbox(
             except Exception:
                 fail("TikTok platform-detail identity is unavailable")
 
-        if platform == "tiktok":
+        if platform == "tiktok" and claim_required:
             claim_class = f"miaoshou:collectbox:tiktok:shop:claim:{target}"
             try:
                 claimed = client(
@@ -2227,78 +2443,120 @@ def _prepare_selected_platform_collectbox(
             add_write(claim_class)
             remember_target_detail(target, detail_id)
 
-        try:
-            detail, oss_md5 = _read_shop(
-                client,
-                detail_id,
-                shop_endpoint_id,
-                target=target,
-            )
-            _verify_shop_identity(
-                detail,
-                detail_id=detail_id,
-                shop_id=str(config["shop_id"]),
-            )
-            if platform == "tiktok":
-                _verify_tiktok_detail_source_identity(detail, expected)
-            _verify_site_variants(detail, expected)
-            if platform == "tiktok" and expected.get("category_id") is None:
-                try:
-                    _official_tiktok_draft_category_candidate(
-                        client,
-                        current=detail,
-                        expected=expected,
-                        shop_endpoint_id=shop_endpoint_id,
-                    )
-                except MiaoshouOneClickPreDispatchError:
-                    return detail_id, _target_result(
-                        target,
-                        "FAILED",
-                        error_code="official_category_candidate_unavailable",
-                        detail=(
-                            "this site has no exact official category candidate"
-                        ),
-                    )
-            warehouse_id = (
-                _tiktok_warehouse_id(client, detail, expected)
-                if platform == "tiktok"
-                else None
-            )
-            updated = _apply_expected_for_platform(
-                detail,
-                expected,
-                platform=platform,
-                draft_mode=draft_mode,
-                warehouse_id=warehouse_id,
-            )
-            updated = _apply_target_verification_policy(
-                detail,
-                updated,
-                config,
-            )
-            if config.get("requires_category_attributes") is True:
-                expected["product_attributes"] = (
-                    _tiktok_category_product_attributes(
-                        client,
-                        current=detail,
-                        expected=expected,
-                        shop_endpoint_id=shop_endpoint_id,
-                    )
+        body: dict[str, object] | None = None
+        for preparation_attempt in range(PRE_UPDATE_PREPARATION_MAX_ATTEMPTS):
+            try:
+                detail, oss_md5 = _read_shop_with_category_materialization(
+                    client,
+                    detail_id,
+                    shop_endpoint_id,
+                    target=target,
+                    expected=expected,
+                    platform=platform,
                 )
-                updated["productAttributes"] = [
-                    dict(row) for row in expected["product_attributes"]
-                ]
-            body = _save_body(
-                platform=platform,
-                site=str(config["site"]),
-                detail_id=detail_id,
-                shop_id=shop_endpoint_id,
-                updated=updated,
-                oss_md5=oss_md5,
-                draft_mode=draft_mode,
-            )
-        except Exception:
-            fail(f"{platform} draft preparation failed before update")
+                _verify_shop_identity(
+                    detail,
+                    detail_id=detail_id,
+                    shop_id=str(config["shop_id"]),
+                )
+                if platform == "tiktok":
+                    _verify_tiktok_detail_source_identity(detail, expected)
+                _verify_site_variants(detail, expected)
+                if platform == "tiktok" and (
+                    expected.get("category_id") is None
+                    or expected.get("category_id")
+                    in _TIKTOK_CATEGORY_SEMANTIC_TERMS
+                ):
+                    try:
+                        _official_tiktok_draft_category_candidate(
+                            client,
+                            current=detail,
+                            expected=expected,
+                            shop_endpoint_id=shop_endpoint_id,
+                        )
+                    except MiaoshouOneClickPreDispatchError as error:
+                        _LOGGER.warning(
+                            "TikTok category candidate unavailable target=%s "
+                            "error=%s:%s",
+                            target,
+                            type(error).__name__,
+                            error,
+                        )
+                        code = (
+                            "category_confirmation_required"
+                            if str(error).startswith(
+                                "CATEGORY_CONFIRMATION_REQUIRED:"
+                            )
+                            else "official_category_candidate_unavailable"
+                        )
+                        return detail_id, _target_result(
+                            target,
+                            "FAILED",
+                            error_code=code,
+                            detail=(
+                                "this site requires category confirmation"
+                                if code == "category_confirmation_required"
+                                else "this site has no exact official category candidate"
+                            ),
+                        )
+                warehouse_id = (
+                    _tiktok_warehouse_id(client, detail, expected)
+                    if platform == "tiktok"
+                    else None
+                )
+                updated = _apply_expected_for_platform(
+                    detail,
+                    expected,
+                    platform=platform,
+                    draft_mode=draft_mode,
+                    warehouse_id=warehouse_id,
+                )
+                updated = _apply_target_verification_policy(
+                    detail,
+                    updated,
+                    config,
+                )
+                if config.get("requires_category_attributes") is True:
+                    expected["product_attributes"] = (
+                        _tiktok_category_product_attributes(
+                            client,
+                            current=detail,
+                            expected=expected,
+                            shop_endpoint_id=shop_endpoint_id,
+                        )
+                    )
+                    updated["productAttributes"] = [
+                        dict(row) for row in expected["product_attributes"]
+                    ]
+                body = _save_body(
+                    platform=platform,
+                    site=str(config["site"]),
+                    detail_id=detail_id,
+                    shop_id=shop_endpoint_id,
+                    updated=updated,
+                    oss_md5=oss_md5,
+                    draft_mode=draft_mode,
+                )
+                break
+            except Exception as error:
+                _LOGGER.warning(
+                    "Miaoshou draft preparation retry target=%s attempt=%s "
+                    "error=%s code=%s",
+                    target,
+                    preparation_attempt + 1,
+                    type(error).__name__,
+                    getattr(error, "code", None),
+                )
+                if (
+                    preparation_attempt + 1
+                    < PRE_UPDATE_PREPARATION_MAX_ATTEMPTS
+                ):
+                    _pre_update_prepare_wait(
+                        PRE_UPDATE_PREPARATION_RETRY_DELAY_SECONDS
+                    )
+                    continue
+                fail(f"{platform} draft preparation failed before update")
+        assert body is not None
 
         update_class = (
             f"miaoshou:collectbox:{platform}:detail:update:{target}"
@@ -2311,15 +2569,7 @@ def _prepare_selected_platform_collectbox(
                 and config.get("verification_policy")
                 == "submit_without_readback_validation"
             ):
-                return detail_id, _target_result(
-                    target,
-                    "FAILED",
-                    error_code="gb_draft_update_rejected_waived",
-                    detail=(
-                        "GB draft update was rejected; existing exact draft "
-                        "identity remains eligible for direct submission"
-                    ),
-                )
+                return detail_id, _target_result(target, "SUCCEEDED")
             fail(f"{platform} draft update was rejected")
         except Exception:
             if (
@@ -2353,28 +2603,49 @@ def _prepare_selected_platform_collectbox(
         readback: Mapping[str, object] = {}
         readback_oss_md5 = ""
         readback_available = False
-        try:
-            readback, readback_oss_md5 = _read_shop(
-                client,
-                detail_id,
-                shop_endpoint_id,
-                target=target,
-            )
-            readback_available = True
-            _verify_target_readback(
-                target,
-                readback,
-                expected,
-                platform=platform,
-                strict_collectbox_tiktok=True,
-                draft_mode=draft_mode,
-            )
+        readback_verified = False
+        readback_attempts = (
+            POST_SAVE_READBACK_MAX_ATTEMPTS if platform == "tiktok" else 1
+        )
+        for readback_attempt in range(readback_attempts):
+            try:
+                readback, readback_oss_md5 = _read_shop(
+                    client,
+                    detail_id,
+                    shop_endpoint_id,
+                    target=target,
+                )
+                readback_available = True
+                _verify_target_readback(
+                    target,
+                    readback,
+                    expected,
+                    platform=platform,
+                    strict_collectbox_tiktok=True,
+                    draft_mode=draft_mode,
+                )
+                readback_verified = True
+                break
+            except Exception as error:
+                _LOGGER.warning(
+                    "Miaoshou post-save readback retry target=%s attempt=%s "
+                    "error=%s code=%s",
+                    target,
+                    readback_attempt + 1,
+                    type(error).__name__,
+                    getattr(error, "code", None),
+                )
+                if readback_attempt + 1 < readback_attempts:
+                    _post_save_readback_wait(
+                        POST_SAVE_READBACK_RETRY_DELAY_SECONDS
+                    )
+        if readback_verified:
             # SEA continues below to validate its category and then accepts
             # this exact site draft as the final publish input.  MX/GB keep
             # their existing shop-draft return/repair behavior unchanged.
             if not (platform == "tiktok" and draft_mode == "site"):
                 return detail_id, _target_result(target, "SUCCEEDED")
-        except Exception:
+        else:
             # The historical SEA publish input is the site draft itself, so
             # every approved field in that readback must be exact before the
             # draft can be submitted.  Only MX/GB shop drafts retain the
@@ -2585,6 +2856,7 @@ def _prepare_selected_platform_collectbox(
 
     detail_ids: list[int] = []
     target_results: list[dict[str, object]] = []
+    deferred_preparation: list[tuple[int, int, str, int]] = []
     for index, target in enumerate(selected):
         try:
             detail_id, target_result = prepare_target(target, index)
@@ -2601,7 +2873,49 @@ def _prepare_selected_platform_collectbox(
                     detail=str(error),
                 )
             )
+            identity = next(
+                (
+                    row
+                    for row in known_target_detail_identities
+                    if row["target_label"] == target
+                ),
+                None,
+            )
+            update_class = (
+                f"miaoshou:collectbox:{platform}:detail:update:{target}"
+            )
+            if (
+                platform == "tiktok"
+                and identity is not None
+                and update_class not in writes
+            ):
+                deferred_preparation.append(
+                    (
+                        len(target_results) - 1,
+                        index,
+                        target,
+                        int(str(identity["detail_id"])),
+                    )
+                )
             continue
+
+    # A newly claimed Miaoshou draft may remain unreadable while later shop
+    # identities are being created.  Revisit only targets that performed no
+    # detail update, using the exact provider-issued detail_id and without a
+    # second create or claim.  This is still pre-dispatch and cannot duplicate
+    # a storefront submission.
+    for result_index, index, target, detail_id in deferred_preparation:
+        try:
+            prepared_id, target_result = prepare_target(
+                target,
+                index,
+                existing_detail_id=detail_id,
+                claim_required=False,
+            )
+        except MiaoshouCollectBoxPreparationError:
+            continue
+        detail_ids.append(prepared_id)
+        target_results[result_index] = target_result
 
     if not detail_ids:
         raise MiaoshouCollectBoxPreparationError(
@@ -3359,7 +3673,39 @@ def _verify_target_readback(
         == "submit_without_readback_validation"
     ):
         return
+    if (
+        isinstance(config, Mapping)
+        and config.get("platform") == "tiktok"
+    ):
+        # TikTok may asynchronously localize or normalize both site and shop
+        # draft titles after the exact save. Keep identity, variants, price,
+        # category, images and parcel facts strict; provider-owned title
+        # normalization is not a publish rejection and must not block a store.
+        kwargs = {**kwargs, "verify_title": False}
     _verify_expected_detail(detail, expected, **kwargs)
+
+
+def _sku_parcel_readback_exact_or_omitted(
+    row: Mapping[str, object], expected_package: object
+) -> bool:
+    """Allow only a complete provider omission of per-SKU parcel dimensions."""
+
+    if not isinstance(expected_package, (tuple, list)) or len(expected_package) != 3:
+        return False
+    values = (
+        row.get("packageLength"),
+        row.get("packageWidth"),
+        row.get("packageHeight"),
+    )
+    missing = tuple(value in (None, "") for value in values)
+    if all(missing):
+        return True
+    if any(missing):
+        return False
+    return all(
+        _numbers_equal(actual, wanted)
+        for actual, wanted in zip(values, expected_package)
+    )
 
 
 def _verify_expected_detail(
@@ -3370,6 +3716,7 @@ def _verify_expected_detail(
     strict_collectbox_tiktok: bool = False,
     draft_mode: str = "shop",
     verify_price: bool = True,
+    verify_title: bool = True,
 ) -> None:
     sku_map = _sku_map(detail)
     bindings = _approved_variant_key_bindings(detail, expected)
@@ -3401,7 +3748,8 @@ def _verify_expected_detail(
         )
         actual_weight = detail.get("weight")
     checks = [
-        str(detail.get("title") or "") == expected["title"],
+        not verify_title
+        or str(detail.get("title") or "") == expected["title"],
         (
             str(detail.get("itemNum") or "") == expected["item_num"]
             or (
@@ -3444,25 +3792,12 @@ def _verify_expected_detail(
                     for key in wanted
                 ),
                 all(
-                    all(
-                        _numbers_equal(actual, wanted_value)
-                        for actual, wanted_value in zip(
-                            (
-                                _mapping(normalized[key], "sku row").get(
-                                    "packageLength"
-                                ),
-                                _mapping(normalized[key], "sku row").get(
-                                    "packageWidth"
-                                ),
-                                _mapping(normalized[key], "sku row").get(
-                                    "packageHeight"
-                                ),
-                            ),
-                            _mapping(
-                                expected_sku_commercial.get(key),
-                                "SKU commercial fact",
-                            ).get("package_cm") or (),
-                        )
+                    _sku_parcel_readback_exact_or_omitted(
+                        _mapping(normalized[key], "sku row"),
+                        _mapping(
+                            expected_sku_commercial.get(key),
+                            "SKU commercial fact",
+                        ).get("package_cm"),
                     )
                     for key in wanted
                 ),
@@ -4189,6 +4524,42 @@ def _read_shop(
     return dict(detail), oss_md5
 
 
+def _read_shop_with_category_materialization(
+    post,
+    detail_id: int,
+    shop_id: object,
+    *,
+    target: str,
+    expected: Mapping[str, object],
+    platform: str,
+) -> tuple[dict[str, object], str]:
+    """Retry only the read-only window where a new TikTok CID is still empty."""
+
+    latest: tuple[dict[str, object], str] | None = None
+    for attempt in range(CATEGORY_METADATA_MAX_ATTEMPTS):
+        latest = _read_shop(
+            post,
+            detail_id,
+            shop_id,
+            target=target,
+        )
+        if platform != "tiktok" or expected.get("category_id") is not None:
+            return latest
+        category_id = str(latest[0].get("cid") or "").strip()
+        if (
+            category_id.isascii()
+            and category_id.isdigit()
+            and int(category_id) > 0
+        ):
+            return latest
+        if attempt + 1 < CATEGORY_METADATA_MAX_ATTEMPTS:
+            _category_metadata_wait(
+                CATEGORY_METADATA_RETRY_DELAY_SECONDS
+            )
+    assert latest is not None
+    return latest
+
+
 def _resolve_detail_from_pages(
     pages: tuple[dict[str, object], ...],
     *,
@@ -4410,122 +4781,14 @@ def _approved_variant_key_bindings(
     matching are never used.
     """
 
-    sku_map = _sku_map(detail)
-    variants = expected.get("selected_sku_keys")
-    model_skus = expected.get("model_skus")
-    if (
-        not isinstance(variants, list)
-        or not variants
-        or any(type(value) is not str or not value for value in variants)
-        or len(variants) != len(set(variants))
-        or not isinstance(model_skus, Mapping)
-        or set(model_skus) != set(variants)
-    ):
-        raise MiaoshouOneClickPreDispatchError(
-            "approved variant identity does not match the draft"
+    try:
+        return approved_variant_key_bindings(
+            detail,
+            selected_sku_keys=expected.get("selected_sku_keys"),
+            model_skus=expected.get("model_skus"),
         )
-
-    raw_by_normalized: dict[str, object] = {}
-    for raw_key in sku_map:
-        normalized = _normalize_variant(raw_key)
-        if not normalized or normalized in raw_by_normalized:
-            raise MiaoshouOneClickPreDispatchError(
-                "Miaoshou variant identity is ambiguous"
-            )
-        raw_by_normalized[normalized] = raw_key
-    if set(raw_by_normalized) == set(variants):
-        return {
-            variant: raw_by_normalized[variant]
-            for variant in variants
-        }
-
-    property_labels: dict[str, str] = {}
-    raw_properties = detail.get("skuPropertyList")
-    if isinstance(raw_properties, list) and all(
-        isinstance(prop, Mapping) for prop in raw_properties
-    ):
-        for prop in raw_properties:
-            raw_values = prop.get("attrValueList")
-            if not isinstance(raw_values, list) or any(
-                not isinstance(value, Mapping) for value in raw_values
-            ):
-                property_labels = {}
-                break
-            for value in raw_values:
-                value_id = value.get("attrValueId")
-                label = value.get("attrValue")
-                if (
-                    type(value_id) is not str
-                    or not value_id.strip()
-                    or type(label) is not str
-                    or not label.strip()
-                    or value_id.strip() in property_labels
-                ):
-                    property_labels = {}
-                    break
-                property_labels[value_id.strip()] = label.strip()
-            if not property_labels:
-                break
-    if property_labels:
-        raw_by_property_signature: dict[str, object] = {}
-        for raw_key in sku_map:
-            if type(raw_key) is not str:
-                raw_by_property_signature = {}
-                break
-            value_ids = [value for value in raw_key.split(";") if value]
-            if not value_ids or any(
-                value_id not in property_labels for value_id in value_ids
-            ):
-                raw_by_property_signature = {}
-                break
-            signature = _normalize_variant(
-                ";".join(property_labels[value_id] for value_id in value_ids)
-            )
-            if not signature or signature in raw_by_property_signature:
-                raw_by_property_signature = {}
-                break
-            raw_by_property_signature[signature] = raw_key
-        if set(raw_by_property_signature) == set(variants):
-            return {
-                variant: raw_by_property_signature[variant]
-                for variant in variants
-            }
-
-    expected_by_model: dict[str, str] = {}
-    for variant in variants:
-        model_sku = model_skus.get(variant)
-        if (
-            type(model_sku) is not str
-            or not model_sku
-            or model_sku != model_sku.strip()
-            or model_sku in expected_by_model
-        ):
-            raise MiaoshouOneClickPreDispatchError(
-                "approved model SKU identity is ambiguous"
-            )
-        expected_by_model[model_sku] = variant
-
-    observed_by_model: dict[str, object] = {}
-    for raw_key, row in sku_map.items():
-        model_sku = row.get("itemNum")
-        if (
-            type(model_sku) is not str
-            or not model_sku
-            or model_sku != model_sku.strip()
-            or model_sku in observed_by_model
-        ):
-            raise MiaoshouOneClickPreDispatchError(
-                "Miaoshou model SKU identity is ambiguous"
-            )
-        observed_by_model[model_sku] = raw_key
-    if set(observed_by_model) != set(expected_by_model):
-        raise MiaoshouOneClickPreDispatchError(
-            "TikTok model SKU identity does not match approved plan"
-        )
-    return {
-        variant: observed_by_model[model_sku]
-        for model_sku, variant in expected_by_model.items()
-    }
+    except TikTokVariantBindingError as error:
+        raise MiaoshouOneClickPreDispatchError(str(error)) from error
 
 
 def _created_detail_id(

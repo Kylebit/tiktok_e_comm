@@ -4,6 +4,7 @@ import unittest
 from typing import Optional
 from unittest.mock import patch
 
+from modules.miaoshou import client as miaoshou_client
 from modules.miaoshou.client import (
     MiaoshouBusinessRejectedError,
     post_open,
@@ -30,6 +31,29 @@ class _FakeResponse:
 
 
 class MiaoshouClientTests(unittest.TestCase):
+    def test_signed_open_calls_are_spaced_below_account_rate_limit(self):
+        clock = {"now": 20.0}
+        sleeps = []
+
+        def monotonic():
+            return clock["now"]
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            clock["now"] += seconds
+
+        with patch.object(miaoshou_client.time, "monotonic", side_effect=monotonic), patch.object(
+            miaoshou_client.time, "sleep", side_effect=sleep
+        ):
+            miaoshou_client._last_open_request_at = 0.0
+            miaoshou_client._wait_for_open_slot()
+            miaoshou_client._wait_for_open_slot()
+
+        self.assertEqual(len(sleeps), 1)
+        self.assertGreaterEqual(
+            sleeps[0], miaoshou_client.OPEN_REQUEST_INTERVAL_SECONDS
+        )
+
     def test_open_business_rejection_is_distinct_from_transport_unknown(self):
         def fake_urlopen(_req, timeout=0):
             return _FakeResponse(

@@ -79,3 +79,17 @@ agent_comms/stage3/*_state.json
 agent_comms/helper/.helper_seq.json
 agent_comms/helper/done/
 agent_comms/helper/outbox/
+
+# Local release/test execution artifacts (never source-controlled)
+/.authorized-oneclick-*
+/.codex-service-*
+/.direct-shopee-*
+/.formal-service-*
+/.operation-backups/
+/.pf*
+/.pt*
+/.pytest-*
+/.restart-*
+/.skill-*
+/.tmp-*
+/tmp_seaya_sdk/

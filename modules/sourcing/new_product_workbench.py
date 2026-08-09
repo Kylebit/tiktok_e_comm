@@ -844,6 +844,66 @@ def load_state(offer_id: str) -> dict[str, Any]:
     return state
 
 
+_CONTENT_REVIEW_FIELDS = (
+    "image_actions",
+    "generated_image_actions",
+    "image_order",
+    "overseas_image_candidates",
+    "image_generation_requests",
+    "video_action",
+    "video_url",
+)
+
+
+def _mirror_content_state_to_collect_box_owner(
+    offer_id: str,
+    state: dict[str, Any],
+) -> None:
+    """Keep duplicate aliases from splitting one Miaoshou product's content state.
+
+    A skipped duplicate has its own requested offer ID but writes to the resolved
+    successful common-collect-box ID.  Content decisions and the verified write
+    receipt therefore belong to that resolved owner.  Commercial/product review
+    fields remain local and are deliberately not copied.
+    """
+
+    content = state.get("content_package")
+    if not isinstance(content, dict) or not content:
+        return
+    owner_id = str(content.get("collect_box_id") or "").strip()
+    if not owner_id.isdigit() or owner_id == offer_id:
+        return
+
+    with _state_write_lock(owner_id):
+        owner = _load_json(_state_path(owner_id)) or {}
+        owner_revision = max(0, int(owner.get("_revision") or 0))
+        owner_review = (
+            owner.get("review")
+            if isinstance(owner.get("review"), dict)
+            else {}
+        )
+        alias_review = (
+            state.get("review")
+            if isinstance(state.get("review"), dict)
+            else {}
+        )
+        for field in _CONTENT_REVIEW_FIELDS:
+            if field in alias_review:
+                owner_review[field] = deepcopy(alias_review[field])
+        owner["review"] = owner_review
+        owner["content_package"] = deepcopy(content)
+        owner["content_package"]["collect_box_id"] = owner_id
+        owner["content_state_alias"] = {
+            "requested_offer_id": offer_id,
+            "resolved_collect_box_id": owner_id,
+            "mirrored_at": _now(),
+        }
+        owner["offer_id"] = owner_id
+        owner["updated_at"] = _now()
+        owner["_revision"] = owner_revision + 1
+        _write_json_atomic(_state_path(owner_id), owner)
+
+
 def save_state(offer_id: str, state: dict[str, Any]) -> dict[str, Any]:
     with _state_write_lock(offer_id):
         current = _load_json(_state_path(offer_id)) or {}
@@ -855,15 +915,21 @@ def save_state(offer_id: str, state: dict[str, Any]) -> dict[str, Any]:
         state["updated_at"] = _now()
         state["_revision"] = current_revision + 1
         _write_json_atomic(_state_path(offer_id), state)
+    _mirror_content_state_to_collect_box_owner(offer_id, state)
     return state
 
 
 def _content_collect_box_id(offer_id: str, state: dict[str, Any], source: dict[str, Any] | None = None) -> str:
     """Find the collect-box ID that owns this product's image review package."""
+    precollect = (source or {}).get("precollect") or {}
+    if precollect.get("resolved_duplicate") is True:
+        resolved = str(precollect.get("resolved_common_collect_id") or "").strip()
+        if resolved.isdigit():
+            return resolved
     saved = str((state.get("content_package") or {}).get("collect_box_id") or "").strip()
     if saved.isdigit():
         return saved
-    for row in ((source or {}).get("precollect") or {}).get("records") or []:
+    for row in precollect.get("records") or []:
         candidate = str((row or {}).get("common_collect_id") or "").strip()
         if candidate.isdigit():
             return candidate
@@ -3079,7 +3145,9 @@ def _write_ordered_images_to_miaoshou_unlocked(
         from modules.miaoshou.client import post_open
 
         post = post_open
-    detail_id = int(str(content.get("collect_box_id") or offer_id))
+    source = _source_summary(offer_id)
+    detail_id = int(_content_collect_box_id(offer_id, state, source))
+    content["collect_box_id"] = str(detail_id)
     detail_path = "/open/v1/product/common_collect_box/common_collect_box/get_common_collect_box_detail"
     edit_path = "/open/v1/product/common_collect_box/common_collect_box/edit_common_collect_box_detail"
     write_state = {
@@ -4775,6 +4843,13 @@ def _source_summary(offer_id: str) -> dict[str, Any]:
         "skus": miaoshou.get("skus") or [],
         "precollect": {
             "mode": precollect.get("mode"),
+            "requested_common_collect_id": precollect.get(
+                "requested_common_collect_id"
+            ),
+            "resolved_common_collect_id": precollect.get(
+                "resolved_common_collect_id"
+            ),
+            "resolved_duplicate": precollect.get("resolved_duplicate") is True,
             "records": precollect_records,
             "claimed": bool(precollect.get("claimed")),
             "published": bool(precollect.get("published")),

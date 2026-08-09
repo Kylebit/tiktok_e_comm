@@ -7,7 +7,14 @@ from decimal import Decimal, InvalidOperation
 import time
 from typing import Callable, Mapping
 
+from domains.channel_operations.tiktok_publisher import (
+    TikTokPreWritePreparationError,
+)
 from modules.miaoshou.client import post_open
+from modules.miaoshou.tiktok_variant_binding import (
+    TikTokVariantBindingError,
+    approved_variant_key_bindings,
+)
 
 
 READ_SITE_DRAFT_PATH = (
@@ -115,41 +122,138 @@ class MiaoshouTikTokTransport:
     def draft_matches(
         self, target: Mapping[str, object], draft: Mapping[str, object]
     ) -> bool:
+        return self._draft_matches(
+            target,
+            draft,
+            accept_post_submit_projection=False,
+        )
+
+    def post_submit_draft_matches(
+        self, target: Mapping[str, object], draft: Mapping[str, object]
+    ) -> bool:
+        """Compare the provider's normalized post-submit draft projection.
+
+        This is deliberately separate from ``draft_matches``: a pre-submit
+        draft with missing delivery/size-chart fields must still be repaired,
+        while the confirmed normalization performed after an accepted submit
+        must not turn a successful publish into a false mismatch.
+        """
+
+        return self._draft_matches(
+            target,
+            draft,
+            accept_post_submit_projection=True,
+        )
+
+    def _draft_matches(
+        self,
+        target: Mapping[str, object],
+        draft: Mapping[str, object],
+        *,
+        accept_post_submit_projection: bool,
+    ) -> bool:
         info = self._mapping(draft.get("info"), "draft info")
-        if str(info.get("cid") or "") != str(target["expected_category_id"]):
+        expected_category = self._category_id(target, info)
+        if str(info.get("cid") or "") != expected_category:
             return False
-        expected = self._decimal(target["expected_price"])
+        delivery_type = info.get("deliveryOptionSetType")
+        if delivery_type != "default" and not (
+            accept_post_submit_projection and delivery_type in (None, "")
+        ):
+            return False
+        if str(info.get("sizeChart") or ""):
+            return False
+        size_chart_type = info.get("sizeChartType")
+        if size_chart_type not in (None, "") and not (
+            accept_post_submit_projection and size_chart_type == "image"
+        ):
+            return False
+        expected_weight, expected_package = self._parent_parcel(target)
+        try:
+            parent_matches = (
+                self._decimal(info.get("weight")) == expected_weight
+                and all(
+                    self._decimal(info.get(field)) == expected
+                    for field, expected in zip(
+                        ("packageLength", "packageWidth", "packageHeight"),
+                        expected_package,
+                    )
+                )
+            )
+        except ValueError:
+            parent_matches = False
+        if not parent_matches:
+            return False
         sku_map = self._sku_map(info)
+        expected_by_key = self._expected_rows_by_draft_key(target, info, sku_map)
         return all(
-            self._decimal(row.get("price")) == expected
-            and self._decimal(row.get("priceIncludeVat")) == expected
-            for row in sku_map.values()
+            (
+                expected_by_key[str(key)][0] is None
+                or str(row.get("itemNum") or "").strip()
+                == expected_by_key[str(key)][0]
+            )
+            and self._decimal(row.get("price")) == expected_by_key[str(key)][1]
+            and self._decimal(row.get("priceIncludeVat"))
+            == expected_by_key[str(key)][1]
+            and self._sku_parcel_matches(
+                row,
+                expected_weight=expected_by_key[str(key)][2],
+                expected_package=expected_by_key[str(key)][3],
+            )
+            for key, row in sku_map.items()
         )
 
     def save_approved_draft(
         self, target: Mapping[str, object], draft: Mapping[str, object]
     ) -> Mapping[str, object]:
-        label = self._label(target)
-        detail_id = int(str(target["detail_id"]))
-        info = deepcopy(dict(self._mapping(draft.get("info"), "draft info")))
-        info["cid"] = str(target["expected_category_id"])
-        price = float(self._decimal(target["expected_price"]))
-        sku_map = self._sku_map(info)
-        updated_skus: dict[str, object] = {}
-        for key, raw_row in sku_map.items():
-            row = deepcopy(dict(raw_row))
-            row["price"] = price
-            row["priceIncludeVat"] = price
-            updated_skus[str(key)] = row
-        info["skuMap"] = updated_skus
-        if label == "tiktok:GB":
-            info["isCodOpen"] = "0"
+        try:
+            label = self._label(target)
+            detail_id = int(str(target["detail_id"]))
+            info = deepcopy(dict(self._mapping(draft.get("info"), "draft info")))
+            category_id = self._category_id(target, info)
+            info["cid"] = category_id
+            parent_weight, parent_package = self._parent_parcel(target)
+            info["weight"] = float(parent_weight)
+            info["packageLength"] = float(parent_package[0])
+            info["packageWidth"] = float(parent_package[1])
+            info["packageHeight"] = float(parent_package[2])
+            sku_map = self._sku_map(info)
+            expected_by_key = self._expected_rows_by_draft_key(target, info, sku_map)
+            updated_skus: dict[str, object] = {}
+            for key, raw_row in sku_map.items():
+                row = deepcopy(dict(raw_row))
+                model_sku, expected_price, sku_weight, sku_package = (
+                    expected_by_key[str(key)]
+                )
+                if model_sku is not None:
+                    row["itemNum"] = model_sku
+                price = float(expected_price)
+                row["price"] = price
+                row["priceIncludeVat"] = price
+                if sku_weight is not None and sku_package is not None:
+                    row["weight"] = float(sku_weight)
+                    row["packageLength"] = float(sku_package[0])
+                    row["packageWidth"] = float(sku_package[1])
+                    row["packageHeight"] = float(sku_package[2])
+                updated_skus[str(key)] = row
+            info["skuMap"] = updated_skus
+            info["deliveryOptionSetType"] = "default"
             info["sizeChart"] = ""
             info["sizeChartType"] = ""
-            info["deliveryOptionSetType"] = str(
-                info.get("deliveryOptionSetType") or "default"
-            )
-            info["productAttributes"] = self._gb_required_attributes(target)
+            if label == "tiktok:GB":
+                info["isCodOpen"] = "0"
+                metadata_target = dict(target)
+                metadata_target["expected_category_id"] = category_id
+                info["productAttributes"] = self._gb_required_attributes(
+                    metadata_target
+                )
+        except TikTokPreWritePreparationError:
+            raise
+        except Exception as error:
+            raise TikTokPreWritePreparationError(
+                "Miaoshou draft repair preparation is invalid",
+                code="draft_repair_preparation_invalid",
+            ) from error
         oss_md5 = str(draft.get("oss_md5") or "")
         if label in _SITE_DRAFT_TARGETS:
             return self._post(
@@ -227,8 +331,6 @@ class MiaoshouTikTokTransport:
                     ],
                 }
             )
-        if not required:
-            raise ValueError("Miaoshou mandatory category attribute is unavailable")
         return required
 
     def submit(self, target: Mapping[str, object]) -> Mapping[str, object]:
@@ -252,6 +354,18 @@ class MiaoshouTikTokTransport:
         )
 
     @staticmethod
+    def _category_id(
+        target: Mapping[str, object], info: Mapping[str, object]
+    ) -> str:
+        value = target.get("expected_category_id")
+        if value is None:
+            value = info.get("cid")
+        clean = str(value or "").strip()
+        if not clean.isascii() or not clean.isdigit() or int(clean) <= 0:
+            raise ValueError("Miaoshou draft has no official category candidate")
+        return clean
+
+    @staticmethod
     def _label(target: Mapping[str, object]) -> str:
         label = str(target.get("target_label") or "")
         expected_shop = EXPECTED_SHOP_ID_BY_TARGET.get(label)
@@ -269,10 +383,170 @@ class MiaoshouTikTokTransport:
     def _sku_map(cls, info: Mapping[str, object]) -> Mapping[str, Mapping[str, object]]:
         sku_map = info.get("skuMap")
         if not isinstance(sku_map, Mapping) or not sku_map:
-            raise ValueError("Miaoshou SKU map is malformed")
+            raise TikTokPreWritePreparationError(
+                "Miaoshou SKU map is malformed",
+                code="sku_price_binding_invalid",
+            )
         if any(not isinstance(row, Mapping) for row in sku_map.values()):
-            raise ValueError("Miaoshou SKU map is malformed")
+            raise TikTokPreWritePreparationError(
+                "Miaoshou SKU map is malformed",
+                code="sku_price_binding_invalid",
+            )
         return sku_map  # type: ignore[return-value]
+
+    @classmethod
+    def _expected_rows_by_draft_key(
+        cls,
+        target: Mapping[str, object],
+        info: Mapping[str, object],
+        sku_map: Mapping[str, Mapping[str, object]],
+    ) -> dict[
+        str,
+        tuple[
+            str | None,
+            Decimal,
+            Decimal | None,
+            tuple[Decimal, Decimal, Decimal] | None,
+        ],
+    ]:
+        raw_prices = target.get("expected_sku_prices")
+        if not raw_prices:
+            price = cls._decimal(target["expected_price"])
+            return {str(key): (None, price, None, None) for key in sku_map}
+        if not isinstance(raw_prices, Mapping):
+            raise TikTokPreWritePreparationError(
+                "approved per-SKU prices are malformed",
+                code="sku_price_binding_invalid",
+            )
+        approved = {
+            str(model_sku).strip(): cls._decimal(price)
+            for model_sku, price in raw_prices.items()
+            if type(model_sku) is str and model_sku.strip()
+        }
+        if len(approved) != len(raw_prices):
+            raise TikTokPreWritePreparationError(
+                "approved per-SKU prices are malformed",
+                code="sku_price_binding_invalid",
+            )
+        variant_model_skus = target.get("expected_variant_model_skus")
+        if variant_model_skus:
+            if not isinstance(variant_model_skus, Mapping):
+                raise TikTokPreWritePreparationError(
+                    "approved variant lineage is malformed",
+                    code="sku_price_binding_invalid",
+                )
+            try:
+                bindings = approved_variant_key_bindings(
+                    info,
+                    selected_sku_keys=list(variant_model_skus),
+                    model_skus=variant_model_skus,
+                )
+            except TikTokVariantBindingError as error:
+                raise TikTokPreWritePreparationError(
+                    str(error), code="sku_price_binding_invalid"
+                ) from error
+            if set(variant_model_skus.values()) != set(approved):
+                raise TikTokPreWritePreparationError(
+                    "approved variant price coverage drifted",
+                    code="sku_price_binding_invalid",
+                )
+            raw_parcels = target.get("expected_sku_parcels")
+            if not isinstance(raw_parcels, Mapping) or set(raw_parcels) != set(
+                variant_model_skus
+            ):
+                raise TikTokPreWritePreparationError(
+                    "approved per-SKU parcel coverage drifted",
+                    code="sku_parcel_binding_invalid",
+                )
+            result = {}
+            for variant in variant_model_skus:
+                raw_parcel = raw_parcels.get(variant)
+                if not isinstance(raw_parcel, Mapping):
+                    raise TikTokPreWritePreparationError(
+                        "approved per-SKU parcel is malformed",
+                        code="sku_parcel_binding_invalid",
+                    )
+                sku_weight = cls._decimal(raw_parcel.get("weight_kg"))
+                sku_package = cls._package(raw_parcel.get("package_cm"))
+                result[str(bindings[variant])] = (
+                    str(variant_model_skus[variant]),
+                    approved[str(variant_model_skus[variant])],
+                    sku_weight,
+                    sku_package,
+                )
+            return result
+        draft_by_model: dict[str, str] = {}
+        for key, row in sku_map.items():
+            model_sku = str(row.get("itemNum") or "").strip()
+            if not model_sku or model_sku in draft_by_model:
+                raise TikTokPreWritePreparationError(
+                    "Miaoshou model SKU identity is malformed",
+                    code="sku_price_binding_invalid",
+                )
+            draft_by_model[model_sku] = str(key)
+        if set(draft_by_model) != set(approved):
+            raise TikTokPreWritePreparationError(
+                "Miaoshou model SKU identity does not match approved prices",
+                code="sku_price_binding_invalid",
+            )
+        return {
+            draft_key: (model_sku, approved[model_sku], None, None)
+            for model_sku, draft_key in draft_by_model.items()
+        }
+
+    @classmethod
+    def _parent_parcel(
+        cls, target: Mapping[str, object]
+    ) -> tuple[Decimal, tuple[Decimal, Decimal, Decimal]]:
+        try:
+            return cls._decimal(target.get("expected_weight_kg")), cls._package(
+                target.get("expected_package_cm")
+            )
+        except (TypeError, ValueError) as error:
+            raise TikTokPreWritePreparationError(
+                "approved parent parcel is malformed",
+                code="parent_parcel_invalid",
+            ) from error
+
+    @classmethod
+    def _package(
+        cls, value: object
+    ) -> tuple[Decimal, Decimal, Decimal]:
+        if not isinstance(value, list) or len(value) != 3:
+            raise ValueError("Miaoshou package is malformed")
+        return tuple(cls._decimal(item) for item in value)  # type: ignore[return-value]
+
+    @classmethod
+    def _sku_parcel_matches(
+        cls,
+        row: Mapping[str, object],
+        *,
+        expected_weight: Decimal | None,
+        expected_package: tuple[Decimal, Decimal, Decimal] | None,
+    ) -> bool:
+        if expected_weight is None or expected_package is None:
+            return True
+        try:
+            if cls._decimal(row.get("weight")) != expected_weight:
+                return False
+        except ValueError:
+            return False
+        values = [
+            row.get("packageLength"),
+            row.get("packageWidth"),
+            row.get("packageHeight"),
+        ]
+        if all(value in (None, "") for value in values):
+            return True
+        if any(value in (None, "") for value in values):
+            return False
+        try:
+            return all(
+                cls._decimal(actual) == expected
+                for actual, expected in zip(values, expected_package)
+            )
+        except ValueError:
+            return False
 
     @staticmethod
     def _decimal(value: object) -> Decimal:

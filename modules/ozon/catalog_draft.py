@@ -21,6 +21,8 @@ from modules.ozon.category_match import (
 from modules.ozon.migrate_attrs import resolve_profile
 from modules.ozon.price_convert import old_price_cny, pick_tk_price
 from modules.ozon.listing_text import (
+    build_ozon_tablecloth_description,
+    build_ozon_tablecloth_title,
     polish_ozon_description,
     polish_ozon_title,
     polish_variant_label,
@@ -250,19 +252,49 @@ def build_draft_from_approved_snapshot(
     )
     category_names = lookup_category_names(category_id, type_id)
     offer_id = to_4digit_offer_id(approved_sku.strip())
-    rule_title = translate.draft_title(title.strip(), offer_id, len_cm=len_cm, wid_cm=wid_cm)
-    rule_description = translate.draft_description(
-        title.strip(), len_cm=len_cm, wid_cm=wid_cm, kit=kit
-    )
+    variant_label = str(snapshot.get("variant_label") or "").strip()
+    if migrate_profile == "tablecloth":
+        product_len, product_wid = parse_variant_dims(variant_label)
+        if not product_len or not product_wid:
+            product_len, product_wid = parse_variant_dims(title.strip())
+        if not product_len or not product_wid:
+            raise ValueError("approved Ozon tablecloth variant size is unavailable")
+        len_cm = _sanitize_dim(product_len, "")
+        wid_cm = _sanitize_dim(product_wid, "")
+        if not len_cm or not wid_cm:
+            raise ValueError("approved Ozon tablecloth variant size is invalid")
+        draft_title = build_ozon_tablecloth_title(
+            title.strip(), len_cm=len_cm, wid_cm=wid_cm
+        )
+        draft_description = build_ozon_tablecloth_description(
+            len_cm=len_cm,
+            wid_cm=wid_cm,
+            kit=kit,
+        )
+        description_source = "approved_tablecloth_rule"
+        product_dimensions_source = (
+            "approved_variant_label" if variant_label else "approved_title"
+        )
+    else:
+        rule_description = translate.draft_description(
+            title.strip(), len_cm=len_cm, wid_cm=wid_cm, kit=kit
+        )
+        # The approved Ozon candidate is already the immutable platform title.
+        # Rebuilding it from shipping-parcel dimensions silently changes both
+        # the wording and the advertised product size (for example 29x90 to
+        # 29x3).  Only table-textile variants above need a deterministic
+        # per-variant title transformation.
+        draft_title = title.strip()
+        draft_description = polish_ozon_description(rule_description)
+        description_source = "rule_fallback"
+        product_dimensions_source = "approved_package_fallback"
     return {
         "offer_id": offer_id,
         "seller_sku": approved_sku.strip(),
         "title_ms": title.strip(),
         "images": normalized_images,
-        "draft_title": polish_ozon_title(
-            rule_title, len_cm=len_cm, wid_cm=wid_cm, migrate_profile=migrate_profile
-        ),
-        "draft_description": polish_ozon_description(rule_description),
+        "draft_title": draft_title,
+        "draft_description": draft_description,
         "hashtags": (
             tablecloth_hashtags()
             if migrate_profile == "tablecloth"
@@ -288,7 +320,7 @@ def build_draft_from_approved_snapshot(
         "old_price": str(old_price),
         "source": "approved_snapshot",
         "title_source": "approved_snapshot",
-        "desc_source": "rule_fallback",
+        "desc_source": description_source,
         "deepseek_used": False,
         "price_source": "approved_release_plan",
         "price_label": f"Approved Ozon release price {price} CNY",
@@ -300,11 +332,12 @@ def build_draft_from_approved_snapshot(
         "tk_category_leaf": str(source_category.get("name") or ""),
         "category_match_method": category.get("match_method"),
         "category_match_score": category.get("best_score"),
-        "variant_label": "",
+        "variant_label": variant_label,
         "tk_group_id": "",
         "tk_group_keys": [],
         "weight_source": "approved_snapshot",
         "dimensions_source": "approved_snapshot",
+        "product_dimensions_source": product_dimensions_source,
         "dimensions_missing": False,
         "error": None,
     }

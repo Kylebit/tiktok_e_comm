@@ -1235,10 +1235,40 @@ def ensure_global_models(
             "option": option[:30],
             "tier_index": [index],
             "original_price": model_price,
+            "image_id": str(sku.get("variation_image_id") or "").strip(),
         })
     expected_skus = [str(row["model_sku"]) for row in expected]
     if len(set(expected_skus)) != len(expected_skus):
         raise ValueError("Shopee global model SKUs are not unique")
+
+    expected_options = []
+    for row in expected:
+        option = {"option": str(row["option"])}
+        if row["image_id"]:
+            option["image"] = {"image_id": str(row["image_id"])}
+        expected_options.append(option)
+
+    def variant_images_exact(payload: dict) -> bool:
+        if not any(str(row["image_id"]) for row in expected):
+            return True
+        response = payload.get("response") if isinstance(payload, dict) else None
+        tiers = response.get("tier_variation") if isinstance(response, dict) else None
+        if not isinstance(tiers, list) or len(tiers) != 1:
+            return False
+        options = tiers[0].get("option_list") if isinstance(tiers[0], dict) else None
+        if not isinstance(options, list) or len(options) != len(expected_options):
+            return False
+        for expected_option, observed_option in zip(expected_options, options):
+            if not isinstance(observed_option, dict):
+                return False
+            if str(observed_option.get("option") or "") != expected_option["option"]:
+                return False
+            expected_image = expected_option.get("image")
+            if expected_image and str(
+                (observed_option.get("image") or {}).get("image_id") or ""
+            ) != str(expected_image["image_id"]):
+                return False
+        return True
 
     existing = merchant_get(
         "/api/v2/global_product/get_global_model_list",
@@ -1260,7 +1290,8 @@ def ensure_global_models(
         publish_models = []
         for row in expected:
             model_sku = str(row["model_sku"])
-            tier_index = by_sku[model_sku].get("tier_index")
+            observed_model = by_sku[model_sku]
+            tier_index = observed_model.get("tier_index")
             if (
                 not isinstance(tier_index, (list, tuple))
                 or not tier_index
@@ -1269,10 +1300,52 @@ def ensure_global_models(
                 raise RuntimeError(
                     f"global item {global_item_id} model tier index is unavailable"
                 )
+            price_info = observed_model.get("price_info")
+            raw_observed_price = (
+                price_info.get("original_price")
+                if isinstance(price_info, dict)
+                else observed_model.get("original_price")
+            )
+            try:
+                observed_price = float(raw_observed_price)
+            except (TypeError, ValueError):
+                raise RuntimeError(
+                    f"global item {global_item_id} model price is unavailable"
+                ) from None
+            if abs(observed_price - float(row["original_price"])) >= 0.000001:
+                raise RuntimeError(
+                    f"global item {global_item_id} model price mismatch: {model_sku}"
+                )
             publish_models.append({
                 "global_model_sku": model_sku,
                 "tier_index": list(tier_index),
             })
+        if not variant_images_exact(existing):
+            response = merchant_post(
+                "/api/v2/global_product/update_tier_variation",
+                merchant_id,
+                merchant_token,
+                {
+                    "global_item_id": int(global_item_id),
+                    "tier_variation": [{
+                        "name": str(tier_name or "Variation")[:14],
+                        "option_list": expected_options,
+                    }],
+                },
+            )
+            error = str(response.get("error") or "").strip()
+            if error and error != "-":
+                raise RuntimeError(response.get("message") or error)
+            existing = merchant_get(
+                "/api/v2/global_product/get_global_model_list",
+                merchant_id,
+                merchant_token,
+                {"global_item_id": int(global_item_id)},
+            )
+            if not variant_images_exact(existing):
+                raise RuntimeError(
+                    f"global item {global_item_id} variant image readback mismatch"
+                )
         return {
             "created": False,
             "global_item_id": int(global_item_id),
@@ -1280,6 +1353,7 @@ def ensure_global_models(
             "publish_models": publish_models,
             "variant_labels": [str(row["option"]) for row in expected],
             "legacy_item_sku": False,
+            "variant_images_verified": variant_images_exact(existing),
         }
 
     if not create_when_missing:
@@ -1298,9 +1372,7 @@ def ensure_global_models(
             "global_item_id": int(global_item_id),
             "tier_variation": [{
                 "name": str(tier_name or "Variation")[:14],
-                "option_list": [
-                    {"option": str(row["option"])} for row in expected
-                ],
+                "option_list": expected_options,
             }],
             "global_model": [
                 {
@@ -1335,6 +1407,10 @@ def ensure_global_models(
         raise RuntimeError(
             f"global item {global_item_id} did not expose all approved Model SKUs"
         )
+    if not variant_images_exact(verified):
+        raise RuntimeError(
+            f"global item {global_item_id} variant image readback mismatch"
+        )
     publish_models = []
     for model_sku in expected_skus:
         tier_index = by_sku[model_sku].get("tier_index")
@@ -1357,6 +1433,7 @@ def ensure_global_models(
         "publish_models": publish_models,
         "variant_labels": [str(row["option"]) for row in expected],
         "legacy_item_sku": False,
+        "variant_images_verified": variant_images_exact(verified),
     }
 
 
@@ -1425,6 +1502,23 @@ def update_global_master(
             detail=detail,
         ),
     }
+    package_weight = detail.get("package_weight")
+    package_dimensions = detail.get("package_dimensions")
+    if isinstance(package_weight, dict) and isinstance(package_dimensions, dict):
+        weight = float(package_weight.get("value") or 0)
+        if str(package_weight.get("unit") or "").upper() == "GRAM":
+            weight /= 1000.0
+        length = float(package_dimensions.get("length") or 0)
+        width = float(package_dimensions.get("width") or 0)
+        height = float(package_dimensions.get("height") or 0)
+        if min(weight, length, width, height) <= 0:
+            raise ValueError("Shopee approved global parcel is invalid")
+        body["weight"] = weight
+        body["dimension"] = {
+            "package_length": length,
+            "package_width": width,
+            "package_height": height,
+        }
     if original_price is not None:
         if float(original_price) <= 0:
             raise ValueError("Shopee global original price must be positive CNY")
@@ -1475,6 +1569,26 @@ def update_global_master(
                 )
                 < 0.000001
             )
+            and (
+                "weight" not in body
+                or abs(float(item.get("weight") or 0) - float(body["weight"]))
+                < 0.000001
+            )
+            and (
+                "dimension" not in body
+                or all(
+                    abs(
+                        float((item.get("dimension") or {}).get(key) or 0)
+                        - float(body["dimension"][key])
+                    )
+                    < 0.000001
+                    for key in (
+                        "package_length",
+                        "package_width",
+                        "package_height",
+                    )
+                )
+            )
         )
         if not verified:
             raise ValueError("global master copy readback mismatch")
@@ -1500,6 +1614,11 @@ def update_global_master(
         "description_length": len(str(item.get("description") or "")),
         "attributes": attributes,
         "verified": True,
+        "image_ids": [
+            str(image_id)
+            for image_id in ((item.get("image") or {}).get("image_id_list") or [])
+            if str(image_id or "").strip()
+        ],
     }
 
 
@@ -1554,6 +1673,22 @@ def ensure_global_master(
             f"global item {global_item_id} copy preflight is invalid"
         )
     item = items[0]
+    expected_weight = None
+    expected_dimensions = None
+    package_weight = detail.get("package_weight")
+    package_dimensions = detail.get("package_dimensions")
+    if isinstance(package_weight, dict) and isinstance(package_dimensions, dict):
+        expected_weight = float(package_weight.get("value") or 0)
+        if str(package_weight.get("unit") or "").upper() == "GRAM":
+            expected_weight /= 1000.0
+        expected_dimensions = {
+            "package_length": float(package_dimensions.get("length") or 0),
+            "package_width": float(package_dimensions.get("width") or 0),
+            "package_height": float(package_dimensions.get("height") or 0),
+        }
+        if min(expected_weight, *expected_dimensions.values()) <= 0:
+            raise ValueError("Shopee approved global parcel is invalid")
+    current_dimensions = item.get("dimension")
     if (
         item["global_item_name"] == expected_title
         and item["description"] == expected_description
@@ -1562,6 +1697,21 @@ def ensure_global_master(
             or abs(float(item.get("original_price") or 0) - expected_price)
             < 0.000001
         )
+        and (
+            expected_weight is None
+            or abs(float(item.get("weight") or 0) - expected_weight) < 0.000001
+        )
+        and (
+            expected_dimensions is None
+            or (
+                isinstance(current_dimensions, dict)
+                and all(
+                    abs(float(current_dimensions.get(key) or 0) - value)
+                    < 0.000001
+                    for key, value in expected_dimensions.items()
+                )
+            )
+        )
     ):
         return {
             "source": "official_shopee_partner_api",
@@ -1569,6 +1719,11 @@ def ensure_global_master(
             "verified": True,
             "updated": False,
             "external_writes_performed": [],
+            "image_ids": [
+                str(image_id)
+                for image_id in ((item.get("image") or {}).get("image_id_list") or [])
+                if str(image_id or "").strip()
+            ],
         }
     updated = update_global_master(
         global_item_id=global_item_id,
@@ -1713,11 +1868,14 @@ def _create_global_item(
     if price <= 0:
         raise ValueError("Shopee global original price must be positive CNY")
     stock = sum(int(i.get("quantity") or 0) for i in (sku.get("inventory") or [])) or 50
-    w = sku.get("sku_weight") or detail.get("package_weight") or {}
+    # CNSC parcel fields belong to the global item.  The approved detail has
+    # already reduced per-SKU facts to the conservative all-variant envelope.
+    # Never let the first model silently replace that master parcel.
+    w = detail.get("package_weight") or sku.get("sku_weight") or {}
     weight = float(w.get("value") or 0.2)
     if (w.get("unit") or "").upper() == "GRAM":
         weight = weight / 1000.0
-    dim = sku.get("sku_dimensions") or detail.get("package_dimensions") or {}
+    dim = detail.get("package_dimensions") or sku.get("sku_dimensions") or {}
     length = int(float(dim.get("length") or 30))
     width = int(float(dim.get("width") or 20))
     height = int(float(dim.get("height") or 2))

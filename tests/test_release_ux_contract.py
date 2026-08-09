@@ -423,6 +423,26 @@ def test_formal_pages_expose_accessible_feedback_regions():
         assert not missing, f"{relative_path} misses feedback contracts {missing}"
 
 
+def test_failed_current_queue_read_is_not_presented_as_still_loading():
+    """A terminal source-read error must expose an immediate retry action."""
+
+    source = (WEB / "static" / "product_workspace.js").read_text(
+        encoding="utf-8"
+    )
+    render_queue = source[
+        source.index("function renderQueue("):
+        source.index("function syncCurrentUrl(")
+    ]
+    refresh_queue_product = _function_body(source, "refreshQueueProduct")
+
+    assert "const switchLabel" in render_queue
+    assert "const switchDisabled" in render_queue
+    assert "item.error" in render_queue
+    assert "item.loading" in render_queue
+    assert "item.error = message" in refresh_queue_product
+    assert '$("#queueMessage").textContent' in refresh_queue_product
+
+
 def test_disabled_release_checkboxes_expose_visible_reasons():
     html = (ROOT / "web/product_workspace.html").read_text(encoding="utf-8")
     studio_html = (ROOT / "web/ai_image_studio.html").read_text(encoding="utf-8")

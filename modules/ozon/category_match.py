@@ -110,7 +110,7 @@ def match_category(
     auto_threshold: int = 28,
 ) -> dict:
     # ① 标题强规则（桌布等，优先于易错的 TK 类目映射）
-    if is_tablecloth_title(title):
+    if is_tablecloth_title(f"{title} {tk_path} {tk_leaf}"):
         type_id = 92692
         category_id = 17028730
         profile = "tablecloth"

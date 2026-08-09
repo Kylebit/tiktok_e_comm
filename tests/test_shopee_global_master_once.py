@@ -131,6 +131,72 @@ def test_existing_global_price_is_updated_from_approved_cny_price(monkeypatch):
     assert receipt["updated"] is True
 
 
+def test_existing_global_parcel_is_updated_from_approved_safe_envelope(monkeypatch):
+    """An exact copy must not hide a stale first-SKU master parcel."""
+
+    description = ("Approved factual description. " * 30).strip()
+    old = _row("Approved title", description)
+    old_item = old["response"]["global_item_list"][0]
+    old_item.update({
+        "weight": 0.1,
+        "dimension": {
+            "package_length": 20,
+            "package_width": 20,
+            "package_height": 3,
+        },
+    })
+    current = _row("Approved title", description)
+    current_item = current["response"]["global_item_list"][0]
+    current_item.update({
+        "weight": 0.2,
+        "dimension": {
+            "package_length": 40,
+            "package_width": 20,
+            "package_height": 3,
+        },
+    })
+    reads = iter([old, current])
+    posts = []
+    monkeypatch.setattr(
+        publish,
+        "merchant_get",
+        lambda *_args, **_kwargs: next(reads),
+    )
+    monkeypatch.setattr(
+        publish,
+        "merchant_post",
+        lambda *args, **kwargs: posts.append((args, kwargs))
+        or {"error": "", "response": {}},
+    )
+    monkeypatch.setattr(
+        publish,
+        "_global_attribute_list",
+        lambda *_args, **_kwargs: [],
+    )
+
+    receipt = publish.ensure_global_master(
+        global_item_id=51465029034,
+        merchant_id=100,
+        merchant_token="runtime-only",
+        detail={
+            "package_weight": {"value": 0.2, "unit": "KILOGRAM"},
+            "package_dimensions": {"length": 40, "width": 20, "height": 3},
+        },
+        title="Approved title",
+        description=description,
+        ref={},
+    )
+
+    body = posts[0][0][3]
+    assert body["weight"] == 0.2
+    assert body["dimension"] == {
+        "package_length": 40,
+        "package_width": 20,
+        "package_height": 3,
+    }
+    assert receipt["updated"] is True
+
+
 def test_global_update_transport_ambiguity_preserves_write_class(monkeypatch):
     description = ("Approved factual description. " * 30).strip()
     monkeypatch.setattr(

@@ -1174,6 +1174,7 @@ class CollectBoxActionStore:
         wait: Callable[[float], None] = time.sleep,
         restart_existing: bool = False,
         restart_request_id: object = None,
+        platform_scope: str | None = None,
     ) -> dict[str, Any]:
         if type(restart_existing) is not bool:
             raise ValueError("restart_existing must be a literal boolean")
@@ -1181,6 +1182,8 @@ class CollectBoxActionStore:
             raise ValueError(
                 "reimport_request_id requires restart_existing=true"
             )
+        if platform_scope is not None and platform_scope not in PLATFORMS:
+            raise ValueError("collect-box platform scope is invalid")
         identity = approved_plan_identity(plan)
         self._ensure_schema()
         clean_common_id = str(common_collect_box_detail_id).strip()
@@ -1204,6 +1207,7 @@ class CollectBoxActionStore:
                 self._validated_restart_request_id(restart_request_id),
                 float(now()),
                 approved_targets,
+                platform_scope,
             )
             batched = True
             if not self._claim_restart_batch(action_id, float(now())):
@@ -1228,6 +1232,7 @@ class CollectBoxActionStore:
             row["platform"]
             for row in current["action"]["platforms"]
             if row["status"] in {PENDING, FAILED_RETRYABLE}
+            and (platform_scope is None or row["platform"] == platform_scope)
         ]
         for platform in candidates:
             action_table = (
@@ -1528,6 +1533,7 @@ class CollectBoxActionStore:
         request_id: str,
         now: float,
         approved_targets: tuple[str, ...],
+        platform_scope: str | None = None,
     ) -> tuple[str, bool]:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1614,6 +1620,11 @@ class CollectBoxActionStore:
                     now,
                 ),
             )
+            batch_platforms = (
+                (platform_scope,)
+                if platform_scope is not None
+                else PLATFORMS
+            )
             connection.executemany(
                 """
                 INSERT INTO collectbox_action_batch_platforms (
@@ -1630,7 +1641,7 @@ class CollectBoxActionStore:
                         ),
                         now,
                     )
-                    for platform in PLATFORMS
+                    for platform in batch_platforms
                 ],
             )
             connection.commit()

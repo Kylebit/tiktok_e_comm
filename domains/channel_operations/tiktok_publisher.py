@@ -18,7 +18,7 @@ from typing import Mapping, Protocol
 from modules.miaoshou.client import MiaoshouBusinessRejectedError
 
 
-APPROVED_TIKTOK_PUBLISH_SNAPSHOT_SCHEMA = "approved-tiktok-publish-snapshot/v1"
+APPROVED_TIKTOK_PUBLISH_SNAPSHOT_SCHEMA = "approved-tiktok-publish-snapshot/v2"
 TIKTOK_PREFLIGHT_RECEIPT_SCHEMA = "tiktok-publish-preflight/v1"
 TIKTOK_PUBLISH_RECEIPT_SCHEMA = "tiktok-publish-receipt/v1"
 
@@ -52,6 +52,14 @@ _LOGGER = logging.getLogger(__name__)
 
 class TikTokPublishContractError(ValueError):
     """The server-owned approved snapshot is malformed or has drifted."""
+
+
+class TikTokPreWritePreparationError(ValueError):
+    """A deterministic target error proven to occur before a write request."""
+
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class TikTokPublishTransport(Protocol):
@@ -96,6 +104,101 @@ def _positive_price(value: object) -> str:
     return format(result, "f")
 
 
+def _positive_decimal(value: object, name: str) -> str:
+    if isinstance(value, bool) or type(value) not in {str, int, float}:
+        raise TikTokPublishContractError(f"{name} is invalid")
+    try:
+        result = Decimal(str(value))
+    except InvalidOperation as error:
+        raise TikTokPublishContractError(f"{name} is invalid") from error
+    if not result.is_finite() or result <= 0:
+        raise TikTokPublishContractError(f"{name} is invalid")
+    return format(result, "f")
+
+
+def _package_cm(value: object, name: str) -> list[str]:
+    if not isinstance(value, list) or len(value) != 3:
+        raise TikTokPublishContractError(f"{name} is invalid")
+    return [_positive_decimal(dimension, name) for dimension in value]
+
+
+def _expected_sku_parcels(
+    value: object,
+    *,
+    variant_model_skus: Mapping[str, str],
+) -> dict[str, dict[str, object]]:
+    if not isinstance(value, Mapping):
+        raise TikTokPublishContractError("expected_sku_parcels is invalid")
+    result: dict[str, dict[str, object]] = {}
+    for raw_variant, raw_row in value.items():
+        if (
+            type(raw_variant) is not str
+            or not raw_variant.strip().strip(";")
+            or not isinstance(raw_row, Mapping)
+        ):
+            raise TikTokPublishContractError("expected_sku_parcels is invalid")
+        variant = raw_variant.strip().strip(";")
+        if variant in result:
+            raise TikTokPublishContractError("expected_sku_parcels is invalid")
+        result[variant] = {
+            "weight_kg": _positive_decimal(
+                raw_row.get("weight_kg"), "expected SKU weight"
+            ),
+            "package_cm": _package_cm(
+                raw_row.get("package_cm"), "expected SKU package"
+            ),
+        }
+    if set(result) != set(variant_model_skus):
+        raise TikTokPublishContractError("expected SKU parcel coverage drifted")
+    return result
+
+
+def _expected_sku_prices(value: object) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise TikTokPublishContractError("expected_sku_prices is invalid")
+    result: dict[str, str] = {}
+    for raw_model_sku, raw_price in value.items():
+        if type(raw_model_sku) is not str or not raw_model_sku.strip():
+            raise TikTokPublishContractError("expected_sku_prices is invalid")
+        model_sku = raw_model_sku.strip()
+        if model_sku in result:
+            raise TikTokPublishContractError("expected_sku_prices is invalid")
+        result[model_sku] = _positive_price(raw_price)
+    return result
+
+
+def _expected_variant_model_skus(value: object) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise TikTokPublishContractError(
+            "expected_variant_model_skus is invalid"
+        )
+    result: dict[str, str] = {}
+    seen_models: set[str] = set()
+    for raw_variant, raw_model_sku in value.items():
+        if (
+            type(raw_variant) is not str
+            or not raw_variant.strip().strip(";")
+            or type(raw_model_sku) is not str
+            or not raw_model_sku.strip()
+        ):
+            raise TikTokPublishContractError(
+                "expected_variant_model_skus is invalid"
+            )
+        variant = raw_variant.strip().strip(";")
+        model_sku = raw_model_sku.strip()
+        if variant in result or model_sku in seen_models:
+            raise TikTokPublishContractError(
+                "expected_variant_model_skus is invalid"
+            )
+        result[variant] = model_sku
+        seen_models.add(model_sku)
+    return result
+
+
 def _validate_snapshot(snapshot: Mapping[str, object]) -> dict[str, object]:
     if not isinstance(snapshot, Mapping):
         raise TikTokPublishContractError("snapshot must be a mapping")
@@ -130,17 +233,61 @@ def _validate_snapshot(snapshot: Mapping[str, object]) -> dict[str, object]:
         currency = raw.get("expected_currency")
         if currency != _CURRENCY_BY_TARGET[label]:
             raise TikTokPublishContractError("expected_currency is invalid")
+        sku_prices = _expected_sku_prices(raw.get("expected_sku_prices"))
+        variant_model_skus = _expected_variant_model_skus(
+            raw.get("expected_variant_model_skus")
+        )
+        expected_weight = _positive_decimal(
+            raw.get("expected_weight_kg"), "expected_weight_kg"
+        )
+        expected_package = _package_cm(
+            raw.get("expected_package_cm"), "expected_package_cm"
+        )
+        sku_parcels = _expected_sku_parcels(
+            raw.get("expected_sku_parcels"),
+            variant_model_skus=variant_model_skus,
+        )
+        if len(sku_prices) > 1 and not variant_model_skus:
+            raise TikTokPublishContractError(
+                "multi-SKU target lacks approved variant lineage"
+            )
+        if (
+            variant_model_skus
+            and sku_prices
+            and set(variant_model_skus.values()) != set(sku_prices)
+        ):
+            raise TikTokPublishContractError(
+                "approved variant, model SKU and price coverage drifted"
+            )
         targets.append(
             {
                 "target_label": label,
                 "detail_id": _positive_digits(raw.get("detail_id"), "detail_id"),
                 "shop_id": _positive_digits(raw.get("shop_id"), "shop_id"),
                 "expected_price": _positive_price(raw.get("expected_price")),
+                **(
+                    {"expected_sku_prices": sku_prices}
+                    if raw.get("expected_sku_prices") is not None
+                    else {}
+                ),
+                **(
+                    {"expected_variant_model_skus": variant_model_skus}
+                    if raw.get("expected_variant_model_skus") is not None
+                    else {}
+                ),
+                "expected_weight_kg": expected_weight,
+                "expected_package_cm": expected_package,
+                "expected_sku_parcels": sku_parcels,
                 "expected_currency": currency,
                 # This is approved product evidence.  It is intentionally not
                 # derived from the site or a platform-wide default.
-                "expected_category_id": _positive_digits(
-                    raw.get("expected_category_id"), "expected_category_id"
+                "expected_category_id": (
+                    None
+                    if raw.get("expected_category_id") is None
+                    else _positive_digits(
+                        raw.get("expected_category_id"),
+                        "expected_category_id",
+                    )
                 ),
                 "category_evidence_digest": _sha256(
                     raw.get("category_evidence_digest"),
@@ -274,6 +421,15 @@ class TikTokPublisher:
                         "provider_reason": _safe_reason(error),
                     }
                 )
+            except TikTokPreWritePreparationError as error:
+                results.append(
+                    {
+                        "target_label": label,
+                        "status": "PREPARATION_REJECTED",
+                        "provider_code": _safe_code(error.code),
+                        "provider_reason": _safe_reason(error),
+                    }
+                )
             except Exception:
                 results.append(
                     {
@@ -369,14 +525,28 @@ class TikTokPublisher:
         confirmed_write_count = 0
         try:
             draft = self.transport.read_draft(target)
-            # GB has no post-save readback gate, but its shop draft must receive
-            # the approved category plus official mandatory category attribute
-            # before submission.  Other sites save only when facts drift.
-            if label == "tiktok:GB" or not self.transport.draft_matches(target, draft):
+            # GB must always materialize its deterministic category metadata,
+            # COD, delivery and size-chart fields before submission.  Other
+            # targets avoid a no-op save when the exact draft already matches.
+            repair_required = (
+                True
+                if label == "tiktok:GB"
+                else not self.transport.draft_matches(target, draft)
+            )
+            if repair_required:
+                try:
+                    save_response = self.transport.save_approved_draft(
+                        target, draft
+                    )
+                except TikTokPreWritePreparationError:
+                    raise
+                except Exception:
+                    # The transport crossed (or may have crossed) the write
+                    # boundary; preserve the request as an unknown outcome.
+                    write_request_count += 1
+                    raise
                 write_request_count += 1
-                _provider_acceptance(
-                    self.transport.save_approved_draft(target, draft)
-                )
+                _provider_acceptance(save_response)
                 confirmed_write_count += 1
             write_request_count += 1
             provider_code, provider_reason = _provider_acceptance(
@@ -392,6 +562,24 @@ class TikTokPublisher:
             return {
                 "target_label": label,
                 "outcome": "ACCEPTED",
+                "provider_code": provider_code,
+                "provider_reason": provider_reason,
+                "external_write_count": confirmed_write_count,
+                "write_request_count": write_request_count,
+            }
+        except TikTokPreWritePreparationError as error:
+            provider_code = _safe_code(error.code)
+            provider_reason = _safe_reason(error)
+            _LOGGER.warning(
+                "tiktok_publish_prewrite_rejected target=%s code=%s writes=%s requests=%s",
+                label,
+                provider_code,
+                confirmed_write_count,
+                write_request_count,
+            )
+            return {
+                "target_label": label,
+                "outcome": "REJECTED",
                 "provider_code": provider_code,
                 "provider_reason": provider_reason,
                 "external_write_count": confirmed_write_count,

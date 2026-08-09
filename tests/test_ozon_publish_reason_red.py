@@ -8,6 +8,40 @@ import types
 from modules.products import server as product_server
 
 
+def test_ozon_existing_product_requires_exact_approved_fields(monkeypatch):
+    """A non-empty stale title must not count as an exact existing product."""
+
+    from modules.ozon import target_scoped
+
+    monkeypatch.setattr(
+        target_scoped,
+        "ozon_post",
+        lambda *_args, **_kwargs: {
+            "items": [
+                {
+                    "id": 5875531446,
+                    "offer_id": "0966",
+                    "name": "Legacy title built from parcel dimensions",
+                    "price": "43",
+                    "images": ["https://images.example/1.jpg"],
+                    "statuses": {"is_created": True, "status": "PRICE_SENT"},
+                }
+            ]
+        },
+    )
+
+    result = target_scoped.read_existing_product(
+        offer_id="0966",
+        expected_title="Approved product title",
+        expected_price=43,
+        expected_images=["https://images.example/1.jpg"],
+    )
+
+    assert result["checks"]["title"] is False
+    assert result["checks"]["price"] is True
+    assert result["checks"]["images"] is True
+
+
 def test_ozon_publish_exposes_safe_provider_rejection_reason(monkeypatch):
     """The former handler collapses the provider fact into a generic error."""
 

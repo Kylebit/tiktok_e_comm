@@ -62,6 +62,9 @@ def test_homebloom_target_is_a_first_class_independent_publish_target():
         "detail_id": "91001",
         "shop_id": "15173238",
         "expected_price": "90",
+        "expected_weight_kg": "0.1",
+        "expected_package_cm": ["20", "20", "3"],
+        "expected_sku_parcels": {},
         "expected_currency": "PHP",
         "expected_category_id": "600338",
         "category_evidence_digest": "a" * 64,
@@ -70,7 +73,7 @@ def test_homebloom_target_is_a_first_class_independent_publish_target():
         "receipt_digest": "d" * 64,
     }
     snapshot = {
-        "schema_version": "approved-tiktok-publish-snapshot/v1",
+        "schema_version": "approved-tiktok-publish-snapshot/v2",
         "offer_id": "3838619319",
         "plan_id": "omnichannel:homebloom-only",
         "product_revision": 1,
@@ -90,6 +93,9 @@ def test_one_missing_store_identity_does_not_block_another_store_snapshot():
         "detail_id": "91002",
         "shop_id": "13295169",
         "expected_price": "20",
+        "expected_weight_kg": "0.1",
+        "expected_package_cm": ["20", "20", "3"],
+        "expected_sku_parcels": {},
         "expected_currency": "MYR",
         "expected_category_id": "600338",
         "category_evidence_digest": "a" * 64,
@@ -98,7 +104,7 @@ def test_one_missing_store_identity_does_not_block_another_store_snapshot():
         "receipt_digest": "d" * 64,
     }
     snapshot = {
-        "schema_version": "approved-tiktok-publish-snapshot/v1",
+        "schema_version": "approved-tiktok-publish-snapshot/v2",
         "offer_id": "3838619319",
         "plan_id": "omnichannel:partial-identities",
         "product_revision": 1,

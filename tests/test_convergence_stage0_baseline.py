@@ -303,7 +303,7 @@ def test_tiktok_partial_row_rejects_nonterminal_gb(gb_status):
     ) is False
 
 
-def test_tiktok_partial_row_rejects_missing_gb():
+def test_tiktok_partial_row_keeps_known_ready_targets_when_one_target_receipt_is_missing():
     row = _tiktok_partial_row(
         gb_status="FAILED",
         gb_error="target_preparation_failed",
@@ -317,7 +317,7 @@ def test_tiktok_partial_row_rejects_missing_gb():
     assert product_server._collectbox_platform_row_publishable(
         row,
         "TIKTOK",
-    ) is False
+    ) is True
 
 
 def test_tiktok_partial_row_rejects_duplicate_gb():
@@ -355,7 +355,7 @@ def test_tiktok_partial_row_rejects_malformed_terminal_gb(mutate):
     ) is False
 
 
-def test_tiktok_partial_row_rejects_any_non_gb_failure():
+def test_tiktok_partial_row_keeps_other_ready_targets_publishable_after_non_gb_failure():
     row = _tiktok_partial_row(
         gb_status="FAILED",
         gb_error="target_preparation_failed",
@@ -370,7 +370,13 @@ def test_tiktok_partial_row_rejects_any_non_gb_failure():
     assert product_server._collectbox_platform_row_publishable(
         row,
         "TIKTOK",
-    ) is False
+    ) is True
+    assert product_server._collectbox_tiktok_ready_target_labels(row) == (
+        "tiktok:LH_MY",
+        "tiktok:LH_TH",
+        "tiktok:LH_VN",
+        "tiktok:MX",
+    )
 
 
 def test_three_platform_http_routes_are_independent(

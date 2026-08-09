@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import os
+import threading
 import time
 import gzip
 import urllib.error
@@ -23,6 +24,9 @@ CONFIG_CANDIDATES = (
     ROOT / "config" / "miaoshou.local.json",
     MAIN_REPO / "config" / "miaoshou.local.json",
 )
+OPEN_REQUEST_INTERVAL_SECONDS = 1.1
+_open_request_lock = threading.Lock()
+_last_open_request_at = 0.0
 
 
 class MiaoshouBusinessRejectedError(RuntimeError):
@@ -90,6 +94,19 @@ def _open_sign(secret: str, path: str, timestamp: int, key: str, body_json: str)
     return hmac.new(secret.encode(), content.encode(), hashlib.sha256).hexdigest()
 
 
+def _wait_for_open_slot() -> None:
+    """Space signed Open API requests below the account's one-second limit."""
+
+    global _last_open_request_at
+    with _open_request_lock:
+        now = time.monotonic()
+        remaining = OPEN_REQUEST_INTERVAL_SECONDS - (now - _last_open_request_at)
+        if _last_open_request_at and remaining > 0:
+            time.sleep(remaining)
+            now = time.monotonic()
+        _last_open_request_at = now
+
+
 def generate_sign(
     app_secret: str,
     path: str,
@@ -132,6 +149,7 @@ def post_open(
         path = "/" + path
     payload = body or {}
     body_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    _wait_for_open_slot()
     timestamp = int(time.time())
     request = urllib.request.Request(
         root + path,

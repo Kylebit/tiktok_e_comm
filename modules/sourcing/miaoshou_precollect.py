@@ -13,6 +13,7 @@ import html
 import json
 import os
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -33,6 +34,9 @@ CONFIG_CANDIDATES = (
     ROOT / "config" / "miaoshou.local.json",
     MAIN_REPO / "config" / "miaoshou.local.json",
 )
+OPEN_REQUEST_INTERVAL_SECONDS = 1.1
+_open_request_lock = threading.Lock()
+_last_open_request_at = 0.0
 
 
 def _now() -> str:
@@ -65,6 +69,19 @@ def _sign(secret: str, path: str, timestamp: int, key: str, body_json: str) -> s
     return hmac.new(secret.encode(), content.encode(), hashlib.sha256).hexdigest()
 
 
+def _wait_for_open_slot() -> None:
+    """Space signed Open API requests below the account's one-second limit."""
+
+    global _last_open_request_at
+    with _open_request_lock:
+        now = time.monotonic()
+        remaining = OPEN_REQUEST_INTERVAL_SECONDS - (now - _last_open_request_at)
+        if _last_open_request_at and remaining > 0:
+            time.sleep(remaining)
+            now = time.monotonic()
+        _last_open_request_at = now
+
+
 def post_open(path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
     cfg = _load_config()
     key = str(cfg["app_id"])
@@ -72,6 +89,7 @@ def post_open(path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
     root = str(cfg.get("base_url") or BASE_URL).rstrip("/")
     payload = body or {}
     body_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    _wait_for_open_slot()
     timestamp = int(time.time())
     request = urllib.request.Request(
         root + path,
@@ -135,13 +153,64 @@ def _find_item(source_id: str, *, post: Callable = post_open) -> dict[str, Any] 
         if source_id in ids:
             exact.append(item)
     candidates = exact or items
-    return candidates[0] if candidates else None
+    if not candidates:
+        return None
+    # Miaoshou may put a later duplicate row in ``skip`` while the earlier
+    # canonical row remains ``success``.  The unreadable alias must not shadow
+    # the exact successful source record.
+    for status in ("success", "collecting", "pending", "processing"):
+        preferred = next(
+            (
+                item
+                for item in candidates
+                if str(item.get("status") or "").strip().lower() == status
+            ),
+            None,
+        )
+        if preferred is not None:
+            return preferred
+    return candidates[0]
 
 
 def _fetch_detail(common_id: int, *, post: Callable = post_open) -> dict[str, Any]:
     response = post(DETAIL_PATH, {"commonCollectBoxDetailId": int(common_id)})
     data = response.get("data") or {}
     return data.get("editCommonCollectBoxDetail") or data
+
+
+def _find_item_by_common_detail_id(
+    common_id: int,
+    *,
+    post: Callable = post_open,
+    max_pages: int = 20,
+) -> dict[str, Any] | None:
+    """Read the bounded collect-box index to identify one duplicate alias."""
+
+    page_size = 100
+    wanted = str(int(common_id))
+    for page_no in range(1, max_pages + 1):
+        response = post(
+            LIST_PATH,
+            {
+                "pageNo": page_no,
+                "pageSize": page_size,
+                "filter": {"tabPaneName": "all"},
+            },
+        )
+        data = response.get("data") or {}
+        items = data.get("detailList") or []
+        for item in items:
+            if str(item.get("commonCollectBoxDetailId") or "") == wanted:
+                return item
+        if not items or len(items) < page_size:
+            break
+        try:
+            total = int(data.get("total") or 0)
+        except (TypeError, ValueError):
+            total = 0
+        if total and page_no * page_size >= total:
+            break
+    return None
 
 
 def source_meta(detail: dict[str, Any]) -> dict[str, str]:
@@ -151,6 +220,41 @@ def source_meta(detail: dict[str, Any]) -> dict[str, str]:
         "source_id": str(source.get("sourceItemId") or ""),
         "source_url": str(source.get("sourceItemUrl") or ""),
     }
+
+
+def _resolve_skipped_duplicate_detail(
+    common_id: int,
+    *,
+    post: Callable = post_open,
+) -> tuple[int, dict[str, Any]] | None:
+    """Resolve a skipped duplicate to the exact successful source record."""
+
+    alias = _find_item_by_common_detail_id(common_id, post=post)
+    if str((alias or {}).get("status") or "").strip().lower() != "skip":
+        return None
+    source_ids = {
+        str(item.get("sourceItemId") or "").strip()
+        for item in (alias or {}).get("sourceList") or []
+        if str(item.get("sourceItemId") or "").strip()
+    }
+    if len(source_ids) != 1:
+        return None
+    source_id = next(iter(source_ids))
+    canonical = _find_item(source_id, post=post)
+    if str((canonical or {}).get("status") or "").strip().lower() != "success":
+        return None
+    try:
+        resolved_id = int(canonical.get("commonCollectBoxDetailId"))
+    except (TypeError, ValueError):
+        return None
+    if resolved_id == int(common_id):
+        return None
+    detail = _fetch_detail(resolved_id, post=post)
+    if source_meta(detail).get("source_id") != source_id:
+        raise RuntimeError(
+            "Miaoshou duplicate resolution changed the exact source identity"
+        )
+    return resolved_id, detail
 
 
 def _detail_image_urls(detail: dict[str, Any]) -> list[str]:
@@ -228,17 +332,30 @@ def import_common_collect_detail(
     """Import one Miaoshou common collect detail as a first-review source."""
     cid = int(str(common_id).strip())
     key = state_key or str(cid)
-    detail = _fetch_detail(cid, post=post)
+    resolved_cid = cid
+    try:
+        detail = _fetch_detail(cid, post=post)
+    except RuntimeError as original_error:
+        # A duplicate row has no independent detail payload.  Follow only its
+        # exact source identity to an already-successful canonical row; never
+        # guess by title, image, seller code, or numeric proximity.
+        resolved = _resolve_skipped_duplicate_detail(cid, post=post)
+        if resolved is None:
+            raise original_error
+        resolved_cid, detail = resolved
     meta = source_meta(detail)
     normalized = normalize_detail(
         detail,
-        source_url=meta.get("source_url") or f"miaoshou://common_collect/{cid}",
-        source_id=meta.get("source_id") or str(cid),
+        source_url=(
+            meta.get("source_url")
+            or f"miaoshou://common_collect/{resolved_cid}"
+        ),
+        source_id=meta.get("source_id") or str(resolved_cid),
     )
     record = {
         "url": normalized["source_url"],
         "source_id": normalized["source_id"],
-        "common_collect_id": cid,
+        "common_collect_id": resolved_cid,
         "status": "success",
         "title": normalized.get("title"),
         "source": meta.get("source") or "miaoshou",
@@ -247,7 +364,14 @@ def import_common_collect_detail(
     payload = {
         "offer_id": key,
         "mode": "miaoshou_common_collect_detail",
-        "input_sources": [{"url": record["url"], "source_id": record["source_id"], "common_collect_id": cid}],
+        "requested_common_collect_id": cid,
+        "resolved_common_collect_id": resolved_cid,
+        "resolved_duplicate": resolved_cid != cid,
+        "input_sources": [{
+            "url": record["url"],
+            "source_id": record["source_id"],
+            "common_collect_id": resolved_cid,
+        }],
         "records": [record],
         "normalized": normalized,
         "updated_at": _now(),

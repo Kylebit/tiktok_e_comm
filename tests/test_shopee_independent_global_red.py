@@ -108,6 +108,92 @@ def test_approved_global_detail_preserves_approved_product_facts() -> None:
     assert detail["skus"][0]["seller_sku"] == "0959"
     assert detail["skus"][0]["inventory"] == [{"quantity": 300}]
     assert detail["package_dimensions"] == {"length": 30.0, "width": 5.0, "height": 5.0}
+    assert detail["skus"][0]["variation_image_position"] == 0
+
+
+def test_existing_global_model_repairs_missing_variant_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A populated model without an option image must converge in place."""
+
+    detail = approved_global_publisher.approved_global_detail({
+        "seller_sku": "0966",
+        "title": "Approved title",
+        "description": "Approved description",
+        "images": ["https://example.test/1.jpg"],
+        "package_cm": [29, 3, 3],
+        "weight_kg": 0.1,
+        "quantity": 1,
+        "global_original_price_cny": 42.83,
+    })
+    detail["skus"][0]["variation_image_id"] = "image-approved-1"
+    reads = iter([
+        {
+            "response": {
+                "global_model": [{
+                    "global_model_sku": "0966",
+                    "tier_index": [0],
+                    "price_info": {"original_price": 42.83},
+                }],
+                "tier_variation": [{
+                    "name": "Variation",
+                    "option_list": [{"option": "0966"}],
+                }],
+            }
+        },
+        {
+            "response": {
+                "global_model": [{
+                    "global_model_sku": "0966",
+                    "tier_index": [0],
+                    "price_info": {"original_price": 42.83},
+                }],
+                "tier_variation": [{
+                    "name": "Variation",
+                    "option_list": [{
+                        "option": "0966",
+                        "image": {"image_id": "image-approved-1"},
+                    }],
+                }],
+            }
+        },
+    ])
+    writes = []
+    monkeypatch.setattr(
+        shopee_publish,
+        "merchant_get",
+        lambda *_args, **_kwargs: next(reads),
+    )
+    monkeypatch.setattr(
+        shopee_publish,
+        "merchant_post",
+        lambda path, _mid, _token, body: writes.append((path, body)) or {"error": ""},
+    )
+
+    result = shopee_publish.ensure_global_models(
+        global_item_id=48715697978,
+        merchant_id=9,
+        merchant_token="token",
+        detail=detail,
+        original_price=42.83,
+        stock=1,
+        create_when_missing=False,
+    )
+
+    assert result["variant_images_verified"] is True
+    assert writes == [(
+        "/api/v2/global_product/update_tier_variation",
+        {
+            "global_item_id": 48715697978,
+            "tier_variation": [{
+                "name": "Variation",
+                "option_list": [{
+                    "option": "0966",
+                    "image": {"image_id": "image-approved-1"},
+                }],
+            }],
+        },
+    )]
 
 
 def test_approved_global_facts_preserve_all_exact_approved_variants() -> None:
@@ -166,6 +252,46 @@ def test_approved_global_detail_preserves_three_models_and_option_labels() -> No
     ]
 
 
+def test_approved_global_accepts_approved_label_without_manual_override() -> None:
+    """The selected SKU label is authoritative when Kyle made no override."""
+
+    payload = _three_variant_approved_payload()
+    payload["product_facts"]["sku_label_overrides"] = {}
+
+    facts = product_server._approved_shopee_global_publish_facts(payload)
+
+    assert [row["option_label"] for row in facts["variants"]] == [
+        row["label"] for row in payload["product_facts"]["selected_skus"]
+    ]
+
+
+def test_approved_global_rejects_conflicting_manual_label_override() -> None:
+    payload = _three_variant_approved_payload()
+    payload["product_facts"]["sku_label_overrides"]["variant-a"] = "drifted"
+
+    with pytest.raises(ValueError, match="variant binding is invalid"):
+        product_server._approved_shopee_global_publish_facts(payload)
+
+
+def test_global_master_parcel_uses_safe_envelope_of_all_approved_skus() -> None:
+    """CNSC has item-level parcel fields, so the master must cover every SKU."""
+
+    facts = product_server._approved_shopee_global_publish_facts(
+        _three_variant_approved_payload()
+    )
+    detail = approved_global_publisher.approved_global_detail(facts)
+
+    assert detail["package_weight"] == {
+        "value": 0.4,
+        "unit": "KILOGRAM",
+    }
+    assert detail["package_dimensions"] == {
+        "length": 90.0,
+        "width": 7.0,
+        "height": 7.0,
+    }
+
+
 def test_shopee_init_tier_payload_contains_all_three_approved_models(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -219,6 +345,41 @@ def test_shopee_init_tier_payload_contains_all_three_approved_models(
     ]
 
 
+def test_existing_global_models_with_repeated_first_price_are_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A complete SKU set is still stale when per-model prices drift."""
+
+    facts = product_server._approved_shopee_global_publish_facts(
+        _three_variant_approved_payload()
+    )
+    detail = approved_global_publisher.approved_global_detail(facts)
+    monkeypatch.setattr(
+        shopee_publish,
+        "merchant_get",
+        lambda *_args, **_kwargs: {
+            "response": {
+                "global_model": [
+                    {"global_model_sku": "0960", "tier_index": [0], "price_info": {"original_price": 89.5}},
+                    {"global_model_sku": "0961", "tier_index": [1], "price_info": {"original_price": 89.5}},
+                    {"global_model_sku": "0962", "tier_index": [2], "price_info": {"original_price": 89.5}},
+                ]
+            }
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="model price mismatch"):
+        shopee_publish.ensure_global_models(
+            global_item_id=456,
+            merchant_id=9,
+            merchant_token="token",
+            detail=detail,
+            original_price=119.65,
+            stock=1,
+            create_when_missing=False,
+        )
+
+
 def test_new_global_product_is_mapped_for_independent_repeat(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -243,7 +404,7 @@ def test_new_global_product_is_mapped_for_independent_repeat(
     assert saved == [(('123',), {"match_key": "0959", "global_model_sku": "0959", "title": "Approved title", "published_regions": []})]
 
 
-def test_existing_global_is_a_success_without_copy_readback_or_tiktok(
+def test_existing_global_converges_approved_copy_before_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     facts = {
@@ -255,11 +416,30 @@ def test_existing_global_is_a_success_without_copy_readback_or_tiktok(
     monkeypatch.setattr("modules.shopee.auth.ensure_shop_token", lambda _shop_id: "token")
     monkeypatch.setattr("modules.shopee.shops.sync_shop_ids", lambda: {"PH": 1})
     monkeypatch.setattr("modules.shopee.global_sku_map.global_item_id_for_match_key", lambda _sku: "123")
-    monkeypatch.setattr("modules.shopee.publish._reference_item", lambda *_args: (_ for _ in ()).throw(AssertionError("reference read is unnecessary")))
+    monkeypatch.setattr("modules.shopee.publish._shop_meta", lambda *_args: {"merchant_id": 9})
+    monkeypatch.setattr("modules.shopee.publish._merchant_token", lambda *_args: "merchant-token")
+    monkeypatch.setattr("modules.shopee.publish._reference_item", lambda *_args: {"category_id": 1})
+    converged = []
+    monkeypatch.setattr(
+        "modules.shopee.publish.ensure_global_master",
+        lambda **kwargs: converged.append(kwargs) or {
+            "verified": True,
+            "updated": True,
+        },
+    )
+    monkeypatch.setattr(
+        "modules.shopee.publish.ensure_global_models",
+        lambda **_kwargs: {"variant_images_verified": True},
+    )
 
     receipt = approved_global_publisher.publish_approved_global(facts)
 
-    assert receipt == {"ok": True, "flow": "already_created", "global_item_id": 123, "model_sku": "0959"}
+    assert receipt["ok"] is True
+    assert receipt["global_item_id"] == 123
+    assert receipt["copy_converged"] is True
+    assert converged[0]["title"] == "Approved title"
+    assert converged[0]["description"] == "Approved description"
+    assert converged[0]["original_price"] is None
 
 
 def test_existing_one_model_global_is_replaced_by_exact_three_model_product(

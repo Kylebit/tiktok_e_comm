@@ -8,6 +8,7 @@ TikTok/Shopee alignment record: the CNSC global product is a Shopee resource.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from copy import deepcopy
 
 
 def _text(value: object, name: str) -> str:
@@ -76,6 +77,7 @@ def approved_global_detail(facts: Mapping[str, object]) -> dict[str, object]:
         else None
     )
     variants: list[dict[str, object]] = []
+    single_variant = len(raw_variants) == 1
     for row in raw_variants:
         if not isinstance(row, Mapping):
             raise ValueError("approved Shopee variants are invalid")
@@ -115,9 +117,20 @@ def approved_global_detail(facts: Mapping[str, object]) -> dict[str, object]:
             "weight_kg": sku_weight,
             "dimensions": sku_dimensions,
             "original_price": sku_price,
+            "variation_image_position": (
+                0 if single_variant else row.get("variation_image_position")
+            ),
         })
     if len({str(row["model_sku"]) for row in variants}) != len(variants):
         raise ValueError("approved Shopee model SKUs are not unique")
+    # Shopee CNSC exposes parcel fields at global-item level, not per model.
+    # Use the conservative envelope of all approved variants so the master is
+    # valid for every SKU instead of silently inheriting the first SKU.
+    weight_kg = max(float(row["weight_kg"]) for row in variants)
+    dimensions = [
+        max(float(row["dimensions"][index]) for row in variants)
+        for index in range(3)
+    ]
     return {
         "title": title,
         "description": description,
@@ -132,6 +145,12 @@ def approved_global_detail(facts: Mapping[str, object]) -> dict[str, object]:
             {
                 "seller_sku": row["model_sku"],
                 "variation_option": row["option_label"],
+                **(
+                    {"variation_image_position": row["variation_image_position"]}
+                    if type(row.get("variation_image_position")) is int
+                    and 0 <= int(row["variation_image_position"]) < len(images)
+                    else {}
+                ),
                 **(
                     {"original_price": row["original_price"]}
                     if row["original_price"] is not None
@@ -153,6 +172,26 @@ def approved_global_detail(facts: Mapping[str, object]) -> dict[str, object]:
     }
 
 
+def _bind_variant_image_ids(
+    detail: Mapping[str, object], image_ids: list[str]
+) -> dict[str, object]:
+    """Bind approved variant positions to uploaded Shopee image identities."""
+
+    bound = deepcopy(dict(detail))
+    skus = bound.get("skus")
+    if not isinstance(skus, list):
+        return bound
+    for sku in skus:
+        if not isinstance(sku, dict):
+            continue
+        position = sku.get("variation_image_position")
+        if type(position) is int and 0 <= position < len(image_ids):
+            image_id = str(image_ids[position] or "").strip()
+            if image_id:
+                sku["variation_image_id"] = image_id
+    return bound
+
+
 def publish_approved_global(facts: Mapping[str, object]) -> dict[str, object]:
     """Create one CNSC global product through Shopee's official API.
 
@@ -167,6 +206,7 @@ def publish_approved_global(facts: Mapping[str, object]) -> dict[str, object]:
         _reference_item,
         _shop_meta,
         _upload_images,
+        ensure_global_master,
         ensure_global_models,
     )
     from modules.shopee.global_sku_map import (
@@ -189,34 +229,59 @@ def publish_approved_global(facts: Mapping[str, object]) -> dict[str, object]:
         _text(facts.get("seller_sku"), "seller SKU")
     )
     replaced_inexact_global_item_id: int | None = None
-    if existing_global_item_id and len(detail["skus"]) == 1:
-        # A previous click already obtained a Shopee global identity.  The
-        # product rule for this button is *create the global product*, not a
-        # secondary synchronization system.  Do not turn a safe repeat into
-        # a write-plus-brittle-readback failure merely because Shopee
-        # normalizes displayed copy.
-        return {
-            "ok": True,
-            "flow": "already_created",
-            "global_item_id": int(existing_global_item_id),
-            "model_sku": _text(facts.get("seller_sku"), "seller SKU"),
-        }
     if existing_global_item_id:
         merchant_id = int(_shop_meta(shop_id, token).get("merchant_id") or 0)
         if merchant_id <= 0:
             raise RuntimeError("Shopee merchant context is unavailable")
         merchant_token = _merchant_token(shop_id, token)
+        ref = _reference_item(region, shop_id, token)
         first_sku = detail["skus"][0]
         stock = sum(
             int(row.get("quantity") or 0)
             for row in first_sku.get("inventory") or []
         ) or 1
         try:
-            ensure_global_models(
+            # Reject a stale/inexact multi-model identity before touching its
+            # master copy.  A second call after the master read binds and
+            # verifies per-variant image identities.
+            if len(detail["skus"]) > 1:
+                ensure_global_models(
+                    global_item_id=int(existing_global_item_id),
+                    merchant_id=merchant_id,
+                    merchant_token=merchant_token,
+                    detail=detail,
+                    original_price=_positive_number(
+                        facts.get("global_original_price_cny"), "global price"
+                    ),
+                    stock=stock,
+                    create_when_missing=False,
+                )
+            master = ensure_global_master(
                 global_item_id=int(existing_global_item_id),
                 merchant_id=merchant_id,
                 merchant_token=merchant_token,
                 detail=detail,
+                title=_text(facts.get("title"), "title"),
+                description=_text(facts.get("description"), "description"),
+                ref=ref,
+                # Once tier variation exists, CNSC exposes price on the Model
+                # row and may omit master `original_price`, even for one SKU.
+                # The exact price is verified by ensure_global_models below.
+                original_price=None,
+            )
+            detail_with_images = _bind_variant_image_ids(
+                detail,
+                [
+                    str(image_id)
+                    for image_id in (master.get("image_ids") or [])
+                    if str(image_id or "").strip()
+                ],
+            )
+            model_result = ensure_global_models(
+                global_item_id=int(existing_global_item_id),
+                merchant_id=merchant_id,
+                merchant_token=merchant_token,
+                detail=detail_with_images,
                 original_price=_positive_number(
                     facts.get("global_original_price_cny"), "global price"
                 ),
@@ -224,7 +289,10 @@ def publish_approved_global(facts: Mapping[str, object]) -> dict[str, object]:
                 create_when_missing=False,
             )
         except RuntimeError:
-            replaced_inexact_global_item_id = int(existing_global_item_id)
+            if len(detail["skus"]) > 1:
+                replaced_inexact_global_item_id = int(existing_global_item_id)
+            else:
+                raise
         else:
             return {
                 "ok": True,
@@ -232,11 +300,17 @@ def publish_approved_global(facts: Mapping[str, object]) -> dict[str, object]:
                 "global_item_id": int(existing_global_item_id),
                 "model_sku": _text(facts.get("seller_sku"), "seller SKU"),
                 "model_count": len(detail["skus"]),
+                "copy_converged": master.get("verified") is True,
+                "copy_updated": master.get("updated") is True,
+                "variant_images_verified": (
+                    model_result.get("variant_images_verified") is True
+                ),
             }
     reference = _reference_item(region, shop_id, token)
     image_ids = _upload_images(list(detail["main_images"]))
     if not image_ids:
         raise RuntimeError("Shopee did not accept any approved image")
+    detail = _bind_variant_image_ids(detail, image_ids)
     result = _create_global_item(
         detail,
         region=region,

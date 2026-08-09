@@ -71,7 +71,11 @@ def _approved_plan(*, persist_category_decisions=True):
     payload = {
         "product_revision": 15,
         "targets": targets,
-        "product_facts": {"category": category},
+        "product_facts": {
+            "category": category,
+            "weight_kg": "0.1",
+            "package_cm": ["20", "20", "3"],
+        },
         "pricing": {
             "selected_targets": {
                 target: {
@@ -277,7 +281,7 @@ def test_http_builds_exact_six_target_snapshot_without_common(
     assert response["success"] is True
     assert len(publisher.snapshots) == 1
     snapshot = publisher.snapshots[0]
-    assert snapshot["schema_version"] == "approved-tiktok-publish-snapshot/v1"
+    assert snapshot["schema_version"] == "approved-tiktok-publish-snapshot/v2"
     assert [row["target_label"] for row in snapshot["targets"]] == list(
         TIKTOK_TARGETS
     )
@@ -297,6 +301,64 @@ def test_http_builds_exact_six_target_snapshot_without_common(
     assert all(len(row["target_identity_digest"]) == 64 for row in snapshot["targets"])
     assert all(len(row["publish_identity_digest"]) == 64 for row in snapshot["targets"])
     assert all(len(row["receipt_digest"]) == 64 for row in snapshot["targets"])
+    assert all(row["expected_weight_kg"] == "0.1" for row in snapshot["targets"])
+    assert all(
+        row["expected_package_cm"] == ["20", "20", "3"]
+        for row in snapshot["targets"]
+    )
+    assert all(row["expected_sku_parcels"] == {} for row in snapshot["targets"])
+
+
+def test_http_target_scope_dispatches_only_the_approved_gb_store(
+    monkeypatch,
+    product_http_server,
+):
+    plan = _approved_plan()
+    contexts = _publish_contexts(plan)
+    publisher = _Publisher()
+    _install_server_fakes(monkeypatch, plan, contexts, publisher)
+    request = _request_body(plan)
+    request["tiktok_target_scope"] = ["tiktok:GB"]
+
+    status, response = _post(
+        product_http_server + "/api/product-workspace/publish-tiktok",
+        request,
+    )
+
+    assert status == 200
+    assert response["success"] is True
+    assert response["target_count"] == 1
+    assert len(publisher.snapshots) == 1
+    snapshot = publisher.snapshots[0]
+    assert [row["target_label"] for row in snapshot["targets"]] == ["tiktok:GB"]
+    assert snapshot["unavailable_targets"] == []
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [[], ["tiktok:GB", "tiktok:GB"], ["shopee:PH"], ["tiktok:NOT_APPROVED"]],
+)
+def test_http_invalid_target_scope_fails_before_platform_writes(
+    monkeypatch,
+    product_http_server,
+    scope,
+):
+    plan = _approved_plan()
+    contexts = _publish_contexts(plan)
+    publisher = _Publisher()
+    _install_server_fakes(monkeypatch, plan, contexts, publisher)
+    request = _request_body(plan)
+    request["tiktok_target_scope"] = scope
+
+    status, response = _post(
+        product_http_server + "/api/product-workspace/publish-tiktok",
+        request,
+    )
+
+    assert status == 409
+    assert response["error"]["code"] == "tiktok_approved_snapshot_invalid"
+    assert response["external_write_count"] == 0
+    assert publisher.snapshots == []
 
 
 def test_missing_collectbox_target_reports_only_that_store_unavailable(
@@ -436,6 +498,7 @@ def test_http_handler_executes_the_real_independent_publisher_contract(
         PUBLISH_PATH,
         READ_SHOP_DRAFT_PATH,
         READ_SITE_DRAFT_PATH,
+        SAVE_SHOP_DRAFT_PATH,
     )
     from tests.test_tiktok_independent_publisher import _publisher
 
@@ -473,3 +536,6 @@ def test_http_handler_executes_the_real_independent_publisher_contract(
     read_paths = {READ_SITE_DRAFT_PATH, READ_SHOP_DRAFT_PATH}
     assert len([call for call in transport.calls if call[0] in read_paths]) == 6
     assert len([call for call in transport.calls if call[0] == PUBLISH_PATH]) == 6
+    assert len(
+        [call for call in transport.calls if call[0] == SAVE_SHOP_DRAFT_PATH]
+    ) == 1

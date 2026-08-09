@@ -28,6 +28,7 @@ from modules.products import server as product_server
 from shared_platform import release_store as release_store_module
 from shared_platform.collectbox_action import (
     ALREADY_PRESENT,
+    IMPORTED,
     RECONCILIATION_REQUIRED,
     SUCCEEDED,
     CollectBoxActionStore,
@@ -128,6 +129,7 @@ def _persist_collectbox_result(
     *,
     include_details: bool = True,
     omit_detail_targets: tuple[str, ...] = (),
+    failed_targets: tuple[str, ...] = (),
     restart_request_id: str | None = None,
 ):
     def adapter(request):
@@ -142,13 +144,13 @@ def _persist_collectbox_result(
         outcomes = tuple(
             CollectBoxTargetOutcome(
                 target_label=label,
-                status=("FAILED" if label == "tiktok:GB" else SUCCEEDED),
+                status=("FAILED" if label in failed_targets else SUCCEEDED),
                 error_code=(
-                    "target_preparation_failed"
-                    if label == "tiktok:GB"
+                    "category_confirmation_required"
+                    if label in failed_targets
                     else None
                 ),
-                detail_digest=("f" * 64 if label == "tiktok:GB" else None),
+                detail_digest=("f" * 64 if label in failed_targets else None),
             )
             for label in TIKTOK_TARGETS
         )
@@ -160,7 +162,9 @@ def _persist_collectbox_result(
             ),
         )
         return CollectBoxPlatformResult(
-            status=RECONCILIATION_REQUIRED,
+            status=(RECONCILIATION_REQUIRED if failed_targets else SUCCEEDED),
+            outcome=(None if failed_targets else IMPORTED),
+            platform_detail_id=(None if failed_targets else "88001"),
             external_writes=writes,
             external_write_count=len(writes),
             target_outcomes=outcomes,
@@ -177,9 +181,13 @@ def _persist_collectbox_result(
                 if include_details
                 else ()
             ),
-            error_category="CHANNEL",
-            error_code="collectbox_platform_preparation_partial",
-            error_detail="GB is terminal while five approved drafts are exact",
+            error_category=("CONTENT" if failed_targets else None),
+            error_code=(
+                "category_confirmation_required" if failed_targets else None
+            ),
+            error_detail=(
+                "one target requires category confirmation" if failed_targets else None
+            ),
         )
 
     projection = store.start(
@@ -328,6 +336,36 @@ def test_six_tiktok_publish_calls_each_target_once_without_oneclick_job(
     assert OneClickReleaseStore(release.path).get_job(plan_id=plan["plan_id"]) is None
 
 
+def test_category_confirmation_target_is_excluded_but_five_ready_targets_publish(
+    tmp_path, monkeypatch
+):
+    release, plan = _approved_tiktok_context(tmp_path)
+    _persist_collectbox_result(
+        CollectBoxActionStore(release.path),
+        plan,
+        failed_targets=("tiktok:LH_PH",),
+    )
+
+    status, body, woken, transport = _start_tiktok_through_handler(
+        release, plan, monkeypatch
+    )
+
+    assert status == 200
+    assert body["successful_target_count"] == 5
+    assert body["not_attempted_target_count"] == 1
+    assert body["failed_targets"] == ["tiktok:LH_PH"]
+    assert woken == []
+    assert transport is not None
+    publish_calls = [
+        body for path, body in transport.calls if path == INDEPENDENT_PUBLISH_PATH
+    ]
+    assert len(publish_calls) == 5
+    assert all(
+        int(body["shopIds"][0]) != EXPECTED_SHOP_IDS["tiktok:LH_PH"]
+        for body in publish_calls
+    )
+
+
 def test_old_collectbox_receipt_without_internal_proof_reports_each_store_without_writes(
     tmp_path, monkeypatch
 ):
@@ -394,6 +432,41 @@ def test_publish_transport_ambiguity_records_one_possible_write_per_target(
         [call for call in transport.calls if call[0] == INDEPENDENT_PUBLISH_PATH]
     ) == 6
     assert OneClickReleaseStore(release.path).get_job(plan_id=plan["plan_id"]) is None
+
+
+def test_one_ready_target_dispatch_ambiguity_does_not_truncate_later_targets(
+    tmp_path, monkeypatch
+):
+    release, plan = _approved_tiktok_context(tmp_path)
+    _persist_collectbox_result(CollectBoxActionStore(release.path), plan)
+
+    def one_ambiguous_factory(snapshot):
+        fake = FakeLowestTransport(snapshot)
+
+        def post(path, payload):
+            response = fake(path, payload)
+            if (
+                path == INDEPENDENT_PUBLISH_PATH
+                and int(payload["detailIds"][0]) == 91001
+            ):
+                raise TimeoutError("first target response lost")
+            return response
+
+        return TikTokPublisher(
+            transport=MiaoshouTikTokTransport(post=post)
+        ), fake
+
+    status, body, _woken, transport = _start_tiktok_through_handler(
+        release, plan, monkeypatch, publisher_factory=one_ambiguous_factory
+    )
+
+    assert status == 200
+    assert body["unknown_target_count"] == 1
+    assert body["successful_target_count"] == 5
+    assert transport is not None
+    assert len(
+        [call for call in transport.calls if call[0] == INDEPENDENT_PUBLISH_PATH]
+    ) == 6
 
 
 def test_missing_gb_detail_proof_does_not_block_other_five_targets(

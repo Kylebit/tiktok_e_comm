@@ -81,6 +81,9 @@ def _snapshot(*, targets: tuple[str, ...] = TARGETS) -> dict:
                 "detail_id": str(3249695000 + index),
                 "shop_id": str(EXPECTED_SHOP_ID_BY_TARGET[target]),
                 "expected_price": price,
+                "expected_weight_kg": "0.1",
+                "expected_package_cm": ["20", "20", "3"],
+                "expected_sku_parcels": {},
                 "expected_currency": currency,
                 # Category is approved product evidence, never a platform/site constant.
                 "expected_category_id": APPROVED_CATEGORY_ID,
@@ -102,15 +105,42 @@ def _snapshot(*, targets: tuple[str, ...] = TARGETS) -> dict:
 
 def _draft_response(target: str, row: dict) -> dict:
     price = row["expected_price"]
+    sku_map = {
+        "default": {
+            "price": price,
+            "priceIncludeVat": price,
+        }
+    }
+    variant_models = row.get("expected_variant_model_skus") or {}
+    sku_parcels = row.get("expected_sku_parcels") or {}
+    if variant_models:
+        sku_map = {}
+        for variant, model_sku in variant_models.items():
+            parcel = sku_parcels[variant]
+            sku_map[variant] = {
+                "itemNum": model_sku,
+                "price": (row.get("expected_sku_prices") or {}).get(
+                    model_sku, price
+                ),
+                "priceIncludeVat": (row.get("expected_sku_prices") or {}).get(
+                    model_sku, price
+                ),
+                "weight": parcel["weight_kg"],
+                "packageLength": parcel["package_cm"][0],
+                "packageWidth": parcel["package_cm"][1],
+                "packageHeight": parcel["package_cm"][2],
+            }
     detail = {
         "detailId": int(row["detail_id"]),
-        "cid": row["expected_category_id"],
-        "skuMap": {
-            "default": {
-                "price": price,
-                "priceIncludeVat": price,
-            }
-        },
+        "cid": row["expected_category_id"] or "600009",
+        "deliveryOptionSetType": "default",
+        "weight": row["expected_weight_kg"],
+        "packageLength": row["expected_package_cm"][0],
+        "packageWidth": row["expected_package_cm"][1],
+        "packageHeight": row["expected_package_cm"][2],
+        "sizeChart": "",
+        "sizeChartType": "",
+        "skuMap": sku_map,
     }
     if target in {
         "tiktok:LH_PH",
@@ -176,6 +206,50 @@ def test_l1_preflight_reads_exact_six_drafts_and_never_writes():
     assert all(path != PUBLISH_PATH for path, _body in fake.calls)
 
 
+def test_l1_preflight_accepts_miaoshou_post_submit_projection_omissions():
+    """Confirmed live projection omissions must not cause perpetual repair.
+
+    Miaoshou accepts the exact save payload, then projects the submitted draft
+    with no deliveryOptionSetType, ``sizeChartType=image``, and without the
+    per-model package dimensions.  Parent parcel, model weights, model prices,
+    SKU identities and category remain observable and must still match exactly.
+    """
+
+    snapshot = _snapshot(targets=("tiktok:LH_PH",))
+    row = snapshot["targets"][0]
+    row["expected_variant_model_skus"] = {
+        ";style;35*140;": "0963",
+        ";style;35*200;": "0964",
+        ";style;35*300;": "0965",
+    }
+    row["expected_sku_prices"] = {
+        "0963": "649",
+        "0964": "824",
+        "0965": "1031",
+    }
+    row["expected_sku_parcels"] = {
+        ";style;35*140;": {"weight_kg": "0.1", "package_cm": ["20", "20", "3"]},
+        ";style;35*200;": {"weight_kg": "0.15", "package_cm": ["20", "20", "3"]},
+        ";style;35*300;": {"weight_kg": "0.2", "package_cm": ["20", "20", "3"]},
+    }
+
+    projected = _draft_response("tiktok:LH_PH", row)
+    info = projected["data"]["siteCollectItemInfo"]
+    info["deliveryOptionSetType"] = None
+    info["sizeChartType"] = "image"
+    for sku in info["skuMap"].values():
+        sku.pop("packageLength")
+        sku.pop("packageWidth")
+        sku.pop("packageHeight")
+
+    transport = MiaoshouTikTokTransport(post=lambda _path, _body: projected)
+    target = snapshot["targets"][0]
+    draft = transport.read_draft(target)
+
+    assert transport.draft_matches(target, draft) is False
+    assert transport.post_submit_draft_matches(target, draft) is True
+
+
 def test_l1_one_rejection_does_not_stop_later_tiktok_targets():
     snapshot = _snapshot()
     publisher, fake = _publisher(snapshot, reject_target="tiktok:LH_MY")
@@ -232,6 +306,92 @@ def test_l1_direct_production_publish_reads_each_target_once():
     read_paths = {READ_SITE_DRAFT_PATH, READ_SHOP_DRAFT_PATH}
     assert len([call for call in fake.calls if call[0] in read_paths]) == 3
     assert len([call for call in fake.calls if call[0] == PUBLISH_PATH]) == 3
+
+
+def test_site_resolved_category_uses_verified_draft_category_for_publish():
+    snapshot = _snapshot()
+    for row in snapshot["targets"]:
+        row["expected_category_id"] = None
+    publisher, fake = _publisher(snapshot)
+
+    receipt = publisher.publish(snapshot)
+
+    assert receipt["accepted_target_count"] == 6
+    assert len([call for call in fake.calls if call[0] == PUBLISH_PATH]) == 6
+
+
+@pytest.mark.parametrize("target", ("tiktok:LH_PH", "tiktok:MX"))
+def test_missing_delivery_option_is_repaired_before_submit(target: str):
+    snapshot = _snapshot(targets=(target,))
+    fake = FakeLowestTransport(snapshot)
+
+    def post(path: str, body: dict) -> dict:
+        response = fake(path, body)
+        if path in {READ_SITE_DRAFT_PATH, READ_SHOP_DRAFT_PATH}:
+            container = (
+                "siteCollectItemInfo"
+                if path == READ_SITE_DRAFT_PATH
+                else "shopCollectItemInfo"
+            )
+            response["data"][container].pop("deliveryOptionSetType")
+        return response
+
+    publisher = TikTokPublisher(transport=MiaoshouTikTokTransport(post=post))
+
+    receipt = publisher.publish(snapshot)
+
+    save_path = (
+        SAVE_SITE_DRAFT_PATH
+        if target == "tiktok:LH_PH"
+        else SAVE_SHOP_DRAFT_PATH
+    )
+    saved = next(body for path, body in fake.calls if path == save_path)
+    container = (
+        "siteCollectItemInfo"
+        if save_path == SAVE_SITE_DRAFT_PATH
+        else "shopCollectItemInfo"
+    )
+    assert saved[container]["deliveryOptionSetType"] == "default"
+    assert receipt["accepted_target_count"] == 1
+
+
+@pytest.mark.parametrize("target", ("tiktok:LH_PH", "tiktok:MX"))
+def test_invalid_size_chart_is_removed_before_submit(target: str):
+    snapshot = _snapshot(targets=(target,))
+    fake = FakeLowestTransport(snapshot)
+
+    def post(path: str, body: dict) -> dict:
+        response = fake(path, body)
+        if path in {READ_SITE_DRAFT_PATH, READ_SHOP_DRAFT_PATH}:
+            container = (
+                "siteCollectItemInfo"
+                if path == READ_SITE_DRAFT_PATH
+                else "shopCollectItemInfo"
+            )
+            response["data"][container]["sizeChart"] = (
+                "https://provider.example/size-chart.gif"
+            )
+            response["data"][container]["sizeChartType"] = "image"
+        return response
+
+    publisher = TikTokPublisher(transport=MiaoshouTikTokTransport(post=post))
+
+    receipt = publisher.publish(snapshot)
+
+    save_path = (
+        SAVE_SITE_DRAFT_PATH
+        if target == "tiktok:LH_PH"
+        else SAVE_SHOP_DRAFT_PATH
+    )
+    saved = next(body for path, body in fake.calls if path == save_path)
+    container = (
+        "siteCollectItemInfo"
+        if save_path == SAVE_SITE_DRAFT_PATH
+        else "shopCollectItemInfo"
+    )
+    assert saved[container]["sizeChart"] == ""
+    assert saved[container]["sizeChartType"] == ""
+    assert receipt["accepted_target_count"] == 1
 
 
 def test_l1_mismatched_target_is_repaired_then_submitted_and_other_targets_continue():
@@ -398,7 +558,7 @@ def test_l1_transport_unknown_does_not_claim_confirmed_external_writes():
     assert result["write_request_count"] == 2
 
 
-def test_red_gb_applies_approved_category_draft_before_submit_without_readback_gate():
+def test_red_gb_repairs_bound_draft_before_submit():
     snapshot = _snapshot(targets=("tiktok:GB",))
 
     class RecordingTransport:
@@ -431,6 +591,253 @@ def test_red_gb_applies_approved_category_draft_before_submit_without_readback_g
     assert transport.calls == ["read", "save", "submit"]
     assert result["outcome"] == "ACCEPTED"
     assert result["external_write_count"] == 2
+
+
+def test_red_gb_repair_does_not_parse_malformed_old_price_before_save():
+    snapshot = _snapshot(targets=("tiktok:GB",))
+
+    class RepairTransport:
+        def __init__(self):
+            self.calls = []
+
+        def read_draft(self, target):
+            self.calls.append("read")
+            return {"info": {"skuMap": {"default": {"price": 0}}}}
+
+        def draft_matches(self, target, draft):
+            self.calls.append("match")
+            raise ValueError("old draft price is malformed")
+
+        def save_approved_draft(self, target, draft):
+            self.calls.append("save")
+            return {"result": "success", "code": "200", "message": "Success"}
+
+        def submit(self, target):
+            self.calls.append("submit")
+            return {"result": "success", "code": "200", "message": "Success"}
+
+    transport = RepairTransport()
+    result = TikTokPublisher(transport=transport).publish(snapshot)["targets"][0]
+
+    assert transport.calls == ["read", "save", "submit"]
+    assert result["outcome"] == "ACCEPTED"
+
+
+def test_red_multisku_prices_are_written_per_model_sku():
+    snapshot = _snapshot(targets=("tiktok:MX",))
+    target = snapshot["targets"][0]
+    target["expected_sku_prices"] = {
+        "0963": "286",
+        "0964": "321",
+        "0965": "359",
+    }
+    target["expected_variant_model_skus"] = {
+        "variant-1": "0963",
+        "variant-2": "0964",
+        "variant-3": "0965",
+    }
+    target["expected_sku_parcels"] = {
+        "variant-1": {"weight_kg": "0.1", "package_cm": ["20", "20", "3"]},
+        "variant-2": {"weight_kg": "0.15", "package_cm": ["20", "20", "3"]},
+        "variant-3": {"weight_kg": "0.2", "package_cm": ["20", "20", "3"]},
+    }
+    calls = []
+
+    def post(path: str, body: dict) -> dict:
+        calls.append((path, body))
+        if path == READ_SHOP_DRAFT_PATH:
+            return {
+                "result": "success",
+                "data": {
+                    "ossMd5": "mx-md5",
+                    "shopCollectItemInfo": {
+                        "detailId": int(target["detail_id"]),
+                        "cid": target["expected_category_id"],
+                        "deliveryOptionSetType": "default",
+                        "sizeChart": "",
+                        "sizeChartType": "",
+                        "skuMap": {
+                            "variant-1": {
+                                "itemNum": "0963",
+                                "price": 1,
+                                "priceIncludeVat": 1,
+                            },
+                            "variant-2": {
+                                "itemNum": "0964",
+                                "price": 1,
+                                "priceIncludeVat": 1,
+                            },
+                            "variant-3": {
+                                "itemNum": "0965",
+                                "price": 1,
+                                "priceIncludeVat": 1,
+                            },
+                        },
+                    },
+                },
+            }
+        if path in {SAVE_SHOP_DRAFT_PATH, PUBLISH_PATH}:
+            return {"result": "success", "code": "200", "message": "Success"}
+        raise AssertionError(path)
+
+    publisher = TikTokPublisher(transport=MiaoshouTikTokTransport(post=post))
+    publisher.publish(snapshot, publisher.preflight(snapshot))
+    saved = next(body for path, body in calls if path == SAVE_SHOP_DRAFT_PATH)
+    saved_rows = saved["shopCollectItemInfo"]["skuMap"]
+
+    assert {
+        row["itemNum"]: str(row["price"]).rstrip("0").rstrip(".")
+        for row in saved_rows.values()
+    } == {"0963": "286", "0964": "321", "0965": "359"}
+
+
+def test_red_opaque_gb_variants_bind_to_approved_model_sku_and_price():
+    snapshot = _snapshot(targets=("tiktok:GB",))
+    target = snapshot["targets"][0]
+    variants = ("gold;35*140", "gold;35*200", "gold;35*300")
+    target["expected_sku_prices"] = {
+        "0963": "17",
+        "0964": "18",
+        "0965": "20",
+    }
+    target["expected_variant_model_skus"] = {
+        variants[0]: "0963",
+        variants[1]: "0964",
+        variants[2]: "0965",
+    }
+    target["expected_sku_parcels"] = {
+        variants[0]: {"weight_kg": "0.1", "package_cm": ["20", "20", "3"]},
+        variants[1]: {"weight_kg": "0.15", "package_cm": ["20", "20", "3"]},
+        variants[2]: {"weight_kg": "0.2", "package_cm": ["20", "20", "3"]},
+    }
+    calls = []
+
+    def post(path: str, body: dict) -> dict:
+        calls.append((path, body))
+        if path == READ_SHOP_DRAFT_PATH:
+            repeated_source_item = {"itemNum": "1070173617923", "price": 1}
+            return {
+                "result": "success",
+                "data": {
+                    "ossMd5": "gb-md5",
+                    "shopCollectItemInfo": {
+                        "detailId": int(target["detail_id"]),
+                        "cid": target["expected_category_id"],
+                        "skuMap": {
+                            ";size-140;color-gold;": dict(repeated_source_item),
+                            ";color-gold;size-200;": dict(repeated_source_item),
+                            ";size-300;color-gold;": dict(repeated_source_item),
+                        },
+                        "skuPropertyList": [
+                            {
+                                "attrName": "Color",
+                                "attrValueList": [
+                                    {
+                                        "attrValueId": "color-gold",
+                                        "attrValue": "gold",
+                                    }
+                                ],
+                            },
+                            {
+                                "attrName": "Size",
+                                "attrValueList": [
+                                    {"attrValueId": "size-140", "attrValue": "35*140"},
+                                    {"attrValueId": "size-200", "attrValue": "35*200"},
+                                    {"attrValueId": "size-300", "attrValue": "35*300"},
+                                ],
+                            },
+                        ],
+                    },
+                },
+            }
+        if path == CATEGORY_METADATA_PATH:
+            return _gb_metadata_response()
+        if path in {SAVE_SHOP_DRAFT_PATH, PUBLISH_PATH}:
+            return {"result": "success", "code": "200", "message": "Success"}
+        raise AssertionError(path)
+
+    receipt = TikTokPublisher(
+        transport=MiaoshouTikTokTransport(post=post)
+    ).publish(snapshot)
+
+    assert receipt["accepted_target_count"] == 1
+    saved = next(body for path, body in calls if path == SAVE_SHOP_DRAFT_PATH)
+    saved_rows = saved["shopCollectItemInfo"]["skuMap"]
+    assert {
+        row["itemNum"]: str(row["price"]).rstrip("0").rstrip(".")
+        for row in saved_rows.values()
+    } == {"0963": "17", "0964": "18", "0965": "20"}
+    saved_info = saved["shopCollectItemInfo"]
+    assert (
+        saved_info["weight"],
+        saved_info["packageLength"],
+        saved_info["packageWidth"],
+        saved_info["packageHeight"],
+    ) == (0.1, 20.0, 20.0, 3.0)
+    assert {
+        row["itemNum"]: (
+            row["weight"],
+            row["packageLength"],
+            row["packageWidth"],
+            row["packageHeight"],
+        )
+        for row in saved_rows.values()
+    } == {
+        "0963": (0.1, 20.0, 20.0, 3.0),
+        "0964": (0.15, 20.0, 20.0, 3.0),
+        "0965": (0.2, 20.0, 20.0, 3.0),
+    }
+
+
+def test_red_local_gb_variant_binding_failure_is_zero_write_rejection():
+    snapshot = _snapshot(targets=("tiktok:GB",))
+    target = snapshot["targets"][0]
+    target["expected_sku_prices"] = {
+        "0963": "17",
+        "0964": "18",
+        "0965": "20",
+    }
+    target["expected_variant_model_skus"] = {
+        "gold;35*140": "0963",
+        "gold;35*200": "0964",
+        "gold;35*300": "0965",
+    }
+    target["expected_sku_parcels"] = {
+        "gold;35*140": {"weight_kg": "0.1", "package_cm": ["20", "20", "3"]},
+        "gold;35*200": {"weight_kg": "0.15", "package_cm": ["20", "20", "3"]},
+        "gold;35*300": {"weight_kg": "0.2", "package_cm": ["20", "20", "3"]},
+    }
+    calls = []
+
+    def post(path: str, body: dict) -> dict:
+        calls.append((path, body))
+        if path == READ_SHOP_DRAFT_PATH:
+            return {
+                "result": "success",
+                "data": {
+                    "ossMd5": "gb-md5",
+                    "shopCollectItemInfo": {
+                        "detailId": int(target["detail_id"]),
+                        "cid": target["expected_category_id"],
+                        "skuMap": {
+                            "opaque-a": {"itemNum": "1070173617923", "price": 1},
+                            "opaque-b": {"itemNum": "1070173617923", "price": 1},
+                            "opaque-c": {"itemNum": "1070173617923", "price": 1},
+                        },
+                    },
+                },
+            }
+        raise AssertionError("a local binding failure must not call a write endpoint")
+
+    result = TikTokPublisher(
+        transport=MiaoshouTikTokTransport(post=post)
+    ).publish(snapshot)["targets"][0]
+
+    assert result["outcome"] == "REJECTED"
+    assert result["provider_code"] == "sku_price_binding_invalid"
+    assert result["external_write_count"] == 0
+    assert result["write_request_count"] == 0
+    assert [path for path, _body in calls] == [READ_SHOP_DRAFT_PATH]
 
 
 def test_red_gb_save_uses_official_required_category_attribute():
@@ -508,7 +915,88 @@ def test_red_gb_save_uses_official_required_category_attribute():
     ]
 
 
-def test_l1_gb_save_rejection_never_calls_publish():
+def test_red_gb_save_allows_category_with_no_mandatory_attributes():
+    snapshot = _snapshot(targets=("tiktok:GB",))
+    row = snapshot["targets"][0]
+    calls = []
+
+    def post(path: str, body: dict) -> dict:
+        calls.append((path, body))
+        if path == READ_SHOP_DRAFT_PATH:
+            return _draft_response("tiktok:GB", row)
+        if path == CATEGORY_METADATA_PATH:
+            return {
+                "result": "success",
+                "data": {
+                    "categoryMetadata": {
+                        "categoryProductAttrList": [
+                            {
+                                "attrId": "100370",
+                                "name": "Batteries Included",
+                                "isMandatory": False,
+                                "values": [{"id": "1", "name": "No"}],
+                            }
+                        ]
+                    }
+                },
+            }
+        if path == SAVE_SHOP_DRAFT_PATH:
+            return {"result": "success", "code": "200", "message": "Success"}
+        raise AssertionError(path)
+
+    transport = MiaoshouTikTokTransport(post=post)
+    draft = transport.read_draft(row)
+    transport.save_approved_draft(row, draft)
+    saved = next(body for path, body in calls if path == SAVE_SHOP_DRAFT_PATH)
+
+    assert saved["shopCollectItemInfo"]["productAttributes"] == []
+
+
+def test_red_gb_metadata_preparation_failure_is_zero_write_rejection():
+    snapshot = _snapshot(targets=("tiktok:GB",))
+    row = snapshot["targets"][0]
+    calls = []
+
+    def post(path: str, body: dict) -> dict:
+        calls.append((path, body))
+        if path == READ_SHOP_DRAFT_PATH:
+            return _draft_response("tiktok:GB", row)
+        if path == CATEGORY_METADATA_PATH:
+            return {
+                "result": "success",
+                "data": {
+                    "categoryMetadata": {
+                        "categoryProductAttrList": [
+                            {
+                                "attrId": "102255",
+                                "name": "Batch Number",
+                                "isMandatory": True,
+                                "values": [
+                                    {"id": "1", "name": "One"},
+                                    {"id": "2", "name": "Two"},
+                                ],
+                            }
+                        ]
+                    }
+                },
+            }
+        raise AssertionError("pre-write preparation must not call a write endpoint")
+
+    result = TikTokPublisher(
+        transport=MiaoshouTikTokTransport(post=post)
+    ).publish(snapshot)["targets"][0]
+
+    assert result["outcome"] == "REJECTED"
+    assert result["provider_code"] == "draft_repair_preparation_invalid"
+    assert result["external_write_count"] == 0
+    assert result["write_request_count"] == 0
+    assert [path for path, _body in calls] == [
+        READ_SHOP_DRAFT_PATH,
+        CATEGORY_METADATA_PATH,
+    ]
+
+
+def test_l1_gb_save_rejection_stops_submit():
     snapshot = _snapshot(targets=("tiktok:GB",))
     fake = FakeLowestTransport(snapshot)
 
@@ -525,7 +1013,7 @@ def test_l1_gb_save_rejection_never_calls_publish():
     result = receipt["targets"][0]
 
     assert result["outcome"] == "REJECTED"
-    assert result["provider_code"] == "fail"
     assert result["external_write_count"] == 0
     assert result["write_request_count"] == 1
     assert not [call for call in fake.calls if call[0] == PUBLISH_PATH]
+    assert [call for call in fake.calls if call[0] == SAVE_SHOP_DRAFT_PATH]

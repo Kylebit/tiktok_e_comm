@@ -5,6 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from modules.sourcing import miaoshou_precollect
 from modules.sourcing.miaoshou_precollect import (
     import_common_collect_detail,
     normalize_detail,
@@ -47,6 +48,89 @@ from modules.sourcing.new_product_workbench import (
 
 
 class NewProductWorkbenchTests(unittest.TestCase):
+    def test_duplicate_alias_content_state_is_mirrored_to_canonical_collect_box_owner(self):
+        with TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            canonical = {
+                "review": {
+                    "seller_sku": "0966",
+                    "selected_sites": ["lh_my"],
+                },
+                "product_approval": {"status": "approved"},
+            }
+            alias = {
+                "review": {
+                    "seller_sku": "",
+                    "image_actions": [
+                        {
+                            "url": "https://img.example/approved.jpg",
+                            "action": "keep",
+                        }
+                    ],
+                    "image_order": ["https://img.example/approved.jpg"],
+                    "video_action": "remove",
+                },
+                "content_package": {
+                    "collect_box_id": "456",
+                    "content_strategy": "source_only",
+                    "source_only_review_status": "approved",
+                    "source_only_final_approval": {
+                        "status": "approved",
+                        "approved_by": "Kyle",
+                    },
+                    "miaoshou_ordered_images_write": {
+                        "status": "verified",
+                        "collect_box_id": "456",
+                    },
+                },
+            }
+
+            with patch(
+                "modules.sourcing.new_product_workbench.STATE_DIR",
+                state_dir,
+            ):
+                save_state("456", canonical)
+                save_state("123", alias)
+
+            mirrored = json.loads((state_dir / "456.json").read_text(encoding="utf-8"))
+            self.assertEqual(mirrored["product_approval"]["status"], "approved")
+            self.assertEqual(mirrored["review"]["seller_sku"], "0966")
+            self.assertEqual(
+                mirrored["review"]["image_order"],
+                ["https://img.example/approved.jpg"],
+            )
+            self.assertEqual(
+                mirrored["content_package"]["source_only_review_status"],
+                "approved",
+            )
+            self.assertEqual(
+                mirrored["content_package"]["miaoshou_ordered_images_write"]["status"],
+                "verified",
+            )
+
+    def test_miaoshou_open_calls_are_spaced_to_respect_account_rate_limit(self):
+        clock = {"now": 20.0}
+        sleeps = []
+
+        def monotonic():
+            return clock["now"]
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            clock["now"] += seconds
+
+        with patch.object(miaoshou_precollect.time, "monotonic", side_effect=monotonic), patch.object(
+            miaoshou_precollect.time, "sleep", side_effect=sleep
+        ):
+            miaoshou_precollect._last_open_request_at = 0.0
+            miaoshou_precollect._wait_for_open_slot()
+            miaoshou_precollect._wait_for_open_slot()
+
+        self.assertEqual(len(sleeps), 1)
+        self.assertGreaterEqual(
+            sleeps[0], miaoshou_precollect.OPEN_REQUEST_INTERVAL_SECONDS
+        )
+
     def test_picture_color_and_approved_specification_form_exact_manifest(self):
         info = {
             "skuPropertyList": [
@@ -709,6 +793,76 @@ class NewProductWorkbenchTests(unittest.TestCase):
         self.assertTrue(all(result["sync"]["checks"].values()))
         self.assertEqual(result["sync"]["collect_box_id"], "123")
         self.assertTrue(all(result["checks"].values()))
+
+    def test_ordered_image_sync_uses_resolved_duplicate_collect_box_identity(self):
+        state = {
+            "review": {
+                "weight_kg": 0.08,
+                "image_actions": [
+                    {"action": "keep", "url": "https://img.example/source-1.jpg"},
+                ],
+                "image_order": ["https://img.example/source-1.jpg"],
+            },
+            "content_package": {},
+        }
+        current = {
+            "title": "Existing title",
+            "itemNum": "0966",
+            "weight": 0.08,
+            "skuMap": {},
+            "imgUrls": ["https://img.example/old.jpg"],
+            "notes": "<p>Existing description</p>",
+        }
+        seen_detail_ids = []
+
+        def fake_post(path, body=None):
+            detail_id = int((body or {}).get("commonCollectBoxDetailId") or 0)
+            seen_detail_ids.append(detail_id)
+            if detail_id != 456:
+                raise RuntimeError("数据链接为空")
+            if path.endswith("get_common_collect_box_detail"):
+                return {
+                    "result": "success",
+                    "data": {
+                        "editCommonCollectBoxDetail": current,
+                        "ossMd5": "x",
+                    },
+                }
+            if path.endswith("edit_common_collect_box_detail"):
+                current.update((body or {})["editCommonCollectBoxDetail"])
+                return {"result": "success"}
+            raise AssertionError(path)
+
+        with patch(
+            "modules.sourcing.new_product_workbench.resolve_offer_key",
+            return_value="123",
+        ), patch(
+            "modules.sourcing.new_product_workbench.load_state",
+            return_value=state,
+        ), patch(
+            "modules.sourcing.new_product_workbench.save_state",
+        ), patch(
+            "modules.sourcing.new_product_workbench._source_summary",
+            return_value={
+                "images": [],
+                "precollect": {
+                    "resolved_duplicate": True,
+                    "resolved_common_collect_id": 456,
+                    "records": [{"common_collect_id": 456}],
+                },
+            },
+        ), patch(
+            "modules.sourcing.new_product_workbench._content_package_dir",
+            return_value=Path("."),
+        ), patch(
+            "modules.sourcing.new_product_workbench._generated_review_images",
+            return_value=[],
+        ):
+            result = write_ordered_images_to_miaoshou("123", post=fake_post)
+
+        self.assertTrue(result["verified"])
+        self.assertEqual(seen_detail_ids, [456, 456, 456])
+        self.assertEqual(result["sync"]["collect_box_id"], "456")
 
     def test_completed_reviewed_ai_suite_does_not_regress_to_ai_planning_stage(self):
         source_actions = [
@@ -1846,6 +2000,90 @@ class NewProductWorkbenchTests(unittest.TestCase):
         self.assertEqual(result["offer_id"], "123456")
         self.assertEqual(result["review"]["title"], "Imported ERP item")
         self.assertEqual(len(result["review"]["image_actions"]), 1)
+
+    def test_skipped_duplicate_collect_id_resolves_exact_successful_source_record(self):
+        """A skipped duplicate is an alias, not an unreadable new product."""
+
+        requested_detail_id = 3880092384
+        successful_detail_id = 3838608018
+        source_item_id = "965497333269"
+
+        def fake_post(path, body=None):
+            body = body or {}
+            if path.endswith("get_common_collect_box_detail"):
+                detail_id = int(body["commonCollectBoxDetailId"])
+                if detail_id == requested_detail_id:
+                    raise RuntimeError("数据链接为空")
+                if detail_id == successful_detail_id:
+                    return {
+                        "result": "success",
+                        "data": {
+                            "editCommonCollectBoxDetail": {
+                                "commonCollectBoxDetailId": successful_detail_id,
+                                "title": "Canonical collected product",
+                                "price": 11,
+                                "stock": 30,
+                                "weight": 0.2,
+                                "imgUrls": ["https://img.example/canonical.jpg"],
+                                "sourceList": [{
+                                    "sourceItemId": source_item_id,
+                                    "source": "1688",
+                                    "sourceItemUrl": (
+                                        "https://detail.1688.com/offer/"
+                                        f"{source_item_id}.html"
+                                    ),
+                                }],
+                            }
+                        },
+                    }
+            if path.endswith("get_common_collect_box_list"):
+                source_keyword = (body.get("filter") or {}).get(
+                    "sourceItemIdKeyword"
+                )
+                rows = [
+                    {
+                        "commonCollectBoxDetailId": requested_detail_id,
+                        "status": "skip",
+                        "reason": "产品已经采集过。",
+                        "sourceList": [{"sourceItemId": source_item_id}],
+                    },
+                    {
+                        "commonCollectBoxDetailId": successful_detail_id,
+                        "status": "success",
+                        "sourceList": [{"sourceItemId": source_item_id}],
+                    },
+                ]
+                if source_keyword:
+                    rows = [
+                        row
+                        for row in rows
+                        if source_keyword
+                        in {
+                            str(item.get("sourceItemId") or "")
+                            for item in row.get("sourceList") or []
+                        }
+                    ]
+                return {
+                    "result": "success",
+                    "data": {"detailList": rows, "total": len(rows)},
+                }
+            raise AssertionError((path, body))
+
+        key, payload = import_common_collect_detail(
+            str(requested_detail_id),
+            post=fake_post,
+            state_key=str(requested_detail_id),
+        )
+
+        self.assertEqual(key, str(requested_detail_id))
+        self.assertEqual(
+            payload["normalized"]["common_collect_id"],
+            successful_detail_id,
+        )
+        self.assertEqual(payload["normalized"]["source_id"], source_item_id)
+        self.assertEqual(payload["requested_common_collect_id"], requested_detail_id)
+        self.assertEqual(payload["resolved_common_collect_id"], successful_detail_id)
+        self.assertTrue(payload["resolved_duplicate"])
 
     def test_overseas_common_collect_id_becomes_material(self):
         def fake_post(path, body=None):

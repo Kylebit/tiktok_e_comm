@@ -56,9 +56,16 @@ _TABLECLOTH_HINTS = (
     "table cloth",
     "table cover",
     "tablecloths",
+    "table runner",
+    "table runners",
+    "table flag",
     "скатерть",
+    "дорожка на стол",
+    "настольная дорожка",
     "taplak meja",
     "meja cover",
+    "桌布",
+    "桌旗",
 )
 
 
@@ -350,6 +357,51 @@ def polish_ozon_title(
 
 def polish_ozon_description(text: str) -> str:
     return sanitize_ozon_description(text)
+
+
+_PRODUCT_DIMENSION_RE = re.compile(
+    r"(?<!\d)\d+(?:[.,]\d+)?\s*[xX×хХ*]\s*\d+(?:[.,]\d+)?\s*(?:см|cm)?",
+    re.IGNORECASE,
+)
+
+
+def build_ozon_tablecloth_title(
+    approved_title: str,
+    *,
+    len_cm: str,
+    wid_cm: str,
+) -> str:
+    """Retain approved table-textile copy while binding the exact variant size."""
+
+    replacement = f"{len_cm}х{wid_cm} см"
+    source = (approved_title or "").strip()
+    if _PRODUCT_DIMENSION_RE.search(source):
+        source = _PRODUCT_DIMENSION_RE.sub(replacement, source, count=1)
+    else:
+        source = f"{source}, {replacement}" if source else f"Дорожка на стол, {replacement}"
+    title = polish_ozon_title(
+        source,
+        len_cm=len_cm,
+        wid_cm=wid_cm,
+        migrate_profile="tablecloth",
+    )
+    forbidden = ("самокле", "наклейк", "на стен", "плёнк", "пвх")
+    if any(token in title.lower() for token in forbidden):
+        raise ValueError("approved Ozon tablecloth title retained sticker semantics")
+    return title
+
+
+def build_ozon_tablecloth_description(*, len_cm: str, wid_cm: str, kit: str) -> str:
+    """Build provider-safe factual copy without the legacy wall-sticker template."""
+
+    return (
+        f"Декоративная текстильная дорожка на стол размером {len_cm}х{wid_cm} см. "
+        "Подходит для оформления обеденного или журнального стола, гостиной, "
+        "столовой и праздничной сервировки. Ажурное изделие можно использовать "
+        "самостоятельно или поверх основной скатерти. "
+        f"В комплекте: {kit}. Перед использованием рекомендуется бережный уход "
+        "в соответствии с маркировкой изделия. Страна производства — Китай."
+    )
 
 
 def tablecloth_hashtags() -> str:

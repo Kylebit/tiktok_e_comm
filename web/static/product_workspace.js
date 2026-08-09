@@ -5184,6 +5184,14 @@
         ? `/api/proxy-image?url=${encodeURIComponent(thumbnailUrl)}`
         : "";
       const thumbnailLabel = thumbnail.approved ? "已批准主图" : "来源预览";
+      const switchLabel = item.loading
+        ? "正在读取"
+        : (item.error ? "重新读取" : (isCurrent ? "正在查看" : "打开商品"));
+      const switchDisabled = Boolean(
+        item.loading
+        || approvalSubmitting
+        || (isCurrent && !item.error),
+      );
       return `
         <article class="queue-card${isCurrent ? " current" : ""}${item.loading ? " is-loading" : ""}"
                  data-key="${esc(key)}">
@@ -5218,8 +5226,8 @@
           </div>
           <footer>
             <button type="button" data-action="switch" data-key="${esc(key)}"
-                    ${isCurrent || item.loading || approvalSubmitting ? "disabled" : ""}>
-              ${isCurrent ? "正在查看" : "打开商品"}
+                    ${switchDisabled ? "disabled" : ""}>
+              ${esc(switchLabel)}
             </button>
             <button type="button" data-action="remove" data-key="${esc(key)}"
                     ${isCurrent || approvalSubmitting ? "disabled" : ""}>
@@ -9026,6 +9034,8 @@
         item.data = null;
         item.error = message;
         if (key === currentQueueKey) {
+          $("#queueMessage").textContent =
+            `Offer ${item.offer_id} 读取失败：${message}。可以点击“重新读取”重试。`;
           showError(message);
           renderFailure(message);
         }

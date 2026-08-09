@@ -8734,6 +8734,9 @@ def _start_collectbox_action(data: dict) -> tuple[int, dict]:
             "external_write_count": 0,
         }
     restart_existing = data.get("restart_collectbox_action", False)
+    platform_scope = data.get("platform_scope")
+    if platform_scope is not None:
+        platform_scope = str(platform_scope).strip().upper()
     if type(restart_existing) is not bool or (
         restart_existing is False
         and "reimport_request_id" in data
@@ -8807,6 +8810,7 @@ def _start_collectbox_action(data: dict) -> tuple[int, dict]:
             wait=wait_for_spacing,
             restart_existing=restart_existing,
             restart_request_id=data.get("reimport_request_id"),
+            platform_scope=platform_scope,
         )
     except (TypeError, ValueError) as error:
         return 409, {
@@ -9143,53 +9147,60 @@ def _collectbox_platform_succeeded(plan_id: str, platform: str) -> bool:
     )
 
 
-def _collectbox_platform_row_publishable(row: dict, platform: str) -> bool:
+def _collectbox_tiktok_ready_targets(plan_id: str) -> tuple[str, ...] | None:
+    store = _collectbox_action_store()
+    status = getattr(store, "status", None)
+    if not callable(status):
+        return None
+    projection = status(plan_id=plan_id)
+    action = projection.get("action") if isinstance(projection, dict) else None
+    rows = action.get("platforms") if isinstance(action, dict) else None
+    for row in rows or ():
+        if isinstance(row, dict) and row.get("platform") == "TIKTOK":
+            return _collectbox_tiktok_ready_target_labels(row)
+    return ()
+
+
+def _collectbox_tiktok_ready_target_labels(
+    row: dict,
+) -> tuple[str, ...] | None:
     from shared_platform.collectbox_action import CollectBoxTargetOutcome
 
     if row.get("status") == "SUCCEEDED":
-        return True
-    if platform != "TIKTOK" or row.get("status") not in {
-        "PARTIAL_FAILED",
-        "RECONCILIATION_REQUIRED",
-    }:
-        return False
+        return None
+    if row.get("status") not in {"PARTIAL_FAILED", "RECONCILIATION_REQUIRED"}:
+        return ()
     outcomes = row.get("target_outcomes")
     if not isinstance(outcomes, list) or not outcomes:
-        return False
-    expected_keys = {
-        "target_label",
-        "status",
-        "error_code",
-        "detail_digest",
-    }
+        return ()
+    expected_keys = {"target_label", "status", "error_code", "detail_digest"}
     seen: set[str] = set()
-    gb_terminal = False
+    ready: list[str] = []
     for outcome in outcomes:
         if not isinstance(outcome, dict) or set(outcome) != expected_keys:
-            return False
+            return ()
         try:
-            typed_outcome = CollectBoxTargetOutcome(**outcome)
+            typed = CollectBoxTargetOutcome(**outcome)
         except (TypeError, ValueError):
-            return False
-        target_label = typed_outcome.target_label
-        status = typed_outcome.status
-        if (
-            target_label not in _GENERIC_TIKTOK_SAFE_RETRY_LABELS
-            or target_label in seen
-        ):
-            return False
-        seen.add(target_label)
-        if target_label != "tiktok:GB":
-            if status != "SUCCEEDED":
-                return False
-            continue
-        if status in {"SUCCEEDED", "REPAIRED_SUCCEEDED"}:
-            gb_terminal = True
-            continue
-        if status != "FAILED":
-            return False
-        gb_terminal = True
-    return gb_terminal
+            return ()
+        if typed.target_label not in _GENERIC_TIKTOK_SAFE_RETRY_LABELS:
+            return ()
+        if typed.target_label in seen:
+            return ()
+        seen.add(typed.target_label)
+        if typed.status in {"SUCCEEDED", "REPAIRED_SUCCEEDED"}:
+            ready.append(typed.target_label)
+        elif typed.status not in {"FAILED", "RECONCILIATION_REQUIRED"}:
+            return ()
+    return tuple(ready)
+
+
+def _collectbox_platform_row_publishable(row: dict, platform: str) -> bool:
+    if row.get("status") == "SUCCEEDED":
+        return True
+    if platform != "TIKTOK":
+        return False
+    return bool(_collectbox_tiktok_ready_target_labels(row))
 
 
 def _with_collectbox_publishability(projection: dict) -> dict:
@@ -9205,6 +9216,13 @@ def _with_collectbox_publishability(projection: dict) -> dict:
             "publishable": _collectbox_platform_row_publishable(
                 row,
                 str(row.get("platform") or ""),
+            ),
+            **(
+                {"publishable_targets": list(ready_targets)}
+                if str(row.get("platform") or "") == "TIKTOK"
+                and (ready_targets := _collectbox_tiktok_ready_target_labels(row))
+                is not None
+                else {}
             ),
         }
         if isinstance(row, dict)
@@ -9425,6 +9443,13 @@ def _start_oneclick_release(
             registry=registry,
         )
         target_labels = _oneclick_scope_target_labels(job, batch_scope)
+        if batch_scope == "TIKTOK":
+            ready_targets = _collectbox_tiktok_ready_targets(plan["plan_id"])
+            if ready_targets is not None:
+                ready_set = set(ready_targets)
+                target_labels = tuple(
+                    label for label in target_labels if label in ready_set
+                )
         if not target_labels:
             return 409, {
                 "ok": False,
@@ -9553,10 +9578,61 @@ def _build_approved_tiktok_publish_snapshot(data: dict) -> dict:
     contexts = _collectbox_action_store().internal_tiktok_publish_contexts(
         plan_id=identity["plan_id"]
     )
-    return build_approved_tiktok_publish_snapshot(
+    ready_targets = _collectbox_tiktok_ready_targets(identity["plan_id"])
+    if ready_targets is not None:
+        ready_set = set(ready_targets)
+        contexts = {
+            target: context
+            for target, context in contexts.items()
+            if target in ready_set
+        }
+    snapshot = build_approved_tiktok_publish_snapshot(
         plan,
         collectbox_contexts=contexts,
     )
+    if "tiktok_target_scope" not in data:
+        return snapshot
+
+    scope = data.get("tiktok_target_scope")
+    if (
+        type(scope) is not list
+        or not scope
+        or any(type(label) is not str or not label.strip() for label in scope)
+        or len(set(scope)) != len(scope)
+    ):
+        raise ValueError(
+            "tiktok_target_scope must be a non-empty list of unique target labels"
+        )
+    approved_targets = {
+        label
+        for label in plan.get("targets", [])
+        if type(label) is str and label.startswith("tiktok:")
+    }
+    if any(label not in approved_targets for label in scope):
+        raise ValueError(
+            "tiktok_target_scope may contain only approved TikTok targets"
+        )
+    targets_by_label = {
+        row.get("target_label"): row
+        for row in snapshot.get("targets", [])
+        if isinstance(row, dict)
+    }
+    unavailable_by_label = {
+        row.get("target_label"): row
+        for row in snapshot.get("unavailable_targets", [])
+        if isinstance(row, dict)
+    }
+    snapshot["targets"] = [
+        targets_by_label[label] for label in scope if label in targets_by_label
+    ]
+    snapshot["unavailable_targets"] = [
+        unavailable_by_label[label]
+        for label in scope
+        if label in unavailable_by_label
+    ]
+    if len(snapshot["targets"]) + len(snapshot["unavailable_targets"]) != len(scope):
+        raise ValueError("approved TikTok target scope could not be resolved")
+    return snapshot
 
 
 def _safe_tiktok_provider_field(value: object, fallback: str) -> str:
@@ -9921,7 +9997,10 @@ def _approved_shopee_global_publish_facts(payload: dict) -> dict:
             or key != selected_keys[index]
             or type(label) is not str
             or not label.strip()
-            or label_overrides.get(key) != label
+            or (
+                key in label_overrides
+                and label_overrides.get(key) != label
+            )
             or key not in model_by_key
             or (
                 row.get("model_sku") is not None
@@ -10081,6 +10160,15 @@ def _approved_ozon_publish_facts(payload: dict) -> dict:
     }
 
 
+def _approved_ozon_variant_publish_facts(payload: dict) -> list[dict]:
+    product_facts = payload.get("product_facts")
+    if isinstance(product_facts, dict) and "selected_skus" in product_facts:
+        from modules.ozon.release_variants import approved_variant_snapshots
+
+        return approved_variant_snapshots(payload)
+    return [_approved_ozon_publish_facts(payload)]
+
+
 def _safe_platform_publish_error(error: Exception) -> str:
     """Return a useful reason without exposing credentials or raw URLs."""
 
@@ -10230,7 +10318,7 @@ def _start_ozon_release(data: dict) -> tuple[int, dict]:
     if failure:
         return failure
     try:
-        facts = _approved_ozon_publish_facts(context["payload"])
+        facts = _approved_ozon_variant_publish_facts(context["payload"])
     except (TypeError, ValueError) as error:
         return 409, {
             "ok": False,
@@ -10244,16 +10332,32 @@ def _start_ozon_release(data: dict) -> tuple[int, dict]:
         if failure:
             return failure
         try:
-            current_facts = _approved_ozon_publish_facts(refreshed["payload"])
+            current_facts = _approved_ozon_variant_publish_facts(
+                refreshed["payload"]
+            )
             if current_facts != facts:
                 raise ValueError("approved Ozon facts changed before dispatch")
             from modules.ozon.target_scoped import read_existing_product
 
-            existing = read_existing_product(offer_id=facts["seller_sku"])
-            checks = existing.get("checks") if isinstance(existing, dict) else {}
-            if isinstance(checks, dict) and all(
-                checks.get(key) is True
-                for key in ("created", "approved", "title", "price", "images")
+            existing_rows = [
+                read_existing_product(
+                    offer_id=row["seller_sku"],
+                    expected_title=row["title"],
+                    expected_price=(
+                        row["price"] if "price" in row else row["price_cny"]
+                    ),
+                    expected_images=row["images"],
+                )
+                for row in facts
+            ]
+            if all(
+                isinstance(existing, dict)
+                and isinstance(existing.get("checks"), dict)
+                and all(
+                    existing["checks"].get(key) is True
+                    for key in ("created", "approved", "title", "price", "images")
+                )
+                for existing in existing_rows
             ):
                 return 200, {
                     "schema_version": "official-platform-publish-result/v1",
@@ -10261,44 +10365,56 @@ def _start_ozon_release(data: dict) -> tuple[int, dict]:
                     "success": True,
                     "platform": "OZON",
                     "message": "Ozon 商品已存在且官方回读成功",
-                    "target_count": 1,
-                    "successful_target_count": 1,
+                    "target_count": len(facts),
+                    "successful_target_count": len(facts),
                     "failed_targets": [],
                     "retryable": True,
                     "already_published": True,
                 }
             from modules.ozon.migrate_batch import migrate_one
 
-            result = migrate_one(
-                facts["seller_sku"],
-                allow_deepseek=False,
-                title_candidate=facts["title"],
-                product_size_cm=facts["size"],
-                quantity=1,
-                price_cny_override=facts["price"],
-                old_price_cny_override=facts["old_price"],
-                price_source_override="approved_release_plan",
-                price_label_override="ozon:RU",
-                image_urls_override=facts["images"],
-                approved_snapshot={
-                    "seller_sku": facts["seller_sku"],
-                    "title": facts["title"],
-                    "package_cm": facts["package_cm"],
-                    "weight_kg": facts["weight_kg"],
-                    "quantity": facts["quantity"],
-                    "price_cny": facts["price"],
-                    "old_price_cny": facts["old_price"],
-                    "images": facts["images"],
-                    "source_category": facts["source_category"],
-                },
-                process_images=False,
-                wait_for_import=False,
-                skip_rich_content=True,
-                skip_mapping_write=True,
-            )
-            accepted = (
-                isinstance(result, dict)
-                and not result.get("errors")
+            results = []
+            for variant in facts:
+                legacy = "size" in variant
+                approved_snapshot = (
+                    {
+                        "seller_sku": variant["seller_sku"],
+                        "title": variant["title"],
+                        "package_cm": variant["package_cm"],
+                        "weight_kg": variant["weight_kg"],
+                        "quantity": variant["quantity"],
+                        "price_cny": variant["price"],
+                        "old_price_cny": variant["old_price"],
+                        "images": variant["images"],
+                        "source_category": variant["source_category"],
+                    }
+                    if legacy else variant
+                )
+                result = migrate_one(
+                    variant["seller_sku"],
+                    allow_deepseek=False,
+                    title_candidate=variant["title"],
+                    product_size_cm=(
+                        variant["size"] if legacy
+                        else (variant["package_cm"][0], variant["package_cm"][1])
+                    ),
+                    quantity=variant["quantity"],
+                    price_cny_override=(variant["price"] if legacy else variant["price_cny"]),
+                    old_price_cny_override=(variant["old_price"] if legacy else variant["old_price_cny"]),
+                    price_source_override="approved_release_plan",
+                    price_label_override="ozon:RU",
+                    image_urls_override=variant["images"],
+                    approved_snapshot=approved_snapshot,
+                    process_images=False,
+                    wait_for_import=False,
+                    skip_rich_content=True,
+                    skip_mapping_write=True,
+                )
+                if not isinstance(result, dict):
+                    raise RuntimeError("Ozon official API returned an invalid import response")
+                results.append(result)
+            accepted_count = sum(
+                not result.get("errors")
                 and (
                     result.get("ok") is True
                     or (
@@ -10306,9 +10422,20 @@ def _start_ozon_release(data: dict) -> tuple[int, dict]:
                         and result.get("import_dispatch_outcome") == "accepted"
                     )
                 )
+                for result in results
             )
-            if not accepted:
-                raise RuntimeError(_safe_ozon_import_reason(result))
+            if accepted_count != len(facts):
+                rejected = next(
+                    (
+                        result for result in results
+                        if result.get("errors") or result.get("ok") is not True
+                    ),
+                    {},
+                )
+                raise RuntimeError(
+                    f"Ozon accepted only {accepted_count}/{len(facts)} approved variants: "
+                    f"{_safe_ozon_import_reason(rejected)}"
+                )
         except Exception as error:
             reason = _safe_platform_publish_error(error)
             _PLATFORM_PUBLISH_LOGGER.warning(
@@ -10322,8 +10449,8 @@ def _start_ozon_release(data: dict) -> tuple[int, dict]:
                 "success": False,
                 "platform": "OZON",
                 "message": f"Ozon 发布失败：{reason}",
-                "target_count": 1,
-                "successful_target_count": 0,
+                "target_count": len(facts),
+                "successful_target_count": locals().get("accepted_count", 0),
                 "failed_targets": ["ozon:RU"],
                 "retryable": True,
             }
@@ -10333,8 +10460,11 @@ def _start_ozon_release(data: dict) -> tuple[int, dict]:
         "success": True,
         "platform": "OZON",
         "message": "Ozon API 已接受发布",
-        "target_count": 1,
-        "successful_target_count": 1,
+        "target_count": len(facts),
+        "successful_target_count": len(facts),
+        "variant_submission_count": len(facts),
+        "publication_status": "SUBMITTED_UNVERIFIED",
+        "external_write_count": len(facts),
         "failed_targets": [],
         "retryable": True,
     }

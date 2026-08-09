@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Orbit 工作台</title><link rel="stylesheet" href="static/workbench.css">
+  <script src="static/workbench.js" defer></script>
+</head>
+<body>
+  <main class="shell">
+    <header><a class="back" href="/">← Orbit 控制台</a><div><p>LOCAL COMMAND CENTER</p><h1>工作台</h1><span id="today"></span></div><button id="newTask" class="primary">新建任务</button></header>
+    <section id="deepOps" class="deep-ops" aria-label="本周深度运营安排"></section>
+    <section class="explore-box" aria-label="探索收集箱"><div><p>EXPLORE · 不打断主线</p><h2>突然想做的事，先收进来</h2><span>默认进入待分诊；只在你决定后才占用正式排期。</span></div><form id="exploreForm"><label class="sr-only" for="exploreIdea">探索想法</label><input id="exploreIdea" required maxlength="500" placeholder="例如：研究某个新选品方向、验证一个自动化想法…"><button class="primary" type="submit">收进探索箱</button></form></section>
+    <section class="mainline" aria-label="待开发候选"><div class="mainline-head"><div><p>BACKLOG · 待开发</p><h2>待开发</h2></div><span>先放在这里，准备好再挑进主线</span></div><div id="mainlineGrid" class="mainline-grid"><article draggable="true" data-mainline="auto-product"><div class="mainline-status">候选 · P0</div><h3>自动商品功能开发收敛</h3><p>收敛核心流程、完成关键验收，并归档遗留问题。</p><small>可拖动调整候选顺序</small></article><article draggable="true" data-mainline="profit-settlement"><div class="mainline-status">候选 · P0</div><h3>利润结算功能开发</h3><p>完成结算数据核验、可追溯利润计算与关键验收。</p><small>可拖动调整候选顺序</small></article></div></section>
+    <section class="metrics" aria-label="任务概览"><article><span>今日 Top 3</span><strong id="topCount">—</strong></article><article><span>当前进行中</span><strong id="activeCount">—</strong></article><article><span>等待审批</span><strong id="approvalCount">—</strong></article><article><span>已阻塞</span><strong id="blockedCount">—</strong></article><article><span>已逾期</span><strong id="overdueCount">—</strong></article></section>
+    <section class="focus"><div class="section-title"><div><p>DO NEXT</p><h2>今日优先事项</h2></div><button id="reviewWeek" class="quiet">生成本周复盘</button></div><div id="top3" class="top3"></div></section>
+    <section class="toolbar"><div class="tabs" role="tablist"><button data-view="board" class="active">看板</button><button data-view="list">列表</button><button data-view="calendar">截止日</button></div><select id="projectFilter"><option value="">全部项目</option></select><select id="statusFilter"><option value="">全部状态</option></select><select id="priorityFilter"><option value="">全部优先级</option><option>P0</option><option>P1</option><option>P2</option><option>P3</option></select></section>
+    <section id="board" class="board"></section><section id="list" class="table-wrap hidden"></section><section id="calendar" class="calendar hidden"></section>
+  </main>
+  <dialog id="taskDialog"><form id="taskForm" method="dialog"><div class="dialog-head"><h2 id="formTitle">新建任务</h2><button value="cancel" class="close" aria-label="关闭">×</button></div><input type="hidden" id="taskId"><label>任务标题<input id="title" required maxlength="500" placeholder="描述可交付的结果"></label><div class="form-grid"><label>项目<input id="project" placeholder="如：电商运营"></label><label>业务线<input id="businessLine" placeholder="如：TikTok / 内容"></label><label>负责人<input id="owner" placeholder="如：Kyle / Codex"></label><label>优先级<select id="priority"><option>P2</option><option>P0</option><option>P1</option><option>P3</option></select></label><label>截止日期<input id="dueDate" type="date"></label><label>审批状态<select id="approvalStatus"><option value="not_required">无需审批</option><option value="pending">等待审批</option><option value="approved">已批准</option><option value="rejected">已拒绝</option></select></label></div><label>关联链接<input id="relatedUrl" type="url" placeholder="https://..."></label><label>验收标准（每行一条）<textarea id="done" rows="3"></textarea></label><label>执行记录 / 说明<textarea id="notes" rows="3"></textarea></label><label>阻塞原因<textarea id="blockedReason" rows="2"></textarea></label><label class="check"><input id="isTop3" type="checkbox"> 标为今日 Top 3</label><div class="actions"><button value="cancel" class="quiet">取消</button><button class="primary" id="saveTask" value="default">保存任务</button></div></form></dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+</body></html>

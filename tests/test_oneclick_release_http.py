@@ -196,7 +196,7 @@ def test_publish_post_cannot_reopen_legacy_job_before_collectbox_step(monkeypatc
     assert calls == []
 
 
-def test_tiktok_publish_after_collectbox_success_creates_only_tiktok_batch(
+def test_legacy_reduced_tiktok_request_does_not_start_oneclick_batch(
     monkeypatch,
 ):
     calls = []
@@ -349,17 +349,11 @@ def test_tiktok_publish_after_collectbox_success_creates_only_tiktok_batch(
         }
     )
 
-    assert status == 200
-    assert response["success"] is True
+    assert status == 409
+    assert response["success"] is False
     assert response["platform"] == "TIKTOK"
-    assert response["successful_target_count"] == 2
-    assert "start_tiktok_batch" in calls
-    assert (
-        "complete_tiktok_batch",
-        "oneclick-job:test",
-        ("tiktok:MX", "tiktok:LH_MY"),
-        "TIKTOK",
-    ) in calls
+    assert response["error"]["code"] == "tiktok_approved_snapshot_invalid"
+    assert "start_tiktok_batch" not in calls
 
 
 def test_shared_control_v2_is_canonical_action_without_storefront_count(

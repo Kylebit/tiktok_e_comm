@@ -115,6 +115,30 @@ def _preparation_failure_fact(
     }
 
 
+def _preflight_failure_fact(
+    status: int,
+    response: Mapping[str, Any],
+    row: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    safe_response_with_zero_writes = dict(response)
+    safe_response_with_zero_writes["external_write_count"] = 0
+    fact = _preparation_failure_fact(
+        status,
+        safe_response_with_zero_writes,
+        row,
+    )
+    fact["attempted"] = False
+    fact["write_outcome"] = "REJECTED"
+    fact["external_write_count"] = 0
+    if row is None:
+        fact["message"] = safe_text(
+            response.get("message")
+            or response.get("error")
+            or "TikTok preflight did not return exactly one TikTok preparation row"
+        )
+    return fact
+
+
 def _selected_tiktok_targets(snapshot: Mapping[str, Any]) -> list[str]:
     platforms = snapshot.get("platforms")
     row = platforms.get("tiktok") if isinstance(platforms, Mapping) else None
@@ -240,10 +264,14 @@ def dispatch_with_fresh_drafts(
         timeout_seconds=timeout_seconds,
     )
     preflight_row = _tiktok_preparation_row(preflight_response)
+    if preflight_status != 200 or preflight_row is None:
+        return _preflight_failure_fact(
+            preflight_status,
+            preflight_response,
+            preflight_row,
+        )
     if (
-        preflight_status == 200
-        and preflight_row is not None
-        and not _row_is_ready_for_snapshot(preflight_row, snapshot, target_labels)
+        not _row_is_ready_for_snapshot(preflight_row, snapshot, target_labels)
     ):
         if target_labels is not None:
             return _preparation_failure_fact(

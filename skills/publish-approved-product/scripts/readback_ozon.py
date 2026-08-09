@@ -11,7 +11,7 @@ from _readback_cli import run
 # Live Seller API readback for Offer 3838599504 confirmed that Ozon returns
 # OFFER_VALIDATED after accepting an asynchronous import but before the item is
 # fully created.  It is an in-flight state, not a content mismatch.
-PROCESSING_STATUSES = {"PROCESSING", "OFFER_VALIDATED"}
+PROCESSING_STATUSES = {"PROCESSING", "OFFER_VALIDATED", "IMPORTED"}
 
 
 def readback(

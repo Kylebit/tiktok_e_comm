@@ -48,6 +48,9 @@ Before the first store submission, read the current collect-box action status.
 If its exact publishable target list is smaller than the approved TikTok target
 list, create one fresh TikTok-only draft batch first. Do not publish a partial
 old batch and only then discover that other selected stores lack usable drafts.
+The status read itself must return HTTP 200 and exactly one TikTok platform row.
+Any non-200 response, malformed response, or missing/duplicate TikTok row is a
+zero-write preflight failure: do not call the publish endpoint.
 
 ## Confirmed rules
 

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 import io
+import json
+import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -201,6 +204,42 @@ class SnapshotTests(unittest.TestCase):
 
 
 class DispatchTests(unittest.TestCase):
+    def test_tiktok_non_200_preflight_blocks_publish(self) -> None:
+        snapshot = build_snapshot(dashboard_fixture(), "3838619319")
+        with patch.object(
+            dispatch_tiktok,
+            "json_request",
+            return_value=(503, {"message": "status unavailable"}),
+        ) as request:
+            fact = dispatch_tiktok.dispatch_with_fresh_drafts(
+                snapshot,
+                base_url="http://local",
+                timeout_seconds=1,
+                execute=True,
+            )
+
+        self.assertFalse(fact["accepted"])
+        self.assertEqual(fact["write_outcome"], "REJECTED")
+        self.assertEqual(request.call_count, 1)
+
+    def test_tiktok_preflight_without_one_tiktok_row_blocks_publish(self) -> None:
+        snapshot = build_snapshot(dashboard_fixture(), "3838619319")
+        with patch.object(
+            dispatch_tiktok,
+            "json_request",
+            return_value=(200, {"action": {"platforms": []}}),
+        ) as request:
+            fact = dispatch_tiktok.dispatch_with_fresh_drafts(
+                snapshot,
+                base_url="http://local",
+                timeout_seconds=1,
+                execute=True,
+            )
+
+        self.assertFalse(fact["accepted"])
+        self.assertEqual(fact["write_outcome"], "REJECTED")
+        self.assertEqual(request.call_count, 1)
+
     def test_tiktok_dispatch_fact_preserves_explicit_unknown_target(self) -> None:
         fact = dispatch_tiktok._fact(
             200,
@@ -402,7 +441,20 @@ class DispatchTests(unittest.TestCase):
     def test_tiktok_stops_when_fresh_batch_preparation_is_not_publishable(self) -> None:
         snapshot = build_snapshot(dashboard_fixture(), "3838619319")
         responses = iter([
-            (404, {}),
+            (
+                200,
+                {
+                    "action": {
+                        "platforms": [
+                            {
+                                "platform": "TIKTOK",
+                                "status": "SUCCEEDED",
+                                "publishable": True,
+                            }
+                        ]
+                    }
+                },
+            ),
             (409, {"ok": False, "message": "draft identity is incomplete"}),
             (
                 200,
@@ -451,7 +503,20 @@ class DispatchTests(unittest.TestCase):
     def test_tiktok_missing_draft_identity_creates_fresh_batch_then_publishes(self) -> None:
         snapshot = build_snapshot(dashboard_fixture(), "3838619319")
         responses = iter([
-            (404, {}),
+            (
+                200,
+                {
+                    "action": {
+                        "platforms": [
+                            {
+                                "platform": "TIKTOK",
+                                "status": "SUCCEEDED",
+                                "publishable": True,
+                            }
+                        ]
+                    }
+                },
+            ),
             (409, {"ok": False, "message": "批准快照或妙手草稿身份不完整"}),
             (
                 200,
@@ -504,6 +569,248 @@ class DispatchTests(unittest.TestCase):
             ),
             expected,
         )
+
+    def test_orchestrator_always_passes_resolved_repo_to_tiktok_readback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            snapshot_path = directory / "snapshot.json"
+            snapshot_path.write_text("{}", encoding="utf-8")
+            args = type(
+                "Args",
+                (),
+                {
+                    "repo": None,
+                    "base_url": "http://local",
+                    "timeout_seconds": 1,
+                },
+            )()
+            commands: list[list[str]] = []
+
+            def run_tool(arguments, output, *, executable):
+                commands.append(arguments)
+                if "dispatch_tiktok.py" in arguments[0]:
+                    return {"accepted": True, "write_outcome": "ACCEPTED"}
+                return {"verified": False, "status": "UNAVAILABLE"}
+
+            with (
+                patch.object(
+                    publish_approved_product,
+                    "_tool_python",
+                    return_value=Path(sys.executable),
+                ),
+                patch.object(
+                    publish_approved_product,
+                    "_run_tool",
+                    side_effect=run_tool,
+                ),
+            ):
+                publish_approved_product._platform_run(
+                    "tiktok",
+                    snapshot_path=snapshot_path,
+                    directory=directory,
+                    args=args,
+                )
+
+        readback_command = commands[1]
+        self.assertIn("--repo", readback_command)
+        self.assertEqual(
+            readback_command[readback_command.index("--repo") + 1],
+            str(_common.DEFAULT_REPO.resolve()),
+        )
+
+    def test_orchestrator_preserves_dispatch_fact_and_runs_readback_after_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            snapshot_path = directory / "snapshot.json"
+            snapshot_path.write_text("{}", encoding="utf-8")
+            args = type(
+                "Args",
+                (),
+                {
+                    "repo": str(_common.DEFAULT_REPO),
+                    "base_url": "http://local",
+                    "timeout_seconds": 1,
+                },
+            )()
+            calls = 0
+
+            def run_tool(arguments, output, *, executable):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    output.write_text(
+                        json.dumps(
+                            {
+                                "platform": "tiktok",
+                                "attempted": True,
+                                "accepted": True,
+                                "write_outcome": "ACCEPTED",
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    raise subprocess.TimeoutExpired(arguments, timeout=1)
+                self.assertTrue((directory / "tiktok-dispatch.json").is_file())
+                return {"verified": False, "status": "UNAVAILABLE"}
+
+            with (
+                patch.object(
+                    publish_approved_product,
+                    "_tool_python",
+                    return_value=Path(sys.executable),
+                ),
+                patch.object(
+                    publish_approved_product,
+                    "_run_tool",
+                    side_effect=run_tool,
+                ),
+            ):
+                row = publish_approved_product._platform_run(
+                    "tiktok",
+                    snapshot_path=snapshot_path,
+                    directory=directory,
+                    args=args,
+                )
+
+        self.assertEqual(calls, 2)
+        self.assertTrue(row["dispatch"]["accepted"])
+        self.assertEqual(row["readback"]["status"], "UNAVAILABLE")
+
+    def test_runner_report_projection_excludes_snapshot_secrets_urls_and_raw_response(self) -> None:
+        unsafe = {
+            "schema_version": "approved-product-execution-report/v3",
+            "error": (
+                "confirmation_token=never-print-confirmation "
+                "secret=never-print-secret https://private.example/error"
+            ),
+            "snapshot": {
+                "schema_version": "approved-publication-snapshot/v3",
+                "identity": {
+                    "offer_id": "3838619319",
+                    "revision": 40,
+                    "plan_id": "plan-1",
+                    "snapshot_digest": "a" * 64,
+                },
+                "request": {"confirmation_token": "never-print-this"},
+                "content": {
+                    "images": ["https://private.example/image.jpg"],
+                    "video_urls": ["https://private.example/video.mp4"],
+                },
+            },
+            "platforms": [
+                {
+                    "platform": "tiktok",
+                    "result": {"code": "PROCESSING"},
+                    "dispatch": {
+                        "accepted": True,
+                        "approved_snapshot": {"title": "full snapshot leak"},
+                        "raw_response": {
+                            "access_token": "never-print-token",
+                            "image_url": "https://private.example/raw.jpg",
+                        },
+                    },
+                    "readback": {
+                        "status": "UNAVAILABLE",
+                        "message": "provider https://private.example/detail",
+                    },
+                }
+            ],
+        }
+
+        safe = publish_approved_product._redacted_report(unsafe)
+        encoded = json.dumps(safe, ensure_ascii=False)
+
+        self.assertNotIn("snapshot", safe)
+        self.assertEqual(
+            safe["snapshot_identity"]["schema_version"],
+            "approved-publication-snapshot/v3",
+        )
+        for forbidden in (
+            "confirmation_token",
+            "never-print-this",
+            "never-print-confirmation",
+            "never-print-secret",
+            "never-print-token",
+            "full snapshot leak",
+            "private.example",
+            "raw_response",
+            "video_urls",
+        ):
+            self.assertNotIn(forbidden, encoded)
+
+    def test_report_path_is_fixed_to_offer_revision_and_run_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp).resolve()
+            valid = (
+                repo
+                / "reports"
+                / "product-publication"
+                / "3838619319"
+                / "40"
+                / "run-001"
+                / "report.json"
+            )
+            location = publish_approved_product._validated_report_path(
+                valid,
+                repo=repo,
+                offer_id="3838619319",
+                revision=40,
+            )
+            self.assertEqual(location.path, valid)
+            self.assertEqual(location.run_id, "run-001")
+            with self.assertRaises(ValueError):
+                publish_approved_product._validated_report_path(
+                    repo / "report.json",
+                    repo=repo,
+                    offer_id="3838619319",
+                    revision=40,
+                )
+            with self.assertRaises(ValueError):
+                publish_approved_product._validated_report_path(
+                    valid.parent.parent.parent / "41" / "run-001" / "report.json",
+                    repo=repo,
+                    offer_id="3838619319",
+                    revision=40,
+                )
+
+    def test_report_is_atomic_and_never_overwrites_existing_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            report = Path(temp) / "report.json"
+            publish_approved_product._write_report_atomic(
+                report, {"ok": True, "run_id": "run-001"}
+            )
+            self.assertEqual(_common.load_json(report)["run_id"], "run-001")
+            self.assertEqual(list(report.parent.glob(".report.json.*.tmp")), [])
+            with self.assertRaises(FileExistsError):
+                publish_approved_product._write_report_atomic(
+                    report, {"ok": False, "run_id": "run-002"}
+                )
+
+    def test_unified_runner_requires_report_path(self) -> None:
+        snapshot = build_snapshot(dashboard_fixture(), "3838619319")
+        argv = [
+            "publish_approved_product.py",
+            "inspect",
+            "--offer-id",
+            "3838619319",
+        ]
+        with (
+            patch.object(sys, "argv", argv),
+            patch.object(
+                publish_approved_product,
+                "_tool_python",
+                return_value=Path(sys.executable),
+            ),
+            patch.object(
+                publish_approved_product,
+                "_inspect",
+                return_value=snapshot,
+            ),
+            patch.object(publish_approved_product, "emit"),
+        ):
+            with self.assertRaises(SystemExit) as raised:
+                publish_approved_product.main()
+        self.assertEqual(raised.exception.code, 2)
 
     def test_deleted_shopee_mapping_is_retired_without_touching_other_entries(self) -> None:
         original = {
@@ -569,6 +876,38 @@ class DispatchPrecedenceTests(unittest.TestCase):
 
 
 class ReadbackClassificationTests(unittest.TestCase):
+    def test_ozon_imported_is_processing_not_mismatch(self) -> None:
+        snapshot = build_snapshot(dashboard_fixture(), "3838619319")
+        response = {
+            "items": [
+                {
+                    "offer_id": sku,
+                    "id": str(4000 + index),
+                    "name": "Ozon title",
+                    "price": str(price),
+                    "images": ["https://example.test/image.jpg"],
+                    "statuses": {
+                        "status": "IMPORTED",
+                        "is_created": False,
+                        "status_failed": "",
+                    },
+                }
+                for index, (sku, price) in enumerate(
+                    zip(("0960", "0961", "0962"), (77, 97, 122)), start=1
+                )
+            ]
+        }
+        args = type(
+            "Args",
+            (),
+            {"repo": str(_common.DEFAULT_REPO), "timeout_seconds": 1},
+        )()
+        with patch("modules.ozon.client.ozon_post", return_value=response):
+            fact = readback_ozon.readback(snapshot, {"accepted": True}, args)
+
+        self.assertEqual(fact["status"], "PROCESSING")
+        self.assertFalse(fact["mismatch"])
+
     def test_tiktok_exact_readback_uses_full_durable_plan_not_redacted_dashboard(self) -> None:
         redacted_plan = {"plan_id": "plan-1", "payload": {"product_revision": 9}}
         full_plan = {

@@ -83,11 +83,24 @@ Inspect first and present the plan. Only after the user authorizes the offer and
 platforms, execute:
 
 ```powershell
-python scripts/publish_approved_product.py publish --offer-id <OFFER_ID> --platform all --execute --report <REPORT_JSON>
+python scripts/publish_approved_product.py publish --offer-id <OFFER_ID> --platform all --repo <PRODUCT_REPO> --execute --report <PRODUCT_REPO>/reports/product-publication/<OFFER_ID>/<REVISION>/<RUN_ID>/report.json
 ```
 
 Use `--platform tiktok`, `shopee`, or `ozon` for an isolated retry. Authorization
 for one platform does not authorize another.
+
+`--report` is mandatory. Its path is immutable and must exactly follow the
+offer/revision/run layout above. Never reuse a run directory and never delete a
+dispatch, readback, or report fact after a child failure or timeout. The runner
+always resolves a Product Center repository (the production repository is the
+default when `--repo` is omitted) and passes that exact repository to every
+readback, including TikTok exact-identity readback.
+
+The report and stdout contain only the approved v3/v4 snapshot identity summary
+and redacted platform facts. Never emit or persist the full snapshot,
+`confirmation_token`, raw provider responses, credentials, or image/video URLs
+in the report. A child timeout after a dispatch fact was written does not erase
+that fact: retain it and continue the platform readback.
 
 ## Platform knowledge
 

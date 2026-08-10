@@ -137,6 +137,85 @@ def _product_publication_platform_executors() -> dict[str, object]:
     return dict(_PRODUCT_PUBLICATION_PLATFORM_EXECUTORS)
 
 
+def _initialize_product_publication_platform_executors() -> dict[str, object]:
+    """Compose the three production executors without contacting providers.
+
+    Each platform is built independently so a local construction failure does
+    not make another platform unavailable.  Provider exceptions are reduced to
+    their type in logs; credentials and provider messages are never emitted.
+    """
+
+    from shared_platform.product_publication_executors import (
+        build_product_publication_platform_executors,
+    )
+    from shared_platform.product_publication_live_dependencies import (
+        DurableTikTokV4DraftPreparer,
+        MiaoshouTikTokV4DraftTransportFactory,
+        OfficialMiaoshouTikTokCategoryResolver,
+        TikTokV4DraftCheckpointStore,
+        build_live_ozon_dependencies,
+        build_live_shopee_dependencies,
+        build_live_tiktok_dependencies,
+    )
+    from shared_platform.product_publication_reports import (
+        DEFAULT_PRODUCT_PUBLICATION_REPORT_ROOT,
+    )
+
+    def compose_tiktok() -> dict[str, object]:
+        category_resolver = OfficialMiaoshouTikTokCategoryResolver()
+        draft_preparer = DurableTikTokV4DraftPreparer(
+            checkpoint_store=TikTokV4DraftCheckpointStore(
+                DEFAULT_PRODUCT_PUBLICATION_REPORT_ROOT
+            ),
+            category_resolver=category_resolver,
+            # The default factory owns the official read-only seed resolver;
+            # no mutable dashboard identity or guessed detail ID is accepted.
+            transport_factory=MiaoshouTikTokV4DraftTransportFactory(),
+        )
+        dependencies = build_live_tiktok_dependencies(
+            draft_preparer=draft_preparer,
+            category_resolver=category_resolver,
+        )
+        return build_product_publication_platform_executors(
+            platform_scope=("TIKTOK",),
+            tiktok=dependencies,
+        )
+
+    def compose_shopee() -> dict[str, object]:
+        return build_product_publication_platform_executors(
+            platform_scope=("SHOPEE",),
+            shopee=build_live_shopee_dependencies(),
+        )
+
+    def compose_ozon() -> dict[str, object]:
+        return build_product_publication_platform_executors(
+            platform_scope=("OZON",),
+            ozon=build_live_ozon_dependencies(),
+        )
+
+    composed: dict[str, object] = {}
+    for platform, factory in (
+        ("TIKTOK", compose_tiktok),
+        ("SHOPEE", compose_shopee),
+        ("OZON", compose_ozon),
+    ):
+        try:
+            result = factory()
+            if set(result) != {platform} or not callable(result.get(platform)):
+                raise TypeError("publication executor composition is invalid")
+            composed[platform] = result[platform]
+        except Exception as error:
+            _PLATFORM_PUBLISH_LOGGER.error(
+                "publication executor composition failed platform=%s error_type=%s",
+                platform,
+                type(error).__name__,
+            )
+
+    global _PRODUCT_PUBLICATION_PLATFORM_EXECUTORS
+    _PRODUCT_PUBLICATION_PLATFORM_EXECUTORS = composed
+    return dict(composed)
+
+
 def _unavailable_product_publication_executor(request) -> dict:
     """Produce a truthful no-write failure when a platform is not composed."""
 
@@ -15357,6 +15436,7 @@ def serve(
 ):
     WEB_DIR.mkdir(parents=True, exist_ok=True)
     (WEB_DIR / "static").mkdir(parents=True, exist_ok=True)
+    _initialize_product_publication_platform_executors()
 
     def _startup_refresh_tokens() -> None:
         try:

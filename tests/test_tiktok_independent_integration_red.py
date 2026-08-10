@@ -92,14 +92,14 @@ def test_tiktok_busy_state_already_disables_only_the_tiktok_button():
     assert "oneClickExecution.controller" not in publish
     assert "platformPublish[platformKey]" in publish
     assert (
-        'platformPublish.TIKTOK.state === "PUBLISHING"'
+        'platformPublish.TIKTOK.status === "PROCESSING"'
         in controls
     )
     assert (
-        'platformPublish.SHOPEE_GLOBAL.state === "PUBLISHING"'
+        'platformPublish.SHOPEE_GLOBAL.status === "PROCESSING"'
         in controls
     )
-    assert 'platformPublish.OZON.state === "PUBLISHING"' in controls
+    assert 'platformPublish.OZON.status === "PROCESSING"' in controls
 
 
 def test_frontend_displays_provider_safe_reason_instead_of_generic_failure():

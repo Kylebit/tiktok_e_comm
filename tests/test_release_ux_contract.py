@@ -534,7 +534,7 @@ def test_release_plan_failure_refreshes_the_current_gate_and_explains_reapproval
     assert '"dashboard": current_dashboard' in server
 
 
-def test_platform_publish_ui_uses_the_final_http_result_without_polling():
+def test_platform_publish_ui_polls_the_durable_publication_report():
     html = (ROOT / "web/product_workspace.html").read_text(encoding="utf-8")
     script = (ROOT / "web/static/product_workspace.js").read_text(
         encoding="utf-8"
@@ -543,6 +543,7 @@ def test_platform_publish_ui_uses_the_final_http_result_without_polling():
         encoding="utf-8"
     )
     publish = _function_body(script, "publishPlatformBatch")
+    poll = _function_body(script, "pollPublicationReport")
     ensure = script[
         script.index("function ensureOneClickExecution("):
         script.index("async function postProductWorkspace(")
@@ -557,12 +558,17 @@ def test_platform_publish_ui_uses_the_final_http_result_without_polling():
     assert 'id="oneClickNextActionButton"' not in html
     assert 'id="oneClickReadRetryButton"' not in html
     assert "boundedJsonFetch(\n        endpoint," in publish
-    assert "payload.success !== true" in publish
-    assert "response.status !== 200" in publish
+    assert "payload.schema_version !== \"product-publication-start/v1\"" in publish
+    assert "response.status !== 202" in publish
+    assert "payload.report_id" in publish
+    assert "payload.run_id" in publish
     assert "boundedJsonFetch" in publish
-    assert 'result.state = "PUBLISHING"' in publish
-    assert 'result.state = "SUCCEEDED"' in publish
-    assert 'result.state = "FAILED"' in publish
+    assert 'result.status = "PROCESSING"' in publish
+    assert 'result.status = "FAILED"' in publish
+    assert "/api/product-workspace/publication-report?" in poll
+    assert "PUBLICATION_REPORT_STATUSES.has(report?.status)" in poll
+    assert "result.status = report.status" in poll
+    assert 'result.status = "PUBLISHED"' not in publish
     assert "scheduleOneClickStatusPoll" not in publish
     assert "payload.accepted" not in publish
     assert "payload.job" not in publish

@@ -385,40 +385,36 @@ def test_three_platform_http_routes_are_independent(
 ):
     calls = []
 
-    def response(platform):
-        def start(payload):
-            calls.append((platform, deepcopy(payload)))
-            return 200, {
-                "schema_version": "miaoshou-platform-publish-result/v1",
-                "ok": True,
-                "platform": platform,
-                "success": True,
-                "message": f"{platform} 发布成功",
-            }
+    def start(payload, *, platform):
+        calls.append((platform, deepcopy(payload)))
+        run_id = f"run-{platform.lower()}"
+        return 202, {
+            "schema_version": "product-publication-start/v1",
+            "ok": True,
+            "platform": platform,
+            "run_id": run_id,
+            "report_id": f"publication-report:{run_id}",
+        }
 
-        return start
-
-    monkeypatch.setattr(
-        product_server,
+    monkeypatch.setattr(product_server, "_start_product_publication", start)
+    for legacy_name in (
         "_start_tiktok_release",
-        response("TIKTOK"),
-    )
-    monkeypatch.setattr(
-        product_server,
         "_start_shopee_global_release",
-        response("SHOPEE_GLOBAL"),
-    )
-    monkeypatch.setattr(
-        product_server,
         "_start_ozon_release",
-        response("OZON"),
-    )
+    ):
+        monkeypatch.setattr(
+            product_server,
+            legacy_name,
+            lambda _payload, name=legacy_name: pytest.fail(
+                f"legacy route called: {name}"
+            ),
+        )
 
     endpoints = (
         ("/api/product-workspace/publish-tiktok", "TIKTOK"),
         (
             "/api/product-workspace/publish-shopee-global",
-            "SHOPEE_GLOBAL",
+            "SHOPEE",
         ),
         ("/api/product-workspace/publish-ozon", "OZON"),
     )
@@ -428,13 +424,13 @@ def test_three_platform_http_routes_are_independent(
             product_http_server + endpoint,
             {"confirm_publish": True, "plan_id": "stage0-plan"},
         )
-        assert status == 200
-        assert body["success"] is True
+        assert status == 202
+        assert body["report_id"] == f"publication-report:{body['run_id']}"
         assert len(calls) == before + 1
         assert calls[-1][0] == expected
 
     assert [platform for platform, _payload in calls] == [
         "TIKTOK",
-        "SHOPEE_GLOBAL",
+        "SHOPEE",
         "OZON",
     ]

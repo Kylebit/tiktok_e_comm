@@ -101,6 +101,81 @@ def _publication_report_api_view(report: dict) -> dict:
     return public_publication_report(report)
 
 
+# Provider transports are composed by the server process, never by an HTTP
+# request.  An empty registry is intentionally safe: the start seam still
+# creates a durable FAILED report with zero claimed writes.
+_PRODUCT_PUBLICATION_PLATFORM_EXECUTORS: dict[str, object] = {}
+
+
+def _product_publication_platform_executors() -> dict[str, object]:
+    """Return the server-owned executor registry for frozen v4 snapshots."""
+
+    return dict(_PRODUCT_PUBLICATION_PLATFORM_EXECUTORS)
+
+
+def _unavailable_product_publication_executor(request) -> dict:
+    """Produce a truthful no-write failure when a platform is not composed."""
+
+    return {
+        "schema_version": "product-publication-platform-result/v1",
+        "platform": request.platform,
+        "targets": [
+            {"target_label": target, "status": "FAILED"}
+            for target in request.target_labels
+        ],
+        "dispatch_attempted": False,
+        "readback_completed": False,
+        "external_write_count": 0,
+        "requires_human_action": True,
+    }
+
+
+def _start_product_publication(
+    data: dict,
+    *,
+    platform: str,
+) -> tuple[int, dict]:
+    """Run exactly one server-owned platform executor from a frozen snapshot."""
+
+    from shared_platform.product_publication_runner import (
+        ProductPublicationRunner,
+        ProductPublicationRunnerError,
+    )
+
+    if platform not in {"TIKTOK", "SHOPEE", "OZON"}:
+        return 400, {"ok": False, "error": "unsupported publication platform"}
+    offer_id = data.get("offer_id")
+    plan_id = data.get("plan_id")
+    if type(offer_id) is not str or type(plan_id) is not str:
+        return 400, {"ok": False, "error": "offer_id and plan_id are required"}
+
+    run_id = f"product-center-{platform.lower()}-{uuid4().hex}"
+    executors = _product_publication_platform_executors()
+    executor = executors.get(platform)
+    if not callable(executor):
+        executor = _unavailable_product_publication_executor
+    try:
+        receipt = ProductPublicationRunner(
+            release_store=_release_store(),
+            report_store=_product_publication_report_store(),
+        ).run(
+            run_id=run_id,
+            offer_id=offer_id,
+            plan_id=plan_id,
+            platform_scope=(platform,),
+            platform_executors={platform: executor},
+        )
+    except (TypeError, ValueError, ProductPublicationRunnerError) as error:
+        return 409, {"ok": False, "error": str(error)}
+    return 202, {
+        "ok": True,
+        "schema_version": "product-publication-start/v1",
+        "platform": platform,
+        "report_id": receipt.report["report_id"],
+        "run_id": receipt.report["run_id"],
+    }
+
+
 def _publication_snapshot_plan_projection(
     plan_payload: dict,
     *,
@@ -14260,15 +14335,23 @@ class Handler(BaseHTTPRequestHandler):
                 status, payload = _prepare_miaoshou_release(data)
             elif path == "/api/product-workspace/collectbox-action/start":
                 status, payload = _start_collectbox_action(data)
-            elif path in {
-                "/api/product-workspace/publish",
-                "/api/product-workspace/publish-tiktok",
-            }:
+            elif path == "/api/product-workspace/publish":
                 status, payload = _start_tiktok_release(data)
+            elif path == "/api/product-workspace/publish-tiktok":
+                status, payload = _start_product_publication(
+                    data,
+                    platform="TIKTOK",
+                )
             elif path == "/api/product-workspace/publish-shopee-global":
-                status, payload = _start_shopee_global_release(data)
+                status, payload = _start_product_publication(
+                    data,
+                    platform="SHOPEE",
+                )
             elif path == "/api/product-workspace/publish-ozon":
-                status, payload = _start_ozon_release(data)
+                status, payload = _start_product_publication(
+                    data,
+                    platform="OZON",
+                )
             elif path == "/api/product-workspace/release-target/manual-verify":
                 status, payload = _manually_verify_release_target(data)
             elif (

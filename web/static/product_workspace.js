@@ -122,6 +122,13 @@
   const ONECLICK_POLL_INTERVAL_MS = 750;
   const ONECLICK_LOCAL_READ_TIMEOUT_MS = 15000;
   const ONECLICK_LOCAL_POST_TIMEOUT_MS = 15000;
+  const PUBLICATION_REPORT_POLL_INTERVAL_MS = 750;
+  const PUBLICATION_REPORT_STATUSES = new Set([
+    "PUBLISHED",
+    "PROCESSING",
+    "PARTIAL",
+    "FAILED",
+  ]);
   const COLLECTBOX_ACTION_SCHEMA = "collectbox-action-status/v1";
   const COLLECTBOX_ACTION_STATUSES = new Set([
     "READY",
@@ -337,31 +344,37 @@
   };
   const platformPublish = {
     TIKTOK: {
-      state: "IDLE",
+      status: null,
       message: "",
-      failedTargets: [],
+      reportId: "",
+      runId: "",
       generation: 0,
       contextKey: "",
       identity: null,
       controller: null,
+      timer: null,
     },
     SHOPEE_GLOBAL: {
-      state: "IDLE",
+      status: null,
       message: "",
-      failedTargets: [],
+      reportId: "",
+      runId: "",
       generation: 0,
       contextKey: "",
       identity: null,
       controller: null,
+      timer: null,
     },
     OZON: {
-      state: "IDLE",
+      status: null,
       message: "",
-      failedTargets: [],
+      reportId: "",
+      runId: "",
       generation: 0,
       contextKey: "",
       identity: null,
       controller: null,
+      timer: null,
     },
   };
   const platformPublishNames = {
@@ -767,12 +780,15 @@
     if (!result) return;
     result.generation += 1;
     if (result.controller) result.controller.abort();
-    result.state = "IDLE";
+    if (result.timer !== null) window.clearTimeout(result.timer);
+    result.status = null;
     result.message = "";
-    result.failedTargets = [];
+    result.reportId = "";
+    result.runId = "";
     result.contextKey = "";
     result.identity = null;
     result.controller = null;
+    result.timer = null;
   }
 
   function resetAllPlatformPublish() {
@@ -4354,30 +4370,24 @@
     const container = $("#oneClickExecutionGroups");
     const message = $("#oneClickExecutionMessage");
     if (!container || !message) return;
-    const stateLabels = {
-      IDLE: "未发布",
-      PUBLISHING: "发布中",
-      SUCCEEDED: "发布成功",
-      FAILED: "发布失败",
-    };
     container.innerHTML = Object.entries(platformPublish).map(
       ([platform, result]) => `
         <article class="oneclick-target-card"
           data-platform-publish-result="${esc(platform)}">
           <strong>${esc(platformPublishNames[platform])}</strong>
-          <span>${esc(stateLabels[result.state])}</span>
+          <span>${esc(PUBLICATION_REPORT_STATUSES.has(result.status) ? result.status : "")}</span>
           <small>${esc(result.message || "尚未点击发布")}</small>
         </article>
       `,
     ).join("");
     const publishing = Object.values(platformPublish).filter(
-      (result) => result.state === "PUBLISHING",
+      (result) => result.status === "PROCESSING",
     ).length;
     const succeeded = Object.values(platformPublish).filter(
-      (result) => result.state === "SUCCEEDED",
+      (result) => result.status === "PUBLISHED",
     ).length;
     const failed = Object.values(platformPublish).filter(
-      (result) => result.state === "FAILED",
+      (result) => ["PARTIAL", "FAILED"].includes(result.status),
     ).length;
     if (!oneClickIdentity(data)) {
       message.textContent = "请先批准当前发布计划。";
@@ -7592,11 +7602,11 @@
     }
     // The server owns the final publish precondition. A terminal import
     // warning must remain actionable so retry can return the precise reason.
-    button.disabled = platformPublish.TIKTOK.state === "PUBLISHING";
+    button.disabled = platformPublish.TIKTOK.status === "PROCESSING";
     shopeeButton.disabled = (
-      platformPublish.SHOPEE_GLOBAL.state === "PUBLISHING"
+      platformPublish.SHOPEE_GLOBAL.status === "PROCESSING"
     );
-    ozonButton.disabled = platformPublish.OZON.state === "PUBLISHING";
+    ozonButton.disabled = platformPublish.OZON.status === "PROCESSING";
     button.textContent = "发布 TikTok";
     shopeeButton.textContent = "发布 Shopee 全球商品";
     ozonButton.textContent = "发布 Ozon";
@@ -8810,26 +8820,97 @@
     return `服务返回 HTTP ${status}`;
   }
 
-  async function publishPlatformBatch(endpoint, platformName, platformKey) {
+  function schedulePublicationReportPoll(platformKey, generation) {
+    const result = platformPublish[platformKey];
+    if (!result || generation !== result.generation) return;
+    if (result.timer !== null) window.clearTimeout(result.timer);
+    result.timer = window.setTimeout(
+      () => pollPublicationReport(platformKey, generation),
+      PUBLICATION_REPORT_POLL_INTERVAL_MS,
+    );
+  }
+
+  async function pollPublicationReport(platformKey, generation) {
     const result = platformPublish[platformKey];
     const identity = result?.identity;
     if (
-      !currentData
+      !result
       || !identity
-      || result?.state === "PUBLISHING"
+      || !result.reportId
+      || generation !== result.generation
     ) return;
+    result.timer = null;
+    const controller = new AbortController();
+    result.controller = controller;
+    const query = new URLSearchParams({
+      offer_id: identity.offerId,
+      report_id: result.reportId,
+    });
+    try {
+      const { response, payload } = await boundedJsonFetch(
+        `/api/product-workspace/publication-report?${query}`,
+        {
+          headers: { Accept: "application/json" },
+          controller,
+        },
+        ONECLICK_LOCAL_READ_TIMEOUT_MS,
+        "发布报告读取",
+      );
+      const report = payload?.report;
+      const expectedPlatform = platformKey === "SHOPEE_GLOBAL"
+        ? "SHOPEE"
+        : platformKey;
+      const platformRows = report?.summary?.platforms;
+      if (
+        !response.ok
+        || payload.ok !== true
+        || report?.report_id !== result.reportId
+        || report?.run_id !== result.runId
+        || report?.offer_id !== identity.offerId
+        || !PUBLICATION_REPORT_STATUSES.has(report?.status)
+        || !Array.isArray(platformRows)
+        || platformRows.length !== 1
+        || platformRows[0]?.platform !== expectedPlatform
+        || platformRows[0]?.status !== report.status
+      ) {
+        throw new Error("发布报告身份或状态无效");
+      }
+      if (generation !== result.generation) return;
+      result.status = report.status;
+      result.message = `${platformPublishNames[platformKey]} ${report.status} · ${result.reportId}`;
+      $("#publishRunMessage").textContent = result.message;
+      showError("");
+    } catch (error) {
+      if (generation !== result.generation) return;
+      result.status = "PROCESSING";
+      result.message = `报告读取中：${friendlyError(error.message)}`;
+      schedulePublicationReportPoll(platformKey, generation);
+    } finally {
+      if (generation === result.generation) {
+        if (result.controller === controller) result.controller = null;
+        renderOneClickExecution(currentData);
+        updateReleaseControls(currentData || {});
+      }
+    }
+  }
+
+  async function publishPlatformBatch(endpoint, platformName, platformKey) {
+    const result = platformPublish[platformKey];
+    const identity = result?.identity;
+    if (!currentData || !identity || result?.status === "PROCESSING") return;
     result.generation += 1;
     const generation = result.generation;
     if (result.controller) result.controller.abort();
+    if (result.timer !== null) window.clearTimeout(result.timer);
     const controller = new AbortController();
     result.controller = controller;
-    const body = currentReleaseBody({ confirm_publish: true });
-    result.state = "PUBLISHING";
-    result.message = `${platformName} 发布中`;
-    result.failedTargets = [];
+    result.status = "PROCESSING";
+    result.message = `${platformName} 发布报告创建中`;
+    result.reportId = "";
+    result.runId = "";
     updateReleaseControls(currentData);
     renderOneClickExecution(currentData);
-    $("#publishRunMessage").textContent = `${platformName} 发布中`;
+    $("#publishRunMessage").textContent = result.message;
     try {
       const { response, payload } = await boundedJsonFetch(
         endpoint,
@@ -8839,42 +8920,34 @@
             Accept: "application/json",
             "Content-Type": "application/json",
           },
-          body: JSON.stringify(body),
+          body: JSON.stringify(currentReleaseBody()),
           controller,
         },
         ONECLICK_LOCAL_POST_TIMEOUT_MS,
         `${platformName} 发布任务创建`,
       );
       if (
-        response.status !== 200
+        response.status !== 202
         || !response.ok
-        || payload.ok === false
-        || payload.success !== true
+        || payload.ok !== true
+        || payload.schema_version !== "product-publication-start/v1"
+        || typeof payload.report_id !== "string"
+        || typeof payload.run_id !== "string"
+        || payload.report_id !== `publication-report:${payload.run_id}`
       ) {
-        const error = new Error(
-          String(payload?.message || "").trim()
-          || platformPublishErrorMessage(payload, response.status, platformName),
+        throw new Error(
+          platformPublishErrorMessage(payload, response.status, platformName),
         );
-        error.status = response.status;
-        error.payload = payload;
-        throw error;
       }
       if (generation !== result.generation) return;
-      result.state = "SUCCEEDED";
-      result.message = String(payload.message || `${platformName} 发布成功`);
-      result.failedTargets = [];
-      $("#publishRunMessage").textContent = result.message;
-      showError("");
+      result.reportId = payload.report_id;
+      result.runId = payload.run_id;
+      await pollPublicationReport(platformKey, generation);
     } catch (error) {
       if (generation !== result.generation) return;
       const message = friendlyError(error.message);
-      result.state = "FAILED";
-      result.message = message.startsWith(platformName)
-        ? message
-        : `${platformName} 发布失败：${message}`;
-      result.failedTargets = Array.isArray(error.payload?.failed_targets)
-        ? [...error.payload.failed_targets]
-        : [];
+      result.status = "FAILED";
+      result.message = `${platformName} 发布启动失败：${message}`;
       showError(message);
       $("#publishRunMessage").textContent = result.message;
     } finally {

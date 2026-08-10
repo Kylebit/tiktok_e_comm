@@ -106,6 +106,10 @@ def _candidate_payload(
         candidate["digests"] = inputs["digests"]
     if isinstance(inputs.get("pricing"), Mapping):
         candidate["pricing"] = inputs["pricing"]
+    if "shopee_global_master" in inputs:
+        candidate["shopee_global_master"] = inputs[
+            "shopee_global_master"
+        ]
 
     if not _text(product_facts.get("description")):
         missing.append("product_facts.description")
@@ -148,6 +152,11 @@ def _candidate_payload(
 
     if not isinstance(candidate.get("digests"), Mapping):
         missing.append("digests")
+    if any(
+        type(target) is str and target.startswith("shopee:")
+        for target in (candidate.get("targets") or ())
+    ) and not isinstance(candidate.get("shopee_global_master"), Mapping):
+        missing.append("shopee_global_master")
     return candidate, list(dict.fromkeys(missing))
 
 

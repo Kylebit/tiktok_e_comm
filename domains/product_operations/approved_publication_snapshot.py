@@ -29,6 +29,7 @@ _CONTROL_ONLY_TARGETS = frozenset({"miaoshou:COMMON"})
 _NON_PROVIDER_CATEGORY_DECISION_SCHEMA_VERSION = (
     "publication-category-decision/v1"
 )
+_SHOPEE_GLOBAL_MASTER_SCHEMA_VERSION = "shopee-global-master/v1"
 _BODY_KEYS = {
     "schema_version",
     "offer_id",
@@ -40,6 +41,7 @@ _BODY_KEYS = {
     "bindings",
     "product",
     "categories_by_target",
+    "shopee_global_master",
     "skus",
     "digests",
 }
@@ -275,6 +277,13 @@ def build_approved_publication_snapshot(
             }
         )
 
+    shopee_global_master = _shopee_global_master(
+        payload.get("shopee_global_master"),
+        targets=targets,
+        skus=skus,
+        approved_product_images=images,
+    )
+
     body = {
         "schema_version": APPROVED_PUBLICATION_SNAPSHOT_SCHEMA_VERSION,
         "offer_id": offer_id,
@@ -300,6 +309,7 @@ def build_approved_publication_snapshot(
             "source_identity": source_contract.payload(),
         },
         "categories_by_target": categories_by_target,
+        "shopee_global_master": shopee_global_master,
         "skus": skus,
         "digests": digests,
     }
@@ -453,8 +463,363 @@ def _validate_frozen_body(body: Mapping[str, Any]) -> None:
             _publication_price(price, f"snapshot {target} price", target=target)
     if len(sellers) != 1:
         raise ApprovedPublicationSnapshotError("snapshot seller SKU identity conflicts")
+    _shopee_global_master(
+        body.get("shopee_global_master"),
+        targets=targets,
+        skus=[dict(row) for row in rows],
+        approved_product_images=_text_list(
+            product.get("images"), "snapshot images"
+        ),
+    )
     if not offer_id:
         raise ApprovedPublicationSnapshotError("snapshot offer identity is missing")
+
+
+def _shopee_global_master(
+    value: Any,
+    *,
+    targets: list[dict[str, str]],
+    skus: list[dict[str, Any]],
+    approved_product_images: list[str],
+) -> dict[str, Any] | None:
+    shopee_targets = {
+        row["target_label"]
+        for row in targets
+        if row["platform"] == "shopee"
+    }
+    if not shopee_targets:
+        if value is not None:
+            raise ApprovedPublicationSnapshotError(
+                "Shopee global master exists without a Shopee target"
+            )
+        return None
+    row = _mapping(value, "Shopee global master")
+    if set(row) != {
+        "schema_version",
+        "price_source",
+        "sku_original_prices_cny",
+        "category_decision",
+        "policy",
+        "variant_image_positions",
+    } or row.get("schema_version") != _SHOPEE_GLOBAL_MASTER_SCHEMA_VERSION:
+        raise ApprovedPublicationSnapshotError(
+            "Shopee global master fields are invalid"
+        )
+
+    source = _mapping(row.get("price_source"), "Shopee master price source")
+    if set(source) != {
+        "target_label",
+        "region",
+        "target_key",
+        "source_binding_digest",
+    }:
+        raise ApprovedPublicationSnapshotError(
+            "Shopee global master price source fields are invalid"
+        )
+    target_label = _text(source.get("target_label"), "Shopee master target")
+    region = _text(source.get("region"), "Shopee master region")
+    target_key = _text(source.get("target_key"), "Shopee master target_key")
+    if (
+        target_label not in shopee_targets
+        or target_label != f"shopee:{region}"
+    ):
+        raise ApprovedPublicationSnapshotError(
+            "Shopee global master price source conflicts"
+        )
+    expected_source_digest = _sha256(
+        {
+            "schema_version": "shopee-global-master-price-source/v1",
+            "target_label": target_label,
+            "region": region,
+            "target_key": target_key,
+        }
+    )
+    if _digest(
+        source.get("source_binding_digest"),
+        "Shopee master source binding digest",
+    ) != expected_source_digest:
+        raise ApprovedPublicationSnapshotError(
+            "Shopee global master price source digest conflicts"
+        )
+
+    models = [
+        _digits(sku.get("model_sku"), "Shopee global master model_sku")
+        for sku in skus
+    ]
+    price_rows = _mapping_list(
+        row.get("sku_original_prices_cny"),
+        "Shopee global master SKU prices",
+    )
+    normalized_prices: list[dict[str, str]] = []
+    seen_prices: set[str] = set()
+    sku_by_model = {str(sku.get("model_sku")): sku for sku in skus}
+    for raw in price_rows:
+        if set(raw) != {"model_sku", "amount", "currency"}:
+            raise ApprovedPublicationSnapshotError(
+                "Shopee global master SKU price fields are invalid"
+            )
+        model = _digits(raw.get("model_sku"), "Shopee global master model_sku")
+        if model not in sku_by_model or model in seen_prices:
+            raise ApprovedPublicationSnapshotError(
+                "Shopee global master SKU price identities conflict"
+            )
+        if raw.get("currency") != "CNY":
+            raise ApprovedPublicationSnapshotError(
+                "Shopee global master currency must be CNY"
+            )
+        amount = _positive_decimal(raw.get("amount"), "Shopee global master price")
+        source_price = _mapping(
+            _mapping(sku_by_model[model].get("prices"), "snapshot prices").get(
+                target_label
+            ),
+            "Shopee global master source target price",
+        )
+        expected_amount = source_price.get("global_original_price_cny")
+        if expected_amount is None or _positive_decimal(
+            expected_amount, "Shopee source global price"
+        ) != amount:
+            raise ApprovedPublicationSnapshotError(
+                "Shopee global master price conflicts with its approved source"
+            )
+        seen_prices.add(model)
+        normalized_prices.append(
+            {"model_sku": model, "amount": amount, "currency": "CNY"}
+        )
+    if [price["model_sku"] for price in normalized_prices] != models:
+        raise ApprovedPublicationSnapshotError(
+            "Shopee global master SKU price coverage conflicts"
+        )
+
+    category_decision = _shopee_global_category_decision(
+        row.get("category_decision")
+    )
+    policy = _shopee_global_policy(row.get("policy"))
+
+    position_rows = _mapping_list(
+        row.get("variant_image_positions"),
+        "Shopee global variant image positions",
+    )
+    positions: list[dict[str, Any]] = []
+    seen_positions: set[str] = set()
+    for raw in position_rows:
+        if set(raw) != {"model_sku", "position", "image_url"}:
+            raise ApprovedPublicationSnapshotError(
+                "Shopee global variant image position fields are invalid"
+            )
+        model = _digits(raw.get("model_sku"), "Shopee variant image model_sku")
+        position = raw.get("position")
+        image_url = _text(raw.get("image_url"), "Shopee variant image URL")
+        if (
+            model not in sku_by_model
+            or model in seen_positions
+            or type(position) is not int
+            or position < 0
+            or position >= len(approved_product_images)
+            or approved_product_images[position] != image_url
+        ):
+            raise ApprovedPublicationSnapshotError(
+                "Shopee global variant image positions conflict"
+            )
+        seen_positions.add(model)
+        positions.append(
+            {"model_sku": model, "position": position, "image_url": image_url}
+        )
+    if [position["model_sku"] for position in positions] != models:
+        raise ApprovedPublicationSnapshotError(
+            "Shopee global variant image position coverage conflicts"
+        )
+    return {
+        "schema_version": _SHOPEE_GLOBAL_MASTER_SCHEMA_VERSION,
+        "price_source": {
+            "target_label": target_label,
+            "region": region,
+            "target_key": target_key,
+            "source_binding_digest": expected_source_digest,
+        },
+        "sku_original_prices_cny": normalized_prices,
+        "category_decision": category_decision,
+        "policy": policy,
+        "variant_image_positions": positions,
+    }
+
+
+def _shopee_global_category_decision(value: Any) -> dict[str, Any]:
+    row = _mapping(value, "Shopee global category decision")
+    if set(row) != {
+        "status",
+        "category",
+        "required_attributes",
+        "source_decision_digest",
+        "decision_digest",
+    }:
+        raise ApprovedPublicationSnapshotError(
+            "Shopee global category decision fields are invalid"
+        )
+    status = _text(row.get("status"), "Shopee global category status")
+    attributes = row.get("required_attributes")
+    if not _sequence(attributes) or any(
+        not isinstance(attribute, Mapping) for attribute in attributes
+    ):
+        raise ApprovedPublicationSnapshotError(
+            "Shopee global required attributes are invalid"
+        )
+    normalized_attributes = json.loads(
+        json.dumps(
+            list(attributes),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    )
+    if status == "DEFERRED_TO_SKILL":
+        if (
+            row.get("category") is not None
+            or normalized_attributes
+            or row.get("source_decision_digest") is not None
+        ):
+            raise ApprovedPublicationSnapshotError(
+                "deferred Shopee global category cannot contain guessed facts"
+            )
+        expected = _sha256(
+            {
+                "schema_version": "shopee-global-category-decision/v1",
+                "status": status,
+                "category": None,
+                "required_attributes": [],
+                "source_decision_digest": None,
+            }
+        )
+        if _digest(
+            row.get("decision_digest"), "Shopee global category decision digest"
+        ) != expected:
+            raise ApprovedPublicationSnapshotError(
+                "Shopee global category decision digest conflicts"
+            )
+        category = None
+        source_decision_digest = None
+        decision_digest = expected
+    elif status == "APPROVED":
+        raw_category = _mapping(row.get("category"), "Shopee global category")
+        if set(raw_category) != {"id", "name", "path"}:
+            raise ApprovedPublicationSnapshotError(
+                "Shopee global category fields are invalid"
+            )
+        category_id = _text(raw_category.get("id"), "Shopee global category id")
+        category_name = _text(
+            raw_category.get("name"), "Shopee global category name"
+        )
+        path_rows = _mapping_list(
+            raw_category.get("path"), "Shopee global category path"
+        )
+        path: list[dict[str, str]] = []
+        for node in path_rows:
+            if set(node) != {"id", "name"}:
+                raise ApprovedPublicationSnapshotError(
+                    "Shopee global category path fields are invalid"
+                )
+            path.append(
+                {
+                    "id": _text(node.get("id"), "Shopee global path id"),
+                    "name": _text(node.get("name"), "Shopee global path name"),
+                }
+            )
+        if not path or path[-1] != {"id": category_id, "name": category_name}:
+            raise ApprovedPublicationSnapshotError(
+                "Shopee global category path identity conflicts"
+            )
+        category = {"id": category_id, "name": category_name, "path": path}
+        source_decision_digest = _digest(
+            row.get("source_decision_digest"),
+            "Shopee global source category decision digest",
+        )
+        expected = _sha256(
+            {
+                "schema_version": "shopee-global-category-decision/v1",
+                "status": status,
+                "category": category,
+                "required_attributes": normalized_attributes,
+                "source_decision_digest": source_decision_digest,
+            }
+        )
+        if _digest(
+            row.get("decision_digest"), "Shopee global category decision digest"
+        ) != expected:
+            raise ApprovedPublicationSnapshotError(
+                "Shopee global category decision digest conflicts"
+            )
+        decision_digest = expected
+    else:
+        raise ApprovedPublicationSnapshotError(
+            "Shopee global category status is invalid"
+        )
+    return {
+        "status": status,
+        "category": category,
+        "required_attributes": normalized_attributes,
+        "source_decision_digest": source_decision_digest,
+        "decision_digest": decision_digest,
+    }
+
+
+def _shopee_global_policy(value: Any) -> dict[str, Any]:
+    row = _mapping(value, "Shopee global policy")
+    if set(row) != {"brand", "condition", "preorder", "stock", "warehouse"}:
+        raise ApprovedPublicationSnapshotError("Shopee global policy fields are invalid")
+    brand = _mapping(row.get("brand"), "Shopee global brand policy")
+    if (
+        set(brand) != {"brand_id", "original_brand_name", "policy_version"}
+        or brand.get("brand_id") != 0
+        or brand.get("original_brand_name") != "NoBrand"
+        or brand.get("policy_version") != "shopee-global-fixed-no-brand/v1"
+    ):
+        raise ApprovedPublicationSnapshotError("Shopee global NoBrand policy drifted")
+    if row.get("condition") != "NEW":
+        raise ApprovedPublicationSnapshotError("Shopee global condition policy drifted")
+    preorder = _mapping(row.get("preorder"), "Shopee global preorder policy")
+    if preorder != {"is_pre_order": False, "days_to_ship": 0}:
+        raise ApprovedPublicationSnapshotError("Shopee global preorder policy drifted")
+    stock = _mapping(row.get("stock"), "Shopee global stock policy")
+    if stock != {
+        "quantity": 200,
+        "policy_version": "shopee-global-fixed-stock/v1",
+    }:
+        raise ApprovedPublicationSnapshotError("Shopee global stock policy drifted")
+    warehouse = _mapping(row.get("warehouse"), "Shopee global warehouse policy")
+    if set(warehouse) != {
+        "display_name",
+        "location_id",
+        "policy_version",
+        "status",
+    } or warehouse.get("display_name") != "中国仓库" or warehouse.get(
+        "policy_version"
+    ) != "shopee-global-fixed-china-warehouse/v1":
+        raise ApprovedPublicationSnapshotError("Shopee global warehouse policy drifted")
+    warehouse_status = warehouse.get("status")
+    if warehouse_status == "DEFERRED_TO_SKILL":
+        if warehouse.get("location_id") is not None:
+            raise ApprovedPublicationSnapshotError(
+                "deferred Shopee warehouse cannot contain a guessed location"
+            )
+        location_id = None
+    elif warehouse_status == "APPROVED":
+        location_id = _text(
+            warehouse.get("location_id"), "Shopee global warehouse location_id"
+        )
+    else:
+        raise ApprovedPublicationSnapshotError("Shopee global warehouse status is invalid")
+    return {
+        "brand": dict(brand),
+        "condition": "NEW",
+        "preorder": {"is_pre_order": False, "days_to_ship": 0},
+        "stock": dict(stock),
+        "warehouse": {
+            "display_name": "中国仓库",
+            "location_id": location_id,
+            "policy_version": "shopee-global-fixed-china-warehouse/v1",
+            "status": warehouse_status,
+        },
+    }
 
 
 def _prices(

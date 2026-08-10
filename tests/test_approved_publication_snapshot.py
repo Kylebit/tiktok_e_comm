@@ -74,6 +74,72 @@ def _target_categories():
     }
 
 
+def _shopee_global_master():
+    source = {
+        "target_label": "shopee:PH",
+        "region": "PH",
+        "target_key": "lh_ph",
+    }
+    source["source_binding_digest"] = _sha(
+        {
+            "schema_version": "shopee-global-master-price-source/v1",
+            **source,
+        }
+    )
+    category = {
+        "status": "DEFERRED_TO_SKILL",
+        "category": None,
+        "required_attributes": [],
+        "source_decision_digest": None,
+    }
+    category["decision_digest"] = _sha(
+        {
+            "schema_version": "shopee-global-category-decision/v1",
+            **category,
+        }
+    )
+    return {
+        "schema_version": "shopee-global-master/v1",
+        "price_source": source,
+        "sku_original_prices_cny": [
+            {"model_sku": "0958", "amount": "40.12", "currency": "CNY"},
+            {"model_sku": "0959", "amount": "41.25", "currency": "CNY"},
+        ],
+        "category_decision": category,
+        "policy": {
+            "brand": {
+                "brand_id": 0,
+                "original_brand_name": "NoBrand",
+                "policy_version": "shopee-global-fixed-no-brand/v1",
+            },
+            "condition": "NEW",
+            "preorder": {"is_pre_order": False, "days_to_ship": 0},
+            "stock": {
+                "quantity": 200,
+                "policy_version": "shopee-global-fixed-stock/v1",
+            },
+            "warehouse": {
+                "display_name": "中国仓库",
+                "location_id": None,
+                "policy_version": "shopee-global-fixed-china-warehouse/v1",
+                "status": "DEFERRED_TO_SKILL",
+            },
+        },
+        "variant_image_positions": [
+            {
+                "model_sku": "0958",
+                "position": 0,
+                "image_url": "https://img.example/main-1.jpg",
+            },
+            {
+                "model_sku": "0959",
+                "position": 1,
+                "image_url": "https://img.example/main-2.jpg",
+            },
+        ],
+    }
+
+
 def _approved_plan():
     source_resolution = resolve_source_product_identity(
         collect_box={
@@ -143,6 +209,10 @@ def _approved_plan():
             },
         },
         "pricing": {
+            "master_price_source": {
+                "region": "PH",
+                "target_key": "lh_ph",
+            },
             "selected_targets": {
                 "tiktok:LH_PH": {
                     "sku_prices": [
@@ -157,9 +227,20 @@ def _approved_plan():
                     ]
                 },
                 "shopee:PH": {
+                    "source": {"region": "PH", "target_key": "lh_ph"},
                     "sku_prices": [
-                        {"model_sku": "0958", "list_price": "125", "currency": "PHP"},
-                        {"model_sku": "0959", "list_price": "128", "currency": "PHP"},
+                        {
+                            "model_sku": "0958",
+                            "list_price": "125",
+                            "currency": "PHP",
+                            "global_original_price_cny": "40.12",
+                        },
+                        {
+                            "model_sku": "0959",
+                            "list_price": "128",
+                            "currency": "PHP",
+                            "global_original_price_cny": "41.25",
+                        },
                     ]
                 },
                 "ozon:RU": {
@@ -178,6 +259,7 @@ def _approved_plan():
             "pricing": pricing_digest,
             "sku_lineage": lineage_digest,
         },
+        "shopee_global_master": _shopee_global_master(),
     }
     payload_digest = _sha(payload)
     return {

@@ -64,6 +64,10 @@ def _raw_approval_inputs(*, sku_count: int = 2):
                 ][:sku_count]
             )
         ],
+        "shopee_global_variant_image_positions": [
+            {"model_sku": model, "position": index}
+            for index, model in enumerate(["0958", "0959"][:sku_count])
+        ],
     }
     for target in payload["targets"]:
         rows = payload["pricing"]["selected_targets"][target]["sku_prices"]

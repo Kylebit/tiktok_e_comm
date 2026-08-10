@@ -9,6 +9,7 @@ snapshot from mutable Product Center state.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 from typing import Any
@@ -226,6 +227,18 @@ def build_approved_publication_snapshot_inputs(
         targets=targets,
         model_skus=list(lineage_models.values()),
     )
+    shopee_global_master = _shopee_global_master_inputs(
+        payload=payload,
+        pricing=normalized_pricing,
+        targets=targets,
+        model_skus=list(lineage_models.values()),
+        approved_product_images=image_urls,
+        sku_details_by_key=sku_details,
+        variant_keys_by_model={
+            model_sku: variant_key
+            for variant_key, model_sku in lineage_models.items()
+        },
+    )
     digests = {
         "source": source_digest,
         "content": _digest(
@@ -259,7 +272,12 @@ def build_approved_publication_snapshot_inputs(
                 "categories_by_target": categories_by_target,
             }
         ),
-        "pricing": _digest(normalized_pricing),
+        "pricing": _digest(
+            {
+                "pricing": normalized_pricing,
+                "shopee_global_master": shopee_global_master,
+            }
+        ),
         "sku_lineage": lineage_digest,
     }
     return {
@@ -268,8 +286,312 @@ def build_approved_publication_snapshot_inputs(
         "categories_by_target": categories_by_target,
         "sku_details_by_key": sku_details,
         "pricing": normalized_pricing,
+        "shopee_global_master": shopee_global_master,
         "digests": digests,
     }
+
+
+def _shopee_global_master_inputs(
+    *,
+    payload: Mapping[str, Any],
+    pricing: Mapping[str, Any],
+    targets: list[str],
+    model_skus: list[str],
+    approved_product_images: list[str],
+    sku_details_by_key: Mapping[str, Mapping[str, Any]],
+    variant_keys_by_model: Mapping[str, str],
+) -> dict[str, Any] | None:
+    """Freeze one exact CNSC master contract without reusing regional facts.
+
+    The approved ``master_price_source`` is the only authority for the CNSC
+    master price.  Regional listing prices stay untouched in ``pricing``.
+    """
+
+    shopee_targets = [target for target in targets if target.startswith("shopee:")]
+    if not shopee_targets:
+        return None
+    raw_pricing = _mapping(payload.get("pricing"), "approved pricing")
+    master_source = _mapping(
+        raw_pricing.get("master_price_source"),
+        "Shopee global master price source",
+    )
+    region = _text(master_source.get("region"), "Shopee master source region").upper()
+    target_key = _text(
+        master_source.get("target_key"), "Shopee master source target_key"
+    )
+    target_label = f"shopee:{region}"
+    selected = _mapping(
+        pricing.get("selected_targets"), "selected target pricing"
+    )
+    if target_label not in shopee_targets or target_label not in selected:
+        raise ApprovedPublicationSnapshotError(
+            "Shopee global master price source is not selected"
+        )
+    matched: list[str] = []
+    for label in shopee_targets:
+        row = _mapping(selected.get(label), f"{label} pricing")
+        source = row.get("source")
+        if not isinstance(source, Mapping):
+            continue
+        source_key = source.get("target_key")
+        if source_key == target_key:
+            matched.append(label)
+        if label == target_label and (
+            source_key != target_key
+            or _text(source.get("region"), f"{label} source region").upper()
+            != region
+        ):
+            raise ApprovedPublicationSnapshotError(
+                "Shopee global master price source drifted"
+            )
+    if matched != [target_label]:
+        raise ApprovedPublicationSnapshotError(
+            "Shopee global master price source is ambiguous"
+        )
+
+    source_row = _mapping(selected[target_label], f"{target_label} pricing")
+    price_rows = source_row.get("sku_prices")
+    if type(price_rows) is not list:
+        raise ApprovedPublicationSnapshotError(
+            "Shopee global master price source has no SKU prices"
+        )
+    prices_by_model: dict[str, dict[str, Any]] = {}
+    for raw in price_rows:
+        row = _mapping(raw, f"{target_label} master SKU price")
+        model_sku = _text(row.get("model_sku"), "Shopee master model_sku")
+        if model_sku not in model_skus or model_sku in prices_by_model:
+            raise ApprovedPublicationSnapshotError(
+                "Shopee global master SKU price identity conflicts"
+            )
+        prices_by_model[model_sku] = {
+            "model_sku": model_sku,
+            "amount": _positive_decimal_text(
+                row.get("global_original_price_cny"),
+                "Shopee global master CNY price",
+            ),
+            "currency": "CNY",
+        }
+    if list(prices_by_model) != model_skus:
+        raise ApprovedPublicationSnapshotError(
+            "Shopee global master SKU price coverage conflicts"
+        )
+
+    category_decision, decision_policy = _shopee_global_category_and_policy(payload)
+    positions = _shopee_global_variant_image_positions(
+        payload=payload,
+        model_skus=model_skus,
+        approved_product_images=approved_product_images,
+        sku_details_by_key=sku_details_by_key,
+        variant_keys_by_model=variant_keys_by_model,
+    )
+    price_source = {
+        "target_label": target_label,
+        "region": region,
+        "target_key": target_key,
+    }
+    price_source["source_binding_digest"] = _digest(
+        {
+            "schema_version": "shopee-global-master-price-source/v1",
+            **price_source,
+        }
+    )
+    return {
+        "schema_version": "shopee-global-master/v1",
+        "price_source": price_source,
+        "sku_original_prices_cny": [prices_by_model[model] for model in model_skus],
+        "category_decision": category_decision,
+        "policy": decision_policy,
+        "variant_image_positions": positions,
+    }
+
+
+def _shopee_global_category_and_policy(
+    payload: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    bindings = payload.get("approved_channel_category_decisions")
+    records = payload.get("_channel_category_decision_records")
+    binding = bindings.get("shopee:GLOBAL") if isinstance(bindings, Mapping) else None
+    record = records.get("shopee:GLOBAL") if isinstance(records, Mapping) else None
+    if binding is None and record is None:
+        decision = {
+            "status": "DEFERRED_TO_SKILL",
+            "category": None,
+            "required_attributes": [],
+            "source_decision_digest": None,
+        }
+        decision["decision_digest"] = _digest(
+            {
+                "schema_version": "shopee-global-category-decision/v1",
+                **decision,
+            }
+        )
+        return decision, _deferred_shopee_global_policy()
+    if binding is None or record is None or type(record) is not str:
+        raise ApprovedPublicationSnapshotError(
+            "Shopee global category decision is incomplete"
+        )
+    try:
+        from shared_platform.channel_category_decisions import (
+            category_decision_execution_payload,
+            category_decision_plan_binding,
+            rehydrate_category_decision,
+        )
+
+        approved = rehydrate_category_decision(record)
+        if (
+            approved.get("product_id") != payload.get("product_id")
+            or approved.get("product_revision") != payload.get("product_revision")
+        ):
+            raise ValueError("product identity drifted")
+        if category_decision_plan_binding(approved) != dict(binding):
+            raise ValueError("binding drifted")
+        execution = category_decision_execution_payload(approved)
+    except (TypeError, ValueError) as error:
+        raise ApprovedPublicationSnapshotError(
+            f"Shopee global category decision drifted: {error}"
+        ) from None
+    path = execution["category"]["path"]
+    category = {
+        "id": str(execution["category"]["category_id"]),
+        "name": _text(path[-1].get("name"), "Shopee global category name"),
+        "path": [
+            {
+                "id": str(node.get("category_id")),
+                "name": _text(node.get("name"), "Shopee global category path name"),
+            }
+            for node in path
+        ],
+    }
+    decision = {
+        "status": "APPROVED",
+        "category": category,
+        "required_attributes": _json_list(
+            execution["attribute_list"], "Shopee global required attributes"
+        ),
+        "source_decision_digest": _digest_text_with_prefix(
+            approved["decision_digest"], "Shopee global category decision digest"
+        ),
+    }
+    decision["decision_digest"] = _digest(
+        {
+            "schema_version": "shopee-global-category-decision/v1",
+            **decision,
+        }
+    )
+    selected_brand = approved["selected_brand"]
+    selected_location = approved["selected_location"]
+    return decision, {
+        "brand": {
+            "brand_id": selected_brand["brand_id"],
+            "original_brand_name": selected_brand["original_brand_name"],
+            "policy_version": "shopee-global-fixed-no-brand/v1",
+        },
+        "condition": approved["condition"],
+        "preorder": dict(approved["preorder"]),
+        "stock": {
+            "quantity": approved["seller_stock"]["quantity"],
+            "policy_version": "shopee-global-fixed-stock/v1",
+        },
+        "warehouse": {
+            # This is the user-approved policy label.  The exact provider
+            # location identity remains the official location_id below.
+            "display_name": "中国仓库",
+            "location_id": selected_location["location_id"],
+            "policy_version": "shopee-global-fixed-china-warehouse/v1",
+            "status": "APPROVED",
+        },
+    }
+
+
+def _deferred_shopee_global_policy() -> dict[str, Any]:
+    return {
+        "brand": {
+            "brand_id": 0,
+            "original_brand_name": "NoBrand",
+            "policy_version": "shopee-global-fixed-no-brand/v1",
+        },
+        "condition": "NEW",
+        "preorder": {"is_pre_order": False, "days_to_ship": 0},
+        "stock": {
+            "quantity": 200,
+            "policy_version": "shopee-global-fixed-stock/v1",
+        },
+        "warehouse": {
+            "display_name": "中国仓库",
+            "location_id": None,
+            "policy_version": "shopee-global-fixed-china-warehouse/v1",
+            "status": "DEFERRED_TO_SKILL",
+        },
+    }
+
+
+def _shopee_global_variant_image_positions(
+    *,
+    payload: Mapping[str, Any],
+    model_skus: list[str],
+    approved_product_images: list[str],
+    sku_details_by_key: Mapping[str, Mapping[str, Any]],
+    variant_keys_by_model: Mapping[str, str],
+) -> list[dict[str, Any]]:
+    product_facts = _mapping(payload.get("product_facts"), "product_facts")
+    explicit = product_facts.get("shopee_global_variant_image_positions")
+    explicit_by_model: dict[str, int] = {}
+    if explicit is not None:
+        if type(explicit) is not list:
+            raise ApprovedPublicationSnapshotError(
+                "Shopee global variant image positions must be a list"
+            )
+        for raw in explicit:
+            row = _mapping(raw, "Shopee global variant image position")
+            if set(row) != {"model_sku", "position"}:
+                raise ApprovedPublicationSnapshotError(
+                    "Shopee global variant image position fields are invalid"
+                )
+            model = _text(row.get("model_sku"), "Shopee variant image model_sku")
+            position = row.get("position")
+            if (
+                model not in model_skus
+                or model in explicit_by_model
+                or type(position) is not int
+                or position < 0
+                or position >= len(approved_product_images)
+            ):
+                raise ApprovedPublicationSnapshotError(
+                    "Shopee global variant image positions conflict"
+                )
+            explicit_by_model[model] = position
+        if set(explicit_by_model) != set(model_skus):
+            raise ApprovedPublicationSnapshotError(
+                "Shopee global variant image position coverage conflicts"
+            )
+    positions: list[dict[str, Any]] = []
+    for model in model_skus:
+        if model in explicit_by_model:
+            position = explicit_by_model[model]
+        elif len(model_skus) == 1:
+            position = 0
+        else:
+            variant_key = variant_keys_by_model[model]
+            images = sku_details_by_key[variant_key].get("image_urls")
+            first = images[0] if type(images) is list and images else None
+            matches = [
+                index
+                for index, image in enumerate(approved_product_images)
+                if image == first
+            ]
+            if len(matches) != 1:
+                raise ApprovedPublicationSnapshotError(
+                    "Shopee global variant image position is unavailable"
+                )
+            position = matches[0]
+        positions.append(
+            {
+                "model_sku": model,
+                "position": position,
+                "image_url": approved_product_images[position],
+            }
+        )
+    return positions
 
 
 def _deferred_categories(targets: list[str]) -> dict[str, dict[str, Any]]:
@@ -501,6 +823,47 @@ def _digest_text(value: Any, name: str) -> str:
     ):
         raise ApprovedPublicationSnapshotError(f"{name} is invalid")
     return text
+
+
+def _digest_text_with_prefix(value: Any, name: str) -> str:
+    return "sha256:" + _digest_text(value, name).removeprefix("sha256:")
+
+
+def _positive_decimal_text(value: Any, name: str) -> str:
+    if type(value) not in {str, int, float} or isinstance(value, bool):
+        raise ApprovedPublicationSnapshotError(f"{name} must be a positive decimal")
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        raise ApprovedPublicationSnapshotError(
+            f"{name} must be a positive decimal"
+        ) from None
+    if not number.is_finite() or number <= 0:
+        raise ApprovedPublicationSnapshotError(f"{name} must be a positive decimal")
+    normalized = format(number.normalize(), "f")
+    return normalized.rstrip("0").rstrip(".") if "." in normalized else normalized
+
+
+def _json_list(value: Any, name: str) -> list[Any]:
+    if type(value) is not list:
+        raise ApprovedPublicationSnapshotError(f"{name} must be a list")
+    try:
+        copied = json.loads(
+            json.dumps(
+                value,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        )
+    except (TypeError, ValueError):
+        raise ApprovedPublicationSnapshotError(
+            f"{name} must be JSON serializable"
+        ) from None
+    if type(copied) is not list or any(not isinstance(row, dict) for row in copied):
+        raise ApprovedPublicationSnapshotError(f"{name} must contain objects")
+    return copied
 
 
 def _json_object(value: Any, name: str) -> dict[str, Any]:

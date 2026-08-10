@@ -725,6 +725,18 @@ def _seed_source_ids(row: Mapping[str, object], operation: str) -> set[str]:
     }
 
 
+def _seed_has_source_identity(row: Mapping[str, object]) -> bool:
+    return any(
+        field in row
+        for field in (
+            "sourceOfferId",
+            "sourceItemId",
+            "sourceProductId",
+            "sourceList",
+        )
+    )
+
+
 def _seed_list_rows(
     *,
     post: ProviderPost,
@@ -946,7 +958,13 @@ class OfficialMiaoshouTikTokV4SeedIdentityResolver:
         unclaimed: list[Mapping[str, object]] = []
         claimed: list[str] = []
         for row in platform_rows:
-            if _seed_source_ids(row, "TikTok platform") != {source_offer_id}:
+            # The production TikTok list omits source fields and exposes the
+            # exact COMMON foreign key instead.  When source fields are
+            # present they remain mandatory and must agree; when absent, the
+            # already source-verified COMMON row is the authoritative join.
+            if _seed_has_source_identity(row) and _seed_source_ids(
+                row, "TikTok platform"
+            ) != {source_offer_id}:
                 raise LivePublicationDependencyError(
                     "TikTok platform source identity conflicts"
                 )

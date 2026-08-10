@@ -854,6 +854,31 @@ def test_tiktok_seed_identity_accepts_real_open_api_success_envelope():
     assert identity["initial_platform_detail_id"] == "3272335044"
 
 
+def test_tiktok_seed_identity_joins_real_platform_row_through_exact_common_id():
+    request = _tiktok_request()
+    source_offer_id = _seed_source_offer_id(request)
+    platform_row = _platform_seed_row(
+        source_offer_id,
+        "3272335044",
+        "2026-08-10 11:00:00",
+    )
+    platform_row.pop("sourceList")
+
+    def post(path, _body):
+        if path == MIAOSHOU_COMMON_LIST_PATH:
+            return _real_miaoshou_seed_list_response(
+                [_common_seed_row(source_offer_id)]
+            )
+        if path == MIAOSHOU_TIKTOK_LIST_PATH:
+            return _real_miaoshou_seed_list_response([platform_row])
+        raise AssertionError(path)
+
+    identity = OfficialMiaoshouTikTokV4SeedIdentityResolver(post=post)(request)
+
+    assert identity["common_detail_id"] == "3882722296"
+    assert identity["initial_platform_detail_id"] == "3272335044"
+
+
 @pytest.mark.parametrize(
     ("common_rows", "platform_rows", "message"),
     [

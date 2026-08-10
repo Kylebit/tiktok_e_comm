@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
@@ -22,8 +23,12 @@ import re
 import tempfile
 from typing import Any
 
+from domains.product_operations import (
+    ApprovedPublicationSnapshotError,
+    validate_approved_publication_snapshot,
+)
 from modules.miaoshou.client import post_open
-from modules.miaoshou.oneclick_release import CATEGORY_TREE_PATH
+from modules.miaoshou.oneclick_release import CATEGORY_TREE_PATH, SOURCE_LIST_PATH
 from modules.miaoshou.tiktok_publisher import (
     CATEGORY_METADATA_PATH,
     EXPECTED_SHOP_ID_BY_TARGET,
@@ -54,6 +59,14 @@ from shared_platform.product_publication_executors import (
 
 
 TIKTOK_CATEGORY_RESOLUTION_SCHEMA = "tiktok-official-category-resolution/v1"
+MIAOSHOU_TIKTOK_SEED_IDENTITY_SCHEMA = (
+    "miaoshou-tiktok-v4-seed-identity/v1"
+)
+MIAOSHOU_COMMON_LIST_PATH = (
+    "/open/v1/product/common_collect_box/common_collect_box/"
+    "get_common_collect_box_list"
+)
+MIAOSHOU_TIKTOK_LIST_PATH = SOURCE_LIST_PATH
 OZON_IMPORT_PATH = "/v3/product/import"
 OZON_READBACK_PATH = "/v3/product/info/list"
 
@@ -675,6 +688,310 @@ class DurableTikTokV4DraftPreparer:
         return self._store.load(request)["external_write_count"]
 
 
+def _positive_provider_id(value: object, name: str) -> str:
+    if isinstance(value, bool):
+        raise LivePublicationDependencyError(f"{name} is malformed")
+    rendered = str(value or "").strip()
+    if not rendered.isdigit() or int(rendered) <= 0:
+        raise LivePublicationDependencyError(f"{name} is malformed")
+    return str(int(rendered))
+
+
+def _seed_source_ids(row: Mapping[str, object], operation: str) -> set[str]:
+    values: list[object] = []
+    for field in ("sourceOfferId", "sourceItemId", "sourceProductId"):
+        if field in row:
+            values.append(row.get(field))
+    if "sourceList" in row:
+        source_list = row.get("sourceList")
+        if not isinstance(source_list, list) or any(
+            not isinstance(item, Mapping) for item in source_list
+        ):
+            raise LivePublicationDependencyError(
+                f"{operation} source identity is malformed"
+            )
+        for item in source_list:
+            for field in ("sourceOfferId", "sourceItemId", "sourceProductId"):
+                if field in item:
+                    values.append(item.get(field))
+    if not values:
+        raise LivePublicationDependencyError(
+            f"{operation} source identity is unavailable"
+        )
+    return {
+        _positive_provider_id(value, f"{operation} source identity")
+        for value in values
+    }
+
+
+def _seed_list_rows(
+    *,
+    post: ProviderPost,
+    path: str,
+    source_offer_id: str,
+    common_list: bool,
+    page_size: int,
+    max_pages: int,
+) -> list[Mapping[str, object]]:
+    rows: list[Mapping[str, object]] = []
+    for page_no in range(1, max_pages + 1):
+        filters: dict[str, object] = {"sourceItemIdKeyword": source_offer_id}
+        if common_list:
+            filters = {"tabPaneName": "all", **filters}
+        data = _provider_data(
+            post(
+                path,
+                {
+                    "pageNo": page_no,
+                    "pageSize": page_size,
+                    "filter": filters,
+                },
+            ),
+            "Miaoshou seed identity list",
+        )
+        page_rows = data.get("detailList", data.get("list"))
+        if not isinstance(page_rows, list) or any(
+            not isinstance(row, Mapping) for row in page_rows
+        ):
+            raise LivePublicationDependencyError(
+                "Miaoshou seed identity list is malformed"
+            )
+        rows.extend(deepcopy(list(page_rows)))
+
+        total_present = "totalCount" in data or "total" in data
+        total = data.get("totalCount", data.get("total"))
+        if total_present and (
+            isinstance(total, bool) or type(total) is not int or total < 0
+        ):
+            raise LivePublicationDependencyError(
+                "Miaoshou seed identity pagination is malformed"
+            )
+        has_next_present = "hasNextPage" in data
+        has_next = data.get("hasNextPage")
+        if has_next_present and type(has_next) is not bool:
+            raise LivePublicationDependencyError(
+                "Miaoshou seed identity pagination is malformed"
+            )
+        if (
+            (has_next_present and has_next is False)
+            or (total_present and len(rows) >= total)
+            or (
+                not has_next_present
+                and not total_present
+                and len(page_rows) < page_size
+            )
+        ):
+            return rows
+    raise LivePublicationDependencyError(
+        "Miaoshou seed identity pagination is incomplete"
+    )
+
+
+def _platform_claimed(row: Mapping[str, object]) -> bool:
+    evidence_seen = False
+    observed_shop_ids: set[str] = set()
+    if "collectBoxDetailShopList" in row:
+        evidence_seen = True
+        shops = row.get("collectBoxDetailShopList")
+        if not isinstance(shops, list) or any(
+            not isinstance(item, Mapping) for item in shops
+        ):
+            raise LivePublicationDependencyError(
+                "TikTok platform claim identity is malformed"
+            )
+        for item in shops:
+            observed_shop_ids.add(
+                _positive_provider_id(
+                    item.get("shopId"), "TikTok platform shop identity"
+                )
+            )
+        if len(observed_shop_ids) != len(shops):
+            raise LivePublicationDependencyError(
+                "TikTok platform claim identity is ambiguous"
+            )
+    for field in ("claimToShopIds", "shopIds"):
+        if field not in row:
+            continue
+        evidence_seen = True
+        values = row.get(field)
+        if not isinstance(values, list):
+            raise LivePublicationDependencyError(
+                "TikTok platform claim identity is malformed"
+            )
+        normalized = {
+            _positive_provider_id(value, "TikTok platform shop identity")
+            for value in values
+        }
+        if len(normalized) != len(values):
+            raise LivePublicationDependencyError(
+                "TikTok platform claim identity is ambiguous"
+            )
+        observed_shop_ids.update(normalized)
+    explicit = row.get("claimed") if "claimed" in row else None
+    if explicit is not None:
+        evidence_seen = True
+        if type(explicit) is not bool:
+            raise LivePublicationDependencyError(
+                "TikTok platform claim identity is malformed"
+            )
+        if explicit is False and observed_shop_ids:
+            raise LivePublicationDependencyError(
+                "TikTok platform claim identity conflicts"
+            )
+    if not evidence_seen:
+        raise LivePublicationDependencyError(
+            "TikTok platform claim identity is unavailable; reconciliation required"
+        )
+    return bool(observed_shop_ids) or explicit is True
+
+
+def _created_sort_key(row: Mapping[str, object]) -> tuple[float, int]:
+    raw = row.get("gmtCreate")
+    if type(raw) is not str or not raw.strip():
+        raise LivePublicationDependencyError(
+            "TikTok platform creation time is malformed"
+        )
+    value = raw.strip().replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise LivePublicationDependencyError(
+            "TikTok platform creation time is malformed"
+        ) from error
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    detail_id = _positive_provider_id(
+        row.get("collectBoxDetailId", row.get("detailId")),
+        "TikTok platform detail identity",
+    )
+    return parsed.timestamp(), int(detail_id)
+
+
+class OfficialMiaoshouTikTokV4SeedIdentityResolver:
+    """Resolve one exact reusable TikTok seed through official read-only lists.
+
+    A source offer and Miaoshou common-detail identity use different
+    namespaces.  This resolver never substitutes one for the other and never
+    creates or claims a platform row while identity is missing or ambiguous.
+    """
+
+    def __init__(
+        self,
+        *,
+        post: ProviderPost = post_open,
+        page_size: int = 100,
+        max_pages: int = 20,
+    ) -> None:
+        if not callable(post):
+            raise TypeError("TikTok seed identity transport must be callable")
+        if (
+            type(page_size) is not int
+            or page_size <= 0
+            or type(max_pages) is not int
+            or max_pages <= 0
+        ):
+            raise TypeError("TikTok seed identity pagination is invalid")
+        self._post = post
+        self._page_size = page_size
+        self._max_pages = max_pages
+
+    def __call__(self, request: object) -> Mapping[str, object]:
+        raw_snapshot = _request_snapshot(request, "TIKTOK")
+        try:
+            snapshot = validate_approved_publication_snapshot(raw_snapshot).payload()
+        except ApprovedPublicationSnapshotError as error:
+            raise LivePublicationDependencyError(
+                "approved v4 snapshot is invalid"
+            ) from error
+        product = snapshot.get("product")
+        source = product.get("source_identity") if isinstance(product, Mapping) else None
+        if not isinstance(source, Mapping):
+            raise LivePublicationDependencyError(
+                "frozen source identity is unavailable"
+            )
+        source_offer_id = _positive_provider_id(
+            source.get("source_offer_id"), "frozen source offer identity"
+        )
+
+        common_rows = _seed_list_rows(
+            post=self._post,
+            path=MIAOSHOU_COMMON_LIST_PATH,
+            source_offer_id=source_offer_id,
+            common_list=True,
+            page_size=self._page_size,
+            max_pages=self._max_pages,
+        )
+        if len(common_rows) != 1:
+            raise LivePublicationDependencyError(
+                "source COMMON identity is unavailable or ambiguous"
+            )
+        common_row = common_rows[0]
+        if _seed_source_ids(common_row, "COMMON") != {source_offer_id}:
+            raise LivePublicationDependencyError("COMMON source identity conflicts")
+        common_detail_id = _positive_provider_id(
+            common_row.get("commonCollectBoxDetailId"),
+            "COMMON detail identity",
+        )
+
+        platform_rows = _seed_list_rows(
+            post=self._post,
+            path=MIAOSHOU_TIKTOK_LIST_PATH,
+            source_offer_id=source_offer_id,
+            common_list=False,
+            page_size=self._page_size,
+            max_pages=self._max_pages,
+        )
+        seen_detail_ids: set[str] = set()
+        unclaimed: list[Mapping[str, object]] = []
+        claimed: list[str] = []
+        for row in platform_rows:
+            if _seed_source_ids(row, "TikTok platform") != {source_offer_id}:
+                raise LivePublicationDependencyError(
+                    "TikTok platform source identity conflicts"
+                )
+            observed_common = _positive_provider_id(
+                row.get("commonCollectBoxDetailId"),
+                "TikTok platform COMMON identity",
+            )
+            if observed_common != common_detail_id:
+                raise LivePublicationDependencyError(
+                    "TikTok platform COMMON identity conflicts"
+                )
+            detail_id = _positive_provider_id(
+                row.get("collectBoxDetailId", row.get("detailId")),
+                "TikTok platform detail identity",
+            )
+            if detail_id in seen_detail_ids:
+                raise LivePublicationDependencyError(
+                    "TikTok platform detail identity is ambiguous"
+                )
+            seen_detail_ids.add(detail_id)
+            if _platform_claimed(row):
+                claimed.append(detail_id)
+            else:
+                unclaimed.append(row)
+        if claimed:
+            raise LivePublicationDependencyError(
+                "claimed TikTok platform identity exists; reconciliation required"
+            )
+
+        initial_platform_detail_id: str | None = None
+        if unclaimed:
+            selected = max(unclaimed, key=_created_sort_key)
+            initial_platform_detail_id = _positive_provider_id(
+                selected.get("collectBoxDetailId", selected.get("detailId")),
+                "TikTok platform detail identity",
+            )
+        body: dict[str, object] = {
+            "schema_version": MIAOSHOU_TIKTOK_SEED_IDENTITY_SCHEMA,
+            "snapshot_digest": snapshot["snapshot_digest"],
+            "common_detail_id": common_detail_id,
+            "initial_platform_detail_id": initial_platform_detail_id,
+        }
+        body["identity_digest"] = "sha256:" + _digest(body)
+        return body
+
+
 class MiaoshouTikTokV4DraftTransportFactory:
     """Build the real v4 draft transport from one exact control identity.
 
@@ -686,12 +1003,16 @@ class MiaoshouTikTokV4DraftTransportFactory:
     def __init__(
         self,
         *,
-        seed_identity_resolver: TikTokDraftSeedIdentityResolver,
+        seed_identity_resolver: TikTokDraftSeedIdentityResolver | None = None,
         post: ProviderPost = post_open,
     ) -> None:
-        if not callable(seed_identity_resolver) or not callable(post):
+        if seed_identity_resolver is not None and not callable(seed_identity_resolver):
+            raise TypeError("TikTok v4 draft seed resolver is invalid")
+        if not callable(post):
             raise TypeError("TikTok v4 draft transport dependencies are invalid")
-        self._seed_identity_resolver = seed_identity_resolver
+        self._seed_identity_resolver = seed_identity_resolver or (
+            OfficialMiaoshouTikTokV4SeedIdentityResolver(post=post)
+        )
         self._post = post
 
     def __call__(
@@ -1418,8 +1739,12 @@ __all__ = [
     "CATEGORY_TREE_PATH",
     "DurableTikTokV4DraftPreparer",
     "LivePublicationDependencyError",
+    "MIAOSHOU_COMMON_LIST_PATH",
+    "MIAOSHOU_TIKTOK_LIST_PATH",
+    "MIAOSHOU_TIKTOK_SEED_IDENTITY_SCHEMA",
     "MiaoshouTikTokV4DraftTransportFactory",
     "OfficialMiaoshouTikTokCategoryResolver",
+    "OfficialMiaoshouTikTokV4SeedIdentityResolver",
     "OfficialOzonV4Transport",
     "ShopeeExactGlobalItemResolver",
     "TikTokUnavailableStorefrontReadback",

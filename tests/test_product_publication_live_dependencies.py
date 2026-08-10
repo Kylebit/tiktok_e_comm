@@ -15,8 +15,11 @@ from shared_platform.product_publication_live_dependencies import (
     CATEGORY_TREE_PATH,
     DurableTikTokV4DraftPreparer,
     LivePublicationDependencyError,
+    MIAOSHOU_COMMON_LIST_PATH,
+    MIAOSHOU_TIKTOK_LIST_PATH,
     MiaoshouTikTokV4DraftTransportFactory,
     OfficialMiaoshouTikTokCategoryResolver,
+    OfficialMiaoshouTikTokV4SeedIdentityResolver,
     OfficialOzonV4Transport,
     ShopeeExactGlobalItemResolver,
     TikTokUnavailableStorefrontReadback,
@@ -701,6 +704,256 @@ def test_tiktok_production_transport_factory_requires_digest_bound_seed_identity
             seed_identity_resolver=lambda _request: invalid,
             post=lambda *_args: pytest.fail("drifted seed must not call provider"),
         )(request, lambda *_args: None)
+
+
+def _seed_list_response(rows):
+    return {
+        "result": "success",
+        "data": {
+            "detailList": deepcopy(rows),
+            "totalCount": len(rows),
+            "hasNextPage": False,
+        },
+    }
+
+
+def _seed_source_offer_id(request: PublicationPlatformRequest) -> str:
+    return request.snapshot["product"]["source_identity"]["source_offer_id"]
+
+
+def _common_seed_row(source_offer_id: str, common_detail_id: str = "3882722296"):
+    return {
+        "commonCollectBoxDetailId": common_detail_id,
+        "sourceList": [{"sourceItemId": source_offer_id}],
+    }
+
+
+def _platform_seed_row(
+    source_offer_id: str,
+    detail_id: str,
+    created_at: str,
+    *,
+    common_detail_id: str = "3882722296",
+):
+    return {
+        "collectBoxDetailId": detail_id,
+        "commonCollectBoxDetailId": common_detail_id,
+        "sourceList": [{"sourceItemId": source_offer_id}],
+        "gmtCreate": created_at,
+        "collectBoxDetailShopList": [],
+    }
+
+
+def test_tiktok_seed_identity_selects_latest_exact_unclaimed_platform_detail():
+    request = _tiktok_request()
+    source_offer_id = _seed_source_offer_id(request)
+    calls = []
+
+    def post(path, body):
+        calls.append((path, deepcopy(body)))
+        if path == MIAOSHOU_COMMON_LIST_PATH:
+            return _seed_list_response([_common_seed_row(source_offer_id)])
+        if path == MIAOSHOU_TIKTOK_LIST_PATH:
+            return _seed_list_response(
+                [
+                    _platform_seed_row(
+                        source_offer_id,
+                        "3271694633",
+                        "2026-08-10 10:00:00",
+                    ),
+                    _platform_seed_row(
+                        source_offer_id,
+                        "3272335044",
+                        "2026-08-10 11:00:00",
+                    ),
+                ]
+            )
+        raise AssertionError(path)
+
+    identity = OfficialMiaoshouTikTokV4SeedIdentityResolver(post=post)(request)
+
+    body = {
+        "schema_version": "miaoshou-tiktok-v4-seed-identity/v1",
+        "snapshot_digest": request.snapshot["snapshot_digest"],
+        "common_detail_id": "3882722296",
+        "initial_platform_detail_id": "3272335044",
+    }
+    assert identity == {
+        **body,
+        "identity_digest": "sha256:"
+        + hashlib.sha256(
+            json.dumps(
+                body,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
+    }
+    assert calls == [
+        (
+            MIAOSHOU_COMMON_LIST_PATH,
+            {
+                "pageNo": 1,
+                "pageSize": 100,
+                "filter": {
+                    "tabPaneName": "all",
+                    "sourceItemIdKeyword": source_offer_id,
+                },
+            },
+        ),
+        (
+            MIAOSHOU_TIKTOK_LIST_PATH,
+            {
+                "pageNo": 1,
+                "pageSize": 100,
+                "filter": {"sourceItemIdKeyword": source_offer_id},
+            },
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("common_rows", "platform_rows", "message"),
+    [
+        (
+            "duplicate-common",
+            "valid-platform",
+            "COMMON identity is unavailable or ambiguous",
+        ),
+        ("valid-common", "common-drift", "platform COMMON identity conflicts"),
+        ("valid-common", "source-drift", "platform source identity conflicts"),
+    ],
+)
+def test_tiktok_seed_identity_fails_closed_on_common_or_source_ambiguity(
+    common_rows,
+    platform_rows,
+    message,
+):
+    request = _tiktok_request()
+    source_offer_id = _seed_source_offer_id(request)
+    exact_common = [_common_seed_row(source_offer_id)]
+    exact_platform = [
+        _platform_seed_row(
+            source_offer_id,
+            "3272335044",
+            "2026-08-10 11:00:00",
+        )
+    ]
+    common_fixture = {
+        "valid-common": exact_common,
+        "duplicate-common": [
+            *exact_common,
+            _common_seed_row(source_offer_id, "3882722297"),
+        ],
+    }[common_rows]
+    platform_fixture = {
+        "valid-platform": exact_platform,
+        "common-drift": [
+            _platform_seed_row(
+                source_offer_id,
+                "3272335044",
+                "2026-08-10 11:00:00",
+                common_detail_id="3882722297",
+            )
+        ],
+        "source-drift": [
+            _platform_seed_row(
+                "999999999999",
+                "3272335044",
+                "2026-08-10 11:00:00",
+            )
+        ],
+    }[platform_rows]
+
+    def post(path, _body):
+        if path == MIAOSHOU_COMMON_LIST_PATH:
+            return _seed_list_response(common_fixture)
+        if path == MIAOSHOU_TIKTOK_LIST_PATH:
+            return _seed_list_response(platform_fixture)
+        raise AssertionError(path)
+
+    with pytest.raises(LivePublicationDependencyError, match=message):
+        OfficialMiaoshouTikTokV4SeedIdentityResolver(post=post)(request)
+
+
+def test_tiktok_seed_identity_returns_null_only_when_no_platform_detail_exists():
+    request = _tiktok_request()
+    source_offer_id = _seed_source_offer_id(request)
+
+    def post(path, _body):
+        if path == MIAOSHOU_COMMON_LIST_PATH:
+            return _seed_list_response([_common_seed_row(source_offer_id)])
+        if path == MIAOSHOU_TIKTOK_LIST_PATH:
+            return _seed_list_response([])
+        raise AssertionError(path)
+
+    identity = OfficialMiaoshouTikTokV4SeedIdentityResolver(post=post)(request)
+
+    assert identity["common_detail_id"] == "3882722296"
+    assert identity["initial_platform_detail_id"] is None
+
+
+def test_tiktok_seed_identity_requires_reconciliation_for_claimed_platform_rows():
+    request = _tiktok_request()
+    source_offer_id = _seed_source_offer_id(request)
+    claimed = [
+        {
+            **_platform_seed_row(
+                source_offer_id,
+                detail_id,
+                created_at,
+            ),
+            "collectBoxDetailShopList": [{"shopId": shop_id}],
+        }
+        for detail_id, created_at, shop_id in (
+            ("3271694633", "2026-08-10 10:00:00", "7676267"),
+            ("3272335044", "2026-08-10 11:00:00", "13295169"),
+        )
+    ]
+
+    def post(path, _body):
+        if path == MIAOSHOU_COMMON_LIST_PATH:
+            return _seed_list_response([_common_seed_row(source_offer_id)])
+        if path == MIAOSHOU_TIKTOK_LIST_PATH:
+            return _seed_list_response(claimed)
+        raise AssertionError(path)
+
+    with pytest.raises(LivePublicationDependencyError, match="reconciliation required"):
+        OfficialMiaoshouTikTokV4SeedIdentityResolver(post=post)(request)
+
+
+def test_tiktok_draft_factory_wires_official_seed_resolver_without_writing():
+    request = _tiktok_request()
+    source_offer_id = _seed_source_offer_id(request)
+    calls = []
+
+    def post(path, body):
+        calls.append((path, deepcopy(body)))
+        if path == MIAOSHOU_COMMON_LIST_PATH:
+            return _seed_list_response([_common_seed_row(source_offer_id)])
+        if path == MIAOSHOU_TIKTOK_LIST_PATH:
+            return _seed_list_response(
+                [
+                    _platform_seed_row(
+                        source_offer_id,
+                        "3272335044",
+                        "2026-08-10 11:00:00",
+                    )
+                ]
+            )
+        raise AssertionError("factory construction must remain read-only")
+
+    transport = MiaoshouTikTokV4DraftTransportFactory(post=post)(
+        request,
+        lambda *_args: None,
+    )
+
+    assert transport is not None
+    assert [path for path, _body in calls] == [
+        MIAOSHOU_COMMON_LIST_PATH,
+        MIAOSHOU_TIKTOK_LIST_PATH,
+    ]
 
 
 def test_tiktok_preparation_retry_reuses_checkpoint_without_blind_claim(tmp_path):

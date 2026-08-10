@@ -40,6 +40,14 @@ SAVE_SITE_DRAFT_PATH = (
     "/open/v1/product/collect_box/tiktok/collect_box/"
     "save_site_collect_item_info"
 )
+READ_SITE_DRAFT_PATH = (
+    "/open/v1/product/collect_box/tiktok/collect_box/"
+    "get_site_collect_item_info"
+)
+READ_SHOP_DRAFT_PATH = (
+    "/open/v1/product/collect_box/tiktok/collect_box/"
+    "get_shop_collect_item_info"
+)
 SAVE_SHOP_DRAFT_PATH = (
     "/open/v1/product/collect_box/tiktok/collect_box/"
     "save_shop_collect_item_info"
@@ -652,25 +660,37 @@ class MiaoshouOpenApiTikTokV4DraftTransport:
         shop_id = _positive_id(identity.get("shop_id"), "shop_id")
         if EXPECTED_SHOP_ID_BY_TARGET.get(label) != shop_id:
             raise TikTokV4DraftPreparationError("Miaoshou save identity drifted")
-        info = _miaoshou_draft_info(draft)
         site = label.rsplit("_", 1)[-1].upper()
-        if site in _SITE_DRAFT_SITES:
-            path = SAVE_SITE_DRAFT_PATH
-            body = {
-                "detailId": int(detail_id),
-                "site": site,
-                "siteCollectItemInfo": info,
-                "ossMd5": "",
-            }
-        else:
-            path = SAVE_SHOP_DRAFT_PATH
-            body = {
-                "detailId": int(detail_id),
-                "shopId": int(shop_id),
-                "shopCollectItemInfo": info,
-                "ossMd5": "",
-            }
         try:
+            if site in _SITE_DRAFT_SITES:
+                current, oss_md5 = self._read_editable_draft(
+                    READ_SITE_DRAFT_PATH,
+                    {"detailId": int(detail_id), "site": site},
+                    "siteCollectItemInfo",
+                )
+                path = SAVE_SITE_DRAFT_PATH
+                info_field = "siteCollectItemInfo"
+                identity_fields = {"detailId": int(detail_id), "site": site}
+            else:
+                current, oss_md5 = self._read_editable_draft(
+                    READ_SHOP_DRAFT_PATH,
+                    {"detailId": int(detail_id), "shopId": int(shop_id)},
+                    "shopCollectItemInfo",
+                )
+                path = SAVE_SHOP_DRAFT_PATH
+                info_field = "shopCollectItemInfo"
+                identity_fields = {
+                    "detailId": int(detail_id),
+                    "shopId": int(shop_id),
+                }
+            # Keep provider-owned mandatory fields while replacing every
+            # approved product/SKU field with the frozen v4 projection.
+            current.update(_miaoshou_draft_info(draft))
+            body = {
+                **identity_fields,
+                info_field: current,
+                "ossMd5": oss_md5,
+            }
             self._post(path, body)
         except MiaoshouBusinessRejectedError:
             return self._observed(
@@ -692,6 +712,22 @@ class MiaoshouOpenApiTikTokV4DraftTransport:
                 "SAVE_DRAFT", "ACCEPTED", detail_id=detail_id, shop_id=shop_id
             ),
         )
+
+    def _read_editable_draft(
+        self,
+        path: str,
+        body: Mapping[str, object],
+        info_field: str,
+    ) -> tuple[dict[str, object], str]:
+        response = self._post(path, dict(body))
+        data = response.get("data") if isinstance(response, Mapping) else None
+        info = data.get(info_field) if isinstance(data, Mapping) else None
+        oss_md5 = str(data.get("ossMd5") or "") if isinstance(data, Mapping) else ""
+        if not isinstance(info, Mapping) or not info or not oss_md5:
+            raise TikTokV4DraftPreparationError(
+                "Miaoshou editable draft or ossMd5 is unavailable"
+            )
+        return deepcopy(dict(info)), oss_md5
 
 
 def _created_detail_id(

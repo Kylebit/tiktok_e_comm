@@ -240,6 +240,14 @@ def test_production_seam_uses_injected_audited_low_level_calls_only() -> None:
                     }
                 },
             }
+        if path.endswith("get_site_collect_item_info"):
+            return {
+                "result": "success",
+                "data": {
+                    "siteCollectItemInfo": {"providerRequired": "keep"},
+                    "ossMd5": "revision-1",
+                },
+            }
         return {"result": "success", "data": {}}
 
     receipt = prepare_tiktok_v4_drafts(
@@ -265,15 +273,19 @@ def test_production_seam_uses_injected_audited_low_level_calls_only() -> None:
     assert [path for path, _ in calls] == [
         "/open/v1/product/common_collect_box/common_collect_box/claimed",
         "/open/v1/product/collect_box/tiktok/collect_box/claim_to_shop",
+        "/open/v1/product/collect_box/tiktok/collect_box/get_site_collect_item_info",
         "/open/v1/product/collect_box/tiktok/collect_box/save_site_collect_item_info",
         "/open/v1/product/common_collect_box/common_collect_box/claimed",
         "/open/v1/product/collect_box/tiktok/collect_box/claim_to_shop",
+        "/open/v1/product/collect_box/tiktok/collect_box/get_site_collect_item_info",
         "/open/v1/product/collect_box/tiktok/collect_box/save_site_collect_item_info",
     ]
-    first_save = calls[2][1]
+    first_save = calls[3][1]
     assert first_save["detailId"] == 7101
     assert first_save["site"] == "PH"
+    assert first_save["ossMd5"] == "revision-1"
     info = first_save["siteCollectItemInfo"]
+    assert info["providerRequired"] == "keep"
     assert info["title"] == _snapshot()["product"]["title"]
     assert info["notes"] == _snapshot()["product"]["description"]
     assert info["cid"] == "600338"
@@ -293,3 +305,46 @@ def test_production_seam_uses_injected_audited_low_level_calls_only() -> None:
     source = inspect.getsource(tiktok_v4_drafts)
     assert "approved_plan_payload" not in source
     assert "oneclick_release" not in source
+
+
+def test_production_seam_reads_current_draft_and_uses_required_oss_md5() -> None:
+    calls: list[tuple[str, dict]] = []
+
+    def post(path: str, body: dict) -> dict:
+        calls.append((path, deepcopy(body)))
+        serial_rows = body.get("detailSerialNumberPlatformList")
+        if isinstance(serial_rows, list):
+            serial = serial_rows[0]["serialNumber"]
+            return {
+                "result": "success",
+                "data": {
+                    "platformCollectBoxDetailIdMap": {
+                        "tiktok": {"5001": 7200 + serial}
+                    }
+                },
+            }
+        if path.endswith("get_site_collect_item_info"):
+            return {
+                "result": "success",
+                "data": {
+                    "siteCollectItemInfo": {"providerRequired": "keep"},
+                    "ossMd5": "revision-1",
+                },
+            }
+        if path.endswith("save_site_collect_item_info"):
+            assert body["ossMd5"] == "revision-1"
+            assert body["siteCollectItemInfo"]["providerRequired"] == "keep"
+        return {"result": "success", "data": {}}
+
+    receipt = prepare_tiktok_v4_drafts(
+        _snapshot(),
+        category_resolver=CategoryResolver(),
+        transport=MiaoshouOpenApiTikTokV4DraftTransport(
+            common_detail_id="5001",
+            post=post,
+        ),
+    )
+
+    assert receipt["status"] == "PREPARED"
+    assert sum(path.endswith("get_site_collect_item_info") for path, _ in calls) == 2
+    assert sum(path.endswith("save_site_collect_item_info") for path, _ in calls) == 2

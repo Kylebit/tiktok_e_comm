@@ -827,6 +827,28 @@ def test_tiktok_seed_identity_selects_latest_exact_unclaimed_platform_detail():
     ]
 
 
+def test_tiktok_category_resolver_uses_exact_leaf_from_frozen_breadcrumb_name():
+    post, calls = _category_post()
+    resolver = OfficialMiaoshouTikTokCategoryResolver(post=post)
+    product = _tiktok_product("居家日用 > 冰箱贴")
+    product["main_category"]["path"] = []
+
+    receipt = resolver.resolve(
+        target={
+            "target_label": "tiktok:LH_MY",
+            "platform": "tiktok",
+            "site": "LH_MY",
+            "store": "LH_MY",
+        },
+        product=product,
+        skus=[{"model_sku": "0967"}],
+    )
+
+    assert receipt["category"]["id"] == "854536"
+    assert receipt["resolution"] == "EXACT"
+    assert calls[0] == (CATEGORY_TREE_PATH, {"site": "MY"})
+
+
 def test_tiktok_seed_identity_accepts_real_open_api_success_envelope():
     request = _tiktok_request()
     source_offer_id = _seed_source_offer_id(request)

@@ -185,6 +185,14 @@ def _main_category_semantics(product: Mapping[str, object]) -> set[str]:
         for row in path:
             if isinstance(row, Mapping):
                 values.extend((row.get("id"), row.get("name")))
+    # A frozen category may carry its exact breadcrumb in ``name`` instead of
+    # a structured ``path``.  Treat each explicitly delimited component as an
+    # exact semantic value; do not infer from product copy or use substrings.
+    for value in tuple(values):
+        if type(value) is str:
+            parts = re.split(r"\s*(?:>|›|→|/)\s*", value)
+            if len(parts) > 1:
+                values.extend(part for part in parts if part)
     semantics = {_semantic_key(value) for value in values}
     semantics.discard("")
     if not semantics:

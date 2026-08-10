@@ -1190,3 +1190,36 @@ def test_platform_scoped_restart_batch_has_no_other_platform_dependency(tmp_path
     ]
     assert second["action"]["status"] == "PARTIAL_FAILED"
     assert second["action"]["terminal"] is True
+
+
+def test_initial_platform_scoped_action_has_no_other_platform_dependency(tmp_path):
+    path = tmp_path / "platform.db"
+    store = CollectBoxActionStore(path)
+    plan = _plan()
+    calls = []
+
+    result = store.start(
+        plan=plan,
+        common_collect_box_detail_id=plan["product_id"],
+        adapter=lambda request: (
+            calls.append(request.platform)
+            or CollectBoxPlatformResult(
+                status=RECONCILIATION_REQUIRED,
+                error_category="CHANNEL",
+                error_code="fixture_tiktok_unknown",
+                error_detail="fixture uncertainty",
+                external_writes=(),
+                external_write_count=0,
+            )
+        ),
+        now=lambda: 100.0,
+        wait=lambda _seconds: None,
+        platform_scope="TIKTOK",
+    )
+
+    assert calls == ["TIKTOK"]
+    assert [row["platform"] for row in result["action"]["platforms"]] == [
+        "TIKTOK"
+    ]
+    assert result["action"]["status"] == "PARTIAL_FAILED"
+    assert result["action"]["terminal"] is True

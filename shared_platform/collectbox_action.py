@@ -1197,6 +1197,7 @@ class CollectBoxActionStore:
             common_digest,
             now(),
             approved_targets,
+            platform_scope=platform_scope,
         )
         batched = False
         action_id = self._action_id(identity["plan_id"])
@@ -1459,6 +1460,8 @@ class CollectBoxActionStore:
         common_digest: str,
         now: float,
         approved_targets: tuple[str, ...],
+        *,
+        platform_scope: str | None = None,
     ) -> None:
         action_id = self._action_id(identity["plan_id"])
         with self._connect() as connection:
@@ -1489,6 +1492,11 @@ class CollectBoxActionStore:
                         now,
                     ),
                 )
+                action_platforms = (
+                    (platform_scope,)
+                    if platform_scope is not None
+                    else PLATFORMS
+                )
                 connection.executemany(
                     """
                     INSERT INTO collectbox_action_platforms (
@@ -1505,7 +1513,7 @@ class CollectBoxActionStore:
                             ),
                             now,
                         )
-                        for platform in PLATFORMS
+                        for platform in action_platforms
                     ],
                 )
             else:
@@ -1523,6 +1531,26 @@ class CollectBoxActionStore:
                 if existing["common_identity_digest"] != common_digest:
                     raise ValueError(
                         "common collect-box identity drifted"
+                    )
+                if platform_scope is not None:
+                    # A scoped platform action is independent.  Rows for an
+                    # unselected platform that have never left PENDING carry
+                    # no provider fact and must not keep the selected action
+                    # RUNNING forever.  Never remove attempted/terminal rows.
+                    connection.execute(
+                        """
+                        DELETE FROM collectbox_action_platforms
+                        WHERE action_id = ? AND platform != ?
+                          AND status = 'PENDING'
+                        """,
+                        (action_id, platform_scope),
+                    )
+                    self._refresh_action(
+                        connection,
+                        action_id,
+                        now,
+                        batched=False,
+                        finalize_pending=False,
                     )
             connection.commit()
 

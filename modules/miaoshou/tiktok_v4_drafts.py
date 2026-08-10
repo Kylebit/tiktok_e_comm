@@ -830,6 +830,11 @@ def _miaoshou_draft_info(draft: Mapping[str, object]) -> dict[str, object]:
         "packageWidth": float(Decimal(str(package[1]))),
         "packageHeight": float(Decimal(str(package[2]))),
         "skuMap": sku_map,
+        # Miaoshou requires these structural draft fields even when the
+        # approved product has no size chart or custom delivery template.
+        "deliveryOptionSetType": "default",
+        "sizeChart": "",
+        "sizeChartType": "",
     }
 
 

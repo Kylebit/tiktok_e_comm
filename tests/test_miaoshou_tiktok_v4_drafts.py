@@ -334,6 +334,9 @@ def test_production_seam_reads_current_draft_and_uses_required_oss_md5() -> None
         if path.endswith("save_site_collect_item_info"):
             assert body["ossMd5"] == "revision-1"
             assert body["siteCollectItemInfo"]["providerRequired"] == "keep"
+            assert body["siteCollectItemInfo"]["deliveryOptionSetType"] == "default"
+            assert body["siteCollectItemInfo"]["sizeChart"] == ""
+            assert body["siteCollectItemInfo"]["sizeChartType"] == ""
         return {"result": "success", "data": {}}
 
     receipt = prepare_tiktok_v4_drafts(

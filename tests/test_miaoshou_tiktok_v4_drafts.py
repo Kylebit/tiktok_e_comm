@@ -225,6 +225,7 @@ def test_missing_category_is_zero_write_target_failure() -> None:
 
 def test_production_seam_uses_injected_audited_low_level_calls_only() -> None:
     calls: list[tuple[str, dict]] = []
+    observed: list[tuple[str, DraftWriteFact]] = []
 
     def post(path: str, body: dict) -> dict:
         calls.append((path, deepcopy(body)))
@@ -247,11 +248,20 @@ def test_production_seam_uses_injected_audited_low_level_calls_only() -> None:
         transport=MiaoshouOpenApiTikTokV4DraftTransport(
             common_detail_id="5001",
             post=post,
+            fact_observer=lambda label, fact: observed.append((label, fact)),
         ),
     )
 
     assert receipt["status"] == "PREPARED"
     assert receipt["external_write_count"] == 6
+    assert [fact.operation for _, fact in observed] == [
+        "CREATE_DRAFT",
+        "CLAIM_TO_SHOP",
+        "SAVE_DRAFT",
+        "CREATE_DRAFT",
+        "CLAIM_TO_SHOP",
+        "SAVE_DRAFT",
+    ]
     assert [path for path, _ in calls] == [
         "/open/v1/product/common_collect_box/common_collect_box/claimed",
         "/open/v1/product/collect_box/tiktok/collect_box/claim_to_shop",

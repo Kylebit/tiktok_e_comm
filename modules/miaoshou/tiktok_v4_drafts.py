@@ -520,6 +520,7 @@ class MiaoshouOpenApiTikTokV4DraftTransport:
         common_detail_id: str,
         initial_platform_detail_id: str | None = None,
         post: Callable[[str, dict[str, object]], Mapping[str, object]] = post_open,
+        fact_observer: Callable[[str, DraftWriteFact], None] | None = None,
     ) -> None:
         self._common_detail_id = _positive_id(common_detail_id, "common_detail_id")
         self._initial_platform_detail_id = _optional_positive_id(
@@ -527,7 +528,15 @@ class MiaoshouOpenApiTikTokV4DraftTransport:
         )
         if not callable(post):
             raise TypeError("Miaoshou OpenAPI post transport is invalid")
+        if fact_observer is not None and not callable(fact_observer):
+            raise TypeError("Miaoshou draft fact observer is invalid")
         self._post = post
+        self._fact_observer = fact_observer
+
+    def _observed(self, label: str, fact: DraftWriteFact) -> DraftWriteFact:
+        if self._fact_observer is not None:
+            self._fact_observer(label, fact)
+        return fact
 
     def claim_or_create(
         self, *, target: Mapping[str, object], ordinal: int
@@ -557,21 +566,36 @@ class MiaoshouOpenApiTikTokV4DraftTransport:
                     },
                 )
             except MiaoshouBusinessRejectedError:
-                return (DraftWriteFact("CREATE_DRAFT", "REJECTED"),)
+                return (
+                    self._observed(
+                        label, DraftWriteFact("CREATE_DRAFT", "REJECTED")
+                    ),
+                )
             except Exception:
-                return (DraftWriteFact("CREATE_DRAFT", "UNKNOWN"),)
+                return (
+                    self._observed(
+                        label, DraftWriteFact("CREATE_DRAFT", "UNKNOWN")
+                    ),
+                )
             try:
                 detail_id = _created_detail_id(
                     response, common_detail_id=self._common_detail_id
                 )
             except Exception:
-                return (DraftWriteFact("CREATE_DRAFT", "UNKNOWN"),)
+                return (
+                    self._observed(
+                        label, DraftWriteFact("CREATE_DRAFT", "UNKNOWN")
+                    ),
+                )
             facts.append(
-                DraftWriteFact(
-                    "CREATE_DRAFT",
-                    "ACCEPTED",
-                    detail_id=detail_id,
-                    shop_id=shop_id,
+                self._observed(
+                    label,
+                    DraftWriteFact(
+                        "CREATE_DRAFT",
+                        "ACCEPTED",
+                        detail_id=detail_id,
+                        shop_id=shop_id,
+                    ),
                 )
             )
         try:
@@ -581,29 +605,38 @@ class MiaoshouOpenApiTikTokV4DraftTransport:
             )
         except MiaoshouBusinessRejectedError:
             facts.append(
-                DraftWriteFact(
-                    "CLAIM_TO_SHOP",
-                    "REJECTED",
-                    detail_id=detail_id,
-                    shop_id=shop_id,
+                self._observed(
+                    label,
+                    DraftWriteFact(
+                        "CLAIM_TO_SHOP",
+                        "REJECTED",
+                        detail_id=detail_id,
+                        shop_id=shop_id,
+                    ),
                 )
             )
         except Exception:
             facts.append(
-                DraftWriteFact(
-                    "CLAIM_TO_SHOP",
-                    "UNKNOWN",
-                    detail_id=detail_id,
-                    shop_id=shop_id,
+                self._observed(
+                    label,
+                    DraftWriteFact(
+                        "CLAIM_TO_SHOP",
+                        "UNKNOWN",
+                        detail_id=detail_id,
+                        shop_id=shop_id,
+                    ),
                 )
             )
         else:
             facts.append(
-                DraftWriteFact(
-                    "CLAIM_TO_SHOP",
-                    "ACCEPTED",
-                    detail_id=detail_id,
-                    shop_id=shop_id,
+                self._observed(
+                    label,
+                    DraftWriteFact(
+                        "CLAIM_TO_SHOP",
+                        "ACCEPTED",
+                        detail_id=detail_id,
+                        shop_id=shop_id,
+                    ),
                 )
             )
         return tuple(facts)
@@ -640,15 +673,24 @@ class MiaoshouOpenApiTikTokV4DraftTransport:
         try:
             self._post(path, body)
         except MiaoshouBusinessRejectedError:
-            return DraftWriteFact(
-                "SAVE_DRAFT", "REJECTED", detail_id=detail_id, shop_id=shop_id
+            return self._observed(
+                label,
+                DraftWriteFact(
+                    "SAVE_DRAFT", "REJECTED", detail_id=detail_id, shop_id=shop_id
+                ),
             )
         except Exception:
-            return DraftWriteFact(
-                "SAVE_DRAFT", "UNKNOWN", detail_id=detail_id, shop_id=shop_id
+            return self._observed(
+                label,
+                DraftWriteFact(
+                    "SAVE_DRAFT", "UNKNOWN", detail_id=detail_id, shop_id=shop_id
+                ),
             )
-        return DraftWriteFact(
-            "SAVE_DRAFT", "ACCEPTED", detail_id=detail_id, shop_id=shop_id
+        return self._observed(
+            label,
+            DraftWriteFact(
+                "SAVE_DRAFT", "ACCEPTED", detail_id=detail_id, shop_id=shop_id
+            ),
         )
 
 

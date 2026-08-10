@@ -1,16 +1,18 @@
 """Production composition for the three frozen-v4 publication executors.
 
 This module only binds ``PublicationPlatformRequest`` to the deterministic
-platform boundaries.  Provider access, durable identity lookup and official
-readback are injected by the caller.  In particular, TikTok consumes existing
-durable collect-box target identities; this layer never creates or restarts a
-collect-box action.
+platform boundaries.  Provider access, durable identity preparation and
+official readback are injected by the caller.  A fresh TikTok v4 run may
+prepare exact per-store drafts through its dedicated v4 boundary; it never
+starts the legacy collect-box action.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+import hashlib
+import json
 from typing import Any
 
 from domains.channel_operations.tiktok_v4_execution import (
@@ -40,6 +42,9 @@ _TARGET_STATUSES = frozenset({"PUBLISHED", "PROCESSING", "FAILED"})
 CollectBoxContextResolver = Callable[
     [PublicationPlatformRequest], Mapping[str, Mapping[str, object]]
 ]
+TikTokDraftPreparer = Callable[
+    [PublicationPlatformRequest], Mapping[str, object]
+]
 ShopeeGlobalItemIdResolver = Callable[[PublicationPlatformRequest], object]
 OzonDispatchTransport = Callable[[dict[str, Any]], object]
 OzonReadback = Callable[[tuple[str, ...]], Sequence[Mapping[str, Any]]]
@@ -47,10 +52,11 @@ OzonReadback = Callable[[tuple[str, ...]], Sequence[Mapping[str, Any]]]
 
 @dataclass(frozen=True)
 class TikTokV4ExecutorDependencies:
-    collectbox_context_resolver: CollectBoxContextResolver
+    collectbox_context_resolver: CollectBoxContextResolver | None
     category_resolver: TikTokCategoryResolver | None
     publisher: TikTokTargetPublisher
     storefront_readback: TikTokStorefrontReadback
+    draft_preparer: TikTokDraftPreparer | None = None
 
 
 @dataclass(frozen=True)
@@ -209,15 +215,26 @@ def _tiktok_result(
 
 def build_tiktok_v4_executor(
     *,
-    collectbox_context_resolver: CollectBoxContextResolver,
+    collectbox_context_resolver: CollectBoxContextResolver | None,
+    draft_preparer: TikTokDraftPreparer | None = None,
     category_resolver: TikTokCategoryResolver | None,
     publisher: TikTokTargetPublisher,
     storefront_readback: TikTokStorefrontReadback,
 ) -> PlatformExecutor:
     """Bind durable TikTok identities and injected I/O to the v4 boundary."""
 
-    if not callable(collectbox_context_resolver):
+    sources = sum(
+        value is not None
+        for value in (collectbox_context_resolver, draft_preparer)
+    )
+    if sources != 1:
+        raise TypeError("TikTok requires exactly one durable context source")
+    if collectbox_context_resolver is not None and not callable(
+        collectbox_context_resolver
+    ):
         raise TypeError("TikTok collect-box context resolver must be callable")
+    if draft_preparer is not None and not callable(draft_preparer):
+        raise TypeError("TikTok v4 draft preparer must be callable")
     if category_resolver is not None and not callable(
         getattr(category_resolver, "resolve", None)
     ):
@@ -231,8 +248,19 @@ def build_tiktok_v4_executor(
 
     def execute(request: PublicationPlatformRequest) -> Mapping[str, Any]:
         labels, snapshot = _request_facts(request, platform="TIKTOK")
+        preparation_write_count: int | None = 0
         try:
-            contexts = collectbox_context_resolver(request)
+            if draft_preparer is not None:
+                preparation = _verified_tiktok_preparation(
+                    draft_preparer(request),
+                    request=request,
+                    labels=labels,
+                )
+                contexts = preparation["collectbox_contexts"]
+                preparation_write_count = preparation["external_write_count"]
+            else:
+                assert collectbox_context_resolver is not None
+                contexts = collectbox_context_resolver(request)
             if not isinstance(contexts, Mapping):
                 raise TypeError("TikTok durable contexts must be a mapping")
             plan = project_tiktok_v4_execution_plan(
@@ -241,22 +269,105 @@ def build_tiktok_v4_executor(
                 category_resolver=category_resolver,
             )
         except Exception:
-            # Projection and durable-identity resolution happen before provider
-            # transport and therefore have a proven zero-write outcome.
-            return _zero_write_failure("TIKTOK", labels)
+            if draft_preparer is not None:
+                count_getter = getattr(draft_preparer, "write_count", None)
+                if callable(count_getter):
+                    try:
+                        preparation_write_count = count_getter(request)
+                    except Exception:
+                        preparation_write_count = None
+            return _result(
+                "TIKTOK",
+                labels,
+                {label: "FAILED" for label in labels},
+                dispatch_attempted=False,
+                readback_completed=False,
+                external_write_count=preparation_write_count,
+                requires_human_action=True,
+            )
         try:
             receipt = execute_tiktok_v4_plan(
                 plan,
                 publisher=publisher,
                 storefront_readback=storefront_readback,
             )
-            return _tiktok_result(receipt, labels=labels)
+            result = _tiktok_result(receipt, labels=labels)
+            publish_count = result["external_write_count"]
+            result["external_write_count"] = (
+                preparation_write_count + publish_count
+                if preparation_write_count is not None
+                and publish_count is not None
+                else None
+            )
+            return result
         except Exception:
             # An unexpected failure after entering execution cannot prove that
             # a transport did not receive a request.
             return _unknown_execution_failure("TIKTOK", labels)
 
     return execute
+
+
+def _verified_tiktok_preparation(
+    value: object,
+    *,
+    request: PublicationPlatformRequest,
+    labels: tuple[str, ...],
+) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        raise ValueError("TikTok v4 draft preparation receipt is invalid")
+    receipt = dict(value)
+    supplied_digest = receipt.pop("receipt_digest", None)
+    canonical = json.dumps(
+        receipt,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    expected_digest = "sha256:" + hashlib.sha256(
+        canonical.encode("utf-8")
+    ).hexdigest()
+    if supplied_digest != expected_digest:
+        raise ValueError("TikTok v4 draft preparation receipt drifted")
+    expected_keys = {
+        "schema_version",
+        "snapshot_digest",
+        "plan_id",
+        "offer_id",
+        "product_revision",
+        "targets",
+        "collectbox_contexts",
+        "external_write_count",
+        "publish_invoked",
+        "status",
+    }
+    snapshot = request.snapshot
+    targets = receipt.get("targets")
+    contexts = receipt.get("collectbox_contexts")
+    count = receipt.get("external_write_count")
+    if (
+        set(receipt) != expected_keys
+        or receipt.get("schema_version")
+        != "miaoshou-tiktok-v4-draft-preparation/v1"
+        or receipt.get("snapshot_digest") != snapshot.get("snapshot_digest")
+        or receipt.get("plan_id") != snapshot.get("plan_id")
+        or receipt.get("offer_id") != snapshot.get("offer_id")
+        or receipt.get("product_revision") != snapshot.get("product_revision")
+        or receipt.get("publish_invoked") is not False
+        or receipt.get("status")
+        not in {"PREPARED", "PARTIAL", "FAILED", "UNKNOWN"}
+        or not isinstance(targets, list)
+        or len(targets) != len(labels)
+        or any(not isinstance(row, Mapping) for row in targets)
+        or {row.get("target_label") for row in targets} != set(labels)
+        or not isinstance(contexts, Mapping)
+        or not set(contexts).issubset(labels)
+        or (count is not None and (type(count) is not int or count < 0))
+    ):
+        raise ValueError("TikTok v4 draft preparation receipt conflicts")
+    receipt["receipt_digest"] = supplied_digest
+    return receipt
 
 
 def _synthetic_unknown_shopee_dispatch(
@@ -427,6 +538,7 @@ def build_product_publication_platform_executors(
             raise TypeError("TikTok executor dependencies are required")
         result["TIKTOK"] = build_tiktok_v4_executor(
             collectbox_context_resolver=tiktok.collectbox_context_resolver,
+            draft_preparer=tiktok.draft_preparer,
             category_resolver=tiktok.category_resolver,
             publisher=tiktok.publisher,
             storefront_readback=tiktok.storefront_readback,
@@ -455,6 +567,7 @@ __all__ = [
     "ShopeeGlobalItemIdResolver",
     "ShopeeRegionExecutorDependencies",
     "TikTokV4ExecutorDependencies",
+    "TikTokDraftPreparer",
     "build_product_publication_platform_executors",
     "build_shopee_region_executor",
     "build_tiktok_v4_executor",

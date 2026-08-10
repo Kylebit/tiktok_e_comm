@@ -368,6 +368,16 @@ def _verified_control_identity(
     context: Mapping[str, object],
     all_target_labels: list[str],
 ) -> dict[str, str]:
+    if (
+        isinstance(context, Mapping)
+        and context.get("schema_version")
+        == "collectbox-tiktok-v4-publish-context/v1"
+    ):
+        return _verified_v4_draft_identity(
+            frozen,
+            target_label=target_label,
+            context=context,
+        )
     required = {
         "schema_version",
         "plan_id",
@@ -424,6 +434,65 @@ def _verified_control_identity(
         "target_identity_digest": detail["identity_digest"],
         "publish_identity_digest": str(context["publish_identity_digest"]),
         "receipt_digest": str(context["receipt_digest"]),
+    }
+
+
+def _verified_v4_draft_identity(
+    frozen: Mapping[str, object],
+    *,
+    target_label: str,
+    context: Mapping[str, object],
+) -> dict[str, str]:
+    required = {
+        "schema_version",
+        "snapshot_digest",
+        "plan_id",
+        "offer_id",
+        "product_revision",
+        "release_payload_digest",
+        "target_detail_identity",
+        "context_digest",
+    }
+    if set(context) != required:
+        raise TikTokV4ExecutionContractError("TikTok v4 draft identity is malformed")
+    if (
+        context.get("snapshot_digest") != frozen["snapshot_digest"]
+        or context.get("plan_id") != frozen["plan_id"]
+        or context.get("offer_id") != frozen["offer_id"]
+        or context.get("product_revision") != frozen["product_revision"]
+        or context.get("release_payload_digest")
+        != frozen["bindings"]["release_payload_digest"]
+    ):
+        raise TikTokV4ExecutionContractError("TikTok v4 draft identity drifted")
+    raw_detail = context.get("target_detail_identity")
+    if not isinstance(raw_detail, Mapping):
+        raise TikTokV4ExecutionContractError("TikTok v4 draft identity is missing")
+    try:
+        detail = CollectBoxTargetDetailIdentity(
+            target_label=raw_detail.get("target_label"),
+            detail_id=raw_detail.get("detail_id"),
+            shop_id=raw_detail.get("shop_id"),
+        ).internal_payload()
+    except (TypeError, ValueError):
+        raise TikTokV4ExecutionContractError(
+            "TikTok v4 draft identity is invalid"
+        ) from None
+    if detail != raw_detail or detail["target_label"] != target_label:
+        raise TikTokV4ExecutionContractError("TikTok v4 draft identity drifted")
+    body = dict(context)
+    supplied = _prefixed_sha(body.pop("context_digest"))
+    if supplied != "sha256:" + _digest(body):
+        raise TikTokV4ExecutionContractError("TikTok v4 context digest drifted")
+    control_digest = supplied.removeprefix("sha256:")
+    return {
+        "detail_id": detail["detail_id"],
+        "shop_id": detail["shop_id"],
+        "target_identity_digest": detail["identity_digest"],
+        "publish_identity_digest": control_digest,
+        # The credential-free v4 context is the durable provider receipt used
+        # by the target publisher.  The aggregate preparation receipt is kept
+        # separately in the run checkpoint.
+        "receipt_digest": control_digest,
     }
 
 

@@ -1,0 +1,746 @@
+from __future__ import annotations
+
+from copy import deepcopy
+import hashlib
+import json
+from types import SimpleNamespace
+
+import pytest
+
+from modules.ozon.approved_publication_v4 import OzonDispatchFact
+from modules.miaoshou.tiktok_v4_drafts import DraftWriteFact
+from modules.shopee.skill_regions import RegionContext
+from shared_platform.product_publication_live_dependencies import (
+    CATEGORY_METADATA_PATH,
+    CATEGORY_TREE_PATH,
+    DurableTikTokV4DraftPreparer,
+    LivePublicationDependencyError,
+    MiaoshouTikTokV4DraftTransportFactory,
+    OfficialMiaoshouTikTokCategoryResolver,
+    OfficialOzonV4Transport,
+    ShopeeExactGlobalItemResolver,
+    TikTokUnavailableStorefrontReadback,
+    TikTokV4DraftCheckpointStore,
+    build_live_ozon_dependencies,
+    build_live_shopee_dependencies,
+    build_live_tiktok_dependencies,
+)
+from shared_platform.product_publication_executors import build_tiktok_v4_executor
+from shared_platform.product_publication_runner import PublicationPlatformRequest
+from test_tiktok_v4_execution import CategoryResolver, _snapshot
+
+
+def _tiktok_product(category_name: str = "Refrigerator Magnets") -> dict:
+    return {
+        "title": "Decorative Resin Fridge Magnet",
+        "description": "Approved product description",
+        "images": ["https://example.test/main.jpg"],
+        "main_category": {
+            "id": "internal-fridge-magnets",
+            "name": category_name,
+            "path": [
+                {"id": "internal-home", "name": "Home Decor"},
+                {"id": "internal-fridge-magnets", "name": category_name},
+            ],
+        },
+    }
+
+
+def _category_post(*, exact_disabled: bool = False, include_fallback: bool = False):
+    calls: list[tuple[str, dict]] = []
+
+    def post(path: str, body: dict):
+        calls.append((path, deepcopy(body)))
+        if path == CATEGORY_TREE_PATH:
+            tree = {
+                "800000": {
+                    "cid": 800000,
+                    "disabled": False,
+                    "name": "Home Decor",
+                    "children": {
+                        "854536": {
+                            "cid": 854536,
+                            "disabled": exact_disabled,
+                            "name": "Refrigerator Magnets",
+                            "nameChinese": "冰箱贴",
+                            "children": {},
+                        }
+                    },
+                }
+            }
+            if include_fallback:
+                tree["600009"] = {
+                    "cid": 600009,
+                    "disabled": False,
+                    "name": "Festive Decorations",
+                    "nameChinese": "节庆装饰",
+                    "children": {},
+                }
+            return {"result": "success", "data": {"cateTree": tree}}
+        if path == CATEGORY_METADATA_PATH:
+            return {
+                "result": "success",
+                "data": {
+                    "categoryMetadata": {"categoryProductAttrList": []}
+                },
+            }
+        raise AssertionError(path)
+
+    return post, calls
+
+
+def test_tiktok_category_resolver_uses_exact_frozen_semantics_and_official_tree():
+    post, calls = _category_post()
+    resolver = OfficialMiaoshouTikTokCategoryResolver(post=post)
+
+    receipt = resolver.resolve(
+        target={
+            "target_label": "tiktok:LH_MY",
+            "platform": "tiktok",
+            "site": "LH_MY",
+            "store": "LH_MY",
+        },
+        product=_tiktok_product(),
+        skus=[{"model_sku": "0967"}],
+    )
+
+    assert receipt["category"] == {
+        "id": "854536",
+        "name": "Refrigerator Magnets",
+        "path": [
+            {"id": "800000", "name": "Home Decor"},
+            {"id": "854536", "name": "Refrigerator Magnets"},
+        ],
+    }
+    assert receipt["resolution"] == "EXACT"
+    assert receipt["enabled"] is True
+    assert receipt["metadata_valid"] is True
+    assert str(receipt["evidence_digest"]).startswith("sha256:")
+    assert calls == [
+        (CATEGORY_TREE_PATH, {"site": "MY"}),
+        (
+            CATEGORY_METADATA_PATH,
+            {"site": "MY", "cid": 854536, "shopIds": [13295169]},
+        ),
+    ]
+
+
+def test_tiktok_category_resolver_does_not_guess_from_title():
+    post, calls = _category_post()
+    resolver = OfficialMiaoshouTikTokCategoryResolver(post=post)
+
+    with pytest.raises(LivePublicationDependencyError, match="exact frozen"):
+        resolver.resolve(
+            target={
+                "target_label": "tiktok:LH_MY",
+                "platform": "tiktok",
+                "site": "LH_MY",
+                "store": "LH_MY",
+            },
+            product=_tiktok_product("Kitchen Gadget"),
+            skus=[{"model_sku": "0967"}],
+        )
+
+    assert calls == []
+
+
+def test_tiktok_category_resolver_only_uses_explicit_tablecloth_fallback():
+    post, calls = _category_post(exact_disabled=True, include_fallback=True)
+    resolver = OfficialMiaoshouTikTokCategoryResolver(post=post)
+    product = _tiktok_product("Tablecloth")
+
+    receipt = resolver.resolve(
+        target={
+            "target_label": "tiktok:LH_PH",
+            "platform": "tiktok",
+            "site": "LH_PH",
+            "store": "LH_PH",
+        },
+        product=product,
+        skus=[{"model_sku": "0967"}],
+    )
+
+    assert receipt["category"]["id"] == "600009"
+    assert receipt["resolution"] == "USER_APPROVED_FALLBACK"
+    assert calls[-1][1]["cid"] == 600009
+
+
+def test_tiktok_unavailable_storefront_readback_is_truthful_processing_input():
+    fact = TikTokUnavailableStorefrontReadback().readback(
+        command={"target_label": "tiktok:GB"},
+        dispatch={"target_label": "tiktok:GB", "outcome": "ACCEPTED"},
+    )
+
+    assert fact == {
+        "target_label": "tiktok:GB",
+        "authority": "UNAVAILABLE",
+        "status": "UNAVAILABLE",
+        "exact": False,
+    }
+
+
+class _ShopeeRuntime:
+    def context(self, region: str) -> RegionContext:
+        return RegionContext(
+            region=region,
+            shop_id=1001,
+            merchant_id=2001,
+            shop_token="shop-token",
+            merchant_token="merchant-token",
+        )
+
+
+def _shopee_snapshot() -> dict:
+    return {
+        "schema_version": "approved-publication-snapshot/v4",
+        "product": {
+            "title": "Approved title",
+            "description": "Approved description",
+            "images": [
+                "https://example.test/main-1.jpg",
+                "https://example.test/main-2.jpg",
+            ],
+        },
+        "publication_targets": [
+            {
+                "target_label": "shopee:MY",
+                "platform": "shopee",
+                "site": "MY",
+                "store": "MY",
+            }
+        ],
+        "skus": [
+            {
+                "model_sku": "0967",
+                "specification": {"Variation": "Blue"},
+                "variant_images": ["https://example.test/blue.jpg"],
+                "parcel": {"weight_kg": "0.2", "package_cm": ["10", "8", "2"]},
+                "prices": {
+                    "shopee:MY": {
+                        "amount": "7.10",
+                        "currency": "MYR",
+                        "global_original_price_cny": "10.00",
+                    }
+                },
+            },
+            {
+                "model_sku": "0968",
+                "specification": {"Variation": "Red"},
+                "variant_images": ["https://example.test/red.jpg"],
+                "parcel": {"weight_kg": "0.3", "package_cm": ["12", "7", "3"]},
+                "prices": {
+                    "shopee:MY": {
+                        "amount": "9.20",
+                        "currency": "MYR",
+                        "global_original_price_cny": "12.00",
+                    }
+                },
+            },
+        ],
+    }
+
+
+def _shopee_request(snapshot: dict | None = None) -> PublicationPlatformRequest:
+    return PublicationPlatformRequest(
+        run_id="run-1",
+        report_id="report-1",
+        platform="SHOPEE",
+        target_labels=("shopee:MY",),
+        snapshot=snapshot or _shopee_snapshot(),
+    )
+
+
+def _official_shopee_get(path: str, _merchant_id: int, _token: str, body: dict):
+    if path.endswith("get_global_item_info"):
+        assert body == {"global_item_id_list": "987654"}
+        return {
+            "response": {
+                "global_item_list": [
+                    {
+                        "global_item_id": 987654,
+                        "global_item_name": "Approved title",
+                        "description": "Approved description",
+                        "global_item_status": "NORMAL",
+                        "image": {
+                            "image_url_list": ["provider://one", "provider://two"],
+                            "image_id_list": ["image-one", "image-two"],
+                        },
+                        "weight": "0.3",
+                        "dimension": {
+                            "package_length": "12",
+                            "package_width": "8",
+                            "package_height": "3",
+                        },
+                    }
+                ]
+            }
+        }
+    if path.endswith("get_global_model_list"):
+        assert body == {"global_item_id": 987654}
+        return {
+            "response": {
+                "tier_variation": [
+                    {
+                        "name": "Variation",
+                        "option_list": [
+                            {"option": "Blue", "image": {"image_id": "img-blue"}},
+                            {"option": "Red", "image": {"image_id": "img-red"}},
+                        ],
+                    }
+                ],
+                "global_model": [
+                    {
+                        "global_model_sku": "0967",
+                        "global_model_id": 1111,
+                        "tier_index": [0],
+                        "price_info": {"original_price": "10.00"},
+                    },
+                    {
+                        "global_model_sku": "0968",
+                        "global_model_id": 2222,
+                        "tier_index": [1],
+                        "price_info": {"original_price": "12.00"},
+                    },
+                ],
+            }
+        }
+    raise AssertionError(path)
+
+
+def test_shopee_global_resolver_requires_exact_official_master_models_and_images():
+    resolver = ShopeeExactGlobalItemResolver(
+        runtime=_ShopeeRuntime(),
+        mapping_lookup=lambda key: "987654" if key in {"0967", "0968"} else None,
+        merchant_get_transport=_official_shopee_get,
+    )
+
+    assert resolver(_shopee_request()) == "987654"
+
+
+def test_shopee_global_resolver_rejects_stale_deleted_identity_before_region_write():
+    def deleted_get(path, merchant_id, token, body):
+        response = _official_shopee_get(path, merchant_id, token, body)
+        if path.endswith("get_global_item_info"):
+            response["response"]["global_item_list"][0][
+                "global_item_status"
+            ] = "DELETED"
+        return response
+
+    resolver = ShopeeExactGlobalItemResolver(
+        runtime=_ShopeeRuntime(),
+        mapping_lookup=lambda _key: "987654",
+        merchant_get_transport=deleted_get,
+    )
+
+    with pytest.raises(LivePublicationDependencyError, match="deleted"):
+        resolver(_shopee_request())
+
+
+def test_shopee_global_resolver_rejects_conflicting_local_mapping_without_api_call():
+    calls = []
+    resolver = ShopeeExactGlobalItemResolver(
+        runtime=_ShopeeRuntime(),
+        mapping_lookup=lambda key: {"0967": "111", "0968": "222"}[key],
+        merchant_get_transport=lambda *args: calls.append(args),
+    )
+
+    with pytest.raises(LivePublicationDependencyError, match="ambiguous"):
+        resolver(_shopee_request())
+
+    assert calls == []
+
+
+def test_shopee_global_resolver_requires_mapping_for_every_approved_sku():
+    calls = []
+    resolver = ShopeeExactGlobalItemResolver(
+        runtime=_ShopeeRuntime(),
+        mapping_lookup=lambda key: "987654" if key == "0967" else None,
+        merchant_get_transport=lambda *args: calls.append(args),
+    )
+
+    with pytest.raises(LivePublicationDependencyError, match="missing"):
+        resolver(_shopee_request())
+
+    assert calls == []
+
+
+@pytest.mark.parametrize("drift", ["price", "variant-image"])
+def test_shopee_global_resolver_rejects_model_price_or_variant_image_drift(drift):
+    def drifted_get(path, merchant_id, token, body):
+        response = _official_shopee_get(path, merchant_id, token, body)
+        if path.endswith("get_global_model_list"):
+            if drift == "price":
+                response["response"]["global_model"][1]["price_info"][
+                    "original_price"
+                ] = "99.00"
+            else:
+                response["response"]["tier_variation"][0]["option_list"][1][
+                    "image"
+                ] = {}
+        return response
+
+    resolver = ShopeeExactGlobalItemResolver(
+        runtime=_ShopeeRuntime(),
+        mapping_lookup=lambda _key: "987654",
+        merchant_get_transport=drifted_get,
+    )
+
+    with pytest.raises(LivePublicationDependencyError):
+        resolver(_shopee_request())
+
+
+def _ozon_variant() -> dict:
+    return {
+        "schema_version": "ozon-approved-import-variant/v1",
+        "target_label": "ozon:RU",
+        "offer_id": "0967",
+        "approved_seller_sku": "0967",
+        "variant_key": "blue",
+        "specification": {"Variation": "Blue"},
+        "title": "Approved Ozon title",
+        "description": "Approved Ozon description",
+        "price": "100",
+        "old_price": "120",
+        "currency": "CNY",
+        "parcel": {"weight_kg": "0.2", "package_cm": ["10", "8", "2"]},
+        "images": ["https://example.test/blue.jpg"],
+        "image_count": 1,
+        "category": {
+            "id": "17028913",
+            "name": "Fridge Magnets",
+            "path": [{"id": "17028913", "name": "Fridge Magnets"}],
+        },
+    }
+
+
+def test_ozon_dispatch_requires_frozen_official_profile_before_network():
+    calls = []
+    transport = OfficialOzonV4Transport(post=lambda *args: calls.append(args))
+
+    fact = transport.dispatch_variant(_ozon_variant())
+
+    assert fact == OzonDispatchFact(outcome="REJECTED")
+    assert calls == []
+
+
+def test_ozon_dispatch_uses_injected_exact_builder_and_official_import():
+    calls = []
+
+    def post(path, body):
+        calls.append((path, deepcopy(body)))
+        return {"result": {"task_id": 444}}
+
+    transport = OfficialOzonV4Transport(
+        post=post,
+        import_item_builder=lambda variant: {
+            "offer_id": variant["offer_id"],
+            "description_category_id": int(variant["category"]["id"]),
+            "type_id": 999,
+            "name": variant["title"],
+            "price": variant["price"],
+            "old_price": variant["old_price"],
+            "currency_code": variant["currency"],
+            "images": variant["images"],
+            "weight": variant["parcel"]["weight_kg"],
+            "weight_unit": "kg",
+            "dimension_unit": "cm",
+            "depth": variant["parcel"]["package_cm"][0],
+            "width": variant["parcel"]["package_cm"][1],
+            "height": variant["parcel"]["package_cm"][2],
+            "attributes": [{"id": 1, "values": [{"value": "exact"}]}],
+        },
+    )
+
+    fact = transport.dispatch_variant(_ozon_variant())
+
+    assert fact == OzonDispatchFact(outcome="ACCEPTED", task_id="444")
+    assert calls == [
+        (
+            "/v3/product/import",
+            {
+                "items": [
+                    {
+                        "offer_id": "0967",
+                        "description_category_id": 17028913,
+                        "type_id": 999,
+                        "name": "Approved Ozon title",
+                        "price": "100",
+                        "old_price": "120",
+                        "currency_code": "CNY",
+                        "images": ["https://example.test/blue.jpg"],
+                        "weight": "0.2",
+                        "weight_unit": "kg",
+                        "dimension_unit": "cm",
+                        "depth": "10",
+                        "width": "8",
+                        "height": "2",
+                        "attributes": [
+                            {"id": 1, "values": [{"value": "exact"}]}
+                        ],
+                    }
+                ]
+            },
+        )
+    ]
+
+
+def test_ozon_readback_normalizes_authoritative_id_statuses_and_parcel():
+    calls = []
+
+    def post(path, body):
+        calls.append((path, deepcopy(body)))
+        return {
+            "items": [
+                {
+                    "offer_id": "0967",
+                    "id": 7654321,
+                    "product_id": 9999999,
+                    "name": "Approved Ozon title",
+                    "price": "100.00",
+                    "old_price": "120.00",
+                    "images": ["provider://image"],
+                    "description_category_id": 17028913,
+                    "weight": 200,
+                    "weight_unit": "g",
+                    "depth": 100,
+                    "width": 80,
+                    "height": 20,
+                    "dimension_unit": "mm",
+                    "statuses": {
+                        "is_created": True,
+                        "status": "CREATED",
+                        "status_failed": "",
+                    },
+                }
+            ]
+        }
+
+    rows = OfficialOzonV4Transport(post=post).readback_variants(("0967",))
+
+    assert rows == [
+        {
+            "offer_id": "0967",
+            "id": 7654321,
+            "statuses": {
+                "is_created": True,
+                "status": "CREATED",
+                "status_failed": "",
+            },
+            "name": "Approved Ozon title",
+            "price": "100.00",
+            "old_price": "120.00",
+            "images": ["provider://image"],
+            "category_id": "17028913",
+            "weight_kg": "0.2",
+            "package_cm": ["10", "8", "2"],
+        }
+    ]
+    assert calls == [
+        (
+            "/v3/product/info/list",
+            {"offer_id": ["0967"], "limit": 1000, "visibility": "ALL"},
+        )
+    ]
+
+
+def test_live_dependency_builders_are_independent():
+    publisher = SimpleNamespace(preflight=lambda _value: {}, publish=lambda _value: {})
+    tiktok = build_live_tiktok_dependencies(
+        collectbox_context_resolver=lambda _request: {}, publisher=publisher
+    )
+    shopee = build_live_shopee_dependencies(
+        resolver=ShopeeExactGlobalItemResolver(
+            runtime=_ShopeeRuntime(),
+            mapping_lookup=lambda _key: None,
+            merchant_get_transport=_official_shopee_get,
+        ),
+        runtime=_ShopeeRuntime(),
+    )
+    ozon = build_live_ozon_dependencies(
+        transport=OfficialOzonV4Transport(post=lambda *_args: {})
+    )
+
+    assert tiktok.collectbox_context_resolver is not shopee.global_item_id_resolver
+    assert shopee.runtime is not ozon.dispatch_variant
+    assert callable(ozon.readback_variants)
+
+
+class _ObservedDraftTransport:
+    def __init__(self, observer, calls, *, unknown_claim: bool = False):
+        self.observer = observer
+        self.calls = calls
+        self.unknown_claim = unknown_claim
+
+    def claim_or_create(self, *, target, ordinal):
+        self.calls.append(("claim", target["target_label"], ordinal))
+        if self.unknown_claim:
+            fact = DraftWriteFact("CLAIM_OR_CREATE", "UNKNOWN")
+        else:
+            fact = DraftWriteFact(
+                "CLAIM_OR_CREATE",
+                "ACCEPTED",
+                detail_id=str(7001 + ordinal),
+                shop_id=str(target["shop_id"]),
+            )
+        self.observer(target["target_label"], fact)
+        return fact
+
+    def save_draft(self, *, identity, draft):
+        self.calls.append(("save", identity["target_label"], draft["target_label"]))
+        fact = DraftWriteFact(
+            "SAVE_DRAFT",
+            "ACCEPTED",
+            detail_id=identity["detail_id"],
+            shop_id=identity["shop_id"],
+        )
+        self.observer(identity["target_label"], fact)
+        return fact
+
+
+def _tiktok_request() -> PublicationPlatformRequest:
+    snapshot = _snapshot()
+    labels = tuple(
+        row["target_label"]
+        for row in snapshot["publication_targets"]
+        if row["platform"] == "tiktok"
+    )
+    return PublicationPlatformRequest(
+        run_id="run-checkpoint-1",
+        report_id="publication-report:run-checkpoint-1",
+        platform="TIKTOK",
+        target_labels=labels,
+        snapshot=snapshot,
+    )
+
+
+def test_tiktok_preparation_checkpoint_survives_publish_preflight_failure(tmp_path):
+    calls = []
+    store = TikTokV4DraftCheckpointStore(tmp_path)
+    preparer = DurableTikTokV4DraftPreparer(
+        checkpoint_store=store,
+        category_resolver=CategoryResolver(),
+        transport_factory=lambda _request, observer: _ObservedDraftTransport(
+            observer, calls
+        ),
+    )
+    request = _tiktok_request()
+    publisher = SimpleNamespace(
+        preflight=lambda _snapshot: (_ for _ in ()).throw(
+            RuntimeError("simulated preflight failure")
+        ),
+        publish=lambda *_args: pytest.fail("publish must not run"),
+    )
+
+    result = build_tiktok_v4_executor(
+        collectbox_context_resolver=None,
+        draft_preparer=preparer,
+        category_resolver=CategoryResolver(),
+        publisher=publisher,
+        storefront_readback=TikTokUnavailableStorefrontReadback(),
+    )(request)
+
+    assert result["external_write_count"] == 4
+    assert result["dispatch_attempted"] is False
+    checkpoint = store.load(request)
+    assert checkpoint["external_write_count"] == 4
+    assert set(checkpoint["receipt"]["collectbox_contexts"]) == set(
+        request.target_labels
+    )
+
+
+def test_tiktok_production_transport_factory_requires_digest_bound_seed_identity():
+    request = _tiktok_request()
+    body = {
+        "schema_version": "miaoshou-tiktok-v4-seed-identity/v1",
+        "snapshot_digest": request.snapshot["snapshot_digest"],
+        "common_detail_id": "5001",
+        "initial_platform_detail_id": "7101",
+    }
+    canonical = json.dumps(
+        body,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    identity = {
+        **body,
+        "identity_digest": "sha256:"
+        + hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+    }
+    observed = []
+    calls = []
+    factory = MiaoshouTikTokV4DraftTransportFactory(
+        seed_identity_resolver=lambda _request: identity,
+        post=lambda path, payload: (
+            calls.append((path, deepcopy(payload)))
+            or {"result": "success", "data": {}}
+        ),
+    )
+    transport = factory(
+        request,
+        lambda label, fact: observed.append((label, fact)),
+    )
+
+    facts = transport.claim_or_create(
+        target={
+            "target_label": "tiktok:LH_PH",
+            "shop_id": "7676267",
+        },
+        ordinal=0,
+    )
+
+    assert len(facts) == 1
+    assert facts[0].operation == "CLAIM_TO_SHOP"
+    assert facts[0].outcome == "ACCEPTED"
+    assert observed == [("tiktok:LH_PH", facts[0])]
+    assert calls[0][0].endswith("claim_to_shop")
+
+    invalid = dict(identity, identity_digest="sha256:" + "0" * 64)
+    with pytest.raises(LivePublicationDependencyError):
+        MiaoshouTikTokV4DraftTransportFactory(
+            seed_identity_resolver=lambda _request: invalid,
+            post=lambda *_args: pytest.fail("drifted seed must not call provider"),
+        )(request, lambda *_args: None)
+
+
+def test_tiktok_preparation_retry_reuses_checkpoint_without_blind_claim(tmp_path):
+    calls = []
+    store = TikTokV4DraftCheckpointStore(tmp_path)
+    preparer = DurableTikTokV4DraftPreparer(
+        checkpoint_store=store,
+        category_resolver=CategoryResolver(),
+        transport_factory=lambda _request, observer: _ObservedDraftTransport(
+            observer, calls
+        ),
+    )
+    request = _tiktok_request()
+
+    first = preparer(request)
+    calls_after_first = list(calls)
+    second = preparer(request)
+
+    assert first["external_write_count"] == 4
+    assert second["external_write_count"] == 4
+    assert calls == calls_after_first
+    assert first["collectbox_contexts"] == second["collectbox_contexts"]
+
+
+def test_tiktok_unknown_claim_checkpoint_prevents_blind_retry(tmp_path):
+    calls = []
+    store = TikTokV4DraftCheckpointStore(tmp_path)
+    preparer = DurableTikTokV4DraftPreparer(
+        checkpoint_store=store,
+        category_resolver=CategoryResolver(),
+        transport_factory=lambda _request, observer: _ObservedDraftTransport(
+            observer, calls, unknown_claim=True
+        ),
+    )
+    request = _tiktok_request()
+
+    first = preparer(request)
+    calls_after_first = list(calls)
+    second = preparer(request)
+
+    assert first["external_write_count"] is None
+    assert second["external_write_count"] is None
+    assert calls == calls_after_first

@@ -22,6 +22,25 @@ failure, warning, or readback block another platform.
 5. Generate one report with a simple label per platform and detailed redacted
    evidence internally.
 
+## Frozen v4 execution boundary
+
+Treat `approved-publication-snapshot/v4` as the only production input for a
+new publication run. Send it only through the v4 platform executors. Never
+feed it into a legacy ReleasePlan parser or a legacy collect-box start route;
+those readers expect different fields and may claim a provider object before
+failing to prepare any target drafts.
+
+For a provider create/claim call, a client idempotency key is only local
+evidence unless the provider explicitly guarantees idempotency. Persist the
+returned platform detail ID before category preparation, target creation, or
+any other fallible step. Before retrying a call whose result is missing or
+ambiguous, reconcile the official provider list and bind the exact existing
+identity. Never retry a claim merely by reusing the client key.
+
+Keep platform scope structural: a TikTok-only run may create only TikTok rows,
+and a Shopee-only run may create only Shopee rows. Never create pending rows or
+completion dependencies for unselected platforms.
+
 ## Turn readback failures into permanent prevention
 
 Use readback as a measurement boundary, not as a recurring manual repair loop.
@@ -125,6 +144,27 @@ Read only the relevant reference before that platform:
 
 Read `references/incident-patterns.md` before adding a permanent lesson. Never
 record an unconfirmed hypothesis as policy.
+
+## Canonical Skill parity
+
+Treat the repository directory `skills/publish-approved-product` as the only
+canonical Skill source. Check the installed copy before use:
+
+```powershell
+python scripts/sync_publish_approved_product_skill.py --check
+```
+
+If review authorizes installation, run it explicitly and then check again:
+
+```powershell
+python scripts/sync_publish_approved_product_skill.py --install
+python scripts/sync_publish_approved_product_skill.py --check
+```
+
+Never install implicitly during publication, test execution, or Skill
+validation. A parity mismatch is a deployment/configuration failure; do not
+silently mix canonical instructions with installed scripts from another
+digest.
 
 ## TikTok category decision
 

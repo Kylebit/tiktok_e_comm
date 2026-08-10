@@ -54,6 +54,15 @@ zero-write preflight failure: do not call the publish endpoint.
 
 ## Confirmed rules
 
+- Consume `approved-publication-snapshot/v4` only through the v4 projection
+  and executor. Never pass it to `_approved_common`, `_approved_site`,
+  `prepare_tiktok_collectbox`, or the legacy collect-box start route.
+- Persist a newly returned Miaoshou platform detail ID before category
+  preparation or target draft creation. A client idempotency key is not
+  provider idempotency; reconcile the official list before any claim retry.
+- A `platform_scope=TIKTOK` action contains only TikTok rows. It must not wait
+  for, create, or inspect a pending Shopee row.
+
 - Distinguish the first batch from a reimport before dispatch. A pristine
   `READY` action whose TikTok row is `PENDING` with zero attempts and zero
   writes must use the ordinary start request. Only a finished prior batch may
@@ -86,6 +95,59 @@ sequence for every selected site/shop:
    `CATEGORY_CONFIRMATION_REQUIRED`; never invent a broad category.
 8. Write the confirmed category and attributes through deterministic code and
    read back the same target before publishing.
+
+### Confirmed fridge-magnet category
+
+- Exact category: `cid=854536` (`冰箱贴`).
+- Confirmed site scope: `PH/MY/TH/VN/MX/GB`.
+- The confirmation is not a timeless hard-coded entitlement. For every target,
+  recursively locate the exact node in the current per-site tree, require it
+  to be enabled with the fridge-magnet semantic label, then validate the
+  current exact-shop metadata before saving the draft.
+- A successful check for one site or shop cannot authorize another. A cached
+  Miaoshou category, metadata-only recognition, or the previous run's result
+  is insufficient.
+- After saving, read the same target-specific `detail_id` and require the exact
+  category plus the existing SKU, price, image, weight and parcel checks.
+
+### Confirmed incident: v4 snapshot entered the legacy parser
+
+Symptom: a v4-approved run made a Miaoshou platform claim, then every TikTok
+target ended in reconciliation before any target draft identity was saved.
+
+Confirmed root cause: the legacy collect-box preparation path expected
+`source_product` and `sku_prices` through the legacy ReleasePlan parser, while
+`approved-publication-snapshot/v4` carries frozen product, target and per-SKU
+facts under a different contract. The platform claim happened before that
+schema mismatch surfaced.
+
+Required handling: project and execute v4 facts directly. Never adapt v4 by
+calling the legacy parser or legacy collect-box start endpoint.
+
+### Confirmed incident: client idempotency did not prevent duplicate claims
+
+Symptom: repeating the same claim with the same local idempotency key returned
+another accepted Miaoshou platform detail instead of `ALREADY_PRESENT`.
+
+Confirmed root cause: the key protected only the local request ledger; the
+provider did not enforce it as provider idempotency.
+
+Required handling: immediately persist the returned platform detail ID before
+any later fallible step. If the process loses that identity or the transport
+outcome is ambiguous, read and reconcile the official provider list first.
+Never repeat the mutation merely because the local key is unchanged.
+
+### Confirmed incident: platform scope created an unrelated dependency
+
+Symptom: a TikTok-only action stayed running after all TikTok work had reached
+a terminal state because an unselected Shopee row remained pending.
+
+Confirmed root cause: initial action creation inserted both platform rows even
+when `platform_scope=TIKTOK`.
+
+Required handling: create only the explicitly selected platform rows. Existing
+attempted or terminal evidence is immutable; cleanup may remove only an
+unselected row that is still pristine `PENDING` with zero attempts and writes.
 
 ### Confirmed tablecloth/table-runner fallback
 

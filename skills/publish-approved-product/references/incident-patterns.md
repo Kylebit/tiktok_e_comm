@@ -15,6 +15,22 @@ current execution report only.
 
 ## Confirmed patterns
 
+- Skill v4 boundary: `approved-publication-snapshot/v4` must never enter the
+  legacy ReleasePlan parser or legacy collect-box start route. The schemas are
+  not compatible, and the legacy sequence can claim a provider object before
+  failing draft preparation.
+- TikTok claim identity: a client idempotency key is not provider idempotency.
+  Persist the returned platform detail ID before the next fallible step; when
+  an outcome is missing or ambiguous, reconcile the official provider list
+  before any retry.
+- Platform isolation: `platform_scope` must create rows only for selected
+  platforms. Pending rows for unselected platforms are forbidden because they
+  create false completion dependencies.
+- TikTok fridge magnets: the exact official `cid=854536` (`冰箱贴`) was
+  confirmed enabled for PH/MY/TH/VN/MX/GB only after an exact per-site tree
+  check and exact-shop metadata validation. Revalidate those two facts for
+  every new run; never infer availability from one site or a cached draft.
+
 - Shopee: a stale local global-item mapping can point to official `DELETED`;
   local mapping alone is never success.
 - Shopee: master images and a complete Model-SKU set do not prove variation

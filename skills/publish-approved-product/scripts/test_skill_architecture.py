@@ -6,6 +6,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = ROOT.parents[1]
 SCRIPTS = ROOT / "scripts"
 REQUIRED_TOOLS = (
     "inspect_snapshot.py",
@@ -109,6 +110,79 @@ class SkillArchitectureTests(unittest.TestCase):
         self.assertIn("CATEGORY_CONFIRMATION_REQUIRED", text)
         self.assertIn("cid=600009", text)
         self.assertIn("explicit user-approved fallback", text)
+
+    def test_v4_runner_never_enters_legacy_collectbox_start_or_plan_parser(self) -> None:
+        source = (
+            REPO_ROOT / "shared_platform" / "product_publication_executors.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("build_tiktok_v4_executor", source)
+        self.assertIn("project_tiktok_v4_execution_plan", source)
+        for forbidden in (
+            "/api/product-workspace/collectbox-action/start",
+            "prepare_tiktok_collectbox",
+            "_approved_common",
+            "_approved_site",
+        ):
+            self.assertNotIn(forbidden, source)
+
+    def test_confirmed_v4_claim_and_platform_scope_incidents_are_documented(self) -> None:
+        english = (ROOT / "references" / "incident-patterns.md").read_text(
+            encoding="utf-8"
+        )
+        chinese = (ROOT / "references" / "SKILL.zh-CN.md").read_text(
+            encoding="utf-8"
+        )
+        for required in (
+            "approved-publication-snapshot/v4",
+            "legacy ReleasePlan parser",
+            "provider idempotency",
+            "platform detail ID",
+            "platform_scope",
+            "unselected platforms",
+        ):
+            self.assertIn(required, english)
+        for required in (
+            "approved-publication-snapshot/v4",
+            "旧 ReleasePlan 解析器",
+            "平台幂等",
+            "平台明细 ID",
+            "platform_scope",
+            "未选择平台",
+        ):
+            self.assertIn(required, chinese)
+
+    def test_fridge_magnet_category_requires_six_site_tree_and_metadata_proof(self) -> None:
+        text = (ROOT / "references" / "tiktok.md").read_text(encoding="utf-8")
+        for required in (
+            "cid=854536",
+            "PH/MY/TH/VN/MX/GB",
+            "per-site tree",
+            "exact-shop metadata",
+            "冰箱贴",
+        ):
+            self.assertIn(required, text)
+
+    def test_tiktok_exact_provider_readback_invariants_remain(self) -> None:
+        text = (ROOT / "references" / "tiktok.md").read_text(encoding="utf-8")
+        for required in (
+            "remembered `detail_id` belongs to that target and approved offer",
+            "every approved model SKU and option name is present exactly once",
+            "every model SKU price equals its own approved per-SKU price",
+            "category equals the approved site candidate",
+            "same target-specific `detail_id`",
+        ):
+            self.assertIn(required, text)
+
+    def test_skill_documents_explicit_canonical_install_parity_workflow(self) -> None:
+        english = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        chinese = (ROOT / "references" / "SKILL.zh-CN.md").read_text(
+            encoding="utf-8"
+        )
+        for text in (english, chinese):
+            self.assertIn("sync_publish_approved_product_skill.py --check", text)
+            self.assertIn("sync_publish_approved_product_skill.py --install", text)
+        self.assertIn("Never install implicitly", english)
+        self.assertIn("不得隐式安装", chinese)
 
 
 if __name__ == "__main__":

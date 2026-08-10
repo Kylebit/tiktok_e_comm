@@ -11,6 +11,7 @@ import pytest
 
 from modules.products import server as product_server
 from shared_platform.product_publication_reports import ProductPublicationReportStore
+from shared_platform.product_publication_runs import ProductPublicationRunStore
 
 
 def _payload() -> dict:
@@ -56,18 +57,24 @@ def report_http_server(tmp_path, monkeypatch):
         tmp_path / "orbit_platform.db",
         reports_root=tmp_path / "reports" / "product-publication",
     )
+    run_store = ProductPublicationRunStore(tmp_path / "orbit_platform.db")
     store.store_report(_payload())
     monkeypatch.setattr(
         product_server,
         "_product_publication_report_store",
         lambda: store,
     )
+    monkeypatch.setattr(
+        product_server,
+        "_product_publication_run_store",
+        lambda: run_store,
+    )
     server = ThreadingHTTPServer(("127.0.0.1", 0), product_server.Handler)
     server.daemon_threads = True
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield f"http://127.0.0.1:{server.server_address[1]}", store
+        yield f"http://127.0.0.1:{server.server_address[1]}", store, run_store
     finally:
         server.shutdown()
         server.server_close()
@@ -84,7 +91,7 @@ def _get(base_url: str, path: str, query: dict[str, object]) -> tuple[int, dict]
 
 
 def test_http_gets_report_and_list_without_mutating_store(report_http_server):
-    base_url, store = report_http_server
+    base_url, store, _run_store = report_http_server
     before_db = store.path.read_bytes()
     before_report = (store.reports_root / "3838616043/31/http-run/report.json").read_bytes()
 
@@ -119,7 +126,7 @@ def test_http_gets_report_and_list_without_mutating_store(report_http_server):
 
 
 def test_http_requires_offer_scope_and_rejects_cross_offer(report_http_server):
-    base_url, _store = report_http_server
+    base_url, _store, _run_store = report_http_server
     missing_status, _ = _get(
         base_url,
         "/api/product-workspace/publication-report",
@@ -143,7 +150,7 @@ def test_http_requires_offer_scope_and_rejects_cross_offer(report_http_server):
 
 
 def test_post_routes_are_not_added(report_http_server):
-    base_url, _store = report_http_server
+    base_url, _store, _run_store = report_http_server
     request = urllib.request.Request(
         base_url + "/api/product-workspace/publication-report",
         data=b"{}",
@@ -153,3 +160,28 @@ def test_post_routes_are_not_added(report_http_server):
     with pytest.raises(urllib.error.HTTPError) as raised:
         urllib.request.urlopen(request, timeout=10)
     assert raised.value.code in {404, 405}
+
+
+def test_http_get_projects_durable_running_job_as_processing(report_http_server):
+    base_url, _report_store, run_store = report_http_server
+    created = run_store.create_run(
+        run_id="http-async-run",
+        offer_id="3838616043",
+        revision=32,
+        plan_id="omnichannel:" + "e" * 64,
+        snapshot_digest="sha256:" + "f" * 64,
+        platform_scope=("OZON",),
+        target_count=1,
+    )
+    run_store.mark_running(run_id=created.run_id)
+
+    status, body = _get(
+        base_url,
+        "/api/product-workspace/publication-report",
+        {"offer_id": "3838616043", "report_id": created.report_id},
+    )
+
+    assert status == 200
+    assert body["report"]["schema_version"] == "product-publication-run-status/v1"
+    assert body["report"]["status"] == "PROCESSING"
+    assert body["report"]["summary"]["evidence"]["dispatch_attempted"] is None

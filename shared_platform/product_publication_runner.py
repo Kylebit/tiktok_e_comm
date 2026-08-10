@@ -80,6 +80,19 @@ class PublicationRunReceipt:
 
 
 @dataclass(frozen=True)
+class PreparedPublicationRun:
+    """Validated immutable identity used before a background run is queued."""
+
+    offer_id: str
+    revision: int
+    plan_id: str
+    snapshot_digest: str
+    platform_scope: tuple[str, ...]
+    target_labels_by_platform: dict[str, tuple[str, ...]]
+    snapshot: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class _PlatformOutcome:
     summary: dict[str, Any]
     dispatch_attempted: bool
@@ -270,6 +283,51 @@ def _existing_scope(report: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(row["platform"] for row in report["summary"]["platforms"])
 
 
+def prepare_product_publication_run(
+    *,
+    release_store: ApprovedPublicationSnapshotStore,
+    offer_id: str,
+    plan_id: str | None = None,
+    snapshot_digest: str | None = None,
+    platform_scope: Sequence[str],
+) -> PreparedPublicationRun:
+    """Resolve and validate one frozen v4 snapshot without invoking a provider."""
+
+    safe_offer_id = _offer_id(offer_id)
+    if (plan_id is None) == (snapshot_digest is None):
+        raise ValueError("exactly one of plan_id or snapshot_digest is required")
+    if plan_id is not None:
+        plan_id = _text(plan_id, "plan_id")
+    if snapshot_digest is not None:
+        snapshot_digest = _text(snapshot_digest, "snapshot_digest", max_length=71)
+    scope = _scope(platform_scope)
+
+    raw_snapshot = release_store.approved_publication_snapshot(
+        offer_id=safe_offer_id,
+        plan_id=plan_id,
+        snapshot_digest=snapshot_digest,
+    )
+    if raw_snapshot is None:
+        raise ValueError("approved publication snapshot is unavailable")
+    snapshot = validate_approved_publication_snapshot(raw_snapshot).payload()
+    if snapshot["offer_id"] != safe_offer_id:
+        raise ValueError("approved publication snapshot offer identity conflicts")
+    if plan_id is not None and snapshot["plan_id"] != plan_id:
+        raise ValueError("approved publication snapshot plan identity conflicts")
+    if snapshot_digest is not None and snapshot["snapshot_digest"] != snapshot_digest:
+        raise ValueError("approved publication snapshot digest identity conflicts")
+    targets_by_platform = _target_labels_by_platform(snapshot, scope)
+    return PreparedPublicationRun(
+        offer_id=safe_offer_id,
+        revision=snapshot["product_revision"],
+        plan_id=snapshot["plan_id"],
+        snapshot_digest=snapshot["snapshot_digest"],
+        platform_scope=scope,
+        target_labels_by_platform=targets_by_platform,
+        snapshot=deepcopy(snapshot),
+    )
+
+
 class ProductPublicationRunner:
     """Execute independent platform callables from one frozen v4 snapshot."""
 
@@ -338,21 +396,15 @@ class ProductPublicationRunner:
                 report=existing, stored=stored, replayed=True
             )
 
-        raw_snapshot = self.release_store.approved_publication_snapshot(
+        prepared = prepare_product_publication_run(
+            release_store=self.release_store,
             offer_id=safe_offer_id,
             plan_id=plan_id,
             snapshot_digest=snapshot_digest,
+            platform_scope=scope,
         )
-        if raw_snapshot is None:
-            raise ValueError("approved publication snapshot is unavailable")
-        snapshot = validate_approved_publication_snapshot(raw_snapshot).payload()
-        if snapshot["offer_id"] != safe_offer_id:
-            raise ValueError("approved publication snapshot offer identity conflicts")
-        if plan_id is not None and snapshot["plan_id"] != plan_id:
-            raise ValueError("approved publication snapshot plan identity conflicts")
-        if snapshot_digest is not None and snapshot["snapshot_digest"] != snapshot_digest:
-            raise ValueError("approved publication snapshot digest identity conflicts")
-        targets_by_platform = _target_labels_by_platform(snapshot, scope)
+        snapshot = prepared.snapshot
+        targets_by_platform = prepared.target_labels_by_platform
 
         outcomes: list[_PlatformOutcome] = []
         for platform in scope:
@@ -437,6 +489,8 @@ __all__ = [
     "ProductPublicationRunConflictError",
     "ProductPublicationRunner",
     "ProductPublicationRunnerError",
+    "PreparedPublicationRun",
     "PublicationPlatformRequest",
     "PublicationRunReceipt",
+    "prepare_product_publication_run",
 ]

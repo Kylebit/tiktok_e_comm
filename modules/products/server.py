@@ -88,6 +88,28 @@ def _product_publication_report_store():
     return default_product_publication_report_store()
 
 
+def _product_publication_run_store():
+    """Late-bound durable lifecycle store for asynchronous publication runs."""
+
+    from shared_platform.product_publication_runs import (
+        default_product_publication_run_store,
+    )
+
+    return default_product_publication_run_store()
+
+
+def _launch_product_publication_background(callback) -> threading.Thread:
+    """Start one daemon worker without inheriting provider latency in the POST."""
+
+    worker = threading.Thread(
+        target=callback,
+        name=f"product-publication-{uuid4().hex[:12]}",
+        daemon=True,
+    )
+    worker.start()
+    return worker
+
+
 def _release_store():
     """Late-bound shared ReleaseStore seam for snapshot read APIs."""
     from shared_platform.release_store import default_release_store
@@ -98,6 +120,8 @@ def _release_store():
 def _publication_report_api_view(report: dict) -> dict:
     from shared_platform.product_publication_reports import public_publication_report
 
+    if report.get("schema_version") == "product-publication-run-status/v1":
+        return dict(report)
     return public_publication_report(report)
 
 
@@ -130,17 +154,69 @@ def _unavailable_product_publication_executor(request) -> dict:
     }
 
 
+def _execute_product_publication_background(
+    *,
+    run_id: str,
+    offer_id: str,
+    snapshot_digest: str,
+    platform: str,
+    executor,
+    release_store,
+    report_store,
+    run_store,
+) -> None:
+    """Run one exact platform after the durable QUEUED event is committed."""
+
+    from shared_platform.product_publication_runner import ProductPublicationRunner
+
+    try:
+        run_store.mark_running(run_id=run_id)
+        receipt = ProductPublicationRunner(
+            release_store=release_store,
+            report_store=report_store,
+        ).run(
+            run_id=run_id,
+            offer_id=offer_id,
+            snapshot_digest=snapshot_digest,
+            platform_scope=(platform,),
+            platform_executors={platform: executor},
+        )
+        if (
+            receipt.report["run_id"] != run_id
+            or receipt.report["offer_id"] != offer_id
+            or receipt.report["report_id"] != f"publication-report:{run_id}"
+        ):
+            raise ValueError("publication runner returned conflicting identity")
+        run_store.mark_completed(
+            run_id=run_id,
+            final_report_id=receipt.report["report_id"],
+        )
+    except Exception as error:
+        # Provider/client exceptions are already reduced to redacted target
+        # outcomes by ProductPublicationRunner.  Reaching this boundary means
+        # infrastructure failed before an immutable final report was secured.
+        try:
+            run_store.mark_failed(
+                run_id=run_id,
+                failure_code="RUNNER_INFRASTRUCTURE_FAILED",
+            )
+        except Exception:
+            pass
+        _PLATFORM_PUBLISH_LOGGER.error(
+            "publication background run failed run_id=%s error_type=%s",
+            run_id,
+            type(error).__name__,
+        )
+
+
 def _start_product_publication(
     data: dict,
     *,
     platform: str,
 ) -> tuple[int, dict]:
-    """Run exactly one server-owned platform executor from a frozen snapshot."""
+    """Validate and queue exactly one frozen platform run, then return 202."""
 
-    from shared_platform.product_publication_runner import (
-        ProductPublicationRunner,
-        ProductPublicationRunnerError,
-    )
+    from shared_platform.product_publication_runner import prepare_product_publication_run
 
     if platform not in {"TIKTOK", "SHOPEE", "OZON"}:
         return 400, {"ok": False, "error": "unsupported publication platform"}
@@ -149,30 +225,64 @@ def _start_product_publication(
     if type(offer_id) is not str or type(plan_id) is not str:
         return 400, {"ok": False, "error": "offer_id and plan_id are required"}
 
-    run_id = f"product-center-{platform.lower()}-{uuid4().hex}"
     executors = _product_publication_platform_executors()
     executor = executors.get(platform)
     if not callable(executor):
         executor = _unavailable_product_publication_executor
+    release_store = _release_store()
+    report_store = _product_publication_report_store()
+    run_store = _product_publication_run_store()
     try:
-        receipt = ProductPublicationRunner(
-            release_store=_release_store(),
-            report_store=_product_publication_report_store(),
-        ).run(
-            run_id=run_id,
+        prepared = prepare_product_publication_run(
+            release_store=release_store,
             offer_id=offer_id,
             plan_id=plan_id,
             platform_scope=(platform,),
-            platform_executors={platform: executor},
         )
-    except (TypeError, ValueError, ProductPublicationRunnerError) as error:
+        run_id = f"product-center-{platform.lower()}-{uuid4().hex}"
+        stored_run = run_store.create_run(
+            run_id=run_id,
+            offer_id=prepared.offer_id,
+            revision=prepared.revision,
+            plan_id=prepared.plan_id,
+            snapshot_digest=prepared.snapshot_digest,
+            platform_scope=(platform,),
+            target_count=len(prepared.target_labels_by_platform[platform]),
+        )
+    except (TypeError, ValueError) as error:
         return 409, {"ok": False, "error": str(error)}
+    try:
+        _launch_product_publication_background(
+            lambda: _execute_product_publication_background(
+                run_id=run_id,
+                offer_id=prepared.offer_id,
+                snapshot_digest=prepared.snapshot_digest,
+                platform=platform,
+                executor=executor,
+                release_store=release_store,
+                report_store=report_store,
+                run_store=run_store,
+            )
+        )
+    except Exception as error:
+        try:
+            run_store.mark_failed(
+                run_id=run_id,
+                failure_code="WORKER_LAUNCH_FAILED",
+            )
+        except Exception:
+            pass
+        _PLATFORM_PUBLISH_LOGGER.error(
+            "publication worker launch failed run_id=%s error_type=%s",
+            run_id,
+            type(error).__name__,
+        )
     return 202, {
         "ok": True,
         "schema_version": "product-publication-start/v1",
         "platform": platform,
-        "report_id": receipt.report["report_id"],
-        "run_id": receipt.report["run_id"],
+        "report_id": stored_run.report_id,
+        "run_id": stored_run.run_id,
     }
 
 
@@ -13552,6 +13662,10 @@ class Handler(BaseHTTPRequestHandler):
                 API_SCHEMA_VERSION,
                 ProductPublicationReportIntegrityError,
             )
+            from shared_platform.product_publication_runs import (
+                ProductPublicationRunIntegrityError,
+                public_publication_run_status,
+            )
 
             q = parse_qs(urlparse(self.path).query, keep_blank_values=True)
             offer_id = (q.get("offer_id") or [""])[0]
@@ -13574,9 +13688,23 @@ class Handler(BaseHTTPRequestHandler):
                     {"ok": False, "error": "publication report integrity check failed"},
                 )
             if report is None:
-                return self._json(
-                    404, {"ok": False, "error": "publication report not found"}
-                )
+                try:
+                    run = _product_publication_run_store().get_run(
+                        report_id=report_id,
+                        offer_id=offer_id,
+                    )
+                    report = public_publication_run_status(run) if run is not None else None
+                except (TypeError, ValueError) as error:
+                    return self._json(400, {"ok": False, "error": str(error)})
+                except ProductPublicationRunIntegrityError:
+                    return self._json(
+                        409,
+                        {"ok": False, "error": "publication run integrity check failed"},
+                    )
+                if report is None:
+                    return self._json(
+                        404, {"ok": False, "error": "publication report not found"}
+                    )
             return self._json(
                 200,
                 {

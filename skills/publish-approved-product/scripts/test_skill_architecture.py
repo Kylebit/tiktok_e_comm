@@ -224,6 +224,12 @@ class SkillArchitectureTests(unittest.TestCase):
             self.assertIn("structural semicolon delimiters", text)
             self.assertIn("shopIdToWarehouseIdAndStockMap", text)
             self.assertIn("positive provider stock", text)
+        chinese = (ROOT / "references" / "SKILL.zh-CN.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("结构分号", chinese)
+        self.assertIn("shopIdToWarehouseIdAndStockMap", chinese)
+        self.assertIn("妙手现有的正库存", chinese)
 
     def test_skill_documents_explicit_canonical_install_parity_workflow(self) -> None:
         english = (ROOT / "SKILL.md").read_text(encoding="utf-8")

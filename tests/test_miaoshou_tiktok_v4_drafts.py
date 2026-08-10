@@ -6,6 +6,7 @@ import inspect
 from modules.miaoshou.tiktok_v4_drafts import (
     DraftWriteFact,
     MiaoshouOpenApiTikTokV4DraftTransport,
+    _provider_bound_sku_map,
     prepare_tiktok_v4_drafts,
 )
 from modules.miaoshou import tiktok_v4_drafts
@@ -461,6 +462,54 @@ def test_production_seam_reads_exact_shop_warehouse_and_preserves_provider_stock
             {shop_id: {f"warehouse-{shop_id}": "300"}},
             {shop_id: {f"warehouse-{shop_id}": "200"}},
         ]
+
+
+def test_production_seam_binds_opaque_provider_key_by_exact_property_label() -> None:
+    shop_id = SHOP_IDS["tiktok:LH_PH"]
+    current = {
+        "skuPropertyList": [
+            {
+                "attrValueList": [
+                    {
+                        "attrValueId": "abb6449b29",
+                        "attrValue": "田园鲜花铺",
+                    }
+                ]
+            }
+        ],
+        "skuMap": {
+            ";abb6449b29;": {
+                "itemNum": "1060462479185",
+                "stock": 300,
+            }
+        },
+    }
+    draft = {
+        "skus": [
+            {
+                "variant_key": ";田园鲜花铺;;",
+                "model_sku": "0967",
+            }
+        ]
+    }
+    desired = {
+        ";田园鲜花铺;;": {
+            "itemNum": "0967",
+            "sellerSku": "0967",
+        }
+    }
+
+    result = _provider_bound_sku_map(
+        current=current,
+        draft=draft,
+        desired=desired,
+        shop_id=shop_id,
+        warehouse_id="warehouse-ph",
+    )
+
+    assert list(result) == [";abb6449b29;"]
+    assert result[";abb6449b29;"]["itemNum"] == "0967"
+    assert result[";abb6449b29;"]["stock"] == 300
 
 
 def test_production_seam_reuses_exact_claimed_target_identities_without_reclaim() -> None:

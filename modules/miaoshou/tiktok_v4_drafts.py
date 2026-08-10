@@ -901,22 +901,37 @@ def _provider_bound_sku_map(
         or not isinstance(desired, Mapping)
     ):
         raise TikTokV4DraftPreparationError("Miaoshou SKU facts are invalid")
-    variants = [str(row.get("variant_key") or "") for row in skus]
+    approved_variants = [str(row.get("variant_key") or "") for row in skus]
+    normalized_by_approved = {
+        variant: variant.strip().strip(";") for variant in approved_variants
+    }
+    if (
+        any(not value for value in normalized_by_approved.values())
+        or len(set(normalized_by_approved.values())) != len(approved_variants)
+    ):
+        raise TikTokV4DraftPreparationError(
+            "approved TikTok variant identity is ambiguous"
+        )
+    normalized_variants = [
+        normalized_by_approved[variant] for variant in approved_variants
+    ]
     models = {
-        str(row.get("variant_key") or ""): str(row.get("model_sku") or "")
+        normalized_by_approved[str(row.get("variant_key") or "")]: str(
+            row.get("model_sku") or ""
+        )
         for row in skus
     }
     try:
         bindings = approved_variant_key_bindings(
             current,
-            selected_sku_keys=variants,
+            selected_sku_keys=normalized_variants,
             model_skus=models,
         )
     except TikTokVariantBindingError as error:
         raise TikTokV4DraftPreparationError(str(error)) from None
     result: dict[object, object] = {}
-    for variant in variants:
-        raw_key = bindings[variant]
+    for variant in approved_variants:
+        raw_key = bindings[normalized_by_approved[variant]]
         current_row = current_map.get(raw_key)
         desired_row = desired.get(variant)
         if not isinstance(current_row, Mapping) or not isinstance(

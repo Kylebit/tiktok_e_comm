@@ -166,7 +166,8 @@ def _provider_data(response: object, operation: str) -> Mapping[str, object]:
     if result and result not in {"success", "ok"}:
         raise LivePublicationDependencyError(f"{operation} was rejected")
     code = response.get("code")
-    if code not in {None, 0, "0", 200, "200"}:
+    normalized_code = code.casefold().strip() if type(code) is str else code
+    if normalized_code not in {None, 0, "0", 200, "200", "success", "ok"}:
         raise LivePublicationDependencyError(f"{operation} was rejected")
     data = response.get("data")
     if not isinstance(data, Mapping):

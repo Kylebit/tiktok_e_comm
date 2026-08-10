@@ -18,6 +18,33 @@ SHOP_IDS = {
 }
 
 
+def _editable_site_payload(*, site: str, revision: str) -> dict:
+    snapshot = _snapshot()
+    label = "tiktok:LH_PH" if site == "PH" else "tiktok:LH_MY"
+    shop_id = SHOP_IDS[label]
+    warehouse_id = f"warehouse-{shop_id}"
+    return {
+        "result": "success",
+        "data": {
+            "siteCollectItemInfo": {
+                "providerRequired": "keep",
+                "collectBoxDetailShopList": [{"shopId": shop_id}],
+                "skuMap": {
+                    str(row["variant_key"]): {
+                        "itemNum": row["model_sku"],
+                        "stock": 300,
+                        "shopIdToWarehouseIdAndStockMap": {
+                            shop_id: {warehouse_id: "300"}
+                        },
+                    }
+                    for row in snapshot["skus"]
+                },
+            },
+            "ossMd5": revision,
+        },
+    }
+
+
 class CategoryResolver:
     def __init__(self, *, missing: set[str] | None = None) -> None:
         self.missing = missing or set()
@@ -241,13 +268,7 @@ def test_production_seam_uses_injected_audited_low_level_calls_only() -> None:
                 },
             }
         if path.endswith("get_site_collect_item_info"):
-            return {
-                "result": "success",
-                "data": {
-                    "siteCollectItemInfo": {"providerRequired": "keep"},
-                    "ossMd5": "revision-1",
-                },
-            }
+            return _editable_site_payload(site=body["site"], revision="revision-1")
         return {"result": "success", "data": {}}
 
     receipt = prepare_tiktok_v4_drafts(
@@ -324,13 +345,7 @@ def test_production_seam_reads_current_draft_and_uses_required_oss_md5() -> None
                 },
             }
         if path.endswith("get_site_collect_item_info"):
-            return {
-                "result": "success",
-                "data": {
-                    "siteCollectItemInfo": {"providerRequired": "keep"},
-                    "ossMd5": "revision-1",
-                },
-            }
+            return _editable_site_payload(site=body["site"], revision="revision-1")
         if path.endswith("save_site_collect_item_info"):
             assert body["ossMd5"] == "revision-1"
             assert body["siteCollectItemInfo"]["providerRequired"] == "keep"
@@ -353,6 +368,101 @@ def test_production_seam_reads_current_draft_and_uses_required_oss_md5() -> None
     assert sum(path.endswith("save_site_collect_item_info") for path, _ in calls) == 2
 
 
+def test_production_seam_reads_exact_shop_warehouse_and_preserves_provider_stock() -> None:
+    calls: list[tuple[str, dict]] = []
+    snapshot = _snapshot()
+    current_sku_map = {
+        str(row["variant_key"]): {
+            "itemNum": row["model_sku"],
+            "stock": 300 - (index * 100),
+        }
+        for index, row in enumerate(snapshot["skus"])
+    }
+
+    def post(path: str, body: dict) -> dict:
+        calls.append((path, deepcopy(body)))
+        serial_rows = body.get("detailSerialNumberPlatformList")
+        if isinstance(serial_rows, list):
+            serial = serial_rows[0]["serialNumber"]
+            return {
+                "result": "success",
+                "data": {
+                    "platformCollectBoxDetailIdMap": {
+                        "tiktok": {"5001": 7400 + serial}
+                    }
+                },
+            }
+        if path.endswith("get_site_collect_item_info"):
+            shop_id = SHOP_IDS[
+                "tiktok:LH_PH" if body["site"] == "PH" else "tiktok:LH_MY"
+            ]
+            return {
+                "result": "success",
+                "data": {
+                    "siteCollectItemInfo": {
+                        "skuMap": deepcopy(current_sku_map),
+                        "collectBoxDetailShopList": [{"shopId": shop_id}],
+                    },
+                    "ossMd5": "revision-with-stock",
+                },
+            }
+        if path.endswith("get_shop_warehouse_list"):
+            shop_id = str(body["shopIds"][0])
+            return {
+                "result": "success",
+                "data": {
+                    "shopWarehouseList": [
+                        {
+                            "shopId": shop_id,
+                            "warehouseList": [
+                                {
+                                    "warehouseId": f"warehouse-{shop_id}",
+                                    "warehouseEffectStatus": "1",
+                                    "isDefault": "1",
+                                }
+                            ],
+                        }
+                    ]
+                },
+            }
+        return {"result": "success", "data": {}}
+
+    receipt = prepare_tiktok_v4_drafts(
+        snapshot,
+        category_resolver=CategoryResolver(),
+        transport=MiaoshouOpenApiTikTokV4DraftTransport(
+            common_detail_id="5001",
+            post=post,
+        ),
+    )
+
+    assert receipt["status"] == "PREPARED"
+    warehouse_calls = [
+        body for path, body in calls if path.endswith("get_shop_warehouse_list")
+    ]
+    assert warehouse_calls == [
+        {"shopIds": [SHOP_IDS["tiktok:LH_PH"]]},
+        {"shopIds": [SHOP_IDS["tiktok:LH_MY"]]},
+    ]
+    saves = [
+        body for path, body in calls if path.endswith("save_site_collect_item_info")
+    ]
+    assert len(saves) == 2
+    for saved in saves:
+        info = saved["siteCollectItemInfo"]
+        shop_id = SHOP_IDS[
+            "tiktok:LH_PH" if saved["site"] == "PH" else "tiktok:LH_MY"
+        ]
+        assert [row["stock"] for row in info["skuMap"].values()] == [300, 200]
+        assert [
+            row["shopIdToWarehouseIdAndStockMap"]
+            for row in info["skuMap"].values()
+        ] == [
+            {shop_id: {f"warehouse-{shop_id}": "300"}},
+            {shop_id: {f"warehouse-{shop_id}": "200"}},
+        ]
+
+
 def test_production_seam_reuses_exact_claimed_target_identities_without_reclaim() -> None:
     calls: list[tuple[str, dict]] = []
     observed: list[DraftWriteFact] = []
@@ -360,13 +470,7 @@ def test_production_seam_reuses_exact_claimed_target_identities_without_reclaim(
     def post(path: str, body: dict) -> dict:
         calls.append((path, deepcopy(body)))
         if path.endswith("get_site_collect_item_info"):
-            return {
-                "result": "success",
-                "data": {
-                    "siteCollectItemInfo": {"providerRequired": "keep"},
-                    "ossMd5": "revision-2",
-                },
-            }
+            return _editable_site_payload(site=body["site"], revision="revision-2")
         return {"result": "success", "data": {}}
 
     receipt = prepare_tiktok_v4_drafts(

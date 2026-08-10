@@ -23,6 +23,10 @@ from domains.product_operations.approved_publication_snapshot import (
 )
 from modules.miaoshou.client import MiaoshouBusinessRejectedError, post_open
 from modules.miaoshou.tiktok_publisher import EXPECTED_SHOP_ID_BY_TARGET
+from modules.miaoshou.tiktok_variant_binding import (
+    TikTokVariantBindingError,
+    approved_variant_key_bindings,
+)
 from shared_platform.collectbox_action import CollectBoxTargetDetailIdentity
 
 
@@ -62,6 +66,10 @@ _OPERATIONS = frozenset(
         "CLAIM_OR_CREATE",
         "SAVE_DRAFT",
     }
+)
+WAREHOUSE_GET_PATH = (
+    "/open/v1/product/collect_box/tiktok/collect_box/"
+    "get_shop_warehouse_list"
 )
 
 
@@ -734,7 +742,20 @@ class MiaoshouOpenApiTikTokV4DraftTransport:
                 }
             # Keep provider-owned mandatory fields while replacing every
             # approved product/SKU field with the frozen v4 projection.
-            current.update(_miaoshou_draft_info(draft))
+            desired = _miaoshou_draft_info(draft)
+            warehouse_id = _tiktok_warehouse_id(
+                self._post,
+                current=current,
+                shop_id=shop_id,
+            )
+            desired["skuMap"] = _provider_bound_sku_map(
+                current=current,
+                draft=draft,
+                desired=desired["skuMap"],
+                shop_id=shop_id,
+                warehouse_id=warehouse_id,
+            )
+            current.update(desired)
             body = {
                 **identity_fields,
                 info_field: current,
@@ -777,6 +798,150 @@ class MiaoshouOpenApiTikTokV4DraftTransport:
                 "Miaoshou editable draft or ossMd5 is unavailable"
             )
         return deepcopy(dict(info)), oss_md5
+
+
+def _tiktok_warehouse_id(
+    post: Callable[[str, dict[str, object]], Mapping[str, object]],
+    *,
+    current: Mapping[str, object],
+    shop_id: str,
+) -> str:
+    sku_map = current.get("skuMap")
+    if not isinstance(sku_map, Mapping) or not sku_map:
+        raise TikTokV4DraftPreparationError("Miaoshou SKU map is unavailable")
+    observed: set[str] = set()
+    for raw_row in sku_map.values():
+        if not isinstance(raw_row, Mapping):
+            raise TikTokV4DraftPreparationError("Miaoshou SKU map is malformed")
+        shop_map = raw_row.get("shopIdToWarehouseIdAndStockMap")
+        if shop_map is None:
+            continue
+        if not isinstance(shop_map, Mapping):
+            raise TikTokV4DraftPreparationError(
+                "Miaoshou warehouse binding is malformed"
+            )
+        warehouse_map = shop_map.get(shop_id)
+        if warehouse_map is None:
+            continue
+        if not isinstance(warehouse_map, Mapping) or not warehouse_map:
+            raise TikTokV4DraftPreparationError(
+                "Miaoshou warehouse binding is malformed"
+            )
+        for warehouse_id in warehouse_map:
+            value = str(warehouse_id or "").strip()
+            if not value:
+                raise TikTokV4DraftPreparationError(
+                    "Miaoshou warehouse identity is malformed"
+                )
+            observed.add(value)
+    if len(observed) == 1:
+        return next(iter(observed))
+    if len(observed) > 1:
+        raise TikTokV4DraftPreparationError(
+            "Miaoshou warehouse identity is ambiguous"
+        )
+
+    response = post(WAREHOUSE_GET_PATH, {"shopIds": [shop_id]})
+    data = response.get("data") if isinstance(response, Mapping) else None
+    groups = data.get("shopWarehouseList") if isinstance(data, Mapping) else None
+    if not isinstance(groups, list) or any(
+        not isinstance(group, Mapping) for group in groups
+    ):
+        raise TikTokV4DraftPreparationError(
+            "Miaoshou warehouse response is malformed"
+        )
+    rows: list[Mapping[str, object]] = []
+    for group in groups:
+        group_shop_id = str(group.get("shopId") or "")
+        if group_shop_id and group_shop_id != shop_id:
+            continue
+        warehouses = group.get("warehouseList")
+        if not isinstance(warehouses, list) or any(
+            not isinstance(row, Mapping) for row in warehouses
+        ):
+            raise TikTokV4DraftPreparationError(
+                "Miaoshou warehouse response is malformed"
+            )
+        rows.extend(warehouses)
+    active = [
+        row
+        for row in rows
+        if str(row.get("warehouseEffectStatus") or "1") == "1"
+        and type(row.get("warehouseId")) is str
+        and bool(str(row.get("warehouseId") or "").strip())
+    ]
+    if not active:
+        raise TikTokV4DraftPreparationError(
+            "Miaoshou active warehouse is unavailable"
+        )
+    active.sort(
+        key=lambda row: (
+            str(row.get("isDefault") or "0") != "1",
+            str(row.get("warehouseSubType") or "") == "3",
+            str(row.get("warehouseId") or ""),
+        )
+    )
+    return str(active[0]["warehouseId"]).strip()
+
+
+def _provider_bound_sku_map(
+    *,
+    current: Mapping[str, object],
+    draft: Mapping[str, object],
+    desired: object,
+    shop_id: str,
+    warehouse_id: str,
+) -> dict[object, object]:
+    skus = draft.get("skus")
+    current_map = current.get("skuMap")
+    if (
+        not isinstance(skus, list)
+        or not skus
+        or not isinstance(current_map, Mapping)
+        or not isinstance(desired, Mapping)
+    ):
+        raise TikTokV4DraftPreparationError("Miaoshou SKU facts are invalid")
+    variants = [str(row.get("variant_key") or "") for row in skus]
+    models = {
+        str(row.get("variant_key") or ""): str(row.get("model_sku") or "")
+        for row in skus
+    }
+    try:
+        bindings = approved_variant_key_bindings(
+            current,
+            selected_sku_keys=variants,
+            model_skus=models,
+        )
+    except TikTokVariantBindingError as error:
+        raise TikTokV4DraftPreparationError(str(error)) from None
+    result: dict[object, object] = {}
+    for variant in variants:
+        raw_key = bindings[variant]
+        current_row = current_map.get(raw_key)
+        desired_row = desired.get(variant)
+        if not isinstance(current_row, Mapping) or not isinstance(
+            desired_row, Mapping
+        ):
+            raise TikTokV4DraftPreparationError(
+                "Miaoshou SKU binding is incomplete"
+            )
+        stock = current_row.get("stock")
+        if (
+            isinstance(stock, bool)
+            or not str(stock or "").isdigit()
+            or int(str(stock)) <= 0
+        ):
+            raise TikTokV4DraftPreparationError(
+                "Miaoshou approved stock is unavailable"
+            )
+        merged = deepcopy(dict(current_row))
+        merged.update(deepcopy(dict(desired_row)))
+        merged["stock"] = int(str(stock))
+        merged["shopIdToWarehouseIdAndStockMap"] = {
+            shop_id: {warehouse_id: str(int(str(stock)))}
+        }
+        result[raw_key] = merged
+    return result
 
 
 def _created_detail_id(
@@ -835,6 +1000,7 @@ def _miaoshou_draft_info(draft: Mapping[str, object]) -> dict[str, object]:
         "deliveryOptionSetType": "default",
         "sizeChart": "",
         "sizeChartType": "",
+        "isCodOpen": "0",
     }
 
 

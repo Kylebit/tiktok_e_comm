@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read official Shopee shop facts for accepted regional publish tasks."""
+"""DEPRECATED COMPATIBILITY: direct Shopee regional readback diagnosis."""
 from __future__ import annotations
 
 import argparse

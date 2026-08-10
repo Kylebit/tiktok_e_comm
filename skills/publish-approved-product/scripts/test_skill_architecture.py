@@ -29,6 +29,48 @@ REQUIRED_REFERENCES = (
 
 
 class SkillArchitectureTests(unittest.TestCase):
+    def test_production_control_wrapper_uses_only_frozen_v4_runner_routes(self) -> None:
+        source = (SCRIPTS / "product_center_publication.py").read_text(
+            encoding="utf-8"
+        )
+        for required in (
+            "/api/product-workspace/publish-tiktok",
+            "/api/product-workspace/publish-shopee-global",
+            "/api/product-workspace/publish-ozon",
+            "/api/product-workspace/publication-report?",
+            "product-publication-start/v1",
+            "approved-publication-snapshot/v4",
+        ):
+            self.assertIn(required, source)
+        for forbidden in (
+            "/api/product-workspace/collectbox-action/start",
+            '"/api/product-workspace/publish"',
+            "dashboard(",
+            "dispatch_tiktok",
+            "dispatch_shopee",
+            "dispatch_ozon",
+            "inspect_snapshot",
+        ):
+            self.assertNotIn(forbidden, source)
+
+    def test_skill_declares_runner_wrapper_as_only_production_command(self) -> None:
+        english = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        chinese = (ROOT / "references" / "SKILL.zh-CN.md").read_text(
+            encoding="utf-8"
+        )
+        for text in (english, chinese):
+            self.assertIn("product_center_publication.py", text)
+            self.assertIn("--plan-id <EXACT_PLAN_ID>", text)
+            self.assertIn("product-publication-start/v1", text)
+            self.assertIn("publication-report", text)
+        self.assertIn("deprecated compatibility", english)
+        self.assertIn("已弃用兼容", chinese)
+
+    def test_direct_tools_are_explicitly_deprecated_compatibility(self) -> None:
+        for name in ("publish_approved_product.py", *REQUIRED_TOOLS):
+            source = (SCRIPTS / name).read_text(encoding="utf-8")
+            self.assertIn("DEPRECATED COMPATIBILITY", source, name)
+
     def test_nine_thin_tools_exist(self) -> None:
         self.assertEqual(
             [name for name in REQUIRED_TOOLS if not (SCRIPTS / name).is_file()],

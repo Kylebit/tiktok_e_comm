@@ -15,6 +15,11 @@ current execution report only.
 
 ## Confirmed patterns
 
+- Production control path: a new approved offer must start only the three
+  explicit Product Center frozen-v4 Runner endpoints with exact
+  `offer_id + plan_id`, validate `product-publication-start/v1`, and poll the
+  server-owned `publication-report`. The old mutable-dashboard orchestrator
+  and direct dispatch/readback scripts are deprecated compatibility only.
 - Skill v4 boundary: `approved-publication-snapshot/v4` must never enter the
   legacy ReleasePlan parser or legacy collect-box start route. The schemas are
   not compatible, and the legacy sequence can claim a provider object before

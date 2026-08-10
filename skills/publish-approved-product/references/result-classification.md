@@ -18,6 +18,12 @@ Keep all detailed evidence internally. Show the user only one of four labels.
 HTTP 200 is transport evidence only. A provider `success` field is acceptance
 evidence only. Neither is sufficient for **发布成功**.
 
+For the Product Center control wrapper, HTTP 202 plus a valid
+`product-publication-start/v1` means only that one frozen-v4 platform run was
+queued. Poll its exact `publication-report:<run_id>`. If the POST result or
+report identity is unavailable, keep **平台处理中** and never repost blindly;
+only the durable report may promote it to another state.
+
 Internal evidence may include request attempted, provider accepted, task/item
 identity, official readback, exact SKU/content checks, external-write
 possibility, and safe-retry classification. Do not expose credentials, raw

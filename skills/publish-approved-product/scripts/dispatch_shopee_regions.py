@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dispatch explicitly selected Shopee regional shops from one global item."""
+"""DEPRECATED COMPATIBILITY: direct Shopee regional dispatch diagnosis."""
 from __future__ import annotations
 
 import argparse

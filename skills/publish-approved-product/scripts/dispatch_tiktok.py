@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dispatch TikTok, creating a new TikTok-only draft batch when required."""
+"""DEPRECATED COMPATIBILITY: direct TikTok dispatch for incident diagnosis."""
 
 from __future__ import annotations
 

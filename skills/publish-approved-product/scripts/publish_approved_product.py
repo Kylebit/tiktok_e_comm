@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Thin stage 05-07 orchestrator.
+"""DEPRECATED COMPATIBILITY: mutable-snapshot direct stage 05-07 orchestrator.
 
-Policy lives here and in the Skill. Transport and readback facts are produced
-by seven independent deterministic tools. A failure in one platform never
-prevents another selected platform from running.
+Do not use this module for a new production run. Use
+``product_center_publication.py`` so Product Center owns the frozen-v4 Runner
+and immutable report lifecycle.
 """
 
 from __future__ import annotations

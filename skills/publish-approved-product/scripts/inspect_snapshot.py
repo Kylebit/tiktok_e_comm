@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""DEPRECATED COMPATIBILITY: inspect old mutable publication data only."""
 from __future__ import annotations
 
 import argparse

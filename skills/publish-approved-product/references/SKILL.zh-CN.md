@@ -13,11 +13,31 @@
 
 ## 核心流程
 
-1. 只读获取已批准 ReleasePlan、目标店铺，以及每个 SKU 的身份、规格、成本、重量、包装尺寸、价格、图片、描述和类目。
-2. 展示本轮执行计划，只阻止平台一定会拒绝的缺失或矛盾字段。
-3. 对每个已授权平台独立执行“发布 → 官方或妙手回读 → 结果分类”。
+1. 要求准确的 `offer_id` 和已批准 `plan_id`，不得从可变工作台重新推导。
+2. 只使用 `product_center_publication.py` 启动生产发布。
+3. 商品中心按 `offer_id + plan_id` 读取冻结 v4 快照，并对每个已授权平台独立执行“发布 → 官方或妙手回读 → 结果分类”。
 4. 一个平台或店铺失败，不得阻止其他平台或店铺。
 5. 对用户只显示：发布成功、平台处理中、部分成功、发布失败；详细证据保留在脱敏报告中。
+
+## 唯一生产命令
+
+```powershell
+python scripts/product_center_publication.py --offer-id <OFFER_ID> --plan-id <EXACT_PLAN_ID> --platform all --execute
+```
+
+该薄控制器只向三个商品中心入口发送 `{offer_id, plan_id}`：
+
+- `/api/product-workspace/publish-tiktok`
+- `/api/product-workspace/publish-shopee-global`
+- `/api/product-workspace/publish-ozon`
+
+它必须验证 HTTP 202、`product-publication-start/v1`、平台、`run_id` 和
+`publication-report:<run_id>` 完全一致，然后轮询准确的 `publication-report`。
+一个平台失败后仍继续启动其他平台。POST 结果丢失时不得自动重发。
+
+`publish_approved_product.py`、`inspect_snapshot.py`、`dispatch_*.py` 和
+`readback_*.py` 是已弃用兼容/诊断工具，不得作为新商品的生产发布入口。
+生产命令不读取 dashboard、不重建商品事实、不调用旧 `/publish` 或旧采集箱启动接口。
 
 ## v4 冻结快照的唯一执行边界
 
@@ -35,7 +55,9 @@ v4 平台执行器。不得把它传给旧 ReleasePlan 解析器或旧采集箱�
 
 ## 确定性脚本与 Agent 的分工
 
-Python 脚本负责组织请求、调用 API、隐藏凭据、轮询、读取事实和输出脱敏摘要。脚本不自行决定下一步策略。
+商品中心服务端的冻结 v4 执行器负责组织平台请求、调用 API、隐藏凭据、轮询和读取事实。
+
+Skill 的薄控制器只负责准确启动身份、三个平台独立顺序、公开报告轮询和四态脱敏摘要；不得组织平台 payload。
 
 Skill/Agent 负责执行顺序、类目策略、是否采用已确认的恢复规则、结果分类、向用户解释，以及把已验证事故沉淀到平台知识文件。
 

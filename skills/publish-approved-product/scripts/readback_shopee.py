@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""DEPRECATED COMPATIBILITY: direct Shopee readback for incident diagnosis."""
 from __future__ import annotations
 
 from typing import Any, Mapping

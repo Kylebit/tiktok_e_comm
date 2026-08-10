@@ -11,16 +11,14 @@ failure, warning, or readback block another platform.
 
 ## Required architecture
 
-1. Run `scripts/inspect_snapshot.py` read-only.
-2. Show the user the selected platforms, targets and every approved SKU fact.
-3. For each authorized platform independently:
-   - run its `dispatch_*.py` tool;
-   - run its `readback_*.py` tool even when dispatch returned an error, because
-     a write may have occurred;
-   - classify the two facts using `references/result-classification.md`.
+1. Require the exact approved `offer_id` and `plan_id`; do not derive either
+   from the mutable dashboard.
+2. Use `scripts/product_center_publication.py` as the only production command.
+3. Let Product Center resolve the frozen v4 snapshot and run each authorized
+   platform through its server-owned async Runner and immutable report.
 4. Continue to the next platform after any platform failure.
-5. Generate one report with a simple label per platform and detailed redacted
-   evidence internally.
+5. Expose only the four-state sanitized summary. Product Center retains the
+   detailed redacted evidence and platform readback in its durable report.
 
 ## Frozen v4 execution boundary
 
@@ -61,9 +59,11 @@ incident must become an invariant for every later approved offer.
 
 ## Inspect the approved snapshot
 
-```powershell
-python scripts/inspect_snapshot.py --offer-id <OFFER_ID> --output <SNAPSHOT_JSON>
-```
+Use the Product Center-approved plan and its exact identity. The production
+command must not call a dashboard endpoint or rebuild a snapshot. Product
+Center binds `offer_id + plan_id` to the immutable v4 snapshot before a run is
+queued. Use `inspect_snapshot.py` only to diagnose old compatibility data; its
+output is never a production publication input.
 
 The snapshot must include each selected SKU's seller SKU, option name, cost,
 weight, package dimensions and price context, plus images, description and
@@ -79,9 +79,22 @@ In the v4 frozen snapshot, the regional price row is
 for every Model SKU and selected region. The additional CNY field is Shopee
 specific; do not add it to TikTok or Ozon price rows.
 
-## Dispatch and readback tools
+## Production Runner and deprecated compatibility tools
 
-The nine tools are deterministic boundaries:
+`product_center_publication.py` is the production control wrapper. It sends
+only `{offer_id, plan_id}` to one or more of these explicit Runner start routes:
+
+- `/api/product-workspace/publish-tiktok`
+- `/api/product-workspace/publish-shopee-global`
+- `/api/product-workspace/publish-ozon`
+
+It requires HTTP 202 with `product-publication-start/v1`, verifies the exact
+platform/run/report identity, then polls `/api/product-workspace/publication-report`
+until `PUBLISHED`, `PROCESSING`, `PARTIAL`, or `FAILED`. A platform failure does
+not stop the other platform starts. A lost POST response is never blindly
+reposted.
+
+The following scripts are deprecated compatibility and diagnostics only:
 
 - `inspect_snapshot.py`
 - `dispatch_tiktok.py` / `readback_tiktok.py`
@@ -89,50 +102,43 @@ The nine tools are deterministic boundaries:
 - `dispatch_shopee_regions.py` / `readback_shopee_regions.py`
 - `dispatch_ozon.py` / `readback_ozon.py`
 
-Dispatch tools organize the approved request, call one endpoint, redact the
-response, and report acceptance/write facts. Readback tools call the correct
-Miaoshou or official provider read and report observed facts. They never decide
-the next action or user-facing result.
+Do not use those deprecated direct scripts for a new production run. They may
+support historical incident reproduction, but they read the old mutable data
+shape and do not own the frozen-v4 async lifecycle.
 
-The deterministic Python tools own request construction, API transport,
-credential redaction, polling and factual readback summaries. The Skill/agent
-owns execution order, whether a confirmed recovery rule applies, result
-classification, user explanation and promotion of verified incidents into the
-platform references. Do not move provider payload assembly into agent prose,
-and do not hide policy decisions inside transport scripts.
+Server-owned frozen-v4 executors own provider request construction, transport,
+credential redaction, polling and readback. The thin Skill client owns only
+the exact start identity, independent platform order, public-report polling and
+sanitized four-state projection. Do not move provider payload assembly into
+agent prose or into this client.
 
 For Shopee, finish and verify the global product first. Then, only when the
 approved snapshot explicitly selects `shopee:PH`, `shopee:MY`, `shopee:TH`,
-or `shopee:VN`, run the regional dispatch and readback tools. Treat every
-selected region independently. A global-only run has zero regional targets.
-The regional dispatcher must never update `published_regions`; only exact
-official shop-item, model, price and global-linkage readback may record that a
-region is published.
+or `shopee:VN`, the server-owned Shopee executor handles regional dispatch and
+readback after Global verification. Treat every selected region independently.
+A global-only run has zero regional targets. Only exact official shop-item,
+model, price and global-linkage readback may record that a region is published.
 
-## Unified command
+## Production command
 
-Inspect first and present the plan. Only after the user authorizes the offer and
-platforms, execute:
+After the user authorizes the exact offer, plan and platforms, execute:
 
 ```powershell
-python scripts/publish_approved_product.py publish --offer-id <OFFER_ID> --platform all --repo <PRODUCT_REPO> --execute --report <PRODUCT_REPO>/reports/product-publication/<OFFER_ID>/<REVISION>/<RUN_ID>/report.json
+python scripts/product_center_publication.py --offer-id <OFFER_ID> --plan-id <EXACT_PLAN_ID> --platform all --execute
 ```
 
 Use `--platform tiktok`, `shopee`, or `ozon` for an isolated retry. Authorization
 for one platform does not authorize another.
 
-`--report` is mandatory. Its path is immutable and must exactly follow the
-offer/revision/run layout above. Never reuse a run directory and never delete a
-dispatch, readback, or report fact after a child failure or timeout. The runner
-always resolves a Product Center repository (the production repository is the
-default when `--repo` is omitted) and passes that exact repository to every
-readback, including TikTok exact-identity readback.
+Product Center, not the Skill client, allocates the run identity and writes the
+immutable report under `reports/product-publication/<offer>/<revision>/<run>`.
+The client validates `product-publication-start/v1`, polls the exact returned
+`publication-report:<run_id>`, and emits no full snapshot, confirmation token,
+raw response, credential, URL, external item ID, or mutable dashboard fact.
 
-The report and stdout contain only the approved v3/v4 snapshot identity summary
-and redacted platform facts. Never emit or persist the full snapshot,
-`confirmation_token`, raw provider responses, credentials, or image/video URLs
-in the report. A child timeout after a dispatch fact was written does not erase
-that fact: retain it and continue the platform readback.
+`publish_approved_product.py` and the direct `dispatch_*.py` / `readback_*.py`
+scripts are deprecated compatibility only. Never invoke them as the production
+path for a new approved offer.
 
 ## Platform knowledge
 

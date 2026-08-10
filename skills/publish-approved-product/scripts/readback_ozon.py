@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""DEPRECATED COMPATIBILITY: direct Ozon readback for incident diagnosis."""
 from __future__ import annotations
 
 import time

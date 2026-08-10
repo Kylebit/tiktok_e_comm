@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""DEPRECATED COMPATIBILITY: direct Ozon dispatch for incident diagnosis."""
 from _dispatch_cli import run
 
 

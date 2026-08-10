@@ -1,5 +1,9 @@
 # 自动上品发布 V2：软件架构说明书
 
+> **DEPRECATED / 历史架构：** 本文描述迁移前的 V2 状态机。当前写入只走
+> 三个平台独立 Runner；详见
+> [LEGACY_PUBLICATION_RETIREMENT.md](LEGACY_PUBLICATION_RETIREMENT.md)。
+
 状态：`DRAFT_FOR_KYLE_REVIEW`
 
 ## 1. 架构目标

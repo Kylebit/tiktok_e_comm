@@ -187,7 +187,7 @@ def test_every_formal_async_action_has_loading_success_and_failure_feedback():
                 "finally",
             ],
             "publishPlatformBatch": [
-                'result.state = "PUBLISHING"',
+                'result.status = "PROCESSING"',
                 "try {",
                 "catch (error)",
                 "finally",
@@ -654,7 +654,7 @@ def test_collectbox_and_platform_release_actions_are_not_cross_wired():
     ) in script
 
 
-def test_oneclick_mvp_keeps_legacy_reads_idle_and_allows_explicit_resubmit():
+def test_oneclick_mvp_keeps_legacy_reads_idle_without_legacy_resubmit():
     script = (ROOT / "web/static/product_workspace.js").read_text(
         encoding="utf-8"
     )
@@ -662,7 +662,6 @@ def test_oneclick_mvp_keeps_legacy_reads_idle_and_allows_explicit_resubmit():
     global_approval = _function_body(script, "submitShopeeGlobalPlanApproval")
     reconcile = _function_body(script, "reconcileOneClickAcceptance")
     router = _function_body(script, "routeOneClickNextAction")
-    resume = _function_body(script, "resumeExactZeroWriteFailures")
 
     assert "ONECLICK_LOCAL_READ_TIMEOUT_MS = 15000" in script
     assert "ONECLICK_LOCAL_POST_TIMEOUT_MS = 15000" in script
@@ -677,11 +676,10 @@ def test_oneclick_mvp_keeps_legacy_reads_idle_and_allows_explicit_resubmit():
     assert "review_shopee_global_plan" in router
     assert "focusFirstControl" in router
     assert "wait_for_channel_capability" in script
-    assert "resume_exact_zero_write_failures: true" in resume
-    assert "oneClickExecution.resumePostAttempted" in resume
-    assert "response.status >= 500" in resume
-    assert "pollOneClickStatus(generation)" in resume
-    assert '"refresh_release_state"' in resume
+    assert "resumeExactZeroWriteFailures" not in script
+    assert '"/api/product-workspace/publish"' not in script
+    assert "await retryOneClickReadOnly()" in router
+    assert "旧版恢复入口已退役" in router
     assert "verify_submission_in_marketplace" in router
     assert "marketplace_product_id" in router
     assert "reconcile_before_any_retry" in router
@@ -698,7 +696,7 @@ def test_oneclick_mvp_keeps_legacy_reads_idle_and_allows_explicit_resubmit():
     assert "preview.start_allowed" not in publish
     assert "preview.preparation_pending_count" not in publish
     assert "reconcileOneClickAcceptance" not in publish
-    assert 'result.state = "FAILED"' in publish
+    assert 'result.status = "FAILED"' in publish
     assert "oneClickObservationWarningForm(target)" not in render
     assert "shopeeGlobalControlCard(control)" not in render
 

@@ -191,7 +191,10 @@ def test_product_workspace_is_the_user_surface_and_fails_without_stale_results()
     assert "prepareMiaoshouButton" in html
     assert "/api/product-workspace/release-plan/approve" in script
     assert "/api/product-workspace/miaoshou-draft/commit" in script
-    assert "/api/product-workspace/publish" in script
+    assert '"/api/product-workspace/publish"' not in script
+    assert '"/api/product-workspace/publish-tiktok"' in script
+    assert '"/api/product-workspace/publish-shopee-global"' in script
+    assert '"/api/product-workspace/publish-ozon"' in script
     assert "并行打开内容与图片工作室" in html
     assert 'id="workbenchLink"' in html and 'target="_blank"' in html
     assert "omnichannel_preview" in script

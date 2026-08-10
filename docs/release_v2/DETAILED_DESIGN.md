@@ -1,5 +1,9 @@
 # 自动上品发布 V2：软件详细设计说明书
 
+> **DEPRECATED / 历史详细设计：** 旧 publish-all、one-click 状态和确认流程
+> 不再是新 UI 的写入合同。现行边界见
+> [LEGACY_PUBLICATION_RETIREMENT.md](LEGACY_PUBLICATION_RETIREMENT.md)。
+
 状态：`DRAFT_FOR_KYLE_REVIEW`
 
 ## 1. 设计约束

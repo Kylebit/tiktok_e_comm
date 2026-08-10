@@ -4512,7 +4512,12 @@
         "perform_governed_safe_action",
       ].includes(action)
     ) {
-      await resumeExactZeroWriteFailures();
+      // The legacy publish-all recovery write is retired.  Historical jobs
+      // remain readable, but every new external submission must enter one of
+      // the three platform-specific ProductPublicationRunner routes.
+      oneClickExecution.statusWarning =
+        "旧版恢复入口已退役；已刷新历史状态，不会提交新的发布请求。";
+      await retryOneClickReadOnly();
       return;
     }
     if (action === "verify_submission_in_marketplace") {
@@ -4588,81 +4593,6 @@
       return;
     }
     focusOneClickTarget(targetLabel);
-  }
-
-  async function resumeExactZeroWriteFailures() {
-    const identity = oneClickExecution.identity;
-    const reference = oneClickExecution.job;
-    if (
-      !identity
-      || !reference
-      || releaseSubmitting
-      || oneClickExecution.resumePostAttempted
-    ) return;
-    const generation = oneClickExecution.generation;
-    oneClickExecution.resumePostAttempted = true;
-    releaseSubmitting = true;
-    oneClickExecution.posting = true;
-    oneClickExecution.error = "";
-    renderOneClickExecution(currentData);
-    updateReleaseControls(currentData || {});
-    try {
-      const { response, payload } = await boundedJsonFetch(
-        "/api/product-workspace/publish",
-        {
-          method: "POST",
-          headers: {
-            Accept: "application/json",
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(currentReleaseBody({
-            confirm_publish: true,
-            resume_exact_zero_write_failures: true,
-          })),
-        },
-        ONECLICK_LOCAL_POST_TIMEOUT_MS,
-        "零写入失败安全恢复",
-      );
-      if (response.status !== 202 || !response.ok || payload.ok === false) {
-        const error = new Error(
-          payload.error || `服务返回 HTTP ${response.status}`,
-        );
-        error.responseOutcomeUnknown = response.status >= 500;
-        throw error;
-      }
-      const job = validateOneClickProjection(
-        payload.job,
-        identity,
-        ONECLICK_STATUS_SCHEMA,
-        reference,
-      );
-      if (generation !== oneClickExecution.generation) return;
-      oneClickExecution.job = job;
-      oneClickExecution.statusWarning =
-        "受治理的零写入恢复已受理；正在只读轮询同一持久任务。";
-      scheduleOneClickStatusPoll(generation, 0);
-    } catch (error) {
-      if (generation !== oneClickExecution.generation) return;
-      if (error.responseOutcomeUnknown === true) {
-        oneClickExecution.statusWarning =
-          "安全恢复响应未收到；正在只读核对同一任务，绝不再次提交。";
-        await pollOneClickStatus(generation);
-      } else {
-        oneClickExecution.error = friendlyError(error.message);
-        oneClickExecution.failureAction = {
-          action: "refresh_release_state",
-          target_focus: null,
-          runnable: false,
-        };
-      }
-    } finally {
-      if (generation === oneClickExecution.generation) {
-        releaseSubmitting = false;
-        oneClickExecution.posting = false;
-        renderOneClickExecution(currentData);
-        updateReleaseControls(currentData || {});
-      }
-    }
   }
 
   async function retryOneClickReadOnly() {
@@ -8969,7 +8899,11 @@
 
   async function runTiktokReleaseAction() {
     if (!currentData?.release_v1?.plan_approved) return;
-    await publishSelectedTargets();
+    await publishPlatformBatch(
+      "/api/product-workspace/publish-tiktok",
+      "TikTok",
+      "TIKTOK",
+    );
   }
 
   async function runShopeeGlobalReleaseAction() {

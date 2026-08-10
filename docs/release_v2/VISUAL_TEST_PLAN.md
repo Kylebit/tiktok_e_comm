@@ -1,5 +1,9 @@
 # 自动上品发布 V2：可视化路径测试规范
 
+> **DEPRECATED / 历史测试矩阵：** 本文中的旧 one-click 状态截图仅供审计。
+> 新测试不得调用旧写入入口；详见
+> [LEGACY_PUBLICATION_RETIREMENT.md](LEGACY_PUBLICATION_RETIREMENT.md)。
+
 状态：`DRAFT_FOR_KYLE_REVIEW`
 
 ## 1. 测试目标

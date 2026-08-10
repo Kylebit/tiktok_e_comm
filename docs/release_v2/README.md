@@ -1,5 +1,9 @@
 # 自动上品发布 V2 规范评审索引
 
+> **DEPRECATED / 历史设计集：** 本目录中的 V2 规格保留作审计资料，不再
+> 作为当前发布实现依据。现行三个独立 Runner 入口及迁移截止点见
+> [LEGACY_PUBLICATION_RETIREMENT.md](LEGACY_PUBLICATION_RETIREMENT.md)。
+
 状态：`DRAFT_FOR_KYLE_REVIEW`
 
 基线：`88309c7239f9c2a413a5f2965fb2b7c45fcc1dad`

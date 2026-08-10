@@ -1,5 +1,9 @@
 # One-click release convergence: stage 0 baseline
 
+> **DEPRECATED / 历史基线：** 本文件只记录迁移前事实，不是当前发布合同。
+> 当前入口、状态和迁移截止点见
+> [LEGACY_PUBLICATION_RETIREMENT.md](release_v2/LEGACY_PUBLICATION_RETIREMENT.md)。
+
 This document freezes the observed baseline before another production fix is
 attempted.  It does not authorize a state-machine, UI, database, or external
 platform change.

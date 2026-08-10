@@ -348,3 +348,45 @@ def test_production_seam_reads_current_draft_and_uses_required_oss_md5() -> None
     assert receipt["status"] == "PREPARED"
     assert sum(path.endswith("get_site_collect_item_info") for path, _ in calls) == 2
     assert sum(path.endswith("save_site_collect_item_info") for path, _ in calls) == 2
+
+
+def test_production_seam_reuses_exact_claimed_target_identities_without_reclaim() -> None:
+    calls: list[tuple[str, dict]] = []
+    observed: list[DraftWriteFact] = []
+
+    def post(path: str, body: dict) -> dict:
+        calls.append((path, deepcopy(body)))
+        if path.endswith("get_site_collect_item_info"):
+            return {
+                "result": "success",
+                "data": {
+                    "siteCollectItemInfo": {"providerRequired": "keep"},
+                    "ossMd5": "revision-2",
+                },
+            }
+        return {"result": "success", "data": {}}
+
+    receipt = prepare_tiktok_v4_drafts(
+        _snapshot(),
+        category_resolver=CategoryResolver(),
+        transport=MiaoshouOpenApiTikTokV4DraftTransport(
+            common_detail_id="5001",
+            platform_detail_ids_by_target={
+                "tiktok:LH_PH": "7301",
+                "tiktok:LH_MY": "7302",
+            },
+            post=post,
+            fact_observer=lambda _label, fact: observed.append(fact),
+        ),
+    )
+
+    assert receipt["status"] == "PREPARED"
+    assert receipt["external_write_count"] == 2
+    assert [fact.operation for fact in observed] == [
+        "IDENTITY_OBSERVED",
+        "SAVE_DRAFT",
+        "IDENTITY_OBSERVED",
+        "SAVE_DRAFT",
+    ]
+    assert not any(path.endswith("claim_to_shop") for path, _ in calls)
+    assert not any(path.endswith("common_collect_box/claimed") for path, _ in calls)

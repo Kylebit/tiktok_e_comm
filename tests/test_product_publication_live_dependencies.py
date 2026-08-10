@@ -654,10 +654,11 @@ def test_tiktok_preparation_checkpoint_survives_publish_preflight_failure(tmp_pa
 def test_tiktok_production_transport_factory_requires_digest_bound_seed_identity():
     request = _tiktok_request()
     body = {
-        "schema_version": "miaoshou-tiktok-v4-seed-identity/v1",
+        "schema_version": "miaoshou-tiktok-v4-seed-identity/v2",
         "snapshot_digest": request.snapshot["snapshot_digest"],
         "common_detail_id": "5001",
         "initial_platform_detail_id": "7101",
+        "platform_detail_ids_by_target": {},
     }
     canonical = json.dumps(
         body,
@@ -787,10 +788,11 @@ def test_tiktok_seed_identity_selects_latest_exact_unclaimed_platform_detail():
     identity = OfficialMiaoshouTikTokV4SeedIdentityResolver(post=post)(request)
 
     body = {
-        "schema_version": "miaoshou-tiktok-v4-seed-identity/v1",
+        "schema_version": "miaoshou-tiktok-v4-seed-identity/v2",
         "snapshot_digest": request.snapshot["snapshot_digest"],
         "common_detail_id": "3882722296",
         "initial_platform_detail_id": "3272335044",
+        "platform_detail_ids_by_target": {},
     }
     assert identity == {
         **body,
@@ -982,7 +984,7 @@ def test_tiktok_seed_identity_returns_null_only_when_no_platform_detail_exists()
     assert identity["initial_platform_detail_id"] is None
 
 
-def test_tiktok_seed_identity_requires_reconciliation_for_claimed_platform_rows():
+def test_tiktok_seed_identity_requires_reconciliation_for_duplicate_claimed_target():
     request = _tiktok_request()
     source_offer_id = _seed_source_offer_id(request)
     claimed = [
@@ -992,6 +994,31 @@ def test_tiktok_seed_identity_requires_reconciliation_for_claimed_platform_rows(
                 detail_id,
                 created_at,
             ),
+            "collectBoxDetailShopList": [{"shopId": shop_id}],
+        }
+        for detail_id, created_at, shop_id in (
+            ("3271694633", "2026-08-10 10:00:00", "7676267"),
+            ("3272335044", "2026-08-10 11:00:00", "7676267"),
+        )
+    ]
+
+    def post(path, _body):
+        if path == MIAOSHOU_COMMON_LIST_PATH:
+            return _seed_list_response([_common_seed_row(source_offer_id)])
+        if path == MIAOSHOU_TIKTOK_LIST_PATH:
+            return _seed_list_response(claimed)
+        raise AssertionError(path)
+
+    with pytest.raises(LivePublicationDependencyError, match="identity is ambiguous"):
+        OfficialMiaoshouTikTokV4SeedIdentityResolver(post=post)(request)
+
+
+def test_tiktok_seed_identity_reuses_unique_claimed_rows_by_exact_target_shop():
+    request = _tiktok_request()
+    source_offer_id = _seed_source_offer_id(request)
+    claimed = [
+        {
+            **_platform_seed_row(source_offer_id, detail_id, created_at),
             "collectBoxDetailShopList": [{"shopId": shop_id}],
         }
         for detail_id, created_at, shop_id in (
@@ -1007,8 +1034,13 @@ def test_tiktok_seed_identity_requires_reconciliation_for_claimed_platform_rows(
             return _seed_list_response(claimed)
         raise AssertionError(path)
 
-    with pytest.raises(LivePublicationDependencyError, match="reconciliation required"):
-        OfficialMiaoshouTikTokV4SeedIdentityResolver(post=post)(request)
+    identity = OfficialMiaoshouTikTokV4SeedIdentityResolver(post=post)(request)
+
+    assert identity["platform_detail_ids_by_target"] == {
+        "tiktok:LH_MY": "3272335044",
+        "tiktok:LH_PH": "3271694633",
+    }
+    assert identity["initial_platform_detail_id"] is None
 
 
 def test_tiktok_draft_factory_wires_official_seed_resolver_without_writing():

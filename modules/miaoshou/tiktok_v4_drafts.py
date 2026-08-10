@@ -54,7 +54,15 @@ SAVE_SHOP_DRAFT_PATH = (
 )
 _SITE_DRAFT_SITES = frozenset({"PH", "MY", "TH", "VN"})
 _OUTCOMES = frozenset({"ACCEPTED", "REJECTED", "UNKNOWN"})
-_OPERATIONS = frozenset({"CREATE_DRAFT", "CLAIM_TO_SHOP", "CLAIM_OR_CREATE", "SAVE_DRAFT"})
+_OPERATIONS = frozenset(
+    {
+        "IDENTITY_OBSERVED",
+        "CREATE_DRAFT",
+        "CLAIM_TO_SHOP",
+        "CLAIM_OR_CREATE",
+        "SAVE_DRAFT",
+    }
+)
 
 
 class TikTokV4DraftPreparationError(ValueError):
@@ -388,7 +396,12 @@ def _claim_facts(
     facts = (value,) if type(value) is DraftWriteFact else tuple(value)
     if not facts or any(type(row) is not DraftWriteFact for row in facts):
         raise TypeError("TikTok claim transport returned invalid facts")
-    claim_operations = {"CREATE_DRAFT", "CLAIM_TO_SHOP", "CLAIM_OR_CREATE"}
+    claim_operations = {
+        "IDENTITY_OBSERVED",
+        "CREATE_DRAFT",
+        "CLAIM_TO_SHOP",
+        "CLAIM_OR_CREATE",
+    }
     if any(row.operation not in claim_operations for row in facts):
         raise ValueError("TikTok claim transport operation drifted")
     for row in facts:
@@ -482,7 +495,10 @@ def _local_failure(label: str, reason_code: str) -> dict[str, object]:
 def _write_count(facts: Sequence[DraftWriteFact]) -> int | None:
     if any(row.outcome == "UNKNOWN" for row in facts):
         return None
-    return sum(row.outcome == "ACCEPTED" for row in facts)
+    return sum(
+        row.outcome == "ACCEPTED" and row.operation != "IDENTITY_OBSERVED"
+        for row in facts
+    )
 
 
 def _optional_positive_id(value: object, name: str) -> str | None:
@@ -527,6 +543,7 @@ class MiaoshouOpenApiTikTokV4DraftTransport:
         *,
         common_detail_id: str,
         initial_platform_detail_id: str | None = None,
+        platform_detail_ids_by_target: Mapping[str, object] | None = None,
         post: Callable[[str, dict[str, object]], Mapping[str, object]] = post_open,
         fact_observer: Callable[[str, DraftWriteFact], None] | None = None,
     ) -> None:
@@ -534,6 +551,19 @@ class MiaoshouOpenApiTikTokV4DraftTransport:
         self._initial_platform_detail_id = _optional_positive_id(
             initial_platform_detail_id, "initial_platform_detail_id"
         )
+        rows = platform_detail_ids_by_target or {}
+        if not isinstance(rows, Mapping):
+            raise ValueError("TikTok platform target identities are invalid")
+        self._platform_detail_ids_by_target = {
+            str(label): _positive_id(value, "platform_detail_id")
+            for label, value in rows.items()
+        }
+        if any(
+            label not in EXPECTED_SHOP_ID_BY_TARGET
+            for label in self._platform_detail_ids_by_target
+        ):
+            raise ValueError("TikTok platform target identity is invalid")
+        self._initial_platform_detail_consumed = False
         if not callable(post):
             raise TypeError("Miaoshou OpenAPI post transport is invalid")
         if fact_observer is not None and not callable(fact_observer):
@@ -558,7 +588,26 @@ class MiaoshouOpenApiTikTokV4DraftTransport:
         ):
             raise TikTokV4DraftPreparationError("Miaoshou target identity is invalid")
         facts: list[DraftWriteFact] = []
-        detail_id = self._initial_platform_detail_id if ordinal == 0 else None
+        observed_detail_id = self._platform_detail_ids_by_target.get(label)
+        if observed_detail_id is not None:
+            return (
+                self._observed(
+                    label,
+                    DraftWriteFact(
+                        "IDENTITY_OBSERVED",
+                        "ACCEPTED",
+                        detail_id=observed_detail_id,
+                        shop_id=shop_id,
+                    ),
+                ),
+            )
+        detail_id = None
+        if (
+            self._initial_platform_detail_id is not None
+            and not self._initial_platform_detail_consumed
+        ):
+            detail_id = self._initial_platform_detail_id
+            self._initial_platform_detail_consumed = True
         if detail_id is None:
             try:
                 response = self._post(

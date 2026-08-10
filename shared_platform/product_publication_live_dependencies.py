@@ -60,7 +60,7 @@ from shared_platform.product_publication_executors import (
 
 TIKTOK_CATEGORY_RESOLUTION_SCHEMA = "tiktok-official-category-resolution/v1"
 MIAOSHOU_TIKTOK_SEED_IDENTITY_SCHEMA = (
-    "miaoshou-tiktok-v4-seed-identity/v1"
+    "miaoshou-tiktok-v4-seed-identity/v2"
 )
 MIAOSHOU_COMMON_LIST_PATH = (
     "/open/v1/product/common_collect_box/common_collect_box/"
@@ -504,7 +504,11 @@ class TikTokV4DraftCheckpointStore:
     def _write_count(events: Sequence[Mapping[str, object]]) -> int | None:
         if any(row.get("outcome") == "UNKNOWN" for row in events):
             return None
-        return sum(row.get("outcome") == "ACCEPTED" for row in events)
+        return sum(
+            row.get("outcome") == "ACCEPTED"
+            and row.get("operation") != "IDENTITY_OBSERVED"
+            for row in events
+        )
 
     def record_fact(
         self, request: object, target_label: str, fact: DraftWriteFact
@@ -608,7 +612,8 @@ class _ResumableTikTokDraftTransport:
                 and row.get("shop_id")
             ]
             claim_accepted = any(
-                row.get("operation") in {"CLAIM_TO_SHOP", "CLAIM_OR_CREATE"}
+                row.get("operation")
+                in {"IDENTITY_OBSERVED", "CLAIM_TO_SHOP", "CLAIM_OR_CREATE"}
                 and row.get("outcome") == "ACCEPTED"
                 for row in claim_events
             )
@@ -808,7 +813,9 @@ def _seed_list_rows(
     )
 
 
-def _platform_claimed(row: Mapping[str, object]) -> bool:
+def _platform_claim_evidence(
+    row: Mapping[str, object],
+) -> tuple[bool, set[str]]:
     evidence_seen = False
     observed_shop_ids: set[str] = set()
     if "collectBoxDetailShopList" in row:
@@ -863,7 +870,11 @@ def _platform_claimed(row: Mapping[str, object]) -> bool:
         raise LivePublicationDependencyError(
             "TikTok platform claim identity is unavailable; reconciliation required"
         )
-    return bool(observed_shop_ids) or explicit is True
+    return bool(observed_shop_ids) or explicit is True, observed_shop_ids
+
+
+def _platform_claimed(row: Mapping[str, object]) -> bool:
+    return _platform_claim_evidence(row)[0]
 
 
 def _created_sort_key(row: Mapping[str, object]) -> tuple[float, int]:
@@ -964,7 +975,17 @@ class OfficialMiaoshouTikTokV4SeedIdentityResolver:
         )
         seen_detail_ids: set[str] = set()
         unclaimed: list[Mapping[str, object]] = []
-        claimed: list[str] = []
+        claimed_without_identity: list[str] = []
+        selected_labels = [
+            row["target_label"]
+            for row in snapshot["publication_targets"]
+            if row["platform"] == "tiktok"
+        ]
+        label_by_shop_id = {
+            str(EXPECTED_SHOP_ID_BY_TARGET[label]): label
+            for label in selected_labels
+        }
+        platform_detail_ids_by_target: dict[str, str] = {}
         for row in platform_rows:
             # The production TikTok list omits source fields and exposes the
             # exact COMMON foreign key instead.  When source fields are
@@ -993,17 +1014,29 @@ class OfficialMiaoshouTikTokV4SeedIdentityResolver:
                     "TikTok platform detail identity is ambiguous"
                 )
             seen_detail_ids.add(detail_id)
-            if _platform_claimed(row):
-                claimed.append(detail_id)
+            claimed, shop_ids = _platform_claim_evidence(row)
+            if claimed:
+                selected_shops = sorted(set(shop_ids).intersection(label_by_shop_id))
+                if not selected_shops:
+                    if not shop_ids:
+                        claimed_without_identity.append(detail_id)
+                    continue
+                for shop_id in selected_shops:
+                    label = label_by_shop_id[shop_id]
+                    if label in platform_detail_ids_by_target:
+                        raise LivePublicationDependencyError(
+                            "claimed TikTok target identity is ambiguous"
+                        )
+                    platform_detail_ids_by_target[label] = detail_id
             else:
                 unclaimed.append(row)
-        if claimed:
+        if claimed_without_identity:
             raise LivePublicationDependencyError(
                 "claimed TikTok platform identity exists; reconciliation required"
             )
 
         initial_platform_detail_id: str | None = None
-        if unclaimed:
+        if unclaimed and set(selected_labels).difference(platform_detail_ids_by_target):
             selected = max(unclaimed, key=_created_sort_key)
             initial_platform_detail_id = _positive_provider_id(
                 selected.get("collectBoxDetailId", selected.get("detailId")),
@@ -1014,6 +1047,7 @@ class OfficialMiaoshouTikTokV4SeedIdentityResolver:
             "snapshot_digest": snapshot["snapshot_digest"],
             "common_detail_id": common_detail_id,
             "initial_platform_detail_id": initial_platform_detail_id,
+            "platform_detail_ids_by_target": platform_detail_ids_by_target,
         }
         body["identity_digest"] = "sha256:" + _digest(body)
         return body
@@ -1054,6 +1088,7 @@ class MiaoshouTikTokV4DraftTransportFactory:
             "snapshot_digest",
             "common_detail_id",
             "initial_platform_detail_id",
+            "platform_detail_ids_by_target",
             "identity_digest",
         }
         if not isinstance(identity, Mapping) or set(identity) != required:
@@ -1064,8 +1099,9 @@ class MiaoshouTikTokV4DraftTransportFactory:
         supplied = body.pop("identity_digest", None)
         common_detail_id = body.get("common_detail_id")
         initial_detail_id = body.get("initial_platform_detail_id")
+        target_detail_ids = body.get("platform_detail_ids_by_target")
         if (
-            body.get("schema_version") != "miaoshou-tiktok-v4-seed-identity/v1"
+            body.get("schema_version") != MIAOSHOU_TIKTOK_SEED_IDENTITY_SCHEMA
             or body.get("snapshot_digest") != snapshot.get("snapshot_digest")
             or isinstance(common_detail_id, bool)
             or not str(common_detail_id or "").isdigit()
@@ -1078,6 +1114,15 @@ class MiaoshouTikTokV4DraftTransportFactory:
                     or int(str(initial_detail_id)) <= 0
                 )
             )
+            or not isinstance(target_detail_ids, Mapping)
+            or any(
+                label not in EXPECTED_SHOP_ID_BY_TARGET
+                or label not in getattr(request, "target_labels", ())
+                or isinstance(detail_id, bool)
+                or not str(detail_id).isdigit()
+                or int(str(detail_id)) <= 0
+                for label, detail_id in target_detail_ids.items()
+            )
             or supplied != "sha256:" + _digest(body)
         ):
             raise LivePublicationDependencyError(
@@ -1088,6 +1133,10 @@ class MiaoshouTikTokV4DraftTransportFactory:
             initial_platform_detail_id=(
                 str(initial_detail_id) if initial_detail_id is not None else None
             ),
+            platform_detail_ids_by_target={
+                str(label): str(detail_id)
+                for label, detail_id in target_detail_ids.items()
+            },
             post=self._post,
             fact_observer=observer,
         )

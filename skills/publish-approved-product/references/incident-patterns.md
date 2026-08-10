@@ -48,6 +48,13 @@ current execution report only.
 - TikTok: opaque draft keys must be decoded through `skuPropertyList`; repeated
   source `itemNum` values are not model identities, and a local binding failure
   is a confirmed zero-write rejection rather than an unknown outcome.
+- TikTok: compare approved and provider option signatures after removing only
+  structural semicolon delimiters. Preserve both original keys; never use
+  position or fuzzy matching when the provider key is opaque.
+- TikTok: every saved SKU needs positive provider stock plus an exact-shop
+  `shopIdToWarehouseIdAndStockMap`. Reuse one exact existing binding or read
+  that shop's official active/default warehouse; never invent stock or reuse a
+  warehouse across shops.
 - TikTok GB: a category with no mandatory attributes is valid; optional-only
   metadata must not block draft repair, and metadata preparation failures are
   zero-write rejections.

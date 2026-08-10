@@ -215,6 +215,16 @@ class SkillArchitectureTests(unittest.TestCase):
         ):
             self.assertIn(required, text)
 
+    def test_confirmed_tiktok_variant_and_warehouse_incidents_are_documented(self) -> None:
+        tiktok = (ROOT / "references" / "tiktok.md").read_text(encoding="utf-8")
+        incidents = (ROOT / "references" / "incident-patterns.md").read_text(
+            encoding="utf-8"
+        )
+        for text in (tiktok, incidents):
+            self.assertIn("structural semicolon delimiters", text)
+            self.assertIn("shopIdToWarehouseIdAndStockMap", text)
+            self.assertIn("positive provider stock", text)
+
     def test_skill_documents_explicit_canonical_install_parity_workflow(self) -> None:
         english = (ROOT / "SKILL.md").read_text(encoding="utf-8")
         chinese = (ROOT / "references" / "SKILL.zh-CN.md").read_text(

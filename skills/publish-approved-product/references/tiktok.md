@@ -273,6 +273,43 @@ Required handling:
 7. A local binding failure is a pre-write rejection with `0` write requests;
    it is not an unknown provider outcome and must not be retried automatically.
 
+### Confirmed incident: structural variant delimiters caused a false mismatch
+
+Symptom: the approved variant was stored as `;田园鲜花铺;;`, while Miaoshou's
+official `skuPropertyList` decoded the opaque SKU key to `田园鲜花铺`. The
+semantic identity was exact, but the binding fell through to the repeated
+source `itemNum` and incorrectly reported an SKU mismatch.
+
+Required handling: strip only Miaoshou's structural semicolon delimiters when
+comparing complete variant signatures. Keep the original approved key in the
+frozen facts and the original provider key in the save payload. Never remove
+ordinary punctuation inside an option name, and never fall back to position,
+title or fuzzy matching.
+
+### Confirmed incident: saved TikTok draft lacked the exact shop warehouse
+
+Symptom: category, SKU, price, parcel and images were valid, but Miaoshou
+rejected a site draft with the exact message that the store warehouse was not
+selected.
+
+Confirmed root cause: the independent v4 save replaced `skuMap` without the
+provider-required positive provider stock and
+`shopIdToWarehouseIdAndStockMap` binding.
+
+Required handling:
+
+1. Bind every approved variant to its exact current provider SKU row first.
+2. Preserve the positive provider stock from that exact row; the frozen
+   product snapshot must not invent inventory.
+3. Reuse one unambiguous warehouse already bound to the exact shop. If absent,
+   read the official warehouse list for that shop and select the deterministic
+   active/default warehouse using the proven provider ordering.
+4. Set `shopIdToWarehouseIdAndStockMap` independently for every SKU and exact
+   shop. Never reuse another shop's warehouse.
+5. Missing stock, no active warehouse, or multiple observed warehouses is a
+   zero-write preparation failure. Do not guess and do not classify it as a
+   provider acceptance.
+
 ### Confirmed incident: optional-only GB category metadata blocked repair
 
 Symptom: GB returned `UNKNOWN` before submission and the bound draft remained

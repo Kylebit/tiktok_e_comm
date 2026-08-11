@@ -177,7 +177,7 @@ def adapt_settlement_evidence(
                 "order_id": record_id,
                 "order_line_id": f"{record_id}:{item_index + 1}",
                 "settlement_status": "settled",
-                "occurred_at": _text(record.get("settled_at")),
+                "occurred_at": _text(record.get("order_created_at") or record.get("occurred_at")),
                 "settled_at": _text(record.get("settled_at")),
                 "currency": _text(record.get("currency")).upper(),
                 "net_settlement_amount": settlement_allocations[item_index],

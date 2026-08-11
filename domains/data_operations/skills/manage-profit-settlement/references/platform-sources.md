@@ -14,6 +14,8 @@ The same TikTok order may have a positive sale statement followed by a negative 
 
 Use payment escrow list filtered by `escrow_release_time`, then escrow detail. Normalize only released escrow rows to settled. Preserve the release timestamp, payout/escrow amount, item quantity, item price, platform/service/commission/shipping/refund components, and item allocation method. Do not treat an ordinary completed order as settled without released escrow evidence.
 
+Read `/api/v2/order/get_order_detail` in batches for the same settled order identities and preserve official `create_time` as `order_created_at`. Treat a missing create time as a quality issue. Keep reporting-period inclusion based on escrow release time; never use order creation time to include an unsettled order and never substitute release time for a missing create time.
+
 Shopee may release many older orders in one settlement batch, so a weekly report can legitimately contain only one release date. Treat this as valid only when every included timestamp comes directly from `escrow_release_time`, remains inside the requested period, and the evidence reports the parent-order and expanded item-line counts. Never replace the release date with order creation, completion, API request, or pull time merely to spread rows across the week.
 
 Escrow-detail fan-out is sequential and can exceed a short command timeout. Size the execution window from the escrow-list parent count, allow a generous bounded timeout, and never start an overlapping retry while the first run is active. The script writes the final evidence only after all requested details finish; absence of the final JSON means the run is incomplete, not an empty or successful settlement period.

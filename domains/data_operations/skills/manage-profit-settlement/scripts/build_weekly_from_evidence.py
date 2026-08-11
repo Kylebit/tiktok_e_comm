@@ -39,7 +39,10 @@ def main() -> int:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--start", required=True, type=date.fromisoformat)
     parser.add_argument("--end", required=True, type=date.fromisoformat)
-    parser.add_argument("--ad-rate", default="0.22")
+    parser.add_argument("--ad-rate", help="global estimated advertising fraction; default 0.22")
+    parser.add_argument("--tiktok-ad-rate", help="TikTok-only override, for example 0.18")
+    parser.add_argument("--shopee-ad-rate", help="Shopee-only override, for example 0.20")
+    parser.add_argument("--ozon-ad-rate", help="Ozon-only override, for example 0.25")
     parser.add_argument("--ozon-sku-map", type=Path)
     parser.add_argument("--allow-ozon-read-enrichment", action="store_true")
     args = parser.parse_args()
@@ -72,6 +75,16 @@ def main() -> int:
     }
     resolved_catalog = replace(catalog, costs_by_sku=resolved_costs)
     costs = CostSnapshot.from_mapping(cost_policy.values)
+    global_ad_rate = Decimal(args.ad_rate or "0.22")
+    platform_ad_rates = {
+        platform: Decimal(value)
+        for platform, value in (
+            ("tiktok", args.tiktok_ad_rate),
+            ("shopee", args.shopee_ad_rate),
+            ("ozon", args.ozon_ad_rate),
+        )
+        if value is not None
+    }
     bundle = build_weekly_evidence_bundle(
         evidence,
         resolved_catalog,
@@ -79,7 +92,9 @@ def main() -> int:
         period_end=args.end,
         costs=costs,
         fx=fx,
-        ad_rate=Decimal(args.ad_rate),
+        ad_rate=global_ad_rate,
+        ad_rates=platform_ad_rates,
+        ad_rate_source="operator_global_override" if args.ad_rate is not None else "default_22",
         seller_sku_by_ozon_sku=ozon_map,
         quantity_by_ozon_order_sku=ozon_quantities,
         cost_assumption_warnings=cost_policy.warnings,

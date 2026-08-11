@@ -69,6 +69,8 @@ def build_monthly_report(
     period_end: date | str,
     costs: CostSnapshot,
     fx: FxSnapshot,
+    ad_rate: Decimal | str = OZON_AD_RATE,
+    ad_rate_source: str | None = None,
     generated_at: datetime | None = None,
     code_version: str = "unknown",
 ) -> OzonProfitReport:
@@ -79,6 +81,8 @@ def build_monthly_report(
         period_kind="monthly",
         costs=costs,
         fx=fx,
+        ad_rate=ad_rate,
+        ad_rate_source=ad_rate_source,
         generated_at=generated_at,
         code_version=code_version,
     )
@@ -91,10 +95,12 @@ def build_weekly_report(
     period_end: date | str,
     costs: CostSnapshot,
     fx: FxSnapshot,
+    ad_rate: Decimal | str = OZON_AD_RATE,
+    ad_rate_source: str | None = None,
     generated_at: datetime | None = None,
     code_version: str = "unknown",
 ) -> OzonProfitReport:
-    """Build an Ozon week using the operator-approved fixed advertising rate."""
+    """Build an Ozon week using the default or operator-supplied advertising rate."""
     return _build_report(
         rows,
         period_start=period_start,
@@ -102,6 +108,8 @@ def build_weekly_report(
         period_kind="weekly",
         costs=costs,
         fx=fx,
+        ad_rate=ad_rate,
+        ad_rate_source=ad_rate_source,
         generated_at=generated_at,
         code_version=code_version,
     )
@@ -115,10 +123,15 @@ def _build_report(
     period_kind: str,
     costs: CostSnapshot,
     fx: FxSnapshot,
+    ad_rate: Decimal | str,
+    ad_rate_source: str | None,
     generated_at: datetime | None,
     code_version: str,
 ) -> OzonProfitReport:
-    rate_value = OZON_AD_RATE
+    rate_value = _decimal(ad_rate)
+    if rate_value is None or rate_value < 0 or rate_value > 1:
+        raise ValueError("ad_rate must be a decimal fraction between 0 and 1")
+    rate_source = _text(ad_rate_source) or ("default_22" if rate_value == OZON_AD_RATE else "operator_global_override")
     start, end = _period(period_start, period_end)
     source_rows = [dict(row) for row in rows]
     issues: list[OzonQualityIssue] = []
@@ -161,16 +174,16 @@ def _build_report(
             "settlement":{"currency":currency,"net_amount_local":settlement,"net_amount_cny":settlement_cny,"buyer_paid_product_amount_local":paid},
             "fx":{"rate_cny_per_local":rate,**fx.payload()},
             "cost":{"unit_cost_cny":cost.unit_cost_cny,"quantity":quantity,"total_cny":product_cost,"version":cost.version,"effective_at":cost.effective_at,"source":cost.source,"snapshot_id":costs.snapshot_id},
-            "advertising":{"mode":"estimated_rate","rate":rate_value,"basis":"buyer_paid_product_amount","basis_amount_local":paid,"amount_local":ad_local,"amount_cny":ad_cny,"policy_version":"ozon-fixed-ad-rate/v1"},
+            "advertising":{"mode":"estimated_rate","rate":rate_value,"input_source":rate_source,"basis":"buyer_paid_product_amount","basis_amount_local":paid,"amount_local":ad_local,"amount_cny":ad_cny,"policy_version":"operator-adjustable-ad-rate/v1"},
             "fee_items":fees,"external_costs_cny":external,"profit_cny":settlement_cny-product_cost-ad_cny-external,"source_snapshot_id":_text(row.get("source_snapshot_id")),"source_settlement_facts":list(row.get("source_settlement_facts") or []),
         })
     lines.sort(key=_line_settlement_sort_key)
     totals=_totals(lines); source_checksum=_checksum(sorted((_ready(row) for row in source_rows),key=_canonical))
-    fingerprint=_checksum({"schema":SCHEMA_VERSION,"period_kind":period_kind,"period":[start.isoformat(),end.isoformat()],"source":source_checksum,"costs":costs.snapshot_id,"fx":fx.snapshot_id,"ad_rate":str(rate_value),"code_version":code_version})
+    fingerprint=_checksum({"schema":SCHEMA_VERSION,"period_kind":period_kind,"period":[start.isoformat(),end.isoformat()],"source":source_checksum,"costs":costs.snapshot_id,"fx":fx.snapshot_id,"ad_rate":str(rate_value),"ad_rate_source":rate_source,"code_version":code_version})
     return OzonProfitReport(
         report_id=f"ozon-profit-{fingerprint[:16]}",idempotency_key=f"{SCHEMA_VERSION}:{fingerprint}",calculation_kind="realized_settlement_with_estimated_ads",period_kind=period_kind,
         period={"start":start.isoformat(),"end":end.isoformat(),"timezone":"source_local_date"},status="ready" if not issues else "needs_review",totals=totals,order_lines=tuple(lines),quality_issues=tuple(issues),
-        source={"input_checksum":source_checksum,"raw_row_count":len(source_rows),"calculated_row_count":len(lines),"rejected_row_count":rejected,"out_of_period_row_count":out_of_period,"unsettled_row_count":unsettled,"cost_snapshot":costs.payload(),"fx_snapshot":fx.payload()},advertising={"mode":"estimated_rate","rate":rate_value,"basis":"buyer_paid_product_amount","policy_version":"ozon-fixed-ad-rate/v1"},
+        source={"input_checksum":source_checksum,"raw_row_count":len(source_rows),"calculated_row_count":len(lines),"rejected_row_count":rejected,"out_of_period_row_count":out_of_period,"unsettled_row_count":unsettled,"cost_snapshot":costs.payload(),"fx_snapshot":fx.payload()},advertising={"mode":"estimated_rate","rate":rate_value,"input_source":rate_source,"basis":"buyer_paid_product_amount","policy_version":"operator-adjustable-ad-rate/v1"},
         generated_at=generated_at or datetime.now(timezone.utc),code_version=code_version,
     )
 

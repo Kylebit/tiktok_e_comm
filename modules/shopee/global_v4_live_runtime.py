@@ -507,6 +507,54 @@ class OfficialShopeeGlobalV4Runtime:
             raise ShopeeGlobalV4LiveRuntimeError(f"{operation} response is malformed")
         return response
 
+    def _reusable_image_bindings(
+        self, image_urls: tuple[str, ...]
+    ) -> dict[str, str] | None:
+        active = self._active.get()
+        command = active.get("command") if isinstance(active, Mapping) else None
+        if self._checkpoint_root is None or not isinstance(command, Mapping):
+            return None
+        offer_id = str(command.get("offer_id") or "").strip()
+        revision = command.get("product_revision")
+        if (
+            not offer_id.isdigit()
+            or type(revision) is not int
+            or revision <= 0
+        ):
+            return None
+        parent = self._checkpoint_root / offer_id / str(revision)
+        if not parent.is_dir():
+            return None
+        candidates: list[tuple[int, Path]] = []
+        for path in parent.glob("*/shopee-global-checkpoint.json"):
+            try:
+                candidates.append((path.stat().st_mtime_ns, path))
+            except OSError:
+                continue
+        for _modified, path in sorted(candidates, reverse=True):
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                continue
+            bindings = value.get("image_bindings") if isinstance(value, Mapping) else None
+            if (
+                value.get("schema_version") != "shopee-global-v4-checkpoint/v1"
+                or value.get("offer_id") != offer_id
+                or value.get("product_revision") != revision
+                or not isinstance(bindings, Mapping)
+                or set(bindings) != set(image_urls)
+            ):
+                continue
+            normalized = {
+                url: str(bindings[url] or "").strip() for url in image_urls
+            }
+            if (
+                all(normalized.values())
+                and len(set(normalized.values())) == len(normalized)
+            ):
+                return normalized
+        return None
+
     def upload_global_images(self, image_urls: Sequence[str]) -> Mapping[str, object]:
         if (
             self._image_upload is None
@@ -515,6 +563,15 @@ class OfficialShopeeGlobalV4Runtime:
             or len(image_urls) != len(set(image_urls))
         ):
             raise ShopeeGlobalV4LiveRuntimeError("Shopee image upload scope is invalid")
+        reusable = self._reusable_image_bindings(image_urls)
+        if reusable is not None:
+            active = self._active.get()
+            if active is None:
+                raise ShopeeGlobalV4LiveRuntimeError(
+                    "Shopee execution context is unavailable"
+                )
+            active["image_bindings"] = deepcopy(reusable)
+            return reusable
         bindings: dict[str, str] = {}
         for position, url in enumerate(image_urls):
             if type(url) is not str or not url.startswith("https://"):

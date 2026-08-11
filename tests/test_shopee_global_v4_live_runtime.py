@@ -1,3 +1,5 @@
+import json
+
 from modules.shopee.global_v4_live_runtime import (
     OfficialShopeeGlobalV4Runtime,
     ShopeeGlobalV4LiveRuntimeError,
@@ -52,6 +54,61 @@ def test_default_image_upload_accepts_official_image_info_list(monkeypatch):
         _default_image_upload("https://img.example/approved.png", 1)
         == "official-image-2"
     )
+
+
+def test_exact_prior_checkpoint_image_bindings_are_reused_without_upload(tmp_path):
+    uploads = []
+    command = {
+        "offer_id": "3882722296",
+        "product_revision": 40,
+        "models": [{"model_sku": "0967"}],
+        "product": {
+            "images": [
+                "https://img.example/main-1.jpg",
+                "https://img.example/main-2.jpg",
+            ]
+        },
+    }
+    checkpoint = tmp_path / "3882722296" / "40" / "old-run"
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "shopee-global-checkpoint.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "shopee-global-v4-checkpoint/v1",
+                "offer_id": "3882722296",
+                "product_revision": 40,
+                "run_id": "old-run",
+                "report_id": "publication-report:old-run",
+                "image_bindings": {
+                    "https://img.example/main-1.jpg": "image-1",
+                    "https://img.example/main-2.jpg": "image-2",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime = OfficialShopeeGlobalV4Runtime(
+        context_resolver=lambda _command: {
+            "merchant_id": 4970102,
+            "merchant_token": "redacted",
+            "shop_id": 1,
+            "shop_token": "redacted",
+        },
+        official_fact_reader=lambda _command, _context: {},
+        mapping_lookup=lambda _sku: None,
+        image_upload_transport=lambda url, position: uploads.append(
+            (url, position)
+        )
+        or f"new-{position}",
+        checkpoint_root=tmp_path,
+    )
+
+    assert runtime.lookup_global_item_ids(command) == {"0967": None}
+    assert runtime.upload_global_images(tuple(command["product"]["images"])) == {
+        "https://img.example/main-1.jpg": "image-1",
+        "https://img.example/main-2.jpg": "image-2",
+    }
+    assert uploads == []
 
 
 def test_exact_main_category_selects_fridge_magnets_and_ignores_other_candidates():

@@ -427,7 +427,9 @@ def _verify_readback(
         raise ShopeeGlobalV4Error("Shopee official SKU coverage is incomplete")
     for model_sku, facts in expected.items():
         observed = by_sku[model_sku]
-        if str(observed.get("status") or "").upper() != "NORMAL":
+        _identity(observed.get("global_model_id"), "Shopee global model identity")
+        model_status = str(observed.get("status") or "").strip().upper()
+        if model_status and model_status != "NORMAL":
             raise ShopeeGlobalV4Error("Shopee official model is not NORMAL")
         if observed.get("option_values") != facts["option_values"]:
             raise ShopeeGlobalV4Error("Shopee official variant options drifted")

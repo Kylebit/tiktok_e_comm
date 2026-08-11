@@ -162,6 +162,7 @@ class _Runtime:
             "variation_names": list(self.command["variation_names"]),
             "models": [
                 {
+                    "global_model_id": str(9101 + index),
                     "model_sku": row["model_sku"],
                     "option_values": list(row["option_values"]),
                     "price_cny": row["price_cny"],
@@ -252,6 +253,17 @@ def test_provider_cdn_urls_do_not_override_exact_uploaded_image_id_lineage():
             variant_image_url=f"https://provider-cdn.example/variant-{index}.jpg"
         )
         for index, model in enumerate(row["models"], start=1)
+    ]
+
+    assert ShopeeGlobalV4Resolver(runtime=runtime)(request) == "8001"
+    assert runtime.calls == ["lookup", "read_item", "read_models"]
+
+
+def test_official_model_without_status_uses_positive_provider_model_identity():
+    request = _request()
+    runtime = _Runtime(mapped={"0958": "8001", "0959": "8001"})
+    runtime.mutate_models = lambda row: [
+        model.pop("status") for model in row["models"]
     ]
 
     assert ShopeeGlobalV4Resolver(runtime=runtime)(request) == "8001"

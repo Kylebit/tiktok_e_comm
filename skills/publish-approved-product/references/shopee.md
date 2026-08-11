@@ -292,3 +292,21 @@ Permanent handling:
 5. Missing, duplicate, reordered or mismatched image IDs remain hard failures.
    If the exact persisted binding is unavailable, require reconciliation rather
    than accepting an image count alone.
+
+## Confirmed incident: global Model status is absent from the official response
+
+Observed on Offer `3882722296` / SKU `0967`: official
+`get_global_model_list` returned a positive `global_model_id`, exact SKU, tier,
+price, stock and option image, but no per-Model status field. The parent global
+item itself was `NORMAL`. Requiring a synthetic Model `NORMAL` value falsely
+rejected the exact official state.
+
+Permanent handling:
+
+1. Require the parent global item status to be `NORMAL`.
+2. Require every approved Model SKU to have one unique positive official
+   `global_model_id` and exact tier, price and variation-image identity.
+3. If a Model status field is present, require `NORMAL`; if the official
+   endpoint omits it, do not invent one or reject the Model solely for that
+   omission.
+4. Missing or ambiguous official Model identity remains a hard failure.

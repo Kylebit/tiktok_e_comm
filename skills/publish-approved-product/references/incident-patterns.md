@@ -45,6 +45,10 @@ current execution report only.
   URLs. Verify the persisted source-URL-to-image-ID binding against official
   ordered master and variation image IDs; never compare CDN URL strings, and
   never accept count-only evidence when the binding is unavailable.
+- Shopee global Model readback may omit a per-Model status field. Require a
+  NORMAL parent item plus one unique positive global_model_id and exact facts
+  for every SKU; enforce Model NORMAL only when the provider actually returns
+  that field.
 - Shopee category recommendation: choose one exact publishable official leaf
   from the frozen main-category semantic identity, then read only that leaf's
   attribute tree. A malformed unrelated recommendation must not erase a valid

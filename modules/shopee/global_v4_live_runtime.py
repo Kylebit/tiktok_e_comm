@@ -1011,6 +1011,7 @@ class OfficialShopeeGlobalV4Runtime:
             price_value = price.get("original_price") if isinstance(price, Mapping) else row.get("original_price")
             normalized.append(
                 {
+                    "global_model_id": str(row.get("global_model_id") or "").strip(),
                     "model_sku": str(row.get("global_model_sku") or "").strip(),
                     "option_values": option_values,
                     "price_cny": price_value,

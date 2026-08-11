@@ -151,7 +151,7 @@ def pull_tiktok(
     allow_credential_refresh: bool = False,
 ) -> dict[str, Any]:
     from core.shops import list_shops
-    from tiktok_settlement import collect_shop_rows
+    from tiktok_settlement import collect_shop_rows, fetch_orders_batch
 
     settings = _settings(root)
     with _tiktok_credential_session(
@@ -166,6 +166,11 @@ def pull_tiktok(
             raise RuntimeError(f"no authorized TikTok shop for site {site}")
         period_start, period_end = _tiktok_period_bounds(start, end)
         region, rows, statements = collect_shop_rows(token, shop, int(period_start.timestamp()), int(period_end.timestamp()))
+        item_expansion_order_ids = {
+            str(row.get("Order/adjustment ID  ") or "")
+            for row in rows
+            if row.get("Type ") == "Order" and row.get("Order/adjustment ID  ")
+        }
         statement_times = _tiktok_statement_times(statements, zone)
         normalized_rows = []
         issues = []
@@ -184,7 +189,26 @@ def pull_tiktok(
                 issues.append(_issue("missing_quantity", normalized["order_id"] or str(index), "quantity"))
             normalized_rows.append(normalized)
         orders = _aggregate_tiktok_records(normalized_rows)
-        payload = _success_payload("tiktok", site, start, end, zone, orders, len(rows), len(orders), issues, "finance statements + statement transactions") | {
+        order_ids = sorted({
+            str(order.get("order_id") or "")
+            for order in orders
+            if order.get("transaction_type") == "Order" and order.get("order_id")
+        })
+        cipher = str(shop.get("cipher") or shop.get("shop_cipher") or "")
+        order_created_at, order_time_issues = _tiktok_order_created_times(
+            token,
+            cipher,
+            order_ids,
+            zone,
+            fetcher=fetch_orders_batch,
+        )
+        issues.extend(order_time_issues)
+        for order in orders:
+            if order.get("transaction_type") == "Order":
+                order["order_created_at"] = order_created_at.get(
+                    str(order.get("order_id") or ""), ""
+                )
+        payload = _success_payload("tiktok", site, start, end, zone, orders, len(rows), len(orders), issues, "finance statements + statement transactions + order/202309/orders") | {
             "statement_count": len(statements),
             "out_of_period_row_count": out_of_period_rows,
         }
@@ -196,6 +220,16 @@ def pull_tiktok(
         )
         payload["receipt"]["credential_source"] = credential_source
         payload["receipt"]["credential_refresh_performed"] = credential_refresh_performed
+        item_expansion_requests = (len(item_expansion_order_ids) + 19) // 20
+        time_enrichment_requests = (len(order_ids) + 19) // 20
+        payload["receipt"]["request_summary"] = {
+            "order_detail_batch_size": 20,
+            "item_expansion_order_detail_request_count": item_expansion_requests,
+            "time_enrichment_order_detail_request_count": time_enrichment_requests,
+            "total_order_detail_request_count": (
+                item_expansion_requests + time_enrichment_requests
+            ),
+        }
         return payload
 
 
@@ -269,6 +303,25 @@ def _shopee_order_created_times(shop_id, token, order_sns, zone, *, request_get)
     for order_sn in ordered:
         if order_sn not in result:
             issues.append(_issue("missing_order_created_at", order_sn, "create_time"))
+    return result, issues
+
+
+def _tiktok_order_created_times(token, cipher, order_ids, zone, *, fetcher):
+    ordered = sorted({str(value) for value in order_ids if str(value)})
+    rows = fetcher(token, cipher, ordered)
+    result = {}
+    issues = []
+    for order_id in ordered:
+        row = rows.get(order_id) if isinstance(rows, Mapping) else None
+        timestamp = row.get("create_time") if isinstance(row, Mapping) else None
+        try:
+            if timestamp in (None, ""):
+                raise ValueError("missing create_time")
+            result[order_id] = datetime.fromtimestamp(
+                int(timestamp), tz=timezone.utc
+            ).astimezone(zone).isoformat()
+        except (TypeError, ValueError, OSError, OverflowError):
+            issues.append(_issue("missing_order_created_at", order_id, "create_time"))
     return result, issues
 
 

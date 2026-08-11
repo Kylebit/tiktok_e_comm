@@ -287,6 +287,39 @@ def test_stage_one_shopee_reads_official_order_created_at_in_batches():
     assert result["ORDER-000"] == "2026-07-29T10:15:00+07:00"
 
 
+def test_stage_one_tiktok_reads_only_official_order_created_at():
+    module = _settlement_pull_module()
+    zone = module.SITE_TIMEZONES[("tiktok", "TH")]
+    timestamp = int(datetime(2026, 7, 29, 3, 15, tzinfo=timezone.utc).timestamp())
+    calls = []
+
+    def fake_fetcher(token, cipher, order_ids):
+        calls.append((token, cipher, order_ids))
+        return {
+            "ORDER-1": {"id": "ORDER-1", "create_time": timestamp},
+            "ORDER-2": {"id": "ORDER-2", "paid_time": timestamp + 10},
+        }
+
+    result, issues = module._tiktok_order_created_times(
+        "redacted-token",
+        "shop-cipher",
+        ["ORDER-2", "ORDER-1", "ORDER-1"],
+        zone,
+        fetcher=fake_fetcher,
+    )
+
+    assert calls == [("redacted-token", "shop-cipher", ["ORDER-1", "ORDER-2"])]
+    assert result == {"ORDER-1": "2026-07-29T10:15:00+07:00"}
+    assert issues == [
+        {
+            "code": "missing_order_created_at",
+            "record_id": "ORDER-2",
+            "field": "create_time",
+            "message": "ORDER-2 has invalid create_time",
+        }
+    ]
+
+
 def test_stage_one_blocked_receipt_never_claims_reads_writes_or_refresh():
     module = _settlement_pull_module()
     payload = module.failure_payload(
@@ -1137,10 +1170,13 @@ def test_detailed_html_renders_main_image_weight_cost_ads_fees_profit_and_live_f
         "最新汇率(CNY/当地)", "0.20000000", "汇率更新时间",
         "2026-08-06T00:00:00+00:00", "汇率来源", "official-fx-test",
         "下单时间", "广告比例来源", "人工全局覆盖",
+        "国家", '<img src="https://example.invalid/main.jpg"',
         'data-role="order-table-top-scroll"', 'data-role="order-table-scroll"',
         "top.addEventListener('scroll'", "body.addEventListener('scroll'",
     ):
         assert expected in html
+    assert "&lt;img" not in html
+    assert "th-main / TH" not in html
 
 
 def test_temporary_cost_policy_defaults_missing_to_5_and_selects_highest_conflict():

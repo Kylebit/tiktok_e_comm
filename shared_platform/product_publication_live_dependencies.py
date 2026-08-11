@@ -60,6 +60,9 @@ from shared_platform.product_publication_executors import (
     ShopeeRegionExecutorDependencies,
     TikTokV4ExecutorDependencies,
 )
+from shared_platform.product_publication_reports import (
+    DEFAULT_PRODUCT_PUBLICATION_REPORT_ROOT,
+)
 
 
 TIKTOK_CATEGORY_RESOLUTION_SCHEMA = "tiktok-official-category-resolution/v1"
@@ -1627,6 +1630,7 @@ class OfficialOzonFridgeMagnetProfileResolver:
     before a dispatch item can be built.
     """
 
+
     _CATEGORY_ID = 17028743
     _TYPE_ID = 93785
     _SEMANTIC_ALIASES = frozenset(
@@ -1777,6 +1781,62 @@ class OfficialOzonFridgeMagnetProfileResolver:
                 "product_type": {"attribute_id": 8229, **product_type},
             },
         }
+
+
+class StoredOzonLocalizedCopyResolver:
+    """Load one digest-bound Skill-authored Russian-copy receipt.
+
+    The deterministic path is server-owned and keyed only by the validated
+    frozen snapshot identity.  This lets the Skill prepare provider-required
+    localization once while the async Product Center runner remains the sole
+    owner of provider dispatch and official readback.
+    """
+
+    def __init__(
+        self, reports_root: str | Path = DEFAULT_PRODUCT_PUBLICATION_REPORT_ROOT
+    ) -> None:
+        self._reports_root = Path(reports_root).resolve()
+
+    def __call__(self, snapshot: Mapping[str, Any]) -> Mapping[str, Any]:
+        if not isinstance(snapshot, Mapping):
+            raise LivePublicationDependencyError(
+                "Ozon localized copy snapshot identity is invalid"
+            )
+        offer_id = snapshot.get("offer_id")
+        revision = snapshot.get("product_revision")
+        digest = snapshot.get("snapshot_digest")
+        if (
+            type(offer_id) is not str
+            or not offer_id.isdigit()
+            or type(revision) is not int
+            or revision <= 0
+            or type(digest) is not str
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None
+        ):
+            raise LivePublicationDependencyError(
+                "Ozon localized copy snapshot identity is invalid"
+            )
+        receipt_path = (
+            self._reports_root / offer_id / str(revision) / "ozon-localized-copy.json"
+        ).resolve()
+        if self._reports_root not in receipt_path.parents:
+            raise LivePublicationDependencyError(
+                "Ozon localized copy path is invalid"
+            )
+        try:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            raise LivePublicationDependencyError(
+                "Ozon localized copy is unavailable"
+            ) from None
+        if (
+            not isinstance(receipt, Mapping)
+            or receipt.get("source_snapshot_digest") != digest
+        ):
+            raise LivePublicationDependencyError(
+                "Ozon localized copy identity conflicts"
+            )
+        return deepcopy(dict(receipt))
 
 
 def build_ozon_import_item_from_frozen_variant(
@@ -2187,7 +2247,9 @@ def build_live_ozon_dependencies(
         official_profile_resolver=(
             official_profile_resolver or OfficialOzonFridgeMagnetProfileResolver()
         ),
-        localized_copy_resolver=localized_copy_resolver,
+        localized_copy_resolver=(
+            localized_copy_resolver or StoredOzonLocalizedCopyResolver()
+        ),
     )
 
 
@@ -2205,6 +2267,7 @@ __all__ = [
     "OfficialOzonFridgeMagnetProfileResolver",
     "OfficialOzonV4Transport",
     "ShopeeExactGlobalItemResolver",
+    "StoredOzonLocalizedCopyResolver",
     "TikTokUnavailableStorefrontReadback",
     "TikTokV4DraftCheckpointStore",
     "build_live_ozon_dependencies",

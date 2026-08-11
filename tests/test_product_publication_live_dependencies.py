@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 import hashlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -23,6 +24,7 @@ from shared_platform.product_publication_live_dependencies import (
     OfficialOzonFridgeMagnetProfileResolver,
     OfficialOzonV4Transport,
     ShopeeExactGlobalItemResolver,
+    StoredOzonLocalizedCopyResolver,
     TikTokUnavailableStorefrontReadback,
     TikTokV4DraftCheckpointStore,
     build_live_ozon_dependencies,
@@ -887,6 +889,39 @@ def test_live_dependency_builders_are_independent():
     assert tiktok.collectbox_context_resolver is not shopee.global_item_id_resolver
     assert shopee.runtime is not ozon.dispatch_variant
     assert callable(ozon.readback_variants)
+
+
+def test_stored_ozon_localized_copy_uses_exact_offer_revision_path(tmp_path: Path):
+    receipt_dir = tmp_path / "3882722296" / "40"
+    receipt_dir.mkdir(parents=True)
+    receipt = {
+        "schema_version": "ozon-localized-copy/v1",
+        "source_snapshot_digest": "sha256:" + "a" * 64,
+        "language": "ru",
+        "title": "Русское название 7 на 7 см",
+        "description": "Точное русское описание товара.",
+    }
+    (receipt_dir / "ozon-localized-copy.json").write_text(
+        json.dumps(receipt, ensure_ascii=False), encoding="utf-8"
+    )
+    resolver = StoredOzonLocalizedCopyResolver(tmp_path)
+
+    assert resolver(
+        {
+            "offer_id": "3882722296",
+            "product_revision": 40,
+            "snapshot_digest": "sha256:" + "a" * 64,
+        }
+    ) == receipt
+
+    with pytest.raises(LivePublicationDependencyError, match="identity"):
+        resolver(
+            {
+                "offer_id": "3882722296",
+                "product_revision": 40,
+                "snapshot_digest": "sha256:" + "b" * 64,
+            }
+        )
 
 
 class _ObservedDraftTransport:

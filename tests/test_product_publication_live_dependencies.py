@@ -543,8 +543,12 @@ def test_ozon_import_builder_uses_only_frozen_variant_and_official_profile():
     assert item["price"] == "100"
     assert item["old_price"] == "120"
     assert item["images"] == variant["images"]
-    assert item["weight"] == "0.2"
-    assert item["depth"] == "10"
+    assert item["weight"] == 200
+    assert item["weight_unit"] == "g"
+    assert item["depth"] == 100
+    assert item["width"] == 80
+    assert item["height"] == 20
+    assert item["dimension_unit"] == "mm"
     attrs = {row["id"]: row for row in item["attributes"]}
     assert attrs[85]["values"] == [
         {"dictionary_value_id": 126745801, "value": "No Brand"}
@@ -558,6 +562,53 @@ def test_ozon_import_builder_uses_only_frozen_variant_and_official_profile():
     assert attrs[4191]["values"] == [
         {"dictionary_value_id": 0, "value": "Exact approved Ozon description"}
     ]
+
+
+def test_ozon_http_400_is_a_definite_rejection_not_unknown_write():
+    variant = _ozon_variant()
+    variant["description"] = "Exact approved Ozon description"
+    variant["category"] = {
+        "id": "17028743",
+        "name": "Souvenirs and Gifts",
+        "path": [
+            {"id": "17027901", "name": "House & Garden"},
+            {"id": "17028743", "name": "Souvenirs and Gifts"},
+        ],
+    }
+    variant["official_profile"] = {
+        "schema_version": "ozon-official-profile-resolution/v1",
+        "resolution": "EXACT",
+        "description_category_id": 17028743,
+        "category_name": "Souvenirs and Gifts",
+        "category_path": [
+            {"id": "17027901", "name": "House & Garden"},
+            {"id": "17028743", "name": "Souvenirs and Gifts"},
+        ],
+        "type_id": 93785,
+        "type_name": "Fridge Magnet",
+        "required_attributes": {
+            "brand": {
+                "attribute_id": 85,
+                "dictionary_value_id": 126745801,
+                "value": "No Brand",
+            },
+            "model_name": {"attribute_id": 9048},
+            "product_type": {
+                "attribute_id": 8229,
+                "dictionary_value_id": 93785,
+                "value": "Fridge Magnet",
+            },
+        },
+    }
+    transport = OfficialOzonV4Transport(
+        post=lambda *_args: (_ for _ in ()).throw(
+            RuntimeError('Ozon HTTP 400: invalid value for int32 field weight')
+        )
+    )
+
+    fact = transport.dispatch_variant(variant)
+
+    assert fact == OzonDispatchFact(outcome="REJECTED")
 
 
 def test_ozon_dispatch_uses_injected_exact_builder_and_official_import():

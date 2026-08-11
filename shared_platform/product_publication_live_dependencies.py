@@ -1836,8 +1836,22 @@ def build_ozon_import_item_from_frozen_variant(
     product_type = required["product_type"]
     if not isinstance(brand, Mapping) or not isinstance(product_type, Mapping):
         raise LivePublicationDependencyError("Ozon dictionary profile is malformed")
-    weight_kg = _normalize_number(parcel.get("weight_kg"))
-    package_cm = [_normalize_number(value) for value in parcel["package_cm"]]
+    weight_kg = Decimal(_normalize_number(parcel.get("weight_kg")))
+    package_cm = [Decimal(_normalize_number(value)) for value in parcel["package_cm"]]
+
+    def provider_int(value: Decimal, *, multiplier: int, name: str) -> int:
+        converted = value * multiplier
+        if converted <= 0 or converted != converted.to_integral_value():
+            raise LivePublicationDependencyError(
+                f"Ozon {name} cannot be represented in provider integer units"
+            )
+        return int(converted)
+
+    weight_g = provider_int(weight_kg, multiplier=1000, name="weight")
+    package_mm = [
+        provider_int(value, multiplier=10, name="package dimension")
+        for value in package_cm
+    ]
     return {
         "attributes": [
             attribute(85, str(brand.get("value") or ""), int(brand.get("dictionary_value_id") or 0)),
@@ -1851,12 +1865,12 @@ def build_ozon_import_item_from_frozen_variant(
         "type_id": int(profile["type_id"]),
         "color_image": images[0],
         "currency_code": str(variant.get("currency") or ""),
-        "depth": package_cm[0],
-        "width": package_cm[1],
-        "height": package_cm[2],
-        "dimension_unit": "cm",
-        "weight": weight_kg,
-        "weight_unit": "kg",
+        "depth": package_mm[0],
+        "width": package_mm[1],
+        "height": package_mm[2],
+        "dimension_unit": "mm",
+        "weight": weight_g,
+        "weight_unit": "g",
         "images": deepcopy(images),
         "name": title,
         "offer_id": offer_id,
@@ -1923,18 +1937,15 @@ class OfficialOzonV4Transport:
                 or item.get("currency_code") != variant.get("currency")
                 or item.get("images") != variant.get("images")
                 or not _same_decimal(
-                    item.get("weight"), variant.get("parcel", {}).get("weight_kg")
+                    _ozon_weight_kg(item),
+                    variant.get("parcel", {}).get("weight_kg"),
                 )
-                or str(item.get("weight_unit") or "").casefold() != "kg"
-                or str(item.get("dimension_unit") or "").casefold() != "cm"
-                or not _same_decimal(
-                    item.get("depth"), variant.get("parcel", {}).get("package_cm", [None] * 3)[0]
-                )
-                or not _same_decimal(
-                    item.get("width"), variant.get("parcel", {}).get("package_cm", [None] * 3)[1]
-                )
-                or not _same_decimal(
-                    item.get("height"), variant.get("parcel", {}).get("package_cm", [None] * 3)[2]
+                or any(
+                    not _same_decimal(observed, expected)
+                    for observed, expected in zip(
+                        _ozon_package_cm(item),
+                        variant.get("parcel", {}).get("package_cm", [None] * 3),
+                    )
                 )
             ):
                 raise LivePublicationDependencyError(
@@ -1945,7 +1956,14 @@ class OfficialOzonV4Transport:
 
         try:
             response = self._post(OZON_IMPORT_PATH, {"items": [item]})
-        except Exception:
+        except Exception as error:
+            # The shared Ozon client raises a credential-free RuntimeError for
+            # HTTP responses.  A deterministic 400/401/403/404/422 proves the
+            # provider rejected the request before accepting an import.  A
+            # timeout, transport error, 409 or rate limit remains UNKNOWN and
+            # must be reconciled by official readback before any retry.
+            if re.match(r"^Ozon HTTP (400|401|403|404|422):", str(error)):
+                return OzonDispatchFact(outcome="REJECTED")
             return OzonDispatchFact(outcome="UNKNOWN")
         if not isinstance(response, Mapping):
             return OzonDispatchFact(outcome="UNKNOWN")

@@ -59,6 +59,16 @@ current execution report only.
   Persist a verified regional item identity and converge through zero-write
   official readback on later runs; a successful prior run must not create a
   duplicate regional item.
+- Shopee regional `item.original_price` and every
+  `item.model[].original_price` must be JSON numbers at the provider boundary.
+  Numeric strings produced `parameter invalid`; changing only the JSON type
+  was accepted and then verified through official item/model readback. Keep
+  approved decimal values unchanged and never collapse per-model prices.
+- Shopee regional `logistic_info` is the authoritative post-create applicable
+  set. The provider may drop preflight candidates or add a default channel.
+  Enable every disabled row on the exact item, then require a nonempty,
+  well-formed, fully enabled official set; do not require set equality with
+  preflight channels.
 - Shopee category recommendation: choose one exact publishable official leaf
   from the frozen main-category semantic identity, then read only that leaf's
   attribute tree. A malformed unrelated recommendation must not erase a valid

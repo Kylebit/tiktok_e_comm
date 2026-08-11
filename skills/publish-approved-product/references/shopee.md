@@ -222,6 +222,47 @@ Permanent handling:
    readback directly with zero create writes. Never create a duplicate merely
    because the prior run has already finished.
 
+## Confirmed incident: regional numeric prices were serialized as strings
+
+Observed on Offer `3882722296` for MY: the exact approved regional task was
+rejected as `product.error_param / parameter invalid` while both
+`item.original_price` and `item.model[].original_price` were JSON strings.
+Changing only those two fields to JSON numbers made Shopee accept task
+`202608111429426328`; official item `46615817790` then passed listing and exact
+readback.
+
+Permanent handling:
+
+1. Keep monetary values as exact decimals inside the frozen snapshot.
+2. At the provider adapter boundary, serialize regional item and model prices
+   as finite positive JSON numbers, never numeric strings.
+3. Do not change the approved amount or currency while changing its JSON type.
+4. Regression-test integral and fractional prices; every model row must remain
+   independently priced.
+5. A provider acceptance is still not success: list and officially read back
+   the exact regional item and models.
+
+## Confirmed incident: shop-item logistics are a provider-selected subset
+
+Observed on Offer `3882722296`: the preflight shop-channel list contained
+24/14/19 compatible candidates for MY/TH/VN, but the created regional items
+exposed only 12/5/7 applicable channels. Shopee also added and enabled VN
+channel `50052`, which was not safe to send in the create task. Requiring the
+final item to reproduce the preflight set therefore created false mismatches.
+
+Permanent handling:
+
+1. Use official preflight channels only to ensure the create task has at least
+   one parcel-compatible option.
+2. After creation, treat the exact item `logistic_info` as the authoritative
+   applicable set; Shopee may remove candidates or add a default channel.
+3. Enable every disabled channel returned on that exact item, one at a time,
+   preserving provider rejections and unknown write outcomes.
+4. Re-read the item and require at least one well-formed logistics row and all
+   returned rows enabled. Do not require equality with the preflight set.
+5. This relaxation applies only to logistics identity. SKU, model price,
+   copy, images, status and global linkage remain exact checks.
+
 ## Confirmed incident: an unrelated recommendation blocked the exact category
 
 Symptom: Shopee officially recommended `Fridge Magnets` first for an approved

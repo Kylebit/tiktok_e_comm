@@ -80,6 +80,10 @@ class ShopeeRegionRuntime(Protocol):
 
     def list_item(self, context: RegionContext, item_id: str) -> None: ...
 
+    def enable_applicable_logistics(
+        self, context: RegionContext, item_id: str
+    ) -> Mapping[str, object]: ...
+
     def regional_models(
         self, context: RegionContext, item_id: str
     ) -> list[Mapping[str, object]]: ...
@@ -372,6 +376,23 @@ def readback_dispatched_regions(
                     listing_error_type = type(error).__name__
                     listing_write_count = None
                 item = runtime.regional_item(context, item_id)
+            logistics_attempted = False
+            logistics_error_type = ""
+            logistics_write_count: int | None = 0
+            if _has_disabled_logistics(item):
+                logistics_attempted = True
+                try:
+                    logistics_receipt = runtime.enable_applicable_logistics(
+                        context, item_id
+                    )
+                    logistics_write_count = _nonnegative_write_count(
+                        logistics_receipt.get("external_write_count"),
+                        "logistics write count",
+                    )
+                except Exception as error:
+                    logistics_error_type = type(error).__name__
+                    logistics_write_count = None
+                item = runtime.regional_item(context, item_id)
             models = runtime.regional_models(context, item_id)
             linkage = runtime.resolved_global_item_id(context, item_id)
             expected_title, expected_description = _approved_copy(snapshot)
@@ -427,7 +448,14 @@ def readback_dispatched_regions(
                     "verified": verified,
                     "listing_attempted": listing_attempted,
                     "listing_error_type": listing_error_type,
-                    "external_write_count": listing_write_count,
+                    "logistics_attempted": logistics_attempted,
+                    "logistics_error_type": logistics_error_type,
+                    "external_write_count": (
+                        None
+                        if listing_write_count is None
+                        or logistics_write_count is None
+                        else listing_write_count + logistics_write_count
+                    ),
                 }
             )
         except Exception as error:
@@ -615,6 +643,24 @@ class OfficialShopeeRegionRuntime:
             raise RuntimeError(
                 "official regional item listing response did not confirm the item"
             )
+
+    def enable_applicable_logistics(
+        self, context: RegionContext, item_id: str
+    ) -> Mapping[str, object]:
+        from modules.shopee.publish import enable_all_applicable_logistics
+
+        receipt = enable_all_applicable_logistics(
+            context.shop_id, context.shop_token, item_id
+        )
+        if receipt.get("verified") is not True:
+            raise RuntimeError("official regional logistics were not verified")
+        attempts = len(receipt.get("newly_enabled_logistic_ids") or []) + len(
+            receipt.get("rejected_logistics") or []
+        )
+        return {
+            "external_write_count": attempts,
+            "enabled_logistic_ids": receipt.get("enabled_logistic_ids") or [],
+        }
 
     def regional_models(
         self, context: RegionContext, item_id: str
@@ -860,6 +906,20 @@ def _positive_int_list(value: object, label: str) -> list[int]:
     return list(value)
 
 
+def _nonnegative_write_count(value: object, label: str) -> int:
+    if type(value) is not int or value < 0:
+        raise ShopeeRegionContractError(f"{label} is invalid")
+    return value
+
+
+def _has_disabled_logistics(item: Mapping[str, object] | None) -> bool:
+    rows = item.get("logistic_info") if isinstance(item, Mapping) else None
+    return isinstance(rows, list) and any(
+        isinstance(row, Mapping) and row.get("enabled") is False
+        for row in rows
+    )
+
+
 def _exact_global_tiers(
     official_rows: list[Mapping[str, object]],
     approved_models: list[Mapping[str, str]],
@@ -912,7 +972,7 @@ def _publish_body(
             "description": description,
             "item_status": "UNLIST",
             "item_sku": item_sku,
-            "original_price": str(min(prices)),
+            "original_price": _provider_price(min(prices)),
             "logistic": [
                 {"logistic_id": value, "enabled": True}
                 for value in logistics
@@ -920,12 +980,22 @@ def _publish_body(
             "model": [
                 {
                     "tier_index": list(tiers[row["model_sku"]]),
-                    "original_price": row["price"],
+                    "original_price": _provider_price(
+                        Decimal(row["price"])
+                    ),
                 }
                 for row in approved_models
             ],
         },
     }
+
+
+def _provider_price(value: Decimal) -> int | float:
+    """Return a JSON number; Shopee rejects numeric price strings."""
+
+    if value == value.to_integral_value():
+        return int(value)
+    return float(value)
 
 
 def _official_readback_checks(
@@ -970,14 +1040,29 @@ def _official_readback_checks(
         image = item.get("image")
         if isinstance(image, Mapping):
             image_urls = image.get("image_url_list") or image.get("image_id_list") or []
+    logistic_rows = (
+        item.get("logistic_info")
+        if isinstance(item, Mapping)
+        and isinstance(item.get("logistic_info"), list)
+        else []
+    )
+    logistic_rows_valid = bool(logistic_rows) and all(
+        isinstance(row, Mapping)
+        and type(row.get("logistic_id")) is int
+        and row["logistic_id"] > 0
+        and type(row.get("enabled")) is bool
+        for row in logistic_rows
+    )
+    applicable_logistic_ids = {
+        int(row["logistic_id"])
+        for row in logistic_rows
+        if isinstance(row, Mapping)
+        and type(row.get("logistic_id")) is int
+        and row["logistic_id"] > 0
+    }
     enabled_logistics = {
-        int(row.get("logistic_id"))
-        for row in (
-            item.get("logistic_info")
-            if isinstance(item, Mapping)
-            and isinstance(item.get("logistic_info"), list)
-            else []
-        )
+        int(row["logistic_id"])
+        for row in logistic_rows
         if isinstance(row, Mapping)
         and row.get("enabled") is True
         and type(row.get("logistic_id")) is int
@@ -1015,8 +1100,10 @@ def _official_readback_checks(
                 )
             )
         ),
-        "selected_logistics_enabled": set(expected_logistics).issubset(
-            enabled_logistics
+        "applicable_logistics_enabled": (
+            logistic_rows_valid
+            and applicable_logistic_ids == enabled_logistics
+            and bool(expected_logistics)
         ),
         "category_exact_when_returned": (
             not observed_category_id

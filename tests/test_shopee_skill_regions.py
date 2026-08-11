@@ -76,6 +76,9 @@ class FakeRuntime:
         self.bad_copy: set[str] = set()
         self.list_failures: set[str] = set()
         self.existing_items: dict[str, str] = {}
+        self.logistic_enable_calls: list[tuple[str, str]] = []
+        self.logistic_enable_failures: set[str] = set()
+        self.provider_added_logistics: set[str] = set()
 
     def context(self, region: str) -> RegionContext:
         self.context_calls.append(region)
@@ -140,7 +143,12 @@ class FakeRuntime:
                     "enabled": context.region not in self.disabled_logistics,
                 },
                 {"logistic_id": 2002, "enabled": True},
-            ],
+            ]
+            + (
+                [{"logistic_id": 9999, "enabled": True}]
+                if context.region in self.provider_added_logistics
+                else []
+            ),
         }
 
     def regional_models(self, context, _item_id):
@@ -177,6 +185,13 @@ class FakeRuntime:
             self.listed_regions.add(context.region)
             raise TimeoutError("listing response lost")
         self.listed_regions.add(context.region)
+
+    def enable_applicable_logistics(self, context, item_id):
+        self.logistic_enable_calls.append((context.region, str(item_id)))
+        attempted = 1 if context.region in self.disabled_logistics else 0
+        if context.region not in self.logistic_enable_failures:
+            self.disabled_logistics.discard(context.region)
+        return {"external_write_count": attempted}
 
     def record_verified_item(self, **facts):
         self.records.append(dict(facts))
@@ -229,14 +244,14 @@ def test_each_selected_region_is_independent_and_uses_complete_unlisted_body() -
             "description": "Approved regional description",
             "item_status": "UNLIST",
             "item_sku": "0967",
-            "original_price": "7.10",
+            "original_price": 7.1,
             "logistic": [
                 {"logistic_id": 2001, "enabled": True},
                 {"logistic_id": 2002, "enabled": True},
             ],
             "model": [
-                {"tier_index": [0], "original_price": "7.10"},
-                {"tier_index": [1], "original_price": "9.20"},
+                {"tier_index": [0], "original_price": 7.1},
+                {"tier_index": [1], "original_price": 9.2},
             ],
         },
     }
@@ -260,6 +275,11 @@ def test_provider_requires_unlisted_create_before_separate_listing() -> None:
     assert body["item"]["item_name"] == "Approved regional title"
     assert body["item"]["description"] == "Approved regional description"
     assert body["item"]["item_sku"] == "0967"
+    assert type(body["item"]["original_price"]) in {int, float}
+    assert all(
+        type(row["original_price"]) in {int, float}
+        for row in body["item"]["model"]
+    )
 
 
 def test_verified_existing_region_is_read_back_without_duplicate_create() -> None:
@@ -467,10 +487,56 @@ def test_lost_listing_response_uses_authoritative_second_readback() -> None:
     assert row["listing_error_type"] == "TimeoutError"
 
 
+def test_disabled_applicable_logistic_is_enabled_then_read_back() -> None:
+    runtime = FakeRuntime()
+    runtime.disabled_logistics.add("PH")
+    snapshot = _snapshot("shopee:PH")
+    dispatch = dispatch_selected_regions(
+        snapshot,
+        global_item_id="60000001",
+        runtime=runtime,
+    )
+
+    result = readback_dispatched_regions(
+        snapshot,
+        dispatch,
+        global_item_id="60000001",
+        runtime=runtime,
+    )
+
+    row = result["targets"][0]
+    assert runtime.logistic_enable_calls == [("PH", "8101")]
+    assert row["outcome"] == "PUBLISHED"
+    assert row["checks"]["applicable_logistics_enabled"] is True
+    assert row["external_write_count"] == 2
+
+
+def test_provider_added_enabled_logistic_is_not_a_content_mismatch() -> None:
+    runtime = FakeRuntime()
+    runtime.provider_added_logistics.add("PH")
+    snapshot = _snapshot("shopee:PH")
+    dispatch = dispatch_selected_regions(
+        snapshot,
+        global_item_id="60000001",
+        runtime=runtime,
+    )
+
+    result = readback_dispatched_regions(
+        snapshot,
+        dispatch,
+        global_item_id="60000001",
+        runtime=runtime,
+    )
+
+    assert result["targets"][0]["outcome"] == "PUBLISHED"
+    assert result["targets"][0]["checks"]["applicable_logistics_enabled"] is True
+
+
 def test_tier_or_requested_logistics_drift_never_records_region() -> None:
     runtime = FakeRuntime()
     runtime.bad_tiers.add("PH")
     runtime.disabled_logistics.add("PH")
+    runtime.logistic_enable_failures.add("PH")
     snapshot = _snapshot("shopee:PH")
     dispatch = dispatch_selected_regions(
         snapshot,
@@ -487,6 +553,6 @@ def test_tier_or_requested_logistics_drift_never_records_region() -> None:
 
     checks = result["targets"][0]["checks"]
     assert checks["model_tiers_exact"] is False
-    assert checks["selected_logistics_enabled"] is False
+    assert checks["applicable_logistics_enabled"] is False
     assert result["targets"][0]["outcome"] == "MISMATCH"
     assert runtime.records == []

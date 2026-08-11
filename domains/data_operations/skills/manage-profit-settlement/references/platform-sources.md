@@ -8,6 +8,8 @@ For local credential discovery, check the configured token file first, then `tik
 
 TikTok Finance statement query bounds are inclusive UTC calendar days, matching `tiktok_settlement.pull_period()`. Convert each returned `statement_time` to the site's reporting timezone for `settled_at`, then re-filter the requested local date range. Group expanded item rows by statement ID, transaction type, and order/adjustment ID; sum allocated money and fee components while retaining every item row. Report settled order, adjustment, and item-line counts separately.
 
+For the settled TikTok order identities, read `/order/202309/orders` in batches and preserve the official `create_time` as `order_created_at`. Missing or invalid creation time is a quality issue. Reporting-period inclusion remains based on Finance settlement evidence; never substitute payment, shipment, completion, statement, settlement, or pull time for missing order creation time.
+
 The same TikTok order may have a positive sale statement followed by a negative refund statement in the same reporting period. Preserve both statement identities. If the repeated item SKU and quantity agree and only the sale statement carries a positive buyer-paid basis, consolidate them into one order line so settlement/refund components sum while product cost and estimated advertising are charged once. Any disagreement or multiple positive bases is blocking.
 
 ## Shopee
@@ -25,6 +27,8 @@ Escrow-detail fan-out is sequential and can exceed a short command timeout. Size
 Use finance transaction list and group operations by posting. Include only postings satisfying the existing official settled predicate. Preserve every operation/service line and whether it contributes to net settlement. Do not include pending postings merely because fulfillment or delivery completed.
 
 For local credential discovery, check `config/ozon.local.json`, then `modules/ozon/legacy_webapp/data/credentials.local.json`; inject the credential in memory and never copy it. Re-filter returned operations by the requested inclusive business-date range because the finance endpoint can return boundary rows outside the requested local dates.
+
+Do not label Ozon `in_process_at`, shipment, delivery, operation, or settlement timestamps as order creation time. Leave the order-created field empty unless an official order read returns an explicit creation-time field.
 
 Finance transaction items may expose only an Ozon platform SKU and omit quantity. For profit calculation, resolve the platform SKU to the authoritative `offer_id`/seller SKU with the read-only `/v3/product/info/list` endpoint and resolve fulfilled quantity with `/v3/posting/fbs/get`. Never infer quantity as one. Record requested/mapped SKU counts, requested postings, quantity keys, and typed failures; retain no raw API response.
 

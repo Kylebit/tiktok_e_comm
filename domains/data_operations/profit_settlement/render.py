@@ -62,7 +62,7 @@ body{{font:13px/1.45 system-ui,sans-serif;margin:0;background:#f5f7f8;color:#172
 
 def _base_headers() -> list[str]:
     return [
-        "结算时间", "下单时间", "订单 ID", "订单行 ID", "店铺/地区", "主图", "平台 SKU", "Seller SKU",
+        "结算时间", "下单时间", "订单 ID", "订单行 ID", "国家", "主图", "平台 SKU", "Seller SKU",
         "商品名称", "规格", "数量", "单件重量(g)", "计费重量(g)", "币种", "买家实付商品金额",
         "净结算(当地)", "最新汇率(CNY/当地)", "汇率更新时间", "汇率来源", "净结算(CNY)", "单件成本(CNY)", "商品总成本(CNY)",
         "广告基数(当地)", "广告比例", "广告比例来源", "广告费(当地)", "广告费(CNY)", "额外成本(CNY)",
@@ -78,7 +78,7 @@ def _order_row(line, fee_columns, warning_by_sku):
     margin = _margin(line)
     cells = [
         _text(line.get("settled_at")), _text(line.get("occurred_at")), _text(identity.get("order_id")), _text(identity.get("order_line_id")),
-        f"{_text(identity.get('shop_id'))} / {_text(identity.get('region'))}", image_html,
+        _text(identity.get("region")), image_html,
         _text(product.get("platform_sku")), _text(product.get("seller_sku")), _text(product.get("product_name")),
         _text(product.get("variant_name")), _quantity(product.get("quantity")), _money(product.get("unit_weight_g")),
         _money(product.get("billable_weight_g")), _text(settlement.get("currency")), _money(settlement.get("buyer_paid_product_amount_local")),
@@ -95,7 +95,7 @@ def _order_row(line, fee_columns, warning_by_sku):
     ]
     output = []
     for index, value in enumerate(cells):
-        output.append(f'<td class="{classes[index]}">{value if index == 4 else escape(value)}</td>')
+        output.append(f'<td class="{classes[index]}">{value if index == 5 else escape(value)}</td>')
     for code, _ in fee_columns:
         local, cny, currency = _fee_value(line, code)
         output.append(f'<td class="num">{escape(_money(local))} {escape(currency)}<br><small>CNY {escape(_money(cny))}</small></td>')

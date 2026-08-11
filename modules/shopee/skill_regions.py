@@ -74,6 +74,8 @@ class ShopeeRegionRuntime(Protocol):
         self, context: RegionContext, item_id: str
     ) -> Mapping[str, object] | None: ...
 
+    def list_item(self, context: RegionContext, item_id: str) -> None: ...
+
     def regional_models(
         self, context: RegionContext, item_id: str
     ) -> list[Mapping[str, object]]: ...
@@ -137,6 +139,8 @@ def dispatch_selected_regions(
         region = target.split(":", 1)[1]
         try:
             approved_models = _approved_models(snapshot, target)
+            approved_title, approved_description = _approved_copy(snapshot)
+            approved_item_sku = _expected_item_sku(snapshot)
             parcel = _parcel_envelope(snapshot)
             context = runtime.context(region)
             official_models = runtime.global_models(context, global_id)
@@ -163,6 +167,9 @@ def dispatch_selected_regions(
                 approved_models=approved_models,
                 tiers=tiers,
                 logistics=logistics,
+                item_name=approved_title,
+                description=approved_description,
+                item_sku=approved_item_sku,
             )
         except Exception as error:
             results.append(
@@ -312,8 +319,25 @@ def readback_dispatched_regions(
                     "successful publish task did not identify a shop item"
                 )
             item = runtime.regional_item(context, item_id)
+            listing_attempted = False
+            listing_error_type = ""
+            if (
+                isinstance(item, Mapping)
+                and str(item.get("item_status") or "").strip().upper()
+                == "UNLIST"
+            ):
+                listing_attempted = True
+                try:
+                    runtime.list_item(context, item_id)
+                except Exception as error:
+                    # A listing transport exception cannot prove that the
+                    # provider rejected the write.  Always read the item again
+                    # and let the official item status determine the result.
+                    listing_error_type = type(error).__name__
+                item = runtime.regional_item(context, item_id)
             models = runtime.regional_models(context, item_id)
             linkage = runtime.resolved_global_item_id(context, item_id)
+            expected_title, expected_description = _approved_copy(snapshot)
             checks = _official_readback_checks(
                 item=item,
                 models=models,
@@ -328,6 +352,8 @@ def readback_dispatched_regions(
                 expected_image_count=_approved_image_count(snapshot),
                 expected_item_sku=_expected_item_sku(snapshot),
                 expected_category_id=_expected_category_id(snapshot, target),
+                expected_title=expected_title,
+                expected_description=expected_description,
                 item_id=item_id,
             )
             verified = all(checks.values())
@@ -362,6 +388,8 @@ def readback_dispatched_regions(
                     "item_id": item_id,
                     "checks": checks,
                     "verified": verified,
+                    "listing_attempted": listing_attempted,
+                    "listing_error_type": listing_error_type,
                 }
             )
         except Exception as error:
@@ -499,6 +527,29 @@ class OfficialShopeeRegionRuntime:
             and str(row.get("item_id") or "") == item_id
         ]
         return matches[0] if len(matches) == 1 else None
+
+    def list_item(self, context: RegionContext, item_id: str) -> None:
+        from modules.shopee.client import shop_post
+
+        response = shop_post(
+            "/api/v2/product/unlist_item",
+            context.shop_id,
+            context.shop_token,
+            {"item_list": [{"item_id": int(item_id), "unlist": False}]},
+        )
+        _raise_provider_error(response, "official regional item listing")
+        rows = (response.get("response") or {}).get("success_list") or []
+        matches = [
+            row
+            for row in rows
+            if isinstance(row, Mapping)
+            and str(row.get("item_id") or "") == str(item_id)
+            and row.get("unlist") is False
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(
+                "official regional item listing response did not confirm the item"
+            )
 
     def regional_models(
         self, context: RegionContext, item_id: str
@@ -684,6 +735,32 @@ def _approved_image_count(snapshot: Mapping[str, object]) -> int:
     return 0
 
 
+def _approved_copy(snapshot: Mapping[str, object]) -> tuple[str, str]:
+    product = snapshot.get("product")
+    content = snapshot.get("content")
+    title = (
+        product.get("title")
+        if isinstance(product, Mapping)
+        else None
+    )
+    description = (
+        product.get("description")
+        if isinstance(product, Mapping)
+        else None
+    )
+    if not str(title or "").strip() and isinstance(content, Mapping):
+        title = content.get("title")
+    if not str(description or "").strip() and isinstance(content, Mapping):
+        description = content.get("description")
+    clean_title = str(title or "").strip()
+    clean_description = str(description or "").strip()
+    if not clean_title or not clean_description:
+        raise ShopeeRegionContractError(
+            "approved regional title and description are required"
+        )
+    return clean_title, clean_description
+
+
 def _expected_item_sku(snapshot: Mapping[str, object]) -> str:
     rows = snapshot.get("skus")
     values = {
@@ -753,6 +830,9 @@ def _publish_body(
     approved_models: list[Mapping[str, str]],
     tiers: Mapping[str, list[int]],
     logistics: list[int],
+    item_name: str,
+    description: str,
+    item_sku: str,
 ) -> dict[str, object]:
     prices = [Decimal(row["price"]) for row in approved_models]
     return {
@@ -760,7 +840,13 @@ def _publish_body(
         "shop_id": int(shop_id),
         "shop_region": region,
         "item": {
-            "item_status": "NORMAL",
+            # This merchant rejects a regional create task that requests
+            # NORMAL directly.  Create an exact UNLIST item, wait for the
+            # task, then list it through the official shop endpoint.
+            "item_name": item_name,
+            "description": description,
+            "item_status": "UNLIST",
+            "item_sku": item_sku,
             "original_price": str(min(prices)),
             "logistic": [
                 {"logistic_id": value, "enabled": True}
@@ -789,6 +875,8 @@ def _official_readback_checks(
     expected_image_count: int,
     expected_item_sku: str,
     expected_category_id: str,
+    expected_title: str,
+    expected_description: str,
     item_id: str,
 ) -> dict[str, bool]:
     expected = {row["model_sku"]: row for row in expected_models}
@@ -853,7 +941,14 @@ def _official_readback_checks(
         "model_prices_exact": model_prices_exact,
         "item_sku_exact": (
             isinstance(item, Mapping)
-            and str(item.get("item_sku") or "").strip() == expected_item_sku
+            and (
+                str(item.get("item_sku") or "").strip() == expected_item_sku
+                or (
+                    item.get("has_model") is True
+                    and not str(item.get("item_sku") or "").strip()
+                    and set(observed) == set(expected)
+                )
+            )
         ),
         "selected_logistics_enabled": set(expected_logistics).issubset(
             enabled_logistics
@@ -863,10 +958,11 @@ def _official_readback_checks(
             or not expected_category_id
             or observed_category_id == expected_category_id
         ),
-        "copy_present": (
+        "copy_exact": (
             isinstance(item, Mapping)
-            and bool(str(item.get("item_name") or "").strip())
-            and bool(str(item.get("description") or "").strip())
+            and str(item.get("item_name") or "").strip() == expected_title
+            and str(item.get("description") or "").strip()
+            == expected_description
         ),
         "images_present": (
             isinstance(image_urls, list)

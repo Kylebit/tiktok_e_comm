@@ -112,18 +112,22 @@ For each selected shop:
    Model SKU, tier index and variation image.
 2. Read the target shop identity and `get_channel_list`; select only logistics
    channels compatible with the approved parcel.
-3. Build one `create_publish_task` request with `global_item_id`, `shop_id`,
-   `shop_region`, requested item status, target logistics, and one local-price
-   row for every approved model tier.
+3. Build one legacy CNSC `create_publish_task` request with `global_item_id`,
+   `shop_id`, `shop_region`, the exact approved title/description/item SKU,
+   target logistics, one local-price row for every approved model tier, and
+   `item_status=UNLIST`.
 4. Save the returned `publish_task_id` as the submission identity.
 5. Poll `get_publish_task_result` until `success` or `failed`; a timeout or
    malformed response is an unknown accepted outcome, never a safe resubmit.
-6. On success, obtain the regional `item_id`, enable applicable logistics if
-   Shopee created them disabled, and read `get_item_base_info` plus
-   `get_model_list`.
-7. Resolve the regional item back to the same `global_item_id` and verify item
+6. On success, obtain the regional `item_id`, read its initial official state,
+   and list an `UNLIST` item with `/api/v2/product/unlist_item` and
+   `unlist=false`. A listing transport exception has an unknown write result,
+   so read the item again instead of blindly repeating it.
+7. Enable applicable logistics if Shopee created them disabled, and read
+   `get_item_base_info` plus `get_model_list` again.
+8. Resolve the regional item back to the same `global_item_id` and verify item
    state, all Model SKUs, each local price/currency, logistics, copy and images.
-8. Report success for that shop only after the regional official readback.
+9. Report success for that shop only after the regional official readback.
 
 The approved snapshot must retain both price identities for every target:
 
@@ -185,6 +189,35 @@ Permanent handling:
 
 Offer 3838608018 verified this rule across PH/MY/TH/VN: all four regional items
 resolved to global item `48715697978` after official merchant resolution.
+
+## Confirmed incident: regional create rejected direct NORMAL publication
+
+Observed on Offer `3882722296` / SKU `0967` for the PH storefront:
+
+- the full legacy CNSC regional body with `item_status=NORMAL` returned
+  `product.error_param / parameter invalid`;
+- the newer `shop_list`-only body was parsed but returned
+  `product.error_busi / record not found` for this merchant mode;
+- the same complete legacy body with `item_status=UNLIST` was accepted as task
+  `202608111429373276` and created item `46465822597`;
+- `/api/v2/product/unlist_item` with `unlist=false` then moved that exact item
+  to official `NORMAL` state.
+
+Permanent handling:
+
+1. Keep the full legacy request shape for this CNSC merchant: approved copy,
+   parent SKU, all model tiers/prices and compatible logistics.
+2. Create the regional item as `UNLIST`; never request direct `NORMAL` in the
+   create task.
+3. Poll the task and persist its exact task/item identity before listing.
+4. List the returned item through the official shop endpoint, then re-read it.
+5. If the listing response is lost, trust only the second official item read;
+   never blindly send the listing write again.
+6. Only official `NORMAL` plus exact global linkage, model SKUs, model prices,
+   tiers, logistics, copy and images is PUBLISHED.
+7. For an official modeled item (`has_model=true`), Shopee may return an empty
+   parent `item_sku`. Accept that omission only when the complete official
+   Model-SKU set is exact; otherwise the SKU identity remains a mismatch.
 
 ## Confirmed incident: an unrelated recommendation blocked the exact category
 

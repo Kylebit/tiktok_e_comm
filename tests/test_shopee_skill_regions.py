@@ -13,6 +13,11 @@ from modules.shopee.skill_regions import (
 def _snapshot(*targets: str) -> dict:
     return {
         "schema_version": "approved-publication-snapshot/v4",
+        "product": {
+            "title": "Approved regional title",
+            "description": "Approved regional description",
+            "images": ["https://example.invalid/image"],
+        },
         "publication_targets": [
             {
                 "target_label": target,
@@ -65,6 +70,11 @@ class FakeRuntime:
         self.missing_items: set[str] = set()
         self.disabled_logistics: set[str] = set()
         self.bad_tiers: set[str] = set()
+        self.list_calls: list[tuple[str, str]] = []
+        self.listed_regions: set[str] = set()
+        self.blank_parent_sku: set[str] = set()
+        self.bad_copy: set[str] = set()
+        self.list_failures: set[str] = set()
 
     def context(self, region: str) -> RegionContext:
         self.context_calls.append(region)
@@ -108,10 +118,17 @@ class FakeRuntime:
             return None
         return {
             "item_id": item_id,
-            "item_status": "NORMAL",
-            "item_sku": "0967",
-            "item_name": f"approved {context.region} item",
-            "description": "approved description",
+            "item_status": (
+                "NORMAL" if context.region in self.listed_regions else "UNLIST"
+            ),
+            "item_sku": "" if context.region in self.blank_parent_sku else "0967",
+            "has_model": True,
+            "item_name": (
+                "Drifted title"
+                if context.region in self.bad_copy
+                else "Approved regional title"
+            ),
+            "description": "Approved regional description",
             "image": {"image_url_list": ["https://example.invalid/image"]},
             "logistic_info": [
                 {
@@ -150,6 +167,13 @@ class FakeRuntime:
     def resolved_global_item_id(self, _context, _item_id):
         return "60000001"
 
+    def list_item(self, context, item_id):
+        self.list_calls.append((context.region, str(item_id)))
+        if context.region in self.list_failures:
+            self.listed_regions.add(context.region)
+            raise TimeoutError("listing response lost")
+        self.listed_regions.add(context.region)
+
     def record_verified_item(self, **facts):
         self.records.append(dict(facts))
 
@@ -172,7 +196,7 @@ def test_global_only_never_dispatches_or_prefills_regions() -> None:
     assert runtime.records == []
 
 
-def test_each_selected_region_is_independent_and_uses_all_sku_prices() -> None:
+def test_each_selected_region_is_independent_and_uses_complete_unlisted_body() -> None:
     runtime = FakeRuntime()
     runtime.create_failures.add("PH")
 
@@ -192,18 +216,46 @@ def test_each_selected_region_is_independent_and_uses_all_sku_prices() -> None:
     ]
     assert [region for region, _body in runtime.create_calls] == ["PH", "MY"]
     my_body = runtime.create_calls[1][1]
-    assert my_body["shop_region"] == "MY"
-    assert my_body["item"]["model"] == [
-        {"tier_index": [0], "original_price": "7.10"},
-        {"tier_index": [1], "original_price": "9.20"},
-    ]
-    assert my_body["item"]["logistic"] == [
-        {"logistic_id": 2001, "enabled": True},
-        {"logistic_id": 2002, "enabled": True},
-    ]
+    assert my_body == {
+        "global_item_id": 60000001,
+        "shop_id": 102,
+        "shop_region": "MY",
+        "item": {
+            "item_name": "Approved regional title",
+            "description": "Approved regional description",
+            "item_status": "UNLIST",
+            "item_sku": "0967",
+            "original_price": "7.10",
+            "logistic": [
+                {"logistic_id": 2001, "enabled": True},
+                {"logistic_id": 2002, "enabled": True},
+            ],
+            "model": [
+                {"tier_index": [0], "original_price": "7.10"},
+                {"tier_index": [1], "original_price": "9.20"},
+            ],
+        },
+    }
     assert "TH" not in runtime.context_calls
     assert "VN" not in runtime.context_calls
     assert runtime.records == []
+
+
+def test_provider_requires_unlisted_create_before_separate_listing() -> None:
+    runtime = FakeRuntime()
+
+    result = dispatch_selected_regions(
+        _snapshot("shopee:PH"),
+        global_item_id="60000001",
+        runtime=runtime,
+    )
+
+    assert result["targets"][0]["outcome"] == "ACCEPTED"
+    body = runtime.create_calls[0][1]
+    assert body["item"]["item_status"] == "UNLIST"
+    assert body["item"]["item_name"] == "Approved regional title"
+    assert body["item"]["description"] == "Approved regional description"
+    assert body["item"]["item_sku"] == "0967"
 
 
 def test_v4_region_without_per_sku_global_cny_lineage_fails_before_dispatch() -> None:
@@ -288,6 +340,7 @@ def test_only_officially_verified_region_is_recorded() -> None:
         "FAILED",
     ]
     assert result["verified_target_count"] == 1
+    assert runtime.list_calls == [("PH", "8101")]
     assert runtime.records == [
         {
             "global_item_id": "60000001",
@@ -319,6 +372,72 @@ def test_missing_official_item_never_records_region() -> None:
     assert result["targets"][0]["outcome"] == "MISMATCH"
     assert result["targets"][0]["verified"] is False
     assert runtime.records == []
+
+
+def test_modeled_item_allows_blank_parent_sku_after_exact_model_readback() -> None:
+    runtime = FakeRuntime()
+    runtime.blank_parent_sku.add("PH")
+    snapshot = _snapshot("shopee:PH")
+    dispatch = dispatch_selected_regions(
+        snapshot,
+        global_item_id="60000001",
+        runtime=runtime,
+    )
+
+    result = readback_dispatched_regions(
+        snapshot,
+        dispatch,
+        global_item_id="60000001",
+        runtime=runtime,
+    )
+
+    assert result["targets"][0]["outcome"] == "PUBLISHED"
+    assert result["targets"][0]["checks"]["item_sku_exact"] is True
+
+
+def test_copy_drift_is_not_published_or_recorded() -> None:
+    runtime = FakeRuntime()
+    runtime.bad_copy.add("PH")
+    snapshot = _snapshot("shopee:PH")
+    dispatch = dispatch_selected_regions(
+        snapshot,
+        global_item_id="60000001",
+        runtime=runtime,
+    )
+
+    result = readback_dispatched_regions(
+        snapshot,
+        dispatch,
+        global_item_id="60000001",
+        runtime=runtime,
+    )
+
+    assert result["targets"][0]["outcome"] == "MISMATCH"
+    assert result["targets"][0]["checks"]["copy_exact"] is False
+    assert runtime.records == []
+
+
+def test_lost_listing_response_uses_authoritative_second_readback() -> None:
+    runtime = FakeRuntime()
+    runtime.list_failures.add("PH")
+    snapshot = _snapshot("shopee:PH")
+    dispatch = dispatch_selected_regions(
+        snapshot,
+        global_item_id="60000001",
+        runtime=runtime,
+    )
+
+    result = readback_dispatched_regions(
+        snapshot,
+        dispatch,
+        global_item_id="60000001",
+        runtime=runtime,
+    )
+
+    row = result["targets"][0]
+    assert row["outcome"] == "PUBLISHED"
+    assert row["listing_attempted"] is True
+    assert row["listing_error_type"] == "TimeoutError"
 
 
 def test_tier_or_requested_logistics_drift_never_records_region() -> None:

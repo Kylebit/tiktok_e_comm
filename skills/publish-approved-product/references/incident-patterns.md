@@ -49,6 +49,13 @@ current execution report only.
   NORMAL parent item plus one unique positive global_model_id and exact facts
   for every SKU; enforce Model NORMAL only when the provider actually returns
   that field.
+- Shopee regional publication for the current CNSC merchant is a verified
+  two-write sequence: submit the complete legacy regional task as `UNLIST`,
+  then list the returned exact item with `unlist=false`. Direct `NORMAL`
+  creation returns `parameter invalid`; the newer `shop_list`-only request
+  returns `record not found`. After either write, authoritative item/model
+  readback wins over the immediate response. A modeled item may omit its
+  parent item SKU only when every official Model SKU is exact.
 - Shopee category recommendation: choose one exact publishable official leaf
   from the frozen main-category semantic identity, then read only that leaf's
   attribute tree. A malformed unrelated recommendation must not erase a valid

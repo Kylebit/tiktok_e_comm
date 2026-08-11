@@ -159,6 +159,12 @@ def project_shopee_global_v4_command(
     if master.get("schema_version") != "shopee-global-master/v1":
         raise ShopeeGlobalV4Error("Shopee global master schema is invalid")
     product = _mapping(frozen.get("product"), "approved Shopee product")
+    main_category = deepcopy(
+        _mapping(product.get("main_category"), "approved main category")
+    )
+    price_source = deepcopy(
+        _mapping(master.get("price_source"), "Shopee master price source")
+    )
     product_images = _https_urls(product.get("images"), "approved Shopee image")
     skus = _rows(frozen.get("skus"), "approved Shopee SKUs")
     master_prices = _rows(
@@ -236,6 +242,12 @@ def project_shopee_global_v4_command(
         "offer_id": _text(frozen.get("offer_id"), "offer id", max_length=32),
         "product_revision": frozen.get("product_revision"),
         "master_schema_version": master["schema_version"],
+        # These are frozen product-policy facts, not mutable dashboard hints.
+        # The provider adapter uses the approved semantic category to select
+        # one official publishable CNSC leaf and the exact master source to
+        # resolve one merchant identity.
+        "main_category": main_category,
+        "price_source": price_source,
         "product": {
             "title": _text(product.get("title"), "Shopee title", max_length=255),
             "description": _text(

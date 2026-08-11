@@ -391,6 +391,10 @@ def test_projection_is_derived_only_from_the_frozen_v4_snapshot():
         "https://img.example/main-1.jpg",
         "https://img.example/main-2.jpg",
     ]
+    assert command["main_category"] == request.snapshot["product"]["main_category"]
+    assert command["price_source"] == request.snapshot["shopee_global_master"][
+        "price_source"
+    ]
 
 
 def test_region_executor_preserves_global_master_writes_when_resolution_fails():

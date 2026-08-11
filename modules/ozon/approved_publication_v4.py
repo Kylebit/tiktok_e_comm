@@ -268,6 +268,14 @@ def _localized_copy(
 
     if not has_cyrillic(title) or not has_cyrillic(description):
         raise OzonApprovedPublicationError("Ozon localized copy is not Russian")
+    # Ozon accepts the multiplication sign in the import request but removes
+    # it from the stored title (for example ``7 × 7`` becomes ``7 7``).  That
+    # makes an exact authoritative readback impossible, so reject the lossy
+    # spelling before any provider write.  Russian ``7 на 7`` is stable.
+    if "×" in title:
+        raise OzonApprovedPublicationError(
+            "Ozon localized title contains a provider-stripped multiplication sign"
+        )
     return title, description
 
 
@@ -431,14 +439,21 @@ def _classify_variant(
     if not created:
         return "PROCESSING"
     images = observed.get("images")
+    profile = expected.get("official_profile")
+    expected_type_id = (
+        str(profile.get("type_id") or "") if isinstance(profile, Mapping) else ""
+    )
     checks = (
         observed.get("name") == expected["title"],
+        observed.get("description") == expected["description"],
         _same_decimal(observed.get("price"), expected["price"]),
         _same_decimal(observed.get("old_price"), expected["old_price"]),
         isinstance(images, Sequence)
         and not isinstance(images, (str, bytes, bytearray))
         and len(images) == expected["image_count"],
         str(observed.get("category_id") or "") == expected["category"]["id"],
+        not expected_type_id
+        or str(observed.get("type_id") or "") == expected_type_id,
         _same_parcel(observed, expected["parcel"]),
     )
     return "PUBLISHED" if all(checks) else "FAILED"

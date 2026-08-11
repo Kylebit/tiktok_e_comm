@@ -135,10 +135,12 @@ def _published_item(payload: dict, *, item_id: object) -> dict:
             "status_failed": "",
         },
         "name": payload["title"],
+        "description": payload["description"],
         "price": payload["price"],
         "old_price": payload["old_price"],
         "images": [f"provider-image-{index}" for index in range(payload["image_count"])],
         "category_id": payload["category"]["id"],
+        "type_id": str(payload.get("official_profile", {}).get("type_id") or ""),
         "weight_kg": payload["parcel"]["weight_kg"],
         "package_cm": payload["parcel"]["package_cm"],
     }
@@ -407,7 +409,7 @@ def test_deferred_ozon_category_uses_one_exact_official_profile_receipt() -> Non
             "schema_version": "ozon-localized-copy/v1",
             "source_snapshot_digest": value["snapshot_digest"],
             "language": "ru",
-            "title": "Декоративный магнит на холодильник из смолы, 7 × 7 см",
+            "title": "Декоративный магнит на холодильник из смолы, 7 на 7 см",
             "description": "Декоративный магнит из синтетической смолы для холодильника.",
         },
         dispatch_variant=dispatch,
@@ -431,7 +433,7 @@ def test_deferred_ozon_category_uses_one_exact_official_profile_receipt() -> Non
     }
     assert submitted[0]["official_profile"]["type_id"] == 93785
     assert submitted[0]["title"] == (
-        "Декоративный магнит на холодильник из смолы, 7 × 7 см"
+        "Декоративный магнит на холодильник из смолы, 7 на 7 см"
     )
     assert submitted[0]["description"].startswith("Декоративный магнит")
 
@@ -496,6 +498,59 @@ def test_exact_fridge_magnet_profile_without_russian_copy_is_zero_write_failure(
                     "value": "Fridge Magnet",
                 },
             },
+        },
+        dispatch_variant=lambda _payload: calls.append("dispatch"),
+        readback_variants=lambda _ids: calls.append("readback"),
+    )
+
+    assert calls == []
+    assert result["dispatch_attempted"] is False
+    assert result["external_write_count"] == 0
+
+
+def test_ozon_localized_title_with_provider_stripped_multiply_sign_is_zero_write() -> None:
+    snapshot = _snapshot()
+    snapshot["categories_by_target"]["ozon:RU"]["category"] = None
+    snapshot["categories_by_target"]["ozon:RU"]["decision"]["status"] = (
+        "DEFERRED_TO_SKILL"
+    )
+    calls: list[str] = []
+    profile = {
+        "schema_version": "ozon-official-profile-resolution/v1",
+        "resolution": "EXACT",
+        "description_category_id": 17028743,
+        "category_name": "Souvenirs and Gifts",
+        "category_path": [
+            {"id": "17027901", "name": "House & Garden"},
+            {"id": "17028743", "name": "Souvenirs and Gifts"},
+        ],
+        "type_id": 93785,
+        "type_name": "Fridge Magnet",
+        "required_attributes": {
+            "brand": {
+                "attribute_id": 85,
+                "dictionary_value_id": 126745801,
+                "value": "No Brand",
+            },
+            "model_name": {"attribute_id": 9048},
+            "product_type": {
+                "attribute_id": 8229,
+                "dictionary_value_id": 93785,
+                "value": "Fridge Magnet",
+            },
+        },
+    }
+
+    result = execute_ozon_v4_publication(
+        snapshot,
+        target_labels=("ozon:RU",),
+        official_profile_resolver=lambda _snapshot: profile,
+        localized_copy_resolver=lambda value: {
+            "schema_version": "ozon-localized-copy/v1",
+            "source_snapshot_digest": value["snapshot_digest"],
+            "language": "ru",
+            "title": "Декоративный магнит, 7 × 7 см",
+            "description": "Декоративный магнит на холодильник из синтетической смолы.",
         },
         dispatch_variant=lambda _payload: calls.append("dispatch"),
         readback_variants=lambda _ids: calls.append("readback"),

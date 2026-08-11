@@ -677,8 +677,8 @@ def test_ozon_readback_normalizes_authoritative_id_statuses_and_parcel():
 
     def post(path, body):
         calls.append((path, deepcopy(body)))
-        return {
-            "items": [
+        if path == "/v3/product/info/list":
+            return {"items": [
                 {
                     "offer_id": "0967",
                     "id": 7654321,
@@ -700,8 +700,27 @@ def test_ozon_readback_normalizes_authoritative_id_statuses_and_parcel():
                         "status_failed": "",
                     },
                 }
-            ]
-        }
+            ]}
+        if path == "/v4/product/info/attributes":
+            return {"result": [{
+                "offer_id": "0967",
+                "id": 7654321,
+                "type_id": 999,
+                "weight": 200,
+                "weight_unit": "g",
+                "depth": 100,
+                "width": 80,
+                "height": 20,
+                "dimension_unit": "mm",
+                "attributes": [],
+            }]}
+        if path == "/v1/product/info/description":
+            return {"result": {
+                "offer_id": "0967",
+                "id": 7654321,
+                "description": "Approved Ozon description",
+            }}
+        raise AssertionError((path, body))
 
     rows = OfficialOzonV4Transport(post=post).readback_variants(("0967",))
 
@@ -715,19 +734,136 @@ def test_ozon_readback_normalizes_authoritative_id_statuses_and_parcel():
                 "status_failed": "",
             },
             "name": "Approved Ozon title",
+            "description": "Approved Ozon description",
             "price": "100.00",
             "old_price": "120.00",
             "images": ["provider://image"],
             "category_id": "17028913",
+            "type_id": "999",
             "weight_kg": "0.2",
             "package_cm": ["10", "8", "2"],
+            "attributes": {},
         }
     ]
     assert calls == [
         (
             "/v3/product/info/list",
             {"offer_id": ["0967"], "limit": 1000, "visibility": "ALL"},
-        )
+        ),
+        (
+            "/v4/product/info/attributes",
+            {
+                "filter": {"offer_id": ["0967"], "visibility": "ALL"},
+                "limit": 1000,
+            },
+        ),
+        ("/v1/product/info/description", {"offer_id": "0967"}),
+    ]
+
+
+def test_ozon_readback_combines_color_image_and_uses_attribute_parcel():
+    approved_gallery = "https://provider.example/gallery.jpg"
+    approved_color = "https://provider.example/color.jpg"
+
+    def post(path, body):
+        if path == "/v3/product/info/list":
+            return {
+                "items": [
+                    {
+                        "offer_id": "0967",
+                        "id": 5906709656,
+                        "name": "Русское название",
+                        "price": "40.00",
+                        "old_price": "52.00",
+                        "images": [approved_gallery],
+                        "color_image": [approved_color],
+                        "description_category_id": 17028743,
+                        "type_id": 93785,
+                        "statuses": {
+                            "is_created": True,
+                            "status": "PRICE_SENT",
+                            "status_failed": "",
+                        },
+                    }
+                ]
+            }
+        if path == "/v4/product/info/attributes":
+            return {
+                "result": [
+                    {
+                        "offer_id": "0967",
+                        "id": 5906709656,
+                        "weight": 100,
+                        "weight_unit": "g",
+                        "depth": 100,
+                        "width": 100,
+                        "height": 20,
+                        "dimension_unit": "mm",
+                        "attributes": [
+                            {
+                                "id": 85,
+                                "values": [
+                                    {
+                                        "dictionary_value_id": 126745801,
+                                        "value": "No Brand",
+                                    }
+                                ],
+                            },
+                            {
+                                "id": 9048,
+                                "values": [
+                                    {
+                                        "dictionary_value_id": 0,
+                                        "value": "0967-fridge-magnet",
+                                    }
+                                ],
+                            },
+                        ],
+                    }
+                ]
+            }
+        if path == "/v1/product/info/description":
+            return {
+                "result": {
+                    "offer_id": "0967",
+                    "id": 5906709656,
+                    "description": "Точное русское описание",
+                }
+            }
+        raise AssertionError((path, body))
+
+    rows = OfficialOzonV4Transport(post=post).readback_variants(("0967",))
+
+    assert rows == [
+        {
+            "offer_id": "0967",
+            "id": 5906709656,
+            "statuses": {
+                "is_created": True,
+                "status": "PRICE_SENT",
+                "status_failed": "",
+            },
+            "name": "Русское название",
+            "description": "Точное русское описание",
+            "price": "40.00",
+            "old_price": "52.00",
+            "images": [approved_gallery, approved_color],
+            "category_id": "17028743",
+            "type_id": "93785",
+            "weight_kg": "0.1",
+            "package_cm": ["10", "10", "2"],
+            "attributes": {
+                "85": [
+                    {"dictionary_value_id": 126745801, "value": "No Brand"}
+                ],
+                "9048": [
+                    {
+                        "dictionary_value_id": 0,
+                        "value": "0967-fridge-magnet",
+                    }
+                ],
+            },
+        }
     ]
 
 

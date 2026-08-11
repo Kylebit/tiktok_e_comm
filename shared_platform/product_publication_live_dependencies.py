@@ -73,6 +73,8 @@ MIAOSHOU_COMMON_LIST_PATH = (
 MIAOSHOU_TIKTOK_LIST_PATH = SOURCE_LIST_PATH
 OZON_IMPORT_PATH = "/v3/product/import"
 OZON_READBACK_PATH = "/v3/product/info/list"
+OZON_ATTRIBUTES_READBACK_PATH = "/v4/product/info/attributes"
+OZON_DESCRIPTION_READBACK_PATH = "/v1/product/info/description"
 OZON_CATEGORY_TREE_PATH = "/v1/description-category/tree"
 OZON_CATEGORY_ATTRIBUTES_PATH = "/v1/description-category/attribute"
 OZON_ATTRIBUTE_VALUES_SEARCH_PATH = (
@@ -2000,6 +2002,44 @@ class OfficialOzonV4Transport:
             not isinstance(item, Mapping) for item in items
         ):
             raise LivePublicationDependencyError("Ozon official readback is malformed")
+        if not items:
+            return []
+
+        attributes_response = self._post(
+            OZON_ATTRIBUTES_READBACK_PATH,
+            {
+                "filter": {"offer_id": list(offer_ids), "visibility": "ALL"},
+                "limit": 1000,
+            },
+        )
+        attribute_rows = (
+            attributes_response.get("result")
+            if isinstance(attributes_response, Mapping)
+            else None
+        )
+        if not isinstance(attribute_rows, list) or any(
+            not isinstance(row, Mapping) for row in attribute_rows
+        ):
+            raise LivePublicationDependencyError(
+                "Ozon official attribute readback is malformed"
+            )
+
+        def exact_rows_by_offer(
+            rows: list[Mapping[str, Any]], *, label: str
+        ) -> dict[str, Mapping[str, Any]]:
+            indexed: dict[str, Mapping[str, Any]] = {}
+            for row in rows:
+                offer_id = str(row.get("offer_id") or "").strip()
+                if not offer_id or offer_id not in offer_ids or offer_id in indexed:
+                    raise LivePublicationDependencyError(
+                        f"Ozon official {label} identity is ambiguous"
+                    )
+                indexed[offer_id] = row
+            return indexed
+
+        attributes_by_offer = exact_rows_by_offer(
+            attribute_rows, label="attribute"
+        )
         normalized: list[Mapping[str, Any]] = []
         for item in items:
             statuses = item.get("statuses")
@@ -2008,24 +2048,82 @@ class OfficialOzonV4Transport:
                 raise LivePublicationDependencyError(
                     "Ozon official product facts are incomplete"
                 )
+            offer_id = str(item.get("offer_id") or "").strip()
+            attribute_row = attributes_by_offer.get(offer_id)
+            if attribute_row is None:
+                raise LivePublicationDependencyError(
+                    "Ozon official attribute facts are unavailable"
+                )
+            description_response = self._post(
+                OZON_DESCRIPTION_READBACK_PATH, {"offer_id": offer_id}
+            )
+            description_row = (
+                description_response.get("result")
+                if isinstance(description_response, Mapping)
+                else None
+            )
+            if (
+                not isinstance(description_row, Mapping)
+                or str(description_row.get("offer_id") or "").strip() != offer_id
+                or description_row.get("id") != item.get("id")
+                or type(description_row.get("description")) is not str
+                or not description_row["description"].strip()
+            ):
+                raise LivePublicationDependencyError(
+                    "Ozon official description identity is invalid"
+                )
+            color_images = item.get("color_image") or []
+            if isinstance(color_images, str):
+                color_images = [color_images]
+            if not isinstance(color_images, list) or any(
+                type(value) is not str or not value.strip() for value in color_images
+            ):
+                raise LivePublicationDependencyError(
+                    "Ozon official color image facts are invalid"
+                )
+            combined_images = list(images)
+            combined_images.extend(
+                value for value in color_images if value not in combined_images
+            )
+            raw_attributes = attribute_row.get("attributes")
+            if not isinstance(raw_attributes, list) or any(
+                not isinstance(row, Mapping) for row in raw_attributes
+            ):
+                raise LivePublicationDependencyError(
+                    "Ozon official attributes are malformed"
+                )
+            attributes: dict[str, Any] = {}
+            for row in raw_attributes:
+                attribute_id = str(row.get("id") or "").strip()
+                values = row.get("values")
+                if not attribute_id or attribute_id in attributes or not isinstance(values, list):
+                    raise LivePublicationDependencyError(
+                        "Ozon official attribute identity is ambiguous"
+                    )
+                attributes[attribute_id] = deepcopy(values)
             normalized.append(
                 {
-                    "offer_id": str(item.get("offer_id") or "").strip(),
+                    "offer_id": offer_id,
                     # ``id`` is authoritative.  Do not fall back to the legacy
                     # product_id field.
                     "id": item.get("id"),
                     "statuses": deepcopy(dict(statuses)),
                     "name": item.get("name"),
+                    "description": description_row.get("description"),
                     "price": item.get("price"),
                     "old_price": item.get("old_price"),
-                    "images": deepcopy(images),
+                    "images": deepcopy(combined_images),
                     "category_id": str(
                         item.get("description_category_id")
                         or item.get("category_id")
                         or ""
                     ),
-                    "weight_kg": _ozon_weight_kg(item),
-                    "package_cm": _ozon_package_cm(item),
+                    "type_id": str(
+                        attribute_row.get("type_id") or item.get("type_id") or ""
+                    ),
+                    "weight_kg": _ozon_weight_kg(attribute_row),
+                    "package_cm": _ozon_package_cm(attribute_row),
+                    "attributes": attributes,
                 }
             )
         return normalized

@@ -456,7 +456,14 @@ def _classify_variant(
         or str(observed.get("type_id") or "") == expected_type_id,
         _same_parcel(observed, expected["parcel"]),
     )
-    return "PUBLISHED" if all(checks) else "FAILED"
+    if all(checks):
+        return "PUBLISHED"
+    # A successful import acknowledgement is asynchronous.  Ozon can expose
+    # the previous stored copy for a short period even though the new update
+    # is accepted.  Only a provider rejection/terminal failed status is a
+    # failure; an accepted write with stale facts remains PROCESSING until a
+    # later authoritative readback converges.
+    return "FAILED" if dispatch.outcome == "REJECTED" else "PROCESSING"
 
 
 def _result(

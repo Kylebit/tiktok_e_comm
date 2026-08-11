@@ -290,6 +290,37 @@ def test_imported_and_offer_validated_are_processing_not_published() -> None:
     assert result["requires_human_action"] is False
 
 
+def test_accepted_update_with_stale_created_readback_is_processing_not_failed() -> None:
+    snapshot = _snapshot()
+    submitted: list[dict] = []
+
+    def dispatch(payload: dict) -> OzonDispatchFact:
+        submitted.append(payload)
+        return OzonDispatchFact(outcome="ACCEPTED", task_id="task-" + payload["offer_id"])
+
+    def readback(_offer_ids: tuple[str, ...]) -> list[dict]:
+        rows = [
+            _published_item(payload, item_id="item-" + payload["offer_id"])
+            for payload in submitted
+        ]
+        # Ozon has accepted the update but its list/read models still expose
+        # the prior stored copy during asynchronous processing.
+        rows[0]["name"] = "Previous provider title"
+        return rows
+
+    result = execute_ozon_v4_publication(
+        snapshot,
+        target_labels=("ozon:RU",),
+        dispatch_variant=dispatch,
+        readback_variants=readback,
+    )
+
+    assert result["targets"] == [
+        {"target_label": "ozon:RU", "status": "PROCESSING"}
+    ]
+    assert result["requires_human_action"] is False
+
+
 def test_created_item_mismatch_or_ambiguous_identity_is_never_whole_product_success() -> None:
     snapshot = _snapshot()
     submitted: list[dict] = []

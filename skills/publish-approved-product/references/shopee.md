@@ -229,3 +229,24 @@ Permanent handling:
    for one variant, it must equal the first approved master image ID.
 6. A complete SKU set and populated master image list do not prove variant
    images are complete.
+
+## Confirmed incident: non-preorder DTS zero is rejected
+
+Symptom: CNSC `add_global_item` rejects an otherwise valid global product with
+`product.error_busi` and says Days to Ship must be 1, or 4 through 10.
+
+Confirmed cause: the frozen global policy used
+`{is_pre_order: false, days_to_ship: 0}`. Shopee does not accept zero for a
+non-preorder global item.
+
+Permanent handling:
+
+1. Freeze non-preorder CNSC policy as
+   `{is_pre_order: false, days_to_ship: 1}`.
+2. Validate that exact provider-required value in the approved v4 snapshot.
+3. Never silently translate an approved zero inside the transport adapter;
+   generate and approve a successor snapshot instead.
+4. A provider rejection creates no global item. Reconcile the official global
+   list by every approved Model SKU before retrying.
+5. Preserve any already-returned image IDs in the run checkpoint so a safe
+   continuation does not upload the same approved images again.

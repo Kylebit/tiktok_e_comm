@@ -113,7 +113,7 @@ def _shopee_global_master():
                 "policy_version": "shopee-global-fixed-no-brand/v1",
             },
             "condition": "NEW",
-            "preorder": {"is_pre_order": False, "days_to_ship": 0},
+            "preorder": {"is_pre_order": False, "days_to_ship": 1},
             "stock": {
                 "quantity": 200,
                 "policy_version": "shopee-global-fixed-stock/v1",

@@ -487,7 +487,10 @@ def _shopee_global_category_and_policy(
             "policy_version": "shopee-global-fixed-no-brand/v1",
         },
         "condition": approved["condition"],
-        "preorder": dict(approved["preorder"]),
+        # Shopee CNSC rejects a non-preorder item when days_to_ship is zero.
+        # The user policy remains non-preorder; freeze the provider-required
+        # minimum DTS as an explicit immutable execution fact.
+        "preorder": {"is_pre_order": False, "days_to_ship": 1},
         "stock": {
             "quantity": approved["seller_stock"]["quantity"],
             "policy_version": "shopee-global-fixed-stock/v1",
@@ -511,7 +514,7 @@ def _deferred_shopee_global_policy() -> dict[str, Any]:
             "policy_version": "shopee-global-fixed-no-brand/v1",
         },
         "condition": "NEW",
-        "preorder": {"is_pre_order": False, "days_to_ship": 0},
+        "preorder": {"is_pre_order": False, "days_to_ship": 1},
         "stock": {
             "quantity": 200,
             "policy_version": "shopee-global-fixed-stock/v1",

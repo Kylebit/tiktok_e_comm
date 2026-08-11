@@ -777,7 +777,7 @@ def _shopee_global_policy(value: Any) -> dict[str, Any]:
     if row.get("condition") != "NEW":
         raise ApprovedPublicationSnapshotError("Shopee global condition policy drifted")
     preorder = _mapping(row.get("preorder"), "Shopee global preorder policy")
-    if preorder != {"is_pre_order": False, "days_to_ship": 0}:
+    if preorder != {"is_pre_order": False, "days_to_ship": 1}:
         raise ApprovedPublicationSnapshotError("Shopee global preorder policy drifted")
     stock = _mapping(row.get("stock"), "Shopee global stock policy")
     if stock != {
@@ -811,7 +811,7 @@ def _shopee_global_policy(value: Any) -> dict[str, Any]:
     return {
         "brand": dict(brand),
         "condition": "NEW",
-        "preorder": {"is_pre_order": False, "days_to_ship": 0},
+        "preorder": {"is_pre_order": False, "days_to_ship": 1},
         "stock": dict(stock),
         "warehouse": {
             "display_name": "中国仓库",

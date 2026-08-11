@@ -224,7 +224,7 @@ def test_offer_3882722296_freezes_exact_ph_global_master_without_equalizing_regi
     assert master["policy"]["condition"] == "NEW"
     assert master["policy"]["preorder"] == {
         "is_pre_order": False,
-        "days_to_ship": 0,
+        "days_to_ship": 1,
     }
     assert master["policy"]["stock"] == {
         "quantity": 200,

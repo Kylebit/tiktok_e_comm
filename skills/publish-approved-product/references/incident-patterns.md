@@ -45,6 +45,9 @@ current execution report only.
   from the frozen main-category semantic identity, then read only that leaf's
   attribute tree. A malformed unrelated recommendation must not erase a valid
   exact candidate; never fall back to title guessing.
+- Shopee non-preorder global items require `days_to_ship=1`; zero is rejected
+  by CNSC `add_global_item`. Freeze the provider-valid value in a successor v4
+  snapshot rather than changing it silently inside the transport adapter.
 - Ozon: current identity/state facts are `item.id` and `item.statuses`.
 - TikTok: store draft identity is target-specific; positional or first-draft
   matching breaks when the selected store set changes.

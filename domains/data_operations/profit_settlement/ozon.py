@@ -162,7 +162,7 @@ def _build_report(
             "fx":{"rate_cny_per_local":rate,**fx.payload()},
             "cost":{"unit_cost_cny":cost.unit_cost_cny,"quantity":quantity,"total_cny":product_cost,"version":cost.version,"effective_at":cost.effective_at,"source":cost.source,"snapshot_id":costs.snapshot_id},
             "advertising":{"mode":"estimated_rate","rate":rate_value,"basis":"buyer_paid_product_amount","basis_amount_local":paid,"amount_local":ad_local,"amount_cny":ad_cny,"policy_version":"ozon-fixed-ad-rate/v1"},
-            "fee_items":fees,"external_costs_cny":external,"profit_cny":settlement_cny-product_cost-ad_cny-external,"source_snapshot_id":_text(row.get("source_snapshot_id")),
+            "fee_items":fees,"external_costs_cny":external,"profit_cny":settlement_cny-product_cost-ad_cny-external,"source_snapshot_id":_text(row.get("source_snapshot_id")),"source_settlement_facts":list(row.get("source_settlement_facts") or []),
         })
     lines.sort(key=_line_settlement_sort_key)
     totals=_totals(lines); source_checksum=_checksum(sorted((_ready(row) for row in source_rows),key=_canonical))

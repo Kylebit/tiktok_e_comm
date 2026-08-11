@@ -8,6 +8,8 @@ For local credential discovery, check the configured token file first, then `tik
 
 TikTok Finance statement query bounds are inclusive UTC calendar days, matching `tiktok_settlement.pull_period()`. Convert each returned `statement_time` to the site's reporting timezone for `settled_at`, then re-filter the requested local date range. Group expanded item rows by statement ID, transaction type, and order/adjustment ID; sum allocated money and fee components while retaining every item row. Report settled order, adjustment, and item-line counts separately.
 
+The same TikTok order may have a positive sale statement followed by a negative refund statement in the same reporting period. Preserve both statement identities. If the repeated item SKU and quantity agree and only the sale statement carries a positive buyer-paid basis, consolidate them into one order line so settlement/refund components sum while product cost and estimated advertising are charged once. Any disagreement or multiple positive bases is blocking.
+
 ## Shopee
 
 Use payment escrow list filtered by `escrow_release_time`, then escrow detail. Normalize only released escrow rows to settled. Preserve the release timestamp, payout/escrow amount, item quantity, item price, platform/service/commission/shipping/refund components, and item allocation method. Do not treat an ordinary completed order as settled without released escrow evidence.

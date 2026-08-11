@@ -72,7 +72,12 @@ def _order_row(line, fee_columns, warning_by_sku):
     for code, _ in fee_columns:
         local, cny, currency = _fee_value(line, code)
         output.append(f'<td class="num">{escape(_money(local))} {escape(currency)}<br><small>CNY {escape(_money(cny))}</small></td>')
-    evidence = f"成本: {_text(cost.get('source'))}<br>{_text(cost.get('version'))}<br>FX: {_text(fx.get('source'))} @ {_text(fx.get('as_of'))}<br>结算: {_text(line.get('source_snapshot_id'))}"
+    facts = _list(line.get("source_settlement_facts"))
+    fact_text = "; ".join(
+        f"{_text(fact.get('fact_id'))}@{_text(fact.get('settled_at'))}"
+        for fact in facts if isinstance(fact, Mapping)
+    ) or "—"
+    evidence = f"成本: {_text(cost.get('source'))}<br>{_text(cost.get('version'))}<br>FX: {_text(fx.get('source'))} @ {_text(fx.get('as_of'))}<br>结算: {_text(line.get('source_snapshot_id'))}<br>结算事实: {fact_text}"
     if warning:
         evidence = f'<span class="warning">{escape(_text(warning.get("code")))}</span><br>{escape(_text(warning.get("message")))}<br>' + evidence
     else:

@@ -507,6 +507,7 @@ def test_stage_two_adapts_tiktok_orders_and_replaces_actual_ads_with_weekly_rate
         "included_order_net_settlement_local": Decimal("100"),
         "excluded_actual_advertising_local": Decimal("-10"),
         "unallocated_local": Decimal("0"),
+        "tolerance_local": Decimal("0.000000000001"),
     }
 
     report = build_tiktok_weekly_report(
@@ -536,6 +537,83 @@ def test_stage_two_adapts_tiktok_orders_and_replaces_actual_ads_with_weekly_rate
         "profit_cny": "4.200",
     }
     assert audit_profit_report(report).status == "PASSED"
+
+
+def test_stage_two_consolidates_same_period_sale_and_refund_without_repeating_cost_or_ads():
+    evidence = {
+        "schema_version": "settlement-evidence/v1",
+        "status": "ready",
+        "platform": "tiktok",
+        "site": "TH",
+        "snapshot_id": "tiktok-settlement:repeated-order",
+        "checksum": "repeated-order",
+        "net_settlement_total_local": "70",
+        "receipt": {"external_writes_performed": []},
+        "orders": [
+            {
+                "order_id": "order-1", "statement_id": "statement-sale",
+                "transaction_type": "Order", "settled_at": "2026-08-06T07:00:00+07:00",
+                "currency": "THB", "net_settlement_amount": "100",
+                "buyer_total_amount": "120",
+                "items": [{"platform_sku": "platform-1", "quantity": "1"}],
+                "financial_components": [{"code": "customer_payment", "amount": "120", "currency": "THB"}],
+            },
+            {
+                "order_id": "order-1", "statement_id": "statement-refund",
+                "transaction_type": "Order", "settled_at": "2026-08-07T07:00:00+07:00",
+                "currency": "THB", "net_settlement_amount": "-30",
+                "buyer_total_amount": "0",
+                "items": [{"platform_sku": "platform-1", "quantity": "1"}],
+                "financial_components": [{"code": "customer_refund", "amount": "-30", "currency": "THB"}],
+            },
+        ],
+    }
+
+    adapted = adapt_settlement_evidence(evidence, _catalog_stub(), period_kind="weekly")
+
+    assert adapted.status == "ready"
+    assert len(adapted.rows) == 1
+    assert adapted.rows[0]["net_settlement_amount"] == Decimal("70")
+    assert adapted.rows[0]["buyer_paid_product_amount"] == Decimal("120")
+    assert [fact["fact_id"] for fact in adapted.rows[0]["source_settlement_facts"]] == [
+        "statement-sale", "statement-refund",
+    ]
+    report = build_tiktok_weekly_report(
+        adapted.rows,
+        period_start="2026-08-03", period_end="2026-08-09",
+        costs=CostSnapshot.from_mapping(
+            {"0001": {"unit_cost_cny": "5", "version": "fixture-v1"}},
+            snapshot_id="costs:fixture",
+        ),
+        fx=FxSnapshot.from_mapping({"THB": "0.2"}, source="fixture-fx", as_of="2026-08-10"),
+        ad_rate="0.22", generated_at=NOW, code_version="stage-two-test",
+    ).payload()
+    assert report["totals"]["product_cost_cny"] == "5"
+    assert report["totals"]["advertising_cny"] == "5.280"
+    assert [fact["fact_id"] for fact in report["order_lines"][0]["source_settlement_facts"]] == [
+        "statement-sale", "statement-refund",
+    ]
+    assert audit_profit_report(report).status == "PASSED"
+
+
+def test_stage_two_allows_sub_minor_unit_decimal_reconciliation_noise():
+    evidence = {
+        "schema_version": "settlement-evidence/v1", "status": "ready",
+        "platform": "tiktok", "site": "TH", "snapshot_id": "tiktok-settlement:tail",
+        "checksum": "tail", "net_settlement_total_local": "1.00000000000000000000001",
+        "receipt": {"external_writes_performed": []},
+        "orders": [{
+            "order_id": "order-tail", "statement_id": "statement-tail",
+            "transaction_type": "Order", "settled_at": "2026-08-06T07:00:00+07:00",
+            "currency": "THB", "net_settlement_amount": "1", "buyer_total_amount": "1",
+            "items": [{"platform_sku": "platform-1", "quantity": "1"}], "financial_components": [],
+        }],
+    }
+
+    result = adapt_settlement_evidence(evidence, _catalog_stub(), period_kind="weekly")
+
+    assert result.status == "ready"
+    assert result.reconciliation["unallocated_local"] == Decimal("1E-23")
 
 
 def test_stage_two_keeps_missing_sku_mapping_as_a_blocking_row():

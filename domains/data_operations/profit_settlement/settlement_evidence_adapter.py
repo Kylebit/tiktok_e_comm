@@ -8,6 +8,9 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 
+RECONCILIATION_TOLERANCE_LOCAL = Decimal("0.000000000001")
+
+
 @dataclass(frozen=True)
 class EvidenceQualityIssue:
     code: str
@@ -189,22 +192,37 @@ def adapt_settlement_evidence(
                 "fee_items": fee_items,
                 "source_snapshot_id": source["snapshot_id"],
                 "source_settlement_record_id": record_id,
+                "source_settlement_facts": [{
+                    "fact_id": _text(record.get("statement_id")) or f"{record_id}:{record_index}",
+                    "record_id": record_id,
+                    "transaction_type": transaction_type,
+                    "settled_at": _text(record.get("settled_at")),
+                    "net_settlement_amount": settlement_allocations[item_index],
+                    "buyer_paid_product_amount": paid_allocations[item_index],
+                }],
                 "allocation_basis": allocation_basis,
                 **weight,
             }
             rows.append(row)
 
+    rows = _consolidate_repeated_order_lines(rows, issues)
     included_total = sum(
         (Decimal(str(row["net_settlement_amount"])) for row in rows), Decimal("0")
     )
     unallocated = official_total - included_total - excluded_actual_ads
-    if unallocated != 0:
-        issues.append(_issue("settlement_reconciliation_mismatch", "report", "net_settlement_total_local"))
+    if abs(unallocated) > RECONCILIATION_TOLERANCE_LOCAL:
+        issues.append(EvidenceQualityIssue(
+            "settlement_reconciliation_mismatch",
+            "report",
+            "net_settlement_total_local",
+            f"Settlement reconciliation difference {unallocated} exceeds local-currency tolerance {RECONCILIATION_TOLERANCE_LOCAL}",
+        ))
     reconciliation = {
         "official_net_settlement_local": official_total,
         "included_order_net_settlement_local": included_total,
         "excluded_actual_advertising_local": excluded_actual_ads,
         "unallocated_local": unallocated,
+        "tolerance_local": RECONCILIATION_TOLERANCE_LOCAL,
     }
     return AdaptedSettlementEvidence(
         "ready" if not issues else "needs_review",
@@ -215,6 +233,70 @@ def adapt_settlement_evidence(
         reconciliation,
         source,
     )
+
+
+def _consolidate_repeated_order_lines(rows, issues):
+    groups = {}
+    for row in rows:
+        key = (
+            _text(row.get("platform")),
+            _text(row.get("region")),
+            _text(row.get("shop_id")),
+            _text(row.get("order_line_id")),
+        )
+        groups.setdefault(key, []).append(row)
+
+    consolidated = []
+    stable_fields = (
+        "order_id", "order_line_id", "currency", "platform_sku",
+        "seller_sku", "canonical_sku", "quantity",
+    )
+    for key in sorted(groups):
+        members = sorted(
+            groups[key],
+            key=lambda row: (
+                _text(row.get("settled_at")),
+                _text((row.get("source_settlement_facts") or [{}])[0].get("fact_id")),
+            ),
+        )
+        if len(members) == 1:
+            consolidated.append(members[0])
+            continue
+        baseline = members[0]
+        conflicts = [
+            field for field in stable_fields
+            if any(member.get(field) != baseline.get(field) for member in members[1:])
+        ]
+        positive_ad_bases = [
+            member for member in members
+            if (_decimal(member.get("buyer_paid_product_amount")) or Decimal("0")) > 0
+        ]
+        if conflicts or len(positive_ad_bases) > 1:
+            detail = ",".join(conflicts) if conflicts else "buyer_paid_product_amount"
+            issues.append(EvidenceQualityIssue(
+                "conflicting_repeated_order_line",
+                _text(baseline.get("order_line_id")),
+                detail,
+                "Repeated settlement facts for one order line disagree on product identity, quantity, or advertising basis",
+            ))
+            continue
+        merged = dict(members[-1])
+        merged["net_settlement_amount"] = sum(
+            (_decimal(member.get("net_settlement_amount")) or Decimal("0") for member in members),
+            Decimal("0"),
+        )
+        merged["buyer_paid_product_amount"] = sum(
+            (_decimal(member.get("buyer_paid_product_amount")) or Decimal("0") for member in members),
+            Decimal("0"),
+        )
+        merged["fee_items"] = [
+            fee for member in members for fee in (member.get("fee_items") or [])
+        ]
+        merged["source_settlement_facts"] = [
+            fact for member in members for fact in (member.get("source_settlement_facts") or [])
+        ]
+        consolidated.append(merged)
+    return consolidated
 
 
 def _allocation_weights(platform, items, record_id, issues, quantity_overrides):
@@ -316,6 +398,7 @@ def _empty_reconciliation():
         "included_order_net_settlement_local": Decimal("0"),
         "excluded_actual_advertising_local": Decimal("0"),
         "unallocated_local": Decimal("0"),
+        "tolerance_local": RECONCILIATION_TOLERANCE_LOCAL,
     }
 
 

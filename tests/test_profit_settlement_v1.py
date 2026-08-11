@@ -246,6 +246,7 @@ def test_stage_one_shopee_evidence_preserves_components_without_guessing_net_inc
             }
         },
         module.SITE_TIMEZONES[("shopee", "TH")],
+        order_created_at="2026-07-29T10:15:00+07:00",
     )
 
     components = {item["code"]: item for item in order["financial_components"]}
@@ -254,6 +255,36 @@ def test_stage_one_shopee_evidence_preserves_components_without_guessing_net_inc
     assert components["commission_fee"]["amount"] == Decimal("-10")
     assert components["service_fee"]["included_in_net_settlement"] == "unknown"
     assert order["items"][0]["quantity"] == Decimal("2")
+    assert order["order_created_at"] == "2026-07-29T10:15:00+07:00"
+
+
+def test_stage_one_shopee_reads_official_order_created_at_in_batches():
+    module = _settlement_pull_module()
+    zone = module.SITE_TIMEZONES[("shopee", "TH")]
+    order_sns = [f"ORDER-{index:03d}" for index in range(51)]
+    timestamp = int(datetime(2026, 7, 29, 3, 15, tzinfo=timezone.utc).timestamp())
+    calls = []
+
+    def fake_get(path, shop_id, token, params):
+        calls.append((path, shop_id, token, params))
+        return {
+            "response": {
+                "order_list": [
+                    {"order_sn": order_sn, "create_time": timestamp}
+                    for order_sn in params["order_sn_list"].split(",")
+                ]
+            }
+        }
+
+    result, issues = module._shopee_order_created_times(
+        123, "redacted-token", order_sns, zone, request_get=fake_get
+    )
+
+    assert issues == []
+    assert len(calls) == 2
+    assert all(call[0] == "/api/v2/order/get_order_detail" for call in calls)
+    assert all(call[3]["response_optional_fields"] == "create_time" for call in calls)
+    assert result["ORDER-000"] == "2026-07-29T10:15:00+07:00"
 
 
 def test_stage_one_blocked_receipt_never_claims_reads_writes_or_refresh():
@@ -666,7 +697,7 @@ def test_stage_two_rejects_evidence_that_claims_external_writes():
     assert {issue.code for issue in result.issues} == {"external_write_claimed"}
 
 
-def test_stage_two_bundle_keeps_platforms_independent_with_fixed_22_percent_ozon_ads():
+def test_stage_two_bundle_supports_global_and_platform_ad_rate_overrides():
     def evidence(platform, site, source_sku):
         item_key = "platform_sku" if platform != "shopee" else "seller_sku"
         return {
@@ -708,6 +739,8 @@ def test_stage_two_bundle_keeps_platforms_independent_with_fixed_22_percent_ozon
         ),
         seller_sku_by_ozon_sku={"ozon-1": "1"},
         ad_rate=Decimal("0.15"),
+        ad_rate_source="operator_global_override",
+        ad_rates={"shopee": Decimal("0.19"), "ozon": Decimal("0.18")},
         generated_at=NOW,
         code_version="stage-two-test",
     )
@@ -717,13 +750,16 @@ def test_stage_two_bundle_keeps_platforms_independent_with_fixed_22_percent_ozon
     assert bundle["reports"]["shopee"]["status"] == "ready"
     assert bundle["reports"]["ozon"]["status"] == "ready"
     assert bundle["reports"]["ozon"]["report"]["order_lines"][0]["advertising"] == {
-        "mode": "estimated_rate", "rate": "0.22", "basis": "buyer_paid_product_amount",
-        "basis_amount_local": "120", "amount_local": "26.40", "amount_cny": "2.1120",
-        "policy_version": "ozon-fixed-ad-rate/v1",
+        "mode": "estimated_rate", "rate": "0.18", "input_source": "operator_platform_override",
+        "basis": "buyer_paid_product_amount", "basis_amount_local": "120",
+        "amount_local": "21.60", "amount_cny": "1.7280",
+        "policy_version": "operator-adjustable-ad-rate/v1",
     }
     assert bundle["reports"]["tiktok"]["report"]["order_lines"][0]["advertising"]["rate"] == "0.15"
-    assert bundle["reports"]["shopee"]["report"]["order_lines"][0]["advertising"]["rate"] == "0.15"
-    assert bundle["advertising"]["ozon"]["rate"] == "0.22"
+    assert bundle["reports"]["tiktok"]["report"]["order_lines"][0]["advertising"]["input_source"] == "operator_global_override"
+    assert bundle["reports"]["shopee"]["report"]["order_lines"][0]["advertising"]["rate"] == "0.19"
+    assert bundle["advertising"]["ozon"]["rate"] == "0.18"
+    assert bundle["advertising"]["shopee"]["input_source"] == "operator_platform_override"
     assert bundle["external_writes_performed"] == []
 
 
@@ -753,20 +789,21 @@ def test_shopee_weekly_ad_basis_uses_discounted_products_not_buyer_shipping_tota
         "schema_version": "settlement-evidence/v1", "status": "ready", "platform": "shopee", "site": "TH",
         "snapshot_id": "shopee-settlement:fixture", "checksum": "fixture", "net_settlement_total_local": "90",
         "receipt": {"external_writes_performed": []},
-        "orders": [{"order_id": "order-1", "settled_at": "2026-07-27T00:00:00+07:00", "currency": "THB", "net_settlement_amount": "90", "buyer_total_amount": "120", "items": [{"seller_sku": "1", "quantity": "2", "discounted_price": "100"}], "financial_components": [{"code": "buyer_paid_shipping_fee", "amount": "40"}]}],
+        "orders": [{"order_id": "order-1", "order_created_at": "2026-07-20T08:30:00+07:00", "settled_at": "2026-07-27T00:00:00+07:00", "currency": "THB", "net_settlement_amount": "90", "buyer_total_amount": "120", "items": [{"seller_sku": "1", "quantity": "2", "discounted_price": "100"}], "financial_components": [{"code": "buyer_paid_shipping_fee", "amount": "40"}]}],
     }
 
     result = adapt_settlement_evidence(evidence, _catalog_stub(), period_kind="weekly")
 
     assert result.status == "ready"
     assert result.rows[0]["buyer_paid_product_amount"] == Decimal("80")
+    assert result.rows[0]["occurred_at"] == "2026-07-20T08:30:00+07:00"
 
 
 @pytest.mark.parametrize(
     "builder",
-    (build_tiktok_weekly_report, build_shopee_weekly_report),
+    (build_tiktok_weekly_report, build_shopee_weekly_report, build_ozon_weekly_report),
 )
-def test_tiktok_and_shopee_weekly_reports_default_to_22_percent_ads(builder):
+def test_weekly_reports_default_to_22_percent_ads(builder):
     report = builder(
         [_row("DEFAULT-ADS")],
         period_start="2026-08-03",
@@ -779,7 +816,45 @@ def test_tiktok_and_shopee_weekly_reports_default_to_22_percent_ads(builder):
 
     assert report.status == "ready"
     assert report.order_lines[0]["advertising"]["rate"] == Decimal("0.22")
+    assert report.order_lines[0]["advertising"]["input_source"] == "default_22"
     assert report.totals["advertising_cny"] == Decimal("8.8000")
+
+
+@pytest.mark.parametrize(
+    "builder",
+    (build_tiktok_weekly_report, build_shopee_weekly_report, build_ozon_weekly_report),
+)
+def test_direct_non_default_weekly_ad_rate_is_audited_as_operator_override(builder):
+    report = builder(
+        [_row("CUSTOM-ADS")],
+        period_start="2026-08-03", period_end="2026-08-09",
+        costs=_costs(), fx=_fx(), ad_rate="0.17",
+        generated_at=NOW, code_version="test-v1",
+    )
+
+    assert report.order_lines[0]["advertising"]["rate"] == Decimal("0.17")
+    assert report.order_lines[0]["advertising"]["input_source"] == "operator_global_override"
+
+
+@pytest.mark.parametrize(
+    "builder",
+    (build_tiktok_weekly_report, build_shopee_weekly_report, build_ozon_weekly_report),
+)
+def test_ad_rate_input_source_changes_report_idempotency(builder):
+    kwargs = dict(
+        period_start="2026-08-03", period_end="2026-08-09",
+        costs=_costs(), fx=_fx(), ad_rate="0.22",
+        generated_at=NOW, code_version="test-v1",
+    )
+    default = builder([_row("ADS-LINEAGE")], **kwargs)
+    overridden = builder(
+        [_row("ADS-LINEAGE")],
+        ad_rate_source="operator_platform_override",
+        **kwargs,
+    )
+
+    assert default.idempotency_key != overridden.idempotency_key
+    assert overridden.order_lines[0]["advertising"]["input_source"] == "operator_platform_override"
 
 
 def test_shopee_monthly_actual_ads_are_deterministically_allocated_by_paid_gmv():
@@ -818,7 +893,7 @@ def test_shopee_monthly_actual_ads_are_deterministically_allocated_by_paid_gmv()
     assert first.payload() == reordered.payload()
 
 
-def test_ozon_monthly_uses_fixed_22_percent_advertising_and_preserves_platform_fees():
+def test_ozon_monthly_defaults_to_22_percent_advertising_and_preserves_platform_fees():
     row = {
         **_row("OZ-1", paid="1000", settlement="1000"),
         "region": "RU",
@@ -847,7 +922,8 @@ def test_ozon_monthly_uses_fixed_22_percent_advertising_and_preserves_platform_f
     assert report.order_lines[0]["fee_items"][0]["code"] == "sale_commission"
     # 80 settlement - 10 goods - (1000 RUB * 22% * 0.08 FX); commission is already netted.
     assert report.order_lines[0]["profit_cny"] == Decimal("52.4000")
-    assert report.advertising["policy_version"] == "ozon-fixed-ad-rate/v1"
+    assert report.advertising["policy_version"] == "operator-adjustable-ad-rate/v1"
+    assert report.advertising["input_source"] == "default_22"
 
 
 def test_missing_cost_and_fx_fail_closed_without_zero_profit_fabrication():
@@ -1060,6 +1136,7 @@ def test_detailed_html_renders_main_image_weight_cost_ads_fees_profit_and_live_f
         "单件成本(CNY)", "12.00 THB", "CNY 2.40",
         "最新汇率(CNY/当地)", "0.20000000", "汇率更新时间",
         "2026-08-06T00:00:00+00:00", "汇率来源", "official-fx-test",
+        "下单时间", "广告比例来源", "人工全局覆盖",
         'data-role="order-table-top-scroll"', 'data-role="order-table-scroll"',
         "top.addEventListener('scroll'", "body.addEventListener('scroll'",
     ):

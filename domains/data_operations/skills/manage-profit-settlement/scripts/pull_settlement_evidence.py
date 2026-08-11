@@ -89,6 +89,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def pull_shopee(root: Path, site: str, start: date, end: date, zone) -> dict[str, Any]:
     from modules.shopee.orders_pull import fetch_escrow_detail, iter_escrow_list
+    from modules.shopee.client import shop_get
 
     settings = _settings(root)
     shopee = settings.get("shopee") if isinstance(settings.get("shopee"), Mapping) else {}
@@ -112,12 +113,17 @@ def pull_shopee(root: Path, site: str, start: date, end: date, zone) -> dict[str
         previous = latest.get(order_sn)
         if previous is None or int(row.get("escrow_release_time") or 0) >= int(previous.get("escrow_release_time") or 0):
             latest[order_sn] = row
+    order_created_at, issues = _shopee_order_created_times(
+        int(shop_id), token, sorted(latest), zone, request_get=shop_get
+    )
     orders: list[dict[str, Any]] = []
-    issues: list[dict[str, str]] = []
     for order_sn, list_row in sorted(latest.items()):
         try:
             detail = fetch_escrow_detail(int(shop_id), token, order_sn)
-            normalized = _shopee_order(site, order_sn, list_row, detail, zone)
+            normalized = _shopee_order(
+                site, order_sn, list_row, detail, zone,
+                order_created_at=order_created_at.get(order_sn, ""),
+            )
             if normalized is None:
                 issues.append(_issue("out_of_reporting_period", order_sn, "escrow_release_time"))
             else:
@@ -125,11 +131,12 @@ def pull_shopee(root: Path, site: str, start: date, end: date, zone) -> dict[str
         except Exception as exc:
             issues.append(_issue("escrow_detail_read_failed", order_sn, "escrow_detail", f"{type(exc).__name__}: {exc}"))
         time.sleep(0.05)
-    payload = _success_payload("shopee", site, start, end, zone, orders, len(list_rows), len(latest), issues, "payment/get_escrow_list + payment/get_escrow_detail")
+    payload = _success_payload("shopee", site, start, end, zone, orders, len(list_rows), len(latest), issues, "payment/get_escrow_list + payment/get_escrow_detail + order/get_order_detail")
     payload["receipt"]["request_summary"] = {
         "escrow_list_page_size": 100,
         "escrow_list_page_count": (len(list_rows) + 99) // 100,
         "escrow_detail_request_count": len(latest),
+        "order_detail_request_count": (len(latest) + 49) // 50,
     }
     return payload
 
@@ -234,7 +241,38 @@ def pull_ozon(root: Path, site: str, start: date, end: date, zone) -> dict[str, 
     return payload
 
 
-def _shopee_order(site, order_sn, list_row, detail, zone):
+def _shopee_order_created_times(shop_id, token, order_sns, zone, *, request_get):
+    result = {}
+    issues = []
+    ordered = [str(value) for value in order_sns if str(value)]
+    for offset in range(0, len(ordered), 50):
+        batch = ordered[offset:offset + 50]
+        response = request_get(
+            "/api/v2/order/get_order_detail",
+            shop_id,
+            token,
+            {
+                "order_sn_list": ",".join(batch),
+                "response_optional_fields": "create_time",
+            },
+        )
+        if response.get("error"):
+            raise RuntimeError(response.get("message") or response.get("error") or str(response))
+        rows = (response.get("response") or {}).get("order_list") or []
+        for row in rows:
+            order_sn = str(row.get("order_sn") or "")
+            timestamp = row.get("create_time")
+            if order_sn and timestamp not in (None, ""):
+                result[order_sn] = datetime.fromtimestamp(
+                    int(timestamp), tz=timezone.utc
+                ).astimezone(zone).isoformat()
+    for order_sn in ordered:
+        if order_sn not in result:
+            issues.append(_issue("missing_order_created_at", order_sn, "create_time"))
+    return result, issues
+
+
+def _shopee_order(site, order_sn, list_row, detail, zone, *, order_created_at=""):
     release_ts = int(list_row.get("escrow_release_time") or 0)
     release_at = datetime.fromtimestamp(release_ts, tz=timezone.utc).astimezone(zone) if release_ts else None
     if release_at is None:
@@ -258,7 +296,7 @@ def _shopee_order(site, order_sn, list_row, detail, zone):
             "ams_commission_fee": _decimal(item.get("ams_commission_fee")), "seller_order_processing_fee": _decimal(item.get("seller_order_processing_fee")),
         })
     settlement = _decimal(income.get("escrow_amount_after_adjustment")) or _decimal(income.get("escrow_amount")) or _decimal(list_row.get("payout_amount"))
-    return {"order_id": order_sn, "settlement_status": "settled", "settled_at": release_at.isoformat(), "currency": _currency(site), "net_settlement_amount": settlement, "buyer_total_amount": _decimal(income.get("buyer_total_amount")), "financial_components": components, "items": items, "return_order_count": len(detail.get("return_order_sn_list") or [])}
+    return {"order_id": order_sn, "order_created_at": str(order_created_at or ""), "settlement_status": "settled", "settled_at": release_at.isoformat(), "currency": _currency(site), "net_settlement_amount": settlement, "buyer_total_amount": _decimal(income.get("buyer_total_amount")), "financial_components": components, "items": items, "return_order_count": len(detail.get("return_order_sn_list") or [])}
 
 
 def _tiktok_row(region, row, index, settled_at):
@@ -384,8 +422,8 @@ def render_html(payload):
     for order in payload.get("orders") or []:
         components = "".join(f"<li><code>{escape(str(item.get('code') or ''))}</code>: {escape(str(item.get('amount')))} {escape(str(item.get('currency') or ''))} <small>{escape(str(item.get('classification') or ''))}; net inclusion={escape(str(item.get('included_in_net_settlement') or ''))}</small></li>" for item in order.get("financial_components") or [])
         items = "".join(f"<li>{escape(str(item.get('seller_sku') or item.get('platform_sku') or ''))} × {escape(str(item.get('quantity') or ''))} — {escape(str(item.get('product_name') or ''))}</li>" for item in order.get("items") or [])
-        rows.append(f"<tr><td>{escape(str(order.get('order_id') or ''))}</td><td>{escape(str(order.get('settled_at') or ''))}</td><td>{escape(str(order.get('net_settlement_amount') or ''))} {escape(str(order.get('currency') or ''))}</td><td><ul>{items}</ul></td><td><details><summary>{len(order.get('financial_components') or [])} 项</summary><ul>{components}</ul></details></td></tr>")
-    return f"<!doctype html><meta charset='utf-8'><title>{escape(payload['platform'])} settlement evidence</title><style>body{{font-family:Arial,sans-serif;margin:24px}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ddd;padding:8px;vertical-align:top}}th{{position:sticky;top:0;background:#f3f5f7}}small{{color:#666}}</style><h1>{escape(payload['platform'])} {escape(payload['site'])} 已结算证据</h1><p>{escape(payload['period']['start'])} 至 {escape(payload['period']['end'])} · {escape(payload['period']['timezone'])}</p><p>订单 {len(payload.get('orders') or [])} · snapshot {escape(str(payload.get('snapshot_id') or ''))}</p><table><thead><tr><th>订单</th><th>结算时间</th><th>净结算</th><th>商品</th><th>全部数值组件</th></tr></thead><tbody>{''.join(rows)}</tbody></table>"
+        rows.append(f"<tr><td>{escape(str(order.get('order_id') or ''))}</td><td>{escape(str(order.get('order_created_at') or ''))}</td><td>{escape(str(order.get('settled_at') or ''))}</td><td>{escape(str(order.get('net_settlement_amount') or ''))} {escape(str(order.get('currency') or ''))}</td><td><ul>{items}</ul></td><td><details><summary>{len(order.get('financial_components') or [])} 项</summary><ul>{components}</ul></details></td></tr>")
+    return f"<!doctype html><meta charset='utf-8'><title>{escape(payload['platform'])} settlement evidence</title><style>body{{font-family:Arial,sans-serif;margin:24px}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ddd;padding:8px;vertical-align:top}}th{{position:sticky;top:0;background:#f3f5f7}}small{{color:#666}}</style><h1>{escape(payload['platform'])} {escape(payload['site'])} 已结算证据</h1><p>{escape(payload['period']['start'])} 至 {escape(payload['period']['end'])} · {escape(payload['period']['timezone'])}</p><p>订单 {len(payload.get('orders') or [])} · snapshot {escape(str(payload.get('snapshot_id') or ''))}</p><table><thead><tr><th>订单</th><th>下单时间</th><th>结算时间</th><th>净结算</th><th>商品</th><th>全部数值组件</th></tr></thead><tbody>{''.join(rows)}</tbody></table>"
 
 
 def _period_bounds(start, end, zone):

@@ -71,6 +71,7 @@ def build_weekly_report(
     costs: CostSnapshot,
     fx: FxSnapshot,
     ad_rate: Decimal | str = Decimal("0.22"),
+    ad_rate_source: str | None = None,
     generated_at: datetime | None = None,
     code_version: str = "unknown",
 ) -> TikTokProfitReport:
@@ -85,6 +86,7 @@ def build_weekly_report(
         costs=costs,
         fx=fx,
         ad_rate=rate,
+        ad_rate_source=_text(ad_rate_source) or ("default_22" if rate == Decimal("0.22") else "operator_global_override"),
         generated_at=generated_at,
         code_version=code_version,
     )
@@ -138,6 +140,7 @@ def _build_report(
     costs: CostSnapshot,
     fx: FxSnapshot,
     ad_rate: Decimal,
+    ad_rate_source: str,
     generated_at: datetime | None,
     code_version: str,
 ) -> TikTokProfitReport:
@@ -243,6 +246,8 @@ def _build_report(
                 "advertising": {
                     "mode": "estimated_rate",
                     "rate": ad_rate,
+                    "input_source": ad_rate_source,
+                    "policy_version": "operator-adjustable-ad-rate/v1",
                     "basis": "buyer_paid_product_amount",
                     "basis_amount_local": paid,
                     "amount_local": advertising_local,
@@ -266,6 +271,7 @@ def _build_report(
             "costs": costs.snapshot_id,
             "fx": fx.snapshot_id,
             "ad_rate": str(ad_rate),
+            "ad_rate_source": ad_rate_source,
             "code_version": code_version,
         }
     )
@@ -290,7 +296,7 @@ def _build_report(
             "cost_snapshot": costs.payload(),
             "fx_snapshot": fx.payload(),
         },
-        assumptions={"advertising_basis": "buyer_paid_product_amount", "advertising_rate": ad_rate},
+        assumptions={"advertising_basis": "buyer_paid_product_amount", "advertising_rate": ad_rate, "advertising_rate_source": ad_rate_source, "advertising_policy_version": "operator-adjustable-ad-rate/v1"},
         generated_at=now,
         code_version=code_version,
     )

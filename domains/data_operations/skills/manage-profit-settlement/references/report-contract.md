@@ -17,7 +17,7 @@ When multiple settlement facts in the same reporting period refer to the same or
 - platform, shop, region, order and order-line identities
 - platform SKU, seller SKU, canonical cost SKU, product/variant names, main image
 - quantity, unit/package/billable weight and weight source when available
-- occurred/settled timestamps and settlement status
+- official order-created/occurred timestamp when available, settled timestamp, and settlement status; Shopee order creation and escrow release remain distinct
 - buyer-paid product amount, net settlement, currency
 - every source fee code/label/amount and net-settlement inclusion flag
 - unit and total product cost, cost version/effective time/source/snapshot
@@ -34,7 +34,7 @@ Operator-approved cost assumptions are non-blocking warnings, not silent catalog
 
 Rows rejected for missing cost, SKU mapping, quantity, FX, settlement, or advertising evidence must not contribute numeric profit. Any aggregate over the remaining calculated rows is a partial diagnostic total, not a complete period result. Report calculated and rejected row counts and identify the blocking seller SKU whenever it is known.
 
-Weekly TikTok/Shopee reports use `realized_settlement_with_estimated_ads`. Their default advertising fraction is `0.22`; an explicit platform/region input may override it. Monthly TikTok/Shopee reports use `realized_settlement_with_actual_ads`. Current Ozon weekly and monthly V1 reports use `realized_settlement_with_estimated_ads` with fixed `0.22` policy. Every estimated payload must retain both the rate and buyer-paid product basis so it cannot be confused with actual advertising spend.
+Weekly reports use `realized_settlement_with_estimated_ads`. Each platform defaults to `0.22`; an explicit global or platform input may override it. Monthly TikTok/Shopee reports use `realized_settlement_with_actual_ads`. Current Ozon weekly and monthly V1 reports use `realized_settlement_with_estimated_ads`, default to `0.22`, and accept an explicit operator override. Every estimated payload must retain the rate, buyer-paid product basis, policy version, and whether the value came from the default, global override, or platform override so it cannot be confused with actual advertising spend.
 
 Order lines are sorted by settlement timestamp descending, with order ID and order-line ID as deterministic ascending tie-breakers. HTML is a display projection: show the live CNY-per-local FX rate, provider and provider as-of time as independent columns, every platform fee component as an independent column, FX rates at eight decimal places, and all price/cost values at exactly two decimal places. Wide tables expose synchronized horizontal scrollbars above and below the order rows. JSON remains the audit artifact and retains full Decimal precision plus FX snapshot identity.
 

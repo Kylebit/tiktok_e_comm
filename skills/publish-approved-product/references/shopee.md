@@ -5,6 +5,37 @@ the Shopee CNSC global product. Publish regional storefronts only when the user
 explicitly authorizes those targets, and treat every storefront as an
 independent operation.
 
+## Frozen-v4 executor boundary
+
+The executable CNSC master path consumes `approved-publication-snapshot/v4`
+and its exact `shopee_global_master` only. It must not read the mutable Product
+Center dashboard or parse a legacy ReleasePlan after approval.
+
+Before the first provider write it must:
+
+1. Resolve an exact local mapping for every frozen Model SKU, or confirm that
+   none of the Model SKUs is mapped. Partial and ambiguous mappings are a
+   zero-write conflict.
+2. Read an existing mapped global item from Shopee. Reuse it only when the
+   official item and model facts are exact. Retire an official `DELETED`
+   identity before rebuilding.
+3. For a new item, use official CNSC category recommendation/tree, required
+   attributes and merchant warehouse-location reads. A deferred category must
+   resolve uniquely; missing required attributes or warehouse identity blocks
+   before upload.
+
+Checkpoint provider identities in this order: uploaded image IDs, returned
+`global_item_id`, then returned global model IDs. Each checkpoint happens
+immediately after its provider call and before the next fallible operation.
+An exception after a write must retain the known identities and an exact or
+unknown write count; it must never be reported as a zero-write safe retry.
+
+The resolver returns a `global_item_id` only after official item and model
+readback proves `NORMAL`, exact title, description, ordered images, parcel
+envelope, full Model-SKU coverage, exact variation dimensions/options, every
+CNY model price and every variant image. Regional publication begins only
+after this resolver returns.
+
 ## Dispatch
 
 Send the approved English title and description, ordered images, every selected

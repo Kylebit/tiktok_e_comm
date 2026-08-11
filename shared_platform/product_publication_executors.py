@@ -412,6 +412,7 @@ def _shopee_result(
     *,
     labels: tuple[str, ...],
     readback_completed: bool,
+    prior_external_write_count: int | None = 0,
 ) -> dict[str, object]:
     dispatch_rows = _target_rows(dispatch, labels=labels)
     if readback_completed:
@@ -446,8 +447,27 @@ def _shopee_result(
         statuses,
         dispatch_attempted=any(attempted),
         readback_completed=readback_completed,
-        external_write_count=None if unknown_write else accepted_count,
+        external_write_count=(
+            None
+            if unknown_write or prior_external_write_count is None
+            else prior_external_write_count + accepted_count
+        ),
     )
+
+
+def _shopee_resolver_write_count(
+    resolver: ShopeeGlobalItemIdResolver,
+    request: PublicationPlatformRequest,
+) -> int | None:
+    observer = getattr(resolver, "write_count", None)
+    if not callable(observer):
+        return 0
+    value = observer(request)
+    if value is None:
+        return None
+    if type(value) is not int or value < 0:
+        raise ValueError("Shopee global resolver write count is invalid")
+    return value
 
 
 def build_shopee_region_executor(
@@ -470,7 +490,29 @@ def build_shopee_region_executor(
         try:
             global_item_id = global_item_id_resolver(request)
         except Exception:
-            return _zero_write_failure("SHOPEE", labels)
+            try:
+                global_write_count = _shopee_resolver_write_count(
+                    global_item_id_resolver, request
+                )
+            except Exception:
+                global_write_count = None
+            if global_write_count == 0:
+                return _zero_write_failure("SHOPEE", labels)
+            return _result(
+                "SHOPEE",
+                labels,
+                {label: "FAILED" for label in labels},
+                dispatch_attempted=True,
+                readback_completed=False,
+                external_write_count=global_write_count,
+                requires_human_action=True,
+            )
+        try:
+            global_write_count = _shopee_resolver_write_count(
+                global_item_id_resolver, request
+            )
+        except Exception:
+            global_write_count = None
 
         try:
             dispatch = dispatch_selected_regions(
@@ -498,6 +540,7 @@ def build_shopee_region_executor(
                 readback,
                 labels=labels,
                 readback_completed=True,
+                prior_external_write_count=global_write_count,
             )
         except Exception:
             return _shopee_result(
@@ -505,6 +548,7 @@ def build_shopee_region_executor(
                 None,
                 labels=labels,
                 readback_completed=False,
+                prior_external_write_count=global_write_count,
             )
 
     return execute

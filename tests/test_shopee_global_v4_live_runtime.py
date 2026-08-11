@@ -364,3 +364,78 @@ def test_full_runtime_creates_models_persists_identity_and_officially_reads_back
         / "shopee-global-checkpoint.json"
     )
     assert checkpoint.is_file()
+
+
+def test_model_init_error_converges_when_official_readback_is_already_exact(tmp_path):
+    """A provider error must not erase a model write already visible officially."""
+
+    state = {
+        "tiers": None,
+        "models": None,
+    }
+
+    def merchant_post(path, _merchant_id, _token, body):
+        assert path.endswith("init_tier_variation")
+        state["tiers"] = body["tier_variation"]
+        state["models"] = [
+            {
+                **row,
+                "global_model_id": 366349471396,
+                "price_info": {"original_price": row["original_price"]},
+                "global_model_status": "NORMAL",
+            }
+            for row in body["global_model"]
+        ]
+        return {
+            "error": "product.error_param",
+            "message": "The level of tier-variation not change.",
+        }
+
+    def merchant_get(path, _merchant_id, _token, _params):
+        assert path.endswith("get_global_model_list")
+        return {
+            "error": "",
+            "response": {
+                "tier_variation": state["tiers"],
+                "global_model": state["models"],
+            },
+        }
+
+    runtime = OfficialShopeeGlobalV4Runtime(
+        context_resolver=lambda _command: {
+            "merchant_id": 4970102,
+            "merchant_token": "redacted",
+            "shop_id": 1,
+            "shop_token": "redacted",
+        },
+        official_fact_reader=lambda _command, _context: {},
+        mapping_lookup=lambda _sku: None,
+        merchant_get_transport=merchant_get,
+        merchant_post_transport=merchant_post,
+        checkpoint_root=tmp_path,
+    )
+    runtime.lookup_global_item_ids(
+        {
+            "offer_id": "3882722296",
+            "product_revision": 40,
+            "models": [{"model_sku": "0967"}],
+            "product": {"images": ["https://img.example/main.jpg"]},
+        }
+    )
+
+    assert runtime.initialize_global_models(
+        "45315817021",
+        {
+            "variation_names": ["option"],
+            "models": [
+                {
+                    "model_sku": "0967",
+                    "option_values": ["7cm*7cm"],
+                    "variant_image_id": "image-1",
+                    "price_cny": 40.12,
+                    "warehouse_location_id": "CNZ",
+                    "stock": {"quantity": 200},
+                }
+            ],
+        },
+    ) == {"0967": "366349471396"}

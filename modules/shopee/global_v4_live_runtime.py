@@ -795,20 +795,33 @@ class OfficialShopeeGlobalV4Runtime:
                     entry["image"] = {"image_id": image_by_first_option[option]}
                 options.append(entry)
             tiers.append({"name": name, "option_list": options})
-        self._provider_response(
-            self._merchant_post(
-                "/api/v2/global_product/init_tier_variation",
-                int(context["merchant_id"]),
-                str(context["merchant_token"]),
-                {
-                    "global_item_id": int(global_item_id),
-                    "tier_variation": tiers,
-                    "global_model": normalized_models,
-                },
-            ),
-            "Shopee global model initialization",
-        )
-        raw = self._read_global_models_raw(global_item_id)
+        provider_error: Exception | None = None
+        try:
+            self._provider_response(
+                self._merchant_post(
+                    "/api/v2/global_product/init_tier_variation",
+                    int(context["merchant_id"]),
+                    str(context["merchant_token"]),
+                    {
+                        "global_item_id": int(global_item_id),
+                        "tier_variation": tiers,
+                        "global_model": normalized_models,
+                    },
+                ),
+                "Shopee global model initialization",
+            )
+        except Exception as error:
+            # Shopee can commit the model change and still return a provider
+            # error (observed for an already-applied one-level variation).
+            # The exact official identity readback is authoritative; never
+            # retry this write merely because its immediate response disagrees.
+            provider_error = error
+        try:
+            raw = self._read_global_models_raw(global_item_id)
+        except Exception:
+            if provider_error is not None:
+                raise provider_error
+            raise
         identities = {
             str(row.get("global_model_sku") or "").strip(): str(
                 row.get("global_model_id") or ""
@@ -818,6 +831,8 @@ class OfficialShopeeGlobalV4Runtime:
         if set(identities) != {str(row["model_sku"]) for row in models} or any(
             not value.isdigit() or int(value) <= 0 for value in identities.values()
         ):
+            if provider_error is not None:
+                raise provider_error
             raise ShopeeGlobalV4LiveRuntimeError(
                 "Shopee official model identities are incomplete"
             )

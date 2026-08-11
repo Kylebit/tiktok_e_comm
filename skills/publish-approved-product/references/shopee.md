@@ -250,3 +250,24 @@ Permanent handling:
    list by every approved Model SKU before retrying.
 5. Preserve any already-returned image IDs in the run checkpoint so a safe
    continuation does not upload the same approved images again.
+
+## Confirmed incident: model initialization response contradicted official state
+
+Observed on Offer `3882722296` / SKU `0967`:
+
+- `init_tier_variation` returned `product.error_param` with `The level of
+  tier-variation not change.`
+- authoritative `get_global_item_info` nevertheless returned `has_model=true`;
+- authoritative `get_global_model_list` returned the exact SKU, tier option,
+  CNY price, parcel and variant-image identity.
+
+Permanent handling:
+
+1. Treat the immediate mutation response and official readback as separate
+   facts.
+2. After any model-initialization rejection or transport exception, read the
+   exact `global_item_id` before deciding whether the write failed.
+3. If official Model SKU coverage and identities are exact, converge and do
+   not send `init_tier_variation` again.
+4. If the readback is missing, partial or mismatched, preserve an unknown or
+   reconciliation-required result; never blindly retry the write.

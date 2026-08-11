@@ -105,3 +105,15 @@ current execution report only.
 - All platforms: local submission ledgers can prove that a request was sent or
   accepted; they cannot prove exact title, variants, prices, parcel, images or
   final provider state.
+
+## Shopee model write looked rejected but was already effective
+
+Symptom: the model-init endpoint returned an error, while an exact official
+readback showed that the approved model already existed.
+
+Confirmed cause: provider mutation acknowledgement and provider read model
+can disagree. Repeating the mutation then produces a tier-level conflict.
+
+Permanent rule: after any ambiguous or rejected-looking model mutation,
+read the exact global item and model identities first. Exact official state
+wins; otherwise retain UNKNOWN/RECONCILIATION_REQUIRED and never blind-retry.

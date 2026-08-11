@@ -22,7 +22,7 @@ When multiple settlement facts in the same reporting period refer to the same or
 - every source fee code/label/amount and net-settlement inclusion flag
 - unit and total product cost, cost version/effective time/source/snapshot
 - advertising amount, mode, basis/source/as-of/snapshot/allocation version
-- FX rate/source/as-of/snapshot
+- live FX rate/source/provider as-of/snapshot; one immutable snapshot per report run
 - external costs, profit, source snapshot identity, quality issues
 
 ## Status
@@ -36,7 +36,7 @@ Rows rejected for missing cost, SKU mapping, quantity, FX, settlement, or advert
 
 Weekly TikTok/Shopee reports use `realized_settlement_with_estimated_ads`. Their default advertising fraction is `0.22`; an explicit platform/region input may override it. Monthly TikTok/Shopee reports use `realized_settlement_with_actual_ads`. Current Ozon weekly and monthly V1 reports use `realized_settlement_with_estimated_ads` with fixed `0.22` policy. Every estimated payload must retain both the rate and buyer-paid product basis so it cannot be confused with actual advertising spend.
 
-Order lines are sorted by settlement timestamp descending, with order ID and order-line ID as deterministic ascending tie-breakers. HTML is a display projection: show every platform fee component as an independent column and format all price/cost values to exactly two decimal places. JSON remains the audit artifact and retains full Decimal precision.
+Order lines are sorted by settlement timestamp descending, with order ID and order-line ID as deterministic ascending tie-breakers. HTML is a display projection: show the live CNY-per-local FX rate, provider and provider as-of time as independent columns, every platform fee component as an independent column, FX rates at eight decimal places, and all price/cost values at exactly two decimal places. Wide tables expose synchronized horizontal scrollbars above and below the order rows. JSON remains the audit artifact and retains full Decimal precision plus FX snapshot identity.
 
 Settlement reconciliation preserves the exact local-currency difference. An absolute difference no greater than `1e-12` is treated as Decimal allocation noise; any larger difference produces `settlement_reconciliation_mismatch`.
 

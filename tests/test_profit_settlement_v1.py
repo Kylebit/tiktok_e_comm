@@ -1048,13 +1048,21 @@ def test_knowledge_base_rejects_secret_or_raw_response_fields(tmp_path):
         )
 
 
-def test_detailed_html_renders_main_image_weight_cost_ads_fees_and_profit():
+def test_detailed_html_renders_main_image_weight_cost_ads_fees_profit_and_live_fx_lineage():
     report = build_tiktok_weekly_report(
         [_row("TK-HTML")], period_start="2026-08-03", period_end="2026-08-09",
         costs=_costs(), fx=_fx(), ad_rate="0.20", generated_at=NOW, code_version="test-v1",
     ).payload()
     html = render_profit_report_html(report)
-    for expected in ("商品主图", "Detailed product", "SKU-1", "125.50", "Platform commission [commission]", "广告成本", "利润 CNY", "单件成本(CNY)", "12.00 THB", "CNY 2.40"):
+    for expected in (
+        "商品主图", "Detailed product", "SKU-1", "125.50",
+        "Platform commission [commission]", "广告成本", "利润 CNY",
+        "单件成本(CNY)", "12.00 THB", "CNY 2.40",
+        "最新汇率(CNY/当地)", "0.20000000", "汇率更新时间",
+        "2026-08-06T00:00:00+00:00", "汇率来源", "official-fx-test",
+        'data-role="order-table-top-scroll"', 'data-role="order-table-scroll"',
+        "top.addEventListener('scroll'", "body.addEventListener('scroll'",
+    ):
         assert expected in html
 
 

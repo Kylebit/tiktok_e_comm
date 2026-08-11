@@ -655,7 +655,7 @@ class OfficialShopeeGlobalV4Runtime:
     def create_global_item(self, payload: Mapping[str, Any]) -> object:
         if self._merchant_post is None or not isinstance(payload, Mapping):
             raise ShopeeGlobalV4LiveRuntimeError("Shopee create transport is unavailable")
-        context, _command = self._provider_context()
+        context, command = self._provider_context()
         product = payload.get("product")
         parcel = payload.get("parcel")
         category = payload.get("category")
@@ -745,7 +745,7 @@ class OfficialShopeeGlobalV4Runtime:
     ) -> object:
         if self._merchant_post is None or self._merchant_get is None:
             raise ShopeeGlobalV4LiveRuntimeError("Shopee model transport is unavailable")
-        context, _command = self._provider_context()
+        context, command = self._provider_context()
         names = payload.get("variation_names")
         models = payload.get("models")
         if (
@@ -917,7 +917,7 @@ class OfficialShopeeGlobalV4Runtime:
     def read_global_item(self, global_item_id: str) -> Mapping[str, Any]:
         if self._merchant_get is None:
             raise ShopeeGlobalV4LiveRuntimeError("Shopee item readback is unavailable")
-        context, _command = self._provider_context()
+        context, command = self._provider_context()
         response = self._provider_response(
             self._merchant_get(
                 "/api/v2/global_product/get_global_item_info",
@@ -942,6 +942,18 @@ class OfficialShopeeGlobalV4Runtime:
         active = self._active.get()
         if active is not None:
             active["item_image_bindings"] = dict(zip(map(str, image_ids), map(str, image_urls)))
+        approved_image_urls = list(command["product"]["images"])
+        for model in command["models"]:
+            variant_image_url = model["variant_image_url"]
+            if variant_image_url not in approved_image_urls:
+                approved_image_urls.append(variant_image_url)
+        approved_bindings = active.get("image_bindings") if active is not None else None
+        if not isinstance(approved_bindings, Mapping) or set(approved_bindings) != set(
+            approved_image_urls
+        ):
+            approved_bindings = self._reusable_image_bindings(tuple(approved_image_urls))
+        if active is not None and approved_bindings is not None:
+            active["image_bindings"] = deepcopy(dict(approved_bindings))
         return {
             "global_item_id": str(row.get("global_item_id") or ""),
             "status": str(row.get("global_item_status") or ""),
@@ -949,6 +961,7 @@ class OfficialShopeeGlobalV4Runtime:
             "description": row.get("description") or row.get("global_item_description"),
             "image_urls": image_urls,
             "image_ids": image_ids,
+            "approved_image_bindings": deepcopy(dict(approved_bindings or {})),
             "parcel": {
                 "weight_kg": row.get("weight"),
                 "package_cm": [

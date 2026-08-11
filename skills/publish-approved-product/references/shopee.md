@@ -271,3 +271,24 @@ Permanent handling:
    not send `init_tier_variation` again.
 4. If the readback is missing, partial or mismatched, preserve an unknown or
    reconciliation-required result; never blindly retry the write.
+
+## Confirmed incident: provider CDN URLs caused a false image mismatch
+
+Observed on Offer `3882722296` / SKU `0967` after the global item and Model
+were already complete: official readback returned provider CDN image URLs,
+while the frozen snapshot retained the original source URLs. The old verifier
+compared those URL strings and falsely reported content drift.
+
+Permanent handling:
+
+1. Persist the exact source-URL-to-Shopee-`image_id` binding immediately after
+   each accepted upload.
+2. On continuation, recover that exact binding from the offer/revision run
+   checkpoint; do not upload the images again.
+3. Compare the official ordered master `image_id` list and every variation
+   option `image_id` with the persisted binding.
+4. Treat provider CDN URLs as delivery locations, not approved image identity.
+   Never require a provider CDN URL to equal the original source URL.
+5. Missing, duplicate, reordered or mismatched image IDs remain hard failures.
+   If the exact persisted binding is unavailable, require reconciliation rather
+   than accepting an image count alone.

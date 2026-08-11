@@ -41,6 +41,10 @@ current execution report only.
 - Shopee: master images and a complete Model-SKU set do not prove variation
   images. Bind each option to an uploaded image ID and verify it from
   `get_global_model_list.tier_variation.option_list`.
+- Shopee image identity: provider readback may replace source URLs with CDN
+  URLs. Verify the persisted source-URL-to-image-ID binding against official
+  ordered master and variation image IDs; never compare CDN URL strings, and
+  never accept count-only evidence when the binding is unavailable.
 - Shopee category recommendation: choose one exact publishable official leaf
   from the frozen main-category semantic identity, then read only that leaf's
   attribute tree. A malformed unrelated recommendation must not erase a valid

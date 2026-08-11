@@ -125,6 +125,13 @@ class _Runtime:
         if self.item_override is not None:
             return deepcopy(self.item_override)
         command = self.command
+        approved_images = list(command["product"]["images"])
+        for model in command["models"]:
+            if model["variant_image_url"] not in approved_images:
+                approved_images.append(model["variant_image_url"])
+        bindings = self.image_bindings or {
+            url: f"mapped-{index + 1}" for index, url in enumerate(approved_images)
+        }
         status = self.existing_status if str(global_item_id) != self.global_item_id else "NORMAL"
         result = {
             "global_item_id": str(global_item_id),
@@ -132,8 +139,8 @@ class _Runtime:
             "title": command["product"]["title"],
             "description": command["product"]["description"],
             "image_urls": list(command["product"]["images"]),
-            "image_ids": [self.image_bindings.get(url, f"mapped-{index + 1}")
-                          for index, url in enumerate(command["product"]["images"])],
+            "image_ids": [bindings[url] for url in command["product"]["images"]],
+            "approved_image_bindings": deepcopy(bindings),
             "parcel": deepcopy(command["parcel"]),
         }
         if self.mutate_item is not None:
@@ -144,6 +151,13 @@ class _Runtime:
         self.calls.append("read_models")
         if self.models_override is not None:
             return deepcopy(self.models_override)
+        approved_images = list(self.command["product"]["images"])
+        for model in self.command["models"]:
+            if model["variant_image_url"] not in approved_images:
+                approved_images.append(model["variant_image_url"])
+        bindings = self.image_bindings or {
+            url: f"mapped-{index + 1}" for index, url in enumerate(approved_images)
+        }
         result = {
             "variation_names": list(self.command["variation_names"]),
             "models": [
@@ -152,10 +166,7 @@ class _Runtime:
                     "option_values": list(row["option_values"]),
                     "price_cny": row["price_cny"],
                     "variant_image_url": row["variant_image_url"],
-                    "variant_image_id": self.image_bindings.get(
-                        row["variant_image_url"],
-                        f"mapped-variant-{index + 1}",
-                    ),
+                    "variant_image_id": bindings[row["variant_image_url"]],
                     "status": "NORMAL",
                 }
                 for index, row in enumerate(self.command["models"])
@@ -227,6 +238,26 @@ def test_existing_exact_normal_mapping_is_read_before_any_write():
     assert resolver.write_count(request) == 0
 
 
+def test_provider_cdn_urls_do_not_override_exact_uploaded_image_id_lineage():
+    request = _request()
+    runtime = _Runtime(mapped={"0958": "8001", "0959": "8001"})
+    runtime.mutate_item = lambda row: row.update(
+        image_urls=[
+            f"https://provider-cdn.example/{index}.jpg"
+            for index, _value in enumerate(row["image_urls"], start=1)
+        ]
+    )
+    runtime.mutate_models = lambda row: [
+        model.update(
+            variant_image_url=f"https://provider-cdn.example/variant-{index}.jpg"
+        )
+        for index, model in enumerate(row["models"], start=1)
+    ]
+
+    assert ShopeeGlobalV4Resolver(runtime=runtime)(request) == "8001"
+    assert runtime.calls == ["lookup", "read_item", "read_models"]
+
+
 def test_deleted_exact_mapping_is_retired_before_safe_rebuild():
     request = _request()
     runtime = _Runtime(
@@ -289,12 +320,11 @@ def test_missing_model_in_official_readback_never_verifies():
 @pytest.mark.parametrize(
     "surface,mutate,error",
     [
-        ("item", lambda row: row.update(title="Drifted"), "title, description or images"),
-        ("item", lambda row: row.update(description="Drifted"), "title, description or images"),
-        ("item", lambda row: row.update(image_urls=["https://img.example/other.jpg"]), "title, description or images"),
+        ("item", lambda row: row.update(title="Drifted"), "title or description"),
+        ("item", lambda row: row.update(description="Drifted"), "title or description"),
+        ("item", lambda row: row.update(image_ids=["wrong-image-id"]), "image"),
         ("item", lambda row: row["parcel"].update(weight_kg="9"), "parcel"),
         ("models", lambda row: row["models"][0].update(price_cny="99"), "price"),
-        ("models", lambda row: row["models"][0].update(variant_image_url="https://img.example/other.jpg"), "variant image"),
         ("models", lambda row: row["models"][0].update(variant_image_id=""), "variant image"),
     ],
 )

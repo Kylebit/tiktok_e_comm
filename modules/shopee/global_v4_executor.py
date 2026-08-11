@@ -374,14 +374,33 @@ def _verify_readback(
     if (
         observed_item.get("title") != product["title"]
         or observed_item.get("description") != product["description"]
-        or observed_item.get("image_urls") != product["images"]
     ):
-        raise ShopeeGlobalV4Error("Shopee official title, description or images drifted")
-    image_ids = observed_item.get("image_ids")
-    if not isinstance(image_ids, list) or len(image_ids) != len(product["images"]) or any(
-        not str(value or "").strip() for value in image_ids
-    ):
+        raise ShopeeGlobalV4Error("Shopee official title or description drifted")
+
+    approved_image_urls = list(product["images"])
+    for model in command["models"]:
+        if model["variant_image_url"] not in approved_image_urls:
+            approved_image_urls.append(model["variant_image_url"])
+    raw_bindings = expected_image_ids
+    if raw_bindings is None:
+        candidate = observed_item.get("approved_image_bindings")
+        raw_bindings = candidate if isinstance(candidate, Mapping) else None
+    if raw_bindings is None or set(raw_bindings) != set(approved_image_urls):
+        raise ShopeeGlobalV4Error(
+            "Shopee approved image identity lineage is unavailable"
+        )
+    approved_image_ids = {
+        url: _text(raw_bindings[url], "Shopee image identity", max_length=255)
+        for url in approved_image_urls
+    }
+    if len(set(approved_image_ids.values())) != len(approved_image_ids):
+        raise ShopeeGlobalV4Error("Shopee approved image identities are ambiguous")
+    raw_item_image_ids = observed_item.get("image_ids")
+    if not isinstance(raw_item_image_ids, list):
         raise ShopeeGlobalV4Error("Shopee official global image identities are incomplete")
+    item_image_ids = [str(value or "").strip() for value in raw_item_image_ids]
+    if item_image_ids != [approved_image_ids[url] for url in product["images"]]:
+        raise ShopeeGlobalV4Error("Shopee official global image identities drifted")
     parcel = _mapping(observed_item.get("parcel"), "Shopee global parcel")
     package = parcel.get("package_cm")
     expected_package = command["parcel"]["package_cm"]
@@ -414,14 +433,10 @@ def _verify_readback(
             raise ShopeeGlobalV4Error("Shopee official variant options drifted")
         if not _same_decimal(observed.get("price_cny"), facts["price_cny"]):
             raise ShopeeGlobalV4Error("Shopee official CNY model price drifted")
-        if observed.get("variant_image_url") != facts["variant_image_url"]:
-            raise ShopeeGlobalV4Error("Shopee official variant image drifted")
         observed_image_id = str(observed.get("variant_image_id") or "").strip()
         if not observed_image_id:
             raise ShopeeGlobalV4Error("Shopee official variant image is missing")
-        if expected_image_ids is not None and (
-            observed_image_id != expected_image_ids[facts["variant_image_url"]]
-        ):
+        if observed_image_id != approved_image_ids[facts["variant_image_url"]]:
             raise ShopeeGlobalV4Error("Shopee official variant image identity drifted")
 
 

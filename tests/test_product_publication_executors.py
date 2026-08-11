@@ -337,6 +337,7 @@ class ProductPublicationExecutorCompositionTests(unittest.TestCase):
             dispatch_variant=ozon.dispatch_variant,
             readback_variants=ozon.readback_variants,
             official_profile_resolver=None,
+            localized_copy_resolver=None,
         )
         self.assertEqual(
             list(

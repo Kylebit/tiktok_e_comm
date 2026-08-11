@@ -49,6 +49,7 @@ ShopeeGlobalItemIdResolver = Callable[[PublicationPlatformRequest], object]
 OzonDispatchTransport = Callable[[dict[str, Any]], object]
 OzonReadback = Callable[[tuple[str, ...]], Sequence[Mapping[str, Any]]]
 OzonOfficialProfileResolver = Callable[[Mapping[str, Any]], Mapping[str, Any]]
+OzonLocalizedCopyResolver = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,7 @@ class OzonV4ExecutorDependencies:
     dispatch_variant: OzonDispatchTransport
     readback_variants: OzonReadback
     official_profile_resolver: OzonOfficialProfileResolver | None = None
+    localized_copy_resolver: OzonLocalizedCopyResolver | None = None
 
 
 def _request_facts(
@@ -623,6 +625,7 @@ def build_product_publication_platform_executors(
             dispatch_variant=ozon.dispatch_variant,
             readback_variants=ozon.readback_variants,
             official_profile_resolver=ozon.official_profile_resolver,
+            localized_copy_resolver=ozon.localized_copy_resolver,
         )
     return result
 

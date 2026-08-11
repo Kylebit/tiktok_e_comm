@@ -2078,6 +2078,7 @@ def build_live_ozon_dependencies(
     *,
     transport: OfficialOzonV4Transport | None = None,
     official_profile_resolver: OfficialOzonFridgeMagnetProfileResolver | None = None,
+    localized_copy_resolver: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
 ) -> OzonV4ExecutorDependencies:
     """Build only Ozon dependencies; no other platform object is touched."""
 
@@ -2088,6 +2089,7 @@ def build_live_ozon_dependencies(
         official_profile_resolver=(
             official_profile_resolver or OfficialOzonFridgeMagnetProfileResolver()
         ),
+        localized_copy_resolver=localized_copy_resolver,
     )
 
 

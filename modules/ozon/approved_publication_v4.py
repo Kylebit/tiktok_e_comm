@@ -51,6 +51,7 @@ class OzonDispatchFact:
 DispatchVariant = Callable[[dict[str, Any]], OzonDispatchFact]
 ReadbackVariants = Callable[[tuple[str, ...]], Sequence[Mapping[str, Any]]]
 OfficialProfileResolver = Callable[[Mapping[str, Any]], Mapping[str, Any]]
+LocalizedCopyResolver = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 
 
 def _text(value: object, name: str) -> str:
@@ -244,9 +245,36 @@ def _category_and_profile(
     return approved or resolved, profile
 
 
+def _localized_copy(
+    snapshot: Mapping[str, Any],
+    resolver: LocalizedCopyResolver | None,
+) -> tuple[str, str]:
+    if resolver is None:
+        raise OzonApprovedPublicationError(
+            "Ozon Russian copy is required for this official profile"
+        )
+    receipt = _mapping(resolver(deepcopy(dict(snapshot))), "Ozon localized copy")
+    if (
+        receipt.get("schema_version") != "ozon-localized-copy/v1"
+        or receipt.get("source_snapshot_digest") != snapshot.get("snapshot_digest")
+        or receipt.get("language") != "ru"
+    ):
+        raise OzonApprovedPublicationError("Ozon localized copy identity conflicts")
+    title = _text(receipt.get("title"), "Ozon localized title")
+    description = _text(receipt.get("description"), "Ozon localized description")
+
+    def has_cyrillic(value: str) -> bool:
+        return sum("\u0400" <= character <= "\u04ff" for character in value) >= 5
+
+    if not has_cyrillic(title) or not has_cyrillic(description):
+        raise OzonApprovedPublicationError("Ozon localized copy is not Russian")
+    return title, description
+
+
 def project_ozon_v4_variants(
     snapshot: Mapping[str, Any], *, target_labels: tuple[str, ...],
     official_profile_resolver: OfficialProfileResolver | None = None,
+    localized_copy_resolver: LocalizedCopyResolver | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Project exact per-model import inputs from a runner-validated v4 body.
 
@@ -268,6 +296,8 @@ def project_ozon_v4_variants(
     category, official_profile = _category_and_profile(
         snapshot, official_profile_resolver
     )
+    if official_profile is not None and official_profile["type_id"] == 93785:
+        title, description = _localized_copy(snapshot, localized_copy_resolver)
     raw_skus = _sequence(snapshot.get("skus"), "approved SKUs")
     if not raw_skus:
         raise OzonApprovedPublicationError("approved Ozon SKU coverage is empty")
@@ -438,6 +468,7 @@ def execute_ozon_v4_publication(
     *,
     target_labels: tuple[str, ...],
     official_profile_resolver: OfficialProfileResolver | None = None,
+    localized_copy_resolver: LocalizedCopyResolver | None = None,
     dispatch_variant: DispatchVariant,
     readback_variants: ReadbackVariants,
 ) -> dict[str, Any]:
@@ -448,6 +479,7 @@ def execute_ozon_v4_publication(
             snapshot,
             target_labels=target_labels,
             official_profile_resolver=official_profile_resolver,
+            localized_copy_resolver=localized_copy_resolver,
         )
     except (OzonApprovedPublicationError, TypeError, ValueError):
         return _result(
@@ -540,6 +572,7 @@ def build_ozon_v4_executor(
     dispatch_variant: DispatchVariant,
     readback_variants: ReadbackVariants,
     official_profile_resolver: OfficialProfileResolver | None = None,
+    localized_copy_resolver: LocalizedCopyResolver | None = None,
 ) -> Callable[[object], dict[str, Any]]:
     """Bind thin provider transports to the shared runner callable shape."""
 
@@ -557,6 +590,7 @@ def build_ozon_v4_executor(
             snapshot,
             target_labels=raw_targets,
             official_profile_resolver=official_profile_resolver,
+            localized_copy_resolver=localized_copy_resolver,
             dispatch_variant=dispatch_variant,
             readback_variants=readback_variants,
         )

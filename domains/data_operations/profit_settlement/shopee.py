@@ -101,7 +101,7 @@ def build_weekly_report(
             "occurred_at":_datetime(row.get("occurred_at")),"settled_at":settled_at,"settlement_status":"settled","settlement":{"currency":currency,"net_amount_local":settlement,"net_amount_cny":settlement_cny,"buyer_paid_product_amount_local":paid},"fx":{"rate_cny_per_local":fx_rate,**fx.payload()},
             "cost":{"unit_cost_cny":cost.unit_cost_cny,"quantity":quantity,"total_cny":product_cost,"version":cost.version,"effective_at":cost.effective_at,"source":cost.source,"snapshot_id":costs.snapshot_id},
             "advertising":{"mode":"estimated_rate","rate":rate_value,"basis":"buyer_paid_product_amount","basis_amount_local":paid,"amount_local":ad_local,"amount_cny":ad_cny},
-            "fee_items":fees,"external_costs_cny":external,"profit_cny":settlement_cny-product_cost-ad_cny-external,"source_snapshot_id":_text(row.get("source_snapshot_id")),
+            "fee_items":fees,"external_costs_cny":external,"profit_cny":settlement_cny-product_cost-ad_cny-external,"source_snapshot_id":_text(row.get("source_snapshot_id")),"source_settlement_facts":list(row.get("source_settlement_facts") or []),
         })
     lines.sort(key=_line_settlement_sort_key)
     source_checksum=_checksum(sorted((_ready(row) for row in source_rows),key=_canonical));fingerprint=_checksum({"schema":SCHEMA_VERSION,"period_kind":"weekly","period":[start.isoformat(),end.isoformat()],"source":source_checksum,"costs":costs.snapshot_id,"fx":fx.snapshot_id,"ad_rate":str(rate_value),"code_version":code_version})
@@ -216,7 +216,7 @@ def _line(item: Mapping[str, Any], advertising_cny: Decimal, costs: CostSnapshot
         "cost": {"unit_cost_cny": item["cost"].unit_cost_cny, "quantity": item["quantity"], "total_cny": product_cost, "version": item["cost"].version, "effective_at": item["cost"].effective_at, "source": item["cost"].source, "snapshot_id": costs.snapshot_id},
         "advertising": {**advertising, "basis": "buyer_paid_product_amount_cny", "basis_amount_cny": item["paid_cny"], "amount_cny": advertising_cny},
         "fee_items": item["fees"], "external_costs_cny": item["external"],
-        "profit_cny": settlement_cny-product_cost-advertising_cny-item["external"], "source_snapshot_id": _text(row.get("source_snapshot_id")),
+        "profit_cny": settlement_cny-product_cost-advertising_cny-item["external"], "source_snapshot_id": _text(row.get("source_snapshot_id")), "source_settlement_facts": list(row.get("source_settlement_facts") or []),
     }
 
 

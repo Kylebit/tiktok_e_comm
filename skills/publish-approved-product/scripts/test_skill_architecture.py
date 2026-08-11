@@ -123,6 +123,24 @@ class SkillArchitectureTests(unittest.TestCase):
         self.assertIn("item.id", text)
         self.assertIn("product_id", text)
 
+    def test_confirmed_ozon_provider_normalizations_are_permanent_rules(self) -> None:
+        ozon = (ROOT / "references" / "ozon.md").read_text(encoding="utf-8")
+        incidents = (ROOT / "references" / "incident-patterns.md").read_text(
+            encoding="utf-8"
+        )
+        chinese = (ROOT / "references" / "SKILL.zh-CN.md").read_text(
+            encoding="utf-8"
+        )
+        for text in (ozon, incidents, chinese):
+            for required in (
+                "1000",
+                "color_image",
+                "/v4/product/info/attributes",
+                "/v1/product/info/description",
+                "7 на 7",
+            ):
+                self.assertIn(required, text)
+
     def test_orchestrator_contains_bounded_deleted_recovery(self) -> None:
         text = (SCRIPTS / "publish_approved_product.py").read_text(encoding="utf-8")
         self.assertIn("_bounded_recovery", text)

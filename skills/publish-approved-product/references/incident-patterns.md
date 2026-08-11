@@ -124,6 +124,19 @@ current execution report only.
 - Ozon: a declined wrong-category item must be archived by official `item.id`
   before it can be deleted by offer ID; direct delete returns
   `ITEM_IS_NOT_ARCHIVED` and must not be retried blindly.
+- Ozon provider units: convert frozen kg × `1000` to integer grams and cm ×
+  `10` to integer millimetres at the API boundary. Decimal kg in the integer
+  `weight` field is an HTTP 400 rejection; exact conversion may not round.
+- Ozon localized copy: the enabled fridge-magnet profile requires Russian
+  title and description. Reject the multiplication sign `×`, which the
+  provider strips, and use stable wording such as `7 на 7 см`.
+- Ozon authoritative readback: combine `images` with `color_image`; read
+  parcel/type/attributes from `/v4/product/info/attributes` and description
+  from `/v1/product/info/description`, all bound to the same `offer_id` and
+  `item.id`. `/v3/product/info/list` alone is not complete verification.
+- Ozon async convergence: an accepted update with the previous stored copy
+  still visible is PROCESSING, not FAILED and not permission to resubmit.
+  Promote to success only after the exact official facts converge.
 - All platforms: provider acceptance and official verification are separate
   facts.
 - All platforms: an exact readback mismatch is not merely a reason to repair

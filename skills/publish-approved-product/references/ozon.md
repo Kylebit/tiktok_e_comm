@@ -104,3 +104,45 @@ creation finishes. The executable readback performs a bounded poll and stops
 as soon as all SKUs verify or any terminal mismatch appears. The user must not
 have to run another publish merely to discover the final state; polling is
 read-only and never resubmits the import.
+
+## Confirmed incident: provider units are integer grams and millimetres
+
+`/v3/product/import` rejects decimal kilograms in the integer `weight` field
+(for example `0.1`) with HTTP 400. Convert each frozen SKU parcel exactly at
+the provider boundary: kilograms × `1000` to integer grams and centimetres ×
+`10` to integer millimetres. Reject a value that is not exactly representable;
+never round or reuse one SKU's parcel for another. Readback converts the
+official integer units back to the frozen kg/cm representation before
+comparison.
+
+## Confirmed incident: this category requires Russian copy
+
+For the exact enabled `House & Garden > Souvenirs and Gifts > Fridge Magnet`
+profile (`description_category_id=17028743`, `type_id=93785`), wholly Latin
+title and description are declined with `DESCRIPTION_DECLINE` on attributes
+4180 and 4191. Produce a digest-bound `ozon-localized-copy/v1` receipt from the
+frozen approved semantics before dispatch. It must contain Russian title and
+description and must not introduce product IDs, brand claims, or new facts.
+
+Ozon silently removes the multiplication sign from a title: `7 × 7` becomes
+`7 7`, which breaks exact readback. Reject `×` before dispatch and use stable
+Russian wording such as `7 на 7 см`.
+
+## Confirmed incident: image and parcel facts span three official reads
+
+The first approved image can be returned through `color_image` while the
+remaining gallery stays in `images`. Count the ordered union of both roles;
+six gallery images plus one `color_image` is seven images, not a missing-image
+failure. Provider CDN URLs are not the approved source URLs, so compare the
+persisted image-role binding/count rather than URL strings.
+
+`/v3/product/info/list` may omit parcel and description after creation. Read
+weight, dimensions, type and attributes from
+`/v4/product/info/attributes`, and read the exact description from
+`/v1/product/info/description`. Bind all three responses to the same
+`offer_id` and authoritative `item.id` before reporting publication success.
+
+After an accepted update, those official reads can briefly expose the prior
+stored copy. A nonterminal mismatch after `ACCEPTED` is **平台处理中** until
+bounded readback converges; an official failed status is **发布失败**. Never
+resubmit merely because the first read is stale.

@@ -320,7 +320,24 @@ def _default_image_upload(url: str, position: int) -> str:
         path = Path(directory) / f"image_{position}{prepared.suffix}"
         path.write_bytes(prepared.content)
         response = upload_image(path, scene="normal")
-    image_id = str(response.get("image_id") or "") if isinstance(response, Mapping) else ""
+    image_id = ""
+    if isinstance(response, Mapping):
+        image_id = str(response.get("image_id") or "").strip()
+        image_info = response.get("image_info")
+        if not image_id and isinstance(image_info, Mapping):
+            image_id = str(image_info.get("image_id") or "").strip()
+        image_info_list = response.get("image_info_list")
+        if not image_id and isinstance(image_info_list, list):
+            for row in image_info_list:
+                if not isinstance(row, Mapping):
+                    continue
+                nested = row.get("image_info")
+                if isinstance(nested, Mapping):
+                    image_id = str(nested.get("image_id") or "").strip()
+                else:
+                    image_id = str(row.get("image_id") or "").strip()
+                if image_id:
+                    break
     if not image_id:
         raise ShopeeGlobalV4LiveRuntimeError("Shopee uploaded image identity is unavailable")
     return image_id

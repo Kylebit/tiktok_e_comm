@@ -1,10 +1,57 @@
 from modules.shopee.global_v4_live_runtime import (
     OfficialShopeeGlobalV4Runtime,
     ShopeeGlobalV4LiveRuntimeError,
+    _default_image_upload,
     select_exact_official_category,
 )
 from modules.shopee.global_v4_executor import ShopeeGlobalV4Resolver
 from test_shopee_global_v4_executor import _request
+
+
+def test_default_image_upload_accepts_official_nested_image_info(monkeypatch):
+    class PreparedImage:
+        suffix = ".jpg"
+        content = b"image-bytes"
+
+    monkeypatch.setattr(
+        "modules.shopee.oneclick_release._download_public_https_image",
+        lambda _url: PreparedImage(),
+    )
+    monkeypatch.setattr(
+        "modules.shopee.client.upload_image",
+        lambda _path, *, scene: {
+            "image_info": {"image_id": "official-image-1"}
+        },
+    )
+
+    assert (
+        _default_image_upload("https://img.example/approved.jpg", 0)
+        == "official-image-1"
+    )
+
+
+def test_default_image_upload_accepts_official_image_info_list(monkeypatch):
+    class PreparedImage:
+        suffix = ".png"
+        content = b"image-bytes"
+
+    monkeypatch.setattr(
+        "modules.shopee.oneclick_release._download_public_https_image",
+        lambda _url: PreparedImage(),
+    )
+    monkeypatch.setattr(
+        "modules.shopee.client.upload_image",
+        lambda _path, *, scene: {
+            "image_info_list": [
+                {"image_info": {"image_id": "official-image-2"}}
+            ]
+        },
+    )
+
+    assert (
+        _default_image_upload("https://img.example/approved.png", 1)
+        == "official-image-2"
+    )
 
 
 def test_exact_main_category_selects_fridge_magnets_and_ignores_other_candidates():

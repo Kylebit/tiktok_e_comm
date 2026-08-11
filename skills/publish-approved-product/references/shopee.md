@@ -218,6 +218,9 @@ Permanent handling:
 7. For an official modeled item (`has_model=true`), Shopee may return an empty
    parent `item_sku`. Accept that omission only when the complete official
    Model-SKU set is exact; otherwise the SKU identity remains a mismatch.
+8. On a later run, an exact stored regional item identity must enter official
+   readback directly with zero create writes. Never create a duplicate merely
+   because the prior run has already finished.
 
 ## Confirmed incident: an unrelated recommendation blocked the exact category
 

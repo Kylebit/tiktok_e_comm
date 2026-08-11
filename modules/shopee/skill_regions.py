@@ -66,6 +66,10 @@ class ShopeeRegionRuntime(Protocol):
         self, context: RegionContext, body: Mapping[str, object]
     ) -> object: ...
 
+    def existing_regional_item(
+        self, context: RegionContext, global_item_id: str
+    ) -> str | None: ...
+
     def publish_task_result(
         self, context: RegionContext, task_id: str
     ) -> object: ...
@@ -171,6 +175,9 @@ def dispatch_selected_regions(
                 description=approved_description,
                 item_sku=approved_item_sku,
             )
+            existing_item_id = runtime.existing_regional_item(
+                context, global_id
+            )
         except Exception as error:
             results.append(
                 _target_fact(
@@ -180,6 +187,26 @@ def dispatch_selected_regions(
                     outcome="NOT_ATTEMPTED",
                     message=str(error),
                 )
+            )
+            continue
+
+        if existing_item_id:
+            results.append(
+                {
+                    **_target_fact(
+                        target,
+                        attempted=False,
+                        accepted=True,
+                        outcome="ACCEPTED",
+                        message="existing regional identity requires official readback",
+                    ),
+                    "existing_item_id": existing_item_id,
+                    "shop_id": context.shop_id,
+                    "expected_model_count": len(approved_models),
+                    "selected_logistics_ids": logistics,
+                    "price_lineage_digest": _digest({"models": approved_models}),
+                    "external_write_count": 0,
+                }
             )
             continue
 
@@ -237,6 +264,7 @@ def dispatch_selected_regions(
                 "expected_model_count": len(approved_models),
                 "selected_logistics_ids": logistics,
                 "price_lineage_digest": _digest({"models": approved_models}),
+                "external_write_count": 1,
             }
         )
     return _dispatch_envelope(global_id, targets, results)
@@ -274,53 +302,60 @@ def readback_dispatched_regions(
             )
             continue
         task_id = str(source.get("provider_task_id") or "").strip()
+        existing_item_id = str(source.get("existing_item_id") or "").strip()
         region = target.split(":", 1)[1]
         try:
-            if not task_id:
+            if not task_id and not existing_item_id:
                 raise ShopeeRegionContractError("publish task identity is missing")
             approved_models = _approved_models(snapshot, target)
             context = runtime.context(region)
             expected_tiers = _exact_global_tiers(
                 runtime.global_models(context, global_id), approved_models
             )
-            task = _poll_task(runtime, context, task_id, attempts)
-            status = str(task.get("publish_status") or "").strip().lower()
-            if status not in {"success", "failed"}:
-                results.append(
-                    {
-                        **_target_fact(
-                            target,
-                            attempted=True,
-                            accepted=True,
-                            outcome="PROCESSING",
-                            message="official publish task is still processing",
-                        ),
-                        "provider_task_id": task_id,
-                    }
-                )
-                continue
-            if status == "failed":
-                results.append(
-                    {
-                        **_target_fact(
-                            target,
-                            attempted=True,
-                            accepted=True,
-                            outcome="FAILED",
-                            message="official publish task failed",
-                        ),
-                        "provider_task_id": task_id,
-                    }
-                )
-                continue
-            item_id = _task_item_id(task)
-            if not item_id:
-                raise ShopeeRegionContractError(
-                    "successful publish task did not identify a shop item"
-                )
+            if existing_item_id:
+                item_id = existing_item_id
+            else:
+                task = _poll_task(runtime, context, task_id, attempts)
+                status = str(task.get("publish_status") or "").strip().lower()
+                if status not in {"success", "failed"}:
+                    results.append(
+                        {
+                            **_target_fact(
+                                target,
+                                attempted=True,
+                                accepted=True,
+                                outcome="PROCESSING",
+                                message="official publish task is still processing",
+                            ),
+                            "provider_task_id": task_id,
+                            "external_write_count": 0,
+                        }
+                    )
+                    continue
+                if status == "failed":
+                    results.append(
+                        {
+                            **_target_fact(
+                                target,
+                                attempted=True,
+                                accepted=True,
+                                outcome="FAILED",
+                                message="official publish task failed",
+                            ),
+                            "provider_task_id": task_id,
+                            "external_write_count": 0,
+                        }
+                    )
+                    continue
+                item_id = _task_item_id(task)
+                if not item_id:
+                    raise ShopeeRegionContractError(
+                        "successful publish task did not identify a shop item"
+                    )
             item = runtime.regional_item(context, item_id)
             listing_attempted = False
             listing_error_type = ""
+            listing_write_count: int | None = 0
             if (
                 isinstance(item, Mapping)
                 and str(item.get("item_status") or "").strip().upper()
@@ -329,11 +364,13 @@ def readback_dispatched_regions(
                 listing_attempted = True
                 try:
                     runtime.list_item(context, item_id)
+                    listing_write_count = 1
                 except Exception as error:
                     # A listing transport exception cannot prove that the
                     # provider rejected the write.  Always read the item again
                     # and let the official item status determine the result.
                     listing_error_type = type(error).__name__
+                    listing_write_count = None
                 item = runtime.regional_item(context, item_id)
             models = runtime.regional_models(context, item_id)
             linkage = runtime.resolved_global_item_id(context, item_id)
@@ -390,6 +427,7 @@ def readback_dispatched_regions(
                     "verified": verified,
                     "listing_attempted": listing_attempted,
                     "listing_error_type": listing_error_type,
+                    "external_write_count": listing_write_count,
                 }
             )
         except Exception as error:
@@ -494,6 +532,33 @@ class OfficialShopeeRegionRuntime:
             context.merchant_token,
             dict(body),
         )
+
+    def existing_regional_item(
+        self, context: RegionContext, global_item_id: str
+    ) -> str | None:
+        from modules.shopee.global_sku_map import load_map
+
+        entry = load_map().get(str(global_item_id))
+        if not isinstance(entry, Mapping):
+            return None
+        shop_items = entry.get("shop_items")
+        row = (
+            shop_items.get(context.region)
+            if isinstance(shop_items, Mapping)
+            else None
+        )
+        if not isinstance(row, Mapping):
+            return None
+        if int(row.get("shop_id") or 0) != context.shop_id:
+            raise ShopeeRegionContractError(
+                "stored regional item belongs to a different shop"
+            )
+        item_id = str(row.get("item_id") or "").strip()
+        if not item_id.isdigit() or int(item_id) <= 0:
+            raise ShopeeRegionContractError(
+                "stored regional item identity is invalid"
+            )
+        return item_id
 
     def publish_task_result(
         self, context: RegionContext, task_id: str

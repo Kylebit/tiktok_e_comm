@@ -439,7 +439,26 @@ def _shopee_result(
         if not outcome:
             raise ValueError("Shopee dispatch outcome is invalid")
         attempted.append(row_attempted)
-        accepted_count += row_accepted
+        row_write_count = row.get("external_write_count")
+        if row_write_count is None:
+            if "external_write_count" in row:
+                unknown_write = True
+            else:
+                accepted_count += row_accepted
+        elif type(row_write_count) is int and row_write_count >= 0:
+            accepted_count += row_write_count
+        else:
+            raise ValueError("Shopee dispatch write count is invalid")
+        if readback_completed:
+            readback_write_count = readback_rows[label].get(
+                "external_write_count", 0
+            )
+            if readback_write_count is None:
+                unknown_write = True
+            elif type(readback_write_count) is int and readback_write_count >= 0:
+                accepted_count += readback_write_count
+            else:
+                raise ValueError("Shopee readback write count is invalid")
         unknown_write = unknown_write or outcome == "UNKNOWN"
     return _result(
         "SHOPEE",

@@ -56,6 +56,9 @@ current execution report only.
   returns `record not found`. After either write, authoritative item/model
   readback wins over the immediate response. A modeled item may omit its
   parent item SKU only when every official Model SKU is exact.
+  Persist a verified regional item identity and converge through zero-write
+  official readback on later runs; a successful prior run must not create a
+  duplicate regional item.
 - Shopee category recommendation: choose one exact publishable official leaf
   from the frozen main-category semantic identity, then read only that leaf's
   attribute tree. A malformed unrelated recommendation must not erase a valid

@@ -75,6 +75,7 @@ class FakeRuntime:
         self.blank_parent_sku: set[str] = set()
         self.bad_copy: set[str] = set()
         self.list_failures: set[str] = set()
+        self.existing_items: dict[str, str] = {}
 
     def context(self, region: str) -> RegionContext:
         self.context_calls.append(region)
@@ -102,6 +103,9 @@ class FakeRuntime:
         if context.region in self.create_failures:
             raise TimeoutError("ambiguous transport outcome")
         return {"error": "", "response": {"publish_task_id": context.shop_id + 9000}}
+
+    def existing_regional_item(self, context, _global_item_id):
+        return self.existing_items.get(context.region)
 
     def publish_task_result(self, context, task_id):
         status = self.task_status.get(context.region, "success")
@@ -256,6 +260,29 @@ def test_provider_requires_unlisted_create_before_separate_listing() -> None:
     assert body["item"]["item_name"] == "Approved regional title"
     assert body["item"]["description"] == "Approved regional description"
     assert body["item"]["item_sku"] == "0967"
+
+
+def test_verified_existing_region_is_read_back_without_duplicate_create() -> None:
+    runtime = FakeRuntime()
+    runtime.existing_items["PH"] = "8101"
+    runtime.listed_regions.add("PH")
+    snapshot = _snapshot("shopee:PH")
+
+    dispatch = dispatch_selected_regions(
+        snapshot,
+        global_item_id="60000001",
+        runtime=runtime,
+    )
+    result = readback_dispatched_regions(
+        snapshot,
+        dispatch,
+        global_item_id="60000001",
+        runtime=runtime,
+    )
+
+    assert runtime.create_calls == []
+    assert dispatch["targets"][0]["existing_item_id"] == "8101"
+    assert result["targets"][0]["outcome"] == "PUBLISHED"
 
 
 def test_v4_region_without_per_sku_global_cny_lineage_fails_before_dispatch() -> None:

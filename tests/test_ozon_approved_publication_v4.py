@@ -355,3 +355,96 @@ def test_runner_executor_uses_only_the_detached_request_snapshot_and_scope() -> 
     assert result["targets"] == [
         {"target_label": "ozon:RU", "status": "PUBLISHED"}
     ]
+
+
+def test_deferred_ozon_category_uses_one_exact_official_profile_receipt() -> None:
+    snapshot = _snapshot()
+    snapshot["categories_by_target"]["ozon:RU"]["category"] = None
+    snapshot["categories_by_target"]["ozon:RU"]["decision"] = {
+        "status": "DEFERRED_TO_SKILL",
+        "decision_digest": "sha256:" + "c" * 64,
+    }
+    submitted: list[dict] = []
+    resolver_calls: list[dict] = []
+
+    def resolve_profile(value: dict) -> dict:
+        resolver_calls.append(value)
+        return {
+            "schema_version": "ozon-official-profile-resolution/v1",
+            "resolution": "EXACT",
+            "description_category_id": 17028743,
+            "category_name": "Souvenirs and Gifts",
+            "category_path": [
+                {"id": "17027901", "name": "House & Garden"},
+                {"id": "17028743", "name": "Souvenirs and Gifts"},
+            ],
+            "type_id": 93785,
+            "type_name": "Fridge Magnet",
+            "required_attributes": {
+                "brand": {
+                    "attribute_id": 85,
+                    "dictionary_value_id": 126745801,
+                    "value": "No Brand",
+                },
+                "model_name": {"attribute_id": 9048},
+                "product_type": {
+                    "attribute_id": 8229,
+                    "dictionary_value_id": 93785,
+                    "value": "Fridge Magnet",
+                },
+            },
+        }
+
+    def dispatch(payload: dict) -> OzonDispatchFact:
+        submitted.append(payload)
+        return OzonDispatchFact(outcome="ACCEPTED", task_id="task-0967")
+
+    result = execute_ozon_v4_publication(
+        snapshot,
+        target_labels=("ozon:RU",),
+        official_profile_resolver=resolve_profile,
+        dispatch_variant=dispatch,
+        readback_variants=lambda _ids: [
+            _published_item(payload, item_id="item-" + payload["offer_id"])
+            for payload in submitted
+        ],
+    )
+
+    assert result["targets"] == [
+        {"target_label": "ozon:RU", "status": "PUBLISHED"}
+    ]
+    assert resolver_calls == [snapshot]
+    assert submitted[0]["category"] == {
+        "id": "17028743",
+        "name": "Souvenirs and Gifts",
+        "path": [
+            {"id": "17027901", "name": "House & Garden"},
+            {"id": "17028743", "name": "Souvenirs and Gifts"},
+        ],
+    }
+    assert submitted[0]["official_profile"]["type_id"] == 93785
+
+
+def test_deferred_ozon_category_without_exact_receipt_is_zero_write_failure() -> None:
+    snapshot = _snapshot()
+    snapshot["categories_by_target"]["ozon:RU"]["category"] = None
+    snapshot["categories_by_target"]["ozon:RU"]["decision"]["status"] = (
+        "DEFERRED_TO_SKILL"
+    )
+    calls: list[str] = []
+
+    result = execute_ozon_v4_publication(
+        snapshot,
+        target_labels=("ozon:RU",),
+        official_profile_resolver=lambda _snapshot: {
+            "schema_version": "ozon-official-profile-resolution/v1",
+            "resolution": "AMBIGUOUS",
+        },
+        dispatch_variant=lambda _payload: calls.append("dispatch"),
+        readback_variants=lambda _ids: calls.append("readback"),
+    )
+
+    assert calls == []
+    assert result["dispatch_attempted"] is False
+    assert result["external_write_count"] == 0
+    assert result["targets"] == [{"target_label": "ozon:RU", "status": "FAILED"}]

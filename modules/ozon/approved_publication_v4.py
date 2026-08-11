@@ -50,6 +50,7 @@ class OzonDispatchFact:
 
 DispatchVariant = Callable[[dict[str, Any]], OzonDispatchFact]
 ReadbackVariants = Callable[[tuple[str, ...]], Sequence[Mapping[str, Any]]]
+OfficialProfileResolver = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 
 
 def _text(value: object, name: str) -> str:
@@ -146,8 +147,106 @@ def _approved_category(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     return {"id": category_id, "name": category_name, "path": path}
 
 
+def _official_profile(value: object) -> dict[str, Any]:
+    profile = _mapping(value, "Ozon official profile")
+    if (
+        profile.get("schema_version") != "ozon-official-profile-resolution/v1"
+        or profile.get("resolution") != "EXACT"
+    ):
+        raise OzonApprovedPublicationError("Ozon official profile is not exact")
+    category_id = int(
+        _positive_decimal(
+            profile.get("description_category_id"),
+            "Ozon official description category id",
+        )
+    )
+    category_name = _text(profile.get("category_name"), "Ozon category name")
+    type_id = int(_positive_decimal(profile.get("type_id"), "Ozon official type id"))
+    type_name = _text(profile.get("type_name"), "Ozon official type name")
+    raw_path = _sequence(profile.get("category_path"), "Ozon category path")
+    path: list[dict[str, str]] = []
+    for raw in raw_path:
+        node = _mapping(raw, "Ozon category path node")
+        path.append(
+            {
+                "id": _text(node.get("id"), "Ozon category path id"),
+                "name": _text(node.get("name"), "Ozon category path name"),
+            }
+        )
+    if not path or path[-1] != {"id": str(category_id), "name": category_name}:
+        raise OzonApprovedPublicationError("Ozon official category path conflicts")
+    raw_attributes = _mapping(
+        profile.get("required_attributes"), "Ozon required attributes"
+    )
+    if set(raw_attributes) != {"brand", "model_name", "product_type"}:
+        raise OzonApprovedPublicationError("Ozon required attribute coverage conflicts")
+
+    def dictionary_attribute(name: str, expected_id: int) -> dict[str, Any]:
+        row = _mapping(raw_attributes.get(name), f"Ozon {name} attribute")
+        if row.get("attribute_id") != expected_id:
+            raise OzonApprovedPublicationError(f"Ozon {name} attribute conflicts")
+        return {
+            "attribute_id": expected_id,
+            "dictionary_value_id": int(
+                _positive_decimal(
+                    row.get("dictionary_value_id"),
+                    f"Ozon {name} dictionary value id",
+                )
+            ),
+            "value": _text(row.get("value"), f"Ozon {name} value"),
+        }
+
+    model_name = _mapping(raw_attributes.get("model_name"), "Ozon model attribute")
+    if model_name != {"attribute_id": 9048}:
+        raise OzonApprovedPublicationError("Ozon model attribute conflicts")
+    normalized = {
+        "schema_version": "ozon-official-profile-resolution/v1",
+        "resolution": "EXACT",
+        "description_category_id": category_id,
+        "category_name": category_name,
+        "category_path": path,
+        "type_id": type_id,
+        "type_name": type_name,
+        "required_attributes": {
+            "brand": dictionary_attribute("brand", 85),
+            "model_name": {"attribute_id": 9048},
+            "product_type": dictionary_attribute("product_type", 8229),
+        },
+    }
+    if normalized["required_attributes"]["product_type"]["dictionary_value_id"] != type_id:
+        raise OzonApprovedPublicationError("Ozon product type dictionary conflicts")
+    return normalized
+
+
+def _category_and_profile(
+    snapshot: Mapping[str, Any],
+    resolver: OfficialProfileResolver | None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    categories = _mapping(snapshot.get("categories_by_target"), "target categories")
+    row = _mapping(categories.get(OZON_TARGET), "approved Ozon category")
+    decision = _mapping(row.get("decision"), "approved Ozon category decision")
+    status = decision.get("status")
+    approved = _approved_category(snapshot) if status == "APPROVED" else None
+    if resolver is None:
+        if approved is None:
+            raise OzonApprovedPublicationError("approved Ozon category is unavailable")
+        return approved, None
+    profile = _official_profile(resolver(deepcopy(dict(snapshot))))
+    resolved = {
+        "id": str(profile["description_category_id"]),
+        "name": profile["category_name"],
+        "path": deepcopy(profile["category_path"]),
+    }
+    if approved is not None and approved != resolved:
+        raise OzonApprovedPublicationError("approved and official Ozon categories conflict")
+    if approved is None and status != "DEFERRED_TO_SKILL":
+        raise OzonApprovedPublicationError("Ozon category decision is invalid")
+    return approved or resolved, profile
+
+
 def project_ozon_v4_variants(
-    snapshot: Mapping[str, Any], *, target_labels: tuple[str, ...]
+    snapshot: Mapping[str, Any], *, target_labels: tuple[str, ...],
+    official_profile_resolver: OfficialProfileResolver | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Project exact per-model import inputs from a runner-validated v4 body.
 
@@ -166,7 +265,9 @@ def project_ozon_v4_variants(
     title = _text(product.get("title"), "approved Ozon title")
     description = _text(product.get("description"), "approved Ozon description")
     _https_urls(product.get("images"), "approved product images")
-    category = _approved_category(snapshot)
+    category, official_profile = _category_and_profile(
+        snapshot, official_profile_resolver
+    )
     raw_skus = _sequence(snapshot.get("skus"), "approved SKUs")
     if not raw_skus:
         raise OzonApprovedPublicationError("approved Ozon SKU coverage is empty")
@@ -237,6 +338,11 @@ def project_ozon_v4_variants(
                 "images": images,
                 "image_count": len(images),
                 "category": deepcopy(category),
+                **(
+                    {"official_profile": deepcopy(official_profile)}
+                    if official_profile is not None
+                    else {}
+                ),
             }
         )
     return tuple(variants)
@@ -331,13 +437,18 @@ def execute_ozon_v4_publication(
     snapshot: Mapping[str, Any],
     *,
     target_labels: tuple[str, ...],
+    official_profile_resolver: OfficialProfileResolver | None = None,
     dispatch_variant: DispatchVariant,
     readback_variants: ReadbackVariants,
 ) -> dict[str, Any]:
     """Dispatch all variants, then always perform one authoritative readback."""
 
     try:
-        variants = project_ozon_v4_variants(snapshot, target_labels=target_labels)
+        variants = project_ozon_v4_variants(
+            snapshot,
+            target_labels=target_labels,
+            official_profile_resolver=official_profile_resolver,
+        )
     except (OzonApprovedPublicationError, TypeError, ValueError):
         return _result(
             "FAILED",
@@ -428,6 +539,7 @@ def build_ozon_v4_executor(
     *,
     dispatch_variant: DispatchVariant,
     readback_variants: ReadbackVariants,
+    official_profile_resolver: OfficialProfileResolver | None = None,
 ) -> Callable[[object], dict[str, Any]]:
     """Bind thin provider transports to the shared runner callable shape."""
 
@@ -444,6 +556,7 @@ def build_ozon_v4_executor(
         return execute_ozon_v4_publication(
             snapshot,
             target_labels=raw_targets,
+            official_profile_resolver=official_profile_resolver,
             dispatch_variant=dispatch_variant,
             readback_variants=readback_variants,
         )

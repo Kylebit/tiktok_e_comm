@@ -73,6 +73,11 @@ MIAOSHOU_COMMON_LIST_PATH = (
 MIAOSHOU_TIKTOK_LIST_PATH = SOURCE_LIST_PATH
 OZON_IMPORT_PATH = "/v3/product/import"
 OZON_READBACK_PATH = "/v3/product/info/list"
+OZON_CATEGORY_TREE_PATH = "/v1/description-category/tree"
+OZON_CATEGORY_ATTRIBUTES_PATH = "/v1/description-category/attribute"
+OZON_ATTRIBUTE_VALUES_SEARCH_PATH = (
+    "/v1/description-category/attribute/values/search"
+)
 
 ProviderPost = Callable[[str, dict[str, object]], Mapping[str, object]]
 ShopeeMerchantGet = Callable[
@@ -1611,14 +1616,264 @@ def _ozon_package_cm(item: Mapping[str, object]) -> list[str]:
     return [_normalize_number(Decimal(str(value)) / divisor) for value in dimensions]
 
 
+class OfficialOzonFridgeMagnetProfileResolver:
+    """Resolve the exact enabled Ozon fridge-magnet profile from official facts.
+
+    Product semantics come only from the frozen main category.  The title is
+    deliberately not used to guess a category.  The current account must
+    expose one enabled ``Fridge Magnet`` type and the exact required metadata
+    before a dispatch item can be built.
+    """
+
+    _CATEGORY_ID = 17028743
+    _TYPE_ID = 93785
+    _SEMANTIC_ALIASES = frozenset(
+        {
+            "fridge magnet",
+            "fridge magnets",
+            "home > fridge magnets",
+            "居家日用 > 冰箱贴",
+            "冰箱贴",
+        }
+    )
+
+    def __init__(self, *, post: OzonPost = ozon_post) -> None:
+        if not callable(post):
+            raise TypeError("Ozon profile transport must be callable")
+        self._post = post
+
+    @staticmethod
+    def _main_category_name(snapshot: Mapping[str, Any]) -> str:
+        product = snapshot.get("product")
+        category = product.get("main_category") if isinstance(product, Mapping) else None
+        name = str(category.get("name") or "").strip() if isinstance(category, Mapping) else ""
+        normalized = " ".join(name.casefold().split())
+        if normalized not in OfficialOzonFridgeMagnetProfileResolver._SEMANTIC_ALIASES:
+            raise LivePublicationDependencyError(
+                "frozen main category is not the approved fridge-magnet semantic"
+            )
+        return name
+
+    @staticmethod
+    def _exact_value(rows: object, *, expected_id: int, labels: set[str]) -> dict[str, Any]:
+        if not isinstance(rows, list):
+            raise LivePublicationDependencyError("Ozon dictionary response is malformed")
+        matches = [
+            row
+            for row in rows
+            if isinstance(row, Mapping)
+            and row.get("id") == expected_id
+            and str(row.get("value") or "").strip().casefold() in labels
+        ]
+        if len(matches) != 1:
+            raise LivePublicationDependencyError("Ozon dictionary value is not exact")
+        return {
+            "dictionary_value_id": expected_id,
+            "value": str(matches[0]["value"]).strip(),
+        }
+
+    def __call__(self, snapshot: Mapping[str, Any]) -> Mapping[str, Any]:
+        if not isinstance(snapshot, Mapping) or snapshot.get("schema_version") != "approved-publication-snapshot/v4":
+            raise LivePublicationDependencyError("approved Ozon snapshot is invalid")
+        self._main_category_name(snapshot)
+        tree_response = self._post(OZON_CATEGORY_TREE_PATH, {"language": "EN"})
+        roots = tree_response.get("result") if isinstance(tree_response, Mapping) else None
+        if not isinstance(roots, list):
+            raise LivePublicationDependencyError("Ozon category tree is malformed")
+        matches: list[tuple[list[dict[str, str]], Mapping[str, object]]] = []
+
+        def walk(nodes: object, path: list[dict[str, str]], enabled: bool) -> None:
+            if not isinstance(nodes, list):
+                return
+            for raw in nodes:
+                if not isinstance(raw, Mapping):
+                    continue
+                row_enabled = enabled and raw.get("disabled") is not True
+                next_path = list(path)
+                category_id = raw.get("description_category_id")
+                category_name = str(raw.get("category_name") or "").strip()
+                if type(category_id) is int and category_id > 0 and category_name:
+                    next_path.append({"id": str(category_id), "name": category_name})
+                if (
+                    row_enabled
+                    and raw.get("type_id") == self._TYPE_ID
+                    and str(raw.get("type_name") or "").strip() == "Fridge Magnet"
+                    and next_path
+                    and next_path[-1]["id"] == str(self._CATEGORY_ID)
+                ):
+                    matches.append((next_path, raw))
+                walk(raw.get("children"), next_path, row_enabled)
+
+        walk(roots, [], True)
+        if len(matches) != 1:
+            raise LivePublicationDependencyError(
+                "Ozon official fridge-magnet type is missing or ambiguous"
+            )
+        category_path, _type_node = matches[0]
+        category_name = category_path[-1]["name"]
+
+        attributes_response = self._post(
+            OZON_CATEGORY_ATTRIBUTES_PATH,
+            {
+                "description_category_id": self._CATEGORY_ID,
+                "type_id": self._TYPE_ID,
+                "language": "EN",
+            },
+        )
+        attributes = (
+            attributes_response.get("result")
+            if isinstance(attributes_response, Mapping)
+            else None
+        )
+        if not isinstance(attributes, list) or any(
+            not isinstance(row, Mapping) for row in attributes
+        ):
+            raise LivePublicationDependencyError("Ozon category attributes are malformed")
+        required_ids = {
+            row.get("id") for row in attributes if row.get("is_required") is True
+        }
+        if required_ids != {85, 9048, 8229}:
+            raise LivePublicationDependencyError(
+                "Ozon required attribute coverage changed"
+            )
+
+        def search(attribute_id: int, value: str) -> object:
+            response = self._post(
+                OZON_ATTRIBUTE_VALUES_SEARCH_PATH,
+                {
+                    "attribute_id": attribute_id,
+                    "description_category_id": self._CATEGORY_ID,
+                    "type_id": self._TYPE_ID,
+                    "language": "EN",
+                    "limit": 20,
+                    "value": value,
+                },
+            )
+            return response.get("result") if isinstance(response, Mapping) else None
+
+        brand = self._exact_value(
+            search(85, "No brand"),
+            expected_id=126745801,
+            labels={"no brand", "нет бренда"},
+        )
+        product_type = self._exact_value(
+            search(8229, "Fridge Magnet"),
+            expected_id=self._TYPE_ID,
+            labels={"fridge magnet"},
+        )
+        return {
+            "schema_version": "ozon-official-profile-resolution/v1",
+            "resolution": "EXACT",
+            "description_category_id": self._CATEGORY_ID,
+            "category_name": category_name,
+            "category_path": category_path,
+            "type_id": self._TYPE_ID,
+            "type_name": "Fridge Magnet",
+            "required_attributes": {
+                "brand": {"attribute_id": 85, **brand},
+                "model_name": {"attribute_id": 9048},
+                "product_type": {"attribute_id": 8229, **product_type},
+            },
+        }
+
+
+def build_ozon_import_item_from_frozen_variant(
+    variant: Mapping[str, Any],
+) -> Mapping[str, object]:
+    """Build one Ozon import item solely from a projected frozen variant."""
+
+    if not isinstance(variant, Mapping):
+        raise LivePublicationDependencyError("Ozon frozen variant is invalid")
+    profile = variant.get("official_profile")
+    if (
+        not isinstance(profile, Mapping)
+        or profile.get("schema_version") != "ozon-official-profile-resolution/v1"
+        or profile.get("resolution") != "EXACT"
+        or profile.get("description_category_id") != 17028743
+        or profile.get("type_id") != 93785
+    ):
+        raise LivePublicationDependencyError("Ozon official profile is unavailable")
+    required = profile.get("required_attributes")
+    if not isinstance(required, Mapping) or set(required) != {
+        "brand",
+        "model_name",
+        "product_type",
+    }:
+        raise LivePublicationDependencyError("Ozon required attribute profile conflicts")
+    offer_id = str(variant.get("offer_id") or "").strip()
+    seller_sku = str(variant.get("approved_seller_sku") or "").strip()
+    title = str(variant.get("title") or "").strip()
+    description = str(variant.get("description") or "").strip()
+    images = variant.get("images")
+    parcel = variant.get("parcel")
+    if (
+        not offer_id
+        or not seller_sku
+        or not title
+        or not description
+        or not isinstance(images, list)
+        or not images
+        or any(type(url) is not str or not url.startswith("https://") for url in images)
+        or not isinstance(parcel, Mapping)
+        or not isinstance(parcel.get("package_cm"), list)
+        or len(parcel["package_cm"]) != 3
+    ):
+        raise LivePublicationDependencyError("Ozon frozen variant facts are incomplete")
+
+    def attribute(attribute_id: int, value: str, dictionary_value_id: int = 0) -> dict:
+        return {
+            "complex_id": 0,
+            "id": attribute_id,
+            "values": [
+                {
+                    "dictionary_value_id": dictionary_value_id,
+                    "value": value,
+                }
+            ],
+        }
+
+    brand = required["brand"]
+    product_type = required["product_type"]
+    if not isinstance(brand, Mapping) or not isinstance(product_type, Mapping):
+        raise LivePublicationDependencyError("Ozon dictionary profile is malformed")
+    weight_kg = _normalize_number(parcel.get("weight_kg"))
+    package_cm = [_normalize_number(value) for value in parcel["package_cm"]]
+    return {
+        "attributes": [
+            attribute(85, str(brand.get("value") or ""), int(brand.get("dictionary_value_id") or 0)),
+            attribute(9048, seller_sku + "-fridge-magnet"),
+            attribute(8229, str(product_type.get("value") or ""), int(product_type.get("dictionary_value_id") or 0)),
+            attribute(4180, title),
+            attribute(4191, description),
+            attribute(9024, offer_id),
+        ],
+        "description_category_id": int(profile["description_category_id"]),
+        "type_id": int(profile["type_id"]),
+        "color_image": images[0],
+        "currency_code": str(variant.get("currency") or ""),
+        "depth": package_cm[0],
+        "width": package_cm[1],
+        "height": package_cm[2],
+        "dimension_unit": "cm",
+        "weight": weight_kg,
+        "weight_unit": "kg",
+        "images": deepcopy(images),
+        "name": title,
+        "offer_id": offer_id,
+        "old_price": _normalize_number(variant.get("old_price")),
+        "price": _normalize_number(variant.get("price")),
+        "vat": "0",
+        "promotions": [{"operation": "DISABLE", "type": "REVIEWS_PROMO"}],
+    }
+
+
 class OfficialOzonV4Transport:
     """Official Ozon import/readback transport with an immutable profile seam.
 
-    Current v4 variants freeze category, copy, prices, parcel and images but do
-    not yet freeze Ozon ``type_id`` and the official attribute payload.  The
-    default therefore returns a known REJECTED pre-write fact.  A caller may
-    inject a deterministic builder only when that builder consumes the variant
-    argument alone and produces the already-approved official profile.
+    The default builder accepts only an exact official profile attached by the
+    Skill-owned resolver and otherwise returns a known REJECTED pre-write fact.
+    A custom builder is allowed only when it consumes the projected variant
+    argument alone.
     """
 
     def __init__(
@@ -1632,14 +1887,11 @@ class OfficialOzonV4Transport:
         if import_item_builder is not None and not callable(import_item_builder):
             raise TypeError("Ozon import item builder must be callable")
         self._post = post
-        self._import_item_builder = import_item_builder
+        self._import_item_builder = (
+            import_item_builder or build_ozon_import_item_from_frozen_variant
+        )
 
     def dispatch_variant(self, variant: dict[str, Any]) -> OzonDispatchFact:
-        if self._import_item_builder is None:
-            # ``type_id`` and attributes are not present in the frozen v4
-            # projection.  Returning REJECTED preserves a proven zero-write
-            # result instead of turning a local precondition into UNKNOWN.
-            return OzonDispatchFact(outcome="REJECTED")
         try:
             item = self._import_item_builder(deepcopy(variant))
             if not isinstance(item, Mapping):
@@ -1805,7 +2057,9 @@ def build_live_shopee_dependencies(
 
 
 def build_live_ozon_dependencies(
-    *, transport: OfficialOzonV4Transport | None = None
+    *,
+    transport: OfficialOzonV4Transport | None = None,
+    official_profile_resolver: OfficialOzonFridgeMagnetProfileResolver | None = None,
 ) -> OzonV4ExecutorDependencies:
     """Build only Ozon dependencies; no other platform object is touched."""
 
@@ -1813,6 +2067,9 @@ def build_live_ozon_dependencies(
     return OzonV4ExecutorDependencies(
         dispatch_variant=live_transport.dispatch_variant,
         readback_variants=live_transport.readback_variants,
+        official_profile_resolver=(
+            official_profile_resolver or OfficialOzonFridgeMagnetProfileResolver()
+        ),
     )
 
 
@@ -1827,6 +2084,7 @@ __all__ = [
     "MiaoshouTikTokV4DraftTransportFactory",
     "OfficialMiaoshouTikTokCategoryResolver",
     "OfficialMiaoshouTikTokV4SeedIdentityResolver",
+    "OfficialOzonFridgeMagnetProfileResolver",
     "OfficialOzonV4Transport",
     "ShopeeExactGlobalItemResolver",
     "TikTokUnavailableStorefrontReadback",
@@ -1834,4 +2092,5 @@ __all__ = [
     "build_live_ozon_dependencies",
     "build_live_shopee_dependencies",
     "build_live_tiktok_dependencies",
+    "build_ozon_import_item_from_frozen_variant",
 ]

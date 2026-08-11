@@ -20,6 +20,7 @@ from shared_platform.product_publication_live_dependencies import (
     MiaoshouTikTokV4DraftTransportFactory,
     OfficialMiaoshouTikTokCategoryResolver,
     OfficialMiaoshouTikTokV4SeedIdentityResolver,
+    OfficialOzonFridgeMagnetProfileResolver,
     OfficialOzonV4Transport,
     ShopeeExactGlobalItemResolver,
     TikTokUnavailableStorefrontReadback,
@@ -27,6 +28,7 @@ from shared_platform.product_publication_live_dependencies import (
     build_live_ozon_dependencies,
     build_live_shopee_dependencies,
     build_live_tiktok_dependencies,
+    build_ozon_import_item_from_frozen_variant,
 )
 from shared_platform.product_publication_executors import build_tiktok_v4_executor
 from shared_platform.product_publication_runner import PublicationPlatformRequest
@@ -424,6 +426,138 @@ def test_ozon_dispatch_requires_frozen_official_profile_before_network():
 
     assert fact == OzonDispatchFact(outcome="REJECTED")
     assert calls == []
+
+
+def test_ozon_fridge_magnet_profile_requires_exact_official_tree_and_metadata():
+    calls = []
+
+    def post(path, body):
+        calls.append((path, deepcopy(body)))
+        if path == "/v1/description-category/tree":
+            return {
+                "result": [
+                    {
+                        "description_category_id": 17027901,
+                        "category_name": "House & Garden",
+                        "disabled": False,
+                        "children": [
+                            {
+                                "description_category_id": 17028743,
+                                "category_name": "Souvenirs and Gifts",
+                                "disabled": False,
+                                "children": [
+                                    {
+                                        "type_id": 93785,
+                                        "type_name": "Fridge Magnet",
+                                        "disabled": False,
+                                        "children": [],
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            }
+        if path == "/v1/description-category/attribute":
+            return {
+                "result": [
+                    {"id": 85, "name": "Brand", "is_required": True},
+                    {"id": 9048, "name": "Model name", "is_required": True},
+                    {"id": 8229, "name": "Type", "is_required": True},
+                    {"id": 4191, "name": "Annotation", "is_required": False},
+                ]
+            }
+        if path == "/v1/description-category/attribute/values/search":
+            if body["attribute_id"] == 85:
+                return {"result": [{"id": 126745801, "value": "No Brand"}]}
+            if body["attribute_id"] == 8229:
+                return {"result": [{"id": 93785, "value": "Fridge Magnet"}]}
+        raise AssertionError((path, body))
+
+    resolver = OfficialOzonFridgeMagnetProfileResolver(post=post)
+    snapshot = {
+        "schema_version": "approved-publication-snapshot/v4",
+        "product": {
+            "title": "Decorative Resin Fridge Magnet",
+            "description": "Approved factual description",
+            "main_category": {
+                "id": "product-semantic:fridge-magnet",
+                "name": "Home > Fridge Magnets",
+            },
+        },
+    }
+
+    profile = resolver(snapshot)
+
+    assert profile["resolution"] == "EXACT"
+    assert profile["description_category_id"] == 17028743
+    assert profile["type_id"] == 93785
+    assert profile["required_attributes"]["brand"] == {
+        "attribute_id": 85,
+        "dictionary_value_id": 126745801,
+        "value": "No Brand",
+    }
+    assert [path for path, _body in calls] == [
+        "/v1/description-category/tree",
+        "/v1/description-category/attribute",
+        "/v1/description-category/attribute/values/search",
+        "/v1/description-category/attribute/values/search",
+    ]
+
+
+def test_ozon_import_builder_uses_only_frozen_variant_and_official_profile():
+    variant = _ozon_variant()
+    variant["description"] = "Exact approved Ozon description"
+    variant["official_profile"] = {
+        "schema_version": "ozon-official-profile-resolution/v1",
+        "resolution": "EXACT",
+        "description_category_id": 17028743,
+        "category_name": "Souvenirs and Gifts",
+        "category_path": [
+            {"id": "17027901", "name": "House & Garden"},
+            {"id": "17028743", "name": "Souvenirs and Gifts"},
+        ],
+        "type_id": 93785,
+        "type_name": "Fridge Magnet",
+        "required_attributes": {
+            "brand": {
+                "attribute_id": 85,
+                "dictionary_value_id": 126745801,
+                "value": "No Brand",
+            },
+            "model_name": {"attribute_id": 9048},
+            "product_type": {
+                "attribute_id": 8229,
+                "dictionary_value_id": 93785,
+                "value": "Fridge Magnet",
+            },
+        },
+    }
+
+    item = build_ozon_import_item_from_frozen_variant(variant)
+
+    assert item["offer_id"] == "0967"
+    assert item["description_category_id"] == 17028743
+    assert item["type_id"] == 93785
+    assert item["name"] == variant["title"]
+    assert item["price"] == "100"
+    assert item["old_price"] == "120"
+    assert item["images"] == variant["images"]
+    assert item["weight"] == "0.2"
+    assert item["depth"] == "10"
+    attrs = {row["id"]: row for row in item["attributes"]}
+    assert attrs[85]["values"] == [
+        {"dictionary_value_id": 126745801, "value": "No Brand"}
+    ]
+    assert attrs[9048]["values"] == [
+        {"dictionary_value_id": 0, "value": "0967-fridge-magnet"}
+    ]
+    assert attrs[8229]["values"] == [
+        {"dictionary_value_id": 93785, "value": "Fridge Magnet"}
+    ]
+    assert attrs[4191]["values"] == [
+        {"dictionary_value_id": 0, "value": "Exact approved Ozon description"}
+    ]
 
 
 def test_ozon_dispatch_uses_injected_exact_builder_and_official_import():

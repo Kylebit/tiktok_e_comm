@@ -48,6 +48,7 @@ TikTokDraftPreparer = Callable[
 ShopeeGlobalItemIdResolver = Callable[[PublicationPlatformRequest], object]
 OzonDispatchTransport = Callable[[dict[str, Any]], object]
 OzonReadback = Callable[[tuple[str, ...]], Sequence[Mapping[str, Any]]]
+OzonOfficialProfileResolver = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,7 @@ class ShopeeRegionExecutorDependencies:
 class OzonV4ExecutorDependencies:
     dispatch_variant: OzonDispatchTransport
     readback_variants: OzonReadback
+    official_profile_resolver: OzonOfficialProfileResolver | None = None
 
 
 def _request_facts(
@@ -620,6 +622,7 @@ def build_product_publication_platform_executors(
         result["OZON"] = build_ozon_v4_executor(
             dispatch_variant=ozon.dispatch_variant,
             readback_variants=ozon.readback_variants,
+            official_profile_resolver=ozon.official_profile_resolver,
         )
     return result
 

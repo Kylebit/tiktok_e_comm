@@ -186,6 +186,28 @@ Permanent handling:
 Offer 3838608018 verified this rule across PH/MY/TH/VN: all four regional items
 resolved to global item `48715697978` after official merchant resolution.
 
+## Confirmed incident: an unrelated recommendation blocked the exact category
+
+Symptom: Shopee officially recommended `Fridge Magnets` first for an approved
+fridge-magnet product, but preparation failed before creation.
+
+Confirmed cause: the observer parsed every recommendation's attribute tree.
+An unrelated `Refrigerators` candidate exposed a provider attribute shape the
+old parser rejected, so that unrelated candidate erased the valid first
+candidate.
+
+Permanent handling:
+
+1. Start only from the frozen, user-approved semantic main category.
+2. Read every recommended official category path and discard non-leaf rows.
+3. Select exactly one publishable leaf by an explicit semantic alias; never
+   infer the category from title wording alone.
+4. Read and validate the attribute tree only for that selected leaf.
+5. An invalid unrelated candidate must not block the exact selected leaf.
+6. For Offer 3882722296 the exact result is official CNSC category `101398`,
+   `Hobbies & Collections > Souvenirs > Fridge Magnets`; it currently has no
+   mandatory attributes. Re-read these official facts for every run.
+
 ## Confirmed incident: global variant exists without an option image
 
 Symptom: the global product and Model SKU exist, but the variation image cell

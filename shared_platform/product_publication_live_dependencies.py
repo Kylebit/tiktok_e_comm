@@ -45,6 +45,10 @@ from modules.ozon.client import ozon_post
 from modules.shopee.client import merchant_get
 from modules.catalog.sku_key import parse_search_key
 from modules.shopee.global_sku_map import load_map
+from modules.shopee.global_v4_executor import ShopeeGlobalV4Resolver
+from modules.shopee.global_v4_live_runtime import (
+    build_official_shopee_global_v4_runtime,
+)
 from modules.shopee.skill_regions import (
     OfficialShopeeRegionRuntime,
     REGIONAL_TARGETS,
@@ -1783,7 +1787,7 @@ def build_live_tiktok_dependencies(
 
 def build_live_shopee_dependencies(
     *,
-    resolver: ShopeeExactGlobalItemResolver | None = None,
+    resolver: Callable[[object], object] | None = None,
     runtime: ShopeeRegionRuntime | None = None,
     poll_attempts: int = 3,
 ) -> ShopeeRegionExecutorDependencies:
@@ -1792,7 +1796,9 @@ def build_live_shopee_dependencies(
     live_runtime = runtime or OfficialShopeeRegionRuntime()
     return ShopeeRegionExecutorDependencies(
         global_item_id_resolver=resolver
-        or ShopeeExactGlobalItemResolver(runtime=live_runtime),
+        or ShopeeGlobalV4Resolver(
+            runtime=build_official_shopee_global_v4_runtime()
+        ),
         runtime=live_runtime,
         poll_attempts=poll_attempts,
     )

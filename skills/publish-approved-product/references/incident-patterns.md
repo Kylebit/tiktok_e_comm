@@ -41,6 +41,10 @@ current execution report only.
 - Shopee: master images and a complete Model-SKU set do not prove variation
   images. Bind each option to an uploaded image ID and verify it from
   `get_global_model_list.tier_variation.option_list`.
+- Shopee category recommendation: choose one exact publishable official leaf
+  from the frozen main-category semantic identity, then read only that leaf's
+  attribute tree. A malformed unrelated recommendation must not erase a valid
+  exact candidate; never fall back to title guessing.
 - Ozon: current identity/state facts are `item.id` and `item.statuses`.
 - TikTok: store draft identity is target-specific; positional or first-draft
   matching breaks when the selected store set changes.

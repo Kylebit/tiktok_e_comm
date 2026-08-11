@@ -525,6 +525,10 @@ class ShopeeGlobalV4Resolver:
                 "image_ids": [bindings[url] for url in command["product"]["images"]],
             },
             "parcel": deepcopy(command["parcel"]),
+            # The official create endpoint requires one positive master price.
+            # Preserve the complete frozen Model rows so the provider adapter
+            # can take that seed without re-reading or equalising SKU prices.
+            "models": deepcopy(command["models"]),
         }
         try:
             raw_global_item_id = self._runtime.create_global_item(create_payload)

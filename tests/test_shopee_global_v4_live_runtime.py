@@ -3,6 +3,8 @@ from modules.shopee.global_v4_live_runtime import (
     ShopeeGlobalV4LiveRuntimeError,
     select_exact_official_category,
 )
+from modules.shopee.global_v4_executor import ShopeeGlobalV4Resolver
+from test_shopee_global_v4_executor import _request
 
 
 def test_exact_main_category_selects_fridge_magnets_and_ignores_other_candidates():
@@ -133,3 +135,128 @@ def test_prepare_creation_returns_only_the_exact_official_leaf():
         "missing_required_attributes": [],
         "warehouse": {"location_id": "CNZ", "display_name": "中国仓库"},
     }
+
+
+def test_full_runtime_creates_models_persists_identity_and_officially_reads_back(
+    tmp_path, monkeypatch
+):
+    state = {"item": None, "tiers": None, "models": None, "map": {}}
+
+    def merchant_post(path, _merchant_id, _token, body):
+        if path.endswith("add_global_item"):
+            state["item"] = dict(body)
+            return {"error": "", "response": {"global_item_id": 9001}}
+        if path.endswith("init_tier_variation"):
+            state["tiers"] = body["tier_variation"]
+            state["models"] = [
+                {
+                    **row,
+                    "global_model_id": 9101 + index,
+                    "price_info": {"original_price": row["original_price"]},
+                    "global_model_status": "NORMAL",
+                }
+                for index, row in enumerate(body["global_model"])
+            ]
+            return {"error": "", "response": {}}
+        raise AssertionError(path)
+
+    def merchant_get(path, _merchant_id, _token, _params):
+        if path.endswith("get_global_item_info"):
+            item = state["item"]
+            return {
+                "error": "",
+                "response": {
+                    "global_item_list": [
+                        {
+                            "global_item_id": 9001,
+                            "global_item_status": "NORMAL",
+                            "global_item_name": item["global_item_name"],
+                            "description": item["description"],
+                            "weight": item["weight"],
+                            "dimension": item["dimension"],
+                            "image": {
+                                "image_id_list": item["image"]["image_id_list"],
+                                "image_url_list": [
+                                    "https://img.example/main-1.jpg",
+                                    "https://img.example/main-2.jpg",
+                                ],
+                            },
+                        }
+                    ]
+                },
+            }
+        if path.endswith("get_global_model_list"):
+            return {
+                "error": "",
+                "response": {
+                    "tier_variation": state["tiers"],
+                    "global_model": state["models"],
+                },
+            }
+        raise AssertionError(path)
+
+    def upsert(global_item_id, *, match_keys, title, tier_name, models, **_kw):
+        state["map"][str(global_item_id)] = {
+            "match_key": match_keys[0],
+            "match_keys": list(match_keys),
+            "title": title,
+            "tier_name": tier_name,
+            "models": [dict(row) for row in models],
+            "published_regions": [],
+            "shop_items": {},
+        }
+
+    monkeypatch.setattr("modules.shopee.global_sku_map.upsert_global_group_entry", upsert)
+    monkeypatch.setattr("modules.shopee.global_sku_map.load_map", lambda: state["map"])
+    monkeypatch.setattr(
+        "modules.shopee.global_sku_map.save_map",
+        lambda value: state.update(map=value),
+    )
+    runtime = OfficialShopeeGlobalV4Runtime(
+        context_resolver=lambda _command: {
+            "merchant_id": 4970102,
+            "merchant_token": "redacted",
+            "shop_id": 1,
+            "shop_token": "redacted",
+        },
+        official_fact_reader=lambda _command, _context: {
+            "authority": "SHOPEE_OFFICIAL",
+            "candidates": [
+                {
+                    "id": "101",
+                    "name": "Wall Stickers",
+                    "path": [
+                        {"id": "10", "name": "Home"},
+                        {"id": "101", "name": "Wall Stickers"},
+                    ],
+                    "publishable": True,
+                    "required_attributes": [],
+                    "missing_required_attributes": [],
+                }
+            ],
+            "brand": {"brand_id": 0, "original_brand_name": "NoBrand"},
+            "warehouse": {"location_id": "CNZ", "display_name": "中国仓库"},
+        },
+        mapping_lookup=lambda _sku: None,
+        merchant_get_transport=merchant_get,
+        merchant_post_transport=merchant_post,
+        image_upload_transport=lambda _url, index: f"image-{index + 1}",
+        checkpoint_root=tmp_path,
+    )
+    request = _request()
+
+    assert ShopeeGlobalV4Resolver(runtime=runtime)(request) == "9001"
+    assert [row["global_model_sku"] for row in state["models"]] == ["0958", "0959"]
+    assert [row["original_price"] for row in state["models"]] == [40.12, 41.25]
+    assert [row["global_model_id"] for row in state["map"]["9001"]["models"]] == [
+        "9101",
+        "9102",
+    ]
+    checkpoint = (
+        tmp_path
+        / request.snapshot["offer_id"]
+        / str(request.snapshot["product_revision"])
+        / request.run_id
+        / "shopee-global-checkpoint.json"
+    )
+    assert checkpoint.is_file()

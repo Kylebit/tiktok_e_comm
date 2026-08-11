@@ -199,6 +199,10 @@ def test_red_no_mapping_creates_complete_multisku_master_and_verifies_readback()
         "weight_kg": "0.21",
         "package_cm": ["38", "45", "0.2"],
     }
+    assert [row["model_sku"] for row in runtime.created_payload["models"]] == [
+        "0958",
+        "0959",
+    ]
     assert runtime.persisted_images
     assert runtime.persisted_globals == [
         ("run-shopee-v4-1", "9001", ["0958", "0959"])

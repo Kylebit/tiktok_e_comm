@@ -1173,6 +1173,11 @@ def test_detailed_html_renders_main_image_weight_cost_ads_fees_profit_and_live_f
         "国家", '<img src="https://example.invalid/main.jpg"',
         'data-role="order-table-top-scroll"', 'data-role="order-table-scroll"',
         "top.addEventListener('scroll'", "body.addEventListener('scroll'",
+        'data-sort="order-created-at"', 'aria-sort="none"',
+        'data-order-created-at="2026-08-03T12:00:00+07:00"',
+        "orderTimeButton.getAttribute('aria-sort') === 'ascending'",
+        "? 'descending' : 'ascending'",
+        "if (!leftTime) return 1", "if (!rightTime) return -1",
     ):
         assert expected in html
     assert "&lt;img" not in html

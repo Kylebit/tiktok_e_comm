@@ -23,13 +23,22 @@ def render_profit_report_html(report: Mapping[str, Any]) -> str:
     issue_html = _messages(issues, "无阻断性质量问题")
     warning_html = _messages(warnings, "无临时假设")
     headers = _base_headers() + [label for _, label in fee_columns] + ["成本/FX/结算证据"]
-    header_html = "".join(f"<th>{escape(label)}</th>" for label in headers)
+    header_html = "".join(
+        (
+            '<th><button type="button" class="sort-button" '
+            'data-sort="order-created-at" aria-sort="none" '
+            'title="点击按下单时间升序或降序排列">'
+            f'{escape(label)} <span aria-hidden="true">↕</span></button></th>'
+        )
+        if index == 1 else f"<th>{escape(label)}</th>"
+        for index, label in enumerate(headers)
+    )
     body_html = "".join(_order_row(line, fee_columns, warning_by_sku) for line in lines)
     footer_html = _footer(report, fee_columns, len(headers))
     return f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{escape(platform)} 利润报表</title><style>
-body{{font:13px/1.45 system-ui,sans-serif;margin:0;background:#f5f7f8;color:#172126}}main{{margin:auto;padding:20px}}h1{{margin:4px 0}}.meta{{color:#64748b}}.cards{{display:grid;grid-template-columns:repeat(5,minmax(150px,1fr));gap:10px;margin:16px 0}}.card,section{{background:#fff;border:1px solid #dfe6e9;border-radius:10px;padding:12px}}.card strong{{display:block;font-size:19px;margin-top:4px}}.status,.warning{{display:inline-block;padding:3px 8px;border-radius:999px;background:#fff3cd}}.warning{{background:#ffe4b5;color:#7c4700;font-size:11px}}.table-scroll-top{{overflow-x:auto;overflow-y:hidden;height:16px;margin-bottom:4px;background:#eef3f4;border:1px solid #dfe6e9;border-radius:7px}}.table-scroll-top>div{{height:1px}}.table{{overflow:auto;max-height:72vh;background:#fff;border:1px solid #dfe6e9;border-radius:10px}}table{{border-collapse:collapse;min-width:max-content;width:100%}}th,td{{padding:7px 9px;border-bottom:1px solid #edf1f2;text-align:left;vertical-align:top;white-space:nowrap}}th{{position:sticky;top:0;z-index:3;background:#eef3f4}}tfoot td{{position:sticky;bottom:0;background:#e8f4ff;font-weight:700;border-top:2px solid #4b9bd8}}td.num{{text-align:right;font-variant-numeric:tabular-nums}}td.product{{white-space:normal;min-width:220px;max-width:300px}}tr.assumption{{background:#fffaf0}}tr.negative{{background:#fff5f5}}img{{width:48px;height:48px;object-fit:cover;border-radius:7px;background:#eee}}code{{font-size:11px}}ul{{margin:6px 0;padding-left:20px}}@media(max-width:800px){{.cards{{grid-template-columns:1fr 1fr}}main{{padding:10px}}}}
+body{{font:13px/1.45 system-ui,sans-serif;margin:0;background:#f5f7f8;color:#172126}}main{{margin:auto;padding:20px}}h1{{margin:4px 0}}.meta{{color:#64748b}}.cards{{display:grid;grid-template-columns:repeat(5,minmax(150px,1fr));gap:10px;margin:16px 0}}.card,section{{background:#fff;border:1px solid #dfe6e9;border-radius:10px;padding:12px}}.card strong{{display:block;font-size:19px;margin-top:4px}}.status,.warning{{display:inline-block;padding:3px 8px;border-radius:999px;background:#fff3cd}}.warning{{background:#ffe4b5;color:#7c4700;font-size:11px}}.table-scroll-top{{overflow-x:auto;overflow-y:hidden;height:16px;margin-bottom:4px;background:#eef3f4;border:1px solid #dfe6e9;border-radius:7px}}.table-scroll-top>div{{height:1px}}.table{{overflow:auto;max-height:72vh;background:#fff;border:1px solid #dfe6e9;border-radius:10px}}table{{border-collapse:collapse;min-width:max-content;width:100%}}th,td{{padding:7px 9px;border-bottom:1px solid #edf1f2;text-align:left;vertical-align:top;white-space:nowrap}}th{{position:sticky;top:0;z-index:3;background:#eef3f4}}.sort-button{{border:0;padding:0;background:transparent;color:inherit;font:inherit;font-weight:700;cursor:pointer;white-space:nowrap}}.sort-button:focus-visible{{outline:2px solid #2563eb;outline-offset:3px;border-radius:2px}}tfoot td{{position:sticky;bottom:0;background:#e8f4ff;font-weight:700;border-top:2px solid #4b9bd8}}td.num{{text-align:right;font-variant-numeric:tabular-nums}}td.product{{white-space:normal;min-width:220px;max-width:300px}}tr.assumption{{background:#fffaf0}}tr.negative{{background:#fff5f5}}img{{width:48px;height:48px;object-fit:cover;border-radius:7px;background:#eee}}code{{font-size:11px}}ul{{margin:6px 0;padding-left:20px}}@media(max-width:800px){{.cards{{grid-template-columns:1fr 1fr}}main{{padding:10px}}}}
 </style></head><body><main>
 <header><span class="status">{escape(_text(report.get('status')))}</span><h1>{escape(platform)} {escape(_text(report.get('period_kind')))} 订单级利润明细</h1><p class="meta">{escape(_text(period.get('start')))} 至 {escape(_text(period.get('end')))} · {escape(_text(report.get('calculation_kind')))} · {len(lines)} 个已结算订单行 · 页面金额统一显示两位小数，JSON 保留原始 Decimal 精度</p></header>
 <div class="cards">{cards}</div>
@@ -56,6 +65,29 @@ body{{font:13px/1.45 system-ui,sans-serif;margin:0;background:#f5f7f8;color:#172
   window.addEventListener('resize', resize);
   if (window.ResizeObserver) new ResizeObserver(resize).observe(body.querySelector('table'));
   resize();
+
+  const orderTimeButton = body.querySelector('[data-sort="order-created-at"]');
+  const tbody = body.querySelector('tbody');
+  if (orderTimeButton && tbody) {{
+    orderTimeButton.addEventListener('click', () => {{
+      const direction = orderTimeButton.getAttribute('aria-sort') === 'ascending'
+        ? 'descending' : 'ascending';
+      const multiplier = direction === 'ascending' ? 1 : -1;
+      const rows = Array.from(tbody.querySelectorAll('tr'));
+      rows.sort((left, right) => {{
+        const leftTime = left.dataset.orderCreatedAt || '';
+        const rightTime = right.dataset.orderCreatedAt || '';
+        if (!leftTime && !rightTime) return (left.dataset.sortTie || '').localeCompare(right.dataset.sortTie || '');
+        if (!leftTime) return 1;
+        if (!rightTime) return -1;
+        const timeOrder = leftTime.localeCompare(rightTime);
+        return timeOrder ? timeOrder * multiplier : (left.dataset.sortTie || '').localeCompare(right.dataset.sortTie || '');
+      }});
+      rows.forEach(row => tbody.appendChild(row));
+      orderTimeButton.setAttribute('aria-sort', direction);
+      orderTimeButton.querySelector('span').textContent = direction === 'ascending' ? '↑' : '↓';
+    }});
+  }}
 }})();
 </script></body></html>"""
 
@@ -113,7 +145,13 @@ def _order_row(line, fee_columns, warning_by_sku):
     if warning: row_classes.append("assumption")
     if _decimal(line.get("profit_cny")) is not None and _decimal(line.get("profit_cny")) < 0: row_classes.append("negative")
     output.append(f'<td class="product">{evidence}</td>')
-    return f'<tr class="{" ".join(row_classes)}">{"".join(output)}</tr>'
+    order_created_at = _text(line.get("occurred_at"))
+    sort_tie = f'{_text(identity.get("order_id"))}::{_text(identity.get("order_line_id"))}'
+    return (
+        f'<tr class="{" ".join(row_classes)}" '
+        f'data-order-created-at="{escape(order_created_at, quote=True)}" '
+        f'data-sort-tie="{escape(sort_tie, quote=True)}">{"".join(output)}</tr>'
+    )
 
 
 def _fee_columns(lines):

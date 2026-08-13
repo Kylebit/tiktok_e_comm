@@ -817,19 +817,38 @@ def test_ozon_read_enrichment_supplies_mapping_and_quantity_without_inference():
     assert result.rows[0]["quantity"] == Decimal("2")
 
 
-def test_shopee_weekly_ad_basis_uses_discounted_products_not_buyer_shipping_total():
+def test_shopee_weekly_ad_basis_uses_product_sales_and_retains_buyer_cash_paid():
     evidence = {
         "schema_version": "settlement-evidence/v1", "status": "ready", "platform": "shopee", "site": "TH",
         "snapshot_id": "shopee-settlement:fixture", "checksum": "fixture", "net_settlement_total_local": "90",
         "receipt": {"external_writes_performed": []},
-        "orders": [{"order_id": "order-1", "order_created_at": "2026-07-20T08:30:00+07:00", "settled_at": "2026-07-27T00:00:00+07:00", "currency": "THB", "net_settlement_amount": "90", "buyer_total_amount": "120", "items": [{"seller_sku": "1", "quantity": "2", "discounted_price": "100"}], "financial_components": [{"code": "buyer_paid_shipping_fee", "amount": "40"}]}],
+        "orders": [{"order_id": "order-1", "order_created_at": "2026-07-20T08:30:00+07:00", "settled_at": "2026-07-27T00:00:00+07:00", "currency": "THB", "net_settlement_amount": "90", "buyer_total_amount": "120", "items": [{"seller_sku": "1", "quantity": "2", "discounted_price": "150"}], "financial_components": [{"code": "order_discounted_price", "amount": "150"}, {"code": "buyer_paid_shipping_fee", "amount": "40"}, {"code": "voucher_from_shopee", "amount": "70"}]}],
     }
 
     result = adapt_settlement_evidence(evidence, _catalog_stub(), period_kind="weekly")
 
     assert result.status == "ready"
-    assert result.rows[0]["buyer_paid_product_amount"] == Decimal("80")
+    assert result.rows[0]["product_sales_amount"] == Decimal("150")
+    assert result.rows[0]["buyer_paid_product_amount"] == Decimal("150")
+    assert result.rows[0]["buyer_cash_paid_product_amount"] == Decimal("80")
     assert result.rows[0]["occurred_at"] == "2026-07-20T08:30:00+07:00"
+
+    report = build_shopee_weekly_report(
+        result.rows,
+        period_start="2026-07-27", period_end="2026-07-27",
+        costs=CostSnapshot.from_mapping(
+            {"0001": {"unit_cost_cny": "10", "version": "fixture-v1"}},
+            snapshot_id="costs:fixture",
+        ),
+        fx=_fx(), ad_rate="0.22", generated_at=NOW,
+        code_version="test-v1",
+    ).payload()
+    line = report["order_lines"][0]
+    assert line["settlement"]["product_sales_amount_local"] == "150"
+    assert line["settlement"]["buyer_cash_paid_product_amount_local"] == "80"
+    assert line["advertising"]["basis"] == "product_sales_amount_after_seller_discount"
+    assert line["advertising"]["basis_amount_local"] == "150"
+    assert line["advertising"]["amount_local"] == "33.00"
 
 
 @pytest.mark.parametrize(
@@ -1171,6 +1190,7 @@ def test_detailed_html_renders_main_image_weight_cost_ads_fees_profit_and_live_f
         "2026-08-06T00:00:00+00:00", "汇率来源", "official-fx-test",
         "下单时间", "广告比例来源", "人工全局覆盖",
         "国家", '<img src="https://example.invalid/main.jpg"',
+        "商品折后成交额", "买家现金实付商品金额",
         'data-role="order-table-top-scroll"', 'data-role="order-table-scroll"',
         "top.addEventListener('scroll'", "body.addEventListener('scroll'",
         'data-sort="order-created-at"', 'aria-sort="none"',

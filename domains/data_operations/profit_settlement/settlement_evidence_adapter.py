@@ -112,7 +112,7 @@ def adapt_settlement_evidence(
             issues.append(_issue("missing_settlement", record_id, "net_settlement_amount"))
             amount = Decimal("0")
         buyer_paid = (
-            _shopee_product_total(record)
+            _shopee_product_sales_total(record)
             if platform == "shopee"
             else _ozon_product_total(record)
             if platform == "ozon"
@@ -121,10 +121,16 @@ def adapt_settlement_evidence(
         if buyer_paid is None:
             buyer_paid = Decimal("0")
             issues.append(_issue("missing_ad_basis", record_id, "buyer_paid_product_amount"))
+        buyer_cash_paid = _shopee_buyer_cash_product_total(record) if platform == "shopee" else None
+        if platform == "shopee" and buyer_cash_paid is None:
+            issues.append(_issue("missing_buyer_cash_product_amount", record_id, "buyer_total_amount"))
 
         weights, allocation_basis = _allocation_weights(platform, items, record_id, issues, quantity_overrides)
         settlement_allocations = _allocate(amount, weights)
         paid_allocations = _allocate(buyer_paid, weights)
+        buyer_cash_allocations = (
+            _allocate(buyer_cash_paid, weights) if buyer_cash_paid is not None else [None] * len(items)
+        )
         component_allocations = [
             _allocate(_decimal(component.get("amount")) or Decimal("0"), weights)
             for component in (record.get("financial_components") or [])
@@ -182,6 +188,8 @@ def adapt_settlement_evidence(
                 "currency": _text(record.get("currency")).upper(),
                 "net_settlement_amount": settlement_allocations[item_index],
                 "buyer_paid_product_amount": paid_allocations[item_index],
+                "product_sales_amount": paid_allocations[item_index],
+                "buyer_cash_paid_product_amount": buyer_cash_allocations[item_index],
                 "platform_sku": source_sku,
                 "seller_sku": seller_sku,
                 "canonical_sku": seller_sku,
@@ -199,6 +207,8 @@ def adapt_settlement_evidence(
                     "settled_at": _text(record.get("settled_at")),
                     "net_settlement_amount": settlement_allocations[item_index],
                     "buyer_paid_product_amount": paid_allocations[item_index],
+                    "product_sales_amount": paid_allocations[item_index],
+                    "buyer_cash_paid_product_amount": buyer_cash_allocations[item_index],
                 }],
                 "allocation_basis": allocation_basis,
                 **weight,
@@ -289,6 +299,17 @@ def _consolidate_repeated_order_lines(rows, issues):
             (_decimal(member.get("buyer_paid_product_amount")) or Decimal("0") for member in members),
             Decimal("0"),
         )
+        merged["product_sales_amount"] = sum(
+            (_decimal(member.get("product_sales_amount")) or Decimal("0") for member in members),
+            Decimal("0"),
+        )
+        cash_values = [
+            _decimal(member.get("buyer_cash_paid_product_amount")) for member in members
+        ]
+        merged["buyer_cash_paid_product_amount"] = (
+            sum((value for value in cash_values if value is not None), Decimal("0"))
+            if any(value is not None for value in cash_values) else None
+        )
         merged["fee_items"] = [
             fee for member in members for fee in (member.get("fee_items") or [])
         ]
@@ -325,7 +346,27 @@ def _item_quantity(item, record_id, source_sku, quantity_overrides):
     return _decimal(raw)
 
 
-def _shopee_product_total(record):
+def _shopee_product_sales_total(record):
+    for component in record.get("financial_components") or []:
+        if not isinstance(component, Mapping):
+            continue
+        if _text(component.get("code")) != "order_discounted_price":
+            continue
+        amount = _decimal(component.get("amount"))
+        if amount is not None and amount >= 0:
+            return amount
+    values = []
+    for item in record.get("items") or []:
+        if not isinstance(item, Mapping):
+            continue
+        amount = _decimal(item.get("discounted_price") or item.get("selling_price"))
+        if amount is None or amount < 0:
+            return None
+        values.append(amount)
+    return sum(values, Decimal("0")) if values else None
+
+
+def _shopee_buyer_cash_product_total(record):
     buyer_total = _decimal(record.get("buyer_total_amount"))
     shipping = None
     for component in record.get("financial_components") or []:

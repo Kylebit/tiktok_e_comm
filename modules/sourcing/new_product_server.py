@@ -297,6 +297,18 @@ class NewProductHandler(BaseHTTPRequestHandler):
                 return self._file(file_path)
             except Exception as exc:
                 return self._json(400, {"ok": False, "error": str(exc)})
+        if path == "/api/new-product/content-package/image-localization/artifact":
+            q = parse_qs(parsed.query)
+            raw = (q.get("offer_id") or [""])[0]
+            artifact_id = (q.get("artifact_id") or [""])[0]
+            if not raw or not artifact_id:
+                return self._json(400, {"ok": False, "error": "missing offer_id or artifact_id"})
+            try:
+                from modules.sourcing import new_product_workbench as np_mod
+
+                return self._file(np_mod.image_localization_artifact(raw, artifact_id))
+            except Exception as exc:
+                return self._json(404, {"ok": False, "error": str(exc)})
         self.send_error(404)
 
     def do_POST(self) -> None:
@@ -345,6 +357,68 @@ class NewProductHandler(BaseHTTPRequestHandler):
                     collect_box_id=str(data.get("collect_box_id") or ""),
                 )
                 return self._json(200, {"ok": True, **result})
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+
+        if path == "/api/new-product/content-package/image-localization/initialize":
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            try:
+                return self._json(200, {
+                    "ok": True,
+                    "image_localization": np_mod.initialize_image_localization(raw),
+                })
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+
+        if path == "/api/new-product/content-package/image-localization/regions":
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            regions = data.get("regions")
+            if not isinstance(regions, list):
+                return self._json(400, {"ok": False, "error": "regions must be a list"})
+            try:
+                return self._json(200, {
+                    "ok": True,
+                    "image_localization": np_mod.save_image_localization_regions(
+                        raw,
+                        expected_revision=data.get("expected_revision"),
+                        asset_id=data.get("asset_id"),
+                        regions=regions,
+                    ),
+                })
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+
+        if path == "/api/new-product/content-package/image-localization/clean-master":
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            if data.get("confirm_local_clean_master") is not True:
+                return self._json(400, {
+                    "ok": False,
+                    "error": "explicit local clean master confirmation is required",
+                })
+            try:
+                current = np_mod.image_localization_summary(raw)
+                manifest = current.get("manifest") or {}
+                asset_id = str(data.get("asset_id") or "")
+                matches = [
+                    row for row in (manifest.get("assets") or [])
+                    if isinstance(row, dict) and row.get("asset_id") == asset_id
+                ]
+                if len(matches) != 1:
+                    raise ValueError("asset_id is unavailable or ambiguous")
+                source_bytes, _ = _download_remote_image(str(matches[0].get("source_url") or ""))
+                return self._json(200, {
+                    "ok": True,
+                    "image_localization": np_mod.create_image_clean_master(
+                        raw,
+                        expected_revision=data.get("expected_revision"),
+                        asset_id=asset_id,
+                        source_bytes=source_bytes,
+                        method=str(data.get("method") or "local_region_fill/v1"),
+                    ),
+                })
             except Exception as exc:
                 return self._json(400, {"ok": False, "error": str(exc)})
 

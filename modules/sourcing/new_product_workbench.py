@@ -16,6 +16,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -40,6 +41,7 @@ WORKSPACE_ROOT = ROOT.parent.parent
 OUTPUTS_DIR = WORKSPACE_ROOT / "outputs"
 STATE_DIR = ROOT / "data" / "new_product_workbench"
 IMAGE_SUITE_OUTPUTS_DIR = ROOT / "outputs" / "image_suite_from_miaoshou"
+IMAGE_LOCALIZATION_DIR = ROOT / "data" / "image_localization"
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
@@ -942,6 +944,139 @@ def _content_package_dir(collect_box_id: str) -> Path | None:
         return None
     path = IMAGE_SUITE_OUTPUTS_DIR / clean
     return path if path.is_dir() else None
+
+
+def _image_localization_store():
+    from modules.sourcing.image_localization import ImageLocalizationStore
+
+    return ImageLocalizationStore(IMAGE_LOCALIZATION_DIR)
+
+
+def _image_localization_source_rows(offer_id: str) -> list[dict[str, str]]:
+    """Derive image identities from the current authoritative source snapshot."""
+    state = load_state(offer_id)
+    source = _source_summary(offer_id)
+    collect_box_id = _content_collect_box_id(offer_id, state, source)
+    package_dir = _content_package_dir(collect_box_id)
+    review_package = _load_json(package_dir / "review_package.json") if package_dir else {}
+    collect_box = (
+        review_package.get("collect_box")
+        if isinstance(review_package.get("collect_box"), dict)
+        else {}
+    )
+    urls = _identity_reference_image_urls(source, collect_box)
+    source_kinds = {
+        str(row.get("url") or "").strip(): str(row.get("kind") or "main")
+        for row in (source.get("images") or [])
+        if isinstance(row, dict) and str(row.get("url") or "").strip()
+    }
+    return [
+        {"url": url, "kind": source_kinds.get(url, "main")}
+        for url in urls
+    ]
+
+
+def image_localization_summary(
+    offer_id_or_url: str, *, resolved_offer_id: bool = False
+) -> dict[str, Any]:
+    from modules.sourcing.image_localization import image_localization_feature_flags
+
+    offer_id = (
+        str(offer_id_or_url)
+        if resolved_offer_id
+        else resolve_offer_key(offer_id_or_url)
+    )
+    features = image_localization_feature_flags()
+    manifest = _image_localization_store().load(offer_id)
+    for asset in manifest.get("assets") or []:
+        clean = asset.get("clean_master") if isinstance(asset.get("clean_master"), dict) else {}
+        artifact_id = str(clean.get("artifact_id") or "")
+        if artifact_id:
+            clean["local_url"] = (
+                "/api/product-flow/content-package/image-localization/artifact"
+                f"?offer_id={urllib.parse.quote(offer_id)}"
+                f"&artifact_id={urllib.parse.quote(artifact_id)}"
+            )
+    return {
+        "enabled": bool(features["manifest_enabled"]),
+        "features": features,
+        "manifest": manifest,
+        "initialized": bool(manifest),
+        "blockers": (
+            []
+            if features["manifest_enabled"]
+            else ["image localization manifest is disabled"]
+        ),
+    }
+
+
+def initialize_image_localization(offer_id_or_url: str) -> dict[str, Any]:
+    offer_id = resolve_offer_key(offer_id_or_url)
+    sources = _image_localization_source_rows(offer_id)
+    manifest = _image_localization_store().initialize(offer_id, sources)
+    return {
+        **image_localization_summary(offer_id, resolved_offer_id=True),
+        "manifest": manifest,
+    }
+
+
+def save_image_localization_regions(
+    offer_id_or_url: str,
+    *,
+    expected_revision: object,
+    asset_id: object,
+    regions: list[dict[str, Any]],
+) -> dict[str, Any]:
+    offer_id = resolve_offer_key(offer_id_or_url)
+    manifest = _image_localization_store().save_regions(
+        offer_id,
+        expected_revision=expected_revision,
+        asset_id=asset_id,
+        regions=regions,
+    )
+    return {
+        **image_localization_summary(offer_id, resolved_offer_id=True),
+        "manifest": manifest,
+    }
+
+
+def create_image_clean_master(
+    offer_id_or_url: str,
+    *,
+    expected_revision: object,
+    asset_id: object,
+    source_bytes: bytes,
+    method: str = "local_region_fill/v1",
+) -> dict[str, Any]:
+    offer_id = resolve_offer_key(offer_id_or_url)
+    if not source_bytes:
+        raise ValueError("source image bytes are required")
+    temp_dir = IMAGE_LOCALIZATION_DIR / offer_id / ".incoming"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix="source-", suffix=".image", dir=temp_dir)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(source_bytes)
+            handle.flush()
+            os.fsync(handle.fileno())
+        manifest = _image_localization_store().create_clean_master(
+            offer_id,
+            expected_revision=expected_revision,
+            asset_id=asset_id,
+            source_path=Path(temp_name),
+            method=method,
+        )
+    finally:
+        Path(temp_name).unlink(missing_ok=True)
+    return {
+        **image_localization_summary(offer_id, resolved_offer_id=True),
+        "manifest": manifest,
+    }
+
+
+def image_localization_artifact(offer_id_or_url: str, artifact_id: str) -> Path:
+    offer_id = resolve_offer_key(offer_id_or_url)
+    return _image_localization_store().artifact_path(offer_id, artifact_id)
 
 
 def _identity_reference_image_urls(
@@ -1953,6 +2088,9 @@ def content_package_summary(
             "error": str(miaoshou_write.get("error") or ""),
         },
         "approved_asset_count": sum(1 for row in artifacts if row.get("decision") == "approved"),
+        "image_localization": image_localization_summary(
+            offer_id, resolved_offer_id=True
+        ),
         "stage": _content_stage(
             saved,
             artifacts,

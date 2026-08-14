@@ -37,6 +37,8 @@
   let storyboardDraft = {};
   let storyboardDraftOfferId = "";
   let storyboardDraftDirty = false;
+  let imageLocalizationDraft = {};
+  let imageLocalizationDraftOfferId = "";
   const RECIPE_LIMITS = Object.freeze({
     scene: 6,
     selling_point: 6,
@@ -1270,10 +1272,218 @@
           : "勾选确认并点击同步后，这里会展示每个真实步骤和回读结果。"));
   }
 
+  const IMAGE_REGION_CLASSIFICATIONS = Object.freeze([
+    ["watermark", "水印"],
+    ["supplier_metadata", "供应商信息"],
+    ["translatable", "需要翻译"],
+    ["product_fact", "商品事实"],
+    ["protected_natural_text", "产品原生文字（保护）"],
+    ["dimension", "尺寸文字"],
+    ["rebuild_required", "复杂详情图（需重建）"],
+    ["ignore", "忽略"],
+  ]);
+
+  function imageLocalizationState() {
+    return preview?.content_package?.image_localization || {};
+  }
+
+  function localizationRegionsFor(asset) {
+    if (
+      imageLocalizationDraftOfferId === currentOfferId()
+      && Array.isArray(imageLocalizationDraft[asset.asset_id])
+    ) {
+      return imageLocalizationDraft[asset.asset_id];
+    }
+    return Array.isArray(asset.regions) ? asset.regions : [];
+  }
+
+  function regionOptions(selected) {
+    return IMAGE_REGION_CLASSIFICATIONS.map(([value, label]) => (
+      `<option value="${value}" ${selected === value ? "selected" : ""}>${label}</option>`
+    )).join("");
+  }
+
+  function regionEditorRow(assetId, region, index) {
+    const box = Array.isArray(region.bbox) && region.bbox.length === 4
+      ? region.bbox
+      : [0.05, 0.80, 0.95, 0.96];
+    return `
+      <div class="localization-region" data-asset-id="${esc(assetId)}" data-region-index="${index}">
+        <input class="region-id" type="text" value="${esc(region.region_id || `manual-${Date.now()}-${index}`)}" aria-label="区域 ID">
+        <select class="region-classification" aria-label="区域分类">${regionOptions(region.classification || "translatable")}</select>
+        <input class="region-text" type="text" maxlength="2000" value="${esc(region.text || "")}" placeholder="识别或人工输入的文字" aria-label="区域文字">
+        ${box.map((value, position) => `<input class="region-box" data-position="${position}" type="number" min="0" max="1" step="0.01" value="${esc(value)}" aria-label="边界 ${position + 1}">`).join("")}
+        <button class="region-remove" type="button" aria-label="删除区域">×</button>
+      </div>
+    `;
+  }
+
+  function renderImageLocalization() {
+    const localization = imageLocalizationState();
+    const features = localization.features || {};
+    const manifest = localization.manifest || {};
+    const assets = Array.isArray(manifest.assets) ? manifest.assets : [];
+    const section = $("#imageLocalization");
+    section.hidden = !localization.enabled;
+    if (!localization.enabled) return;
+    $("#ocrProviderStatus").textContent = features.ocr_provider_enabled
+      ? "OCR provider 已启用"
+      : "OCR provider 未启用 · 可人工标注";
+    $("#ocrProviderStatus").className = `badge ${features.ocr_provider_enabled ? "safe" : "neutral"}`;
+    $("#initializeLocalizationButton").hidden = Boolean(localization.initialized);
+    const grid = $("#imageLocalizationGrid");
+    if (!assets.length) {
+      grid.innerHTML = '<p class="localization-empty">尚未建立处理清单。点击“建立图片处理清单”只会保存本地图片身份，不调用 OCR 或图片服务。</p>';
+      return;
+    }
+    grid.innerHTML = assets.map((asset) => {
+      const regions = localizationRegionsFor(asset);
+      const clean = asset.clean_master || {};
+      const overlays = regions.map((region) => {
+        const box = region.bbox || [0, 0, 0, 0];
+        const tone = region.classification === "protected_natural_text" ? "protected" : (
+          ["watermark", "supplier_metadata"].includes(region.classification) ? "remove" : "review"
+        );
+        return `<span class="localization-overlay ${tone}" style="left:${box[0] * 100}%;top:${box[1] * 100}%;width:${(box[2] - box[0]) * 100}%;height:${(box[3] - box[1]) * 100}%" title="${esc(region.classification)}"></span>`;
+      }).join("");
+      return `
+        <article class="localization-card" data-asset-id="${esc(asset.asset_id)}">
+          <header><div><strong>${esc(asset.source_kind || "source")} · ${esc(asset.asset_id)}</strong><small>清单 revision ${esc(manifest.revision)}</small></div><span class="badge ${clean.status === "created" ? "safe" : "neutral"}">${esc(clean.status || "not_created")}</span></header>
+          <div class="localization-preview">
+            <div class="localization-image"><img src="${esc(proxyImage(asset.source_url))}" alt="原始来源图">${overlays}</div>
+            ${clean.local_url ? `<div class="localization-image clean"><img src="${esc(clean.local_url)}" alt="干净母图"><span>不可变干净母图</span></div>` : ""}
+          </div>
+          <div class="localization-region-head"><strong>文字与保护区域</strong><small>坐标为 0–1：x0, y0, x1, y1</small></div>
+          <div class="localization-regions">${regions.map((region, index) => regionEditorRow(asset.asset_id, region, index)).join("")}</div>
+          <div class="localization-card-actions">
+            <button class="button secondary localization-add-region" type="button">添加人工区域</button>
+            <button class="button dark localization-save-regions" type="button">保存区域</button>
+            <button class="button secondary localization-clean-master" type="button">生成本地干净母图</button>
+          </div>
+        </article>
+      `;
+    }).join("");
+
+    $$(".localization-add-region").forEach((button) => button.addEventListener("click", () => {
+      const card = button.closest(".localization-card");
+      const host = card.querySelector(".localization-regions");
+      const index = host.querySelectorAll(".localization-region").length;
+      host.insertAdjacentHTML("beforeend", regionEditorRow(card.dataset.assetId, {}, index));
+      bindLocalizationRegionRemoveButtons(card);
+      bindLocalizationDraftInputs(card);
+      captureLocalizationDraft(card.dataset.assetId);
+    }));
+    $$(".localization-save-regions").forEach((button) => button.addEventListener("click", () => (
+      saveImageLocalizationRegions(button.closest(".localization-card").dataset.assetId)
+    )));
+    $$(".localization-clean-master").forEach((button) => button.addEventListener("click", () => (
+      createCleanMaster(button.closest(".localization-card").dataset.assetId)
+    )));
+    bindLocalizationRegionRemoveButtons(grid);
+    bindLocalizationDraftInputs(grid);
+  }
+
+  function bindLocalizationDraftInputs(root) {
+    root.querySelectorAll(".localization-region input,.localization-region select").forEach((node) => {
+      node.addEventListener("input", () => {
+        captureLocalizationDraft(node.closest(".localization-region").dataset.assetId);
+      });
+      node.addEventListener("change", () => {
+        captureLocalizationDraft(node.closest(".localization-region").dataset.assetId);
+      });
+    });
+  }
+
+  function bindLocalizationRegionRemoveButtons(root) {
+    root.querySelectorAll(".region-remove").forEach((button) => {
+      button.onclick = () => {
+        const row = button.closest(".localization-region");
+        const assetId = row.dataset.assetId;
+        row.remove();
+        captureLocalizationDraft(assetId);
+      };
+    });
+  }
+
+  function collectLocalizationRegions(assetId) {
+    return $$(".localization-region")
+      .filter((row) => row.dataset.assetId === assetId)
+      .map((row) => ({
+        region_id: row.querySelector(".region-id").value.trim(),
+        classification: row.querySelector(".region-classification").value,
+        text: row.querySelector(".region-text").value,
+        bbox: Array.from(row.querySelectorAll(".region-box")).map((input) => Number(input.value)),
+        origin: "manual",
+      }));
+  }
+
+  function captureLocalizationDraft(assetId) {
+    imageLocalizationDraftOfferId = currentOfferId();
+    imageLocalizationDraft[assetId] = collectLocalizationRegions(assetId);
+  }
+
+  async function initializeImageLocalization() {
+    setLoading($("#initializeLocalizationButton"), true);
+    try {
+      const result = await post("content-package/image-localization/initialize", {
+        offer_id: currentOfferId(),
+      });
+      preview.content_package.image_localization = result.image_localization;
+      imageLocalizationDraft = {};
+      imageLocalizationDraftOfferId = currentOfferId();
+      renderImageLocalization();
+      toast("已建立本地图片处理清单；未调用 OCR 或外部图片服务。");
+    } catch (error) {
+      showAlert(error.message);
+    } finally {
+      setLoading($("#initializeLocalizationButton"), false);
+    }
+  }
+
+  async function saveImageLocalizationRegions(assetId, { quiet = false } = {}) {
+    const manifest = imageLocalizationState().manifest || {};
+    const result = await post("content-package/image-localization/regions", {
+      offer_id: currentOfferId(),
+      expected_revision: manifest.revision,
+      asset_id: assetId,
+      regions: collectLocalizationRegions(assetId),
+    });
+    preview.content_package.image_localization = result.image_localization;
+    delete imageLocalizationDraft[assetId];
+    imageLocalizationDraftOfferId = currentOfferId();
+    renderImageLocalization();
+    if (!quiet) toast("区域已保存；原始图片没有被修改。");
+    return result.image_localization;
+  }
+
+  async function createCleanMaster(assetId) {
+    const button = $$(".localization-card").find((card) => card.dataset.assetId === assetId)
+      ?.querySelector(".localization-clean-master");
+    setLoading(button, true);
+    try {
+      const saved = await saveImageLocalizationRegions(assetId, { quiet: true });
+      const result = await post("content-package/image-localization/clean-master", {
+        offer_id: currentOfferId(),
+        expected_revision: saved.manifest.revision,
+        asset_id: assetId,
+        method: "local_region_fill/v1",
+        confirm_local_clean_master: true,
+      });
+      preview.content_package.image_localization = result.image_localization;
+      renderImageLocalization();
+      toast("本地干净母图已生成；来源原图保持不变。");
+    } catch (error) {
+      showAlert(error.message);
+    } finally {
+      setLoading(button, false);
+    }
+  }
+
   function render() {
     finalOrder = buildFinalItems();
     renderProject();
     renderSources();
+    renderImageLocalization();
     renderStoryboard();
     renderPlanningProgress();
     renderVersions();
@@ -1325,6 +1535,10 @@
         && sourceOnlyDraftOfferId === offerId
       );
       preview = loadedPreview;
+      if (imageLocalizationDraftOfferId && imageLocalizationDraftOfferId !== offerId) {
+        imageLocalizationDraft = {};
+        imageLocalizationDraftOfferId = "";
+      }
       if (!syncInFlight) syncFeedbackOverride = null;
       if (!quiet) contentStrategyDraft = null;
       if (preserveSourceDraft) contentStrategyDraft = "source_only";
@@ -1916,6 +2130,7 @@
   });
   $("#refreshButton").addEventListener("click", () => load());
   $("#saveSourceButton").addEventListener("click", saveSourceReview);
+  $("#initializeLocalizationButton").addEventListener("click", initializeImageLocalization);
   $("#savePlanButton").addEventListener("click", () => saveContentReview());
   $("#preparePackageButton").addEventListener("click", preparePackage);
   $("#aiPlanButton").addEventListener("click", requestAiPlan);

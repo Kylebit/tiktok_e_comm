@@ -285,7 +285,12 @@ def test_ai_image_studio_routes_are_served_with_strict_csp(product_server, path)
 def test_proxy_exposes_only_the_ai_studio_write_surface():
     allowed_get, allowed_post = _proxy_allowlists()
 
-    assert allowed_get == {"preview", "content-report", "content-image"}
+    assert allowed_get == {
+        "preview",
+        "content-report",
+        "content-image",
+        "content-package/image-localization/artifact",
+    }
     assert allowed_post == {
         "review",
         "content-package/prepare",
@@ -297,6 +302,9 @@ def test_proxy_exposes_only_the_ai_studio_write_surface():
         "content-package/remaining-images-generate",
         "content-package/miaoshou-images/commit",
         "content-package/generated-image/decision",
+        "content-package/image-localization/initialize",
+        "content-package/image-localization/regions",
+        "content-package/image-localization/clean-master",
     }
     assert not {
         action

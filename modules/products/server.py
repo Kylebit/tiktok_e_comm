@@ -13206,6 +13206,7 @@ class Handler(BaseHTTPRequestHandler):
             "preview",
             "content-report",
             "content-image",
+            "content-package/image-localization/artifact",
         }
         allowed_post = {
             "review",
@@ -13218,6 +13219,9 @@ class Handler(BaseHTTPRequestHandler):
             "content-package/remaining-images-generate",
             "content-package/miaoshou-images/commit",
             "content-package/generated-image/decision",
+            "content-package/image-localization/initialize",
+            "content-package/image-localization/regions",
+            "content-package/image-localization/clean-master",
         }
         allowed = allowed_get if method == "GET" else allowed_post
         if action not in allowed:

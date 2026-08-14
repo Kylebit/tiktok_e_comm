@@ -20,6 +20,8 @@ Read `/api/v2/order/get_order_detail` in batches for the same settled order iden
 
 Shopee may release many older orders in one settlement batch, so a weekly report can legitimately contain only one release date. Treat this as valid only when every included timestamp comes directly from `escrow_release_time`, remains inside the requested period, and the evidence reports the parent-order and expanded item-line counts. Never replace the release date with order creation, completion, API request, or pull time merely to spread rows across the week.
 
+Classify fulfillment from escrow-detail finance evidence. Accept `seller_shipping_fee` or the API-equivalent `actual_shipping_fee` together with `shipping_fee_sst`/`sst`. Only two exact zeros mean local fulfillment; any non-zero field means cross-border. Missing either field is a quality issue, never an implied local order. Apply the configured local shipping and warehouse charge once per parent order, not once per expanded item line.
+
 Escrow-detail fan-out is sequential and can exceed a short command timeout. Size the execution window from the escrow-list parent count, allow a generous bounded timeout, and never start an overlapping retry while the first run is active. The script writes the final evidence only after all requested details finish; absence of the final JSON means the run is incomplete, not an empty or successful settlement period.
 
 ## Ozon

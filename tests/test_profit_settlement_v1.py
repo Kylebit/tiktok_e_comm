@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 import ast
+import copy
 import importlib.util
 import json
 from pathlib import Path
@@ -129,6 +130,12 @@ def _row(order_id: str, *, paid: str = "200", settlement: str = "100") -> dict:
         "package_weight_g": "280",
         "billable_weight_g": "300",
         "weight_source": "platform_fulfillment",
+        "fulfillment": {
+            "mode": "cross_border",
+            "classification_rule": "seller_or_actual_shipping_fee_zero_and_shipping_sst_zero/v1",
+            "seller_shipping_fee_local": "29",
+            "shipping_sst_local": "0",
+        },
         "fee_items": [
             {
                 "code": "commission",
@@ -750,7 +757,7 @@ def test_stage_two_bundle_supports_global_and_platform_ad_rate_overrides():
                 "net_settlement_amount": "100",
                 "buyer_total_amount": "120",
                 "items": [{item_key: source_sku, "quantity": "1", "discounted_price": "120"}],
-                "financial_components": ([{"code": "OperationAgentDeliveredToCustomer", "amount": "120"}] if platform == "ozon" else [{"code": "fee", "amount": "-2"}, {"code": "buyer_paid_shipping_fee", "amount": "0"}]),
+                "financial_components": ([{"code": "OperationAgentDeliveredToCustomer", "amount": "120"}] if platform == "ozon" else [{"code": "fee", "amount": "-2"}, {"code": "buyer_paid_shipping_fee", "amount": "0"}, *([{"code": "actual_shipping_fee", "amount": "29"}, {"code": "shipping_fee_sst", "amount": "0"}] if platform == "shopee" else [])]),
             }],
         }
 
@@ -822,7 +829,7 @@ def test_shopee_weekly_ad_basis_uses_product_sales_and_retains_buyer_cash_paid()
         "schema_version": "settlement-evidence/v1", "status": "ready", "platform": "shopee", "site": "TH",
         "snapshot_id": "shopee-settlement:fixture", "checksum": "fixture", "net_settlement_total_local": "90",
         "receipt": {"external_writes_performed": []},
-        "orders": [{"order_id": "order-1", "order_created_at": "2026-07-20T08:30:00+07:00", "settled_at": "2026-07-27T00:00:00+07:00", "currency": "THB", "net_settlement_amount": "90", "buyer_total_amount": "120", "items": [{"seller_sku": "1", "quantity": "2", "discounted_price": "150"}], "financial_components": [{"code": "order_discounted_price", "amount": "150"}, {"code": "buyer_paid_shipping_fee", "amount": "40"}, {"code": "voucher_from_shopee", "amount": "70"}]}],
+        "orders": [{"order_id": "order-1", "order_created_at": "2026-07-20T08:30:00+07:00", "settled_at": "2026-07-27T00:00:00+07:00", "currency": "THB", "net_settlement_amount": "90", "buyer_total_amount": "120", "items": [{"seller_sku": "1", "quantity": "2", "discounted_price": "150"}], "financial_components": [{"code": "order_discounted_price", "amount": "150"}, {"code": "buyer_paid_shipping_fee", "amount": "40"}, {"code": "voucher_from_shopee", "amount": "70"}, {"code": "actual_shipping_fee", "amount": "29"}, {"code": "shipping_fee_sst", "amount": "0"}]}],
     }
 
     result = adapt_settlement_evidence(evidence, _catalog_stub(), period_kind="weekly")
@@ -849,6 +856,55 @@ def test_shopee_weekly_ad_basis_uses_product_sales_and_retains_buyer_cash_paid()
     assert line["advertising"]["basis"] == "product_sales_amount_after_seller_discount"
     assert line["advertising"]["basis_amount_local"] == "150"
     assert line["advertising"]["amount_local"] == "33.00"
+
+
+def test_shopee_fulfillment_classification_and_local_cost_are_order_scoped_and_configurable():
+    first = _row("SP-LOCAL", paid="100", settlement="100")
+    second = copy.deepcopy(first)
+    second["order_line_id"] = "SP-LOCAL:2"
+    second["buyer_paid_product_amount"] = "300"
+    first["fulfillment"] = second["fulfillment"] = {
+        "mode": "local",
+        "classification_rule": "seller_or_actual_shipping_fee_zero_and_shipping_sst_zero/v1",
+        "seller_shipping_fee_local": "0",
+        "shipping_sst_local": "0",
+    }
+
+    default_report = build_shopee_weekly_report(
+        [second, first], period_start="2026-08-03", period_end="2026-08-09",
+        costs=_costs(), fx=_fx(), generated_at=NOW, code_version="test-v1",
+    )
+    overridden = build_shopee_weekly_report(
+        [first, second], period_start="2026-08-03", period_end="2026-08-09",
+        costs=_costs(), fx=_fx(), local_warehouse_fee_cny="6.50",
+        generated_at=NOW, code_version="test-v1",
+    )
+
+    assert default_report.status == "ready"
+    assert default_report.source["fulfillment_order_counts"] == {"local": 1, "cross_border": 0, "unknown": 0}
+    assert default_report.totals["local_shipping_cost_cny"] == Decimal("4")
+    assert default_report.totals["local_warehouse_cost_cny"] == Decimal("4")
+    assert sum((line["external_costs_cny"] for line in default_report.order_lines), Decimal("0")) == Decimal("10")
+    assert sum((line["fulfillment"]["local_shipping_cost_cny"] for line in default_report.order_lines), Decimal("0")) == Decimal("4")
+    assert sum((line["fulfillment"]["local_warehouse_cost_cny"] for line in default_report.order_lines), Decimal("0")) == Decimal("4")
+    assert audit_profit_report(default_report.payload()).status == "PASSED"
+    assert overridden.totals["local_warehouse_cost_cny"] == Decimal("6.50")
+    assert overridden.idempotency_key != default_report.idempotency_key
+
+
+def test_shopee_adapter_classifies_zero_shipping_and_sst_as_local():
+    evidence = {
+        "schema_version": "settlement-evidence/v1", "status": "ready", "platform": "shopee", "site": "TH",
+        "snapshot_id": "shopee-settlement:local", "checksum": "local", "net_settlement_total_local": "90",
+        "receipt": {"external_writes_performed": []},
+        "orders": [{"order_id": "local-1", "settled_at": "2026-07-27T00:00:00+07:00", "currency": "THB", "net_settlement_amount": "90", "buyer_total_amount": "120", "items": [{"seller_sku": "1", "quantity": "1", "discounted_price": "120"}], "financial_components": [{"code": "actual_shipping_fee", "amount": "0"}, {"code": "shipping_fee_sst", "amount": "0"}, {"code": "buyer_paid_shipping_fee", "amount": "0"}, {"code": "order_discounted_price", "amount": "120"}]}],
+    }
+
+    result = adapt_settlement_evidence(evidence, _catalog_stub(), period_kind="weekly")
+
+    assert result.status == "ready"
+    assert result.rows[0]["fulfillment"]["mode"] == "local"
+    assert result.rows[0]["fulfillment"]["seller_shipping_fee_local"] == Decimal("0")
 
 
 @pytest.mark.parametrize(
@@ -1198,10 +1254,14 @@ def test_detailed_html_renders_main_image_weight_cost_ads_fees_profit_and_live_f
         "orderTimeButton.getAttribute('aria-sort') === 'ascending'",
         "? 'descending' : 'ascending'",
         "if (!leftTime) return 1", "if (!rightTime) return -1",
+        "发货方式", "本土每单运费(CNY)", "本土仓费(CNY)",
     ):
         assert expected in html
     assert "&lt;img" not in html
     assert "th-main / TH" not in html
+    assert "平台 SKU" not in html
+    assert html.index("<th>Seller SKU</th>") < html.index("<th>净结算(CNY)</th>") < html.index("<th>商品总成本(CNY)</th>") < html.index("<th>广告费(CNY)</th>") < html.index("<th>利润(CNY)</th>") < html.index("<th>利润率</th>")
+    assert html.index("<th>成本/FX/结算证据</th>") < html.index("<th>商品名称</th>")
 
 
 def test_temporary_cost_policy_defaults_missing_to_5_and_selects_highest_conflict():

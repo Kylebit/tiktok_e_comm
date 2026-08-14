@@ -8,6 +8,9 @@ from html import escape
 from typing import Any
 
 
+AMS_COMMISSION_FEE_CODE = "order_ams_commission_fee"
+
+
 def render_profit_report_html(report: Mapping[str, Any]) -> str:
     platform = _text(report.get("platform")).upper()
     period = _map(report.get("period")); totals = _map(report.get("totals"))
@@ -96,7 +99,7 @@ def _base_headers() -> list[str]:
     return [
         "结算时间", "下单时间", "订单 ID", "订单行 ID", "国家", "发货方式", "主图", "Seller SKU",
         "净结算(CNY)", "商品总成本(CNY)", "广告费(CNY)", "本土履约费(CNY)", "利润(CNY)", "利润率",
-        "规格", "数量", "单件重量(g)", "计费重量(g)", "币种", "商品折后成交额", "买家现金实付商品金额",
+        "规格", "数量", "单件重量(g)", "计费重量(g)", "联盟营销佣金(AMS)", "商品折后成交额", "买家现金实付商品金额",
         "净结算(当地)", "最新汇率(CNY/当地)", "汇率更新时间", "汇率来源", "单件成本(CNY)",
         "广告基数(当地)", "广告比例", "广告比例来源", "广告费(当地)", "额外成本(CNY)",
     ]
@@ -108,12 +111,13 @@ def _order_row(line, fee_columns, warning_by_sku):
     sku = _text(product.get("canonical_sku")); warning = warning_by_sku.get(sku)
     image = _text(product.get("image_url")); image_html = f'<img src="{escape(image, quote=True)}" alt="商品主图" loading="lazy">' if image.lower().startswith("https://") else '<span class="meta">无主图</span>'
     margin = _margin(line)
+    ams_local, ams_cny, ams_currency = _fee_value(line, AMS_COMMISSION_FEE_CODE)
     cells = [
         _text(line.get("settled_at")), _text(line.get("occurred_at")), _text(identity.get("order_id")), _text(identity.get("order_line_id")),
         _text(identity.get("region")), _fulfillment_label(fulfillment.get("mode")), image_html, _text(product.get("seller_sku")),
         _money(settlement.get("net_amount_cny")), _money(cost.get("total_cny")), _money(ads.get("amount_cny")), _money(fulfillment.get("local_fulfillment_cost_cny")), _money(line.get("profit_cny")), margin,
         _text(product.get("variant_name")), _quantity(product.get("quantity")), _money(product.get("unit_weight_g")),
-        _money(product.get("billable_weight_g")), _text(settlement.get("currency")), _money(settlement.get("product_sales_amount_local") or settlement.get("buyer_paid_product_amount_local")), _money(settlement.get("buyer_cash_paid_product_amount_local")),
+        _money(product.get("billable_weight_g")), _localized_fee(ams_local, ams_cny, ams_currency), _money(settlement.get("product_sales_amount_local") or settlement.get("buyer_paid_product_amount_local")), _money(settlement.get("buyer_cash_paid_product_amount_local")),
         _money(settlement.get("net_amount_local")), _fx_rate(fx.get("rate_cny_per_local")),
         _text(fx.get("as_of")), _text(fx.get("source")), _money(cost.get("unit_cost_cny")), _money(ads.get("basis_amount_local")),
         _percent_value(ads.get("rate")), _ad_rate_source(ads.get("input_source")), _money(ads.get("amount_local")),
@@ -161,7 +165,7 @@ def _fee_columns(lines):
         for item in _list(line.get("fee_items")):
             if not isinstance(item, Mapping): continue
             code = _text(item.get("code"))
-            if code:
+            if code and code != AMS_COMMISSION_FEE_CODE:
                 label = _text(item.get("label") or code)
                 values.setdefault(code, f"{label} [{code}]")
     return sorted(values.items(), key=lambda item: item[0].lower())
@@ -186,6 +190,10 @@ def _footer(report, fee_columns, column_count):
     cells[10] = _money(totals.get("advertising_cny"))
     cells[11] = _money(totals.get("local_fulfillment_cost_cny"))
     cells[12] = _money(totals.get("profit_cny"))
+    ams_local = sum((_fee_value(line, AMS_COMMISSION_FEE_CODE)[0] for line in lines), Decimal("0"))
+    ams_cny = sum((_fee_value(line, AMS_COMMISSION_FEE_CODE)[1] for line in lines), Decimal("0"))
+    ams_currency = next((_fee_value(line, AMS_COMMISSION_FEE_CODE)[2] for line in lines if _fee_value(line, AMS_COMMISSION_FEE_CODE)[2]), "")
+    cells[18] = _localized_fee(ams_local, ams_cny, ams_currency)
     cells[19] = _money(sum((_decimal(_map(line.get("settlement")).get("product_sales_amount_local") or _map(line.get("settlement")).get("buyer_paid_product_amount_local")) or Decimal("0") for line in lines), Decimal("0")))
     cells[20] = _money(sum((_decimal(_map(line.get("settlement")).get("buyer_cash_paid_product_amount_local")) or Decimal("0") for line in lines), Decimal("0")))
     cells[30] = _money(totals.get("external_costs_cny"))
@@ -210,6 +218,7 @@ def _messages(items, empty):
 
 
 def _card(label, value): return f'<div class="card"><span>{escape(label)}</span><strong>{escape(_money(value))}</strong></div>'
+def _localized_fee(local, cny, currency): return f"{_money(local)} {currency or '当地'} / CNY {_money(cny)}"
 def _map(value): return value if isinstance(value, Mapping) else {}
 def _list(value): return value if isinstance(value, list) else []
 def _text(value): return str(value) if value not in (None, "") else "—"

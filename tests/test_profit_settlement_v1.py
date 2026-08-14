@@ -1343,7 +1343,7 @@ def test_shopee_html_moves_ams_commission_into_former_currency_column_without_du
         "included_in_net_settlement": True,
     })
     report = build_shopee_weekly_report(
-        [row], period_start="2026-08-03", period_end="2026-08-09",
+        [row, _row("SP-NON-AMS", paid="169", settlement="116")], period_start="2026-08-03", period_end="2026-08-09",
         costs=_costs(), fx=_fx(), generated_at=NOW, code_version="test-v1",
     ).payload()
 
@@ -1353,6 +1353,17 @@ def test_shopee_html_moves_ams_commission_into_former_currency_column_without_du
     assert "22.00 THB / CNY 4.40" in html
     assert "order_ams_commission_fee [order_ams_commission_fee]" not in html
     assert "<th>币种</th>" not in html
+    assert report["source"]["affiliate_marketing"] == {
+        "classification_rule": "positive_order_ams_commission_fee_per_parent_order/v1",
+        "settled_parent_order_count": 2,
+        "affiliate_parent_order_count": 1,
+        "non_affiliate_parent_order_count": 1,
+        "affiliate_order_share": "0.5",
+        "ams_commission_fee_cny": "4.40",
+        "ams_commission_fee_local_by_currency": {"THB": "22"},
+    }
+    assert "联盟营销订单占比" in html
+    assert "50.00% (1/2)" in html
 
 
 def test_temporary_cost_policy_defaults_missing_to_5_and_selects_highest_conflict():

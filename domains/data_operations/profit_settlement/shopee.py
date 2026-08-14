@@ -15,6 +15,7 @@ from domains.data_operations.profit_settlement.shared_inputs import CostSnapshot
 
 PLATFORM = "shopee"
 SCHEMA_VERSION = "profit-report/shopee/v1"
+AMS_COMMISSION_FEE_CODE = "order_ams_commission_fee"
 
 
 @dataclass(frozen=True)
@@ -136,7 +137,7 @@ def build_weekly_report(
     source_checksum = _checksum(sorted((_ready(row) for row in source_rows), key=_canonical))
     fulfillment_policy = {"local_fulfillment_fee_cny_per_order": local_fulfillment, "cost_components": ["local_shipping", "local_warehouse"], "classification_rule": "import_vat_and_duty_presence/v2"}
     fingerprint = _checksum({"schema":SCHEMA_VERSION,"period_kind":"weekly","period":[start.isoformat(),end.isoformat()],"source":source_checksum,"costs":costs.snapshot_id,"fx":fx.snapshot_id,"ad_rate":str(rate_value),"ad_rate_source":rate_source,"fulfillment_policy":fulfillment_policy,"code_version":code_version})
-    return ShopeeProfitReport(report_id=f"shopee-profit-{fingerprint[:16]}",idempotency_key=f"{SCHEMA_VERSION}:{fingerprint}",calculation_kind="realized_settlement_with_estimated_ads",period_kind="weekly",period={"start":start.isoformat(),"end":end.isoformat(),"timezone":"source_local_date"},status="ready" if not issues else "needs_review",totals=_totals(lines),order_lines=tuple(lines),quality_issues=tuple(issues),source={"input_checksum":source_checksum,"raw_row_count":len(source_rows),"calculated_row_count":len(lines),"rejected_row_count":rejected,"out_of_period_row_count":out_of_period,"unsettled_row_count":unsettled,"fulfillment_order_counts":_fulfillment_order_counts(lines),"fulfillment_policy":fulfillment_policy,"cost_snapshot":costs.payload(),"fx_snapshot":fx.payload()},advertising={"mode":"estimated_rate","rate":rate_value,"input_source":rate_source,"policy_version":"operator-adjustable-ad-rate/v1","basis":"product_sales_amount_after_seller_discount"},generated_at=generated_at or datetime.now(timezone.utc),code_version=code_version)
+    return ShopeeProfitReport(report_id=f"shopee-profit-{fingerprint[:16]}",idempotency_key=f"{SCHEMA_VERSION}:{fingerprint}",calculation_kind="realized_settlement_with_estimated_ads",period_kind="weekly",period={"start":start.isoformat(),"end":end.isoformat(),"timezone":"source_local_date"},status="ready" if not issues else "needs_review",totals=_totals(lines),order_lines=tuple(lines),quality_issues=tuple(issues),source={"input_checksum":source_checksum,"raw_row_count":len(source_rows),"calculated_row_count":len(lines),"rejected_row_count":rejected,"out_of_period_row_count":out_of_period,"unsettled_row_count":unsettled,"fulfillment_order_counts":_fulfillment_order_counts(lines),"affiliate_marketing":_affiliate_marketing_summary(lines),"fulfillment_policy":fulfillment_policy,"cost_snapshot":costs.payload(),"fx_snapshot":fx.payload()},advertising={"mode":"estimated_rate","rate":rate_value,"input_source":rate_source,"policy_version":"operator-adjustable-ad-rate/v1","basis":"product_sales_amount_after_seller_discount"},generated_at=generated_at or datetime.now(timezone.utc),code_version=code_version)
 
 
 def build_monthly_report(
@@ -211,7 +212,7 @@ def build_monthly_report(
         totals=totals,
         order_lines=tuple(calculated),
         quality_issues=tuple(issues),
-        source={"input_checksum": source_checksum, "raw_row_count": len(source_rows), "calculated_row_count": len(calculated), "rejected_row_count": rejected, "out_of_period_row_count": out_of_period, "unsettled_row_count": unsettled, "fulfillment_order_counts": _fulfillment_order_counts(calculated), "fulfillment_policy": fulfillment_policy, "cost_snapshot": costs.payload(), "fx_snapshot": fx.payload()},
+        source={"input_checksum": source_checksum, "raw_row_count": len(source_rows), "calculated_row_count": len(calculated), "rejected_row_count": rejected, "out_of_period_row_count": out_of_period, "unsettled_row_count": unsettled, "fulfillment_order_counts": _fulfillment_order_counts(calculated), "affiliate_marketing": _affiliate_marketing_summary(calculated), "fulfillment_policy": fulfillment_policy, "cost_snapshot": costs.payload(), "fx_snapshot": fx.payload()},
         advertising=advertising or {},
         generated_at=generated_at or datetime.now(timezone.utc),
         code_version=code_version,
@@ -338,6 +339,36 @@ def _fulfillment_order_counts(lines: Iterable[Mapping[str, Any]]) -> dict[str, i
     return {
         mode: sum(1 for value in orders.values() if value == mode)
         for mode in ("local", "cross_border", "unknown")
+    }
+
+
+def _affiliate_marketing_summary(lines: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    order_fee_cny: dict[str, Decimal] = {}
+    fee_local_by_currency: dict[str, Decimal] = {}
+    for line in lines:
+        identity = line.get("identity") if isinstance(line.get("identity"), Mapping) else {}
+        order_id = _text(identity.get("order_id"))
+        if not order_id:
+            continue
+        order_fee_cny.setdefault(order_id, Decimal("0"))
+        for fee in line.get("fee_items") if isinstance(line.get("fee_items"), (tuple, list)) else ():
+            if not isinstance(fee, Mapping) or _text(fee.get("code")) != AMS_COMMISSION_FEE_CODE:
+                continue
+            amount = _decimal(fee.get("amount")) or Decimal("0")
+            amount_cny = _decimal(fee.get("amount_cny")) or Decimal("0")
+            currency = _text(fee.get("currency")).upper() or "UNKNOWN"
+            order_fee_cny[order_id] += amount_cny
+            fee_local_by_currency[currency] = fee_local_by_currency.get(currency, Decimal("0")) + amount
+    total_orders = len(order_fee_cny)
+    affiliate_orders = sum(1 for amount in order_fee_cny.values() if amount > 0)
+    return {
+        "classification_rule": "positive_order_ams_commission_fee_per_parent_order/v1",
+        "settled_parent_order_count": total_orders,
+        "affiliate_parent_order_count": affiliate_orders,
+        "non_affiliate_parent_order_count": total_orders - affiliate_orders,
+        "affiliate_order_share": Decimal(affiliate_orders) / Decimal(total_orders) if total_orders else Decimal("0"),
+        "ams_commission_fee_cny": sum(order_fee_cny.values(), Decimal("0")),
+        "ams_commission_fee_local_by_currency": dict(sorted(fee_local_by_currency.items())),
     }
 
 

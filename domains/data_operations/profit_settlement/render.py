@@ -23,6 +23,14 @@ def render_profit_report_html(report: Mapping[str, Any]) -> str:
         ("advertising_cny", "广告成本 CNY"), ("external_costs_cny", "额外成本 CNY"),
         ("profit_cny", "利润 CNY"),
     ))
+    affiliate = _map(_map(report.get("source")).get("affiliate_marketing"))
+    if platform == "SHOPEE" and affiliate:
+        cards += _text_card(
+            "联盟营销订单占比",
+            f"{_percent_value(affiliate.get('affiliate_order_share'))} "
+            f"({escape(_text(affiliate.get('affiliate_parent_order_count')))}/"
+            f"{escape(_text(affiliate.get('settled_parent_order_count')))})",
+        )
     issue_html = _messages(issues, "无阻断性质量问题")
     warning_html = _messages(warnings, "无临时假设")
     headers = _base_headers() + [label for _, label in fee_columns] + ["成本/FX/结算证据", "商品名称"]
@@ -218,6 +226,7 @@ def _messages(items, empty):
 
 
 def _card(label, value): return f'<div class="card"><span>{escape(label)}</span><strong>{escape(_money(value))}</strong></div>'
+def _text_card(label, value): return f'<div class="card"><span>{escape(label)}</span><strong>{value}</strong></div>'
 def _localized_fee(local, cny, currency): return f"{_money(local)} {currency or '当地'} / CNY {_money(cny)}"
 def _map(value): return value if isinstance(value, Mapping) else {}
 def _list(value): return value if isinstance(value, list) else []

@@ -1322,14 +1322,37 @@ def test_detailed_html_renders_main_image_weight_cost_ads_fees_profit_and_live_f
         "orderTimeButton.getAttribute('aria-sort') === 'ascending'",
         "? 'descending' : 'ascending'",
         "if (!leftTime) return 1", "if (!rightTime) return -1",
-        "发货方式", "本土履约费(CNY)",
+        "发货方式", "本土履约费(CNY)", "联盟营销佣金(AMS)",
     ):
         assert expected in html
     assert "&lt;img" not in html
     assert "th-main / TH" not in html
     assert "平台 SKU" not in html
+    assert "<th>币种</th>" not in html
     assert html.index("<th>Seller SKU</th>") < html.index("<th>净结算(CNY)</th>") < html.index("<th>商品总成本(CNY)</th>") < html.index("<th>广告费(CNY)</th>") < html.index("<th>本土履约费(CNY)</th>") < html.index("<th>利润(CNY)</th>") < html.index("<th>利润率</th>")
     assert html.index("<th>成本/FX/结算证据</th>") < html.index("<th>商品名称</th>")
+
+
+def test_shopee_html_moves_ams_commission_into_former_currency_column_without_duplicate():
+    row = _row("SP-AMS", paid="169", settlement="94")
+    row["fee_items"].append({
+        "code": "order_ams_commission_fee",
+        "label": "order_ams_commission_fee",
+        "amount": "22",
+        "currency": "THB",
+        "included_in_net_settlement": True,
+    })
+    report = build_shopee_weekly_report(
+        [row], period_start="2026-08-03", period_end="2026-08-09",
+        costs=_costs(), fx=_fx(), generated_at=NOW, code_version="test-v1",
+    ).payload()
+
+    html = render_profit_report_html(report)
+
+    assert html.count("<th>联盟营销佣金(AMS)</th>") == 1
+    assert "22.00 THB / CNY 4.40" in html
+    assert "order_ams_commission_fee [order_ams_commission_fee]" not in html
+    assert "<th>币种</th>" not in html
 
 
 def test_temporary_cost_policy_defaults_missing_to_5_and_selects_highest_conflict():

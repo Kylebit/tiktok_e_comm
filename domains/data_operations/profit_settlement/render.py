@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from email.utils import parsedate_to_datetime
 from html import escape
 from typing import Any
 
@@ -33,7 +35,7 @@ def render_profit_report_html(report: Mapping[str, Any]) -> str:
         )
     issue_html = _messages(issues, "无阻断性质量问题")
     warning_html = _messages(warnings, "无临时假设")
-    headers = _base_headers() + [label for _, label in fee_columns] + ["成本/FX/结算证据", "商品名称"]
+    headers = _visible_base_headers(platform) + [label for _, label in fee_columns] + ["成本/FX/结算证据", "商品名称"]
     header_html = "".join(
         (
             '<th><button type="button" class="sort-button" '
@@ -44,8 +46,8 @@ def render_profit_report_html(report: Mapping[str, Any]) -> str:
         if index == 1 else f"<th>{escape(label)}</th>"
         for index, label in enumerate(headers)
     )
-    body_html = "".join(_order_row(line, fee_columns, warning_by_sku) for line in lines)
-    footer_html = _footer(report, fee_columns, len(headers))
+    body_html = "".join(_order_row(line, fee_columns, warning_by_sku, platform) for line in lines)
+    footer_html = _footer(report, fee_columns, platform)
     return f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{escape(platform)} 利润报表</title><style>
@@ -113,7 +115,14 @@ def _base_headers() -> list[str]:
     ]
 
 
-def _order_row(line, fee_columns, warning_by_sku):
+def _visible_base_headers(platform: str) -> list[str]:
+    headers = _base_headers()
+    if platform == "SHOPEE":
+        headers.pop(3)
+    return headers
+
+
+def _order_row(line, fee_columns, warning_by_sku, platform):
     identity = _map(line.get("identity")); product = _map(line.get("product")); settlement = _map(line.get("settlement"))
     cost = _map(line.get("cost")); ads = _map(line.get("advertising")); fx = _map(line.get("fx")); fulfillment = _map(line.get("fulfillment"))
     sku = _text(product.get("canonical_sku")); warning = warning_by_sku.get(sku)
@@ -121,13 +130,13 @@ def _order_row(line, fee_columns, warning_by_sku):
     margin = _margin(line)
     ams_local, ams_cny, ams_currency = _fee_value(line, AMS_COMMISSION_FEE_CODE)
     cells = [
-        _text(line.get("settled_at")), _text(line.get("occurred_at")), _text(identity.get("order_id")), _text(identity.get("order_line_id")),
+        _display_time(line.get("settled_at")), _display_time(line.get("occurred_at")), _text(identity.get("order_id")), _text(identity.get("order_line_id")),
         _text(identity.get("region")), _fulfillment_label(fulfillment.get("mode")), image_html, _text(product.get("seller_sku")),
         _money(settlement.get("net_amount_cny")), _money(cost.get("total_cny")), _money(ads.get("amount_cny")), _money(fulfillment.get("local_fulfillment_cost_cny")), _money(line.get("profit_cny")), margin,
         _text(product.get("variant_name")), _quantity(product.get("quantity")), _money(product.get("unit_weight_g")),
         _money(product.get("billable_weight_g")), _localized_fee(ams_local, ams_cny, ams_currency), _money(settlement.get("product_sales_amount_local") or settlement.get("buyer_paid_product_amount_local")), _money(settlement.get("buyer_cash_paid_product_amount_local")),
         _money(settlement.get("net_amount_local")), _fx_rate(fx.get("rate_cny_per_local")),
-        _text(fx.get("as_of")), _text(fx.get("source")), _money(cost.get("unit_cost_cny")), _money(ads.get("basis_amount_local")),
+        _display_time(fx.get("as_of")), _text(fx.get("source")), _money(cost.get("unit_cost_cny")), _money(ads.get("basis_amount_local")),
         _percent_value(ads.get("rate")), _ad_rate_source(ads.get("input_source")), _money(ads.get("amount_local")),
         _money(line.get("external_costs_cny")),
     ]
@@ -136,9 +145,14 @@ def _order_row(line, fee_columns, warning_by_sku):
         "num", "num", "num", "num", "num", "num", "product", "num", "num", "num", "", "num", "num",
         "num", "num", "", "product", "num", "num", "num", "product", "num", "num",
     ]
+    image_cell_index = 6
+    if platform == "SHOPEE":
+        cells.pop(3)
+        classes.pop(3)
+        image_cell_index -= 1
     output = []
     for index, value in enumerate(cells):
-        output.append(f'<td class="{classes[index]}">{value if index == 6 else escape(value)}</td>')
+        output.append(f'<td class="{classes[index]}">{value if index == image_cell_index else escape(value)}</td>')
     for code, _ in fee_columns:
         local, cny, currency = _fee_value(line, code)
         output.append(f'<td class="num">{escape(_money(local))} {escape(currency)}<br><small>CNY {escape(_money(cny))}</small></td>')
@@ -158,7 +172,7 @@ def _order_row(line, fee_columns, warning_by_sku):
     if _decimal(line.get("profit_cny")) is not None and _decimal(line.get("profit_cny")) < 0: row_classes.append("negative")
     output.append(f'<td class="product">{evidence}</td>')
     output.append(f'<td class="product">{escape(_text(product.get("product_name")))}</td>')
-    order_created_at = _text(line.get("occurred_at"))
+    order_created_at = _optional_text(line.get("occurred_at"))
     sort_tie = f'{_text(identity.get("order_id"))}::{_text(identity.get("order_line_id"))}'
     return (
         f'<tr class="{" ".join(row_classes)}" '
@@ -189,7 +203,7 @@ def _fee_value(line, code):
     return local, cny, currency
 
 
-def _footer(report, fee_columns, column_count):
+def _footer(report, fee_columns, platform):
     totals = _map(report.get("totals")); lines = [line for line in _list(report.get("order_lines")) if isinstance(line, Mapping)]
     cells = [""] * len(_base_headers())
     cells[0] = "合计"
@@ -205,6 +219,8 @@ def _footer(report, fee_columns, column_count):
     cells[19] = _money(sum((_decimal(_map(line.get("settlement")).get("product_sales_amount_local") or _map(line.get("settlement")).get("buyer_paid_product_amount_local")) or Decimal("0") for line in lines), Decimal("0")))
     cells[20] = _money(sum((_decimal(_map(line.get("settlement")).get("buyer_cash_paid_product_amount_local")) or Decimal("0") for line in lines), Decimal("0")))
     cells[30] = _money(totals.get("external_costs_cny"))
+    if platform == "SHOPEE":
+        cells.pop(3)
     html = "".join(f'<td class="num">{escape(value)}</td>' for value in cells)
     for code, _ in fee_columns:
         local = sum((_fee_value(line, code)[0] for line in lines), Decimal("0")); cny = sum((_fee_value(line, code)[1] for line in lines), Decimal("0"))
@@ -231,6 +247,26 @@ def _localized_fee(local, cny, currency): return f"{_money(local)} {currency or 
 def _map(value): return value if isinstance(value, Mapping) else {}
 def _list(value): return value if isinstance(value, list) else []
 def _text(value): return str(value) if value not in (None, "") else "—"
+def _optional_text(value): return str(value) if value not in (None, "") else ""
+def _display_time(value):
+    raw = _optional_text(value).strip()
+    if not raw:
+        return "—"
+    try:
+        parsed = datetime.fromisoformat(raw[:-1] + "+00:00" if raw.endswith("Z") else raw)
+    except ValueError:
+        try:
+            parsed = parsedate_to_datetime(raw)
+        except (TypeError, ValueError):
+            return raw
+    rendered = parsed.strftime("%Y-%m-%d %H:%M:%S")
+    offset = parsed.utcoffset()
+    if offset is None:
+        return f"{rendered}（时区未提供）"
+    total_minutes = int(offset.total_seconds() // 60)
+    sign = "+" if total_minutes >= 0 else "-"
+    hours, minutes = divmod(abs(total_minutes), 60)
+    return f"{rendered}（UTC{sign}{hours:02d}:{minutes:02d}）"
 def _quantity(value):
     number = _decimal(value)
     return str(int(number)) if number is not None and number == number.to_integral() else _money(value)

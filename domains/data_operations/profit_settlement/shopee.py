@@ -136,7 +136,7 @@ def build_weekly_report(
     lines.sort(key=_line_settlement_sort_key)
     rate_source = _text(ad_rate_source) or ("default_22" if rate_value == Decimal("0.22") else "operator_global_override")
     source_checksum = _checksum(sorted((_ready(row) for row in source_rows), key=_canonical))
-    fulfillment_policy = {"local_shipping_fee_cny_per_order": local_shipping, "local_warehouse_fee_cny_per_order": local_warehouse, "classification_rule": "seller_or_actual_shipping_fee_zero_and_shipping_sst_zero/v1"}
+    fulfillment_policy = {"local_shipping_fee_cny_per_order": local_shipping, "local_warehouse_fee_cny_per_order": local_warehouse, "classification_rule": "import_vat_and_duty_presence/v2"}
     fingerprint = _checksum({"schema":SCHEMA_VERSION,"period_kind":"weekly","period":[start.isoformat(),end.isoformat()],"source":source_checksum,"costs":costs.snapshot_id,"fx":fx.snapshot_id,"ad_rate":str(rate_value),"ad_rate_source":rate_source,"fulfillment_policy":fulfillment_policy,"code_version":code_version})
     return ShopeeProfitReport(report_id=f"shopee-profit-{fingerprint[:16]}",idempotency_key=f"{SCHEMA_VERSION}:{fingerprint}",calculation_kind="realized_settlement_with_estimated_ads",period_kind="weekly",period={"start":start.isoformat(),"end":end.isoformat(),"timezone":"source_local_date"},status="ready" if not issues else "needs_review",totals=_totals(lines),order_lines=tuple(lines),quality_issues=tuple(issues),source={"input_checksum":source_checksum,"raw_row_count":len(source_rows),"calculated_row_count":len(lines),"rejected_row_count":rejected,"out_of_period_row_count":out_of_period,"unsettled_row_count":unsettled,"fulfillment_order_counts":_fulfillment_order_counts(lines),"fulfillment_policy":fulfillment_policy,"cost_snapshot":costs.payload(),"fx_snapshot":fx.payload()},advertising={"mode":"estimated_rate","rate":rate_value,"input_source":rate_source,"policy_version":"operator-adjustable-ad-rate/v1","basis":"product_sales_amount_after_seller_discount"},generated_at=generated_at or datetime.now(timezone.utc),code_version=code_version)
 
@@ -203,7 +203,7 @@ def build_monthly_report(
         rejected += len(prepared)
     totals = _totals(calculated)
     source_checksum = _checksum(sorted((_ready(row) for row in source_rows), key=_canonical))
-    fulfillment_policy = {"local_shipping_fee_cny_per_order": local_shipping, "local_warehouse_fee_cny_per_order": local_warehouse, "classification_rule": "seller_or_actual_shipping_fee_zero_and_shipping_sst_zero/v1"}
+    fulfillment_policy = {"local_shipping_fee_cny_per_order": local_shipping, "local_warehouse_fee_cny_per_order": local_warehouse, "classification_rule": "import_vat_and_duty_presence/v2"}
     fingerprint = _checksum({"schema": SCHEMA_VERSION, "period_kind": "monthly", "period": [start.isoformat(), end.isoformat()], "source": source_checksum, "costs": costs.snapshot_id, "fx": fx.snapshot_id, "advertising": advertising or {}, "fulfillment_policy": fulfillment_policy, "code_version": code_version})
     return ShopeeProfitReport(
         report_id=f"shopee-profit-{fingerprint[:16]}",
@@ -266,13 +266,13 @@ def _fulfillment(row: Mapping[str, object], record_id: str, issues: list[ShopeeQ
     item = dict(raw) if isinstance(raw, Mapping) else {}
     mode = _text(item.get("mode")).lower()
     if mode not in {"local", "cross_border"}:
-        issues.append(_issue("missing_fulfillment_evidence", record_id, "fulfillment.mode"))
+        issues.append(_issue("missing_fulfillment_tax_evidence", record_id, "fulfillment.mode"))
         mode = "unknown"
     return {
         "mode": mode,
-        "classification_rule": _text(item.get("classification_rule")) or "seller_or_actual_shipping_fee_zero_and_shipping_sst_zero/v1",
-        "seller_shipping_fee_local": _decimal(item.get("seller_shipping_fee_local")),
-        "shipping_sst_local": _decimal(item.get("shipping_sst_local")),
+        "classification_rule": _text(item.get("classification_rule")) or "import_vat_and_duty_presence/v2",
+        "import_vat_local": _decimal(item.get("import_vat_local")),
+        "import_duty_local": _decimal(item.get("import_duty_local")),
         "local_shipping_cost_cny": Decimal("0"),
         "local_warehouse_cost_cny": Decimal("0"),
         "allocation_method": "not_applicable" if mode != "local" else "pending",

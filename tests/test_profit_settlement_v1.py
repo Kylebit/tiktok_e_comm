@@ -132,9 +132,9 @@ def _row(order_id: str, *, paid: str = "200", settlement: str = "100") -> dict:
         "weight_source": "platform_fulfillment",
         "fulfillment": {
             "mode": "cross_border",
-            "classification_rule": "seller_or_actual_shipping_fee_zero_and_shipping_sst_zero/v1",
-            "seller_shipping_fee_local": "29",
-            "shipping_sst_local": "0",
+            "classification_rule": "import_vat_and_duty_presence/v2",
+            "import_vat_local": "13",
+            "import_duty_local": "37",
         },
         "fee_items": [
             {
@@ -757,7 +757,7 @@ def test_stage_two_bundle_supports_global_and_platform_ad_rate_overrides():
                 "net_settlement_amount": "100",
                 "buyer_total_amount": "120",
                 "items": [{item_key: source_sku, "quantity": "1", "discounted_price": "120"}],
-                "financial_components": ([{"code": "OperationAgentDeliveredToCustomer", "amount": "120"}] if platform == "ozon" else [{"code": "fee", "amount": "-2"}, {"code": "buyer_paid_shipping_fee", "amount": "0"}, *([{"code": "actual_shipping_fee", "amount": "29"}, {"code": "shipping_fee_sst", "amount": "0"}] if platform == "shopee" else [])]),
+                "financial_components": ([{"code": "OperationAgentDeliveredToCustomer", "amount": "120"}] if platform == "ozon" else [{"code": "fee", "amount": "-2"}, {"code": "buyer_paid_shipping_fee", "amount": "0"}, *([{"code": "vat_on_imported_goods", "amount": "13"}, {"code": "th_import_duty", "amount": "37"}] if platform == "shopee" else [])]),
             }],
         }
 
@@ -829,7 +829,7 @@ def test_shopee_weekly_ad_basis_uses_product_sales_and_retains_buyer_cash_paid()
         "schema_version": "settlement-evidence/v1", "status": "ready", "platform": "shopee", "site": "TH",
         "snapshot_id": "shopee-settlement:fixture", "checksum": "fixture", "net_settlement_total_local": "90",
         "receipt": {"external_writes_performed": []},
-        "orders": [{"order_id": "order-1", "order_created_at": "2026-07-20T08:30:00+07:00", "settled_at": "2026-07-27T00:00:00+07:00", "currency": "THB", "net_settlement_amount": "90", "buyer_total_amount": "120", "items": [{"seller_sku": "1", "quantity": "2", "discounted_price": "150"}], "financial_components": [{"code": "order_discounted_price", "amount": "150"}, {"code": "buyer_paid_shipping_fee", "amount": "40"}, {"code": "voucher_from_shopee", "amount": "70"}, {"code": "actual_shipping_fee", "amount": "29"}, {"code": "shipping_fee_sst", "amount": "0"}]}],
+        "orders": [{"order_id": "order-1", "order_created_at": "2026-07-20T08:30:00+07:00", "settled_at": "2026-07-27T00:00:00+07:00", "currency": "THB", "net_settlement_amount": "90", "buyer_total_amount": "120", "items": [{"seller_sku": "1", "quantity": "2", "discounted_price": "150"}], "financial_components": [{"code": "order_discounted_price", "amount": "150"}, {"code": "buyer_paid_shipping_fee", "amount": "40"}, {"code": "voucher_from_shopee", "amount": "70"}, {"code": "vat_on_imported_goods", "amount": "13"}, {"code": "th_import_duty", "amount": "37"}]}],
     }
 
     result = adapt_settlement_evidence(evidence, _catalog_stub(), period_kind="weekly")
@@ -865,9 +865,9 @@ def test_shopee_fulfillment_classification_and_local_cost_are_order_scoped_and_c
     second["buyer_paid_product_amount"] = "300"
     first["fulfillment"] = second["fulfillment"] = {
         "mode": "local",
-        "classification_rule": "seller_or_actual_shipping_fee_zero_and_shipping_sst_zero/v1",
-        "seller_shipping_fee_local": "0",
-        "shipping_sst_local": "0",
+        "classification_rule": "import_vat_and_duty_presence/v2",
+        "import_vat_local": "0",
+        "import_duty_local": "0",
     }
 
     default_report = build_shopee_weekly_report(
@@ -892,19 +892,51 @@ def test_shopee_fulfillment_classification_and_local_cost_are_order_scoped_and_c
     assert overridden.idempotency_key != default_report.idempotency_key
 
 
-def test_shopee_adapter_classifies_zero_shipping_and_sst_as_local():
+def test_shopee_adapter_classifies_zero_import_vat_and_duty_as_local():
     evidence = {
         "schema_version": "settlement-evidence/v1", "status": "ready", "platform": "shopee", "site": "TH",
         "snapshot_id": "shopee-settlement:local", "checksum": "local", "net_settlement_total_local": "90",
         "receipt": {"external_writes_performed": []},
-        "orders": [{"order_id": "local-1", "settled_at": "2026-07-27T00:00:00+07:00", "currency": "THB", "net_settlement_amount": "90", "buyer_total_amount": "120", "items": [{"seller_sku": "1", "quantity": "1", "discounted_price": "120"}], "financial_components": [{"code": "actual_shipping_fee", "amount": "0"}, {"code": "shipping_fee_sst", "amount": "0"}, {"code": "buyer_paid_shipping_fee", "amount": "0"}, {"code": "order_discounted_price", "amount": "120"}]}],
+        "orders": [{"order_id": "local-1", "settled_at": "2026-07-27T00:00:00+07:00", "currency": "THB", "net_settlement_amount": "90", "buyer_total_amount": "120", "items": [{"seller_sku": "1", "quantity": "1", "discounted_price": "120"}], "financial_components": [{"code": "vat_on_imported_goods", "amount": "0"}, {"code": "th_import_duty", "amount": "0"}, {"code": "buyer_paid_shipping_fee", "amount": "0"}, {"code": "order_discounted_price", "amount": "120"}]}],
     }
 
     result = adapt_settlement_evidence(evidence, _catalog_stub(), period_kind="weekly")
 
     assert result.status == "ready"
     assert result.rows[0]["fulfillment"]["mode"] == "local"
-    assert result.rows[0]["fulfillment"]["seller_shipping_fee_local"] == Decimal("0")
+    assert result.rows[0]["fulfillment"]["import_vat_local"] == Decimal("0")
+
+
+@pytest.mark.parametrize(
+    ("vat", "duty", "expected_mode", "expected_status", "expected_issue"),
+    (
+        ("13", "37", "cross_border", "ready", None),
+        ("13", "0", "cross_border", "needs_review", "incomplete_cross_border_tax_pair"),
+        (None, "0", "unknown", "needs_review", "missing_fulfillment_tax_evidence"),
+    ),
+)
+def test_shopee_import_tax_pair_is_fail_closed(vat, duty, expected_mode, expected_status, expected_issue):
+    components = [
+        {"code": "buyer_paid_shipping_fee", "amount": "0"},
+        {"code": "order_discounted_price", "amount": "120"},
+    ]
+    if vat is not None:
+        components.append({"code": "vat_on_imported_goods", "amount": vat})
+    if duty is not None:
+        components.append({"code": "th_import_duty", "amount": duty})
+    evidence = {
+        "schema_version": "settlement-evidence/v1", "status": "ready", "platform": "shopee", "site": "TH",
+        "snapshot_id": "shopee-settlement:tax-pair", "checksum": "tax-pair", "net_settlement_total_local": "90",
+        "receipt": {"external_writes_performed": []},
+        "orders": [{"order_id": "tax-pair-1", "settled_at": "2026-07-27T00:00:00+07:00", "currency": "THB", "net_settlement_amount": "90", "buyer_total_amount": "120", "items": [{"seller_sku": "1", "quantity": "1", "discounted_price": "120"}], "financial_components": components}],
+    }
+
+    result = adapt_settlement_evidence(evidence, _catalog_stub(), period_kind="weekly")
+
+    assert result.status == expected_status
+    assert result.rows[0]["fulfillment"]["mode"] == expected_mode
+    if expected_issue:
+        assert expected_issue in {issue.code for issue in result.issues}
 
 
 @pytest.mark.parametrize(

@@ -814,7 +814,7 @@ def test_stage_two_bundle_supports_global_and_platform_ad_rate_overrides():
                 "net_settlement_amount": "100",
                 "buyer_total_amount": "120",
                 "items": [{item_key: source_sku, "quantity": "1", "discounted_price": "120"}],
-                "financial_components": ([{"code": "OperationAgentDeliveredToCustomer", "amount": "120"}] if platform == "ozon" else [{"code": "fee", "amount": "-2"}, {"code": "buyer_paid_shipping_fee", "amount": "0"}, *([{"code": "vat_on_imported_goods", "amount": "13"}, {"code": "th_import_duty", "amount": "37"}] if platform == "shopee" else [])]),
+                "financial_components": ([{"code": "OperationAgentDeliveredToCustomer", "amount": "120"}] if platform == "ozon" else [{"code": "fee", "amount": "-2"}, {"code": "buyer_paid_shipping_fee", "amount": "0"}, *([{"code": "vat_on_imported_goods", "amount": "13"}, {"code": "th_import_duty", "amount": "37"}, *([{"code": "sales_tax_on_lvg", "amount": "0"}] if site == "MY" else [])] if platform == "shopee" else [])]),
             }],
         }
 
@@ -1040,6 +1040,35 @@ def test_shopee_import_tax_pair_is_fail_closed(vat, duty, expected_mode, expecte
     assert result.rows[0]["fulfillment"]["mode"] == expected_mode
     if expected_issue:
         assert expected_issue in {issue.code for issue in result.issues}
+
+
+@pytest.mark.parametrize(
+    ("lvg_sales_tax", "expected_mode", "expected_status"),
+    (("5.14", "cross_border", "ready"), ("0", "local", "ready"), (None, "unknown", "needs_review")),
+)
+def test_shopee_my_uses_low_value_goods_sales_tax_for_fulfillment(
+    lvg_sales_tax, expected_mode, expected_status
+):
+    components = [
+        {"code": "buyer_paid_shipping_fee", "amount": "0"},
+        {"code": "order_discounted_price", "amount": "56.52"},
+        {"code": "vat_on_imported_goods", "amount": "0"},
+        {"code": "th_import_duty", "amount": "0"},
+    ]
+    if lvg_sales_tax is not None:
+        components.append({"code": "sales_tax_on_lvg", "amount": lvg_sales_tax})
+    evidence = {
+        "schema_version": "settlement-evidence/v1", "status": "ready", "platform": "shopee", "site": "MY",
+        "snapshot_id": "shopee-settlement:my-lvg", "checksum": "my-lvg", "net_settlement_total_local": "25.83",
+        "receipt": {"external_writes_performed": []},
+        "orders": [{"order_id": "my-lvg-1", "settled_at": "2026-08-03T00:00:00+08:00", "currency": "MYR", "net_settlement_amount": "25.83", "buyer_total_amount": "56.52", "items": [{"seller_sku": "1", "quantity": "1", "discounted_price": "56.52"}], "financial_components": components}],
+    }
+
+    result = adapt_settlement_evidence(evidence, _catalog_stub(), period_kind="weekly")
+
+    assert result.status == expected_status
+    assert result.rows[0]["fulfillment"]["mode"] == expected_mode
+    assert result.rows[0]["fulfillment"]["classification_rule"] == "my_lvg_sales_tax_charged/v1"
 
 
 @pytest.mark.parametrize(

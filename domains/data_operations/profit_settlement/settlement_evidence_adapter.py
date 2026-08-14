@@ -140,7 +140,11 @@ def adapt_settlement_evidence(
             component for component in (record.get("financial_components") or [])
             if isinstance(component, Mapping)
         ]
-        fulfillment = _shopee_fulfillment(record, record_id, issues) if platform == "shopee" else None
+        fulfillment = (
+            _shopee_fulfillment(record, record_id, site, issues)
+            if platform == "shopee"
+            else None
+        )
         for item_index, item in enumerate(items):
             if not isinstance(item, Mapping):
                 issues.append(_issue("invalid_item", f"{record_id}:{item_index}", "items"))
@@ -247,13 +251,33 @@ def adapt_settlement_evidence(
     )
 
 
-def _shopee_fulfillment(record, record_id, issues):
+def _shopee_fulfillment(record, record_id, site, issues):
     """Classify Shopee fulfillment from official import-tax evidence."""
     amounts = {
         _text(component.get("code")).lower(): _decimal(component.get("amount"))
         for component in (record.get("financial_components") or [])
         if isinstance(component, Mapping)
     }
+    if site == "MY":
+        lvg_sales_tax = amounts.get("sales_tax_on_lvg")
+        if lvg_sales_tax is None:
+            issues.append(EvidenceQualityIssue(
+                "missing_fulfillment_tax_evidence",
+                record_id,
+                "financial_components",
+                "Shopee MY fulfillment requires the low-value-goods sales-tax settlement field",
+            ))
+            mode = "unknown"
+        else:
+            mode = "cross_border" if lvg_sales_tax != 0 else "local"
+        return {
+            "mode": mode,
+            "classification_rule": "my_lvg_sales_tax_charged/v1",
+            "lvg_sales_tax_local": lvg_sales_tax,
+            "import_vat_local": None,
+            "import_duty_local": None,
+        }
+
     import_vat = next(
         (amounts[code] for code in ("vat_on_imported_goods", "import_vat") if code in amounts),
         None,

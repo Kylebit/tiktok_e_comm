@@ -275,6 +275,40 @@ def test_workbench_initializes_from_authoritative_source_snapshot_and_exposes_su
     assert saved["manifest"]["assets"][0]["regions"][0]["text"] == "English product fact"
 
 
+def test_image_localization_sources_exclude_images_removed_during_source_review(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        new_product_workbench,
+        "load_state",
+        lambda offer_id: {
+            "review": {
+                "image_actions": [
+                    {"url": "https://img.example/keep.jpg", "action": "keep"},
+                    {"url": "https://img.example/remove.jpg", "action": "remove"},
+                ]
+            }
+        },
+    )
+    monkeypatch.setattr(
+        new_product_workbench,
+        "_source_summary",
+        lambda offer_id: {
+            "images": [
+                {"url": "https://img.example/keep.jpg", "kind": "main"},
+                {"url": "https://img.example/remove.jpg", "kind": "detail"},
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        new_product_workbench, "_content_package_dir", lambda collect_box_id: None
+    )
+
+    rows = new_product_workbench._image_localization_source_rows("123")
+
+    assert rows == [{"url": "https://img.example/keep.jpg", "kind": "main"}]
+
+
 def test_batch1_http_and_studio_contracts_are_present():
     root = Path(__file__).resolve().parents[1]
     server = (root / "modules/sourcing/new_product_server.py").read_text(encoding="utf-8")

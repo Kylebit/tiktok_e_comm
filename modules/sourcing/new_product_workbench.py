@@ -965,6 +965,17 @@ def _image_localization_source_rows(offer_id: str) -> list[dict[str, str]]:
         else {}
     )
     urls = _identity_reference_image_urls(source, collect_box)
+    review = state.get("review") if isinstance(state.get("review"), dict) else {}
+    reviewed_actions = {
+        str(row.get("output_url") or row.get("url") or "").strip(): str(
+            row.get("action") or ""
+        ).strip()
+        for row in (review.get("image_actions") or [])
+        if isinstance(row, dict)
+        and str(row.get("output_url") or row.get("url") or "").strip()
+    }
+    if reviewed_actions:
+        urls = [url for url in urls if reviewed_actions.get(url) == "keep"]
     source_kinds = {
         str(row.get("url") or "").strip(): str(row.get("kind") or "main")
         for row in (source.get("images") or [])

@@ -117,7 +117,7 @@ def _base_headers() -> list[str]:
 
 def _visible_base_headers(platform: str) -> list[str]:
     headers = _base_headers()
-    if platform == "SHOPEE":
+    if platform in {"SHOPEE", "TIKTOK"}:
         headers.pop(3)
     return headers
 
@@ -146,7 +146,7 @@ def _order_row(line, fee_columns, warning_by_sku, platform):
         "num", "num", "", "product", "num", "num", "num", "product", "num", "num",
     ]
     image_cell_index = 6
-    if platform == "SHOPEE":
+    if platform in {"SHOPEE", "TIKTOK"}:
         cells.pop(3)
         classes.pop(3)
         image_cell_index -= 1
@@ -219,7 +219,7 @@ def _footer(report, fee_columns, platform):
     cells[19] = _money(sum((_decimal(_map(line.get("settlement")).get("product_sales_amount_local") or _map(line.get("settlement")).get("buyer_paid_product_amount_local")) or Decimal("0") for line in lines), Decimal("0")))
     cells[20] = _money(sum((_decimal(_map(line.get("settlement")).get("buyer_cash_paid_product_amount_local")) or Decimal("0") for line in lines), Decimal("0")))
     cells[30] = _money(totals.get("external_costs_cny"))
-    if platform == "SHOPEE":
+    if platform in {"SHOPEE", "TIKTOK"}:
         cells.pop(3)
     html = "".join(f'<td class="num">{escape(value)}</td>' for value in cells)
     for code, _ in fee_columns:
@@ -285,7 +285,9 @@ def _fulfillment_label(value):
         "local": "本土发货",
         "cross_border": "跨境发货",
         "unknown": "待核对",
-    }.get(str(value or ""), "待核对")
+        "FULFILLMENT_BY_SELLER": "商家履约（FULFILLMENT_BY_SELLER）",
+        "FULFILLMENT_BY_TIKTOK": "TikTok履约（FULFILLMENT_BY_TIKTOK）",
+    }.get(str(value or ""), _text(value) if value else "待核对")
 def _money(value):
     number = _decimal(value)
     return f"{number.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):f}" if number is not None else "—"

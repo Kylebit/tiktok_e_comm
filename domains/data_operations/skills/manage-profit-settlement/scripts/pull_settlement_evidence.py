@@ -257,7 +257,7 @@ def pull_tiktok(
             if order.get("transaction_type") == "Order" and order.get("order_id")
         })
         cipher = str(shop.get("cipher") or shop.get("shop_cipher") or "")
-        order_created_at, order_time_issues = _tiktok_order_created_times(
+        order_facts, order_time_issues = _tiktok_order_facts(
             token,
             cipher,
             order_ids,
@@ -267,9 +267,9 @@ def pull_tiktok(
         issues.extend(order_time_issues)
         for order in orders:
             if order.get("transaction_type") == "Order":
-                order["order_created_at"] = order_created_at.get(
-                    str(order.get("order_id") or ""), ""
-                )
+                facts = order_facts.get(str(order.get("order_id") or ""), {})
+                order["order_created_at"] = str(facts.get("order_created_at") or "")
+                order["fulfillment"] = dict(facts.get("fulfillment") or {})
         payload = _success_payload("tiktok", site, start, end, zone, orders, len(rows), len(orders), issues, "finance statements + statement transactions + order/202309/orders") | {
             "statement_count": len(statements),
             "out_of_period_row_count": out_of_period_rows,
@@ -369,6 +369,17 @@ def _shopee_order_created_times(shop_id, token, order_sns, zone, *, request_get)
 
 
 def _tiktok_order_created_times(token, cipher, order_ids, zone, *, fetcher):
+    facts, issues = _tiktok_order_facts(
+        token, cipher, order_ids, zone, fetcher=fetcher
+    )
+    return {
+        order_id: str(value.get("order_created_at") or "")
+        for order_id, value in facts.items()
+        if value.get("order_created_at")
+    }, [issue for issue in issues if issue.get("code") != "missing_fulfillment_type"]
+
+
+def _tiktok_order_facts(token, cipher, order_ids, zone, *, fetcher):
     ordered = sorted({str(value) for value in order_ids if str(value)})
     rows = fetcher(token, cipher, ordered)
     result = {}
@@ -379,11 +390,38 @@ def _tiktok_order_created_times(token, cipher, order_ids, zone, *, fetcher):
         try:
             if timestamp in (None, ""):
                 raise ValueError("missing create_time")
-            result[order_id] = datetime.fromtimestamp(
+            order_created_at = datetime.fromtimestamp(
                 int(timestamp), tz=timezone.utc
             ).astimezone(zone).isoformat()
         except (TypeError, ValueError, OSError, OverflowError):
             issues.append(_issue("missing_order_created_at", order_id, "create_time"))
+            order_created_at = ""
+        fulfillment_type = (
+            str(row.get("fulfillment_type") or "")
+            if isinstance(row, Mapping)
+            else ""
+        )
+        if not fulfillment_type:
+            issues.append(
+                _issue(
+                    "missing_fulfillment_type",
+                    order_id,
+                    "fulfillment_type",
+                    f"{order_id} has no official TikTok fulfillment_type",
+                )
+            )
+        result[order_id] = {
+            "order_created_at": order_created_at,
+            "fulfillment": {
+                "mode": fulfillment_type,
+                "fulfillment_type": fulfillment_type,
+                "delivery_type": str(row.get("delivery_type") or "") if isinstance(row, Mapping) else "",
+                "shipping_type": str(row.get("shipping_type") or "") if isinstance(row, Mapping) else "",
+                "delivery_option_name": str(row.get("delivery_option_name") or "") if isinstance(row, Mapping) else "",
+                "warehouse_id": str(row.get("warehouse_id") or "") if isinstance(row, Mapping) else "",
+                "evidence_source": "/order/202309/orders.fulfillment_type",
+            },
+        }
     return result, issues
 
 

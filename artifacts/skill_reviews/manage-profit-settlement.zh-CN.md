@@ -28,6 +28,10 @@ TikTok、Shopee、Ozon 三条链路必须相互独立，不能用一个平台的
 7. 对 JSON 连续执行两轮独立审计。结算对账保留精确本币差额；绝对值不超过 `1e-12` 仅视为 Decimal 分摊尾差，超过则阻断。缺成本、SKU、数量、汇率、结算或广告证据的行不得贡献数值利润；剩余行合计只是诊断性部分结果，不是完整周期利润。
 8. 只有 `ready` 且人工明确确认的月报才能进入本地知识库；周报和 `needs_review` 报表禁止入库。
 
+### TikTok 发货方式与订单行 ID
+
+TikTok 新拉取的每个已结算订单都必须从 `/order/202309/orders` 保留官方 `fulfillment_type`，同时保留 `delivery_type`、`shipping_type`、`delivery_option_name`、`warehouse_id` 和证据来源。已知枚举可加中文标签，未知枚举必须原样展示，禁止根据费用、承运商、店铺名或仓库文字猜测；新拉取缺失该字段必须报告质量问题。TikTok 和 Shopee HTML 都隐藏订单行 ID，但 JSON 和页面排序元数据继续保留。
+
 ## 安全门槛
 
 - 所有平台调用仅限外部读取，回执必须是 `external_writes_performed=[]`。

@@ -10,6 +10,8 @@ TikTok Finance statement query bounds are inclusive UTC calendar days, matching 
 
 For the settled TikTok order identities, read `/order/202309/orders` in batches and preserve the official `create_time` as `order_created_at`. Missing or invalid creation time is a quality issue. Reporting-period inclusion remains based on Finance settlement evidence; never substitute payment, shipment, completion, statement, settlement, or pull time for missing order creation time.
 
+From the same official order response, preserve `fulfillment_type` as the authoritative TikTok fulfillment method. Also retain `delivery_type`, `shipping_type`, `delivery_option_name`, and `warehouse_id` when returned. Known values such as `FULFILLMENT_BY_SELLER` and `FULFILLMENT_BY_TIKTOK` may receive Chinese display labels, but JSON must keep the exact platform enum and evidence source. A newly pulled settled order without `fulfillment_type` is a quality issue; never infer fulfillment from fees, carrier, tracking number, shop name, or warehouse text.
+
 The same TikTok order may have a positive sale statement followed by a negative refund statement in the same reporting period. Preserve both statement identities. If the repeated item SKU and quantity agree and only the sale statement carries a positive buyer-paid basis, consolidate them into one order line so settlement/refund components sum while product cost and estimated advertising are charged once. Any disagreement or multiple positive bases is blocking.
 
 ## Shopee

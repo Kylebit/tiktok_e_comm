@@ -16,7 +16,10 @@ from domains.data_operations.profit_settlement.knowledge_base import (
     ProfitKnowledgeBase,
 )
 from domains.data_operations.profit_settlement.audit import audit_profit_report
-from domains.data_operations.profit_settlement.render import render_profit_report_html
+from domains.data_operations.profit_settlement.render import (
+    _visible_base_headers,
+    render_profit_report_html,
+)
 from domains.data_operations.profit_settlement.shared_inputs import (
     CostSnapshot,
     FxSnapshot,
@@ -382,6 +385,41 @@ def test_stage_one_tiktok_reads_only_official_order_created_at():
             "message": "ORDER-2 has invalid create_time",
         }
     ]
+
+
+def test_stage_one_tiktok_preserves_official_fulfillment_evidence():
+    module = _settlement_pull_module()
+    zone = module.SITE_TIMEZONES[("tiktok", "TH")]
+    timestamp = int(datetime(2026, 7, 29, 3, 15, tzinfo=timezone.utc).timestamp())
+
+    facts, issues = module._tiktok_order_facts(
+        "redacted-token",
+        "shop-cipher",
+        ["ORDER-1"],
+        zone,
+        fetcher=lambda *_args: {
+            "ORDER-1": {
+                "id": "ORDER-1",
+                "create_time": timestamp,
+                "fulfillment_type": "FULFILLMENT_BY_SELLER",
+                "delivery_type": "HOME_DELIVERY",
+                "shipping_type": "TIKTOK",
+                "delivery_option_name": "Standard shipping",
+                "warehouse_id": "warehouse-redacted",
+            }
+        },
+    )
+
+    assert issues == []
+    assert facts["ORDER-1"]["fulfillment"] == {
+        "mode": "FULFILLMENT_BY_SELLER",
+        "fulfillment_type": "FULFILLMENT_BY_SELLER",
+        "delivery_type": "HOME_DELIVERY",
+        "shipping_type": "TIKTOK",
+        "delivery_option_name": "Standard shipping",
+        "warehouse_id": "warehouse-redacted",
+        "evidence_source": "/order/202309/orders.fulfillment_type",
+    }
 
 
 def test_stage_one_blocked_receipt_never_claims_reads_writes_or_refresh():
@@ -1519,6 +1557,25 @@ def test_shopee_html_hides_order_line_id_and_formats_visible_times_for_people():
     assert "2026-08-06 00:00:00（UTC+00:00）" in html
     assert 'data-order-created-at="2026-08-03T12:00:00+07:00"' in html
     assert report["order_lines"][0]["identity"]["order_line_id"] == "SP-TIME:1"
+
+
+def test_tiktok_html_hides_order_line_id_but_json_retains_it():
+    row = _row("TK-HIDDEN-LINE")
+    row["fulfillment"] = {
+        "mode": "FULFILLMENT_BY_SELLER",
+        "fulfillment_type": "FULFILLMENT_BY_SELLER",
+        "evidence_source": "/order/202309/orders.fulfillment_type",
+    }
+    report = build_tiktok_weekly_report(
+        [row], period_start="2026-08-03", period_end="2026-08-09",
+        costs=_costs(), fx=_fx(), generated_at=NOW, code_version="test-v1",
+    ).payload()
+    html = render_profit_report_html(report)
+
+    assert _visible_base_headers("TIKTOK") == _visible_base_headers("SHOPEE")
+    assert report["order_lines"][0]["identity"]["order_line_id"] == "TK-HIDDEN-LINE:1"
+    assert report["order_lines"][0]["fulfillment"]["fulfillment_type"] == "FULFILLMENT_BY_SELLER"
+    assert "FULFILLMENT_BY_SELLER" in html
 
 
 def test_temporary_cost_policy_defaults_missing_to_5_and_selects_highest_conflict():

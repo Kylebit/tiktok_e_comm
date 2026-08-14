@@ -227,6 +227,7 @@ def _build_report(
                 "occurred_at": _datetime(row.get("occurred_at")),
                 "settled_at": settled_at,
                 "settlement_status": "settled",
+                "fulfillment": dict(row.get("fulfillment") or {}),
                 "settlement": {
                     "currency": currency,
                     "net_amount_local": settlement,

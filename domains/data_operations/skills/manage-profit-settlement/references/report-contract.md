@@ -25,6 +25,7 @@ When multiple settlement facts in the same reporting period refer to the same or
 - live FX rate/source/provider as-of/snapshot; one immutable snapshot per report run
 - external costs, profit, source snapshot identity, quality issues
 - Shopee fulfillment mode and official import-tax evidence; for local orders, the allocated combined CNY shipping-and-warehouse cost plus its per-parent-order policy
+- TikTok official `fulfillment_type` and its order-detail evidence source; retain supporting delivery/shipping/warehouse fields when returned
 
 ## Status
 
@@ -42,6 +43,8 @@ For Shopee, classify fulfillment with site-specific official settlement evidence
 Order lines are initially sorted by settlement timestamp descending, with order ID and order-line ID as deterministic ascending tie-breakers. HTML is a display projection: let the order-created header toggle ascending and descending order while keeping missing times last and breaking ties by order ID/order-line ID; do not mutate the JSON audit order. Hide the Shopee order-line ID column in HTML, but retain it in JSON and in the HTML row sort metadata for audit, deduplication, and deterministic ties. Display settlement time, order-created time, and FX as-of time as `YYYY-MM-DD HH:MM:SS（UTC±HH:MM）`; keep their original timezone-aware values in JSON and keep the raw order-created value in the HTML sort attribute. Show only Seller SKU, put net settlement CNY, total product cost CNY, advertising CNY, combined local-fulfillment CNY, profit, and margin immediately after it, and put product name at the far right. Replace the standalone currency column with `联盟营销佣金(AMS)`, showing `order_ams_commission_fee` in local currency and CNY exactly once; omit that code from dynamic fee columns. Define affiliate-order share as settled parent orders whose report lines have a positive aggregate CNY AMS fee divided by all calculated settled parent orders; never count expanded item lines as separate orders. Retain numerator, denominator, non-affiliate count, exact share and AMS totals in JSON. Show the country/region code without the internal shop identifier, render a valid HTTPS main-image URL as an image, show the live CNY-per-local FX rate, provider and provider as-of time as independent columns, every other platform fee component as an independent column, FX rates at eight decimal places, and all price/cost values at exactly two decimal places. Wide tables expose synchronized horizontal scrollbars above and below the order rows. JSON remains the audit artifact and retains full Decimal precision plus FX snapshot identity.
 
 Settlement reconciliation preserves the exact local-currency difference. An absolute difference no greater than `1e-12` is treated as Decimal allocation noise; any larger difference produces `settlement_reconciliation_mismatch`.
+
+TikTok follows the same hidden order-line ID display contract as Shopee: omit the column from HTML, but retain it in JSON and HTML sort metadata.
 
 ## Knowledge
 

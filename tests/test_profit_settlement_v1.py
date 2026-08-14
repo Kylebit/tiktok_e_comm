@@ -1366,6 +1366,23 @@ def test_shopee_html_moves_ams_commission_into_former_currency_column_without_du
     assert "50.00% (1/2)" in html
 
 
+def test_shopee_html_hides_order_line_id_and_formats_visible_times_for_people():
+    report = build_shopee_weekly_report(
+        [_row("SP-TIME")], period_start="2026-08-03", period_end="2026-08-09",
+        costs=_costs(), fx=_fx(), generated_at=NOW, code_version="test-v1",
+    ).payload()
+
+    html = render_profit_report_html(report)
+
+    assert "<th>订单行 ID</th>" not in html
+    assert "<th>订单 ID</th>" in html
+    assert "2026-08-05 12:00:00（UTC+07:00）" in html
+    assert "2026-08-03 12:00:00（UTC+07:00）" in html
+    assert "2026-08-06 00:00:00（UTC+00:00）" in html
+    assert 'data-order-created-at="2026-08-03T12:00:00+07:00"' in html
+    assert report["order_lines"][0]["identity"]["order_line_id"] == "SP-TIME:1"
+
+
 def test_temporary_cost_policy_defaults_missing_to_5_and_selects_highest_conflict():
     catalog = SimpleNamespace(
         costs_by_sku={"0001": Decimal("4"), "0002": Decimal("8")},

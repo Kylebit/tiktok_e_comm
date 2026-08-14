@@ -95,11 +95,10 @@ body{{font:13px/1.45 system-ui,sans-serif;margin:0;background:#f5f7f8;color:#172
 def _base_headers() -> list[str]:
     return [
         "结算时间", "下单时间", "订单 ID", "订单行 ID", "国家", "发货方式", "主图", "Seller SKU",
-        "净结算(CNY)", "商品总成本(CNY)", "广告费(CNY)", "利润(CNY)", "利润率",
+        "净结算(CNY)", "商品总成本(CNY)", "广告费(CNY)", "本土履约费(CNY)", "利润(CNY)", "利润率",
         "规格", "数量", "单件重量(g)", "计费重量(g)", "币种", "商品折后成交额", "买家现金实付商品金额",
         "净结算(当地)", "最新汇率(CNY/当地)", "汇率更新时间", "汇率来源", "单件成本(CNY)",
         "广告基数(当地)", "广告比例", "广告比例来源", "广告费(当地)", "额外成本(CNY)",
-        "本土每单运费(CNY)", "本土仓费(CNY)",
     ]
 
 
@@ -112,18 +111,18 @@ def _order_row(line, fee_columns, warning_by_sku):
     cells = [
         _text(line.get("settled_at")), _text(line.get("occurred_at")), _text(identity.get("order_id")), _text(identity.get("order_line_id")),
         _text(identity.get("region")), _fulfillment_label(fulfillment.get("mode")), image_html, _text(product.get("seller_sku")),
-        _money(settlement.get("net_amount_cny")), _money(cost.get("total_cny")), _money(ads.get("amount_cny")), _money(line.get("profit_cny")), margin,
+        _money(settlement.get("net_amount_cny")), _money(cost.get("total_cny")), _money(ads.get("amount_cny")), _money(fulfillment.get("local_fulfillment_cost_cny")), _money(line.get("profit_cny")), margin,
         _text(product.get("variant_name")), _quantity(product.get("quantity")), _money(product.get("unit_weight_g")),
         _money(product.get("billable_weight_g")), _text(settlement.get("currency")), _money(settlement.get("product_sales_amount_local") or settlement.get("buyer_paid_product_amount_local")), _money(settlement.get("buyer_cash_paid_product_amount_local")),
         _money(settlement.get("net_amount_local")), _fx_rate(fx.get("rate_cny_per_local")),
         _text(fx.get("as_of")), _text(fx.get("source")), _money(cost.get("unit_cost_cny")), _money(ads.get("basis_amount_local")),
         _percent_value(ads.get("rate")), _ad_rate_source(ads.get("input_source")), _money(ads.get("amount_local")),
-        _money(line.get("external_costs_cny")), _money(fulfillment.get("local_shipping_cost_cny")), _money(fulfillment.get("local_warehouse_cost_cny")),
+        _money(line.get("external_costs_cny")),
     ]
     classes = [
         "", "", "", "", "", "", "", "",
-        "num", "num", "num", "num", "num", "product", "num", "num", "num", "", "num", "num",
-        "num", "num", "", "product", "num", "num", "num", "product", "num", "num", "num", "num",
+        "num", "num", "num", "num", "num", "num", "product", "num", "num", "num", "", "num", "num",
+        "num", "num", "", "product", "num", "num", "num", "product", "num", "num",
     ]
     output = []
     for index, value in enumerate(cells):
@@ -185,12 +184,11 @@ def _footer(report, fee_columns, column_count):
     cells[8] = _money(totals.get("settlement_cny"))
     cells[9] = _money(totals.get("product_cost_cny"))
     cells[10] = _money(totals.get("advertising_cny"))
-    cells[11] = _money(totals.get("profit_cny"))
-    cells[18] = _money(sum((_decimal(_map(line.get("settlement")).get("product_sales_amount_local") or _map(line.get("settlement")).get("buyer_paid_product_amount_local")) or Decimal("0") for line in lines), Decimal("0")))
-    cells[19] = _money(sum((_decimal(_map(line.get("settlement")).get("buyer_cash_paid_product_amount_local")) or Decimal("0") for line in lines), Decimal("0")))
-    cells[29] = _money(totals.get("external_costs_cny"))
-    cells[30] = _money(totals.get("local_shipping_cost_cny"))
-    cells[31] = _money(totals.get("local_warehouse_cost_cny"))
+    cells[11] = _money(totals.get("local_fulfillment_cost_cny"))
+    cells[12] = _money(totals.get("profit_cny"))
+    cells[19] = _money(sum((_decimal(_map(line.get("settlement")).get("product_sales_amount_local") or _map(line.get("settlement")).get("buyer_paid_product_amount_local")) or Decimal("0") for line in lines), Decimal("0")))
+    cells[20] = _money(sum((_decimal(_map(line.get("settlement")).get("buyer_cash_paid_product_amount_local")) or Decimal("0") for line in lines), Decimal("0")))
+    cells[30] = _money(totals.get("external_costs_cny"))
     html = "".join(f'<td class="num">{escape(value)}</td>' for value in cells)
     for code, _ in fee_columns:
         local = sum((_fee_value(line, code)[0] for line in lines), Decimal("0")); cny = sum((_fee_value(line, code)[1] for line in lines), Decimal("0"))
@@ -226,6 +224,7 @@ def _ad_rate_source(value):
         "default_22": "默认 22%",
         "operator_global_override": "人工全局覆盖",
         "operator_platform_override": "人工平台覆盖",
+        "policy_config": "统一策略配置",
     }.get(str(value or ""), _text(value))
 def _fulfillment_label(value):
     return {

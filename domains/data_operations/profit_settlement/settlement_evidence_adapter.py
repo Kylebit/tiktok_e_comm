@@ -140,11 +140,11 @@ def adapt_settlement_evidence(
             component for component in (record.get("financial_components") or [])
             if isinstance(component, Mapping)
         ]
-        fulfillment = (
-            _shopee_fulfillment(record, record_id, site, issues)
-            if platform == "shopee"
-            else None
-        )
+        fulfillment = None
+        if platform == "shopee":
+            fulfillment = _shopee_fulfillment(record, record_id, site, issues)
+        elif platform == "tiktok" and transaction_type == "Order":
+            fulfillment = _tiktok_fulfillment(record, record_id, issues)
         for item_index, item in enumerate(items):
             if not isinstance(item, Mapping):
                 issues.append(_issue("invalid_item", f"{record_id}:{item_index}", "items"))
@@ -335,6 +335,23 @@ def _shopee_fulfillment(record, record_id, site, issues):
         "classification_rule": "both_import_vat_and_duty_charged/v3",
         "import_vat_local": import_vat,
         "import_duty_local": import_duty,
+    }
+
+
+def _tiktok_fulfillment(record, record_id, issues):
+    raw = record.get("fulfillment")
+    value = raw if isinstance(raw, Mapping) else {}
+    fulfillment_type = _text(value.get("fulfillment_type") or value.get("mode"))
+    return {
+        "mode": fulfillment_type or "unknown",
+        "fulfillment_type": fulfillment_type,
+        "delivery_type": _text(value.get("delivery_type")),
+        "shipping_type": _text(value.get("shipping_type")),
+        "delivery_option_name": _text(value.get("delivery_option_name")),
+        "warehouse_id": _text(value.get("warehouse_id")),
+        "evidence_source": _text(value.get("evidence_source"))
+        or "/order/202309/orders.fulfillment_type",
+        "classification_rule": "official_tiktok_fulfillment_type/v1",
     }
 
 

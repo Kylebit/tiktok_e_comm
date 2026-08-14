@@ -28,6 +28,10 @@ Keep TikTok, Shopee, and Ozon execution independent. Never use one platform's se
 12. Perform two audit passes from each JSON artifact. Recompute totals from order lines and confirm only settled rows were included. Treat absolute reconciliation differences up to `1e-12` local currency as Decimal allocation noise while retaining the exact difference and tolerance; larger differences remain blocking. Iterate with a failing fixture/test when an issue is reproducible.
 13. Approve only a ready monthly report after explicit human confirmation. Use `scripts/profit_report.py approve-monthly`; never approve a weekly or needs-review report.
 
+### TikTok fulfillment display
+
+For TikTok, read official `fulfillment_type` from `/order/202309/orders` for every newly pulled settled order. Preserve the raw enum plus `delivery_type`, `shipping_type`, `delivery_option_name`, `warehouse_id`, and evidence source. Display known enums with a Chinese label and retain unknown enums verbatim rather than guessing. Treat a missing `fulfillment_type` as a stage-1 quality issue. Hide the order-line ID column in both TikTok and Shopee HTML while retaining it in JSON and HTML sort metadata.
+
 ## Safety gates
 
 - Treat platform reads as external reads, never writes. Require `external_writes_performed=[]` from an injected live adapter receipt.

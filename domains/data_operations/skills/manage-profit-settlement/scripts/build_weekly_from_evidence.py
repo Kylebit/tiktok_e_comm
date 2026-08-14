@@ -40,6 +40,8 @@ def main() -> int:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--start", required=True, type=date.fromisoformat)
     parser.add_argument("--end", required=True, type=date.fromisoformat)
+    parser.add_argument("--platform", choices=("tiktok", "shopee", "ozon"))
+    parser.add_argument("--site", help="site paired with --platform, for example MY")
     parser.add_argument("--policy-config", type=Path, default=Path(__file__).resolve().parents[1] / "report-policy.json", help="single JSON policy for advertising rates and Shopee local fulfillment fee")
     parser.add_argument("--ad-rate", help="global estimated advertising fraction; default 0.22")
     parser.add_argument("--tiktok-ad-rate", help="TikTok-only override, for example 0.18")
@@ -49,16 +51,24 @@ def main() -> int:
     parser.add_argument("--ozon-sku-map", type=Path)
     parser.add_argument("--allow-ozon-read-enrichment", action="store_true")
     args = parser.parse_args()
+    if bool(args.platform) != bool(args.site):
+        parser.error("--platform and --site must be supplied together")
 
     policy = _load_policy(args.policy_config)
-    evidence = _load_evidence(args.evidence_dir, args.start, args.end)
+    evidence = _load_evidence(
+        args.evidence_dir,
+        args.start,
+        args.end,
+        platform=args.platform,
+        site=args.site,
+    )
     catalog = load_local_catalog(args.project_root / "data" / "shop.db")
     live_fx = _live_fx()
     fx = FxSnapshot.from_mapping(live_fx["rates"], source=live_fx["provider"], as_of=live_fx["as_of"])
     ozon_map = _load_mapping(args.ozon_sku_map)
     ozon_quantities = {}
     ozon_enrichment = {"status": "not_requested", "external_reads_performed": [], "external_writes_performed": []}
-    if args.allow_ozon_read_enrichment:
+    if args.allow_ozon_read_enrichment and "ozon" in evidence:
         live_map, ozon_quantities, ozon_enrichment = _read_ozon_enrichment(
             args.project_root, evidence["ozon"]
         )
@@ -123,6 +133,7 @@ def main() -> int:
         cost_assumption_warnings=cost_policy.warnings,
         generated_at=datetime.now(timezone.utc),
         code_version="profit-settlement-v1-stage2",
+        platforms=tuple(evidence),
     )
     catalog_issues = [_catalog_issue(item) for item in catalog.issues]
     bundle["catalog_quality_issues"] = catalog_issues
@@ -143,16 +154,17 @@ def main() -> int:
     bundle["external_writes_performed"] = []
 
     args.output.mkdir(parents=True, exist_ok=True)
+    site_suffix = f"_{args.site.upper()}" if args.site else ""
     for platform, item in bundle["reports"].items():
         report = item.get("report")
         if isinstance(report, dict):
-            (args.output / f"{platform}_{args.start}_{args.end}.html").write_text(
+            (args.output / f"{platform}{site_suffix}_{args.start}_{args.end}.html").write_text(
                 render_profit_report_html(report), encoding="utf-8"
             )
-            (args.output / f"{platform}_{args.start}_{args.end}.json").write_text(
+            (args.output / f"{platform}{site_suffix}_{args.start}_{args.end}.json").write_text(
                 json.dumps(item, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
             )
-    bundle_path = args.output / f"weekly_profit_{args.start}_{args.end}.json"
+    bundle_path = args.output / f"weekly_profit{site_suffix}_{args.start}_{args.end}.json"
     bundle_path.write_text(json.dumps(bundle, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps({
         "status": bundle["status"],
@@ -166,7 +178,21 @@ def main() -> int:
     return 0 if bundle["status"] == "ready" else 2
 
 
-def _load_evidence(directory: Path, start: date, end: date) -> dict[str, dict]:
+def _load_evidence(
+    directory: Path,
+    start: date,
+    end: date,
+    *,
+    platform: str | None = None,
+    site: str | None = None,
+) -> dict[str, dict]:
+    if platform and site:
+        normalized_site = site.upper()
+        path = directory / f"{platform}_{normalized_site}_{start}_{end}.settlement.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("platform") != platform or payload.get("site") != normalized_site:
+            raise ValueError(f"evidence identity mismatch: expected {platform}/{normalized_site}")
+        return {platform: payload}
     output = {}
     for platform, site in (("tiktok", "TH"), ("shopee", "TH"), ("ozon", "RU")):
         path = directory / f"{platform}_{site}_{start}_{end}.settlement.json"

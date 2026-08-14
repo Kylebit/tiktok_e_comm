@@ -1,8 +1,9 @@
 """Pull one closed period of redacted, read-only settlement evidence.
 
 This is stage 1 only: it does not calculate profit, write production data, or
-retain raw API responses. TikTok credential refresh is allowed only when the
-operator explicitly opts in; it runs against a disposable token copy.
+retain raw API responses. Credential refresh is allowed only when the operator
+explicitly opts in. TikTok refresh uses a disposable token copy; Shopee refresh
+updates the configured token store because Shopee may rotate refresh tokens.
 """
 
 from __future__ import annotations
@@ -24,7 +25,10 @@ from typing import Any, Mapping
 
 
 SITE_TIMEZONES = {
+    ("shopee", "MY"): timezone(timedelta(hours=8), name="Asia/Kuala_Lumpur"),
+    ("shopee", "PH"): timezone(timedelta(hours=8), name="Asia/Manila"),
     ("shopee", "TH"): timezone(timedelta(hours=7), name="Asia/Bangkok"),
+    ("shopee", "VN"): timezone(timedelta(hours=7), name="Asia/Ho_Chi_Minh"),
     ("tiktok", "TH"): timezone(timedelta(hours=7), name="Asia/Bangkok"),
     ("ozon", "RU"): timezone(timedelta(hours=3), name="Europe/Moscow"),
 }
@@ -53,7 +57,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--allow-credential-refresh",
         action="store_true",
-        help="allow TikTok auth refresh against a disposable token copy",
+        help=(
+            "allow an explicitly authorized credential refresh; TikTok uses a "
+            "disposable copy while Shopee updates its configured token store"
+        ),
     )
     args = parser.parse_args(argv)
     if args.end < args.start:
@@ -64,7 +71,14 @@ def main(argv: list[str] | None = None) -> int:
     args.output.mkdir(parents=True, exist_ok=True)
     try:
         if args.platform == "shopee":
-            payload = pull_shopee(args.project_root, args.site.upper(), args.start, args.end, zone)
+            payload = pull_shopee(
+                args.project_root,
+                args.site.upper(),
+                args.start,
+                args.end,
+                zone,
+                allow_credential_refresh=args.allow_credential_refresh,
+            )
         elif args.platform == "tiktok":
             payload = pull_tiktok(
                 args.project_root,
@@ -87,7 +101,15 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if payload.get("status") == "ready" else 2
 
 
-def pull_shopee(root: Path, site: str, start: date, end: date, zone) -> dict[str, Any]:
+def pull_shopee(
+    root: Path,
+    site: str,
+    start: date,
+    end: date,
+    zone,
+    *,
+    allow_credential_refresh: bool = False,
+) -> dict[str, Any]:
     from modules.shopee.orders_pull import fetch_escrow_detail, iter_escrow_list
     from modules.shopee.client import shop_get
 
@@ -101,8 +123,18 @@ def pull_shopee(root: Path, site: str, start: date, end: date, zone) -> dict[str
     expire_at = int(entry.get("expire_at") or 0)
     if not shop_id or not token:
         raise RuntimeError("missing authorized Shopee site token")
+    credential_refresh_performed = False
     if expire_at < int(time.time()) + 120:
-        raise RuntimeError("Shopee access token is expired; credential refresh is prohibited by the Skill")
+        if not allow_credential_refresh:
+            raise RuntimeError(
+                "Shopee access token is expired; rerun with explicit "
+                "--allow-credential-refresh after operator authorization"
+            )
+        refreshed = _refresh_shopee_token(token_path, settings, int(shop_id))
+        token = str(refreshed.get("access_token") or "")
+        if not token:
+            raise RuntimeError("Shopee credential refresh returned no access token")
+        credential_refresh_performed = True
     period_start, period_end = _period_bounds(start, end, zone)
     list_rows = iter_escrow_list(int(shop_id), token, time_from=int(period_start.timestamp()), time_to=int(period_end.timestamp()))
     latest: dict[str, Mapping[str, Any]] = {}
@@ -138,7 +170,37 @@ def pull_shopee(root: Path, site: str, start: date, end: date, zone) -> dict[str
         "escrow_detail_request_count": len(latest),
         "order_detail_request_count": (len(latest) + 49) // 50,
     }
+    payload["receipt"]["credential_refresh_performed"] = credential_refresh_performed
+    payload["receipt"]["credential_refresh_scope"] = (
+        "configured_shopee_token_store" if credential_refresh_performed else "none"
+    )
     return payload
+
+
+def _refresh_shopee_token(
+    token_path: Path,
+    settings: Mapping[str, Any],
+    shop_id: int,
+) -> Mapping[str, Any]:
+    """Refresh exactly the configured project token store after opt-in.
+
+    The settlement Skill lives in an isolated worktree, while credentials live
+    under the explicitly supplied project root. Bind both settings and token
+    path for the duration of the refresh so the worktree's stale token copy can
+    never be selected accidentally.
+    """
+    import core.config as core_config
+    from modules.shopee import auth as shopee_auth
+
+    previous_cache = core_config._cache
+    previous_token_path = shopee_auth.token_path
+    try:
+        core_config._cache = dict(settings)
+        shopee_auth.token_path = lambda: token_path
+        return shopee_auth.refresh_token(shop_id)
+    finally:
+        shopee_auth.token_path = previous_token_path
+        core_config._cache = previous_cache
 
 
 def pull_tiktok(

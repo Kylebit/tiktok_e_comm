@@ -16,6 +16,8 @@ The same TikTok order may have a positive sale statement followed by a negative 
 
 Use payment escrow list filtered by `escrow_release_time`, then escrow detail. Normalize only released escrow rows to settled. Preserve the release timestamp, payout/escrow amount, item quantity, item price, platform/service/commission/shipping/refund components, and item allocation method. Do not treat an ordinary completed order as settled without released escrow evidence.
 
+Use each authorized shop's reporting timezone for inclusive period bounds: MY `Asia/Kuala_Lumpur` (UTC+08:00), PH `Asia/Manila` (UTC+08:00), TH `Asia/Bangkok` (UTC+07:00), and VN `Asia/Ho_Chi_Minh` (UTC+07:00). Never reuse another site's timezone or combine sites into one evidence artifact.
+
 Read `/api/v2/order/get_order_detail` in batches for the same settled order identities and preserve official `create_time` as `order_created_at`. Treat a missing create time as a quality issue. Keep reporting-period inclusion based on escrow release time; never use order creation time to include an unsettled order and never substitute release time for a missing create time.
 
 Shopee may release many older orders in one settlement batch, so a weekly report can legitimately contain only one release date. Treat this as valid only when every included timestamp comes directly from `escrow_release_time`, remains inside the requested period, and the evidence reports the parent-order and expanded item-line counts. Never replace the release date with order creation, completion, API request, or pull time merely to spread rows across the week.
@@ -43,5 +45,7 @@ For the current operator-approved Ozon V1 estimate, sum positive `OperationAgent
 Require a redacted receipt containing platform, period, snapshot ID/checksum, fetched-at time, source row count, normalized settled row count, excluded unsettled count, rejected count, API cursor/page summary, and `external_writes_performed=[]`. Never include credentials or raw API bodies.
 
 The stage-1 artifact schema is `settlement-evidence/v1`. A `ready` evidence artifact means the official settlement read and redacted normalization completed; it does not mean profit is ready. A missing/expired credential or API failure must produce a `blocked` receipt rather than a cached report presented as current.
+
+Shopee access-token refresh is permitted only after explicit operator authorization and must use `--allow-credential-refresh`. Because Shopee may rotate the refresh token, the configured token store is updated and the evidence receipt must record `credential_refresh_performed=true` and `credential_refresh_scope=configured_shopee_token_store`.
 
 Preserve every numeric settlement component with its source code. Until a platform-specific reconciliation contract classifies the component, set `included_in_net_settlement` to `unknown`; never infer fee arithmetic from the component name alone.

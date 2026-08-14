@@ -34,6 +34,7 @@ def build_weekly_evidence_bundle(
     cost_assumption_warnings: tuple[object, ...] = (),
     generated_at: datetime | None = None,
     code_version: str = "unknown",
+    platforms: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """Return JSON-ready reports without reading files, databases, or networks."""
     start = period_start if isinstance(period_start, date) else date.fromisoformat(str(period_start))
@@ -44,8 +45,12 @@ def build_weekly_evidence_bundle(
     resolved_advertising = _advertising_rates(ad_rate, ad_rates, ad_rate_source, ad_rate_sources)
     reports: dict[str, Any] = {}
     bundle_issues: list[dict[str, str]] = []
+    selected_platforms = platforms or ("tiktok", "shopee", "ozon")
+    unknown_platforms = sorted(set(selected_platforms) - {"tiktok", "shopee", "ozon"})
+    if unknown_platforms:
+        raise ValueError(f"unknown report platforms: {', '.join(unknown_platforms)}")
 
-    for platform in ("tiktok", "shopee", "ozon"):
+    for platform in selected_platforms:
         evidence = evidence_by_platform.get(platform)
         if not isinstance(evidence, Mapping):
             bundle_issues.append(_issue("missing_settlement_evidence", platform, "evidence", "No settlement-evidence/v1 artifact was supplied"))

@@ -292,7 +292,9 @@ def test_batch1_http_and_studio_contracts_are_present():
     assert '"content-package/image-localization/clean-master"' in product_server
     assert 'id="imageLocalization"' in html
     assert 'id="imageLocalizationGrid"' in html
+    assert 'id="imageLocalizationStatus"' in html
     assert "renderImageLocalization" in script
+    assert "setImageLocalizationStatus" in script
     assert "saveImageLocalizationRegions" in script
     assert "createCleanMaster" in script
     assert "ocr_provider_enabled" in script

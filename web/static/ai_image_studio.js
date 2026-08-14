@@ -1287,6 +1287,13 @@
     return preview?.content_package?.image_localization || {};
   }
 
+  function setImageLocalizationStatus(message, tone = "") {
+    const status = $("#imageLocalizationStatus");
+    status.textContent = message || "";
+    status.className = `localization-status ${tone}`.trim();
+    status.hidden = !message;
+  }
+
   function localizationRegionsFor(asset) {
     if (
       imageLocalizationDraftOfferId === currentOfferId()
@@ -1424,6 +1431,7 @@
 
   async function initializeImageLocalization() {
     setLoading($("#initializeLocalizationButton"), true);
+    setImageLocalizationStatus("正在建立本地图片处理清单…", "pending");
     try {
       const result = await post("content-package/image-localization/initialize", {
         offer_id: currentOfferId(),
@@ -1432,8 +1440,10 @@
       imageLocalizationDraft = {};
       imageLocalizationDraftOfferId = currentOfferId();
       renderImageLocalization();
+      setImageLocalizationStatus(`图片处理清单已建立，共 ${result.image_localization.manifest.assets.length} 张。`);
       toast("已建立本地图片处理清单；未调用 OCR 或外部图片服务。");
     } catch (error) {
+      setImageLocalizationStatus(`建立失败：${error.message}`, "error");
       showAlert(error.message);
     } finally {
       setLoading($("#initializeLocalizationButton"), false);
@@ -1442,24 +1452,34 @@
 
   async function saveImageLocalizationRegions(assetId, { quiet = false } = {}) {
     const manifest = imageLocalizationState().manifest || {};
-    const result = await post("content-package/image-localization/regions", {
-      offer_id: currentOfferId(),
-      expected_revision: manifest.revision,
-      asset_id: assetId,
-      regions: collectLocalizationRegions(assetId),
-    });
-    preview.content_package.image_localization = result.image_localization;
-    delete imageLocalizationDraft[assetId];
-    imageLocalizationDraftOfferId = currentOfferId();
-    renderImageLocalization();
-    if (!quiet) toast("区域已保存；原始图片没有被修改。");
-    return result.image_localization;
+    setImageLocalizationStatus("正在保存区域…", "pending");
+    try {
+      const result = await post("content-package/image-localization/regions", {
+        offer_id: currentOfferId(),
+        expected_revision: manifest.revision,
+        asset_id: assetId,
+        regions: collectLocalizationRegions(assetId),
+      });
+      preview.content_package.image_localization = result.image_localization;
+      delete imageLocalizationDraft[assetId];
+      imageLocalizationDraftOfferId = currentOfferId();
+      renderImageLocalization();
+      setImageLocalizationStatus("区域已保存；原始图片没有被修改。");
+      if (!quiet) toast("区域已保存；原始图片没有被修改。");
+      return result.image_localization;
+    } catch (error) {
+      setImageLocalizationStatus(`保存失败：${error.message}`, "error");
+      showAlert(error.message);
+      if (quiet) throw error;
+      return null;
+    }
   }
 
   async function createCleanMaster(assetId) {
     const button = $$(".localization-card").find((card) => card.dataset.assetId === assetId)
       ?.querySelector(".localization-clean-master");
     setLoading(button, true);
+    setImageLocalizationStatus("正在保存区域并生成本地干净母图…", "pending");
     try {
       const saved = await saveImageLocalizationRegions(assetId, { quiet: true });
       const result = await post("content-package/image-localization/clean-master", {
@@ -1471,8 +1491,10 @@
       });
       preview.content_package.image_localization = result.image_localization;
       renderImageLocalization();
+      setImageLocalizationStatus("本地干净母图已生成；来源原图保持不变。");
       toast("本地干净母图已生成；来源原图保持不变。");
     } catch (error) {
+      setImageLocalizationStatus(`生成失败：${error.message}`, "error");
       showAlert(error.message);
     } finally {
       setLoading(button, false);

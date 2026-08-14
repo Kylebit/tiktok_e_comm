@@ -248,35 +248,44 @@ def adapt_settlement_evidence(
 
 
 def _shopee_fulfillment(record, record_id, issues):
-    """Classify Shopee fulfillment from official settlement fee fields."""
+    """Classify Shopee fulfillment from official import-tax evidence."""
     amounts = {
         _text(component.get("code")).lower(): _decimal(component.get("amount"))
         for component in (record.get("financial_components") or [])
         if isinstance(component, Mapping)
     }
-    seller_shipping = next(
-        (amounts[code] for code in ("seller_shipping_fee", "actual_shipping_fee") if code in amounts),
+    import_vat = next(
+        (amounts[code] for code in ("vat_on_imported_goods", "import_vat") if code in amounts),
         None,
     )
-    shipping_sst = next(
-        (amounts[code] for code in ("sst", "shipping_fee_sst") if code in amounts),
+    import_duty = next(
+        (amounts[code] for code in ("th_import_duty", "import_duty", "customs_duty") if code in amounts),
         None,
     )
-    if seller_shipping is None or shipping_sst is None:
+    if import_vat is None or import_duty is None:
         issues.append(EvidenceQualityIssue(
-            "missing_fulfillment_evidence",
+            "missing_fulfillment_tax_evidence",
             record_id,
             "financial_components",
-            "Shopee fulfillment requires seller/actual shipping fee and shipping SST settlement fields",
+            "Shopee fulfillment requires VAT-on-imported-goods and import-duty settlement fields",
         ))
         mode = "unknown"
+    elif import_vat == 0 and import_duty == 0:
+        mode = "local"
     else:
-        mode = "local" if seller_shipping == 0 and shipping_sst == 0 else "cross_border"
+        mode = "cross_border"
+        if (import_vat == 0) != (import_duty == 0):
+            issues.append(EvidenceQualityIssue(
+                "incomplete_cross_border_tax_pair",
+                record_id,
+                "financial_components",
+                "Shopee import VAT and import duty do not form a complete charged pair",
+            ))
     return {
         "mode": mode,
-        "classification_rule": "seller_or_actual_shipping_fee_zero_and_shipping_sst_zero/v1",
-        "seller_shipping_fee_local": seller_shipping,
-        "shipping_sst_local": shipping_sst,
+        "classification_rule": "import_vat_and_duty_presence/v2",
+        "import_vat_local": import_vat,
+        "import_duty_local": import_duty,
     }
 
 

@@ -303,6 +303,54 @@ def test_stage_one_shopee_reads_official_order_created_at_in_batches():
     assert result["ORDER-000"] == "2026-07-29T10:15:00+07:00"
 
 
+def test_stage_one_supports_shopee_my_ph_and_vn_reporting_timezones():
+    module = _settlement_pull_module()
+
+    expected = {
+        "MY": ("Asia/Kuala_Lumpur", 8),
+        "PH": ("Asia/Manila", 8),
+        "VN": ("Asia/Ho_Chi_Minh", 7),
+    }
+    for site, (name, hours) in expected.items():
+        zone = module.SITE_TIMEZONES[("shopee", site)]
+        assert zone.tzname(None) == name
+        assert zone.utcoffset(None).total_seconds() == hours * 3600
+
+
+def test_stage_one_shopee_refresh_requires_explicit_operator_opt_in(tmp_path):
+    module = _settlement_pull_module()
+    zone = module.SITE_TIMEZONES[("shopee", "MY")]
+    (tmp_path / "shopee_tokens.json").write_text(
+        json.dumps(
+            {
+                "sync_shop_ids": {"MY": 123},
+                "shops": {
+                    "123": {
+                        "access_token": "expired-token",
+                        "refresh_token": "redacted-refresh-token",
+                        "expire_at": 1,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "settings.json").write_text(
+        json.dumps({"shopee": {"token_file": "shopee_tokens.json"}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="explicit --allow-credential-refresh"):
+        module.pull_shopee(
+            tmp_path,
+            "MY",
+            datetime(2026, 8, 3).date(),
+            datetime(2026, 8, 9).date(),
+            zone,
+        )
+
+
 def test_stage_one_tiktok_reads_only_official_order_created_at():
     module = _settlement_pull_module()
     zone = module.SITE_TIMEZONES[("tiktok", "TH")]
@@ -811,6 +859,25 @@ def test_stage_two_bundle_supports_global_and_platform_ad_rate_overrides():
     assert bundle["advertising"]["shopee"]["input_source"] == "operator_platform_override"
     assert bundle["external_writes_performed"] == []
 
+    shopee_only = build_weekly_evidence_bundle(
+        {"shopee": evidence("shopee", "MY", "1")},
+        _catalog_stub(),
+        period_start="2026-07-27",
+        period_end="2026-08-02",
+        costs=CostSnapshot.from_mapping(
+            {"0001": {"unit_cost_cny": "10", "version": "fixture-v1"}},
+            snapshot_id="costs:fixture",
+        ),
+        fx=FxSnapshot.from_mapping(
+            {"THB": "0.2"}, source="fixture-fx", as_of="2026-08-03"
+        ),
+        platforms=("shopee",),
+        generated_at=NOW,
+        code_version="stage-two-test",
+    )
+    assert shopee_only["status"] == "ready"
+    assert set(shopee_only["reports"]) == {"shopee"}
+
 
 def test_unified_report_policy_loads_ad_rates_and_combined_local_fee(tmp_path):
     policy_path = tmp_path / "report-policy.json"
@@ -947,7 +1014,7 @@ def test_shopee_adapter_classifies_zero_import_vat_and_duty_as_local():
     ("vat", "duty", "expected_mode", "expected_status", "expected_issue"),
     (
         ("13", "37", "cross_border", "ready", None),
-        ("13", "0", "cross_border", "needs_review", "incomplete_cross_border_tax_pair"),
+        ("13", "0", "local", "ready", None),
         (None, "0", "unknown", "needs_review", "missing_fulfillment_tax_evidence"),
     ),
 )

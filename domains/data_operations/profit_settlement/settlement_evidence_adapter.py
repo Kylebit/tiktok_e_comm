@@ -270,20 +270,13 @@ def _shopee_fulfillment(record, record_id, issues):
             "Shopee fulfillment requires VAT-on-imported-goods and import-duty settlement fields",
         ))
         mode = "unknown"
-    elif import_vat == 0 and import_duty == 0:
-        mode = "local"
-    else:
+    elif import_vat != 0 and import_duty != 0:
         mode = "cross_border"
-        if (import_vat == 0) != (import_duty == 0):
-            issues.append(EvidenceQualityIssue(
-                "incomplete_cross_border_tax_pair",
-                record_id,
-                "financial_components",
-                "Shopee import VAT and import duty do not form a complete charged pair",
-            ))
+    else:
+        mode = "local"
     return {
         "mode": mode,
-        "classification_rule": "import_vat_and_duty_presence/v2",
+        "classification_rule": "both_import_vat_and_duty_charged/v3",
         "import_vat_local": import_vat,
         "import_duty_local": import_duty,
     }

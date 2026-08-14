@@ -1072,6 +1072,48 @@ def test_shopee_my_uses_low_value_goods_sales_tax_for_fulfillment(
 
 
 @pytest.mark.parametrize(
+    ("import_vat", "expected_mode", "expected_status"),
+    (("14.385", "cross_border", "ready"), ("0", "local", "ready"), (None, "unknown", "needs_review")),
+)
+def test_shopee_vn_uses_import_vat_for_fulfillment(
+    import_vat, expected_mode, expected_status
+):
+    components = [
+        {"code": "buyer_paid_shipping_fee", "amount": "0"},
+        {"code": "order_discounted_price", "amount": "194195"},
+    ]
+    if import_vat is not None:
+        components.append({"code": "vat_on_imported_goods", "amount": import_vat})
+    evidence = {
+        "schema_version": "settlement-evidence/v1", "status": "ready", "platform": "shopee", "site": "VN",
+        "snapshot_id": "shopee-settlement:vn-vat", "checksum": "vn-vat", "net_settlement_total_local": "87834",
+        "receipt": {"external_writes_performed": []},
+        "orders": [{"order_id": "vn-vat-1", "settled_at": "2026-08-03T00:00:00+07:00", "currency": "VND", "net_settlement_amount": "87834", "buyer_total_amount": "194195", "items": [{"seller_sku": "1", "quantity": "1", "discounted_price": "194195"}], "financial_components": components}],
+    }
+
+    result = adapt_settlement_evidence(evidence, _catalog_stub(), period_kind="weekly")
+
+    assert result.status == expected_status
+    assert result.rows[0]["fulfillment"]["mode"] == expected_mode
+    assert result.rows[0]["fulfillment"]["classification_rule"] == "vn_import_vat_charged/v1"
+
+
+def test_shopee_ph_classifies_every_order_as_cross_border():
+    evidence = {
+        "schema_version": "settlement-evidence/v1", "status": "ready", "platform": "shopee", "site": "PH",
+        "snapshot_id": "shopee-settlement:ph", "checksum": "ph", "net_settlement_total_local": "100",
+        "receipt": {"external_writes_performed": []},
+        "orders": [{"order_id": "ph-1", "settled_at": "2026-08-03T00:00:00+08:00", "currency": "PHP", "net_settlement_amount": "100", "buyer_total_amount": "120", "items": [{"seller_sku": "1", "quantity": "1", "discounted_price": "120"}], "financial_components": [{"code": "buyer_paid_shipping_fee", "amount": "0"}, {"code": "order_discounted_price", "amount": "120"}]}],
+    }
+
+    result = adapt_settlement_evidence(evidence, _catalog_stub(), period_kind="weekly")
+
+    assert result.status == "ready"
+    assert result.rows[0]["fulfillment"]["mode"] == "cross_border"
+    assert result.rows[0]["fulfillment"]["classification_rule"] == "ph_all_orders_cross_border/v1"
+
+
+@pytest.mark.parametrize(
     "builder",
     (build_tiktok_weekly_report, build_shopee_weekly_report, build_ozon_weekly_report),
 )

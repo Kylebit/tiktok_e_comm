@@ -278,6 +278,38 @@ def _shopee_fulfillment(record, record_id, site, issues):
             "import_duty_local": None,
         }
 
+    if site == "PH":
+        return {
+            "mode": "cross_border",
+            "classification_rule": "ph_all_orders_cross_border/v1",
+            "lvg_sales_tax_local": None,
+            "import_vat_local": None,
+            "import_duty_local": None,
+        }
+
+    if site == "VN":
+        import_vat = next(
+            (amounts[code] for code in ("vat_on_imported_goods", "import_vat") if code in amounts),
+            None,
+        )
+        if import_vat is None:
+            issues.append(EvidenceQualityIssue(
+                "missing_fulfillment_tax_evidence",
+                record_id,
+                "financial_components",
+                "Shopee VN fulfillment requires the value-added-tax settlement field",
+            ))
+            mode = "unknown"
+        else:
+            mode = "cross_border" if import_vat != 0 else "local"
+        return {
+            "mode": mode,
+            "classification_rule": "vn_import_vat_charged/v1",
+            "lvg_sales_tax_local": None,
+            "import_vat_local": import_vat,
+            "import_duty_local": None,
+        }
+
     import_vat = next(
         (amounts[code] for code in ("vat_on_imported_goods", "import_vat") if code in amounts),
         None,

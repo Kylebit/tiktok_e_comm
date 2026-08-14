@@ -48,6 +48,6 @@ The stage-1 artifact schema is `settlement-evidence/v1`. A `ready` evidence arti
 
 Shopee access-token refresh is permitted only after explicit operator authorization and must use `--allow-credential-refresh`. Because Shopee may rotate the refresh token, the configured token store is updated and the evidence receipt must record `credential_refresh_performed=true` and `credential_refresh_scope=configured_shopee_token_store`.
 
-Shopee fulfillment classification is site-specific. For MY, use `sales_tax_on_lvg`: a present non-zero charge is cross-border and a present zero value is local. For TH/VN, use the paired import-VAT and import-duty rule documented in the main Skill. Missing required evidence remains blocking.
+Shopee fulfillment classification is site-specific. For MY, use `sales_tax_on_lvg`: a present non-zero charge is cross-border and a present zero value is local. For VN, apply the same non-zero/zero rule to `vat_on_imported_goods`. Treat every PH order as cross-border. For TH, use the paired import-VAT and import-duty rule documented in the main Skill. Missing required evidence remains blocking.
 
 Preserve every numeric settlement component with its source code. Until a platform-specific reconciliation contract classifies the component, set `included_in_net_settlement` to `unknown`; never infer fee arithmetic from the component name alone.

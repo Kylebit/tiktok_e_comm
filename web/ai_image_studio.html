@@ -161,12 +161,8 @@
       </article>
       <article class="approval-strip">
         <label class="check-row">
-          <input id="factApproved" type="checkbox">
-          <span><strong>商品事实已核对</strong><small>商品身份、尺寸与来源信息没有被 AI 改写</small></span>
-        </label>
-        <label class="check-row">
-          <input id="scopeApproved" type="checkbox">
-          <span><strong id="scopeApprovalTitle">本地生图约束已确认</strong><small id="scopeApprovalHint">图片数量、类型与类目规则符合本次需求</small></span>
+          <input id="generationBasisConfirmed" type="checkbox">
+          <span><strong id="generationBasisTitle">生成依据已确认</strong><small id="generationBasisHint">商品事实、身份参考、图片数量与类目约束均符合本次需求</small></span>
         </label>
         <button id="preparePackageButton" class="button secondary" type="button" hidden>
           <span class="button-label">读取妙手并创建本地包</span>
@@ -226,15 +222,15 @@
         <div>
           <span class="danger-mark" aria-hidden="true">!</span>
           <div>
-            <h3>同步当前图片到妙手</h3>
-            <p>这会替换妙手公共采集箱中的主图和详情图，但不会认领店铺或发布商品。</p>
+            <h3>同步图片并批准最终内容</h3>
+            <p>这会替换妙手公共采集箱中的主图和详情图；若妙手旧规格重量不符合保存规则，会同时采用工作台已保存的商品与逐规格重量，其余商品字段保持不变。不会认领店铺或发布商品。</p>
             <label class="confirm-row">
               <input id="miaoshouConfirm" type="checkbox">
-              我已核对最终图片和顺序，允许写入妙手并回读验证
+              我已核对最终图片和顺序，允许写入妙手、回读验证并批准最终内容
             </label>
           </div>
           <button id="syncMiaoshouButton" class="button danger" type="button" disabled>
-            <span class="sync-button-label">同步到妙手</span>
+            <span class="sync-button-label">同步图片并批准最终内容</span>
             <span class="sync-button-loading">同步与回读中…</span>
           </button>
           <div id="syncProgress" class="sync-progress" aria-live="polite">

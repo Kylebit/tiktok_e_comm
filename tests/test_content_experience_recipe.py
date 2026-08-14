@@ -534,6 +534,21 @@ def test_completed_ai_image_review_can_be_finalized_as_the_content_approval(
                     "status": "reviewed_locally",
                 },
             },
+            "suite_revision": 1,
+            "miaoshou_ordered_images_write": {
+                "status": "verified",
+                "ordered_image_urls": [
+                    "https://assets.example/source.jpg",
+                    "https://assets.example/sc1.png",
+                ],
+                "written_image_count": 2,
+                "checks": {
+                    "main_images_exact_order": True,
+                    "detail_images_exact_order": True,
+                },
+                "suite_revision": 1,
+                "recipe_signature": "current",
+            },
         },
         "review": {
             "image_actions": [
@@ -549,6 +564,7 @@ def test_completed_ai_image_review_can_be_finalized_as_the_content_approval(
     saved: list[dict] = []
     monkeypatch.setattr(workbench, "resolve_offer_key", lambda _value: "3838619319")
     monkeypatch.setattr(workbench, "load_state", lambda _offer: state)
+    monkeypatch.setattr(workbench, "_content_recipe_signature", lambda _content: "current")
     monkeypatch.setattr(
         workbench,
         "content_package_summary",
@@ -582,6 +598,44 @@ def test_completed_ai_image_review_can_be_finalized_as_the_content_approval(
     assert saved
 
 
+def test_final_approval_uses_verified_miaoshou_images_not_pending_candidates(monkeypatch):
+    state = {
+        "offer_id": "3890899011", "_revision": 9,
+        "review": {"image_order": ["https://img.example/final-1.jpg", "https://img.example/final-2.jpg"], "video_action": "none"},
+        "content_package": {
+            "content_strategy": "ai_assisted", "fact_card_approved": True,
+            "planning_scope_approved": True, "suite_approved": True,
+            "suite_revision": 3,
+            "remaining_images_generation": {"items": [{"artifact_id": "sc1", "miaoshou_action": "review"}, {"artifact_id": "sc2", "miaoshou_action": "review"}]},
+            "miaoshou_ordered_images_write": {
+                "status": "verified", "ordered_image_urls": ["https://img.example/final-1.jpg", "https://img.example/final-2.jpg"],
+                "written_image_count": 2, "checks": {"main_images_exact_order": True, "detail_images_exact_order": True},
+                "suite_revision": 3, "recipe_signature": "current",
+            },
+        },
+    }
+    monkeypatch.setattr(workbench, "resolve_offer_key", lambda _value: "3890899011")
+    monkeypatch.setattr(workbench, "load_state", lambda _offer: state)
+    monkeypatch.setattr(workbench, "_content_recipe_signature", lambda _content: "current")
+    monkeypatch.setattr(workbench, "save_state", lambda _offer, value: value)
+
+    workbench.finalize_content_package_review("3890899011", {"expected_revision": 9, "approved_by": "Kyle"})
+
+    assert state["content_package"]["final_content_approval"]["status"] == "approved"
+    assert state["content_package"]["final_content_approval"]["miaoshou_ordered_image_urls"] == state["review"]["image_order"]
+
+
+def test_final_approval_rejects_missing_or_drifted_miaoshou_evidence(monkeypatch):
+    state = {"offer_id": "3890899011", "_revision": 9, "review": {"image_order": ["a"], "video_action": "none"}, "content_package": {"content_strategy": "ai_assisted", "fact_card_approved": True, "planning_scope_approved": True, "suite_approved": True, "suite_revision": 3, "miaoshou_ordered_images_write": {"status": "verified", "ordered_image_urls": ["b"], "written_image_count": 1, "checks": {"main_images_exact_order": True, "detail_images_exact_order": True}, "suite_revision": 3, "recipe_signature": "current"}}}
+    monkeypatch.setattr(workbench, "resolve_offer_key", lambda _value: "3890899011")
+    monkeypatch.setattr(workbench, "load_state", lambda _offer: state)
+    monkeypatch.setattr(workbench, "_content_recipe_signature", lambda _content: "current")
+    monkeypatch.setattr(workbench, "save_state", lambda *_args: (_ for _ in ()).throw(AssertionError("must fail before write")))
+
+    with pytest.raises(ValueError, match="Miaoshou"):
+        workbench.finalize_content_package_review("3890899011", {"expected_revision": 9, "approved_by": "Kyle"})
+
+
 def test_valid_ai_final_approval_closes_the_content_workflow_stage() -> None:
     review = {
         "title": "Waterproof PVC Floor Sticker",
@@ -604,11 +658,22 @@ def test_valid_ai_final_approval_closes_the_content_workflow_stage() -> None:
         "fact_card_approved": True,
         "planning_scope_approved": True,
         "suite_approved": True,
+        "suite_revision": 1,
         "asset_decisions": {
             "sc1": {"decision": "approved"},
         },
         "generated_image_miaoshou_decisions": {
             "sc1": {"action": "keep", "status": "reviewed_locally"},
+        },
+        "miaoshou_ordered_images_write": {
+            "status": "verified",
+            "ordered_image_urls": list(review["image_order"]),
+            "written_image_count": 2,
+            "checks": {
+                "main_images_exact_order": True,
+                "detail_images_exact_order": True,
+            },
+            "suite_revision": 1,
         },
     }
     approval_payload = {
@@ -616,6 +681,7 @@ def test_valid_ai_final_approval_closes_the_content_workflow_stage() -> None:
         "status": "approved",
         "approved_by": "Kyle",
         "image_order": list(review["image_order"]),
+        "miaoshou_ordered_image_urls": list(review["image_order"]),
         "video_action": "none",
         "asset_decisions": content["asset_decisions"],
         "generated_image_decisions": content[
@@ -634,6 +700,7 @@ def test_valid_ai_final_approval_closes_the_content_workflow_stage() -> None:
         ).hexdigest(),
         "approved_at": "2026-08-04T00:00:00+00:00",
     }
+    content["miaoshou_ordered_images_write"]["recipe_signature"] = workbench._content_recipe_signature(content)
 
     workflow = workbench._product_workflow_summary(
         source={

@@ -63,6 +63,73 @@ class _ReportStore:
 
 
 class ProductPublicationExecutorCompositionTests(unittest.TestCase):
+    def test_tiktok_preserves_sanitized_target_failure_evidence(self) -> None:
+        request = _request("TIKTOK", ("tiktok:LH_PH",))
+        evidence = {
+            "target_label": "tiktok:LH_PH",
+            "status": "FAILED",
+            "stage": "PUBLISH",
+            "provider_code": "bad code with spaces",
+            "provider_reason": (
+                "Authorization Bearer secret-token "
+                "https://provider.example/items/123456789012"
+            ),
+            "request_attempted": True,
+            "outcome_unknown": False,
+            "external_write_count": 0,
+        }
+
+        with (
+            patch(
+                "shared_platform.product_publication_executors."
+                "project_tiktok_v4_execution_plan",
+                return_value={"plan": "v4"},
+            ),
+            patch(
+                "shared_platform.product_publication_executors."
+                "execute_tiktok_v4_plan",
+                return_value={
+                    "external_write_count": 0,
+                    "targets": [
+                        {
+                            "target_label": "tiktok:LH_PH",
+                            "status": "FAILED",
+                            "dispatch_attempted": True,
+                            "readback_status": "REJECTED",
+                            "external_write_count": 0,
+                            "evidence": evidence,
+                        }
+                    ],
+                },
+            ),
+        ):
+            result = build_tiktok_v4_executor(
+                collectbox_context_resolver=lambda _request: {},
+                category_resolver=None,
+                publisher=SimpleNamespace(
+                    preflight=lambda _snapshot: {},
+                    publish=lambda _snapshot, _preflight=None: {},
+                ),
+                storefront_readback=SimpleNamespace(readback=lambda **_kwargs: {}),
+            )(request)
+
+        self.assertEqual(
+            result["targets"],
+            [
+                {
+                    "target_label": "tiktok:LH_PH",
+                    "status": "FAILED",
+                    "evidence": {
+                        **evidence,
+                        "provider_code": "business_rejected",
+                        "provider_reason": (
+                            "authorization=[redacted] [redacted-url]"
+                        ),
+                    },
+                }
+            ],
+        )
+
     def test_tiktok_composes_v4_plan_without_legacy_collectbox_start(self) -> None:
         request = _request("TIKTOK", ("tiktok:LH_PH", "tiktok:LH_MY"))
         contexts = {"tiktok:LH_MY": {"detail_id": "draft-my"}}
@@ -91,6 +158,16 @@ class ProductPublicationExecutorCompositionTests(unittest.TestCase):
                             "dispatch_attempted": False,
                             "readback_status": "NOT_ATTEMPTED",
                             "external_write_count": 0,
+                            "evidence": {
+                                "target_label": "tiktok:LH_PH",
+                                "status": "FAILED",
+                                "stage": "IDENTITY",
+                                "provider_code": "identity_unavailable",
+                                "provider_reason": "draft identity unavailable",
+                                "request_attempted": False,
+                                "outcome_unknown": False,
+                                "external_write_count": 0,
+                            },
                         },
                         {
                             "target_label": "tiktok:LH_MY",
@@ -129,8 +206,25 @@ class ProductPublicationExecutorCompositionTests(unittest.TestCase):
                 "schema_version": "product-publication-platform-result/v1",
                 "platform": "TIKTOK",
                 "targets": [
-                    {"target_label": "tiktok:LH_PH", "status": "FAILED"},
-                    {"target_label": "tiktok:LH_MY", "status": "PUBLISHED"},
+                    {
+                        "target_label": "tiktok:LH_PH",
+                        "status": "FAILED",
+                        "evidence": {
+                            "target_label": "tiktok:LH_PH",
+                            "status": "FAILED",
+                            "stage": "IDENTITY",
+                            "provider_code": "identity_unavailable",
+                            "provider_reason": "draft identity unavailable",
+                            "request_attempted": False,
+                            "outcome_unknown": False,
+                            "external_write_count": 0,
+                        },
+                    },
+                    {
+                        "target_label": "tiktok:LH_MY",
+                        "status": "PUBLISHED",
+                        "evidence": None,
+                    },
                 ],
                 "dispatch_attempted": True,
                 "readback_completed": True,
@@ -173,8 +267,34 @@ class ProductPublicationExecutorCompositionTests(unittest.TestCase):
         self.assertEqual(
             result["targets"],
             [
-                {"target_label": "tiktok:LH_PH", "status": "FAILED"},
-                {"target_label": "tiktok:LH_MY", "status": "FAILED"},
+                {
+                    "target_label": "tiktok:LH_PH",
+                    "status": "FAILED",
+                    "evidence": {
+                        "target_label": "tiktok:LH_PH",
+                        "status": "FAILED",
+                        "stage": "PREPARATION",
+                        "provider_code": "tiktok_preparation_failed",
+                        "provider_reason": "TikTok local preparation failed",
+                        "request_attempted": False,
+                        "outcome_unknown": False,
+                        "external_write_count": 0,
+                    },
+                },
+                {
+                    "target_label": "tiktok:LH_MY",
+                    "status": "FAILED",
+                    "evidence": {
+                        "target_label": "tiktok:LH_MY",
+                        "status": "FAILED",
+                        "stage": "PREPARATION",
+                        "provider_code": "tiktok_preparation_failed",
+                        "provider_reason": "TikTok local preparation failed",
+                        "request_attempted": False,
+                        "outcome_unknown": False,
+                        "external_write_count": 0,
+                    },
+                },
             ],
         )
         self.assertFalse(result["dispatch_attempted"])
@@ -483,7 +603,22 @@ class ProductPublicationExecutorCompositionTests(unittest.TestCase):
             {
                 "schema_version": "product-publication-platform-result/v1",
                 "platform": "OZON",
-                "targets": [{"target_label": "ozon:RU", "status": "FAILED"}],
+                "targets": [
+                    {
+                        "target_label": "ozon:RU",
+                        "status": "FAILED",
+                        "evidence": {
+                            "target_label": "ozon:RU",
+                            "status": "FAILED",
+                            "stage": "PREPARATION",
+                            "provider_code": "ozon_preparation_failed",
+                            "provider_reason": "Ozon preparation failed",
+                            "request_attempted": False,
+                            "outcome_unknown": False,
+                            "external_write_count": 0,
+                        },
+                    }
+                ],
                 "dispatch_attempted": False,
                 "readback_completed": False,
                 "external_write_count": 0,

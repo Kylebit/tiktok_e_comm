@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from modules.sourcing import miaoshou_precollect
+from modules.sourcing.image_shot_prompts import build_shot_prompts
 from modules.sourcing.miaoshou_precollect import (
     import_common_collect_detail,
     normalize_detail,
@@ -39,6 +40,7 @@ from modules.sourcing.new_product_workbench import (
     prepare_miaoshou_site_drafts,
     prepare_miaoshou_draft,
     price_review,
+    save_manual_storyboard_edits,
     content_package_summary,
     save_state,
     sync_miaoshou_second_review,
@@ -48,6 +50,49 @@ from modules.sourcing.new_product_workbench import (
 
 
 class NewProductWorkbenchTests(unittest.TestCase):
+    def test_manual_storyboard_edit_replaces_paid_plan_copy_and_invalidates_preflight(self):
+        with TemporaryDirectory() as tmp, patch(
+            "modules.sourcing.new_product_workbench.STATE_DIR", Path(tmp, "state")
+        ), patch("modules.sourcing.new_product_workbench.IMAGE_SUITE_OUTPUTS_DIR", Path(tmp, "images")), patch(
+            "modules.sourcing.new_product_workbench.resolve_offer_key", side_effect=lambda value: value
+        ):
+            package = Path(tmp, "images", "123456789")
+            package.mkdir(parents=True)
+            package.joinpath("review_package.json").write_text(json.dumps({
+                "plan": {"suite": {"items": [{"id": "scene_1", "type": "scene", "selected": True, "title": "AI title", "focus": "AI focus", "aspect_ratio": "1:1"}]}},
+                "model_proposal": {"planning_source": "ai"}, "collect_box": {}, "fact_card": {},
+            }), encoding="utf-8")
+            save_state("123456789", {"content_package": {"collect_box_id": "123456789", "remaining_images_preflight": {"status": "ready_for_explicit_paid_confirmation"}}})
+            result = save_manual_storyboard_edits("123456789", expected_revision=1, edits={"scene_1": {"title": "人工标题", "focus": "人工构图"}})
+            saved = json.loads(package.joinpath("review_package.json").read_text(encoding="utf-8"))
+            prompts = build_shot_prompts({"analysis": {}, "_meta": {}, "suite": saved["plan"]["suite"]})
+            saved["plan"]["suite"]["items"][0].update({"title": "AI title", "focus": "AI focus"})
+            package.joinpath("review_package.json").write_text(json.dumps(saved), encoding="utf-8")
+            refreshed = content_package_summary("123456789", resolved_offer_id=True)
+            replayed = json.loads(package.joinpath("review_package.json").read_text(encoding="utf-8"))
+
+        self.assertIn("人工标题", prompts["shots"][0]["prompt"])
+        self.assertIn("人工构图", prompts["shots"][0]["prompt"])
+        self.assertEqual(result["revision"], 2)
+        self.assertEqual(refreshed["suite"]["items"][0]["title"], "人工标题")
+        self.assertEqual(replayed["plan"]["suite"]["items"][0]["focus"], "人工构图")
+        self.assertFalse(result["remaining_images_preflight"]["ready"])
+
+    def test_manual_storyboard_edit_rejects_tampered_shot_or_stale_revision(self):
+        with TemporaryDirectory() as tmp, patch(
+            "modules.sourcing.new_product_workbench.STATE_DIR", Path(tmp, "state")
+        ), patch("modules.sourcing.new_product_workbench.IMAGE_SUITE_OUTPUTS_DIR", Path(tmp, "images")), patch(
+            "modules.sourcing.new_product_workbench.resolve_offer_key", side_effect=lambda value: value
+        ):
+            package = Path(tmp, "images", "123456789")
+            package.mkdir(parents=True)
+            package.joinpath("review_package.json").write_text(json.dumps({"plan": {"suite": {"items": [{"id": "scene_1", "selected": True}]}}}), encoding="utf-8")
+            save_state("123456789", {"content_package": {"collect_box_id": "123456789"}})
+            with self.assertRaisesRegex(ValueError, "shot IDs"):
+                save_manual_storyboard_edits("123456789", expected_revision=1, edits={"evil": {"title": "x", "focus": "y"}})
+            with self.assertRaisesRegex(ValueError, "stale"):
+                save_manual_storyboard_edits("123456789", expected_revision=0, edits={"scene_1": {"title": "x", "focus": "y"}})
+
     def test_duplicate_alias_content_state_is_mirrored_to_canonical_collect_box_owner(self):
         with TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
@@ -738,12 +783,13 @@ class NewProductWorkbenchTests(unittest.TestCase):
         def fake_post(path, body=None):
             if path.endswith("edit_common_collect_box_detail"):
                 saved.update((body or {})["editCommonCollectBoxDetail"])
+                current.update(saved)
                 return {"result": "success"}
             if path.endswith("get_common_collect_box_detail"):
                 return {
                     "result": "success",
                     "data": {
-                        "editCommonCollectBoxDetail": saved or current,
+                        "editCommonCollectBoxDetail": current,
                         "ossMd5": "x",
                     },
                 }
@@ -783,6 +829,8 @@ class NewProductWorkbenchTests(unittest.TestCase):
         self.assertEqual(saved["notes"].count("<img "), 2)
         self.assertEqual(saved["title"], "Existing title")
         self.assertEqual(saved["itemNum"], "0942")
+        self.assertEqual(saved["weight"], 0.08)
+        self.assertEqual(saved["skuMap"], {})
         self.assertEqual(result["sync"]["status"], "verified")
         self.assertEqual(
             [row["status"] for row in result["sync"]["steps"]],
@@ -793,6 +841,156 @@ class NewProductWorkbenchTests(unittest.TestCase):
         self.assertTrue(all(result["sync"]["checks"].values()))
         self.assertEqual(result["sync"]["collect_box_id"], "123")
         self.assertTrue(all(result["checks"].values()))
+
+    def test_ordered_image_sync_reconciles_stale_sku_weight_from_saved_facts(self):
+        state = {
+            "review": {
+                "weight_kg": 0.1,
+                "sku_commercial_facts": {
+                    ";星空蓝;15*15cm无织唛;": {
+                        "weight_kg": 0.1,
+                    },
+                },
+                "image_actions": [
+                    {"action": "keep", "url": "https://img.example/source-1.jpg"},
+                ],
+                "image_order": ["https://img.example/source-1.jpg"],
+            },
+            "content_package": {"collect_box_id": "123"},
+        }
+        current = {
+            "title": "Existing title",
+            "itemNum": "0968",
+            "weight": 0.08,
+            "skuMap": {
+                ";星空蓝;15*15cm无织唛;": {
+                    "weight": 0.015,
+                    "stock": 200,
+                },
+            },
+            "imgUrls": ["https://img.example/old.jpg"],
+            "notes": '<p>Existing description</p><p><img src="https://img.example/old.jpg"></p>',
+        }
+        submitted = {}
+        edit_calls = []
+
+        def fake_post(path, body=None):
+            if path.endswith("edit_common_collect_box_detail"):
+                edit = dict((body or {})["editCommonCollectBoxDetail"])
+                submitted.update(edit)
+                edit_calls.append(edit)
+                effective = {**current, **edit}
+                effective_sku_weight = float(
+                    ((effective.get("skuMap") or {}).get(";星空蓝;15*15cm无织唛;") or {}).get("weight") or 0
+                )
+                images_changed = edit.get("imgUrls") != current.get("imgUrls")
+                current_sku_weight = float(
+                    ((current.get("skuMap") or {}).get(";星空蓝;15*15cm无织唛;") or {}).get("weight") or 0
+                )
+                if effective_sku_weight == 0.015 or (
+                    images_changed and current_sku_weight == 0.015
+                ):
+                    return {
+                        "result": "error",
+                        "message": "skuMap weight 小数位数不能超过2位",
+                    }
+                current.update(edit)
+                return {"result": "success"}
+            if path.endswith("get_common_collect_box_detail"):
+                return {
+                    "result": "success",
+                    "data": {
+                        "editCommonCollectBoxDetail": current,
+                        "ossMd5": "x",
+                    },
+                }
+            raise AssertionError(path)
+
+        with patch(
+            "modules.sourcing.new_product_workbench.resolve_offer_key",
+            return_value="123",
+        ), patch(
+            "modules.sourcing.new_product_workbench.load_state",
+            return_value=state,
+        ), patch(
+            "modules.sourcing.new_product_workbench.save_state",
+        ), patch(
+            "modules.sourcing.new_product_workbench._source_summary",
+            return_value={"images": []},
+        ), patch(
+            "modules.sourcing.new_product_workbench._content_package_dir",
+            return_value=Path("."),
+        ), patch(
+            "modules.sourcing.new_product_workbench._generated_review_images",
+            return_value=[],
+        ):
+            result = write_ordered_images_to_miaoshou("123", post=fake_post)
+
+        self.assertTrue(result["verified"])
+        self.assertEqual(submitted["weight"], 0.08)
+        self.assertEqual(
+            submitted["skuMap"][";星空蓝;15*15cm无织唛;"],
+            {"weight": 0.1, "stock": 200},
+        )
+        self.assertEqual(submitted["title"], "Existing title")
+        self.assertEqual(submitted["itemNum"], "0968")
+        self.assertEqual(submitted["skuMap"][";星空蓝;15*15cm无织唛;"]["stock"], 200)
+        self.assertEqual(len(edit_calls), 2)
+        self.assertEqual(edit_calls[0]["imgUrls"], ["https://img.example/old.jpg"])
+        self.assertEqual(edit_calls[1]["imgUrls"], ["https://img.example/source-1.jpg"])
+
+    def test_ordered_image_sync_keeps_valid_existing_weights(self):
+        state = {
+            "review": {
+                "weight_kg": 0.1,
+                "sku_commercial_facts": {";Blue;;": {"weight_kg": 0.1}},
+                "image_actions": [
+                    {"action": "keep", "url": "https://img.example/source-1.jpg"},
+                ],
+                "image_order": ["https://img.example/source-1.jpg"],
+            },
+            "content_package": {"collect_box_id": "123"},
+        }
+        current = {
+            "title": "Existing title",
+            "itemNum": "0968",
+            "weight": 0.08,
+            "skuMap": {";Blue;;": {"weight": 0.08, "stock": 200}},
+            "imgUrls": ["https://img.example/old.jpg"],
+            "notes": "<p>Existing description</p>",
+        }
+        submitted = {}
+
+        def fake_post(path, body=None):
+            if path.endswith("edit_common_collect_box_detail"):
+                submitted.update((body or {})["editCommonCollectBoxDetail"])
+                current.update(submitted)
+                return {"result": "success"}
+            if path.endswith("get_common_collect_box_detail"):
+                return {
+                    "result": "success",
+                    "data": {"editCommonCollectBoxDetail": current, "ossMd5": "x"},
+                }
+            raise AssertionError(path)
+
+        with patch(
+            "modules.sourcing.new_product_workbench.resolve_offer_key", return_value="123"
+        ), patch(
+            "modules.sourcing.new_product_workbench.load_state", return_value=state
+        ), patch(
+            "modules.sourcing.new_product_workbench.save_state"
+        ), patch(
+            "modules.sourcing.new_product_workbench._source_summary", return_value={"images": []}
+        ), patch(
+            "modules.sourcing.new_product_workbench._content_package_dir", return_value=Path(".")
+        ), patch(
+            "modules.sourcing.new_product_workbench._generated_review_images", return_value=[]
+        ):
+            result = write_ordered_images_to_miaoshou("123", post=fake_post)
+
+        self.assertTrue(result["verified"])
+        self.assertEqual(submitted["weight"], 0.08)
+        self.assertEqual(submitted["skuMap"][";Blue;;"]["weight"], 0.08)
 
     def test_ordered_image_sync_uses_resolved_duplicate_collect_box_identity(self):
         state = {

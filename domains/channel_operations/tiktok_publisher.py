@@ -62,6 +62,10 @@ class TikTokPreWritePreparationError(ValueError):
         self.code = code
 
 
+class TikTokBatchPreflightError(RuntimeError):
+    """A shared/local payload failure that must stop the batch before writes."""
+
+
 class TikTokPublishTransport(Protocol):
     def read_draft(self, target: Mapping[str, object]) -> Mapping[str, object]: ...
 
@@ -69,8 +73,12 @@ class TikTokPublishTransport(Protocol):
         self, target: Mapping[str, object], draft: Mapping[str, object]
     ) -> bool: ...
 
-    def save_approved_draft(
+    def prepare_approved_draft(
         self, target: Mapping[str, object], draft: Mapping[str, object]
+    ) -> Mapping[str, object]: ...
+
+    def save_prepared_draft(
+        self, target: Mapping[str, object], prepared: Mapping[str, object]
     ) -> Mapping[str, object]: ...
 
     def submit(self, target: Mapping[str, object]) -> Mapping[str, object]: ...
@@ -120,6 +128,20 @@ def _package_cm(value: object, name: str) -> list[str]:
     if not isinstance(value, list) or len(value) != 3:
         raise TikTokPublishContractError(f"{name} is invalid")
     return [_positive_decimal(dimension, name) for dimension in value]
+
+
+def _approved_text(value: object, name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise TikTokPublishContractError(f"{name} is invalid")
+    return value
+
+
+def _approved_images(value: object) -> list[str]:
+    if not isinstance(value, list) or not value or any(
+        not isinstance(image, str) or not image.strip() for image in value
+    ):
+        raise TikTokPublishContractError("expected_images is invalid")
+    return list(value)
 
 
 def _expected_sku_parcels(
@@ -199,6 +221,46 @@ def _expected_variant_model_skus(value: object) -> dict[str, str]:
     return result
 
 
+def _expected_variant_specifications(
+    value: object, *, variant_model_skus: Mapping[str, str]
+) -> dict[str, dict[str, str]]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise TikTokPublishContractError(
+            "expected_variant_specifications is invalid"
+        )
+    result: dict[str, dict[str, str]] = {}
+    for raw_variant, raw_specification in value.items():
+        variant = str(raw_variant or "").strip().strip(";")
+        if (
+            not variant
+            or variant in result
+            or not isinstance(raw_specification, Mapping)
+        ):
+            raise TikTokPublishContractError(
+                "expected_variant_specifications is invalid"
+            )
+        specification = {
+            str(key).strip(): str(item).strip()
+            for key, item in raw_specification.items()
+            if type(key) is str
+            and key.strip()
+            and type(item) is str
+            and item.strip()
+        }
+        if not specification or len(specification) != len(raw_specification):
+            raise TikTokPublishContractError(
+                "expected_variant_specifications is invalid"
+            )
+        result[variant] = specification
+    if result and set(result) != set(variant_model_skus):
+        raise TikTokPublishContractError(
+            "expected_variant_specifications coverage is invalid"
+        )
+    return result
+
+
 def _validate_snapshot(snapshot: Mapping[str, object]) -> dict[str, object]:
     if not isinstance(snapshot, Mapping):
         raise TikTokPublishContractError("snapshot must be a mapping")
@@ -236,6 +298,10 @@ def _validate_snapshot(snapshot: Mapping[str, object]) -> dict[str, object]:
         sku_prices = _expected_sku_prices(raw.get("expected_sku_prices"))
         variant_model_skus = _expected_variant_model_skus(
             raw.get("expected_variant_model_skus")
+        )
+        variant_specifications = _expected_variant_specifications(
+            raw.get("expected_variant_specifications"),
+            variant_model_skus=variant_model_skus,
         )
         expected_weight = _positive_decimal(
             raw.get("expected_weight_kg"), "expected_weight_kg"
@@ -275,8 +341,20 @@ def _validate_snapshot(snapshot: Mapping[str, object]) -> dict[str, object]:
                     if raw.get("expected_variant_model_skus") is not None
                     else {}
                 ),
+                **(
+                    {"expected_variant_specifications": variant_specifications}
+                    if raw.get("expected_variant_specifications") is not None
+                    else {}
+                ),
                 "expected_weight_kg": expected_weight,
                 "expected_package_cm": expected_package,
+                "expected_title": _approved_text(
+                    raw.get("expected_title"), "expected_title"
+                ),
+                "expected_description": _approved_text(
+                    raw.get("expected_description"), "expected_description"
+                ),
+                "expected_images": _approved_images(raw.get("expected_images")),
                 "expected_sku_parcels": sku_parcels,
                 "expected_currency": currency,
                 # This is approved product evidence.  It is intentionally not
@@ -354,7 +432,7 @@ def _sha256(value: object, name: str) -> str:
 
 def _safe_code(value: object) -> str:
     code = str(value or "business_rejected").strip()
-    if not code or len(code) > 80 or any(
+    if not code or not code.isascii() or len(code) > 80 or any(
         not (char.isalnum() or char in {"_", "-"}) for char in code
     ):
         return "business_rejected"
@@ -379,6 +457,18 @@ def _safe_reason(value: object) -> str:
     reason = re.sub(r"\b\d{9,}\b", "[redacted-id]", reason)
     reason = re.sub(r"\b[0-9a-fA-F]{32,}\b", "[redacted-digest]", reason)
     return reason[:240]
+
+
+def sanitize_tiktok_provider_code(value: object) -> str:
+    """Return the public-safe provider code used in target evidence."""
+
+    return _safe_code(value)
+
+
+def sanitize_tiktok_provider_reason(value: object) -> str:
+    """Return the redacted, bounded provider reason used in target evidence."""
+
+    return _safe_reason(value)
 
 
 def _provider_acceptance(response: Mapping[str, object]) -> tuple[str, str]:
@@ -407,11 +497,33 @@ class TikTokPublisher:
             try:
                 draft = self.transport.read_draft(target)
                 status = (
-                    "READY"
+                    "REPAIR_REQUIRED"
+                    if label == "tiktok:GB"
+                    else "READY"
                     if self.transport.draft_matches(target, draft)
                     else "REPAIR_REQUIRED"
                 )
-                results.append({"target_label": label, "status": status})
+                prepared = self.transport.prepare_approved_draft(target, draft)
+                try:
+                    json.dumps(
+                        prepared,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    )
+                except (TypeError, ValueError) as error:
+                    raise TikTokBatchPreflightError(
+                        "TikTok prepared SAVE payload is not JSON serializable"
+                    ) from error
+                results.append(
+                    {
+                        "target_label": label,
+                        "status": status,
+                        "save_required": label == "tiktok:GB" or status == "REPAIR_REQUIRED",
+                        "prepared_save": prepared,
+                    }
+                )
             except MiaoshouBusinessRejectedError as error:
                 results.append(
                     {
@@ -430,6 +542,8 @@ class TikTokPublisher:
                         "provider_reason": _safe_reason(error),
                     }
                 )
+            except TikTokBatchPreflightError:
+                raise
             except Exception:
                 results.append(
                     {
@@ -463,6 +577,8 @@ class TikTokPublisher:
     ) -> dict[str, object]:
         approved = _validate_snapshot(snapshot)
         snapshot_digest = _canonical_digest(approved)
+        if preflight is None:
+            preflight = self.preflight(snapshot)
         if preflight is not None:
             if (
                 not isinstance(preflight, Mapping)
@@ -489,13 +605,39 @@ class TikTokPublisher:
                     "preflight target coverage is invalid"
                 )
 
+        preflight_rows = {
+            str(row["target_label"]): row
+            for row in (preflight.get("targets") if preflight is not None else [])
+            if isinstance(row, Mapping)
+        }
         results: list[dict[str, object]] = []
         for target in approved["targets"]:
-            results.append(self._publish_target(target))
+            row = preflight_rows.get(str(target["target_label"]))
+            if row is None:
+                raise TikTokPublishContractError(
+                    "preflight target preparation is unavailable"
+                )
+            if row.get("status") not in {"READY", "REPAIR_REQUIRED"}:
+                results.append(
+                    {
+                        "target_label": target["target_label"],
+                        "outcome": "REJECTED",
+                        "stage": "PREFLIGHT",
+                        "provider_code": row.get("provider_code", "preflight_rejected"),
+                        "provider_reason": row.get(
+                            "provider_reason", "TikTok target preflight rejected"
+                        ),
+                        "external_write_count": 0,
+                        "write_request_count": 0,
+                    }
+                )
+            else:
+                results.append(self._publish_target(target, row))
         results.extend(
             {
                 "target_label": row["target_label"],
                 "outcome": "NOT_ATTEMPTED",
+                "stage": "IDENTITY",
                 "provider_code": row["reason_code"],
                 "provider_reason": "Miaoshou draft identity is unavailable",
                 "external_write_count": 0,
@@ -519,24 +661,27 @@ class TikTokPublisher:
             "targets": results,
         }
 
-    def _publish_target(self, target: Mapping[str, object]) -> dict[str, object]:
+    def _publish_target(
+        self,
+        target: Mapping[str, object],
+        preflight_target: Mapping[str, object],
+    ) -> dict[str, object]:
         label = str(target["target_label"])
         write_request_count = 0
         confirmed_write_count = 0
+        stage = "PUBLISH"
         try:
-            draft = self.transport.read_draft(target)
-            # GB must always materialize its deterministic category metadata,
-            # COD, delivery and size-chart fields before submission.  Other
-            # targets avoid a no-op save when the exact draft already matches.
-            repair_required = (
-                True
-                if label == "tiktok:GB"
-                else not self.transport.draft_matches(target, draft)
-            )
+            repair_required = preflight_target.get("save_required") is True
             if repair_required:
+                stage = "SAVE"
                 try:
-                    save_response = self.transport.save_approved_draft(
-                        target, draft
+                    prepared = preflight_target.get("prepared_save")
+                    if not isinstance(prepared, Mapping):
+                        raise TikTokPublishContractError(
+                            "preflight prepared SAVE is unavailable"
+                        )
+                    save_response = self.transport.save_prepared_draft(
+                        target, prepared
                     )
                 except TikTokPreWritePreparationError:
                     raise
@@ -548,6 +693,7 @@ class TikTokPublisher:
                 write_request_count += 1
                 _provider_acceptance(save_response)
                 confirmed_write_count += 1
+            stage = "PUBLISH"
             write_request_count += 1
             provider_code, provider_reason = _provider_acceptance(
                 self.transport.submit(target)
@@ -562,6 +708,7 @@ class TikTokPublisher:
             return {
                 "target_label": label,
                 "outcome": "ACCEPTED",
+                "stage": stage,
                 "provider_code": provider_code,
                 "provider_reason": provider_reason,
                 "external_write_count": confirmed_write_count,
@@ -580,6 +727,7 @@ class TikTokPublisher:
             return {
                 "target_label": label,
                 "outcome": "REJECTED",
+                "stage": stage,
                 "provider_code": provider_code,
                 "provider_reason": provider_reason,
                 "external_write_count": confirmed_write_count,
@@ -598,6 +746,7 @@ class TikTokPublisher:
             return {
                 "target_label": label,
                 "outcome": "REJECTED",
+                "stage": stage,
                 "provider_code": provider_code,
                 "provider_reason": provider_reason,
                 "external_write_count": confirmed_write_count,
@@ -612,8 +761,9 @@ class TikTokPublisher:
             return {
                 "target_label": label,
                 "outcome": "UNKNOWN",
+                "stage": stage,
                 "provider_code": "transport_unknown",
                 "provider_reason": "Miaoshou request outcome is unknown",
-                "external_write_count": None,
+                "external_write_count": confirmed_write_count,
                 "write_request_count": write_request_count,
             }

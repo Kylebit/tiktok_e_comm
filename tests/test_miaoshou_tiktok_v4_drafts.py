@@ -3,9 +3,16 @@ from __future__ import annotations
 from copy import deepcopy
 import inspect
 
+import pytest
+
+from modules.miaoshou.client import MiaoshouBusinessRejectedError
 from modules.miaoshou.tiktok_v4_drafts import (
     DraftWriteFact,
     MiaoshouOpenApiTikTokV4DraftTransport,
+    TikTokV4DraftPreparationError,
+    TikTokV4SystemicPreflightError,
+    _draft_payload,
+    _miaoshou_draft_info,
     _provider_bound_sku_map,
     prepare_tiktok_v4_drafts,
 )
@@ -17,6 +24,47 @@ SHOP_IDS = {
     "tiktok:LH_PH": "7676267",
     "tiktok:LH_MY": "13295169",
 }
+
+
+def test_miaoshou_draft_rounds_provider_parcel_dimensions_up_to_integers() -> None:
+    snapshot = _snapshot()
+    target = snapshot["publication_targets"][0]
+    draft = _draft_payload(
+        snapshot,
+        target=target,
+        category=CategoryResolver().resolve(
+            target=target,
+            product=snapshot["product"],
+            skus=snapshot["skus"],
+        ),
+    )
+    draft["parent_parcel"] = {
+        "weight_kg": "0.1",
+        "package_cm": ["15", "15.2", "0.8"],
+    }
+    for row in draft["skus"]:
+        row["parcel"] = {
+            "weight_kg": "0.1",
+            "package_cm": ["15", "15.2", "0.8"],
+        }
+
+    info = _miaoshou_draft_info(draft)
+
+    assert [
+        info["packageLength"],
+        info["packageWidth"],
+        info["packageHeight"],
+    ] == [15, 16, 1]
+    assert [
+        [
+            row["packageLength"],
+            row["packageWidth"],
+            row["packageHeight"],
+        ]
+        for row in info["skuMap"].values()
+    ] == [[15, 16, 1], [15, 16, 1]]
+    assert info["weight"] == 0.1
+    assert [row["weight"] for row in info["skuMap"].values()] == [0.1, 0.1]
 
 
 def _editable_site_payload(*, site: str, revision: str) -> dict:
@@ -108,6 +156,12 @@ class Transport:
             shop_id=identity["shop_id"],
         )
 
+    def prepare_save_draft(self, *, identity, draft):
+        return {"identity": deepcopy(identity), "draft": deepcopy(draft)}
+
+    def save_prepared_draft(self, *, identity, prepared):
+        return self.save_draft(identity=identity, draft=prepared["draft"])
+
 
 def test_v4_snapshot_alone_supplies_every_exact_draft_fact() -> None:
     snapshot = _snapshot()
@@ -190,6 +244,100 @@ def test_one_target_failure_never_blocks_later_tiktok_targets() -> None:
         "tiktok:LH_MY"
     ]
     assert set(receipt["collectbox_contexts"]) == {"tiktok:LH_MY"}
+
+
+def test_phase_a_serializes_every_draft_before_any_claim_or_save(monkeypatch) -> None:
+    original = tiktok_v4_drafts._draft_payload
+    calls = 0
+
+    def malformed_second(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        draft = original(*args, **kwargs)
+        if calls == 2:
+            draft["systemic_non_json_value"] = object()
+        return draft
+
+    monkeypatch.setattr(tiktok_v4_drafts, "_draft_payload", malformed_second)
+    transport = Transport()
+    with pytest.raises(TikTokV4SystemicPreflightError, match="JSON serializable"):
+        prepare_tiktok_v4_drafts(
+            _snapshot(), category_resolver=CategoryResolver(), transport=transport
+        )
+    assert transport.claims == []
+    assert transport.saves == []
+
+
+def test_phase_a_shared_projection_failure_is_not_category_unavailable(monkeypatch) -> None:
+    original = tiktok_v4_drafts._draft_payload
+    calls = 0
+
+    def broken_second(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise TikTokV4DraftPreparationError("shared SKU projection failed")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(tiktok_v4_drafts, "_draft_payload", broken_second)
+    transport = Transport()
+    with pytest.raises(TikTokV4SystemicPreflightError, match="projection"):
+        prepare_tiktok_v4_drafts(
+            _snapshot(), category_resolver=CategoryResolver(), transport=transport
+        )
+    assert transport.claims == []
+    assert transport.saves == []
+
+
+def test_phase_b_prepares_every_save_before_sending_any_save() -> None:
+    class PhaseTransport(Transport):
+        def __init__(self) -> None:
+            super().__init__()
+            self.events = []
+
+        def prepare_save_draft(self, *, identity, draft):
+            self.events.append(("prepare", identity["target_label"]))
+            if identity["target_label"] == "tiktok:LH_MY":
+                raise TikTokV4DraftPreparationError("warehouse unavailable")
+            return {"identity": deepcopy(identity), "draft": deepcopy(draft)}
+
+        def save_prepared_draft(self, *, identity, prepared):
+            self.events.append(("save", identity["target_label"]))
+            return super().save_draft(identity=identity, draft=prepared["draft"])
+
+    transport = PhaseTransport()
+    receipt = prepare_tiktok_v4_drafts(
+        _snapshot(), category_resolver=CategoryResolver(), transport=transport
+    )
+    assert transport.events == [
+        ("prepare", "tiktok:LH_PH"),
+        ("prepare", "tiktok:LH_MY"),
+        ("save", "tiktok:LH_PH"),
+    ]
+    assert [row["status"] for row in receipt["targets"]] == ["PREPARED", "FAILED"]
+
+
+def test_phase_b_systemic_failure_prevents_every_save() -> None:
+    class PhaseTransport(Transport):
+        def __init__(self) -> None:
+            super().__init__()
+            self.prepared = []
+
+        def prepare_save_draft(self, *, identity, draft):
+            self.prepared.append(identity["target_label"])
+            if identity["target_label"] == "tiktok:LH_MY":
+                raise TikTokV4SystemicPreflightError("shared JSON adapter failed")
+            return {"identity": deepcopy(identity), "draft": deepcopy(draft)}
+
+    transport = PhaseTransport()
+    receipt = prepare_tiktok_v4_drafts(
+        _snapshot(), category_resolver=CategoryResolver(), transport=transport
+    )
+    assert transport.prepared == ["tiktok:LH_PH", "tiktok:LH_MY"]
+    assert transport.saves == []
+    assert [row["reason_code"] for row in receipt["targets"]] == [
+        "SAVE_PREFLIGHT_FAILED", "SAVE_PREFLIGHT_FAILED"
+    ]
 
 
 def test_ambiguous_claim_and_save_preserve_identity_and_write_truth() -> None:
@@ -287,22 +435,22 @@ def test_production_seam_uses_injected_audited_low_level_calls_only() -> None:
     assert [fact.operation for _, fact in observed] == [
         "CREATE_DRAFT",
         "CLAIM_TO_SHOP",
-        "SAVE_DRAFT",
         "CREATE_DRAFT",
         "CLAIM_TO_SHOP",
+        "SAVE_DRAFT",
         "SAVE_DRAFT",
     ]
     assert [path for path, _ in calls] == [
         "/open/v1/product/common_collect_box/common_collect_box/claimed",
         "/open/v1/product/collect_box/tiktok/collect_box/claim_to_shop",
-        "/open/v1/product/collect_box/tiktok/collect_box/get_site_collect_item_info",
-        "/open/v1/product/collect_box/tiktok/collect_box/save_site_collect_item_info",
         "/open/v1/product/common_collect_box/common_collect_box/claimed",
         "/open/v1/product/collect_box/tiktok/collect_box/claim_to_shop",
         "/open/v1/product/collect_box/tiktok/collect_box/get_site_collect_item_info",
+        "/open/v1/product/collect_box/tiktok/collect_box/get_site_collect_item_info",
+        "/open/v1/product/collect_box/tiktok/collect_box/save_site_collect_item_info",
         "/open/v1/product/collect_box/tiktok/collect_box/save_site_collect_item_info",
     ]
-    first_save = calls[3][1]
+    first_save = calls[6][1]
     assert first_save["detailId"] == 7101
     assert first_save["site"] == "PH"
     assert first_save["ossMd5"] == "revision-1"
@@ -512,6 +660,195 @@ def test_production_seam_binds_opaque_provider_key_by_exact_property_label() -> 
     assert result[";abb6449b29;"]["stock"] == 300
 
 
+def test_production_seam_binds_source_variant_suffix_by_exact_specification() -> None:
+    shop_id = SHOP_IDS["tiktok:LH_PH"]
+    current = {
+        "skuPropertyList": [
+            {
+                "attrValueList": [
+                    {"attrValueId": "color-blue", "attrValue": "星空蓝"}
+                ]
+            },
+            {
+                "attrValueList": [
+                    {"attrValueId": "size-15", "attrValue": "15*15cm"}
+                ]
+            },
+        ],
+        "skuMap": {
+            ";color-blue;size-15;": {
+                "itemNum": "991290086160",
+                "stock": 300,
+            }
+        },
+    }
+    draft = {
+        "skus": [
+            {
+                "variant_key": ";星空蓝;15*15cm无织唛;",
+                "model_sku": "0968",
+                "specification": {"option": "15*15cm"},
+            }
+        ]
+    }
+    desired = {
+        ";星空蓝;15*15cm无织唛;": {
+            "itemNum": "0968",
+            "sellerSku": "0968",
+        }
+    }
+
+    result = _provider_bound_sku_map(
+        current=current,
+        draft=draft,
+        desired=desired,
+        shop_id=shop_id,
+        warehouse_id="warehouse-ph",
+    )
+
+    assert list(result) == [";color-blue;size-15;"]
+    assert result[";color-blue;size-15;"]["itemNum"] == "0968"
+
+
+def test_prewrite_variant_binding_failure_is_zero_write_rejection() -> None:
+    calls: list[tuple[str, dict]] = []
+
+    def post(path: str, body: dict) -> dict:
+        calls.append((path, deepcopy(body)))
+        if path.endswith("get_site_collect_item_info"):
+            return {
+                "result": "success",
+                "data": {
+                    "siteCollectItemInfo": {
+                        "skuMap": {
+                            ";opaque;": {
+                                "itemNum": "source-offer",
+                                "stock": 300,
+                            }
+                        },
+                        "collectBoxDetailShopList": [
+                            {"shopId": SHOP_IDS["tiktok:LH_PH"]}
+                        ],
+                    },
+                    "ossMd5": "revision-prewrite",
+                },
+            }
+        if path.endswith("get_shop_warehouse_list"):
+            return {
+                "result": "success",
+                "data": {
+                    "shopWarehouseList": [
+                        {
+                            "shopId": str(body["shopIds"][0]),
+                            "warehouseList": [
+                                {
+                                    "warehouseId": "warehouse-ph",
+                                    "warehouseEffectStatus": "1",
+                                    "isDefault": "1",
+                                }
+                            ],
+                        }
+                    ]
+                },
+            }
+        raise AssertionError("a pre-write failure must not send a save request")
+
+    snapshot = _snapshot()
+    target = snapshot["publication_targets"][0]
+    draft = _draft_payload(
+        snapshot,
+        target=target,
+        category=CategoryResolver().resolve(
+            target=target,
+            product=snapshot["product"],
+            skus=snapshot["skus"],
+        ),
+    )
+    fact = MiaoshouOpenApiTikTokV4DraftTransport(
+        common_detail_id="5001",
+        post=post,
+    ).save_draft(
+        identity={
+            "target_label": "tiktok:LH_PH",
+            "detail_id": "7301",
+            "shop_id": SHOP_IDS["tiktok:LH_PH"],
+        },
+        draft=draft,
+    )
+
+    assert fact.operation == "SAVE_DRAFT"
+    assert fact.outcome == "REJECTED"
+    assert not any(path.endswith("save_site_collect_item_info") for path, _ in calls)
+
+
+def test_read_only_preparation_retries_but_save_is_sent_once() -> None:
+    calls: list[str] = []
+    read_attempts = 0
+    warehouse_attempts = 0
+
+    def post(path: str, body: dict) -> dict:
+        nonlocal read_attempts, warehouse_attempts
+        calls.append(path)
+        if path.endswith("get_site_collect_item_info"):
+            read_attempts += 1
+            if read_attempts == 1:
+                raise MiaoshouBusinessRejectedError("draft is materializing")
+            return _editable_site_payload(site=body["site"], revision="retry-md5")
+        if path.endswith("get_shop_warehouse_list"):
+            warehouse_attempts += 1
+            if warehouse_attempts == 1:
+                raise MiaoshouBusinessRejectedError("warehouse is materializing")
+            shop_id = str(body["shopIds"][0])
+            return {
+                "result": "success",
+                "data": {
+                    "shopWarehouseList": [
+                        {
+                            "shopId": shop_id,
+                            "warehouseList": [
+                                {
+                                    "warehouseId": f"warehouse-{shop_id}",
+                                    "warehouseEffectStatus": "1",
+                                    "isDefault": "1",
+                                }
+                            ],
+                        }
+                    ]
+                },
+            }
+        if path.endswith("save_site_collect_item_info"):
+            return {"result": "success", "data": {}}
+        raise AssertionError(path)
+
+    snapshot = _snapshot()
+    target = snapshot["publication_targets"][0]
+    fact = MiaoshouOpenApiTikTokV4DraftTransport(
+        common_detail_id="5001",
+        post=post,
+        read_retry_seconds=0,
+    ).save_draft(
+        identity={
+            "target_label": "tiktok:LH_PH",
+            "detail_id": "7301",
+            "shop_id": SHOP_IDS["tiktok:LH_PH"],
+        },
+        draft=_draft_payload(
+            snapshot,
+            target=target,
+            category=CategoryResolver().resolve(
+                target=target,
+                product=snapshot["product"],
+                skus=snapshot["skus"],
+            ),
+        ),
+    )
+
+    assert fact.outcome == "ACCEPTED"
+    assert read_attempts == 2
+    assert warehouse_attempts == 0
+    assert sum(path.endswith("save_site_collect_item_info") for path in calls) == 1
+
+
 def test_production_seam_reuses_exact_claimed_target_identities_without_reclaim() -> None:
     calls: list[tuple[str, dict]] = []
     observed: list[DraftWriteFact] = []
@@ -540,8 +877,8 @@ def test_production_seam_reuses_exact_claimed_target_identities_without_reclaim(
     assert receipt["external_write_count"] == 2
     assert [fact.operation for fact in observed] == [
         "IDENTITY_OBSERVED",
-        "SAVE_DRAFT",
         "IDENTITY_OBSERVED",
+        "SAVE_DRAFT",
         "SAVE_DRAFT",
     ]
     assert not any(path.endswith("claim_to_shop") for path, _ in calls)

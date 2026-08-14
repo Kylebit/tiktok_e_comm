@@ -19,8 +19,12 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
+import re
 import time
 from typing import Any, Mapping, Protocol
+from modules.shopee.global_copy import localized_semantic_line_matches
+
+from modules.shopee.global_copy import contains_vietnamese_language_features
 
 
 REGIONAL_CURRENCIES = {
@@ -70,6 +74,13 @@ class ShopeeRegionRuntime(Protocol):
         self, context: RegionContext, global_item_id: str
     ) -> str | None: ...
 
+    def discover_existing_regional_item(
+        self,
+        context: RegionContext,
+        global_item_id: str,
+        model_skus: tuple[str, ...],
+    ) -> str | None: ...
+
     def publish_task_result(
         self, context: RegionContext, task_id: str
     ) -> object: ...
@@ -82,6 +93,23 @@ class ShopeeRegionRuntime(Protocol):
 
     def enable_applicable_logistics(
         self, context: RegionContext, item_id: str
+    ) -> Mapping[str, object]: ...
+
+    def localize_regional_copy(
+        self,
+        context: RegionContext,
+        *,
+        english_title: str,
+        english_description: str,
+    ) -> Mapping[str, object]: ...
+
+    def update_regional_copy(
+        self,
+        context: RegionContext,
+        item_id: str,
+        *,
+        title: str,
+        description: str,
     ) -> Mapping[str, object]: ...
 
     def regional_models(
@@ -147,7 +175,6 @@ def dispatch_selected_regions(
         region = target.split(":", 1)[1]
         try:
             approved_models = _approved_models(snapshot, target)
-            approved_title, approved_description = _approved_copy(snapshot)
             approved_item_sku = _expected_item_sku(snapshot)
             parcel = _parcel_envelope(snapshot)
             context = runtime.context(region)
@@ -175,13 +202,17 @@ def dispatch_selected_regions(
                 approved_models=approved_models,
                 tiers=tiers,
                 logistics=logistics,
-                item_name=approved_title,
-                description=approved_description,
                 item_sku=approved_item_sku,
             )
             existing_item_id = runtime.existing_regional_item(
                 context, global_id
             )
+            if not existing_item_id:
+                existing_item_id = runtime.discover_existing_regional_item(
+                    context,
+                    global_id,
+                    tuple(sorted(row["model_sku"] for row in approved_models)),
+                )
         except Exception as error:
             results.append(
                 _target_fact(
@@ -307,6 +338,7 @@ def readback_dispatched_regions(
             continue
         task_id = str(source.get("provider_task_id") or "").strip()
         existing_item_id = str(source.get("existing_item_id") or "").strip()
+        is_existing_identity = bool(existing_item_id)
         region = target.split(":", 1)[1]
         try:
             if not task_id and not existing_item_id:
@@ -360,11 +392,104 @@ def readback_dispatched_regions(
             listing_attempted = False
             listing_error_type = ""
             listing_write_count: int | None = 0
-            if (
+            should_list = (
                 isinstance(item, Mapping)
                 and str(item.get("item_status") or "").strip().upper()
                 == "UNLIST"
+            )
+            logistics_attempted = False
+            logistics_error_type = ""
+            logistics_write_count: int | None = 0
+            expected_title, expected_description = _approved_copy(snapshot)
+            copy_repair_attempted = False
+            copy_repair_error_type = ""
+            copy_write_count: int | None = 0
+            repaired_copy: tuple[str, str] | None = None
+            if region in {"TH", "VN"} and not _regional_copy_matches(
+                item,
+                region=region,
+                english_title=expected_title,
+                english_description=expected_description,
             ):
+                copy_repair_attempted = True
+                try:
+                    localized = runtime.localize_regional_copy(
+                        context,
+                        english_title=expected_title,
+                        english_description=expected_description,
+                    )
+                    localized_title = str(localized.get("title") or "").strip()
+                    localized_description = str(
+                        localized.get("description") or ""
+                    ).strip()
+                    if not _localized_copy_matches(
+                        localized_title,
+                        localized_description,
+                        region=region,
+                    ):
+                        raise ShopeeRegionContractError(
+                            "localized regional copy failed language validation"
+                        )
+                except Exception as error:
+                    copy_repair_error_type = type(error).__name__
+                else:
+                    repaired_copy = (localized_title, localized_description)
+                    try:
+                        repair_receipt = runtime.update_regional_copy(
+                            context,
+                            item_id,
+                            title=localized_title,
+                            description=localized_description,
+                        )
+                        copy_write_count = _nonnegative_write_count(
+                            repair_receipt.get("external_write_count"),
+                            "copy repair write count",
+                        )
+                    except Exception as error:
+                        # The update transport may have lost its response after
+                        # Shopee accepted the change. Never retry blindly;
+                        # official readback below is authoritative.
+                        copy_repair_error_type = type(error).__name__
+                        copy_write_count = None
+                    item = runtime.regional_item(context, item_id)
+            if should_list and is_existing_identity:
+                # An existing UNLIST item has no provider task identity to
+                # rescue us from a wrong candidate.  Prove every immutable
+                # commercial and copy fact before making the one listing
+                # write; only the expected NORMAL status is deferred.
+                prelisting_models = runtime.regional_models(context, item_id)
+                prelisting_linkage = runtime.resolved_global_item_id(
+                    context, item_id
+                )
+                prelisting_checks = _official_readback_checks(
+                    item=item,
+                    models=prelisting_models,
+                    resolved_global_item_id=prelisting_linkage,
+                    expected_global_item_id=global_id,
+                    expected_models=approved_models,
+                    expected_tiers=expected_tiers,
+                    expected_logistics=_positive_int_list(
+                        source.get("selected_logistics_ids"),
+                        "selected logistics",
+                    ),
+                    expected_image_count=_approved_image_count(snapshot),
+                    expected_item_sku=_expected_item_sku(snapshot),
+                    expected_category_id=_expected_category_id(snapshot, target),
+                    expected_title=expected_title,
+                    expected_description=expected_description,
+                    expected_region=region,
+                    repaired_copy=repaired_copy,
+                    item_id=item_id,
+                )
+                if not all(
+                    value
+                    for name, value in prelisting_checks.items()
+                    if name != "normal_status_exact"
+                ):
+                    raise ShopeeRegionContractError(
+                        "existing UNLIST regional item does not match approved facts"
+                    )
+            if should_list:
                 listing_attempted = True
                 try:
                     runtime.list_item(context, item_id)
@@ -376,26 +501,8 @@ def readback_dispatched_regions(
                     listing_error_type = type(error).__name__
                     listing_write_count = None
                 item = runtime.regional_item(context, item_id)
-            logistics_attempted = False
-            logistics_error_type = ""
-            logistics_write_count: int | None = 0
-            if _has_disabled_logistics(item):
-                logistics_attempted = True
-                try:
-                    logistics_receipt = runtime.enable_applicable_logistics(
-                        context, item_id
-                    )
-                    logistics_write_count = _nonnegative_write_count(
-                        logistics_receipt.get("external_write_count"),
-                        "logistics write count",
-                    )
-                except Exception as error:
-                    logistics_error_type = type(error).__name__
-                    logistics_write_count = None
-                item = runtime.regional_item(context, item_id)
             models = runtime.regional_models(context, item_id)
             linkage = runtime.resolved_global_item_id(context, item_id)
-            expected_title, expected_description = _approved_copy(snapshot)
             checks = _official_readback_checks(
                 item=item,
                 models=models,
@@ -412,6 +519,8 @@ def readback_dispatched_regions(
                 expected_category_id=_expected_category_id(snapshot, target),
                 expected_title=expected_title,
                 expected_description=expected_description,
+                expected_region=region,
+                repaired_copy=repaired_copy,
                 item_id=item_id,
             )
             verified = all(checks.values())
@@ -450,11 +559,18 @@ def readback_dispatched_regions(
                     "listing_error_type": listing_error_type,
                     "logistics_attempted": logistics_attempted,
                     "logistics_error_type": logistics_error_type,
+                    "copy_repair_attempted": copy_repair_attempted,
+                    "copy_repair_error_type": copy_repair_error_type,
                     "external_write_count": (
                         None
                         if listing_write_count is None
                         or logistics_write_count is None
-                        else listing_write_count + logistics_write_count
+                        or copy_write_count is None
+                        else (
+                            listing_write_count
+                            + logistics_write_count
+                            + copy_write_count
+                        )
                     ),
                 }
             )
@@ -588,6 +704,71 @@ class OfficialShopeeRegionRuntime:
             )
         return item_id
 
+    def discover_existing_regional_item(
+        self,
+        context: RegionContext,
+        global_item_id: str,
+        model_skus: tuple[str, ...],
+    ) -> str | None:
+        """Bounded, read-only recovery for an absent local shop-item mapping."""
+        from modules.shopee.client import shop_get
+
+        expected_skus = set(model_skus)
+        if not expected_skus or len(expected_skus) != len(model_skus):
+            raise ShopeeRegionContractError("approved regional Model-SKU set is invalid")
+        candidate_ids: list[str] = []
+        # Existing regional work may have stopped after Shopee created the
+        # exact item as UNLIST. Recover it safely, but never discover/revive a
+        # BANNED identity. Each status has its own bounded official listing.
+        for status in ("NORMAL", "UNLIST"):
+            offset = 0
+            for _page in range(10):
+                response = shop_get(
+                    "/api/v2/product/get_item_list",
+                    context.shop_id,
+                    context.shop_token,
+                    {"offset": offset, "page_size": 100, "item_status": status},
+                )
+                _raise_provider_error(response, "official regional item discovery")
+                payload = response.get("response") or {}
+                rows = payload.get("item")
+                if not isinstance(rows, list):
+                    raise RuntimeError("official regional item discovery is malformed")
+                page_ids = [
+                    str(row.get("item_id") or "").strip()
+                    for row in rows
+                    if isinstance(row, Mapping)
+                ]
+                if len(page_ids) != len(rows) or any(not item_id.isdigit() for item_id in page_ids):
+                    raise RuntimeError("official regional item discovery identities are malformed")
+                for item_id in page_ids:
+                    models = self.regional_models(context, item_id)
+                    observed_skus = {
+                        str(row.get("model_sku") or "").strip()
+                        for row in models
+                        if str(row.get("model_sku") or "").strip()
+                    }
+                    if observed_skus != expected_skus or len(models) != len(expected_skus):
+                        continue
+                    linkage = self.resolved_global_item_id(context, item_id)
+                    if linkage != global_item_id:
+                        raise ShopeeRegionContractError(
+                            "regional Model-SKU candidate belongs to a different global item"
+                        )
+                    candidate_ids.append(item_id)
+                if payload.get("has_next_page") is not True:
+                    break
+                next_offset = payload.get("next_offset")
+                if type(next_offset) is not int or next_offset <= offset:
+                    raise RuntimeError("official regional item discovery pagination is invalid")
+                offset = next_offset
+            else:
+                raise RuntimeError("official regional item discovery exceeded page bound")
+        unique_ids = sorted(set(candidate_ids))
+        if len(unique_ids) > 1:
+            raise ShopeeRegionContractError("regional item discovery is ambiguous")
+        return unique_ids[0] if unique_ids else None
+
     def publish_task_result(
         self, context: RegionContext, task_id: str
     ) -> object:
@@ -660,6 +841,56 @@ class OfficialShopeeRegionRuntime:
         return {
             "external_write_count": attempts,
             "enabled_logistic_ids": receipt.get("enabled_logistic_ids") or [],
+        }
+
+    def localize_regional_copy(
+        self,
+        context: RegionContext,
+        *,
+        english_title: str,
+        english_description: str,
+    ) -> Mapping[str, object]:
+        from modules.shopee.global_copy import localize_shopee_copy
+
+        return localize_shopee_copy(
+            english_title=english_title,
+            english_description=english_description,
+            region=context.region,
+        )
+
+    def update_regional_copy(
+        self,
+        context: RegionContext,
+        item_id: str,
+        *,
+        title: str,
+        description: str,
+    ) -> Mapping[str, object]:
+        from modules.shopee.publish import update_local_listing_copy
+
+        receipt = update_local_listing_copy(
+            shop_id=context.shop_id,
+            token=context.shop_token,
+            item_id=int(item_id),
+            title=title,
+            description=description,
+        )
+        logistics = receipt.get("logistics")
+        newly_enabled = (
+            logistics.get("newly_enabled_logistic_ids")
+            if isinstance(logistics, Mapping)
+            else []
+        )
+        rejected = (
+            logistics.get("rejected_logistics")
+            if isinstance(logistics, Mapping)
+            else []
+        )
+        return {
+            "external_write_count": (
+                1 + len(newly_enabled or []) + len(rejected or [])
+            ),
+            "verified": receipt.get("verified") is True,
         }
 
     def regional_models(
@@ -955,8 +1186,6 @@ def _publish_body(
     approved_models: list[Mapping[str, str]],
     tiers: Mapping[str, list[int]],
     logistics: list[int],
-    item_name: str,
-    description: str,
     item_sku: str,
 ) -> dict[str, object]:
     prices = [Decimal(row["price"]) for row in approved_models]
@@ -968,8 +1197,9 @@ def _publish_body(
             # This merchant rejects a regional create task that requests
             # NORMAL directly.  Create an exact UNLIST item, wait for the
             # task, then list it through the official shop endpoint.
-            "item_name": item_name,
-            "description": description,
+            # Do not send regional copy. Shopee derives it from the approved
+            # English Global master and applies the destination language.
+            # Supplying English here overrides that provider translation.
             "item_status": "UNLIST",
             "item_sku": item_sku,
             "original_price": _provider_price(min(prices)),
@@ -1012,6 +1242,8 @@ def _official_readback_checks(
     expected_category_id: str,
     expected_title: str,
     expected_description: str,
+    expected_region: str,
+    repaired_copy: tuple[str, str] | None,
     item_id: str,
 ) -> dict[str, bool]:
     expected = {row["model_sku"]: row for row in expected_models}
@@ -1073,6 +1305,27 @@ def _official_readback_checks(
         if isinstance(item, Mapping)
         else ""
     )
+    observed_title = (
+        str(item.get("item_name") or "").strip()
+        if isinstance(item, Mapping)
+        else ""
+    )
+    observed_description = (
+        str(item.get("description") or "").strip()
+        if isinstance(item, Mapping)
+        else ""
+    )
+    copy_exact = (
+        observed_title == repaired_copy[0]
+        and observed_description == repaired_copy[1]
+        if repaired_copy is not None
+        else _regional_copy_matches(
+            item,
+            region=expected_region,
+            english_title=expected_title,
+            english_description=expected_description,
+        )
+    )
     return {
         "item_identity_exact": (
             isinstance(item, Mapping)
@@ -1102,25 +1355,75 @@ def _official_readback_checks(
         ),
         "applicable_logistics_enabled": (
             logistic_rows_valid
-            and applicable_logistic_ids == enabled_logistics
-            and bool(expected_logistics)
+            and bool(enabled_logistics)
         ),
         "category_exact_when_returned": (
             not observed_category_id
             or not expected_category_id
             or observed_category_id == expected_category_id
         ),
-        "copy_exact": (
-            isinstance(item, Mapping)
-            and str(item.get("item_name") or "").strip() == expected_title
-            and str(item.get("description") or "").strip()
-            == expected_description
-        ),
+        "copy_exact": copy_exact,
         "images_present": (
             isinstance(image_urls, list)
             and len(image_urls) >= max(1, expected_image_count)
         ),
     }
+
+
+def _regional_copy_matches(
+    item: Mapping[str, object] | None,
+    *,
+    region: str,
+    english_title: str,
+    english_description: str,
+) -> bool:
+    if not isinstance(item, Mapping):
+        return False
+    title = str(item.get("item_name") or "").strip()
+    description = str(item.get("description") or "").strip()
+    if region in {"PH", "MY"}:
+        return title == english_title and description == english_description
+    return _localized_copy_matches(title, description, region=region)
+
+
+def _localized_copy_matches(title: str, description: str, *, region: str) -> bool:
+    if not title or not description:
+        return False
+    if region == "TH":
+        return _contains_thai(title) and _localized_description_matches(
+            description, region=region
+        )
+    if region == "VN":
+        return _contains_vietnamese(title) and _localized_description_matches(
+            description, region=region
+        )
+    return False
+
+
+_SEMANTIC_LINE_SPLIT_RE = re.compile(r"(?:\r?\n|[\u2022\u25cf\u25aa\u25e6])+")
+
+
+def _localized_description_matches(description: str, *, region: str) -> bool:
+    """Require every meaningful description line to be localized."""
+
+    lines = [
+        line.strip()
+        for line in _SEMANTIC_LINE_SPLIT_RE.split(description)
+        if line.strip()
+    ]
+    if not lines:
+        return False
+    return all(
+        localized_semantic_line_matches(line, site=region) for line in lines
+    )
+
+
+def _contains_thai(value: str) -> bool:
+    return any("\u0e00" <= char <= "\u0e7f" for char in value)
+
+
+def _contains_vietnamese(value: str) -> bool:
+    return contains_vietnamese_language_features(value)
 
 
 def _regional_model_price(row: Mapping[str, object], currency: str) -> Decimal | None:

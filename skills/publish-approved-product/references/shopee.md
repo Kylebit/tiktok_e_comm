@@ -24,6 +24,20 @@ Before the first provider write it must:
    resolve uniquely; missing required attributes or warehouse identity blocks
    before upload.
 
+For the approved semantic `餐具 > 餐垫、杯垫` (including exact English
+`Placemat(s) & Coaster(s)` aliases), accept only the official publishable leaf
+whose own leaf semantic is `Placemats & Coasters`. Do not substitute
+`Table Cloths`, `Others`, title keywords, or a TikTok category fallback.
+
+For the approved semantic `背景墙 > 墙纸、壁纸`, accept only the official
+publishable leaf `101157` (`Wallpapers & Wall Stickers`). If its sole required
+attribute is `100818 Seasonal Decoration`, use only the official dictionary
+value `4228` (`No`): Kyle has approved all such products as non-seasonal.
+Do not infer another category or synthesize values for any other required
+attribute. Final global-item readback must still prove the exact category and
+the selected `100818=4228` attribute; absent, changed, or ambiguous official
+facts fail closed before regional publication.
+
 Checkpoint provider identities in this order: uploaded image IDs, returned
 `global_item_id`, then returned global model IDs. Each checkpoint happens
 immediately after its provider call and before the next fallible operation.
@@ -113,9 +127,10 @@ For each selected shop:
 2. Read the target shop identity and `get_channel_list`; select only logistics
    channels compatible with the approved parcel.
 3. Build one legacy CNSC `create_publish_task` request with `global_item_id`,
-   `shop_id`, `shop_region`, the exact approved title/description/item SKU,
-   target logistics, one local-price row for every approved model tier, and
-   `item_status=UNLIST`.
+   `shop_id`, `shop_region`, the exact approved item SKU, target logistics,
+   one local-price row for every approved model tier, and
+   `item_status=UNLIST`. Do **not** send regional `item_name` or `description`:
+   Shopee must derive destination copy from the verified English Global master.
 4. Save the returned `publish_task_id` as the submission identity.
 5. Poll `get_publish_task_result` until `success` or `failed`; a timeout or
    malformed response is an unknown accepted outcome, never a safe resubmit.
@@ -127,7 +142,42 @@ For each selected shop:
    `get_item_base_info` plus `get_model_list` again.
 8. Resolve the regional item back to the same `global_item_id` and verify item
    state, all Model SKUs, each local price/currency, logistics, copy and images.
+   PH/MY may retain the English Global copy. TH must contain Thai copy and VN
+   must contain Vietnamese copy. For TH/VN descriptions, each semantic line
+   that contains letters must include that target language on the same line;
+   a line made only of numbers, dimensions, punctuation, and bullets may remain
+   language-neutral. Do not treat a Latin material or unit token as localized
+   unless its line also has the target-language label.
 9. Report success for that shop only after the regional official readback.
+
+If official TH/VN readback is still English, do not create another regional
+item and do not repeat `create_publish_task`. Generate localized copy from the
+same frozen English Global master, update that exact existing `item_id` through
+the official shop update API, and read the same item again. A lost update
+response is an unknown write outcome; official readback decides whether the
+repair took effect. Only the repaired target is affected.
+
+## Confirmed incident: explicit English copy disabled regional translation
+
+Symptom: PH/MY/TH/VN regional items were all created with the same English
+title and description even though earlier Shopee Global-to-shop publication
+had produced Thai and Vietnamese shop copy.
+
+Confirmed cause: the v4 regional adapter explicitly sent the English Global
+master as `item.item_name` and `item.description` in
+`create_publish_task`. Those optional overrides replaced Shopee's destination
+copy derivation.
+
+Permanent handling:
+
+1. Keep English title and description on the CNSC Global master.
+2. Omit `item_name` and `description` from every regional create task.
+3. Keep exact parent SKU, Model tiers, local prices, parcel and logistics in
+   the regional request; copy omission must not remove those facts.
+4. Officially read every created or existing shop item.
+5. Accept English for PH/MY; require Thai for TH and Vietnamese for VN.
+6. Repair an English TH/VN item in place, then officially read it again.
+7. Never create a duplicate item merely to correct language.
 
 The approved snapshot must retain both price identities for every target:
 
@@ -222,6 +272,18 @@ Permanent handling:
    readback directly with zero create writes. Never create a duplicate merely
    because the prior run has already finished.
 
+When that local regional identity is absent, perform bounded official `NORMAL`
+and `UNLIST` item discovery before creating (at most ten pages per status).
+Never discover, reuse, or list a `BANNED` identity. Reuse only one candidate
+whose complete Model-SKU set and resolved Global identity are exact for the
+same shop and region; zero candidates may continue to the normal create path,
+while multiple candidates across either status or any identity ambiguity fail
+closed. Before listing a recovered `UNLIST` item, require every approved
+commercial, copy, image, linkage and logistics fact to be exact; then list that
+same item once and rely on official readback if its response is lost. Persist
+the recovered local identity only through `record_shop_item` after the complete
+official `NORMAL` readback succeeds.
+
 ## Confirmed incident: regional numeric prices were serialized as strings
 
 Observed on Offer `3882722296` for MY: the exact approved regional task was
@@ -256,10 +318,15 @@ Permanent handling:
    one parcel-compatible option.
 2. After creation, treat the exact item `logistic_info` as the authoritative
    applicable set; Shopee may remove candidates or add a default channel.
-3. Enable every disabled channel returned on that exact item, one at a time,
-   preserving provider rejections and unknown write outcomes.
-4. Re-read the item and require at least one well-formed logistics row and all
-   returned rows enabled. Do not require equality with the preflight set.
+3. Do not force-enable the full provider-selected set merely to satisfy
+   verification. If no applicable row is enabled, report the mismatch; a
+   later user-authorized repair may enable an explicitly approved channel and
+   must preserve provider rejections and unknown write outcomes.
+4. Re-read the item and require at least one well-formed applicable logistics
+   row to be enabled. Provider-selected applicable rows may remain disabled;
+   do not force-enable every returned row merely to satisfy verification.
+   Only user-approved required logistics IDs may impose stricter per-ID
+   enablement.
 5. This relaxation applies only to logistics identity. SKU, model price,
    copy, images, status and global linkage remain exact checks.
 

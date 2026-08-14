@@ -71,12 +71,13 @@
   ]);
 
   const QUEUE_STORAGE_KEY = "orbit.productWorkspace.releaseQueue.v1";
-  const LISTING_COPY_POLICY_VERSION = "listing-copy-candidates-v6";
+  const LISTING_COPY_POLICY_VERSION = "listing-copy-candidates-v8";
   const MAX_QUEUE_ITEMS = 50;
   const QUEUE_REFRESH_CONCURRENCY = 4;
   let currentData = null;
   let approvalSubmitting = false;
   let factsSubmitting = false;
+  let productFactsDraftDirty = false;
   let titleDraftSubmitting = false;
   let titleAdoptSubmitting = false;
   let releaseSubmitting = false;
@@ -4916,6 +4917,21 @@
     return payload;
   }
 
+  async function resetTestOffer(key) {
+    const item = queueItem(key);
+    if (!item) throw new Error("queue product was not found");
+    const confirmed = window.confirm(
+      `将 Offer ${item.offer_id} 移出队列，并清理它尚未发布的本地工作状态与 SKU 预留。\n\n`
+      + "如果已经写入真实平台，系统会拒绝清理并说明原因。是否继续？",
+    );
+    if (!confirmed) return false;
+    await postProductWorkspace("/api/product-workspace/reset-test-offer", {
+      offer_id: item.offer_id,
+      user_approved: true,
+    });
+    return true;
+  }
+
   function dashboardFromPayload(payload) {
     if (payload?.product) return payload;
     if (payload?.dashboard?.product) return payload.dashboard;
@@ -5170,7 +5186,7 @@
               ${esc(switchLabel)}
             </button>
             <button type="button" data-action="remove" data-key="${esc(key)}"
-                    ${isCurrent || approvalSubmitting ? "disabled" : ""}>
+                    ${item.loading || approvalSubmitting ? "disabled" : ""}>
               移出队列
             </button>
           </footer>
@@ -5487,6 +5503,98 @@
     updateFactsEditControls();
   }
 
+  function captureProductFactsDraft() {
+    const form = $("#productFactsForm");
+    const product = currentData?.product || {};
+    if (
+      !productFactsDraftDirty
+      || !form
+      || form.dataset.locked !== "false"
+      || !product.offer_id
+    ) return null;
+    const commercial = {};
+    form.querySelectorAll(".sku-commercial-input").forEach((field) => {
+      const key = String(field.dataset.skuKey || "");
+      const name = String(field.dataset.commercialField || "");
+      if (!key || !name) return;
+      commercial[key] ||= {};
+      commercial[key][name] = field.value;
+    });
+    return {
+      offerId: String(product.offer_id),
+      revision: String(form.dataset.revision || ""),
+      fields: {
+        title: $("#factsEditTitle").value,
+        cost: $("#factsEditCost").value,
+        weight: $("#factsEditWeight").value,
+        length: $("#factsEditLength").value,
+        width: $("#factsEditWidth").value,
+        height: $("#factsEditHeight").value,
+      },
+      selectedSkuKeys: [...form.querySelectorAll(
+        'input[name="selected_sku_key"]:checked',
+      )].map((field) => field.value),
+      labels: Object.fromEntries([...form.querySelectorAll(".sku-label-input")]
+        .map((field) => [String(field.dataset.skuKey || ""), field.value])),
+      commercial,
+    };
+  }
+
+  function restoreProductFactsDraft(draft, { allowRevisionChange = false } = {}) {
+    if (!draft) return;
+    const form = $("#productFactsForm");
+    const product = currentData?.product || {};
+    if (
+      String(product.offer_id || "") !== draft.offerId
+      || (
+        !allowRevisionChange
+        && String(form.dataset.revision || "") !== draft.revision
+      )
+      || form.dataset.locked !== "false"
+    ) return;
+    const ids = {
+      title: "#factsEditTitle",
+      cost: "#factsEditCost",
+      weight: "#factsEditWeight",
+      length: "#factsEditLength",
+      width: "#factsEditWidth",
+      height: "#factsEditHeight",
+    };
+    Object.entries(ids).forEach(([name, selector]) => {
+      $(selector).value = draft.fields[name];
+    });
+    const selected = new Set(draft.selectedSkuKeys);
+    form.querySelectorAll('input[name="selected_sku_key"]').forEach((field) => {
+      field.checked = selected.has(field.value);
+    });
+    form.querySelectorAll(".sku-label-input").forEach((field) => {
+      const key = String(field.dataset.skuKey || "");
+      if (Object.hasOwn(draft.labels, key)) field.value = draft.labels[key];
+    });
+    form.querySelectorAll(".sku-commercial-input").forEach((field) => {
+      const key = String(field.dataset.skuKey || "");
+      const name = String(field.dataset.commercialField || "");
+      if (Object.hasOwn(draft.commercial[key] || {}, name)) {
+        field.value = draft.commercial[key][name];
+      }
+    });
+    productFactsDraftDirty = true;
+    updateFactsEditControls();
+    $("#factsEditMessage").textContent =
+      "未保存的商品修改已保留；保存后才会建立新 revision。";
+  }
+
+  async function saveDirtyProductFactsBeforeAction(actionLabel = "继续") {
+    if (!productFactsDraftDirty) return true;
+    const saved = await submitFactsEdit();
+    if (!saved) {
+      $("#factsEditMessage").textContent =
+        `请先修正并保存商品事实，才能${actionLabel}；当前草稿仍保留。`;
+      return false;
+    }
+    return true;
+  }
+
   function renderTitleDraft(data) {
     const draft = data.listing_copy || {};
     const candidates = Array.isArray(draft.candidates) ? draft.candidates : [];
@@ -5552,7 +5660,7 @@
         ? "候选与当前商品事实不匹配，不能采用"
         : (locked
           ? "候选待 Kyle 显式采用；采用会废止旧审批、旧发布计划和未完成运行"
-          : "候选待 Kyle 采用")));
+          : "AI 候选为只读预览；请直接在上方正式英文标题中修改并保存")));
     $("#titleDraftStatus").textContent =
       `${status} · 模型 ${draft.model || "未记录"} · 规则 ${draft.policy_version || "未记录"} · 输入签名 ${(draft.input_signature || "").slice(0, 16)}`;
     const shopeeDescription = String(draft.shopee_description_en || "").trim();
@@ -5573,15 +5681,16 @@
           <small>${esc(row.language || "")}${row.limit ? ` · ≤${esc(row.limit)}` : ""}</small>
         </div>
         <strong>${esc(row.title || "")}</strong>
-        ${row.master ? `<button class="button button-secondary adopt-title-candidate"
+        ${row.master && locked ? `<button class="button button-secondary adopt-title-candidate"
           type="button" data-title="${esc(row.title || "")}"
           ${titleAdoptSubmitting || stale || adopted ? "disabled" : ""}>${
             titleAdoptSubmitting
               ? "正在采用并废止旧版本…"
-              : (locked
-                ? "采用并废止旧审批 / 发布计划"
-                : "采用为正式英文标题")
-          }</button>` : ""}
+              : "采用并废止旧审批 / 发布计划"
+          }</button>` : (row.master ? `
+          <small class="title-candidate-guidance">
+            只读 AI 候选；上方“正式英文商品标题”是唯一编辑位置。
+          </small>` : "")}
       </article>
     `).join("") + (shopeeDescription ? `
       <article class="title-candidate title-description-candidate">
@@ -5598,6 +5707,7 @@
   async function generateTitleDraft() {
     if (!currentData || titleDraftSubmitting || pageLoading) return;
     const product = currentData.product || {};
+    const productTitleAtRequestStart = String(product.title || "");
     const draft = currentData.listing_copy || {};
     const locked = Boolean(product.actual_product_approved || product.fields_locked);
     const lockedStaleRefresh =
@@ -5632,8 +5742,10 @@
           + "同时废止旧 ReleasePlan；不会修改已批准商品事实，也不会写妙手或渠道。"
         )
     )) return;
+    const factsDraftAtRequestStart = captureProductFactsDraft();
     titleDraftSubmitting = true;
     let failureMessage = "";
+    let successMessage = "";
     renderTitleDraft(currentData);
     updateReleaseControls(currentData);
     $("#titleDraftStatus").textContent =
@@ -5657,15 +5769,33 @@
         ) ? "Kyle" : "",
       });
       const data = dashboardFromPayload(payload) || payload.dashboard || currentData;
+      const preservedFactsDraft = captureProductFactsDraft();
+      const draftFieldValue = (draft, id) => String(
+        (draft?.fields || []).find((field) => field.id === id)?.value || "",
+      );
+      const preserveEditedTitle = Boolean(
+        preservedFactsDraft?.dirty
+        && (
+          draftFieldValue(factsDraftAtRequestStart, "factsEditTitle")
+            !== productTitleAtRequestStart
+          || draftFieldValue(preservedFactsDraft, "factsEditTitle")
+            !== draftFieldValue(factsDraftAtRequestStart, "factsEditTitle")
+        )
+      );
       currentData = data;
       const item = queueItem(currentQueueKey);
       if (item) item.data = data;
       render(data);
+      restoreProductFactsDraft(preservedFactsDraft, { allowRevisionChange: true });
       const master = String(data.listing_copy?.semantic_master_en || "").trim();
-      if (master) {
+      if (master && !locked && !preserveEditedTitle) {
         $("#factsEditTitle").value = master;
+        productFactsDraftDirty = true;
+        updateFactsEditControls();
         $("#factsEditMessage").textContent =
           "已把英文语义母版放入正式标题输入框；请核对后点击“保存并确认商品事实 · 刷新全部售价”。";
+        successMessage =
+          "已填入上方正式英文标题；尚未保存，可以直接修改。最后点击“保存并确认商品事实”才会建立新 revision。";
       }
     } catch (error) {
       if (isStateRevisionConflict(error)) {
@@ -5704,6 +5834,7 @@
       renderTitleDraft(currentData || {});
       updateReleaseControls(currentData || {});
       if (failureMessage) $("#titleDraftStatus").textContent = failureMessage;
+      else if (successMessage) $("#titleDraftStatus").textContent = successMessage;
     }
   }
 
@@ -5716,10 +5847,8 @@
     const sameApprovedTitle =
       candidateTitle === String(product.title || "").trim();
     if (!locked) {
-      $("#factsEditTitle").value = candidateTitle;
-      $("#factsEditMessage").textContent =
-        "已采用 ToAPI 优化的英文语义母版；核对后保存，才会建立新 revision 并刷新全部售价。";
-      $("#factsEditTitle").focus();
+      $("#titleDraftStatus").textContent =
+        "当前商品尚未锁定，不需要执行采用动作；请直接编辑上方正式英文标题并保存。";
       return;
     }
     if (
@@ -5829,21 +5958,21 @@
   }
 
   async function submitFactsEdit() {
-    if (!currentData || factsSubmitting || pageLoading) return;
+    if (!currentData || factsSubmitting || pageLoading) return false;
     const form = $("#productFactsForm");
     if (form.dataset.locked !== "false") {
       $("#factsEditMessage").textContent =
         "当前 revision 已锁定，不能直接覆盖；请先废止旧审批与发布计划。";
-      return;
+      return false;
     }
-    if (!form.reportValidity()) return;
+    if (!form.reportValidity()) return false;
     const selectedSkuKeys = [...form.querySelectorAll(
       'input[name="selected_sku_key"]:checked',
     )].map((input) => input.value);
     if (!selectedSkuKeys.length) {
       $("#factsEditMessage").textContent = "请至少保留一个真实可采购的来源规格。";
       $("#productSpecGrid").focus?.();
-      return;
+      return false;
     }
     const skuLabelOverrides = {};
     const skuCommercialFacts = {};
@@ -5855,7 +5984,7 @@
       if (!label) {
         $("#factsEditMessage").textContent = "发布规格名称不能为空。";
         input?.focus();
-        return;
+        return false;
       }
       skuLabelOverrides[key] = label;
       const commercialField = (name) => [...form.querySelectorAll(
@@ -5877,7 +6006,7 @@
       ) {
         $("#factsEditMessage").textContent = `请完整填写 SKU ${key} 的成本、重量和包装尺寸。`;
         commercialField("cost_cny")?.focus();
-        return;
+        return false;
       }
       skuCommercialFacts[key] = commercial;
     }
@@ -5885,7 +6014,7 @@
     const key = productKey(product.offer_id);
     if (!key || key !== currentQueueKey || loadedQueueKey !== currentQueueKey) {
       showError("当前商品仍在切换中，不能用上一件商品的 revision 保存。");
-      return;
+      return false;
     }
     factsSubmitting = true;
     form.classList.add("is-submitting");
@@ -5913,6 +6042,7 @@
         item.seller_sku = data.product?.seller_sku_candidate || "";
         item.error = "";
       }
+      productFactsDraftDirty = false;
       currentData = data;
       loadedQueueKey = currentQueueKey;
       render(data);
@@ -5921,12 +6051,14 @@
       const revision = data.product?.revision ?? payload.revision ?? "新";
       $("#factsEditMessage").textContent =
         `已核对并保存 revision ${revision}；全部国家与店铺售价、费用审计和渠道预检已按新值刷新。当前尚未锁定或发布。`;
+      return true;
     } catch (error) {
       const message = error.status === 409
         ? `保存被拒绝：${friendlyError(error.message)} 请刷新当前商品后再核对。`
         : `保存失败：${friendlyError(error.message)}`;
       $("#factsEditMessage").textContent = message;
       showError(message);
+      return false;
     } finally {
       factsSubmitting = false;
       form.classList.remove("is-submitting");
@@ -6015,8 +6147,29 @@
     updateApprovalButton(data);
   }
 
+  function renderFieldImpactSummary(data) {
+    const node = $("#factsImpactSummary");
+    if (!node) return;
+    const map = data.field_impact_map;
+    if (
+      map?.schema_version !== "product-workflow-field-impacts/v1"
+      || !map.fields
+    ) {
+      node.textContent = "修改影响暂不可用；保存前不会推测或扩大失效范围。";
+      return;
+    }
+    const copySafe = ["cost_cny", "weight_kg", "package_cm"].every(
+      (field) => !(map.fields[field] || []).includes("listing_copy"),
+    );
+    node.textContent = copySafe
+      ? "修改影响：成本、重量和包裹尺寸只会刷新商品审批、售价与发布计划，不会要求重做平台文案；规格名称、类目或商品标题变化才会刷新文案。"
+      : "修改影响：请按当前字段依赖完成受影响步骤。";
+  }
+
   async function submitApproval() {
-    if (!currentData || approvalSubmitting || !approvalEligible(currentData)) return;
+    if (!currentData || approvalSubmitting) return;
+    if (!await saveDirtyProductFactsBeforeAction("批准商品事实")) return;
+    if (!approvalEligible(currentData)) return;
     const approvalWarnings = (currentData.approval?.warnings || [])
       .map(translateBlocker)
       .filter(Boolean);
@@ -6283,6 +6436,7 @@
       || action.actionable !== true
       || action.terminal === true
     ) return;
+    if (!await saveDirtyProductFactsBeforeAction("执行下一步")) return;
     if (action.kind === "content_finalize") {
       const actionButton = $("#nextStepActionButton");
       const offerId = String(currentData?.product?.offer_id || "").trim();
@@ -7377,15 +7531,25 @@
     const supplied = Array.isArray(release?.recovery_actions)
       ? release.recovery_actions.filter((row) => row && row.code)
       : [];
+    const workflow = currentData?.workflow_next_action || {};
+    const workflowRecovery = (
+      workflow.schema_version === "product-workflow-next-action/v1"
+      && workflow.actionable === true
+      && workflow.terminal !== true
+    ) ? [{
+      code: "continue_workflow",
+      label: workflow.label,
+      detail: workflow.detail,
+    }] : [];
     const actions = supplied.length
       ? supplied
       : (
         !release?.plan_approved && !release?.eligible_for_plan_approval
-          ? [{
-            code: "refresh_release_state",
-            label: "重新检查并定位未完成步骤",
-            detail: "重新读取当前商品状态，不会批准、同步或发布。",
-          }]
+          ? (workflowRecovery.length ? workflowRecovery : [{
+              code: "refresh_release_state",
+              label: "重新检查并定位未完成步骤",
+              detail: "重新读取当前商品状态，不会批准、同步或发布。",
+            }])
           : []
       );
     panel.hidden = actions.length === 0;
@@ -7435,6 +7599,10 @@
   async function runReleaseRecovery(actionCode) {
     if (!currentData || pageLoading || releaseSubmitting || approvalSubmitting) return;
     const code = String(actionCode || "");
+    if (code === "continue_workflow") {
+      await runWorkflowNextAction();
+      return;
+    }
     if (code === "review_shopee_global_plan") {
       const identity = shopeeGlobalPlanIdentity(currentData);
       if (!identity) {
@@ -7577,9 +7745,19 @@
         || "当前发布计划尚未满足批准条件。",
       );
     }
-    $("#approveReleasePlanButton").disabled = Boolean(
+    const approvalButton = $("#approveReleasePlanButton");
+    approvalButton.disabled = Boolean(
       approved || !eligible || releasePlanApprovalSubmitting,
     );
+    approvalButton.dataset.disabledReason = approved
+      ? "当前发布计划已经批准，无需重复操作。"
+      : (eligible
+        ? ""
+        : String(
+          currentData?.workflow_next_action?.detail
+          || translateBlocker((release.blockers || [])[0])
+          || "请先完成页面显示的唯一下一步。",
+        ));
     updateReleasePrimaryAction(data);
 
     const prepared = Boolean(release.miaoshou_prepared);
@@ -8440,6 +8618,7 @@
 
   async function approveReleasePlan() {
     if (!currentData || releasePlanApprovalSubmitting) return;
+    if (!await saveDirtyProductFactsBeforeAction("批准发布计划")) return;
     releasePlanApprovalSubmitting = true;
     updateReleaseControls(currentData);
     $("#releasePlanMessage").textContent = "正在重新计算精确计划并校验确认令牌…";
@@ -8925,11 +9104,14 @@
   }
 
   function render(data) {
+    const productFactsDraft = captureProductFactsDraft();
+    productFactsDraftDirty = false;
     currentData = data;
     const stages = stageModel(data);
     renderProduct(data);
     renderTitleDraft(data);
     renderApproval(data);
+    renderFieldImpactSummary(data);
     renderStages(stages);
     renderNextStep(data, stages);
     renderImages(data.content || {});
@@ -8961,6 +9143,7 @@
     $("#workbenchLink").href = studioUrl;
     $("#studioNavLink").href = studioUrl;
     $("#workbenchLink").removeAttribute("aria-disabled");
+    restoreProductFactsDraft(productFactsDraft);
   }
 
   function clearCurrentApprovalContext() {
@@ -8968,6 +9151,7 @@
     resetAllPlatformPublish();
     resetCollectboxAction();
     currentData = null;
+    productFactsDraftDirty = false;
     loadedQueueKey = "";
     $("#releasePlanCheckbox").checked = false;
     $("#prepareMiaoshouCheckbox").checked = false;
@@ -8985,6 +9169,7 @@
       });
     }
     const key = productKey(item.offer_id);
+    const preservedFactsDraft = captureProductFactsDraft();
     item.loading = true;
     item.activity = options.collectIfMissing
       ? "正在检查本地档案；缺失时将立即从妙手采集"
@@ -9029,6 +9214,7 @@
           // disabled until an unrelated later render happens to run.
           pageLoading = false;
           render(data);
+          restoreProductFactsDraft(preservedFactsDraft, { allowRevisionChange: true });
           showError("");
           if (options.collectIfMissing) {
             $("#queueMessage").textContent =
@@ -9068,6 +9254,7 @@
       || releaseSubmitting
       || releasePlanApprovalSubmitting
     ) return;
+    if (key !== currentQueueKey && !await saveDirtyProductFactsBeforeAction("切换商品")) return;
     const item = queueItem(key);
     if (!item) return;
     currentQueueKey = key;
@@ -9097,6 +9284,7 @@
 
   async function refreshAllQueueProducts() {
     if (queueRefreshing || !queueItems.length) return;
+    if (!await saveDirtyProductFactsBeforeAction("刷新商品队列")) return;
     queueRefreshing = true;
     $("#refreshAllButton").disabled = true;
     $(".queue-section").classList.add("is-refreshing");
@@ -9188,7 +9376,7 @@
       publicationTargets: [...pendingPublicationTargets],
     }).catch(() => {});
   });
-  $("#queueGrid").addEventListener("click", (event) => {
+  $("#queueGrid").addEventListener("click", async (event) => {
     const button = event.target.closest("button[data-action]");
     if (!button || button.disabled) return;
     const key = button.dataset.key || "";
@@ -9196,11 +9384,30 @@
       selectQueueProduct(key);
       return;
     }
-    if (button.dataset.action === "remove" && key !== currentQueueKey) {
+    if (button.dataset.action === "remove") {
+      button.disabled = true;
+      $("#queueMessage").textContent = "正在安全清理该 Offer 的本地测试状态…";
+      try {
+        if (!await resetTestOffer(key)) {
+          button.disabled = false;
+          return;
+        }
+      } catch (error) {
+        $("#queueMessage").textContent = `无法移出：${friendlyError(error.message)}`;
+        button.disabled = false;
+        return;
+      }
+      const removedCurrent = key === currentQueueKey;
       queueItems = queueItems.filter((item) => (
         productKey(item.offer_id) !== key
       ));
       saveQueue();
+      if (removedCurrent) {
+        clearCurrentApprovalContext();
+        currentQueueKey = "";
+        const next = queueItems[0];
+        if (next) selectQueueProduct(productKey(next.offer_id));
+      }
       renderQueue();
       $("#queueMessage").textContent = "商品已移出队列。";
     }
@@ -9211,6 +9418,7 @@
   });
   $("#productFactsForm").addEventListener("input", () => {
     if (!currentData || factsSubmitting) return;
+    productFactsDraftDirty = true;
     $("#factsEditMessage").textContent =
       "有尚未保存的修改；当前售价仍是上一 revision。保存后会建立新 revision，并重新计算全部国家与店铺售价。";
   });

@@ -2205,6 +2205,56 @@ class ReleaseStore:
                 ) from error
             raise
 
+    def create_target_only_successor(
+        self,
+        predecessor_plan_id: str,
+        *,
+        additions: Mapping[str, Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        """Persist an additive successor without rebuilding dashboard facts."""
+        predecessor = self.get_plan(_text(predecessor_plan_id))
+        if predecessor is None:
+            raise ReleaseStoreError("predecessor release plan was not found")
+        if predecessor["status"] != PLAN_APPROVED:
+            raise ReleaseAuthorizationError(
+                "target-only successor requires an approved predecessor"
+            )
+        if self.approved_publication_snapshot(
+            offer_id=predecessor["product_id"], plan_id=predecessor["plan_id"]
+        ) is None:
+            raise ReleaseAuthorizationError(
+                "target-only successor requires a durable frozen predecessor snapshot"
+            )
+        from shared_platform.target_only_successor import (
+            build_target_only_successor_payload,
+        )
+
+        payload = build_target_only_successor_payload(
+            predecessor["payload"],
+            additions=additions,
+            ordered_targets=RELEASE_TARGET_LABELS,
+        )
+        from domains.product_operations import build_approved_publication_snapshot
+
+        preview = self.preview_plan(payload)
+        validation_time = "2000-01-01T00:00:00+00:00"
+        build_approved_publication_snapshot(
+            {
+                **preview,
+                "status": PLAN_APPROVED,
+                "approved_at": validation_time,
+                "approval": {
+                    "status": PLAN_APPROVED,
+                    "approved_by": "Kyle",
+                    "approved_at": validation_time,
+                    "user_approved": True,
+                    "plan_id": preview["plan_id"],
+                    "payload_digest": preview["payload_digest"],
+                },
+            }
+        )
+        return self.create_plan(payload, supersedes_plan_id=predecessor["plan_id"])
+
     def get_plan(self, plan_id: str) -> dict[str, Any] | None:
         if not self.path.is_file():
             return None
@@ -5615,6 +5665,100 @@ class ReleaseStore:
                 (_text(plan_id),),
             ).fetchone()
             return _plan_from_row(row)
+
+    def reset_unexecuted_test_product(self, product_id: str) -> dict[str, Any]:
+        """Release local reservations only when no publication run ever began.
+
+        Immutable plans and approvals are retained as superseded audit facts.
+        Once a run exists, callers must use platform-aware rollback/reconciliation
+        instead of pretending that deleting local state erased an external write.
+        """
+
+        clean_product_id = _text(product_id)
+        if not clean_product_id:
+            raise ValueError("product_id is required")
+        if not self.path.is_file():
+            return {"superseded_plan_count": 0, "released_source_reservation_count": 0}
+        with self._transaction() as connection:
+            plans = connection.execute(
+                """
+                SELECT * FROM release_plans
+                WHERE product_id = ? AND status != 'SUPERSEDED'
+                ORDER BY created_at, plan_id
+                """,
+                (clean_product_id,),
+            ).fetchall()
+            plan_ids = [row["plan_id"] for row in plans]
+            if plan_ids:
+                placeholders = ",".join("?" for _ in plan_ids)
+                started = connection.execute(
+                    f"""
+                    SELECT run_id FROM release_runs
+                    WHERE plan_id IN ({placeholders})
+                    LIMIT 1
+                    """,
+                    tuple(plan_ids),
+                ).fetchone()
+                if started:
+                    raise ReleaseAuthorizationError(
+                        "test offer already has a publication run; platform-aware rollback is required"
+                    )
+            now = _utc_now()
+            reservation_digests: set[str] = set()
+            for plan_id in plan_ids:
+                linked = connection.execute(
+                    """
+                    SELECT reservation_digest
+                    FROM release_source_sku_plan_links
+                    WHERE plan_id = ?
+                    """,
+                    (plan_id,),
+                ).fetchone()
+                if linked:
+                    reservation_digests.add(linked["reservation_digest"])
+                self._supersede_in_transaction(
+                    connection,
+                    plan_id,
+                    superseded_by_plan_id=None,
+                    reason="test offer removed from Product Center queue",
+                    now=now,
+                )
+            released_source_count = 0
+            for digest in reservation_digests:
+                active_consumer = connection.execute(
+                    """
+                    SELECT 1
+                    FROM release_source_sku_plan_links AS link
+                    JOIN release_plans AS plan ON plan.plan_id = link.plan_id
+                    WHERE link.reservation_digest = ?
+                      AND plan.status != 'SUPERSEDED'
+                    LIMIT 1
+                    """,
+                    (digest,),
+                ).fetchone()
+                if active_consumer:
+                    continue
+                changed = connection.execute(
+                    """
+                    UPDATE release_source_sku_reservations
+                    SET status = 'SUPERSEDED', updated_at = ?
+                    WHERE reservation_digest = ? AND status = 'ACTIVE'
+                    """,
+                    (now, digest),
+                ).rowcount
+                connection.execute(
+                    """
+                    UPDATE release_source_sku_reservation_keys
+                    SET status = 'SUPERSEDED', updated_at = ?
+                    WHERE reservation_digest = ? AND status = 'ACTIVE'
+                    """,
+                    (now, digest),
+                )
+                released_source_count += int(bool(changed))
+            return {
+                "superseded_plan_count": len(plan_ids),
+                "released_source_reservation_count": released_source_count,
+            }
 
     def active_sku_reservations(self) -> list[dict[str, Any]]:
         if not self.path.is_file():

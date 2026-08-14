@@ -177,6 +177,11 @@ def test_bridge_freezes_complete_v4_inputs_without_provider_category_guessing(
     assert snapshot["skus"][0]["variant_images"] == [
         "https://img.example/blue.jpg"
     ]
+    assert snapshot["shopee_global_master"]["parcel_envelope"] == {
+        "weight_kg": "0.2" if sku_count == 1 else "0.21000000000000002",
+        "package_cm": [8, 8, 2],
+        "policy_version": "shopee-global-parcel-ceil-cm/v1",
+    }
     assert set(snapshot["digests"]) == {
         "source",
         "content",
@@ -191,6 +196,35 @@ def test_bridge_freezes_complete_v4_inputs_without_provider_category_guessing(
         else:
             assert row["category"] is None
             assert row["decision"]["status"] == "DEFERRED_TO_SKILL"
+
+
+def test_bridge_freezes_multisku_shopee_parcel_envelope_with_ceiled_dimensions():
+    dashboard, payload = _raw_approval_inputs(sku_count=2)
+    parcels = {
+        "blue-38x45": {
+            "cost_cny": "8",
+            "weight_kg": "0.265",
+            "package_cm": ["61", "2.1", "5.2"],
+        },
+        "pink-38x45": {
+            "cost_cny": "9",
+            "weight_kg": "0.21",
+            "package_cm": ["60.1", "3", "5"],
+        },
+    }
+    payload["product_facts"]["sku_commercial_facts"] = deepcopy(parcels)
+    dashboard["product"]["sku_commercial_facts"] = deepcopy(parcels)
+
+    inputs = build_approved_publication_snapshot_inputs(
+        dashboard=dashboard,
+        release_plan_payload=payload,
+    )
+
+    assert inputs["shopee_global_master"]["parcel_envelope"] == {
+        "weight_kg": "0.265",
+        "package_cm": [61, 3, 6],
+        "policy_version": "shopee-global-parcel-ceil-cm/v1",
+    }
 
 
 def test_bridge_does_not_treat_title_workflow_status_as_description_approval():

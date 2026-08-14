@@ -184,6 +184,9 @@
             <strong>售价联动</strong>
             <span>保存后使用新成本、重量和包装尺寸重新计算全部国家与店铺售价。</span>
           </div>
+          <p id="factsImpactSummary" class="facts-edit-message" role="status">
+            修改影响：正在读取字段依赖…
+          </p>
           <div class="facts-edit-actions">
             <p id="factsEditMessage" class="facts-edit-message" role="status">正在读取商品 revision…</p>
             <button id="factsEditSaveButton" class="button button-primary" type="submit" disabled>
@@ -364,7 +367,8 @@
           </p>
           <div class="approval-actions">
             <span>批准人：<strong>Kyle</strong></span>
-            <button id="approveReleasePlanButton" class="button button-primary" type="submit" disabled>
+            <button id="approveReleasePlanButton" class="button button-primary" type="submit"
+                    aria-describedby="releasePlanMessage releasePlanRecoveryDetail" disabled>
               批准当前发布计划
             </button>
           </div>

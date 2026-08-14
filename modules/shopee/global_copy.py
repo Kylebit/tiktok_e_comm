@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 
 GLOBAL_TITLE_MAX = 120
 GLOBAL_DESC_MAX = 3000
@@ -56,6 +57,25 @@ _COUNTED_ITEM_RE = re.compile(
     r"(?<!\d)(\d+)\s*(?:pieces?|pcs?|items?|units?|decals?|stickers?)\b",
     re.I,
 )
+_VIETNAMESE_LANGUAGE_FEATURES = frozenset(
+    "ÀÁẢÃẠĂẰẮẲẴẶÂẦẤẨẪẬĐÈÉẺẼẸÊỀẾỂỄỆÌÍỈĨỊ"
+    "ÒÓỎÕỌÔỒỐỔỖỘƠỜỚỞỠỢÙÚỦŨỤƯỪỨỬỮỰỲÝỶỸỴ"
+    "àáảãạăằắẳẵặâầấẩẫậđèéẻẽẹêềếểễệìíỉĩị"
+    "òóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵ"
+)
+
+
+def contains_vietnamese_language_features(value: str) -> bool:
+    """Return whether text has a Vietnamese-specific accented letter.
+
+    NFC normalization makes decomposed tone marks match the explicit, narrow
+    Vietnamese set without treating arbitrary Latin-1 letters as Vietnamese.
+    """
+
+    return any(
+        char in _VIETNAMESE_LANGUAGE_FEATURES
+        for char in unicodedata.normalize("NFC", str(value or ""))
+    )
 
 _SYSTEM = """You are a Shopee CNSC cross-border listing copywriter. Write in English ONLY.
 
@@ -64,7 +84,8 @@ Rules:
 - If the source listing is already English (Philippines TikTok Shop), REUSE its wording and keywords; expand the description, do not replace good phrases.
 - If the source is Thai/Vietnamese/Malay or any non-English language, translate accurately to natural ecommerce English, then expand.
 - Title: 80-120 characters, searchable, no emoji, no ALL CAPS blocks, no markdown, no bullet options, no preamble.
-- Description: plain text, target 1800-2800 characters when source description is short or missing; otherwise expand to at least 1200. Include product type, material, size/dimensions if known, quantity, features, usage scenes, installation/care, shipping note. End with "Seller SKU: __SKU__".
+- Description: plain text, target 1800-2800 characters when source description is short or missing; otherwise expand to at least 1200. Include product type, material, size/dimensions if known, quantity, features, usage scenes, installation/care, shipping note.
+- Never expose brand names or internal/source/platform identifiers in buyer-facing copy, including Seller SKU, SKU, item code, product code, Product ID, Item ID, Offer ID, or source ID.
 - Do not invent specs not in the source. Do not write "Here are options" or multiple titles.
 
 Output ONLY valid JSON with keys title and description (no markdown)."""
@@ -144,16 +165,30 @@ def _clamp_title(title: str, model_sku: str) -> str:
 
 def _clamp_description(desc: str, model_sku: str) -> str:
     d = str(desc or "").replace("\r\n", "\n").replace("\r", "\n")
-    d = "\n".join(re.sub(r"[ \t]+", " ", line).strip() for line in d.split("\n"))
+    internal_identity = re.compile(
+        r"^\s*(?:[-*]\s*)?(?:source\s+)?(?:brand(?:\s+name)?|seller\s+sku|sku|"
+        r"item\s+code|product\s+code|product\s+id|item\s+id|offer\s+id|source\s+id)\s*[:=-]",
+        re.I,
+    )
+    d = "\n".join(
+        re.sub(r"[ \t]+", " ", line).strip()
+        for line in d.split("\n")
+        if not internal_identity.match(line)
+    )
+    d = re.sub(
+        r"\b(?:source\s+)?(?:brand(?:\s+name)?|seller\s+sku|sku|item\s+code|"
+        r"product\s+code|product\s+id|item\s+id|offer\s+id|source\s+id)"
+        r"\s*[:=-]\s*[^.\n;]+[.;]?",
+        "",
+        d,
+        flags=re.I,
+    )
     d = re.sub(r"\n{3,}", "\n\n", d).strip()
     if len(d) < 120:
         d = (
             d
-            + f" Quality home product for daily use. Easy to use and suitable for modern living spaces. "
-            f"Seller SKU: {model_sku}."
+            + " Quality home product for daily use. Easy to use and suitable for modern living spaces."
         )
-    if f"SKU {model_sku}" not in d and f"SKU: {model_sku}" not in d:
-        d = d.rstrip() + f" Seller SKU: {model_sku}."
     if len(d) > GLOBAL_DESC_MAX:
         d = d[: GLOBAL_DESC_MAX - 3].rstrip() + "..."
     return d
@@ -256,8 +291,7 @@ def _generic_english_description(detail: dict, model_sku: str, title: str) -> st
             "Check the product images and dimensions before ordering. Screen "
             "settings can make colours look slightly different. Waterproof, "
             "removable and residue-free performance is not promised unless it "
-            "is separately verified in the approved product facts.\n\n"
-            f"Seller SKU: {model_sku}."
+            "is separately verified in the approved product facts."
         )
     else:
         body = (
@@ -272,8 +306,7 @@ def _generic_english_description(detail: dict, model_sku: str, title: str) -> st
             "PLEASE NOTE\n"
             "Screen settings can make colours look slightly different. No "
             "performance claim is made unless it is present in the verified "
-            "product facts.\n\n"
-            f"Seller SKU: {model_sku}."
+            "product facts."
         )
     return _clamp_description(body, model_sku)
 
@@ -346,20 +379,17 @@ def _approved_copy_required_facts(
     quantity_match = _LABELED_QUANTITY_RE.search(source)
     if quantity_match is None:
         quantity_match = _COUNTED_ITEM_RE.search(source)
-    if quantity_match is None or int(quantity_match.group(1)) <= 0:
-        raise ValueError(
-            "approved English copy is missing an explicit positive quantity"
-        )
-
-    return {
+    facts = {
         "material_tokens": material_tokens,
         "finished_dimensions": [
             _normalized_fact_number(size_match.group(1)),
             _normalized_fact_number(size_match.group(2)),
         ],
         "dimension_unit": size_match.group(3).lower(),
-        "quantity": int(quantity_match.group(1)),
     }
+    if quantity_match is not None and int(quantity_match.group(1)) > 0:
+        facts["quantity"] = int(quantity_match.group(1))
+    return facts
 
 
 def _localized_copy_preserves_required_facts(
@@ -390,11 +420,102 @@ def _localized_copy_preserves_required_facts(
             f"{first} x {second}"
         )
 
-    quantity = required_facts["quantity"]
-    if not re.search(rf"(?<!\d){quantity}(?!\d)", combined):
+    quantity = required_facts.get("quantity")
+    if quantity is not None and not re.search(rf"(?<!\d){quantity}(?!\d)", combined):
         raise RuntimeError(
             f"Shopee localized copy lost required quantity {quantity}"
         )
+
+
+_SEMANTIC_LINE_SPLIT_RE = re.compile(r"(?:\r?\n|[\u2022\u25cf\u25aa\u25e6])+")
+_MAX_UNLOCALIZED_SEMANTIC_LINES = 24
+
+
+def localized_semantic_line_matches(line: str, *, site: str) -> bool:
+    """Accept a target-language line, or a dimension-only non-copy line."""
+
+    value = str(line or "").strip()
+    if not value:
+        return False
+    if site == "TH":
+        has_target_language = any("\u0e00" <= char <= "\u0e7f" for char in value)
+    elif site == "VN":
+        has_target_language = contains_vietnamese_language_features(value)
+    else:
+        return False
+    if has_target_language:
+        return True
+    dimension_only = re.sub(
+        r"(?i)(?<=\d)\s*(?:x|\N{MULTIPLICATION SIGN})\s*(?=\d)|(?<=\d)\s*(?:cm|mm|m|in|inch|inches)\b",
+        "",
+        value,
+    )
+    return not re.search(r"[A-Za-z]", dimension_only)
+
+
+def _localized_description_has_target_language(
+    description: str, *, site: str
+) -> bool:
+    lines = [
+        line.strip()
+        for line in _SEMANTIC_LINE_SPLIT_RE.split(description)
+        if line.strip()
+    ]
+    if not lines:
+        return False
+    return all(localized_semantic_line_matches(line, site=site) for line in lines)
+
+
+def _line_has_target_language(line: str, *, site: str) -> bool:
+    return localized_semantic_line_matches(line, site=site)
+
+
+def _translate_unlocalized_semantic_lines(
+    description: str,
+    *,
+    site: str,
+    language: str,
+    approved_facts: str,
+) -> str:
+    normalized = re.sub(r"([\u2022\u25cf\u25aa\u25e6])", r"\n\1", description)
+    lines = normalized.splitlines()
+    missing = [
+        index
+        for index, line in enumerate(lines)
+        if line.strip() and not _line_has_target_language(line, site=site)
+    ]
+    if not missing:
+        return description
+    if len(missing) > _MAX_UNLOCALIZED_SEMANTIC_LINES:
+        raise RuntimeError(
+            f"Shopee {site} localized description has too many untranslated semantic lines"
+        )
+    system = f"""Translate one ecommerce description line into {language}.
+Return exactly one plain-text line: no JSON, markdown fence, explanation or extra line.
+The result must contain {language} characters. Preserve every number, dimension and
+Latin material token present in the source line exactly. Do not add product facts."""
+    for index in missing:
+        translated = _ai_chat(
+            system,
+            "Approved English facts:\n"
+            + approved_facts
+            + "\n\nSource line:\n"
+            + lines[index].strip(),
+            max_tokens=180,
+        ).strip().strip('"')
+        if "\n" in translated or not _line_has_target_language(
+            translated, site=site
+        ):
+            raise RuntimeError(
+                f"Shopee {site} localized description failed semantic-line language validation"
+            )
+        lines[index] = translated
+    corrected = "\n".join(lines).strip()
+    if not _localized_description_has_target_language(corrected, site=site):
+        raise RuntimeError(
+            f"Shopee {site} localized description failed semantic-line language validation"
+        )
+    return corrected
 
 
 def localize_shopee_copy(
@@ -425,58 +546,92 @@ def localize_shopee_copy(
         english_title,
         english_description,
     )
+    quantity_instruction = (
+        f"Preserve the approved quantity {required_facts['quantity']} exactly."
+        if "quantity" in required_facts
+        else "The approved copy has no explicit quantity; do not invent a quantity or package count."
+    )
     system = f"""You localize approved Shopee cross-border product copy into natural {language}.
 Preserve every supplied product fact exactly and never invent claims.
 Return ONLY JSON with keys title and description.
 Title: 60-115 characters, natural ecommerce language for {site}, searchable, no emoji.
 Description: 500-1800 characters, plain text with clear section headings and line breaks.
-Preserve all materials, dimensions, quantity, package contents and application guidance.
+Preserve all approved materials, dimensions, package contents and application guidance.
+{quantity_instruction}
 Keep each source material token exactly as supplied in Latin characters somewhere
 in the description, even when the surrounding copy is localized.
+Every non-empty description semantic line must contain {language} characters.
+Never emit an English-only heading, label, bullet or sentence. Keep any Latin
+material or dimension token on the same line as its {language} label.
 Do not add waterproof, removable, residue-free, reusable, durability, certification,
 warranty, medical, safety or performance claims. Do not include a seller SKU."""
-    raw = _ai_chat(
-        system,
-        (
-            f"Approved English title:\n{str(english_title or '').strip()}\n\n"
-            "Approved English description:\n"
-            f"{str(english_description or '').strip()}"
-        ),
-        max_tokens=1400,
+    source_user = (
+        f"Approved English title:\n{str(english_title or '').strip()}\n\n"
+        "Approved English description:\n"
+        f"{str(english_description or '').strip()}"
     )
-    parsed = _parse_ai_json(raw)
-    title = re.sub(r"\s+", " ", str(parsed.get("title") or "")).strip()
-    description = str(parsed.get("description") or "").strip()
-    if not (60 <= len(title) <= GLOBAL_TITLE_MAX):
-        raise RuntimeError(
-            f"Shopee {site} localized title length is invalid: {len(title)}"
+    raw = _ai_chat(system, source_user, max_tokens=1400)
+    for attempt in range(2):
+        parsed = _parse_ai_json(raw)
+        title = re.sub(r"\s+", " ", str(parsed.get("title") or "")).strip()
+        description = str(parsed.get("description") or "").strip()
+        if not (60 <= len(title) <= GLOBAL_TITLE_MAX):
+            raise RuntimeError(
+                f"Shopee {site} localized title length is invalid: {len(title)}"
+            )
+        if not (500 <= len(description) <= GLOBAL_DESC_MAX):
+            raise RuntimeError(
+                f"Shopee {site} localized description length is invalid: "
+                f"{len(description)}"
+            )
+        if site == "TH":
+            title_language_ok = any("\u0e00" <= char <= "\u0e7f" for char in title)
+        else:
+            title_language_ok = contains_vietnamese_language_features(title)
+        if not title_language_ok:
+            raise RuntimeError(f"Shopee {site} localized title failed language validation")
+        if _localized_description_has_target_language(description, site=site):
+            _localized_copy_preserves_required_facts(
+                title,
+                description,
+                required_facts,
+            )
+            return {
+                "title": title,
+                "description": description,
+                "region": site,
+                "provider": "toapi",
+                "model": TOAPI_COPY_MODEL,
+            }
+        if attempt:
+            description = _translate_unlocalized_semantic_lines(
+                description,
+                site=site,
+                language=language,
+                approved_facts=source_user,
+            )
+            _localized_copy_preserves_required_facts(
+                title,
+                description,
+                required_facts,
+            )
+            return {
+                "title": title,
+                "description": description,
+                "region": site,
+                "provider": "toapi",
+                "model": TOAPI_COPY_MODEL,
+            }
+        raw = _ai_chat(
+            system
+            + "\nCORRECTION: Rewrite the first draft. Every non-empty description "
+            "semantic line must contain the target language; preserve all approved facts.",
+            source_user
+            + "\n\nFirst localized draft to correct:\n"
+            + json.dumps({"title": title, "description": description}, ensure_ascii=False),
+            max_tokens=1400,
         )
-    if not (500 <= len(description) <= GLOBAL_DESC_MAX):
-        raise RuntimeError(
-            f"Shopee {site} localized description length is invalid: "
-            f"{len(description)}"
-        )
-    if site == "TH":
-        language_ok = any("\u0e00" <= char <= "\u0e7f" for char in title)
-    else:
-        language_ok = any(
-            "\u00c0" <= char <= "\u024f" or "\u1ea0" <= char <= "\u1ef9"
-            for char in title
-        )
-    if not language_ok:
-        raise RuntimeError(f"Shopee {site} localized title failed language validation")
-    _localized_copy_preserves_required_facts(
-        title,
-        description,
-        required_facts,
-    )
-    return {
-        "title": title,
-        "description": description,
-        "region": site,
-        "provider": "toapi",
-        "model": TOAPI_COPY_MODEL,
-    }
+    raise AssertionError("unreachable localized copy correction state")
 
 
 def english_variant_label(raw: str, fallback: str = "") -> str:
@@ -556,7 +711,7 @@ def build_global_copy(
         title = _clamp_title(f"Home Decor Product SKU {model_sku}", model_sku)
     if not is_english_listing_text(description):
         description = _clamp_description(
-            f"{title}. Quality home product for daily use. Seller SKU: {model_sku}.",
+            f"{title}. Quality home product for daily use.",
             model_sku,
         )
 

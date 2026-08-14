@@ -136,6 +136,44 @@ def test_missing_store_reads_are_side_effect_free_and_allowlist_is_exact(tmp_pat
     assert not path.exists()
 
 
+def test_unexecuted_test_product_reset_releases_all_sku_reservations(tmp_path):
+    store = ReleaseStore(tmp_path / "release.db")
+    plan = store.create_plan(_plan_with_source_lineage())
+    store.approve_plan(
+        plan["plan_id"],
+        approved_by="Kyle",
+        user_approved=True,
+        confirmation_token=plan["confirmation_token"],
+    )
+
+    result = store.reset_unexecuted_test_product(plan["product_id"])
+
+    assert result == {
+        "superseded_plan_count": 1,
+        "released_source_reservation_count": 1,
+    }
+    assert store.active_plan_for_product(plan["product_id"]) is None
+    assert store.active_sku_reservations() == []
+    context = store.source_sku_lineage_context(
+        source_offer_id="168812345",
+        source_authority="1688",
+        source_identity_digest=plan["payload"]["source_product_identity"][
+            "identity_digest"
+        ],
+    )
+    assert context["existing_reservations"] == []
+
+
+def test_started_test_product_cannot_be_locally_forgotten(tmp_path):
+    store, plan, _approval = _approved_store(tmp_path)
+    store.start_run(plan["plan_id"])
+
+    with pytest.raises(ReleaseAuthorizationError, match="platform-aware rollback"):
+        store.reset_unexecuted_test_product(plan["product_id"])
+
+    assert store.active_plan_for_product(plan["product_id"])["plan_id"] == plan["plan_id"]
+
+
 def test_persisted_approval_integer_is_decoded_as_literal_boolean(tmp_path):
     store, plan, approval = _approved_store(tmp_path)
 

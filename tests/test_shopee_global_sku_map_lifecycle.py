@@ -1,4 +1,5 @@
 from modules.shopee import global_sku_map
+import pytest
 
 
 def test_new_global_mappings_do_not_invent_regional_publications(
@@ -28,6 +29,84 @@ def test_new_global_mappings_do_not_invent_regional_publications(
     assert data["90000000002"]["published_regions"] == []
     assert data["90000000001"]["shop_items"] == {}
     assert data["90000000002"]["shop_items"] == {}
+
+
+def test_exact_global_reconcile_completes_partial_mapping_without_losing_regions(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "shopee-map.json"
+    monkeypatch.setattr(global_sku_map, "map_path", lambda: path)
+    global_sku_map.save_map(
+        {
+            "45215618349": {
+                "match_key": "0963",
+                "match_keys": ["0963"],
+                "title": "approved title",
+                "tier_name": "Variation",
+                "models": [{"global_model_sku": "0963", "model_name": "35x140"}],
+                "unrelated_evidence": {"keep": True},
+                "published_regions": ["PH"],
+                "shop_items": {"PH": {"shop_id": 1, "item_id": "77"}},
+            }
+        }
+    )
+
+    global_sku_map.upsert_global_group_entry(
+        "45215618349",
+        match_keys=["0963", "0964", "0965"],
+        title="approved title",
+        tier_name="Variation",
+        models=[
+            {"global_model_sku": "0963", "model_name": "35x140"},
+            {"global_model_sku": "0964", "model_name": "35x200"},
+            {"global_model_sku": "0965", "model_name": "35x300"},
+        ],
+    )
+
+    entry = global_sku_map.load_map()["45215618349"]
+    assert entry["match_keys"] == ["0963", "0964", "0965"]
+    assert [row["global_model_sku"] for row in entry["models"]] == [
+        "0963", "0964", "0965"
+    ]
+    assert entry["published_regions"] == ["PH"]
+    assert entry["shop_items"] == {"PH": {"shop_id": 1, "item_id": "77"}}
+    assert entry["unrelated_evidence"] == {"keep": True}
+
+    before_repeat = global_sku_map.load_map()
+    global_sku_map.upsert_global_group_entry(
+        "45215618349",
+        match_keys=["0963", "0964", "0965"],
+        title="approved title",
+        tier_name="Variation",
+        models=[
+            {"global_model_sku": "0963", "model_name": "35x140"},
+            {"global_model_sku": "0964", "model_name": "35x200"},
+            {"global_model_sku": "0965", "model_name": "35x300"},
+        ],
+    )
+    assert global_sku_map.load_map() == before_repeat
+
+
+def test_group_reconcile_save_failure_keeps_previous_map(tmp_path, monkeypatch):
+    path = tmp_path / "shopee-map.json"
+    monkeypatch.setattr(global_sku_map, "map_path", lambda: path)
+    initial = {"45215618349": {"match_key": "0963", "match_keys": ["0963"]}}
+    global_sku_map.save_map(initial)
+    monkeypatch.setattr(global_sku_map.os, "replace", lambda *_args: (_ for _ in ()).throw(OSError("disk full")))
+
+    with pytest.raises(OSError, match="disk full"):
+        global_sku_map.upsert_global_group_entry(
+            "45215618349",
+            match_keys=["0963", "0964", "0965"],
+            models=[
+                {"global_model_sku": "0963"},
+                {"global_model_sku": "0964"},
+                {"global_model_sku": "0965"},
+            ],
+        )
+
+    assert global_sku_map.load_map() == initial
 
 
 def test_replacement_preserves_retired_regional_item_history(

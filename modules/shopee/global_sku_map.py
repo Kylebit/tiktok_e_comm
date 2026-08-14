@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 
@@ -32,7 +33,16 @@ def load_map() -> dict[str, dict]:
 def save_map(data: dict) -> None:
     path = map_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    try:
+        os.replace(temporary, path)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def _model_sku(entry: dict) -> str:
@@ -550,7 +560,9 @@ def upsert_global_group_entry(
                 "tk_seller_sku": str(m.get("tk_seller_sku") or ""),
             }
         )
-    data[gid] = {
+    existing = data.get(gid)
+    entry = dict(existing) if isinstance(existing, dict) else {}
+    entry.update({
         "match_key": keys[0],
         "match_keys": keys,
         "title": title,
@@ -559,7 +571,10 @@ def upsert_global_group_entry(
         "models": model_rows,
         "tk_product_id": tk_product_id,
         "tk_source_region": tk_source_region,
-        "published_regions": [],
-        "shop_items": {},
-    }
+    })
+    if not isinstance(entry.get("published_regions"), list):
+        entry["published_regions"] = []
+    if not isinstance(entry.get("shop_items"), dict):
+        entry["shop_items"] = {}
+    data[gid] = entry
     save_map(data)

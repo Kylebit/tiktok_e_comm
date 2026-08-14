@@ -24,6 +24,14 @@ current execution report only.
   legacy ReleasePlan parser or legacy collect-box start route. The schemas are
   not compatible, and the legacy sequence can claim a provider object before
   failing draft preparation.
+- Execution identity drift: freeze the canonical Skill manifest, Git commit,
+  and actual platform-scoped production-code content digest when a run is
+  created. Verify all three before RUNNING or provider dispatch. Drift is a
+  durable zero-write failure and requires a successor run; never implicitly
+  install the Skill.
+- Evidence boundary: retain only the fixed sanitized per-target evidence
+  fields in the immutable internal report. Public report projections remain
+  four-state counts and strip target evidence and execution identity.
 - TikTok claim identity: a client idempotency key is not provider idempotency.
   Persist the returned platform detail ID before the next fallible step; when
   an outcome is missing or ambiguous, reconcile the official provider list
@@ -69,6 +77,12 @@ current execution report only.
   Enable every disabled row on the exact item, then require a nonempty,
   well-formed, fully enabled official set; do not require set equality with
   preflight channels.
+- Shopee regional language: keep English on the verified CNSC Global master,
+  but omit `item_name` and `description` from `create_publish_task`. Explicitly
+  sending the English master disables destination copy derivation and creates
+  English TH/VN listings. Official readback accepts English for PH/MY, requires
+  Thai for TH and Vietnamese for VN, and repairs a wrong-language TH/VN item
+  in place before a second official readback; never create a duplicate.
 - Shopee category recommendation: choose one exact publishable official leaf
   from the frozen main-category semantic identity, then read only that leaf's
   attribute tree. A malformed unrelated recommendation must not erase a valid
@@ -90,6 +104,13 @@ current execution report only.
   `shopIdToWarehouseIdAndStockMap`. Reuse one exact existing binding or read
   that shop's official active/default warehouse; never invent stock or reuse a
   warehouse across shops.
+- TikTok all-target preflight uses two explicit barriers. Before claim/create,
+  every frozen target draft must be built and JSON-serialized; shared failure
+  means zero provider mutations. After identities exist, every real SAVE body
+  must be read-only prepared before the first SAVE/PUBLISH. Shared typed failure
+  stops all SAVE/PUBLISH, while target-scoped category/identity/warehouse
+  readiness failure blocks only that target. Claim/create between the barriers
+  is a provider mutation and must remain visible in write evidence.
 - TikTok GB: a category with no mandatory attributes is valid; optional-only
   metadata must not block draft repair, and metadata preparation failures are
   zero-write rejections.

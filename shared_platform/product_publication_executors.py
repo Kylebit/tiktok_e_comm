@@ -22,6 +22,10 @@ from domains.channel_operations.tiktok_v4_execution import (
     execute_tiktok_v4_plan,
     project_tiktok_v4_execution_plan,
 )
+from domains.channel_operations.tiktok_publisher import (
+    sanitize_tiktok_provider_code,
+    sanitize_tiktok_provider_reason,
+)
 from modules.ozon.approved_publication_v4 import build_ozon_v4_executor
 from modules.shopee.skill_regions import (
     ShopeeRegionRuntime,
@@ -38,6 +42,8 @@ from shared_platform.product_publication_runner import (
 
 _PLATFORM_ORDER = ("TIKTOK", "SHOPEE", "OZON")
 _TARGET_STATUSES = frozenset({"PUBLISHED", "PROCESSING", "FAILED"})
+_TIKTOK_EVIDENCE_FIELDS = frozenset({"target_label", "status", "stage", "provider_code", "provider_reason", "request_attempted", "outcome_unknown", "external_write_count"})
+_TIKTOK_EVIDENCE_STAGES = frozenset({"IDENTITY", "PREPARATION", "PREFLIGHT", "SAVE", "PUBLISH", "READBACK", "EXECUTION"})
 
 CollectBoxContextResolver = Callable[
     [PublicationPlatformRequest], Mapping[str, Mapping[str, object]]
@@ -107,6 +113,7 @@ def _result(
     readback_completed: bool,
     external_write_count: int | None,
     requires_human_action: bool | None = None,
+    target_evidence: Mapping[str, Mapping[str, object] | None] | None = None,
 ) -> dict[str, object]:
     if set(statuses) != set(labels):
         raise ValueError("platform result target coverage conflicts")
@@ -117,11 +124,13 @@ def _result(
     ):
         raise ValueError("platform result write count is invalid")
     failed = any(statuses[label] == "FAILED" for label in labels)
+    if target_evidence is not None and set(target_evidence) != set(labels):
+        raise ValueError("platform result target evidence coverage conflicts")
     return {
         "schema_version": PLATFORM_RESULT_SCHEMA_VERSION,
         "platform": platform,
         "targets": [
-            {"target_label": label, "status": statuses[label]} for label in labels
+            {"target_label": label, "status": statuses[label], **({"evidence": target_evidence[label]} if target_evidence is not None else {})} for label in labels
         ],
         "dispatch_attempted": dispatch_attempted,
         "readback_completed": readback_completed,
@@ -187,6 +196,7 @@ def _tiktok_result(
     attempted: list[bool] = []
     readback_observed: list[bool] = []
     write_counts: list[int | None] = []
+    target_evidence: dict[str, Mapping[str, object] | None] = {}
     for label in labels:
         row = rows[label]
         status = row.get("status")
@@ -199,6 +209,7 @@ def _tiktok_result(
         if count is not None and (type(count) is not int or count < 0):
             raise ValueError("TikTok write evidence is invalid")
         statuses[label] = str(status)
+        target_evidence[label] = _tiktok_evidence(row.get("evidence"), label, str(status))
         attempted.append(was_attempted)
         write_counts.append(count)
         if was_attempted:
@@ -214,7 +225,28 @@ def _tiktok_result(
             if all(count is not None for count in write_counts)
             else None
         ),
+        target_evidence=target_evidence,
     )
+
+
+def _tiktok_evidence(value: object, label: str, status: str) -> Mapping[str, object] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping) or set(value) != set(_TIKTOK_EVIDENCE_FIELDS):
+        raise ValueError("TikTok target evidence fields are invalid")
+    if value.get("target_label") != label or value.get("status") != status:
+        raise ValueError("TikTok target evidence identity conflicts")
+    stage = value.get("stage")
+    if stage not in _TIKTOK_EVIDENCE_STAGES:
+        raise ValueError("TikTok target evidence stage is invalid")
+    attempted, unknown, count = value.get("request_attempted"), value.get("outcome_unknown"), value.get("external_write_count")
+    if type(attempted) is not bool or type(unknown) is not bool or (count is not None and (type(count) is not int or count < 0)):
+        raise ValueError("TikTok target evidence is invalid")
+    return {"target_label": label, "status": status, "stage": stage, "provider_code": sanitize_tiktok_provider_code(value.get("provider_code")), "provider_reason": sanitize_tiktok_provider_reason(value.get("provider_reason")), "request_attempted": attempted, "outcome_unknown": unknown, "external_write_count": count}
+
+
+def _tiktok_failure_evidence(labels: tuple[str, ...], *, stage: str, provider_code: str, provider_reason: str, request_attempted: bool, outcome_unknown: bool, external_write_count: int | None) -> dict[str, Mapping[str, object]]:
+    return {label: {"target_label": label, "status": "FAILED", "stage": stage, "provider_code": provider_code, "provider_reason": provider_reason, "request_attempted": request_attempted, "outcome_unknown": outcome_unknown, "external_write_count": external_write_count} for label in labels}
 
 
 def build_tiktok_v4_executor(
@@ -288,6 +320,7 @@ def build_tiktok_v4_executor(
                 readback_completed=False,
                 external_write_count=preparation_write_count,
                 requires_human_action=True,
+                target_evidence=_tiktok_failure_evidence(labels, stage="PREPARATION", provider_code="tiktok_preparation_failed", provider_reason="TikTok local preparation failed", request_attempted=preparation_write_count is None or preparation_write_count > 0, outcome_unknown=preparation_write_count is None, external_write_count=preparation_write_count),
             )
         try:
             receipt = execute_tiktok_v4_plan(
@@ -307,7 +340,7 @@ def build_tiktok_v4_executor(
         except Exception:
             # An unexpected failure after entering execution cannot prove that
             # a transport did not receive a request.
-            return _unknown_execution_failure("TIKTOK", labels)
+            return _result("TIKTOK", labels, {label: "FAILED" for label in labels}, dispatch_attempted=True, readback_completed=False, external_write_count=None, requires_human_action=True, target_evidence=_tiktok_failure_evidence(labels, stage="EXECUTION", provider_code="transport_unknown", provider_reason="TikTok execution outcome is unknown", request_attempted=True, outcome_unknown=True, external_write_count=None))
 
     return execute
 

@@ -163,10 +163,10 @@ def _dashboard() -> dict:
         },
         "actual_release_gate": {"ready": True, "blockers": []},
         "listing_copy": {
-            "schema_version": "listing-copy-candidates-v6",
+            "schema_version": "listing-copy-candidates-v8",
             "status": "adopted_in_product_facts",
             "provider": "toapi",
-            "policy_version": "listing-copy-candidates-v6",
+            "policy_version": "listing-copy-candidates-v8",
             "model": "gpt-5.4-mini-official",
             "input_signature": copy_signature,
             "current_input_signature": copy_signature,

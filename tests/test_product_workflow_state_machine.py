@@ -5,8 +5,10 @@ from copy import deepcopy
 import pytest
 
 from shared_platform.product_workflow import (
+    FIELD_IMPACT_SCHEMA_VERSION,
     SCHEMA_VERSION,
     assert_no_dead_end,
+    project_product_field_impacts,
     project_product_workflow_next_action,
 )
 
@@ -198,6 +200,55 @@ def test_unapproved_plan_preview_cannot_hide_missing_content_action():
     assert action["kind"] == "content_finalize"
     assert action["control_id"] == "nextStepActionButton"
     assert_no_dead_end(action)
+
+
+def test_product_facts_can_be_approved_before_independent_content_review():
+    """Content review must not serialise the independent product-facts lock."""
+
+    view = _ready_view()
+    view["product"]["actual_product_approved"] = False
+    view["content"]["approved"] = False
+    view["release_v1"].update(
+        {
+            "plan": None,
+            "plan_approved": False,
+            "eligible_for_plan_approval": False,
+        }
+    )
+
+    action = project_product_workflow_next_action(view)
+
+    assert action["code"] == "approve_product_facts"
+    assert action["control_id"] == "approvalButton"
+    assert_no_dead_end(action)
+
+
+def test_field_impacts_are_local_and_explain_which_approval_changes():
+    impacts = project_product_field_impacts()
+
+    assert impacts["schema_version"] == FIELD_IMPACT_SCHEMA_VERSION
+    assert impacts["fields"]["cost_cny"] == [
+        "product_approval",
+        "pricing",
+        "release_plan",
+    ]
+    assert impacts["fields"]["weight_kg"] == [
+        "product_approval",
+        "pricing",
+        "release_plan",
+    ]
+    assert "listing_copy" not in impacts["fields"]["package_cm"]
+    assert impacts["fields"]["final_images"] == [
+        "content_approval",
+        "release_plan",
+    ]
+    assert impacts["fields"]["storyboard"] == ["generation_input"]
+    assert impacts["fields"]["selected_sites"] == [
+        "pricing",
+        "release_plan_targets",
+    ]
+    assert impacts["fields"]["fx_rates"] == ["pricing", "release_plan"]
+    assert impacts["fields"]["support_cod"] == ["pricing", "release_plan"]
 
 
 def test_mixed_release_results_keep_independent_first_attempt_actionable():

@@ -12,9 +12,10 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, ROUND_CEILING
 import hashlib
 import json
+import time
 from typing import Callable, Protocol
 
 from domains.product_operations.approved_publication_snapshot import (
@@ -77,6 +78,10 @@ class TikTokV4DraftPreparationError(ValueError):
     """The immutable v4 preparation contract failed before provider work."""
 
 
+class TikTokV4SystemicPreflightError(RuntimeError):
+    """A shared projection/serialization failure that must fuse the batch."""
+
+
 @dataclass(frozen=True)
 class DraftWriteFact:
     """One provider-mutation truth, optionally carrying an exact identity."""
@@ -117,11 +122,18 @@ class TikTokV4DraftTransport(Protocol):
         self, *, target: Mapping[str, object], ordinal: int
     ) -> DraftWriteFact | Sequence[DraftWriteFact]: ...
 
-    def save_draft(
+    def prepare_save_draft(
         self,
         *,
         identity: Mapping[str, str],
         draft: Mapping[str, object],
+    ) -> Mapping[str, object]: ...
+
+    def save_prepared_draft(
+        self,
+        *,
+        identity: Mapping[str, str],
+        prepared: Mapping[str, object],
     ) -> DraftWriteFact: ...
 
 
@@ -139,8 +151,10 @@ def prepare_tiktok_v4_drafts(
         raise TikTokV4DraftPreparationError(
             f"approved-publication-snapshot/v4 is invalid: {error}"
         ) from None
-    if not callable(getattr(transport, "claim_or_create", None)) or not callable(
-        getattr(transport, "save_draft", None)
+    if (
+        not callable(getattr(transport, "claim_or_create", None))
+        or not callable(getattr(transport, "prepare_save_draft", None))
+        or not callable(getattr(transport, "save_prepared_draft", None))
     ):
         raise TikTokV4DraftPreparationError("TikTok draft transport is invalid")
 
@@ -150,14 +164,16 @@ def prepare_tiktok_v4_drafts(
     if not selected:
         raise TikTokV4DraftPreparationError("snapshot selects no TikTok targets")
 
-    target_results: list[dict[str, object]] = []
+    # Phase A completes across the target set before identity mutations.
+    phase_a: list[dict[str, object]] = []
+    target_results: dict[str, dict[str, object]] = {}
     contexts: dict[str, dict[str, object]] = {}
     all_writes: list[DraftWriteFact] = []
     for ordinal, target in enumerate(selected):
         label = target["target_label"]
         shop_id = EXPECTED_SHOP_ID_BY_TARGET.get(label)
         if shop_id is None:
-            target_results.append(_local_failure(label, "TARGET_UNSUPPORTED"))
+            target_results[label] = _local_failure(label, "TARGET_UNSUPPORTED")
             continue
         try:
             category = _target_category(
@@ -165,21 +181,37 @@ def prepare_tiktok_v4_drafts(
                 target=target,
                 resolver=category_resolver,
             )
-        except Exception:
-            target_results.append(_local_failure(label, "CATEGORY_UNAVAILABLE"))
+        except TikTokV4DraftPreparationError:
+            target_results[label] = _local_failure(label, "CATEGORY_UNAVAILABLE")
             continue
-
         provider_target = deepcopy(dict(target))
         provider_target["shop_id"] = shop_id
-        draft = _draft_payload(
-            frozen,
-            target=target,
-            category=category,
+        try:
+            draft = _draft_payload(frozen, target=target, category=category)
+        except Exception as error:
+            raise TikTokV4SystemicPreflightError(
+                "TikTok frozen draft projection failed"
+            ) from error
+        _require_json_serializable(draft, boundary="TikTok frozen draft")
+        phase_a.append(
+            {
+                "ordinal": ordinal,
+                "label": label,
+                "shop_id": shop_id,
+                "provider_target": provider_target,
+                "draft": draft,
+            }
         )
+
+    phase_b: list[dict[str, object]] = []
+    for row in phase_a:
+        ordinal = int(row["ordinal"])
+        label = str(row["label"])
+        shop_id = str(row["shop_id"])
         target_writes: list[DraftWriteFact] = []
         try:
             raw_claim = transport.claim_or_create(
-                target=deepcopy(provider_target),
+                target=deepcopy(row["provider_target"]),
                 ordinal=ordinal,
             )
             claim_facts = _claim_facts(raw_claim, shop_id=shop_id)
@@ -190,13 +222,11 @@ def prepare_tiktok_v4_drafts(
         try:
             identity = _last_identity(claim_facts, label=label, shop_id=shop_id)
         except TikTokV4DraftPreparationError:
-            target_results.append(
-                _target_result(
-                    label,
-                    status="UNKNOWN",
-                    reason_code="CLAIM_IDENTITY_AMBIGUOUS",
-                    writes=target_writes,
-                )
+            target_results[label] = _target_result(
+                label,
+                status="UNKNOWN",
+                reason_code="CLAIM_IDENTITY_AMBIGUOUS",
+                writes=target_writes,
             )
             continue
         if identity is not None:
@@ -204,24 +234,70 @@ def prepare_tiktok_v4_drafts(
 
         claim_outcome = _combined_outcome(claim_facts)
         if claim_outcome != "ACCEPTED" or identity is None:
-            target_results.append(
-                _target_result(
-                    label,
-                    status="UNKNOWN" if claim_outcome == "UNKNOWN" else "FAILED",
-                    reason_code=(
-                        "CLAIM_OUTCOME_UNKNOWN"
-                        if claim_outcome == "UNKNOWN"
-                        else "CLAIM_REJECTED"
-                    ),
-                    writes=target_writes,
-                )
+            target_results[label] = _target_result(
+                label,
+                status="UNKNOWN" if claim_outcome == "UNKNOWN" else "FAILED",
+                reason_code=(
+                    "CLAIM_OUTCOME_UNKNOWN"
+                    if claim_outcome == "UNKNOWN"
+                    else "CLAIM_REJECTED"
+                ),
+                writes=target_writes,
             )
             continue
+        phase_b.append(
+            {
+                "label": label,
+                "identity": identity,
+                "draft": row["draft"],
+                "writes": target_writes,
+            }
+        )
 
+    prepared_rows: list[dict[str, object]] = []
+    systemic_prepare_failure: TikTokV4SystemicPreflightError | None = None
+    for row in phase_b:
+        label = str(row["label"])
+        identity = row["identity"]
         try:
-            raw_save = transport.save_draft(
+            prepared = transport.prepare_save_draft(
                 identity=deepcopy(identity),
-                draft=deepcopy(draft),
+                draft=deepcopy(row["draft"]),
+            )
+            _require_json_serializable(
+                prepared, boundary="TikTok prepared SAVE payload"
+            )
+            prepared_rows.append({**row, "prepared": prepared})
+        except TikTokV4DraftPreparationError:
+            target_results[label] = _target_result(
+                label,
+                status="FAILED",
+                reason_code="SAVE_PREFLIGHT_REJECTED",
+                writes=row["writes"],
+            )
+        except TikTokV4SystemicPreflightError as error:
+            systemic_prepare_failure = error
+            break
+
+    if systemic_prepare_failure is not None:
+        for row in phase_b:
+            label = str(row["label"])
+            target_results[label] = _target_result(
+                label,
+                status="FAILED",
+                reason_code="SAVE_PREFLIGHT_FAILED",
+                writes=row["writes"],
+            )
+        prepared_rows = []
+
+    for row in prepared_rows:
+        label = str(row["label"])
+        identity = row["identity"]
+        target_writes = row["writes"]
+        try:
+            raw_save = transport.save_prepared_draft(
+                identity=deepcopy(identity),
+                prepared=deepcopy(row["prepared"]),
             )
             save = _save_fact(raw_save, identity=identity)
         except MiaoshouBusinessRejectedError:
@@ -250,14 +326,14 @@ def prepare_tiktok_v4_drafts(
             "REJECTED": "SAVE_REJECTED",
             "UNKNOWN": "SAVE_OUTCOME_UNKNOWN",
         }[save.outcome]
-        target_results.append(
-            _target_result(
-                label,
-                status=status,
-                reason_code=reason,
-                writes=target_writes,
-            )
+        target_results[label] = _target_result(
+            label,
+            status=status,
+            reason_code=reason,
+            writes=target_writes,
         )
+
+    ordered_results = [target_results[row["target_label"]] for row in selected]
 
     result: dict[str, object] = {
         "schema_version": PREPARATION_SCHEMA_VERSION,
@@ -265,17 +341,17 @@ def prepare_tiktok_v4_drafts(
         "plan_id": frozen["plan_id"],
         "offer_id": frozen["offer_id"],
         "product_revision": frozen["product_revision"],
-        "targets": target_results,
+        "targets": ordered_results,
         "collectbox_contexts": contexts,
         "external_write_count": _write_count(all_writes),
         "publish_invoked": False,
         "status": (
             "PREPARED"
-            if all(row["status"] == "PREPARED" for row in target_results)
+            if all(row["status"] == "PREPARED" for row in ordered_results)
             else "PARTIAL"
-            if any(row["status"] == "PREPARED" for row in target_results)
+            if any(row["status"] == "PREPARED" for row in ordered_results)
             else "UNKNOWN"
-            if any(row["status"] == "UNKNOWN" for row in target_results)
+            if any(row["status"] == "UNKNOWN" for row in ordered_results)
             else "FAILED"
         ),
     }
@@ -536,6 +612,21 @@ def _digest(value: object) -> str:
     ).hexdigest()
 
 
+def _require_json_serializable(value: object, *, boundary: str) -> None:
+    try:
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as error:
+        raise TikTokV4SystemicPreflightError(
+            f"{boundary} is not JSON serializable"
+        ) from error
+
+
 def _decimal_text(value: Decimal) -> str:
     text = format(value, "f")
     if "." in text:
@@ -554,6 +645,9 @@ class MiaoshouOpenApiTikTokV4DraftTransport:
         platform_detail_ids_by_target: Mapping[str, object] | None = None,
         post: Callable[[str, dict[str, object]], Mapping[str, object]] = post_open,
         fact_observer: Callable[[str, DraftWriteFact], None] | None = None,
+        read_attempts: int = 3,
+        read_retry_seconds: float = 1.1,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._common_detail_id = _positive_id(common_detail_id, "common_detail_id")
         self._initial_platform_detail_id = _optional_positive_id(
@@ -578,6 +672,13 @@ class MiaoshouOpenApiTikTokV4DraftTransport:
             raise TypeError("Miaoshou draft fact observer is invalid")
         self._post = post
         self._fact_observer = fact_observer
+        if type(read_attempts) is not int or read_attempts < 1:
+            raise ValueError("Miaoshou read attempts are invalid")
+        if read_retry_seconds < 0 or not callable(sleep):
+            raise ValueError("Miaoshou read retry policy is invalid")
+        self._read_attempts = read_attempts
+        self._read_retry_seconds = read_retry_seconds
+        self._sleep = sleep
 
     def _observed(self, label: str, fact: DraftWriteFact) -> DraftWriteFact:
         if self._fact_observer is not None:
@@ -706,62 +807,91 @@ class MiaoshouOpenApiTikTokV4DraftTransport:
             )
         return tuple(facts)
 
-    def save_draft(
+    def prepare_save_draft(
         self,
         *,
         identity: Mapping[str, str],
         draft: Mapping[str, object],
-    ) -> DraftWriteFact:
+    ) -> Mapping[str, object]:
         label = str(identity.get("target_label") or "")
         detail_id = _positive_id(identity.get("detail_id"), "detail_id")
         shop_id = _positive_id(identity.get("shop_id"), "shop_id")
         if EXPECTED_SHOP_ID_BY_TARGET.get(label) != shop_id:
             raise TikTokV4DraftPreparationError("Miaoshou save identity drifted")
         site = label.rsplit("_", 1)[-1].upper()
-        try:
-            if site in _SITE_DRAFT_SITES:
-                current, oss_md5 = self._read_editable_draft(
-                    READ_SITE_DRAFT_PATH,
-                    {"detailId": int(detail_id), "site": site},
-                    "siteCollectItemInfo",
+        body: dict[str, object] | None = None
+        for attempt in range(self._read_attempts):
+            try:
+                if site in _SITE_DRAFT_SITES:
+                    current, oss_md5 = self._read_editable_draft(
+                        READ_SITE_DRAFT_PATH,
+                        {"detailId": int(detail_id), "site": site},
+                        "siteCollectItemInfo",
+                    )
+                    path = SAVE_SITE_DRAFT_PATH
+                    info_field = "siteCollectItemInfo"
+                    identity_fields = {"detailId": int(detail_id), "site": site}
+                else:
+                    current, oss_md5 = self._read_editable_draft(
+                        READ_SHOP_DRAFT_PATH,
+                        {"detailId": int(detail_id), "shopId": int(shop_id)},
+                        "shopCollectItemInfo",
+                    )
+                    path = SAVE_SHOP_DRAFT_PATH
+                    info_field = "shopCollectItemInfo"
+                    identity_fields = {
+                        "detailId": int(detail_id),
+                        "shopId": int(shop_id),
+                    }
+                desired = _miaoshou_draft_info(draft)
+                warehouse_id = _tiktok_warehouse_id(
+                    self._post,
+                    current=current,
+                    shop_id=shop_id,
                 )
-                path = SAVE_SITE_DRAFT_PATH
-                info_field = "siteCollectItemInfo"
-                identity_fields = {"detailId": int(detail_id), "site": site}
-            else:
-                current, oss_md5 = self._read_editable_draft(
-                    READ_SHOP_DRAFT_PATH,
-                    {"detailId": int(detail_id), "shopId": int(shop_id)},
-                    "shopCollectItemInfo",
+                desired["skuMap"] = _provider_bound_sku_map(
+                    current=current,
+                    draft=draft,
+                    desired=desired["skuMap"],
+                    shop_id=shop_id,
+                    warehouse_id=warehouse_id,
                 )
-                path = SAVE_SHOP_DRAFT_PATH
-                info_field = "shopCollectItemInfo"
-                identity_fields = {
-                    "detailId": int(detail_id),
-                    "shopId": int(shop_id),
+                current.update(desired)
+                body = {
+                    **identity_fields,
+                    info_field: current,
+                    "ossMd5": oss_md5,
                 }
-            # Keep provider-owned mandatory fields while replacing every
-            # approved product/SKU field with the frozen v4 projection.
-            desired = _miaoshou_draft_info(draft)
-            warehouse_id = _tiktok_warehouse_id(
-                self._post,
-                current=current,
-                shop_id=shop_id,
+                break
+            except Exception:
+                if attempt + 1 < self._read_attempts:
+                    self._sleep(self._read_retry_seconds)
+        if body is None:
+            raise TikTokV4DraftPreparationError(
+                "Miaoshou SAVE payload preparation is unavailable"
             )
-            desired["skuMap"] = _provider_bound_sku_map(
-                current=current,
-                draft=draft,
-                desired=desired["skuMap"],
-                shop_id=shop_id,
-                warehouse_id=warehouse_id,
-            )
-            current.update(desired)
-            body = {
-                **identity_fields,
-                info_field: current,
-                "ossMd5": oss_md5,
-            }
-            self._post(path, body)
+        prepared = {"path": path, "body": body}
+        _require_json_serializable(prepared, boundary="TikTok prepared SAVE payload")
+        return prepared
+
+    def save_prepared_draft(
+        self,
+        *,
+        identity: Mapping[str, str],
+        prepared: Mapping[str, object],
+    ) -> DraftWriteFact:
+        label = str(identity.get("target_label") or "")
+        detail_id = _positive_id(identity.get("detail_id"), "detail_id")
+        shop_id = _positive_id(identity.get("shop_id"), "shop_id")
+        if EXPECTED_SHOP_ID_BY_TARGET.get(label) != shop_id:
+            raise TikTokV4DraftPreparationError("Miaoshou save identity drifted")
+        path = prepared.get("path")
+        body = prepared.get("body")
+        if path not in {SAVE_SITE_DRAFT_PATH, SAVE_SHOP_DRAFT_PATH} or not isinstance(body, Mapping):
+            raise TikTokV4DraftPreparationError("Miaoshou prepared SAVE is invalid")
+        _require_json_serializable(prepared, boundary="TikTok prepared SAVE payload")
+        try:
+            self._post(str(path), deepcopy(dict(body)))
         except MiaoshouBusinessRejectedError:
             return self._observed(
                 label,
@@ -783,6 +913,27 @@ class MiaoshouOpenApiTikTokV4DraftTransport:
             ),
         )
 
+    def save_draft(
+        self,
+        *,
+        identity: Mapping[str, str],
+        draft: Mapping[str, object],
+    ) -> DraftWriteFact:
+        """Compatibility helper; formal orchestration uses the two-step seam."""
+        try:
+            prepared = self.prepare_save_draft(identity=identity, draft=draft)
+        except TikTokV4DraftPreparationError:
+            return self._observed(
+                str(identity.get("target_label") or ""),
+                DraftWriteFact(
+                    "SAVE_DRAFT",
+                    "REJECTED",
+                    detail_id=_positive_id(identity.get("detail_id"), "detail_id"),
+                    shop_id=_positive_id(identity.get("shop_id"), "shop_id"),
+                ),
+            )
+        return self.save_prepared_draft(identity=identity, prepared=prepared)
+
     def _read_editable_draft(
         self,
         path: str,
@@ -798,7 +949,6 @@ class MiaoshouOpenApiTikTokV4DraftTransport:
                 "Miaoshou editable draft or ossMd5 is unavailable"
             )
         return deepcopy(dict(info)), oss_md5
-
 
 def _tiktok_warehouse_id(
     post: Callable[[str, dict[str, object]], Mapping[str, object]],
@@ -921,11 +1071,18 @@ def _provider_bound_sku_map(
         )
         for row in skus
     }
+    specifications = {
+        normalized_by_approved[str(row.get("variant_key") or "")]: deepcopy(
+            row.get("specification")
+        )
+        for row in skus
+    }
     try:
         bindings = approved_variant_key_bindings(
             current,
             selected_sku_keys=normalized_variants,
             model_skus=models,
+            specifications=specifications,
         )
     except TikTokVariantBindingError as error:
         raise TikTokV4DraftPreparationError(str(error)) from None
@@ -994,9 +1151,9 @@ def _miaoshou_draft_info(draft: Mapping[str, object]) -> dict[str, object]:
             "priceIncludeVat": float(Decimal(str(row["price"]))),
             "currency": row["currency"],
             "weight": float(Decimal(str(parcel["weight_kg"]))),
-            "packageLength": float(Decimal(str(sku_package[0]))),
-            "packageWidth": float(Decimal(str(sku_package[1]))),
-            "packageHeight": float(Decimal(str(sku_package[2]))),
+            "packageLength": _miaoshou_package_cm(sku_package[0]),
+            "packageWidth": _miaoshou_package_cm(sku_package[1]),
+            "packageHeight": _miaoshou_package_cm(sku_package[2]),
             "imgUrls": deepcopy(row["images"]),
         }
     return {
@@ -1006,9 +1163,9 @@ def _miaoshou_draft_info(draft: Mapping[str, object]) -> dict[str, object]:
         "imgUrls": deepcopy(draft["images"]),
         "cid": category["id"],
         "weight": float(Decimal(str(parent["weight_kg"]))),
-        "packageLength": float(Decimal(str(package[0]))),
-        "packageWidth": float(Decimal(str(package[1]))),
-        "packageHeight": float(Decimal(str(package[2]))),
+        "packageLength": _miaoshou_package_cm(package[0]),
+        "packageWidth": _miaoshou_package_cm(package[1]),
+        "packageHeight": _miaoshou_package_cm(package[2]),
         "skuMap": sku_map,
         # Miaoshou requires these structural draft fields even when the
         # approved product has no size chart or custom delivery template.
@@ -1017,6 +1174,17 @@ def _miaoshou_draft_info(draft: Mapping[str, object]) -> dict[str, object]:
         "sizeChartType": "",
         "isCodOpen": "0",
     }
+
+
+def _miaoshou_package_cm(value: object) -> int:
+    """Project approved dimensions into Miaoshou's positive-integer cm API."""
+
+    dimension = Decimal(str(value))
+    if not dimension.is_finite() or dimension <= 0:
+        raise TikTokV4DraftPreparationError(
+            "Miaoshou v4 package dimension is invalid"
+        )
+    return int(dimension.to_integral_value(rounding=ROUND_CEILING))
 
 
 __all__ = [

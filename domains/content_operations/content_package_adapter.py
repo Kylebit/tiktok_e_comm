@@ -275,6 +275,7 @@ def build_workbench_content_package_handoff(
         if isinstance(item, Mapping) and bool(item.get("selected", True)) and str(item.get("id") or "").strip()
     ]
     selected_shots = list(dict.fromkeys(selected_shots))
+    final_ai_urls = _approved_ai_final_image_urls(review, content)
     current_by_shot = _current_audits_by_shot(content, selected_shots, generation_audits)
     decisions = content.get("asset_decisions") if isinstance(content.get("asset_decisions"), Mapping) else {}
     final_decisions = content.get("generated_image_miaoshou_decisions") if isinstance(content.get("generated_image_miaoshou_decisions"), Mapping) else {}
@@ -282,33 +283,45 @@ def build_workbench_content_package_handoff(
     missing: list[str] = []
     blockers: list[str] = []
     superseded: list[str] = []
-    for shot_id in selected_shots:
-        current = current_by_shot.get(shot_id)
-        if current is None:
-            missing.append(shot_id)
-            blockers.append(f"{shot_id}: no current technically verified artifact")
-            continue
-        artifact_id, audit = current
-        superseded.extend(
-            candidate_id for candidate_id, candidate in generation_audits.items()
-            if candidate_id != artifact_id and isinstance(candidate, Mapping)
-            and str(candidate.get("shot_id") or str(candidate_id).split("_", 1)[0]) == shot_id
-        )
-        decision_source = _final_content_approval_source(artifact_id, decisions, final_decisions)
-        if decision_source is None:
-            if _has_explicit_final_rejection(
-                artifact_id, decisions, final_decisions
-            ):
+    if final_ai_urls is not None:
+        generated_lineage = [
+            ContentAssetLineage(
+                shot_id=f"final-{index}",
+                artifact_id=f"miaoshou-final:{index}",
+                image_url=url,
+                audit_id="miaoshou_ordered_images_write",
+                decision_source="final_content_approval.verified_miaoshou_ordered_images",
+            )
+            for index, url in enumerate(final_ai_urls, start=1)
+        ]
+    else:
+        for shot_id in selected_shots:
+            current = current_by_shot.get(shot_id)
+            if current is None:
+                missing.append(shot_id)
+                blockers.append(f"{shot_id}: no current technically verified artifact")
                 continue
-            missing.append(shot_id)
-            blockers.append(f"{shot_id}: current artifact {artifact_id} lacks final content approval")
-            continue
-        url = _audit_image_url(audit)
-        generated_lineage.append(ContentAssetLineage(
-            shot_id=shot_id, artifact_id=artifact_id, image_url=url,
-            audit_id=str(audit.get("audit_id") or f"generation_audit:{artifact_id}"),
-            decision_source=decision_source,
-        ))
+            artifact_id, audit = current
+            superseded.extend(
+                candidate_id for candidate_id, candidate in generation_audits.items()
+                if candidate_id != artifact_id and isinstance(candidate, Mapping)
+                and str(candidate.get("shot_id") or str(candidate_id).split("_", 1)[0]) == shot_id
+            )
+            decision_source = _final_content_approval_source(artifact_id, decisions, final_decisions)
+            if decision_source is None:
+                if _has_explicit_final_rejection(
+                    artifact_id, decisions, final_decisions
+                ):
+                    continue
+                missing.append(shot_id)
+                blockers.append(f"{shot_id}: current artifact {artifact_id} lacks final content approval")
+                continue
+            url = _audit_image_url(audit)
+            generated_lineage.append(ContentAssetLineage(
+                shot_id=shot_id, artifact_id=artifact_id, image_url=url,
+                audit_id=str(audit.get("audit_id") or f"generation_audit:{artifact_id}"),
+                decision_source=decision_source,
+            ))
 
     source_lineage, source_blockers = _approved_source_lineage(review)
     blockers.extend(source_blockers)
@@ -339,6 +352,8 @@ def build_workbench_content_package_handoff(
                 "content fact-card and a current adopted storyboard recipe are required"
             )
         if (
+            final_ai_urls is None
+            and
             str(content.get("planning_review_mode") or "")
             != EXPERIENCE_RECIPE_REVIEW_MODE
         ):
@@ -353,9 +368,12 @@ def build_workbench_content_package_handoff(
                 for shot_id in selected_shots
             ):
                 blockers.append("every selected storyboard shot requires approval")
-        lineage, order_blockers = _order_lineage(
-            source_lineage + generated_lineage, review.get("image_order")
-        )
+        if final_ai_urls is not None:
+            lineage, order_blockers = generated_lineage, []
+        else:
+            lineage, order_blockers = _order_lineage(
+                source_lineage + generated_lineage, review.get("image_order")
+            )
     blockers.extend(order_blockers)
     urls = tuple(row.image_url for row in lineage)
     video_action = str(
@@ -591,6 +609,89 @@ def _written_image_urls(content):
     if not isinstance(write, Mapping) or not (write.get("verified") or write.get("status") == "verified"):
         return set()
     return {str(url).strip() for url in (write.get("ordered_image_urls") or write.get("image_urls") or write.get("generated_image_urls") or []) if str(url).strip()}
+
+
+def _approved_ai_final_image_urls(
+    review: Mapping[str, Any], content: Mapping[str, Any]
+) -> list[str] | None:
+    """Return the final Miaoshou authority set only when its approval is exact.
+
+    The completed final approval intentionally supersedes pending model candidates.
+    It remains fail-closed when the recorded final image write, review order, suite
+    identity, or signed approval no longer agree.
+    """
+    approval = content.get("final_content_approval")
+    write = content.get("miaoshou_ordered_images_write")
+    if not (
+        str(content.get("content_strategy") or "ai_assisted") == "ai_assisted"
+        and content.get("suite_approved") is True
+        and isinstance(approval, Mapping)
+        and approval.get("schema_version") == "ai-assisted-final-content-approval/v1"
+        and approval.get("status") == "approved"
+        and approval.get("approved_by") == "Kyle"
+        and str(approval.get("approved_at") or "").strip()
+        and isinstance(write, Mapping)
+        and str(write.get("status") or "") == "verified"
+    ):
+        return None
+    checks = write.get("checks") if isinstance(write.get("checks"), Mapping) else {}
+    urls = [
+        str(url).strip()
+        for url in (write.get("ordered_image_urls") or [])
+        if str(url).strip()
+    ]
+    review_urls = [
+        str(url).strip()
+        for url in (review.get("image_order") or [])
+        if str(url).strip()
+    ]
+    if not (
+        urls
+        and len(urls) == len(set(urls))
+        and urls == review_urls
+        and urls == list(approval.get("image_order") or [])
+        and urls == list(approval.get("miaoshou_ordered_image_urls") or [])
+        and len(urls) == int(write.get("written_image_count") or 0)
+        and checks.get("main_images_exact_order")
+        and checks.get("detail_images_exact_order")
+        and int(write.get("suite_revision") or 0)
+        == max(1, int(content.get("suite_revision") or 1))
+    ):
+        return None
+    recipe_signature = json.dumps(
+        {
+            "content_strategy": str(content.get("content_strategy") or "ai_assisted"),
+            "fact_card_approved": bool(content.get("fact_card_approved")),
+            "planning_scope_approved": bool(content.get("planning_scope_approved")),
+            "suite_approved": bool(content.get("suite_approved")),
+            "identity_reference_urls": list(content.get("identity_reference_urls") or []),
+            "primary_identity_url": str(content.get("primary_identity_url") or ""),
+            "suite_customization": content.get("suite_customization") or {},
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if str(write.get("recipe_signature") or "") != recipe_signature:
+        return None
+    expected_payload = {
+        "schema_version": "ai-assisted-final-content-approval/v1",
+        "status": "approved",
+        "approved_by": "Kyle",
+        "image_order": review_urls,
+        "miaoshou_ordered_image_urls": urls,
+        "video_action": str(review.get("video_action") or "none"),
+        "asset_decisions": content.get("asset_decisions") or {},
+        "generated_image_decisions": content.get("generated_image_miaoshou_decisions") or {},
+    }
+    expected_digest = hashlib.sha256(
+        json.dumps(
+            expected_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+    if approval.get("approval_digest") != expected_digest:
+        return None
+    return urls
 
 
 def _approved_audit_for_shot(

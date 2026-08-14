@@ -332,6 +332,48 @@ def test_worker_launch_failure_is_durable_failed_without_platform_call(
     ) is None
 
 
+def test_execution_identity_drift_fails_before_running_or_dispatch(tmp_path, monkeypatch):
+    snapshot = build_approved_publication_snapshot(_approved_plan()).payload()
+    db_path = tmp_path / "orbit_platform.db"
+    report_store = ProductPublicationReportStore(
+        db_path, reports_root=tmp_path / "reports" / "product-publication"
+    )
+    run_store = ProductPublicationRunStore(db_path)
+    calls = []
+    expected = {"skill_digest": "1" * 64, "git_commit": "2" * 40, "code_digest": "3" * 64}
+    current = {**expected, "code_digest": "4" * 64}
+    created = run_store.create_run(
+        run_id="identity-drift-run",
+        offer_id=snapshot["offer_id"],
+        revision=snapshot["product_revision"],
+        plan_id=snapshot["plan_id"],
+        snapshot_digest=snapshot["snapshot_digest"],
+        platform_scope=("TIKTOK",),
+        target_count=2,
+        execution_identity=expected,
+    )
+    monkeypatch.setattr(product_server, "_product_publication_execution_identity", lambda _platform: current)
+
+    product_server._execute_product_publication_background(
+        run_id=created.run_id,
+        offer_id=snapshot["offer_id"],
+        snapshot_digest=snapshot["snapshot_digest"],
+        platform="TIKTOK",
+        executor=lambda request: calls.append(request),
+        release_store=_SnapshotStore(snapshot),
+        report_store=report_store,
+        run_store=run_store,
+        expected_execution_identity=expected,
+    )
+
+    run = run_store.get_run_by_id(run_id=created.run_id)
+    assert run["state"] == "FAILED"
+    assert run["failure_code"] == "EXECUTION_IDENTITY_DRIFT"
+    assert run["event_count"] == 2
+    assert calls == []
+    assert report_store.get_report_by_run(run_id=created.run_id) is None
+
+
 def test_invalid_frozen_identity_fails_before_run_or_platform(tmp_path, monkeypatch):
     snapshot = build_approved_publication_snapshot(_approved_plan()).payload()
     db_path = tmp_path / "orbit_platform.db"

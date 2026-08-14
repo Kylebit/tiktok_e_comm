@@ -150,7 +150,15 @@ def merchant_post(path: str, merchant_id: int, access_token: str, body: dict) ->
         method="POST",
         headers={"Content-Type": "application/json"},
     )
-    with urlopen_retry(req, timeout=90, context=SSL_CTX) as resp:
+    # A merchant mutation may have reached Shopee before a transport failure.
+    # Retrying it here (including through curl fallback) would be a blind replay.
+    with urlopen_retry(
+        req,
+        timeout=90,
+        context=SSL_CTX,
+        attempts=1,
+        allow_curl_fallback=False,
+    ) as resp:
         return _parse_json(resp.read().decode("utf-8"), path)
 
 

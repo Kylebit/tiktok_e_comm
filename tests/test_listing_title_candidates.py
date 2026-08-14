@@ -7,6 +7,7 @@ import pytest
 from domains.content_operations.listing_title_candidates import (
     EXPECTED_TARGETS,
     TOAPI_TITLE_MODEL,
+    _deterministic_shopee_description,
     _deterministic_shopee_title,
     _validate_shopee_master_coverage,
     fact_signature,
@@ -96,7 +97,7 @@ def test_model_candidates_are_platform_specific_and_auditable():
     assert result["status"] == "draft_pending_kyle_review"
     assert result["provider"] == "toapi"
     assert result["model"] == TOAPI_TITLE_MODEL
-    assert result["schema_version"] == "listing-copy-candidates-v6"
+    assert result["schema_version"] == "listing-copy-candidates-v8"
     assert result["generation_attempts"] == 1
     assert result["repair_performed"] is False
     assert len(result["shopee_description_en"]) >= 500
@@ -212,12 +213,100 @@ def test_non_english_source_brand_line_is_omitted_from_english_description():
     assert result["generation_attempts"] == 1
 
 
+def test_shopee_master_description_contains_only_product_information():
+    payload = json.loads(_model_payload())
+    payload["shopee_description_en"] += (
+        "\nOrigin: Zhejiang, China"
+        "\nPayment support: credit card, bank transfer and cash on delivery"
+        "\nShipping service: contact the seller for delivery options"
+        "\nAfter-sales service: refunds are handled by the storefront"
+    )
+
+    result = generate_title_candidates(
+        _facts(),
+        model_call=lambda *_args, **_kwargs: json.dumps(
+            payload,
+            ensure_ascii=False,
+        ),
+    )
+    description = result["shopee_description_en"].casefold()
+
+    for forbidden in (
+        "origin:",
+        "payment support",
+        "bank transfer",
+        "cash on delivery",
+        "shipping service",
+        "delivery options",
+        "after-sales service",
+        "refunds",
+        "storefront",
+    ):
+        assert forbidden not in description
+
+
+def test_deterministic_shopee_description_is_product_only():
+    description = _deterministic_shopee_description(
+        _facts(),
+        semantic_master_en="Watercolour Floral Butterfly PVC Wall Decal",
+    ).casefold()
+
+    for forbidden in (
+        "origin",
+        "payment",
+        "shipping",
+        "delivery",
+        "storefront",
+        "seller",
+        "refund",
+        "approved",
+        "verified",
+        "global listing",
+    ):
+        assert forbidden not in description
+
+
+def test_shopee_master_description_omits_all_internal_identity_and_brand_lines():
+    payload = json.loads(_model_payload())
+    payload["shopee_description_en"] += (
+        "\nBrand: BRUP"
+        "\nSeller SKU: 0952"
+        "\nItem code: JD5047"
+        "\nProduct ID: 3828540231"
+        "\nOffer ID: 3828540231"
+    )
+
+    result = generate_title_candidates(
+        _facts(),
+        model_call=lambda *_args, **_kwargs: json.dumps(
+            payload,
+            ensure_ascii=False,
+        ),
+    )
+    description = result["shopee_description_en"].casefold()
+
+    for forbidden in (
+        "brup",
+        "0952",
+        "jd5047",
+        "3828540231",
+        "seller sku",
+        "item code",
+        "product id",
+        "offer id",
+        "brand:",
+    ):
+        assert forbidden not in description
+
+
 def test_model_prompt_excludes_chinese_and_english_brand_attributes():
     facts = {
         **_facts(),
         "verified_attributes": {
             "\u54c1\u724c": "SECRET-CHINESE-BRAND",
             "Brand Name": "SECRET-ENGLISH-BRAND",
+            "Origin": "SECRET-ORIGIN",
+            "Payment support": "SECRET-PAYMENT",
             "\u6750\u8d28": "PVC",
         },
     }
@@ -232,6 +321,8 @@ def test_model_prompt_excludes_chinese_and_english_brand_attributes():
     prompt = calls[0][1]["content"]
     assert "SECRET-CHINESE-BRAND" not in prompt
     assert "SECRET-ENGLISH-BRAND" not in prompt
+    assert "SECRET-ORIGIN" not in prompt
+    assert "SECRET-PAYMENT" not in prompt
     assert "PVC" in prompt
 
 
@@ -372,7 +463,7 @@ def test_variant_label_noise_cannot_become_semantic_product_master():
         )
 
 
-def test_fact_signature_ignores_readback_enrichment_but_tracks_approved_facts():
+def test_fact_signature_ignores_non_copy_facts_but_tracks_copy_identity():
     base = _facts()
     enriched = {
         **base,
@@ -392,11 +483,16 @@ def test_fact_signature_ignores_readback_enrichment_but_tracks_approved_facts():
     assert fact_signature(base) == fact_signature(source_price_changed)
     assert model_input_signature(base) != model_input_signature(enriched)
 
-    changes = [
-        {**base, "source_title_zh": "\u4e0d\u540c\u6765\u6e90\u6807\u9898"},
+    for changed in (
         {**base, "cost_cny": 9.5},
         {**base, "weight_kg": 0.15},
         {**base, "package_cm": [31, 3, 3]},
+    ):
+        assert fact_signature(base) == fact_signature(changed)
+
+    changes = [
+        {**base, "source_title_zh": "\u4e0d\u540c\u6765\u6e90\u6807\u9898"},
+        {**base, "category": {"main": "\u4e0d\u540c\u7c7b\u76ee"}},
         {
             **base,
             "selected_skus": [

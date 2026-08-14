@@ -11,17 +11,150 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from contextvars import ContextVar
 from copy import deepcopy
+from decimal import Decimal, InvalidOperation
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import tempfile
+import time
 import unicodedata
 from typing import Any
+
+from modules.shopee.global_v4_executor import UpdateReceipt
+
+
+_PRICE_READBACK_ATTEMPTS = 3
+_PRICE_READBACK_DELAY_SECONDS = 1.0
 
 
 class ShopeeGlobalV4LiveRuntimeError(RuntimeError):
     """Official Shopee facts are missing, ambiguous, or conflict with v4."""
+
+
+class _ShopeeGlobalV4PreSubmitError(ShopeeGlobalV4LiveRuntimeError):
+    """A model update failed before the provider POST was attempted."""
+
+    provider_write_attempted = False
+
+
+class ShopeeGlobalModelUpdateFailure(ShopeeGlobalV4LiveRuntimeError):
+    """Credential-free classification for one attempted model mutation."""
+
+    _KINDS = frozenset(
+        {
+            "ACCEPTED_UNVERIFIED",
+            "BUSINESS_REJECTED",
+            "MALFORMED_RESPONSE",
+            "TRANSPORT_UNKNOWN",
+        }
+    )
+
+    def __init__(
+        self,
+        *,
+        kind: str,
+        provider_code: str = "",
+        http_status: int | None = None,
+        request_id_digest: str = "",
+        outcome_unknown: bool,
+    ) -> None:
+        if (
+            kind not in self._KINDS
+            or type(provider_code) is not str
+            or provider_code != _safe_provider_code(provider_code)
+            or (
+                http_status is not None
+                and (type(http_status) is not int or not 100 <= http_status <= 599)
+            )
+            or type(request_id_digest) is not str
+            or (
+                request_id_digest
+                and not re.fullmatch(r"sha256:[0-9a-f]{64}", request_id_digest)
+            )
+            or type(outcome_unknown) is not bool
+            or (
+                kind
+                in {
+                    "ACCEPTED_UNVERIFIED",
+                    "MALFORMED_RESPONSE",
+                    "TRANSPORT_UNKNOWN",
+                }
+                and outcome_unknown is not True
+            )
+        ):
+            raise ValueError("Shopee global model failure classification is invalid")
+        super().__init__(f"Shopee global model update failed ({kind})")
+        self.stage = "update_price"
+        self.kind = kind
+        self.provider_code = provider_code
+        self.http_status = http_status
+        self.request_id_digest = request_id_digest
+        self.provider_write_attempted = True
+        self.outcome_unknown = outcome_unknown
+
+
+def _safe_provider_code(value: object) -> str:
+    code = str(value or "").strip()
+    if len(code) > 80 or not re.fullmatch(r"[A-Za-z0-9._-]*", code):
+        return ""
+    return code
+
+
+def _request_id_digest(value: object) -> str:
+    request_id = str(value or "").strip()
+    if not request_id:
+        return ""
+    return "sha256:" + hashlib.sha256(request_id.encode("utf-8")).hexdigest()
+
+
+def _safe_http_status(error: BaseException) -> int | None:
+    value = getattr(error, "code", None)
+    if type(value) is int and 100 <= value <= 599:
+        return value
+    return None
+
+
+def _normalized_seller_stock(value: object) -> list[dict[str, object]] | None:
+    candidates = [value] if isinstance(value, Mapping) else value
+    if not isinstance(candidates, list) or not candidates:
+        return None
+    normalized: list[dict[str, object]] = []
+    for candidate in candidates:
+        if not isinstance(candidate, Mapping):
+            return None
+        location_id = str(candidate.get("location_id") or "").strip()
+        stock = candidate.get("stock")
+        if not location_id or type(stock) is not int or stock < 0:
+            return None
+        normalized.append({"location_id": location_id, "stock": stock})
+    return normalized
+
+
+def _normalized_stock_info(value: object) -> list[dict[str, object]] | None:
+    if not isinstance(value, list) or not value:
+        return None
+    normalized: list[dict[str, object]] = []
+    for candidate in value:
+        if not isinstance(candidate, Mapping):
+            return None
+        location_id = str(candidate.get("stock_location_id") or "").strip()
+        quantities = (
+            candidate.get("current_stock"),
+            candidate.get("normal_stock"),
+            candidate.get("reserved_stock"),
+        )
+        if (
+            candidate.get("stock_type") != 2
+            or not location_id
+            or any(type(quantity) is not int or quantity < 0 for quantity in quantities)
+        ):
+            return None
+        # Official observed quantities describe current provider inventory;
+        # they are not the frozen approved publish quantity.
+        normalized.append({"location_id": location_id})
+    return normalized
 
 
 def _semantic_key(value: object) -> str:
@@ -65,7 +198,20 @@ _EXACT_CATEGORY_ALIASES = {
     "墙贴": frozenset({"墙贴", "wallsticker", "wallstickers", "walldecal", "walldecals"}),
     "wallsticker": frozenset({"墙贴", "wallsticker", "wallstickers", "walldecal", "walldecals"}),
     "wallstickers": frozenset({"墙贴", "wallsticker", "wallstickers", "walldecal", "walldecals"}),
+    "餐垫杯垫": frozenset(
+        {"餐垫杯垫", "placematscoasters", "placematcoaster", "placemat", "coaster"}
+    ),
+    "placematscoasters": frozenset(
+        {"餐垫杯垫", "placematscoasters", "placematcoaster", "placemat", "coaster"}
+    ),
+    "墙纸壁纸": frozenset(
+        {"墙纸壁纸", "wallpaperswallstickers", "wallpaperwallstickers"}
+    ),
 }
+
+_WALLPAPER_CATEGORY_ID = "101157"
+_WALLPAPER_SEASONAL_ATTRIBUTE_ID = 100818
+_WALLPAPER_NON_SEASONAL_VALUE_ID = 4228
 
 
 def _approved_semantic_aliases(main_category: Mapping[str, Any]) -> frozenset[str]:
@@ -165,7 +311,8 @@ def _default_context_resolver(command: Mapping[str, Any]) -> Mapping[str, object
 
 
 def _approved_required_attributes(
-    command: Mapping[str, Any], official_rows: Sequence[Mapping[str, object]]
+    command: Mapping[str, Any], official_rows: Sequence[Mapping[str, object]], *,
+    selected_category_id: str | None = None,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     mandatory = {
         int(row["attribute_id"]): row
@@ -175,6 +322,22 @@ def _approved_required_attributes(
     decision = command.get("category_decision")
     if not mandatory:
         return [], []
+    if (
+        selected_category_id == _WALLPAPER_CATEGORY_ID
+        and isinstance(decision, Mapping)
+        and decision.get("status") == "DEFERRED_TO_SKILL"
+        and set(mandatory) == {_WALLPAPER_SEASONAL_ATTRIBUTE_ID}
+    ):
+        candidates = [
+            value for value in mandatory[_WALLPAPER_SEASONAL_ATTRIBUTE_ID].get("attribute_value_list", [])
+            if isinstance(value, Mapping)
+            and value.get("value_id") == _WALLPAPER_NON_SEASONAL_VALUE_ID
+            and _semantic_key(value.get("original_value_name")) == "no"
+        ]
+        if len(candidates) == 1:
+            return [{"attribute_id": _WALLPAPER_SEASONAL_ATTRIBUTE_ID,
+                     "attribute_value_list": [{"value_id": _WALLPAPER_NON_SEASONAL_VALUE_ID,
+                                               "original_value_name": "No"}]}], []
     if not isinstance(decision, Mapping) or decision.get("status") != "APPROVED":
         return [], [
             {
@@ -276,7 +439,9 @@ def _default_official_fact_reader(
         )
     selected = select_exact_official_category(command.get("main_category"), candidates)
     attributes = _read_attribute_tree(transport, int(selected["id"]))
-    required, missing = _approved_required_attributes(command, attributes)
+    required, missing = _approved_required_attributes(
+        command, attributes, selected_category_id=selected["id"]
+    )
     for candidate in candidates:
         if candidate["id"] == selected["id"]:
             candidate["required_attributes"] = required
@@ -379,6 +544,7 @@ class OfficialShopeeGlobalV4Runtime:
             [str, int, str, dict[str, object]], Mapping[str, object]
         ] | None = None,
         image_upload_transport: Callable[[str, int], str] | None = None,
+        price_readback_wait: Callable[[float], object] = time.sleep,
         checkpoint_root: Path | None = None,
     ) -> None:
         if not all(
@@ -392,6 +558,9 @@ class OfficialShopeeGlobalV4Runtime:
         self._merchant_get = merchant_get_transport
         self._merchant_post = merchant_post_transport
         self._image_upload = image_upload_transport
+        if not callable(price_readback_wait):
+            raise TypeError("Shopee price readback wait must be callable")
+        self._price_readback_wait = price_readback_wait
         self._checkpoint_root = Path(checkpoint_root) if checkpoint_root else None
         self._active: ContextVar[dict[str, object] | None] = ContextVar(
             "shopee_global_v4_active", default=None
@@ -588,6 +757,86 @@ class OfficialShopeeGlobalV4Runtime:
         active["image_bindings"] = deepcopy(bindings)
         return bindings
 
+    def _checkpointed_image_bindings(self, image_urls: tuple[str, ...]) -> dict[str, str]:
+        """Recover only unambiguous prior source-URL/image-ID receipts."""
+
+        active = self._active.get()
+        command = active.get("command") if isinstance(active, Mapping) else None
+        if self._checkpoint_root is None or not isinstance(command, Mapping):
+            return {}
+        offer_id = str(command.get("offer_id") or "").strip()
+        revision = command.get("product_revision")
+        if not offer_id.isdigit() or type(revision) is not int or revision <= 0:
+            return {}
+        parent = self._checkpoint_root / offer_id / str(revision)
+        if not parent.is_dir():
+            return {}
+        recovered: dict[str, str] = {}
+        for path in parent.glob("*/shopee-global-checkpoint.json"):
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                continue
+            bindings = value.get("image_bindings") if isinstance(value, Mapping) else None
+            if (
+                value.get("schema_version") != "shopee-global-v4-checkpoint/v1"
+                or value.get("offer_id") != offer_id
+                or value.get("product_revision") != revision
+                or not isinstance(bindings, Mapping)
+                or not set(bindings).issubset(image_urls)
+            ):
+                continue
+            for url, raw_image_id in bindings.items():
+                image_id = str(raw_image_id or "").strip()
+                if not image_id:
+                    raise ShopeeGlobalV4LiveRuntimeError(
+                        "Shopee checkpointed image identity is invalid"
+                    )
+                previous = recovered.setdefault(str(url), image_id)
+                if previous != image_id:
+                    raise ShopeeGlobalV4LiveRuntimeError(
+                        "Shopee checkpointed image identity conflicts"
+                    )
+        if len(set(recovered.values())) != len(recovered):
+            raise ShopeeGlobalV4LiveRuntimeError(
+                "Shopee checkpointed image identities are ambiguous"
+            )
+        return recovered
+
+    def checkpointed_upload_global_images(
+        self, request: object, image_urls: Sequence[str]
+    ) -> tuple[Mapping[str, object], int]:
+        """Upload only missing frozen images and checkpoint every receipt."""
+
+        if (
+            self._image_upload is None
+            or not isinstance(image_urls, tuple)
+            or not image_urls
+            or len(image_urls) != len(set(image_urls))
+        ):
+            raise ShopeeGlobalV4LiveRuntimeError("Shopee image upload scope is invalid")
+        active = self._active.get()
+        if active is None:
+            raise ShopeeGlobalV4LiveRuntimeError("Shopee execution context is unavailable")
+        bindings = self._checkpointed_image_bindings(image_urls)
+        active["image_bindings"] = deepcopy(bindings)
+        uploaded = 0
+        for position, url in enumerate(image_urls):
+            if type(url) is not str or not url.startswith("https://"):
+                raise ShopeeGlobalV4LiveRuntimeError("Shopee image URL is invalid")
+            if url in bindings:
+                continue
+            image_id = str(self._image_upload(url, position)).strip()
+            if not image_id or image_id in bindings.values():
+                raise ShopeeGlobalV4LiveRuntimeError(
+                    "Shopee uploaded image identity is invalid"
+                )
+            bindings[url] = image_id
+            active["image_bindings"] = deepcopy(bindings)
+            self._checkpoint_update(request, {"image_bindings": deepcopy(bindings)})
+            uploaded += 1
+        return deepcopy(bindings), uploaded
+
     def _checkpoint_update(self, request: object, update: Mapping[str, object]) -> None:
         if self._checkpoint_root is None:
             raise ShopeeGlobalV4LiveRuntimeError("Shopee checkpoint root is unavailable")
@@ -673,6 +922,7 @@ class OfficialShopeeGlobalV4Runtime:
         if (
             not isinstance(package, list)
             or len(package) != 3
+            or any(type(value) is not int or value <= 0 for value in package)
             or not isinstance(stock, Mapping)
             or not isinstance(brand, Mapping)
             or not isinstance(preorder, Mapping)
@@ -738,6 +988,596 @@ class OfficialShopeeGlobalV4Runtime:
         self._checkpoint_update(
             request,
             {"global_item_id": str(global_item_id), "model_skus": list(models)},
+        )
+
+    def update_global_item(
+        self, global_item_id: str, payload: Mapping[str, Any]
+    ) -> None:
+        """Converge only frozen master copy on an already verified global item."""
+
+        if self._merchant_post is None or not isinstance(payload, Mapping):
+            raise ShopeeGlobalV4LiveRuntimeError("Shopee update transport is unavailable")
+        context, _command = self._provider_context()
+        item_id = str(global_item_id or "").strip()
+        title = payload.get("title")
+        description = payload.get("description")
+        if (
+            not item_id.isdigit()
+            or int(item_id) <= 0
+            or type(title) is not str
+            or not title.strip()
+            or title != title.strip()
+            or len(title) > 255
+            or type(description) is not str
+            or not description.strip()
+            or description != description.strip()
+            or len(description) > 5000
+            or set(payload) != {"title", "description"}
+        ):
+            raise ShopeeGlobalV4LiveRuntimeError("Shopee global copy update is invalid")
+        self._provider_response(
+            self._merchant_post(
+                "/api/v2/global_product/update_global_item",
+                int(context["merchant_id"]),
+                str(context["merchant_token"]),
+                {
+                    "global_item_id": int(item_id),
+                    "global_item_name": title,
+                    "description": description,
+                },
+            ),
+            "Shopee global copy update",
+        )
+
+    def update_existing_global_item(
+        self, global_item_id: str, payload: Mapping[str, Any]
+    ) -> UpdateReceipt:
+        """Attempt one in-place update and reconcile only a lost response."""
+
+        if self._merchant_post is None or not isinstance(payload, Mapping):
+            raise ShopeeGlobalV4LiveRuntimeError("Shopee update transport is unavailable")
+        context, _command = self._provider_context()
+        item_id = str(global_item_id or "").strip()
+        title = payload.get("title")
+        description = payload.get("description")
+        image_ids = payload.get("image_ids")
+        parcel = payload.get("parcel")
+        package = parcel.get("package_cm") if isinstance(parcel, Mapping) else None
+        try:
+            weight = float(parcel.get("weight_kg")) if isinstance(parcel, Mapping) else 0
+            dimensions = (
+                [float(value) for value in package]
+                if isinstance(package, list)
+                else []
+            )
+        except (TypeError, ValueError):
+            weight, dimensions = 0, []
+        if (
+            not item_id.isdigit()
+            or int(item_id) <= 0
+            or type(title) is not str
+            or not title.strip()
+            or title != title.strip()
+            or len(title) > 255
+            or type(description) is not str
+            or not description.strip()
+            or description != description.strip()
+            or len(description) > 5000
+            or not isinstance(image_ids, list)
+            or not image_ids
+            or any(
+                type(image_id) is not str or not image_id.strip()
+                for image_id in image_ids
+            )
+            or len(image_ids) != len(set(image_ids))
+            or not isinstance(package, list)
+            or len(package) != 3
+            or any(type(value) is not int or value <= 0 for value in package)
+            or weight <= 0 or len(dimensions) != 3 or min(dimensions) <= 0
+            or set(payload) != {"title", "description", "image_ids", "parcel"}
+        ):
+            raise ShopeeGlobalV4LiveRuntimeError("Shopee global image update is invalid")
+        body = {
+            "global_item_id": int(item_id),
+            "global_item_name": title,
+            "description": description,
+            "image": {"image_id_list": list(image_ids)},
+            "weight": weight,
+            "dimension": {
+                "package_length": dimensions[0],
+                "package_width": dimensions[1],
+                "package_height": dimensions[2],
+            },
+        }
+        try:
+            provider_value = self._merchant_post(
+                "/api/v2/global_product/update_global_item",
+                int(context["merchant_id"]),
+                str(context["merchant_token"]),
+                body,
+            )
+        except Exception as transport_error:
+            try:
+                observed = self.read_global_item(item_id)
+            except Exception:
+                raise transport_error
+            parcel_observed = (
+                observed.get("parcel") if isinstance(observed, Mapping) else None
+            )
+            package_observed = (
+                parcel_observed.get("package_cm")
+                if isinstance(parcel_observed, Mapping)
+                else None
+            )
+            try:
+                exact = (
+                    observed.get("title") == title
+                    and observed.get("description") == description
+                    and observed.get("image_ids") == list(image_ids)
+                    and Decimal(str(parcel_observed.get("weight_kg")))
+                    == Decimal(str(weight))
+                    and [Decimal(str(value)) for value in package_observed]
+                    == [Decimal(str(value)) for value in dimensions]
+                )
+            except (AttributeError, InvalidOperation, TypeError, ValueError):
+                exact = False
+            if exact:
+                return UpdateReceipt(attempted_count=1, reconciled_by_readback=True)
+            raise transport_error
+        self._provider_response(provider_value, "Shopee global image update")
+        return UpdateReceipt(attempted_count=1, reconciled_by_readback=False)
+
+    def persist_existing_global_update_receipt(
+        self, request: object, receipt: UpdateReceipt
+    ) -> None:
+        if type(receipt) is not UpdateReceipt:
+            raise ShopeeGlobalV4LiveRuntimeError("Shopee global update receipt is invalid")
+        self._checkpoint_update(
+            request,
+            {
+                "existing_global_item_update": {
+                    "attempted_count": receipt.attempted_count,
+                    "reconciled_by_readback": receipt.reconciled_by_readback,
+                }
+            },
+        )
+
+    def update_existing_global_tier_variation(
+        self, global_item_id: str, payload: Mapping[str, Any]
+    ) -> UpdateReceipt:
+        """Attempt one frozen tier update and reconcile only a lost response."""
+
+        if self._merchant_post is None or not isinstance(payload, Mapping):
+            raise ShopeeGlobalV4LiveRuntimeError("Shopee tier update transport is unavailable")
+        context, _command = self._provider_context()
+        item_id = str(global_item_id or "").strip()
+        names = payload.get("variation_names")
+        models = payload.get("models")
+        if (
+            not item_id.isdigit()
+            or int(item_id) <= 0
+            or not isinstance(names, list)
+            or not 1 <= len(names) <= 2
+            or any(
+                type(name) is not str or not name.strip() or name != name.strip()
+                for name in names
+            )
+            or len(names) != len(set(names))
+            or not isinstance(models, list)
+            or not models
+            or set(payload) != {"variation_names", "models"}
+        ):
+            raise ShopeeGlobalV4LiveRuntimeError("Shopee global tier update is invalid")
+        options: list[list[str]] = [[] for _ in names]
+        image_by_first_option: dict[str, str] = {}
+        seen_model_skus: set[str] = set()
+        seen_option_values: set[tuple[str, ...]] = set()
+        for model in models:
+            values = model.get("option_values") if isinstance(model, Mapping) else None
+            model_sku = (
+                str(model.get("model_sku") or "").strip()
+                if isinstance(model, Mapping)
+                else ""
+            )
+            image_id = (
+                str(model.get("variant_image_id") or "").strip()
+                if isinstance(model, Mapping)
+                else ""
+            )
+            if (
+                not isinstance(values, list)
+                or len(values) != len(names)
+                or any(
+                    type(value) is not str
+                    or not value.strip()
+                    or value != value.strip()
+                    for value in values
+                )
+                or not model_sku
+                or model_sku in seen_model_skus
+                or tuple(values) in seen_option_values
+                or not image_id
+                or set(model) != {"model_sku", "option_values", "variant_image_id"}
+            ):
+                raise ShopeeGlobalV4LiveRuntimeError("Shopee global tier update is invalid")
+            seen_model_skus.add(model_sku)
+            seen_option_values.add(tuple(values))
+            previous = image_by_first_option.setdefault(values[0], image_id)
+            if previous != image_id:
+                raise ShopeeGlobalV4LiveRuntimeError(
+                    "Shopee first variation image identity conflicts"
+                )
+            for index, value in enumerate(values):
+                if value not in options[index]:
+                    options[index].append(value)
+        tiers = []
+        for index, name in enumerate(names):
+            option_list = []
+            for value in options[index]:
+                row: dict[str, object] = {"option": value}
+                if index == 0:
+                    row["image"] = {"image_id": image_by_first_option[value]}
+                option_list.append(row)
+            tiers.append({"name": name, "option_list": option_list})
+        body = {"global_item_id": int(item_id), "tier_variation": tiers}
+        try:
+            provider_value = self._merchant_post(
+                "/api/v2/global_product/update_tier_variation",
+                int(context["merchant_id"]),
+                str(context["merchant_token"]),
+                body,
+            )
+        except Exception as transport_error:
+            try:
+                observed = self.read_global_models(item_id)
+            except Exception:
+                raise transport_error
+            observed_rows = observed.get("models") if isinstance(observed, Mapping) else None
+            by_sku: dict[str, Mapping[str, Any]] = {}
+            if isinstance(observed_rows, list):
+                for row in observed_rows:
+                    sku = str(row.get("model_sku") or "").strip() if isinstance(row, Mapping) else ""
+                    if not sku or sku in by_sku:
+                        by_sku = {}
+                        break
+                    by_sku[sku] = row
+            expected = {str(row["model_sku"]): row for row in models}
+            exact = (
+                isinstance(observed, Mapping)
+                and observed.get("variation_names") == list(names)
+                and set(by_sku) == set(expected)
+                and len(by_sku) == len(models)
+            )
+            if exact:
+                for model_sku, frozen in expected.items():
+                    row = by_sku[model_sku]
+                    global_model_id = str(row.get("global_model_id") or "").strip()
+                    if (
+                        not global_model_id.isdigit()
+                        or int(global_model_id) <= 0
+                        or row.get("option_values") != frozen["option_values"]
+                        or str(row.get("variant_image_id") or "").strip()
+                        != frozen["variant_image_id"]
+                    ):
+                        exact = False
+                        break
+            if exact:
+                return UpdateReceipt(attempted_count=1, reconciled_by_readback=True)
+            raise transport_error
+        self._provider_response(provider_value, "Shopee global tier image update")
+        return UpdateReceipt(attempted_count=1, reconciled_by_readback=False)
+
+    def persist_existing_global_tier_update_receipt(
+        self, request: object, receipt: UpdateReceipt
+    ) -> None:
+        if type(receipt) is not UpdateReceipt:
+            raise ShopeeGlobalV4LiveRuntimeError("Shopee global tier receipt is invalid")
+        self._checkpoint_update(
+            request,
+            {
+                "existing_global_tier_update": {
+                    "attempted_count": receipt.attempted_count,
+                    "reconciled_by_readback": receipt.reconciled_by_readback,
+                }
+            },
+        )
+
+    def update_existing_global_models(
+        self, global_item_id: str, payload: Mapping[str, Any]
+    ) -> UpdateReceipt:
+        """Bind fresh official Model IDs and attempt one frozen price update."""
+
+        if (
+            self._merchant_post is None
+            or self._merchant_get is None
+            or not isinstance(payload, Mapping)
+        ):
+            raise _ShopeeGlobalV4PreSubmitError(
+                "Shopee global model update transport is unavailable"
+            )
+        try:
+            context, _command = self._provider_context()
+        except Exception as error:
+            raise _ShopeeGlobalV4PreSubmitError(
+                "Shopee global model update context is unavailable"
+            ) from error
+        item_id = str(global_item_id or "").strip()
+        models = payload.get("models")
+        if (
+            not item_id.isdigit()
+            or int(item_id) <= 0
+            or not isinstance(models, list)
+            or not models
+            or set(payload) != {"models"}
+        ):
+            raise _ShopeeGlobalV4PreSubmitError(
+                "Shopee global price update payload is invalid"
+            )
+
+        frozen_by_sku: dict[str, dict[str, object]] = {}
+        for row in models:
+            model_sku = (
+                str(row.get("model_sku") or "").strip()
+                if isinstance(row, Mapping)
+                else ""
+            )
+            option_values = row.get("option_values") if isinstance(row, Mapping) else None
+            try:
+                price = Decimal(str(row.get("price_cny")))
+            except (AttributeError, InvalidOperation, TypeError, ValueError):
+                price = Decimal(0)
+            if (
+                not isinstance(row, Mapping)
+                or set(row) != {"model_sku", "option_values", "price_cny"}
+                or not model_sku
+                or model_sku in frozen_by_sku
+                or not isinstance(option_values, list)
+                or not option_values
+                or any(type(value) is not str or not value for value in option_values)
+                or not price.is_finite()
+                or price <= 0
+            ):
+                raise _ShopeeGlobalV4PreSubmitError(
+                    "Shopee frozen global model identity is invalid"
+                )
+            frozen_by_sku[model_sku] = {
+                "option_values": list(option_values),
+                "price": price,
+            }
+
+        try:
+            fresh = self.read_global_models(item_id)
+        except Exception as error:
+            raise _ShopeeGlobalV4PreSubmitError(
+                "Shopee official global model binding is unavailable"
+            ) from error
+        fresh_rows = fresh.get("models") if isinstance(fresh, Mapping) else None
+        official_by_sku: dict[str, Mapping[str, Any]] = {}
+        official_ids: set[str] = set()
+        if isinstance(fresh_rows, list):
+            for row in fresh_rows:
+                model_sku = (
+                    str(row.get("model_sku") or "").strip()
+                    if isinstance(row, Mapping)
+                    else ""
+                )
+                model_id = (
+                    str(row.get("global_model_id") or "").strip()
+                    if isinstance(row, Mapping)
+                    else ""
+                )
+                if (
+                    not model_sku
+                    or model_sku in official_by_sku
+                    or not model_id.isdigit()
+                    or int(model_id) <= 0
+                    or model_id in official_ids
+                ):
+                    raise _ShopeeGlobalV4PreSubmitError(
+                        "Shopee official global model identity is ambiguous"
+                    )
+                official_by_sku[model_sku] = row
+                official_ids.add(model_id)
+        if set(official_by_sku) != set(frozen_by_sku) or len(fresh_rows or []) != len(
+            frozen_by_sku
+        ):
+            raise _ShopeeGlobalV4PreSubmitError(
+                "Shopee official global model coverage is incomplete"
+            )
+
+        price_rows = []
+        submitted_id_by_sku: dict[str, str] = {}
+        for model_sku in frozen_by_sku:
+            frozen = frozen_by_sku[model_sku]
+            official = official_by_sku[model_sku]
+            if official.get("option_values") != frozen["option_values"]:
+                raise _ShopeeGlobalV4PreSubmitError(
+                    "Shopee official global model binding is incomplete"
+                )
+            submitted_id_by_sku[model_sku] = str(official["global_model_id"])
+            price_rows.append(
+                {
+                    "global_model_id": int(official["global_model_id"]),
+                    "original_price": float(frozen["price"]),
+                }
+            )
+
+        def readback_exact() -> tuple[bool, bool]:
+            try:
+                observed = self.read_global_models(item_id)
+            except Exception:
+                return False, False
+            observed_rows = (
+                observed.get("models") if isinstance(observed, Mapping) else None
+            )
+            if not isinstance(observed_rows, list):
+                return True, False
+            observed_by_sku: dict[str, Mapping[str, Any]] = {}
+            observed_ids: set[str] = set()
+            for row in observed_rows:
+                model_sku = (
+                    str(row.get("model_sku") or "").strip()
+                    if isinstance(row, Mapping)
+                    else ""
+                )
+                model_id = (
+                    str(row.get("global_model_id") or "").strip()
+                    if isinstance(row, Mapping)
+                    else ""
+                )
+                if (
+                    not model_sku
+                    or model_sku in observed_by_sku
+                    or not model_id.isdigit()
+                    or int(model_id) <= 0
+                    or model_id in observed_ids
+                ):
+                    return True, False
+                observed_by_sku[model_sku] = row
+                observed_ids.add(model_id)
+            if (
+                len(observed_rows) != len(frozen_by_sku)
+                or set(observed_by_sku) != set(frozen_by_sku)
+            ):
+                return True, False
+            for model_sku, frozen in frozen_by_sku.items():
+                row = observed_by_sku[model_sku]
+                try:
+                    price_exact = Decimal(str(row.get("price_cny"))) == frozen["price"]
+                except (InvalidOperation, TypeError, ValueError):
+                    price_exact = False
+                if (
+                    str(row.get("global_model_id") or "").strip()
+                    != submitted_id_by_sku[model_sku]
+                    or row.get("option_values") != frozen["option_values"]
+                    or not price_exact
+                ):
+                    return True, False
+            return True, True
+
+        body = {"global_item_id": int(item_id), "price_list": price_rows}
+        failure_kind = ""
+        provider_code = ""
+        http_status: int | None = None
+        request_id_digest = ""
+        accepted = False
+        try:
+            provider_value = self._merchant_post(
+                "/api/v2/global_product/update_price",
+                int(context["merchant_id"]),
+                str(context["merchant_token"]),
+                body,
+            )
+        except Exception as transport_error:
+            failure_kind = "TRANSPORT_UNKNOWN"
+            http_status = _safe_http_status(transport_error)
+        else:
+            if not isinstance(provider_value, Mapping):
+                failure_kind = "MALFORMED_RESPONSE"
+            else:
+                raw_error = str(provider_value.get("error") or "").strip()
+                request_id_digest = _request_id_digest(
+                    provider_value.get("request_id")
+                )
+                if raw_error and raw_error != "-":
+                    failure_kind = "BUSINESS_REJECTED"
+                    provider_code = _safe_provider_code(raw_error)
+                else:
+                    accepted = True
+
+        if accepted:
+            for attempt in range(_PRICE_READBACK_ATTEMPTS):
+                if attempt:
+                    self._price_readback_wait(_PRICE_READBACK_DELAY_SECONDS)
+                _readback_available, exact = readback_exact()
+                if exact:
+                    return UpdateReceipt(
+                        attempted_count=1, reconciled_by_readback=False
+                    )
+            failure_kind = "ACCEPTED_UNVERIFIED"
+            readback_available = True
+        else:
+            readback_available, exact = readback_exact()
+            if exact:
+                return UpdateReceipt(attempted_count=1, reconciled_by_readback=True)
+        raise ShopeeGlobalModelUpdateFailure(
+            kind=failure_kind,
+            provider_code=provider_code,
+            http_status=http_status,
+            request_id_digest=request_id_digest,
+            outcome_unknown=(
+                failure_kind != "BUSINESS_REJECTED" or not readback_available
+            ),
+        )
+
+    def persist_existing_global_model_update_receipt(
+        self, request: object, receipt: UpdateReceipt
+    ) -> None:
+        if type(receipt) is not UpdateReceipt:
+            raise ShopeeGlobalV4LiveRuntimeError("Shopee global model receipt is invalid")
+        self._checkpoint_update(
+            request,
+            {
+                "existing_global_model_update": {
+                    "attempted_count": receipt.attempted_count,
+                    "reconciled_by_readback": receipt.reconciled_by_readback,
+                }
+            },
+        )
+
+    def persist_existing_global_model_update_failure(
+        self, request: object, failure: Mapping[str, object]
+    ) -> None:
+        expected = {
+            "stage",
+            "kind",
+            "provider_code",
+            "http_status",
+            "request_id_digest",
+            "provider_write_attempted",
+            "outcome_unknown",
+        }
+        if not isinstance(failure, Mapping) or set(failure) != expected:
+            raise ShopeeGlobalV4LiveRuntimeError(
+                "Shopee global model failure evidence is invalid"
+            )
+        kind = failure.get("kind")
+        provider_code = failure.get("provider_code")
+        http_status = failure.get("http_status")
+        request_digest = failure.get("request_id_digest")
+        outcome_unknown = failure.get("outcome_unknown")
+        if (
+            failure.get("stage") != "update_price"
+            or kind not in ShopeeGlobalModelUpdateFailure._KINDS
+            or type(provider_code) is not str
+            or provider_code != _safe_provider_code(provider_code)
+            or (
+                http_status is not None
+                and (type(http_status) is not int or not 100 <= http_status <= 599)
+            )
+            or type(request_digest) is not str
+            or (
+                request_digest
+                and not re.fullmatch(r"sha256:[0-9a-f]{64}", request_digest)
+            )
+            or failure.get("provider_write_attempted") is not True
+            or type(outcome_unknown) is not bool
+            or (
+                kind
+                in {
+                    "ACCEPTED_UNVERIFIED",
+                    "MALFORMED_RESPONSE",
+                    "TRANSPORT_UNKNOWN",
+                }
+                and outcome_unknown is not True
+            )
+        ):
+            raise ShopeeGlobalV4LiveRuntimeError(
+                "Shopee global model failure evidence is invalid"
+            )
+        self._checkpoint_update(
+            request,
+            {"existing_global_model_update_failure": deepcopy(dict(failure))},
         )
 
     def initialize_global_models(
@@ -959,6 +1799,8 @@ class OfficialShopeeGlobalV4Runtime:
             "status": str(row.get("global_item_status") or ""),
             "title": row.get("global_item_name"),
             "description": row.get("description") or row.get("global_item_description"),
+            "category_id": str(row.get("category_id") or ""),
+            "attribute_list": deepcopy(row.get("attribute_list")),
             "image_urls": image_urls,
             "image_ids": image_ids,
             "approved_image_bindings": deepcopy(dict(approved_bindings or {})),
@@ -1018,6 +1860,11 @@ class OfficialShopeeGlobalV4Runtime:
                     "variant_image_url": variant_image_url,
                     "variant_image_id": variant_image_id,
                     "status": str(row.get("global_model_status") or row.get("status") or "").upper(),
+                    "seller_stock": (
+                        _normalized_seller_stock(row.get("seller_stock"))
+                        if row.get("seller_stock") is not None
+                        else _normalized_stock_info(row.get("stock_info"))
+                    ),
                 }
             )
         return {
@@ -1028,6 +1875,7 @@ class OfficialShopeeGlobalV4Runtime:
 
 __all__ = [
     "OfficialShopeeGlobalV4Runtime",
+    "ShopeeGlobalModelUpdateFailure",
     "ShopeeGlobalV4LiveRuntimeError",
     "build_official_shopee_global_v4_runtime",
     "select_exact_official_category",

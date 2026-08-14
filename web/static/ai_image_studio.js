@@ -34,6 +34,9 @@
   let sourceOnlyDraftDirty = false;
   let sourceOnlySaveFeedback = "";
   let sourceReviewSubmitting = false;
+  let storyboardDraft = {};
+  let storyboardDraftOfferId = "";
+  let storyboardDraftDirty = false;
   const RECIPE_LIMITS = Object.freeze({
     scene: 6,
     selling_point: 6,
@@ -630,10 +633,11 @@
   function contentReviewPayload() {
     const refs = selectedIdentityReferences();
     const videoUrl = String(preview?.source?.video?.url || "").trim();
+    const generationBasisConfirmed = $("#generationBasisConfirmed").checked;
     return {
       content_strategy: currentContentStrategy(),
-      fact_card_approved: $("#factApproved").checked,
-      planning_scope_approved: $("#scopeApproved").checked,
+      fact_card_approved: generationBasisConfirmed,
+      planning_scope_approved: generationBasisConfirmed,
       identity_reference_urls: refs,
       primary_identity_url: refs.includes(selectedPrimaryReference())
         ? selectedPrimaryReference()
@@ -938,8 +942,9 @@
         renderProject();
       };
     });
-    $("#factApproved").checked = Boolean(content.fact_card_approved);
-    $("#scopeApproved").checked = Boolean(content.planning_scope_approved);
+    $("#generationBasisConfirmed").checked = Boolean(
+      content.fact_card_approved && content.planning_scope_approved,
+    );
     $("#preparePackageButton").hidden = Boolean(content.package_found);
     const items = content.suite?.items || [];
     const visible = visibleRecipe(content);
@@ -960,13 +965,62 @@
     $("#sizeConfirmed").onchange = () => { captureRecipeDraft(); updateRecipeUi({ validate: true }); };
     updateRecipeUi();
     updateStrategyUi();
+    const activeStoryboardDraft = storyboardDraftOfferId === currentOfferId()
+      ? storyboardDraft
+      : {};
     $("#storyboardGrid").innerHTML = items.length ? items.map((item) => `
       <article class="story-card">
         <header><h3>${esc(item.title_zh || item.title || item.id)}</h3><span class="experience-badge">经验配方 · 自动采用</span></header>
-        <p>${esc(item.focus_zh || item.focus || "")}</p>
+        <label>标题<input data-story-title="${esc(item.id)}" value="${esc(activeStoryboardDraft[item.id]?.title ?? item.title_zh ?? item.title ?? "")}" maxlength="240"></label>
+        <label>构图描述<textarea data-story-focus="${esc(item.id)}" maxlength="1200">${esc(activeStoryboardDraft[item.id]?.focus ?? item.focus_zh ?? item.focus ?? "")}</textarea></label>
       </article>
-    `).join("") : '<article class="story-card"><p>尚未建立经验配方。先确认商品事实与图片数量，再由 AI 生成本次分镜；分镜无需逐卡审批。</p></article>';
+    `).join("") + '<button id="saveStoryboardEdits" class="button secondary" type="button">保存人工修改</button>' : '<article class="story-card"><p>尚未建立经验配方。先确认商品事实与图片数量，再由 AI 生成本次分镜；分镜无需逐卡审批。</p></article>';
+    $$('[data-story-title], [data-story-focus]').forEach((node) => {
+      node.addEventListener("input", () => {
+        const id = node.dataset.storyTitle || node.dataset.storyFocus || "";
+        if (!id) return;
+        storyboardDraftOfferId = currentOfferId();
+        storyboardDraft[id] = {
+          title: document.querySelector(`[data-story-title="${id}"]`)?.value || "",
+          focus: document.querySelector(`[data-story-focus="${id}"]`)?.value || "",
+        };
+        storyboardDraftDirty = true;
+      });
+    });
   }
+
+  async function saveStoryboardEdits({ quiet = false } = {}) {
+    const edits = {};
+    (preview?.content_package?.suite?.items || []).forEach((item) => {
+      const id = String(item.id || "");
+      edits[id] = {
+        title: document.querySelector(`[data-story-title="${id}"]`)?.value || "",
+        focus: document.querySelector(`[data-story-focus="${id}"]`)?.value || "",
+      };
+    });
+    try {
+      const result = await post("content-package/storyboard-edits", {
+        offer_id: currentOfferId(), expected_revision: Number(preview?.content_package?.revision || 0), edits,
+      });
+      preview.content_package = result.content_package;
+      storyboardDraft = {};
+      storyboardDraftOfferId = "";
+      storyboardDraftDirty = false;
+      if (!quiet) {
+        render();
+        toast("人工修改已保存；需要重新预检，尚未创建付费任务。");
+      }
+      return result;
+    } catch (error) {
+      showAlert(error.message);
+      throw error;
+    }
+  }
+
+  document.addEventListener("click", async (event) => {
+    if (event.target?.id !== "saveStoryboardEdits") return;
+    try { await saveStoryboardEdits(); } catch (_) { /* already shown */ }
+  });
 
   function updateStrategyUi() {
     const sourceOnly = sourceOnlyActive();
@@ -999,12 +1053,12 @@
           ? `最终内容已批准：${finalOrder.length} 张来源图及当前视频决定已锁定；尚未写入妙手。`
           : `当前已保存 ${finalOrder.length} 张来源图；请点击“保存并批准最终内容”。`
     );
-    $("#scopeApprovalTitle").textContent = sourceOnly
-      ? "来源素材范围已确认"
-      : "本地生图约束已确认";
-    $("#scopeApprovalHint").textContent = sourceOnly
+    $("#generationBasisTitle").textContent = sourceOnly
+      ? "来源素材与最终顺序已确认"
+      : "生成依据已确认";
+    $("#generationBasisHint").textContent = sourceOnly
       ? "所有来源图已逐张决定，最终顺序只包含保留的 HTTPS 来源图"
-      : "图片数量、类型与类目规则符合本次需求";
+      : "商品事实、身份参考、图片数量与类目约束均符合本次需求";
     $("#strategyStatus").textContent = sourceOnly
       ? "AI 相关入口已关闭；历史 AI 图片不会进入本次最终图片。"
       : "AI 入口可用；商品事实与配方需确认，经验分镜自动采用，付费生成和成图审核仍由人工决定。";
@@ -1295,6 +1349,7 @@
 
   async function saveSourceReview({
     successMessage = "来源图决定、备注和当前排序已保存到本地。",
+    quiet = false,
   } = {}) {
     if (sourceReviewSubmitting) return null;
     sourceReviewSubmitting = true;
@@ -1330,10 +1385,11 @@
       });
       preview.content_package = result.content_package;
       await load({ quiet: true });
-      toast(successMessage);
+      if (!quiet) toast(successMessage);
       return result;
     } catch (error) {
       showAlert(error.message);
+      if (quiet) throw error;
       return null;
     } finally {
       sourceReviewSubmitting = false;
@@ -1476,7 +1532,7 @@
       });
       return;
     }
-    if (!$("#factApproved").checked || !$("#scopeApproved").checked) {
+    if (!$("#generationBasisConfirmed").checked) {
       reportPlanningBlocker({
         title: "AI 分镜尚未开始",
         message: "请先确认商品事实和本地生图约束；本次点击未发送 AI 规划请求。",
@@ -1507,6 +1563,7 @@
     });
     try {
       await nextPaint();
+      await saveStoryboardEdits();
       await saveContentReview({ quiet: true });
       renderPlanningProgress({
         status: "running",
@@ -1661,30 +1718,51 @@
     }
   }
 
-  async function saveVersionReview() {
-    if (sourceOnlyActive()) {
-      showAlert("当前为仅来源图策略，不审核或混入 AI 版本。");
-      return;
-    }
+  function generatedDecisionRowsFromDom() {
     const currentArtifactIds = new Set(
       generatedCurrentRows().map((row) => row.artifact_id),
     );
-    const finalActions = $$(".asset-decision")
+    return $$(".asset-decision")
       .filter((node) => currentArtifactIds.has(node.dataset.artifactId))
       .map((node) => ({
         artifact_id: node.dataset.artifactId,
         action: node.value === "approved" ? "keep" : "remove",
       }));
+  }
+
+  async function saveAllContentDrafts({ includeFinalOrder = false } = {}) {
+    if (sourceOnlyActive()) return null;
+    const desiredOrder = finalOrder.map((row) => row.url);
+    const finalActions = generatedDecisionRowsFromDom();
+    if (storyboardDraftDirty) {
+      await saveStoryboardEdits({ quiet: true });
+      await load({ quiet: true });
+    }
+    await saveSourceReview({ quiet: true });
+    for (const action of finalActions) {
+      await post("content-package/generated-image/decision", {
+        offer_id: currentOfferId(),
+        ...action,
+      });
+    }
+    await load({ quiet: true });
+    if (!includeFinalOrder) return preview;
+    preview = await post("review", {
+      offer_id: currentOfferId(),
+      review: reviewPayload({ image_order: desiredOrder }),
+    });
+    render();
+    return preview;
+  }
+
+  async function saveVersionReview() {
+    if (sourceOnlyActive()) {
+      showAlert("当前为仅来源图策略，不审核或混入 AI 版本。");
+      return;
+    }
     setLoading($("#saveVersionsButton"), true);
     try {
-      await saveContentReview({ quiet: true });
-      for (const action of finalActions) {
-        await post("content-package/generated-image/decision", {
-          offer_id: currentOfferId(),
-          ...action,
-        });
-      }
-      await load({ quiet: true });
+      await saveAllContentDrafts();
       toast("图片决定已保存：通过即保留，返工、拒绝或待定均不进入最终图片。");
     } catch (error) {
       showAlert(error.message);
@@ -1699,11 +1777,7 @@
     }
     setLoading($("#saveOrderButton"), true);
     try {
-      preview = await post("review", {
-        offer_id: currentOfferId(),
-        review: reviewPayload({ image_order: finalOrder.map((row) => row.url) }),
-      });
-      render();
+      await saveAllContentDrafts({ includeFinalOrder: true });
       if (!quiet) toast("最终图片顺序已保存到本地，尚未写入妙手。");
       return preview;
     } catch (error) {
@@ -1714,8 +1788,29 @@
     }
   }
 
+  function miaoshouImagesAlreadyVerified() {
+    const content = preview?.content_package || {};
+    const write = content.miaoshou_ordered_images_write
+      || content.miaoshou_generated_images_write
+      || {};
+    return write.status === "verified" && content.final_content_approval_ready === true;
+  }
+
+  async function finalizeAiContentAfterVerifiedSync() {
+    if (sourceOnlyActive() || preview?.content_package?.final_content_approval_valid) return;
+    const result = await post("content-package/finalize", {
+      offer_id: currentOfferId(),
+      approval: {
+        expected_revision: Number(preview?.content_package?.revision || 0),
+        approved_by: "Kyle",
+      },
+    });
+    preview.content_package = result.content_package;
+  }
+
   async function syncMiaoshou() {
     if (!$("#miaoshouConfirm").checked) return;
+    if (syncInFlight) return;
     if (sourceOnlyActive() && !sourceOnlyFinalApproved()) {
       showAlert("请先点击“保存并批准最终内容”，再同步到妙手。");
       return;
@@ -1724,7 +1819,6 @@
       showAlert("最终图片为空，不能同步妙手。");
       return;
     }
-    if (!confirm(`将按当前顺序把 ${finalOrder.length} 张图片写入妙手公共采集箱并回读验证。此操作不会发布商品。再次确认继续吗？`)) return;
     syncInFlight = true;
     $("#miaoshouConfirm").disabled = true;
     setLoading($("#syncMiaoshouButton"), true);
@@ -1736,6 +1830,19 @@
     });
     try {
       await saveOrder({ quiet: true });
+      if (miaoshouImagesAlreadyVerified()) {
+        await finalizeAiContentAfterVerifiedSync();
+        await load({ quiet: true });
+        renderSyncFeedback({
+          status: "verified",
+          written_image_count: finalOrder.length,
+          checks: { images: true, description_images: true },
+        });
+        $("#miaoshouConfirm").checked = false;
+        $("#syncMiaoshouButton").disabled = true;
+        toast("妙手图片已验证；最终内容已批准，无需重复写入妙手。");
+        return;
+      }
       renderSyncFeedback({
         status: "preparing",
         phase: "read_current",
@@ -1769,11 +1876,13 @@
         checks: result.checks,
       });
       await load({ quiet: true });
+      await finalizeAiContentAfterVerifiedSync();
+      await load({ quiet: true });
       syncFeedbackOverride = null;
       renderSyncFeedback();
       $("#miaoshouConfirm").checked = false;
       $("#syncMiaoshouButton").disabled = true;
-      toast(`已同步 ${result.written_image_count || finalOrder.length} 张图片并通过回读验证。`);
+      toast(`已同步 ${result.written_image_count || finalOrder.length} 张图片、通过回读并批准最终内容。`);
     } catch (error) {
       renderSyncFeedback(error.payload?.sync || {
         status: "failed",

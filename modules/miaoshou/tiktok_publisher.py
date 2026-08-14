@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_CEILING
+import json
+import re
 import time
 from typing import Callable, Mapping
 
 from domains.channel_operations.tiktok_publisher import (
+    TikTokBatchPreflightError,
     TikTokPreWritePreparationError,
 )
 from modules.miaoshou.client import post_open
@@ -39,6 +42,10 @@ PUBLISH_PATH = (
 )
 CATEGORY_METADATA_PATH = (
     "/open/v1/product/collect_box/tiktok/collect_box/get_category_metadata"
+)
+WAREHOUSE_GET_PATH = (
+    "/open/v1/product/collect_box/tiktok/collect_box/"
+    "get_shop_warehouse_list"
 )
 
 EXPECTED_SHOP_ID_BY_TARGET = {
@@ -156,6 +163,24 @@ class MiaoshouTikTokTransport:
         expected_category = self._category_id(target, info)
         if str(info.get("cid") or "") != expected_category:
             return False
+        if str(info.get("title") or "") != self._target_text(
+            target, "expected_title"
+        ):
+            return False
+        expected_description = self._target_text(target, "expected_description")
+        if str(info.get("notes") or "") != expected_description:
+            return False
+        notes_text = info.get("notesText")
+        notes_text_matches = str(notes_text or "") == expected_description
+        notes_text_is_confirmed_projection = (
+            accept_post_submit_projection and notes_text in (None, "")
+        )
+        if not notes_text_matches and not notes_text_is_confirmed_projection:
+            return False
+        expected_images = self._target_images(target)
+        observed_images = info.get("imgUrls")
+        if not isinstance(observed_images, list) or observed_images != expected_images:
+            return False
         delivery_type = info.get("deliveryOptionSetType")
         if delivery_type != "default" and not (
             accept_post_submit_projection and delivery_type in (None, "")
@@ -169,6 +194,9 @@ class MiaoshouTikTokTransport:
         ):
             return False
         expected_weight, expected_package = self._parent_parcel(target)
+        provider_package = tuple(
+            self._package_dimension(value) for value in expected_package
+        )
         try:
             parent_matches = (
                 self._decimal(info.get("weight")) == expected_weight
@@ -176,7 +204,7 @@ class MiaoshouTikTokTransport:
                     self._decimal(info.get(field)) == expected
                     for field, expected in zip(
                         ("packageLength", "packageWidth", "packageHeight"),
-                        expected_package,
+                        provider_package,
                     )
                 )
             )
@@ -186,7 +214,18 @@ class MiaoshouTikTokTransport:
             return False
         sku_map = self._sku_map(info)
         expected_by_key = self._expected_rows_by_draft_key(target, info, sku_map)
-        return all(
+        try:
+            expected_specifications = self._bound_variant_specifications(
+                target, info, sku_map
+            )
+            specifications_match = self._variant_specifications_match(
+                info,
+                expected_specifications,
+                accept_provider_omission=accept_post_submit_projection,
+            )
+        except TikTokPreWritePreparationError:
+            return False
+        return specifications_match and all(
             (
                 expected_by_key[str(key)][0] is None
                 or str(row.get("itemNum") or "").strip()
@@ -198,12 +237,19 @@ class MiaoshouTikTokTransport:
             and self._sku_parcel_matches(
                 row,
                 expected_weight=expected_by_key[str(key)][2],
-                expected_package=expected_by_key[str(key)][3],
+                expected_package=(
+                    tuple(
+                        self._package_dimension(value)
+                        for value in expected_by_key[str(key)][3]
+                    )
+                    if expected_by_key[str(key)][3] is not None
+                    else None
+                ),
             )
             for key, row in sku_map.items()
         )
 
-    def save_approved_draft(
+    def prepare_approved_draft(
         self, target: Mapping[str, object], draft: Mapping[str, object]
     ) -> Mapping[str, object]:
         try:
@@ -212,13 +258,24 @@ class MiaoshouTikTokTransport:
             info = deepcopy(dict(self._mapping(draft.get("info"), "draft info")))
             category_id = self._category_id(target, info)
             info["cid"] = category_id
+            info["title"] = self._target_text(target, "expected_title")
+            expected_description = self._target_text(target, "expected_description")
+            info["notes"] = expected_description
+            info["notesText"] = expected_description
+            info["imgUrls"] = self._target_images(target)
             parent_weight, parent_package = self._parent_parcel(target)
             info["weight"] = float(parent_weight)
-            info["packageLength"] = float(parent_package[0])
-            info["packageWidth"] = float(parent_package[1])
-            info["packageHeight"] = float(parent_package[2])
+            info["packageLength"] = self._package_dimension(parent_package[0])
+            info["packageWidth"] = self._package_dimension(parent_package[1])
+            info["packageHeight"] = self._package_dimension(parent_package[2])
             sku_map = self._sku_map(info)
             expected_by_key = self._expected_rows_by_draft_key(target, info, sku_map)
+            expected_specifications = self._bound_variant_specifications(
+                target, info, sku_map
+            )
+            warehouse_id = self._warehouse_id(
+                info, shop_id=str(target["shop_id"])
+            )
             updated_skus: dict[str, object] = {}
             for key, raw_row in sku_map.items():
                 row = deepcopy(dict(raw_row))
@@ -232,11 +289,22 @@ class MiaoshouTikTokTransport:
                 row["priceIncludeVat"] = price
                 if sku_weight is not None and sku_package is not None:
                     row["weight"] = float(sku_weight)
-                    row["packageLength"] = float(sku_package[0])
-                    row["packageWidth"] = float(sku_package[1])
-                    row["packageHeight"] = float(sku_package[2])
+                    row["packageLength"] = self._package_dimension(sku_package[0])
+                    row["packageWidth"] = self._package_dimension(sku_package[1])
+                    row["packageHeight"] = self._package_dimension(sku_package[2])
+                stock = raw_row.get("stock")
+                if isinstance(stock, bool) or not str(stock or "").isdigit() or int(str(stock)) <= 0:
+                    raise TikTokPreWritePreparationError(
+                        "Miaoshou approved stock is unavailable",
+                        code="warehouse_binding_invalid",
+                    )
+                row["stock"] = int(str(stock))
+                row["shopIdToWarehouseIdAndStockMap"] = {
+                    str(target["shop_id"]): {warehouse_id: str(int(str(stock)))}
+                }
                 updated_skus[str(key)] = row
             info["skuMap"] = updated_skus
+            self._apply_variant_specifications(info, expected_specifications)
             info["deliveryOptionSetType"] = "default"
             info["sizeChart"] = ""
             info["sizeChartType"] = ""
@@ -256,23 +324,69 @@ class MiaoshouTikTokTransport:
             ) from error
         oss_md5 = str(draft.get("oss_md5") or "")
         if label in _SITE_DRAFT_TARGETS:
-            return self._post(
-                SAVE_SITE_DRAFT_PATH,
-                {
+            prepared = {
+                "path": SAVE_SITE_DRAFT_PATH,
+                "body": {
                     "detailId": detail_id,
                     "site": _SITE_BY_TARGET[label],
                     "siteCollectItemInfo": info,
                     "ossMd5": oss_md5,
                 },
+            }
+        else:
+            prepared = {
+                "path": SAVE_SHOP_DRAFT_PATH,
+                "body": {
+                    "detailId": detail_id,
+                    "shopId": int(str(target["shop_id"])),
+                    "shopCollectItemInfo": info,
+                    "ossMd5": oss_md5,
+                },
+            }
+        try:
+            json.dumps(
+                prepared,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
             )
-        return self._post(
-            SAVE_SHOP_DRAFT_PATH,
-            {
-                "detailId": detail_id,
-                "shopId": int(str(target["shop_id"])),
-                "shopCollectItemInfo": info,
-                "ossMd5": oss_md5,
-            },
+        except (TypeError, ValueError) as error:
+            raise TikTokBatchPreflightError(
+                "TikTok prepared SAVE payload is not JSON serializable"
+            ) from error
+        return prepared
+
+    def save_prepared_draft(
+        self,
+        target: Mapping[str, object],
+        prepared: Mapping[str, object],
+    ) -> Mapping[str, object]:
+        label = self._label(target)
+        path = prepared.get("path")
+        body = prepared.get("body")
+        expected_path = (
+            SAVE_SITE_DRAFT_PATH if label in _SITE_DRAFT_TARGETS else SAVE_SHOP_DRAFT_PATH
+        )
+        if path != expected_path or not isinstance(body, Mapping):
+            raise TikTokPreWritePreparationError(
+                "Miaoshou prepared SAVE is invalid",
+                code="draft_repair_preparation_invalid",
+            )
+        if str(body.get("detailId") or "") != str(target["detail_id"]):
+            raise TikTokPreWritePreparationError(
+                "Miaoshou prepared SAVE identity drifted",
+                code="draft_repair_preparation_invalid",
+            )
+        return self._post(str(path), deepcopy(dict(body)))
+
+    def save_approved_draft(
+        self, target: Mapping[str, object], draft: Mapping[str, object]
+    ) -> Mapping[str, object]:
+        """Compatibility helper; formal publisher uses prepare then send."""
+        return self.save_prepared_draft(
+            target,
+            self.prepare_approved_draft(target, draft),
         )
 
     def _gb_required_attributes(
@@ -333,6 +447,73 @@ class MiaoshouTikTokTransport:
             )
         return required
 
+    def _warehouse_id(self, info: Mapping[str, object], *, shop_id: str) -> str:
+        observed: set[str] = set()
+        for row in self._sku_map(info).values():
+            bindings = row.get("shopIdToWarehouseIdAndStockMap")
+            if bindings is None:
+                continue
+            if not isinstance(bindings, Mapping):
+                raise TikTokPreWritePreparationError(
+                    "Miaoshou warehouse binding is malformed",
+                    code="warehouse_binding_invalid",
+                )
+            warehouse_map = bindings.get(shop_id)
+            if warehouse_map is None:
+                continue
+            if not isinstance(warehouse_map, Mapping) or not warehouse_map:
+                raise TikTokPreWritePreparationError(
+                    "Miaoshou warehouse binding is malformed",
+                    code="warehouse_binding_invalid",
+                )
+            observed.update(str(key).strip() for key in warehouse_map if str(key).strip())
+        if len(observed) == 1:
+            return next(iter(observed))
+        if len(observed) > 1:
+            raise TikTokPreWritePreparationError(
+                "Miaoshou warehouse identity is ambiguous",
+                code="warehouse_binding_invalid",
+            )
+        response = self._post(WAREHOUSE_GET_PATH, {"shopIds": [shop_id]})
+        data = self._mapping(response.get("data"), "warehouse data")
+        groups = data.get("shopWarehouseList")
+        if not isinstance(groups, list):
+            raise TikTokPreWritePreparationError(
+                "Miaoshou warehouse response is malformed",
+                code="warehouse_binding_invalid",
+            )
+        active: list[Mapping[str, object]] = []
+        for group in groups:
+            if not isinstance(group, Mapping):
+                raise TikTokPreWritePreparationError(
+                    "Miaoshou warehouse response is malformed",
+                    code="warehouse_binding_invalid",
+                )
+            if str(group.get("shopId") or "") != shop_id:
+                continue
+            rows = group.get("warehouseList")
+            if not isinstance(rows, list) or any(not isinstance(row, Mapping) for row in rows):
+                raise TikTokPreWritePreparationError("Miaoshou warehouse response is malformed", code="warehouse_binding_invalid")
+            active.extend(row for row in rows if str(row.get("warehouseEffectStatus") or "1") == "1" and str(row.get("warehouseId") or "").strip())
+        mainland_pickup = [
+            row for row in active
+            if self._is_china_mainland_pickup_warehouse(row)
+        ]
+        if len(mainland_pickup) != 1:
+            raise TikTokPreWritePreparationError(
+                "Miaoshou China mainland pickup warehouse is unavailable",
+                code="warehouse_binding_invalid",
+            )
+        return str(mainland_pickup[0]["warehouseId"]).strip()
+
+    @staticmethod
+    def _is_china_mainland_pickup_warehouse(row: Mapping[str, object]) -> bool:
+        name = str(row.get("warehouseName") or row.get("name") or "")
+        normalized = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", name.lower())
+        return (
+            "chinesemainland" in normalized and "pickupwarehouse" in normalized
+        ) or ("中国大陆" in normalized and "揽收仓" in normalized)
+
     def submit(self, target: Mapping[str, object]) -> Mapping[str, object]:
         label = self._label(target)
         now = self._monotonic()
@@ -372,6 +553,28 @@ class MiaoshouTikTokTransport:
         if expected_shop is None or str(target.get("shop_id") or "") != expected_shop:
             raise ValueError("TikTok target shop binding drifted")
         return label
+
+    @staticmethod
+    def _target_text(target: Mapping[str, object], field: str) -> str:
+        value = target.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise TikTokPreWritePreparationError(
+                f"approved TikTok {field} is invalid",
+                code="approved_copy_invalid",
+            )
+        return value
+
+    @staticmethod
+    def _target_images(target: Mapping[str, object]) -> list[str]:
+        value = target.get("expected_images")
+        if not isinstance(value, list) or not value or any(
+            not isinstance(image, str) or not image.strip() for image in value
+        ):
+            raise TikTokPreWritePreparationError(
+                "approved TikTok images are invalid",
+                code="approved_images_invalid",
+            )
+        return list(value)
 
     @staticmethod
     def _mapping(value: object, name: str) -> Mapping[str, object]:
@@ -440,6 +643,7 @@ class MiaoshouTikTokTransport:
                     info,
                     selected_sku_keys=list(variant_model_skus),
                     model_skus=variant_model_skus,
+                    specifications=target.get("expected_variant_specifications"),
                 )
             except TikTokVariantBindingError as error:
                 raise TikTokPreWritePreparationError(
@@ -495,6 +699,198 @@ class MiaoshouTikTokTransport:
         }
 
     @classmethod
+    def _bound_variant_specifications(
+        cls,
+        target: Mapping[str, object],
+        info: Mapping[str, object],
+        sku_map: Mapping[str, Mapping[str, object]],
+    ) -> dict[str, tuple[dict[str, str], str]]:
+        """Bind frozen display facts only through the exact Model-SKU contract."""
+
+        raw_models = target.get("expected_variant_model_skus")
+        raw_specifications = target.get("expected_variant_specifications")
+        if raw_specifications in (None, {}):
+            return {}
+        if not isinstance(raw_models, Mapping) or not isinstance(
+            raw_specifications, Mapping
+        ) or not raw_models or set(raw_models) != set(raw_specifications):
+            raise TikTokPreWritePreparationError(
+                "approved variant display specification coverage is invalid",
+                code="sku_price_binding_invalid",
+            )
+        models = {str(key): value for key, value in raw_models.items()}
+        if set(models) != set(raw_models) or any(
+            type(value) is not str or not value.strip() for value in models.values()
+        ):
+            raise TikTokPreWritePreparationError(
+                "approved variant model SKU identity is invalid",
+                code="sku_price_binding_invalid",
+            )
+        specifications: dict[str, dict[str, str]] = {}
+        for variant, raw_specification in raw_specifications.items():
+            if not isinstance(raw_specification, Mapping):
+                raise TikTokPreWritePreparationError(
+                    "approved variant display specification is invalid",
+                    code="sku_price_binding_invalid",
+                )
+            specification = {
+                str(key): value
+                for key, value in raw_specification.items()
+                if type(key) is str and type(value) is str and value.strip()
+            }
+            if set(specification) != set(raw_specification) or not specification:
+                raise TikTokPreWritePreparationError(
+                    "approved variant display specification is invalid",
+                    code="sku_price_binding_invalid",
+                )
+            display = specification.get("option")
+            if type(display) is not str or not display.strip():
+                raise TikTokPreWritePreparationError(
+                    "approved variant display option is invalid",
+                    code="sku_price_binding_invalid",
+                )
+            specifications[str(variant)] = specification
+        try:
+            bindings = approved_variant_key_bindings(
+                info,
+                selected_sku_keys=list(models),
+                model_skus=models,
+                specifications=specifications,
+            )
+        except TikTokVariantBindingError as error:
+            raise TikTokPreWritePreparationError(
+                str(error), code="sku_price_binding_invalid"
+            ) from error
+        result = {
+            str(bindings[variant]): (
+                specifications[variant], specifications[variant]["option"]
+            )
+            for variant in models
+        }
+        if set(result) != set(str(key) for key in sku_map):
+            raise TikTokPreWritePreparationError(
+                "Miaoshou variant display specification binding is incomplete",
+                code="sku_price_binding_invalid",
+            )
+        return result
+
+    @classmethod
+    def _display_value_by_sku_key(
+        cls,
+        info: Mapping[str, object],
+        expected: Mapping[str, tuple[dict[str, str], str]],
+    ) -> tuple[dict[str, object], dict[str, dict[str, object]]]:
+        """Return the single final-sale property value for every bound SKU row."""
+
+        raw_properties = info.get("skuPropertyList")
+        raw_skus = info.get("skuMap")
+        if not isinstance(raw_properties, list) or not raw_properties or not isinstance(
+            raw_skus, Mapping
+        ):
+            raise TikTokPreWritePreparationError(
+                "Miaoshou display specification projection is unavailable",
+                code="sku_price_binding_invalid",
+            )
+        target_property = raw_properties[-1]
+        if not isinstance(target_property, dict):
+            raise TikTokPreWritePreparationError(
+                "Miaoshou final sale property is malformed",
+                code="sku_price_binding_invalid",
+            )
+        raw_values = target_property.get("attrValueList")
+        if not isinstance(raw_values, list) or not raw_values:
+            raise TikTokPreWritePreparationError(
+                "Miaoshou final sale property values are malformed",
+                code="sku_price_binding_invalid",
+            )
+        values_by_id: dict[str, dict[str, object]] = {}
+        for value in raw_values:
+            if not isinstance(value, dict):
+                raise TikTokPreWritePreparationError(
+                    "Miaoshou final sale property values are malformed",
+                    code="sku_price_binding_invalid",
+                )
+            value_id = value.get("attrValueId")
+            if type(value_id) is not str or not value_id.strip() or value_id in values_by_id:
+                raise TikTokPreWritePreparationError(
+                    "Miaoshou final sale property identity is ambiguous",
+                    code="sku_price_binding_invalid",
+                )
+            values_by_id[value_id] = value
+        if set(expected) != set(str(key) for key in raw_skus):
+            raise TikTokPreWritePreparationError(
+                "Miaoshou display specification SKU coverage is incomplete",
+                code="sku_price_binding_invalid",
+            )
+        by_sku_key: dict[str, dict[str, object]] = {}
+        used_ids: set[str] = set()
+        for raw_key in expected:
+            value_ids = [part for part in raw_key.split(";") if part]
+            matching_ids = [value_id for value_id in value_ids if value_id in values_by_id]
+            if len(matching_ids) != 1 or matching_ids[0] in used_ids:
+                raise TikTokPreWritePreparationError(
+                    "Miaoshou final sale property binding is ambiguous",
+                    code="sku_price_binding_invalid",
+                )
+            used_ids.add(matching_ids[0])
+            by_sku_key[raw_key] = values_by_id[matching_ids[0]]
+        return target_property, by_sku_key
+
+    @classmethod
+    def _apply_variant_specifications(
+        cls,
+        info: dict[str, object],
+        expected: Mapping[str, tuple[dict[str, str], str]],
+    ) -> None:
+        if not expected:
+            return
+        target_property, values_by_sku_key = cls._display_value_by_sku_key(info, expected)
+        raw_properties = info["skuPropertyList"]
+        raw_skus = info["skuMap"]
+        assert isinstance(raw_properties, list) and isinstance(raw_skus, Mapping)
+        target_property["attrName"] = "Specification"
+        for raw_key, (specification, display) in expected.items():
+            value = values_by_sku_key[raw_key]
+            value["attrValue"] = display
+            row = raw_skus.get(raw_key)
+            if not isinstance(row, Mapping):
+                raise TikTokPreWritePreparationError(
+                    "Miaoshou display specification SKU row is malformed",
+                    code="sku_price_binding_invalid",
+                )
+            row["specification"] = deepcopy(specification)
+        raw_properties[-1] = target_property
+
+    @classmethod
+    def _variant_specifications_match(
+        cls,
+        info: Mapping[str, object],
+        expected: Mapping[str, tuple[dict[str, str], str]],
+        *,
+        accept_provider_omission: bool,
+    ) -> bool:
+        if not expected:
+            return True
+        target_property, values_by_sku_key = cls._display_value_by_sku_key(info, expected)
+        if target_property.get("attrName") != "Specification":
+            return False
+        raw_skus = info.get("skuMap")
+        if not isinstance(raw_skus, Mapping):
+            return False
+        for raw_key, (specification, display) in expected.items():
+            row = raw_skus.get(raw_key)
+            if not isinstance(row, Mapping) or values_by_sku_key[raw_key].get(
+                "attrValue"
+            ) != display:
+                return False
+            observed_specification = row.get("specification")
+            if observed_specification is None and accept_provider_omission:
+                continue
+            if observed_specification != specification:
+                return False
+        return True
+
+    @classmethod
     def _parent_parcel(
         cls, target: Mapping[str, object]
     ) -> tuple[Decimal, tuple[Decimal, Decimal, Decimal]]:
@@ -515,6 +911,10 @@ class MiaoshouTikTokTransport:
         if not isinstance(value, list) or len(value) != 3:
             raise ValueError("Miaoshou package is malformed")
         return tuple(cls._decimal(item) for item in value)  # type: ignore[return-value]
+
+    @staticmethod
+    def _package_dimension(value: Decimal) -> int:
+        return int(value.to_integral_value(rounding=ROUND_CEILING))
 
     @classmethod
     def _sku_parcel_matches(

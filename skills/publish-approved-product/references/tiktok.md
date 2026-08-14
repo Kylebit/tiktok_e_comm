@@ -19,6 +19,21 @@ Persist and read one identity per target:
 Never infer a target from list position, title, the first draft, or another
 store's `detail_id`.
 
+## HomeBloom SEA transport and identities
+
+HomeBloom PH/MY/TH/VN are TikTok publication targets without a direct official
+API integration in this workflow. They must use the Miaoshou Open API and must not use the TikTok official API. Bind the four exact target/shop identities:
+
+- `tiktok:HB_PH` -> HomeBloom PH `shop_id=15173238`
+- `tiktok:HB_MY` -> HomeBloom MY `shop_id=16770639`
+- `tiktok:HB_TH` -> HomeBloom TH `shop_id=16770557`
+- `tiktok:HB_VN` -> HomeBloom VN `shop_id=16783702`
+
+Each selected HomeBloom shop is an independent execution target. Read, repair,
+submit, checkpoint, and classify its exact Miaoshou `detail_id` independently.
+Never reuse a LivelyHive shop merely because it has the same country code, and
+never let one HomeBloom result stand in for another selected shop.
+
 ## Required evidence
 
 For each target verify, when the provider exposes the fact:
@@ -74,6 +89,31 @@ zero-write preflight failure: do not call the publish endpoint.
 - Category and price readback are target-specific.
 - Each selected shop is an independent execution target. A failed target must
   not prevent another ready target from being submitted.
+
+### Two-barrier all-target preflight
+
+Formal frozen-v4 execution must finish two batch barriers before sending a
+SAVE or PUBLISH request:
+
+1. Before any provider identity mutation, project every selected target's
+   frozen category, copy, ordered images, SKU/model prices and parcel into the
+   real draft shape and prove it is JSON serializable. A shared snapshot,
+   projection or serialization failure stops the whole batch with zero
+   provider mutations.
+2. Only after that barrier may a missing provider detail identity require a
+   claim/create mutation. Once identities are available, read each editable
+   draft and exact-shop warehouse, build the real SAVE body, validate category,
+   warehouse, stock, copy, images, SKU prices and parcel, and prove JSON
+   serialization for every executable target before the first SAVE/PUBLISH.
+
+Do not describe claim/create as read-only: a new target can incur identity
+writes between the barriers. During the second barrier, however, SAVE and
+PUBLISH counts must remain zero. A typed shared/systemic failure in that
+barrier prevents every SAVE/PUBLISH. A typed target preparation failure such
+as missing/ambiguous exact-shop warehouse, category or identity blocks only
+that target; after all targets finish preflight, other prepared targets may
+continue. Never infer failure scope from a generic `TypeError`, provider text,
+or target position.
 
 ## Category mapping workflow
 
@@ -149,14 +189,15 @@ Required handling: create only the explicitly selected platform rows. Existing
 attempted or terminal evidence is immutable; cleanup may remove only an
 unselected row that is still pristine `PENDING` with zero attempts and writes.
 
-### Confirmed tablecloth/table-runner fallback
+### Confirmed table-mat and tablecloth category
 
-- Primary: `cid=600204` (tablecloth/table runner / kitchen linens).
-- Approved fallback: `cid=600009` (festive decoration), authorized by Kyle for
-  this product family when TikTok disables or omits `600204` for a site.
+- Direct approved category: `cid=600009` (Festive Decoration), authorized by
+  Kyle for table mats/placemats/coasters and tablecloths/table runners.
+- Do not first select `cid=600033` or `cid=600204` for these product families.
 - Never choose `600009` merely because the title contains holiday words.
-- For each site, inspect the official tree in order: use enabled `600204`;
-  otherwise use enabled `600009`; otherwise require category confirmation.
+- For each exact shop, require the official tree to show enabled `600009` and
+  require the returned category metadata to match that shop; otherwise require
+  category confirmation.
 - Miaoshou returns `cateTree` as a nested hierarchy. Search recursively through
   each node's `children` by exact `cid`; never assume the requested cid is a
   top-level key. A flat lookup falsely reports both categories unavailable.
@@ -301,13 +342,17 @@ Required handling:
 1. Bind every approved variant to its exact current provider SKU row first.
 2. Preserve the positive provider stock from that exact row; the frozen
    product snapshot must not invent inventory.
-3. Reuse one unambiguous warehouse already bound to the exact shop. If absent,
-   read the official warehouse list for that shop and select the deterministic
-   active/default warehouse using the proven provider ordering.
+3. For every TikTok/Miaoshou target shop, reuse one unambiguous, correct
+   warehouse already bound to that exact shop. If absent,
+   read the official warehouse list for that shop and select the unique active
+   warehouse named `The Chinese mainland Pickup Warehouse`, or its clear
+   localized Chinese-mainland pickup equivalent. Do not use default status or
+   provider ordering as a substitute for that name semantic.
 4. Set `shopIdToWarehouseIdAndStockMap` independently for every SKU and exact
    shop. Never reuse another shop's warehouse.
-5. Missing stock, no active warehouse, or multiple observed warehouses is a
-   zero-write preparation failure. Do not guess and do not classify it as a
+5. Missing stock, no uniquely matching Chinese-mainland pickup warehouse,
+   ambiguous candidates, or multiple observed warehouses is a zero-write
+   preparation failure. Do not cross-shop bind, guess, or classify it as a
    provider acceptance.
 
 ### Confirmed incident: optional-only GB category metadata blocked repair
@@ -416,6 +461,22 @@ Required handling:
 5. After an accepted save, apply the existing bounded readback policy. Do not
    issue another save merely because provider materialization is delayed.
 
+### Confirmed incident: sub-centimeter package dimension rejected the whole draft
+
+Miaoshou's TikTok draft save accepts weight decimals but requires each parent
+and per-SKU package dimension to be a positive whole centimeter. A frozen
+dimension such as `0.8 cm` sent verbatim is rejected with
+`siteCollectItemInfo.packageHeight 不能小于1`; because category, images,
+description, SKU and parcel are one save transaction, none of those approved
+fields persist after that rejection.
+
+Project every positive approved package dimension to the provider envelope by
+rounding upward to the next whole centimeter (`0.8 -> 1`, `15.2 -> 16`) while
+preserving the approved weight exactly. Apply the same projection to parent
+and per-SKU rows and use it for post-save readback. Never alter the frozen
+source parcel, round weight, retry a rejected request blindly, or create a new
+draft when the bound existing identity is available.
+
 ### Confirmed incident: unsupported size-chart URL blocks submission
 
 Miaoshou validates a non-empty size-chart URL even when the approved product
@@ -442,3 +503,21 @@ size-chart fields are repaired. Use a separate post-submit matcher that accepts
 only these confirmed projection omissions. Parent parcel, every model SKU,
 every model price, every model weight and category must still match exactly;
 partial dimension omission or any explicit different value remains a failure.
+
+For HomeBloom PH detail `3280463163`, official post-save GET retained the
+approved `notes` string, title, ordered images, category, parcel, SKU and
+price, while auxiliary `notesText` was absent (`null`). Keep writing both
+`notes` and `notesText` before submit. Pre-submit matching requires both exact
+fields so a stale editable draft is repaired. Post-submit matching may accept
+only a missing, null, or empty `notesText` when authoritative `notes` is exact;
+any non-empty differing `notesText` remains a mismatch.
+
+### Approved self-adhesive decorative wallpaper fallback
+
+Kyle approves `cid=600338` (`Decorative Stickers`) only for the frozen
+`背景墙 > 墙纸、壁纸` family when approved title and description explicitly say
+self-adhesive decorative wall covering. Re-read each exact shop's current tree
+and metadata; require enabled node and valid metadata. Do not use it for
+ordinary wallpaper or share one site's result with another. GB uses the sole
+official Batch Number selection `102255=1000256` (`1`); all other approved
+sites have no required attribute. Any changed or ambiguous fact fails closed.

@@ -443,6 +443,25 @@ def test_failed_current_queue_read_is_not_presented_as_still_loading():
     assert '$("#queueMessage").textContent' in refresh_queue_product
 
 
+def test_product_workspace_never_discards_a_dirty_fact_draft_for_a_later_action():
+    source = (WEB / "static" / "product_workspace.js").read_text(
+        encoding="utf-8"
+    )
+    refresh_queue_product = _function_body(source, "refreshQueueProduct")
+    submit_approval = _function_body(source, "submitApproval")
+    workflow_next = _function_body(source, "runWorkflowNextAction")
+    approve_plan = _function_body(source, "approveReleasePlan")
+    generate_title = _function_body(source, "generateTitleDraft")
+
+    assert "const preservedFactsDraft = captureProductFactsDraft()" in refresh_queue_product
+    assert "restoreProductFactsDraft(preservedFactsDraft" in refresh_queue_product
+    assert "await saveDirtyProductFactsBeforeAction" in submit_approval
+    assert "await saveDirtyProductFactsBeforeAction" in workflow_next
+    assert "await saveDirtyProductFactsBeforeAction" in approve_plan
+    assert "const preservedFactsDraft = captureProductFactsDraft()" in generate_title
+    assert "restoreProductFactsDraft(preservedFactsDraft" in generate_title
+
+
 def test_disabled_release_checkboxes_expose_visible_reasons():
     html = (ROOT / "web/product_workspace.html").read_text(encoding="utf-8")
     studio_html = (ROOT / "web/ai_image_studio.html").read_text(encoding="utf-8")
@@ -519,6 +538,25 @@ def test_blocked_release_plan_exposes_a_recovery_action_instead_of_a_dead_end():
     assert "updateReleaseControls(currentData || {})" in script
     assert "pageLoading = false;" in script
     assert ".release-plan-recovery" in style
+
+
+def test_release_plan_disabled_reason_uses_the_server_owned_next_action():
+    html = (ROOT / "web" / "product_workspace.html").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "static" / "product_workspace.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'id="approveReleasePlanButton"' in html
+    assert 'aria-describedby="releasePlanMessage releasePlanRecoveryDetail"' in html
+    assert 'code: "continue_workflow"' in script
+    assert 'label: workflow.label' in script
+    assert 'detail: workflow.detail' in script
+    assert 'if (code === "continue_workflow")' in script
+    assert "await runWorkflowNextAction()" in script
+    assert "approvalButton.dataset.disabledReason" in script
+    assert 'id="factsImpactSummary"' in html
+    assert "function renderFieldImpactSummary" in script
+    assert "data.field_impact_map" in script
 
 
 def test_release_plan_failure_refreshes_the_current_gate_and_explains_reapproval():

@@ -20,6 +20,10 @@ from domains.product_operations.approved_publication_snapshot import (
     ApprovedPublicationSnapshotError,
     validate_approved_publication_snapshot,
 )
+from domains.channel_operations.tiktok_publisher import (
+    sanitize_tiktok_provider_code,
+    sanitize_tiktok_provider_reason,
+)
 from shared_platform.collectbox_action import CollectBoxTargetDetailIdentity
 
 
@@ -192,19 +196,35 @@ def execute_tiktok_v4_plan(
             "readback_status": "NOT_ATTEMPTED",
             "external_write_count": 0,
             "retry_safe": True,
+            "evidence": _target_evidence(
+                label=str(row["target_label"]),
+                status="FAILED",
+                stage="IDENTITY",
+                provider_code=row["reason_code"],
+                provider_reason="Miaoshou draft identity is unavailable",
+                request_attempted=False,
+                outcome_unknown=False,
+                external_write_count=0,
+            ),
         }
         for row in plan["blocked_targets"]
     }
 
+    # Complete every target's read/prepare preflight before the first publish
+    # mutation. A thrown exception represents a shared/systemic local failure;
+    # target-specific readiness failures are returned as receipt statuses.
+    preflights: dict[str, Mapping[str, object]] = {}
+    systemic_preflight_failure = False
     for command in plan["targets"]:
         label = command["target_label"]
         publisher_snapshot = command["publisher_snapshot"]
         try:
             preflight = publisher.preflight(deepcopy(publisher_snapshot))
-            preflight_status = _preflight_status(preflight, label)
+            preflight_fact = _preflight_fact(preflight, label)
+            preflight_status = str(preflight_fact["status"])
         except Exception:
-            preflight = None
-            preflight_status = "READ_UNKNOWN"
+            systemic_preflight_failure = True
+            break
         if preflight_status not in _READY_PREFLIGHT_STATUSES:
             outcomes[label] = {
                 "target_label": label,
@@ -216,36 +236,83 @@ def execute_tiktok_v4_plan(
                 "readback_status": "NOT_ATTEMPTED",
                 "external_write_count": 0,
                 "retry_safe": True,
+                "evidence": _target_evidence(
+                    label=label,
+                    status="FAILED",
+                    stage="PREFLIGHT",
+                    provider_code=preflight_fact["provider_code"],
+                    provider_reason=preflight_fact["provider_reason"],
+                    request_attempted=False,
+                    outcome_unknown=False,
+                    external_write_count=0,
+                ),
             }
             continue
+        preflights[label] = preflight
 
-        try:
-            receipt = publisher.publish(
-                deepcopy(publisher_snapshot),
-                deepcopy(preflight),
-            )
-            dispatch = _dispatch_fact(receipt, label)
-        except Exception:
-            dispatch = {
+    if systemic_preflight_failure:
+        for command in plan["targets"]:
+            label = command["target_label"]
+            outcomes[label] = {
                 "target_label": label,
-                "outcome": "UNKNOWN",
-                "external_write_count": None,
+                "status": "FAILED",
+                "reason_code": "BATCH_PREFLIGHT_FAILED",
+                "dispatch_attempted": False,
+                "dispatch_outcome": "NOT_ATTEMPTED",
+                "readback_authority": "NOT_ATTEMPTED",
+                "readback_status": "NOT_ATTEMPTED",
+                "external_write_count": 0,
+                "retry_safe": True,
+                "evidence": _target_evidence(
+                    label=label,
+                    status="FAILED",
+                    stage="PREFLIGHT",
+                    provider_code="batch_preflight_failed",
+                    provider_reason="TikTok batch preflight failed before dispatch",
+                    request_attempted=False,
+                    outcome_unknown=False,
+                    external_write_count=0,
+                ),
             }
+    else:
+        for command in plan["targets"]:
+            label = command["target_label"]
+            preflight = preflights.get(label)
+            if preflight is None:
+                continue
+            publisher_snapshot = command["publisher_snapshot"]
 
-        try:
-            raw_readback = storefront_readback.readback(
-                command=deepcopy(command),
-                dispatch=deepcopy(dispatch),
-            )
-            readback = _readback_fact(raw_readback, label)
-        except Exception:
-            readback = {
-                "target_label": label,
-                "authority": "UNAVAILABLE",
-                "status": "UNAVAILABLE",
-                "exact": False,
-            }
-        outcomes[label] = _classify_target(dispatch, readback)
+            try:
+                receipt = publisher.publish(
+                    deepcopy(publisher_snapshot),
+                    deepcopy(preflight),
+                )
+                dispatch = _dispatch_fact(receipt, label)
+            except Exception:
+                dispatch = {
+                    "target_label": label,
+                    "outcome": "UNKNOWN",
+                    "stage": "PUBLISH",
+                    "provider_code": "transport_unknown",
+                    "provider_reason": "Miaoshou request outcome is unknown",
+                    "write_request_count": 1,
+                    "external_write_count": None,
+                }
+
+            try:
+                raw_readback = storefront_readback.readback(
+                    command=deepcopy(command),
+                    dispatch=deepcopy(dispatch),
+                )
+                readback = _readback_fact(raw_readback, label)
+            except Exception:
+                readback = {
+                    "target_label": label,
+                    "authority": "UNAVAILABLE",
+                    "status": "UNAVAILABLE",
+                    "exact": False,
+                }
+            outcomes[label] = _classify_target(dispatch, readback)
 
     ordered = [outcomes[label] for label in plan["target_order"]]
     status = _aggregate_status(ordered)
@@ -284,6 +351,7 @@ def _target_command(
     skus: list[dict[str, object]] = []
     model_prices: dict[str, str] = {}
     variant_models: dict[str, str] = {}
+    variant_specifications: dict[str, dict[str, str]] = {}
     sku_parcels: dict[str, dict[str, object]] = {}
     currency: str | None = None
     for frozen_sku in frozen["skus"]:
@@ -307,6 +375,9 @@ def _target_command(
         skus.append(sku)
         model_prices[sku["model_sku"]] = sku["price"]
         variant_models[sku["variant_key"]] = sku["model_sku"]
+        variant_specifications[sku["variant_key"]] = deepcopy(
+            sku["specification"]
+        )
         sku_parcels[sku["variant_key"]] = deepcopy(sku["parcel"])
     assert currency is not None
     parent_parcel = _derived_parent_parcel(skus)
@@ -323,8 +394,12 @@ def _target_command(
         "expected_price": skus[0]["price"],
         "expected_sku_prices": model_prices,
         "expected_variant_model_skus": variant_models,
+        "expected_variant_specifications": variant_specifications,
         "expected_weight_kg": parent_parcel["weight_kg"],
         "expected_package_cm": parent_parcel["package_cm"],
+        "expected_title": frozen["product"]["title"],
+        "expected_description": frozen["product"]["description"],
+        "expected_images": deepcopy(frozen["product"]["images"]),
         "expected_sku_parcels": sku_parcels,
         "expected_currency": currency,
         "expected_category_id": category["id"],
@@ -748,6 +823,7 @@ def _validate_target_command_identity(
         raise TikTokV4ExecutionContractError("TikTok category identity drifted")
     model_prices: dict[str, object] = {}
     variant_models: dict[str, object] = {}
+    variant_specifications: dict[str, object] = {}
     sku_parcels: dict[str, object] = {}
     currencies: set[object] = set()
     for row in skus:
@@ -766,6 +842,7 @@ def _validate_target_command_identity(
             raise TikTokV4ExecutionContractError("TikTok SKU identity drifted")
         model_prices[model] = row.get("price")
         variant_models[variant] = model
+        variant_specifications[variant] = row.get("specification")
         sku_parcels[variant] = row.get("parcel")
         currencies.add(row.get("currency"))
     if (
@@ -773,18 +850,30 @@ def _validate_target_command_identity(
         or provider_target.get("expected_currency") not in currencies
         or provider_target.get("expected_sku_prices") != model_prices
         or provider_target.get("expected_variant_model_skus") != variant_models
+        or provider_target.get("expected_variant_specifications")
+        != variant_specifications
         or provider_target.get("expected_sku_parcels") != sku_parcels
     ):
         raise TikTokV4ExecutionContractError("TikTok SKU execution facts drifted")
 
 
-def _preflight_status(receipt: Mapping[str, object], label: str) -> str:
+def _preflight_fact(
+    receipt: Mapping[str, object], label: str
+) -> dict[str, object]:
     rows = receipt.get("targets") if isinstance(receipt, Mapping) else None
     if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], Mapping):
-        return "READ_UNKNOWN"
+        return {"status": "READ_UNKNOWN", "provider_code": "transport_unknown", "provider_reason": "TikTok preflight outcome is unknown"}
     if rows[0].get("target_label") != label:
-        return "READ_UNKNOWN"
-    return str(rows[0].get("status") or "").upper()
+        return {"status": "READ_UNKNOWN", "provider_code": "transport_unknown", "provider_reason": "TikTok preflight outcome is unknown"}
+    return {
+        "status": str(rows[0].get("status") or "").upper(),
+        "provider_code": sanitize_tiktok_provider_code(rows[0].get("provider_code") or "preflight_rejected"),
+        "provider_reason": sanitize_tiktok_provider_reason(rows[0].get("provider_reason") or "TikTok target preflight rejected"),
+    }
+
+
+def _preflight_status(receipt: Mapping[str, object], label: str) -> str:
+    return str(_preflight_fact(receipt, label)["status"])
 
 
 def _dispatch_fact(receipt: Mapping[str, object], label: str) -> dict[str, object]:
@@ -793,6 +882,8 @@ def _dispatch_fact(receipt: Mapping[str, object], label: str) -> dict[str, objec
         return {
             "target_label": label,
             "outcome": "UNKNOWN",
+            "stage": "PUBLISH", "provider_code": "transport_unknown",
+            "provider_reason": "Miaoshou request outcome is unknown", "write_request_count": 0,
             "external_write_count": None,
         }
     row = rows[0]
@@ -805,14 +896,28 @@ def _dispatch_fact(receipt: Mapping[str, object], label: str) -> dict[str, objec
         return {
             "target_label": label,
             "outcome": "UNKNOWN",
+            "stage": "PUBLISH", "provider_code": "transport_unknown",
+            "provider_reason": "Miaoshou request outcome is unknown", "write_request_count": 0,
             "external_write_count": None,
         }
     count = row.get("external_write_count")
+    request_count = row.get("write_request_count")
+    stage = str(row.get("stage") or "PUBLISH").upper()
+    if stage not in {"IDENTITY", "PREFLIGHT", "SAVE", "PUBLISH", "READBACK"}:
+        stage = "PUBLISH"
     return {
         "target_label": label,
         "outcome": outcome,
+        "stage": stage,
+        "provider_code": "transport_unknown" if outcome == "UNKNOWN" else sanitize_tiktok_provider_code(row.get("provider_code")),
+        "provider_reason": "Miaoshou request outcome is unknown" if outcome == "UNKNOWN" else sanitize_tiktok_provider_reason(row.get("provider_reason")),
+        "write_request_count": request_count if type(request_count) is int and request_count >= 0 else 0,
         "external_write_count": count if type(count) is int and count >= 0 else None,
     }
+
+
+def _target_evidence(*, label: str, status: str, stage: str, provider_code: object, provider_reason: object, request_attempted: bool, outcome_unknown: bool, external_write_count: int | None) -> dict[str, object]:
+    return {"target_label": label, "status": status, "stage": stage, "provider_code": sanitize_tiktok_provider_code(provider_code), "provider_reason": sanitize_tiktok_provider_reason(provider_reason), "request_attempted": request_attempted, "outcome_unknown": outcome_unknown, "external_write_count": external_write_count}
 
 
 def _readback_fact(value: Mapping[str, object], label: str) -> dict[str, object]:
@@ -860,6 +965,15 @@ def _classify_target(
     else:
         status = "FAILED"
         reason = "DISPATCH_REJECTED"
+    evidence = None
+    if status != "PUBLISHED":
+        evidence = _target_evidence(
+            label=str(dispatch["target_label"]), status=status,
+            stage=str(dispatch.get("stage") or "PUBLISH"),
+            provider_code=dispatch.get("provider_code"), provider_reason=dispatch.get("provider_reason"),
+            request_attempted=type(dispatch.get("write_request_count")) is int and int(dispatch["write_request_count"]) > 0,
+            outcome_unknown=outcome == "UNKNOWN", external_write_count=dispatch["external_write_count"],
+        )
     return {
         "target_label": dispatch["target_label"],
         "status": status,
@@ -870,6 +984,7 @@ def _classify_target(
         "readback_status": readback_status,
         "external_write_count": dispatch["external_write_count"],
         "retry_safe": outcome == "REJECTED" and status == "FAILED",
+        "evidence": evidence,
     }
 
 

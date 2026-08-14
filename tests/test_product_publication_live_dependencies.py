@@ -151,8 +151,8 @@ def test_tiktok_category_resolver_does_not_guess_from_title():
     assert calls == []
 
 
-def test_tiktok_category_resolver_only_uses_explicit_tablecloth_fallback():
-    post, calls = _category_post(exact_disabled=True, include_fallback=True)
+def test_tiktok_category_resolver_uses_approved_festive_decoration_for_tablecloth():
+    post, calls = _category_post(include_fallback=True)
     resolver = OfficialMiaoshouTikTokCategoryResolver(post=post)
     product = _tiktok_product("Tablecloth")
 
@@ -169,7 +169,39 @@ def test_tiktok_category_resolver_only_uses_explicit_tablecloth_fallback():
 
     assert receipt["category"]["id"] == "600009"
     assert receipt["resolution"] == "USER_APPROVED_FALLBACK"
-    assert calls[-1][1]["cid"] == 600009
+    assert calls == [
+        (CATEGORY_TREE_PATH, {"site": "PH"}),
+        (
+            CATEGORY_METADATA_PATH,
+            {"site": "PH", "cid": 600009, "shopIds": [7676267]},
+        ),
+    ]
+
+
+def test_tiktok_category_resolver_uses_approved_festive_decoration_for_placemats():
+    post, calls = _category_post(include_fallback=True)
+    resolver = OfficialMiaoshouTikTokCategoryResolver(post=post)
+
+    receipt = resolver.resolve(
+        target={
+            "target_label": "tiktok:HB_PH",
+            "platform": "tiktok",
+            "site": "HB_PH",
+            "store": "HB_PH",
+        },
+        product=_tiktok_product("餐具 > 餐垫、杯垫"),
+        skus=[{"model_sku": "0968"}],
+    )
+
+    assert receipt["category"]["id"] == "600009"
+    assert receipt["resolution"] == "USER_APPROVED_FALLBACK"
+    assert calls == [
+        (CATEGORY_TREE_PATH, {"site": "PH"}),
+        (
+            CATEGORY_METADATA_PATH,
+            {"site": "PH", "cid": 600009, "shopIds": [15173238]},
+        ),
+    ]
 
 
 def test_tiktok_unavailable_storefront_readback_is_truthful_processing_input():
@@ -426,7 +458,11 @@ def test_ozon_dispatch_requires_frozen_official_profile_before_network():
 
     fact = transport.dispatch_variant(_ozon_variant())
 
-    assert fact == OzonDispatchFact(outcome="REJECTED")
+    assert fact == OzonDispatchFact(
+        outcome="PRE_SUBMIT_FAILED",
+        provider_code="ozon_profile_unavailable",
+        provider_reason="Ozon frozen profile cannot build an import item",
+    )
     assert calls == []
 
 
@@ -507,9 +543,61 @@ def test_ozon_fridge_magnet_profile_requires_exact_official_tree_and_metadata():
     ]
 
 
+def test_ozon_profile_resolver_selects_exact_enabled_mug_coaster_profile():
+    def post(path, body):
+        if path == "/v1/description-category/tree":
+            return {"result": [{"description_category_id": 17027494, "category_name": "House & Garden", "disabled": False, "children": [{"description_category_id": 17027926, "category_name": "Drinking Utensils & Accessories", "disabled": False, "children": [{"type_id": 96376, "type_name": "Mug Coaster", "disabled": False, "children": []}]}]}]}
+        if path == "/v1/description-category/attribute":
+            assert body["description_category_id"] == 17027926
+            assert body["type_id"] == 96376
+            return {"result": [{"id": 85, "is_required": True}, {"id": 9048, "is_required": True}, {"id": 8229, "is_required": True}]}
+        if path == "/v1/description-category/attribute/values/search":
+            return {"result": [{"id": 126745801, "value": "No Brand"}]} if body["attribute_id"] == 85 else {"result": [{"id": 96376, "value": "Mug Coaster"}]}
+        raise AssertionError(path)
+
+    profile = OfficialOzonFridgeMagnetProfileResolver(post=post)({
+        "schema_version": "approved-publication-snapshot/v4",
+        "product": {"main_category": {"name": "餐具 > 餐垫、杯垫"}},
+    })
+
+    assert (profile["description_category_id"], profile["type_id"]) == (17027926, 96376)
+
+
+def test_ozon_profile_resolver_and_builder_accept_exact_wallpaper_profile():
+    def post(path, body):
+        if path == "/v1/description-category/tree":
+            return {"result": [{"description_category_id": 17000001, "category_name": "Construction & Renovation", "disabled": False, "children": [{"description_category_id": 17028954, "category_name": "Wallpaper & Wall Coatings", "disabled": False, "children": [{"type_id": 95819, "type_name": "Wallpaper", "disabled": False, "children": []}]}]}]}
+        if path == "/v1/description-category/attribute":
+            assert body["description_category_id"] == 17028954
+            assert body["type_id"] == 95819
+            return {"result": [{"id": 85, "is_required": True}, {"id": 9048, "is_required": True}, {"id": 8229, "is_required": True}]}
+        if path == "/v1/description-category/attribute/values/search":
+            return {"result": [{"id": 126745801, "value": "No Brand"}]} if body["attribute_id"] == 85 else {"result": [{"id": 95819, "value": "Wallpaper"}]}
+        raise AssertionError(path)
+
+    snapshot = {
+        "schema_version": "approved-publication-snapshot/v4",
+        "product": {"main_category": {"name": "背景墙 > 墙纸、壁纸"}},
+    }
+    profile = OfficialOzonFridgeMagnetProfileResolver(post=post)(snapshot)
+    assert (profile["description_category_id"], profile["type_id"]) == (17028954, 95819)
+    variant = _ozon_variant()
+    variant.update({
+        "offer_id": "0969", "approved_seller_sku": "0969",
+        "category": {"id": "17028954", "name": "Wallpaper & Wall Coatings", "path": []},
+        "official_profile": profile,
+    })
+    item = build_ozon_import_item_from_frozen_variant(variant)
+    attrs = {row["id"]: row for row in item["attributes"]}
+    assert (item["description_category_id"], item["type_id"]) == (17028954, 95819)
+    assert attrs[9048]["values"] == [{"dictionary_value_id": 0, "value": "0969-wallpaper"}]
+    assert attrs[8229]["values"] == [{"dictionary_value_id": 95819, "value": "Wallpaper"}]
+
+
 def test_ozon_import_builder_uses_only_frozen_variant_and_official_profile():
     variant = _ozon_variant()
     variant["description"] = "Exact approved Ozon description"
+    variant["category"] = {"id": "17028743", "name": "Souvenirs and Gifts", "path": []}
     variant["official_profile"] = {
         "schema_version": "ozon-official-profile-resolution/v1",
         "resolution": "EXACT",
@@ -566,6 +654,19 @@ def test_ozon_import_builder_uses_only_frozen_variant_and_official_profile():
     ]
 
 
+def test_0968_mug_coaster_profile_builds_exact_frozen_payload_before_fake_post():
+    variant = _ozon_variant()
+    variant.update({"offer_id": "0968", "approved_seller_sku": "0968", "title": "Approved coaster title", "description": "Approved coaster description", "images": [f"https://example.test/coaster-{index}.jpg" for index in range(1, 8)], "parcel": {"weight_kg": "0.1", "package_cm": ["15", "15", "0.8"]}, "price": "76.58", "old_price": "90", "category": {"id": "17027926", "name": "Drinking Utensils & Accessories", "path": []}, "official_profile": {"schema_version": "ozon-official-profile-resolution/v1", "resolution": "EXACT", "description_category_id": 17027926, "type_id": 96376, "required_attributes": {"brand": {"attribute_id": 85, "dictionary_value_id": 126745801, "value": "No Brand"}, "model_name": {"attribute_id": 9048}, "product_type": {"attribute_id": 8229, "dictionary_value_id": 96376, "value": "Mug Coaster"}}}})
+    calls = []
+    fact = OfficialOzonV4Transport(post=lambda path, body: calls.append((path, deepcopy(body))) or {"result": {"task_id": 444}}).dispatch_variant(variant)
+    assert fact == OzonDispatchFact(outcome="ACCEPTED", task_id="444")
+    item = calls[0][1]["items"][0]
+    assert calls[0][0] == "/v3/product/import"
+    assert (item["description_category_id"], item["type_id"], item["weight"], item["depth"], item["width"], item["height"]) == (17027926, 96376, 100, 150, 150, 8)
+    assert item["images"] == variant["images"]
+    assert {row["id"]: row["values"][0]["value"] for row in item["attributes"]}[9048] == "0968-mug-coaster"
+
+
 def test_ozon_http_400_is_a_definite_rejection_not_unknown_write():
     variant = _ozon_variant()
     variant["description"] = "Exact approved Ozon description"
@@ -610,7 +711,36 @@ def test_ozon_http_400_is_a_definite_rejection_not_unknown_write():
 
     fact = transport.dispatch_variant(variant)
 
-    assert fact == OzonDispatchFact(outcome="REJECTED")
+    assert fact == OzonDispatchFact(
+        outcome="REJECTED",
+        provider_code="ozon_business_rejected",
+        provider_reason="Ozon import was rejected",
+    )
+
+
+def test_ozon_business_rejection_response_is_sanitized_without_raw_message():
+    variant = _ozon_variant()
+    transport = OfficialOzonV4Transport(
+        post=lambda *_args: {"message": "attribute rejected Authorization Bearer SECRET"},
+        import_item_builder=lambda _variant: {
+            "offer_id": variant["offer_id"],
+            "description_category_id": int(variant["category"]["id"]),
+            "type_id": 999, "name": variant["title"], "price": variant["price"],
+            "old_price": variant["old_price"], "currency_code": variant["currency"],
+            "images": variant["images"], "weight": variant["parcel"]["weight_kg"],
+            "weight_unit": "kg", "dimension_unit": "cm",
+            "depth": variant["parcel"]["package_cm"][0], "width": variant["parcel"]["package_cm"][1],
+            "height": variant["parcel"]["package_cm"][2],
+            "attributes": [{"id": 1, "values": [{"value": "exact"}]}],
+        },
+    )
+    fact = transport.dispatch_variant(variant)
+    assert fact == OzonDispatchFact(
+        outcome="REJECTED",
+        provider_code="ozon_attribute_rejected",
+        provider_reason="Ozon rejected an approved attribute value",
+    )
+    assert "SECRET" not in str(fact)
 
 
 def test_ozon_dispatch_uses_injected_exact_builder_and_official_import():
@@ -954,6 +1084,13 @@ class _ObservedDraftTransport:
         )
         self.observer(identity["target_label"], fact)
         return fact
+
+    def prepare_save_draft(self, *, identity, draft):
+        self.calls.append(("prepare_save", identity["target_label"], draft["target_label"]))
+        return {"identity": deepcopy(identity), "draft": deepcopy(draft)}
+
+    def save_prepared_draft(self, *, identity, prepared):
+        return self.save_draft(identity=identity, draft=prepared["draft"])
 
 
 def _tiktok_request() -> PublicationPlatformRequest:

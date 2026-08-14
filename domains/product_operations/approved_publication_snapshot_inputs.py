@@ -9,7 +9,7 @@ snapshot from mutable Product Center state.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_CEILING
 import hashlib
 import json
 from typing import Any
@@ -234,6 +234,7 @@ def build_approved_publication_snapshot_inputs(
         model_skus=list(lineage_models.values()),
         approved_product_images=image_urls,
         sku_details_by_key=sku_details,
+        sku_commercial_by_key=plan_commercial,
         variant_keys_by_model={
             model_sku: variant_key
             for variant_key, model_sku in lineage_models.items()
@@ -299,6 +300,7 @@ def _shopee_global_master_inputs(
     model_skus: list[str],
     approved_product_images: list[str],
     sku_details_by_key: Mapping[str, Mapping[str, Any]],
+    sku_commercial_by_key: Mapping[str, Mapping[str, Any]],
     variant_keys_by_model: Mapping[str, str],
 ) -> dict[str, Any] | None:
     """Freeze one exact CNSC master contract without reusing regional facts.
@@ -395,13 +397,71 @@ def _shopee_global_master_inputs(
             **price_source,
         }
     )
+    parcel_envelope = _shopee_parcel_envelope_inputs(
+        model_skus=model_skus,
+        variant_keys_by_model=variant_keys_by_model,
+        sku_commercial_by_key=sku_commercial_by_key,
+    )
     return {
         "schema_version": "shopee-global-master/v1",
         "price_source": price_source,
         "sku_original_prices_cny": [prices_by_model[model] for model in model_skus],
         "category_decision": category_decision,
+        "parcel_envelope": parcel_envelope,
         "policy": decision_policy,
         "variant_image_positions": positions,
+    }
+
+
+def _shopee_parcel_envelope_inputs(
+    *,
+    model_skus: list[str],
+    variant_keys_by_model: Mapping[str, str],
+    sku_commercial_by_key: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    weights: list[Decimal] = []
+    packages: list[list[Decimal]] = []
+    for model_sku in model_skus:
+        variant_key = variant_keys_by_model.get(model_sku)
+        row = _mapping(
+            sku_commercial_by_key.get(variant_key),
+            f"Shopee {model_sku} parcel source",
+        )
+        weights.append(
+            Decimal(
+                _positive_decimal_text(
+                    row.get("weight_kg"), f"Shopee {model_sku} weight"
+                )
+            )
+        )
+        package = row.get("package_cm")
+        if type(package) is not list or len(package) != 3:
+            raise ApprovedPublicationSnapshotError(
+                f"Shopee {model_sku} package requires three dimensions"
+            )
+        packages.append(
+            [
+                Decimal(
+                    _positive_decimal_text(
+                        value, f"Shopee {model_sku} package dimension"
+                    )
+                )
+                for value in package
+            ]
+        )
+    return {
+        "weight_kg": _positive_decimal_text(
+            str(max(weights)), "Shopee parcel envelope weight"
+        ),
+        "package_cm": [
+            int(
+                max(package[index] for package in packages).to_integral_value(
+                    rounding=ROUND_CEILING
+                )
+            )
+            for index in range(3)
+        ],
+        "policy_version": "shopee-global-parcel-ceil-cm/v1",
     }
 
 

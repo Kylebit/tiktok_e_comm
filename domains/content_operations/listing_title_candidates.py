@@ -12,7 +12,7 @@ from typing import Any, Callable
 
 from modules.sourcing.image_suite_plan import chat_completions, message_content
 
-POLICY_VERSION = "listing-copy-candidates-v6"
+POLICY_VERSION = "listing-copy-candidates-v8"
 TOAPI_TITLE_MODEL = "gpt-5.4-mini-official"
 EXPECTED_TARGETS = (
     ("tiktok", "MY", "English / Malay", 255),
@@ -65,6 +65,16 @@ Use only the verified product facts supplied by the user. Never invent
 material, dimensions, quantity, certification, waterproof/removable claims,
 brand, compatibility, or performance. Produce natural search-friendly titles,
 not keyword lists or translated source-platform noise.
+Never include any brand name or internal/source/platform identifier in the
+Shopee description, including Seller SKU, SKU, item code, product code,
+Product ID, Item ID, Offer ID, or source ID.
+The Shopee description must contain only information about the product itself:
+product identity, verified design and attributes, selected sellable options,
+intended use, application guidance, package contents and factual product
+cautions. Never include origin or manufacturing location, payment support or
+payment methods, price or discounts, stock, shipping, delivery or logistics,
+seller/storefront/supplier details, contact or customer service, warranty,
+after-sales service, returns or refunds, wholesale/export/MOQ terms.
 
 Return strict JSON only:
 {
@@ -95,7 +105,8 @@ Platform strategy:
   semantic_master_en or shopee_description_en. If a source brand or attribute
   value contains Chinese, omit that value instead of copying, translating, or
   transliterating it. Do not mention a claim unless it is present in the
-  verified facts.
+  verified facts. Do not turn commercial, transaction, logistics or seller
+  metadata into description content even when it appears in the source facts.
 - Ozon RU: write natural Russian retail copy, not transliterated English.
 - Localize meaning and search phrasing for each site; do not merely translate
   the English master word for word.
@@ -173,8 +184,22 @@ def fact_snapshot(facts: dict[str, Any]) -> dict[str, Any]:
 
 
 def fact_signature(facts: dict[str, Any]) -> str:
+    snapshot = fact_snapshot(facts)
+    # Copy freshness is intentionally narrower than the complete audited fact
+    # snapshot. Cost, parcel weight and package dimensions drive pricing and
+    # the immutable ReleasePlan, but they do not change the product identity
+    # expressed by the approved listing copy.
+    copy_freshness = {
+        key: snapshot[key]
+        for key in (
+            "offer_id",
+            "source_title_zh",
+            "category",
+            "selected_skus",
+        )
+    }
     return "sha256:" + hashlib.sha256(
-        _canonical(fact_snapshot(facts)).encode("utf-8")
+        _canonical(copy_freshness).encode("utf-8")
     ).hexdigest()
 
 
@@ -429,17 +454,50 @@ def _deterministic_shopee_title(master: str) -> str:
     return candidate
 
 
+_INTERNAL_IDENTITY_LINE_RE = re.compile(
+    r"^\s*(?:[-*]\s*)?(?:source\s+)?(?:brand(?:\s+name)?|seller\s+sku|sku|"
+    r"item\s+code|product\s+code|product\s+id|item\s+id|offer\s+id|source\s+id)\s*[:=-]",
+    re.I,
+)
+_NON_PRODUCT_DESCRIPTION_LINE_RE = re.compile(
+    r"(?:\b(?:country|place)\s+of\s+origin\b|\borigin\s*[:=-]|\bmade\s+in\b|"
+    r"\bmanufacturer\s+location\b|\bpayment(?:\s+(?:support|methods?|options?))?\b|"
+    r"\bcash\s+on\s+delivery\b|\bCOD\b|\bprice\s*[:=-]|\bdiscounts?\s*[:=-]|"
+    r"\b(?:stock|inventory)\s*[:=-]|\b(?:shipping|delivery|logistics)\b|"
+    r"\b(?:seller|storefront|supplier)(?:\s+information)?\b|"
+    r"\bcontact\s+(?:information|the\s+seller)\b|\bcustomer\s+service\b|"
+    r"\bwarrant(?:y|ies)\b|\bafter[- ]sales(?:\s+service)?\b|"
+    r"\breturns?\s*[:=-]|\brefunds?\b|\bwholesale\b|\bexport\s+terms?\b|"
+    r"\bminimum\s+order(?:\s+quantity)?\b|\bMOQ\b)",
+    re.I,
+)
+_NON_PRODUCT_ATTRIBUTE_KEY_RE = re.compile(
+    r"(?:brand|origin|country\s+of\s+origin|place\s+of\s+origin|payment|"
+    r"shipping|delivery|logistics|seller|storefront|supplier|after[- ]sales|"
+    r"returns?|refunds?|warrant(?:y|ies)|wholesale|minimum\s+order|moq|"
+    r"品牌|产地|原产地|支付|付款|物流|发货|运输|配送|店铺|卖家|供应商|"
+    r"售后|退货|退款|保修|批发|起订)",
+    re.I,
+)
+
+
 def _clean_shopee_description(value: Any) -> str:
     description = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
     description = "\n".join(
         line
         for line in description.splitlines()
-        if not (
-            re.search(r"[\u4e00-\u9fff]", line)
-            and re.match(r"\s*(?:[-*]\s*)?(?:source\s+)?brand\s*:", line, re.I)
-        )
+        if not _INTERNAL_IDENTITY_LINE_RE.match(line)
+        and not _NON_PRODUCT_DESCRIPTION_LINE_RE.search(line)
     )
     description = re.sub(r"[ \t]+", " ", description)
+    description = re.sub(
+        r"\b(?:source\s+)?(?:brand(?:\s+name)?|seller\s+sku|sku|item\s+code|"
+        r"product\s+code|product\s+id|item\s+id|offer\s+id|source\s+id)"
+        r"\s*[:=-]\s*[^.\n;]+[.;]?",
+        "",
+        description,
+        flags=re.I,
+    )
     description = re.sub(r"\n{3,}", "\n\n", description).strip()
     if len(description) < 500:
         raise ValueError("Shopee global description is too short")
@@ -472,57 +530,44 @@ def _deterministic_shopee_description(
         and re.search(r"[A-Za-z]", label)
         and not re.search(r"[\u4e00-\u9fff\u0e00-\u0e7f]", label)
     ]
-    weight = _canonical_decimal(facts.get("weight_kg"))
-    package = [
-        _canonical_decimal(value)
-        for value in (facts.get("package_cm") or ())
-    ]
-    shipping_lines: list[str] = []
-    if weight not in (None, ""):
-        shipping_lines.append(
-            f"Recorded parcel weight for shipping review: {weight} kg."
-        )
-    if len(package) == 3 and all(value not in (None, "") for value in package):
-        shipping_lines.append(
-            "Recorded parcel dimensions for shipping review: "
-            + " x ".join(str(value) for value in package)
-            + " cm."
-        )
     variant_line = (
         "Selected listing option: " + ", ".join(selected_labels) + "."
         if selected_labels
         else (
-            "Use the selected option shown in the listing and product images "
-            "as the order reference."
+            "The available product option is identified by the product facts "
+            "and images."
         )
     )
     description = (
         "PRODUCT OVERVIEW\n"
-        f"{title}. This global listing description is based only on the "
-        "verified product identity, selected option and current source images. "
-        "It is written as a reviewable English master for regional storefronts.\n\n"
-        "VERIFIED LISTING DETAILS\n"
-        f"Product identity: {title}.\n"
-        f"{variant_line}\n"
-        + ("\n".join(shipping_lines) + "\n" if shipping_lines else "")
-        + "\nPRODUCT APPEARANCE\n"
-        "Use the ordered product images as the exact visual reference for the "
-        "design, colour, shape and included visible elements. Screen settings "
-        "may make colours appear slightly different. No unverified brand, "
-        "material, size, quantity or performance claim has been added.\n\n"
-        "SELECTION AND USE\n"
-        "Confirm the selected option and review every image before ordering. "
+        f"{title}. Review the design, selected option and intended use to make "
+        "sure this product suits the planned space or application. The images "
+        "show the product appearance, colour arrangement, shape and visible "
+        "included elements.\n\n"
+        "PRODUCT DETAILS\n"
+        f"Product type: {title}.\n"
+        f"{variant_line}\n\n"
+        "DESIGN AND APPEARANCE\n"
+        "Use the product images as the visual reference for the pattern, colour, "
+        "shape, surface appearance and included visible elements. Screen "
+        "settings and room lighting may make colours appear slightly different. "
+        "Check the complete image set when comparing the design with the planned "
+        "setting.\n\n"
+        "INTENDED USE AND APPLICATION\n"
         "Choose a suitable placement and use the product only for the purpose "
-        "shown by the approved product facts and images. Follow any instructions "
-        "included with the received product.\n\n"
-        "SHIPPING AND ORDER REVIEW\n"
-        "Parcel measurements are logistics records and are not presented as "
-        "finished product dimensions. Check the storefront option, price and "
-        "delivery information before confirming the order.\n\n"
-        "FACTUAL CAUTIONS\n"
-        "This description does not promise waterproof, removable, reusable, "
-        "residue-free, certified, medical, safety or durability performance "
-        "unless that fact is separately verified and approved."
+        "shown in the product details and images. Prepare the intended surface or "
+        "space as appropriate for this product type. Follow any care, assembly or "
+        "application instructions included with the product.\n\n"
+        "SELECTION AND PACKAGE CONTENTS\n"
+        "The selected option identifies the product variation covered by this "
+        "description. Compare the option label with the product images before use. "
+        "Package contents correspond to the selected variation and the visible "
+        "included pieces shown for that option.\n\n"
+        "PRODUCT NOTES\n"
+        "Keep the product in conditions suitable for its material and intended "
+        "purpose. Colour appearance can vary slightly between screens and room "
+        "lighting. Product performance is limited to the characteristics stated "
+        "in this description and shown for the selected variation."
     )
     return _clean_shopee_description(description)
 
@@ -605,8 +650,7 @@ def generate_title_candidates(
             if isinstance(verified_attributes, dict)
             else ()
         )
-        if "brand" not in str(key).casefold()
-        and "品牌" not in str(key)
+        if not _NON_PRODUCT_ATTRIBUTE_KEY_RE.search(str(key))
     }
     request_facts = {
         **facts,
@@ -750,7 +794,7 @@ def generate_title_candidates(
                 ) from validation_error
 
     return {
-        "schema_version": "listing-copy-candidates-v6",
+        "schema_version": "listing-copy-candidates-v8",
         "provider": "toapi",
         "status": "draft_pending_kyle_review",
         "semantic_master_en": master,

@@ -159,7 +159,9 @@ class SkillArchitectureTests(unittest.TestCase):
             "Product type/use outrank",
             "cid=600009",
             "cid=600204",
-            "Approved fallback",
+            "placemat",
+            "Festive Decoration",
+            "Direct approved category",
             "PROVIDER_FIELD_OMITTED",
         ):
             self.assertIn(required, text)
@@ -232,6 +234,64 @@ class SkillArchitectureTests(unittest.TestCase):
             "same target-specific `detail_id`",
         ):
             self.assertIn(required, text)
+
+    def test_homebloom_sea_targets_use_exact_miaoshou_shop_identities(self) -> None:
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+        tiktok = (ROOT / "references" / "tiktok.md").read_text(encoding="utf-8")
+        chinese = (ROOT / "references" / "SKILL.zh-CN.md").read_text(
+            encoding="utf-8"
+        )
+        publisher = (
+            REPO_ROOT / "modules" / "miaoshou" / "tiktok_publisher.py"
+        ).read_text(encoding="utf-8")
+        exact_targets = {
+            "tiktok:HB_PH": "15173238",
+            "tiktok:HB_MY": "16770639",
+            "tiktok:HB_TH": "16770557",
+            "tiktok:HB_VN": "16783702",
+        }
+        for target, shop_id in exact_targets.items():
+            self.assertIn(target, skill)
+            self.assertIn(target, tiktok)
+            self.assertIn(target, chinese)
+            self.assertIn(f'"{target}": "{shop_id}"', publisher)
+            self.assertIn(shop_id, tiktok)
+        for text in (skill, tiktok):
+            self.assertIn("Miaoshou Open API", text)
+            self.assertIn("must not use the TikTok official API", text)
+            self.assertIn("independent execution target", text)
+        self.assertIn("妙手开放 API", chinese)
+        self.assertIn("不得改走 TikTok 官方 API", chinese)
+
+    def test_shopee_regional_language_rule_never_overrides_provider_translation(self) -> None:
+        shopee = (ROOT / "references" / "shopee.md").read_text(
+            encoding="utf-8"
+        )
+        incidents = (ROOT / "references" / "incident-patterns.md").read_text(
+            encoding="utf-8"
+        )
+        chinese = (ROOT / "references" / "SKILL.zh-CN.md").read_text(
+            encoding="utf-8"
+        )
+        for text in (shopee, incidents):
+            self.assertIn(
+                "omit `item_name` and `description`",
+                text.casefold(),
+            )
+            for required in (
+                "English for PH/MY",
+                "Thai for TH",
+                "Vietnamese for VN",
+                "duplicate",
+            ):
+                self.assertIn(required, text)
+        for required in (
+            "不得主动发送",
+            "TH 必须回读为泰语",
+            "VN 必须回读为越南语",
+            "不得为了修复语言再创建一个重复商品",
+        ):
+            self.assertIn(required, chinese)
 
     def test_confirmed_tiktok_variant_and_warehouse_incidents_are_documented(self) -> None:
         tiktok = (ROOT / "references" / "tiktok.md").read_text(encoding="utf-8")

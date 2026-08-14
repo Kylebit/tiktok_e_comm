@@ -51,6 +51,17 @@ SKU has a current `item.id`, is created according to `statuses`, and has no
 official failed status. An accepted asynchronous import with incomplete
 readback is **平台处理中**, not success.
 
+## Sanitized target evidence
+
+Every Ozon result, including a zero-write profile, localized-copy, or payload
+preflight failure, must carry exactly the runner-safe target evidence fields:
+`target_label`, `status`, `stage`, `provider_code`, `provider_reason`,
+`request_attempted`, `outcome_unknown`, and `external_write_count`. Use a
+stable, sanitized reason and code; never retain provider response bodies,
+credentials, request headers, or raw URLs. The runner persists this evidence
+only in its internal report, so a preflight failure remains explainable while
+truthfully recording zero attempted external writes.
+
 ## Confirmed incident: table runner fell through to the historical sticker map
 
 Symptom: all approved prices and images reached Ozon, but all variants were
@@ -116,6 +127,31 @@ official integer units back to the frozen kg/cm representation before
 comparison.
 
 ## Confirmed incident: this category requires Russian copy
+
+## Exact semantic profile resolution
+
+Resolve an Ozon profile from the frozen main-category semantic and official
+tree, type, required attributes, and dictionary values. Do not apply the
+fridge-magnet profile to another product. For approved `餐具 > 餐垫、杯垫` /
+`coaster` semantics, the current official exact profile is `House & Garden >
+Drinking Utensils & Accessories`, `description_category_id=17027926`, type
+`Mug Coaster` (`type_id=96376`); required attributes are Brand (85), Model
+name (9048), and Type (8229). Any missing, disabled, or ambiguous official
+fact is a zero-write blocker.
+
+The frozen-v4 import builder has a closed profile registry: only the confirmed
+Fridge Magnet `(17028743, 93785)`, Mug Coaster `(17027926, 96376)`, and
+Wallpaper `(17028954, 95819)` pairs may form an import payload. The Wallpaper
+pair is valid only for the approved wallpaper semantic and the official path
+`Construction & Renovation > Wallpaper & Wall Coatings`; its required
+attributes are likewise Brand (85), Model name (9048), and Type (8229), with
+the official Wallpaper dictionary value `95819`. It must bind the profile category/type and all
+required attributes exactly. Attribute 9048 is profile-specific (for example
+`0968-mug-coaster` or `0969-wallpaper`), never a hard-coded fridge-magnet suffix. Preserve the
+frozen parcel for that SKU at the Ozon boundary: `0.8 cm` is `8 mm`, not a
+Shopee envelope-rounded value. A local builder failure is a zero-write
+PREPARATION failure; only a submitted provider business rejection is a
+DISPATCH attempt.
 
 For the exact enabled `House & Garden > Souvenirs and Gifts > Fridge Magnet`
 profile (`description_category_id=17028743`, `type_id=93785`), wholly Latin

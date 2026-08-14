@@ -18,6 +18,7 @@ def approved_variant_key_bindings(
     *,
     selected_sku_keys: object,
     model_skus: object,
+    specifications: object | None = None,
 ) -> dict[str, object]:
     """Return ``approved variant_key -> raw Miaoshou skuMap key``.
 
@@ -116,10 +117,43 @@ def approved_variant_key_bindings(
                 break
             raw_by_property_signature[signature] = raw_key
         if set(raw_by_property_signature) == set(variants):
-            return {
-                variant: raw_by_property_signature[variant]
-                for variant in variants
-            }
+                return {
+                    variant: raw_by_property_signature[variant]
+                    for variant in variants
+                }
+
+        expected_model_values = set(model_skus.values())
+        observed_model_values = [row.get("itemNum") for row in sku_map.values()]
+        exact_model_coverage = (
+            all(type(value) is str and value.strip() == value for value in observed_model_values)
+            and len(observed_model_values) == len(set(observed_model_values))
+            and set(observed_model_values) == expected_model_values
+        )
+        if specifications is not None and not exact_model_coverage:
+            if not isinstance(specifications, Mapping) or set(specifications) != set(variants):
+                raise TikTokVariantBindingError("approved variant specification coverage is invalid")
+            approved_by_dimensions: dict[tuple[str, ...], str] = {}
+            for variant in variants:
+                raw_specification = specifications.get(variant)
+                if not isinstance(raw_specification, Mapping):
+                    raise TikTokVariantBindingError("approved variant specification is invalid")
+                tokens = tuple(str(value).strip() for value in raw_specification.values() if type(value) is str and value.strip())
+                if not tokens:
+                    raise TikTokVariantBindingError("approved variant specification is invalid")
+                source_parts = tuple(part.strip() for part in _normalize_variant(variant).split(";") if part.strip())
+                unmatched = list(source_parts)
+                for token in tokens:
+                    matching = [part for part in unmatched if part.startswith(token)]
+                    if len(matching) != 1:
+                        raise TikTokVariantBindingError("approved variant specification is ambiguous")
+                    unmatched.remove(matching[0])
+                dimensions = tuple((*unmatched, *tokens))
+                if dimensions in approved_by_dimensions:
+                    raise TikTokVariantBindingError("approved variant specification is ambiguous")
+                approved_by_dimensions[dimensions] = variant
+            provider_by_dimensions = {tuple(signature.split(";")): raw_key for signature, raw_key in raw_by_property_signature.items()}
+            if set(provider_by_dimensions) == set(approved_by_dimensions):
+                return {approved_by_dimensions[dimensions]: provider_by_dimensions[dimensions] for dimensions in approved_by_dimensions}
 
     expected_by_model: dict[str, str] = {}
     for variant in variants:

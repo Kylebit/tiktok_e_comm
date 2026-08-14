@@ -360,12 +360,20 @@ def _commercial_approval_facts(
     review: Mapping[str, Any],
     pricing_review: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Return only durable product facts owned by product approval.
+
+    Target selection, video decisions, exchange rates and calculated prices
+    belong to content/pricing/ReleasePlan authorities. Keeping them out of the
+    product fingerprint lets those later-stage choices change without asking
+    Kyle to re-approve the physical product facts.
+    """
+
+    del pricing_review  # retained in the call signature for compatibility
     category = review.get("category")
     facts = {
         "cost_cny": review.get("cost_cny"),
         "weight_kg": review.get("weight_kg"),
         "package_cm": list(review.get("package_cm") or ()),
-        "selected_sites": sorted(str(value) for value in (review.get("selected_sites") or ())),
         "selected_sku_keys": list(review.get("selected_sku_keys") or ()),
         "sku_label_overrides": {
             str(key): str(value)
@@ -376,20 +384,6 @@ def _commercial_approval_facts(
             )
         },
         "category": dict(category) if isinstance(category, Mapping) else category,
-        "support_cod": review.get("support_cod"),
-        "video_action": str(review.get("video_action") or ""),
-        "fx_rates": {
-            str(key).upper(): value
-            for key, value in sorted(
-                (review.get("fx_rates") or {}).items()
-                if isinstance(review.get("fx_rates"), Mapping)
-                else ()
-            )
-        },
-        "pricing_algorithm": "modules.sourcing.new_product_workbench.price_review",
-        "selected_store_prices": list(
-            (pricing_review or {}).get("selected_store_prices") or ()
-        ),
     }
     raw_sku_facts = review.get("sku_commercial_facts")
     if isinstance(raw_sku_facts, Mapping):
@@ -405,10 +399,18 @@ def _commercial_approval_facts(
             for key, row in sorted(raw_sku_facts.items())
             if isinstance(row, Mapping)
         }
-        facts["sku_pricing"] = list(
-            (pricing_review or {}).get("sku_pricing") or ()
-        )
     return facts
+
+
+def _product_approval_facts_match(
+    actual: Mapping[str, Any] | None,
+    expected: Mapping[str, Any] | None,
+) -> bool:
+    """Accept legacy approvals after removing later-stage fingerprint fields."""
+
+    if not isinstance(actual, Mapping) or not isinstance(expected, Mapping):
+        return False
+    return _commercial_approval_facts(actual) == dict(expected)
 
 
 def _commercial_release_blockers(review: Mapping[str, Any]) -> list[str]:
@@ -1784,6 +1786,14 @@ def build_release_dashboard(
         "seller_sku": clean_seller_sku,
         "input_fingerprint": str(expected_approval.get("input_fingerprint") or ""),
     }
+    fingerprint_matches = bool(actual_approval) and (
+        str(actual_approval.get("input_fingerprint") or "")
+        == required_approval_matches["input_fingerprint"]
+        or _product_approval_facts_match(
+            actual_approval.get("approval_input_facts"),
+            expected_approval.get("approval_input_facts"),
+        )
+    )
     actual_product_approved = (
         simulated_ready
         and bool(required_approval_matches["input_fingerprint"])
@@ -1791,7 +1801,9 @@ def build_release_dashboard(
         and all(
         str(actual_approval.get(key) or "") == expected
         for key, expected in required_approval_matches.items()
+        if key != "input_fingerprint"
         )
+        and fingerprint_matches
         and all(
         str(actual_approval.get(key) or "").strip()
         for key in ("approval_id", "package_id", "approved_by", "approved_at")

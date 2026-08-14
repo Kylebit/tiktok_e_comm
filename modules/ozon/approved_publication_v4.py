@@ -34,9 +34,11 @@ class OzonDispatchFact:
 
     outcome: str
     task_id: str | None = None
+    provider_code: str | None = None
+    provider_reason: str | None = None
 
     def __post_init__(self) -> None:
-        if self.outcome not in {"ACCEPTED", "REJECTED", "UNKNOWN"}:
+        if self.outcome not in {"ACCEPTED", "REJECTED", "UNKNOWN", "PRE_SUBMIT_FAILED"}:
             raise ValueError("Ozon dispatch outcome is invalid")
         if self.task_id is not None and (
             type(self.task_id) is not str
@@ -46,6 +48,17 @@ class OzonDispatchFact:
             raise ValueError("Ozon dispatch task identity is invalid")
         if self.outcome == "ACCEPTED" and self.task_id is None:
             raise ValueError("accepted Ozon dispatch requires a task identity")
+        for value, name in (
+            (self.provider_code, "Ozon provider code"),
+            (self.provider_reason, "Ozon provider reason"),
+        ):
+            if value is not None and (
+                type(value) is not str
+                or not value
+                or value != value.strip()
+                or len(value) > 160
+            ):
+                raise ValueError(f"{name} is invalid")
 
 
 DispatchVariant = Callable[[dict[str, Any]], OzonDispatchFact]
@@ -473,11 +486,36 @@ def _result(
     readback_completed: bool,
     external_write_count: int | None,
     requires_human_action: bool,
+    stage: str | None = None,
+    provider_code: str | None = None,
+    provider_reason: str | None = None,
 ) -> dict[str, Any]:
+    status = str(status)
+    if status not in {"PUBLISHED", "PROCESSING", "FAILED"}:
+        raise OzonApprovedPublicationError("Ozon result status is invalid")
+    stage = stage or ("READBACK" if readback_completed else (
+        "DISPATCH" if dispatch_attempted else "PREPARATION"
+    ))
+    if stage not in {"PREPARATION", "DISPATCH", "READBACK"}:
+        raise OzonApprovedPublicationError("Ozon evidence stage is invalid")
+    evidence = {
+        "target_label": OZON_TARGET,
+        "status": status,
+        "stage": stage,
+        "provider_code": provider_code or (
+            "ozon_preparation_failed" if stage == "PREPARATION" else "ozon_result"
+        ),
+        "provider_reason": provider_reason or (
+            "Ozon preparation failed" if stage == "PREPARATION" else "Ozon result classified"
+        ),
+        "request_attempted": dispatch_attempted,
+        "outcome_unknown": external_write_count is None,
+        "external_write_count": external_write_count,
+    }
     return {
         "schema_version": PLATFORM_RESULT_SCHEMA_VERSION,
         "platform": "OZON",
-        "targets": [{"target_label": OZON_TARGET, "status": status}],
+        "targets": [{"target_label": OZON_TARGET, "status": status, "evidence": evidence}],
         "dispatch_attempted": dispatch_attempted,
         "readback_completed": readback_completed,
         "external_write_count": external_write_count,
@@ -528,6 +566,23 @@ def execute_ozon_v4_publication(
             accepted_count += 1
         elif fact.outcome == "UNKNOWN":
             unknown_write_count = True
+
+    pre_submit = [
+        fact for fact in dispatch_facts.values()
+        if fact.outcome == "PRE_SUBMIT_FAILED"
+    ]
+    if pre_submit:
+        fact = pre_submit[0]
+        return _result(
+            "FAILED",
+            dispatch_attempted=False,
+            readback_completed=False,
+            external_write_count=0,
+            requires_human_action=True,
+            stage="PREPARATION",
+            provider_code=fact.provider_code or "ozon_preparation_failed",
+            provider_reason=fact.provider_reason or "Ozon preparation failed",
+        )
 
     external_write_count = None if unknown_write_count else accepted_count
     offer_ids = tuple(variant["offer_id"] for variant in variants)
@@ -580,6 +635,21 @@ def execute_ozon_v4_publication(
         target_status = "FAILED"
     else:
         target_status = "PROCESSING"
+    rejected_facts = [
+        fact for fact in dispatch_facts.values() if fact.outcome == "REJECTED"
+    ]
+    if target_status == "FAILED" and not items and len(rejected_facts) == len(variants):
+        fact = rejected_facts[0]
+        return _result(
+            target_status,
+            dispatch_attempted=True,
+            readback_completed=True,
+            external_write_count=external_write_count,
+            requires_human_action=True,
+            stage="DISPATCH",
+            provider_code=fact.provider_code or "ozon_dispatch_rejected",
+            provider_reason=fact.provider_reason or "Ozon import was rejected",
+        )
     return _result(
         target_status,
         dispatch_attempted=True,

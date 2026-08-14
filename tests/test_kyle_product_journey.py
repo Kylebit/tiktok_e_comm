@@ -688,6 +688,33 @@ def test_title_draft_http_preserves_revision_conflict_payload(
     assert calls == [request_payload]
 
 
+def test_reset_test_offer_http_route_is_explicit_and_reports_zero_external_writes(
+    product_http_server,
+    monkeypatch,
+):
+    calls = []
+
+    def reset(data: dict) -> tuple[int, dict]:
+        calls.append(data)
+        return 200, {
+            "ok": True,
+            "offer_id": data["offer_id"],
+            "external_writes_performed": [],
+            "audit_history_retained": True,
+        }
+
+    monkeypatch.setattr(product_server, "_reset_product_workspace_test_offer", reset)
+
+    status, payload = _post(
+        product_http_server + "/api/product-workspace/reset-test-offer",
+        {"offer_id": OFFER_ID, "user_approved": True},
+    )
+
+    assert status == 200
+    assert payload["external_writes_performed"] == []
+    assert calls == [{"offer_id": OFFER_ID, "user_approved": True}]
+
+
 def test_facts_http_route_is_same_origin_json_protected(
     product_http_server,
     monkeypatch,
@@ -771,3 +798,81 @@ def test_formal_frontend_collects_first_and_has_an_inline_facts_editor():
     render_start = script.index("function render(data)")
     render_end = script.index("function clearCurrentApprovalContext", render_start)
     assert "renderPricingReview(" in script[render_start:render_end]
+
+
+def test_unrelated_title_generation_preserves_unsaved_product_fact_edits():
+    """AI copy owns copy fields, not the operator's unsaved commercial draft."""
+
+    script = (ROOT / "web/static/product_workspace.js").read_text(encoding="utf-8")
+    generate_start = script.index("async function generateTitleDraft()")
+    generate_end = script.index("async function adoptTitleCandidate", generate_start)
+    generate_flow = script[generate_start:generate_end]
+
+    assert "captureProductFactsDraft()" in generate_flow
+    assert "restoreProductFactsDraft(" in generate_flow
+    assert generate_flow.index("captureProductFactsDraft()") < generate_flow.index(
+        'postProductWorkspace("/api/product-workspace/title-draft"'
+    )
+    assert generate_flow.index("render(data);") < generate_flow.index(
+        "restoreProductFactsDraft("
+    )
+    assert "allowRevisionChange: true" in generate_flow
+
+
+def test_remove_from_queue_requests_a_server_side_test_reset_first():
+    """Queue removal must reset owned local state instead of only hiding a card."""
+
+    script = (ROOT / "web/static/product_workspace.js").read_text(encoding="utf-8")
+    click_start = script.index('$("#queueGrid").addEventListener("click"')
+    click_end = script.index('$("#approvalForm")', click_start)
+    remove_flow = script[click_start:click_end]
+    reset_start = script.index("async function resetTestOffer(")
+    reset_end = script.index("function dashboardFromPayload", reset_start)
+    reset_flow = script[reset_start:reset_end]
+
+    assert "/api/product-workspace/reset-test-offer" in reset_flow
+    assert "await resetTestOffer(" in remove_flow
+    assert remove_flow.index("await resetTestOffer(") < remove_flow.index(
+        "queueItems = queueItems.filter"
+    )
+
+
+def test_test_offer_reset_deletes_only_owned_local_state_and_releases_reservations(
+    tmp_path,
+    monkeypatch,
+):
+    state_root = tmp_path / "data" / "new_product_workbench"
+    state_root.mkdir(parents=True)
+    owned = [
+        state_root / f"{OFFER_ID}.json",
+        state_root / f"{OFFER_ID}_miaoshou.json",
+        state_root / f"{OFFER_ID}_site_drafts.json",
+    ]
+    for path in owned:
+        _write_json(path, {"offer_id": OFFER_ID})
+    unrelated = state_root / "9999999999.json"
+    _write_json(unrelated, {"offer_id": "9999999999"})
+    calls = []
+
+    class Store:
+        def reset_unexecuted_test_product(self, product_id: str) -> dict:
+            calls.append(product_id)
+            return {
+                "superseded_plan_count": 1,
+                "released_source_reservation_count": 1,
+            }
+
+    monkeypatch.setattr(new_product_workbench, "STATE_DIR", state_root)
+    monkeypatch.setattr(product_server, "ROOT", tmp_path)
+    monkeypatch.setattr(product_server, "_release_store", lambda: Store())
+
+    status, payload = product_server._reset_product_workspace_test_offer(
+        {"offer_id": OFFER_ID, "user_approved": True}
+    )
+
+    assert status == 200
+    assert payload["external_writes_performed"] == []
+    assert payload["audit_history_retained"] is True
+    assert calls == [OFFER_ID]
+    assert all(not path.exists() for path in owned)
+    assert unrelated.is_file()

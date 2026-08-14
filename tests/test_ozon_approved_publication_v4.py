@@ -146,6 +146,21 @@ def _published_item(payload: dict, *, item_id: object) -> dict:
     }
 
 
+def _target(status: str, *, attempted: bool, count: int | None, readback: bool) -> dict:
+    stage = "READBACK" if readback else "DISPATCH" if attempted else "PREPARATION"
+    return {
+        "target_label": "ozon:RU",
+        "status": status,
+        "evidence": {
+            "target_label": "ozon:RU", "status": status, "stage": stage,
+            "provider_code": "ozon_preparation_failed" if stage == "PREPARATION" else "ozon_result",
+            "provider_reason": "Ozon preparation failed" if stage == "PREPARATION" else "Ozon result classified",
+            "request_attempted": attempted, "outcome_unknown": count is None,
+            "external_write_count": count,
+        },
+    }
+
+
 def test_v4_ozon_dispatch_preserves_every_approved_sku_fact_independently() -> None:
     snapshot = _snapshot()
     submitted: list[dict] = []
@@ -171,7 +186,7 @@ def test_v4_ozon_dispatch_preserves_every_approved_sku_fact_independently() -> N
     assert result == {
         "schema_version": "product-publication-platform-result/v1",
         "platform": "OZON",
-        "targets": [{"target_label": "ozon:RU", "status": "PUBLISHED"}],
+        "targets": [_target("PUBLISHED", attempted=True, count=3, readback=True)],
         "dispatch_attempted": True,
         "readback_completed": True,
         "external_write_count": 3,
@@ -211,7 +226,7 @@ def test_missing_ozon_old_price_lineage_fails_before_any_provider_call() -> None
 
     assert calls == []
     assert result["targets"] == [
-        {"target_label": "ozon:RU", "status": "FAILED"}
+        _target("FAILED", attempted=False, count=0, readback=False)
     ]
     assert result["dispatch_attempted"] is False
     assert result["readback_completed"] is False
@@ -249,7 +264,7 @@ def test_dispatch_exception_does_not_skip_readback_and_never_becomes_success() -
     assert [row["offer_id"] for row in submitted] == ["0967", "0968", "0969"]
     assert readback_calls == [("0967", "0968", "0969")]
     assert result["targets"] == [
-        {"target_label": "ozon:RU", "status": "PROCESSING"}
+        _target("PROCESSING", attempted=True, count=None, readback=True)
     ]
     assert result["external_write_count"] is None
     assert result["requires_human_action"] is False
@@ -285,7 +300,7 @@ def test_imported_and_offer_validated_are_processing_not_published() -> None:
     )
 
     assert result["targets"] == [
-        {"target_label": "ozon:RU", "status": "PROCESSING"}
+        _target("PROCESSING", attempted=True, count=3, readback=True)
     ]
     assert result["requires_human_action"] is False
 
@@ -316,7 +331,7 @@ def test_accepted_update_with_stale_created_readback_is_processing_not_failed() 
     )
 
     assert result["targets"] == [
-        {"target_label": "ozon:RU", "status": "PROCESSING"}
+        _target("PROCESSING", attempted=True, count=3, readback=True)
     ]
     assert result["requires_human_action"] is False
 
@@ -345,7 +360,7 @@ def test_created_item_mismatch_or_ambiguous_identity_is_never_whole_product_succ
     )
 
     assert result["targets"] == [
-        {"target_label": "ozon:RU", "status": "FAILED"}
+        _target("FAILED", attempted=True, count=3, readback=True)
     ]
     assert result["readback_completed"] is True
     assert result["requires_human_action"] is True
@@ -386,7 +401,7 @@ def test_runner_executor_uses_only_the_detached_request_snapshot_and_scope() -> 
 
     assert result["platform"] == "OZON"
     assert result["targets"] == [
-        {"target_label": "ozon:RU", "status": "PUBLISHED"}
+        _target("PUBLISHED", attempted=True, count=3, readback=True)
     ]
 
 
@@ -451,7 +466,7 @@ def test_deferred_ozon_category_uses_one_exact_official_profile_receipt() -> Non
     )
 
     assert result["targets"] == [
-        {"target_label": "ozon:RU", "status": "PUBLISHED"}
+        _target("PUBLISHED", attempted=True, count=3, readback=True)
     ]
     assert resolver_calls == [snapshot]
     assert submitted[0]["category"] == {
@@ -491,7 +506,7 @@ def test_deferred_ozon_category_without_exact_receipt_is_zero_write_failure() ->
     assert calls == []
     assert result["dispatch_attempted"] is False
     assert result["external_write_count"] == 0
-    assert result["targets"] == [{"target_label": "ozon:RU", "status": "FAILED"}]
+    assert result["targets"] == [_target("FAILED", attempted=False, count=0, readback=False)]
 
 
 def test_exact_fridge_magnet_profile_without_russian_copy_is_zero_write_failure() -> None:
@@ -590,3 +605,33 @@ def test_ozon_localized_title_with_provider_stripped_multiply_sign_is_zero_write
     assert calls == []
     assert result["dispatch_attempted"] is False
     assert result["external_write_count"] == 0
+
+
+def test_dispatch_rejection_with_empty_readback_retains_dispatch_evidence() -> None:
+    result = execute_ozon_v4_publication(
+        _snapshot(),
+        target_labels=("ozon:RU",),
+        dispatch_variant=lambda _payload: OzonDispatchFact(
+            outcome="REJECTED",
+            provider_code="ozon_business_rejected",
+            provider_reason="Ozon import was rejected",
+        ),
+        readback_variants=lambda _ids: [],
+    )
+
+    assert result["targets"] == [
+        {
+            "target_label": "ozon:RU",
+            "status": "FAILED",
+            "evidence": {
+                "target_label": "ozon:RU",
+                "status": "FAILED",
+                "stage": "DISPATCH",
+                "provider_code": "ozon_business_rejected",
+                "provider_reason": "Ozon import was rejected",
+                "request_attempted": True,
+                "outcome_unknown": False,
+                "external_write_count": 0,
+            },
+        }
+    ]

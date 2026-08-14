@@ -19,7 +19,6 @@ from domains.product_operations import (
     validate_approved_publication_snapshot,
 )
 from shared_platform.product_publication_reports import (
-    REPORT_SCHEMA_VERSION,
     SUMMARY_SCHEMA_VERSION,
     ProductPublicationReportStore,
     StoredPublicationReport,
@@ -28,6 +27,8 @@ from shared_platform.product_publication_reports import (
 
 
 PLATFORM_RESULT_SCHEMA_VERSION = "product-publication-platform-result/v1"
+INTERNAL_REPORT_SCHEMA_VERSION = "product-publication-report/v2"
+_LEGACY_EXECUTION_IDENTITY = {"skill_digest": "0" * 64, "git_commit": "0" * 40, "code_digest": "0" * 64}
 _PLATFORM_ORDER = ("TIKTOK", "SHOPEE", "OZON")
 _PLATFORMS = frozenset(_PLATFORM_ORDER)
 _TARGET_STATUSES = frozenset({"PUBLISHED", "PROCESSING", "FAILED"})
@@ -43,6 +44,11 @@ _RESULT_FIELDS = frozenset(
     }
 )
 _TARGET_FIELDS = frozenset({"target_label", "status"})
+_TARGET_FIELDS_WITH_EVIDENCE = frozenset({"target_label", "status", "evidence"})
+_TARGET_EVIDENCE_FIELDS = frozenset(
+    {"target_label", "status", "stage", "provider_code", "provider_reason", "request_attempted", "outcome_unknown", "external_write_count"}
+)
+_EXECUTION_IDENTITY_FIELDS = frozenset({"skill_digest", "git_commit", "code_digest"})
 
 
 class ApprovedPublicationSnapshotStore(Protocol):
@@ -95,6 +101,7 @@ class PreparedPublicationRun:
 @dataclass(frozen=True)
 class _PlatformOutcome:
     summary: dict[str, Any]
+    targets: list[dict[str, Any]]
     dispatch_attempted: bool
     readback_completed: bool
     external_write_count: int | None
@@ -102,6 +109,42 @@ class _PlatformOutcome:
 
 
 PlatformExecutor = Callable[[PublicationPlatformRequest], Mapping[str, Any]]
+
+
+def _execution_identity(value: object) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        raise TypeError("execution_identity must be a mapping")
+    _exact_fields(value, _EXECUTION_IDENTITY_FIELDS, "execution_identity")
+    result = {name: _text(value[name], name, max_length=64) for name in _EXECUTION_IDENTITY_FIELDS}
+    if len(result["git_commit"]) != 40 or any(c not in "0123456789abcdef" for c in result["git_commit"]):
+        raise ValueError("git_commit is invalid")
+    for name in ("skill_digest", "code_digest"):
+        if len(result[name]) != 64 or any(c not in "0123456789abcdef" for c in result[name]):
+            raise ValueError(f"{name} is invalid")
+    return result
+
+
+def _target_evidence(value: object, *, label: str, status: str) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise TypeError("target evidence must be a mapping or null")
+    _exact_fields(value, _TARGET_EVIDENCE_FIELDS, "target evidence")
+    if value["target_label"] != label or value["status"] != status:
+        raise ValueError("target evidence identity conflicts")
+    stage = _text(value["stage"], "target evidence stage", max_length=32)
+    code = _text(value["provider_code"], "provider_code", max_length=80)
+    reason = _text(value["provider_reason"], "provider_reason", max_length=240)
+    if not code.isascii() or any(not (c.isalnum() or c in "_-") for c in code):
+        raise ValueError("provider_code is unsafe")
+    if "http://" in reason.casefold() or "https://" in reason.casefold():
+        raise ValueError("provider_reason contains a URL")
+    attempted = value["request_attempted"]
+    unknown = value["outcome_unknown"]
+    if type(attempted) is not bool or type(unknown) is not bool:
+        raise TypeError("target evidence flags must be boolean")
+    count = _nonnegative_int_or_none(value["external_write_count"], "target evidence external_write_count")
+    return {"target_label": label, "status": status, "stage": stage, "provider_code": code, "provider_reason": reason, "request_attempted": attempted, "outcome_unknown": unknown, "external_write_count": count}
 
 
 def _text(value: object, name: str, *, max_length: int = 512) -> str:
@@ -204,10 +247,12 @@ def _validate_platform_result(
     if type(raw_targets) is not list:
         raise TypeError("platform result targets must be a list")
     statuses_by_target: dict[str, str] = {}
+    safe_targets: list[dict[str, Any]] = []
     for index, raw in enumerate(raw_targets):
         if not isinstance(raw, Mapping):
             raise TypeError(f"platform result targets[{index}] must be a mapping")
-        _exact_fields(raw, _TARGET_FIELDS, f"platform result targets[{index}]")
+        if set(raw) not in {_TARGET_FIELDS, _TARGET_FIELDS_WITH_EVIDENCE}:
+            raise ValueError(f"platform result targets[{index}] fields are invalid")
         target_label = _text(raw["target_label"], "target_label")
         status = _text(raw["status"], "target status", max_length=16)
         if status not in _TARGET_STATUSES:
@@ -215,6 +260,7 @@ def _validate_platform_result(
         if target_label in statuses_by_target:
             raise ValueError("platform result target is duplicated")
         statuses_by_target[target_label] = status
+        safe_targets.append({"target_label": target_label, "status": status, "evidence": _target_evidence(raw.get("evidence"), label=target_label, status=status)})
     if set(statuses_by_target) != set(expected_targets):
         raise ValueError("platform result target coverage conflicts")
 
@@ -234,6 +280,7 @@ def _validate_platform_result(
             "processing_count": processing_count,
             "failed_count": failed_count,
         },
+        targets=safe_targets,
         dispatch_attempted=value["dispatch_attempted"],
         readback_completed=value["readback_completed"],
         external_write_count=writes,
@@ -253,6 +300,7 @@ def _failed_outcome(platform: str, targets: tuple[str, ...]) -> _PlatformOutcome
             "processing_count": 0,
             "failed_count": len(targets),
         },
+        targets=[{"target_label": label, "status": "FAILED", "evidence": None} for label in targets],
         # Invocation crossed the adapter boundary.  The runner cannot prove
         # whether a provider write occurred after an exception/malformed result.
         dispatch_attempted=True,
@@ -349,6 +397,7 @@ class ProductPublicationRunner:
         snapshot_digest: str | None = None,
         platform_scope: Sequence[str],
         platform_executors: Mapping[str, PlatformExecutor],
+        execution_identity: Mapping[str, object] | None = None,
     ) -> PublicationRunReceipt:
         safe_offer_id = _offer_id(offer_id)
         report_id = publication_report_id(run_id)
@@ -360,6 +409,9 @@ class ProductPublicationRunner:
             snapshot_digest = _text(snapshot_digest, "snapshot_digest", max_length=71)
         scope = _scope(platform_scope)
         executors = _executors(platform_executors, scope=scope)
+        safe_execution_identity = _execution_identity(
+            _LEGACY_EXECUTION_IDENTITY if execution_identity is None else execution_identity
+        )
 
         existing = self.report_store.get_report_by_run(run_id=run_id)
         if existing is not None:
@@ -367,6 +419,7 @@ class ProductPublicationRunner:
                 existing["report_id"] == report_id
                 and existing["offer_id"] == safe_offer_id
                 and _existing_scope(existing) == scope
+                and existing.get("execution_identity") == safe_execution_identity
             )
             if plan_id is not None:
                 identity_matches = identity_matches and existing["plan_id"] == plan_id
@@ -381,15 +434,7 @@ class ProductPublicationRunner:
                 )
             stored = self.report_store.store_report(
                 {name: existing[name] for name in (
-                    "schema_version",
-                    "report_id",
-                    "run_id",
-                    "offer_id",
-                    "revision",
-                    "plan_id",
-                    "snapshot",
-                    "status",
-                    "summary",
+                    "schema_version", "report_id", "run_id", "offer_id", "revision", "plan_id", "snapshot", "execution_identity", "targets", "status", "summary",
                 )}
             )
             return PublicationRunReceipt(
@@ -441,7 +486,7 @@ class ProductPublicationRunner:
         )
         overall_status = _classify(statuses)
         report = {
-            "schema_version": REPORT_SCHEMA_VERSION,
+            "schema_version": INTERNAL_REPORT_SCHEMA_VERSION,
             "report_id": report_id,
             "run_id": run_id,
             "offer_id": safe_offer_id,
@@ -451,6 +496,8 @@ class ProductPublicationRunner:
                 "schema_version": APPROVED_PUBLICATION_SNAPSHOT_SCHEMA_VERSION,
                 "digest": snapshot["snapshot_digest"],
             },
+            "execution_identity": safe_execution_identity,
+            "targets": [row for outcome in outcomes for row in outcome.targets],
             "status": overall_status,
             "summary": {
                 "schema_version": SUMMARY_SCHEMA_VERSION,

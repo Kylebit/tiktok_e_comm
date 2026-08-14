@@ -225,6 +225,39 @@ def test_accepted_run_that_does_not_finish_remains_processing_without_repost() -
     assert result["platforms"][0]["reason_code"] == "REPORT_STILL_PROCESSING"
 
 
+def test_initial_processing_projection_without_plan_keeps_accepted_run_identity() -> None:
+    clock = FakeClock()
+    post_count = 0
+
+    def request(url: str, *, payload=None, timeout_seconds=0):
+        nonlocal post_count
+        del timeout_seconds
+        if payload is not None:
+            post_count += 1
+            return _start("SHOPEE", "product-center-shopee-pending")
+        _status, response = _report(
+            "SHOPEE", "product-center-shopee-pending", "PROCESSING"
+        )
+        response["report"]["schema_version"] = "product-publication-run-status/v1"
+        response["report"].pop("plan_id")
+        return 200, response
+
+    result = publication.run_publication(
+        offer_id=OFFER_ID,
+        plan_id=PLAN_ID,
+        platform="shopee",
+        request=request,
+        poll_interval_seconds=0.25,
+        poll_timeout_seconds=0.5,
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    )
+
+    assert post_count == 1
+    assert result["platforms"][0]["status"] == "PROCESSING"
+    assert result["platforms"][0]["reason_code"] == "REPORT_STILL_PROCESSING"
+
+
 def test_accepted_run_with_temporarily_missing_report_is_processing() -> None:
     clock = FakeClock()
 

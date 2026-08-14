@@ -112,12 +112,39 @@ the exact start identity, independent platform order, public-report polling and
 sanitized four-state projection. Do not move provider payload assembly into
 agent prose or into this client.
 
+At run creation, Product Center freezes the canonical repository Skill
+manifest digest, exact Git commit, and a content digest of the production
+execution files for the selected platform. Dirty execution code therefore
+changes identity even when the commit is unchanged. The worker verifies this
+identity before RUNNING or provider dispatch; drift is a durable zero-write
+failure and never triggers an implicit Skill install.
+
+The immutable internal report may retain only the fixed sanitized target
+evidence fields: target label, status, stage, safe provider code, redacted
+reason, request-attempted flag, unknown-outcome flag, and confirmed write
+count. Public reports remain four-state counts and strip target evidence and
+execution identity. Raw responses, headers, URLs, tokens, exception arguments,
+and external item identities are forbidden.
+
+HomeBloom SEA stores are TikTok targets owned by the Miaoshou Open API path,
+not Shopee regional targets and not direct TikTok API targets. When the frozen
+snapshot selects `tiktok:HB_PH`, `tiktok:HB_MY`, `tiktok:HB_TH`, or
+`tiktok:HB_VN`, keep each as an independent execution target bound to its exact
+HomeBloom shop identity. The executor must not use the TikTok official API for
+these stores, must not substitute the same-region LivelyHive shop, and must not
+collapse the four targets into one shared result.
+
 For Shopee, finish and verify the global product first. Then, only when the
 approved snapshot explicitly selects `shopee:PH`, `shopee:MY`, `shopee:TH`,
 or `shopee:VN`, the server-owned Shopee executor handles regional dispatch and
 readback after Global verification. Treat every selected region independently.
 A global-only run has zero regional targets. Only exact official shop-item,
 model, price and global-linkage readback may record that a region is published.
+Keep the approved English copy on the verified Global master. Regional create
+requests must omit `item_name` and `description` so Shopee can derive the
+destination copy. Official readback accepts English for PH/MY, requires Thai
+for TH and Vietnamese for VN, and repairs only the exact existing wrong-language
+TH/VN item before reading it again. Never create a duplicate for copy repair.
 
 ## Production command
 
@@ -190,8 +217,10 @@ draft category as an untrusted candidate. Before TikTok dispatch:
    exact leaf, consult only the explicit user-approved fallback table in
    `references/tiktok.md`. Accept a fallback only when its official tree node
    is enabled for the exact site and its metadata is valid for the exact shop.
-   For approved tablecloth/table-runner products, Kyle authorizes
-   `cid=600009` Festive Decoration when exact `cid=600204` is unavailable.
+   For approved table-mat/placemat/coaster and tablecloth/table-runner products,
+   Kyle authorizes direct use of `cid=600009` Festive Decoration. Do not first
+   select `cid=600033` or `cid=600204`; the live site tree must still show
+   `600009` enabled and the exact shop metadata must validate.
    Do not invent any other broad fallback.
 6. If neither the exact candidate nor an approved fallback is available,
    return `CATEGORY_CONFIRMATION_REQUIRED` with the top candidates and ask for

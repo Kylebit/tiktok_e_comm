@@ -401,7 +401,7 @@ def test_adopt_then_save_same_facts_keeps_candidate_current(
         ("package_cm", [41, 3, 3]),
     ],
 )
-def test_title_adoption_rejects_true_approved_fact_changes(
+def test_title_adoption_keeps_candidate_current_for_non_copy_commercial_changes(
     monkeypatch,
     tmp_path,
     field,
@@ -409,6 +409,25 @@ def test_title_adoption_rejects_true_approved_fact_changes(
 ):
     initial = _locked_state()
     initial["review"][field] = changed_value
+    state, saves, store = _install(monkeypatch, tmp_path, initial=initial)
+
+    status, payload = product_server._adopt_product_workspace_title_candidate(
+        _request(state)
+    )
+
+    assert status == 200
+    assert payload["dashboard"]["listing_copy"]["status"] == "adopted_in_product_facts"
+    assert state["listing_copy"]["status"] == "adopted_in_product_facts"
+    assert len(saves) == 1
+    assert not store.path.exists()
+
+
+def test_title_adoption_still_rejects_copy_identity_changes(
+    monkeypatch,
+    tmp_path,
+):
+    initial = _locked_state()
+    initial["review"]["category"] = {"id": "other", "name": "other"}
     state, saves, store = _install(monkeypatch, tmp_path, initial=initial)
 
     status, payload = product_server._adopt_product_workspace_title_candidate(
@@ -478,14 +497,14 @@ def test_locked_unadopted_candidate_can_be_regenerated_with_kyle_approval(
     tmp_path,
 ):
     initial = _locked_state()
-    initial["listing_copy"]["policy_version"] = "listing-copy-candidates-v6"
+    initial["listing_copy"]["policy_version"] = "listing-copy-candidates-v8"
     state, saves, _store = _install(monkeypatch, tmp_path, initial=initial)
     generated = {
-        "schema_version": "listing-copy-candidates-v6",
+        "schema_version": "listing-copy-candidates-v8",
         "status": "draft_pending_kyle_review",
         "semantic_master_en": "Safer Replacement English Master",
         "candidates": [],
-        "policy_version": "listing-copy-candidates-v6",
+        "policy_version": "listing-copy-candidates-v8",
         "model": "fixture-model",
     }
     monkeypatch.setattr(

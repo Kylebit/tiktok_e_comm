@@ -30,6 +30,7 @@ _PLATFORMS = frozenset({"TIKTOK", "SHOPEE", "OZON"})
 _SAFE_RUN_PART = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _HEX_DIGEST = re.compile(r"^(?:sha256:)?[0-9a-f]{64}$")
 _FAILURE_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+_EXECUTION_IDENTITY_FIELDS = frozenset({"skill_digest", "git_commit", "code_digest"})
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS product_publication_runs (
@@ -42,6 +43,7 @@ CREATE TABLE IF NOT EXISTS product_publication_runs (
     snapshot_digest TEXT NOT NULL,
     platform_scope_json TEXT NOT NULL,
     target_count INTEGER NOT NULL,
+    execution_identity_json TEXT,
     state TEXT NOT NULL,
     final_report_id TEXT,
     failure_code TEXT,
@@ -60,6 +62,7 @@ CREATE TABLE IF NOT EXISTS product_publication_run_events (
     final_report_id TEXT,
     failure_code TEXT,
     created_at TEXT NOT NULL,
+    run_identity_digest TEXT,
     event_digest TEXT NOT NULL,
     UNIQUE (run_id, sequence),
     FOREIGN KEY (run_id) REFERENCES product_publication_runs(run_id),
@@ -137,6 +140,18 @@ def _sha256(value: object) -> str:
     return "sha256:" + digest.removeprefix("sha256:")
 
 
+def _execution_identity(value: object) -> dict[str, str]:
+    if not isinstance(value, Mapping) or set(value) != set(_EXECUTION_IDENTITY_FIELDS):
+        raise ValueError("execution_identity fields are invalid")
+    result = {name: _text(value[name], name, max_length=64) for name in _EXECUTION_IDENTITY_FIELDS}
+    if not re.fullmatch(r"[0-9a-f]{40}", result["git_commit"]):
+        raise ValueError("git_commit is invalid")
+    for name in ("skill_digest", "code_digest"):
+        if not re.fullmatch(r"[0-9a-f]{64}", result[name]):
+            raise ValueError(f"{name} is invalid")
+    return result
+
+
 def _scope(value: object) -> tuple[str, ...]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
         raise TypeError("platform_scope must be a sequence")
@@ -160,6 +175,7 @@ def _identity_payload(
     snapshot_digest: str,
     platform_scope: tuple[str, ...],
     target_count: int,
+    execution_identity: Mapping[str, str],
 ) -> dict[str, Any]:
     return {
         "run_id": run_id,
@@ -171,6 +187,7 @@ def _identity_payload(
         "snapshot_digest": snapshot_digest,
         "platform_scope": list(platform_scope),
         "target_count": target_count,
+        "execution_identity": dict(execution_identity),
     }
 
 
@@ -182,6 +199,7 @@ def _event_payload(
     final_report_id: str | None,
     failure_code: str | None,
     created_at: str,
+    run_identity_digest: str | None = None,
 ) -> dict[str, Any]:
     return {
         "run_id": run_id,
@@ -190,6 +208,7 @@ def _event_payload(
         "final_report_id": final_report_id,
         "failure_code": failure_code,
         "created_at": created_at,
+        **({"run_identity_digest": run_identity_digest} if run_identity_digest is not None else {}),
     }
 
 
@@ -218,6 +237,12 @@ class ProductPublicationRunStore:
     @staticmethod
     def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.executescript(_SCHEMA)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(product_publication_runs)")}
+        if "execution_identity_json" not in columns:
+            conn.execute("ALTER TABLE product_publication_runs ADD COLUMN execution_identity_json TEXT")
+        event_columns = {row[1] for row in conn.execute("PRAGMA table_info(product_publication_run_events)")}
+        if "run_identity_digest" not in event_columns:
+            conn.execute("ALTER TABLE product_publication_run_events ADD COLUMN run_identity_digest TEXT")
 
     @staticmethod
     def _append_event(
@@ -229,6 +254,7 @@ class ProductPublicationRunStore:
         final_report_id: str | None,
         failure_code: str | None,
         created_at: str,
+        run_identity_digest: str,
     ) -> None:
         payload = _event_payload(
             run_id=run_id,
@@ -237,13 +263,14 @@ class ProductPublicationRunStore:
             final_report_id=final_report_id,
             failure_code=failure_code,
             created_at=created_at,
+            run_identity_digest=run_identity_digest,
         )
         conn.execute(
             """
             INSERT INTO product_publication_run_events (
                 run_id, sequence, state, final_report_id, failure_code,
-                created_at, event_digest
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                created_at, run_identity_digest, event_digest
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -252,6 +279,7 @@ class ProductPublicationRunStore:
                 final_report_id,
                 failure_code,
                 created_at,
+                run_identity_digest,
                 _digest(payload),
             ),
         )
@@ -266,6 +294,7 @@ class ProductPublicationRunStore:
         snapshot_digest: str,
         platform_scope: Sequence[str],
         target_count: int,
+        execution_identity: Mapping[str, object] | None = None,
     ) -> StoredPublicationRun:
         safe_run_id = _run_id(run_id)
         safe_report_id = publication_report_id(safe_run_id)
@@ -275,6 +304,11 @@ class ProductPublicationRunStore:
         safe_digest = _sha256(snapshot_digest)
         safe_scope = _scope(platform_scope)
         safe_target_count = _target_count(target_count)
+        safe_execution_identity = _execution_identity(
+            {"skill_digest": "0" * 64, "git_commit": "0" * 40, "code_digest": "0" * 64}
+            if execution_identity is None
+            else execution_identity
+        )
         identity = _identity_payload(
             run_id=safe_run_id,
             report_id=safe_report_id,
@@ -284,6 +318,7 @@ class ProductPublicationRunStore:
             snapshot_digest=safe_digest,
             platform_scope=safe_scope,
             target_count=safe_target_count,
+            execution_identity=safe_execution_identity,
         )
         identity_digest = _digest(identity)
         now = _utc_now()
@@ -310,9 +345,9 @@ class ProductPublicationRunStore:
                     run_id, report_id, offer_id, revision, plan_id,
                     snapshot_schema_version, snapshot_digest,
                     platform_scope_json, target_count, state,
-                    final_report_id, failure_code, identity_digest,
+                    execution_identity_json, final_report_id, failure_code, identity_digest,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'QUEUED', NULL, NULL, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'QUEUED', ?, NULL, NULL, ?, ?, ?)
                 """,
                 (
                     safe_run_id,
@@ -324,6 +359,7 @@ class ProductPublicationRunStore:
                     safe_digest,
                     _canonical_json(list(safe_scope)),
                     safe_target_count,
+                    _canonical_json(safe_execution_identity),
                     identity_digest,
                     now,
                     now,
@@ -337,6 +373,7 @@ class ProductPublicationRunStore:
                 final_report_id=None,
                 failure_code=None,
                 created_at=now,
+                run_identity_digest=identity_digest,
             )
             conn.commit()
         return StoredPublicationRun(safe_run_id, safe_report_id, "QUEUED", True)
@@ -406,6 +443,7 @@ class ProductPublicationRunStore:
                 final_report_id=final_report_id,
                 failure_code=failure_code,
                 created_at=now,
+                run_identity_digest=row["identity_digest"],
             )
             conn.commit()
             updated = conn.execute(
@@ -432,6 +470,11 @@ class ProductPublicationRunStore:
             return None
         try:
             scope = tuple(json.loads(row["platform_scope_json"]))
+            execution_identity = (
+                _execution_identity(json.loads(row["execution_identity_json"]))
+                if row["execution_identity_json"] is not None
+                else None
+            )
         except (TypeError, json.JSONDecodeError) as error:
             raise ProductPublicationRunIntegrityError("publication run scope is invalid") from error
         identity = _identity_payload(
@@ -443,8 +486,15 @@ class ProductPublicationRunStore:
             snapshot_digest=row["snapshot_digest"],
             platform_scope=_scope(scope),
             target_count=_target_count(row["target_count"]),
+            execution_identity=(execution_identity or {"skill_digest": "0" * 64, "git_commit": "0" * 40, "code_digest": "0" * 64}),
         )
-        if row["snapshot_schema_version"] != SNAPSHOT_SCHEMA_VERSION or _digest(identity) != row["identity_digest"]:
+        if execution_identity is None:
+            legacy_identity = dict(identity)
+            legacy_identity.pop("execution_identity")
+            identity_matches = _digest(legacy_identity) == row["identity_digest"]
+        else:
+            identity_matches = _digest(identity) == row["identity_digest"]
+        if row["snapshot_schema_version"] != SNAPSHOT_SCHEMA_VERSION or not identity_matches:
             raise ProductPublicationRunIntegrityError("publication run identity digest does not match")
         events = conn.execute(
             "SELECT * FROM product_publication_run_events WHERE run_id = ? ORDER BY sequence",
@@ -460,7 +510,10 @@ class ProductPublicationRunStore:
                 final_report_id=event["final_report_id"],
                 failure_code=event["failure_code"],
                 created_at=event["created_at"],
+                run_identity_digest=event["run_identity_digest"],
             )
+            if event["run_identity_digest"] not in {None, row["identity_digest"]}:
+                raise ProductPublicationRunIntegrityError("publication run event identity conflicts")
             if _digest(payload) != event["event_digest"]:
                 raise ProductPublicationRunIntegrityError("publication run event digest does not match")
         last = events[-1]
@@ -476,6 +529,7 @@ class ProductPublicationRunStore:
         return {
             "schema_version": RUN_SCHEMA_VERSION,
             **identity,
+            "execution_identity": execution_identity,
             "state": row["state"],
             "final_report_id": row["final_report_id"],
             "failure_code": row["failure_code"],

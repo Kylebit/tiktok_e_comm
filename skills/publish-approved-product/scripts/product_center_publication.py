@@ -106,13 +106,24 @@ def _report_status(
         raise IdentityError("publication report is missing")
     if report.get("schema_version") not in REPORT_SCHEMAS:
         raise IdentityError("publication report schema is invalid")
-    expected = {
+    start_bound_identity = {
         "offer_id": offer_id,
-        "plan_id": plan_id,
         "run_id": run_id,
         "report_id": report_id,
     }
-    if any(report.get(field) != value for field, value in expected.items()):
+    if any(
+        report.get(field) != value
+        for field, value in start_bound_identity.items()
+    ):
+        raise IdentityError("publication report identity conflicts with start response")
+    transient_run_status = (
+        report.get("schema_version") == "product-publication-run-status/v1"
+        and report.get("status") == "PROCESSING"
+    )
+    if (
+        (not transient_run_status or "plan_id" in report)
+        and report.get("plan_id") != plan_id
+    ):
         raise IdentityError("publication report identity conflicts with start response")
     snapshot = report.get("snapshot")
     if (

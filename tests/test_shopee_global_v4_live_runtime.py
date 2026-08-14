@@ -6,7 +6,11 @@ from modules.shopee.global_v4_live_runtime import (
     _default_image_upload,
     select_exact_official_category,
 )
-from modules.shopee.global_v4_executor import ShopeeGlobalV4Resolver
+from modules.shopee.global_v4_executor import (
+    ShopeeGlobalV4Resolver,
+    UpdateReceipt,
+    project_shopee_global_v4_command,
+)
 from test_shopee_global_v4_executor import _request
 
 
@@ -54,6 +58,101 @@ def test_default_image_upload_accepts_official_image_info_list(monkeypatch):
         _default_image_upload("https://img.example/approved.png", 1)
         == "official-image-2"
     )
+
+
+def test_existing_global_copy_update_uses_one_official_in_place_request():
+    calls = []
+    runtime = OfficialShopeeGlobalV4Runtime(
+        context_resolver=lambda _command: {
+            "merchant_id": 4970102,
+            "merchant_token": "redacted",
+            "shop_id": 1,
+            "shop_token": "redacted",
+        },
+        official_fact_reader=lambda _command, _context: {},
+        mapping_lookup=lambda _sku: "51765420288",
+        merchant_post_transport=lambda path, merchant_id, token, body: calls.append(
+            (path, merchant_id, token, body)
+        ) or {"error": "", "response": {}},
+    )
+    runtime.lookup_global_item_ids(
+        {
+            "models": [{"model_sku": "0960"}],
+            "product": {"images": ["https://img.example/main.jpg"]},
+        }
+    )
+
+    runtime.update_global_item(
+        "51765420288",
+        {"title": "Frozen title", "description": "Frozen description"},
+    )
+
+    assert calls == [
+        (
+            "/api/v2/global_product/update_global_item",
+            4970102,
+            "redacted",
+            {
+                "global_item_id": 51765420288,
+                "global_item_name": "Frozen title",
+                "description": "Frozen description",
+            },
+        )
+    ]
+
+
+def test_existing_global_image_convergence_uses_only_in_place_update_endpoints():
+    calls = []
+    runtime = OfficialShopeeGlobalV4Runtime(
+        context_resolver=lambda _command: {
+            "merchant_id": 4970102,
+            "merchant_token": "redacted",
+            "shop_id": 1,
+            "shop_token": "redacted",
+        },
+        official_fact_reader=lambda _command, _context: {},
+        mapping_lookup=lambda _sku: "51765420288",
+        merchant_post_transport=lambda path, _merchant_id, _token, body: calls.append(
+            (path, body)
+        ) or {"error": "", "response": {}},
+    )
+    runtime.lookup_global_item_ids(
+        {"models": [{"model_sku": "0960"}], "product": {"images": ["https://img.example/main.jpg"]}}
+    )
+    receipt = runtime.update_existing_global_item(
+        "51765420288",
+        {
+            "title": "Frozen title",
+            "description": "Frozen description",
+            "image_ids": ["image-1", "image-2"],
+            "parcel": {
+                "weight_kg": "0.265",
+                "package_cm": [61, 3, 6],
+            },
+        },
+    )
+    runtime.update_existing_global_tier_variation(
+        "51765420288", {"variation_names": ["Color"], "models": [{"model_sku": "0960", "option_values": ["Blue"], "variant_image_id": "image-1"}]}
+    )
+    assert calls == [
+        (
+            "/api/v2/global_product/update_global_item",
+            {
+                "global_item_id": 51765420288,
+                "global_item_name": "Frozen title",
+                "description": "Frozen description",
+                "image": {"image_id_list": ["image-1", "image-2"]},
+                "weight": 0.265,
+                "dimension": {
+                    "package_length": 61.0,
+                    "package_width": 3.0,
+                    "package_height": 6.0,
+                },
+            },
+        ),
+        ("/api/v2/global_product/update_tier_variation", {"global_item_id": 51765420288, "tier_variation": [{"name": "Color", "option_list": [{"option": "Blue", "image": {"image_id": "image-1"}}]}]}),
+    ]
+    assert receipt == UpdateReceipt(attempted_count=1, reconciled_by_readback=False)
 
 
 def test_exact_prior_checkpoint_image_bindings_are_reused_without_upload(tmp_path):
@@ -111,6 +210,35 @@ def test_exact_prior_checkpoint_image_bindings_are_reused_without_upload(tmp_pat
     assert uploads == []
 
 
+def test_checkpointed_legacy_image_upload_resumes_partial_receipts_without_reupload(tmp_path):
+    request = _request()
+    command = project_shopee_global_v4_command(request.snapshot)
+    first, second = command["product"]["images"]
+    old_checkpoint = tmp_path / request.snapshot["offer_id"] / str(request.snapshot["product_revision"]) / "old-run"
+    old_checkpoint.mkdir(parents=True)
+    (old_checkpoint / "shopee-global-checkpoint.json").write_text(
+        json.dumps({"schema_version": "shopee-global-v4-checkpoint/v1", "offer_id": request.snapshot["offer_id"], "product_revision": request.snapshot["product_revision"], "run_id": "old-run", "report_id": "publication-report:old-run", "image_bindings": {first: "image-from-receipt"}}),
+        encoding="utf-8",
+    )
+    uploads = []
+    runtime = OfficialShopeeGlobalV4Runtime(
+        context_resolver=lambda _command: {"merchant_id": 4970102, "merchant_token": "redacted", "shop_id": 1, "shop_token": "redacted"},
+        official_fact_reader=lambda _command, _context: {},
+        mapping_lookup=lambda _sku: "8001",
+        image_upload_transport=lambda url, position: uploads.append((url, position)) or "image-uploaded-second",
+        checkpoint_root=tmp_path,
+    )
+    runtime.lookup_global_item_ids(command)
+
+    bindings, upload_count = runtime.checkpointed_upload_global_images(request, tuple(command["product"]["images"]))
+
+    assert bindings == {first: "image-from-receipt", second: "image-uploaded-second"}
+    assert upload_count == 1
+    assert uploads == [(second, 1)]
+    current = tmp_path / request.snapshot["offer_id"] / str(request.snapshot["product_revision"]) / request.run_id / "shopee-global-checkpoint.json"
+    assert json.loads(current.read_text(encoding="utf-8"))["image_bindings"] == bindings
+
+
 def test_exact_main_category_selects_fridge_magnets_and_ignores_other_candidates():
     selected = select_exact_official_category(
         {"id": "product-semantic:x", "name": "居家日用 > 冰箱贴"},
@@ -164,6 +292,18 @@ def test_unrelated_recommendations_never_fall_back_to_title_guessing():
         assert "exact semantic category" in str(error)
     else:
         raise AssertionError("an unrelated category must not be selected")
+
+
+def test_exact_main_category_selects_placemats_and_coasters_from_chinese_semantics():
+    selected = select_exact_official_category(
+        {"id": "product-semantic:x", "name": "餐具 > 餐垫、杯垫"},
+        [
+            {"id": "101247", "name": "Placemats & Coasters", "path": [{"id": "100636", "name": "Home & Living"}, {"id": "100718", "name": "Dinnerware"}, {"id": "101247", "name": "Placemats & Coasters"}], "publishable": True},
+            {"id": "101164", "name": "Table Cloths", "path": [{"id": "101164", "name": "Table Cloths"}], "publishable": True},
+        ],
+    )
+
+    assert selected["id"] == "101247"
 
 
 def test_prepare_creation_returns_only_the_exact_official_leaf():

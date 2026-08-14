@@ -610,8 +610,22 @@ async function productAsyncFeedback(browser) {
     await page.route("**/api/product-workspace/title-draft", (route) => {
       state.pending.titleDraft = route;
     });
+    const unsavedCommercialDraft = {
+      cost_cny: "19.87",
+      weight_kg: "0.456",
+      length_cm: "41.2",
+      width_cm: "32.1",
+      height_cm: "5.4",
+    };
+    for (const [field, value] of Object.entries(unsavedCommercialDraft)) {
+      await page.locator(
+        `.sku-commercial-input[data-commercial-field="${field}"]`,
+      ).first().fill(value);
+    }
     await page.locator("#generateTitleDraftButton").click();
     await page.waitForFunction(() => document.querySelector("#generateTitleDraftButton")?.classList.contains("is-loading"));
+    const editedSpecification = "Kyle edited specification while AI is running";
+    await page.locator(".sku-label-input").first().fill(editedSpecification);
     check(
       await computedVisibility(page, "#titleDraftStatus"),
       "product: title model action exposes visible progress feedback",
@@ -654,8 +668,39 @@ async function productAsyncFeedback(browser) {
     );
     check(
       (await page.locator("#factsEditTitle").inputValue()).includes("Watercolour Floral"),
-      "product: semantic English master is adopted into the editable fact field",
+      "product: semantic English master is placed into the editable fact field",
     );
+    check(
+      (await page.locator(".sku-label-input").first().inputValue()) === editedSpecification,
+      "product: async title generation preserves a specification edited while the request is running",
+      await page.locator(".sku-label-input").first().inputValue(),
+    );
+    check(
+      await page.locator("#factsEditTitle").isEnabled(),
+      "product: generated English title remains directly editable before save",
+    );
+    check(
+      await page.locator(".adopt-title-candidate").count() === 0,
+      "product: unlocked facts do not expose a redundant title adoption button",
+    );
+    const generatedTitleFeedback = (
+      await page.locator("#titleDraftStatus").innerText()
+    ).trim();
+    check(
+      generatedTitleFeedback.includes("已填入上方正式英文标题")
+      && generatedTitleFeedback.includes("尚未保存")
+      && generatedTitleFeedback.includes("可以直接修改"),
+      "product: title generation gives visible local-only unsaved feedback",
+      generatedTitleFeedback,
+    );
+    for (const [field, value] of Object.entries(unsavedCommercialDraft)) {
+      check(
+        await page.locator(
+          `.sku-commercial-input[data-commercial-field="${field}"]`,
+        ).first().inputValue() === value,
+        `product: title generation preserves unsaved ${field}`,
+      );
+    }
     await page.route("**/api/product-workspace/facts", (route) => {
       state.pending.productFacts = route;
     });
@@ -1150,6 +1195,17 @@ async function productLockedStaleTitleRefresh(browser) {
       && refreshRequest.approved_by === "Kyle",
       "product: locked stale refresh submits exact revision and Kyle approval",
       refreshRequest,
+    );
+    const lockedRefreshStatus = (
+      await page.locator("#titleDraftStatus").innerText()
+    ).trim();
+    check(
+      await page.locator("#factsEditTitle").isDisabled()
+      && lockedRefreshStatus.includes("候选待 Kyle 显式采用")
+      && !lockedRefreshStatus.includes("可以直接修改")
+      && !lockedRefreshStatus.includes("最后点击“保存并确认商品事实”"),
+      "product: locked title refresh stays read-only and requires explicit adoption",
+      lockedRefreshStatus,
     );
     check(
       await page.locator(
@@ -5637,6 +5693,28 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
   const errors = [];
   let previewState = "READY";
   let statusReads = 0;
+  const publicationReports = new Map();
+  let publicationSequence = 0;
+  const publicationStart = (platform, status) => {
+    publicationSequence += 1;
+    const runId = `collectbox-contract-${platform.toLowerCase()}-${publicationSequence}`;
+    const reportId = `publication-report:${runId}`;
+    publicationReports.set(reportId, {
+      schema_version: "product-publication-report/v1",
+      report_id: reportId,
+      run_id: runId,
+      offer_id: "3828540231",
+      status,
+      summary: { platforms: [{ platform, status }] },
+    });
+    return {
+      schema_version: "product-publication-start/v1",
+      ok: true,
+      platform,
+      report_id: reportId,
+      run_id: runId,
+    };
+  };
   let releaseInitialStartResponse;
   let initialStartIsLatched = true;
   const initialStartResponseGate = new Promise((resolve) => {
@@ -5701,38 +5779,25 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
       "/api/product-workspace/publish-shopee-global",
       "/api/product-workspace/publish-ozon",
     ].includes(url.pathname)) {
-      if (url.pathname === "/api/product-workspace/publish-tiktok") {
-        return route.fulfill(jsonResponse({
-          ok: false,
-          error: {
-            category: "CAPABILITY",
-            code: "step1_collectbox_required",
-            detail_digest: "9".repeat(64),
-          },
-          canonical_next_action: {
-            action: "start_collectbox_action",
-            target_focus: null,
-          },
-          external_writes_performed: [],
-        }, 409));
-      }
-      if (url.pathname === "/api/product-workspace/publish-ozon") {
-        return route.fulfill(jsonResponse({
-          ok: false,
-          error: {
-            category: "INVENTORY",
-            code: "approved_inventory_required",
-            detail_digest: "7".repeat(64),
-          },
-          external_writes_performed: [],
-        }, 409));
-      }
-      return route.fulfill(jsonResponse({
-        ok: true,
-        accepted: true,
-        external_writes_performed: [],
-        job: oneClickPendingJobProjection(),
-      }, 202));
+      const platform = url.pathname.endsWith("publish-tiktok")
+        ? "TIKTOK"
+        : url.pathname.endsWith("publish-ozon")
+        ? "OZON"
+        : "SHOPEE";
+      return route.fulfill(jsonResponse(
+        publicationStart(
+          platform,
+          platform === "SHOPEE" ? "PUBLISHED" : "FAILED",
+        ),
+        202,
+      ));
+    }
+    if (url.pathname === "/api/product-workspace/publication-report") {
+      const report = publicationReports.get(url.searchParams.get("report_id"));
+      return route.fulfill(jsonResponse(
+        report ? { ok: true, report } : { ok: false },
+        report ? 200 : 404,
+      ));
     }
     if (url.pathname === "/api/product-workspace/publish-status") {
       return route.fulfill(jsonResponse({
@@ -5887,10 +5952,9 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
         const failureText = await optionalText("#oneClickExecutionPreview");
         check(
           failureText.includes("TikTok")
-            && failureText.includes("发布失败")
-            && failureText.includes("step1_collectbox_required")
+            && failureText.includes("FAILED")
             && await platformButton.isEnabled(),
-          `platform structured error ${viewport.width}: actionable reason and code stay visible with retry`,
+          `platform report ${viewport.width}: redacted failure stays visible with retry`,
           { failureText, enabled: await platformButton.isEnabled() },
         );
       }
@@ -5898,10 +5962,9 @@ async function collectboxStepOnePrimaryActionContract(browser, viewport) {
         const failureText = await optionalText("#oneClickExecutionPreview");
         check(
           failureText.includes("Ozon")
-            && failureText.includes("发布失败")
-            && failureText.includes("approved_inventory_required")
+            && failureText.includes("FAILED")
             && await platformButton.isEnabled(),
-          `platform structured error ${viewport.width}: unknown structured code is preserved with retry`,
+          `platform report ${viewport.width}: Ozon failure stays visible with retry`,
           { failureText, enabled: await platformButton.isEnabled() },
         );
       }
@@ -8149,6 +8212,26 @@ async function simplifiedPlatformPublishContract(browser, viewport) {
   const artifactRoot = process.env.ORBIT_BROWSER_ARTIFACT_DIR || "";
   const suffix = `${viewport.width}x${viewport.height}`;
   let tiktokAttempt = 0;
+  const publicationReports = new Map();
+  const publicationStart = (platform, attempt, status) => {
+    const runId = `run-${platform.toLowerCase()}-${attempt}`;
+    const reportId = `publication-report:${runId}`;
+    publicationReports.set(reportId, {
+      schema_version: "product-publication-report/v1",
+      report_id: reportId,
+      run_id: runId,
+      offer_id: "3828540231",
+      status,
+      summary: { platforms: [{ platform, status }] },
+    });
+    return {
+      schema_version: "product-publication-start/v1",
+      ok: true,
+      platform,
+      report_id: reportId,
+      run_id: runId,
+    };
+  };
   let releaseFirstTiktok;
   const firstTiktokGate = new Promise((resolve) => {
     releaseFirstTiktok = resolve;
@@ -8186,28 +8269,49 @@ async function simplifiedPlatformPublishContract(browser, viewport) {
     if (url.pathname === "/api/product-workspace/collectbox-action/start") {
       return route.fulfill(jsonResponse(collectboxActionProjection("SUCCEEDED")));
     }
+    if (url.pathname === "/api/product-workspace/publication-report") {
+      const report = publicationReports.get(url.searchParams.get("report_id"));
+      return route.fulfill(jsonResponse(
+        report ? { ok: true, report } : { ok: false },
+        report ? 200 : 404,
+      ));
+    }
+    // WP4 buttons create one durable Runner report and then read that report.
+    // Keep the retired direct-result fixtures below unreachable so this
+    // browser contract proves the production start/report protocol.
+    if (url.pathname === "/api/product-workspace/publish-tiktok") {
+      tiktokAttempt += 1;
+      if (tiktokAttempt === 1) await firstTiktokGate;
+      return route.fulfill(jsonResponse(
+        publicationStart(
+          "TIKTOK",
+          tiktokAttempt,
+          tiktokAttempt === 1 ? "FAILED" : "PUBLISHED",
+        ),
+        202,
+      ));
+    }
+    if (url.pathname === "/api/product-workspace/publish-shopee-global") {
+      await firstTiktokGate;
+      return route.fulfill(jsonResponse(
+        publicationStart("SHOPEE", 1, "PUBLISHED"),
+        202,
+      ));
+    }
+    if (url.pathname === "/api/product-workspace/publish-ozon") {
+      return route.fulfill(jsonResponse(
+        publicationStart("OZON", 1, "PUBLISHED"),
+        202,
+      ));
+    }
     if (url.pathname === "/api/product-workspace/publish-tiktok") {
       tiktokAttempt += 1;
       if (tiktokAttempt === 1) {
         await firstTiktokGate;
-        return route.fulfill(jsonResponse({
-          schema_version: "miaoshou-platform-publish-result/v1",
-          ok: false,
-          platform: "TIKTOK",
-          success: false,
-          message: "",
-          error: {
-            category: "PROVIDER",
-            code: "tiktok_target_not_accepted",
-            provider_code: "category_required",
-            provider_reason: "GB category attribute is required",
-            detail_digest: "f".repeat(64),
-          },
-          target_count: 6,
-          successful_target_count: 0,
-          failed_targets: ["tiktok:LH_PH"],
-          retryable: true,
-        }));
+        return route.fulfill(jsonResponse(
+          publicationStart("TIKTOK", tiktokAttempt, "FAILED"),
+          202,
+        ));
       }
       return route.fulfill(jsonResponse({
         schema_version: "miaoshou-platform-publish-result/v1",
@@ -8270,7 +8374,7 @@ async function simplifiedPlatformPublishContract(browser, viewport) {
     const firstClick = tiktok.click();
     await page.waitForFunction(() => (
       document.querySelector('[data-platform-publish-result="TIKTOK"]')
-        ?.textContent?.includes("发布中")
+        ?.textContent?.includes("PROCESSING")
     ));
     check(
       await shopee.isEnabled() && await ozon.isEnabled(),
@@ -8284,20 +8388,18 @@ async function simplifiedPlatformPublishContract(browser, viewport) {
     await shopeeClick;
     await page.waitForFunction(() => (
       document.querySelector('[data-platform-publish-result="SHOPEE_GLOBAL"]')
-        ?.textContent?.includes("发布成功")
+        ?.textContent?.includes("PUBLISHED")
     ));
     await page.waitForFunction(() => (
       document.querySelector('[data-platform-publish-result="TIKTOK"]')
-        ?.textContent?.includes("发布失败")
+        ?.textContent?.includes("FAILED")
     ));
     const combined = await page.locator("#oneClickExecutionGroups").innerText();
     check(
       combined.includes("TikTok")
-        && combined.includes("发布失败")
-        && combined.includes("GB category attribute is required")
-        && combined.includes("category_required")
+        && combined.includes("FAILED")
         && combined.includes("Shopee 全球商品")
-        && combined.includes("发布成功"),
+        && combined.includes("PUBLISHED"),
       `simple publish ${suffix}: independent success and failure remain visible`,
       combined,
     );
@@ -8315,7 +8417,7 @@ async function simplifiedPlatformPublishContract(browser, viewport) {
     await tiktok.click();
     await page.waitForFunction(() => (
       document.querySelector('[data-platform-publish-result="TIKTOK"]')
-        ?.textContent?.includes("发布成功")
+        ?.textContent?.includes("PUBLISHED")
     ));
     const siblingsAfterTiktokRetry = await page.evaluate(() => ({
       shopee: document.querySelector(
@@ -8334,7 +8436,7 @@ async function simplifiedPlatformPublishContract(browser, viewport) {
     await ozon.click();
     await page.waitForFunction(() => (
       document.querySelector('[data-platform-publish-result="OZON"]')
-        ?.textContent?.includes("发布成功")
+        ?.textContent?.includes("PUBLISHED")
     ));
     await screenshot("all-success-after-retry");
 
@@ -8382,13 +8484,19 @@ async function simplifiedPlatformPublishContract(browser, viewport) {
           && row.body?.product_revision === 31
           && row.body?.payload_digest === "a".repeat(64)
           && row.body?.targets_digest === "b".repeat(64)
-          && row.body?.confirm_publish === true
         )),
       `simple publish ${suffix}: TikTok POST binds the approved snapshot identity`,
       tiktokPosts,
     );
+    const reportReads = requests.filter(
+      (row) => row.path === "/api/product-workspace/publication-report",
+    );
     const finalText = await page.locator("#oneClickExecutionPreview").innerText();
-    check(statusReads.length === 0, `simple publish ${suffix}: zero post/publish polling`, statusReads);
+    check(
+      statusReads.length === 0 && reportReads.length === 4,
+      `simple publish ${suffix}: only durable publication reports are polled`,
+      { statusReads, reportReads },
+    );
     check(
       !/(人工验收|对账|结果未确认|SUBMITTED_UNVERIFIED|RECONCILIATION_REQUIRED)/.test(finalText),
       `simple publish ${suffix}: obsolete workflow text is absent`,
@@ -8405,6 +8513,8 @@ async function tiktokTerminalCollectboxRemainsActionableContract(browser) {
   const page = await context.newPage();
   const requests = [];
   const errors = [];
+  const runId = "terminal-collectbox-run";
+  const reportId = `publication-report:${runId}`;
   page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
   page.on("console", (message) => {
     if (message.type() === "error") errors.push(`console: ${message.text()}`);
@@ -8423,12 +8533,27 @@ async function tiktokTerminalCollectboxRemainsActionableContract(browser) {
     }
     if (url.pathname === "/api/product-workspace/publish-tiktok") {
       return route.fulfill(jsonResponse({
-        ok: false,
-        success: false,
+        schema_version: "product-publication-start/v1",
+        ok: true,
         platform: "TIKTOK",
-        message: "TikTok 妙手采集身份不完整，请先重新导入后重试发布。",
-        retryable: true,
-      }, 409));
+        report_id: reportId,
+        run_id: runId,
+      }, 202));
+    }
+    if (url.pathname === "/api/product-workspace/publication-report") {
+      return route.fulfill(jsonResponse({
+        ok: true,
+        report: {
+          schema_version: "product-publication-report/v1",
+          report_id: reportId,
+          run_id: runId,
+          offer_id: "3838619319",
+          status: "FAILED",
+          summary: {
+            platforms: [{ platform: "TIKTOK", status: "FAILED" }],
+          },
+        },
+      }));
     }
     return route.fulfill(jsonResponse({ ok: false }, 404));
   });
@@ -8449,7 +8574,7 @@ async function tiktokTerminalCollectboxRemainsActionableContract(browser) {
       await tiktok.click();
       await page.waitForFunction(() => (
         document.querySelector('[data-platform-publish-result="TIKTOK"]')
-          ?.textContent?.includes("重新导入")
+          ?.textContent?.includes("FAILED")
       ));
       check(
         requests.some((row) => (
@@ -8459,14 +8584,19 @@ async function tiktokTerminalCollectboxRemainsActionableContract(browser) {
         "actionable TikTok button delegates the final decision to the server",
         requests,
       );
+      check(
+        requests.some((row) => (
+          row.method === "GET"
+          && row.path === "/api/product-workspace/publication-report"
+        )),
+        "actionable TikTok button reads the durable publication report",
+        requests,
+      );
     }
-    const unexpectedErrors = errors.filter(
-      (entry) => !entry.includes("status of 409 (Conflict)"),
-    );
     check(
-      unexpectedErrors.length === 0,
+      errors.length === 0,
       "terminal collectbox actionability has no unexpected browser errors",
-      unexpectedErrors,
+      errors,
     );
   } finally {
     await context.close();
@@ -8481,6 +8611,19 @@ async function tiktokTerminalCollectboxRemainsActionableContract(browser) {
       : {}),
   });
   try {
+    if (
+      process.env.ORBIT_BROWSER_CONTRACT_ONLY
+        === "product-title-draft-preserves-facts"
+    ) {
+      await productAsyncFeedback(browser);
+      process.stdout.write(`${JSON.stringify({
+        ok: failures.length === 0,
+        failures,
+        results,
+      }, null, 2)}\n`);
+      if (failures.length) process.exitCode = 1;
+      return;
+    }
     if (
       process.env.ORBIT_BROWSER_CONTRACT_ONLY
         === "simplified-platform-publish"

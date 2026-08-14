@@ -163,15 +163,21 @@ def test_projection_uses_only_frozen_v4_facts_and_exact_durable_identity():
         def save_approved_draft(self, target, draft):  # pragma: no cover
             raise AssertionError("preflight must be read-only")
 
+        def prepare_approved_draft(self, target, draft):
+            return {"body": {"detailId": target["detail_id"]}}
+
+        def save_prepared_draft(self, target, prepared):  # pragma: no cover
+            raise AssertionError("preflight must be read-only")
+
         def submit(self, target):  # pragma: no cover
             raise AssertionError("preflight must be read-only")
 
     preflight = TikTokPublisher(ExactDraftTransport()).preflight(
         ph["publisher_snapshot"]
     )
-    assert preflight["targets"] == [
-        {"target_label": "tiktok:LH_PH", "status": "READY"}
-    ]
+    assert preflight["targets"][0]["target_label"] == "tiktok:LH_PH"
+    assert preflight["targets"][0]["status"] == "READY"
+    assert preflight["targets"][0]["save_required"] is False
 
 
 def test_tampered_v4_snapshot_fails_before_category_or_control_reads():
@@ -392,6 +398,54 @@ def test_preflight_fails_closed_per_store_and_other_store_continues():
         "FAILED",
         "PROCESSING",
     ]
+
+
+def test_business_rejection_evidence_survives_real_execution_path():
+    _, plan = _project()
+    publisher = Publisher(dispatch={"tiktok:LH_PH": "REJECTED"})
+    original_publish = publisher.publish
+
+    def publish(snapshot, preflight=None):
+        receipt = original_publish(snapshot, preflight)
+        row = receipt["targets"][0]
+        if row["target_label"] == "tiktok:LH_PH":
+            row.update({"stage": "SAVE", "provider_code": "categoryInvalid", "provider_reason": "Authorization Bearer secret-token https://provider.example/items/123456789012"})
+        return receipt
+
+    publisher.publish = publish
+    receipt = execute_tiktok_v4_plan(plan, publisher=publisher, storefront_readback=Readback())
+    evidence = receipt["targets"][0]["evidence"]
+    assert evidence == {"target_label": "tiktok:LH_PH", "status": "FAILED", "stage": "SAVE", "provider_code": "categoryInvalid", "provider_reason": "authorization=[redacted] [redacted-url]", "request_attempted": True, "outcome_unknown": False, "external_write_count": 0}
+
+
+def test_transport_unknown_keeps_confirmed_save_count_without_leaking_error():
+    _, plan = _project()
+
+    class UnknownAfterSavePublisher(Publisher):
+        def publish(self, snapshot, preflight=None):
+            label = snapshot["targets"][0]["target_label"]
+            self.publish_calls.append(label)
+            return {"targets": [{"target_label": label, "outcome": "UNKNOWN", "stage": "PUBLISH", "provider_code": "transport_unknown", "provider_reason": "TimeoutError Authorization Bearer secret-token", "external_write_count": 1, "write_request_count": 2}]}
+
+    receipt = execute_tiktok_v4_plan(plan, publisher=UnknownAfterSavePublisher(), storefront_readback=Readback())
+    evidence = receipt["targets"][0]["evidence"]
+    assert evidence["request_attempted"] is True
+    assert evidence["outcome_unknown"] is True
+    assert evidence["external_write_count"] == 1
+    assert "secret-token" not in evidence["provider_reason"]
+
+
+def test_all_target_preflight_systemic_failure_happens_before_any_publish():
+    _, plan = _project()
+    publisher = Publisher(
+        preflight={"tiktok:LH_MY": TypeError("payload is not JSON serializable")},
+    )
+    receipt = execute_tiktok_v4_plan(
+        plan, publisher=publisher, storefront_readback=Readback()
+    )
+    assert publisher.preflight_calls == ["tiktok:LH_PH", "tiktok:LH_MY"]
+    assert publisher.publish_calls == []
+    assert receipt["external_write_count"] == 0
 
 
 def test_dispatch_exception_still_runs_readback_and_official_truth_wins():

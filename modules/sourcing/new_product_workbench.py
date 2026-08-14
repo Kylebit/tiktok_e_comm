@@ -24,7 +24,7 @@ import urllib.request
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 from core.config import ROOT
 from domains.content_operations.content_package_adapter import (
@@ -1363,6 +1363,27 @@ def _ai_assisted_final_review_ready(
     )
 
 
+def _verified_miaoshou_final_images(
+    review: Mapping[str, Any], content: Mapping[str, Any]
+) -> list[str]:
+    """Return the current authoritative final image order, or fail closed."""
+    write = content.get("miaoshou_ordered_images_write")
+    if not isinstance(write, Mapping) or str(write.get("status") or "") != "verified":
+        raise ValueError("Miaoshou final image read-back is unavailable")
+    checks = write.get("checks") if isinstance(write.get("checks"), Mapping) else {}
+    if not (checks.get("main_images_exact_order") and checks.get("detail_images_exact_order")):
+        raise ValueError("Miaoshou final image read-back is not exact")
+    urls = [str(url).strip() for url in (write.get("ordered_image_urls") or []) if str(url).strip()]
+    order = [str(url).strip() for url in (review.get("image_order") or []) if str(url).strip()]
+    if not urls or urls != order or len(urls) != int(write.get("written_image_count") or 0):
+        raise ValueError("Miaoshou final image order drifted")
+    if int(write.get("suite_revision") or 0) != max(1, int(content.get("suite_revision") or 1)):
+        raise ValueError("Miaoshou final image revision drifted")
+    if str(write.get("recipe_signature") or "") != _content_recipe_signature(dict(content)):
+        raise ValueError("Miaoshou final image identity drifted")
+    return urls
+
+
 def _ai_assisted_final_approval_valid(
     review: dict[str, Any],
     content: dict[str, Any],
@@ -1384,11 +1405,16 @@ def _ai_assisted_final_approval_valid(
         and str(approval.get("approved_at") or "").strip()
     ):
         return False
+    try:
+        miaoshou_ordered_image_urls = _verified_miaoshou_final_images(review, content)
+    except ValueError:
+        return False
     expected_payload = {
         "schema_version": "ai-assisted-final-content-approval/v1",
         "status": "approved",
         "approved_by": "Kyle",
         "image_order": list(review.get("image_order") or []),
+        "miaoshou_ordered_image_urls": miaoshou_ordered_image_urls,
         "video_action": str(review.get("video_action") or "none"),
         "asset_decisions": content.get("asset_decisions") or {},
         "generated_image_decisions": (
@@ -1568,9 +1594,11 @@ def _product_workflow_summary(
     }
 
 
-def content_package_summary(offer_id_or_url: str) -> dict[str, Any]:
+def content_package_summary(
+    offer_id_or_url: str, *, resolved_offer_id: bool = False
+) -> dict[str, Any]:
     """Return local image-review metadata without calling models, ToAPI, or Miaoshou."""
-    offer_id = resolve_offer_key(offer_id_or_url)
+    offer_id = str(offer_id_or_url) if resolved_offer_id else resolve_offer_key(offer_id_or_url)
     state = load_state(offer_id)
     source = _source_summary(offer_id)
     saved = dict(state.get("content_package") or {})
@@ -1588,6 +1616,8 @@ def content_package_summary(offer_id_or_url: str) -> dict[str, Any]:
     generated_review_images = _generated_review_images(offer_id, saved, package_dir)
     report_ready = bool(package_dir and (package_dir / "review_report.html").is_file())
     review_package = _load_json(package_dir / "review_package.json") if package_dir else {}
+    if package_dir and _apply_manual_storyboard_edits(saved, review_package):
+        _write_json_atomic(package_dir / "review_package.json", review_package)
     collect_box = review_package.get("collect_box") if isinstance(review_package.get("collect_box"), dict) else {}
     fact_card = review_package.get("fact_card") if isinstance(review_package.get("fact_card"), dict) else {}
     plan = review_package.get("plan") if isinstance(review_package.get("plan"), dict) else {}
@@ -1676,6 +1706,7 @@ def content_package_summary(offer_id_or_url: str) -> dict[str, Any]:
     primary_identity_url = saved_primary if saved_primary in identity_reference_urls else (identity_reference_urls[0] if identity_reference_urls else "")
     return {
         "schema_version": "1.0.0",
+        "revision": max(0, int(state.get("_revision") or 0)),
         "content_strategy": strategy,
         "collect_box_id": collect_box_id,
         "package_found": package_dir is not None,
@@ -2257,6 +2288,85 @@ def _safe_image_execution_plan(
     }
 
 
+def save_manual_storyboard_edits(
+    offer_id_or_url: str, *, expected_revision: int, edits: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Save operator copy overrides for existing AI shots; no generation occurs."""
+    offer_id = parse_offer_id(offer_id_or_url)
+    state = load_state(offer_id)
+    if type(expected_revision) is not int or expected_revision != state["_revision"]:
+        raise ValueError("storyboard is stale; refresh before saving manual edits")
+    if not isinstance(edits, Mapping):
+        raise ValueError("storyboard edits must be an object")
+    content = state.setdefault("content_package", {})
+    package_dir = _content_package_dir(str(content.get("collect_box_id") or ""))
+    if package_dir is None:
+        raise ValueError("content review package is unavailable")
+    review_package = _load_json(package_dir / "review_package.json")
+    plan = review_package.get("plan") if isinstance(review_package.get("plan"), dict) else {}
+    suite = plan.get("suite") if isinstance(plan.get("suite"), dict) else {}
+    items = [row for row in suite.get("items") or [] if isinstance(row, dict)]
+    allowed = {str(row.get("id") or ""): row for row in items if str(row.get("id") or "")}
+    if not edits or set(edits) - set(allowed):
+        raise ValueError("storyboard edit shot IDs are invalid")
+    saved: dict[str, dict[str, str]] = {}
+    for shot_id, raw in edits.items():
+        if not isinstance(raw, Mapping) or set(raw) != {"title", "focus"}:
+            raise ValueError("storyboard edits may contain only title and focus")
+        title, focus = (str(raw[key] or "").strip() for key in ("title", "focus"))
+        if not title or not focus or len(title) > 240 or len(focus) > 1200:
+            raise ValueError("storyboard edit title or focus is invalid")
+        row = allowed[shot_id]
+        row["title"] = title
+        row["focus"] = focus
+        row["operator_title_zh"] = title
+        row["operator_focus_zh"] = focus
+        saved[shot_id] = {"title": title, "focus": focus}
+    _write_json_atomic(package_dir / "review_package.json", review_package)
+    content["manual_storyboard_edits"] = saved
+    content["manual_storyboard_saved_at"] = _now()
+    _invalidate_paid_image_state(content)
+    content.pop("remaining_images_preflight", None)
+    save_state(offer_id, state)
+    return content_package_summary(offer_id, resolved_offer_id=True)
+
+
+def _apply_manual_storyboard_edits(
+    content: Mapping[str, Any], review_package: dict[str, Any]
+) -> bool:
+    """Reapply validated operator copy without changing storyboard structure."""
+    edits = content.get("manual_storyboard_edits")
+    if not isinstance(edits, Mapping):
+        return False
+    plan = review_package.get("plan") if isinstance(review_package.get("plan"), dict) else {}
+    suite = plan.get("suite") if isinstance(plan.get("suite"), dict) else {}
+    items = {
+        str(row.get("id") or ""): row
+        for row in suite.get("items") or []
+        if isinstance(row, dict) and str(row.get("id") or "")
+    }
+    if not edits or set(edits) - set(items):
+        raise ValueError("saved storyboard edits no longer match the current AI storyboard")
+    changed = False
+    for shot_id, raw in edits.items():
+        if not isinstance(raw, Mapping):
+            raise ValueError("saved storyboard edits are invalid")
+        title, focus = (str(raw.get(key) or "").strip() for key in ("title", "focus"))
+        if not title or not focus:
+            raise ValueError("saved storyboard edits are invalid")
+        row = items[shot_id]
+        values = {
+            "title": title,
+            "focus": focus,
+            "operator_title_zh": title,
+            "operator_focus_zh": focus,
+        }
+        if any(row.get(key) != value for key, value in values.items()):
+            row.update(values)
+            changed = True
+    return changed
+
+
 def _planning_recipe_signature(content: dict[str, Any]) -> str:
     """Fields that require a fresh AI storyboard when changed."""
     recipe = {
@@ -2310,6 +2420,8 @@ def prepare_first_image_generation(offer_id_or_url: str) -> dict[str, Any]:
     if package_dir is None:
         raise ValueError("content review package not found")
     review_package = _load_json(package_dir / "review_package.json") or {}
+    if _apply_manual_storyboard_edits(content, review_package):
+        _write_json_atomic(package_dir / "review_package.json", review_package)
     # Model observations remain review-only. Paid execution receives only
     # source-supported facts plus the approved composition direction.
     execution_plan = _safe_image_execution_plan(
@@ -2489,6 +2601,8 @@ def prepare_remaining_image_generations(
     force_all = bool(content.pop("force_regenerate_all", False))
 
     review_package = _load_json(package_dir / "review_package.json") or {}
+    if _apply_manual_storyboard_edits(content, review_package):
+        _write_json_atomic(package_dir / "review_package.json", review_package)
     # The planning model is advisory. Paid prompts are rebuilt from source facts,
     # the approved suite, and the selected identity references only.
     execution_plan = _safe_image_execution_plan(
@@ -3158,6 +3272,8 @@ def _write_ordered_images_to_miaoshou_unlocked(
         "ordered_image_urls": image_urls,
         "source_image_count": len(selected["source_urls"]),
         "generated_image_count": len(selected["generated_urls"]),
+        "suite_revision": max(1, int(content.get("suite_revision") or 1)),
+        "recipe_signature": _content_recipe_signature(content),
         "steps": _miaoshou_sync_steps("read_current"),
         "checks": {},
         "error": "",
@@ -3240,13 +3356,11 @@ def _write_ordered_images_to_miaoshou_unlocked(
     updated = dict(current)
     updated["imgUrls"] = image_urls
     updated["notes"] = notes
-    current_weight = float(current.get("weight") or 0)
     saved_weight = float((state.get("review") or {}).get("weight_kg") or 0)
-    candidate_weight = current_weight if current_weight >= 0.01 else saved_weight
-    if candidate_weight < 0.01:
+    if saved_weight < 0.01:
         message = (
-            "Miaoshou requires a weight of at least 0.01 kg; save a valid "
-            "weight in Treasury before image synchronization"
+            "Miaoshou requires a saved product weight of at least 0.01 kg "
+            "before image synchronization"
         )
         _set_miaoshou_sync_phase(
             write_state,
@@ -3258,13 +3372,62 @@ def _write_ordered_images_to_miaoshou_unlocked(
         write_state["finished_at"] = _now()
         save_state(offer_id, state)
         raise ValueError(message)
-    editable_weight = _miaoshou_editable_weight_kg(candidate_weight)
-    if abs(editable_weight - current_weight) > 0.000001:
-        updated["weight"] = editable_weight
-        updated["skuMap"] = {
-            key: {**dict(row or {}), "weight": editable_weight}
-            for key, row in (current.get("skuMap") or {}).items()
+    current_weight = float(current.get("weight") or 0)
+    updated["weight"] = (
+        current_weight
+        if current_weight >= 0.01
+        and abs(_miaoshou_editable_weight_kg(current_weight) - current_weight) < 0.000001
+        else _miaoshou_editable_weight_kg(saved_weight)
+    )
+    saved_sku_facts = (state.get("review") or {}).get("sku_commercial_facts") or {}
+    updated_skus = {}
+    for sku_key, row in (current.get("skuMap") or {}).items():
+        current_sku_weight = float((row or {}).get("weight") or 0)
+        if current_sku_weight >= 0.01 and abs(
+            _miaoshou_editable_weight_kg(current_sku_weight) - current_sku_weight
+        ) < 0.000001:
+            effective_sku_weight = current_sku_weight
+        else:
+            saved_sku_weight = float(
+                ((saved_sku_facts.get(sku_key) or {}).get("weight_kg")) or saved_weight
+            )
+            effective_sku_weight = _miaoshou_editable_weight_kg(saved_sku_weight)
+        updated_skus[sku_key] = {
+            **dict(row or {}),
+            "weight": effective_sku_weight,
         }
+    updated["skuMap"] = updated_skus
+
+    weight_repair_required = (
+        updated.get("weight") != current.get("weight")
+        or updated_skus != (current.get("skuMap") or {})
+    )
+    if weight_repair_required:
+        repair_payload = dict(current)
+        repair_payload["weight"] = updated["weight"]
+        repair_payload["skuMap"] = updated_skus
+        repair_resp = post(edit_path, {
+            "commonCollectBoxDetailId": detail_id,
+            "editCommonCollectBoxDetail": repair_payload,
+            "ossMd5": oss_md5,
+        })
+        if repair_resp.get("result") != "success":
+            raise RuntimeError(
+                f"Miaoshou weight repair failed: {repair_resp.get('code')} "
+                f"{repair_resp.get('message', '')}"
+            )
+        repaired_resp = post(detail_path, {"commonCollectBoxDetailId": detail_id})
+        repaired_data = repaired_resp.get("data") or {}
+        repaired = repaired_data.get("editCommonCollectBoxDetail") or {}
+        if (
+            repaired_resp.get("result") != "success"
+            or repaired.get("weight") != updated.get("weight")
+            or (repaired.get("skuMap") or {}) != updated_skus
+        ):
+            raise RuntimeError("Miaoshou weight repair read-back failed")
+        oss_md5 = str(repaired_data.get("ossMd5") or "")
+        if not oss_md5:
+            raise RuntimeError("Miaoshou weight repair read-back is missing ossMd5")
 
     write_state.update({
         "previous_img_urls": list(current.get("imgUrls") or []),
@@ -3356,6 +3519,8 @@ def _write_ordered_images_to_miaoshou_unlocked(
         ),
         "title_unchanged": str(verified.get("title") or "") == str(current.get("title") or ""),
         "item_num_unchanged": str(verified.get("itemNum") or "") == str(current.get("itemNum") or ""),
+        "weight_reconciled": verified.get("weight") == updated.get("weight"),
+        "sku_map_reconciled": (verified.get("skuMap") or {}) == updated.get("skuMap"),
     }
     checks_passed = all(checks.values())
     _set_miaoshou_sync_phase(
@@ -3625,6 +3790,8 @@ def save_content_package_review(offer_id_or_url: str, review: dict[str, Any]) ->
         }
     package_dir = _content_package_dir(str(content.get("collect_box_id") or ""))
     review_package = _load_json(package_dir / "review_package.json") if package_dir else {}
+    if package_dir and _apply_manual_storyboard_edits(content, review_package):
+        _write_json_atomic(package_dir / "review_package.json", review_package)
     plan = review_package.get("plan") if isinstance(review_package.get("plan"), dict) else {}
     suite = plan.get("suite") if isinstance(plan.get("suite"), dict) else {}
     allowed_storyboard_ids = {
@@ -3869,18 +4036,14 @@ def finalize_content_package_review(
         raise ValueError(
             "source-only content must use its source-only final approval action"
         )
-    current = content_package_summary(offer_id)
-    if current.get("final_content_approval_ready") is not True:
-        raise ValueError(
-            "current final images are not fully reviewed and ordered; "
-            "complete every keep/remove decision before approval"
-        )
     review = state.get("review") if isinstance(state.get("review"), dict) else {}
+    miaoshou_ordered_image_urls = _verified_miaoshou_final_images(review, content)
     approval_payload = {
         "schema_version": "ai-assisted-final-content-approval/v1",
         "status": "approved",
         "approved_by": approved_by,
         "image_order": list(review.get("image_order") or []),
+        "miaoshou_ordered_image_urls": miaoshou_ordered_image_urls,
         "video_action": str(review.get("video_action") or "none"),
         "asset_decisions": content.get("asset_decisions") or {},
         "generated_image_decisions": (

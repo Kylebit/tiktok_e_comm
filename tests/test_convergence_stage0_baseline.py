@@ -210,9 +210,7 @@ def test_legacy_topology_without_exact_draft_proof_is_not_submitted(
     )
 
     assert status == 409
-    assert body["ok"] is False
-    assert body["error"]["code"] == "tiktok_approved_snapshot_invalid"
-    assert body["external_write_count"] == 0
+    assert body == {"ok": False, "error": "offer_id is invalid"}
     assert "start_tiktok_batch" not in calls
     assert not any(value.startswith("wake:") for value in calls)
 

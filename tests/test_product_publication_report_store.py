@@ -168,6 +168,75 @@ def test_file_or_summary_tampering_fails_integrity_check(tmp_path):
         store.get_report(report_id=stored.report_id, offer_id="3838616043")
 
 
+def test_internal_v2_rejects_extra_or_unsafe_target_evidence(tmp_path):
+    payload = _report_payload()
+    payload["schema_version"] = "product-publication-report/v2"
+    payload["execution_identity"] = {
+        "skill_digest": "1" * 64,
+        "git_commit": "2" * 40,
+        "code_digest": "3" * 64,
+    }
+    payload["targets"] = [
+        {
+            "target_label": "tiktok:LH_PH",
+            "status": "FAILED",
+            "evidence": {
+                "target_label": "tiktok:LH_PH",
+                "status": "FAILED",
+                "stage": "PUBLISH",
+                "provider_code": "rejected",
+                "provider_reason": "safe reason",
+                "request_attempted": True,
+                "outcome_unknown": False,
+                "external_write_count": 0,
+                "raw_response": {"token": "SECRET"},
+            },
+        }
+    ]
+
+    with pytest.raises(ValueError, match="fields"):
+        _store(tmp_path).store_report(payload)
+    assert not (tmp_path / "reports").exists()
+
+    payload["targets"][0]["evidence"].pop("raw_response")
+    payload["targets"][0]["evidence"]["provider_reason"] = "https://provider.invalid/item"
+    with pytest.raises(ValueError, match="URL"):
+        _store(tmp_path).store_report(payload)
+
+    for secret_reason in (
+        "Authorization: Bearer top-secret",
+        "access_token=top-secret",
+        "Cookie: session=top-secret",
+    ):
+        payload["targets"][0]["evidence"]["provider_reason"] = secret_reason
+        with pytest.raises(ValueError, match="secret-shaped"):
+            _store(tmp_path).store_report(payload)
+
+
+def test_internal_v2_file_execution_identity_tamper_is_detected(tmp_path):
+    payload = _report_payload()
+    payload.update(
+        {
+            "schema_version": "product-publication-report/v2",
+            "execution_identity": {
+                "skill_digest": "1" * 64,
+                "git_commit": "2" * 40,
+                "code_digest": "3" * 64,
+            },
+            "targets": [],
+        }
+    )
+    store = _store(tmp_path)
+    stored = store.store_report(payload)
+    report_file = store.reports_root / stored.report_path
+    body = json.loads(report_file.read_text(encoding="utf-8"))
+    body["execution_identity"]["code_digest"] = "4" * 64
+    report_file.write_text(json.dumps(body), encoding="utf-8")
+
+    with pytest.raises(ProductPublicationReportIntegrityError, match="digest"):
+        store.get_report(report_id=stored.report_id, offer_id=payload["offer_id"])
+
+
 def test_read_only_methods_do_not_create_database(tmp_path):
     store = _store(tmp_path)
     assert store.get_report(report_id="missing", offer_id="3838616043") is None

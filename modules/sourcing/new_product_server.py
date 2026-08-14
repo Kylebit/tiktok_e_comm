@@ -380,6 +380,17 @@ class NewProductHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 return self._json(400, {"ok": False, "error": str(exc)})
 
+        if path == "/api/new-product/content-package/storyboard-edits":
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            try:
+                package = np_mod.save_manual_storyboard_edits(
+                    raw, expected_revision=data.get("expected_revision"), edits=data.get("edits")
+                )
+                return self._json(200, {"ok": True, "content_package": package})
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+
         if path == "/api/new-product/content-package/finalize":
             if not raw:
                 return self._json(400, {"ok": False, "error": "missing offer_id"})

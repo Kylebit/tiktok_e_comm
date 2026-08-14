@@ -13,6 +13,37 @@ from typing import Any
 
 
 SCHEMA_VERSION = "product-workflow-next-action/v1"
+FIELD_IMPACT_SCHEMA_VERSION = "product-workflow-field-impacts/v1"
+
+
+_FIELD_IMPACTS: dict[str, tuple[str, ...]] = {
+    "title": ("product_approval", "listing_copy", "release_plan"),
+    "category": ("product_approval", "listing_copy", "release_plan"),
+    "selected_sku_keys": (
+        "product_approval",
+        "listing_copy",
+        "pricing",
+        "release_plan",
+    ),
+    "sku_label_overrides": (
+        "product_approval",
+        "listing_copy",
+        "release_plan",
+    ),
+    "cost_cny": ("product_approval", "pricing", "release_plan"),
+    "weight_kg": ("product_approval", "pricing", "release_plan"),
+    "package_cm": ("product_approval", "pricing", "release_plan"),
+    "selected_sites": (
+        "pricing",
+        "release_plan_targets",
+    ),
+    "fx_rates": ("pricing", "release_plan"),
+    "support_cod": ("pricing", "release_plan"),
+    "final_images": ("content_approval", "release_plan"),
+    "image_order": ("content_approval", "release_plan"),
+    "video_decision": ("content_approval", "release_plan"),
+    "storyboard": ("generation_input",),
+}
 
 _SUCCESS_TARGET_STATES = frozenset({"SUCCEEDED", "MANUALLY_VERIFIED"})
 _MANUAL_TARGET_STATES = frozenset({"SUBMITTED_UNVERIFIED"})
@@ -101,6 +132,22 @@ def _content_ready(content: dict[str, Any]) -> bool:
     )
 
 
+def project_product_field_impacts() -> dict[str, Any]:
+    """Describe the smallest durable authorities invalidated by each field.
+
+    This projection is shared by the server and UI so a later step never has
+    to infer a broader dependency than the backend actually enforces.
+    """
+
+    return {
+        "schema_version": FIELD_IMPACT_SCHEMA_VERSION,
+        "fields": {
+            field: list(impacts)
+            for field, impacts in _FIELD_IMPACTS.items()
+        },
+    }
+
+
 def project_product_workflow_next_action(view: dict[str, Any]) -> dict[str, Any]:
     """Return exactly one safe next action for every product workspace state."""
 
@@ -128,6 +175,19 @@ def project_product_workflow_next_action(view: dict[str, Any]) -> dict[str, Any]
             reason_codes=("product_facts_incomplete",),
         )
 
+    # Product facts and the content package have independent approval
+    # fingerprints. Either may be completed first; ReleasePlan creation still
+    # waits for both authorities below.
+    if not product.get("actual_product_approved"):
+        return _action(
+            "approve_product_facts",
+            "approval",
+            "批准并锁定商品事实",
+            "核对商品事实后批准并保存当前 revision；此动作不会发布。",
+            control_id="approvalButton",
+            reason_codes=("product_approval_required",),
+        )
+
     if not governed_plan_approved and not _content_ready(content):
         return _action(
             "complete_content_review",
@@ -137,16 +197,6 @@ def project_product_workflow_next_action(view: dict[str, Any]) -> dict[str, Any]
             kind="content_finalize",
             control_id="nextStepActionButton",
             reason_codes=("content_review_incomplete",),
-        )
-
-    if not product.get("actual_product_approved"):
-        return _action(
-            "approve_product_facts",
-            "approval",
-            "批准并锁定商品事实",
-            "核对商品事实后批准并保存当前 revision；此动作不会发布。",
-            control_id="approvalButton",
-            reason_codes=("product_approval_required",),
         )
 
     recovery_actions = [

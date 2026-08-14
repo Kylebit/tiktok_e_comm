@@ -24,7 +24,48 @@ def _create(store, *, run_id="run-async-001"):
         snapshot_digest="sha256:" + "b" * 64,
         platform_scope=("TIKTOK",),
         target_count=6,
+        execution_identity={
+            "skill_digest": "1" * 64,
+            "git_commit": "2" * 40,
+            "code_digest": "3" * 64,
+        },
     )
+
+
+def test_execution_identity_is_part_of_replay_and_tamper_checked(tmp_path):
+    store = _store(tmp_path)
+    created = _create(store)
+    run = store.get_run_by_id(run_id=created.run_id)
+    assert run["execution_identity"] == {
+        "skill_digest": "1" * 64,
+        "git_commit": "2" * 40,
+        "code_digest": "3" * 64,
+    }
+
+    with pytest.raises(ValueError, match="different facts"):
+        store.create_run(
+            run_id=created.run_id,
+            offer_id="3838616043",
+            revision=42,
+            plan_id="omnichannel:" + "a" * 64,
+            snapshot_digest="sha256:" + "b" * 64,
+            platform_scope=("TIKTOK",),
+            target_count=6,
+            execution_identity={
+                "skill_digest": "9" * 64,
+                "git_commit": "2" * 40,
+                "code_digest": "3" * 64,
+            },
+        )
+
+    with sqlite3.connect(store.path) as conn:
+        conn.execute(
+            "UPDATE product_publication_runs SET execution_identity_json = ? WHERE run_id = ?",
+            ('{"skill_digest":"' + "9" * 64 + '","git_commit":"' + "2" * 40 + '","code_digest":"' + "3" * 64 + '"}', created.run_id),
+        )
+        conn.commit()
+    with pytest.raises(ProductPublicationRunIntegrityError, match="identity digest"):
+        store.get_run_by_id(run_id=created.run_id)
 
 
 def test_queued_and_running_survive_reopen_as_processing_without_success(tmp_path):

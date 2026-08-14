@@ -84,6 +84,23 @@ OZON_ATTRIBUTE_VALUES_SEARCH_PATH = (
     "/v1/description-category/attribute/values/search"
 )
 
+
+def _safe_ozon_rejection(value: object) -> tuple[str, str]:
+    """Return fixed safe rejection evidence; never retain a provider body."""
+    text = str(value).casefold()
+    if "attribute" in text:
+        return "ozon_attribute_rejected", "Ozon rejected an approved attribute value"
+    if "category" in text or "type" in text:
+        return "ozon_category_rejected", "Ozon rejected the category or type"
+    return "ozon_business_rejected", "Ozon import was rejected"
+
+
+_OZON_IMPORT_PROFILE_REGISTRY = {
+    (17028743, 93785): "fridge-magnet",
+    (17027926, 96376): "mug-coaster",
+    (17028954, 95819): "wallpaper",
+}
+
 ProviderPost = Callable[[str, dict[str, object]], Mapping[str, object]]
 ShopeeMerchantGet = Callable[
     [str, int, str, dict[str, object]], Mapping[str, object]
@@ -143,10 +160,41 @@ _TIKTOK_EXACT_CATEGORY_PROFILES = (
                 "桌布桌旗",
             }
         ),
-        "primary": "600204",
-        # This single fallback was explicitly approved by Kyle.  It is not a
-        # generic nearest-category rule.
-        "fallbacks": ("600009",),
+        "primary": "600009",
+        "fallbacks": (),
+        "resolution": "USER_APPROVED_FALLBACK",
+    },
+    {
+        "aliases": frozenset(
+            {
+                "placemat",
+                "placemats",
+                "coaster",
+                "coasters",
+                "mugcoaster",
+                "mugcoasters",
+                "tablemat",
+                "tablemats",
+                "cupmat",
+                "cupmats",
+                "餐垫",
+                "杯垫",
+                "餐垫杯垫",
+                "桌垫",
+            }
+        ),
+        "primary": "600009",
+        "fallbacks": (),
+        "resolution": "USER_APPROVED_FALLBACK",
+    },
+    {
+        "aliases": frozenset(
+            {"墙纸壁纸", "wallpaper", "wallpapers", "wallcovering", "wallcoverings"}
+        ),
+        "primary": "600338",
+        "fallbacks": (),
+        "resolution": "USER_APPROVED_FALLBACK",
+        "requires_self_adhesive_decorative_covering": True,
     },
 )
 
@@ -225,7 +273,21 @@ def _tiktok_profile(product: Mapping[str, object]) -> Mapping[str, object]:
         raise LivePublicationDependencyError(
             "exact frozen main category has no unique TikTok mapping"
         )
-    return matches[0]
+    profile = matches[0]
+    if profile.get("requires_self_adhesive_decorative_covering"):
+        text = " ".join(
+            str(product.get(field) or "").casefold()
+            for field in ("title", "description")
+        )
+        if not (
+            "self-adhesive" in text
+            and "decorative" in text
+            and ("wall covering" in text or "wallpaper" in text)
+        ):
+            raise LivePublicationDependencyError(
+                "approved wallpaper is not an explicit self-adhesive decorative wall covering"
+            )
+    return profile
 
 
 def _node_id(raw_key: object, node: Mapping[str, object]) -> str:
@@ -333,7 +395,11 @@ class OfficialMiaoshouTikTokCategoryResolver:
             if node.get("disabled") is not False:
                 continue
             selected = (str(category_id), node, path)
-            resolution = "EXACT" if index == 0 else "USER_APPROVED_FALLBACK"
+            resolution = (
+                str(profile.get("resolution", "EXACT"))
+                if index == 0
+                else "USER_APPROVED_FALLBACK"
+            )
             break
         if selected is None:
             raise LivePublicationDependencyError(
@@ -644,12 +710,12 @@ class _ResumableTikTokDraftTransport:
                 )
         return self._transport.claim_or_create(target=target, ordinal=ordinal)
 
-    def save_draft(
+    def prepare_save_draft(
         self,
         *,
         identity: Mapping[str, str],
         draft: Mapping[str, object],
-    ) -> DraftWriteFact:
+    ) -> Mapping[str, object]:
         label = str(identity.get("target_label") or "")
         saves = [
             row
@@ -657,11 +723,25 @@ class _ResumableTikTokDraftTransport:
             if row.get("operation") == "SAVE_DRAFT"
         ]
         if any(row.get("outcome") == "UNKNOWN" for row in saves):
-            return _fact_from_event(saves[-1])
+            return {"checkpoint_event": deepcopy(dict(saves[-1]))}
         accepted = [row for row in saves if row.get("outcome") == "ACCEPTED"]
         if accepted:
-            return _fact_from_event(accepted[-1])
-        return self._transport.save_draft(identity=identity, draft=draft)
+            return {"checkpoint_event": deepcopy(dict(accepted[-1]))}
+        return self._transport.prepare_save_draft(identity=identity, draft=draft)
+
+    def save_prepared_draft(
+        self,
+        *,
+        identity: Mapping[str, str],
+        prepared: Mapping[str, object],
+    ) -> DraftWriteFact:
+        checkpoint_event = prepared.get("checkpoint_event")
+        if isinstance(checkpoint_event, Mapping):
+            return _fact_from_event(checkpoint_event)
+        return self._transport.save_prepared_draft(
+            identity=identity,
+            prepared=prepared,
+        )
 
 
 class DurableTikTokV4DraftPreparer:
@@ -1633,6 +1713,10 @@ class OfficialOzonFridgeMagnetProfileResolver:
 
     _CATEGORY_ID = 17028743
     _TYPE_ID = 93785
+    _PLACEMAT_CATEGORY_ID = 17027926
+    _PLACEMAT_TYPE_ID = 96376
+    _WALLPAPER_CATEGORY_ID = 17028954
+    _WALLPAPER_TYPE_ID = 95819
     _SEMANTIC_ALIASES = frozenset(
         {
             "fridge magnet",
@@ -1642,11 +1726,38 @@ class OfficialOzonFridgeMagnetProfileResolver:
             "冰箱贴",
         }
     )
+    _WALLPAPER_SEMANTIC_ALIASES = frozenset(
+        {
+            "背景墙 > 墙纸、壁纸",
+            "墙纸、壁纸",
+            "wallpaper",
+            "wallpapers",
+            "wall covering",
+            "wall coverings",
+        }
+    )
 
     def __init__(self, *, post: OzonPost = ozon_post) -> None:
         if not callable(post):
             raise TypeError("Ozon profile transport must be callable")
         self._post = post
+
+    @staticmethod
+    def _profile_ids(snapshot: Mapping[str, Any]) -> tuple[int, int, str]:
+        product = snapshot.get("product")
+        category = product.get("main_category") if isinstance(product, Mapping) else None
+        name = str(category.get("name") or "").strip() if isinstance(category, Mapping) else ""
+        normalized = " ".join(name.casefold().split())
+        if normalized in OfficialOzonFridgeMagnetProfileResolver._WALLPAPER_SEMANTIC_ALIASES:
+            return (
+                OfficialOzonFridgeMagnetProfileResolver._WALLPAPER_CATEGORY_ID,
+                OfficialOzonFridgeMagnetProfileResolver._WALLPAPER_TYPE_ID,
+                "Wallpaper",
+            )
+        if normalized in {"餐具 > 餐垫、杯垫", "餐垫、杯垫", "placemat", "coaster", "placemat coaster"}:
+            return (OfficialOzonFridgeMagnetProfileResolver._PLACEMAT_CATEGORY_ID, OfficialOzonFridgeMagnetProfileResolver._PLACEMAT_TYPE_ID, "Mug Coaster")
+        OfficialOzonFridgeMagnetProfileResolver._main_category_name(snapshot)
+        return (OfficialOzonFridgeMagnetProfileResolver._CATEGORY_ID, OfficialOzonFridgeMagnetProfileResolver._TYPE_ID, "Fridge Magnet")
 
     @staticmethod
     def _main_category_name(snapshot: Mapping[str, Any]) -> str:
@@ -1681,7 +1792,7 @@ class OfficialOzonFridgeMagnetProfileResolver:
     def __call__(self, snapshot: Mapping[str, Any]) -> Mapping[str, Any]:
         if not isinstance(snapshot, Mapping) or snapshot.get("schema_version") != "approved-publication-snapshot/v4":
             raise LivePublicationDependencyError("approved Ozon snapshot is invalid")
-        self._main_category_name(snapshot)
+        profile_category_id, type_id, type_name = self._profile_ids(snapshot)
         tree_response = self._post(OZON_CATEGORY_TREE_PATH, {"language": "EN"})
         roots = tree_response.get("result") if isinstance(tree_response, Mapping) else None
         if not isinstance(roots, list):
@@ -1702,10 +1813,10 @@ class OfficialOzonFridgeMagnetProfileResolver:
                     next_path.append({"id": str(category_id), "name": category_name})
                 if (
                     row_enabled
-                    and raw.get("type_id") == self._TYPE_ID
-                    and str(raw.get("type_name") or "").strip() == "Fridge Magnet"
+                    and raw.get("type_id") == type_id
+                    and str(raw.get("type_name") or "").strip() == type_name
                     and next_path
-                    and next_path[-1]["id"] == str(self._CATEGORY_ID)
+                    and next_path[-1]["id"] == str(profile_category_id)
                 ):
                     matches.append((next_path, raw))
                 walk(raw.get("children"), next_path, row_enabled)
@@ -1721,8 +1832,8 @@ class OfficialOzonFridgeMagnetProfileResolver:
         attributes_response = self._post(
             OZON_CATEGORY_ATTRIBUTES_PATH,
             {
-                "description_category_id": self._CATEGORY_ID,
-                "type_id": self._TYPE_ID,
+                "description_category_id": profile_category_id,
+                "type_id": type_id,
                 "language": "EN",
             },
         )
@@ -1748,8 +1859,8 @@ class OfficialOzonFridgeMagnetProfileResolver:
                 OZON_ATTRIBUTE_VALUES_SEARCH_PATH,
                 {
                     "attribute_id": attribute_id,
-                    "description_category_id": self._CATEGORY_ID,
-                    "type_id": self._TYPE_ID,
+                    "description_category_id": profile_category_id,
+                    "type_id": type_id,
                     "language": "EN",
                     "limit": 20,
                     "value": value,
@@ -1763,18 +1874,18 @@ class OfficialOzonFridgeMagnetProfileResolver:
             labels={"no brand", "нет бренда"},
         )
         product_type = self._exact_value(
-            search(8229, "Fridge Magnet"),
-            expected_id=self._TYPE_ID,
-            labels={"fridge magnet"},
+            search(8229, type_name),
+            expected_id=type_id,
+            labels={type_name.casefold()},
         )
         return {
             "schema_version": "ozon-official-profile-resolution/v1",
             "resolution": "EXACT",
-            "description_category_id": self._CATEGORY_ID,
+            "description_category_id": profile_category_id,
             "category_name": category_name,
             "category_path": category_path,
-            "type_id": self._TYPE_ID,
-            "type_name": "Fridge Magnet",
+            "type_id": type_id,
+            "type_name": type_name,
             "required_attributes": {
                 "brand": {"attribute_id": 85, **brand},
                 "model_name": {"attribute_id": 9048},
@@ -1851,9 +1962,11 @@ def build_ozon_import_item_from_frozen_variant(
         not isinstance(profile, Mapping)
         or profile.get("schema_version") != "ozon-official-profile-resolution/v1"
         or profile.get("resolution") != "EXACT"
-        or profile.get("description_category_id") != 17028743
-        or profile.get("type_id") != 93785
     ):
+        raise LivePublicationDependencyError("Ozon official profile is unavailable")
+    profile_key = (profile.get("description_category_id"), profile.get("type_id"))
+    profile_slug = _OZON_IMPORT_PROFILE_REGISTRY.get(profile_key)
+    if profile_slug is None:
         raise LivePublicationDependencyError("Ozon official profile is unavailable")
     required = profile.get("required_attributes")
     if not isinstance(required, Mapping) or set(required) != {
@@ -1862,12 +1975,19 @@ def build_ozon_import_item_from_frozen_variant(
         "product_type",
     }:
         raise LivePublicationDependencyError("Ozon required attribute profile conflicts")
+    if any(
+        not isinstance(required[name], Mapping)
+        or required[name].get("attribute_id") != attribute_id
+        for name, attribute_id in (("brand", 85), ("model_name", 9048), ("product_type", 8229))
+    ):
+        raise LivePublicationDependencyError("Ozon required attribute profile conflicts")
     offer_id = str(variant.get("offer_id") or "").strip()
     seller_sku = str(variant.get("approved_seller_sku") or "").strip()
     title = str(variant.get("title") or "").strip()
     description = str(variant.get("description") or "").strip()
     images = variant.get("images")
     parcel = variant.get("parcel")
+    category = variant.get("category")
     if (
         not offer_id
         or not seller_sku
@@ -1879,6 +1999,8 @@ def build_ozon_import_item_from_frozen_variant(
         or not isinstance(parcel, Mapping)
         or not isinstance(parcel.get("package_cm"), list)
         or len(parcel["package_cm"]) != 3
+        or not isinstance(category, Mapping)
+        or str(category.get("id") or "") != str(profile_key[0])
     ):
         raise LivePublicationDependencyError("Ozon frozen variant facts are incomplete")
 
@@ -1917,7 +2039,7 @@ def build_ozon_import_item_from_frozen_variant(
     return {
         "attributes": [
             attribute(85, str(brand.get("value") or ""), int(brand.get("dictionary_value_id") or 0)),
-            attribute(9048, seller_sku + "-fridge-magnet"),
+            attribute(9048, seller_sku + "-" + profile_slug),
             attribute(8229, str(product_type.get("value") or ""), int(product_type.get("dictionary_value_id") or 0)),
             attribute(4180, title),
             attribute(4191, description),
@@ -2014,7 +2136,11 @@ class OfficialOzonV4Transport:
                     "Ozon immutable type_id/attributes do not match the frozen variant"
                 )
         except Exception:
-            return OzonDispatchFact(outcome="REJECTED")
+            return OzonDispatchFact(
+                outcome="PRE_SUBMIT_FAILED",
+                provider_code="ozon_profile_unavailable",
+                provider_reason="Ozon frozen profile cannot build an import item",
+            )
 
         try:
             response = self._post(OZON_IMPORT_PATH, {"items": [item]})
@@ -2025,13 +2151,19 @@ class OfficialOzonV4Transport:
             # timeout, transport error, 409 or rate limit remains UNKNOWN and
             # must be reconciled by official readback before any retry.
             if re.match(r"^Ozon HTTP (400|401|403|404|422):", str(error)):
-                return OzonDispatchFact(outcome="REJECTED")
+                code, reason = _safe_ozon_rejection(error)
+                return OzonDispatchFact(
+                    outcome="REJECTED", provider_code=code, provider_reason=reason
+                )
             return OzonDispatchFact(outcome="UNKNOWN")
         if not isinstance(response, Mapping):
             return OzonDispatchFact(outcome="UNKNOWN")
         error = response.get("error") or response.get("message")
         if error and not response.get("result"):
-            return OzonDispatchFact(outcome="REJECTED")
+            code, reason = _safe_ozon_rejection(error)
+            return OzonDispatchFact(
+                outcome="REJECTED", provider_code=code, provider_reason=reason
+            )
         task_id = _positive_task_id(response)
         return (
             OzonDispatchFact(outcome="ACCEPTED", task_id=task_id)

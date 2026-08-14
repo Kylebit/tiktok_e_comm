@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_CEILING
 import hashlib
 import json
 import re
@@ -30,6 +30,10 @@ _NON_PROVIDER_CATEGORY_DECISION_SCHEMA_VERSION = (
     "publication-category-decision/v1"
 )
 _SHOPEE_GLOBAL_MASTER_SCHEMA_VERSION = "shopee-global-master/v1"
+# User-approved provider rule: only Shopee envelope dimensions use per-axis
+# centimetre ceilings.  Per-SKU parcel facts, exact weight, prices, and every
+# other platform projection remain unchanged.
+_SHOPEE_PARCEL_ENVELOPE_POLICY_VERSION = "shopee-global-parcel-ceil-cm/v1"
 _BODY_KEYS = {
     "schema_version",
     "offer_id",
@@ -494,11 +498,14 @@ def _shopee_global_master(
             )
         return None
     row = _mapping(value, "Shopee global master")
+    if "parcel_envelope" not in row:
+        raise ApprovedPublicationSnapshotError("Shopee parcel envelope is missing")
     if set(row) != {
         "schema_version",
         "price_source",
         "sku_original_prices_cny",
         "category_decision",
+        "parcel_envelope",
         "policy",
         "variant_image_positions",
     } or row.get("schema_version") != _SHOPEE_GLOBAL_MASTER_SCHEMA_VERSION:
@@ -593,6 +600,7 @@ def _shopee_global_master(
     category_decision = _shopee_global_category_decision(
         row.get("category_decision")
     )
+    parcel_envelope = _shopee_parcel_envelope(row.get("parcel_envelope"), skus=skus)
     policy = _shopee_global_policy(row.get("policy"))
 
     position_rows = _mapping_list(
@@ -638,8 +646,72 @@ def _shopee_global_master(
         },
         "sku_original_prices_cny": normalized_prices,
         "category_decision": category_decision,
+        "parcel_envelope": parcel_envelope,
         "policy": policy,
         "variant_image_positions": positions,
+    }
+
+
+def _shopee_parcel_envelope(
+    value: Any, *, skus: list[dict[str, Any]]
+) -> dict[str, Any]:
+    row = _mapping(value, "Shopee parcel envelope")
+    if set(row) != {"weight_kg", "package_cm", "policy_version"}:
+        raise ApprovedPublicationSnapshotError(
+            "Shopee parcel envelope fields are invalid"
+        )
+    if row.get("policy_version") != _SHOPEE_PARCEL_ENVELOPE_POLICY_VERSION:
+        raise ApprovedPublicationSnapshotError(
+            "Shopee parcel envelope policy is invalid"
+        )
+    package = row.get("package_cm")
+    if (
+        not _sequence(package)
+        or len(package) != 3
+        or any(type(value) is not int or value <= 0 for value in package)
+    ):
+        raise ApprovedPublicationSnapshotError(
+            "Shopee parcel envelope dimensions are invalid"
+        )
+
+    approved_weights: list[Decimal] = []
+    approved_packages: list[list[Decimal]] = []
+    for sku in skus:
+        parcel = _mapping(sku.get("parcel"), "Shopee SKU parcel")
+        approved_weights.append(
+            Decimal(_positive_decimal(parcel.get("weight_kg"), "Shopee SKU weight"))
+        )
+        approved_packages.append(
+            [
+                Decimal(value)
+                for value in _dimensions(
+                    parcel.get("package_cm"), "Shopee SKU package"
+                )
+            ]
+        )
+    expected_weight = _positive_decimal(
+        str(max(approved_weights)), "Shopee parcel envelope weight"
+    )
+    expected_package = [
+        int(
+            max(values[index] for values in approved_packages).to_integral_value(
+                rounding=ROUND_CEILING
+            )
+        )
+        for index in range(3)
+    ]
+    if (
+        _positive_decimal(row.get("weight_kg"), "Shopee parcel envelope weight")
+        != expected_weight
+        or list(package) != expected_package
+    ):
+        raise ApprovedPublicationSnapshotError(
+            "Shopee parcel envelope conflicts with approved SKU parcels"
+        )
+    return {
+        "weight_kg": expected_weight,
+        "package_cm": expected_package,
+        "policy_version": _SHOPEE_PARCEL_ENVELOPE_POLICY_VERSION,
     }
 
 

@@ -22,6 +22,7 @@ from domains.content_operations.content_package_adapter import (
 from shared_platform.release_control import (
     _catalog_sku_is_owned_by_release,
     _commercial_approval_facts,
+    _product_approval_facts_match,
     _default_omnichannel_targets,
     build_weekly_profit_rehearsal,
     build_release_dashboard,
@@ -1413,6 +1414,51 @@ def test_legacy_approval_fingerprint_does_not_gain_new_sku_only_fields():
 
     assert "sku_commercial_facts" not in facts
     assert "sku_pricing" not in facts
+
+
+def test_product_approval_fingerprint_excludes_target_content_and_pricing_inputs():
+    review = {
+        "cost_cny": 15,
+        "weight_kg": 0.1,
+        "package_cm": [20, 20, 3],
+        "selected_sites": ["LH_TH", "HB_MY"],
+        "selected_sku_keys": ["default"],
+        "sku_label_overrides": {},
+        "category": {"id": "1", "name": "wall sticker"},
+        "support_cod": True,
+        "video_action": "remove",
+        "fx_rates": {"THB": "4.7"},
+    }
+
+    facts = _commercial_approval_facts(
+        review,
+        {
+            "selected_store_prices": [{"target_key": "lh_th"}],
+            "sku_pricing": [{"variant_key": "default"}],
+        },
+    )
+
+    assert set(facts) == {
+        "cost_cny",
+        "weight_kg",
+        "package_cm",
+        "selected_sku_keys",
+        "sku_label_overrides",
+        "category",
+    }
+    legacy = {
+        **facts,
+        "selected_sites": ["LH_TH"],
+        "support_cod": True,
+        "video_action": "keep",
+        "fx_rates": {"THB": "4.7"},
+        "pricing_algorithm": "legacy",
+        "selected_store_prices": [{"target_key": "lh_th"}],
+    }
+    assert _product_approval_facts_match(legacy, facts) is True
+    assert _product_approval_facts_match(
+        {**legacy, "cost_cny": 16}, facts
+    ) is False
 
 
 def test_real_gate_requires_matching_approval_and_verified_current_image_order(tmp_path):

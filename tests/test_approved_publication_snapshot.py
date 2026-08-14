@@ -106,6 +106,11 @@ def _shopee_global_master():
             {"model_sku": "0959", "amount": "41.25", "currency": "CNY"},
         ],
         "category_decision": category,
+        "parcel_envelope": {
+            "weight_kg": "0.21",
+            "package_cm": [38, 45, 1],
+            "policy_version": "shopee-global-parcel-ceil-cm/v1",
+        },
         "policy": {
             "brand": {
                 "brand_id": 0,
@@ -307,6 +312,11 @@ def test_builds_self_contained_multisku_approved_snapshot():
         "ozon:RU",
     }
     assert document["skus"][0]["parcel"]["package_cm"] == ["38", "45", "0.2"]
+    assert document["shopee_global_master"]["parcel_envelope"] == {
+        "weight_kg": "0.21",
+        "package_cm": [38, 45, 1],
+        "policy_version": "shopee-global-parcel-ceil-cm/v1",
+    }
     assert document["skus"][1]["variant_images"] == ["https://img.example/pink.jpg"]
     assert document["product"]["main_category"]["id"] == "wall-stickers"
     assert document["categories_by_target"]["tiktok:LH_PH"]["category"]["id"] == "600338"
@@ -316,6 +326,65 @@ def test_builds_self_contained_multisku_approved_snapshot():
     )
     assert len(document["product"]["source_identity"]["provenance"]) == 2
     assert document["snapshot_digest"].startswith("sha256:")
+
+
+def test_shopee_parcel_envelope_uses_multisku_max_and_ceils_each_dimension():
+    plan = _approved_plan()
+    commercial = plan["payload"]["product_facts"]["sku_commercial_facts"]
+    commercial["blue-38x45"]["weight_kg"] = "0.265"
+    commercial["blue-38x45"]["package_cm"] = ["61", "2.1", "5.2"]
+    commercial["pink-38x45"]["weight_kg"] = "0.21"
+    commercial["pink-38x45"]["package_cm"] = ["60.1", "3", "5"]
+    plan["payload"]["shopee_global_master"]["parcel_envelope"] = {
+        "weight_kg": "0.265",
+        "package_cm": [61, 3, 6],
+        "policy_version": "shopee-global-parcel-ceil-cm/v1",
+    }
+    _rebind(plan)
+
+    document = build_approved_publication_snapshot(plan).payload()
+
+    assert document["shopee_global_master"]["parcel_envelope"] == {
+        "weight_kg": "0.265",
+        "package_cm": [61, 3, 6],
+        "policy_version": "shopee-global-parcel-ceil-cm/v1",
+    }
+    assert document["skus"][0]["parcel"] == {
+        "weight_kg": "0.265",
+        "package_cm": ["61", "2.1", "5.2"],
+    }
+    assert document["skus"][1]["parcel"]["package_cm"] == ["60.1", "3", "5"]
+
+
+@pytest.mark.parametrize("mutation", ["missing", "tampered"])
+def test_shopee_parcel_envelope_is_required_and_exact(mutation):
+    plan = _approved_plan()
+    if mutation == "missing":
+        plan["payload"]["shopee_global_master"].pop("parcel_envelope")
+    else:
+        plan["payload"]["shopee_global_master"]["parcel_envelope"]["package_cm"][2] = 2
+    _rebind(plan)
+
+    with pytest.raises(ApprovedPublicationSnapshotError, match="parcel envelope"):
+        build_approved_publication_snapshot(plan)
+
+
+def test_shopee_parcel_envelope_changes_plan_and_snapshot_identity():
+    first_plan = _approved_plan()
+    second_plan = deepcopy(first_plan)
+    second_plan["payload"]["product_facts"]["sku_commercial_facts"][
+        "blue-38x45"
+    ]["package_cm"][2] = "1.2"
+    second_plan["payload"]["shopee_global_master"]["parcel_envelope"][
+        "package_cm"
+    ][2] = 2
+    _rebind(second_plan)
+
+    first = build_approved_publication_snapshot(first_plan)
+    second = build_approved_publication_snapshot(second_plan)
+
+    assert first_plan["payload_digest"] != second_plan["payload_digest"]
+    assert first.snapshot_digest != second.snapshot_digest
 
 
 def test_same_approval_is_idempotent_and_round_trips_from_json_payload():

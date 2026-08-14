@@ -13,6 +13,8 @@ import time
 import hashlib
 import math
 import os
+import subprocess
+import shutil
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import date, datetime, timezone
@@ -137,6 +139,31 @@ def _product_publication_platform_executors() -> dict[str, object]:
     return dict(_PRODUCT_PUBLICATION_PLATFORM_EXECUTORS)
 
 
+_PRODUCT_PUBLICATION_COMMON_EXECUTION_FILES = (
+    "modules/products/server.py", "shared_platform/product_publication_runner.py",
+    "shared_platform/product_publication_reports.py", "shared_platform/product_publication_runs.py",
+    "shared_platform/product_publication_executors.py", "shared_platform/product_publication_live_dependencies.py",
+)
+_PRODUCT_PUBLICATION_PLATFORM_EXECUTION_FILES = {
+    "TIKTOK": ("domains/channel_operations/tiktok_publisher.py", "domains/channel_operations/tiktok_v4_execution.py", "modules/miaoshou/client.py", "modules/miaoshou/tiktok_publisher.py", "modules/miaoshou/tiktok_v4_drafts.py"),
+    "SHOPEE": ("modules/shopee/client.py", "modules/shopee/global_v4_executor.py", "modules/shopee/global_v4_live_runtime.py", "modules/shopee/global_sku_map.py", "modules/shopee/skill_regions.py"),
+    "OZON": ("modules/ozon/approved_publication_v4.py", "modules/ozon/client.py"),
+}
+
+
+def _product_publication_execution_identity(platform: str) -> dict[str, str]:
+    from scripts.sync_publish_approved_product_skill import build_manifest
+
+    skill_digest = build_manifest(ROOT / "skills" / "publish-approved-product").digest
+    git_commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, check=True, capture_output=True, text=True, timeout=10).stdout.strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", git_commit) or platform not in _PRODUCT_PUBLICATION_PLATFORM_EXECUTION_FILES:
+        raise ValueError("publication execution identity is invalid")
+    files = tuple(sorted({*_PRODUCT_PUBLICATION_COMMON_EXECUTION_FILES, *_PRODUCT_PUBLICATION_PLATFORM_EXECUTION_FILES[platform]}))
+    manifest = {relative: hashlib.sha256((ROOT / relative).read_bytes()).hexdigest() for relative in files}
+    code_digest = hashlib.sha256(json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    return {"skill_digest": skill_digest, "git_commit": git_commit, "code_digest": code_digest}
+
+
 def _initialize_product_publication_platform_executors() -> dict[str, object]:
     """Compose the three production executors without contacting providers.
 
@@ -243,12 +270,16 @@ def _execute_product_publication_background(
     release_store,
     report_store,
     run_store,
+    expected_execution_identity: dict[str, str],
 ) -> None:
     """Run one exact platform after the durable QUEUED event is committed."""
 
     from shared_platform.product_publication_runner import ProductPublicationRunner
 
     try:
+        if _product_publication_execution_identity(platform) != expected_execution_identity:
+            run_store.mark_failed(run_id=run_id, failure_code="EXECUTION_IDENTITY_DRIFT")
+            return
         run_store.mark_running(run_id=run_id)
         receipt = ProductPublicationRunner(
             release_store=release_store,
@@ -259,6 +290,7 @@ def _execute_product_publication_background(
             snapshot_digest=snapshot_digest,
             platform_scope=(platform,),
             platform_executors={platform: executor},
+            execution_identity=expected_execution_identity,
         )
         if (
             receipt.report["run_id"] != run_id
@@ -327,6 +359,7 @@ def _start_product_publication(
             snapshot_digest=prepared.snapshot_digest,
             platform_scope=(platform,),
             target_count=len(prepared.target_labels_by_platform[platform]),
+            execution_identity=(execution_identity := _product_publication_execution_identity(platform)),
         )
     except (TypeError, ValueError) as error:
         return 409, {"ok": False, "error": str(error)}
@@ -341,6 +374,7 @@ def _start_product_publication(
                 release_store=release_store,
                 report_store=report_store,
                 run_store=run_store,
+                expected_execution_identity=execution_identity,
             )
         )
     except Exception as error:
@@ -414,6 +448,7 @@ def _product_workspace_view(payload: dict) -> dict:
     """Present governed evidence and durable V1 state as the formal workspace."""
     from shared_platform.product_workflow import (
         assert_no_dead_end,
+        project_product_field_impacts,
         project_product_workflow_next_action,
     )
 
@@ -468,6 +503,7 @@ def _product_workspace_view(payload: dict) -> dict:
     next_action = project_product_workflow_next_action(view)
     assert_no_dead_end(next_action)
     view["workflow_next_action"] = next_action
+    view["field_impact_map"] = project_product_field_impacts()
     return view
 
 
@@ -647,6 +683,62 @@ def _product_workbench_lock(offer_id: str) -> threading.Lock:
 
     with _product_workbench_locks_guard:
         return _product_workbench_locks.setdefault(offer_id, threading.Lock())
+
+
+def _reset_product_workspace_test_offer(data: dict) -> tuple[int, dict]:
+    """Forget one unexecuted Offer while retaining immutable audit history."""
+
+    from modules.sourcing import new_product_workbench as np_mod
+    from shared_platform.release_store import ReleaseAuthorizationError
+
+    offer_id = str(data.get("offer_id") or "").strip()
+    if not offer_id.isdigit() or not 1 <= len(offer_id) <= 32:
+        return 400, {"ok": False, "error": "offer_id must contain 1-32 digits"}
+    if data.get("user_approved") is not True:
+        return 400, {"ok": False, "error": "explicit user approval is required"}
+
+    with _product_workbench_lock(offer_id):
+        try:
+            release_result = _release_store().reset_unexecuted_test_product(offer_id)
+        except ReleaseAuthorizationError as error:
+            return 409, {
+                "ok": False,
+                "error": str(error),
+                "requires_platform_rollback": True,
+            }
+
+        state_root = np_mod.STATE_DIR.resolve()
+        deleted: list[str] = []
+        for suffix in (
+            "",
+            "_miaoshou",
+            "_miaoshou_draft",
+            "_tiktok_claim",
+            "_site_drafts",
+        ):
+            path = (state_root / f"{offer_id}{suffix}.json").resolve()
+            if path.parent != state_root:
+                raise RuntimeError("unsafe test-offer state path")
+            if path.is_file():
+                path.unlink()
+                deleted.append(path.name)
+
+        image_root = (ROOT / "outputs" / "image_suite_from_miaoshou").resolve()
+        image_path = (image_root / offer_id).resolve()
+        if image_path.parent != image_root:
+            raise RuntimeError("unsafe test-offer image path")
+        if image_path.is_dir():
+            shutil.rmtree(image_path)
+            deleted.append(f"image_suite_from_miaoshou/{offer_id}")
+
+    return 200, {
+        "ok": True,
+        "offer_id": offer_id,
+        "deleted_local_state": deleted,
+        "release_state": release_result,
+        "external_writes_performed": [],
+        "audit_history_retained": True,
+    }
 
 
 def _collect_product_workspace_locally(data: dict) -> tuple[int, dict]:
@@ -14455,6 +14547,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_feishu_event()
         if path in {
             "/api/product-workspace/collect",
+            "/api/product-workspace/reset-test-offer",
             "/api/product-workspace/facts",
             "/api/product-workspace/title-draft",
             "/api/product-workspace/title-adopt",
@@ -14522,6 +14615,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(400, {"ok": False, "error": "json body must be an object"})
             if path == "/api/product-workspace/collect":
                 status, payload = _collect_product_workspace_locally(data)
+            elif path == "/api/product-workspace/reset-test-offer":
+                status, payload = _reset_product_workspace_test_offer(data)
             elif path == "/api/product-workspace/facts":
                 status, payload = _save_product_workspace_facts_locally(data)
             elif path == "/api/product-workspace/title-draft":

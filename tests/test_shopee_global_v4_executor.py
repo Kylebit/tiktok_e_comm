@@ -6,6 +6,7 @@ from domains.product_operations import build_approved_publication_snapshot
 from modules.shopee.global_v4_executor import (
     ShopeeGlobalV4Error,
     ShopeeGlobalV4Resolver,
+    UpdateReceipt,
     project_shopee_global_v4_command,
 )
 from shared_platform.product_publication_runner import PublicationPlatformRequest
@@ -43,6 +44,24 @@ class _Runtime:
         self.persisted_globals = []
         self.persisted_models = []
         self.retired = []
+        self.updates = []
+        self.item_title = None
+        self.force_image_drift = False
+        self.force_variant_image_drift = False
+        self.variation_names_override = None
+        self.force_parcel_drift = False
+        self.omit_image_lineage = False
+        self.checkpointed_uploads = []
+        self.update_receipt = UpdateReceipt(
+            attempted_count=1, reconciled_by_readback=False
+        )
+        self.persisted_update_receipts = []
+        self.update_error = None
+        self.tier_update_receipt = UpdateReceipt(
+            attempted_count=1, reconciled_by_readback=False
+        )
+        self.tier_update_error = None
+        self.persisted_tier_update_receipts = []
 
     def lookup_global_item_ids(self, command):
         self.calls.append("lookup")
@@ -86,6 +105,15 @@ class _Runtime:
         self.calls.append("persist_images")
         self.persisted_images.append((request.run_id, deepcopy(bindings)))
 
+    def checkpointed_upload_global_images(self, request, image_urls):
+        self.calls.append("checkpointed_upload")
+        self.checkpointed_uploads.append((request.run_id, tuple(image_urls)))
+        self.image_bindings = {
+            url: f"reconciled-image-{index + 1}"
+            for index, url in enumerate(image_urls)
+        }
+        return deepcopy(self.image_bindings), len(image_urls)
+
     def create_global_item(self, payload):
         self.calls.append("create")
         self.created_payload = deepcopy(payload)
@@ -96,6 +124,38 @@ class _Runtime:
         self.persisted_globals.append(
             (request.run_id, str(global_item_id), deepcopy(models))
         )
+
+    def update_global_item(self, global_item_id, payload):
+        self.calls.append("update")
+        self.updates.append((str(global_item_id), deepcopy(payload)))
+        self.item_title = payload["title"]
+
+    def update_existing_global_item(self, global_item_id, payload):
+        self.calls.append("update_existing_item")
+        if self.update_error is not None:
+            raise self.update_error
+        self.updates.append((str(global_item_id), deepcopy(payload)))
+        self.item_title = payload["title"]
+        self.force_image_drift = False
+        self.force_parcel_drift = False
+        return self.update_receipt
+
+    def persist_existing_global_update_receipt(self, request, receipt):
+        self.calls.append("persist_update_receipt")
+        self.persisted_update_receipts.append((request.run_id, receipt))
+
+    def update_existing_global_tier_variation(self, global_item_id, payload):
+        self.calls.append("update_existing_tier")
+        if self.tier_update_error is not None:
+            raise self.tier_update_error
+        self.tier_updates = (str(global_item_id), deepcopy(payload))
+        self.force_variant_image_drift = False
+        self.variation_names_override = None
+        return self.tier_update_receipt
+
+    def persist_existing_global_tier_update_receipt(self, request, receipt):
+        self.calls.append("persist_tier_update_receipt")
+        self.persisted_tier_update_receipts.append((request.run_id, receipt))
 
     def initialize_global_models(self, global_item_id, payload):
         self.calls.append("initialize")
@@ -143,6 +203,14 @@ class _Runtime:
             "approved_image_bindings": deepcopy(bindings),
             "parcel": deepcopy(command["parcel"]),
         }
+        if self.force_image_drift:
+            result["image_ids"] = ["legacy-image"]
+        if self.force_parcel_drift:
+            result["parcel"]["weight_kg"] = "9"
+        if self.omit_image_lineage:
+            result["approved_image_bindings"] = {}
+        if self.item_title is not None:
+            result["title"] = self.item_title
         if self.mutate_item is not None:
             self.mutate_item(result)
         return result
@@ -159,7 +227,9 @@ class _Runtime:
             url: f"mapped-{index + 1}" for index, url in enumerate(approved_images)
         }
         result = {
-            "variation_names": list(self.command["variation_names"]),
+            "variation_names": list(
+                self.variation_names_override or self.command["variation_names"]
+            ),
             "models": [
                 {
                     "global_model_id": str(9101 + index),
@@ -173,6 +243,12 @@ class _Runtime:
                 for index, row in enumerate(self.command["models"])
             ],
         }
+        if self.force_image_drift:
+            for row in result["models"]:
+                row["variant_image_id"] = "legacy-image"
+        if self.force_variant_image_drift:
+            for row in result["models"]:
+                row["variant_image_id"] = ""
         if self.mutate_models is not None:
             self.mutate_models(result)
         return result
@@ -209,7 +285,7 @@ def test_red_no_mapping_creates_complete_multisku_master_and_verifies_readback()
     assert all(row["variant_image_id"] for row in runtime.initialized_payload["models"])
     assert runtime.created_payload["parcel"] == {
         "weight_kg": "0.21",
-        "package_cm": ["38", "45", "0.2"],
+        "package_cm": [38, 45, 1],
     }
     assert [row["model_sku"] for row in runtime.created_payload["models"]] == [
         "0958",
@@ -355,16 +431,330 @@ def test_any_official_master_fact_drift_prevents_verification(surface, mutate, e
     assert resolver.write_count(request) == 3
 
 
-def test_partial_local_mapping_is_never_reused_or_duplicated():
+def test_partial_local_mapping_is_completed_only_after_full_official_readback():
     request = _request()
     runtime = _Runtime(mapped={"0958": "8001"})
     resolver = ShopeeGlobalV4Resolver(runtime=runtime)
 
-    with pytest.raises(ShopeeGlobalV4Error, match="mapping is partial"):
+    assert resolver(request) == "8001"
+    assert runtime.calls == ["lookup", "read_item", "read_models", "persist_global"]
+    assert runtime.persisted_globals == [
+        ("run-shopee-v4-1", "8001", ["0958", "0959"])
+    ]
+    assert "create" not in runtime.calls
+    assert resolver.write_count(request) == 0
+
+
+def test_existing_normal_title_drift_is_updated_in_place_then_fully_read_back():
+    request = _request()
+    runtime = _Runtime(mapped={"0958": "8001", "0959": "8001"})
+    runtime.item_title = "Stale title"
+    resolver = ShopeeGlobalV4Resolver(runtime=runtime)
+
+    assert resolver(request) == "8001"
+    assert runtime.calls == [
+        "lookup",
+        "read_item",
+        "read_models",
+        "update_existing_item",
+        "persist_update_receipt",
+        "read_item",
+        "read_models",
+    ]
+    assert runtime.updates == [
+        (
+            "8001",
+            {
+                "title": project_shopee_global_v4_command(request.snapshot)["product"]["title"],
+                "description": project_shopee_global_v4_command(request.snapshot)["product"]["description"],
+                "image_ids": ["mapped-1", "mapped-2"],
+                "parcel": project_shopee_global_v4_command(request.snapshot)["parcel"],
+            },
+        )
+    ]
+    assert "create" not in runtime.calls
+    assert resolver.write_count(request) == 1
+
+
+def test_legacy_existing_global_without_image_lineage_uploads_and_converges_in_place():
+    request = _request()
+    runtime = _Runtime(mapped={"0958": "8001", "0959": "8001"})
+    runtime.item_title = "Stale title"
+    runtime.force_image_drift = True
+    runtime.omit_image_lineage = True
+    resolver = ShopeeGlobalV4Resolver(runtime=runtime)
+
+    assert resolver(request) == "8001"
+    assert runtime.calls == [
+        "lookup",
+        "read_item",
+        "read_models",
+        "checkpointed_upload",
+        "update_existing_item",
+        "persist_update_receipt",
+        "update_existing_tier",
+        "persist_tier_update_receipt",
+        "read_item",
+        "read_models",
+    ]
+    assert runtime.checkpointed_uploads == [
+        (
+            "run-shopee-v4-1",
+            ("https://img.example/main-1.jpg", "https://img.example/main-2.jpg"),
+        )
+    ]
+    assert "create" not in runtime.calls
+    assert resolver.write_count(request) == 4
+    assert runtime.persisted_update_receipts == [
+        (
+            "run-shopee-v4-1",
+            UpdateReceipt(attempted_count=1, reconciled_by_readback=False),
+        )
+    ]
+    assert runtime.persisted_tier_update_receipts == [
+        (
+            "run-shopee-v4-1",
+            UpdateReceipt(attempted_count=1, reconciled_by_readback=False),
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "receipt",
+    [None, {"attempted_count": 1, "reconciled_by_readback": False}],
+)
+def test_existing_global_tier_missing_or_invalid_receipt_fails_closed(receipt):
+    request = _request()
+    runtime = _Runtime(mapped={"0958": "8001", "0959": "8001"})
+    runtime.force_variant_image_drift = True
+    runtime.tier_update_receipt = receipt
+    resolver = ShopeeGlobalV4Resolver(runtime=runtime)
+
+    with pytest.raises(ShopeeGlobalV4Error, match="update receipt"):
         resolver(request)
 
-    assert runtime.calls == ["lookup"]
-    assert resolver.write_count(request) == 0
+    assert runtime.calls[-1] == "update_existing_tier"
+    assert "update_existing_item" not in runtime.calls
+    assert "persist_tier_update_receipt" not in runtime.calls
+    assert "create" not in runtime.calls
+    assert "initialize" not in runtime.calls
+    assert resolver.write_count(request) is None
+
+
+def test_unknown_existing_global_tier_outcome_stops_before_create_or_init():
+    request = _request()
+    runtime = _Runtime(mapped={"0958": "8001", "0959": "8001"})
+    runtime.force_variant_image_drift = True
+    runtime.tier_update_error = ConnectionError("lost tier response not applied")
+    resolver = ShopeeGlobalV4Resolver(runtime=runtime)
+
+    with pytest.raises(ConnectionError, match="lost tier response not applied"):
+        resolver(request)
+
+    assert runtime.calls[-1] == "update_existing_tier"
+    assert "persist_tier_update_receipt" not in runtime.calls
+    assert "create" not in runtime.calls
+    assert "initialize" not in runtime.calls
+    assert resolver.write_count(request) is None
+
+
+def test_missing_option_images_update_only_variations_and_exact_continuation_is_zero_write():
+    request = _request()
+    runtime = _Runtime(mapped={"0958": "8001", "0959": "8001"})
+    runtime.force_variant_image_drift = True
+    first = ShopeeGlobalV4Resolver(runtime=runtime)
+
+    assert first(request) == "8001"
+    assert runtime.calls == [
+        "lookup",
+        "read_item",
+        "read_models",
+        "update_existing_tier",
+        "persist_tier_update_receipt",
+        "read_item",
+        "read_models",
+    ]
+    assert "checkpointed_upload" not in runtime.calls
+    assert "update_existing_item" not in runtime.calls
+    assert "create" not in runtime.calls
+    assert "initialize" not in runtime.calls
+    assert first.write_count(request) == 1
+
+    before = len(runtime.calls)
+    continuation = ShopeeGlobalV4Resolver(runtime=runtime)
+    assert continuation(request) == "8001"
+    assert runtime.calls[before:] == ["lookup", "read_item", "read_models"]
+    assert continuation.write_count(request) == 0
+
+
+def test_tier_name_drift_updates_frozen_variation_name_without_stage_a_write():
+    request = _request()
+    runtime = _Runtime(mapped={"0958": "8001", "0959": "8001"})
+    runtime.variation_names_override = ["Legacy Color", "Legacy Size"]
+    resolver = ShopeeGlobalV4Resolver(runtime=runtime)
+
+    assert resolver(request) == "8001"
+    assert runtime.tier_updates[1]["variation_names"] == list(
+        project_shopee_global_v4_command(request.snapshot)["variation_names"]
+    )
+    assert "update_existing_item" not in runtime.calls
+    assert "create" not in runtime.calls
+    assert "initialize" not in runtime.calls
+    assert resolver.write_count(request) == 1
+
+
+def test_ambiguous_official_option_binding_fails_before_any_variation_write():
+    request = _request()
+    runtime = _Runtime(mapped={"0958": "8001", "0959": "8001"})
+
+    def duplicate_option_binding(result):
+        result["models"][1]["option_values"] = list(
+            result["models"][0]["option_values"]
+        )
+
+    runtime.mutate_models = duplicate_option_binding
+
+    with pytest.raises(ShopeeGlobalV4Error, match="variant options"):
+        ShopeeGlobalV4Resolver(runtime=runtime)(request)
+
+    assert runtime.calls == ["lookup", "read_item", "read_models"]
+    assert "update_existing_tier" not in runtime.calls
+    assert "create" not in runtime.calls
+    assert "initialize" not in runtime.calls
+
+
+@pytest.mark.parametrize(
+    "receipt",
+    [None, {"attempted_count": 1, "reconciled_by_readback": False}],
+)
+def test_existing_global_update_missing_or_invalid_receipt_fails_closed(receipt):
+    request = _request()
+    runtime = _Runtime(mapped={"0958": "8001", "0959": "8001"})
+    runtime.force_image_drift = True
+    runtime.omit_image_lineage = True
+    runtime.update_receipt = receipt
+    resolver = ShopeeGlobalV4Resolver(runtime=runtime)
+
+    with pytest.raises(ShopeeGlobalV4Error, match="update receipt"):
+        resolver(request)
+
+    assert runtime.calls[-1] == "update_existing_item"
+    assert "persist_update_receipt" not in runtime.calls
+    assert "update_existing_tier" not in runtime.calls
+    assert "create" not in runtime.calls
+    assert resolver.write_count(request) is None
+
+
+def test_unknown_existing_global_update_outcome_stops_before_tier_or_create():
+    request = _request()
+    runtime = _Runtime(mapped={"0958": "8001", "0959": "8001"})
+    runtime.force_image_drift = True
+    runtime.omit_image_lineage = True
+    runtime.update_error = ConnectionError("lost response not applied")
+    resolver = ShopeeGlobalV4Resolver(runtime=runtime)
+
+    with pytest.raises(ConnectionError, match="lost response not applied"):
+        resolver(request)
+
+    assert runtime.calls[-1] == "update_existing_item"
+    assert "persist_update_receipt" not in runtime.calls
+    assert "update_existing_tier" not in runtime.calls
+    assert "create" not in runtime.calls
+    assert resolver.write_count(request) is None
+
+
+def test_ambiguous_existing_model_structure_fails_before_upload_or_update():
+    request = _request()
+    runtime = _Runtime(mapped={"0958": "8001", "0959": "8001"})
+    runtime.omit_image_lineage = True
+    command = project_shopee_global_v4_command(request.snapshot)
+    runtime.models_override = {
+        "variation_names": list(command["variation_names"]),
+        "models": [
+            {
+                "global_model_id": "9101",
+                "model_sku": "0958",
+                "option_values": list(command["models"][0]["option_values"]),
+                "price_cny": command["models"][0]["price_cny"],
+                "variant_image_id": "legacy-image-1",
+            },
+            {
+                "global_model_id": "9102",
+                "model_sku": "0958",
+                "option_values": list(command["models"][1]["option_values"]),
+                "price_cny": command["models"][1]["price_cny"],
+                "variant_image_id": "legacy-image-2",
+            },
+        ],
+    }
+
+    with pytest.raises(ShopeeGlobalV4Error, match="SKU coverage is ambiguous"):
+        ShopeeGlobalV4Resolver(runtime=runtime)(request)
+
+    assert runtime.calls == ["lookup", "read_item", "read_models"]
+    assert "checkpointed_upload" not in runtime.calls
+    assert "update_existing_item" not in runtime.calls
+    assert "create" not in runtime.calls
+
+
+def test_existing_parcel_drift_converges_in_place_without_upload_or_tier_write():
+    request = _request()
+    runtime = _Runtime(mapped={"0958": "8001", "0959": "8001"})
+    runtime.force_parcel_drift = True
+    resolver = ShopeeGlobalV4Resolver(runtime=runtime)
+
+    assert resolver(request) == "8001"
+
+    assert runtime.calls == [
+        "lookup",
+        "read_item",
+        "read_models",
+        "update_existing_item",
+        "persist_update_receipt",
+        "read_item",
+        "read_models",
+    ]
+    assert "checkpointed_upload" not in runtime.calls
+    assert "update_existing_tier" not in runtime.calls
+    assert "create" not in runtime.calls
+    assert runtime.updates[0][1]["parcel"] == project_shopee_global_v4_command(
+        request.snapshot
+    )["parcel"]
+    assert resolver.write_count(request) == 1
+
+
+def test_existing_title_update_fails_closed_when_official_readback_stays_drifted():
+    request = _request()
+    runtime = _Runtime(mapped={"0958": "8001", "0959": "8001"})
+    runtime.mutate_item = lambda row: row.update(title="Still stale")
+    resolver = ShopeeGlobalV4Resolver(runtime=runtime)
+
+    with pytest.raises(ShopeeGlobalV4Error, match="title or description drifted"):
+        resolver(request)
+
+    assert runtime.calls == [
+        "lookup",
+        "read_item",
+        "read_models",
+        "update_existing_item",
+        "persist_update_receipt",
+        "read_item",
+        "read_models",
+    ]
+    assert "create" not in runtime.calls
+    assert resolver.write_count(request) == 1
+
+
+def test_partial_mapping_with_incomplete_official_models_fails_closed_without_create():
+    request = _request()
+    runtime = _Runtime(mapped={"0958": "8001"})
+    runtime.models_override = {"variation_names": ["color", "size"], "models": []}
+
+    with pytest.raises(ShopeeGlobalV4Error, match="global models is invalid"):
+        ShopeeGlobalV4Resolver(runtime=runtime)(request)
+
+    assert runtime.calls == ["lookup", "read_item", "read_models"]
+    assert "create" not in runtime.calls
 
 
 @pytest.mark.parametrize(

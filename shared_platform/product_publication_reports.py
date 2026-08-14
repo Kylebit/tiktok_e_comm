@@ -24,6 +24,8 @@ from core.config import ROOT
 DEFAULT_PRODUCT_PUBLICATION_REPORT_DB = ROOT / "data" / "orbit_platform.db"
 DEFAULT_PRODUCT_PUBLICATION_REPORT_ROOT = ROOT / "reports" / "product-publication"
 REPORT_SCHEMA_VERSION = "product-publication-report/v1"
+INTERNAL_REPORT_SCHEMA_VERSION = "product-publication-report/v2"
+PUBLIC_REPORT_SCHEMA_VERSION = REPORT_SCHEMA_VERSION
 SUMMARY_SCHEMA_VERSION = "product-publication-summary/v1"
 SNAPSHOT_SCHEMA_VERSION = "approved-publication-snapshot/v4"
 API_SCHEMA_VERSION = "product-publication-report-api/v1"
@@ -38,7 +40,7 @@ STATUS_LABELS = {
 _PLATFORMS = frozenset({"TIKTOK", "SHOPEE", "OZON"})
 _SAFE_RUN_PART = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _HEX_DIGEST = re.compile(r"^(?:sha256:)?[0-9a-f]{64}$")
-_REPORT_FIELDS = frozenset(
+_LEGACY_REPORT_FIELDS = frozenset(
     {
         "schema_version",
         "report_id",
@@ -51,6 +53,7 @@ _REPORT_FIELDS = frozenset(
         "summary",
     }
 )
+_REPORT_FIELDS = _LEGACY_REPORT_FIELDS | {"execution_identity", "targets"}
 _SUMMARY_FIELDS = frozenset(
     {
         "schema_version",
@@ -78,6 +81,9 @@ _EVIDENCE_FIELDS = frozenset(
         "external_write_count",
     }
 )
+_EXECUTION_IDENTITY_FIELDS = frozenset({"skill_digest", "git_commit", "code_digest"})
+_TARGET_FIELDS = frozenset({"target_label", "status", "evidence"})
+_TARGET_EVIDENCE_FIELDS = frozenset({"target_label", "status", "stage", "provider_code", "provider_reason", "request_attempted", "outcome_unknown", "external_write_count"})
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS product_publication_reports (
@@ -189,6 +195,64 @@ def _exact_fields(value: Mapping[str, Any], expected: frozenset[str], name: str)
         raise ValueError(f"{name} fields are invalid; missing={missing}; extra={extra}")
 
 
+def _execution_identity(value: object) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        raise TypeError("execution_identity must be a mapping")
+    _exact_fields(value, _EXECUTION_IDENTITY_FIELDS, "execution_identity")
+    result = {name: _exact_text(value[name], name, max_length=64) for name in _EXECUTION_IDENTITY_FIELDS}
+    if not re.fullmatch(r"[0-9a-f]{40}", result["git_commit"]):
+        raise ValueError("git_commit is invalid")
+    for name in ("skill_digest", "code_digest"):
+        if not re.fullmatch(r"[0-9a-f]{64}", result[name]):
+            raise ValueError(f"{name} is invalid")
+    return result
+
+
+def _safe_targets(value: object) -> list[dict[str, Any]]:
+    if type(value) is not list:
+        raise TypeError("report targets must be a list")
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, raw in enumerate(value):
+        if not isinstance(raw, Mapping):
+            raise TypeError(f"report targets[{index}] must be a mapping")
+        _exact_fields(raw, _TARGET_FIELDS, f"report targets[{index}]")
+        label = _exact_text(raw["target_label"], "target_label")
+        status = _exact_text(raw["status"], "target status", max_length=16)
+        if status not in {"PUBLISHED", "PROCESSING", "FAILED"} or label in seen:
+            raise ValueError("report target is invalid or duplicated")
+        seen.add(label)
+        evidence = raw["evidence"]
+        if evidence is not None:
+            if not isinstance(evidence, Mapping):
+                raise TypeError("target evidence must be a mapping or null")
+            _exact_fields(evidence, _TARGET_EVIDENCE_FIELDS, "target evidence")
+            if evidence["target_label"] != label or evidence["status"] != status:
+                raise ValueError("target evidence identity conflicts")
+            stage = _exact_text(evidence["stage"], "stage", max_length=32)
+            code = _exact_text(evidence["provider_code"], "provider_code", max_length=80)
+            reason = _exact_text(evidence["provider_reason"], "provider_reason", max_length=240)
+            if not code.isascii() or any(not (c.isalnum() or c in "_-") for c in code):
+                raise ValueError("provider_code is unsafe")
+            if "http://" in reason.casefold() or "https://" in reason.casefold():
+                raise ValueError("provider_reason contains a URL")
+            if re.search(
+                r"(?i)\b(authorization|bearer|access[_-]?token|refresh[_-]?token|token|secret|cookie|set-cookie|app[_-]?key)\b\s*[:=]?\s*\S+",
+                reason,
+            ):
+                raise ValueError("provider_reason contains secret-shaped content")
+            attempted = evidence["request_attempted"]
+            unknown = evidence["outcome_unknown"]
+            if type(attempted) is not bool or type(unknown) is not bool:
+                raise TypeError("target evidence flags must be boolean")
+            count = evidence["external_write_count"]
+            if count is not None:
+                count = _exact_nonnegative_int(count, "target evidence write count")
+            evidence = {"target_label": label, "status": status, "stage": stage, "provider_code": code, "provider_reason": reason, "request_attempted": attempted, "outcome_unknown": unknown, "external_write_count": count}
+        rows.append({"target_label": label, "status": status, "evidence": evidence})
+    return rows
+
+
 def _validated_summary(value: object, *, report_status: str) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise TypeError("summary must be a mapping")
@@ -257,8 +321,10 @@ def validate_publication_report(value: object) -> dict[str, Any]:
     """Validate the version+digest envelope without interpreting product facts."""
     if not isinstance(value, Mapping):
         raise TypeError("publication report must be a mapping")
-    _exact_fields(value, _REPORT_FIELDS, "publication report")
-    if value["schema_version"] != REPORT_SCHEMA_VERSION:
+    schema_version = value.get("schema_version")
+    fields = _REPORT_FIELDS if schema_version == INTERNAL_REPORT_SCHEMA_VERSION else _LEGACY_REPORT_FIELDS
+    _exact_fields(value, fields, "publication report")
+    if schema_version not in {REPORT_SCHEMA_VERSION, INTERNAL_REPORT_SCHEMA_VERSION}:
         raise ValueError("unsupported publication report schema")
     report_id = _exact_text(value["report_id"], "report_id")
     run_id = _run_id(value["run_id"])
@@ -278,8 +344,10 @@ def validate_publication_report(value: object) -> dict[str, Any]:
         raise ValueError("unsupported approved publication snapshot schema")
     snapshot_digest = _sha256(snapshot["digest"], "snapshot digest")
     summary = _validated_summary(value["summary"], report_status=status)
+    execution_identity = _execution_identity(value["execution_identity"]) if schema_version == INTERNAL_REPORT_SCHEMA_VERSION else None
+    targets = _safe_targets(value["targets"]) if schema_version == INTERNAL_REPORT_SCHEMA_VERSION else None
     return {
-        "schema_version": REPORT_SCHEMA_VERSION,
+        "schema_version": schema_version,
         "report_id": report_id,
         "run_id": run_id,
         "offer_id": offer_id,
@@ -289,6 +357,7 @@ def validate_publication_report(value: object) -> dict[str, Any]:
             "schema_version": SNAPSHOT_SCHEMA_VERSION,
             "digest": snapshot_digest,
         },
+        **({"execution_identity": execution_identity, "targets": targets} if schema_version == INTERNAL_REPORT_SCHEMA_VERSION else {}),
         "status": status,
         "summary": summary,
     }
@@ -470,6 +539,7 @@ class ProductPublicationReportStore:
                 "schema_version": row["snapshot_schema_version"],
                 "digest": row["snapshot_digest"],
             },
+            **({"execution_identity": file_payload.get("execution_identity"), "targets": file_payload.get("targets")} if file_payload.get("schema_version") == INTERNAL_REPORT_SCHEMA_VERSION else {}),
             "status": row["status"],
             "summary": summary,
             "report_path": row["report_path"],
@@ -482,15 +552,16 @@ class ProductPublicationReportStore:
                 raise ProductPublicationReportIntegrityError(
                     f"server-owned publication report {name} does not match the index"
                 )
-        if file_payload.get("schema_version") != REPORT_SCHEMA_VERSION:
+        if file_payload.get("schema_version") not in {REPORT_SCHEMA_VERSION, INTERNAL_REPORT_SCHEMA_VERSION}:
             raise ProductPublicationReportIntegrityError(
                 "server-owned publication report schema does not match"
             )
-        if _digest({name: file_payload[name] for name in _REPORT_FIELDS}) != row["envelope_digest"]:
+        envelope_fields = _REPORT_FIELDS if file_payload["schema_version"] == INTERNAL_REPORT_SCHEMA_VERSION else _LEGACY_REPORT_FIELDS
+        if _digest({name: file_payload[name] for name in envelope_fields}) != row["envelope_digest"]:
             raise ProductPublicationReportIntegrityError(
                 "server-owned publication report envelope does not match"
             )
-        return {"schema_version": REPORT_SCHEMA_VERSION, **expected}
+        return {"schema_version": file_payload["schema_version"], **expected}
 
     def get_report(self, *, report_id: str, offer_id: str) -> dict[str, Any] | None:
         safe_report_id = _exact_text(report_id, "report_id")
@@ -584,7 +655,7 @@ class ProductPublicationReportStore:
 def public_publication_report(report: Mapping[str, Any]) -> dict[str, Any]:
     """Return the Product Center projection, intentionally excluding file paths."""
     return {
-        "schema_version": REPORT_SCHEMA_VERSION,
+        "schema_version": PUBLIC_REPORT_SCHEMA_VERSION,
         "report_id": report["report_id"],
         "run_id": report["run_id"],
         "offer_id": report["offer_id"],

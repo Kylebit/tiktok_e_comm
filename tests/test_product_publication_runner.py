@@ -7,6 +7,7 @@ import pytest
 
 from domains.product_operations import build_approved_publication_snapshot
 from shared_platform.product_publication_reports import ProductPublicationReportStore
+from shared_platform.product_publication_reports import public_publication_report
 from shared_platform.product_publication_runner import (
     ProductPublicationRunConflictError,
     ProductPublicationRunner,
@@ -56,6 +57,71 @@ def _platform_result(
         "external_write_count": writes,
         "requires_human_action": requires_human_action,
     }
+
+
+def _execution_identity() -> dict:
+    return {
+        "skill_digest": "1" * 64,
+        "git_commit": "2" * 40,
+        "code_digest": "3" * 64,
+    }
+
+
+def test_runner_retains_safe_target_evidence_internally_but_public_strips_it(
+    tmp_path,
+):
+    snapshot = _snapshot()
+    label = "tiktok:LH_PH"
+    evidence = {
+        "target_label": label,
+        "status": "FAILED",
+        "stage": "PUBLISH",
+        "provider_code": "categoryInvalid",
+        "provider_reason": "category is incomplete",
+        "request_attempted": True,
+        "outcome_unknown": False,
+        "external_write_count": 0,
+    }
+
+    def executor(request):
+        rows = [
+            {
+                "target_label": target,
+                "status": "FAILED",
+                "evidence": evidence if target == label else None,
+            }
+            for target in request.target_labels
+        ]
+        return {
+            "schema_version": "product-publication-platform-result/v1",
+            "platform": "TIKTOK",
+            "targets": rows,
+            "dispatch_attempted": True,
+            "readback_completed": False,
+            "external_write_count": 0,
+            "requires_human_action": True,
+        }
+
+    receipt = ProductPublicationRunner(
+        release_store=_SnapshotStore(snapshot),
+        report_store=_report_store(tmp_path),
+    ).run(
+        run_id="run-safe-evidence",
+        offer_id=snapshot["offer_id"],
+        plan_id=snapshot["plan_id"],
+        platform_scope=("TIKTOK",),
+        platform_executors={"TIKTOK": executor},
+        execution_identity=_execution_identity(),
+    )
+
+    assert receipt.report["execution_identity"] == _execution_identity()
+    assert receipt.report["targets"][0]["evidence"] == evidence
+    public = public_publication_report(receipt.report)
+    encoded = str(public)
+    assert "targets" not in public
+    assert "execution_identity" not in public
+    assert "categoryInvalid" not in encoded
+    assert "category is incomplete" not in encoded
 
 
 def test_runner_uses_v4_snapshot_once_per_independent_platform_and_persists_redacted_report(

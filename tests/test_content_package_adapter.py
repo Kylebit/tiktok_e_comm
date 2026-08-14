@@ -1,4 +1,6 @@
 import pytest
+import hashlib
+import json
 
 from domains.content_operations.content_package_adapter import (
     SOURCE_ONLY_FINAL_APPROVAL_SCHEMA,
@@ -169,6 +171,103 @@ def test_workbench_handoff_does_not_block_explicitly_rejected_removed_shot():
         "sc1_r4": {"decision": "approved"},
         "sz1_r6_1784961073473": {"decision": "rejected"},
     }
+
+
+def _approved_ai_final_state(*, stale_write: bool = False):
+    urls = [f"https://assets.example/final-{index}.png" for index in range(1, 8)]
+    content = {
+        "content_strategy": "ai_assisted",
+        "product_id": "3890899011",
+        "fact_card_approved": True,
+        "planning_scope_approved": True,
+        "suite_approved": True,
+        "suite_revision": 3,
+        "asset_decisions": {},
+        "generated_image_miaoshou_decisions": {},
+        "miaoshou_ordered_images_write": {
+            "status": "verified",
+            "ordered_image_urls": list(urls if not stale_write else reversed(urls)),
+            "written_image_count": 7,
+            "checks": {
+                "main_images_exact_order": True,
+                "detail_images_exact_order": True,
+            },
+            "suite_revision": 3,
+        },
+    }
+    recipe = {
+        "content_strategy": "ai_assisted",
+        "fact_card_approved": True,
+        "planning_scope_approved": True,
+        "suite_approved": True,
+        "identity_reference_urls": [],
+        "primary_identity_url": "",
+        "suite_customization": {},
+    }
+    content["miaoshou_ordered_images_write"]["recipe_signature"] = json.dumps(
+        recipe, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    approval_payload = {
+        "schema_version": "ai-assisted-final-content-approval/v1",
+        "status": "approved",
+        "approved_by": "Kyle",
+        "image_order": list(urls),
+        "miaoshou_ordered_image_urls": list(urls),
+        "video_action": "none",
+        "asset_decisions": {},
+        "generated_image_decisions": {},
+    }
+    content["final_content_approval"] = {
+        **approval_payload,
+        "approval_digest": hashlib.sha256(
+            json.dumps(
+                approval_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+        ).hexdigest(),
+        "approved_at": "2026-08-13T00:00:00+00:00",
+    }
+    return {"content_package": content, "review": {"image_order": urls, "video_action": "none"}}
+
+
+def test_workbench_handoff_uses_verified_ai_final_images_without_pending_candidates():
+    state = _approved_ai_final_state()
+    handoff = build_workbench_content_package_handoff(
+        product_id="3890899011",
+        state=state,
+        suite_plan={"suite": {"items": [{"id": "sc1"}, {"id": "sc2"}]}},
+        generation_audits={
+            "sc1_r1": _audit("sc1", "https://assets.example/pending-1.png"),
+            "sc2_r1": _audit("sc2", "https://assets.example/pending-2.png"),
+        },
+        copy={"en": "Approved copy"},
+    )
+
+    assert handoff.content_package.approval.status == "approved"
+    assert handoff.missing_shot_ids == ()
+    assert handoff.blockers == ()
+    assert handoff.content_package.image_urls == tuple(
+        state["content_package"]["miaoshou_ordered_images_write"]["ordered_image_urls"]
+    )
+
+
+@pytest.mark.parametrize("stale_write", [True, False])
+def test_workbench_handoff_fails_closed_without_current_verified_ai_final_set(stale_write):
+    state = _approved_ai_final_state(stale_write=stale_write)
+    if not stale_write:
+        state["content_package"].pop("final_content_approval")
+    handoff = build_workbench_content_package_handoff(
+        product_id="3890899011",
+        state=state,
+        suite_plan={"suite": {"items": [{"id": "sc1"}, {"id": "sc2"}]}},
+        generation_audits={
+            "sc1_r1": _audit("sc1", "https://assets.example/pending-1.png"),
+            "sc2_r1": _audit("sc2", "https://assets.example/pending-2.png"),
+        },
+        copy={"en": "Approved copy"},
+    )
+
+    assert handoff.content_package.approval.status == "pending"
+    assert handoff.missing_shot_ids == ("sc1", "sc2")
 
 
 def _approve_source_only_state(state):

@@ -140,6 +140,7 @@ def adapt_settlement_evidence(
             component for component in (record.get("financial_components") or [])
             if isinstance(component, Mapping)
         ]
+        fulfillment = _shopee_fulfillment(record, record_id, issues) if platform == "shopee" else None
         for item_index, item in enumerate(items):
             if not isinstance(item, Mapping):
                 issues.append(_issue("invalid_item", f"{record_id}:{item_index}", "items"))
@@ -198,6 +199,7 @@ def adapt_settlement_evidence(
                 "variant_name": _text(item.get("variant_name") or metadata.get("variant_name")),
                 "image_url": _text(item.get("image_url") or metadata.get("image_url")),
                 "fee_items": fee_items,
+                **({"fulfillment": fulfillment} if fulfillment is not None else {}),
                 "source_snapshot_id": source["snapshot_id"],
                 "source_settlement_record_id": record_id,
                 "source_settlement_facts": [{
@@ -243,6 +245,39 @@ def adapt_settlement_evidence(
         reconciliation,
         source,
     )
+
+
+def _shopee_fulfillment(record, record_id, issues):
+    """Classify Shopee fulfillment from official settlement fee fields."""
+    amounts = {
+        _text(component.get("code")).lower(): _decimal(component.get("amount"))
+        for component in (record.get("financial_components") or [])
+        if isinstance(component, Mapping)
+    }
+    seller_shipping = next(
+        (amounts[code] for code in ("seller_shipping_fee", "actual_shipping_fee") if code in amounts),
+        None,
+    )
+    shipping_sst = next(
+        (amounts[code] for code in ("sst", "shipping_fee_sst") if code in amounts),
+        None,
+    )
+    if seller_shipping is None or shipping_sst is None:
+        issues.append(EvidenceQualityIssue(
+            "missing_fulfillment_evidence",
+            record_id,
+            "financial_components",
+            "Shopee fulfillment requires seller/actual shipping fee and shipping SST settlement fields",
+        ))
+        mode = "unknown"
+    else:
+        mode = "local" if seller_shipping == 0 and shipping_sst == 0 else "cross_border"
+    return {
+        "mode": mode,
+        "classification_rule": "seller_or_actual_shipping_fee_zero_and_shipping_sst_zero/v1",
+        "seller_shipping_fee_local": seller_shipping,
+        "shipping_sst_local": shipping_sst,
+    }
 
 
 def _consolidate_repeated_order_lines(rows, issues):

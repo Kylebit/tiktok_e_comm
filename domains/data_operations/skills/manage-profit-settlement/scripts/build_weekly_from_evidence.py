@@ -43,6 +43,8 @@ def main() -> int:
     parser.add_argument("--tiktok-ad-rate", help="TikTok-only override, for example 0.18")
     parser.add_argument("--shopee-ad-rate", help="Shopee-only override, for example 0.20")
     parser.add_argument("--ozon-ad-rate", help="Ozon-only override, for example 0.25")
+    parser.add_argument("--shopee-local-shipping-fee-cny", default="4", help="Shopee local-fulfillment shipping cost per order in CNY; default 4")
+    parser.add_argument("--shopee-local-warehouse-fee-cny", default="4", help="Shopee local-warehouse cost per order in CNY; default 4")
     parser.add_argument("--ozon-sku-map", type=Path)
     parser.add_argument("--allow-ozon-read-enrichment", action="store_true")
     args = parser.parse_args()
@@ -95,6 +97,8 @@ def main() -> int:
         ad_rate=global_ad_rate,
         ad_rates=platform_ad_rates,
         ad_rate_source="operator_global_override" if args.ad_rate is not None else "default_22",
+        shopee_local_shipping_fee_cny=Decimal(args.shopee_local_shipping_fee_cny),
+        shopee_local_warehouse_fee_cny=Decimal(args.shopee_local_warehouse_fee_cny),
         seller_sku_by_ozon_sku=ozon_map,
         quantity_by_ozon_order_sku=ozon_quantities,
         cost_assumption_warnings=cost_policy.warnings,

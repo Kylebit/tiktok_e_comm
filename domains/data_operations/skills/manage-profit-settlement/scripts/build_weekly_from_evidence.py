@@ -7,6 +7,7 @@ from collections import Counter
 from dataclasses import replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from hashlib import sha256
 import json
 from pathlib import Path
 import subprocess
@@ -39,16 +40,17 @@ def main() -> int:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--start", required=True, type=date.fromisoformat)
     parser.add_argument("--end", required=True, type=date.fromisoformat)
+    parser.add_argument("--policy-config", type=Path, default=Path(__file__).resolve().parents[1] / "report-policy.json", help="single JSON policy for advertising rates and Shopee local fulfillment fee")
     parser.add_argument("--ad-rate", help="global estimated advertising fraction; default 0.22")
     parser.add_argument("--tiktok-ad-rate", help="TikTok-only override, for example 0.18")
     parser.add_argument("--shopee-ad-rate", help="Shopee-only override, for example 0.20")
     parser.add_argument("--ozon-ad-rate", help="Ozon-only override, for example 0.25")
-    parser.add_argument("--shopee-local-shipping-fee-cny", default="4", help="Shopee local-fulfillment shipping cost per order in CNY; default 4")
-    parser.add_argument("--shopee-local-warehouse-fee-cny", default="4", help="Shopee local-warehouse cost per order in CNY; default 4")
+    parser.add_argument("--shopee-local-fulfillment-fee-cny", help="Shopee combined local shipping and warehouse cost per parent order in CNY; overrides policy config")
     parser.add_argument("--ozon-sku-map", type=Path)
     parser.add_argument("--allow-ozon-read-enrichment", action="store_true")
     args = parser.parse_args()
 
+    policy = _load_policy(args.policy_config)
     evidence = _load_evidence(args.evidence_dir, args.start, args.end)
     catalog = load_local_catalog(args.project_root / "data" / "shop.db")
     live_fx = _live_fx()
@@ -77,16 +79,33 @@ def main() -> int:
     }
     resolved_catalog = replace(catalog, costs_by_sku=resolved_costs)
     costs = CostSnapshot.from_mapping(cost_policy.values)
-    global_ad_rate = Decimal(args.ad_rate or "0.22")
-    platform_ad_rates = {
-        platform: Decimal(value)
-        for platform, value in (
-            ("tiktok", args.tiktok_ad_rate),
-            ("shopee", args.shopee_ad_rate),
-            ("ozon", args.ozon_ad_rate),
-        )
-        if value is not None
-    }
+    configured_rates = policy["weekly_ad_rates"]
+    if args.ad_rate is not None:
+        global_ad_rate = Decimal(args.ad_rate)
+        global_ad_source = "operator_global_override"
+        platform_ad_rates = {}
+        platform_ad_sources = {}
+    else:
+        global_ad_rate = Decimal(configured_rates["default"])
+        global_ad_source = "policy_config"
+        platform_ad_rates = {
+            platform: Decimal(configured_rates[platform])
+            for platform in ("tiktok", "shopee", "ozon")
+        }
+        platform_ad_sources = {platform: "policy_config" for platform in platform_ad_rates}
+    for platform, value in (
+        ("tiktok", args.tiktok_ad_rate),
+        ("shopee", args.shopee_ad_rate),
+        ("ozon", args.ozon_ad_rate),
+    ):
+        if value is not None:
+            platform_ad_rates[platform] = Decimal(value)
+            platform_ad_sources[platform] = "operator_platform_override"
+    local_fulfillment_fee = Decimal(
+        args.shopee_local_fulfillment_fee_cny
+        if args.shopee_local_fulfillment_fee_cny is not None
+        else policy["shopee"]["local_fulfillment_fee_cny_per_order"]
+    )
     bundle = build_weekly_evidence_bundle(
         evidence,
         resolved_catalog,
@@ -96,9 +115,9 @@ def main() -> int:
         fx=fx,
         ad_rate=global_ad_rate,
         ad_rates=platform_ad_rates,
-        ad_rate_source="operator_global_override" if args.ad_rate is not None else "default_22",
-        shopee_local_shipping_fee_cny=Decimal(args.shopee_local_shipping_fee_cny),
-        shopee_local_warehouse_fee_cny=Decimal(args.shopee_local_warehouse_fee_cny),
+        ad_rate_sources=platform_ad_sources,
+        ad_rate_source=global_ad_source,
+        shopee_local_fulfillment_fee_cny=local_fulfillment_fee,
         seller_sku_by_ozon_sku=ozon_map,
         quantity_by_ozon_order_sku=ozon_quantities,
         cost_assumption_warnings=cost_policy.warnings,
@@ -107,6 +126,13 @@ def main() -> int:
     )
     catalog_issues = [_catalog_issue(item) for item in catalog.issues]
     bundle["catalog_quality_issues"] = catalog_issues
+    bundle["policy_config"] = {
+        "schema_version": policy["schema_version"],
+        "snapshot_id": policy["snapshot_id"],
+        "source_path": str(args.policy_config.resolve()),
+        "weekly_ad_rates": policy["weekly_ad_rates"],
+        "shopee": policy["shopee"],
+    }
     bundle["external_reads"] = [
         "settlement-evidence/v1 JSON artifacts",
         "shop.db via SQLite mode=ro",
@@ -146,6 +172,36 @@ def _load_evidence(directory: Path, start: date, end: date) -> dict[str, dict]:
         path = directory / f"{platform}_{site}_{start}_{end}.settlement.json"
         output[platform] = json.loads(path.read_text(encoding="utf-8"))
     return output
+
+
+def _load_policy(path: Path) -> dict[str, object]:
+    raw = path.read_bytes()
+    payload = json.loads(raw.decode("utf-8"))
+    if not isinstance(payload, dict) or payload.get("schema_version") != "profit-settlement-policy/v1":
+        raise ValueError("policy config must use profit-settlement-policy/v1")
+    rates = payload.get("weekly_ad_rates")
+    shopee = payload.get("shopee")
+    if not isinstance(rates, dict) or not isinstance(shopee, dict):
+        raise ValueError("policy config requires weekly_ad_rates and shopee objects")
+    for key in ("default", "tiktok", "shopee", "ozon"):
+        try:
+            value = Decimal(str(rates[key]))
+        except (KeyError, ValueError, ArithmeticError) as exc:
+            raise ValueError(f"policy weekly_ad_rates.{key} must be a decimal fraction") from exc
+        if value < 0 or value > 1:
+            raise ValueError(f"policy weekly_ad_rates.{key} must be between 0 and 1")
+    try:
+        local_fee = Decimal(str(shopee["local_fulfillment_fee_cny_per_order"]))
+    except (KeyError, ValueError, ArithmeticError) as exc:
+        raise ValueError("policy shopee.local_fulfillment_fee_cny_per_order must be a CNY amount") from exc
+    if local_fee < 0:
+        raise ValueError("policy shopee.local_fulfillment_fee_cny_per_order must be non-negative")
+    return {
+        "schema_version": payload["schema_version"],
+        "snapshot_id": f"sha256:{sha256(raw).hexdigest()}",
+        "weekly_ad_rates": {key: str(Decimal(str(rates[key]))) for key in ("default", "tiktok", "shopee", "ozon")},
+        "shopee": {"local_fulfillment_fee_cny_per_order": str(local_fee)},
+    }
 
 
 def _load_mapping(path: Path | None) -> dict[str, str]:

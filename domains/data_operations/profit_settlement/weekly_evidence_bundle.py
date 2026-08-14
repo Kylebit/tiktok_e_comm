@@ -26,9 +26,9 @@ def build_weekly_evidence_bundle(
     fx: FxSnapshot,
     ad_rate: Decimal | str = Decimal("0.22"),
     ad_rates: Mapping[str, Decimal | str] | None = None,
+    ad_rate_sources: Mapping[str, str] | None = None,
     ad_rate_source: str | None = None,
-    shopee_local_shipping_fee_cny: Decimal | str = Decimal("4"),
-    shopee_local_warehouse_fee_cny: Decimal | str = Decimal("4"),
+    shopee_local_fulfillment_fee_cny: Decimal | str = Decimal("4"),
     seller_sku_by_ozon_sku: Mapping[str, str] | None = None,
     quantity_by_ozon_order_sku: Mapping[str, object] | None = None,
     cost_assumption_warnings: tuple[object, ...] = (),
@@ -41,7 +41,7 @@ def build_weekly_evidence_bundle(
     if end < start:
         raise ValueError("period_end must not precede period_start")
     now = generated_at or datetime.now(timezone.utc)
-    resolved_advertising = _advertising_rates(ad_rate, ad_rates, ad_rate_source)
+    resolved_advertising = _advertising_rates(ad_rate, ad_rates, ad_rate_source, ad_rate_sources)
     reports: dict[str, Any] = {}
     bundle_issues: list[dict[str, str]] = []
 
@@ -68,8 +68,7 @@ def build_weekly_evidence_bundle(
             fx=fx,
             ad_rate=resolved_advertising[platform]["rate"],
             ad_rate_source=resolved_advertising[platform]["input_source"],
-            shopee_local_shipping_fee_cny=shopee_local_shipping_fee_cny,
-            shopee_local_warehouse_fee_cny=shopee_local_warehouse_fee_cny,
+            shopee_local_fulfillment_fee_cny=shopee_local_fulfillment_fee_cny,
             generated_at=now,
             code_version=code_version,
         )
@@ -111,7 +110,7 @@ def build_weekly_evidence_bundle(
     }
 
 
-def _platform_report(platform, adapted, *, start, end, costs, fx, ad_rate, ad_rate_source, shopee_local_shipping_fee_cny, shopee_local_warehouse_fee_cny, generated_at, code_version):
+def _platform_report(platform, adapted, *, start, end, costs, fx, ad_rate, ad_rate_source, shopee_local_fulfillment_fee_cny, generated_at, code_version):
     arguments = {
         "period_start": start,
         "period_end": end,
@@ -131,8 +130,7 @@ def _platform_report(platform, adapted, *, start, end, costs, fx, ad_rate, ad_ra
 
         return build_weekly_report(
             adapted.rows,
-            local_shipping_fee_cny=shopee_local_shipping_fee_cny,
-            local_warehouse_fee_cny=shopee_local_warehouse_fee_cny,
+            local_fulfillment_fee_cny=shopee_local_fulfillment_fee_cny,
             **arguments,
         )
     from domains.data_operations.profit_settlement.ozon import build_weekly_report
@@ -140,9 +138,10 @@ def _platform_report(platform, adapted, *, start, end, costs, fx, ad_rate, ad_ra
     return build_weekly_report(adapted.rows, **arguments)
 
 
-def _advertising_rates(default_rate, overrides, default_source):
+def _advertising_rates(default_rate, overrides, default_source, override_sources=None):
     rates = {}
     supplied = dict(overrides or {})
+    supplied_sources = dict(override_sources or {})
     unknown = sorted(set(supplied) - {"tiktok", "shopee", "ozon"})
     if unknown:
         raise ValueError(f"unknown advertising-rate platforms: {', '.join(unknown)}")
@@ -158,7 +157,7 @@ def _advertising_rates(default_rate, overrides, default_source):
             raise ValueError(f"{platform} ad rate must be a decimal fraction") from exc
         if rate < 0 or rate > 1:
             raise ValueError(f"{platform} ad rate must be between 0 and 1")
-        source = "operator_platform_override" if platform in supplied else resolved_default_source
+        source = supplied_sources.get(platform) or ("operator_platform_override" if platform in supplied else resolved_default_source)
         rates[platform] = {
             "mode": "estimated_rate",
             "rate": str(rate),

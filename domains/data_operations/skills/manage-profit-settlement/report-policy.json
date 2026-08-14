@@ -1,0 +1,12 @@
+{
+  "schema_version": "profit-settlement-policy/v1",
+  "weekly_ad_rates": {
+    "default": "0.22",
+    "tiktok": "0.22",
+    "shopee": "0.22",
+    "ozon": "0.22"
+  },
+  "shopee": {
+    "local_fulfillment_fee_cny_per_order": "4"
+  }
+}

@@ -52,6 +52,15 @@ from domains.data_operations.profit_settlement.ozon import (
 NOW = datetime(2026, 8, 6, 8, 0, tzinfo=timezone.utc)
 
 
+def _weekly_build_script_module():
+    path = Path(__file__).parents[1] / "domains" / "data_operations" / "skills" / "manage-profit-settlement" / "scripts" / "build_weekly_from_evidence.py"
+    spec = importlib.util.spec_from_file_location("profit_weekly_build_script", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _catalog_stub():
     return SimpleNamespace(
         seller_sku_by_platform_sku={"platform-1": "0001", "platform-2": "0002"},
@@ -803,6 +812,34 @@ def test_stage_two_bundle_supports_global_and_platform_ad_rate_overrides():
     assert bundle["external_writes_performed"] == []
 
 
+def test_unified_report_policy_loads_ad_rates_and_combined_local_fee(tmp_path):
+    policy_path = tmp_path / "report-policy.json"
+    policy_path.write_text(json.dumps({
+        "schema_version": "profit-settlement-policy/v1",
+        "weekly_ad_rates": {"default": "0.21", "tiktok": "0.20", "shopee": "0.19", "ozon": "0.18"},
+        "shopee": {"local_fulfillment_fee_cny_per_order": "5.50"},
+    }), encoding="utf-8")
+
+    policy = _weekly_build_script_module()._load_policy(policy_path)
+
+    assert policy["weekly_ad_rates"] == {"default": "0.21", "tiktok": "0.20", "shopee": "0.19", "ozon": "0.18"}
+    assert policy["shopee"] == {"local_fulfillment_fee_cny_per_order": "5.50"}
+    assert policy["snapshot_id"].startswith("sha256:")
+
+
+@pytest.mark.parametrize("bad_rate", ["-0.01", "1.01", "not-a-number"])
+def test_unified_report_policy_rejects_invalid_ad_rates(tmp_path, bad_rate):
+    policy_path = tmp_path / "report-policy.json"
+    policy_path.write_text(json.dumps({
+        "schema_version": "profit-settlement-policy/v1",
+        "weekly_ad_rates": {"default": "0.22", "tiktok": bad_rate, "shopee": "0.22", "ozon": "0.22"},
+        "shopee": {"local_fulfillment_fee_cny_per_order": "4"},
+    }), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="weekly_ad_rates.tiktok"):
+        _weekly_build_script_module()._load_policy(policy_path)
+
+
 def test_ozon_read_enrichment_supplies_mapping_and_quantity_without_inference():
     evidence = {
         "schema_version": "settlement-evidence/v1", "status": "ready", "platform": "ozon", "site": "RU",
@@ -876,19 +913,18 @@ def test_shopee_fulfillment_classification_and_local_cost_are_order_scoped_and_c
     )
     overridden = build_shopee_weekly_report(
         [first, second], period_start="2026-08-03", period_end="2026-08-09",
-        costs=_costs(), fx=_fx(), local_warehouse_fee_cny="6.50",
+        costs=_costs(), fx=_fx(), local_fulfillment_fee_cny="6.50",
         generated_at=NOW, code_version="test-v1",
     )
 
     assert default_report.status == "ready"
     assert default_report.source["fulfillment_order_counts"] == {"local": 1, "cross_border": 0, "unknown": 0}
-    assert default_report.totals["local_shipping_cost_cny"] == Decimal("4")
-    assert default_report.totals["local_warehouse_cost_cny"] == Decimal("4")
-    assert sum((line["external_costs_cny"] for line in default_report.order_lines), Decimal("0")) == Decimal("10")
-    assert sum((line["fulfillment"]["local_shipping_cost_cny"] for line in default_report.order_lines), Decimal("0")) == Decimal("4")
-    assert sum((line["fulfillment"]["local_warehouse_cost_cny"] for line in default_report.order_lines), Decimal("0")) == Decimal("4")
+    assert default_report.totals["local_fulfillment_cost_cny"] == Decimal("4")
+    assert sum((line["external_costs_cny"] for line in default_report.order_lines), Decimal("0")) == Decimal("6")
+    assert sum((line["fulfillment"]["local_fulfillment_cost_cny"] for line in default_report.order_lines), Decimal("0")) == Decimal("4")
+    assert default_report.source["fulfillment_policy"]["cost_components"] == ["local_shipping", "local_warehouse"]
     assert audit_profit_report(default_report.payload()).status == "PASSED"
-    assert overridden.totals["local_warehouse_cost_cny"] == Decimal("6.50")
+    assert overridden.totals["local_fulfillment_cost_cny"] == Decimal("6.50")
     assert overridden.idempotency_key != default_report.idempotency_key
 
 
@@ -1286,13 +1322,13 @@ def test_detailed_html_renders_main_image_weight_cost_ads_fees_profit_and_live_f
         "orderTimeButton.getAttribute('aria-sort') === 'ascending'",
         "? 'descending' : 'ascending'",
         "if (!leftTime) return 1", "if (!rightTime) return -1",
-        "发货方式", "本土每单运费(CNY)", "本土仓费(CNY)",
+        "发货方式", "本土履约费(CNY)",
     ):
         assert expected in html
     assert "&lt;img" not in html
     assert "th-main / TH" not in html
     assert "平台 SKU" not in html
-    assert html.index("<th>Seller SKU</th>") < html.index("<th>净结算(CNY)</th>") < html.index("<th>商品总成本(CNY)</th>") < html.index("<th>广告费(CNY)</th>") < html.index("<th>利润(CNY)</th>") < html.index("<th>利润率</th>")
+    assert html.index("<th>Seller SKU</th>") < html.index("<th>净结算(CNY)</th>") < html.index("<th>商品总成本(CNY)</th>") < html.index("<th>广告费(CNY)</th>") < html.index("<th>本土履约费(CNY)</th>") < html.index("<th>利润(CNY)</th>") < html.index("<th>利润率</th>")
     assert html.index("<th>成本/FX/结算证据</th>") < html.index("<th>商品名称</th>")
 
 

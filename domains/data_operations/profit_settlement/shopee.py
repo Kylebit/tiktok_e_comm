@@ -70,16 +70,14 @@ def build_weekly_report(
     fx: FxSnapshot,
     ad_rate: Decimal | str = Decimal("0.22"),
     ad_rate_source: str | None = None,
-    local_shipping_fee_cny: Decimal | str = Decimal("4"),
-    local_warehouse_fee_cny: Decimal | str = Decimal("4"),
+    local_fulfillment_fee_cny: Decimal | str = Decimal("4"),
     generated_at: datetime | None = None,
     code_version: str = "unknown",
 ) -> ShopeeProfitReport:
     rate_value = _decimal(ad_rate)
     if rate_value is None or rate_value < 0 or rate_value > 1:
         raise ValueError("ad_rate must be a decimal fraction between 0 and 1")
-    local_shipping = _nonnegative_money(local_shipping_fee_cny, "local_shipping_fee_cny")
-    local_warehouse = _nonnegative_money(local_warehouse_fee_cny, "local_warehouse_fee_cny")
+    local_fulfillment = _nonnegative_money(local_fulfillment_fee_cny, "local_fulfillment_fee_cny")
     start, end = _period(period_start, period_end)
     source_rows = [dict(row) for row in rows]
     issues: list[ShopeeQualityIssue] = []
@@ -132,11 +130,11 @@ def build_weekly_report(
             "fulfillment": fulfillment,
             "fee_items":fees,"external_costs_cny":external,"profit_cny":settlement_cny-product_cost-ad_cny-external,"source_snapshot_id":_text(row.get("source_snapshot_id")),"source_settlement_facts":list(row.get("source_settlement_facts") or []),
         })
-    _apply_local_fulfillment_costs(lines, local_shipping, local_warehouse, issues)
+    _apply_local_fulfillment_costs(lines, local_fulfillment, issues)
     lines.sort(key=_line_settlement_sort_key)
     rate_source = _text(ad_rate_source) or ("default_22" if rate_value == Decimal("0.22") else "operator_global_override")
     source_checksum = _checksum(sorted((_ready(row) for row in source_rows), key=_canonical))
-    fulfillment_policy = {"local_shipping_fee_cny_per_order": local_shipping, "local_warehouse_fee_cny_per_order": local_warehouse, "classification_rule": "import_vat_and_duty_presence/v2"}
+    fulfillment_policy = {"local_fulfillment_fee_cny_per_order": local_fulfillment, "cost_components": ["local_shipping", "local_warehouse"], "classification_rule": "import_vat_and_duty_presence/v2"}
     fingerprint = _checksum({"schema":SCHEMA_VERSION,"period_kind":"weekly","period":[start.isoformat(),end.isoformat()],"source":source_checksum,"costs":costs.snapshot_id,"fx":fx.snapshot_id,"ad_rate":str(rate_value),"ad_rate_source":rate_source,"fulfillment_policy":fulfillment_policy,"code_version":code_version})
     return ShopeeProfitReport(report_id=f"shopee-profit-{fingerprint[:16]}",idempotency_key=f"{SCHEMA_VERSION}:{fingerprint}",calculation_kind="realized_settlement_with_estimated_ads",period_kind="weekly",period={"start":start.isoformat(),"end":end.isoformat(),"timezone":"source_local_date"},status="ready" if not issues else "needs_review",totals=_totals(lines),order_lines=tuple(lines),quality_issues=tuple(issues),source={"input_checksum":source_checksum,"raw_row_count":len(source_rows),"calculated_row_count":len(lines),"rejected_row_count":rejected,"out_of_period_row_count":out_of_period,"unsettled_row_count":unsettled,"fulfillment_order_counts":_fulfillment_order_counts(lines),"fulfillment_policy":fulfillment_policy,"cost_snapshot":costs.payload(),"fx_snapshot":fx.payload()},advertising={"mode":"estimated_rate","rate":rate_value,"input_source":rate_source,"policy_version":"operator-adjustable-ad-rate/v1","basis":"product_sales_amount_after_seller_discount"},generated_at=generated_at or datetime.now(timezone.utc),code_version=code_version)
 
@@ -149,13 +147,11 @@ def build_monthly_report(
     costs: CostSnapshot,
     fx: FxSnapshot,
     actual_advertising: Mapping[str, object] | None,
-    local_shipping_fee_cny: Decimal | str = Decimal("4"),
-    local_warehouse_fee_cny: Decimal | str = Decimal("4"),
+    local_fulfillment_fee_cny: Decimal | str = Decimal("4"),
     generated_at: datetime | None = None,
     code_version: str = "unknown",
 ) -> ShopeeProfitReport:
-    local_shipping = _nonnegative_money(local_shipping_fee_cny, "local_shipping_fee_cny")
-    local_warehouse = _nonnegative_money(local_warehouse_fee_cny, "local_warehouse_fee_cny")
+    local_fulfillment = _nonnegative_money(local_fulfillment_fee_cny, "local_fulfillment_fee_cny")
     start, end = _period(period_start, period_end)
     source_rows = [dict(row) for row in rows]
     issues: list[ShopeeQualityIssue] = []
@@ -198,12 +194,12 @@ def build_monthly_report(
     advertising = _advertising(actual_advertising, issues)
     allocations = _allocate(advertising.get("total_cny") if advertising else None, prepared)
     calculated = [_line(item, allocations[index], costs, fx, advertising) for index, item in enumerate(prepared)] if advertising else []
-    _apply_local_fulfillment_costs(calculated, local_shipping, local_warehouse, issues)
+    _apply_local_fulfillment_costs(calculated, local_fulfillment, issues)
     if not advertising and prepared:
         rejected += len(prepared)
     totals = _totals(calculated)
     source_checksum = _checksum(sorted((_ready(row) for row in source_rows), key=_canonical))
-    fulfillment_policy = {"local_shipping_fee_cny_per_order": local_shipping, "local_warehouse_fee_cny_per_order": local_warehouse, "classification_rule": "import_vat_and_duty_presence/v2"}
+    fulfillment_policy = {"local_fulfillment_fee_cny_per_order": local_fulfillment, "cost_components": ["local_shipping", "local_warehouse"], "classification_rule": "import_vat_and_duty_presence/v2"}
     fingerprint = _checksum({"schema": SCHEMA_VERSION, "period_kind": "monthly", "period": [start.isoformat(), end.isoformat()], "source": source_checksum, "costs": costs.snapshot_id, "fx": fx.snapshot_id, "advertising": advertising or {}, "fulfillment_policy": fulfillment_policy, "code_version": code_version})
     return ShopeeProfitReport(
         report_id=f"shopee-profit-{fingerprint[:16]}",
@@ -273,16 +269,14 @@ def _fulfillment(row: Mapping[str, object], record_id: str, issues: list[ShopeeQ
         "classification_rule": _text(item.get("classification_rule")) or "import_vat_and_duty_presence/v2",
         "import_vat_local": _decimal(item.get("import_vat_local")),
         "import_duty_local": _decimal(item.get("import_duty_local")),
-        "local_shipping_cost_cny": Decimal("0"),
-        "local_warehouse_cost_cny": Decimal("0"),
+        "local_fulfillment_cost_cny": Decimal("0"),
         "allocation_method": "not_applicable" if mode != "local" else "pending",
     }
 
 
 def _apply_local_fulfillment_costs(
     lines: list[dict[str, Any]],
-    shipping_per_order: Decimal,
-    warehouse_per_order: Decimal,
+    fee_per_order: Decimal,
     issues: list[ShopeeQualityIssue],
 ) -> None:
     groups: dict[str, list[dict[str, Any]]] = {}
@@ -296,20 +290,17 @@ def _apply_local_fulfillment_costs(
             groups.setdefault(order_id, []).append(line)
     for order_id, members in sorted(groups.items()):
         members.sort(key=lambda line: _text((line.get("identity") or {}).get("order_line_id")))
-        shipping_allocations = _allocate_order_cost(shipping_per_order, members)
-        warehouse_allocations = _allocate_order_cost(warehouse_per_order, members)
-        for line, shipping, warehouse in zip(members, shipping_allocations, warehouse_allocations):
+        allocations = _allocate_order_cost(fee_per_order, members)
+        for line, allocation in zip(members, allocations):
             fulfillment = line["fulfillment"]
-            fulfillment["local_shipping_cost_cny"] = shipping
-            fulfillment["local_warehouse_cost_cny"] = warehouse
+            fulfillment["local_fulfillment_cost_cny"] = allocation
             fulfillment["allocation_method"] = "product_sales_cny_pro_rata_with_exact_remainder/v1"
             fulfillment["order_cost_policy"] = {
-                "shipping_fee_cny_per_order": shipping_per_order,
-                "warehouse_fee_cny_per_order": warehouse_per_order,
+                "local_fulfillment_fee_cny_per_order": fee_per_order,
+                "cost_components": ["local_shipping", "local_warehouse"],
             }
-            local_cost = shipping + warehouse
-            line["external_costs_cny"] += local_cost
-            line["profit_cny"] -= local_cost
+            line["external_costs_cny"] += allocation
+            line["profit_cny"] -= allocation
 
 
 def _allocate_order_cost(total: Decimal, lines: list[dict[str, Any]]) -> list[Decimal]:
@@ -373,8 +364,7 @@ def _totals(lines):
         "settlement_cny": sum((x["settlement"]["net_amount_cny"] for x in lines), Decimal("0")),
         "product_cost_cny": sum((x["cost"]["total_cny"] for x in lines), Decimal("0")),
         "advertising_cny": sum((x["advertising"]["amount_cny"] for x in lines), Decimal("0")),
-        "local_shipping_cost_cny": sum((_decimal((x.get("fulfillment") or {}).get("local_shipping_cost_cny")) or Decimal("0") for x in lines), Decimal("0")),
-        "local_warehouse_cost_cny": sum((_decimal((x.get("fulfillment") or {}).get("local_warehouse_cost_cny")) or Decimal("0") for x in lines), Decimal("0")),
+        "local_fulfillment_cost_cny": sum((_decimal((x.get("fulfillment") or {}).get("local_fulfillment_cost_cny")) or Decimal("0") for x in lines), Decimal("0")),
         "external_costs_cny": sum((x["external_costs_cny"] for x in lines), Decimal("0")),
         "profit_cny": sum((x["profit_cny"] for x in lines), Decimal("0")),
     }

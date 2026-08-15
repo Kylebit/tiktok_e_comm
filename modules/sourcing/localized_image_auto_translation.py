@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
@@ -109,7 +110,16 @@ def _source_rows(regions: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
 
 
 def _numeric_tokens(text: str) -> list[str]:
-    return re.findall(r"\d+(?:[.,]\d+)?", text)
+    tokens = re.findall(r"\d+(?:[.,]\d+)?", text)
+    normalized: list[str] = []
+    for token in tokens:
+        normalized.append(
+            "".join(
+                str(unicodedata.digit(char)) if char.isdigit() else char
+                for char in token
+            )
+        )
+    return normalized
 
 
 def _requires_translation(source_text: str) -> bool:

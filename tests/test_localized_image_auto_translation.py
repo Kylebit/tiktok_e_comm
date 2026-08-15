@@ -134,3 +134,15 @@ def test_allows_valid_single_word_loanword_in_latin_script_locale():
     )
 
     assert result["translations"]["ms-MY"][0]["translated_text"] == "STANDARD"
+
+
+def test_accepts_locale_digits_when_the_numeric_fact_is_unchanged():
+    payload = _payload()
+    payload["translations"]["th-TH"][0]["translated_text"] = "ติดตั้งง่าย ๔๔ cm"
+
+    result = translate_image_regions(
+        REGIONS,
+        model_call=lambda *_args, **_kwargs: json.dumps(payload, ensure_ascii=False),
+    )
+
+    assert result["translations"]["th-TH"][0]["translated_text"].endswith("๔๔ cm")

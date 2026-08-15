@@ -25,7 +25,7 @@ When multiple settlement facts in the same reporting period refer to the same or
 - live FX rate/source/provider as-of/snapshot; one immutable snapshot per report run
 - external costs, profit, source snapshot identity, quality issues
 - Shopee fulfillment mode and official import-tax evidence; for local orders, the allocated combined CNY shipping-and-warehouse cost plus its per-parent-order policy
-- TikTok official `fulfillment_type` and its order-detail evidence source; retain supporting delivery/shipping/warehouse fields when returned
+- TikTok Thailand local/cross-border mode plus the independent settled `import_vat` and `customs_duty` Decimal components; exclude order-API fulfillment-operator fields
 
 ## Status
 
@@ -45,6 +45,8 @@ Order lines are initially sorted by settlement timestamp descending, with order 
 Settlement reconciliation preserves the exact local-currency difference. An absolute difference no greater than `1e-12` is treated as Decimal allocation noise; any larger difference produces `settlement_reconciliation_mismatch`.
 
 TikTok follows the same hidden order-line ID display contract as Shopee: omit the column from HTML, but retain it in JSON and HTML sort metadata.
+
+For TikTok Thailand, a non-zero settled `import_vat` or `customs_duty` component means cross-border; two present exact zeros mean local. Missing either component is blocking. Never substitute order API `fulfillment_type` or warehouse/delivery metadata for this tax evidence, and do not retain those operator fields in report payloads.
 
 ## Knowledge
 

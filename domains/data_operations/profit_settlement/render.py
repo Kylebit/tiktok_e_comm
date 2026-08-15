@@ -285,8 +285,6 @@ def _fulfillment_label(value):
         "local": "本土发货",
         "cross_border": "跨境发货",
         "unknown": "待核对",
-        "FULFILLMENT_BY_SELLER": "商家履约（FULFILLMENT_BY_SELLER）",
-        "FULFILLMENT_BY_TIKTOK": "TikTok履约（FULFILLMENT_BY_TIKTOK）",
     }.get(str(value or ""), _text(value) if value else "待核对")
 def _money(value):
     number = _decimal(value)

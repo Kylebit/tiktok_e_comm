@@ -387,7 +387,7 @@ def test_stage_one_tiktok_reads_only_official_order_created_at():
     ]
 
 
-def test_stage_one_tiktok_preserves_official_fulfillment_evidence():
+def test_stage_one_tiktok_keeps_order_time_but_drops_fulfillment_operator():
     module = _settlement_pull_module()
     zone = module.SITE_TIMEZONES[("tiktok", "TH")]
     timestamp = int(datetime(2026, 7, 29, 3, 15, tzinfo=timezone.utc).timestamp())
@@ -411,14 +411,203 @@ def test_stage_one_tiktok_preserves_official_fulfillment_evidence():
     )
 
     assert issues == []
-    assert facts["ORDER-1"]["fulfillment"] == {
-        "mode": "FULFILLMENT_BY_SELLER",
-        "fulfillment_type": "FULFILLMENT_BY_SELLER",
-        "delivery_type": "HOME_DELIVERY",
-        "shipping_type": "TIKTOK",
-        "delivery_option_name": "Standard shipping",
-        "warehouse_id": "warehouse-redacted",
-        "evidence_source": "/order/202309/orders.fulfillment_type",
+    assert facts["ORDER-1"] == {
+        "order_created_at": "2026-07-29T10:15:00+07:00",
+    }
+
+
+def test_stage_one_tiktok_preserves_import_tax_components():
+    module = _settlement_pull_module()
+    row = module._tiktok_row(
+        "TH",
+        {
+            "Order/adjustment ID  ": "ORDER-1",
+            "Statement ID": "STATEMENT-1",
+            "Type ": "Order",
+            "Currency": "THB",
+            "SKU ID": "platform-1",
+            "Quantity": "1",
+            "Total settlement amount": "124.87",
+            "Subtotal after seller discounts": "205.66",
+            "Customs duty": "-13.00",
+            "Import VAT": "-14.69",
+        },
+        0,
+        "2026-08-10T07:00:00+07:00",
+    )
+
+    components = {item["code"]: item["amount"] for item in row["financial_components"]}
+    assert components["customs_duty"] == Decimal("-13.00")
+    assert components["import_vat"] == Decimal("-14.69")
+
+
+def test_stage_one_tiktok_missing_import_tax_is_blocking_evidence_issue():
+    module = _settlement_pull_module()
+    issues = module._tiktok_import_tax_issues([{
+        "order_id": "ORDER-1",
+        "transaction_type": "Order",
+        "financial_components": [
+            {"code": "customs_duty", "amount": Decimal("0")},
+        ],
+    }])
+
+    assert [issue["code"] for issue in issues] == [
+        "missing_fulfillment_tax_evidence"
+    ]
+    assert "import_vat" in issues[0]["message"]
+
+
+def test_tiktok_line_expansion_preserves_missing_tax_as_missing():
+    import tiktok_settlement
+
+    row = tiktok_settlement.base_row(
+        "STATEMENT-1",
+        0,
+        "THB",
+        {
+            "type": "ORDER",
+            "order_id": "ORDER-1",
+            "settlement_amount": "10",
+        },
+    )
+    expanded = tiktok_settlement.expand_order_rows(
+        row,
+        {},
+        {"line_items": [{"sku_id": "platform-1", "sale_price": "12"}]},
+    )
+
+    assert expanded[0]["Customs duty"] == ""
+    assert expanded[0]["Import VAT"] == ""
+
+
+def test_tiktok_finance_v202501_maps_nested_tax_and_fee_breakdowns(monkeypatch):
+    import tiktok_settlement
+
+    calls = []
+    monkeypatch.setattr(
+        tiktok_settlement,
+        "paginate_get",
+        lambda token, path, query, list_key: calls.append(
+            (token, path, query, list_key)
+        ) or [],
+    )
+    tiktok_settlement.fetch_statement_transactions("token", "cipher", "STATEMENT-1")
+
+    assert calls[0][1] == "/finance/202501/statements/STATEMENT-1/statement_transactions"
+    assert calls[0][3] == "transactions"
+
+    row = tiktok_settlement.base_row(
+        "STATEMENT-1",
+        0,
+        "THB",
+        {
+            "type": "ORDER",
+            "order_id": "ORDER-1",
+            "settlement_amount": "124.87",
+            "revenue_amount": "205.66",
+            "fee_tax_amount": "-66.79",
+            "adjustment_amount": "0",
+            "revenue_breakdown": {
+                "subtotal_before_discount_amount": "220",
+                "seller_discount_amount": "-14.34",
+            },
+            "shipping_cost_breakdown": {
+                "actual_shipping_fee_amount": "-14",
+                "customer_paid_shipping_fee_amount": "0",
+            },
+            "fee_tax_breakdown": {
+                "fee": {
+                    "transaction_fee_amount": "-6.6",
+                    "platform_commission_amount": "-17.14",
+                },
+                "tax": {
+                    "customs_duty_amount": "-13",
+                    "import_vat_amount": "-14.69",
+                },
+            },
+            "supplementary_component": {"customer_payment_amount": "205.66"},
+        },
+    )
+
+    assert row["Subtotal after seller discounts"] == 205.66
+    assert row["Customs duty"] == -13.0
+    assert row["Import VAT"] == -14.69
+    assert row["Transaction fee"] == -6.6
+
+
+@pytest.mark.parametrize(
+    ("import_vat", "customs_duty", "expected_mode"),
+    (("-14.69", "-13.00", "cross_border"), ("0", "0", "local")),
+)
+def test_tiktok_th_fulfillment_uses_import_tax_not_operator(
+    import_vat, customs_duty, expected_mode
+):
+    evidence = {
+        "schema_version": "settlement-evidence/v1",
+        "status": "ready",
+        "platform": "tiktok",
+        "site": "TH",
+        "snapshot_id": "tiktok-settlement:tax-fixture",
+        "checksum": "tax-fixture",
+        "net_settlement_total_local": "124.87",
+        "receipt": {"external_writes_performed": []},
+        "orders": [{
+            "order_id": "ORDER-1",
+            "statement_id": "STATEMENT-1",
+            "transaction_type": "Order",
+            "settlement_status": "settled",
+            "settled_at": "2026-08-10T07:00:00+07:00",
+            "currency": "THB",
+            "net_settlement_amount": "124.87",
+            "buyer_total_amount": "205.66",
+            "items": [{"platform_sku": "platform-1", "quantity": "1"}],
+            "financial_components": [
+                {"code": "import_vat", "amount": import_vat, "currency": "THB"},
+                {"code": "customs_duty", "amount": customs_duty, "currency": "THB"},
+            ],
+            "fulfillment": {"fulfillment_type": "FULFILLMENT_BY_SELLER"},
+        }],
+    }
+
+    result = adapt_settlement_evidence(evidence, _catalog_stub(), period_kind="weekly")
+
+    assert result.status == "ready"
+    fulfillment = result.rows[0]["fulfillment"]
+    assert fulfillment["mode"] == expected_mode
+    assert fulfillment["classification_rule"] == "tiktok_th_import_tax_charged/v1"
+    assert "fulfillment_type" not in fulfillment
+
+
+def test_tiktok_th_missing_import_tax_evidence_needs_review():
+    evidence = {
+        "schema_version": "settlement-evidence/v1",
+        "status": "ready",
+        "platform": "tiktok",
+        "site": "TH",
+        "snapshot_id": "tiktok-settlement:missing-tax",
+        "checksum": "missing-tax",
+        "net_settlement_total_local": "10",
+        "receipt": {"external_writes_performed": []},
+        "orders": [{
+            "order_id": "ORDER-1",
+            "statement_id": "STATEMENT-1",
+            "transaction_type": "Order",
+            "settlement_status": "settled",
+            "settled_at": "2026-08-10T07:00:00+07:00",
+            "currency": "THB",
+            "net_settlement_amount": "10",
+            "buyer_total_amount": "12",
+            "items": [{"platform_sku": "platform-1", "quantity": "1"}],
+            "financial_components": [],
+        }],
+    }
+
+    result = adapt_settlement_evidence(evidence, _catalog_stub(), period_kind="weekly")
+
+    assert result.status == "needs_review"
+    assert result.rows[0]["fulfillment"]["mode"] == "unknown"
+    assert {issue.code for issue in result.issues} == {
+        "missing_fulfillment_tax_evidence"
     }
 
 
@@ -634,8 +823,10 @@ def test_stage_two_adapts_tiktok_orders_and_replaces_actual_ads_with_weekly_rate
                     {"platform_sku": "platform-1", "quantity": "1", "product_name": "One"},
                     {"platform_sku": "platform-2", "quantity": "3", "product_name": "Two"},
                 ],
-                "financial_components": [
-                    {"code": "commission", "amount": "-20", "currency": "THB"}
+                    "financial_components": [
+                        {"code": "commission", "amount": "-20", "currency": "THB"},
+                        {"code": "import_vat", "amount": "0", "currency": "THB"},
+                        {"code": "customs_duty", "amount": "0", "currency": "THB"},
                 ],
             },
             {
@@ -722,7 +913,11 @@ def test_stage_two_consolidates_same_period_sale_and_refund_without_repeating_co
                 "currency": "THB", "net_settlement_amount": "100",
                 "buyer_total_amount": "120",
                 "items": [{"platform_sku": "platform-1", "quantity": "1"}],
-                "financial_components": [{"code": "customer_payment", "amount": "120", "currency": "THB"}],
+                "financial_components": [
+                    {"code": "customer_payment", "amount": "120", "currency": "THB"},
+                    {"code": "import_vat", "amount": "0", "currency": "THB"},
+                    {"code": "customs_duty", "amount": "0", "currency": "THB"},
+                ],
             },
             {
                 "order_id": "order-1", "statement_id": "statement-refund",
@@ -730,7 +925,11 @@ def test_stage_two_consolidates_same_period_sale_and_refund_without_repeating_co
                 "currency": "THB", "net_settlement_amount": "-30",
                 "buyer_total_amount": "0",
                 "items": [{"platform_sku": "platform-1", "quantity": "1"}],
-                "financial_components": [{"code": "customer_refund", "amount": "-30", "currency": "THB"}],
+                "financial_components": [
+                    {"code": "customer_refund", "amount": "-30", "currency": "THB"},
+                    {"code": "import_vat", "amount": "0", "currency": "THB"},
+                    {"code": "customs_duty", "amount": "0", "currency": "THB"},
+                ],
             },
         ],
     }
@@ -772,7 +971,11 @@ def test_stage_two_allows_sub_minor_unit_decimal_reconciliation_noise():
             "order_id": "order-tail", "statement_id": "statement-tail",
             "transaction_type": "Order", "settled_at": "2026-08-06T07:00:00+07:00",
             "currency": "THB", "net_settlement_amount": "1", "buyer_total_amount": "1",
-            "items": [{"platform_sku": "platform-1", "quantity": "1"}], "financial_components": [],
+            "items": [{"platform_sku": "platform-1", "quantity": "1"}],
+            "financial_components": [
+                {"code": "import_vat", "amount": "0", "currency": "THB"},
+                {"code": "customs_duty", "amount": "0", "currency": "THB"},
+            ],
         }],
     }
 
@@ -801,7 +1004,10 @@ def test_stage_two_keeps_missing_sku_mapping_as_a_blocking_row():
             "net_settlement_amount": "10",
             "buyer_total_amount": "12",
             "items": [{"platform_sku": "unknown-platform", "quantity": "1"}],
-            "financial_components": [],
+            "financial_components": [
+                {"code": "import_vat", "amount": "0", "currency": "THB"},
+                {"code": "customs_duty", "amount": "0", "currency": "THB"},
+            ],
         }],
     }
 
@@ -852,7 +1058,22 @@ def test_stage_two_bundle_supports_global_and_platform_ad_rate_overrides():
                 "net_settlement_amount": "100",
                 "buyer_total_amount": "120",
                 "items": [{item_key: source_sku, "quantity": "1", "discounted_price": "120"}],
-                "financial_components": ([{"code": "OperationAgentDeliveredToCustomer", "amount": "120"}] if platform == "ozon" else [{"code": "fee", "amount": "-2"}, {"code": "buyer_paid_shipping_fee", "amount": "0"}, *([{"code": "vat_on_imported_goods", "amount": "13"}, {"code": "th_import_duty", "amount": "37"}, *([{"code": "sales_tax_on_lvg", "amount": "0"}] if site == "MY" else [])] if platform == "shopee" else [])]),
+                "financial_components": (
+                    [{"code": "OperationAgentDeliveredToCustomer", "amount": "120"}]
+                    if platform == "ozon"
+                    else [
+                        {"code": "fee", "amount": "-2"},
+                        {"code": "buyer_paid_shipping_fee", "amount": "0"},
+                        *(
+                            [{"code": "vat_on_imported_goods", "amount": "13"}, {"code": "th_import_duty", "amount": "37"}, *([{"code": "sales_tax_on_lvg", "amount": "0"}] if site == "MY" else [])]
+                            if platform == "shopee"
+                            else [
+                                {"code": "import_vat", "amount": "0"},
+                                {"code": "customs_duty", "amount": "0"},
+                            ]
+                        ),
+                    ]
+                ),
             }],
         }
 
@@ -1562,9 +1783,11 @@ def test_shopee_html_hides_order_line_id_and_formats_visible_times_for_people():
 def test_tiktok_html_hides_order_line_id_but_json_retains_it():
     row = _row("TK-HIDDEN-LINE")
     row["fulfillment"] = {
-        "mode": "FULFILLMENT_BY_SELLER",
-        "fulfillment_type": "FULFILLMENT_BY_SELLER",
-        "evidence_source": "/order/202309/orders.fulfillment_type",
+        "mode": "cross_border",
+        "classification_rule": "tiktok_th_import_tax_charged/v1",
+        "import_vat_local": "-14.69",
+        "customs_duty_local": "-13.00",
+        "evidence_source": "finance.statement_transactions.import_vat+customs_duty",
     }
     report = build_tiktok_weekly_report(
         [row], period_start="2026-08-03", period_end="2026-08-09",
@@ -1574,8 +1797,10 @@ def test_tiktok_html_hides_order_line_id_but_json_retains_it():
 
     assert _visible_base_headers("TIKTOK") == _visible_base_headers("SHOPEE")
     assert report["order_lines"][0]["identity"]["order_line_id"] == "TK-HIDDEN-LINE:1"
-    assert report["order_lines"][0]["fulfillment"]["fulfillment_type"] == "FULFILLMENT_BY_SELLER"
-    assert "FULFILLMENT_BY_SELLER" in html
+    assert report["order_lines"][0]["fulfillment"]["mode"] == "cross_border"
+    assert "fulfillment_type" not in report["order_lines"][0]["fulfillment"]
+    assert "跨境发货" in html
+    assert "FULFILLMENT_BY_SELLER" not in html
 
 
 def test_temporary_cost_policy_defaults_missing_to_5_and_selects_highest_conflict():

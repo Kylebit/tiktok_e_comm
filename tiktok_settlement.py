@@ -140,13 +140,13 @@ def fetch_statements(access_token, cipher, ge, lt):
 def fetch_statement_transactions(access_token, cipher, statement_id):
     return paginate_get(
         access_token,
-        f"/finance/202309/statements/{statement_id}/statement_transactions",
+        f"/finance/202501/statements/{statement_id}/statement_transactions",
         {
             "shop_cipher": cipher,
             "sort_field": "order_create_time",
             "page_size": "100",
         },
-        list_key="statement_transactions",
+        list_key="transactions",
     )
 
 
@@ -193,7 +193,32 @@ def tx_order_id(tx) -> str:
 
 
 def base_row(statement_id, statement_time, currency, tx):
-    return {
+    fee_tax = tx.get("fee_tax_breakdown") or {}
+    fee = fee_tax.get("fee") or {}
+    tax = fee_tax.get("tax") or {}
+    revenue = tx.get("revenue_breakdown") or {}
+    shipping = tx.get("shipping_cost_breakdown") or {}
+    supplementary = tx.get("supplementary_component") or {}
+
+    def value(legacy_key, source, current_key=None):
+        if legacy_key in tx:
+            return tx.get(legacy_key)
+        return source.get(current_key or legacy_key)
+
+    subtotal_before = value(
+        "gross_sales_amount", revenue, "subtotal_before_discount_amount"
+    )
+    seller_discount = value(
+        "seller_discount_amount", revenue, "seller_discount_amount"
+    )
+    if "after_seller_discounts_subtotal_amount" in tx:
+        subtotal_after = tx.get("after_seller_discounts_subtotal_amount")
+    elif subtotal_before not in (None, "") and seller_discount not in (None, ""):
+        subtotal_after = fnum(subtotal_before) + fnum(seller_discount)
+    else:
+        subtotal_after = None
+
+    row = {
         "Statement Date": fmt_date(statement_time),
         "Statement ID": str(statement_id),
         "Currency": currency or tx.get("currency", ""),
@@ -201,22 +226,33 @@ def base_row(statement_id, statement_time, currency, tx):
         "Order/adjustment ID  ": tx_order_id(tx),
         "Total settlement amount": fnum(tx.get("settlement_amount")),
         "Total Revenue": fnum(tx.get("revenue_amount")),
-        "Subtotal after seller discounts": fnum(tx.get("after_seller_discounts_subtotal_amount")),
-        "Subtotal before discounts": fnum(tx.get("gross_sales_amount")),
-        "Seller discounts": fnum(tx.get("seller_discount_amount")),
-        "Total Fees": fnum(tx.get("fee_amount")),
-        "Transaction fee": fnum(tx.get("transaction_fee_amount")),
-        "TikTok Shop commission fee": fnum(tx.get("platform_commission_amount")),
-        "Actual shipping fee": fnum(tx.get("actual_shipping_fee_amount")),
-        "Customer shipping fee": fnum(tx.get("customer_shipping_fee_amount")),
-        "Affiliate Commission": fnum(tx.get("affiliate_commission_amount")),
-        "Affiliate Shop Ads commission": fnum(tx.get("affiliate_ads_commission_amount")),
-        "Customer payment": fnum(tx.get("customer_payment_amount")),
-        "Customer refund": fnum(tx.get("customer_refund_amount")),
-        "Platform discounts": fnum(tx.get("platform_discount_amount")),
+        "Subtotal after seller discounts": fnum(subtotal_after),
+        "Subtotal before discounts": fnum(subtotal_before),
+        "Seller discounts": fnum(seller_discount),
+        "Total Fees": fnum(value("fee_amount", tx, "fee_tax_amount")),
+        "Transaction fee": fnum(value("transaction_fee_amount", fee)),
+        "TikTok Shop commission fee": fnum(value("platform_commission_amount", fee)),
+        "Actual shipping fee": fnum(value("actual_shipping_fee_amount", shipping)),
+        "Customer shipping fee": fnum(value("customer_shipping_fee_amount", shipping, "customer_paid_shipping_fee_amount")),
+        "Affiliate Commission": fnum(value("affiliate_commission_amount", fee)),
+        "Affiliate Shop Ads commission": fnum(value("affiliate_ads_commission_amount", fee)),
+        "Customs duty": (
+            fnum(value("customs_duty_amount", tax))
+            if "customs_duty_amount" in tx or "customs_duty_amount" in tax
+            else ""
+        ),
+        "Import VAT": (
+            fnum(value("import_vat_amount", tax))
+            if "import_vat_amount" in tx or "import_vat_amount" in tax
+            else ""
+        ),
+        "Customer payment": fnum(value("customer_payment_amount", supplementary)),
+        "Customer refund": fnum(value("customer_refund_amount", supplementary)),
+        "Platform discounts": fnum(value("platform_discount_amount", supplementary)),
         "Ajustment amount": fnum(tx.get("adjustment_amount")),
         "Related order ID": str(tx.get("adjustment_order_id") or tx.get("order_id") or ""),
     }
+    return row
 
 
 def expand_order_rows(row, tx, order):
@@ -234,9 +270,17 @@ def expand_order_rows(row, tx, order):
         "Subtotal before discounts", "Seller discounts", "Total Fees", "Transaction fee",
         "TikTok Shop commission fee", "Actual shipping fee", "Customer shipping fee",
         "Affiliate Commission", "Affiliate Shop Ads commission",
+        "Customs duty", "Import VAT",
         "Customer payment", "Customer refund", "Platform discounts", "Ajustment amount",
     ]
-    splits = {k: split_amount(row[k], weights) for k in numeric_keys}
+    splits = {
+        key: (
+            [""] * len(weights)
+            if row[key] == ""
+            else split_amount(row[key], weights)
+        )
+        for key in numeric_keys
+    }
     rows = []
     for i, item in enumerate(items):
         r = dict(row)
@@ -245,7 +289,8 @@ def expand_order_rows(row, tx, order):
         r["Product name"] = item.get("product_name") or ""
         r["SKU name"] = item.get("sku_name") or ""
         for k in numeric_keys:
-            r[k] = round(splits[k][i], 2)
+            value = splits[k][i]
+            r[k] = "" if value == "" else round(value, 2)
         rows.append(r)
     return rows
 

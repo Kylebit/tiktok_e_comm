@@ -251,6 +251,7 @@ def pull_tiktok(
                 issues.append(_issue("missing_quantity", normalized["order_id"] or str(index), "quantity"))
             normalized_rows.append(normalized)
         orders = _aggregate_tiktok_records(normalized_rows)
+        issues.extend(_tiktok_import_tax_issues(orders))
         order_ids = sorted({
             str(order.get("order_id") or "")
             for order in orders
@@ -269,8 +270,7 @@ def pull_tiktok(
             if order.get("transaction_type") == "Order":
                 facts = order_facts.get(str(order.get("order_id") or ""), {})
                 order["order_created_at"] = str(facts.get("order_created_at") or "")
-                order["fulfillment"] = dict(facts.get("fulfillment") or {})
-        payload = _success_payload("tiktok", site, start, end, zone, orders, len(rows), len(orders), issues, "finance statements + statement transactions + order/202309/orders") | {
+        payload = _success_payload("tiktok", site, start, end, zone, orders, len(rows), len(orders), issues, "finance/202309/statements + finance/202501 statement transactions + order/202309/orders") | {
             "statement_count": len(statements),
             "out_of_period_row_count": out_of_period_rows,
         }
@@ -376,7 +376,7 @@ def _tiktok_order_created_times(token, cipher, order_ids, zone, *, fetcher):
         order_id: str(value.get("order_created_at") or "")
         for order_id, value in facts.items()
         if value.get("order_created_at")
-    }, [issue for issue in issues if issue.get("code") != "missing_fulfillment_type"]
+    }, issues
 
 
 def _tiktok_order_facts(token, cipher, order_ids, zone, *, fetcher):
@@ -396,31 +396,8 @@ def _tiktok_order_facts(token, cipher, order_ids, zone, *, fetcher):
         except (TypeError, ValueError, OSError, OverflowError):
             issues.append(_issue("missing_order_created_at", order_id, "create_time"))
             order_created_at = ""
-        fulfillment_type = (
-            str(row.get("fulfillment_type") or "")
-            if isinstance(row, Mapping)
-            else ""
-        )
-        if not fulfillment_type:
-            issues.append(
-                _issue(
-                    "missing_fulfillment_type",
-                    order_id,
-                    "fulfillment_type",
-                    f"{order_id} has no official TikTok fulfillment_type",
-                )
-            )
         result[order_id] = {
             "order_created_at": order_created_at,
-            "fulfillment": {
-                "mode": fulfillment_type,
-                "fulfillment_type": fulfillment_type,
-                "delivery_type": str(row.get("delivery_type") or "") if isinstance(row, Mapping) else "",
-                "shipping_type": str(row.get("shipping_type") or "") if isinstance(row, Mapping) else "",
-                "delivery_option_name": str(row.get("delivery_option_name") or "") if isinstance(row, Mapping) else "",
-                "warehouse_id": str(row.get("warehouse_id") or "") if isinstance(row, Mapping) else "",
-                "evidence_source": "/order/202309/orders.fulfillment_type",
-            },
         }
     return result, issues
 
@@ -538,6 +515,30 @@ def _aggregate_tiktok_records(rows):
         existing["product_name"] = ""
         existing["variant_name"] = ""
     return [grouped[key] for key in sorted(grouped)]
+
+
+def _tiktok_import_tax_issues(orders):
+    issues = []
+    required = {"import_vat", "customs_duty"}
+    for order in orders:
+        if order.get("transaction_type") != "Order":
+            continue
+        codes = {
+            str(component.get("code") or "")
+            for component in order.get("financial_components") or []
+            if isinstance(component, Mapping)
+            and component.get("amount") is not None
+        }
+        missing = sorted(required - codes)
+        if missing:
+            order_id = str(order.get("order_id") or "")
+            issues.append(_issue(
+                "missing_fulfillment_tax_evidence",
+                order_id,
+                "financial_components",
+                f"{order_id} is missing TikTok Thailand tax components: {', '.join(missing)}",
+            ))
+    return issues
 
 
 def _ozon_order(posting, rows):

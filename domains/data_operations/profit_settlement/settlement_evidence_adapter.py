@@ -339,19 +339,31 @@ def _shopee_fulfillment(record, record_id, site, issues):
 
 
 def _tiktok_fulfillment(record, record_id, issues):
-    raw = record.get("fulfillment")
-    value = raw if isinstance(raw, Mapping) else {}
-    fulfillment_type = _text(value.get("fulfillment_type") or value.get("mode"))
+    amounts = {
+        _text(component.get("code")): _decimal(component.get("amount"))
+        for component in (record.get("financial_components") or [])
+        if isinstance(component, Mapping)
+    }
+    import_vat = amounts.get("import_vat")
+    customs_duty = amounts.get("customs_duty")
+    if import_vat is None or customs_duty is None:
+        issues.append(EvidenceQualityIssue(
+            "missing_fulfillment_tax_evidence",
+            record_id,
+            "financial_components",
+            "TikTok Thailand fulfillment requires import VAT and customs-duty settlement fields",
+        ))
+        mode = "unknown"
+    elif import_vat != 0 or customs_duty != 0:
+        mode = "cross_border"
+    else:
+        mode = "local"
     return {
-        "mode": fulfillment_type or "unknown",
-        "fulfillment_type": fulfillment_type,
-        "delivery_type": _text(value.get("delivery_type")),
-        "shipping_type": _text(value.get("shipping_type")),
-        "delivery_option_name": _text(value.get("delivery_option_name")),
-        "warehouse_id": _text(value.get("warehouse_id")),
-        "evidence_source": _text(value.get("evidence_source"))
-        or "/order/202309/orders.fulfillment_type",
-        "classification_rule": "official_tiktok_fulfillment_type/v1",
+        "mode": mode,
+        "classification_rule": "tiktok_th_import_tax_charged/v1",
+        "import_vat_local": import_vat,
+        "customs_duty_local": customs_duty,
+        "evidence_source": "finance.statement_transactions.import_vat+customs_duty",
     }
 
 

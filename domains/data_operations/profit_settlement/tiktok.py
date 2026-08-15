@@ -103,10 +103,13 @@ def build_monthly_report(
     costs: CostSnapshot,
     fx: FxSnapshot,
     actual_advertising: Mapping[str, object] | None,
+    period_basis: str = "settled_at",
     local_fulfillment_fee_cny: Decimal | str = Decimal("4"),
     generated_at: datetime | None = None,
     code_version: str = "unknown",
 ) -> TikTokProfitReport:
+    if period_basis not in {"settled_at", "order_created_at"}:
+        raise ValueError("period_basis must be settled_at or order_created_at")
     local_fulfillment=_nonnegative_money(local_fulfillment_fee_cny,"local_fulfillment_fee_cny")
     start,end=_period(period_start,period_end);source_rows=[dict(row) for row in rows];issues=[];prepared=[];rejected=out_of_period=unsettled=0
     _audit_metadata(issues, fx, code_version)
@@ -115,7 +118,10 @@ def build_monthly_report(
         if _text(row.get("settlement_status")).lower() != "settled":unsettled+=1;continue
         settled_at=_datetime(row.get("settled_at"))
         if settled_at is None:issues.append(_issue("missing_settled_at",record_id,"settled_at"));rejected+=1;continue
-        if not start<=settled_at.date()<=end:out_of_period+=1;continue
+        period_at = settled_at if period_basis == "settled_at" else _datetime(row.get("occurred_at"))
+        if period_at is None:
+            issues.append(_issue("missing_order_created_at",record_id,"occurred_at"));rejected+=1;continue
+        if not start<=period_at.date()<=end:out_of_period+=1;continue
         sku=_text(row.get("canonical_sku"));cost=costs.get(sku);currency=_text(row.get("currency")).upper();fx_rate=fx.get(currency);quantity=_decimal(row.get("quantity"));settlement=_decimal(row.get("net_settlement_amount"));paid=_decimal(row.get("buyer_paid_product_amount"));invalid=False
         for missing,field,code in ((not sku or cost is None,"canonical_sku","missing_cost"),(not currency or fx_rate is None,"currency","missing_fx"),(quantity is None or quantity<=0,"quantity","invalid_quantity"),(settlement is None,"net_settlement_amount","missing_settlement"),(paid is None or paid<0,"buyer_paid_product_amount","missing_ad_basis")):
             if missing:issues.append(_issue(code,record_id,field));invalid=True
@@ -136,8 +142,8 @@ def build_monthly_report(
     charged_local_order_count=_apply_local_fulfillment_costs(lines,local_fulfillment,issues)
     fulfillment_policy=_fulfillment_policy(local_fulfillment)
     settlement_outcome_policy=_zero_settlement_policy()
-    source_checksum=_checksum(sorted((_json_ready(row) for row in source_rows),key=_canonical));fingerprint=_checksum({"schema":SCHEMA_VERSION,"period_kind":"monthly","period":[start.isoformat(),end.isoformat()],"source":source_checksum,"costs":costs.snapshot_id,"fx":fx.snapshot_id,"advertising":ad or {},"fulfillment_policy":fulfillment_policy,"settlement_outcome_policy":settlement_outcome_policy,"code_version":code_version})
-    return TikTokProfitReport(report_id=f"tiktok-profit-{fingerprint[:16]}",idempotency_key=f"{SCHEMA_VERSION}:{fingerprint}",calculation_kind="realized_settlement_with_actual_ads",period_kind="monthly",period={"start":start.isoformat(),"end":end.isoformat(),"timezone":"source_local_date"},status="ready" if not issues else "needs_review",totals=_totals(lines),order_lines=tuple(lines),quality_issues=tuple(issues),source={"input_checksum":source_checksum,"raw_row_count":len(source_rows),"calculated_row_count":len(lines),"rejected_row_count":rejected,"out_of_period_row_count":out_of_period,"unsettled_row_count":unsettled,"zero_settlement_unshipped_order_count":zero_settlement_order_count,"local_fulfillment_charged_order_count":charged_local_order_count,"fulfillment_order_counts":_fulfillment_order_counts(lines),"fulfillment_policy":fulfillment_policy,"settlement_outcome_policy":settlement_outcome_policy,"cost_snapshot":costs.payload(),"fx_snapshot":fx.payload()},assumptions={**(ad or {}),"fulfillment_policy":fulfillment_policy,"settlement_outcome_policy":settlement_outcome_policy},generated_at=generated_at or datetime.now(timezone.utc),code_version=code_version)
+    source_checksum=_checksum(sorted((_json_ready(row) for row in source_rows),key=_canonical));fingerprint=_checksum({"schema":SCHEMA_VERSION,"period_kind":"monthly","period":[start.isoformat(),end.isoformat()],"period_basis":period_basis,"source":source_checksum,"costs":costs.snapshot_id,"fx":fx.snapshot_id,"advertising":ad or {},"fulfillment_policy":fulfillment_policy,"settlement_outcome_policy":settlement_outcome_policy,"code_version":code_version})
+    return TikTokProfitReport(report_id=f"tiktok-profit-{fingerprint[:16]}",idempotency_key=f"{SCHEMA_VERSION}:{fingerprint}",calculation_kind="realized_settlement_with_actual_ads",period_kind="monthly",period={"start":start.isoformat(),"end":end.isoformat(),"timezone":"source_local_date","basis":period_basis},status="ready" if not issues else "needs_review",totals=_totals(lines),order_lines=tuple(lines),quality_issues=tuple(issues),source={"input_checksum":source_checksum,"period_basis":period_basis,"raw_row_count":len(source_rows),"calculated_row_count":len(lines),"rejected_row_count":rejected,"out_of_period_row_count":out_of_period,"unsettled_row_count":unsettled,"zero_settlement_unshipped_order_count":zero_settlement_order_count,"local_fulfillment_charged_order_count":charged_local_order_count,"fulfillment_order_counts":_fulfillment_order_counts(lines),"fulfillment_policy":fulfillment_policy,"settlement_outcome_policy":settlement_outcome_policy,"cost_snapshot":costs.payload(),"fx_snapshot":fx.payload()},assumptions={**(ad or {}),"fulfillment_policy":fulfillment_policy,"settlement_outcome_policy":settlement_outcome_policy},generated_at=generated_at or datetime.now(timezone.utc),code_version=code_version)
 
 
 def _build_report(

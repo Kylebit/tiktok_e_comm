@@ -1,5 +1,7 @@
 # 利润报表合同（中文审阅镜像）
 
+TikTok 下单月份月报按官方 `order_created_at` 筛选，但每个纳入订单仍必须有截至声明日期的 Finance 结算证据。自然月内 `GMV Payment for TikTok Ads` 的实际扣款按买家商品 GMV 分摊并保留 statement、FX 与分摊来源；带 `related_order_id` 的非订单调整先回挂原订单再计算利润。
+
 客户拒收只有在官方原因/状态或操作员确认事实存在时才能应用退货成本规则：本土退货可再售，商品损耗成本为 0；跨境退货销毁，保留全部商品成本。退款、运费、广告和履约支出仍按实际证据保留，负结算结构本身不能作为拒收证明。
 
 > 英文 [`report-contract.md`](../../../domains/data_operations/skills/manage-profit-settlement/references/report-contract.md) 是唯一执行来源。

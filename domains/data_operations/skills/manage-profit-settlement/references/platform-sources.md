@@ -20,6 +20,8 @@ For an operator-confirmed TikTok parent order whose consolidated net settlement 
 
 To audit whether a TikTok order-creation period has fully settled, search the official order endpoint by `create_time` in bounded site-timezone segments and compare its redacted order IDs with Finance order transactions observed through an explicit as-of date. Keep cancelled-without-settlement separate from non-cancelled outstanding orders. Do not infer completion from delivery state.
 
+Report total cancelled orders separately from the subsets with and without Finance settlement/refund evidence. For an order-created monthly profit report, filter settled rows by official `order_created_at`; take actual advertising only from `GMV Payment for TikTok Ads` Finance charges whose statement date is inside that calendar month, then allocate the CNY total by buyer-paid GMV. Attach a logistics reimbursement or other non-order adjustment with `related_order_id` to the original order and preserve both source facts.
+
 For a confirmed TikTok customer refusal, local customs-route returns are resalable and do not consume product cost; cross-border returns are destroyed and retain product cost. Apply this only with official reason/status evidence or a versioned operator exception fact, never from refund or negative-settlement arithmetic alone.
 
 ## Shopee

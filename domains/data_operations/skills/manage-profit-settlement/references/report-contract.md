@@ -52,6 +52,8 @@ Under operator policy `zero-settlement-unshipped-ads-only/v1`, classify a TikTok
 
 For a customer-refusal return confirmed by official reason/status evidence or an explicit operator exception fact, use fulfillment evidence to recognize product loss. A local return is resalable and recognizes zero product-cost loss; a cross-border return is destroyed and retains full product cost. Preserve confirmation provenance, fulfillment evidence, refund, shipping, advertising, and fulfillment costs. Negative settlement shape by itself is insufficient evidence.
 
+For a TikTok order-created monthly report, period inclusion uses official `order_created_at`, not settlement date, but every included row must still have Finance settlement evidence observed through the declared as-of date. Allocate calendar-month `GMV Payment for TikTok Ads` charges by buyer-paid GMV and preserve the statement, FX, and allocation lineage. Attach a non-order adjustment carrying `related_order_id` to that order before profit calculation.
+
 ## Knowledge
 
 Store only explicitly approved monthly reports. Keep immutable JSON artifacts under platform/year/month plus a local index. Reject secret/raw-response fields. Corrections produce a new report and approval; never overwrite an approved artifact.

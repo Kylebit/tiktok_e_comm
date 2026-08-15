@@ -121,7 +121,14 @@ def _requires_translation(source_text: str) -> bool:
 def _validate_target_language(locale: str, source_text: str, translated: str) -> None:
     if not _requires_translation(source_text):
         return
-    if translated.casefold() == source_text.casefold():
+    # Single-word retail terms can legitimately be identical loanwords in
+    # Malay, Vietnamese or Spanish (for example "STANDARD"). Thai and Russian
+    # still require their target script, and unchanged multi-word copy is not
+    # accepted for the Latin-script locales.
+    if (
+        translated.casefold() == source_text.casefold()
+        and (locale in {"th-TH", "ru-RU"} or bool(re.search(r"\s", source_text)))
+    ):
         raise LocalizedImageAutoTranslationError(
             f"{locale} target language translation is unchanged"
         )

@@ -108,3 +108,29 @@ def test_no_text_requires_no_model_call():
     assert result["translations"] == {locale: [] for locale in AUTO_TRANSLATION_LOCALES}
     assert result["receipt"]["model_calls"] == 0
     assert result["receipt"]["status"] == "NO_TEXT_REUSE_BASE"
+
+
+def test_allows_valid_single_word_loanword_in_latin_script_locale():
+    regions = [
+        {
+            "region_id": "text-33333333333333333333",
+            "source_text": "STANDARD",
+        }
+    ]
+    payload = {
+        "schema_version": "localized-image-auto-translation/v1",
+        "translations": {
+            "ms-MY": [{"region_id": regions[0]["region_id"], "source_text": "STANDARD", "translated_text": "STANDARD"}],
+            "th-TH": [{"region_id": regions[0]["region_id"], "source_text": "STANDARD", "translated_text": "มาตรฐาน"}],
+            "vi-VN": [{"region_id": regions[0]["region_id"], "source_text": "STANDARD", "translated_text": "TIÊU CHUẨN"}],
+            "ru-RU": [{"region_id": regions[0]["region_id"], "source_text": "STANDARD", "translated_text": "СТАНДАРТ"}],
+            "es-MX": [{"region_id": regions[0]["region_id"], "source_text": "STANDARD", "translated_text": "ESTÁNDAR"}],
+        },
+    }
+
+    result = translate_image_regions(
+        regions,
+        model_call=lambda *_args, **_kwargs: json.dumps(payload, ensure_ascii=False),
+    )
+
+    assert result["translations"]["ms-MY"][0]["translated_text"] == "STANDARD"

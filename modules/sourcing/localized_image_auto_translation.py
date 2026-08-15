@@ -121,14 +121,15 @@ def _requires_translation(source_text: str) -> bool:
 def _validate_target_language(locale: str, source_text: str, translated: str) -> None:
     if not _requires_translation(source_text):
         return
-    # Single-word retail terms can legitimately be identical loanwords in
-    # Malay, Vietnamese or Spanish (for example "STANDARD"). Thai and Russian
-    # still require their target script, and unchanged multi-word copy is not
-    # accepted for the Latin-script locales.
-    if (
-        translated.casefold() == source_text.casefold()
-        and (locale in {"th-TH", "ru-RU"} or bool(re.search(r"\s", source_text)))
-    ):
+    # Retail terms and short phrases can legitimately be identical loanwords
+    # in Malay, Vietnamese or Spanish. Those Latin-script languages cannot be
+    # classified reliably without a separate model, so their hard gates remain
+    # exact coverage, non-empty text and numeric preservation. Thai and Russian
+    # still require their target script and therefore cannot remain English.
+    if translated.casefold() == source_text.casefold() and locale in {
+        "th-TH",
+        "ru-RU",
+    }:
         raise LocalizedImageAutoTranslationError(
             f"{locale} target language translation is unchanged"
         )

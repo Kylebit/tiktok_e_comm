@@ -709,7 +709,7 @@ class LocalizedImagePackStore:
                     image["preview"] = {
                         "status": "AUTO_PREVIEW_READY",
                         **artifact,
-                        "renderer": "pillow-local-preview/v1",
+                        "renderer": "pillow-local-preview/v2",
                         "translation_digest": _canonical_digest(translations),
                         "created_at": _now(),
                     }
@@ -723,6 +723,7 @@ class LocalizedImagePackStore:
                 "provider": "toapis-chat-completions/v1",
                 "model": "gpt-5.4-mini-official",
                 "model_calls": model_calls,
+                "renderer": "pillow-local-preview/v2",
                 "inventory_digest": _canonical_digest(inventory_identity),
                 "completed_at": _now(),
             }
@@ -748,7 +749,7 @@ class LocalizedImagePackStore:
             clean_locale = str(locale or "").strip()
             if clean_locale == "en-master" or clean_locale not in LOCALES:
                 raise LocalizedImagePackError("localized pack is required")
-            if renderer != "pillow-local-preview/v1":
+            if renderer not in {"pillow-local-preview/v1", "pillow-local-preview/v2"}:
                 raise LocalizedImagePackError("localized preview renderer is unsupported")
             if (
                 not isinstance(artifact_bytes, bytes)

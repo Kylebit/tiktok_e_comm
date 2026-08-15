@@ -281,3 +281,24 @@ def test_automatic_translation_creates_five_locale_previews_without_product_cent
         model_call=lambda *_args, **_kwargs: pytest.fail("idempotent call must not use model"),
     )
     assert repeated["project"]["revision"] == result["project"]["revision"]
+
+    project_path = (
+        tmp_path / "localized_image_packs" / "3900088343" / "project.json"
+    )
+    stale_renderer = json.loads(project_path.read_text(encoding="utf-8"))
+    stale_renderer["automatic_translation"]["renderer"] = "pillow-local-preview/v1"
+    project_path.write_text(
+        json.dumps(stale_renderer, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    rerendered = workbench.auto_translate_localized_images(
+        "3900088343",
+        expected_revision=result["project"]["revision"],
+        source_bytes_by_url={url: _image_bytes() for url in urls},
+        model_call=lambda *_args, **_kwargs: pytest.fail(
+            "renderer upgrade must reuse saved translations"
+        ),
+    )
+    assert rerendered["project"]["revision"] == result["project"]["revision"] + 1
+    assert rerendered["project"]["automatic_translation"]["renderer"] == (
+        "pillow-local-preview/v2"
+    )

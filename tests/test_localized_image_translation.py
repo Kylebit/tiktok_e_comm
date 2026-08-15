@@ -185,6 +185,34 @@ def test_local_preview_renders_only_the_saved_translation_regions():
         assert output.format == "PNG"
 
 
+def test_thai_preview_prefers_a_font_with_thai_glyph_support(monkeypatch):
+    from modules.sourcing import localized_image_render as renderer
+
+    requested = []
+    real_truetype = renderer.ImageFont.truetype
+
+    def recording_truetype(path, *args, **kwargs):
+        requested.append(str(path))
+        return real_truetype(path, *args, **kwargs)
+
+    monkeypatch.setattr(renderer.ImageFont, "truetype", recording_truetype)
+    regions = detect_english_text_regions(_image_bytes(), engine=_FakeOcr())
+    render_translation_preview(
+        _image_bytes(),
+        regions=regions,
+        translations=[
+            {
+                "region_id": regions[0]["region_id"],
+                "translated_text": "ติดตั้งง่าย",
+            }
+        ],
+        locale="th-TH",
+    )
+
+    assert requested
+    assert requested[0].endswith("LeelawUI.ttf")
+
+
 def test_preview_artifact_is_bound_to_translation_revision(tmp_path):
     store = LocalizedImagePackStore(tmp_path)
     project = store.initialize_from_approved_snapshot(_snapshot())
@@ -314,6 +342,7 @@ def test_automatic_bundle_commits_all_locales_once_and_is_bound_to_inventory(tmp
 
     assert saved["revision"] == scanned["revision"] + 1
     assert saved["automatic_translation"]["status"] == "AUTO_PREVIEW_READY"
+    assert saved["automatic_translation"]["renderer"] == "pillow-local-preview/v2"
     assert saved["automatic_translation"]["model_calls"] == 1
     assert saved["packs"]["th-TH"]["status"] == "AUTO_PREVIEW_READY"
     translated_image = saved["packs"]["th-TH"]["images"][0]

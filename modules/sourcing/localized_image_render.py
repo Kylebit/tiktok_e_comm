@@ -9,15 +9,22 @@ from typing import Any, Mapping, Sequence
 from PIL import Image, ImageDraw, ImageFont
 
 
-RENDERER = "pillow-local-preview/v1"
+RENDERER = "pillow-local-preview/v2"
 
 
 class LocalizedImageRenderError(ValueError):
     """The local preview cannot be rendered safely."""
 
 
-def _font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+def _font(size: int, locale: str) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    locale_candidates = {
+        "th-TH": (
+            Path("C:/Windows/Fonts/LeelawUI.ttf"),
+            Path("C:/Windows/Fonts/tahoma.ttf"),
+        ),
+    }
     candidates = (
+        *locale_candidates.get(locale, ()),
         Path("C:/Windows/Fonts/arial.ttf"),
         Path("C:/Windows/Fonts/segoeui.ttf"),
         Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
@@ -95,18 +102,19 @@ def _fitted_text(
     draw: ImageDraw.ImageDraw,
     text: str,
     box: tuple[int, int, int, int],
+    locale: str,
 ) -> tuple[str, ImageFont.ImageFont]:
     x0, y0, x1, y1 = box
     box_width = max(1, x1 - x0 - 6)
     box_height = max(1, y1 - y0 - 6)
     for size in range(max(10, min(44, box_height)), 7, -1):
-        font = _font(size)
+        font = _font(size, locale)
         max_chars = max(2, int(box_width / max(1, size * 0.56)))
         wrapped = _wrap(text, max_chars)
         bounds = draw.multiline_textbbox((0, 0), wrapped, font=font, spacing=2)
         if bounds[2] - bounds[0] <= box_width and bounds[3] - bounds[1] <= box_height:
             return wrapped, font
-    return _wrap(text, max(2, len(text))), _font(8)
+    return _wrap(text, max(2, len(text))), _font(8, locale)
 
 
 def render_translation_preview(
@@ -140,7 +148,7 @@ def render_translation_preview(
         box = _pixel_box(region.get("bbox") or [], *image.size)
         fill = _sample_fill(image, box)
         draw.rectangle(box, fill=fill)
-        text, font = _fitted_text(draw, translated[region_id], box)
+        text, font = _fitted_text(draw, translated[region_id], box, locale)
         luminance = (0.299 * fill[0]) + (0.587 * fill[1]) + (0.114 * fill[2])
         color = (20, 26, 25) if luminance > 145 else (248, 248, 245)
         draw.multiline_text(

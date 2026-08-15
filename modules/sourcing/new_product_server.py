@@ -453,7 +453,13 @@ class NewProductHandler(BaseHTTPRequestHandler):
                     raise ValueError("localized image revision is invalid") from error
                 if expected != int(project.get("revision") or 0):
                     raise ValueError("localized image revision has changed")
-                if (project.get("automatic_translation") or {}).get("status") == "AUTO_PREVIEW_READY":
+                from modules.sourcing.localized_image_render import RENDERER
+
+                automatic = project.get("automatic_translation") or {}
+                if (
+                    automatic.get("status") == "AUTO_PREVIEW_READY"
+                    and automatic.get("renderer") == RENDERER
+                ):
                     return self._json(
                         200,
                         {

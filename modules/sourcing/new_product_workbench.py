@@ -1093,7 +1093,10 @@ def auto_translate_localized_images(
     from modules.sourcing.localized_image_auto_translation import (
         translate_image_regions,
     )
-    from modules.sourcing.localized_image_render import render_translation_preview
+    from modules.sourcing.localized_image_render import (
+        RENDERER,
+        render_translation_preview,
+    )
 
     offer_id = resolve_offer_key(offer_id_or_url)
     store = _localized_image_pack_store()
@@ -1106,7 +1109,11 @@ def auto_translate_localized_images(
         raise ValueError("localized image revision is invalid") from error
     if expected != int(project.get("revision") or 0):
         raise ValueError("localized image revision has changed")
-    if (project.get("automatic_translation") or {}).get("status") == "AUTO_PREVIEW_READY":
+    automatic = project.get("automatic_translation") or {}
+    if (
+        automatic.get("status") == "AUTO_PREVIEW_READY"
+        and automatic.get("renderer") == RENDERER
+    ):
         return _localized_project_result(offer_id)
     source_urls = list((project.get("base_package") or {}).get("ordered_image_urls") or [])
     inventory = (project.get("text_inventory") or {}).get("images") or {}
@@ -1121,7 +1128,44 @@ def auto_translate_localized_images(
         if not isinstance(row, dict) or row.get("status") != "SCANNED":
             raise ValueError("localized image text inventory is incomplete")
         regions = row.get("regions") or []
-        if model_call is None:
+        reusable: dict[str, list[dict[str, Any]]] = {}
+        reusable_receipt: dict[str, Any] | None = None
+        for locale in ("ms-MY", "th-TH", "vi-VN", "ru-RU", "es-MX"):
+            image_matches = [
+                image
+                for image in (
+                    (project.get("packs") or {}).get(locale, {}).get("images") or []
+                )
+                if isinstance(image, dict) and image.get("source_url") == source_url
+            ]
+            if len(image_matches) != 1:
+                reusable = {}
+                break
+            image = image_matches[0]
+            rows = image.get("translations") or []
+            if len(rows) != len(regions) or any(
+                not str(row.get("translated_text") or "").strip()
+                for row in rows
+                if isinstance(row, dict)
+            ):
+                reusable = {}
+                break
+            reusable[locale] = [
+                {
+                    "region_id": row.get("region_id"),
+                    "source_text": row.get("source_text"),
+                    "translated_text": row.get("translated_text"),
+                }
+                for row in rows
+                if isinstance(row, dict)
+            ]
+            reusable_receipt = image.get("automatic_translation_receipt")
+        if len(reusable) == 5 and isinstance(reusable_receipt, dict):
+            translated = {
+                "translations": reusable,
+                "receipt": reusable_receipt,
+            }
+        elif model_call is None:
             translated = translate_image_regions(regions)
         else:
             translated = translate_image_regions(regions, model_call=model_call)

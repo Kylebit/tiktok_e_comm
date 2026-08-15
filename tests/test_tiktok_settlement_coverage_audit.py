@@ -9,8 +9,9 @@ def test_build_coverage_separates_settled_cancelled_and_unsettled():
             {"order_id": "A", "order_created_at": "2026-07-01T01:00:00+07:00", "order_status": "COMPLETED"},
             {"order_id": "B", "order_created_at": "2026-07-02T01:00:00+07:00", "order_status": "CANCELLED"},
             {"order_id": "C", "order_created_at": "2026-07-03T01:00:00+07:00", "order_status": "DELIVERED"},
+            {"order_id": "D", "order_created_at": "2026-07-04T01:00:00+07:00", "order_status": "CANCELLED"},
         ],
-        settled_order_ids={"A"},
+        settled_order_ids={"A", "D"},
         start=date(2026, 7, 1),
         end=date(2026, 7, 31),
         as_of=date(2026, 8, 15),
@@ -19,8 +20,10 @@ def test_build_coverage_separates_settled_cancelled_and_unsettled():
 
     assert result["status"] == "needs_review"
     assert result["counts"] == {
-        "created_orders": 3,
-        "settled_orders": 1,
+        "created_orders": 4,
+        "settled_orders": 2,
+        "cancelled_orders": 2,
+        "cancelled_with_settlement": 1,
         "cancelled_without_settlement": 1,
         "unsettled_non_cancelled": 1,
     }

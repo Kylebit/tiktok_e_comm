@@ -80,6 +80,7 @@ def adapt_settlement_evidence(
         official_total = Decimal("0")
         issues.append(_issue("missing_official_settlement_total", "report", "net_settlement_total_local"))
     rows: list[dict[str, Any]] = []
+    related_adjustments: list[dict[str, Any]] = []
     excluded_actual_ads = Decimal("0")
     overrides = dict(seller_sku_by_platform_sku or {})
     quantity_overrides = dict(quantity_by_order_platform_sku or {})
@@ -91,13 +92,12 @@ def adapt_settlement_evidence(
         record_id = _text(record.get("order_id")) or str(record_index)
         transaction_type = _text(record.get("transaction_type"))
         amount = _decimal(record.get("net_settlement_amount"))
-        is_tiktok_weekly_ads = (
+        is_tiktok_actual_ads = (
             platform == "tiktok"
-            and period_kind == "weekly"
             and "gmv payment" in transaction_type.lower()
             and "ads" in transaction_type.lower()
         )
-        if is_tiktok_weekly_ads:
+        if is_tiktok_actual_ads:
             if amount is None:
                 issues.append(_issue("invalid_actual_advertising_adjustment", record_id, "net_settlement_amount"))
             else:
@@ -106,6 +106,18 @@ def adapt_settlement_evidence(
 
         items = record.get("items") if isinstance(record.get("items"), list) else []
         if not items:
+            related_order_id = _text(record.get("related_order_id"))
+            if platform == "tiktok" and related_order_id and amount is not None:
+                related_adjustments.append({
+                    "order_id": record_id,
+                    "related_order_id": related_order_id,
+                    "statement_id": _text(record.get("statement_id")),
+                    "transaction_type": transaction_type,
+                    "settled_at": _text(record.get("settled_at")),
+                    "currency": _text(record.get("currency")).upper(),
+                    "amount": amount,
+                })
+                continue
             issues.append(_issue("unsupported_settlement_adjustment", record_id, "items"))
             continue
         if amount is None:
@@ -222,6 +234,7 @@ def adapt_settlement_evidence(
             rows.append(row)
 
     rows = _consolidate_repeated_order_lines(rows, issues)
+    _attach_related_adjustments(rows, related_adjustments, issues)
     included_total = sum(
         (Decimal(str(row["net_settlement_amount"])) for row in rows), Decimal("0")
     )
@@ -249,6 +262,55 @@ def adapt_settlement_evidence(
         reconciliation,
         source,
     )
+
+
+def _attach_related_adjustments(rows, adjustments, issues):
+    for adjustment in adjustments:
+        targets = [
+            row for row in rows
+            if _text(row.get("order_id")) == adjustment["related_order_id"]
+        ]
+        if not targets:
+            issues.append(_issue(
+                "unmatched_related_adjustment",
+                adjustment["order_id"],
+                "related_order_id",
+            ))
+            continue
+        weights = [
+            max(
+                _decimal(row.get("buyer_paid_product_amount")) or Decimal("0"),
+                Decimal("0"),
+            )
+            for row in targets
+        ]
+        if not any(weights):
+            weights = [
+                max(_decimal(row.get("quantity")) or Decimal("0"), Decimal("0"))
+                for row in targets
+            ]
+        allocations = _allocate(adjustment["amount"], weights)
+        for target, allocation in zip(targets, allocations):
+            target["net_settlement_amount"] = (
+                (_decimal(target.get("net_settlement_amount")) or Decimal("0"))
+                + allocation
+            )
+            target.setdefault("fee_items", []).append({
+                "code": adjustment["transaction_type"].strip().lower().replace(" ", "_"),
+                "label": adjustment["transaction_type"],
+                "amount": allocation,
+                "currency": adjustment["currency"],
+                "included_in_net_settlement": True,
+            })
+            target.setdefault("source_settlement_facts", []).append({
+                "fact_id": adjustment["statement_id"] or adjustment["order_id"],
+                "record_id": adjustment["order_id"],
+                "related_order_id": adjustment["related_order_id"],
+                "transaction_type": adjustment["transaction_type"],
+                "settled_at": adjustment["settled_at"],
+                "net_settlement_amount": allocation,
+                "buyer_paid_product_amount": Decimal("0"),
+            })
 
 
 def _shopee_fulfillment(record, record_id, site, issues):

@@ -46,6 +46,9 @@ from domains.data_operations.profit_settlement.tiktok import (
     build_monthly_report as build_tiktok_monthly_report,
     build_weekly_report as build_tiktok_weekly_report,
 )
+from domains.data_operations.profit_settlement.tiktok_monthly import (
+    actual_advertising_from_finance,
+)
 from domains.data_operations.profit_settlement.ozon import (
     build_monthly_report as build_ozon_monthly_report,
     build_weekly_report as build_ozon_weekly_report,
@@ -58,6 +61,15 @@ NOW = datetime(2026, 8, 6, 8, 0, tzinfo=timezone.utc)
 def _weekly_build_script_module():
     path = Path(__file__).parents[1] / "domains" / "data_operations" / "skills" / "manage-profit-settlement" / "scripts" / "build_weekly_from_evidence.py"
     spec = importlib.util.spec_from_file_location("profit_weekly_build_script", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _monthly_build_script_module():
+    path = Path(__file__).parents[1] / "domains" / "data_operations" / "skills" / "manage-profit-settlement" / "scripts" / "build_tiktok_monthly_from_evidence.py"
+    spec = importlib.util.spec_from_file_location("profit_monthly_build_script", path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -1625,6 +1637,120 @@ def test_reporting_period_uses_settlement_date_not_order_date():
     assert len(report.order_lines) == 1
     assert report.order_lines[0]["occurred_at"].date().isoformat() == "2026-07-01"
     assert report.order_lines[0]["settled_at"].date().isoformat() == "2026-08-05"
+
+
+def test_tiktok_monthly_order_created_period_includes_later_settlement():
+    report = build_tiktok_monthly_report(
+        [{
+            **_row("TK-JULY-CREATED"),
+            "occurred_at": "2026-07-31T23:30:00+07:00",
+            "settled_at": "2026-08-10T07:00:00+07:00",
+        }],
+        period_start="2026-07-01",
+        period_end="2026-07-31",
+        period_basis="order_created_at",
+        costs=_costs(),
+        fx=_fx(),
+        actual_advertising={
+            "total_cny": "4",
+            "source": "finance-gmv-payment",
+            "as_of": "2026-07-31T07:00:00+07:00",
+            "snapshot_id": "ads:july",
+        },
+        generated_at=NOW,
+        code_version="test-v1",
+    )
+
+    assert report.status == "ready"
+    assert [line["identity"]["order_id"] for line in report.order_lines] == [
+        "TK-JULY-CREATED"
+    ]
+    assert report.source["period_basis"] == "order_created_at"
+
+
+def test_tiktok_monthly_adapter_excludes_actual_ads_and_attaches_related_adjustment():
+    evidence = {
+        "schema_version": "settlement-evidence/v1",
+        "status": "ready",
+        "platform": "tiktok",
+        "site": "TH",
+        "snapshot_id": "tiktok-settlement:monthly",
+        "checksum": "monthly",
+        "net_settlement_total_local": "55",
+        "receipt": {"external_writes_performed": []},
+        "orders": [
+            {
+                "order_id": "ORDER-1",
+                "statement_id": "S-1",
+                "transaction_type": "Order",
+                "order_created_at": "2026-07-01T10:00:00+07:00",
+                "settled_at": "2026-07-10T07:00:00+07:00",
+                "currency": "THB",
+                "net_settlement_amount": "50",
+                "buyer_total_amount": "100",
+                "items": [{"platform_sku": "platform-1", "quantity": "1"}],
+                "financial_components": [
+                    {"code": "import_vat", "amount": "0", "currency": "THB"},
+                    {"code": "customs_duty", "amount": "0", "currency": "THB"},
+                ],
+            },
+            {
+                "order_id": "ADS-1",
+                "statement_id": "S-2",
+                "transaction_type": "GMV Payment for TikTok Ads",
+                "settled_at": "2026-07-11T07:00:00+07:00",
+                "currency": "THB",
+                "net_settlement_amount": "-5",
+                "items": [],
+            },
+            {
+                "order_id": "ADJ-1",
+                "related_order_id": "ORDER-1",
+                "statement_id": "S-3",
+                "transaction_type": "Logistics reimbursement",
+                "settled_at": "2026-07-12T07:00:00+07:00",
+                "currency": "THB",
+                "net_settlement_amount": "10",
+                "items": [],
+            },
+        ],
+    }
+
+    result = adapt_settlement_evidence(evidence, _catalog_stub(), period_kind="monthly")
+
+    assert result.status == "ready"
+    assert result.rows[0]["net_settlement_amount"] == Decimal("60")
+    assert result.reconciliation["excluded_actual_advertising_local"] == Decimal("-5")
+    assert result.reconciliation["unallocated_local"] == Decimal("0")
+    assert result.rows[0]["source_settlement_facts"][-1]["transaction_type"] == "Logistics reimbursement"
+
+
+def test_tiktok_actual_monthly_ads_use_only_finance_rows_dated_in_month():
+    result = actual_advertising_from_finance(
+        {
+            "orders": [
+                {"transaction_type": "GMV Payment for TikTok Ads", "statement_id": "JULY", "settled_at": "2026-07-31T07:00:00+07:00", "net_settlement_amount": "-100", "currency": "THB"},
+                {"transaction_type": "GMV Payment for TikTok Ads", "statement_id": "AUG", "settled_at": "2026-08-01T07:00:00+07:00", "net_settlement_amount": "-50", "currency": "THB"},
+            ]
+        },
+        start=datetime(2026, 7, 1).date(),
+        end=datetime(2026, 7, 31).date(),
+        fx_rate_cny_per_local=Decimal("0.2"),
+        fx_snapshot_id="fx:july",
+    )
+
+    assert result["total_local"] == Decimal("100")
+    assert result["total_cny"] == Decimal("20.0")
+    assert result["source_row_count"] == 1
+    assert result["allocation_policy"] == "buyer-paid-gmv-share/v1"
+
+
+def test_monthly_build_script_makes_decimal_evidence_json_ready():
+    module = _monthly_build_script_module()
+
+    assert module._json_ready({"total_cny": Decimal("12.340")}) == {
+        "total_cny": "12.340"
+    }
 
 
 @pytest.mark.parametrize(

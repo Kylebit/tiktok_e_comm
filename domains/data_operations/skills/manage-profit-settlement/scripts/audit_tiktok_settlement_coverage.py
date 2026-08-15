@@ -95,7 +95,8 @@ def _html(payload: dict) -> str:
 <style>body{{font-family:Arial,sans-serif;margin:24px}}table{{border-collapse:collapse;width:100%;margin-bottom:24px}}th,td{{border:1px solid #ddd;padding:8px;text-align:left}}th{{background:#f3f5f7}}</style>
 <h1>TikTok TH 订单结算覆盖审计</h1>
 <p>下单区间：{payload['created_period']['start']} 至 {payload['created_period']['end']}（Asia/Bangkok）；结算观察截止：{payload['settlement_observed_through']}</p>
-<ul><li>下单订单：{counts['created_orders']}</li><li>已找到 Finance 结算：{counts['settled_orders']}</li><li>已取消且无结算：{counts['cancelled_without_settlement']}</li><li>未取消但未找到结算：{counts['unsettled_non_cancelled']}</li></ul>
+<ul><li>下单订单：{counts['created_orders']}</li><li>已找到 Finance 结算：{counts['settled_orders']}</li><li>取消订单总数：{counts['cancelled_orders']}</li><li>取消且有结算/退款：{counts['cancelled_with_settlement']}</li><li>取消且无结算：{counts['cancelled_without_settlement']}</li><li>未取消但未找到结算：{counts['unsettled_non_cancelled']}</li></ul>
+<h2>取消且有结算/退款</h2><table><tr><th>订单 ID</th><th>下单时间</th><th>官方状态</th></tr>{rows(payload['cancelled_with_settlement_orders'])}</table>
 <h2>未取消但未找到结算</h2><table><tr><th>订单 ID</th><th>下单时间</th><th>官方状态</th></tr>{rows(payload['unsettled_non_cancelled_orders'])}</table>
 <h2>已取消且无结算</h2><table><tr><th>订单 ID</th><th>下单时间</th><th>官方状态</th></tr>{rows(payload['cancelled_without_settlement_orders'])}</table>"""
 

@@ -40,11 +40,14 @@ def build_coverage(
 
     normalized = [deduplicated[key] for key in sorted(deduplicated)]
     settled = []
+    cancelled_with_settlement = []
     cancelled = []
     unsettled = []
     for order in normalized:
         if order["order_id"] in settled_order_ids:
             settled.append(order)
+            if _is_cancelled(order["order_status"]):
+                cancelled_with_settlement.append(order)
         elif _is_cancelled(order["order_status"]):
             cancelled.append(order)
         else:
@@ -66,6 +69,8 @@ def build_coverage(
     counts = {
         "created_orders": len(normalized),
         "settled_orders": len(settled),
+        "cancelled_orders": len(cancelled_with_settlement) + len(cancelled),
+        "cancelled_with_settlement": len(cancelled_with_settlement),
         "cancelled_without_settlement": len(cancelled),
         "unsettled_non_cancelled": len(unsettled),
     }
@@ -87,6 +92,7 @@ def build_coverage(
         "all_created_orders_settled": counts["settled_orders"] == counts["created_orders"],
         "all_non_cancelled_orders_settled": not unsettled,
         "settled_orders": settled,
+        "cancelled_with_settlement_orders": cancelled_with_settlement,
         "cancelled_without_settlement_orders": cancelled,
         "unsettled_non_cancelled_orders": unsettled,
         "receipt": {

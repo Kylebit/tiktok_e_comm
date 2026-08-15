@@ -1295,6 +1295,39 @@ def test_tiktok_local_fulfillment_cost_is_once_per_parent_order_and_configurable
     assert overridden.idempotency_key != default_report.idempotency_key
 
 
+def test_tiktok_zero_settlement_parent_keeps_ads_but_excludes_goods_and_local_fulfillment():
+    first = _row("TK-ZERO", paid="100", settlement="0")
+    second = copy.deepcopy(first)
+    second["order_line_id"] = "TK-ZERO:2"
+    second["buyer_paid_product_amount"] = "300"
+    first["fee_items"] = second["fee_items"] = []
+    first["fulfillment"] = second["fulfillment"] = {
+        "mode": "local",
+        "classification_rule": "tiktok_th_import_tax_charged/v1",
+        "import_vat_local": "0",
+        "customs_duty_local": "0",
+    }
+
+    report = build_tiktok_weekly_report(
+        [second, first],
+        period_start="2026-08-03", period_end="2026-08-09",
+        costs=_costs(), fx=_fx(), generated_at=NOW, code_version="test-v1",
+    )
+
+    assert report.status == "ready"
+    assert report.source["zero_settlement_unshipped_order_count"] == 1
+    assert report.source["local_fulfillment_charged_order_count"] == 0
+    assert report.totals["product_cost_cny"] == Decimal("0")
+    assert report.totals["advertising_cny"] == Decimal("17.6000")
+    assert report.totals["local_fulfillment_cost_cny"] == Decimal("0")
+    assert report.totals["profit_cny"] == Decimal("-17.6000")
+    assert all(line["cost"]["total_cny"] == Decimal("0") for line in report.order_lines)
+    assert all(line["cost"]["catalog_total_cny"] == Decimal("20") for line in report.order_lines)
+    assert all(line["settlement_outcome"]["advertising_cost_recognized"] is True for line in report.order_lines)
+    assert audit_profit_report(report.payload()).status == "PASSED"
+    assert "零结算未发货（仅计广告）" in render_profit_report_html(report.payload())
+
+
 def test_shopee_adapter_classifies_zero_import_vat_and_duty_as_local():
     evidence = {
         "schema_version": "settlement-evidence/v1", "status": "ready", "platform": "shopee", "site": "TH",

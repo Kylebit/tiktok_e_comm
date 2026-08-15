@@ -48,6 +48,8 @@ TikTok follows the same hidden order-line ID display contract as Shopee: omit th
 
 For TikTok Thailand, a non-zero settled `import_vat` or `customs_duty` component means cross-border; two present exact zeros mean local. Missing either component is blocking. Charge the configured local-fulfillment fee once per local parent order, default CNY 4, allocate it deterministically across item lines, and include it in external costs and the report fingerprint. Never charge cross-border or unknown orders. Never substitute order API `fulfillment_type` or warehouse/delivery metadata for this tax evidence, and do not retain those operator fields in report payloads.
 
+Under operator policy `zero-settlement-unshipped-ads-only/v1`, classify a TikTok parent order whose summed local-currency net settlement is exactly zero as unshipped. Keep advertising cost, set recognized product cost and local-fulfillment cost to zero, preserve the catalog product cost as unrecognized evidence, and retain the decision and policy version in the fingerprint. Do not infer the same treatment for a negative settlement; require separate refund, shipping, or order-status evidence.
+
 ## Knowledge
 
 Store only explicitly approved monthly reports. Keep immutable JSON artifacts under platform/year/month plus a local index. Reject secret/raw-response fields. Corrections produce a new report and approval; never overwrite an approved artifact.

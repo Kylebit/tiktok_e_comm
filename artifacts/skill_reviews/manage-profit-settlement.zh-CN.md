@@ -30,7 +30,7 @@ TikTok、Shopee、Ozon 三条链路必须相互独立，不能用一个平台的
 
 ### TikTok 发货方式与订单行 ID
 
-TikTok 泰国的本土/跨境只按已结算 Finance 税费证据判断：`import_vat`（进口增值税）或 `customs_duty`（进口关税）任一项非 0 即为跨境，两项字段都存在且均为精确 0 才是本土；任一字段缺失或非法时必须标记 `unknown`、报告 `missing_fulfillment_tax_evidence`，并让报表进入 `needs_review`。每个本土父订单只扣一次可配置的本土履约费，默认 CNY 4；多商品行按商品销售额稳定分摊，跨境和 unknown 订单不扣，金额、父订单数、策略及指纹都保留在 JSON。不保留、不展示、也不使用订单 API 的 `fulfillment_type`、配送、运输或仓库字段，因为它们表达的是履约主体，不是海关路线。TikTok 和 Shopee HTML 都隐藏订单行 ID，但 JSON 和页面排序元数据继续保留。正式读取使用 `/finance/202501/statements/{statement_id}/statement_transactions` 的 `transactions` 集合及嵌套税费明细；禁止回退到已废弃的 v202309 交易接口来让报表通过。
+TikTok 泰国的本土/跨境只按已结算 Finance 税费证据判断：`import_vat`（进口增值税）或 `customs_duty`（进口关税）任一项非 0 即为跨境，两项字段都存在且均为精确 0 才是本土；任一字段缺失或非法时必须标记 `unknown`、报告 `missing_fulfillment_tax_evidence`，并让报表进入 `needs_review`。每个本土父订单只扣一次可配置的本土履约费，默认 CNY 4；多商品行按商品销售额稳定分摊，跨境和 unknown 订单不扣，金额、父订单数、策略及指纹都保留在 JSON。按人工确认的 `zero-settlement-unshipped-ads-only/v1` 政策，TikTok 父订单当地币净结算合计精确为0时，保留广告费，但商品成本和本土履约费均不确认，因为货物未发出；JSON 必须保留未确认的目录成本、判断结果和政策版本。负结算不得套用该规则，也不得在没有订单类型证据时认定为达人样品。不保留、不展示、也不使用订单 API 的 `fulfillment_type`、配送、运输或仓库字段，因为它们表达的是履约主体，不是海关路线。TikTok 和 Shopee HTML 都隐藏订单行 ID，但 JSON 和页面排序元数据继续保留。正式读取使用 `/finance/202501/statements/{statement_id}/statement_transactions` 的 `transactions` 集合及嵌套税费明细；禁止回退到已废弃的 v202309 交易接口来让报表通过。
 
 ## 安全门槛
 

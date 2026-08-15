@@ -40,6 +40,9 @@
   let imageLocalizationDraft = {};
   let imageLocalizationDraftOfferId = "";
   let localizedImageProject = null;
+  let localizedImageLocale = "th-TH";
+  let localizedTranslationDraft = {};
+  let localizedTranslationDraftOfferId = "";
   const RECIPE_LIMITS = Object.freeze({
     scene: 6,
     selling_point: 6,
@@ -1467,9 +1470,12 @@
     const routes = project.route_draft?.routes || {};
     const initialized = Boolean(summary.initialized && Object.keys(packs).length);
     $("#initializeLocalizedImagePacksButton").hidden = initialized;
+    $("#scanLocalizedImageTextButton").hidden = !initialized;
+    $("#localizedImageLocaleLabel").hidden = !initialized;
     if (!initialized) {
       packGrid.innerHTML = '<div class="localized-empty">尚未导入。完成商品发布中心审核后，可在这里建立独立语言图片项目。</div>';
       routeGrid.innerHTML = "";
+      $("#localizedTranslationGrid").innerHTML = "";
       return;
     }
     packGrid.innerHTML = Object.values(packs).map((pack) => {
@@ -1488,6 +1494,78 @@
     setLocalizedImagePackStatus(
       `已绑定批准计划 ${project.release_plan_id}；语言图片项目独立保存，外部写入 ${summary.external_writes || 0}。`,
     );
+    renderLocalizedTranslationEditor();
+  }
+
+  function localizedDraftKey(locale, sourceUrl) {
+    return `${locale}|${sourceUrl}`;
+  }
+
+  function localizedPackImage(project, locale, sourceUrl) {
+    return (project.packs?.[locale]?.images || []).find((row) => row.source_url === sourceUrl) || {};
+  }
+
+  function renderLocalizedTranslationEditor() {
+    const host = $("#localizedTranslationGrid");
+    const project = localizedImageProject?.project || {};
+    const sourceUrls = project.base_package?.ordered_image_urls || [];
+    const inventory = project.text_inventory?.images || {};
+    const locale = localizedImageLocale;
+    $("#localizedImageLocaleSelect").value = locale;
+    host.innerHTML = sourceUrls.map((sourceUrl, index) => {
+      const image = localizedPackImage(project, locale, sourceUrl);
+      const scanned = inventory[sourceUrl] || {};
+      const draftKey = localizedDraftKey(locale, sourceUrl);
+      const translations = localizedTranslationDraft[draftKey] || image.translations || [];
+      const previewUrl = image.preview?.local_url || "";
+      const visualUrl = previewUrl || proxyImage(sourceUrl);
+      const rows = translations.map((row) => `
+        <div class="localized-text-row" data-region-id="${esc(row.region_id)}">
+          <label><strong>${esc(row.source_text)}</strong><br>${esc(row.region_id)}</label>
+          <textarea class="localized-translation-input" placeholder="输入 ${esc(locale)} 译文">${esc(row.translated_text || "")}</textarea>
+        </div>
+      `).join("");
+      return `
+        <article class="localized-translation-card" data-source-url="${esc(sourceUrl)}">
+          <div class="localized-translation-visual">
+            <img src="${esc(visualUrl)}" alt="${previewUrl ? "本地翻译预览" : "批准英文母版"}">
+            <small>第 ${index + 1} 张 · ${previewUrl ? "本地预览，尚未批准" : "英文母版"}</small>
+          </div>
+          <div class="localized-translation-editor">
+            <header><strong>${esc(locale)}</strong><small>${esc(scanned.status || "NOT_SCANNED")} · ${translations.length} 个文字区域</small></header>
+            ${rows || '<div class="localized-scan-empty">尚未识别到英文文字。点击上方“本地 OCR 扫描全部英文文字”。</div>'}
+            <div class="localized-translation-actions">
+              <button class="button secondary localized-save-translation" type="button" ${rows ? "" : "disabled"}>保存译文草稿</button>
+              <button class="button dark localized-create-preview" type="button" ${rows ? "" : "disabled"}>保存并生成本地预览</button>
+            </div>
+          </div>
+        </article>
+      `;
+    }).join("");
+    $$(".localized-translation-input").forEach((input) => {
+      input.addEventListener("input", () => {
+        const card = input.closest(".localized-translation-card");
+        const sourceUrl = card.dataset.sourceUrl;
+        localizedTranslationDraftOfferId = currentOfferId();
+        localizedTranslationDraft[localizedDraftKey(locale, sourceUrl)] = Array.from(
+          card.querySelectorAll(".localized-text-row"),
+        ).map((row) => ({
+          region_id: row.dataset.regionId,
+          source_text: row.querySelector("label strong").textContent,
+          translated_text: row.querySelector("textarea").value,
+        }));
+        setLocalizedImagePackStatus("译文尚未保存；刷新不会静默覆盖当前输入。", "pending");
+      });
+    });
+    $$(".localized-save-translation").forEach((button) => button.addEventListener("click", () => (
+      saveLocalizedTranslation(button.closest(".localized-translation-card").dataset.sourceUrl)
+    )));
+    $$(".localized-create-preview").forEach((button) => button.addEventListener("click", () => (
+      saveLocalizedTranslation(
+        button.closest(".localized-translation-card").dataset.sourceUrl,
+        { createPreview: true },
+      )
+    )));
   }
 
   async function loadLocalizedImageProject({ quiet = false } = {}) {
@@ -1521,6 +1599,75 @@
       showAlert(error.message);
     } finally {
       setLoading(button, false);
+    }
+  }
+
+  async function scanAllLocalizedImageText() {
+    if (Object.keys(localizedTranslationDraft).length) {
+      showAlert("请先保存当前译文草稿，再重新扫描英文文字，避免覆盖区域身份。");
+      return;
+    }
+    const button = $("#scanLocalizedImageTextButton");
+    const urls = localizedImageProject?.project?.base_package?.ordered_image_urls || [];
+    setLoading(button, true);
+    try {
+      for (let index = 0; index < urls.length; index += 1) {
+        setLocalizedImagePackStatus(`本地 OCR 扫描中：${index + 1}/${urls.length}…`, "pending");
+        const result = await post("content-package/localized-images/scan-text", {
+          offer_id: currentOfferId(),
+          expected_revision: localizedImageProject.project.revision,
+          source_url: urls[index],
+        });
+        localizedImageProject = result.localized_images;
+      }
+      renderLocalizedImageProject();
+      toast("本地 OCR 扫描完成；未调用付费 OCR 或平台接口。");
+    } catch (error) {
+      setLocalizedImagePackStatus(`OCR 扫描停止：${error.message}`, "error");
+      showAlert(error.message);
+    } finally {
+      setLoading(button, false);
+    }
+  }
+
+  function translationRowsFromCard(sourceUrl) {
+    const cards = $$(".localized-translation-card");
+    const card = cards.find((row) => row.dataset.sourceUrl === sourceUrl);
+    return Array.from(card?.querySelectorAll(".localized-text-row") || []).map((row) => ({
+      region_id: row.dataset.regionId,
+      translated_text: row.querySelector("textarea").value.trim(),
+    }));
+  }
+
+  async function saveLocalizedTranslation(sourceUrl, { createPreview = false } = {}) {
+    const key = localizedDraftKey(localizedImageLocale, sourceUrl);
+    const translations = translationRowsFromCard(sourceUrl);
+    setLocalizedImagePackStatus("正在保存独立译文草稿…", "pending");
+    try {
+      let result = await post("content-package/localized-images/translation-draft", {
+        offer_id: currentOfferId(),
+        expected_revision: localizedImageProject.project.revision,
+        locale: localizedImageLocale,
+        source_url: sourceUrl,
+        translations,
+      });
+      localizedImageProject = result.localized_images;
+      delete localizedTranslationDraft[key];
+      if (createPreview) {
+        setLocalizedImagePackStatus("正在生成本地翻译预览…", "pending");
+        result = await post("content-package/localized-images/preview", {
+          offer_id: currentOfferId(),
+          expected_revision: localizedImageProject.project.revision,
+          locale: localizedImageLocale,
+          source_url: sourceUrl,
+        });
+        localizedImageProject = result.localized_images;
+      }
+      renderLocalizedImageProject();
+      toast(createPreview ? "本地翻译预览已生成，尚未批准或发布。" : "译文草稿已保存。");
+    } catch (error) {
+      setLocalizedImagePackStatus(`保存失败：${error.message}`, "error");
+      showAlert(error.message);
     }
   }
 
@@ -1634,6 +1781,10 @@
       preview = loadedPreview;
       if (!localizedImageProject || localizedImageProject.offer_id !== offerId) {
         localizedImageProject = null;
+      }
+      if (localizedTranslationDraftOfferId && localizedTranslationDraftOfferId !== offerId) {
+        localizedTranslationDraft = {};
+        localizedTranslationDraftOfferId = "";
       }
       if (imageLocalizationDraftOfferId && imageLocalizationDraftOfferId !== offerId) {
         imageLocalizationDraft = {};
@@ -2233,6 +2384,11 @@
   $("#saveSourceButton").addEventListener("click", saveSourceReview);
   $("#initializeLocalizationButton").addEventListener("click", initializeImageLocalization);
   $("#initializeLocalizedImagePacksButton").addEventListener("click", initializeLocalizedImageProject);
+  $("#scanLocalizedImageTextButton").addEventListener("click", scanAllLocalizedImageText);
+  $("#localizedImageLocaleSelect").addEventListener("change", (event) => {
+    localizedImageLocale = event.currentTarget.value;
+    renderLocalizedTranslationEditor();
+  });
   $("#savePlanButton").addEventListener("click", () => saveContentReview());
   $("#preparePackageButton").addEventListener("click", preparePackage);
   $("#aiPlanButton").addEventListener("click", requestAiPlan);

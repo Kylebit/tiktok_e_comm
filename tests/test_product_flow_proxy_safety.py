@@ -291,6 +291,7 @@ def test_proxy_exposes_only_the_ai_studio_write_surface():
         "content-image",
         "content-package/image-localization/artifact",
         "content-package/localized-images",
+        "content-package/localized-images/artifact",
     }
     assert allowed_post == {
         "review",
@@ -307,6 +308,9 @@ def test_proxy_exposes_only_the_ai_studio_write_surface():
         "content-package/image-localization/regions",
         "content-package/image-localization/clean-master",
         "content-package/localized-images/initialize",
+        "content-package/localized-images/scan-text",
+        "content-package/localized-images/translation-draft",
+        "content-package/localized-images/preview",
     }
     assert not {
         action

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from io import BytesIO
 
 import pytest
+from PIL import Image
 
 from modules.sourcing import new_product_workbench as workbench
 
@@ -107,3 +109,89 @@ def test_server_registers_read_and_initialize_endpoints():
     assert '"/api/new-product/content-package/localized-images/initialize"' in source
     assert '"content-package/localized-images"' in proxy
     assert '"content-package/localized-images/initialize"' in proxy
+
+
+class _FakeOcr:
+    def __call__(self, _image):
+        return (
+            [[[[10, 10], [190, 10], [190, 40], [10, 40]], "Easy to install", 0.99]],
+            None,
+        )
+
+
+def _image_bytes() -> bytes:
+    output = BytesIO()
+    Image.new("RGB", (200, 100), "white").save(output, format="PNG")
+    return output.getvalue()
+
+
+def test_scans_saves_and_renders_localized_image_without_product_center_mutation(
+    tmp_path, monkeypatch
+):
+    state_dir = tmp_path / "new_product_workbench"
+    state_dir.mkdir()
+    state_path = state_dir / "3900088343.json"
+    state_path.write_text('{"offer_id":"3900088343","_revision":17}', encoding="utf-8")
+    original = state_path.read_bytes()
+    monkeypatch.setattr(workbench, "STATE_DIR", state_dir)
+    monkeypatch.setattr(
+        workbench, "LOCALIZED_IMAGE_PACKS_DIR", tmp_path / "localized_image_packs"
+    )
+    monkeypatch.setattr(workbench, "resolve_offer_key", lambda value: str(value).strip())
+    initialized = workbench.initialize_localized_image_project(
+        "3900088343", release_store=_ReleaseStore()
+    )
+    source_url = initialized["project"]["base_package"]["ordered_image_urls"][0]
+
+    scanned = workbench.scan_localized_image_text(
+        "3900088343",
+        expected_revision=1,
+        source_url=source_url,
+        source_bytes=_image_bytes(),
+        ocr_engine=_FakeOcr(),
+    )
+    region_id = scanned["project"]["packs"]["th-TH"]["images"][0][
+        "translations"
+    ][0]["region_id"]
+    translated = workbench.save_localized_translation_draft(
+        "3900088343",
+        expected_revision=scanned["project"]["revision"],
+        locale="th-TH",
+        source_url=source_url,
+        translations=[{"region_id": region_id, "translated_text": "Easy setup"}],
+    )
+    rendered = workbench.create_localized_translation_preview(
+        "3900088343",
+        expected_revision=translated["project"]["revision"],
+        locale="th-TH",
+        source_url=source_url,
+        source_bytes=_image_bytes(),
+    )
+
+    preview = rendered["project"]["packs"]["th-TH"]["images"][0]["preview"]
+    assert preview["status"] == "PREVIEW_READY"
+    assert preview["local_url"].startswith(
+        "/api/product-flow/content-package/localized-images/artifact?"
+    )
+    assert workbench.localized_image_preview_artifact(
+        "3900088343", preview["artifact_id"]
+    ).is_file()
+    assert state_path.read_bytes() == original
+    assert rendered["external_writes"] == 0
+    assert rendered["product_center_mutated"] is False
+
+
+def test_server_registers_scan_translation_preview_and_artifact_endpoints():
+    source = Path("modules/sourcing/new_product_server.py").read_text(
+        encoding="utf-8"
+    )
+    proxy = Path("modules/products/server.py").read_text(encoding="utf-8")
+
+    for endpoint in (
+        "content-package/localized-images/scan-text",
+        "content-package/localized-images/translation-draft",
+        "content-package/localized-images/preview",
+        "content-package/localized-images/artifact",
+    ):
+        assert endpoint in source
+        assert endpoint in proxy

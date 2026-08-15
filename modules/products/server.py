@@ -13208,6 +13208,7 @@ class Handler(BaseHTTPRequestHandler):
             "content-image",
             "content-package/image-localization/artifact",
             "content-package/localized-images",
+            "content-package/localized-images/artifact",
         }
         allowed_post = {
             "review",
@@ -13224,6 +13225,9 @@ class Handler(BaseHTTPRequestHandler):
             "content-package/image-localization/regions",
             "content-package/image-localization/clean-master",
             "content-package/localized-images/initialize",
+            "content-package/localized-images/scan-text",
+            "content-package/localized-images/translation-draft",
+            "content-package/localized-images/preview",
         }
         allowed = allowed_get if method == "GET" else allowed_post
         if action not in allowed:

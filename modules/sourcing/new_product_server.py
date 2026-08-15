@@ -326,6 +326,20 @@ class NewProductHandler(BaseHTTPRequestHandler):
                 return self._file(np_mod.image_localization_artifact(raw, artifact_id))
             except Exception as exc:
                 return self._json(404, {"ok": False, "error": str(exc)})
+        if path == "/api/new-product/content-package/localized-images/artifact":
+            q = parse_qs(parsed.query)
+            raw = (q.get("offer_id") or [""])[0]
+            artifact_id = (q.get("artifact_id") or [""])[0]
+            if not raw or not artifact_id:
+                return self._json(400, {"ok": False, "error": "missing offer_id or artifact_id"})
+            try:
+                from modules.sourcing import new_product_workbench as np_mod
+
+                return self._file(
+                    np_mod.localized_image_preview_artifact(raw, artifact_id)
+                )
+            except Exception as exc:
+                return self._json(404, {"ok": False, "error": str(exc)})
         self.send_error(404)
 
     def do_POST(self) -> None:
@@ -397,6 +411,80 @@ class NewProductHandler(BaseHTTPRequestHandler):
                     {
                         "ok": True,
                         "localized_images": np_mod.initialize_localized_image_project(raw),
+                    },
+                )
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+
+        if path == "/api/new-product/content-package/localized-images/scan-text":
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            source_url = str(data.get("source_url") or "").strip()
+            try:
+                project = np_mod.localized_image_project_summary(raw).get("project") or {}
+                approved_urls = set((project.get("base_package") or {}).get("ordered_image_urls") or [])
+                if source_url not in approved_urls:
+                    raise ValueError("localized image source is not approved")
+                source_bytes, _ = _download_remote_image(source_url)
+                return self._json(
+                    200,
+                    {
+                        "ok": True,
+                        "localized_images": np_mod.scan_localized_image_text(
+                            raw,
+                            expected_revision=data.get("expected_revision"),
+                            source_url=source_url,
+                            source_bytes=source_bytes,
+                        ),
+                    },
+                )
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+
+        if path == "/api/new-product/content-package/localized-images/translation-draft":
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            translations = data.get("translations")
+            if not isinstance(translations, list):
+                return self._json(400, {"ok": False, "error": "translations must be a list"})
+            try:
+                return self._json(
+                    200,
+                    {
+                        "ok": True,
+                        "localized_images": np_mod.save_localized_translation_draft(
+                            raw,
+                            expected_revision=data.get("expected_revision"),
+                            locale=str(data.get("locale") or ""),
+                            source_url=str(data.get("source_url") or ""),
+                            translations=translations,
+                        ),
+                    },
+                )
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+
+        if path == "/api/new-product/content-package/localized-images/preview":
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            source_url = str(data.get("source_url") or "").strip()
+            try:
+                project = np_mod.localized_image_project_summary(raw).get("project") or {}
+                approved_urls = set((project.get("base_package") or {}).get("ordered_image_urls") or [])
+                if source_url not in approved_urls:
+                    raise ValueError("localized image source is not approved")
+                source_bytes, _ = _download_remote_image(source_url)
+                return self._json(
+                    200,
+                    {
+                        "ok": True,
+                        "localized_images": np_mod.create_localized_translation_preview(
+                            raw,
+                            expected_revision=data.get("expected_revision"),
+                            locale=str(data.get("locale") or ""),
+                            source_url=source_url,
+                            source_bytes=source_bytes,
+                        ),
                     },
                 )
             except Exception as exc:

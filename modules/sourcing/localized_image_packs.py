@@ -85,6 +85,23 @@ def _atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
             candidate.unlink()
 
 
+def _atomic_bytes(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    finally:
+        candidate = Path(temp_name)
+        if candidate.exists():
+            candidate.unlink()
+
+
 def _approved_images(snapshot: Mapping[str, Any]) -> list[str]:
     product = snapshot.get("product")
     if not isinstance(product, Mapping):
@@ -178,6 +195,37 @@ class LocalizedImagePackStore:
 
     def _path(self, offer_id: object) -> Path:
         return self.root / _offer_id(offer_id) / "project.json"
+
+    @staticmethod
+    def _check_revision(project: Mapping[str, Any], expected_revision: object) -> None:
+        try:
+            expected = int(expected_revision)
+        except (TypeError, ValueError) as error:
+            raise LocalizedImagePackError("localized image revision is invalid") from error
+        if expected != int(project.get("revision") or 0):
+            raise LocalizedImagePackError("localized image revision has changed")
+
+    def _commit(self, offer_id: object, project: dict[str, Any]) -> dict[str, Any]:
+        project["revision"] = int(project.get("revision") or 0) + 1
+        project["updated_at"] = _now()
+        project["external_writes"] = 0
+        _atomic_json(self._path(offer_id), project)
+        return project
+
+    @staticmethod
+    def _pack_image(project: Mapping[str, Any], locale: str, source_url: str) -> dict[str, Any]:
+        packs = project.get("packs")
+        pack = packs.get(locale) if isinstance(packs, Mapping) else None
+        if not isinstance(pack, Mapping):
+            raise LocalizedImagePackError("localized pack is unavailable")
+        matches = [
+            row
+            for row in (pack.get("images") or [])
+            if isinstance(row, dict) and row.get("source_url") == source_url
+        ]
+        if len(matches) != 1:
+            raise LocalizedImagePackError("localized pack image is unavailable or ambiguous")
+        return matches[0]
 
     def load(self, offer_id: object) -> dict[str, Any]:
         path = self._path(offer_id)
@@ -286,3 +334,249 @@ class LocalizedImagePackStore:
         }
         _atomic_json(self._path(offer_id), project)
         return project
+
+    def save_text_inventory(
+        self,
+        offer_id: object,
+        *,
+        expected_revision: object,
+        source_url: object,
+        source_url_digest: object,
+        provider: object,
+        regions: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        """Bind locally detected text regions to one approved base image."""
+
+        with self._lock:
+            project = self.load(offer_id)
+            if not project:
+                raise LocalizedImagePackError("localized image project is missing")
+            self._check_revision(project, expected_revision)
+            clean_url = str(source_url or "").strip()
+            base_image = self._pack_image(project, "en-master", clean_url)
+            if str(source_url_digest or "") != base_image.get("source_url_digest"):
+                raise LocalizedImagePackError("text inventory source identity has changed")
+            if str(provider or "") != "rapidocr-local/v1":
+                raise LocalizedImagePackError("text inventory provider is unsupported")
+            normalized: list[dict[str, Any]] = []
+            for raw in regions:
+                if not isinstance(raw, Mapping):
+                    raise LocalizedImagePackError("text inventory region is invalid")
+                region_id = str(raw.get("region_id") or "").strip()
+                source_text = str(raw.get("source_text") or "").strip()
+                bbox = raw.get("bbox")
+                try:
+                    box = [round(float(value), 6) for value in bbox]
+                    confidence = round(float(raw.get("confidence")), 6)
+                except (TypeError, ValueError) as error:
+                    raise LocalizedImagePackError("text inventory region is invalid") from error
+                if (
+                    not re.fullmatch(r"text-[a-f0-9]{20}", region_id)
+                    or not source_text
+                    or len(source_text) > 500
+                    or len(box) != 4
+                    or not all(0 <= value <= 1 for value in box)
+                    or box[2] <= box[0]
+                    or box[3] <= box[1]
+                    or not 0 <= confidence <= 1
+                    or raw.get("origin") != "rapidocr-local/v1"
+                ):
+                    raise LocalizedImagePackError("text inventory region is invalid")
+                normalized.append(
+                    {
+                        "region_id": region_id,
+                        "source_text": source_text,
+                        "bbox": box,
+                        "confidence": confidence,
+                        "origin": "rapidocr-local/v1",
+                    }
+                )
+            ids = [row["region_id"] for row in normalized]
+            if len(ids) != len(set(ids)):
+                raise LocalizedImagePackError("text inventory region identity is ambiguous")
+            inventory = project.setdefault(
+                "text_inventory",
+                {"schema_version": "localized-image-text-inventory/v1", "images": {}},
+            )
+            images = inventory.setdefault("images", {})
+            images[clean_url] = {
+                "source_url": clean_url,
+                "source_url_digest": base_image["source_url_digest"],
+                "provider": "rapidocr-local/v1",
+                "status": "SCANNED",
+                "regions": normalized,
+                "scanned_at": _now(),
+            }
+            inventory["status"] = "SCANNED"
+            for locale, pack in (project.get("packs") or {}).items():
+                if locale == "en-master" or not isinstance(pack, dict):
+                    continue
+                image = self._pack_image(project, locale, clean_url)
+                previous = {
+                    row.get("region_id"): row
+                    for row in (image.get("translations") or [])
+                    if isinstance(row, Mapping)
+                }
+                image["translations"] = [
+                    {
+                        "region_id": row["region_id"],
+                        "source_text": row["source_text"],
+                        "translated_text": (
+                            str(previous.get(row["region_id"], {}).get("translated_text") or "")
+                            if previous.get(row["region_id"], {}).get("source_text")
+                            == row["source_text"]
+                            else ""
+                        ),
+                        "status": (
+                            "DRAFT_TRANSLATED"
+                            if str(previous.get(row["region_id"], {}).get("translated_text") or "").strip()
+                            and previous.get(row["region_id"], {}).get("source_text")
+                            == row["source_text"]
+                            else "PENDING_TRANSLATION"
+                        ),
+                    }
+                    for row in normalized
+                ]
+                image["status"] = (
+                    "TEXT_NOT_PRESENT" if not normalized else "PENDING_TRANSLATION"
+                )
+                image.pop("preview", None)
+                pack["status"] = "PENDING_TEXT_REVIEW"
+            return self._commit(offer_id, project)
+
+    def save_translation_draft(
+        self,
+        offer_id: object,
+        *,
+        expected_revision: object,
+        locale: object,
+        source_url: object,
+        translations: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        """Save operator-edited translations without approving or publishing them."""
+
+        with self._lock:
+            project = self.load(offer_id)
+            if not project:
+                raise LocalizedImagePackError("localized image project is missing")
+            self._check_revision(project, expected_revision)
+            clean_locale = str(locale or "").strip()
+            if clean_locale == "en-master" or clean_locale not in LOCALES:
+                raise LocalizedImagePackError("localized pack is required")
+            image = self._pack_image(project, clean_locale, str(source_url or "").strip())
+            existing = image.get("translations") or []
+            existing_by_id = {
+                row.get("region_id"): row for row in existing if isinstance(row, Mapping)
+            }
+            incoming: dict[str, str] = {}
+            for raw in translations:
+                if not isinstance(raw, Mapping):
+                    raise LocalizedImagePackError("translation draft is invalid")
+                region_id = str(raw.get("region_id") or "").strip()
+                translated = str(raw.get("translated_text") or "").strip()
+                if not region_id or len(translated) > 800 or region_id in incoming:
+                    raise LocalizedImagePackError("translation draft is invalid")
+                incoming[region_id] = translated
+            if set(incoming) != set(existing_by_id):
+                raise LocalizedImagePackError("translation region coverage has changed")
+            image["translations"] = [
+                {
+                    "region_id": row["region_id"],
+                    "source_text": row["source_text"],
+                    "translated_text": incoming[row["region_id"]],
+                    "status": (
+                        "DRAFT_TRANSLATED"
+                        if incoming[row["region_id"]]
+                        else "PENDING_TRANSLATION"
+                    ),
+                }
+                for row in existing
+            ]
+            complete = bool(existing) and all(incoming.values())
+            image["status"] = "DRAFT_TRANSLATED" if complete else "PENDING_TRANSLATION"
+            image.pop("preview", None)
+            pack = project["packs"][clean_locale]
+            pack["status"] = "DRAFT_TRANSLATED" if complete else "PENDING_TEXT_REVIEW"
+            return self._commit(offer_id, project)
+
+    def save_preview_artifact(
+        self,
+        offer_id: object,
+        *,
+        expected_revision: object,
+        locale: object,
+        source_url: object,
+        artifact_bytes: bytes,
+        renderer: object,
+    ) -> dict[str, Any]:
+        """Persist a local-only preview bound to the current translation draft."""
+
+        with self._lock:
+            project = self.load(offer_id)
+            if not project:
+                raise LocalizedImagePackError("localized image project is missing")
+            self._check_revision(project, expected_revision)
+            clean_locale = str(locale or "").strip()
+            if clean_locale == "en-master" or clean_locale not in LOCALES:
+                raise LocalizedImagePackError("localized pack is required")
+            if renderer != "pillow-local-preview/v1":
+                raise LocalizedImagePackError("localized preview renderer is unsupported")
+            if (
+                not isinstance(artifact_bytes, bytes)
+                or not artifact_bytes.startswith(b"\x89PNG\r\n\x1a\n")
+                or len(artifact_bytes) > 20 * 1024 * 1024
+            ):
+                raise LocalizedImagePackError("localized preview artifact is invalid")
+            image = self._pack_image(project, clean_locale, str(source_url or "").strip())
+            translations = image.get("translations") or []
+            if not translations or any(
+                not str(row.get("translated_text") or "").strip()
+                for row in translations
+                if isinstance(row, Mapping)
+            ):
+                raise LocalizedImagePackError("complete translation draft is required")
+            artifact_digest = hashlib.sha256(artifact_bytes).hexdigest()
+            artifact_id = f"localized-preview-{artifact_digest[:20]}"
+            artifact_path = self._path(offer_id).parent / "artifacts" / f"{artifact_id}.png"
+            if artifact_path.exists() and artifact_path.read_bytes() != artifact_bytes:
+                raise LocalizedImagePackError("localized preview artifact identity collision")
+            if not artifact_path.exists():
+                _atomic_bytes(artifact_path, artifact_bytes)
+            translation_identity = [
+                {
+                    "region_id": row["region_id"],
+                    "source_text": row["source_text"],
+                    "translated_text": row["translated_text"],
+                }
+                for row in translations
+            ]
+            image["preview"] = {
+                "status": "PREVIEW_READY",
+                "artifact_id": artifact_id,
+                "artifact_digest": f"sha256:{artifact_digest}",
+                "renderer": "pillow-local-preview/v1",
+                "translation_digest": _canonical_digest(translation_identity),
+                "created_at": _now(),
+            }
+            image["status"] = "PREVIEW_READY"
+            project["packs"][clean_locale]["status"] = "PREVIEW_READY"
+            return self._commit(offer_id, project)
+
+    def preview_artifact_path(self, offer_id: object, artifact_id: object) -> Path:
+        project = self.load(offer_id)
+        clean = str(artifact_id or "").strip()
+        if not re.fullmatch(r"localized-preview-[a-f0-9]{20}", clean):
+            raise LocalizedImagePackError("localized preview artifact_id is invalid")
+        bound = any(
+            (image.get("preview") or {}).get("artifact_id") == clean
+            for pack in (project.get("packs") or {}).values()
+            if isinstance(pack, Mapping)
+            for image in (pack.get("images") or [])
+            if isinstance(image, Mapping)
+        )
+        if not bound:
+            raise LocalizedImagePackError("localized preview artifact is not bound")
+        path = self._path(offer_id).parent / "artifacts" / f"{clean}.png"
+        if not path.is_file():
+            raise LocalizedImagePackError("localized preview artifact is missing")
+        return path

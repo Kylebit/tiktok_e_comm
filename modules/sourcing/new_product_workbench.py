@@ -964,6 +964,20 @@ def localized_image_project_summary(offer_id_or_url: str) -> dict[str, Any]:
 
     offer_id = resolve_offer_key(offer_id_or_url)
     project = _localized_image_pack_store().load(offer_id)
+    for pack in (project.get("packs") or {}).values():
+        if not isinstance(pack, dict):
+            continue
+        for image in pack.get("images") or []:
+            if not isinstance(image, dict):
+                continue
+            preview = image.get("preview")
+            artifact_id = str((preview or {}).get("artifact_id") or "")
+            if isinstance(preview, dict) and artifact_id:
+                preview["local_url"] = (
+                    "/api/product-flow/content-package/localized-images/artifact"
+                    f"?offer_id={urllib.parse.quote(offer_id)}"
+                    f"&artifact_id={urllib.parse.quote(artifact_id)}"
+                )
     return {
         "schema_version": "localized-image-project-summary/v1",
         "offer_id": offer_id,
@@ -1008,6 +1022,115 @@ def initialize_localized_image_project(
         "external_writes": 0,
         "product_center_mutated": False,
     }
+
+
+def _localized_project_result(offer_id: str) -> dict[str, Any]:
+    return localized_image_project_summary(offer_id)
+
+
+def scan_localized_image_text(
+    offer_id_or_url: str,
+    *,
+    expected_revision: object,
+    source_url: str,
+    source_bytes: bytes,
+    ocr_engine=None,
+) -> dict[str, Any]:
+    """Run local RapidOCR for one approved image and seed translation drafts."""
+
+    from modules.sourcing.localized_image_ocr import detect_english_text_regions
+
+    offer_id = resolve_offer_key(offer_id_or_url)
+    project = _localized_image_pack_store().load(offer_id)
+    base_images = (project.get("packs") or {}).get("en-master", {}).get("images") or []
+    matches = [
+        row
+        for row in base_images
+        if isinstance(row, dict) and row.get("source_url") == source_url
+    ]
+    if len(matches) != 1:
+        raise ValueError("localized image source is unavailable or ambiguous")
+    regions = detect_english_text_regions(source_bytes, engine=ocr_engine)
+    _localized_image_pack_store().save_text_inventory(
+        offer_id,
+        expected_revision=expected_revision,
+        source_url=source_url,
+        source_url_digest=matches[0].get("source_url_digest"),
+        provider="rapidocr-local/v1",
+        regions=regions,
+    )
+    return _localized_project_result(offer_id)
+
+
+def save_localized_translation_draft(
+    offer_id_or_url: str,
+    *,
+    expected_revision: object,
+    locale: str,
+    source_url: str,
+    translations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    offer_id = resolve_offer_key(offer_id_or_url)
+    _localized_image_pack_store().save_translation_draft(
+        offer_id,
+        expected_revision=expected_revision,
+        locale=locale,
+        source_url=source_url,
+        translations=translations,
+    )
+    return _localized_project_result(offer_id)
+
+
+def create_localized_translation_preview(
+    offer_id_or_url: str,
+    *,
+    expected_revision: object,
+    locale: str,
+    source_url: str,
+    source_bytes: bytes,
+) -> dict[str, Any]:
+    from modules.sourcing.localized_image_render import (
+        RENDERER,
+        render_translation_preview,
+    )
+
+    offer_id = resolve_offer_key(offer_id_or_url)
+    store = _localized_image_pack_store()
+    project = store.load(offer_id)
+    inventory = (project.get("text_inventory") or {}).get("images") or {}
+    text_row = inventory.get(source_url)
+    if not isinstance(text_row, dict):
+        raise ValueError("scan the approved image text before previewing translations")
+    pack = (project.get("packs") or {}).get(locale)
+    matches = [
+        row
+        for row in ((pack or {}).get("images") or [])
+        if isinstance(row, dict) and row.get("source_url") == source_url
+    ]
+    if len(matches) != 1:
+        raise ValueError("localized image source is unavailable or ambiguous")
+    artifact = render_translation_preview(
+        source_bytes,
+        regions=text_row.get("regions") or [],
+        translations=matches[0].get("translations") or [],
+        locale=locale,
+    )
+    store.save_preview_artifact(
+        offer_id,
+        expected_revision=expected_revision,
+        locale=locale,
+        source_url=source_url,
+        artifact_bytes=artifact,
+        renderer=RENDERER,
+    )
+    return _localized_project_result(offer_id)
+
+
+def localized_image_preview_artifact(
+    offer_id_or_url: str, artifact_id: str
+) -> Path:
+    offer_id = resolve_offer_key(offer_id_or_url)
+    return _localized_image_pack_store().preview_artifact_path(offer_id, artifact_id)
 
 
 def _image_localization_source_rows(offer_id: str) -> list[dict[str, str]]:

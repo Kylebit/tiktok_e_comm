@@ -109,3 +109,19 @@ def test_ai_studio_exposes_isolated_locale_image_packs_without_product_center_wr
     assert "pack.status" in script
     assert "待文字识别、翻译、排版与人工批准" in script
     assert ".localized-pack-grid" in css
+
+
+def test_ai_studio_supports_local_ocr_editable_translations_and_local_preview():
+    html = (ROOT / "web/ai_image_studio.html").read_text(encoding="utf-8")
+    script = (ROOT / "web/static/ai_image_studio.js").read_text(encoding="utf-8")
+
+    assert 'id="scanLocalizedImageTextButton"' in html
+    assert 'id="localizedImageLocaleSelect"' in html
+    assert 'id="localizedTranslationGrid"' in html
+    assert "本地 OCR 扫描全部英文文字" in html
+    assert 'post("content-package/localized-images/scan-text"' in script
+    assert 'post("content-package/localized-images/translation-draft"' in script
+    assert 'post("content-package/localized-images/preview"' in script
+    assert "localizedTranslationDraft" in script
+    assert "刷新不会静默覆盖当前输入" in script
+    assert "尚未批准或发布" in script

@@ -50,6 +50,8 @@ For TikTok Thailand, a non-zero settled `import_vat` or `customs_duty` component
 
 Under operator policy `zero-settlement-unshipped-ads-only/v1`, classify a TikTok parent order whose summed local-currency net settlement is exactly zero as unshipped. Keep advertising cost, set recognized product cost and local-fulfillment cost to zero, preserve the catalog product cost as unrecognized evidence, and retain the decision and policy version in the fingerprint. Do not infer the same treatment for a negative settlement; require separate refund, shipping, or order-status evidence.
 
+For a customer-refusal return confirmed by official reason/status evidence or an explicit operator exception fact, use fulfillment evidence to recognize product loss. A local return is resalable and recognizes zero product-cost loss; a cross-border return is destroyed and retains full product cost. Preserve confirmation provenance, fulfillment evidence, refund, shipping, advertising, and fulfillment costs. Negative settlement shape by itself is insufficient evidence.
+
 ## Knowledge
 
 Store only explicitly approved monthly reports. Keep immutable JSON artifacts under platform/year/month plus a local index. Reject secret/raw-response fields. Corrections produce a new report and approval; never overwrite an approved artifact.

@@ -231,7 +231,11 @@ def translate_image_regions(
             },
         ],
         temperature=0.0,
-        max_tokens=max(1800, min(8000, 900 + len(source_rows) * 180)),
+        # One image may contain 10-20 regions and every region is returned for
+        # five locales. A smaller dynamic ceiling truncated otherwise valid
+        # JSON on real 14-region product cards, so reserve the full bounded
+        # response budget while still making exactly one request per image.
+        max_tokens=8000,
     )
     translations = _validated_translations(_json_object(raw), source_rows)
     return {

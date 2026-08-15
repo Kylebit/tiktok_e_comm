@@ -61,6 +61,7 @@ def test_translates_one_image_to_all_locales_in_one_strict_model_call():
     assert result["receipt"]["model"] == "gpt-5.4-mini-official"
     assert result["receipt"]["model_calls"] == 1
     assert "Translate only the supplied source_text" in calls[0][0][0]["content"]
+    assert calls[0][2] == 8000
 
 
 @pytest.mark.parametrize(

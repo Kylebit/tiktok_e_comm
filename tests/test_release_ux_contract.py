@@ -647,7 +647,7 @@ def test_collectbox_and_platform_release_actions_are_not_cross_wired():
     assert 'id="collectboxActionPanel"' in html
     assert 'id="collectboxActionMessage"' in html
     assert 'id="collectboxActionStatus"' in html
-    assert "product_workspace.js?v=20260804-v37" in html
+    assert "product_workspace.js?v=20260815-v38" in html
     assert 'COLLECTBOX_ACTION_SCHEMA = "collectbox-action-status/v1"' in script
     assert "/api/product-workspace/collectbox-action/preview?" in script
     assert "/api/product-workspace/collectbox-action/status?" in script
@@ -690,6 +690,23 @@ def test_collectbox_and_platform_release_actions_are_not_cross_wired():
         '$("#ozonReleaseButton").addEventListener('
         '"click", runOzonReleaseAction)'
     ) in script
+
+
+def test_collectbox_frontend_validates_server_owned_tiktok_publishable_targets():
+    script = (ROOT / "web/static/product_workspace.js").read_text(
+        encoding="utf-8"
+    )
+    validator = script[
+        script.index("function validateCollectboxPlatform("):
+        script.index("function validateCollectboxProjection(")
+    ]
+
+    assert '"publishable_targets"' in validator
+    assert 'expectedPlatform === "TIKTOK"' in validator
+    assert "row.publishable_targets" in validator
+    assert "expectedPublishableTargets" in validator
+    assert "selectedTargetOrder.includes(target)" in validator
+    assert "JSON.stringify(row.publishable_targets)" in validator
 
 
 def test_oneclick_mvp_keeps_legacy_reads_idle_without_legacy_resubmit():

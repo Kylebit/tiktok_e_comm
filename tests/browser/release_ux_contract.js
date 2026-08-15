@@ -5108,27 +5108,47 @@ function collectboxActionProjection(state) {
     error = null,
     targets = null,
     targetOutcomes = null,
-    publishable = status === "SUCCEEDED",
-  }) => ({
-    platform: name,
-    targets: targets || [{
+    publishable = null,
+  }) => {
+    const resolvedTargets = targets || [{
       target_label: name === "TIKTOK" ? "tiktok:LH_PH" : "shopee:MY",
       status,
-    }],
-    target_outcomes: targetOutcomes || [],
-    status,
-    outcome,
-    attempt_count: attempts,
-    retry_allowed: retryAllowed,
-    receipt_digest: receiptDigest,
-    platform_detail_id_digest: detailDigest,
-    external_writes: {
-      count: writeCount,
-      classes: writeClasses,
-    },
-    error,
-    publishable,
-  });
+    }];
+    const resolvedOutcomes = targetOutcomes || [];
+    const publishableTargets = (
+      name === "TIKTOK" && status === "RECONCILIATION_REQUIRED"
+    )
+      ? resolvedOutcomes
+        .filter((target) => [
+          "SUCCEEDED",
+          "REPAIRED_SUCCEEDED",
+        ].includes(target.status))
+        .map((target) => target.target_label)
+      : [];
+    const row = {
+      platform: name,
+      targets: resolvedTargets,
+      target_outcomes: resolvedOutcomes,
+      status,
+      outcome,
+      attempt_count: attempts,
+      retry_allowed: retryAllowed,
+      receipt_digest: receiptDigest,
+      platform_detail_id_digest: detailDigest,
+      external_writes: {
+        count: writeCount,
+        classes: writeClasses,
+      },
+      error,
+      publishable: publishable ?? (
+        status === "SUCCEEDED" || publishableTargets.length > 0
+      ),
+    };
+    if (name === "TIKTOK" && status !== "SUCCEEDED") {
+      row.publishable_targets = publishableTargets;
+    }
+    return row;
+  };
   const base = {
     schema_version: "collectbox-action-status/v1",
     ok: true,

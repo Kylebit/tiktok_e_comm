@@ -878,21 +878,25 @@
   }
 
   function validateCollectboxPlatform(row, expectedPlatform) {
+    const expectedKeys = [
+      "platform",
+      "targets",
+      "target_outcomes",
+      "status",
+      "outcome",
+      "attempt_count",
+      "retry_allowed",
+      "receipt_digest",
+      "platform_detail_id_digest",
+      "external_writes",
+      "error",
+      "publishable",
+    ];
+    if (expectedPlatform === "TIKTOK" && row?.status !== "SUCCEEDED") {
+      expectedKeys.push("publishable_targets");
+    }
     if (
-      !exactObjectKeys(row, [
-        "platform",
-        "targets",
-        "target_outcomes",
-        "status",
-        "outcome",
-        "attempt_count",
-        "retry_allowed",
-        "receipt_digest",
-        "platform_detail_id_digest",
-        "external_writes",
-        "error",
-        "publishable",
-      ])
+      !exactObjectKeys(row, expectedKeys)
       || row.platform !== expectedPlatform
       || !Array.isArray(row.targets)
       || row.targets.some((target) => (
@@ -933,6 +937,22 @@
       ).size !== row.target_outcomes.length
       || !COLLECTBOX_PLATFORM_STATUSES.has(row.status)
       || typeof row.publishable !== "boolean"
+      || (
+        expectedPlatform === "TIKTOK" && row.status !== "SUCCEEDED"
+          ? (
+            !Array.isArray(row.publishable_targets)
+            || row.publishable_targets.some((target) => (
+              typeof target !== "string"
+              || !target.startsWith("tiktok:")
+            ))
+            || new Set(row.publishable_targets).size
+              !== row.publishable_targets.length
+          )
+          : Object.prototype.hasOwnProperty.call(
+            row,
+            "publishable_targets",
+          )
+      )
       || !Number.isInteger(row.attempt_count)
       || row.attempt_count < 0
       || typeof row.retry_allowed !== "boolean"
@@ -976,6 +996,39 @@
         );
       }
       previousTargetIndex = currentTargetIndex;
+    }
+    const expectedPublishableTargets = (
+      expectedPlatform === "TIKTOK"
+      && row.status === "RECONCILIATION_REQUIRED"
+    )
+      ? row.target_outcomes
+        .filter((target) => [
+          "SUCCEEDED",
+          "REPAIRED_SUCCEEDED",
+        ].includes(target.status))
+        .map((target) => target.target_label)
+      : [];
+    if (
+      expectedPlatform === "TIKTOK"
+      && row.status !== "SUCCEEDED"
+      && (
+        row.publishable_targets.some(
+          (target) => !selectedTargetOrder.includes(target),
+        )
+        || JSON.stringify(row.publishable_targets)
+          !== JSON.stringify(expectedPublishableTargets)
+      )
+    ) {
+      throw oneClickContractError(
+        "TikTok 可发布站点状态不完整，请刷新后重试。",
+      );
+    }
+    const expectedPublishable = row.status === "SUCCEEDED"
+      || expectedPublishableTargets.length > 0;
+    if (row.publishable !== expectedPublishable) {
+      throw oneClickContractError(
+        "妙手采集箱可发布状态互相矛盾，请刷新后重试。",
+      );
     }
     const writeClass = collectboxWriteClass(expectedPlatform);
     const successExact = row.status === "SUCCEEDED" && (

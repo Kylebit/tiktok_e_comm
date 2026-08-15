@@ -1081,6 +1081,76 @@ def save_localized_translation_draft(
     return _localized_project_result(offer_id)
 
 
+def auto_translate_localized_images(
+    offer_id_or_url: str,
+    *,
+    expected_revision: object,
+    source_bytes_by_url: dict[str, bytes],
+    model_call=None,
+) -> dict[str, Any]:
+    """Automatically translate and render all locale packs without platform writes."""
+
+    from modules.sourcing.localized_image_auto_translation import (
+        translate_image_regions,
+    )
+    from modules.sourcing.localized_image_render import render_translation_preview
+
+    offer_id = resolve_offer_key(offer_id_or_url)
+    store = _localized_image_pack_store()
+    project = store.load(offer_id)
+    if not project:
+        raise ValueError("localized image project is missing")
+    try:
+        expected = int(expected_revision)
+    except (TypeError, ValueError) as error:
+        raise ValueError("localized image revision is invalid") from error
+    if expected != int(project.get("revision") or 0):
+        raise ValueError("localized image revision has changed")
+    if (project.get("automatic_translation") or {}).get("status") == "AUTO_PREVIEW_READY":
+        return _localized_project_result(offer_id)
+    source_urls = list((project.get("base_package") or {}).get("ordered_image_urls") or [])
+    inventory = (project.get("text_inventory") or {}).get("images") or {}
+    if set(inventory) != set(source_urls):
+        raise ValueError("all approved images must be locally scanned before translation")
+    if set(source_bytes_by_url) != set(source_urls):
+        raise ValueError("approved source image bytes are incomplete")
+
+    items: list[dict[str, Any]] = []
+    for source_url in source_urls:
+        row = inventory.get(source_url)
+        if not isinstance(row, dict) or row.get("status") != "SCANNED":
+            raise ValueError("localized image text inventory is incomplete")
+        regions = row.get("regions") or []
+        if model_call is None:
+            translated = translate_image_regions(regions)
+        else:
+            translated = translate_image_regions(regions, model_call=model_call)
+        previews = {
+            locale: render_translation_preview(
+                source_bytes_by_url[source_url],
+                regions=regions,
+                translations=translations,
+                locale=locale,
+            )
+            for locale, translations in translated["translations"].items()
+            if regions
+        }
+        items.append(
+            {
+                "source_url": source_url,
+                "translations": translated["translations"],
+                "previews": previews,
+                "receipt": translated["receipt"],
+            }
+        )
+    store.save_automatic_bundle(
+        offer_id,
+        expected_revision=expected,
+        items=items,
+    )
+    return _localized_project_result(offer_id)
+
+
 def create_localized_translation_preview(
     offer_id_or_url: str,
     *,

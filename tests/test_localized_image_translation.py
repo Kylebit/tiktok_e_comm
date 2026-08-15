@@ -231,3 +231,100 @@ def test_preview_artifact_is_bound_to_translation_revision(tmp_path):
     assert metadata["status"] == "PREVIEW_READY"
     assert store.preview_artifact_path("3900088343", metadata["artifact_id"]).is_file()
     assert saved["external_writes"] == 0
+
+
+def test_automatic_bundle_commits_all_locales_once_and_is_bound_to_inventory(tmp_path):
+    store = LocalizedImagePackStore(tmp_path)
+    project = store.initialize_from_approved_snapshot(_snapshot())
+    source_url = project["base_package"]["ordered_image_urls"][0]
+    region = detect_english_text_regions(_image_bytes(), engine=_FakeOcr())[0]
+    scanned = store.save_text_inventory(
+        "3900088343",
+        expected_revision=1,
+        source_url=source_url,
+        source_url_digest=project["packs"]["en-master"]["images"][0][
+            "source_url_digest"
+        ],
+        provider="rapidocr-local/v1",
+        regions=[region],
+    )
+    second_url = project["base_package"]["ordered_image_urls"][1]
+    scanned = store.save_text_inventory(
+        "3900088343",
+        expected_revision=scanned["revision"],
+        source_url=second_url,
+        source_url_digest=project["packs"]["en-master"]["images"][1][
+            "source_url_digest"
+        ],
+        provider="rapidocr-local/v1",
+        regions=[],
+    )
+    translations = {
+        "ms-MY": "Mudah dipasang",
+        "th-TH": "ติดตั้งง่าย",
+        "vi-VN": "Dễ lắp đặt",
+        "ru-RU": "Простая установка",
+        "es-MX": "Fácil de instalar",
+    }
+    items = []
+    for url in scanned["base_package"]["ordered_image_urls"]:
+        regions = (scanned.get("text_inventory") or {}).get("images", {}).get(url, {}).get("regions", [])
+        if regions:
+            locale_rows = {
+                locale: [
+                    {
+                        "region_id": region["region_id"],
+                        "source_text": region["source_text"],
+                        "translated_text": translated,
+                    }
+                ]
+                for locale, translated in translations.items()
+            }
+            previews = {
+                locale: render_translation_preview(
+                    _image_bytes(),
+                    regions=[region],
+                    translations=rows,
+                    locale=locale,
+                )
+                for locale, rows in locale_rows.items()
+            }
+        else:
+            locale_rows = {locale: [] for locale in translations}
+            previews = {}
+        items.append(
+            {
+                "source_url": url,
+                "translations": locale_rows,
+                "previews": previews,
+                "receipt": {
+                    "status": "AUTO_TRANSLATED" if regions else "NO_TEXT_REUSE_BASE",
+                    "provider": "toapis-chat-completions/v1",
+                    "model": "gpt-5.4-mini-official",
+                    "model_calls": 1 if regions else 0,
+                },
+            }
+        )
+
+    saved = store.save_automatic_bundle(
+        "3900088343",
+        expected_revision=scanned["revision"],
+        items=items,
+    )
+
+    assert saved["revision"] == scanned["revision"] + 1
+    assert saved["automatic_translation"]["status"] == "AUTO_PREVIEW_READY"
+    assert saved["automatic_translation"]["model_calls"] == 1
+    assert saved["packs"]["th-TH"]["status"] == "AUTO_PREVIEW_READY"
+    translated_image = saved["packs"]["th-TH"]["images"][0]
+    assert translated_image["translations"][0]["translated_text"] == "ติดตั้งง่าย"
+    assert store.preview_artifact_path(
+        "3900088343", translated_image["preview"]["artifact_id"]
+    ).is_file()
+    assert saved["packs"]["th-TH"]["images"][1]["status"] == "REUSE_BASE_NO_TEXT"
+    assert saved["external_writes"] == 0
+
+    with pytest.raises(LocalizedImagePackError, match="revision"):
+        store.save_automatic_bundle(
+            "3900088343", expected_revision=scanned["revision"], items=items
+        )

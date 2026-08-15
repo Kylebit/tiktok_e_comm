@@ -441,6 +441,63 @@ class NewProductHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 return self._json(400, {"ok": False, "error": str(exc)})
 
+        if path == "/api/new-product/content-package/localized-images/auto-translate":
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            try:
+                summary = np_mod.localized_image_project_summary(raw)
+                project = summary.get("project") or {}
+                try:
+                    expected = int(data.get("expected_revision"))
+                except (TypeError, ValueError) as error:
+                    raise ValueError("localized image revision is invalid") from error
+                if expected != int(project.get("revision") or 0):
+                    raise ValueError("localized image revision has changed")
+                if (project.get("automatic_translation") or {}).get("status") == "AUTO_PREVIEW_READY":
+                    return self._json(
+                        200,
+                        {
+                            "ok": True,
+                            "localized_images": np_mod.auto_translate_localized_images(
+                                raw,
+                                expected_revision=expected,
+                                source_bytes_by_url={},
+                            ),
+                        },
+                    )
+                source_urls = list(
+                    (project.get("base_package") or {}).get("ordered_image_urls") or []
+                )
+                if not source_urls:
+                    raise ValueError("approved localized image sources are missing")
+                source_bytes_by_url: dict[str, bytes] = {}
+                for source_url in source_urls:
+                    source_bytes, _ = _download_remote_image(source_url)
+                    source_bytes_by_url[source_url] = source_bytes
+                    inventory = (project.get("text_inventory") or {}).get("images") or {}
+                    if source_url in inventory:
+                        continue
+                    scanned = np_mod.scan_localized_image_text(
+                        raw,
+                        expected_revision=project.get("revision"),
+                        source_url=source_url,
+                        source_bytes=source_bytes,
+                    )
+                    project = scanned.get("project") or {}
+                return self._json(
+                    200,
+                    {
+                        "ok": True,
+                        "localized_images": np_mod.auto_translate_localized_images(
+                            raw,
+                            expected_revision=project.get("revision"),
+                            source_bytes_by_url=source_bytes_by_url,
+                        ),
+                    },
+                )
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+
         if path == "/api/new-product/content-package/localized-images/translation-draft":
             if not raw:
                 return self._json(400, {"ok": False, "error": "missing offer_id"})

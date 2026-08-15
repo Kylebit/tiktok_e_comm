@@ -408,6 +408,7 @@ class LocalizedImagePackStore:
                 "scanned_at": _now(),
             }
             inventory["status"] = "SCANNED"
+            project.pop("automatic_translation", None)
             for locale, pack in (project.get("packs") or {}).items():
                 if locale == "en-master" or not isinstance(pack, dict):
                     continue
@@ -497,6 +498,234 @@ class LocalizedImagePackStore:
             image.pop("preview", None)
             pack = project["packs"][clean_locale]
             pack["status"] = "DRAFT_TRANSLATED" if complete else "PENDING_TEXT_REVIEW"
+            return self._commit(offer_id, project)
+
+    def save_automatic_bundle(
+        self,
+        offer_id: object,
+        *,
+        expected_revision: object,
+        items: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        """Atomically bind all automatic translations and local previews.
+
+        Model output is gathered and rendered before this method is called. The
+        project is committed once only after every approved source image and
+        every locale has passed exact identity checks.
+        """
+
+        with self._lock:
+            project = self.load(offer_id)
+            if not project:
+                raise LocalizedImagePackError("localized image project is missing")
+            self._check_revision(project, expected_revision)
+            source_urls = list(
+                (project.get("base_package") or {}).get("ordered_image_urls") or []
+            )
+            incoming = {
+                str(row.get("source_url") or "").strip(): row
+                for row in items
+                if isinstance(row, Mapping)
+            }
+            if (
+                len(incoming) != len(items)
+                or list(incoming) != source_urls
+                or set(incoming) != set(source_urls)
+            ):
+                raise LocalizedImagePackError(
+                    "automatic translation source coverage has changed"
+                )
+            inventory_images = (
+                (project.get("text_inventory") or {}).get("images") or {}
+            )
+            if set(inventory_images) != set(source_urls):
+                raise LocalizedImagePackError(
+                    "all approved images must be locally scanned before translation"
+                )
+            localized_locales = tuple(locale for locale in LOCALES if locale != "en-master")
+            prepared: list[dict[str, Any]] = []
+            inventory_identity: list[dict[str, Any]] = []
+            model_calls = 0
+            for source_url in source_urls:
+                inventory = inventory_images[source_url]
+                if not isinstance(inventory, Mapping) or inventory.get("status") != "SCANNED":
+                    raise LocalizedImagePackError("text inventory is incomplete")
+                regions = inventory.get("regions") or []
+                region_ids = [str(row.get("region_id") or "") for row in regions]
+                source_by_id = {
+                    str(row.get("region_id") or ""): str(row.get("source_text") or "")
+                    for row in regions
+                    if isinstance(row, Mapping)
+                }
+                inventory_identity.append(
+                    {
+                        "source_url": source_url,
+                        "source_url_digest": inventory.get("source_url_digest"),
+                        "regions": [
+                            {
+                                "region_id": row.get("region_id"),
+                                "source_text": row.get("source_text"),
+                                "bbox": row.get("bbox"),
+                            }
+                            for row in regions
+                            if isinstance(row, Mapping)
+                        ],
+                    }
+                )
+                item = incoming[source_url]
+                raw_translations = item.get("translations")
+                raw_previews = item.get("previews")
+                receipt = item.get("receipt")
+                if (
+                    not isinstance(raw_translations, Mapping)
+                    or set(raw_translations) != set(localized_locales)
+                    or not isinstance(raw_previews, Mapping)
+                    or not isinstance(receipt, Mapping)
+                    or receipt.get("provider") != "toapis-chat-completions/v1"
+                    or receipt.get("model") != "gpt-5.4-mini-official"
+                ):
+                    raise LocalizedImagePackError(
+                        "automatic translation bundle is invalid"
+                    )
+                try:
+                    item_calls = int(receipt.get("model_calls"))
+                except (TypeError, ValueError) as error:
+                    raise LocalizedImagePackError(
+                        "automatic translation receipt is invalid"
+                    ) from error
+                expected_calls = 1 if regions else 0
+                if (
+                    item_calls != expected_calls
+                    or receipt.get("status")
+                    != ("AUTO_TRANSLATED" if regions else "NO_TEXT_REUSE_BASE")
+                    or set(raw_previews) != (set(localized_locales) if regions else set())
+                ):
+                    raise LocalizedImagePackError(
+                        "automatic translation receipt is invalid"
+                    )
+                model_calls += item_calls
+                locale_rows: dict[str, list[dict[str, str]]] = {}
+                preview_bytes: dict[str, bytes] = {}
+                for locale in localized_locales:
+                    rows = raw_translations.get(locale)
+                    if not isinstance(rows, list) or len(rows) != len(region_ids):
+                        raise LocalizedImagePackError(
+                            "automatic translation region coverage has changed"
+                        )
+                    ids = [
+                        str(row.get("region_id") or "")
+                        for row in rows
+                        if isinstance(row, Mapping)
+                    ]
+                    if ids != region_ids:
+                        raise LocalizedImagePackError(
+                            "automatic translation region coverage has changed"
+                        )
+                    clean_rows: list[dict[str, str]] = []
+                    for row in rows:
+                        if not isinstance(row, Mapping):
+                            raise LocalizedImagePackError(
+                                "automatic translation row is invalid"
+                            )
+                        region_id = str(row.get("region_id") or "")
+                        source_text = str(row.get("source_text") or "")
+                        translated_text = str(row.get("translated_text") or "").strip()
+                        if (
+                            source_text != source_by_id.get(region_id)
+                            or not translated_text
+                            or len(translated_text) > 800
+                        ):
+                            raise LocalizedImagePackError(
+                                "automatic translation row is invalid"
+                            )
+                        clean_rows.append(
+                            {
+                                "region_id": region_id,
+                                "source_text": source_text,
+                                "translated_text": translated_text,
+                            }
+                        )
+                    locale_rows[locale] = clean_rows
+                    if regions:
+                        artifact = raw_previews.get(locale)
+                        if (
+                            not isinstance(artifact, bytes)
+                            or not artifact.startswith(b"\x89PNG\r\n\x1a\n")
+                            or len(artifact) > 20 * 1024 * 1024
+                        ):
+                            raise LocalizedImagePackError(
+                                "automatic translation preview is invalid"
+                            )
+                        preview_bytes[locale] = artifact
+                prepared.append(
+                    {
+                        "source_url": source_url,
+                        "regions_present": bool(regions),
+                        "translations": locale_rows,
+                        "previews": preview_bytes,
+                        "receipt": {
+                            "status": receipt.get("status"),
+                            "provider": receipt.get("provider"),
+                            "model": receipt.get("model"),
+                            "model_calls": item_calls,
+                        },
+                    }
+                )
+
+            artifact_records: dict[tuple[str, str], dict[str, str]] = {}
+            for item in prepared:
+                for locale, artifact in item["previews"].items():
+                    artifact_digest = hashlib.sha256(artifact).hexdigest()
+                    artifact_id = f"localized-preview-{artifact_digest[:20]}"
+                    artifact_path = (
+                        self._path(offer_id).parent / "artifacts" / f"{artifact_id}.png"
+                    )
+                    if artifact_path.exists() and artifact_path.read_bytes() != artifact:
+                        raise LocalizedImagePackError(
+                            "localized preview artifact identity collision"
+                        )
+                    if not artifact_path.exists():
+                        _atomic_bytes(artifact_path, artifact)
+                    artifact_records[(item["source_url"], locale)] = {
+                        "artifact_id": artifact_id,
+                        "artifact_digest": f"sha256:{artifact_digest}",
+                    }
+
+            for item in prepared:
+                for locale in localized_locales:
+                    image = self._pack_image(project, locale, item["source_url"])
+                    translations = [
+                        {**row, "status": "AUTO_TRANSLATED"}
+                        for row in item["translations"][locale]
+                    ]
+                    image["translations"] = translations
+                    image["automatic_translation_receipt"] = dict(item["receipt"])
+                    if not item["regions_present"]:
+                        image["status"] = "REUSE_BASE_NO_TEXT"
+                        image["output_url"] = item["source_url"]
+                        image.pop("preview", None)
+                        continue
+                    artifact = artifact_records[(item["source_url"], locale)]
+                    image["preview"] = {
+                        "status": "AUTO_PREVIEW_READY",
+                        **artifact,
+                        "renderer": "pillow-local-preview/v1",
+                        "translation_digest": _canonical_digest(translations),
+                        "created_at": _now(),
+                    }
+                    image["status"] = "AUTO_PREVIEW_READY"
+
+            for locale in localized_locales:
+                project["packs"][locale]["status"] = "AUTO_PREVIEW_READY"
+            project["automatic_translation"] = {
+                "schema_version": "localized-image-automatic-run/v1",
+                "status": "AUTO_PREVIEW_READY",
+                "provider": "toapis-chat-completions/v1",
+                "model": "gpt-5.4-mini-official",
+                "model_calls": model_calls,
+                "inventory_digest": _canonical_digest(inventory_identity),
+                "completed_at": _now(),
+            }
             return self._commit(offer_id, project)
 
     def save_preview_artifact(

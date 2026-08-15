@@ -13226,6 +13226,7 @@ class Handler(BaseHTTPRequestHandler):
             "content-package/image-localization/clean-master",
             "content-package/localized-images/initialize",
             "content-package/localized-images/scan-text",
+            "content-package/localized-images/auto-translate",
             "content-package/localized-images/translation-draft",
             "content-package/localized-images/preview",
         }
@@ -13269,7 +13270,8 @@ class Handler(BaseHTTPRequestHandler):
         )
         opener = urllib.request.build_opener(_NoRemoteImageRedirects())
         try:
-            with opener.open(request, timeout=120) as response:
+            timeout = 600 if action == "content-package/localized-images/auto-translate" else 120
+            with opener.open(request, timeout=timeout) as response:
                 data = response.read(64 * 1024 * 1024)
                 content_type = response.headers.get("Content-Type") or "application/octet-stream"
                 if action == "content-report" and "text/html" in content_type:

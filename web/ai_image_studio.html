@@ -120,7 +120,7 @@
           <div>
             <p class="kicker">INDEPENDENT LOCALE PACKS</p>
             <h3 id="localizedImagePackTitle">国家语言图片包（独立）</h3>
-            <p>只从已批准 ReleasePlan 的最终英文图片导入母版。此处不会修改商品发布中心、不会重新审批发布计划，也不会写入任何平台。</p>
+            <p>只从已批准 ReleasePlan 的最终英文图片导入母版，系统自动识别英文、翻译五种语言并生成本地预览。正常情况无需逐条填写；此处不会修改商品发布中心或写入平台。</p>
           </div>
           <div class="localized-pack-actions">
             <label id="localizedImageLocaleLabel" hidden>编辑语言
@@ -132,7 +132,8 @@
                 <option value="es-MX">西班牙语 · MX</option>
               </select>
             </label>
-            <button id="scanLocalizedImageTextButton" class="button secondary" type="button" hidden>本地 OCR 扫描全部英文文字</button>
+            <button id="scanLocalizedImageTextButton" class="button secondary" type="button" hidden>仅重新扫描 OCR（故障排查）</button>
+            <button id="autoTranslateLocalizedImagesButton" class="button dark" type="button" hidden>自动生成五种语言图片预览</button>
             <button id="initializeLocalizedImagePacksButton" class="button secondary" type="button">导入已批准图片母版</button>
           </div>
         </header>

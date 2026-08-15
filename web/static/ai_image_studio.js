@@ -1470,7 +1470,9 @@
     const routes = project.route_draft?.routes || {};
     const initialized = Boolean(summary.initialized && Object.keys(packs).length);
     $("#initializeLocalizedImagePacksButton").hidden = initialized;
-    $("#scanLocalizedImageTextButton").hidden = !initialized;
+    $("#scanLocalizedImageTextButton").hidden = true;
+    $("#autoTranslateLocalizedImagesButton").hidden = !initialized
+      || project.automatic_translation?.status === "AUTO_PREVIEW_READY";
     $("#localizedImageLocaleLabel").hidden = !initialized;
     if (!initialized) {
       packGrid.innerHTML = '<div class="localized-empty">尚未导入。完成商品发布中心审核后，可在这里建立独立语言图片项目。</div>';
@@ -1484,7 +1486,7 @@
         <article class="localized-pack-card ${ready ? "ready" : ""}">
           <header><strong>${esc(pack.locale)}</strong><span class="badge">${esc(pack.status)}</span></header>
           <small>${esc((pack.images || []).length)} 张 · revision ${esc(pack.revision)}</small>
-          <small>${ready ? "复用已批准英文母版" : "待文字识别、翻译、排版与人工批准"}</small>
+          <small>${ready ? "复用已批准英文母版" : (pack.status === "AUTO_PREVIEW_READY" ? "自动翻译与本地预览已完成" : "等待自动处理，无需逐条填写")}</small>
         </article>
       `;
     }).join("");
@@ -1533,11 +1535,16 @@
           </div>
           <div class="localized-translation-editor">
             <header><strong>${esc(locale)}</strong><small>${esc(scanned.status || "NOT_SCANNED")} · ${translations.length} 个文字区域</small></header>
-            ${rows || '<div class="localized-scan-empty">尚未识别到英文文字。点击上方“本地 OCR 扫描全部英文文字”。</div>'}
-            <div class="localized-translation-actions">
-              <button class="button secondary localized-save-translation" type="button" ${rows ? "" : "disabled"}>保存译文草稿</button>
-              <button class="button dark localized-create-preview" type="button" ${rows ? "" : "disabled"}>保存并生成本地预览</button>
-            </div>
+            ${rows ? `
+              <details class="localized-manual-correction">
+                <summary>异常修正（通常不需要）</summary>
+                <div class="localized-manual-fields">${rows}</div>
+                <div class="localized-translation-actions">
+                  <button class="button secondary localized-save-translation" type="button">保存异常修正</button>
+                  <button class="button dark localized-create-preview" type="button">保存并重新生成预览</button>
+                </div>
+              </details>
+            ` : '<div class="localized-scan-empty">没有需要人工填写的内容；点击上方按钮会自动 OCR、翻译并生成五语预览。</div>'}
           </div>
         </article>
       `;
@@ -1624,6 +1631,36 @@
       toast("本地 OCR 扫描完成；未调用付费 OCR 或平台接口。");
     } catch (error) {
       setLocalizedImagePackStatus(`OCR 扫描停止：${error.message}`, "error");
+      showAlert(error.message);
+    } finally {
+      setLoading(button, false);
+    }
+  }
+
+  async function autoTranslateLocalizedImages() {
+    if (Object.keys(localizedTranslationDraft).length) {
+      showAlert("存在尚未保存的异常修正，请先保存或刷新放弃后再自动处理。");
+      return;
+    }
+    const button = $("#autoTranslateLocalizedImagesButton");
+    setLoading(button, true);
+    setLocalizedImagePackStatus(
+      "正在自动完成本地 OCR、五语翻译与预览排版；不会修改商品发布中心或平台…",
+      "pending",
+    );
+    try {
+      const result = await post("content-package/localized-images/auto-translate", {
+        offer_id: currentOfferId(),
+        expected_revision: localizedImageProject.project.revision,
+      });
+      localizedImageProject = result.localized_images;
+      renderLocalizedImageProject();
+      toast("五种语言图片预览已自动生成；无需逐条输入，且尚未写入任何平台。");
+    } catch (error) {
+      setLocalizedImagePackStatus(
+        `自动处理停止：${error.message}。可在异常修正区处理，不影响商品发布中心。`,
+        "error",
+      );
       showAlert(error.message);
     } finally {
       setLoading(button, false);
@@ -2385,6 +2422,7 @@
   $("#initializeLocalizationButton").addEventListener("click", initializeImageLocalization);
   $("#initializeLocalizedImagePacksButton").addEventListener("click", initializeLocalizedImageProject);
   $("#scanLocalizedImageTextButton").addEventListener("click", scanAllLocalizedImageText);
+  $("#autoTranslateLocalizedImagesButton").addEventListener("click", autoTranslateLocalizedImages);
   $("#localizedImageLocaleSelect").addEventListener("change", (event) => {
     localizedImageLocale = event.currentTarget.value;
     renderLocalizedTranslationEditor();

@@ -309,6 +309,7 @@ def test_proxy_exposes_only_the_ai_studio_write_surface():
         "content-package/image-localization/clean-master",
         "content-package/localized-images/initialize",
         "content-package/localized-images/scan-text",
+        "content-package/localized-images/auto-translate",
         "content-package/localized-images/translation-draft",
         "content-package/localized-images/preview",
     }

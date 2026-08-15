@@ -173,7 +173,8 @@ def _validated_translations(
                 raise LocalizedImageAutoTranslationError(
                     f"{locale} translated text is invalid"
                 )
-            if _numeric_tokens(translated) != _numeric_tokens(source_text):
+            source_numbers = _numeric_tokens(source_text)
+            if source_numbers and _numeric_tokens(translated) != source_numbers:
                 raise LocalizedImageAutoTranslationError(
                     f"{locale} numeric tokens have changed"
                 )

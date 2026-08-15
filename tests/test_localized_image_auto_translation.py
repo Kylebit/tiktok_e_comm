@@ -146,3 +146,24 @@ def test_accepts_locale_digits_when_the_numeric_fact_is_unchanged():
     )
 
     assert result["translations"]["th-TH"][0]["translated_text"].endswith("๔๔ cm")
+
+
+def test_allows_translator_to_render_spelled_number_as_a_locale_digit():
+    payload = _payload()
+    for locale, rows in payload["translations"].items():
+        rows[0]["source_text"] = "Two useful lengths"
+        rows[0]["translated_text"] = {
+            "ms-MY": "2 pilihan panjang",
+            "th-TH": "ความยาว ๒ แบบ",
+            "vi-VN": "2 chiều dài hữu ích",
+            "ru-RU": "2 варианта длины",
+            "es-MX": "2 longitudes útiles",
+        }[locale]
+    regions = [{"region_id": REGIONS[0]["region_id"], "source_text": "Two useful lengths"}]
+
+    result = translate_image_regions(
+        regions,
+        model_call=lambda *_args, **_kwargs: json.dumps(payload, ensure_ascii=False),
+    )
+
+    assert result["translations"]["th-TH"][0]["translated_text"] == "ความยาว ๒ แบบ"

@@ -1024,11 +1024,8 @@ def image_localization_summary(
 def initialize_image_localization(offer_id_or_url: str) -> dict[str, Any]:
     offer_id = resolve_offer_key(offer_id_or_url)
     sources = _image_localization_source_rows(offer_id)
-    manifest = _image_localization_store().initialize(offer_id, sources)
-    return {
-        **image_localization_summary(offer_id, resolved_offer_id=True),
-        "manifest": manifest,
-    }
+    _image_localization_store().initialize(offer_id, sources)
+    return image_localization_summary(offer_id, resolved_offer_id=True)
 
 
 def save_image_localization_regions(
@@ -1039,16 +1036,13 @@ def save_image_localization_regions(
     regions: list[dict[str, Any]],
 ) -> dict[str, Any]:
     offer_id = resolve_offer_key(offer_id_or_url)
-    manifest = _image_localization_store().save_regions(
+    _image_localization_store().save_regions(
         offer_id,
         expected_revision=expected_revision,
         asset_id=asset_id,
         regions=regions,
     )
-    return {
-        **image_localization_summary(offer_id, resolved_offer_id=True),
-        "manifest": manifest,
-    }
+    return image_localization_summary(offer_id, resolved_offer_id=True)
 
 
 def create_image_clean_master(
@@ -1070,7 +1064,7 @@ def create_image_clean_master(
             handle.write(source_bytes)
             handle.flush()
             os.fsync(handle.fileno())
-        manifest = _image_localization_store().create_clean_master(
+        _image_localization_store().create_clean_master(
             offer_id,
             expected_revision=expected_revision,
             asset_id=asset_id,
@@ -1079,10 +1073,43 @@ def create_image_clean_master(
         )
     finally:
         Path(temp_name).unlink(missing_ok=True)
-    return {
-        **image_localization_summary(offer_id, resolved_offer_id=True),
-        "manifest": manifest,
-    }
+    return image_localization_summary(offer_id, resolved_offer_id=True)
+
+
+def auto_clean_image_watermarks(
+    offer_id_or_url: str,
+    *,
+    expected_revision: object,
+    source_bytes_by_asset: Mapping[str, bytes],
+) -> dict[str, Any]:
+    """Run the local edge-watermark detector across reviewed source siblings."""
+    offer_id = resolve_offer_key(offer_id_or_url)
+    if not isinstance(source_bytes_by_asset, Mapping) or not source_bytes_by_asset:
+        raise ValueError("source image bytes are required")
+    temp_dir = IMAGE_LOCALIZATION_DIR / offer_id / ".incoming"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    source_paths: dict[str, Path] = {}
+    try:
+        for asset_id, source_bytes in source_bytes_by_asset.items():
+            if not isinstance(source_bytes, bytes) or not source_bytes:
+                raise ValueError(f"source image bytes are required for {asset_id}")
+            fd, temp_name = tempfile.mkstemp(
+                prefix="watermark-source-", suffix=".image", dir=temp_dir
+            )
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(source_bytes)
+                handle.flush()
+                os.fsync(handle.fileno())
+            source_paths[str(asset_id)] = Path(temp_name)
+        _image_localization_store().auto_clean_watermarks(
+            offer_id,
+            expected_revision=expected_revision,
+            source_paths=source_paths,
+        )
+    finally:
+        for path in source_paths.values():
+            path.unlink(missing_ok=True)
+    return image_localization_summary(offer_id, resolved_offer_id=True)
 
 
 def image_localization_artifact(offer_id_or_url: str, artifact_id: str) -> Path:

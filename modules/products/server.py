@@ -13222,6 +13222,7 @@ class Handler(BaseHTTPRequestHandler):
             "content-package/image-localization/initialize",
             "content-package/image-localization/regions",
             "content-package/image-localization/clean-master",
+            "content-package/image-localization/auto-watermark-clean",
         }
         allowed = allowed_get if method == "GET" else allowed_post
         if action not in allowed:

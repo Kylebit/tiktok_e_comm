@@ -390,6 +390,41 @@ class NewProductHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 return self._json(400, {"ok": False, "error": str(exc)})
 
+        if path == "/api/new-product/content-package/image-localization/auto-watermark-clean":
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            if data.get("confirm_local_auto_clean") is not True:
+                return self._json(400, {
+                    "ok": False,
+                    "error": "explicit local automatic watermark confirmation is required",
+                })
+            try:
+                current = np_mod.image_localization_summary(raw)
+                manifest = current.get("manifest") or {}
+                assets = [
+                    row for row in (manifest.get("assets") or [])
+                    if isinstance(row, dict)
+                ]
+                if not assets or len(assets) > 24:
+                    raise ValueError("image localization asset count is invalid")
+                source_bytes_by_asset = {}
+                for asset in assets:
+                    asset_id = str(asset.get("asset_id") or "")
+                    source_bytes, _ = _download_remote_image(
+                        str(asset.get("source_url") or "")
+                    )
+                    source_bytes_by_asset[asset_id] = source_bytes
+                return self._json(200, {
+                    "ok": True,
+                    "image_localization": np_mod.auto_clean_image_watermarks(
+                        raw,
+                        expected_revision=data.get("expected_revision"),
+                        source_bytes_by_asset=source_bytes_by_asset,
+                    ),
+                })
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+
         if path == "/api/new-product/content-package/image-localization/clean-master":
             if not raw:
                 return self._json(400, {"ok": False, "error": "missing offer_id"})

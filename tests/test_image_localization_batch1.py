@@ -11,9 +11,11 @@ from modules.sourcing import new_product_workbench
 from modules.sourcing.image_localization import (
     ImageLocalizationStore,
     ImageLocalizationValidationError,
+    LocalWatermarkDetector,
     image_localization_feature_flags,
 )
 from modules.sourcing.new_product_workbench import (
+    create_image_clean_master,
     image_localization_summary,
     initialize_image_localization,
     save_image_localization_regions,
@@ -275,6 +277,47 @@ def test_workbench_initializes_from_authoritative_source_snapshot_and_exposes_su
     assert saved["manifest"]["assets"][0]["regions"][0]["text"] == "English product fact"
 
 
+def test_workbench_clean_master_response_keeps_local_preview_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(new_product_workbench, "IMAGE_LOCALIZATION_DIR", tmp_path)
+    monkeypatch.setattr(
+        new_product_workbench,
+        "_image_localization_source_rows",
+        lambda offer_id: _source(),
+    )
+    monkeypatch.setattr(
+        new_product_workbench, "resolve_offer_key", lambda value: str(value)
+    )
+    initialized = initialize_image_localization("123")
+    asset_id = initialized["manifest"]["assets"][0]["asset_id"]
+    saved = save_image_localization_regions(
+        "123",
+        expected_revision=1,
+        asset_id=asset_id,
+        regions=[{
+            "region_id": "wm-bottom",
+            "bbox": [0.0, 0.75, 1.0, 1.0],
+            "text": "shop.example.1688.com",
+            "classification": "watermark",
+            "origin": "manual",
+        }],
+    )
+
+    cleaned = create_image_clean_master(
+        "123",
+        expected_revision=saved["manifest"]["revision"],
+        asset_id=asset_id,
+        source_bytes=_png_bytes(),
+    )
+
+    clean = cleaned["manifest"]["assets"][0]["clean_master"]
+    assert clean["status"] == "created"
+    assert clean["local_url"].startswith(
+        "/api/product-flow/content-package/image-localization/artifact?"
+    )
+
+
 def test_image_localization_sources_exclude_images_removed_during_source_review(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -309,6 +352,118 @@ def test_image_localization_sources_exclude_images_removed_during_source_review(
     assert rows == [{"url": "https://img.example/keep.jpg", "kind": "main"}]
 
 
+def test_local_watermark_detector_uses_repeated_sibling_template_for_weak_match():
+    import numpy as np
+
+    class DetectorWithKnownTemplate(LocalWatermarkDetector):
+        @staticmethod
+        def _template_mask(image, union_box):
+            mask = np.zeros(image.shape[:2], dtype=np.uint8)
+            mask[740:780, 390:580] = 255
+            return mask
+
+    strong = np.full((800, 800, 3), 90, dtype=np.uint8)
+    weak = np.full((800, 800, 3), 150, dtype=np.uint8)
+    candidates = {
+        "strong": [{"bbox": [0.17, 0.84, 0.98, 0.99], "text": "shop123.1688.com", "confidence": .99}],
+        "weak": [{"bbox": [0.82, 0.88, 0.98, 0.99], "text": "com", "confidence": .91}],
+    }
+
+    plans = DetectorWithKnownTemplate.plan_from_candidates(
+        {"strong": strong, "weak": weak},
+        candidates,
+    )
+
+    assert plans["strong"]["strategy"] == "glyph_ocr_mask"
+    assert plans["weak"]["strategy"] == "repeated_sibling_template"
+    assert int(np.count_nonzero(plans["weak"]["mask"])) > 0
+    assert plans["weak"]["regions"][0]["origin"] == "local_detector"
+
+
+def test_local_watermark_template_keeps_a_sparse_glyph_mask():
+    import cv2
+    import numpy as np
+
+    image = np.full((800, 800, 3), 80, dtype=np.uint8)
+    for x in range(420, 620, 20):
+        cv2.circle(image, (x, 770), 4, (245, 245, 245), -1)
+
+    mask = LocalWatermarkDetector._template_mask(
+        image,
+        [0.50, 0.90, 0.80, 0.99],
+    )
+
+    changed = int(np.count_nonzero(mask))
+    assert changed > 0
+    assert changed < int(image.shape[0] * image.shape[1] * 0.01)
+
+
+def test_local_watermark_rendered_text_mask_is_sparse_and_nonempty():
+    import numpy as np
+
+    image = np.zeros((800, 800, 3), dtype=np.uint8)
+    mask = LocalWatermarkDetector._rendered_text_mask(
+        image,
+        [{
+            "bbox": [0.48, 0.93, 0.98, 0.99],
+            "text": "shop123.1688.com",
+            "confidence": 0.99,
+        }],
+    )
+
+    changed = int(np.count_nonzero(mask))
+    assert changed > 0
+    assert changed < int(image.shape[0] * image.shape[1] * 0.02)
+
+
+def test_automatic_watermark_cleanup_creates_artifact_without_changing_source(tmp_path: Path):
+    import numpy as np
+
+    class FakeDetector:
+        provider_name = "fake-local-watermark"
+        provider_version = "test-v1"
+
+        def analyze(self, images):
+            asset_id, image = next(iter(images.items()))
+            mask = np.zeros(image.shape[:2], dtype=np.uint8)
+            mask[80:95, 10:90] = 255
+            return {
+                asset_id: {
+                    "strategy": "direct_ocr_boxes",
+                    "mask": mask,
+                    "regions": [{
+                        "region_id": "auto-watermark-1",
+                        "bbox": [0.1, 0.8, 0.9, 0.95],
+                        "text": "shop.example.1688.com",
+                        "classification": "watermark",
+                        "origin": "local_detector",
+                        "confidence": .99,
+                    }],
+                }
+            }
+
+    store = ImageLocalizationStore(tmp_path / "store")
+    manifest = store.initialize("123", _source())
+    source_path = tmp_path / "source.png"
+    source_bytes = _png_bytes()
+    source_path.write_bytes(source_bytes)
+
+    result = store.auto_clean_watermarks(
+        "123",
+        expected_revision=manifest["revision"],
+        source_paths={manifest["assets"][0]["asset_id"]: source_path},
+        detector=FakeDetector(),
+    )
+
+    asset = result["assets"][0]
+    clean = asset["clean_master"]
+    assert source_path.read_bytes() == source_bytes
+    assert asset["regions"][0]["origin"] == "local_detector"
+    assert clean["status"] == "created"
+    assert clean["method"] == "local_ocr_watermark_inpaint/v1"
+    assert store.artifact_path("123", clean["artifact_id"]).is_file()
+
+
 def test_batch1_http_and_studio_contracts_are_present():
     root = Path(__file__).resolve().parents[1]
     server = (root / "modules/sourcing/new_product_server.py").read_text(encoding="utf-8")
@@ -320,10 +475,12 @@ def test_batch1_http_and_studio_contracts_are_present():
     assert '"/api/new-product/content-package/image-localization/initialize"' in server
     assert '"/api/new-product/content-package/image-localization/regions"' in server
     assert '"/api/new-product/content-package/image-localization/clean-master"' in server
+    assert '"/api/new-product/content-package/image-localization/auto-watermark-clean"' in server
     assert '"content-package/image-localization/artifact"' in product_server
     assert '"content-package/image-localization/initialize"' in product_server
     assert '"content-package/image-localization/regions"' in product_server
     assert '"content-package/image-localization/clean-master"' in product_server
+    assert '"content-package/image-localization/auto-watermark-clean"' in product_server
     assert 'id="imageLocalization"' in html
     assert 'id="imageLocalizationGrid"' in html
     assert 'id="imageLocalizationStatus"' in html
@@ -331,6 +488,8 @@ def test_batch1_http_and_studio_contracts_are_present():
     assert "setImageLocalizationStatus" in script
     assert "saveImageLocalizationRegions" in script
     assert "createCleanMaster" in script
+    assert "autoCleanImageWatermarks" in script
+    assert 'id="autoWatermarkCleanButton"' in html
     assert "ocr_provider_enabled" in script
     assert "imageLocalizationDraftOfferId" in script
     assert "captureLocalizationDraft" in script

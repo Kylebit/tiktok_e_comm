@@ -1316,11 +1316,16 @@
       : [0.05, 0.80, 0.95, 0.96];
     return `
       <div class="localization-region" data-asset-id="${esc(assetId)}" data-region-index="${index}">
-        <input class="region-id" type="text" value="${esc(region.region_id || `manual-${Date.now()}-${index}`)}" aria-label="区域 ID">
-        <select class="region-classification" aria-label="区域分类">${regionOptions(region.classification || "translatable")}</select>
-        <input class="region-text" type="text" maxlength="2000" value="${esc(region.text || "")}" placeholder="识别或人工输入的文字" aria-label="区域文字">
-        ${box.map((value, position) => `<input class="region-box" data-position="${position}" type="number" min="0" max="1" step="0.01" value="${esc(value)}" aria-label="边界 ${position + 1}">`).join("")}
-        <button class="region-remove" type="button" aria-label="删除区域">×</button>
+        <div class="localization-region-main">
+          <select class="region-classification" aria-label="区域分类">${regionOptions(region.classification || "translatable")}</select>
+          <input class="region-text" type="text" maxlength="2000" value="${esc(region.text || "")}" placeholder="识别或人工输入的文字" aria-label="区域文字">
+          <button class="region-remove" type="button" aria-label="删除区域">×</button>
+        </div>
+        <details class="localization-region-advanced">
+          <summary>高级调整（通常无需填写坐标）</summary>
+          <input class="region-id" type="text" value="${esc(region.region_id || `manual-${Date.now()}-${index}`)}" aria-label="区域 ID">
+          ${box.map((value, position) => `<input class="region-box" data-position="${position}" type="number" min="0" max="1" step="0.01" value="${esc(value)}" aria-label="边界 ${position + 1}">`).join("")}
+        </details>
       </div>
     `;
   }
@@ -1335,9 +1340,10 @@
     if (!localization.enabled) return;
     $("#ocrProviderStatus").textContent = features.ocr_provider_enabled
       ? "OCR provider 已启用"
-      : "OCR provider 未启用 · 可人工标注";
+      : "本地水印识别可用 · 翻译 OCR 未启用";
     $("#ocrProviderStatus").className = `badge ${features.ocr_provider_enabled ? "safe" : "neutral"}`;
     $("#initializeLocalizationButton").hidden = Boolean(localization.initialized);
+    $("#autoWatermarkCleanButton").hidden = !assets.length;
     const grid = $("#imageLocalizationGrid");
     if (!assets.length) {
       grid.innerHTML = '<p class="localization-empty">尚未建立处理清单。点击“建立图片处理清单”只会保存本地图片身份，不调用 OCR 或图片服务。</p>';
@@ -1495,6 +1501,37 @@
       toast("本地干净母图已生成；来源原图保持不变。");
     } catch (error) {
       setImageLocalizationStatus(`生成失败：${error.message}`, "error");
+      showAlert(error.message);
+    } finally {
+      setLoading(button, false);
+    }
+  }
+
+  async function autoCleanImageWatermarks() {
+    const button = $("#autoWatermarkCleanButton");
+    const manifest = imageLocalizationState().manifest || {};
+    setLoading(button, true);
+    setImageLocalizationStatus("正在用本地 OCR 自动识别并去除全部图片的边缘水印…", "pending");
+    try {
+      const result = await post("content-package/image-localization/auto-watermark-clean", {
+        offer_id: currentOfferId(),
+        expected_revision: manifest.revision,
+        confirm_local_auto_clean: true,
+      });
+      preview.content_package.image_localization = result.image_localization;
+      imageLocalizationDraft = {};
+      imageLocalizationDraftOfferId = currentOfferId();
+      renderImageLocalization();
+      const scan = result.image_localization.manifest.last_auto_watermark_scan || {};
+      const created = Number(scan.created_asset_count || 0);
+      const scanned = Number(scan.scanned_asset_count || 0);
+      const message = created
+        ? `已扫描 ${scanned} 张并生成 ${created} 张本地候选。候选仍需人工验收，不会自动进入最终图片。`
+        : `已扫描 ${scanned} 张图片，没有发现符合安全规则的边缘水印；原图未修改。`;
+      setImageLocalizationStatus(message, created ? "" : "pending");
+      toast(message);
+    } catch (error) {
+      setImageLocalizationStatus(`自动去水印失败：${error.message}`, "error");
       showAlert(error.message);
     } finally {
       setLoading(button, false);
@@ -2153,6 +2190,7 @@
   $("#refreshButton").addEventListener("click", () => load());
   $("#saveSourceButton").addEventListener("click", saveSourceReview);
   $("#initializeLocalizationButton").addEventListener("click", initializeImageLocalization);
+  $("#autoWatermarkCleanButton").addEventListener("click", autoCleanImageWatermarks);
   $("#savePlanButton").addEventListener("click", () => saveContentReview());
   $("#preparePackageButton").addEventListener("click", preparePackage);
   $("#aiPlanButton").addEventListener("click", requestAiPlan);

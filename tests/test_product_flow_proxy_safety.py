@@ -305,6 +305,7 @@ def test_proxy_exposes_only_the_ai_studio_write_surface():
         "content-package/image-localization/initialize",
         "content-package/image-localization/regions",
         "content-package/image-localization/clean-master",
+        "content-package/image-localization/auto-watermark-clean",
     }
     assert not {
         action

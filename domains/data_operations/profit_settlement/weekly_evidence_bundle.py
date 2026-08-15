@@ -28,6 +28,7 @@ def build_weekly_evidence_bundle(
     ad_rates: Mapping[str, Decimal | str] | None = None,
     ad_rate_sources: Mapping[str, str] | None = None,
     ad_rate_source: str | None = None,
+    tiktok_local_fulfillment_fee_cny: Decimal | str = Decimal("4"),
     shopee_local_fulfillment_fee_cny: Decimal | str = Decimal("4"),
     seller_sku_by_ozon_sku: Mapping[str, str] | None = None,
     quantity_by_ozon_order_sku: Mapping[str, object] | None = None,
@@ -73,6 +74,7 @@ def build_weekly_evidence_bundle(
             fx=fx,
             ad_rate=resolved_advertising[platform]["rate"],
             ad_rate_source=resolved_advertising[platform]["input_source"],
+            tiktok_local_fulfillment_fee_cny=tiktok_local_fulfillment_fee_cny,
             shopee_local_fulfillment_fee_cny=shopee_local_fulfillment_fee_cny,
             generated_at=now,
             code_version=code_version,
@@ -115,7 +117,7 @@ def build_weekly_evidence_bundle(
     }
 
 
-def _platform_report(platform, adapted, *, start, end, costs, fx, ad_rate, ad_rate_source, shopee_local_fulfillment_fee_cny, generated_at, code_version):
+def _platform_report(platform, adapted, *, start, end, costs, fx, ad_rate, ad_rate_source, tiktok_local_fulfillment_fee_cny, shopee_local_fulfillment_fee_cny, generated_at, code_version):
     arguments = {
         "period_start": start,
         "period_end": end,
@@ -129,7 +131,11 @@ def _platform_report(platform, adapted, *, start, end, costs, fx, ad_rate, ad_ra
     if platform == "tiktok":
         from domains.data_operations.profit_settlement.tiktok import build_weekly_report
 
-        return build_weekly_report(adapted.rows, **arguments)
+        return build_weekly_report(
+            adapted.rows,
+            local_fulfillment_fee_cny=tiktok_local_fulfillment_fee_cny,
+            **arguments,
+        )
     if platform == "shopee":
         from domains.data_operations.profit_settlement.shopee import build_weekly_report
 

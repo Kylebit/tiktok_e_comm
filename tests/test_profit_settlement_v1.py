@@ -890,8 +890,9 @@ def test_stage_two_adapts_tiktok_orders_and_replaces_actual_ads_with_weekly_rate
         "settlement_cny": "20.0",
         "product_cost_cny": "7",
         "advertising_cny": "8.800",
-        "external_costs_cny": "0",
-        "profit_cny": "4.200",
+        "local_fulfillment_cost_cny": "4.00",
+        "external_costs_cny": "4.00",
+        "profit_cny": "0.200",
     }
     assert audit_profit_report(report).status == "PASSED"
 
@@ -1143,12 +1144,14 @@ def test_unified_report_policy_loads_ad_rates_and_combined_local_fee(tmp_path):
     policy_path.write_text(json.dumps({
         "schema_version": "profit-settlement-policy/v1",
         "weekly_ad_rates": {"default": "0.21", "tiktok": "0.20", "shopee": "0.19", "ozon": "0.18"},
+        "tiktok": {"local_fulfillment_fee_cny_per_order": "4.25"},
         "shopee": {"local_fulfillment_fee_cny_per_order": "5.50"},
     }), encoding="utf-8")
 
     policy = _weekly_build_script_module()._load_policy(policy_path)
 
     assert policy["weekly_ad_rates"] == {"default": "0.21", "tiktok": "0.20", "shopee": "0.19", "ozon": "0.18"}
+    assert policy["tiktok"] == {"local_fulfillment_fee_cny_per_order": "4.25"}
     assert policy["shopee"] == {"local_fulfillment_fee_cny_per_order": "5.50"}
     assert policy["snapshot_id"].startswith("sha256:")
 
@@ -1249,6 +1252,44 @@ def test_shopee_fulfillment_classification_and_local_cost_are_order_scoped_and_c
     assert sum((line["external_costs_cny"] for line in default_report.order_lines), Decimal("0")) == Decimal("6")
     assert sum((line["fulfillment"]["local_fulfillment_cost_cny"] for line in default_report.order_lines), Decimal("0")) == Decimal("4")
     assert default_report.source["fulfillment_policy"]["cost_components"] == ["local_shipping", "local_warehouse"]
+    assert audit_profit_report(default_report.payload()).status == "PASSED"
+    assert overridden.totals["local_fulfillment_cost_cny"] == Decimal("6.50")
+    assert overridden.idempotency_key != default_report.idempotency_key
+
+
+def test_tiktok_local_fulfillment_cost_is_once_per_parent_order_and_configurable():
+    first = _row("TK-LOCAL", paid="100", settlement="100")
+    second = copy.deepcopy(first)
+    second["order_line_id"] = "TK-LOCAL:2"
+    second["buyer_paid_product_amount"] = "300"
+    first["fulfillment"] = second["fulfillment"] = {
+        "mode": "local",
+        "classification_rule": "tiktok_th_import_tax_charged/v1",
+        "import_vat_local": "0",
+        "customs_duty_local": "0",
+    }
+    cross_border = _row("TK-CROSS", paid="200", settlement="100")
+
+    default_report = build_tiktok_weekly_report(
+        [second, cross_border, first],
+        period_start="2026-08-03", period_end="2026-08-09",
+        costs=_costs(), fx=_fx(), generated_at=NOW, code_version="test-v1",
+    )
+    overridden = build_tiktok_weekly_report(
+        [first, second, cross_border],
+        period_start="2026-08-03", period_end="2026-08-09",
+        costs=_costs(), fx=_fx(), local_fulfillment_fee_cny="6.50",
+        generated_at=NOW, code_version="test-v1",
+    )
+
+    assert default_report.status == "ready"
+    assert default_report.source["fulfillment_order_counts"] == {"cross_border": 1, "local": 1, "unknown": 0}
+    assert default_report.totals["local_fulfillment_cost_cny"] == Decimal("4")
+    local_lines = [line for line in default_report.order_lines if line["identity"]["order_id"] == "TK-LOCAL"]
+    assert sum((line["fulfillment"]["local_fulfillment_cost_cny"] for line in local_lines), Decimal("0")) == Decimal("4")
+    assert all(line["fulfillment"]["local_fulfillment_cost_cny"] == Decimal("0") for line in default_report.order_lines if line["identity"]["order_id"] == "TK-CROSS")
+    assert default_report.source["fulfillment_policy"]["cost_components"] == ["local_fulfillment"]
+    assert all(line["fulfillment"]["customs_duty_local"] == Decimal("0") for line in local_lines)
     assert audit_profit_report(default_report.payload()).status == "PASSED"
     assert overridden.totals["local_fulfillment_cost_cny"] == Decimal("6.50")
     assert overridden.idempotency_key != default_report.idempotency_key

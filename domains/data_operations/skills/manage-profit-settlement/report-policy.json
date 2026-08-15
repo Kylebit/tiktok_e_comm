@@ -6,6 +6,9 @@
     "shopee": "0.22",
     "ozon": "0.22"
   },
+  "tiktok": {
+    "local_fulfillment_fee_cny_per_order": "4"
+  },
   "shopee": {
     "local_fulfillment_fee_cny_per_order": "4"
   }

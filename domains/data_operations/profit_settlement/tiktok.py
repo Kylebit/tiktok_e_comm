@@ -72,12 +72,14 @@ def build_weekly_report(
     fx: FxSnapshot,
     ad_rate: Decimal | str = Decimal("0.22"),
     ad_rate_source: str | None = None,
+    local_fulfillment_fee_cny: Decimal | str = Decimal("4"),
     generated_at: datetime | None = None,
     code_version: str = "unknown",
 ) -> TikTokProfitReport:
     rate = _decimal(ad_rate)
     if rate is None or rate < 0 or rate > 1:
         raise ValueError("ad_rate must be a decimal fraction between 0 and 1")
+    local_fulfillment = _nonnegative_money(local_fulfillment_fee_cny, "local_fulfillment_fee_cny")
     return _build_report(
         rows,
         period_start=period_start,
@@ -87,6 +89,7 @@ def build_weekly_report(
         fx=fx,
         ad_rate=rate,
         ad_rate_source=_text(ad_rate_source) or ("default_22" if rate == Decimal("0.22") else "operator_global_override"),
+        local_fulfillment_fee_cny=local_fulfillment,
         generated_at=generated_at,
         code_version=code_version,
     )
@@ -100,9 +103,11 @@ def build_monthly_report(
     costs: CostSnapshot,
     fx: FxSnapshot,
     actual_advertising: Mapping[str, object] | None,
+    local_fulfillment_fee_cny: Decimal | str = Decimal("4"),
     generated_at: datetime | None = None,
     code_version: str = "unknown",
 ) -> TikTokProfitReport:
+    local_fulfillment=_nonnegative_money(local_fulfillment_fee_cny,"local_fulfillment_fee_cny")
     start,end=_period(period_start,period_end);source_rows=[dict(row) for row in rows];issues=[];prepared=[];rejected=out_of_period=unsettled=0
     _audit_metadata(issues, fx, code_version)
     for index,row in enumerate(source_rows):
@@ -119,16 +124,18 @@ def build_monthly_report(
         if not _text(row.get("source_snapshot_id")): issues.append(_issue("missing_source_snapshot",record_id,"source_snapshot_id"))
         fees,external=_fees(row.get("fee_items"),currency,fx,issues,record_id)
         if fees is None:rejected+=1;continue
-        prepared.append({"row":row,"record_id":record_id,"occurred":_datetime(row.get("occurred_at")),"settled_at":settled_at,"sku":sku,"cost":cost,"currency":currency,"fx_rate":fx_rate,"quantity":quantity,"settlement":settlement,"paid":paid,"paid_cny":paid*fx_rate,"fees":fees,"external":external})
+        prepared.append({"row":row,"record_id":record_id,"occurred":_datetime(row.get("occurred_at")),"settled_at":settled_at,"sku":sku,"cost":cost,"currency":currency,"fx_rate":fx_rate,"quantity":quantity,"settlement":settlement,"paid":paid,"paid_cny":paid*fx_rate,"fees":fees,"external":external,"fulfillment":_fulfillment(row,record_id,issues)})
     prepared.sort(key=_prepared_settlement_sort_key)
     ad=_actual_advertising(actual_advertising,issues);allocations=_allocate_ads(ad.get("total_cny") if ad else None,prepared);lines=[]
     if ad:
         for index,item in enumerate(prepared):
             row=item["row"];ad_cny=allocations[index];settlement_cny=item["settlement"]*item["fx_rate"];product_cost=item["cost"].unit_cost_cny*item["quantity"]
-            lines.append({"identity":{"platform":PLATFORM,"shop_id":_text(row.get("shop_id")),"region":_text(row.get("region")).upper(),"order_id":_text(row.get("order_id")),"order_line_id":item["record_id"]},"product":{"platform_sku":_text(row.get("platform_sku")),"seller_sku":_text(row.get("seller_sku")),"canonical_sku":item["sku"],"product_name":_text(row.get("product_name")),"variant_name":_text(row.get("variant_name")),"image_url":_text(row.get("image_url")),"quantity":item["quantity"],"unit_weight_g":_decimal(row.get("unit_weight_g")),"package_weight_g":_decimal(row.get("package_weight_g")),"billable_weight_g":_decimal(row.get("billable_weight_g")),"weight_source":_text(row.get("weight_source"))},"occurred_at":item["occurred"],"settled_at":item["settled_at"],"settlement_status":"settled","settlement":{"currency":item["currency"],"net_amount_local":item["settlement"],"net_amount_cny":settlement_cny,"buyer_paid_product_amount_local":item["paid"]},"fx":{"rate_cny_per_local":item["fx_rate"],**fx.payload()},"cost":{"unit_cost_cny":item["cost"].unit_cost_cny,"quantity":item["quantity"],"total_cny":product_cost,"version":item["cost"].version,"effective_at":item["cost"].effective_at,"source":item["cost"].source,"snapshot_id":costs.snapshot_id},"advertising":{**ad,"basis":"buyer_paid_product_amount_cny","basis_amount_cny":item["paid_cny"],"amount_cny":ad_cny},"fee_items":item["fees"],"external_costs_cny":item["external"],"profit_cny":settlement_cny-product_cost-ad_cny-item["external"],"source_snapshot_id":_text(row.get("source_snapshot_id")),"source_settlement_facts":list(row.get("source_settlement_facts") or [])})
+            lines.append({"identity":{"platform":PLATFORM,"shop_id":_text(row.get("shop_id")),"region":_text(row.get("region")).upper(),"order_id":_text(row.get("order_id")),"order_line_id":item["record_id"]},"product":{"platform_sku":_text(row.get("platform_sku")),"seller_sku":_text(row.get("seller_sku")),"canonical_sku":item["sku"],"product_name":_text(row.get("product_name")),"variant_name":_text(row.get("variant_name")),"image_url":_text(row.get("image_url")),"quantity":item["quantity"],"unit_weight_g":_decimal(row.get("unit_weight_g")),"package_weight_g":_decimal(row.get("package_weight_g")),"billable_weight_g":_decimal(row.get("billable_weight_g")),"weight_source":_text(row.get("weight_source"))},"occurred_at":item["occurred"],"settled_at":item["settled_at"],"settlement_status":"settled","fulfillment":dict(item["fulfillment"]),"settlement":{"currency":item["currency"],"net_amount_local":item["settlement"],"net_amount_cny":settlement_cny,"buyer_paid_product_amount_local":item["paid"]},"fx":{"rate_cny_per_local":item["fx_rate"],**fx.payload()},"cost":{"unit_cost_cny":item["cost"].unit_cost_cny,"quantity":item["quantity"],"total_cny":product_cost,"version":item["cost"].version,"effective_at":item["cost"].effective_at,"source":item["cost"].source,"snapshot_id":costs.snapshot_id},"advertising":{**ad,"basis":"buyer_paid_product_amount_cny","basis_amount_cny":item["paid_cny"],"amount_cny":ad_cny},"fee_items":item["fees"],"external_costs_cny":item["external"],"profit_cny":settlement_cny-product_cost-ad_cny-item["external"],"source_snapshot_id":_text(row.get("source_snapshot_id")),"source_settlement_facts":list(row.get("source_settlement_facts") or [])})
     else:rejected+=len(prepared)
-    source_checksum=_checksum(sorted((_json_ready(row) for row in source_rows),key=_canonical));fingerprint=_checksum({"schema":SCHEMA_VERSION,"period_kind":"monthly","period":[start.isoformat(),end.isoformat()],"source":source_checksum,"costs":costs.snapshot_id,"fx":fx.snapshot_id,"advertising":ad or {},"code_version":code_version})
-    return TikTokProfitReport(report_id=f"tiktok-profit-{fingerprint[:16]}",idempotency_key=f"{SCHEMA_VERSION}:{fingerprint}",calculation_kind="realized_settlement_with_actual_ads",period_kind="monthly",period={"start":start.isoformat(),"end":end.isoformat(),"timezone":"source_local_date"},status="ready" if not issues else "needs_review",totals=_totals(lines),order_lines=tuple(lines),quality_issues=tuple(issues),source={"input_checksum":source_checksum,"raw_row_count":len(source_rows),"calculated_row_count":len(lines),"rejected_row_count":rejected,"out_of_period_row_count":out_of_period,"unsettled_row_count":unsettled,"cost_snapshot":costs.payload(),"fx_snapshot":fx.payload()},assumptions=ad or {},generated_at=generated_at or datetime.now(timezone.utc),code_version=code_version)
+    _apply_local_fulfillment_costs(lines,local_fulfillment,issues)
+    fulfillment_policy=_fulfillment_policy(local_fulfillment)
+    source_checksum=_checksum(sorted((_json_ready(row) for row in source_rows),key=_canonical));fingerprint=_checksum({"schema":SCHEMA_VERSION,"period_kind":"monthly","period":[start.isoformat(),end.isoformat()],"source":source_checksum,"costs":costs.snapshot_id,"fx":fx.snapshot_id,"advertising":ad or {},"fulfillment_policy":fulfillment_policy,"code_version":code_version})
+    return TikTokProfitReport(report_id=f"tiktok-profit-{fingerprint[:16]}",idempotency_key=f"{SCHEMA_VERSION}:{fingerprint}",calculation_kind="realized_settlement_with_actual_ads",period_kind="monthly",period={"start":start.isoformat(),"end":end.isoformat(),"timezone":"source_local_date"},status="ready" if not issues else "needs_review",totals=_totals(lines),order_lines=tuple(lines),quality_issues=tuple(issues),source={"input_checksum":source_checksum,"raw_row_count":len(source_rows),"calculated_row_count":len(lines),"rejected_row_count":rejected,"out_of_period_row_count":out_of_period,"unsettled_row_count":unsettled,"fulfillment_order_counts":_fulfillment_order_counts(lines),"fulfillment_policy":fulfillment_policy,"cost_snapshot":costs.payload(),"fx_snapshot":fx.payload()},assumptions={**(ad or {}),"fulfillment_policy":fulfillment_policy},generated_at=generated_at or datetime.now(timezone.utc),code_version=code_version)
 
 
 def _build_report(
@@ -141,6 +148,7 @@ def _build_report(
     fx: FxSnapshot,
     ad_rate: Decimal,
     ad_rate_source: str,
+    local_fulfillment_fee_cny: Decimal,
     generated_at: datetime | None,
     code_version: str,
 ) -> TikTokProfitReport:
@@ -148,7 +156,7 @@ def _build_report(
     source_rows = [dict(row) for row in rows]
     issues: list[TikTokQualityIssue] = []
     _audit_metadata(issues, fx, code_version)
-    calculated: list[Mapping[str, Any]] = []
+    calculated: list[dict[str, Any]] = []
     rejected = out_of_period = unsettled = 0
     for index, row in enumerate(source_rows):
         record_id = _text(row.get("order_line_id") or row.get("order_id")) or str(index)
@@ -227,7 +235,7 @@ def _build_report(
                 "occurred_at": _datetime(row.get("occurred_at")),
                 "settled_at": settled_at,
                 "settlement_status": "settled",
-                "fulfillment": dict(row.get("fulfillment") or {}),
+                "fulfillment": _fulfillment(row, record_id, issues),
                 "settlement": {
                     "currency": currency,
                     "net_amount_local": settlement,
@@ -261,8 +269,10 @@ def _build_report(
                 "source_settlement_facts": list(row.get("source_settlement_facts") or []),
             }
         )
+    _apply_local_fulfillment_costs(calculated, local_fulfillment_fee_cny, issues)
     calculated.sort(key=_line_settlement_sort_key)
     totals = _totals(calculated)
+    fulfillment_policy = _fulfillment_policy(local_fulfillment_fee_cny)
     source_fingerprint = _checksum(sorted((_json_ready(row) for row in source_rows), key=_canonical))
     fingerprint = _checksum(
         {
@@ -273,6 +283,7 @@ def _build_report(
             "fx": fx.snapshot_id,
             "ad_rate": str(ad_rate),
             "ad_rate_source": ad_rate_source,
+            "fulfillment_policy": fulfillment_policy,
             "code_version": code_version,
         }
     )
@@ -294,10 +305,12 @@ def _build_report(
             "rejected_row_count": rejected,
             "out_of_period_row_count": out_of_period,
             "unsettled_row_count": unsettled,
+            "fulfillment_order_counts": _fulfillment_order_counts(calculated),
+            "fulfillment_policy": fulfillment_policy,
             "cost_snapshot": costs.payload(),
             "fx_snapshot": fx.payload(),
         },
-        assumptions={"advertising_basis": "buyer_paid_product_amount", "advertising_rate": ad_rate, "advertising_rate_source": ad_rate_source, "advertising_policy_version": "operator-adjustable-ad-rate/v1"},
+        assumptions={"advertising_basis": "buyer_paid_product_amount", "advertising_rate": ad_rate, "advertising_rate_source": ad_rate_source, "advertising_policy_version": "operator-adjustable-ad-rate/v1", "fulfillment_policy": fulfillment_policy},
         generated_at=now,
         code_version=code_version,
     )
@@ -342,11 +355,105 @@ def _allocate_ads(total: Decimal | None, rows: list[dict[str, Any]]) -> list[Dec
     return result
 
 
+def _fulfillment(row: Mapping[str, object], record_id: str, issues: list[TikTokQualityIssue]) -> dict[str, Any]:
+    raw = row.get("fulfillment")
+    item = dict(raw) if isinstance(raw, Mapping) else {}
+    mode = _text(item.get("mode")).lower()
+    if mode not in {"local", "cross_border"}:
+        issues.append(_issue("missing_fulfillment_tax_evidence", record_id, "fulfillment.mode"))
+        mode = "unknown"
+    return {
+        "mode": mode,
+        "classification_rule": _text(item.get("classification_rule")) or "tiktok_th_import_tax_charged/v1",
+        "import_vat_local": _decimal(item.get("import_vat_local")),
+        "customs_duty_local": _decimal(
+            item.get("customs_duty_local")
+            if "customs_duty_local" in item
+            else item.get("import_duty_local")
+        ),
+        "local_fulfillment_cost_cny": Decimal("0"),
+        "allocation_method": "not_applicable" if mode != "local" else "pending",
+    }
+
+
+def _apply_local_fulfillment_costs(
+    lines: list[dict[str, Any]],
+    fee_per_order: Decimal,
+    issues: list[TikTokQualityIssue],
+) -> None:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for line in lines:
+        fulfillment = line.get("fulfillment") if isinstance(line.get("fulfillment"), Mapping) else {}
+        if fulfillment.get("mode") != "local":
+            continue
+        order_id = _text((line.get("identity") or {}).get("order_id"))
+        if not order_id:
+            issues.append(_issue("missing_order_id_for_local_cost", "report", "identity.order_id"))
+            continue
+        groups.setdefault(order_id, []).append(line)
+    for order_id, members in sorted(groups.items()):
+        members.sort(key=lambda line: _text((line.get("identity") or {}).get("order_line_id")))
+        allocations = _allocate_order_cost(fee_per_order, members)
+        for line, allocation in zip(members, allocations):
+            fulfillment = line["fulfillment"]
+            fulfillment["local_fulfillment_cost_cny"] = allocation
+            fulfillment["allocation_method"] = "product_sales_cny_pro_rata_with_exact_remainder/v1"
+            fulfillment["order_cost_policy"] = _fulfillment_policy(fee_per_order)
+            line["external_costs_cny"] += allocation
+            line["profit_cny"] -= allocation
+
+
+def _allocate_order_cost(total: Decimal, lines: list[dict[str, Any]]) -> list[Decimal]:
+    if not lines:
+        return []
+    weights = [
+        max(
+            (_decimal((line.get("settlement") or {}).get("buyer_paid_product_amount_local")) or Decimal("0"))
+            * (_decimal((line.get("fx") or {}).get("rate_cny_per_local")) or Decimal("0")),
+            Decimal("0"),
+        )
+        for line in lines
+    ]
+    denominator = sum(weights, Decimal("0"))
+    if denominator <= 0:
+        weights = [Decimal("1")] * len(lines)
+        denominator = Decimal(len(lines))
+    result: list[Decimal] = []
+    assigned = Decimal("0")
+    for index, weight in enumerate(weights):
+        amount = (
+            total - assigned
+            if index == len(lines) - 1
+            else (total * weight / denominator).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        )
+        result.append(amount)
+        assigned += amount
+    return result
+
+
+def _fulfillment_policy(fee_per_order: Decimal) -> dict[str, Any]:
+    return {
+        "local_fulfillment_fee_cny_per_order": fee_per_order,
+        "cost_components": ["local_fulfillment"],
+        "classification_rule": "tiktok_th_import_tax_charged/v1",
+    }
+
+
+def _fulfillment_order_counts(lines: list[Mapping[str, Any]]) -> dict[str, int]:
+    orders: dict[str, set[str]] = {"local": set(), "cross_border": set(), "unknown": set()}
+    for line in lines:
+        mode = _text((line.get("fulfillment") or {}).get("mode")) or "unknown"
+        order_id = _text((line.get("identity") or {}).get("order_id"))
+        orders.setdefault(mode, set()).add(order_id)
+    return {key: len(value - {""}) for key, value in sorted(orders.items())}
+
+
 def _totals(lines: list[Mapping[str, Any]]) -> dict[str, Decimal]:
     return {
         "settlement_cny": sum((line["settlement"]["net_amount_cny"] for line in lines), Decimal("0")),
         "product_cost_cny": sum((line["cost"]["total_cny"] for line in lines), Decimal("0")),
         "advertising_cny": sum((line["advertising"]["amount_cny"] for line in lines), Decimal("0")),
+        "local_fulfillment_cost_cny": sum((_decimal((line.get("fulfillment") or {}).get("local_fulfillment_cost_cny")) or Decimal("0") for line in lines), Decimal("0")),
         "external_costs_cny": sum((line["external_costs_cny"] for line in lines), Decimal("0")),
         "profit_cny": sum((line["profit_cny"] for line in lines), Decimal("0")),
     }
@@ -405,6 +512,13 @@ def _decimal(value: object) -> Decimal | None:
         return Decimal(str(value))
     except (InvalidOperation, ValueError):
         return None
+
+
+def _nonnegative_money(value: object, field: str) -> Decimal:
+    amount = _decimal(value)
+    if amount is None or amount < 0:
+        raise ValueError(f"{field} must be a non-negative CNY amount")
+    return amount
 
 
 def _text(value: object) -> str:

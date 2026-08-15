@@ -20,7 +20,7 @@ TikTok、Shopee、Ozon 三条链路必须相互独立，不能用一个平台的
 ## 第二阶段：订单级利润
 
 1. 从只读 `shop.db` 生成以规范 seller SKU 为键的成本快照；运行时实时读取一次最新汇率并冻结为整次运行的 FX 快照，同时保留汇率提供方、提供方截至时间、快照身份和完整精度的本币兑 CNY 汇率。所有实时汇率源失败时必须停止，禁止回退配置默认值。临时成本政策为：缺少正数成本时单件按 CNY 5，成本冲突时取最高正数；两者都必须在受影响 SKU/订单上显示假设警告，不能冒充成本库事实。
-2. 运行 `scripts/build_weekly_from_evidence.py`，只消费已审核的 `settlement-evidence/v1`。构建单个独立站点时必须同时传入 `--platform PLATFORM --site SITE`，禁止把不同 Shopee 站点合并进同一报表。统一在 Skill 根目录的 `report-policy.json` 修改三平台周度广告占比和 Shopee 本土履约费；默认三平台均为 22%，Shopee 本土发货每个父订单只扣一项合并后的运费仓储费 CNY 4。可用 `--policy-config` 指向其他版本化策略文件，也可用 `--ad-rate`、三个平台广告参数或 `--shopee-local-fulfillment-fee-cny` 临时覆盖本次运行。程序记录策略校验和与最终值，只写明确指定的报表目录，不写数据库、不改平台订单。
+2. 运行 `scripts/build_weekly_from_evidence.py`，只消费已审核的 `settlement-evidence/v1`。构建单个独立站点时必须同时传入 `--platform PLATFORM --site SITE`，禁止把不同 Shopee 站点合并进同一报表。统一在 Skill 根目录的 `report-policy.json` 修改三平台周度广告占比及 TikTok、Shopee 本土履约费；默认三平台均为 22%，TikTok 或 Shopee 的本土发货每个父订单各只扣一次 CNY 4。可用 `--policy-config` 指向其他版本化策略文件，也可用 `--ad-rate`、三个平台广告参数、`--tiktok-local-fulfillment-fee-cny` 或 `--shopee-local-fulfillment-fee-cny` 临时覆盖本次运行。程序记录策略校验和与最终值，只写明确指定的报表目录，不写数据库、不改平台订单。
 3. TikTok/Shopee 周报广告费默认按 22% 估算，不含买家运费。Shopee 必须使用官方 `order_discounted_price`（卖家折扣后的商品成交额、平台券抵扣前）作为广告基数，并把“商品折后成交额”和“买家现金实付商品金额（buyer_total_amount 减买家运费）”分列展示；平台券减少买家现金但不减少卖家商品成交额，因此禁止用现金实付作为 Shopee 广告 GMV。报表必须标记广告为估算。TikTok 结算中已有的真实广告调整先单独剔出并对账，避免再按 22% 重复扣除。
 4. TikTok/Shopee 月报必须使用真实广告消耗；优先订单归因，否则按买家实付 GMV 对真实总额进行可审计分摊，不能回退为 0 或 22%。
 5. Ozon V1 周报和月报的广告费默认按商品销售基数的 22% 估算，允许人工明确覆盖，政策版本为 `operator-adjustable-ad-rate/v1`，不得表述为真实广告消耗。若财务记录只有平台 SKU 且没有数量，可只读调用商品信息和 FBS 发货单接口补 seller SKU 与实际履约数量；绝不能假定数量为 1。
@@ -30,7 +30,7 @@ TikTok、Shopee、Ozon 三条链路必须相互独立，不能用一个平台的
 
 ### TikTok 发货方式与订单行 ID
 
-TikTok 泰国的本土/跨境只按已结算 Finance 税费证据判断：`import_vat`（进口增值税）或 `customs_duty`（进口关税）任一项非 0 即为跨境，两项字段都存在且均为精确 0 才是本土；任一字段缺失或非法时必须标记 `unknown`、报告 `missing_fulfillment_tax_evidence`，并让报表进入 `needs_review`。不保留、不展示、也不使用订单 API 的 `fulfillment_type`、配送、运输或仓库字段，因为它们表达的是履约主体，不是海关路线。TikTok 和 Shopee HTML 都隐藏订单行 ID，但 JSON 和页面排序元数据继续保留。正式读取使用 `/finance/202501/statements/{statement_id}/statement_transactions` 的 `transactions` 集合及嵌套税费明细；禁止回退到已废弃的 v202309 交易接口来让报表通过。
+TikTok 泰国的本土/跨境只按已结算 Finance 税费证据判断：`import_vat`（进口增值税）或 `customs_duty`（进口关税）任一项非 0 即为跨境，两项字段都存在且均为精确 0 才是本土；任一字段缺失或非法时必须标记 `unknown`、报告 `missing_fulfillment_tax_evidence`，并让报表进入 `needs_review`。每个本土父订单只扣一次可配置的本土履约费，默认 CNY 4；多商品行按商品销售额稳定分摊，跨境和 unknown 订单不扣，金额、父订单数、策略及指纹都保留在 JSON。不保留、不展示、也不使用订单 API 的 `fulfillment_type`、配送、运输或仓库字段，因为它们表达的是履约主体，不是海关路线。TikTok 和 Shopee HTML 都隐藏订单行 ID，但 JSON 和页面排序元数据继续保留。正式读取使用 `/finance/202501/statements/{statement_id}/statement_transactions` 的 `transactions` 集合及嵌套税费明细；禁止回退到已废弃的 v202309 交易接口来让报表通过。
 
 ## 安全门槛
 

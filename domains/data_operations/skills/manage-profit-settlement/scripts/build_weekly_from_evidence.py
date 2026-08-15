@@ -42,11 +42,12 @@ def main() -> int:
     parser.add_argument("--end", required=True, type=date.fromisoformat)
     parser.add_argument("--platform", choices=("tiktok", "shopee", "ozon"))
     parser.add_argument("--site", help="site paired with --platform, for example MY")
-    parser.add_argument("--policy-config", type=Path, default=Path(__file__).resolve().parents[1] / "report-policy.json", help="single JSON policy for advertising rates and Shopee local fulfillment fee")
+    parser.add_argument("--policy-config", type=Path, default=Path(__file__).resolve().parents[1] / "report-policy.json", help="single JSON policy for advertising rates and platform local fulfillment fees")
     parser.add_argument("--ad-rate", help="global estimated advertising fraction; default 0.22")
     parser.add_argument("--tiktok-ad-rate", help="TikTok-only override, for example 0.18")
     parser.add_argument("--shopee-ad-rate", help="Shopee-only override, for example 0.20")
     parser.add_argument("--ozon-ad-rate", help="Ozon-only override, for example 0.25")
+    parser.add_argument("--tiktok-local-fulfillment-fee-cny", help="TikTok local fulfillment cost per parent order in CNY; overrides policy config")
     parser.add_argument("--shopee-local-fulfillment-fee-cny", help="Shopee combined local shipping and warehouse cost per parent order in CNY; overrides policy config")
     parser.add_argument("--ozon-sku-map", type=Path)
     parser.add_argument("--allow-ozon-read-enrichment", action="store_true")
@@ -111,7 +112,12 @@ def main() -> int:
         if value is not None:
             platform_ad_rates[platform] = Decimal(value)
             platform_ad_sources[platform] = "operator_platform_override"
-    local_fulfillment_fee = Decimal(
+    tiktok_local_fulfillment_fee = Decimal(
+        args.tiktok_local_fulfillment_fee_cny
+        if args.tiktok_local_fulfillment_fee_cny is not None
+        else policy["tiktok"]["local_fulfillment_fee_cny_per_order"]
+    )
+    shopee_local_fulfillment_fee = Decimal(
         args.shopee_local_fulfillment_fee_cny
         if args.shopee_local_fulfillment_fee_cny is not None
         else policy["shopee"]["local_fulfillment_fee_cny_per_order"]
@@ -127,7 +133,8 @@ def main() -> int:
         ad_rates=platform_ad_rates,
         ad_rate_sources=platform_ad_sources,
         ad_rate_source=global_ad_source,
-        shopee_local_fulfillment_fee_cny=local_fulfillment_fee,
+        tiktok_local_fulfillment_fee_cny=tiktok_local_fulfillment_fee,
+        shopee_local_fulfillment_fee_cny=shopee_local_fulfillment_fee,
         seller_sku_by_ozon_sku=ozon_map,
         quantity_by_ozon_order_sku=ozon_quantities,
         cost_assumption_warnings=cost_policy.warnings,
@@ -142,6 +149,7 @@ def main() -> int:
         "snapshot_id": policy["snapshot_id"],
         "source_path": str(args.policy_config.resolve()),
         "weekly_ad_rates": policy["weekly_ad_rates"],
+        "tiktok": policy["tiktok"],
         "shopee": policy["shopee"],
     }
     bundle["external_reads"] = [
@@ -206,8 +214,9 @@ def _load_policy(path: Path) -> dict[str, object]:
     if not isinstance(payload, dict) or payload.get("schema_version") != "profit-settlement-policy/v1":
         raise ValueError("policy config must use profit-settlement-policy/v1")
     rates = payload.get("weekly_ad_rates")
+    tiktok = payload.get("tiktok", {"local_fulfillment_fee_cny_per_order": "4"})
     shopee = payload.get("shopee")
-    if not isinstance(rates, dict) or not isinstance(shopee, dict):
+    if not isinstance(rates, dict) or not isinstance(tiktok, dict) or not isinstance(shopee, dict):
         raise ValueError("policy config requires weekly_ad_rates and shopee objects")
     for key in ("default", "tiktok", "shopee", "ozon"):
         try:
@@ -216,17 +225,21 @@ def _load_policy(path: Path) -> dict[str, object]:
             raise ValueError(f"policy weekly_ad_rates.{key} must be a decimal fraction") from exc
         if value < 0 or value > 1:
             raise ValueError(f"policy weekly_ad_rates.{key} must be between 0 and 1")
-    try:
-        local_fee = Decimal(str(shopee["local_fulfillment_fee_cny_per_order"]))
-    except (KeyError, ValueError, ArithmeticError) as exc:
-        raise ValueError("policy shopee.local_fulfillment_fee_cny_per_order must be a CNY amount") from exc
-    if local_fee < 0:
-        raise ValueError("policy shopee.local_fulfillment_fee_cny_per_order must be non-negative")
+    local_fees = {}
+    for platform, config in (("tiktok", tiktok), ("shopee", shopee)):
+        try:
+            local_fee = Decimal(str(config["local_fulfillment_fee_cny_per_order"]))
+        except (KeyError, ValueError, ArithmeticError) as exc:
+            raise ValueError(f"policy {platform}.local_fulfillment_fee_cny_per_order must be a CNY amount") from exc
+        if local_fee < 0:
+            raise ValueError(f"policy {platform}.local_fulfillment_fee_cny_per_order must be non-negative")
+        local_fees[platform] = str(local_fee)
     return {
         "schema_version": payload["schema_version"],
         "snapshot_id": f"sha256:{sha256(raw).hexdigest()}",
         "weekly_ad_rates": {key: str(Decimal(str(rates[key]))) for key in ("default", "tiktok", "shopee", "ozon")},
-        "shopee": {"local_fulfillment_fee_cny_per_order": str(local_fee)},
+        "tiktok": {"local_fulfillment_fee_cny_per_order": local_fees["tiktok"]},
+        "shopee": {"local_fulfillment_fee_cny_per_order": local_fees["shopee"]},
     }
 
 

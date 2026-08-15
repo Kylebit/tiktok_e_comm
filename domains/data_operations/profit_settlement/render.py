@@ -131,7 +131,7 @@ def _order_row(line, fee_columns, warning_by_sku, platform):
     ams_local, ams_cny, ams_currency = _fee_value(line, AMS_COMMISSION_FEE_CODE)
     cells = [
         _display_time(line.get("settled_at")), _display_time(line.get("occurred_at")), _text(identity.get("order_id")), _text(identity.get("order_line_id")),
-        _text(identity.get("region")), _fulfillment_label(fulfillment.get("mode")), image_html, _text(product.get("seller_sku")),
+        _text(identity.get("region")), _fulfillment_display(fulfillment, line.get("settlement_outcome")), image_html, _text(product.get("seller_sku")),
         _money(settlement.get("net_amount_cny")), _money(cost.get("total_cny")), _money(ads.get("amount_cny")), _money(fulfillment.get("local_fulfillment_cost_cny")), _money(line.get("profit_cny")), margin,
         _text(product.get("variant_name")), _quantity(product.get("quantity")), _money(product.get("unit_weight_g")),
         _money(product.get("billable_weight_g")), _localized_fee(ams_local, ams_cny, ams_currency), _money(settlement.get("product_sales_amount_local") or settlement.get("buyer_paid_product_amount_local")), _money(settlement.get("buyer_cash_paid_product_amount_local")),
@@ -286,6 +286,12 @@ def _fulfillment_label(value):
         "cross_border": "跨境发货",
         "unknown": "待核对",
     }.get(str(value or ""), _text(value) if value else "待核对")
+def _fulfillment_display(fulfillment, settlement_outcome):
+    label = _fulfillment_label(_map(fulfillment).get("mode"))
+    outcome = _map(settlement_outcome)
+    if outcome.get("classification") == "zero_settlement_unshipped":
+        return f"{label} / 零结算未发货（仅计广告）"
+    return label
 def _money(value):
     number = _decimal(value)
     return f"{number.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):f}" if number is not None else "—"

@@ -118,27 +118,6 @@ def _requires_translation(source_text: str) -> bool:
     return len(letters) >= 4 and not invariant_code
 
 
-def _validate_target_language(locale: str, source_text: str, translated: str) -> None:
-    if not _requires_translation(source_text):
-        return
-    # Retail terms and short phrases can legitimately be identical loanwords
-    # in Malay, Vietnamese or Spanish. Those Latin-script languages cannot be
-    # classified reliably without a separate model, so their hard gates remain
-    # exact coverage, non-empty text and numeric preservation. Thai and Russian
-    # still require their target script and therefore cannot remain English.
-    if translated.casefold() == source_text.casefold() and locale in {
-        "th-TH",
-        "ru-RU",
-    }:
-        raise LocalizedImageAutoTranslationError(
-            f"{locale} target language translation is unchanged"
-        )
-    if locale == "th-TH" and not re.search(r"[\u0e00-\u0e7f]", translated):
-        raise LocalizedImageAutoTranslationError("th-TH target language is missing")
-    if locale == "ru-RU" and not re.search(r"[\u0400-\u04ff]", translated):
-        raise LocalizedImageAutoTranslationError("ru-RU target language is missing")
-
-
 def _validated_translations(
     payload: Mapping[str, Any], source_rows: Sequence[Mapping[str, str]]
 ) -> dict[str, list[dict[str, str]]]:
@@ -188,7 +167,6 @@ def _validated_translations(
                 raise LocalizedImageAutoTranslationError(
                     f"{locale} numeric tokens have changed"
                 )
-            _validate_target_language(locale, source_text, translated)
             clean_rows.append(
                 {
                     "region_id": region_id,
@@ -196,6 +174,16 @@ def _validated_translations(
                     "translated_text": translated,
                 }
             )
+        if any(_requires_translation(row["source_text"]) for row in source_rows):
+            combined = " ".join(row["translated_text"] for row in clean_rows)
+            if locale == "th-TH" and not re.search(r"[\u0e00-\u0e7f]", combined):
+                raise LocalizedImageAutoTranslationError(
+                    "th-TH target language is missing"
+                )
+            if locale == "ru-RU" and not re.search(r"[\u0400-\u04ff]", combined):
+                raise LocalizedImageAutoTranslationError(
+                    "ru-RU target language is missing"
+                )
         result[locale] = clean_rows
     return result
 

@@ -18,6 +18,10 @@ The same TikTok order may have a positive sale statement followed by a negative 
 
 For an operator-confirmed TikTok parent order whose consolidated net settlement is exactly zero, retain the advertising charge but do not recognize product cost or local-fulfillment cost under `zero-settlement-unshipped-ads-only/v1`. Preserve the catalog cost and settlement components for audit. A negative settlement is not proof of a creator sample; keep its refund, shipping, and adjustment components unresolved until official order-type/status evidence identifies the cause.
 
+To audit whether a TikTok order-creation period has fully settled, search the official order endpoint by `create_time` in bounded site-timezone segments and compare its redacted order IDs with Finance order transactions observed through an explicit as-of date. Keep cancelled-without-settlement separate from non-cancelled outstanding orders. Do not infer completion from delivery state.
+
+For a confirmed TikTok customer refusal, local customs-route returns are resalable and do not consume product cost; cross-border returns are destroyed and retain product cost. Apply this only with official reason/status evidence or a versioned operator exception fact, never from refund or negative-settlement arithmetic alone.
+
 ## Shopee
 
 Use payment escrow list filtered by `escrow_release_time`, then escrow detail. Normalize only released escrow rows to settled. Preserve the release timestamp, payout/escrow amount, item quantity, item price, platform/service/commission/shipping/refund components, and item allocation method. Do not treat an ordinary completed order as settled without released escrow evidence.

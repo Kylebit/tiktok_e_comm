@@ -92,3 +92,20 @@ def test_verified_miaoshou_image_sync_also_finishes_final_content_approval():
     assert "async function finalizeAiContentAfterVerifiedSync" in script
     assert 'post("content-package/finalize"' in script
     assert "await finalizeAiContentAfterVerifiedSync();" in sync_source
+
+
+def test_ai_studio_exposes_isolated_locale_image_packs_without_product_center_write():
+    html = (ROOT / "web/ai_image_studio.html").read_text(encoding="utf-8")
+    script = (ROOT / "web/static/ai_image_studio.js").read_text(encoding="utf-8")
+    css = (ROOT / "web/static/ai_image_studio.css").read_text(encoding="utf-8")
+
+    assert 'id="initializeLocalizedImagePacksButton"' in html
+    assert 'id="localizedImagePackGrid"' in html
+    assert 'id="localizedImageRouteGrid"' in html
+    assert "不会修改商品发布中心" in html
+    assert 'flowApi("content-package/localized-images")' in script
+    assert 'post("content-package/localized-images/initialize"' in script
+    assert "商品发布中心和平台均未被修改" in script
+    assert "pack.status" in script
+    assert "待文字识别、翻译、排版与人工批准" in script
+    assert ".localized-pack-grid" in css

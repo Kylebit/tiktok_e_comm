@@ -39,6 +39,7 @@
   let storyboardDraftDirty = false;
   let imageLocalizationDraft = {};
   let imageLocalizationDraftOfferId = "";
+  let localizedImageProject = null;
   const RECIPE_LIMITS = Object.freeze({
     scene: 6,
     selling_point: 6,
@@ -1450,6 +1451,79 @@
     }
   }
 
+  function setLocalizedImagePackStatus(message, tone = "") {
+    const node = $("#localizedImagePackStatus");
+    node.textContent = message || "";
+    node.hidden = !message;
+    node.className = `localization-status ${tone}`.trim();
+  }
+
+  function renderLocalizedImageProject() {
+    const packGrid = $("#localizedImagePackGrid");
+    const routeGrid = $("#localizedImageRouteGrid");
+    const summary = localizedImageProject || {};
+    const project = summary.project || {};
+    const packs = project.packs || {};
+    const routes = project.route_draft?.routes || {};
+    const initialized = Boolean(summary.initialized && Object.keys(packs).length);
+    $("#initializeLocalizedImagePacksButton").hidden = initialized;
+    if (!initialized) {
+      packGrid.innerHTML = '<div class="localized-empty">尚未导入。完成商品发布中心审核后，可在这里建立独立语言图片项目。</div>';
+      routeGrid.innerHTML = "";
+      return;
+    }
+    packGrid.innerHTML = Object.values(packs).map((pack) => {
+      const ready = pack.status === "READY_BASE";
+      return `
+        <article class="localized-pack-card ${ready ? "ready" : ""}">
+          <header><strong>${esc(pack.locale)}</strong><span class="badge">${esc(pack.status)}</span></header>
+          <small>${esc((pack.images || []).length)} 张 · revision ${esc(pack.revision)}</small>
+          <small>${ready ? "复用已批准英文母版" : "待文字识别、翻译、排版与人工批准"}</small>
+        </article>
+      `;
+    }).join("");
+    routeGrid.innerHTML = Object.entries(routes).map(([target, route]) => (
+      `<span class="localized-route">${esc(target)} → ${esc(route.locale)}</span>`
+    )).join("");
+    setLocalizedImagePackStatus(
+      `已绑定批准计划 ${project.release_plan_id}；语言图片项目独立保存，外部写入 ${summary.external_writes || 0}。`,
+    );
+  }
+
+  async function loadLocalizedImageProject({ quiet = false } = {}) {
+    try {
+      const result = await requestJson(
+        `${flowApi("content-package/localized-images")}?offer_id=${encodeURIComponent(currentOfferId())}`,
+      );
+      localizedImageProject = result.localized_images || null;
+      renderLocalizedImageProject();
+    } catch (error) {
+      localizedImageProject = null;
+      renderLocalizedImageProject();
+      setLocalizedImagePackStatus(`读取失败：${error.message}`, "error");
+      if (!quiet) showAlert(error.message);
+    }
+  }
+
+  async function initializeLocalizedImageProject() {
+    const button = $("#initializeLocalizedImagePacksButton");
+    setLoading(button, true);
+    setLocalizedImagePackStatus("正在从已批准 ReleasePlan 导入最终英文图片…", "pending");
+    try {
+      const result = await post("content-package/localized-images/initialize", {
+        offer_id: currentOfferId(),
+      });
+      localizedImageProject = result.localized_images || null;
+      renderLocalizedImageProject();
+      toast("独立语言图片项目已建立；商品发布中心和平台均未被修改。");
+    } catch (error) {
+      setLocalizedImagePackStatus(`导入失败：${error.message}`, "error");
+      showAlert(error.message);
+    } finally {
+      setLoading(button, false);
+    }
+  }
+
   async function saveImageLocalizationRegions(assetId, { quiet = false } = {}) {
     const manifest = imageLocalizationState().manifest || {};
     setImageLocalizationStatus("正在保存区域…", "pending");
@@ -1506,6 +1580,7 @@
     renderProject();
     renderSources();
     renderImageLocalization();
+    renderLocalizedImageProject();
     renderStoryboard();
     renderPlanningProgress();
     renderVersions();
@@ -1557,6 +1632,9 @@
         && sourceOnlyDraftOfferId === offerId
       );
       preview = loadedPreview;
+      if (!localizedImageProject || localizedImageProject.offer_id !== offerId) {
+        localizedImageProject = null;
+      }
       if (imageLocalizationDraftOfferId && imageLocalizationDraftOfferId !== offerId) {
         imageLocalizationDraft = {};
         imageLocalizationDraftOfferId = "";
@@ -1572,6 +1650,7 @@
       }
       finalOrder = buildFinalItems();
       render();
+      await loadLocalizedImageProject({ quiet: true });
       const url = new URL(window.location.href);
       url.searchParams.set("offer_id", offerId);
       history.replaceState(null, "", url);
@@ -2153,6 +2232,7 @@
   $("#refreshButton").addEventListener("click", () => load());
   $("#saveSourceButton").addEventListener("click", saveSourceReview);
   $("#initializeLocalizationButton").addEventListener("click", initializeImageLocalization);
+  $("#initializeLocalizedImagePacksButton").addEventListener("click", initializeLocalizedImageProject);
   $("#savePlanButton").addEventListener("click", () => saveContentReview());
   $("#preparePackageButton").addEventListener("click", preparePackage);
   $("#aiPlanButton").addEventListener("click", requestAiPlan);

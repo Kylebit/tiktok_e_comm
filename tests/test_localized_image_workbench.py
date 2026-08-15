@@ -1,0 +1,109 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from modules.sourcing import new_product_workbench as workbench
+
+
+def _snapshot() -> dict:
+    return {
+        "schema_version": "approved-publication-snapshot/v4",
+        "offer_id": "3900088343",
+        "plan_id": "omnichannel:approved-wallpaper",
+        "snapshot_digest": f"sha256:{'a' * 64}",
+        "product": {
+            "images": [
+                "https://assets.example/master-01.png",
+                "https://assets.example/master-02.png",
+            ]
+        },
+        "publication_targets": [
+            {"target_label": "miaoshou:COMMON"},
+            {"target_label": "tiktok:LH_TH"},
+            {"target_label": "shopee:VN"},
+            {"target_label": "ozon:RU"},
+        ],
+    }
+
+
+class _ReleaseStore:
+    def __init__(self, *, approved: bool = True):
+        self.approved = approved
+        self.reads: list[tuple] = []
+
+    def active_plan_for_product(self, offer_id: str):
+        self.reads.append(("active_plan_for_product", offer_id))
+        if not self.approved:
+            return None
+        return {
+            "plan_id": "omnichannel:approved-wallpaper",
+            "product_id": offer_id,
+            "status": "APPROVED",
+        }
+
+    def approved_publication_snapshot(self, *, offer_id: str, plan_id: str):
+        self.reads.append(("approved_publication_snapshot", offer_id, plan_id))
+        return _snapshot()
+
+
+def test_initializes_from_release_store_without_mutating_workbench_state(
+    tmp_path, monkeypatch
+):
+    state_dir = tmp_path / "new_product_workbench"
+    state_dir.mkdir()
+    state_path = state_dir / "3900088343.json"
+    state_path.write_text('{"offer_id":"3900088343","_revision":17}', encoding="utf-8")
+    original = state_path.read_bytes()
+    monkeypatch.setattr(workbench, "STATE_DIR", state_dir)
+    monkeypatch.setattr(
+        workbench, "LOCALIZED_IMAGE_PACKS_DIR", tmp_path / "localized_image_packs"
+    )
+    monkeypatch.setattr(
+        workbench, "resolve_offer_key", lambda value: str(value).strip()
+    )
+    release_store = _ReleaseStore()
+
+    result = workbench.initialize_localized_image_project(
+        "3900088343", release_store=release_store
+    )
+
+    assert result["initialized"] is True
+    assert result["project"]["external_writes"] == 0
+    assert result["project"]["packs"]["th-TH"]["status"] == "PENDING_TEXT_REVIEW"
+    assert state_path.read_bytes() == original
+    assert release_store.reads == [
+        ("active_plan_for_product", "3900088343"),
+        (
+            "approved_publication_snapshot",
+            "3900088343",
+            "omnichannel:approved-wallpaper",
+        ),
+    ]
+
+
+def test_requires_an_active_approved_v4_release_plan(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        workbench, "LOCALIZED_IMAGE_PACKS_DIR", tmp_path / "localized_image_packs"
+    )
+    monkeypatch.setattr(
+        workbench, "resolve_offer_key", lambda value: str(value).strip()
+    )
+
+    with pytest.raises(ValueError, match="approved ReleasePlan"):
+        workbench.initialize_localized_image_project(
+            "3900088343", release_store=_ReleaseStore(approved=False)
+        )
+
+
+def test_server_registers_read_and_initialize_endpoints():
+    source = Path("modules/sourcing/new_product_server.py").read_text(
+        encoding="utf-8"
+    )
+    proxy = Path("modules/products/server.py").read_text(encoding="utf-8")
+
+    assert '"/api/new-product/content-package/localized-images"' in source
+    assert '"/api/new-product/content-package/localized-images/initialize"' in source
+    assert '"content-package/localized-images"' in proxy
+    assert '"content-package/localized-images/initialize"' in proxy

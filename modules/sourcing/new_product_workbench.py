@@ -42,6 +42,7 @@ OUTPUTS_DIR = WORKSPACE_ROOT / "outputs"
 STATE_DIR = ROOT / "data" / "new_product_workbench"
 IMAGE_SUITE_OUTPUTS_DIR = ROOT / "outputs" / "image_suite_from_miaoshou"
 IMAGE_LOCALIZATION_DIR = ROOT / "data" / "image_localization"
+LOCALIZED_IMAGE_PACKS_DIR = ROOT / "data" / "localized_image_packs"
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
@@ -950,6 +951,63 @@ def _image_localization_store():
     from modules.sourcing.image_localization import ImageLocalizationStore
 
     return ImageLocalizationStore(IMAGE_LOCALIZATION_DIR)
+
+
+def _localized_image_pack_store():
+    from modules.sourcing.localized_image_packs import LocalizedImagePackStore
+
+    return LocalizedImagePackStore(LOCALIZED_IMAGE_PACKS_DIR)
+
+
+def localized_image_project_summary(offer_id_or_url: str) -> dict[str, Any]:
+    """Read the independent locale-image project without touching Product Center."""
+
+    offer_id = resolve_offer_key(offer_id_or_url)
+    project = _localized_image_pack_store().load(offer_id)
+    return {
+        "schema_version": "localized-image-project-summary/v1",
+        "offer_id": offer_id,
+        "initialized": bool(project),
+        "project": project,
+        "external_writes": 0,
+        "product_center_mutated": False,
+    }
+
+
+def initialize_localized_image_project(
+    offer_id_or_url: str, *, release_store=None
+) -> dict[str, Any]:
+    """Import the immutable approved master into an isolated locale project."""
+
+    offer_id = resolve_offer_key(offer_id_or_url)
+    if release_store is None:
+        from shared_platform.release_store import ReleaseStore
+
+        release_store = ReleaseStore(ROOT / "data" / "orbit_platform.db")
+    plan = release_store.active_plan_for_product(offer_id)
+    if (
+        not isinstance(plan, dict)
+        or plan.get("status") != "APPROVED"
+        or str(plan.get("product_id") or "") != offer_id
+    ):
+        raise ValueError("an active approved ReleasePlan is required")
+    plan_id = str(plan.get("plan_id") or "").strip()
+    snapshot = release_store.approved_publication_snapshot(
+        offer_id=offer_id, plan_id=plan_id
+    )
+    if not isinstance(snapshot, dict):
+        raise ValueError("the approved ReleasePlan has no durable v4 snapshot")
+    project = _localized_image_pack_store().initialize_from_approved_snapshot(
+        snapshot
+    )
+    return {
+        "schema_version": "localized-image-project-summary/v1",
+        "offer_id": offer_id,
+        "initialized": True,
+        "project": project,
+        "external_writes": 0,
+        "product_center_mutated": False,
+    }
 
 
 def _image_localization_source_rows(offer_id: str) -> list[dict[str, str]]:

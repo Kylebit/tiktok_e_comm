@@ -259,6 +259,23 @@ class NewProductHandler(BaseHTTPRequestHandler):
             q = parse_qs(parsed.query)
             raw = (q.get("offer_id") or q.get("url") or [""])[0]
             return self._dispatch_preview({"offer_id": raw}, allow_precollect=False)
+        if path == "/api/new-product/content-package/localized-images":
+            q = parse_qs(parsed.query)
+            raw = (q.get("offer_id") or [""])[0]
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            try:
+                from modules.sourcing import new_product_workbench as np_mod
+
+                return self._json(
+                    200,
+                    {
+                        "ok": True,
+                        "localized_images": np_mod.localized_image_project_summary(raw),
+                    },
+                )
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
         if path in ("/api/new-product/content-report", "/api/new-product/content-image"):
             q = parse_qs(parsed.query)
             raw = (q.get("offer_id") or [""])[0]
@@ -368,6 +385,20 @@ class NewProductHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     "image_localization": np_mod.initialize_image_localization(raw),
                 })
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+
+        if path == "/api/new-product/content-package/localized-images/initialize":
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            try:
+                return self._json(
+                    200,
+                    {
+                        "ok": True,
+                        "localized_images": np_mod.initialize_localized_image_project(raw),
+                    },
+                )
             except Exception as exc:
                 return self._json(400, {"ok": False, "error": str(exc)})
 

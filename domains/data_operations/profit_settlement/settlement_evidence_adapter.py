@@ -424,7 +424,7 @@ def _tiktok_fulfillment(record, record_id, site, issues):
     customs_duty = amounts.get("customs_duty")
     if site == "MY":
         sst = next(
-            (amounts[code] for code in ("sst", "sales_and_service_tax", "import_vat") if code in amounts),
+            (amounts[code] for code in ("sst", "sales_and_service_tax") if code in amounts),
             None,
         )
         if sst is None:
@@ -441,7 +441,7 @@ def _tiktok_fulfillment(record, record_id, site, issues):
             "sst_local": sst,
             "import_vat_local": None,
             "customs_duty_local": None,
-            "evidence_source": "finance.statement_transactions.sst(import_vat_api_alias)",
+            "evidence_source": "finance.statement_transactions.fee_tax_breakdown.tax.sst_amount",
         }
     if site == "VN":
         if import_vat is None:

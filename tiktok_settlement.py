@@ -42,6 +42,7 @@ CSV_COLUMNS = [
     "Total Fees", "Transaction fee", "TikTok Shop commission fee",
     "Actual shipping fee", "Customer shipping fee",
     "Affiliate Commission", "Affiliate Shop Ads commission",
+    "Customs duty", "Import VAT", "SST",
     "Customer payment", "Customer refund", "Platform discounts",
     "Ajustment amount", "Related order ID",
 ]
@@ -246,6 +247,11 @@ def base_row(statement_id, statement_time, currency, tx):
             if "import_vat_amount" in tx or "import_vat_amount" in tax
             else ""
         ),
+        "SST": (
+            fnum(value("sst_amount", tax))
+            if "sst_amount" in tx or "sst_amount" in tax
+            else ""
+        ),
         "Customer payment": fnum(value("customer_payment_amount", supplementary)),
         "Customer refund": fnum(value("customer_refund_amount", supplementary)),
         "Platform discounts": fnum(value("platform_discount_amount", supplementary)),
@@ -270,7 +276,7 @@ def expand_order_rows(row, tx, order):
         "Subtotal before discounts", "Seller discounts", "Total Fees", "Transaction fee",
         "TikTok Shop commission fee", "Actual shipping fee", "Customer shipping fee",
         "Affiliate Commission", "Affiliate Shop Ads commission",
-        "Customs duty", "Import VAT",
+        "Customs duty", "Import VAT", "SST",
         "Customer payment", "Customer refund", "Platform discounts", "Ajustment amount",
     ]
     splits = {

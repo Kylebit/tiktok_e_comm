@@ -39,6 +39,7 @@ from domains.data_operations.profit_settlement.weekly_evidence_bundle import (
     build_weekly_evidence_bundle,
 )
 from domains.data_operations.profit_settlement.shopee import (
+    build_monthly_estimated_report as build_shopee_monthly_estimated_report,
     build_monthly_report as build_shopee_monthly_report,
     build_weekly_report as build_shopee_weekly_report,
 )
@@ -1766,6 +1767,63 @@ def test_shopee_monthly_actual_ads_are_deterministically_allocated_by_paid_gmv()
     assert first.totals["profit_cny"] == Decimal("-10.00")
     assert first.idempotency_key == reordered.idempotency_key
     assert first.payload() == reordered.payload()
+
+
+def test_shopee_monthly_estimated_ads_use_buyer_cash_paid_and_remain_distinct():
+    row = _row("SP-EST", paid="100", settlement="100")
+    row["buyer_cash_paid_product_amount"] = "80"
+    common = dict(
+        period_start="2026-08-01",
+        period_end="2026-08-31",
+        costs=_costs(),
+        fx=_fx(),
+        generated_at=NOW,
+        code_version="test-v1",
+    )
+
+    monthly = build_shopee_monthly_estimated_report(
+        [row],
+        ad_rate="0.22",
+        ad_rate_source="operator_monthly_override",
+        **common,
+    )
+    weekly = build_shopee_weekly_report(
+        [row],
+        ad_rate="0.22",
+        ad_rate_source="operator_monthly_override",
+        **common,
+    )
+
+    assert monthly.status == "ready"
+    assert monthly.period_kind == "monthly"
+    assert monthly.calculation_kind == "realized_settlement_with_estimated_ads"
+    assert monthly.advertising == {
+        "mode": "estimated_rate",
+        "rate": Decimal("0.22"),
+        "input_source": "operator_monthly_override",
+        "policy_version": "operator-adjustable-ad-rate/v1",
+        "basis": "buyer_cash_paid_product_amount",
+    }
+    line = monthly.order_lines[0]
+    assert line["advertising"]["basis_amount_local"] == Decimal("80")
+    assert line["advertising"]["amount_local"] == Decimal("17.60")
+    assert line["advertising"]["amount_cny"] == Decimal("3.520")
+    assert monthly.idempotency_key != weekly.idempotency_key
+
+
+def test_shopee_monthly_estimated_ads_require_explicit_source():
+    with pytest.raises(ValueError, match="ad_rate_source is required"):
+        build_shopee_monthly_estimated_report(
+            [_row("SP-EST-SOURCE")],
+            period_start="2026-08-01",
+            period_end="2026-08-31",
+            costs=_costs(),
+            fx=_fx(),
+            ad_rate="0.22",
+            ad_rate_source="",
+            generated_at=NOW,
+            code_version="test-v1",
+        )
 
 
 def test_ozon_monthly_defaults_to_22_percent_advertising_and_preserves_platform_fees():

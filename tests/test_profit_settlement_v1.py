@@ -544,6 +544,9 @@ def test_tiktok_finance_v202501_maps_nested_tax_and_fee_breakdowns(monkeypatch):
             "type": "ORDER",
             "order_id": "ORDER-1",
             "settlement_amount": "124.87",
+            "shipping_cost_amount": "0",
+            "actual_shipping_fee_amount": "-58",
+            "platform_shipping_fee_discount_amount": "58",
             "revenue_amount": "205.66",
             "fee_tax_amount": "-66.79",
             "adjustment_amount": "0",
@@ -575,6 +578,57 @@ def test_tiktok_finance_v202501_maps_nested_tax_and_fee_breakdowns(monkeypatch):
     assert row["Import VAT"] == -14.69
     assert row["SST"] == -4.54
     assert row["Transaction fee"] == -6.6
+    assert row["Merchant shipping fee"] == 0.0
+    assert row["Actual shipping fee"] == -58.0
+
+
+@pytest.mark.parametrize(
+    ("merchant_shipping_fee", "expected_mode"),
+    (("0", "local"), ("-58", "cross_border")),
+)
+def test_tiktok_ph_merchant_shipping_fee_zero_is_local_and_nonzero_is_cross_border(
+    merchant_shipping_fee, expected_mode
+):
+    evidence = {
+        "schema_version": "settlement-evidence/v1", "status": "ready",
+        "platform": "tiktok", "site": "PH",
+        "snapshot_id": "tiktok-settlement:ph-shipping", "checksum": "shipping",
+        "net_settlement_total_local": "214.30", "receipt": {"external_writes_performed": []},
+        "orders": [{
+            "order_id": "585453724624848362", "statement_id": "7673327190913664786",
+            "transaction_type": "Order", "settlement_status": "settled",
+            "settled_at": "2026-08-14T08:00:00+08:00", "currency": "PHP",
+            "net_settlement_amount": "214.30", "buyer_total_amount": "307.54",
+            "items": [{"platform_sku": "platform-1", "quantity": "1"}],
+            "financial_components": [
+                {"code": "merchant_shipping_fee", "amount": merchant_shipping_fee, "currency": "PHP"},
+                {"code": "actual_shipping_fee", "amount": "-58", "currency": "PHP"},
+                {"code": "platform_shipping_fee_discount", "amount": "58", "currency": "PHP"},
+                {"code": "customer_payment", "amount": "307.54", "currency": "PHP"},
+                {"code": "subtotal_after_seller_discounts", "amount": "307.54", "currency": "PHP"},
+            ],
+        }],
+    }
+
+    result = adapt_settlement_evidence(evidence, _catalog_stub(), period_kind="weekly")
+
+    fulfillment = result.rows[0]["fulfillment"]
+    assert fulfillment["mode"] == expected_mode
+    assert fulfillment["classification_rule"] == "tiktok_ph_merchant_shipping_fee_zero_local/v1"
+    assert fulfillment["merchant_shipping_fee_local"] == Decimal(merchant_shipping_fee)
+    assert "unsupported_tiktok_site_fulfillment_rule" not in {
+        issue.code for issue in result.issues
+    }
+
+
+def test_tiktok_ph_missing_merchant_shipping_fee_is_blocking():
+    module = _settlement_pull_module()
+    issues = module._tiktok_import_tax_issues([{
+        "order_id": "PH-MISSING", "transaction_type": "Order", "financial_components": [],
+    }], "PH")
+
+    assert [issue["code"] for issue in issues] == ["missing_fulfillment_shipping_evidence"]
+    assert "merchant_shipping_fee" in issues[0]["message"]
 
 
 @pytest.mark.parametrize(
@@ -2093,7 +2147,7 @@ def test_monthly_build_script_fails_closed_for_tiktok_site_without_fulfillment_c
         },
         "assumptions": {"fulfillment_policy": {"classification_rule": "tiktok_th_import_tax_charged/v1"}},
         "order_lines": [{
-            "identity": {"order_id": "PH-1", "region": "PH"},
+            "identity": {"order_id": "SG-1", "region": "SG"},
             "fulfillment": {
                 "mode": "local", "classification_rule": "tiktok_th_import_tax_charged/v1",
                 "local_fulfillment_cost_cny": "0", "allocation_method": "pending",
@@ -2101,7 +2155,7 @@ def test_monthly_build_script_fails_closed_for_tiktok_site_without_fulfillment_c
         }],
     }
 
-    module._apply_unsupported_site_fulfillment_gate(payload, "PH")
+    module._apply_unsupported_site_fulfillment_gate(payload, "SG")
 
     assert payload["status"] == "needs_review"
     assert payload["totals"]["local_fulfillment_cost_cny"] == "0"

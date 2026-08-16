@@ -40,7 +40,7 @@ CSV_COLUMNS = [
     "Total settlement amount", "Total Revenue", "Subtotal after seller discounts",
     "Subtotal before discounts", "Seller discounts",
     "Total Fees", "Transaction fee", "TikTok Shop commission fee",
-    "Actual shipping fee", "Customer shipping fee",
+    "Merchant shipping fee", "Actual shipping fee", "Customer shipping fee",
     "Affiliate Commission", "Affiliate Shop Ads commission",
     "Customs duty", "Import VAT", "SST",
     "Customer payment", "Customer refund", "Platform discounts",
@@ -233,6 +233,11 @@ def base_row(statement_id, statement_time, currency, tx):
         "Total Fees": fnum(value("fee_amount", tx, "fee_tax_amount")),
         "Transaction fee": fnum(value("transaction_fee_amount", fee)),
         "TikTok Shop commission fee": fnum(value("platform_commission_amount", fee)),
+        "Merchant shipping fee": (
+            fnum(value("shipping_cost_amount", shipping))
+            if "shipping_cost_amount" in tx or "shipping_cost_amount" in shipping
+            else ""
+        ),
         "Actual shipping fee": fnum(value("actual_shipping_fee_amount", shipping)),
         "Customer shipping fee": fnum(value("customer_shipping_fee_amount", shipping, "customer_paid_shipping_fee_amount")),
         "Affiliate Commission": fnum(value("affiliate_commission_amount", fee)),
@@ -274,7 +279,7 @@ def expand_order_rows(row, tx, order):
     numeric_keys = [
         "Total settlement amount", "Total Revenue", "Subtotal after seller discounts",
         "Subtotal before discounts", "Seller discounts", "Total Fees", "Transaction fee",
-        "TikTok Shop commission fee", "Actual shipping fee", "Customer shipping fee",
+        "TikTok Shop commission fee", "Merchant shipping fee", "Actual shipping fee", "Customer shipping fee",
         "Affiliate Commission", "Affiliate Shop Ads commission",
         "Customs duty", "Import VAT", "SST",
         "Customer payment", "Customer refund", "Platform discounts", "Ajustment amount",

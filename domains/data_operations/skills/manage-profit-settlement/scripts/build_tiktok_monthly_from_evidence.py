@@ -7,6 +7,7 @@ from collections import Counter
 from dataclasses import replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from hashlib import sha256
 import json
 from pathlib import Path
 import sys
@@ -102,7 +103,7 @@ def main(argv=None) -> int:
         "period_end": args.end,
         "costs": costs,
         "fx": fx,
-        "local_fulfillment_fee_cny": args.local_fulfillment_fee_cny,
+        "local_fulfillment_fee_cny": args.local_fulfillment_fee_cny if site == "TH" else "0",
         "generated_at": datetime.now(timezone.utc),
     }
     if args.ad_rate is not None:
@@ -132,6 +133,8 @@ def main(argv=None) -> int:
             quality_issues=report.quality_issues + adapter_issues,
         )
     payload = report.payload()
+    if site != "TH":
+        _apply_unsupported_site_fulfillment_gate(payload, site)
     payload["assumption_warnings"] = [
         {
             "code": warning.code,
@@ -143,8 +146,7 @@ def main(argv=None) -> int:
     ]
     payload["source"]["evidence_reconciliation"] = adapted.payload()["reconciliation"]
     payload["source"]["settlement_evidence_snapshot_id"] = evidence.get("snapshot_id")
-    payload["source"]["order_coverage"] = coverage.get("counts")
-    payload["source"]["coverage_snapshot_id"] = coverage.get("snapshot_id")
+    _apply_coverage_gate(payload, coverage)
     payload["source"]["actual_advertising"] = _json_ready(actual_ads)
     payload["source"]["actual_advertising_usage"] = (
         "reference_only_not_used_in_profit"
@@ -192,6 +194,85 @@ def _json_ready(value):
     if isinstance(value, (list, tuple)):
         return [_json_ready(item) for item in value]
     return value
+
+
+def _apply_coverage_gate(payload, coverage):
+    counts = dict(coverage.get("counts") or {})
+    snapshot_id = str(coverage.get("snapshot_id") or "")
+    unsettled_non_cancelled = int(counts.get("unsettled_non_cancelled") or 0)
+    coverage_status = str(coverage.get("status") or "unknown")
+    all_non_cancelled_settled = coverage.get("all_non_cancelled_orders_settled") is True
+    payload["source"]["order_coverage"] = counts
+    payload["source"]["coverage_snapshot_id"] = snapshot_id
+    payload["source"]["coverage_status"] = coverage_status
+    payload["source"]["settlement_observed_through"] = coverage.get("settlement_observed_through")
+    payload["source"]["all_non_cancelled_orders_settled"] = all_non_cancelled_settled
+    if unsettled_non_cancelled or not all_non_cancelled_settled:
+        payload["quality_issues"].append({
+            "code": "unsettled_non_cancelled_orders",
+            "record_id": snapshot_id or "coverage:unknown",
+            "field": "coverage.all_non_cancelled_orders_settled",
+            "message": (
+                f"{unsettled_non_cancelled} non-cancelled order(s) created in the reporting month "
+                "have no Finance settlement evidence through the declared coverage as-of time"
+            ),
+        })
+        payload["status"] = "needs_review"
+    fingerprint = sha256(json.dumps({
+        "base_idempotency_key": payload.get("idempotency_key"),
+        "coverage_snapshot_id": snapshot_id,
+        "coverage_status": coverage_status,
+        "settlement_observed_through": coverage.get("settlement_observed_through"),
+        "counts": counts,
+        "all_non_cancelled_orders_settled": all_non_cancelled_settled,
+        "site": next((
+            str(line.get("identity", {}).get("region") or "").upper()
+            for line in payload.get("order_lines") or []
+            if line.get("identity", {}).get("region")
+        ), ""),
+        "fulfillment_policy": payload.get("source", {}).get("fulfillment_policy"),
+        "quality_issue_codes": sorted(str(item.get("code") or "") for item in payload.get("quality_issues") or []),
+    }, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")).hexdigest()
+    payload["idempotency_key"] = f"profit-report/tiktok-monthly-coverage/v1:{fingerprint}"
+    payload["report_id"] = f"tiktok-profit:{fingerprint[:16]}"
+
+
+def _apply_unsupported_site_fulfillment_gate(payload, site):
+    rule = f"unsupported_tiktok_{site.lower()}_fulfillment_rule/v1"
+    parent_orders = set()
+    for line in payload.get("order_lines") or []:
+        identity = line.get("identity") or {}
+        parent_orders.add(str(identity.get("order_id") or ""))
+        fulfillment = line.get("fulfillment") or {}
+        fulfillment["mode"] = "unknown"
+        fulfillment["classification_rule"] = rule
+        fulfillment["local_fulfillment_cost_cny"] = "0"
+        fulfillment["allocation_method"] = "not_applicable"
+        fulfillment.pop("order_cost_policy", None)
+    policy = {
+        "local_fulfillment_fee_cny_per_order": "0",
+        "cost_components": [],
+        "classification_rule": rule,
+    }
+    payload["source"]["fulfillment_order_counts"] = {
+        "cross_border": 0,
+        "local": 0,
+        "unknown": len(parent_orders - {""}),
+    }
+    payload["source"]["local_fulfillment_charged_order_count"] = 0
+    payload["source"]["fulfillment_policy"] = policy
+    payload["assumptions"]["fulfillment_policy"] = policy
+    payload["totals"]["local_fulfillment_cost_cny"] = "0"
+    payload["quality_issues"].append({
+        "code": "unsupported_tiktok_site_fulfillment_rule",
+        "record_id": f"tiktok:{site}",
+        "field": "fulfillment.classification_rule",
+        "message": (
+            f"TikTok {site} has no operator-approved local/cross-border classification rule; "
+            "no local-fulfillment cost was recognized"
+        ),
+    })
+    payload["status"] = "needs_review"
 
 
 if __name__ == "__main__":

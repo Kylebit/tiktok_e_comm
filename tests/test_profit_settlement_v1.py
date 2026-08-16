@@ -1855,6 +1855,89 @@ def test_monthly_build_script_makes_decimal_evidence_json_ready():
     }
 
 
+def test_monthly_build_script_fails_closed_for_unsettled_non_cancelled_coverage():
+    module = _monthly_build_script_module()
+    payload = {
+        "status": "ready",
+        "report_id": "base-report",
+        "idempotency_key": "base-key",
+        "quality_issues": [],
+        "source": {},
+    }
+    coverage = {
+        "status": "needs_review",
+        "snapshot_id": "coverage:my-july",
+        "settlement_observed_through": "2026-08-15",
+        "all_non_cancelled_orders_settled": False,
+        "counts": {"created_orders": 699, "unsettled_non_cancelled": 1},
+    }
+
+    module._apply_coverage_gate(payload, coverage)
+
+    assert payload["status"] == "needs_review"
+    assert payload["quality_issues"] == [{
+        "code": "unsettled_non_cancelled_orders",
+        "record_id": "coverage:my-july",
+        "field": "coverage.all_non_cancelled_orders_settled",
+        "message": "1 non-cancelled order(s) created in the reporting month have no Finance settlement evidence through the declared coverage as-of time",
+    }]
+    assert payload["source"]["all_non_cancelled_orders_settled"] is False
+    assert payload["idempotency_key"].startswith("profit-report/tiktok-monthly-coverage/v1:")
+
+
+def test_monthly_coverage_snapshot_changes_idempotency_without_blocking_complete_coverage():
+    module = _monthly_build_script_module()
+    keys = []
+    for snapshot_id in ("coverage:first", "coverage:second"):
+        payload = {
+            "status": "ready", "report_id": "base-report", "idempotency_key": "base-key",
+            "quality_issues": [], "source": {},
+        }
+        module._apply_coverage_gate(payload, {
+            "status": "ready", "snapshot_id": snapshot_id,
+            "settlement_observed_through": "2026-08-15",
+            "all_non_cancelled_orders_settled": True,
+            "counts": {"created_orders": 359, "unsettled_non_cancelled": 0},
+        })
+        assert payload["status"] == "ready"
+        assert payload["quality_issues"] == []
+        keys.append(payload["idempotency_key"])
+
+    assert keys[0] != keys[1]
+
+
+def test_monthly_build_script_fails_closed_for_tiktok_site_without_fulfillment_contract():
+    module = _monthly_build_script_module()
+    payload = {
+        "status": "ready",
+        "quality_issues": [],
+        "totals": {"local_fulfillment_cost_cny": "4"},
+        "source": {
+            "fulfillment_order_counts": {"local": 1, "cross_border": 0, "unknown": 0},
+            "local_fulfillment_charged_order_count": 1,
+            "fulfillment_policy": {"classification_rule": "tiktok_th_import_tax_charged/v1"},
+        },
+        "assumptions": {"fulfillment_policy": {"classification_rule": "tiktok_th_import_tax_charged/v1"}},
+        "order_lines": [{
+            "identity": {"order_id": "MY-1", "region": "MY"},
+            "fulfillment": {
+                "mode": "local", "classification_rule": "tiktok_th_import_tax_charged/v1",
+                "local_fulfillment_cost_cny": "0", "allocation_method": "pending",
+            },
+        }],
+    }
+
+    module._apply_unsupported_site_fulfillment_gate(payload, "MY")
+
+    assert payload["status"] == "needs_review"
+    assert payload["totals"]["local_fulfillment_cost_cny"] == "0"
+    assert payload["source"]["fulfillment_order_counts"] == {
+        "cross_border": 0, "local": 0, "unknown": 1,
+    }
+    assert payload["order_lines"][0]["fulfillment"]["mode"] == "unknown"
+    assert payload["quality_issues"][0]["code"] == "unsupported_tiktok_site_fulfillment_rule"
+
+
 @pytest.mark.parametrize(
     "builder",
     (build_tiktok_weekly_report, build_shopee_weekly_report, build_ozon_weekly_report),

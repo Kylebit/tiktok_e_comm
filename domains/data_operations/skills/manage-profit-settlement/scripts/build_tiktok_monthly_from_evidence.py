@@ -45,11 +45,15 @@ def main(argv=None) -> int:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--start", required=True, type=date.fromisoformat)
     parser.add_argument("--end", required=True, type=date.fromisoformat)
+    parser.add_argument("--site")
     parser.add_argument("--local-fulfillment-fee-cny", default="4")
     args = parser.parse_args(argv)
 
     evidence = json.loads(args.evidence.read_text(encoding="utf-8"))
     coverage = json.loads(args.coverage.read_text(encoding="utf-8"))
+    site = str(args.site or evidence.get("site") or "").upper()
+    if not site or site != str(coverage.get("site") or "").upper():
+        raise RuntimeError("evidence and coverage site identity must match")
     catalog = load_local_catalog(args.project_root / "data" / "shop.db")
     adapted = adapt_settlement_evidence(evidence, catalog, period_kind="monthly")
     required_skus = {str(row.get("canonical_sku") or "") for row in adapted.rows}
@@ -67,14 +71,22 @@ def main(argv=None) -> int:
     fx = FxSnapshot.from_mapping(
         live_fx["rates"], source=live_fx["provider"], as_of=live_fx["as_of"]
     )
-    thb_rate = fx.get("THB")
-    if thb_rate is None:
-        raise RuntimeError("live FX snapshot has no THB rate")
+    currencies = {
+        str(row.get("currency") or "").upper()
+        for row in evidence.get("orders") or []
+        if row.get("currency")
+    }
+    if len(currencies) != 1:
+        raise RuntimeError("TikTok monthly evidence must use one explicit currency")
+    local_currency = next(iter(currencies))
+    local_rate = fx.get(local_currency)
+    if local_rate is None:
+        raise RuntimeError(f"live FX snapshot has no {local_currency} rate")
     actual_ads = actual_advertising_from_finance(
         evidence,
         start=args.start,
         end=args.end,
-        fx_rate_cny_per_local=thb_rate,
+        fx_rate_cny_per_local=local_rate,
         fx_snapshot_id=fx.snapshot_id,
     )
     report = build_monthly_report(
@@ -128,7 +140,7 @@ def main(argv=None) -> int:
         payload["status"] = "needs_review"
 
     args.output.mkdir(parents=True, exist_ok=True)
-    stem = f"tiktok_TH_{args.start}_{args.end}.monthly-profit"
+    stem = f"tiktok_{site}_{args.start}_{args.end}.monthly-profit"
     json_path = args.output / f"{stem}.json"
     html_path = args.output / f"{stem}.html"
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")

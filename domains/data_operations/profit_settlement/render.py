@@ -51,12 +51,20 @@ def render_profit_report_html(report: Mapping[str, Any]) -> str:
     return f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{escape(platform)} 利润报表</title><style>
-body{{font:13px/1.45 system-ui,sans-serif;margin:0;background:#f5f7f8;color:#172126}}main{{margin:auto;padding:20px}}h1{{margin:4px 0}}.meta{{color:#64748b}}.cards{{display:grid;grid-template-columns:repeat(5,minmax(150px,1fr));gap:10px;margin:16px 0}}.card,section{{background:#fff;border:1px solid #dfe6e9;border-radius:10px;padding:12px}}.card strong{{display:block;font-size:19px;margin-top:4px}}.status,.warning{{display:inline-block;padding:3px 8px;border-radius:999px;background:#fff3cd}}.warning{{background:#ffe4b5;color:#7c4700;font-size:11px}}.table-scroll-top{{overflow-x:auto;overflow-y:hidden;height:16px;margin-bottom:4px;background:#eef3f4;border:1px solid #dfe6e9;border-radius:7px}}.table-scroll-top>div{{height:1px}}.table{{overflow:auto;max-height:72vh;background:#fff;border:1px solid #dfe6e9;border-radius:10px}}table{{border-collapse:collapse;min-width:max-content;width:100%}}th,td{{padding:7px 9px;border-bottom:1px solid #edf1f2;text-align:left;vertical-align:top;white-space:nowrap}}th{{position:sticky;top:0;z-index:3;background:#eef3f4}}.sort-button{{border:0;padding:0;background:transparent;color:inherit;font:inherit;font-weight:700;cursor:pointer;white-space:nowrap}}.sort-button:focus-visible{{outline:2px solid #2563eb;outline-offset:3px;border-radius:2px}}tfoot td{{position:sticky;bottom:0;background:#e8f4ff;font-weight:700;border-top:2px solid #4b9bd8}}td.num{{text-align:right;font-variant-numeric:tabular-nums}}td.product{{white-space:normal;min-width:220px;max-width:300px}}tr.assumption{{background:#fffaf0}}tr.local-fulfillment{{background:#effaf1}}tr.negative{{background:#fff5f5}}img{{width:48px;height:48px;object-fit:cover;border-radius:7px;background:#eee}}code{{font-size:11px}}ul{{margin:6px 0;padding-left:20px}}@media(max-width:800px){{.cards{{grid-template-columns:1fr 1fr}}main{{padding:10px}}}}
+body{{font:13px/1.45 system-ui,sans-serif;margin:0;background:#f5f7f8;color:#172126}}main{{margin:auto;padding:20px}}h1{{margin:4px 0}}.meta{{color:#64748b}}.cards{{display:grid;grid-template-columns:repeat(5,minmax(150px,1fr));gap:10px;margin:16px 0}}.card,section{{background:#fff;border:1px solid #dfe6e9;border-radius:10px;padding:12px}}.card strong{{display:block;font-size:19px;margin-top:4px}}.status,.warning{{display:inline-block;padding:3px 8px;border-radius:999px;background:#fff3cd}}.warning{{background:#ffe4b5;color:#7c4700;font-size:11px}}.order-filter{{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:10px 0;padding:10px 12px;background:#fff;border:1px solid #dfe6e9;border-radius:10px}}.order-filter label{{display:flex;align-items:center;gap:6px}}.order-filter input,.order-filter button{{font:inherit;padding:5px 8px;border:1px solid #b8c4ca;border-radius:6px;background:#fff}}.order-filter button{{cursor:pointer}}.filter-summary{{font-weight:700}}.daily-order-counts{{display:flex;flex-wrap:wrap;gap:6px;width:100%}}.daily-order-count{{padding:3px 7px;border-radius:999px;background:#e8f4ff;color:#164e78;font-variant-numeric:tabular-nums}}.table-scroll-top{{overflow-x:auto;overflow-y:hidden;height:16px;margin-bottom:4px;background:#eef3f4;border:1px solid #dfe6e9;border-radius:7px}}.table-scroll-top>div{{height:1px}}.table{{overflow:auto;max-height:72vh;background:#fff;border:1px solid #dfe6e9;border-radius:10px}}table{{border-collapse:collapse;min-width:max-content;width:100%}}th,td{{padding:7px 9px;border-bottom:1px solid #edf1f2;text-align:left;vertical-align:top;white-space:nowrap}}th{{position:sticky;top:0;z-index:3;background:#eef3f4}}.sort-button{{border:0;padding:0;background:transparent;color:inherit;font:inherit;font-weight:700;cursor:pointer;white-space:nowrap}}.sort-button:focus-visible{{outline:2px solid #2563eb;outline-offset:3px;border-radius:2px}}tfoot td{{position:sticky;bottom:0;background:#e8f4ff;font-weight:700;border-top:2px solid #4b9bd8}}td.num{{text-align:right;font-variant-numeric:tabular-nums}}td.product{{white-space:normal;min-width:220px;max-width:300px}}tr.assumption{{background:#fffaf0}}tr.local-fulfillment{{background:#effaf1}}tr.negative{{background:#fff5f5}}img{{width:48px;height:48px;object-fit:cover;border-radius:7px;background:#eee}}code{{font-size:11px}}ul{{margin:6px 0;padding-left:20px}}@media(max-width:800px){{.cards{{grid-template-columns:1fr 1fr}}main{{padding:10px}}}}
 </style></head><body><main>
 <header><span class="status">{escape(_text(report.get('status')))}</span><h1>{escape(platform)} {escape(_text(report.get('period_kind')))} 订单级利润明细</h1><p class="meta">{escape(_text(period.get('start')))} 至 {escape(_text(period.get('end')))} · {escape(_text(report.get('calculation_kind')))} · {len(lines)} 个已结算订单行 · 页面金额统一显示两位小数，JSON 保留原始 Decimal 精度</p></header>
 <div class="cards">{cards}</div>
 <section><h2>阻断性质量问题</h2><ul>{issue_html}</ul><h2>临时假设警告</h2><ul>{warning_html}</ul><p class="meta">report_id={escape(_text(report.get('report_id')))} · idempotency_key={escape(_text(report.get('idempotency_key')))}</p></section>
 <h2>订单明细（每项费用独立成列）</h2>
+<div class="order-filter" data-role="order-date-filter">
+<label>下单日期从 <input type="date" data-role="order-date-start"></label>
+<label>至 <input type="date" data-role="order-date-end"></label>
+<button type="button" data-role="order-date-reset">清除筛选</button>
+<span class="filter-summary" data-role="filtered-order-summary"></span>
+<span class="meta">筛选只改变页面显示，不修改审计 JSON 或整期合计。</span>
+<div class="daily-order-counts" data-role="daily-order-counts" aria-live="polite"></div>
+</div>
 <div class="table-scroll-top" data-role="order-table-top-scroll" aria-label="订单明细顶部横向滚动条"><div></div></div>
 <div class="table" data-role="order-table-scroll"><table><thead><tr>{header_html}</tr></thead><tbody>{body_html}</tbody><tfoot>{footer_html}</tfoot></table></div>
 </main><script>
@@ -81,6 +89,47 @@ body{{font:13px/1.45 system-ui,sans-serif;margin:0;background:#f5f7f8;color:#172
 
   const orderTimeButton = body.querySelector('[data-sort="order-created-at"]');
   const tbody = body.querySelector('tbody');
+  const startInput = document.querySelector('[data-role="order-date-start"]');
+  const endInput = document.querySelector('[data-role="order-date-end"]');
+  const resetButton = document.querySelector('[data-role="order-date-reset"]');
+  const filterSummary = document.querySelector('[data-role="filtered-order-summary"]');
+  const dailyCounts = document.querySelector('[data-role="daily-order-counts"]');
+  const applyDateFilter = () => {{
+    if (!tbody) return;
+    const start = startInput ? startInput.value : '';
+    const end = endInput ? endInput.value : '';
+    const visibleRows = [];
+    const ordersByDay = new Map();
+    Array.from(tbody.querySelectorAll('tr')).forEach(row => {{
+      const date = (row.dataset.orderCreatedAt || '').slice(0, 10);
+      const visible = Boolean(date) && (!start || date >= start) && (!end || date <= end);
+      row.hidden = !visible;
+      if (!visible) return;
+      visibleRows.push(row);
+      if (!ordersByDay.has(date)) ordersByDay.set(date, new Set());
+      ordersByDay.get(date).add(row.dataset.orderId || row.dataset.sortTie || '');
+    }});
+    const uniqueOrders = new Set(visibleRows.map(row => row.dataset.orderId || row.dataset.sortTie || ''));
+    if (filterSummary) filterSummary.textContent = `显示 ${{uniqueOrders.size}} 个订单，${{visibleRows.length}} 个商品单位行`;
+    if (dailyCounts) {{
+      dailyCounts.replaceChildren(...Array.from(ordersByDay.entries())
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([date, orderIds]) => {{
+          const chip = document.createElement('span');
+          chip.className = 'daily-order-count';
+          chip.textContent = `${{date}}：${{orderIds.size}} 单`;
+          return chip;
+        }}));
+    }}
+  }};
+  if (startInput) startInput.addEventListener('input', applyDateFilter);
+  if (endInput) endInput.addEventListener('input', applyDateFilter);
+  if (resetButton) resetButton.addEventListener('click', () => {{
+    if (startInput) startInput.value = '';
+    if (endInput) endInput.value = '';
+    applyDateFilter();
+  }});
+  applyDateFilter();
   if (orderTimeButton && tbody) {{
     orderTimeButton.addEventListener('click', () => {{
       const direction = orderTimeButton.getAttribute('aria-sort') === 'ascending'
@@ -175,8 +224,9 @@ def _order_row(line, fee_columns, warning_by_sku, platform):
     order_created_at = _optional_text(line.get("occurred_at"))
     sort_tie = f'{_text(identity.get("order_id"))}::{_text(identity.get("order_line_id"))}'
     return (
-        f'<tr class="{" ".join(row_classes)}" '
-        f'data-order-created-at="{escape(order_created_at, quote=True)}" '
+    f'<tr class="{" ".join(row_classes)}" '
+    f'data-order-created-at="{escape(order_created_at, quote=True)}" '
+        f'data-order-id="{escape(_text(identity.get("order_id")), quote=True)}" '
         f'data-sort-tie="{escape(sort_tie, quote=True)}">{"".join(output)}</tr>'
     )
 

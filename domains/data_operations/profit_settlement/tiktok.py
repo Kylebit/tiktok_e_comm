@@ -122,21 +122,21 @@ def build_monthly_report(
         if period_at is None:
             issues.append(_issue("missing_order_created_at",record_id,"occurred_at"));rejected+=1;continue
         if not start<=period_at.date()<=end:out_of_period+=1;continue
-        sku=_text(row.get("canonical_sku"));cost=costs.get(sku);currency=_text(row.get("currency")).upper();fx_rate=fx.get(currency);quantity=_decimal(row.get("quantity"));settlement=_decimal(row.get("net_settlement_amount"));paid=_decimal(row.get("buyer_paid_product_amount"));invalid=False
-        for missing,field,code in ((not sku or cost is None,"canonical_sku","missing_cost"),(not currency or fx_rate is None,"currency","missing_fx"),(quantity is None or quantity<=0,"quantity","invalid_quantity"),(settlement is None,"net_settlement_amount","missing_settlement"),(paid is None or paid<0,"buyer_paid_product_amount","missing_ad_basis")):
+        sku=_text(row.get("canonical_sku"));cost=costs.get(sku);currency=_text(row.get("currency")).upper();fx_rate=fx.get(currency);quantity=_decimal(row.get("quantity"));settlement=_decimal(row.get("net_settlement_amount"));paid=_decimal(row.get("buyer_paid_product_amount"));cash_paid=_decimal(row.get("buyer_cash_paid_product_amount"));ad_basis=cash_paid if cash_paid is not None else paid;invalid=False
+        for missing,field,code in ((not sku or cost is None,"canonical_sku","missing_cost"),(not currency or fx_rate is None,"currency","missing_fx"),(quantity is None or quantity<=0,"quantity","invalid_quantity"),(settlement is None,"net_settlement_amount","missing_settlement"),(ad_basis is None or ad_basis<0,"buyer_cash_paid_product_amount","missing_ad_basis")):
             if missing:issues.append(_issue(code,record_id,field));invalid=True
         if invalid:rejected+=1;continue
         if cost.version == "unspecified": issues.append(_issue("missing_cost_version",record_id,"cost.version"))
         if not _text(row.get("source_snapshot_id")): issues.append(_issue("missing_source_snapshot",record_id,"source_snapshot_id"))
         fees,external=_fees(row.get("fee_items"),currency,fx,issues,record_id)
         if fees is None:rejected+=1;continue
-        prepared.append({"row":row,"record_id":record_id,"occurred":_datetime(row.get("occurred_at")),"settled_at":settled_at,"sku":sku,"cost":cost,"currency":currency,"fx_rate":fx_rate,"quantity":quantity,"settlement":settlement,"paid":paid,"paid_cny":paid*fx_rate,"fees":fees,"external":external,"fulfillment":_fulfillment(row,record_id,issues)})
+        prepared.append({"row":row,"record_id":record_id,"occurred":_datetime(row.get("occurred_at")),"settled_at":settled_at,"sku":sku,"cost":cost,"currency":currency,"fx_rate":fx_rate,"quantity":quantity,"settlement":settlement,"paid":paid,"cash_paid":cash_paid,"ad_basis":ad_basis,"paid_cny":ad_basis*fx_rate,"fees":fees,"external":external,"fulfillment":_fulfillment(row,record_id,issues)})
     prepared.sort(key=_prepared_settlement_sort_key)
     ad=_actual_advertising(actual_advertising,issues);allocations=_allocate_ads(ad.get("total_cny") if ad else None,prepared);lines=[]
     if ad:
         for index,item in enumerate(prepared):
             row=item["row"];ad_cny=allocations[index];settlement_cny=item["settlement"]*item["fx_rate"];product_cost=item["cost"].unit_cost_cny*item["quantity"]
-            lines.append({"identity":{"platform":PLATFORM,"shop_id":_text(row.get("shop_id")),"region":_text(row.get("region")).upper(),"order_id":_text(row.get("order_id")),"order_line_id":item["record_id"]},"product":{"platform_sku":_text(row.get("platform_sku")),"seller_sku":_text(row.get("seller_sku")),"canonical_sku":item["sku"],"product_name":_text(row.get("product_name")),"variant_name":_text(row.get("variant_name")),"image_url":_text(row.get("image_url")),"quantity":item["quantity"],"unit_weight_g":_decimal(row.get("unit_weight_g")),"package_weight_g":_decimal(row.get("package_weight_g")),"billable_weight_g":_decimal(row.get("billable_weight_g")),"weight_source":_text(row.get("weight_source"))},"occurred_at":item["occurred"],"settled_at":item["settled_at"],"settlement_status":"settled","fulfillment":dict(item["fulfillment"]),"settlement":{"currency":item["currency"],"net_amount_local":item["settlement"],"net_amount_cny":settlement_cny,"buyer_paid_product_amount_local":item["paid"]},"fx":{"rate_cny_per_local":item["fx_rate"],**fx.payload()},"cost":{"unit_cost_cny":item["cost"].unit_cost_cny,"quantity":item["quantity"],"total_cny":product_cost,"version":item["cost"].version,"effective_at":item["cost"].effective_at,"source":item["cost"].source,"snapshot_id":costs.snapshot_id},"advertising":{**ad,"basis":"buyer_paid_product_amount_cny","basis_amount_cny":item["paid_cny"],"amount_cny":ad_cny},"fee_items":item["fees"],"external_costs_cny":item["external"],"profit_cny":settlement_cny-product_cost-ad_cny-item["external"],"source_snapshot_id":_text(row.get("source_snapshot_id")),"source_settlement_facts":list(row.get("source_settlement_facts") or [])})
+            lines.append({"identity":{"platform":PLATFORM,"shop_id":_text(row.get("shop_id")),"region":_text(row.get("region")).upper(),"order_id":_text(row.get("order_id")),"order_line_id":item["record_id"]},"product":{"platform_sku":_text(row.get("platform_sku")),"seller_sku":_text(row.get("seller_sku")),"canonical_sku":item["sku"],"product_name":_text(row.get("product_name")),"variant_name":_text(row.get("variant_name")),"image_url":_text(row.get("image_url")),"quantity":item["quantity"],"unit_weight_g":_decimal(row.get("unit_weight_g")),"package_weight_g":_decimal(row.get("package_weight_g")),"billable_weight_g":_decimal(row.get("billable_weight_g")),"weight_source":_text(row.get("weight_source"))},"occurred_at":item["occurred"],"settled_at":item["settled_at"],"settlement_status":"settled","fulfillment":dict(item["fulfillment"]),"settlement":{"currency":item["currency"],"net_amount_local":item["settlement"],"net_amount_cny":settlement_cny,"product_sales_amount_local":item["paid"],"buyer_paid_product_amount_local":item["paid"],"buyer_cash_paid_product_amount_local":item["cash_paid"]},"fx":{"rate_cny_per_local":item["fx_rate"],**fx.payload()},"cost":{"unit_cost_cny":item["cost"].unit_cost_cny,"quantity":item["quantity"],"total_cny":product_cost,"version":item["cost"].version,"effective_at":item["cost"].effective_at,"source":item["cost"].source,"snapshot_id":costs.snapshot_id},"advertising":{**ad,"basis":"buyer_cash_paid_product_amount_cny","basis_amount_cny":item["paid_cny"],"amount_cny":ad_cny},"fee_items":item["fees"],"external_costs_cny":item["external"],"profit_cny":settlement_cny-product_cost-ad_cny-item["external"],"source_snapshot_id":_text(row.get("source_snapshot_id")),"source_settlement_facts":list(row.get("source_settlement_facts") or [])})
     else:rejected+=len(prepared)
     zero_settlement_order_count=_apply_zero_settlement_unshipped_policy(lines)
     charged_local_order_count=_apply_local_fulfillment_costs(lines,local_fulfillment,issues)
@@ -186,6 +186,8 @@ def _build_report(
         quantity = _decimal(row.get("quantity"))
         settlement = _decimal(row.get("net_settlement_amount"))
         paid = _decimal(row.get("buyer_paid_product_amount"))
+        cash_paid = _decimal(row.get("buyer_cash_paid_product_amount"))
+        ad_basis = cash_paid if cash_paid is not None else paid
         invalid = False
         if not sku or cost is None:
             issues.append(_issue("missing_cost", record_id, "canonical_sku"))
@@ -199,8 +201,8 @@ def _build_report(
         if settlement is None:
             issues.append(_issue("missing_settlement", record_id, "net_settlement_amount"))
             invalid = True
-        if paid is None:
-            issues.append(_issue("missing_ad_basis", record_id, "buyer_paid_product_amount"))
+        if ad_basis is None:
+            issues.append(_issue("missing_ad_basis", record_id, "buyer_cash_paid_product_amount"))
             invalid = True
         if invalid:
             rejected += 1
@@ -215,7 +217,7 @@ def _build_report(
             continue
         settlement_cny = settlement * fx_rate
         product_cost_cny = cost.unit_cost_cny * quantity
-        advertising_local = paid * ad_rate
+        advertising_local = ad_basis * ad_rate
         advertising_cny = advertising_local * fx_rate
         profit_cny = settlement_cny - product_cost_cny - advertising_cny - external_cost
         calculated.append(
@@ -248,7 +250,9 @@ def _build_report(
                     "currency": currency,
                     "net_amount_local": settlement,
                     "net_amount_cny": settlement_cny,
+                    "product_sales_amount_local": paid,
                     "buyer_paid_product_amount_local": paid,
+                    "buyer_cash_paid_product_amount_local": cash_paid,
                 },
                 "fx": {"rate_cny_per_local": fx_rate, **fx.payload()},
                 "cost": {
@@ -265,8 +269,8 @@ def _build_report(
                     "rate": ad_rate,
                     "input_source": ad_rate_source,
                     "policy_version": "operator-adjustable-ad-rate/v1",
-                    "basis": "buyer_paid_product_amount",
-                    "basis_amount_local": paid,
+                    "basis": "buyer_cash_paid_product_amount",
+                    "basis_amount_local": ad_basis,
                     "amount_local": advertising_local,
                     "amount_cny": advertising_cny,
                 },
@@ -324,7 +328,7 @@ def _build_report(
             "cost_snapshot": costs.payload(),
             "fx_snapshot": fx.payload(),
         },
-        assumptions={"advertising_basis": "buyer_paid_product_amount", "advertising_rate": ad_rate, "advertising_rate_source": ad_rate_source, "advertising_policy_version": "operator-adjustable-ad-rate/v1", "fulfillment_policy": fulfillment_policy, "settlement_outcome_policy": settlement_outcome_policy},
+        assumptions={"advertising_basis": "buyer_cash_paid_product_amount", "advertising_rate": ad_rate, "advertising_rate_source": ad_rate_source, "advertising_policy_version": "operator-adjustable-ad-rate/v1", "fulfillment_policy": fulfillment_policy, "settlement_outcome_policy": settlement_outcome_policy},
         generated_at=now,
         code_version=code_version,
     )
@@ -355,7 +359,7 @@ def _actual_advertising(value: Mapping[str, object] | None, issues: list[TikTokQ
     item=dict(value or {});total=_decimal(item.get("total_cny"));source=_text(item.get("source"));as_of=_text(item.get("as_of"));snapshot=_text(item.get("snapshot_id"))
     if total is None or total<0 or not source or not as_of or not snapshot:
         issues.append(TikTokQualityIssue("missing_actual_advertising","report","actual_advertising","TikTok monthly profit requires auditable actual advertising spend"));return None
-    return {"mode":"allocated_actual_ads","total_cny":total,"source":source,"as_of":as_of,"snapshot_id":snapshot,"allocation_basis":"buyer_paid_product_amount_cny","allocation_version":"gmv-pro-rata-v1"}
+    return {"mode":"allocated_actual_ads","total_cny":total,"source":source,"as_of":as_of,"snapshot_id":snapshot,"allocation_basis":"buyer_cash_paid_product_amount_cny","allocation_version":"gmv-pro-rata-v1"}
 
 
 def _allocate_ads(total: Decimal | None, rows: list[dict[str, Any]]) -> list[Decimal]:

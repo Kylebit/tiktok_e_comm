@@ -48,3 +48,30 @@ def test_build_coverage_is_ready_when_every_non_cancelled_order_is_settled():
 
     assert result["status"] == "ready"
     assert result["counts"]["unsettled_non_cancelled"] == 0
+
+
+def test_build_coverage_retains_explicit_site_timezone_in_identity():
+    from domains.data_operations.profit_settlement.tiktok_coverage import build_coverage
+
+    result = build_coverage(
+        orders=[],
+        settled_order_ids=set(),
+        start=date(2026, 7, 1),
+        end=date(2026, 7, 31),
+        as_of=date(2026, 8, 15),
+        settlement_snapshot_id="settlement:my",
+        site="MY",
+        timezone_name="Asia/Kuala_Lumpur",
+    )
+    default_site = build_coverage(
+        orders=[],
+        settled_order_ids=set(),
+        start=date(2026, 7, 1),
+        end=date(2026, 7, 31),
+        as_of=date(2026, 8, 15),
+        settlement_snapshot_id="settlement:my",
+    )
+
+    assert result["site"] == "MY"
+    assert result["created_period"]["timezone"] == "Asia/Kuala_Lumpur"
+    assert result["snapshot_id"] != default_site["snapshot_id"]

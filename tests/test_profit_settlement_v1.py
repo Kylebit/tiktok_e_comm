@@ -204,7 +204,7 @@ def test_tiktok_weekly_report_has_detailed_order_profit_and_estimated_ads():
     assert line["product"]["image_url"].endswith("main.jpg")
     assert line["product"]["unit_weight_g"] == Decimal("125.5")
     assert line["cost"]["version"] == "catalog-2026-08"
-    assert line["advertising"]["basis"] == "buyer_paid_product_amount"
+    assert line["advertising"]["basis"] == "buyer_cash_paid_product_amount"
     assert line["advertising"]["mode"] == "estimated_rate"
     assert line["fee_items"][0]["code"] == "commission"
     assert line["fee_items"][1]["included_in_net_settlement"] is False
@@ -467,6 +467,18 @@ def test_stage_one_tiktok_missing_import_tax_is_blocking_evidence_issue():
         "missing_fulfillment_tax_evidence"
     ]
     assert "import_vat" in issues[0]["message"]
+
+
+def test_stage_one_tiktok_non_th_does_not_apply_thailand_tax_contract():
+    module = _settlement_pull_module()
+
+    assert module.SITE_TIMEZONES[("tiktok", "MY")].utcoffset(None).total_seconds() == 8 * 3600
+    assert module.SITE_TIMEZONES[("tiktok", "PH")].utcoffset(None).total_seconds() == 8 * 3600
+    assert module.SITE_TIMEZONES[("tiktok", "VN")].utcoffset(None).total_seconds() == 7 * 3600
+    assert module._tiktok_import_tax_issues(
+        [{"order_id": "ORDER-1", "transaction_type": "Order", "financial_components": []}],
+        "MY",
+    ) == []
 
 
 def test_tiktok_line_expansion_preserves_missing_tax_as_missing():
@@ -926,9 +938,10 @@ def test_stage_two_consolidates_same_period_sale_and_refund_without_repeating_co
                 "currency": "THB", "net_settlement_amount": "100",
                 "buyer_total_amount": "120",
                 "items": [{"platform_sku": "platform-1", "quantity": "1"}],
-                "financial_components": [
-                    {"code": "customer_payment", "amount": "120", "currency": "THB"},
-                    {"code": "import_vat", "amount": "0", "currency": "THB"},
+                    "financial_components": [
+                        {"code": "customer_payment", "amount": "120", "currency": "THB"},
+                        {"code": "customer_shipping_fee", "amount": "0", "currency": "THB"},
+                        {"code": "import_vat", "amount": "0", "currency": "THB"},
                     {"code": "customs_duty", "amount": "0", "currency": "THB"},
                 ],
             },
@@ -1202,7 +1215,7 @@ def test_ozon_read_enrichment_supplies_mapping_and_quantity_without_inference():
     assert result.rows[0]["quantity"] == Decimal("2")
 
 
-def test_shopee_weekly_ad_basis_uses_product_sales_and_retains_buyer_cash_paid():
+def test_shopee_weekly_ad_basis_uses_buyer_cash_product_payment():
     evidence = {
         "schema_version": "settlement-evidence/v1", "status": "ready", "platform": "shopee", "site": "TH",
         "snapshot_id": "shopee-settlement:fixture", "checksum": "fixture", "net_settlement_total_local": "90",
@@ -1231,9 +1244,50 @@ def test_shopee_weekly_ad_basis_uses_product_sales_and_retains_buyer_cash_paid()
     line = report["order_lines"][0]
     assert line["settlement"]["product_sales_amount_local"] == "150"
     assert line["settlement"]["buyer_cash_paid_product_amount_local"] == "80"
-    assert line["advertising"]["basis"] == "product_sales_amount_after_seller_discount"
-    assert line["advertising"]["basis_amount_local"] == "150"
-    assert line["advertising"]["amount_local"] == "33.00"
+    assert line["advertising"]["basis"] == "buyer_cash_paid_product_amount"
+    assert line["advertising"]["basis_amount_local"] == "80"
+    assert line["advertising"]["amount_local"] == "17.60"
+
+
+def test_tiktok_weekly_ad_basis_excludes_shipping_and_platform_discount():
+    evidence = {
+        "schema_version": "settlement-evidence/v1", "status": "ready", "platform": "tiktok", "site": "TH",
+        "snapshot_id": "tiktok-settlement:cash-basis", "checksum": "cash-basis", "net_settlement_total_local": "90",
+        "receipt": {"external_writes_performed": []},
+        "orders": [{
+            "order_id": "TK-CASH", "order_created_at": "2026-07-20T08:30:00+07:00",
+            "settled_at": "2026-07-27T00:00:00+07:00", "currency": "THB",
+            "transaction_type": "Order", "net_settlement_amount": "90",
+            "buyer_total_amount": "195.52",
+            "items": [{"platform_sku": "platform-1", "quantity": "1"}],
+            "financial_components": [
+                {"code": "customer_payment", "amount": "218.20"},
+                {"code": "customer_shipping_fee", "amount": "31.00"},
+                {"code": "platform_discounts", "amount": "8.32"},
+                {"code": "import_vat", "amount": "0"},
+                {"code": "customs_duty", "amount": "0"},
+            ],
+        }],
+    }
+
+    adapted = adapt_settlement_evidence(evidence, _catalog_stub(), period_kind="weekly")
+
+    assert adapted.status == "ready"
+    assert adapted.rows[0]["buyer_paid_product_amount"] == Decimal("195.52")
+    assert adapted.rows[0]["buyer_cash_paid_product_amount"] == Decimal("187.20")
+    report = build_tiktok_weekly_report(
+        adapted.rows,
+        period_start="2026-07-27", period_end="2026-07-27",
+        costs=CostSnapshot.from_mapping(
+            {"0001": {"unit_cost_cny": "10", "version": "fixture-v1"}},
+            snapshot_id="costs:fixture",
+        ),
+        fx=_fx(), ad_rate="0.22", generated_at=NOW, code_version="test-v1",
+    ).payload()
+    line = report["order_lines"][0]
+    assert line["advertising"]["basis"] == "buyer_cash_paid_product_amount"
+    assert line["advertising"]["basis_amount_local"] == "187.20"
+    assert line["advertising"]["amount_local"] == "41.1840"
 
 
 def test_shopee_fulfillment_classification_and_local_cost_are_order_scoped_and_configurable():
@@ -1919,6 +1973,10 @@ def test_detailed_html_renders_main_image_weight_cost_ads_fees_profit_and_live_f
         "orderTimeButton.getAttribute('aria-sort') === 'ascending'",
         "? 'descending' : 'ascending'",
         "if (!leftTime) return 1", "if (!rightTime) return -1",
+        'data-role="order-date-start"', 'data-role="order-date-end"',
+        'data-role="filtered-order-summary"', 'data-role="daily-order-counts"',
+        'data-order-id="TK-HTML"', "applyDateFilter", "ordersByDay",
+        "uniqueOrders.size", "orderIds.size", "筛选只改变页面显示",
         "发货方式", "本土履约费(CNY)", "联盟营销佣金(AMS)",
     ):
         assert expected in html

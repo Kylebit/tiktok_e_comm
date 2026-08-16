@@ -29,7 +29,10 @@ SITE_TIMEZONES = {
     ("shopee", "PH"): timezone(timedelta(hours=8), name="Asia/Manila"),
     ("shopee", "TH"): timezone(timedelta(hours=7), name="Asia/Bangkok"),
     ("shopee", "VN"): timezone(timedelta(hours=7), name="Asia/Ho_Chi_Minh"),
+    ("tiktok", "MY"): timezone(timedelta(hours=8), name="Asia/Kuala_Lumpur"),
+    ("tiktok", "PH"): timezone(timedelta(hours=8), name="Asia/Manila"),
     ("tiktok", "TH"): timezone(timedelta(hours=7), name="Asia/Bangkok"),
+    ("tiktok", "VN"): timezone(timedelta(hours=7), name="Asia/Ho_Chi_Minh"),
     ("ozon", "RU"): timezone(timedelta(hours=3), name="Europe/Moscow"),
 }
 
@@ -251,7 +254,7 @@ def pull_tiktok(
                 issues.append(_issue("missing_quantity", normalized["order_id"] or str(index), "quantity"))
             normalized_rows.append(normalized)
         orders = _aggregate_tiktok_records(normalized_rows)
-        issues.extend(_tiktok_import_tax_issues(orders))
+        issues.extend(_tiktok_import_tax_issues(orders, site))
         order_ids = sorted({
             str(order.get("order_id") or "")
             for order in orders
@@ -517,8 +520,10 @@ def _aggregate_tiktok_records(rows):
     return [grouped[key] for key in sorted(grouped)]
 
 
-def _tiktok_import_tax_issues(orders):
+def _tiktok_import_tax_issues(orders, site="TH"):
     issues = []
+    if str(site).upper() != "TH":
+        return issues
     required = {"import_vat", "customs_duty"}
     for order in orders:
         if order.get("transaction_type") != "Order":

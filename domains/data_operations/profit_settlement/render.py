@@ -7,6 +7,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from email.utils import parsedate_to_datetime
 from html import escape
+import json
 from typing import Any
 
 
@@ -62,7 +63,7 @@ body{{font:13px/1.45 system-ui,sans-serif;margin:0;background:#f5f7f8;color:#172
 <label>至 <input type="date" data-role="order-date-end"></label>
 <button type="button" data-role="order-date-reset">清除筛选</button>
 <span class="filter-summary" data-role="filtered-order-summary"></span>
-<span class="meta">筛选只改变页面显示，不修改审计 JSON 或整期合计。</span>
+<span class="meta">筛选只改变页面显示和底部筛选合计，不修改审计 JSON 或整期合计。</span>
 <div class="daily-order-counts" data-role="daily-order-counts" aria-live="polite"></div>
 </div>
 <div class="table-scroll-top" data-role="order-table-top-scroll" aria-label="订单明细顶部横向滚动条"><div></div></div>
@@ -94,20 +95,64 @@ body{{font:13px/1.45 system-ui,sans-serif;margin:0;background:#f5f7f8;color:#172
   const resetButton = document.querySelector('[data-role="order-date-reset"]');
   const filterSummary = document.querySelector('[data-role="filtered-order-summary"]');
   const dailyCounts = document.querySelector('[data-role="daily-order-counts"]');
+  const totalLabel = body.querySelector('[data-role="visible-total-label"]');
+  const totalCells = Array.from(body.querySelectorAll('tfoot [data-total-key]'));
+  const wholePeriodTotals = new Map(totalCells.map(cell => [cell, cell.innerHTML]));
+  const renderPair = (cell, local, cny, currency, localized) => {{
+    cell.replaceChildren();
+    if (localized) {{
+      cell.append(document.createTextNode(`${{local.toFixed(2)}} ${{currency || '当地'}} / CNY ${{cny.toFixed(2)}}`));
+      return;
+    }}
+    cell.append(document.createTextNode(local.toFixed(2)), document.createElement('br'));
+    const detail = document.createElement('small');
+    detail.textContent = `CNY ${{cny.toFixed(2)}}`;
+    cell.append(detail);
+  }};
+  const updateVisibleTotals = (visibleRows, filterActive) => {{
+    if (!filterActive) {{
+      wholePeriodTotals.forEach((html, cell) => {{ cell.innerHTML = html; }});
+      if (totalLabel) totalLabel.textContent = '合计';
+      return;
+    }}
+    const totals = new Map();
+    visibleRows.forEach(row => {{
+      let values = {{}};
+      try {{ values = JSON.parse(row.dataset.sumValues || '{{}}'); }} catch (_error) {{ values = {{}}; }}
+      Object.entries(values).forEach(([key, value]) => {{
+        const current = totals.get(key) || {{value: 0, local: 0, cny: 0, currency: ''}};
+        current.value += Number(value.value || 0);
+        current.local += Number(value.local || 0);
+        current.cny += Number(value.cny || 0);
+        current.currency ||= value.currency || '';
+        totals.set(key, current);
+      }});
+    }});
+    totalCells.forEach(cell => {{
+      const value = totals.get(cell.dataset.totalKey) || {{value: 0, local: 0, cny: 0, currency: ''}};
+      if (cell.dataset.totalFormat === 'localized') renderPair(cell, value.local, value.cny, value.currency, true);
+      else if (cell.dataset.totalFormat === 'pair') renderPair(cell, value.local, value.cny, value.currency, false);
+      else cell.textContent = value.value.toFixed(2);
+    }});
+    if (totalLabel) totalLabel.textContent = '筛选合计';
+  }};
   const applyDateFilter = () => {{
     if (!tbody) return;
     const start = startInput ? startInput.value : '';
     const end = endInput ? endInput.value : '';
+    const filterActive = Boolean(start || end);
     const visibleRows = [];
     const ordersByDay = new Map();
     Array.from(tbody.querySelectorAll('tr')).forEach(row => {{
       const date = (row.dataset.orderCreatedAt || '').slice(0, 10);
-      const visible = Boolean(date) && (!start || date >= start) && (!end || date <= end);
+      const visible = !filterActive || (Boolean(date) && (!start || date >= start) && (!end || date <= end));
       row.hidden = !visible;
       if (!visible) return;
       visibleRows.push(row);
-      if (!ordersByDay.has(date)) ordersByDay.set(date, new Set());
-      ordersByDay.get(date).add(row.dataset.orderId || row.dataset.sortTie || '');
+      if (date) {{
+        if (!ordersByDay.has(date)) ordersByDay.set(date, new Set());
+        ordersByDay.get(date).add(row.dataset.orderId || row.dataset.sortTie || '');
+      }}
     }});
     const uniqueOrders = new Set(visibleRows.map(row => row.dataset.orderId || row.dataset.sortTie || ''));
     if (filterSummary) filterSummary.textContent = `显示 ${{uniqueOrders.size}} 个订单，${{visibleRows.length}} 个商品单位行`;
@@ -121,6 +166,7 @@ body{{font:13px/1.45 system-ui,sans-serif;margin:0;background:#f5f7f8;color:#172
           return chip;
         }}));
     }}
+    updateVisibleTotals(visibleRows, filterActive);
   }};
   if (startInput) startInput.addEventListener('input', applyDateFilter);
   if (endInput) endInput.addEventListener('input', applyDateFilter);
@@ -223,12 +269,35 @@ def _order_row(line, fee_columns, warning_by_sku, platform):
     output.append(f'<td class="product">{escape(_text(product.get("product_name")))}</td>')
     order_created_at = _optional_text(line.get("occurred_at"))
     sort_tie = f'{_text(identity.get("order_id"))}::{_text(identity.get("order_line_id"))}'
+    sum_values = _row_sum_values(line, fee_columns)
     return (
     f'<tr class="{" ".join(row_classes)}" '
     f'data-order-created-at="{escape(order_created_at, quote=True)}" '
         f'data-order-id="{escape(_text(identity.get("order_id")), quote=True)}" '
-        f'data-sort-tie="{escape(sort_tie, quote=True)}">{"".join(output)}</tr>'
+        f'data-sort-tie="{escape(sort_tie, quote=True)}" '
+        f'data-sum-values="{escape(json.dumps(sum_values, sort_keys=True, separators=(",", ":")), quote=True)}">{"".join(output)}</tr>'
     )
+
+
+def _row_sum_values(line, fee_columns):
+    settlement = _map(line.get("settlement")); cost = _map(line.get("cost"))
+    ads = _map(line.get("advertising")); fulfillment = _map(line.get("fulfillment"))
+    ams_local, ams_cny, ams_currency = _fee_value(line, AMS_COMMISSION_FEE_CODE)
+    values = {
+        "settlement_cny": {"value": _decimal_string(settlement.get("net_amount_cny"))},
+        "product_cost_cny": {"value": _decimal_string(cost.get("total_cny"))},
+        "advertising_cny": {"value": _decimal_string(ads.get("amount_cny"))},
+        "local_fulfillment_cost_cny": {"value": _decimal_string(fulfillment.get("local_fulfillment_cost_cny"))},
+        "profit_cny": {"value": _decimal_string(line.get("profit_cny"))},
+        "ams": {"local": str(ams_local), "cny": str(ams_cny), "currency": ams_currency},
+        "product_sales_local": {"value": _decimal_string(settlement.get("product_sales_amount_local") or settlement.get("buyer_paid_product_amount_local"))},
+        "buyer_cash_local": {"value": _decimal_string(settlement.get("buyer_cash_paid_product_amount_local"))},
+        "external_costs_cny": {"value": _decimal_string(line.get("external_costs_cny"))},
+    }
+    for code, _ in fee_columns:
+        local, cny, currency = _fee_value(line, code)
+        values[f"fee:{code}"] = {"local": str(local), "cny": str(cny), "currency": currency}
+    return values
 
 
 def _fee_columns(lines):
@@ -269,12 +338,30 @@ def _footer(report, fee_columns, platform):
     cells[19] = _money(sum((_decimal(_map(line.get("settlement")).get("product_sales_amount_local") or _map(line.get("settlement")).get("buyer_paid_product_amount_local")) or Decimal("0") for line in lines), Decimal("0")))
     cells[20] = _money(sum((_decimal(_map(line.get("settlement")).get("buyer_cash_paid_product_amount_local")) or Decimal("0") for line in lines), Decimal("0")))
     cells[30] = _money(totals.get("external_costs_cny"))
+    total_keys = [""] * len(_base_headers())
+    total_keys[8] = "settlement_cny"
+    total_keys[9] = "product_cost_cny"
+    total_keys[10] = "advertising_cny"
+    total_keys[11] = "local_fulfillment_cost_cny"
+    total_keys[12] = "profit_cny"
+    total_keys[18] = "ams"
+    total_keys[19] = "product_sales_local"
+    total_keys[20] = "buyer_cash_local"
+    total_keys[30] = "external_costs_cny"
     if platform in {"SHOPEE", "TIKTOK"}:
         cells.pop(3)
-    html = "".join(f'<td class="num">{escape(value)}</td>' for value in cells)
+        total_keys.pop(3)
+    html_parts = []
+    for index, (value, key) in enumerate(zip(cells, total_keys)):
+        attributes = ' data-role="visible-total-label"' if index == 0 else ""
+        if key:
+            total_format = "localized" if key == "ams" else "money"
+            attributes += f' data-total-key="{escape(key, quote=True)}" data-total-format="{total_format}"'
+        html_parts.append(f'<td class="num"{attributes}>{escape(value)}</td>')
+    html = "".join(html_parts)
     for code, _ in fee_columns:
         local = sum((_fee_value(line, code)[0] for line in lines), Decimal("0")); cny = sum((_fee_value(line, code)[1] for line in lines), Decimal("0"))
-        html += f'<td class="num">{escape(_money(local))}<br><small>CNY {escape(_money(cny))}</small></td>'
+        html += f'<td class="num" data-total-key="{escape(f"fee:{code}", quote=True)}" data-total-format="pair">{escape(_money(local))}<br><small>CNY {escape(_money(cny))}</small></td>'
     html += "<td></td><td></td>"
     return f"<tr>{html}</tr>"
 
@@ -353,3 +440,8 @@ def _decimal(value):
     if value is None or isinstance(value, bool) or str(value).strip() == "": return None
     try: return Decimal(str(value))
     except (InvalidOperation, ValueError): return None
+
+
+def _decimal_string(value):
+    number = _decimal(value)
+    return str(number if number is not None else Decimal("0"))

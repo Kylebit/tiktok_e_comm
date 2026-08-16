@@ -2020,10 +2020,17 @@ def test_detailed_html_renders_main_image_weight_cost_ads_fees_profit_and_live_f
         'data-role="order-date-start"', 'data-role="order-date-end"',
         'data-role="filtered-order-summary"', 'data-role="daily-order-counts"',
         'data-order-id="TK-HTML"', "applyDateFilter", "ordersByDay",
-        "uniqueOrders.size", "orderIds.size", "筛选只改变页面显示",
+        "uniqueOrders.size", "orderIds.size", "筛选只改变页面显示和底部筛选合计",
+        'data-sum-values="', 'data-total-key="settlement_cny"',
+        'data-total-key="advertising_cny"', 'data-total-key="profit_cny"',
+        'data-role="visible-total-label"', "updateVisibleTotals",
+        "wholePeriodTotals", "filterActive", "筛选合计",
         "发货方式", "本土履约费(CNY)", "联盟营销佣金(AMS)",
     ):
         assert expected in html
+    assert '&quot;advertising_cny&quot;:{&quot;value&quot;:&quot;8.0000&quot;}' in html
+    assert "const visible = !filterActive ||" in html
+    assert "updateVisibleTotals(visibleRows, filterActive)" in html
     assert "&lt;img" not in html
     assert "th-main / TH" not in html
     assert "平台 SKU" not in html

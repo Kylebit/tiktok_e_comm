@@ -421,12 +421,18 @@ def _fulfillment(row: Mapping[str, object], record_id: str, issues: list[TikTokQ
     item = dict(raw) if isinstance(raw, Mapping) else {}
     mode = _text(item.get("mode")).lower()
     if mode not in {"local", "cross_border"}:
-        issues.append(_issue("missing_fulfillment_tax_evidence", record_id, "fulfillment.mode"))
+        is_ph_shipping_rule = _text(item.get("classification_rule")) == "tiktok_ph_merchant_shipping_fee_zero_local/v1"
+        issues.append(_issue(
+            "missing_fulfillment_shipping_evidence" if is_ph_shipping_rule else "missing_fulfillment_tax_evidence",
+            record_id,
+            "fulfillment.merchant_shipping_fee_local" if is_ph_shipping_rule else "fulfillment.mode",
+        ))
         mode = "unknown"
     return {
         "mode": mode,
         "classification_rule": _text(item.get("classification_rule")) or "tiktok_th_import_tax_charged/v1",
         "sst_local": _decimal(item.get("sst_local")),
+        "merchant_shipping_fee_local": _decimal(item.get("merchant_shipping_fee_local")),
         "import_vat_local": _decimal(item.get("import_vat_local")),
         "customs_duty_local": _decimal(
             item.get("customs_duty_local")

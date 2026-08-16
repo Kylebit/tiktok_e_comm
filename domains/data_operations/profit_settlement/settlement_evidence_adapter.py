@@ -460,6 +460,25 @@ def _tiktok_fulfillment(record, record_id, site, issues):
             "customs_duty_local": None,
             "evidence_source": "finance.statement_transactions.import_vat",
         }
+    if site == "PH":
+        merchant_shipping_fee = amounts.get("merchant_shipping_fee")
+        if merchant_shipping_fee is None:
+            issues.append(EvidenceQualityIssue(
+                "missing_fulfillment_shipping_evidence", record_id, "financial_components",
+                "TikTok Philippines fulfillment requires the merchant shipping fee settlement field",
+            ))
+            mode = "unknown"
+        else:
+            mode = "local" if merchant_shipping_fee == 0 else "cross_border"
+        return {
+            "mode": mode,
+            "classification_rule": "tiktok_ph_merchant_shipping_fee_zero_local/v1",
+            "merchant_shipping_fee_local": merchant_shipping_fee,
+            "sst_local": None,
+            "import_vat_local": None,
+            "customs_duty_local": None,
+            "evidence_source": "finance.statement_transactions.shipping_cost_amount",
+        }
     if site != "TH":
         issues.append(EvidenceQualityIssue(
             "unsupported_tiktok_site_fulfillment_rule", record_id, "site",

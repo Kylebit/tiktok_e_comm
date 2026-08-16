@@ -101,13 +101,7 @@ def main(argv=None) -> int:
     local_rate = fx.get(local_currency)
     if local_rate is None:
         raise RuntimeError(f"live FX snapshot has no {local_currency} rate")
-    finance_actual_ads = actual_advertising_from_finance(
-        evidence,
-        start=args.start,
-        end=args.end,
-        fx_rate_cny_per_local=local_rate,
-        fx_snapshot_id=fx.snapshot_id,
-    )
+    finance_actual_ads = None
     if args.actual_advertising_json is not None:
         campaign_snapshot = json.loads(
             args.actual_advertising_json.read_text(encoding="utf-8")
@@ -128,14 +122,31 @@ def main(argv=None) -> int:
             fx_rate_cny_per_source=campaign_rate,
             fx_snapshot_id=fx.snapshot_id,
         )
+        try:
+            finance_actual_ads = actual_advertising_from_finance(
+                evidence,
+                start=args.start,
+                end=args.end,
+                fx_rate_cny_per_local=local_rate,
+                fx_snapshot_id=fx.snapshot_id,
+            )
+        except ValueError:
+            finance_actual_ads = None
     else:
+        finance_actual_ads = actual_advertising_from_finance(
+            evidence,
+            start=args.start,
+            end=args.end,
+            fx_rate_cny_per_local=local_rate,
+            fx_snapshot_id=fx.snapshot_id,
+        )
         actual_ads = finance_actual_ads
     common = {
         "period_start": args.start,
         "period_end": args.end,
         "costs": costs,
         "fx": fx,
-        "local_fulfillment_fee_cny": args.local_fulfillment_fee_cny if site in {"TH", "MY", "VN"} else "0",
+        "local_fulfillment_fee_cny": args.local_fulfillment_fee_cny if site in {"TH", "MY", "PH", "VN"} else "0",
         "generated_at": datetime.now(timezone.utc),
     }
     if args.ad_rate is not None:
@@ -165,7 +176,7 @@ def main(argv=None) -> int:
             quality_issues=report.quality_issues + adapter_issues,
         )
     payload = report.payload()
-    if site not in {"TH", "MY", "VN"}:
+    if site not in {"TH", "MY", "PH", "VN"}:
         _apply_unsupported_site_fulfillment_gate(payload, site)
     payload["assumption_warnings"] = [
         {

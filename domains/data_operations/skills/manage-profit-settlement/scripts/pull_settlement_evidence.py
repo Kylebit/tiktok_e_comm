@@ -45,8 +45,9 @@ def _repo_root() -> Path:
 
 
 REPO_ROOT = _repo_root()
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+if str(REPO_ROOT) in sys.path:
+    sys.path.remove(str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -526,6 +527,7 @@ def _tiktok_import_tax_issues(orders, site="TH"):
     required_by_site = {
         "TH": {"import_vat", "customs_duty"},
         "MY": {"sst"},
+        "PH": {"merchant_shipping_fee"},
         "VN": {"import_vat"},
     }
     required = required_by_site.get(site)
@@ -544,10 +546,10 @@ def _tiktok_import_tax_issues(orders, site="TH"):
         if missing:
             order_id = str(order.get("order_id") or "")
             issues.append(_issue(
-                "missing_fulfillment_tax_evidence",
+                "missing_fulfillment_shipping_evidence" if site == "PH" else "missing_fulfillment_tax_evidence",
                 order_id,
                 "financial_components",
-                f"{order_id} is missing TikTok {site} fulfillment tax components: {', '.join(missing)}",
+                f"{order_id} is missing TikTok {site} fulfillment components: {', '.join(missing)}",
             ))
     return issues
 

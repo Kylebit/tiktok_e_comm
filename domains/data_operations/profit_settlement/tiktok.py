@@ -175,7 +175,7 @@ def build_monthly_report(
     else:rejected+=len(prepared)
     zero_settlement_order_count=_apply_zero_settlement_unshipped_policy(lines)
     charged_local_order_count=_apply_local_fulfillment_costs(lines,local_fulfillment,issues)
-    fulfillment_policy=_fulfillment_policy(local_fulfillment)
+    fulfillment_policy=_fulfillment_policy(local_fulfillment, _fulfillment_rule(lines))
     settlement_outcome_policy=_zero_settlement_policy()
     source_checksum=_checksum(sorted((_json_ready(row) for row in source_rows),key=_canonical));fingerprint=_checksum({"schema":SCHEMA_VERSION,"period_kind":"monthly","period":[start.isoformat(),end.isoformat()],"period_basis":period_basis,"source":source_checksum,"costs":costs.snapshot_id,"fx":fx.snapshot_id,"advertising":ad or {},"fulfillment_policy":fulfillment_policy,"settlement_outcome_policy":settlement_outcome_policy,"code_version":code_version})
     return TikTokProfitReport(report_id=f"tiktok-profit-{fingerprint[:16]}",idempotency_key=f"{SCHEMA_VERSION}:{fingerprint}",calculation_kind="realized_settlement_with_actual_ads",period_kind="monthly",period={"start":start.isoformat(),"end":end.isoformat(),"timezone":"source_local_date","basis":period_basis},status="ready" if not issues else "needs_review",totals=_totals(lines),order_lines=tuple(lines),quality_issues=tuple(issues),source={"input_checksum":source_checksum,"period_basis":period_basis,"raw_row_count":len(source_rows),"calculated_row_count":len(lines),"rejected_row_count":rejected,"out_of_period_row_count":out_of_period,"unsettled_row_count":unsettled,"zero_settlement_unshipped_order_count":zero_settlement_order_count,"local_fulfillment_charged_order_count":charged_local_order_count,"fulfillment_order_counts":_fulfillment_order_counts(lines),"fulfillment_policy":fulfillment_policy,"settlement_outcome_policy":settlement_outcome_policy,"cost_snapshot":costs.payload(),"fx_snapshot":fx.payload()},assumptions={**(ad or {}),"fulfillment_policy":fulfillment_policy,"settlement_outcome_policy":settlement_outcome_policy},generated_at=generated_at or datetime.now(timezone.utc),code_version=code_version)
@@ -326,7 +326,7 @@ def _build_report(
     charged_local_order_count = _apply_local_fulfillment_costs(calculated, local_fulfillment_fee_cny, issues)
     calculated.sort(key=_line_settlement_sort_key)
     totals = _totals(calculated)
-    fulfillment_policy = _fulfillment_policy(local_fulfillment_fee_cny)
+    fulfillment_policy = _fulfillment_policy(local_fulfillment_fee_cny, _fulfillment_rule(calculated))
     settlement_outcome_policy = _zero_settlement_policy()
     source_fingerprint = _checksum(sorted((_json_ready(row) for row in source_rows), key=_canonical))
     fingerprint = _checksum(
@@ -426,6 +426,7 @@ def _fulfillment(row: Mapping[str, object], record_id: str, issues: list[TikTokQ
     return {
         "mode": mode,
         "classification_rule": _text(item.get("classification_rule")) or "tiktok_th_import_tax_charged/v1",
+        "sst_local": _decimal(item.get("sst_local")),
         "import_vat_local": _decimal(item.get("import_vat_local")),
         "customs_duty_local": _decimal(
             item.get("customs_duty_local")
@@ -434,6 +435,7 @@ def _fulfillment(row: Mapping[str, object], record_id: str, issues: list[TikTokQ
         ),
         "local_fulfillment_cost_cny": Decimal("0"),
         "allocation_method": "not_applicable" if mode != "local" else "pending",
+        "evidence_source": _text(item.get("evidence_source")),
     }
 
 
@@ -461,7 +463,9 @@ def _apply_local_fulfillment_costs(
             fulfillment = line["fulfillment"]
             fulfillment["local_fulfillment_cost_cny"] = allocation
             fulfillment["allocation_method"] = "product_sales_cny_pro_rata_with_exact_remainder/v1"
-            fulfillment["order_cost_policy"] = _fulfillment_policy(fee_per_order)
+            fulfillment["order_cost_policy"] = _fulfillment_policy(
+                fee_per_order, _text(fulfillment.get("classification_rule"))
+            )
             line["external_costs_cny"] += allocation
             line["profit_cny"] -= allocation
     return len(groups)
@@ -533,12 +537,26 @@ def _allocate_order_cost(total: Decimal, lines: list[dict[str, Any]]) -> list[De
     return result
 
 
-def _fulfillment_policy(fee_per_order: Decimal) -> dict[str, Any]:
+def _fulfillment_policy(
+    fee_per_order: Decimal,
+    classification_rule: str = "tiktok_th_import_tax_charged/v1",
+) -> dict[str, Any]:
     return {
         "local_fulfillment_fee_cny_per_order": fee_per_order,
         "cost_components": ["local_fulfillment"],
-        "classification_rule": "tiktok_th_import_tax_charged/v1",
+        "classification_rule": classification_rule or "unknown",
     }
+
+
+def _fulfillment_rule(lines: list[Mapping[str, Any]]) -> str:
+    rules = sorted({
+        _text((line.get("fulfillment") or {}).get("classification_rule"))
+        for line in lines
+        if _text((line.get("fulfillment") or {}).get("classification_rule"))
+    })
+    if len(rules) == 1:
+        return rules[0]
+    return "mixed_or_missing_tiktok_fulfillment_rule/v1"
 
 
 def _zero_settlement_policy() -> dict[str, Any]:

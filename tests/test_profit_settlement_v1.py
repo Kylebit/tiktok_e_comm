@@ -636,6 +636,61 @@ def test_tiktok_th_missing_import_tax_evidence_needs_review():
     }
 
 
+@pytest.mark.parametrize(
+    ("site", "tax_amount", "expected_mode", "expected_rule"),
+    (
+        ("MY", "-6.20", "cross_border", "tiktok_my_sst_charged/v1"),
+        ("MY", "0", "local", "tiktok_my_sst_charged/v1"),
+        ("VN", "-9180", "cross_border", "tiktok_vn_import_vat_charged/v1"),
+        ("VN", "0", "local", "tiktok_vn_import_vat_charged/v1"),
+    ),
+)
+def test_tiktok_my_sst_and_vn_vat_are_site_specific_fulfillment_evidence(
+    site, tax_amount, expected_mode, expected_rule
+):
+    currency = "MYR" if site == "MY" else "VND"
+    evidence = {
+        "schema_version": "settlement-evidence/v1", "status": "ready",
+        "platform": "tiktok", "site": site,
+        "snapshot_id": f"tiktok-settlement:{site.lower()}-tax", "checksum": "tax",
+        "net_settlement_total_local": "100", "receipt": {"external_writes_performed": []},
+        "orders": [{
+            "order_id": f"{site}-1", "statement_id": "STATEMENT-1", "transaction_type": "Order",
+            "settlement_status": "settled", "settled_at": "2026-08-10T07:00:00+07:00",
+            "currency": currency, "net_settlement_amount": "100", "buyer_total_amount": "120",
+            "items": [{"platform_sku": "platform-1", "quantity": "1"}],
+            # TikTok Finance exposes the regional SST/VAT through import_vat_amount.
+            "financial_components": [
+                {"code": "import_vat", "amount": tax_amount, "currency": currency},
+                {"code": "customer_payment", "amount": "120", "currency": currency},
+                {"code": "subtotal_after_seller_discounts", "amount": "120", "currency": currency},
+            ],
+        }],
+    }
+
+    result = adapt_settlement_evidence(evidence, _catalog_stub(), period_kind="weekly")
+
+    assert result.rows
+    assert result.rows[0]["fulfillment"]["mode"] == expected_mode
+    assert result.rows[0]["fulfillment"]["classification_rule"] == expected_rule
+    if site == "MY":
+        assert result.rows[0]["fulfillment"]["sst_local"] == Decimal(tax_amount)
+    else:
+        assert result.rows[0]["fulfillment"]["import_vat_local"] == Decimal(tax_amount)
+
+    report = build_tiktok_weekly_report(
+        result.rows, period_start="2026-08-10", period_end="2026-08-10",
+        costs=CostSnapshot.from_mapping(
+            {"0001": {"unit_cost_cny": "10", "version": "fixture-v1"}},
+            snapshot_id="costs:regional-tax-fixture",
+        ), fx=FxSnapshot.from_mapping(
+            {currency: "1"}, source="fixture-fx", as_of="2026-08-10T00:00:00+00:00"
+        ), generated_at=NOW, code_version="test-v1",
+    )
+    assert report.order_lines
+    assert report.source["fulfillment_policy"]["classification_rule"] == expected_rule
+
+
 def test_stage_one_blocked_receipt_never_claims_reads_writes_or_refresh():
     module = _settlement_pull_module()
     payload = module.failure_payload(
@@ -1919,7 +1974,7 @@ def test_monthly_build_script_fails_closed_for_tiktok_site_without_fulfillment_c
         },
         "assumptions": {"fulfillment_policy": {"classification_rule": "tiktok_th_import_tax_charged/v1"}},
         "order_lines": [{
-            "identity": {"order_id": "MY-1", "region": "MY"},
+            "identity": {"order_id": "PH-1", "region": "PH"},
             "fulfillment": {
                 "mode": "local", "classification_rule": "tiktok_th_import_tax_charged/v1",
                 "local_fulfillment_cost_cny": "0", "allocation_method": "pending",
@@ -1927,7 +1982,7 @@ def test_monthly_build_script_fails_closed_for_tiktok_site_without_fulfillment_c
         }],
     }
 
-    module._apply_unsupported_site_fulfillment_gate(payload, "MY")
+    module._apply_unsupported_site_fulfillment_gate(payload, "PH")
 
     assert payload["status"] == "needs_review"
     assert payload["totals"]["local_fulfillment_cost_cny"] == "0"

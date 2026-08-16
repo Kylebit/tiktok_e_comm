@@ -103,7 +103,7 @@ def main(argv=None) -> int:
         "period_end": args.end,
         "costs": costs,
         "fx": fx,
-        "local_fulfillment_fee_cny": args.local_fulfillment_fee_cny if site == "TH" else "0",
+        "local_fulfillment_fee_cny": args.local_fulfillment_fee_cny if site in {"TH", "MY", "VN"} else "0",
         "generated_at": datetime.now(timezone.utc),
     }
     if args.ad_rate is not None:
@@ -133,7 +133,7 @@ def main(argv=None) -> int:
             quality_issues=report.quality_issues + adapter_issues,
         )
     payload = report.payload()
-    if site != "TH":
+    if site not in {"TH", "MY", "VN"}:
         _apply_unsupported_site_fulfillment_gate(payload, site)
     payload["assumption_warnings"] = [
         {

@@ -43,6 +43,7 @@ from domains.data_operations.profit_settlement.shopee import (
     build_weekly_report as build_shopee_weekly_report,
 )
 from domains.data_operations.profit_settlement.tiktok import (
+    build_monthly_estimated_report as build_tiktok_monthly_estimated_report,
     build_monthly_report as build_tiktok_monthly_report,
     build_weekly_report as build_tiktok_weekly_report,
 )
@@ -1720,6 +1721,49 @@ def test_tiktok_monthly_order_created_period_includes_later_settlement():
         "TK-JULY-CREATED"
     ]
     assert report.source["period_basis"] == "order_created_at"
+
+
+def test_tiktok_monthly_operator_override_uses_cash_paid_product_amount_at_22_percent():
+    included = {
+        **_row("TK-JULY-ESTIMATED", paid="100", settlement="80"),
+        "buyer_cash_paid_product_amount": "80",
+        "occurred_at": "2026-07-31T23:30:00+07:00",
+        "settled_at": "2026-08-10T07:00:00+07:00",
+    }
+    excluded = {
+        **_row("TK-AUGUST-CREATED", paid="200", settlement="160"),
+        "buyer_cash_paid_product_amount": "160",
+        "occurred_at": "2026-08-01T00:01:00+07:00",
+        "settled_at": "2026-08-10T07:00:00+07:00",
+    }
+
+    report = build_tiktok_monthly_estimated_report(
+        [excluded, included],
+        period_start="2026-07-01",
+        period_end="2026-07-31",
+        costs=_costs(),
+        fx=_fx(),
+        ad_rate="0.22",
+        generated_at=NOW,
+        code_version="test-v1",
+    )
+
+    assert report.status == "ready"
+    assert report.calculation_kind == "realized_settlement_with_estimated_ads"
+    assert report.period_kind == "monthly"
+    assert report.period["basis"] == "order_created_at"
+    assert report.source["out_of_period_row_count"] == 1
+    assert [line["identity"]["order_id"] for line in report.order_lines] == [
+        "TK-JULY-ESTIMATED"
+    ]
+    advertising = report.order_lines[0]["advertising"]
+    assert advertising["basis"] == "buyer_cash_paid_product_amount"
+    assert advertising["basis_amount_local"] == Decimal("80")
+    assert advertising["rate"] == Decimal("0.22")
+    assert advertising["amount_local"] == Decimal("17.60")
+    assert advertising["amount_cny"] == Decimal("3.520")
+    assert advertising["input_source"] == "operator_monthly_override"
+    assert audit_profit_report(report.payload()).status == "PASSED"
 
 
 def test_tiktok_monthly_adapter_excludes_actual_ads_and_attaches_related_adjustment():

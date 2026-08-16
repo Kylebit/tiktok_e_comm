@@ -85,10 +85,45 @@ def build_weekly_report(
         period_start=period_start,
         period_end=period_end,
         period_kind="weekly",
+        period_basis="settled_at",
         costs=costs,
         fx=fx,
         ad_rate=rate,
         ad_rate_source=_text(ad_rate_source) or ("default_22" if rate == Decimal("0.22") else "operator_global_override"),
+        local_fulfillment_fee_cny=local_fulfillment,
+        generated_at=generated_at,
+        code_version=code_version,
+    )
+
+
+def build_monthly_estimated_report(
+    rows: Iterable[Mapping[str, object]],
+    *,
+    period_start: date | str,
+    period_end: date | str,
+    costs: CostSnapshot,
+    fx: FxSnapshot,
+    ad_rate: Decimal | str = Decimal("0.22"),
+    ad_rate_source: str | None = None,
+    local_fulfillment_fee_cny: Decimal | str = Decimal("4"),
+    generated_at: datetime | None = None,
+    code_version: str = "unknown",
+) -> TikTokProfitReport:
+    """Build an explicit operator-approved monthly estimate by order-created date."""
+    rate = _decimal(ad_rate)
+    if rate is None or rate < 0 or rate > 1:
+        raise ValueError("ad_rate must be a decimal fraction between 0 and 1")
+    local_fulfillment = _nonnegative_money(local_fulfillment_fee_cny, "local_fulfillment_fee_cny")
+    return _build_report(
+        rows,
+        period_start=period_start,
+        period_end=period_end,
+        period_kind="monthly",
+        period_basis="order_created_at",
+        costs=costs,
+        fx=fx,
+        ad_rate=rate,
+        ad_rate_source=_text(ad_rate_source) or "operator_monthly_override",
         local_fulfillment_fee_cny=local_fulfillment,
         generated_at=generated_at,
         code_version=code_version,
@@ -152,6 +187,7 @@ def _build_report(
     period_start: date | str,
     period_end: date | str,
     period_kind: str,
+    period_basis: str,
     costs: CostSnapshot,
     fx: FxSnapshot,
     ad_rate: Decimal,
@@ -176,7 +212,12 @@ def _build_report(
             issues.append(_issue("missing_settled_at", record_id, "settled_at"))
             rejected += 1
             continue
-        if settled_at.date() < start or settled_at.date() > end:
+        period_at = settled_at if period_basis == "settled_at" else _datetime(row.get("occurred_at"))
+        if period_at is None:
+            issues.append(_issue("missing_order_created_at", record_id, "occurred_at"))
+            rejected += 1
+            continue
+        if period_at.date() < start or period_at.date() > end:
             out_of_period += 1
             continue
         sku = _text(row.get("canonical_sku"))
@@ -292,6 +333,7 @@ def _build_report(
         {
             "schema": SCHEMA_VERSION,
             "period": [start.isoformat(), end.isoformat()],
+            "period_basis": period_basis,
             "source": source_fingerprint,
             "costs": costs.snapshot_id,
             "fx": fx.snapshot_id,
@@ -308,13 +350,14 @@ def _build_report(
         idempotency_key=f"{SCHEMA_VERSION}:{fingerprint}",
         calculation_kind="realized_settlement_with_estimated_ads",
         period_kind=period_kind,
-        period={"start": start.isoformat(), "end": end.isoformat(), "timezone": "source_local_date"},
+        period={"start": start.isoformat(), "end": end.isoformat(), "timezone": "source_local_date", "basis": period_basis},
         status="ready" if not issues else "needs_review",
         totals=totals,
         order_lines=tuple(calculated),
         quality_issues=tuple(issues),
         source={
             "input_checksum": source_fingerprint,
+            "period_basis": period_basis,
             "raw_row_count": len(source_rows),
             "calculated_row_count": len(calculated),
             "rejected_row_count": rejected,

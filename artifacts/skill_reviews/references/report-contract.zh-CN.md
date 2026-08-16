@@ -1,6 +1,6 @@
 # 利润报表合同（中文审阅镜像）
 
-TikTok 下单月份月报按官方 `order_created_at` 筛选，但每个纳入订单仍必须有截至声明日期的 Finance 结算证据。默认使用自然月内 `GMV Payment for TikTok Ads` 的实际扣款；操作员明确指定月度估算比例时，逐订单按买家现金实付商品金额计算，报表标为估算广告，实际 Finance 广告只作参考且不参与利润。带 `related_order_id` 的非订单调整先回挂原订单再计算利润。
+TikTok 下单月份月报按官方 `order_created_at` 筛选，但每个纳入订单仍必须有截至声明日期的 Finance 结算证据。广告账户导出应转换成带源文件 SHA-256、站点/周期身份、原币金额、截至时间和 FX 血缘的脱敏快照并优先作为真实广告；自然月内 `GMV Payment for TikTok Ads` 的 Finance 扣款保留为独立对账参考。操作员明确指定月度估算比例时，逐订单按买家现金实付商品金额计算，报表标为估算广告。带 `related_order_id` 的非订单调整先回挂原订单再计算利润。
 
 客户拒收只有在官方原因/状态或操作员确认事实存在时才能应用退货成本规则：本土退货可再售，商品损耗成本为 0；跨境退货销毁，保留全部商品成本。退款、运费、广告和履约支出仍按实际证据保留，负结算结构本身不能作为拒收证明。
 
@@ -51,7 +51,7 @@ Shopee 必须按官方进口税费判断发货方式：`vat_on_imported_goods` �
 
 TikTok 下单月份报表必须把配套订单覆盖审计作为完整性门槛。存在任何未取得 Finance 结算的非取消订单时，必须报告 `unsettled_non_cancelled_orders`、将报表设为 `needs_review`，并禁止批准；已结算订单的金额只作为诊断子集。取消且无 Finance 证据的订单是审计排除项，不是未结算阻断。覆盖快照身份、状态、计数和截至时间必须进入幂等指纹。
 
-TikTok 履约规则必须按站点隔离。MY 的 SST 非 0 为跨境、精确为 0 为本土；区域 Finance API 当前通过 `import_vat_amount` 暴露该值，必须保留 SST 别名与来源。VN 的增值税/`import_vat_amount` 非 0 为跨境、精确为 0 为本土。缺字段必须阻断。PH 或其他未批准规则的站点统一为 `unknown`、本土履约成本为 0，并报告 `unsupported_tiktok_site_fulfillment_rule`。
+TikTok 履约规则必须按站点隔离。MY 的 `fee_tax_breakdown.tax.sst_amount` 非 0 为跨境、精确为 0 为本土；不得用 `import_vat_amount` 代替，缺 SST 必须阻断。VN 的增值税/`import_vat_amount` 非 0 为跨境、精确为 0 为本土。缺字段必须阻断。PH 或其他未批准规则的站点统一为 `unknown`、本土履约成本为 0，并报告 `unsupported_tiktok_site_fulfillment_rule`。
 
 结算对账必须保留精确本币差额。绝对值不超过 `1e-12` 视为 Decimal 分摊尾差；超过该值则产生 `settlement_reconciliation_mismatch`。
 

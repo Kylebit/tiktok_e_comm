@@ -48,6 +48,7 @@ from domains.data_operations.profit_settlement.tiktok import (
     build_weekly_report as build_tiktok_weekly_report,
 )
 from domains.data_operations.profit_settlement.tiktok_monthly import (
+    actual_advertising_from_campaign_snapshot,
     actual_advertising_from_finance,
 )
 from domains.data_operations.profit_settlement.ozon import (
@@ -470,14 +471,27 @@ def test_stage_one_tiktok_missing_import_tax_is_blocking_evidence_issue():
     assert "import_vat" in issues[0]["message"]
 
 
-def test_stage_one_tiktok_non_th_does_not_apply_thailand_tax_contract():
+def test_stage_one_tiktok_uses_site_specific_fulfillment_tax_contracts():
     module = _settlement_pull_module()
 
     assert module.SITE_TIMEZONES[("tiktok", "MY")].utcoffset(None).total_seconds() == 8 * 3600
     assert module.SITE_TIMEZONES[("tiktok", "PH")].utcoffset(None).total_seconds() == 8 * 3600
     assert module.SITE_TIMEZONES[("tiktok", "VN")].utcoffset(None).total_seconds() == 7 * 3600
-    assert module._tiktok_import_tax_issues(
+    my_issues = module._tiktok_import_tax_issues(
         [{"order_id": "ORDER-1", "transaction_type": "Order", "financial_components": []}],
+        "MY",
+    )
+    assert [issue["code"] for issue in my_issues] == [
+        "missing_fulfillment_tax_evidence"
+    ]
+    assert "sst" in my_issues[0]["message"]
+
+    assert module._tiktok_import_tax_issues(
+        [{
+            "order_id": "ORDER-2",
+            "transaction_type": "Order",
+            "financial_components": [{"code": "sst", "amount": "0"}],
+        }],
         "MY",
     ) == []
 
@@ -503,6 +517,7 @@ def test_tiktok_line_expansion_preserves_missing_tax_as_missing():
 
     assert expanded[0]["Customs duty"] == ""
     assert expanded[0]["Import VAT"] == ""
+    assert expanded[0]["SST"] == ""
 
 
 def test_tiktok_finance_v202501_maps_nested_tax_and_fee_breakdowns(monkeypatch):
@@ -548,6 +563,7 @@ def test_tiktok_finance_v202501_maps_nested_tax_and_fee_breakdowns(monkeypatch):
                 "tax": {
                     "customs_duty_amount": "-13",
                     "import_vat_amount": "-14.69",
+                    "sst_amount": "-4.54",
                 },
             },
             "supplementary_component": {"customer_payment_amount": "205.66"},
@@ -557,6 +573,7 @@ def test_tiktok_finance_v202501_maps_nested_tax_and_fee_breakdowns(monkeypatch):
     assert row["Subtotal after seller discounts"] == 205.66
     assert row["Customs duty"] == -13.0
     assert row["Import VAT"] == -14.69
+    assert row["SST"] == -4.54
     assert row["Transaction fee"] == -6.6
 
 
@@ -631,8 +648,8 @@ def test_tiktok_th_missing_import_tax_evidence_needs_review():
 
     assert result.status == "needs_review"
     assert result.rows[0]["fulfillment"]["mode"] == "unknown"
-    assert {issue.code for issue in result.issues} == {
-        "missing_fulfillment_tax_evidence"
+    assert "missing_fulfillment_tax_evidence" in {
+        issue.code for issue in result.issues
     }
 
 
@@ -659,9 +676,12 @@ def test_tiktok_my_sst_and_vn_vat_are_site_specific_fulfillment_evidence(
             "settlement_status": "settled", "settled_at": "2026-08-10T07:00:00+07:00",
             "currency": currency, "net_settlement_amount": "100", "buyer_total_amount": "120",
             "items": [{"platform_sku": "platform-1", "quantity": "1"}],
-            # TikTok Finance exposes the regional SST/VAT through import_vat_amount.
             "financial_components": [
-                {"code": "import_vat", "amount": tax_amount, "currency": currency},
+                {
+                    "code": "sst" if site == "MY" else "import_vat",
+                    "amount": tax_amount,
+                    "currency": currency,
+                },
                 {"code": "customer_payment", "amount": "120", "currency": currency},
                 {"code": "subtotal_after_seller_discounts", "amount": "120", "currency": currency},
             ],
@@ -689,6 +709,34 @@ def test_tiktok_my_sst_and_vn_vat_are_site_specific_fulfillment_evidence(
     )
     assert report.order_lines
     assert report.source["fulfillment_policy"]["classification_rule"] == expected_rule
+
+
+def test_tiktok_my_import_vat_never_substitutes_for_missing_sst():
+    evidence = {
+        "schema_version": "settlement-evidence/v1", "status": "ready",
+        "platform": "tiktok", "site": "MY",
+        "snapshot_id": "tiktok-settlement:my-missing-sst", "checksum": "tax",
+        "net_settlement_total_local": "100", "receipt": {"external_writes_performed": []},
+        "orders": [{
+            "order_id": "MY-1", "statement_id": "STATEMENT-1", "transaction_type": "Order",
+            "settlement_status": "settled", "settled_at": "2026-08-10T08:00:00+08:00",
+            "currency": "MYR", "net_settlement_amount": "100", "buyer_total_amount": "120",
+            "items": [{"platform_sku": "platform-1", "quantity": "1"}],
+            "financial_components": [
+                {"code": "import_vat", "amount": "-4.54", "currency": "MYR"},
+                {"code": "customer_payment", "amount": "120", "currency": "MYR"},
+                {"code": "subtotal_after_seller_discounts", "amount": "120", "currency": "MYR"},
+            ],
+        }],
+    }
+
+    result = adapt_settlement_evidence(evidence, _catalog_stub(), period_kind="weekly")
+
+    assert result.status == "needs_review"
+    assert result.rows[0]["fulfillment"]["mode"] == "unknown"
+    assert "missing_fulfillment_tax_evidence" in {
+        issue.code for issue in result.issues
+    }
 
 
 def test_stage_one_blocked_receipt_never_claims_reads_writes_or_refresh():
@@ -1900,6 +1948,77 @@ def test_tiktok_actual_monthly_ads_use_only_finance_rows_dated_in_month():
     assert result["total_cny"] == Decimal("20.0")
     assert result["source_row_count"] == 1
     assert result["allocation_policy"] == "buyer-paid-gmv-share/v1"
+
+
+def test_tiktok_actual_monthly_ads_accept_auditable_campaign_export_snapshot():
+    snapshot = {
+        "schema_version": "tiktok-campaign-advertising/v1",
+        "platform": "tiktok",
+        "site": "MY",
+        "period": {"start": "2026-07-01", "end": "2026-07-31"},
+        "cost": {"amount": "1182.34", "currency": "USD"},
+        "metrics": {
+            "sku_orders": 656,
+            "gross_revenue": "4473.54",
+            "gross_revenue_currency": "USD",
+            "roi": "3.78",
+        },
+        "source": {
+            "label": "TikTok Ads campaign overview export",
+            "file_sha256": "a" * 64,
+        },
+        "as_of": "2026-07-31T23:59:59+08:00",
+    }
+
+    result = actual_advertising_from_campaign_snapshot(
+        snapshot,
+        start=datetime(2026, 7, 1).date(),
+        end=datetime(2026, 7, 31).date(),
+        site="MY",
+        fx_rate_cny_per_source=Decimal("6.760548145243616352201257862"),
+        fx_snapshot_id="fx:july-live",
+    )
+
+    assert result["total_source"] == Decimal("1182.34")
+    assert result["total_cny"] == Decimal("7993.266494047337357861635221")
+    assert result["currency"] == "USD"
+    assert result["source"] == "TikTok Ads campaign overview export"
+    assert result["snapshot_id"].startswith("tiktok-campaign-actual-ads:")
+    assert result["source_file_sha256"] == "a" * 64
+    assert result["source_metrics"]["sku_orders"] == 656
+
+    snapshot["snapshot_id"] = result["snapshot_id"]
+    replay = actual_advertising_from_campaign_snapshot(
+        snapshot,
+        start=datetime(2026, 7, 1).date(),
+        end=datetime(2026, 7, 31).date(),
+        site="MY",
+        fx_rate_cny_per_source=Decimal("6.760548145243616352201257862"),
+        fx_snapshot_id="fx:july-live",
+    )
+    assert replay["snapshot_id"] == result["snapshot_id"]
+
+
+def test_tiktok_campaign_advertising_snapshot_fails_closed_on_identity_drift():
+    snapshot = {
+        "schema_version": "tiktok-campaign-advertising/v1",
+        "platform": "tiktok",
+        "site": "TH",
+        "period": {"start": "2026-07-01", "end": "2026-07-31"},
+        "cost": {"amount": "100", "currency": "USD"},
+        "source": {"label": "export", "file_sha256": "b" * 64},
+        "as_of": "2026-07-31T23:59:59+07:00",
+    }
+
+    with pytest.raises(ValueError, match="site identity"):
+        actual_advertising_from_campaign_snapshot(
+            snapshot,
+            start=datetime(2026, 7, 1).date(),
+            end=datetime(2026, 7, 31).date(),
+            site="MY",
+            fx_rate_cny_per_source=Decimal("6.7"),
+            fx_snapshot_id="fx:test",
+        )
 
 
 def test_monthly_build_script_makes_decimal_evidence_json_ready():

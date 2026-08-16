@@ -522,9 +522,15 @@ def _aggregate_tiktok_records(rows):
 
 def _tiktok_import_tax_issues(orders, site="TH"):
     issues = []
-    if str(site).upper() != "TH":
+    site = str(site).upper()
+    required_by_site = {
+        "TH": {"import_vat", "customs_duty"},
+        "MY": {"sst"},
+        "VN": {"import_vat"},
+    }
+    required = required_by_site.get(site)
+    if required is None:
         return issues
-    required = {"import_vat", "customs_duty"}
     for order in orders:
         if order.get("transaction_type") != "Order":
             continue
@@ -541,7 +547,7 @@ def _tiktok_import_tax_issues(orders, site="TH"):
                 "missing_fulfillment_tax_evidence",
                 order_id,
                 "financial_components",
-                f"{order_id} is missing TikTok Thailand tax components: {', '.join(missing)}",
+                f"{order_id} is missing TikTok {site} fulfillment tax components: {', '.join(missing)}",
             ))
     return issues
 

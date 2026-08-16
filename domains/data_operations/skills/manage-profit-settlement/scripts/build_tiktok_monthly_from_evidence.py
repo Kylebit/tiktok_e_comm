@@ -39,7 +39,10 @@ from domains.data_operations.profit_settlement.tiktok import (
     build_monthly_estimated_report,
     build_monthly_report,
 )
-from domains.data_operations.profit_settlement.tiktok_monthly import actual_advertising_from_finance
+from domains.data_operations.profit_settlement.tiktok_monthly import (
+    actual_advertising_from_campaign_snapshot,
+    actual_advertising_from_finance,
+)
 
 
 def main(argv=None) -> int:
@@ -56,7 +59,14 @@ def main(argv=None) -> int:
         "--ad-rate",
         help="explicit monthly estimated advertising fraction; when present, actual Finance ads are retained as reference only",
     )
+    parser.add_argument(
+        "--actual-advertising-json",
+        type=Path,
+        help="redacted tiktok-campaign-advertising/v1 export snapshot used as actual monthly advertising spend",
+    )
     args = parser.parse_args(argv)
+    if args.ad_rate is not None and args.actual_advertising_json is not None:
+        raise RuntimeError("--ad-rate and --actual-advertising-json are mutually exclusive")
 
     evidence = json.loads(args.evidence.read_text(encoding="utf-8"))
     coverage = json.loads(args.coverage.read_text(encoding="utf-8"))
@@ -91,13 +101,35 @@ def main(argv=None) -> int:
     local_rate = fx.get(local_currency)
     if local_rate is None:
         raise RuntimeError(f"live FX snapshot has no {local_currency} rate")
-    actual_ads = actual_advertising_from_finance(
+    finance_actual_ads = actual_advertising_from_finance(
         evidence,
         start=args.start,
         end=args.end,
         fx_rate_cny_per_local=local_rate,
         fx_snapshot_id=fx.snapshot_id,
     )
+    if args.actual_advertising_json is not None:
+        campaign_snapshot = json.loads(
+            args.actual_advertising_json.read_text(encoding="utf-8")
+        )
+        campaign_currency = str(
+            (campaign_snapshot.get("cost") or {}).get("currency") or ""
+        ).upper()
+        campaign_rate = fx.get(campaign_currency)
+        if campaign_rate is None:
+            raise RuntimeError(
+                f"live FX snapshot has no campaign advertising currency {campaign_currency}"
+            )
+        actual_ads = actual_advertising_from_campaign_snapshot(
+            campaign_snapshot,
+            start=args.start,
+            end=args.end,
+            site=site,
+            fx_rate_cny_per_source=campaign_rate,
+            fx_snapshot_id=fx.snapshot_id,
+        )
+    else:
+        actual_ads = finance_actual_ads
     common = {
         "period_start": args.start,
         "period_end": args.end,
@@ -148,6 +180,9 @@ def main(argv=None) -> int:
     payload["source"]["settlement_evidence_snapshot_id"] = evidence.get("snapshot_id")
     _apply_coverage_gate(payload, coverage)
     payload["source"]["actual_advertising"] = _json_ready(actual_ads)
+    payload["source"]["finance_actual_advertising_reference"] = _json_ready(
+        finance_actual_ads
+    )
     payload["source"]["actual_advertising_usage"] = (
         "reference_only_not_used_in_profit"
         if args.ad_rate is not None
@@ -159,6 +194,10 @@ def main(argv=None) -> int:
         "shop.db via SQLite mode=ro",
         live_fx["provider"],
     ]
+    if args.actual_advertising_json is not None:
+        payload["source"]["external_reads"].append(
+            "tiktok-campaign-advertising/v1 JSON artifact"
+        )
     payload["source"]["external_writes_performed"] = []
     first_audit = audit_profit_report(payload).payload()
     second_audit = audit_profit_report(payload).payload()
@@ -180,6 +219,7 @@ def main(argv=None) -> int:
         "quality_issue_counts": dict(sorted(Counter(item["code"] for item in payload["quality_issues"]).items())),
         "assumption_warning_counts": dict(sorted(Counter(item["code"] for item in payload["assumption_warnings"]).items())),
         "actual_advertising": actual_ads,
+        "finance_actual_advertising_reference": finance_actual_ads,
         "audit_passes": [item["status"] for item in payload["audit_passes"]],
         "external_writes_performed": [],
     }, ensure_ascii=False, indent=2, default=str))

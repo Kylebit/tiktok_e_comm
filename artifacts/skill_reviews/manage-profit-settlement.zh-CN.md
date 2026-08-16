@@ -13,6 +13,8 @@ TikTok 下单月份月报运行 `scripts/build_tiktok_monthly_from_evidence.py`�
 
 > 英文 [`SKILL.md`](../../domains/data_operations/skills/manage-profit-settlement/SKILL.md) 是唯一执行版本；本文件只供人工阅读，每轮随英文版更新。
 
+订单日期筛选启用后，表格底部必须显示“筛选合计”，并只汇总当前可见订单行的净结算、商品成本、广告费、本土履约费、利润、买家金额、AMS、额外成本和各平台费用。清除筛选后恢复整期合计；此交互不得修改 JSON 审计总额。
+
 TikTok、Shopee、Ozon 三条链路必须相互独立，不能用一个平台的数据补另一个平台。三者只共享带版本的商品成本快照和同一次运行的不可变汇率快照。
 
 ## 第一阶段：官方结算证据

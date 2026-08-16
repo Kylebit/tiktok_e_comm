@@ -1248,6 +1248,10 @@ def test_shopee_weekly_ad_basis_uses_buyer_cash_product_payment():
     assert line["advertising"]["basis"] == "buyer_cash_paid_product_amount"
     assert line["advertising"]["basis_amount_local"] == "80"
     assert line["advertising"]["amount_local"] == "17.60"
+    html = render_profit_report_html(report)
+    assert "总成交额（用户实付）CNY</span><strong>16.00" in html
+    assert "整体利润率（利润/用户实付）</span><strong>-34.50%" in html
+    assert "<td class=\"num\">-34.50%</td>" in html
 
 
 def test_tiktok_weekly_ad_basis_excludes_shipping_and_platform_discount():
@@ -1996,8 +2000,10 @@ def test_knowledge_base_rejects_secret_or_raw_response_fields(tmp_path):
 
 
 def test_detailed_html_renders_main_image_weight_cost_ads_fees_profit_and_live_fx_lineage():
+    row = _row("TK-HTML")
+    row["buyer_cash_paid_product_amount"] = "200"
     report = build_tiktok_weekly_report(
-        [_row("TK-HTML")], period_start="2026-08-03", period_end="2026-08-09",
+        [row], period_start="2026-08-03", period_end="2026-08-09",
         costs=_costs(), fx=_fx(), ad_rate="0.20", generated_at=NOW, code_version="test-v1",
     ).payload()
     html = render_profit_report_html(report)
@@ -2023,9 +2029,14 @@ def test_detailed_html_renders_main_image_weight_cost_ads_fees_profit_and_live_f
         "uniqueOrders.size", "orderIds.size", "筛选只改变页面显示和底部筛选合计",
         'data-sum-values="', 'data-total-key="settlement_cny"',
         'data-total-key="advertising_cny"', 'data-total-key="profit_cny"',
+        'data-total-key="profit_margin"', 'data-total-format="margin"',
+        '&quot;buyer_cash_cny&quot;:{&quot;value&quot;:',
         'data-role="visible-total-label"', "updateVisibleTotals",
         "wholePeriodTotals", "filterActive", "筛选合计",
         "发货方式", "本土履约费(CNY)", "联盟营销佣金(AMS)",
+        "总成交额（用户实付）CNY", "整体利润率（利润/用户实付）",
+        "利润率(利润/用户实付)", "-22.50%", "外部成本合计(CNY)",
+        "平台已在净结算中扣除的费用不会重复扣除",
     ):
         assert expected in html
     assert '&quot;advertising_cny&quot;:{&quot;value&quot;:&quot;8.0000&quot;}' in html
@@ -2035,8 +2046,29 @@ def test_detailed_html_renders_main_image_weight_cost_ads_fees_profit_and_live_f
     assert "th-main / TH" not in html
     assert "平台 SKU" not in html
     assert "<th>币种</th>" not in html
-    assert html.index("<th>Seller SKU</th>") < html.index("<th>净结算(CNY)</th>") < html.index("<th>商品总成本(CNY)</th>") < html.index("<th>广告费(CNY)</th>") < html.index("<th>本土履约费(CNY)</th>") < html.index("<th>利润(CNY)</th>") < html.index("<th>利润率</th>")
+    assert html.index("<th>Seller SKU</th>") < html.index("<th>净结算(CNY)</th>") < html.index("<th>商品总成本(CNY)</th>") < html.index("<th>广告费(CNY)</th>") < html.index("<th>本土履约费(CNY)</th>") < html.index("<th>利润(CNY)</th>") < html.index("<th>利润率(利润/用户实付)</th>")
     assert html.index("<th>成本/FX/结算证据</th>") < html.index("<th>商品名称</th>")
+
+
+def test_html_explains_external_cost_when_it_is_only_local_fulfillment():
+    row = _row("TK-LOCAL-EXTERNAL", paid="100", settlement="100")
+    row["fee_items"] = []
+    row["fulfillment"] = {
+        "mode": "local",
+        "classification_rule": "tiktok_th_import_tax_charged/v1",
+        "import_vat_local": "0",
+        "customs_duty_local": "0",
+    }
+    report = build_tiktok_weekly_report(
+        [row], period_start="2026-08-03", period_end="2026-08-09",
+        costs=_costs(), fx=_fx(), generated_at=NOW, code_version="test-v1",
+    ).payload()
+
+    html = render_profit_report_html(report)
+
+    assert "本土履约费 CNY" in html
+    assert "本报表外部成本全部为本土履约费：1 个本土父订单 × CNY 4.00 = CNY 4.00" in html
+    assert "平台佣金、交易费、税费等已包含在净结算中，不在此重复扣除" in html
 
 
 def test_shopee_html_moves_ams_commission_into_former_currency_column_without_duplicate():

@@ -17,16 +17,44 @@ AMS_COMMISSION_FEE_CODE = "order_ams_commission_fee"
 def render_profit_report_html(report: Mapping[str, Any]) -> str:
     platform = _text(report.get("platform")).upper()
     period = _map(report.get("period")); totals = _map(report.get("totals"))
+    source = _map(report.get("source"))
     issues = _list(report.get("quality_issues")); warnings = _list(report.get("assumption_warnings"))
     lines = [line for line in _list(report.get("order_lines")) if isinstance(line, Mapping)]
     fee_columns = _fee_columns(lines)
     warning_by_sku = {str(item.get("canonical_sku") or ""): item for item in warnings if isinstance(item, Mapping)}
-    cards = "".join(_card(label, totals.get(field)) for field, label in (
+    buyer_cash_cny = sum((_buyer_cash_cny(line) for line in lines), Decimal("0"))
+    local_fulfillment_cny = _decimal(totals.get("local_fulfillment_cost_cny")) or Decimal("0")
+    external_costs_cny = _decimal(totals.get("external_costs_cny")) or Decimal("0")
+    external_cost_label = (
+        "本土履约费 CNY"
+        if external_costs_cny == local_fulfillment_cny
+        else "本土履约及其他外部成本 CNY"
+    )
+    cards = _card("总成交额（用户实付）CNY", buyer_cash_cny)
+    cards += "".join(_card(label, totals.get(field)) for field, label in (
         ("settlement_cny", "净结算 CNY"), ("product_cost_cny", "商品成本 CNY"),
-        ("advertising_cny", "广告成本 CNY"), ("external_costs_cny", "额外成本 CNY"),
+        ("advertising_cny", "广告成本 CNY"), ("external_costs_cny", external_cost_label),
         ("profit_cny", "利润 CNY"),
     ))
-    affiliate = _map(_map(report.get("source")).get("affiliate_marketing"))
+    cards += _text_card(
+        "整体利润率（利润/用户实付）",
+        escape(_profit_margin(totals.get("profit_cny"), buyer_cash_cny)),
+    )
+    fulfillment_charged_orders = int(_decimal(source.get("local_fulfillment_charged_order_count")) or Decimal("0"))
+    if external_costs_cny == local_fulfillment_cny and fulfillment_charged_orders:
+        per_order_fulfillment = local_fulfillment_cny / Decimal(fulfillment_charged_orders)
+        external_cost_note = (
+            f"本报表外部成本全部为本土履约费：{fulfillment_charged_orders} 个本土父订单 × "
+            f"CNY {_money(per_order_fulfillment)} = CNY {_money(local_fulfillment_cny)}。"
+            "平台佣金、交易费、税费等已包含在净结算中，不在此重复扣除。"
+        )
+    else:
+        other_external = external_costs_cny - local_fulfillment_cny
+        external_cost_note = (
+            f"外部成本包括本土履约费 CNY {_money(local_fulfillment_cny)} 和其他未包含在净结算中的成本 "
+            f"CNY {_money(other_external)}；平台已在净结算中扣除的费用不会重复扣除。"
+        )
+    affiliate = _map(source.get("affiliate_marketing"))
     if platform == "SHOPEE" and affiliate:
         cards += _text_card(
             "联盟营销订单占比",
@@ -55,7 +83,7 @@ def render_profit_report_html(report: Mapping[str, Any]) -> str:
 body{{font:13px/1.45 system-ui,sans-serif;margin:0;background:#f5f7f8;color:#172126}}main{{margin:auto;padding:20px}}h1{{margin:4px 0}}.meta{{color:#64748b}}.cards{{display:grid;grid-template-columns:repeat(5,minmax(150px,1fr));gap:10px;margin:16px 0}}.card,section{{background:#fff;border:1px solid #dfe6e9;border-radius:10px;padding:12px}}.card strong{{display:block;font-size:19px;margin-top:4px}}.status,.warning{{display:inline-block;padding:3px 8px;border-radius:999px;background:#fff3cd}}.warning{{background:#ffe4b5;color:#7c4700;font-size:11px}}.order-filter{{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:10px 0;padding:10px 12px;background:#fff;border:1px solid #dfe6e9;border-radius:10px}}.order-filter label{{display:flex;align-items:center;gap:6px}}.order-filter input,.order-filter button{{font:inherit;padding:5px 8px;border:1px solid #b8c4ca;border-radius:6px;background:#fff}}.order-filter button{{cursor:pointer}}.filter-summary{{font-weight:700}}.daily-order-counts{{display:flex;flex-wrap:wrap;gap:6px;width:100%}}.daily-order-count{{padding:3px 7px;border-radius:999px;background:#e8f4ff;color:#164e78;font-variant-numeric:tabular-nums}}.table-scroll-top{{overflow-x:auto;overflow-y:hidden;height:16px;margin-bottom:4px;background:#eef3f4;border:1px solid #dfe6e9;border-radius:7px}}.table-scroll-top>div{{height:1px}}.table{{overflow:auto;max-height:72vh;background:#fff;border:1px solid #dfe6e9;border-radius:10px}}table{{border-collapse:collapse;min-width:max-content;width:100%}}th,td{{padding:7px 9px;border-bottom:1px solid #edf1f2;text-align:left;vertical-align:top;white-space:nowrap}}th{{position:sticky;top:0;z-index:3;background:#eef3f4}}.sort-button{{border:0;padding:0;background:transparent;color:inherit;font:inherit;font-weight:700;cursor:pointer;white-space:nowrap}}.sort-button:focus-visible{{outline:2px solid #2563eb;outline-offset:3px;border-radius:2px}}tfoot td{{position:sticky;bottom:0;background:#e8f4ff;font-weight:700;border-top:2px solid #4b9bd8}}td.num{{text-align:right;font-variant-numeric:tabular-nums}}td.product{{white-space:normal;min-width:220px;max-width:300px}}tr.assumption{{background:#fffaf0}}tr.local-fulfillment{{background:#effaf1}}tr.negative{{background:#fff5f5}}img{{width:48px;height:48px;object-fit:cover;border-radius:7px;background:#eee}}code{{font-size:11px}}ul{{margin:6px 0;padding-left:20px}}@media(max-width:800px){{.cards{{grid-template-columns:1fr 1fr}}main{{padding:10px}}}}
 </style></head><body><main>
 <header><span class="status">{escape(_text(report.get('status')))}</span><h1>{escape(platform)} {escape(_text(report.get('period_kind')))} 订单级利润明细</h1><p class="meta">{escape(_text(period.get('start')))} 至 {escape(_text(period.get('end')))} · {escape(_text(report.get('calculation_kind')))} · {len(lines)} 个已结算订单行 · 页面金额统一显示两位小数，JSON 保留原始 Decimal 精度</p></header>
-<div class="cards">{cards}</div>
+<div class="cards">{cards}</div><p class="meta">{escape(external_cost_note)}</p>
 <section><h2>阻断性质量问题</h2><ul>{issue_html}</ul><h2>临时假设警告</h2><ul>{warning_html}</ul><p class="meta">report_id={escape(_text(report.get('report_id')))} · idempotency_key={escape(_text(report.get('idempotency_key')))}</p></section>
 <h2>订单明细（每项费用独立成列）</h2>
 <div class="order-filter" data-role="order-date-filter">
@@ -130,7 +158,11 @@ body{{font:13px/1.45 system-ui,sans-serif;margin:0;background:#f5f7f8;color:#172
     }});
     totalCells.forEach(cell => {{
       const value = totals.get(cell.dataset.totalKey) || {{value: 0, local: 0, cny: 0, currency: ''}};
-      if (cell.dataset.totalFormat === 'localized') renderPair(cell, value.local, value.cny, value.currency, true);
+      if (cell.dataset.totalFormat === 'margin') {{
+        const profit = totals.get('profit_cny')?.value || 0;
+        const buyerCash = totals.get('buyer_cash_cny')?.value || 0;
+        cell.textContent = buyerCash ? `${{(profit / buyerCash * 100).toFixed(2)}}%` : '—';
+      }} else if (cell.dataset.totalFormat === 'localized') renderPair(cell, value.local, value.cny, value.currency, true);
       else if (cell.dataset.totalFormat === 'pair') renderPair(cell, value.local, value.cny, value.currency, false);
       else cell.textContent = value.value.toFixed(2);
     }});
@@ -203,10 +235,10 @@ body{{font:13px/1.45 system-ui,sans-serif;margin:0;background:#f5f7f8;color:#172
 def _base_headers() -> list[str]:
     return [
         "结算时间", "下单时间", "订单 ID", "订单行 ID", "国家", "发货方式", "主图", "Seller SKU",
-        "净结算(CNY)", "商品总成本(CNY)", "广告费(CNY)", "本土履约费(CNY)", "利润(CNY)", "利润率",
+        "净结算(CNY)", "商品总成本(CNY)", "广告费(CNY)", "本土履约费(CNY)", "利润(CNY)", "利润率(利润/用户实付)",
         "规格", "数量", "单件重量(g)", "计费重量(g)", "联盟营销佣金(AMS)", "商品折后成交额", "买家现金实付商品金额",
         "净结算(当地)", "最新汇率(CNY/当地)", "汇率更新时间", "汇率来源", "单件成本(CNY)",
-        "广告基数(当地)", "广告比例", "广告比例来源", "广告费(当地)", "额外成本(CNY)",
+        "广告基数(当地)", "广告比例", "广告比例来源", "广告费(当地)", "外部成本合计(CNY)",
     ]
 
 
@@ -289,6 +321,7 @@ def _row_sum_values(line, fee_columns):
         "advertising_cny": {"value": _decimal_string(ads.get("amount_cny"))},
         "local_fulfillment_cost_cny": {"value": _decimal_string(fulfillment.get("local_fulfillment_cost_cny"))},
         "profit_cny": {"value": _decimal_string(line.get("profit_cny"))},
+        "buyer_cash_cny": {"value": _decimal_string(_buyer_cash_cny(line))},
         "ams": {"local": str(ams_local), "cny": str(ams_cny), "currency": ams_currency},
         "product_sales_local": {"value": _decimal_string(settlement.get("product_sales_amount_local") or settlement.get("buyer_paid_product_amount_local"))},
         "buyer_cash_local": {"value": _decimal_string(settlement.get("buyer_cash_paid_product_amount_local"))},
@@ -331,6 +364,8 @@ def _footer(report, fee_columns, platform):
     cells[10] = _money(totals.get("advertising_cny"))
     cells[11] = _money(totals.get("local_fulfillment_cost_cny"))
     cells[12] = _money(totals.get("profit_cny"))
+    buyer_cash_cny = sum((_buyer_cash_cny(line) for line in lines), Decimal("0"))
+    cells[13] = _profit_margin(totals.get("profit_cny"), buyer_cash_cny)
     ams_local = sum((_fee_value(line, AMS_COMMISSION_FEE_CODE)[0] for line in lines), Decimal("0"))
     ams_cny = sum((_fee_value(line, AMS_COMMISSION_FEE_CODE)[1] for line in lines), Decimal("0"))
     ams_currency = next((_fee_value(line, AMS_COMMISSION_FEE_CODE)[2] for line in lines if _fee_value(line, AMS_COMMISSION_FEE_CODE)[2]), "")
@@ -344,6 +379,7 @@ def _footer(report, fee_columns, platform):
     total_keys[10] = "advertising_cny"
     total_keys[11] = "local_fulfillment_cost_cny"
     total_keys[12] = "profit_cny"
+    total_keys[13] = "profit_margin"
     total_keys[18] = "ams"
     total_keys[19] = "product_sales_local"
     total_keys[20] = "buyer_cash_local"
@@ -355,7 +391,7 @@ def _footer(report, fee_columns, platform):
     for index, (value, key) in enumerate(zip(cells, total_keys)):
         attributes = ' data-role="visible-total-label"' if index == 0 else ""
         if key:
-            total_format = "localized" if key == "ams" else "money"
+            total_format = "localized" if key == "ams" else ("margin" if key == "profit_margin" else "money")
             attributes += f' data-total-key="{escape(key, quote=True)}" data-total-format="{total_format}"'
         html_parts.append(f'<td class="num"{attributes}>{escape(value)}</td>')
     html = "".join(html_parts)
@@ -367,10 +403,23 @@ def _footer(report, fee_columns, platform):
 
 
 def _margin(line):
+    return _profit_margin(line.get("profit_cny"), _buyer_cash_cny(line))
+
+
+def _buyer_cash_cny(line):
     settlement = _map(line.get("settlement")); fx = _map(line.get("fx"))
-    basis = _decimal(settlement.get("product_sales_amount_local") or settlement.get("buyer_paid_product_amount_local")); rate = _decimal(fx.get("rate_cny_per_local")); profit = _decimal(line.get("profit_cny"))
-    if basis is None or rate is None or profit is None or basis * rate == 0: return "—"
-    return f"{(profit / (basis * rate) * Decimal('100')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}%"
+    buyer_cash_local = _decimal(settlement.get("buyer_cash_paid_product_amount_local"))
+    rate = _decimal(fx.get("rate_cny_per_local"))
+    if buyer_cash_local is None or rate is None:
+        return Decimal("0")
+    return buyer_cash_local * rate
+
+
+def _profit_margin(profit_value, buyer_cash_cny):
+    profit = _decimal(profit_value); basis = _decimal(buyer_cash_cny)
+    if profit is None or basis is None or basis == 0:
+        return "—"
+    return f"{(profit / basis * Decimal('100')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}%"
 
 
 def _messages(items, empty):

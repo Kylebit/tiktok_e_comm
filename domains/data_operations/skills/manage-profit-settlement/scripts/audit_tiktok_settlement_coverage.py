@@ -26,10 +26,7 @@ from domains.data_operations.profit_settlement.tiktok_coverage import build_cove
 import pull_settlement_evidence as settlement_pull
 
 
-BANGKOK = timezone(timedelta(hours=7), name="Asia/Bangkok")
-
-
-def _fetch_created_orders(token: str, cipher: str, start: date, end: date) -> tuple[list[dict], int]:
+def _fetch_created_orders(token: str, cipher: str, start: date, end: date, zone) -> tuple[list[dict], int]:
     from core.api_client import post
 
     orders = {}
@@ -37,8 +34,8 @@ def _fetch_created_orders(token: str, cipher: str, start: date, end: date) -> tu
     segment_start = start
     while segment_start <= end:
         segment_end = min(segment_start + timedelta(days=13), end)
-        local_start = datetime.combine(segment_start, datetime.min.time(), tzinfo=BANGKOK)
-        local_end = datetime.combine(segment_end + timedelta(days=1), datetime.min.time(), tzinfo=BANGKOK)
+        local_start = datetime.combine(segment_start, datetime.min.time(), tzinfo=zone)
+        local_end = datetime.combine(segment_end + timedelta(days=1), datetime.min.time(), tzinfo=zone)
         page_token = ""
         while True:
             query = {"shop_cipher": cipher, "page_size": "100"}
@@ -63,7 +60,7 @@ def _fetch_created_orders(token: str, cipher: str, start: date, end: date) -> tu
                 created = row.get("create_time")
                 if not order_id or created in (None, ""):
                     continue
-                created_at = datetime.fromtimestamp(int(created), tz=timezone.utc).astimezone(BANGKOK)
+                created_at = datetime.fromtimestamp(int(created), tz=timezone.utc).astimezone(zone)
                 if not start <= created_at.date() <= end:
                     continue
                 orders[order_id] = {
@@ -91,10 +88,12 @@ def _html(payload: dict) -> str:
         ) or "<tr><td colspan='3'>无</td></tr>"
 
     counts = payload["counts"]
-    return f"""<!doctype html><meta charset='utf-8'><title>TikTok TH 7月订单结算覆盖审计</title>
+    site = escape(str(payload.get("site") or ""))
+    zone = escape(str(payload["created_period"].get("timezone") or ""))
+    return f"""<!doctype html><meta charset='utf-8'><title>TikTok {site} 7月订单结算覆盖审计</title>
 <style>body{{font-family:Arial,sans-serif;margin:24px}}table{{border-collapse:collapse;width:100%;margin-bottom:24px}}th,td{{border:1px solid #ddd;padding:8px;text-align:left}}th{{background:#f3f5f7}}</style>
-<h1>TikTok TH 订单结算覆盖审计</h1>
-<p>下单区间：{payload['created_period']['start']} 至 {payload['created_period']['end']}（Asia/Bangkok）；结算观察截止：{payload['settlement_observed_through']}</p>
+<h1>TikTok {site} 订单结算覆盖审计</h1>
+<p>下单区间：{payload['created_period']['start']} 至 {payload['created_period']['end']}（{zone}）；结算观察截止：{payload['settlement_observed_through']}</p>
 <ul><li>下单订单：{counts['created_orders']}</li><li>已找到 Finance 结算：{counts['settled_orders']}</li><li>取消订单总数：{counts['cancelled_orders']}</li><li>取消且有结算/退款：{counts['cancelled_with_settlement']}</li><li>取消且无结算：{counts['cancelled_without_settlement']}</li><li>未取消但未找到结算：{counts['unsettled_non_cancelled']}</li></ul>
 <h2>取消且有结算/退款</h2><table><tr><th>订单 ID</th><th>下单时间</th><th>官方状态</th></tr>{rows(payload['cancelled_with_settlement_orders'])}</table>
 <h2>未取消但未找到结算</h2><table><tr><th>订单 ID</th><th>下单时间</th><th>官方状态</th></tr>{rows(payload['unsettled_non_cancelled_orders'])}</table>
@@ -108,12 +107,17 @@ def main(argv=None) -> int:
     parser.add_argument("--start", required=True, type=date.fromisoformat)
     parser.add_argument("--end", required=True, type=date.fromisoformat)
     parser.add_argument("--as-of", required=True, type=date.fromisoformat)
+    parser.add_argument("--site")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--allow-credential-refresh", action="store_true")
     args = parser.parse_args(argv)
     evidence = json.loads(args.settlement_evidence.read_text(encoding="utf-8"))
     if evidence.get("status") != "ready":
         raise RuntimeError("settlement evidence is not ready")
+    site = str(args.site or evidence.get("site") or "").upper()
+    zone = settlement_pull.SITE_TIMEZONES.get(("tiktok", site))
+    if zone is None:
+        raise RuntimeError(f"unsupported TikTok site timezone: {site}")
     settled_ids = {
         str(row.get("order_id") or "")
         for row in evidence.get("orders") or []
@@ -129,13 +133,13 @@ def main(argv=None) -> int:
         from core.shops import list_shops
 
         shop = next(
-            (row for row in list_shops(token) if str(row.get("region") or "").upper() == "TH"),
+            (row for row in list_shops(token) if str(row.get("region") or "").upper() == site),
             None,
         )
         if shop is None:
-            raise RuntimeError("no authorized TikTok TH shop")
+            raise RuntimeError(f"no authorized TikTok {site} shop")
         cipher = str(shop.get("cipher") or shop.get("shop_cipher") or "")
-        orders, request_count = _fetch_created_orders(token, cipher, args.start, args.end)
+        orders, request_count = _fetch_created_orders(token, cipher, args.start, args.end, zone)
     payload = build_coverage(
         orders=orders,
         settled_order_ids=settled_ids,
@@ -143,6 +147,8 @@ def main(argv=None) -> int:
         end=args.end,
         as_of=args.as_of,
         settlement_snapshot_id=str(evidence.get("snapshot_id") or evidence.get("checksum") or ""),
+        site=site,
+        timezone_name=zone.tzname(None),
     )
     payload["receipt"]["external_reads_performed"] = [
         "order/202309/orders/search",

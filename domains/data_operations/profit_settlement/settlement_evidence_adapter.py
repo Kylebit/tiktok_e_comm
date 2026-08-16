@@ -133,8 +133,21 @@ def adapt_settlement_evidence(
         if buyer_paid is None:
             buyer_paid = Decimal("0")
             issues.append(_issue("missing_ad_basis", record_id, "buyer_paid_product_amount"))
-        buyer_cash_paid = _shopee_buyer_cash_product_total(record) if platform == "shopee" else None
-        if platform == "shopee" and buyer_cash_paid is None:
+        buyer_cash_paid = (
+            _shopee_buyer_cash_product_total(record)
+            if platform == "shopee"
+            else _tiktok_buyer_cash_product_total(record)
+            if platform == "tiktok"
+            else None
+        )
+        has_tiktok_cash_fields = any(
+            isinstance(component, Mapping) and _text(component.get("code")) == "customer_payment"
+            for component in record.get("financial_components") or []
+        )
+        if (
+            platform == "shopee"
+            or (platform == "tiktok" and has_tiktok_cash_fields)
+        ) and buyer_cash_paid is None:
             issues.append(_issue("missing_buyer_cash_product_amount", record_id, "buyer_total_amount"))
 
         weights, allocation_basis = _allocation_weights(platform, items, record_id, issues, quantity_overrides)
@@ -560,6 +573,20 @@ def _shopee_buyer_cash_product_total(record):
     if buyer_total is None or buyer_total < 0 or shipping is None or shipping < 0:
         return None
     product_total = buyer_total - shipping
+    return product_total if product_total >= 0 else None
+
+
+def _tiktok_buyer_cash_product_total(record):
+    amounts = {
+        _text(component.get("code")): _decimal(component.get("amount"))
+        for component in record.get("financial_components") or []
+        if isinstance(component, Mapping)
+    }
+    customer_payment = amounts.get("customer_payment")
+    customer_shipping = amounts.get("customer_shipping_fee")
+    if customer_payment is None or customer_payment < 0 or customer_shipping is None:
+        return None
+    product_total = customer_payment - customer_shipping
     return product_total if product_total >= 0 else None
 
 

@@ -24,6 +24,8 @@ def build_coverage(
     end: date,
     as_of: date,
     settlement_snapshot_id: str,
+    site: str = "TH",
+    timezone_name: str = "Asia/Bangkok",
 ) -> dict:
     """Return a redacted, deterministic coverage artifact."""
 
@@ -57,6 +59,8 @@ def build_coverage(
         "orders": normalized,
         "settled_order_ids": sorted(settled_order_ids),
         "settlement_snapshot_id": settlement_snapshot_id,
+        "site": site,
+        "timezone": timezone_name,
     }
     checksum = sha256(
         json.dumps(
@@ -78,11 +82,11 @@ def build_coverage(
         "schema_version": "tiktok-order-settlement-coverage/v1",
         "status": "ready" if not unsettled else "needs_review",
         "platform": "tiktok",
-        "site": "TH",
+        "site": site,
         "created_period": {
             "start": start.isoformat(),
             "end": end.isoformat(),
-            "timezone": "Asia/Bangkok",
+            "timezone": timezone_name,
         },
         "settlement_observed_through": as_of.isoformat(),
         "settlement_snapshot_id": settlement_snapshot_id,

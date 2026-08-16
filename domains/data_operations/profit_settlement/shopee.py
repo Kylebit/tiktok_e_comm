@@ -100,13 +100,13 @@ def build_weekly_report(
         currency = _text(row.get("currency")).upper(); fx_rate = fx.get(currency)
         quantity = _decimal(row.get("quantity")); settlement = _decimal(row.get("net_settlement_amount"))
         paid = _decimal(row.get("product_sales_amount") or row.get("buyer_paid_product_amount"))
-        cash_paid = _decimal(row.get("buyer_cash_paid_product_amount")); invalid = False
+        cash_paid = _decimal(row.get("buyer_cash_paid_product_amount")); ad_basis = cash_paid if cash_paid is not None else paid; invalid = False
         for missing, field, code in (
             (not sku or cost is None, "canonical_sku", "missing_cost"),
             (not currency or fx_rate is None, "currency", "missing_fx"),
             (quantity is None or quantity <= 0, "quantity", "invalid_quantity"),
             (settlement is None, "net_settlement_amount", "missing_settlement"),
-            (paid is None, "buyer_paid_product_amount", "missing_ad_basis"),
+            (ad_basis is None, "buyer_cash_paid_product_amount", "missing_ad_basis"),
         ):
             if missing:
                 issues.append(_issue(code, record_id, field)); invalid = True
@@ -121,13 +121,13 @@ def build_weekly_report(
             continue
         fulfillment = _fulfillment(row, record_id, issues)
         settlement_cny = settlement * fx_rate; product_cost = cost.unit_cost_cny * quantity
-        ad_local = paid * rate_value; ad_cny = ad_local * fx_rate
+        ad_local = ad_basis * rate_value; ad_cny = ad_local * fx_rate
         lines.append({
             "identity":{"platform":PLATFORM,"shop_id":_text(row.get("shop_id")),"region":_text(row.get("region")).upper(),"order_id":_text(row.get("order_id")),"order_line_id":record_id},
             "product":{"platform_sku":_text(row.get("platform_sku")),"seller_sku":_text(row.get("seller_sku")),"canonical_sku":sku,"product_name":_text(row.get("product_name")),"variant_name":_text(row.get("variant_name")),"image_url":_text(row.get("image_url")),"quantity":quantity,"unit_weight_g":_decimal(row.get("unit_weight_g")),"package_weight_g":_decimal(row.get("package_weight_g")),"billable_weight_g":_decimal(row.get("billable_weight_g")),"weight_source":_text(row.get("weight_source"))},
             "occurred_at":_datetime(row.get("occurred_at")),"settled_at":settled_at,"settlement_status":"settled","settlement":{"currency":currency,"net_amount_local":settlement,"net_amount_cny":settlement_cny,"product_sales_amount_local":paid,"buyer_cash_paid_product_amount_local":cash_paid,"buyer_paid_product_amount_local":paid},"fx":{"rate_cny_per_local":fx_rate,**fx.payload()},
             "cost":{"unit_cost_cny":cost.unit_cost_cny,"quantity":quantity,"total_cny":product_cost,"version":cost.version,"effective_at":cost.effective_at,"source":cost.source,"snapshot_id":costs.snapshot_id},
-            "advertising":{"mode":"estimated_rate","rate":rate_value,"input_source":_text(ad_rate_source) or ("default_22" if rate_value == Decimal("0.22") else "operator_global_override"),"policy_version":"operator-adjustable-ad-rate/v1","basis":"product_sales_amount_after_seller_discount","basis_amount_local":paid,"amount_local":ad_local,"amount_cny":ad_cny},
+            "advertising":{"mode":"estimated_rate","rate":rate_value,"input_source":_text(ad_rate_source) or ("default_22" if rate_value == Decimal("0.22") else "operator_global_override"),"policy_version":"operator-adjustable-ad-rate/v1","basis":"buyer_cash_paid_product_amount","basis_amount_local":ad_basis,"amount_local":ad_local,"amount_cny":ad_cny},
             "fulfillment": fulfillment,
             "fee_items":fees,"external_costs_cny":external,"profit_cny":settlement_cny-product_cost-ad_cny-external,"source_snapshot_id":_text(row.get("source_snapshot_id")),"source_settlement_facts":list(row.get("source_settlement_facts") or []),
         })
@@ -137,7 +137,7 @@ def build_weekly_report(
     source_checksum = _checksum(sorted((_ready(row) for row in source_rows), key=_canonical))
     fulfillment_policy = {"local_fulfillment_fee_cny_per_order": local_fulfillment, "cost_components": ["local_shipping", "local_warehouse"], "classification_rule": "import_vat_and_duty_presence/v2"}
     fingerprint = _checksum({"schema":SCHEMA_VERSION,"period_kind":"weekly","period":[start.isoformat(),end.isoformat()],"source":source_checksum,"costs":costs.snapshot_id,"fx":fx.snapshot_id,"ad_rate":str(rate_value),"ad_rate_source":rate_source,"fulfillment_policy":fulfillment_policy,"code_version":code_version})
-    return ShopeeProfitReport(report_id=f"shopee-profit-{fingerprint[:16]}",idempotency_key=f"{SCHEMA_VERSION}:{fingerprint}",calculation_kind="realized_settlement_with_estimated_ads",period_kind="weekly",period={"start":start.isoformat(),"end":end.isoformat(),"timezone":"source_local_date"},status="ready" if not issues else "needs_review",totals=_totals(lines),order_lines=tuple(lines),quality_issues=tuple(issues),source={"input_checksum":source_checksum,"raw_row_count":len(source_rows),"calculated_row_count":len(lines),"rejected_row_count":rejected,"out_of_period_row_count":out_of_period,"unsettled_row_count":unsettled,"fulfillment_order_counts":_fulfillment_order_counts(lines),"affiliate_marketing":_affiliate_marketing_summary(lines),"fulfillment_policy":fulfillment_policy,"cost_snapshot":costs.payload(),"fx_snapshot":fx.payload()},advertising={"mode":"estimated_rate","rate":rate_value,"input_source":rate_source,"policy_version":"operator-adjustable-ad-rate/v1","basis":"product_sales_amount_after_seller_discount"},generated_at=generated_at or datetime.now(timezone.utc),code_version=code_version)
+    return ShopeeProfitReport(report_id=f"shopee-profit-{fingerprint[:16]}",idempotency_key=f"{SCHEMA_VERSION}:{fingerprint}",calculation_kind="realized_settlement_with_estimated_ads",period_kind="weekly",period={"start":start.isoformat(),"end":end.isoformat(),"timezone":"source_local_date"},status="ready" if not issues else "needs_review",totals=_totals(lines),order_lines=tuple(lines),quality_issues=tuple(issues),source={"input_checksum":source_checksum,"raw_row_count":len(source_rows),"calculated_row_count":len(lines),"rejected_row_count":rejected,"out_of_period_row_count":out_of_period,"unsettled_row_count":unsettled,"fulfillment_order_counts":_fulfillment_order_counts(lines),"affiliate_marketing":_affiliate_marketing_summary(lines),"fulfillment_policy":fulfillment_policy,"cost_snapshot":costs.payload(),"fx_snapshot":fx.payload()},advertising={"mode":"estimated_rate","rate":rate_value,"input_source":rate_source,"policy_version":"operator-adjustable-ad-rate/v1","basis":"buyer_cash_paid_product_amount"},generated_at=generated_at or datetime.now(timezone.utc),code_version=code_version)
 
 
 def build_monthly_report(

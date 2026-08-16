@@ -74,6 +74,7 @@ def build_weekly_report(
     local_fulfillment_fee_cny: Decimal | str = Decimal("4"),
     generated_at: datetime | None = None,
     code_version: str = "unknown",
+    _period_kind: str = "weekly",
 ) -> ShopeeProfitReport:
     rate_value = _decimal(ad_rate)
     if rate_value is None or rate_value < 0 or rate_value > 1:
@@ -136,8 +137,44 @@ def build_weekly_report(
     rate_source = _text(ad_rate_source) or ("default_22" if rate_value == Decimal("0.22") else "operator_global_override")
     source_checksum = _checksum(sorted((_ready(row) for row in source_rows), key=_canonical))
     fulfillment_policy = {"local_fulfillment_fee_cny_per_order": local_fulfillment, "cost_components": ["local_shipping", "local_warehouse"], "classification_rule": "import_vat_and_duty_presence/v2"}
-    fingerprint = _checksum({"schema":SCHEMA_VERSION,"period_kind":"weekly","period":[start.isoformat(),end.isoformat()],"source":source_checksum,"costs":costs.snapshot_id,"fx":fx.snapshot_id,"ad_rate":str(rate_value),"ad_rate_source":rate_source,"fulfillment_policy":fulfillment_policy,"code_version":code_version})
-    return ShopeeProfitReport(report_id=f"shopee-profit-{fingerprint[:16]}",idempotency_key=f"{SCHEMA_VERSION}:{fingerprint}",calculation_kind="realized_settlement_with_estimated_ads",period_kind="weekly",period={"start":start.isoformat(),"end":end.isoformat(),"timezone":"source_local_date"},status="ready" if not issues else "needs_review",totals=_totals(lines),order_lines=tuple(lines),quality_issues=tuple(issues),source={"input_checksum":source_checksum,"raw_row_count":len(source_rows),"calculated_row_count":len(lines),"rejected_row_count":rejected,"out_of_period_row_count":out_of_period,"unsettled_row_count":unsettled,"fulfillment_order_counts":_fulfillment_order_counts(lines),"affiliate_marketing":_affiliate_marketing_summary(lines),"fulfillment_policy":fulfillment_policy,"cost_snapshot":costs.payload(),"fx_snapshot":fx.payload()},advertising={"mode":"estimated_rate","rate":rate_value,"input_source":rate_source,"policy_version":"operator-adjustable-ad-rate/v1","basis":"buyer_cash_paid_product_amount"},generated_at=generated_at or datetime.now(timezone.utc),code_version=code_version)
+    fingerprint = _checksum({"schema":SCHEMA_VERSION,"period_kind":_period_kind,"period":[start.isoformat(),end.isoformat()],"source":source_checksum,"costs":costs.snapshot_id,"fx":fx.snapshot_id,"ad_rate":str(rate_value),"ad_rate_source":rate_source,"fulfillment_policy":fulfillment_policy,"code_version":code_version})
+    return ShopeeProfitReport(report_id=f"shopee-profit-{fingerprint[:16]}",idempotency_key=f"{SCHEMA_VERSION}:{fingerprint}",calculation_kind="realized_settlement_with_estimated_ads",period_kind=_period_kind,period={"start":start.isoformat(),"end":end.isoformat(),"timezone":"source_local_date"},status="ready" if not issues else "needs_review",totals=_totals(lines),order_lines=tuple(lines),quality_issues=tuple(issues),source={"input_checksum":source_checksum,"raw_row_count":len(source_rows),"calculated_row_count":len(lines),"rejected_row_count":rejected,"out_of_period_row_count":out_of_period,"unsettled_row_count":unsettled,"fulfillment_order_counts":_fulfillment_order_counts(lines),"affiliate_marketing":_affiliate_marketing_summary(lines),"fulfillment_policy":fulfillment_policy,"cost_snapshot":costs.payload(),"fx_snapshot":fx.payload()},advertising={"mode":"estimated_rate","rate":rate_value,"input_source":rate_source,"policy_version":"operator-adjustable-ad-rate/v1","basis":"buyer_cash_paid_product_amount"},generated_at=generated_at or datetime.now(timezone.utc),code_version=code_version)
+
+
+def build_monthly_estimated_report(
+    rows: Iterable[Mapping[str, object]],
+    *,
+    period_start: date | str,
+    period_end: date | str,
+    costs: CostSnapshot,
+    fx: FxSnapshot,
+    ad_rate: Decimal | str,
+    ad_rate_source: str = "operator_monthly_override",
+    local_fulfillment_fee_cny: Decimal | str = Decimal("4"),
+    generated_at: datetime | None = None,
+    code_version: str = "unknown",
+) -> ShopeeProfitReport:
+    """Build a monthly Shopee report with an explicit operator-approved ad estimate.
+
+    This deliberately remains distinct from :func:`build_monthly_report`,
+    whose contract requires an auditable actual advertising snapshot.
+    """
+
+    if not _text(ad_rate_source):
+        raise ValueError("ad_rate_source is required for monthly estimated advertising")
+    return build_weekly_report(
+        rows,
+        period_start=period_start,
+        period_end=period_end,
+        costs=costs,
+        fx=fx,
+        ad_rate=ad_rate,
+        ad_rate_source=ad_rate_source,
+        local_fulfillment_fee_cny=local_fulfillment_fee_cny,
+        generated_at=generated_at,
+        code_version=code_version,
+        _period_kind="monthly",
+    )
 
 
 def build_monthly_report(

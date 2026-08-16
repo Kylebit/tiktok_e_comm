@@ -50,11 +50,15 @@ TikTok follows the same hidden order-line ID display contract as Shopee: omit th
 
 For TikTok Thailand, a non-zero settled `import_vat` or `customs_duty` component means cross-border; two present exact zeros mean local. Missing either component is blocking. Charge the configured local-fulfillment fee once per local parent order, default CNY 4, allocate it deterministically across item lines, and include it in external costs and the report fingerprint. Never charge cross-border or unknown orders. Never substitute order API `fulfillment_type` or warehouse/delivery metadata for this tax evidence, and do not retain those operator fields in report payloads.
 
+The Thailand fulfillment rule is site-scoped. For TikTok MY, VN, PH, or another site without an approved contract, set fulfillment to `unknown`, recognize zero local-fulfillment cost, emit `unsupported_tiktok_site_fulfillment_rule`, and keep the report in `needs_review`; never infer or copy the Thailand rule.
+
 Under operator policy `zero-settlement-unshipped-ads-only/v1`, classify a TikTok parent order whose summed local-currency net settlement is exactly zero as unshipped. Keep advertising cost, set recognized product cost and local-fulfillment cost to zero, preserve the catalog product cost as unrecognized evidence, and retain the decision and policy version in the fingerprint. Do not infer the same treatment for a negative settlement; require separate refund, shipping, or order-status evidence.
 
 For a customer-refusal return confirmed by official reason/status evidence or an explicit operator exception fact, use fulfillment evidence to recognize product loss. A local return is resalable and recognizes zero product-cost loss; a cross-border return is destroyed and retains full product cost. Preserve confirmation provenance, fulfillment evidence, refund, shipping, advertising, and fulfillment costs. Negative settlement shape by itself is insufficient evidence.
 
 For a TikTok order-created monthly report, period inclusion uses official `order_created_at`, not settlement date, but every included row must still have Finance settlement evidence observed through the declared as-of date. Allocate calendar-month `GMV Payment for TikTok Ads` charges by buyer-paid GMV and preserve the statement, FX, and allocation lineage. Attach a non-order adjustment carrying `related_order_id` to that order before profit calculation.
+
+The paired created-order coverage artifact is a monthly completeness gate. If any non-cancelled order lacks Finance settlement through the declared as-of time, emit `unsettled_non_cancelled_orders`, set the report to `needs_review`, and prohibit approval while still exposing the calculated settled-order subset as diagnostic output. Cancelled orders without Finance evidence remain an audited exclusion, not an unsettled blocker. Include the coverage snapshot, status, counts, and as-of time in the report idempotency fingerprint.
 
 ## Knowledge
 

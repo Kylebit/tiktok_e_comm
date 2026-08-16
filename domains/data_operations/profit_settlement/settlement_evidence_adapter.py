@@ -169,7 +169,7 @@ def adapt_settlement_evidence(
         if platform == "shopee":
             fulfillment = _shopee_fulfillment(record, record_id, site, issues)
         elif platform == "tiktok" and transaction_type == "Order":
-            fulfillment = _tiktok_fulfillment(record, record_id, issues)
+            fulfillment = _tiktok_fulfillment(record, record_id, site, issues)
         for item_index, item in enumerate(items):
             if not isinstance(item, Mapping):
                 issues.append(_issue("invalid_item", f"{record_id}:{item_index}", "items"))
@@ -413,14 +413,63 @@ def _shopee_fulfillment(record, record_id, site, issues):
     }
 
 
-def _tiktok_fulfillment(record, record_id, issues):
+def _tiktok_fulfillment(record, record_id, site, issues):
     amounts = {
         _text(component.get("code")): _decimal(component.get("amount"))
         for component in (record.get("financial_components") or [])
         if isinstance(component, Mapping)
     }
+    site = _text(site).upper()
     import_vat = amounts.get("import_vat")
     customs_duty = amounts.get("customs_duty")
+    if site == "MY":
+        sst = next(
+            (amounts[code] for code in ("sst", "sales_and_service_tax", "import_vat") if code in amounts),
+            None,
+        )
+        if sst is None:
+            issues.append(EvidenceQualityIssue(
+                "missing_fulfillment_tax_evidence", record_id, "financial_components",
+                "TikTok Malaysia fulfillment requires the SST settlement field",
+            ))
+            mode = "unknown"
+        else:
+            mode = "cross_border" if sst != 0 else "local"
+        return {
+            "mode": mode,
+            "classification_rule": "tiktok_my_sst_charged/v1",
+            "sst_local": sst,
+            "import_vat_local": None,
+            "customs_duty_local": None,
+            "evidence_source": "finance.statement_transactions.sst(import_vat_api_alias)",
+        }
+    if site == "VN":
+        if import_vat is None:
+            issues.append(EvidenceQualityIssue(
+                "missing_fulfillment_tax_evidence", record_id, "financial_components",
+                "TikTok Vietnam fulfillment requires the value-added-tax settlement field",
+            ))
+            mode = "unknown"
+        else:
+            mode = "cross_border" if import_vat != 0 else "local"
+        return {
+            "mode": mode,
+            "classification_rule": "tiktok_vn_import_vat_charged/v1",
+            "sst_local": None,
+            "import_vat_local": import_vat,
+            "customs_duty_local": None,
+            "evidence_source": "finance.statement_transactions.import_vat",
+        }
+    if site != "TH":
+        issues.append(EvidenceQualityIssue(
+            "unsupported_tiktok_site_fulfillment_rule", record_id, "site",
+            f"TikTok {site or 'unknown'} has no operator-approved fulfillment classification rule",
+        ))
+        return {
+            "mode": "unknown", "classification_rule": f"unsupported_tiktok_{site.lower() or 'unknown'}_fulfillment_rule/v1",
+            "sst_local": None, "import_vat_local": None, "customs_duty_local": None,
+            "evidence_source": "none",
+        }
     if import_vat is None or customs_duty is None:
         issues.append(EvidenceQualityIssue(
             "missing_fulfillment_tax_evidence",
@@ -436,6 +485,7 @@ def _tiktok_fulfillment(record, record_id, issues):
     return {
         "mode": mode,
         "classification_rule": "tiktok_th_import_tax_charged/v1",
+        "sst_local": None,
         "import_vat_local": import_vat,
         "customs_duty_local": customs_duty,
         "evidence_source": "finance.statement_transactions.import_vat+customs_duty",

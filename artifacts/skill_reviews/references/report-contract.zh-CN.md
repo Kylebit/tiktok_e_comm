@@ -51,7 +51,7 @@ Shopee 必须按官方进口税费判断发货方式：`vat_on_imported_goods` �
 
 TikTok 下单月份报表必须把配套订单覆盖审计作为完整性门槛。存在任何未取得 Finance 结算的非取消订单时，必须报告 `unsettled_non_cancelled_orders`、将报表设为 `needs_review`，并禁止批准；已结算订单的金额只作为诊断子集。取消且无 Finance 证据的订单是审计排除项，不是未结算阻断。覆盖快照身份、状态、计数和截至时间必须进入幂等指纹。
 
-TikTok 泰国的履约税费规则只适用于 TH，不得套用于 MY、VN、PH 或其他站点。未建立并批准站点专属合同时，必须将履约标记为 `unknown`、本土履约成本记为 0、报告 `unsupported_tiktok_site_fulfillment_rule`，并保持 `needs_review`。
+TikTok 履约规则必须按站点隔离。MY 的 SST 非 0 为跨境、精确为 0 为本土；区域 Finance API 当前通过 `import_vat_amount` 暴露该值，必须保留 SST 别名与来源。VN 的增值税/`import_vat_amount` 非 0 为跨境、精确为 0 为本土。缺字段必须阻断。PH 或其他未批准规则的站点统一为 `unknown`、本土履约成本为 0，并报告 `unsupported_tiktok_site_fulfillment_rule`。
 
 结算对账必须保留精确本币差额。绝对值不超过 `1e-12` 视为 Decimal 分摊尾差；超过该值则产生 `settlement_reconciliation_mismatch`。
 

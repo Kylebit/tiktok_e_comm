@@ -1,6 +1,6 @@
 # 利润报表合同（中文审阅镜像）
 
-TikTok 下单月份月报按官方 `order_created_at` 筛选，但每个纳入订单仍必须有截至声明日期的 Finance 结算证据。自然月内 `GMV Payment for TikTok Ads` 的实际扣款按买家商品 GMV 分摊并保留 statement、FX 与分摊来源；带 `related_order_id` 的非订单调整先回挂原订单再计算利润。
+TikTok 下单月份月报按官方 `order_created_at` 筛选，但每个纳入订单仍必须有截至声明日期的 Finance 结算证据。默认使用自然月内 `GMV Payment for TikTok Ads` 的实际扣款；操作员明确指定月度估算比例时，逐订单按买家现金实付商品金额计算，报表标为估算广告，实际 Finance 广告只作参考且不参与利润。带 `related_order_id` 的非订单调整先回挂原订单再计算利润。
 
 客户拒收只有在官方原因/状态或操作员确认事实存在时才能应用退货成本规则：本土退货可再售，商品损耗成本为 0；跨境退货销毁，保留全部商品成本。退款、运费、广告和履约支出仍按实际证据保留，负结算结构本身不能作为拒收证明。
 
@@ -41,7 +41,7 @@ TikTok 下单月份月报按官方 `order_created_at` 筛选，但每个纳入�
 
 经操作人批准的临时成本政策属于非阻断警告：缺成本单件按 CNY 5；冲突成本取最高正数。报表必须保留选中值、全部候选值、受影响 SKU 和政策版本。
 
-周报是 `realized_settlement_with_estimated_ads`，各平台默认比例在统一 `report-policy.json` 中配置为 0.22，可全局或分平台人工覆盖。广告基数必须是买家现金实付商品金额，不能使用净结算金额，也不能包含买家运费：TikTok 使用 `customer_payment - customer_shipping_fee`，Shopee 使用 `buyer_total_amount - buyer_paid_shipping_fee`。卖家折扣后商品成交额必须另行保留。TikTok/Shopee 月报使用真实广告；缺少订单级归因时，也按买家现金实付商品金额分摊。Ozon 当前周报和月报默认按 0.22 估算，也允许人工明确覆盖。估算报表必须保留比例、现金实付商品基数、政策版本，以及比例来自统一策略配置、全局覆盖还是平台覆盖。
+周报是 `realized_settlement_with_estimated_ads`，各平台默认比例在统一 `report-policy.json` 中配置为 0.22，可全局或分平台人工覆盖。广告基数必须是买家现金实付商品金额，不能使用净结算金额，也不能包含买家运费：TikTok 使用 `customer_payment - customer_shipping_fee`，Shopee 使用 `buyer_total_amount - buyer_paid_shipping_fee`。卖家折扣后商品成交额必须另行保留。TikTok/Shopee 月报默认使用真实广告；缺少订单级归因时，也按买家现金实付商品金额分摊。操作员明确覆盖月度比例时，报表改为 `realized_settlement_with_estimated_ads`，逐订单按现金实付商品金额计算，并把真实 Finance 广告标成只读参考、不得参与利润。Ozon 当前周报和月报默认按 0.22 估算，也允许人工明确覆盖。估算报表必须保留比例、现金实付商品基数、政策版本，以及比例来自统一策略配置、全局覆盖、平台覆盖还是月报覆盖。
 
 Shopee 必须按官方进口税费判断发货方式：`vat_on_imported_goods` 或进口关税（泰国为 `th_import_duty`）非 0 即为跨境；只有两项字段都存在且严格为 0 才是本土。字段缺失必须阻断；只有一项非 0 时仍保守标为跨境，但产生 `incomplete_cross_border_tax_pair`，不能成为 ready。本土订单默认每个父订单只扣一项合并后的本土履约费 CNY 4；在商品行间稳定分摊，保存为 `local_fulfillment_cost_cny`，加入 `external_costs_cny`，并写入幂等指纹。
 

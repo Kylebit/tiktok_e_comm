@@ -328,6 +328,7 @@ def _ad_rate_source(value):
         "default_22": "默认 22%",
         "operator_global_override": "人工全局覆盖",
         "operator_platform_override": "人工平台覆盖",
+        "operator_monthly_override": "人工月报覆盖",
         "policy_config": "统一策略配置",
     }.get(str(value or ""), _text(value))
 def _fulfillment_label(value):

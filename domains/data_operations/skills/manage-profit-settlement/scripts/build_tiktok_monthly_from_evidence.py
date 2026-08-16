@@ -33,7 +33,11 @@ from domains.data_operations.profit_settlement.local_catalog import load_local_c
 from domains.data_operations.profit_settlement.render import render_profit_report_html
 from domains.data_operations.profit_settlement.settlement_evidence_adapter import adapt_settlement_evidence
 from domains.data_operations.profit_settlement.shared_inputs import CostSnapshot, FxSnapshot
-from domains.data_operations.profit_settlement.tiktok import TikTokQualityIssue, build_monthly_report
+from domains.data_operations.profit_settlement.tiktok import (
+    TikTokQualityIssue,
+    build_monthly_estimated_report,
+    build_monthly_report,
+)
 from domains.data_operations.profit_settlement.tiktok_monthly import actual_advertising_from_finance
 
 
@@ -47,6 +51,10 @@ def main(argv=None) -> int:
     parser.add_argument("--end", required=True, type=date.fromisoformat)
     parser.add_argument("--site")
     parser.add_argument("--local-fulfillment-fee-cny", default="4")
+    parser.add_argument(
+        "--ad-rate",
+        help="explicit monthly estimated advertising fraction; when present, actual Finance ads are retained as reference only",
+    )
     args = parser.parse_args(argv)
 
     evidence = json.loads(args.evidence.read_text(encoding="utf-8"))
@@ -89,18 +97,30 @@ def main(argv=None) -> int:
         fx_rate_cny_per_local=local_rate,
         fx_snapshot_id=fx.snapshot_id,
     )
-    report = build_monthly_report(
-        adapted.rows,
-        period_start=args.start,
-        period_end=args.end,
-        period_basis="order_created_at",
-        costs=costs,
-        fx=fx,
-        actual_advertising=actual_ads,
-        local_fulfillment_fee_cny=args.local_fulfillment_fee_cny,
-        generated_at=datetime.now(timezone.utc),
-        code_version="profit-settlement-v1-tiktok-monthly-created-orders",
-    )
+    common = {
+        "period_start": args.start,
+        "period_end": args.end,
+        "costs": costs,
+        "fx": fx,
+        "local_fulfillment_fee_cny": args.local_fulfillment_fee_cny,
+        "generated_at": datetime.now(timezone.utc),
+    }
+    if args.ad_rate is not None:
+        report = build_monthly_estimated_report(
+            adapted.rows,
+            ad_rate=args.ad_rate,
+            ad_rate_source="operator_monthly_override",
+            code_version="profit-settlement-v1-tiktok-monthly-estimated-ads",
+            **common,
+        )
+    else:
+        report = build_monthly_report(
+            adapted.rows,
+            period_basis="order_created_at",
+            actual_advertising=actual_ads,
+            code_version="profit-settlement-v1-tiktok-monthly-created-orders",
+            **common,
+        )
     adapter_issues = tuple(
         TikTokQualityIssue(issue.code, issue.record_id, issue.field, issue.message)
         for issue in adapted.issues
@@ -126,6 +146,11 @@ def main(argv=None) -> int:
     payload["source"]["order_coverage"] = coverage.get("counts")
     payload["source"]["coverage_snapshot_id"] = coverage.get("snapshot_id")
     payload["source"]["actual_advertising"] = _json_ready(actual_ads)
+    payload["source"]["actual_advertising_usage"] = (
+        "reference_only_not_used_in_profit"
+        if args.ad_rate is not None
+        else "used_in_profit"
+    )
     payload["source"]["external_reads"] = [
         "settlement-evidence/v1 JSON artifact",
         "tiktok-order-settlement-coverage/v1 JSON artifact",

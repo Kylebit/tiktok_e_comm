@@ -7,6 +7,12 @@ from domains.data_operations.financial_facts import (
     adapt_financial_facts,
     adapt_sqlite_fixture,
 )
+from domains.data_operations.local_snapshot_adapter import (
+    LocalSnapshotAdaptation,
+    adapt_local_profit_snapshots,
+    adapt_profit_snapshot_text,
+    discover_local_profit_snapshots,
+)
 
 __all__ = [
     "DataQualityIssue",
@@ -14,4 +20,8 @@ __all__ = [
     "FinancialFactAdaptation",
     "adapt_financial_facts",
     "adapt_sqlite_fixture",
+    "LocalSnapshotAdaptation",
+    "adapt_local_profit_snapshots",
+    "adapt_profit_snapshot_text",
+    "discover_local_profit_snapshots",
 ]

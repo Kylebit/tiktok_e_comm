@@ -282,7 +282,7 @@ def test_ai_image_studio_routes_are_served_with_strict_csp(product_server, path)
     assert headers["Cache-Control"] == "no-store"
 
 
-def test_proxy_exposes_only_the_ai_studio_write_surface():
+def test_proxy_exposes_only_the_content_and_standalone_image_review_surface():
     allowed_get, allowed_post = _proxy_allowlists()
 
     assert allowed_get == {
@@ -292,6 +292,8 @@ def test_proxy_exposes_only_the_ai_studio_write_surface():
         "content-package/image-localization/artifact",
         "content-package/localized-images",
         "content-package/localized-images/artifact",
+        "content-package/localized-image-review",
+        "content-package/localized-image-review/artifact",
     }
     assert allowed_post == {
         "review",
@@ -312,6 +314,10 @@ def test_proxy_exposes_only_the_ai_studio_write_surface():
         "content-package/localized-images/auto-translate",
         "content-package/localized-images/translation-draft",
         "content-package/localized-images/preview",
+        "content-package/localized-image-review/initialize",
+        "content-package/localized-image-review/generate",
+        "content-package/localized-image-review/decision",
+        "content-package/localized-image-review/approve",
     }
     assert not {
         action

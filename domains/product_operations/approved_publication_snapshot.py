@@ -288,6 +288,21 @@ def build_approved_publication_snapshot(
         approved_product_images=images,
     )
 
+    product = {
+        "title": title,
+        "description": description,
+        "images": images,
+        "main_category": category,
+        "source_identity": source_contract.payload(),
+    }
+    image_routing = _image_routing(
+        payload.get("localized_image_routing"),
+        targets=targets,
+        base_images=images,
+    )
+    if image_routing is not None:
+        product["image_routing"] = image_routing
+
     body = {
         "schema_version": APPROVED_PUBLICATION_SNAPSHOT_SCHEMA_VERSION,
         "offer_id": offer_id,
@@ -305,13 +320,7 @@ def build_approved_publication_snapshot(
                 payload.get("content_package_id"), "content_package_id"
             ),
         },
-        "product": {
-            "title": title,
-            "description": description,
-            "images": images,
-            "main_category": category,
-            "source_identity": source_contract.payload(),
-        },
+        "product": product,
         "categories_by_target": categories_by_target,
         "shopee_global_master": shopee_global_master,
         "skus": skus,
@@ -383,13 +392,14 @@ def _validate_frozen_body(body: Mapping[str, Any]) -> None:
     _text(bindings.get("content_package_id"), "content package binding")
 
     product = _mapping(body.get("product"), "snapshot product")
-    if set(product) != {
+    base_product_fields = {
         "title",
         "description",
         "images",
         "main_category",
         "source_identity",
-    }:
+    }
+    if frozenset(product) not in {frozenset(base_product_fields), frozenset({*base_product_fields, "image_routing"})}:
         raise ApprovedPublicationSnapshotError("snapshot product fields are invalid")
     _text(product.get("title"), "snapshot title")
     _text(product.get("description"), "snapshot description")
@@ -410,6 +420,11 @@ def _validate_frozen_body(body: Mapping[str, Any]) -> None:
     }:
         raise ApprovedPublicationSnapshotError("snapshot source identity fields are invalid")
     source_digest = _source_identity(source).identity_digest
+    _image_routing(
+        product.get("image_routing"),
+        targets=targets,
+        base_images=_text_list(product.get("images"), "snapshot images"),
+    )
     _target_categories(body.get("categories_by_target"), targets=targets)
 
     digests = _mapping(body.get("digests"), "snapshot digests")
@@ -1078,6 +1093,68 @@ def _target_categories(
     return result
 
 
+def _image_routing(
+    value: Any,
+    *,
+    targets: list[dict[str, str]],
+    base_images: list[str],
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    row = _mapping(value, "localized image routing")
+    if set(row) != {
+        "schema_version",
+        "approval_digest",
+        "supplement_digest",
+        "source_snapshot_digest",
+        "routes",
+    } or row.get("schema_version") != "localized-publication-images/v1":
+        raise ApprovedPublicationSnapshotError("localized image routing fields are invalid")
+    routes = _mapping(row.get("routes"), "localized image routes")
+    expected = {target["target_label"] for target in targets}
+    if set(routes) != expected:
+        raise ApprovedPublicationSnapshotError("localized image route coverage drifted")
+    normalized: dict[str, dict[str, Any]] = {}
+    for label in sorted(expected):
+        route = _mapping(routes[label], f"{label} image route")
+        if set(route) != {"locale", "ordered_images"}:
+            raise ApprovedPublicationSnapshotError(f"{label} image route fields are invalid")
+        locale = _text(route.get("locale"), f"{label} image locale")
+        images = _text_list(route.get("ordered_images"), f"{label} routed images")
+        if len(images) != len(base_images):
+            raise ApprovedPublicationSnapshotError(f"{label} image count drifted")
+        for image in images:
+            if not image.startswith("https://"):
+                raise ApprovedPublicationSnapshotError(f"{label} image URL must use HTTPS")
+        normalized[label] = {"locale": locale, "ordered_images": images}
+    return {
+        "schema_version": "localized-publication-images/v1",
+        "approval_digest": _digest(row.get("approval_digest"), "localized image approval digest"),
+        "supplement_digest": _digest(row.get("supplement_digest"), "localized image supplement digest"),
+        "source_snapshot_digest": _digest(row.get("source_snapshot_digest"), "localized image source snapshot digest"),
+        "routes": normalized,
+    }
+
+
+def publication_images_for_target(
+    snapshot: Mapping[str, Any], target_label: str
+) -> list[str]:
+    """Return the exact frozen ordered images for one publication target."""
+    product = _mapping(snapshot.get("product"), "snapshot product")
+    base = _text_list(product.get("images"), "snapshot images")
+    routing = product.get("image_routing")
+    if routing is None:
+        return base
+    targets = _targets(snapshot.get("publication_targets"), already_projected=True)
+    normalized = _image_routing(routing, targets=targets, base_images=base)
+    assert normalized is not None
+    label = _text(target_label, "publication target label")
+    try:
+        return list(normalized["routes"][label]["ordered_images"])
+    except KeyError as error:
+        raise ApprovedPublicationSnapshotError("localized image target is unavailable") from error
+
+
 def _source_identity(value: Mapping[str, Any]) -> SourceProductIdentity:
     if value.get("schema_version") != SOURCE_IDENTITY_SCHEMA_VERSION:
         raise ApprovedPublicationSnapshotError("source identity schema is invalid")
@@ -1334,5 +1411,6 @@ __all__ = [
     "approved_publication_snapshot_from_payload",
     "build_approved_publication_snapshot",
     "publication_category_decision_digest",
+    "publication_images_for_target",
     "validate_approved_publication_snapshot",
 ]

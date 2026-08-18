@@ -9,6 +9,7 @@ from domains.product_operations.approved_publication_snapshot import (
     ApprovedPublicationSnapshotError,
     approved_publication_snapshot_from_payload,
     build_approved_publication_snapshot,
+    publication_images_for_target,
     validate_approved_publication_snapshot,
 )
 from domains.product_operations.source_identity import (
@@ -711,3 +712,41 @@ def test_target_category_tamper_and_path_identity_drift_fail_closed():
         match="provider category path identity conflicts",
     ):
         approved_publication_snapshot_from_payload(structurally_invalid)
+
+
+def test_freezes_complete_target_specific_image_routes():
+    plan = _approved_plan()
+    base = list(plan["payload"]["product_facts"]["image_urls"])
+    routes = {
+        label: {
+            "locale": "ms-MY" if label == "tiktok:LH_MY" else "en-master",
+            "ordered_images": (
+                ["https://img.example/ms-1.jpg", "https://img.example/ms-2.jpg"]
+                if label == "tiktok:LH_MY"
+                else list(base)
+            ),
+        }
+        for label in plan["payload"]["targets"]
+    }
+    plan["payload"]["localized_image_routing"] = {
+        "schema_version": "localized-publication-images/v1",
+        "approval_digest": "sha256:" + "1" * 64,
+        "supplement_digest": "sha256:" + "2" * 64,
+        "source_snapshot_digest": "sha256:" + "3" * 64,
+        "routes": routes,
+    }
+    _rebind(plan)
+
+    document = build_approved_publication_snapshot(plan).payload()
+
+    assert publication_images_for_target(document, "tiktok:LH_MY") == [
+        "https://img.example/ms-1.jpg",
+        "https://img.example/ms-2.jpg",
+    ]
+    assert publication_images_for_target(document, "ozon:RU") == base
+
+    tampered = deepcopy(plan)
+    tampered["payload"]["localized_image_routing"]["routes"].pop("ozon:RU")
+    _rebind(tampered)
+    with pytest.raises(ApprovedPublicationSnapshotError, match="coverage"):
+        build_approved_publication_snapshot(tampered)

@@ -22,6 +22,7 @@ import json
 import re
 import time
 from typing import Any, Mapping, Protocol
+from domains.product_operations import publication_images_for_target
 from modules.shopee.global_copy import localized_semantic_line_matches
 
 from modules.shopee.global_copy import contains_vietnamese_language_features
@@ -112,6 +113,22 @@ class ShopeeRegionRuntime(Protocol):
         description: str,
     ) -> Mapping[str, object]: ...
 
+    def existing_regional_image_binding(
+        self, context: RegionContext, global_item_id: str
+    ) -> Mapping[str, object] | None: ...
+
+    def upload_regional_images(
+        self, context: RegionContext, image_urls: tuple[str, ...]
+    ) -> Mapping[str, object]: ...
+
+    def update_regional_images(
+        self,
+        context: RegionContext,
+        item_id: str,
+        *,
+        image_ids: tuple[str, ...],
+    ) -> Mapping[str, object]: ...
+
     def regional_models(
         self, context: RegionContext, item_id: str
     ) -> list[Mapping[str, object]]: ...
@@ -128,6 +145,8 @@ class ShopeeRegionRuntime(Protocol):
         shop_id: int,
         item_id: str,
         model_id: str,
+        image_route_digest: str = "",
+        image_ids: tuple[str, ...] = (),
     ) -> None: ...
 
 
@@ -389,6 +408,91 @@ def readback_dispatched_regions(
                         "successful publish task did not identify a shop item"
                     )
             item = runtime.regional_item(context, item_id)
+            base_images = tuple(_approved_images(snapshot))
+            target_images = tuple(publication_images_for_target(snapshot, target))
+            if len(target_images) != len(base_images):
+                raise ShopeeRegionContractError(
+                    "localized regional image count conflicts with the global master"
+                )
+            localized_image_route = target_images != base_images
+            image_route_digest = (
+                _digest({"ordered_images": list(target_images)})
+                if localized_image_route
+                else ""
+            )
+            expected_image_ids: tuple[str, ...] | None = None
+            image_attempted = False
+            image_error_type = ""
+            image_write_count: int | None = 0
+            if localized_image_route:
+                stored_binding = runtime.existing_regional_image_binding(
+                    context, global_id
+                )
+                if stored_binding is not None:
+                    stored_digest = str(
+                        stored_binding.get("image_route_digest") or ""
+                    ).strip()
+                    stored_ids = _image_ids(
+                        stored_binding.get("image_ids"),
+                        "stored regional image binding",
+                    )
+                    if stored_digest != image_route_digest:
+                        raise ShopeeRegionContractError(
+                            "stored regional image route conflicts with the approved route"
+                        )
+                    expected_image_ids = tuple(stored_ids)
+                else:
+                    identity_models = runtime.regional_models(context, item_id)
+                    identity_linkage = runtime.resolved_global_item_id(
+                        context, item_id
+                    )
+                    if not _regional_identity_safe_for_image_update(
+                        item=item,
+                        models=identity_models,
+                        resolved_global_item_id=identity_linkage,
+                        expected_global_item_id=global_id,
+                        expected_models=approved_models,
+                        expected_item_sku=_expected_item_sku(snapshot),
+                        expected_category_id=_expected_category_id(snapshot, target),
+                        item_id=item_id,
+                    ):
+                        raise ShopeeRegionContractError(
+                            "regional identity is not exact enough for an image update"
+                        )
+                    image_attempted = True
+                    upload_receipt = runtime.upload_regional_images(
+                        context, target_images
+                    )
+                    uploaded_ids = _image_ids(
+                        upload_receipt.get("image_ids"),
+                        "regional image upload receipt",
+                    )
+                    if len(uploaded_ids) != len(target_images):
+                        raise ShopeeRegionContractError(
+                            "regional image upload coverage is incomplete"
+                        )
+                    upload_write_count = _nonnegative_write_count(
+                        upload_receipt.get("external_write_count"),
+                        "regional image upload write count",
+                    )
+                    expected_image_ids = tuple(uploaded_ids)
+                    try:
+                        update_receipt = runtime.update_regional_images(
+                            context,
+                            item_id,
+                            image_ids=expected_image_ids,
+                        )
+                        update_write_count = _nonnegative_write_count(
+                            update_receipt.get("external_write_count"),
+                            "regional image update write count",
+                        )
+                        image_write_count = upload_write_count + update_write_count
+                    except Exception as error:
+                        image_error_type = type(error).__name__
+                        image_write_count = None
+                    item = runtime.regional_item(context, item_id)
+                    if _official_image_ids(item) == expected_image_ids:
+                        image_write_count = upload_write_count + 1
             listing_attempted = False
             listing_error_type = ""
             listing_write_count: int | None = 0
@@ -479,6 +583,7 @@ def readback_dispatched_regions(
                     expected_description=expected_description,
                     expected_region=region,
                     repaired_copy=repaired_copy,
+                    expected_image_ids=expected_image_ids,
                     item_id=item_id,
                 )
                 if not all(
@@ -521,6 +626,7 @@ def readback_dispatched_regions(
                 expected_description=expected_description,
                 expected_region=region,
                 repaired_copy=repaired_copy,
+                expected_image_ids=expected_image_ids,
                 item_id=item_id,
             )
             verified = all(checks.values())
@@ -531,13 +637,19 @@ def readback_dispatched_regions(
                     if isinstance(row, Mapping)
                     and str(row.get("model_id") or "").strip()
                 )
-                runtime.record_verified_item(
-                    global_item_id=global_id,
-                    region=region,
-                    shop_id=context.shop_id,
-                    item_id=item_id,
-                    model_id=model_ids[0] if model_ids else "",
-                )
+                record_facts: dict[str, object] = {
+                    "global_item_id": global_id,
+                    "region": region,
+                    "shop_id": context.shop_id,
+                    "item_id": item_id,
+                    "model_id": model_ids[0] if model_ids else "",
+                }
+                if expected_image_ids is not None:
+                    record_facts.update(
+                        image_route_digest=image_route_digest,
+                        image_ids=expected_image_ids,
+                    )
+                runtime.record_verified_item(**record_facts)
             results.append(
                 {
                     **_target_fact(
@@ -561,15 +673,19 @@ def readback_dispatched_regions(
                     "logistics_error_type": logistics_error_type,
                     "copy_repair_attempted": copy_repair_attempted,
                     "copy_repair_error_type": copy_repair_error_type,
+                    "image_update_attempted": image_attempted,
+                    "image_update_error_type": image_error_type,
                     "external_write_count": (
                         None
                         if listing_write_count is None
                         or logistics_write_count is None
                         or copy_write_count is None
+                        or image_write_count is None
                         else (
                             listing_write_count
                             + logistics_write_count
                             + copy_write_count
+                            + image_write_count
                         )
                     ),
                 }
@@ -732,6 +848,13 @@ class OfficialShopeeRegionRuntime:
                 _raise_provider_error(response, "official regional item discovery")
                 payload = response.get("response") or {}
                 rows = payload.get("item")
+                if (
+                    rows is None
+                    and type(payload.get("total_count")) is int
+                    and payload["total_count"] == 0
+                    and payload.get("has_next_page") is False
+                ):
+                    rows = []
                 if not isinstance(rows, list):
                     raise RuntimeError("official regional item discovery is malformed")
                 page_ids = [
@@ -893,6 +1016,51 @@ class OfficialShopeeRegionRuntime:
             "verified": receipt.get("verified") is True,
         }
 
+    def existing_regional_image_binding(
+        self, context: RegionContext, global_item_id: str
+    ) -> Mapping[str, object] | None:
+        from modules.shopee.global_sku_map import load_map
+
+        entry = load_map().get(str(global_item_id))
+        shop_items = entry.get("shop_items") if isinstance(entry, Mapping) else None
+        row = shop_items.get(context.region) if isinstance(shop_items, Mapping) else None
+        binding = row.get("localized_images") if isinstance(row, Mapping) else None
+        return dict(binding) if isinstance(binding, Mapping) else None
+
+    def upload_regional_images(
+        self, context: RegionContext, image_urls: tuple[str, ...]
+    ) -> Mapping[str, object]:
+        del context
+        from modules.shopee.publish import _upload_images_exact
+
+        image_ids = _upload_images_exact(list(image_urls), max_images=9)
+        return {
+            "image_ids": image_ids,
+            "external_write_count": len(image_ids),
+        }
+
+    def update_regional_images(
+        self,
+        context: RegionContext,
+        item_id: str,
+        *,
+        image_ids: tuple[str, ...],
+    ) -> Mapping[str, object]:
+        from modules.shopee.client import shop_post
+
+        clean_ids = _image_ids(image_ids, "regional image update")
+        response = shop_post(
+            "/api/v2/product/update_item",
+            context.shop_id,
+            context.shop_token,
+            {
+                "item_id": int(item_id),
+                "image": {"image_id_list": clean_ids},
+            },
+        )
+        _raise_provider_error(response, "official regional image update")
+        return {"external_write_count": 1}
+
     def regional_models(
         self, context: RegionContext, item_id: str
     ) -> list[Mapping[str, object]]:
@@ -933,6 +1101,8 @@ class OfficialShopeeRegionRuntime:
         shop_id: int,
         item_id: str,
         model_id: str,
+        image_route_digest: str = "",
+        image_ids: tuple[str, ...] = (),
     ) -> None:
         from modules.shopee.global_sku_map import record_shop_item
 
@@ -942,6 +1112,8 @@ class OfficialShopeeRegionRuntime:
             shop_id=shop_id,
             item_id=item_id,
             model_id=model_id,
+            image_route_digest=image_route_digest,
+            image_ids=list(image_ids),
         )
 
 
@@ -1067,14 +1239,18 @@ def _parcel_envelope(
     )
 
 
-def _approved_image_count(snapshot: Mapping[str, object]) -> int:
+def _approved_images(snapshot: Mapping[str, object]) -> list[str]:
     product = snapshot.get("product")
     if isinstance(product, Mapping) and isinstance(product.get("images"), list):
-        return len(product["images"])
+        return [str(value).strip() for value in product["images"]]
     content = snapshot.get("content")
     if isinstance(content, Mapping) and isinstance(content.get("images"), list):
-        return len(content["images"])
-    return 0
+        return [str(value).strip() for value in content["images"]]
+    return []
+
+
+def _approved_image_count(snapshot: Mapping[str, object]) -> int:
+    return len(_approved_images(snapshot))
 
 
 def _approved_copy(snapshot: Mapping[str, object]) -> tuple[str, str]:
@@ -1244,6 +1420,7 @@ def _official_readback_checks(
     expected_description: str,
     expected_region: str,
     repaired_copy: tuple[str, str] | None,
+    expected_image_ids: tuple[str, ...] | None,
     item_id: str,
 ) -> dict[str, bool]:
     expected = {row["model_sku"]: row for row in expected_models}
@@ -1272,6 +1449,7 @@ def _official_readback_checks(
         image = item.get("image")
         if isinstance(image, Mapping):
             image_urls = image.get("image_url_list") or image.get("image_id_list") or []
+    observed_image_ids = _official_image_ids(item)
     logistic_rows = (
         item.get("logistic_info")
         if isinstance(item, Mapping)
@@ -1367,7 +1545,60 @@ def _official_readback_checks(
             isinstance(image_urls, list)
             and len(image_urls) >= max(1, expected_image_count)
         ),
+        "localized_images_exact": (
+            expected_image_ids is None
+            or observed_image_ids == expected_image_ids
+        ),
     }
+
+
+def _regional_identity_safe_for_image_update(
+    *,
+    item: Mapping[str, object] | None,
+    models: list[Mapping[str, object]],
+    resolved_global_item_id: str,
+    expected_global_item_id: str,
+    expected_models: list[Mapping[str, str]],
+    expected_item_sku: str,
+    expected_category_id: str,
+    item_id: str,
+) -> bool:
+    if not isinstance(item, Mapping) or str(item.get("item_id") or "") != item_id:
+        return False
+    if str(resolved_global_item_id or "") != expected_global_item_id:
+        return False
+    expected_skus = {row["model_sku"] for row in expected_models}
+    observed_skus = {
+        str(row.get("model_sku") or "").strip()
+        for row in models
+        if isinstance(row, Mapping) and str(row.get("model_sku") or "").strip()
+    }
+    if observed_skus != expected_skus:
+        return False
+    item_sku = str(item.get("item_sku") or "").strip()
+    if item_sku != expected_item_sku and not (
+        item.get("has_model") is True and not item_sku
+    ):
+        return False
+    category_id = str(item.get("category_id") or "").strip()
+    return not category_id or not expected_category_id or category_id == expected_category_id
+
+
+def _official_image_ids(item: Mapping[str, object] | None) -> tuple[str, ...]:
+    image = item.get("image") if isinstance(item, Mapping) else None
+    values = image.get("image_id_list") if isinstance(image, Mapping) else None
+    if not isinstance(values, list):
+        return ()
+    return tuple(str(value or "").strip() for value in values)
+
+
+def _image_ids(value: object, label: str) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        raise ShopeeRegionContractError(f"{label} is invalid")
+    clean = [str(row or "").strip() for row in value]
+    if not clean or any(not row for row in clean) or len(set(clean)) != len(clean):
+        raise ShopeeRegionContractError(f"{label} is invalid")
+    return clean
 
 
 def _regional_copy_matches(

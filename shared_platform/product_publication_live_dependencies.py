@@ -281,11 +281,10 @@ def _tiktok_profile(product: Mapping[str, object]) -> Mapping[str, object]:
         )
         if not (
             "self-adhesive" in text
-            and "decorative" in text
             and ("wall covering" in text or "wallpaper" in text)
         ):
             raise LivePublicationDependencyError(
-                "approved wallpaper is not an explicit self-adhesive decorative wall covering"
+                "approved wallpaper is not an explicit self-adhesive wall covering"
             )
     return profile
 

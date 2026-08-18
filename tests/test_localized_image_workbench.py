@@ -234,6 +234,7 @@ def test_automatic_translation_creates_five_locale_previews_without_product_cent
         "es-MX": "Fácil de instalar",
     }
     calls = []
+    generation_calls = []
 
     def model_call(_messages, **_kwargs):
         calls.append(True)
@@ -254,14 +255,40 @@ def test_automatic_translation_creates_five_locale_previews_without_product_cent
             ensure_ascii=False,
         )
 
+    def image_generator(*, source_url, source_bytes, locale, translations, checkpoint_dir):
+        generation_calls.append(
+            {
+                "source_url": source_url,
+                "locale": locale,
+                "translations": translations,
+                "checkpoint_dir": checkpoint_dir,
+            }
+        )
+        return {
+            "image_bytes": _image_bytes(),
+            "receipt": {
+                "status": "COMPLETED",
+                "provider": "toapis-images/v1",
+                "model": "gpt-image-2-official",
+                "task_id": f"task-{locale}",
+                "client_business_id": f"localized-{locale}",
+                "request_attempted": True,
+                "outcome_unknown": False,
+                "external_generation_count": 1,
+            },
+        }
+
     result = workbench.auto_translate_localized_images(
         "3900088343",
         expected_revision=current["project"]["revision"],
         source_bytes_by_url={url: _image_bytes() for url in urls},
         model_call=model_call,
+        image_generator=image_generator,
+        confirm_paid_generation=True,
     )
 
     assert len(calls) == 1
+    assert len(generation_calls) == 5
     assert result["project"]["automatic_translation"]["status"] == "AUTO_PREVIEW_READY"
     assert all(
         result["project"]["packs"][locale]["status"] == "AUTO_PREVIEW_READY"
@@ -271,7 +298,9 @@ def test_automatic_translation_creates_five_locale_previews_without_product_cent
         "local_url"
     ].startswith("/api/product-flow/content-package/localized-images/artifact?")
     assert state_path.read_bytes() == original
-    assert result["external_writes"] == 0
+    assert result["external_writes"] == 5
+    assert result["paid_generation_calls"] == 5
+    assert result["platform_writes"] == 0
     assert result["product_center_mutated"] is False
 
     repeated = workbench.auto_translate_localized_images(
@@ -279,6 +308,7 @@ def test_automatic_translation_creates_five_locale_previews_without_product_cent
         expected_revision=result["project"]["revision"],
         source_bytes_by_url={},
         model_call=lambda *_args, **_kwargs: pytest.fail("idempotent call must not use model"),
+        image_generator=lambda **_kwargs: pytest.fail("idempotent call must not generate"),
     )
     assert repeated["project"]["revision"] == result["project"]["revision"]
 
@@ -286,7 +316,7 @@ def test_automatic_translation_creates_five_locale_previews_without_product_cent
         tmp_path / "localized_image_packs" / "3900088343" / "project.json"
     )
     stale_renderer = json.loads(project_path.read_text(encoding="utf-8"))
-    stale_renderer["automatic_translation"]["renderer"] = "pillow-local-preview/v1"
+    stale_renderer["automatic_translation"]["renderer"] = "pillow-local-preview/v2"
     project_path.write_text(
         json.dumps(stale_renderer, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -297,8 +327,10 @@ def test_automatic_translation_creates_five_locale_previews_without_product_cent
         model_call=lambda *_args, **_kwargs: pytest.fail(
             "renderer upgrade must reuse saved translations"
         ),
+        image_generator=image_generator,
+        confirm_paid_generation=True,
     )
     assert rerendered["project"]["revision"] == result["project"]["revision"] + 1
     assert rerendered["project"]["automatic_translation"]["renderer"] == (
-        "pillow-local-preview/v2"
+        "toapis-reference-image/v1"
     )

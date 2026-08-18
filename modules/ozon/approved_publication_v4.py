@@ -14,6 +14,10 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from domains.product_operations.approved_publication_snapshot import (
+    publication_images_for_target,
+)
+
 
 SNAPSHOT_SCHEMA_VERSION = "approved-publication-snapshot/v4"
 PLATFORM_RESULT_SCHEMA_VERSION = "product-publication-platform-result/v1"
@@ -313,7 +317,9 @@ def project_ozon_v4_variants(
     product = _mapping(snapshot.get("product"), "approved product")
     title = _text(product.get("title"), "approved Ozon title")
     description = _text(product.get("description"), "approved Ozon description")
-    _https_urls(product.get("images"), "approved product images")
+    base_images = _https_urls(product.get("images"), "approved product images")
+    target_images = publication_images_for_target(snapshot, OZON_TARGET)
+    routed_by_base = dict(zip(base_images, target_images, strict=True))
     category, official_profile = _category_and_profile(
         snapshot, official_profile_resolver
     )
@@ -371,7 +377,10 @@ def project_ozon_v4_variants(
             raise OzonApprovedPublicationError(
                 "approved Ozon old price must exceed price"
             )
-        images = _https_urls(sku.get("variant_images"), "approved Ozon variant images")
+        images = [
+            routed_by_base.get(url, url)
+            for url in _https_urls(sku.get("variant_images"), "approved Ozon variant images")
+        ]
         variants.append(
             {
                 "schema_version": "ozon-approved-import-variant/v1",

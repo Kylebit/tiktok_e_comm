@@ -94,38 +94,32 @@ def test_verified_miaoshou_image_sync_also_finishes_final_content_approval():
     assert "await finalizeAiContentAfterVerifiedSync();" in sync_source
 
 
-def test_ai_studio_exposes_isolated_locale_image_packs_without_product_center_write():
+def test_ai_studio_removes_legacy_clean_master_and_locale_pack_panels():
     html = (ROOT / "web/ai_image_studio.html").read_text(encoding="utf-8")
     script = (ROOT / "web/static/ai_image_studio.js").read_text(encoding="utf-8")
-    css = (ROOT / "web/static/ai_image_studio.css").read_text(encoding="utf-8")
+    styles = (ROOT / "web/static/ai_image_studio.css").read_text(encoding="utf-8")
 
-    assert 'id="initializeLocalizedImagePacksButton"' in html
-    assert 'id="localizedImagePackGrid"' in html
-    assert 'id="localizedImageRouteGrid"' in html
-    assert "不会修改商品发布中心" in html
-    assert 'flowApi("content-package/localized-images")' in script
-    assert 'post("content-package/localized-images/initialize"' in script
-    assert "商品发布中心和平台均未被修改" in script
-    assert "pack.status" in script
-    assert "等待自动处理，无需逐条填写" in script
-    assert ".localized-pack-grid" in css
+    assert 'id="imageLocalization"' not in html
+    assert 'id="localizedImagePackTitle"' not in html
+    assert 'id="localizedImagePackGrid"' not in html
+    assert 'id="initializeLocalizedImagePacksButton"' not in html
+    assert "干净母图与图片文字区域" not in html
+    assert "国家语言图片包（独立）" not in html
+    assert 'id="manualImageProfileTitle"' not in html
+    assert "localizedImageProject" not in script
+    assert "content-package/localized-images" not in script
+    assert ".localized-pack-panel" not in styles
 
 
-def test_ai_studio_supports_local_ocr_editable_translations_and_local_preview():
+def test_ai_studio_does_not_embed_the_standalone_locale_review_workflow():
     html = (ROOT / "web/ai_image_studio.html").read_text(encoding="utf-8")
     script = (ROOT / "web/static/ai_image_studio.js").read_text(encoding="utf-8")
 
-    assert 'id="scanLocalizedImageTextButton"' in html
-    assert 'id="autoTranslateLocalizedImagesButton"' in html
-    assert 'id="localizedImageLocaleSelect"' in html
-    assert 'id="localizedTranslationGrid"' in html
-    assert "自动生成五种语言图片预览" in html
-    assert 'post("content-package/localized-images/scan-text"' in script
-    assert 'post("content-package/localized-images/auto-translate"' in script
-    assert 'post("content-package/localized-images/translation-draft"' in script
-    assert 'post("content-package/localized-images/preview"' in script
-    assert "localizedTranslationDraft" in script
-    assert "刷新不会静默覆盖当前输入" in script
-    assert "尚未批准或发布" in script
-    assert "异常修正（通常不需要）" in script
-    assert "不会修改商品发布中心或平台" in script
+    assert 'id="scanLocalizedImageTextButton"' not in html
+    assert 'id="autoTranslateLocalizedImagesButton"' not in html
+    assert 'id="localizedImageLocaleSelect"' not in html
+    assert 'id="localizedTranslationGrid"' not in html
+    assert 'id="localizedPaidGenerationConfirm"' not in html
+    assert "content-package/localized-image-review" not in script
+    assert "autoTranslateLocalizedImages" not in script
+    assert "saveLocalizedTranslation" not in script

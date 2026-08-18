@@ -320,11 +320,25 @@ def test_automatic_bundle_commits_all_locales_once_and_is_bound_to_inventory(tmp
         else:
             locale_rows = {locale: [] for locale in translations}
             previews = {}
+        generation_receipts = {
+            locale: {
+                "status": "COMPLETED",
+                "provider": "toapis-images/v1",
+                "model": "gpt-image-2-official",
+                "task_id": f"task-{locale}",
+                "client_business_id": f"localized-{locale}",
+                "request_attempted": True,
+                "outcome_unknown": False,
+                "external_generation_count": 1,
+            }
+            for locale in previews
+        }
         items.append(
             {
                 "source_url": url,
                 "translations": locale_rows,
                 "previews": previews,
+                "generation_receipts": generation_receipts,
                 "receipt": {
                     "status": "AUTO_TRANSLATED" if regions else "NO_TEXT_REUSE_BASE",
                     "provider": "toapis-chat-completions/v1",
@@ -342,7 +356,8 @@ def test_automatic_bundle_commits_all_locales_once_and_is_bound_to_inventory(tmp
 
     assert saved["revision"] == scanned["revision"] + 1
     assert saved["automatic_translation"]["status"] == "AUTO_PREVIEW_READY"
-    assert saved["automatic_translation"]["renderer"] == "pillow-local-preview/v2"
+    assert saved["automatic_translation"]["renderer"] == "toapis-reference-image/v1"
+    assert saved["automatic_translation"]["image_generation_calls"] == 5
     assert saved["automatic_translation"]["model_calls"] == 1
     assert saved["packs"]["th-TH"]["status"] == "AUTO_PREVIEW_READY"
     translated_image = saved["packs"]["th-TH"]["images"][0]

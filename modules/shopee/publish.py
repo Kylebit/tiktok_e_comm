@@ -613,6 +613,39 @@ def _upload_images(urls: list[str], *, max_images: int = 8) -> list[str]:
     return ids
 
 
+def _upload_images_exact(urls: list[str], *, max_images: int = 9) -> list[str]:
+    """Upload one frozen ordered image set without skipping failed rows."""
+
+    clean_urls = [str(value or "").strip() for value in urls]
+    if (
+        not clean_urls
+        or len(clean_urls) > max_images
+        or any(not value.startswith("https://") for value in clean_urls)
+        or len(set(clean_urls)) != len(clean_urls)
+    ):
+        raise ValueError("Shopee exact image URLs are invalid")
+    ids: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="shopee_exact_img_") as tmp:
+        for index, url in enumerate(clean_urls):
+            path = Path(tmp) / f"img_{index}.jpg"
+            _download_image(url, path)
+            response = upload_image(path, scene="normal" if index == 0 else "desc")
+            info = response.get("image_info") if isinstance(response, dict) else None
+            image_id = info.get("image_id") if isinstance(info, dict) else None
+            if not image_id and isinstance(response, dict):
+                rows = response.get("image_info_list")
+                row = rows[0] if isinstance(rows, list) and len(rows) == 1 else None
+                nested = row.get("image_info") if isinstance(row, dict) else None
+                image_id = nested.get("image_id") if isinstance(nested, dict) else None
+            clean_id = str(image_id or "").strip()
+            if not clean_id or clean_id in ids:
+                raise RuntimeError("Shopee exact image upload response is invalid")
+            ids.append(clean_id)
+    if len(ids) != len(clean_urls):
+        raise RuntimeError("Shopee exact image upload coverage is incomplete")
+    return ids
+
+
 def build_payload(
     detail: dict,
     *,

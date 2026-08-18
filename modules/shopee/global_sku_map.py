@@ -324,6 +324,8 @@ def record_shop_item(
     shop_id: int,
     item_id: int | str,
     model_id: str = "",
+    image_route_digest: str = "",
+    image_ids: list[str] | None = None,
 ) -> None:
     data = load_map()
     gid = str(global_item_id).strip()
@@ -340,6 +342,19 @@ def record_shop_item(
         "item_id": str(item_id),
         "model_id": str(model_id or f"item_{item_id}"),
     }
+    if image_route_digest or image_ids:
+        clean_ids = [str(value or "").strip() for value in (image_ids or [])]
+        if (
+            not str(image_route_digest or "").strip()
+            or not clean_ids
+            or any(not value for value in clean_ids)
+            or len(set(clean_ids)) != len(clean_ids)
+        ):
+            raise ValueError("regional localized image binding is invalid")
+        replacement["localized_images"] = {
+            "image_route_digest": str(image_route_digest).strip(),
+            "image_ids": clean_ids,
+        }
     previous = shop_items.get(clean_region)
     if (
         isinstance(previous, dict)

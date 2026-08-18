@@ -43,6 +43,7 @@ STATE_DIR = ROOT / "data" / "new_product_workbench"
 IMAGE_SUITE_OUTPUTS_DIR = ROOT / "outputs" / "image_suite_from_miaoshou"
 IMAGE_LOCALIZATION_DIR = ROOT / "data" / "image_localization"
 LOCALIZED_IMAGE_PACKS_DIR = ROOT / "data" / "localized_image_packs"
+LOCALIZED_IMAGE_REVIEWS_DIR = ROOT / "data" / "localized_image_reviews"
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
@@ -959,6 +960,328 @@ def _localized_image_pack_store():
     return LocalizedImagePackStore(LOCALIZED_IMAGE_PACKS_DIR)
 
 
+def _localized_image_review_store():
+    from modules.sourcing.localized_image_review import LocalizedImageReviewStore
+
+    return LocalizedImageReviewStore(LOCALIZED_IMAGE_REVIEWS_DIR)
+
+
+def _localized_image_review_generation_job_path(offer_id: str) -> Path:
+    return LOCALIZED_IMAGE_REVIEWS_DIR / offer_id / "generation-job.json"
+
+
+def localized_image_review_generation_job(offer_id_or_url: str) -> dict[str, Any]:
+    offer_id = resolve_offer_key(offer_id_or_url)
+    job = _load_json(_localized_image_review_generation_job_path(offer_id)) or {}
+    if not job:
+        return {
+            "schema_version": "localized-image-review-generation-job/v1",
+            "offer_id": offer_id,
+            "status": "IDLE",
+        }
+    return dict(job)
+
+
+def save_localized_image_review_generation_job(
+    offer_id_or_url: str, payload: Mapping[str, Any]
+) -> dict[str, Any]:
+    offer_id = resolve_offer_key(offer_id_or_url)
+    job = {
+        "schema_version": "localized-image-review-generation-job/v1",
+        "offer_id": offer_id,
+        **dict(payload),
+    }
+    _write_json_atomic(_localized_image_review_generation_job_path(offer_id), job)
+    return dict(job)
+
+
+def localized_image_review_summary(offer_id_or_url: str) -> dict[str, Any]:
+    """Read the standalone human-review project without touching Product Center."""
+
+    offer_id = resolve_offer_key(offer_id_or_url)
+    project = _localized_image_review_store().load(offer_id)
+    for task in project.get("tasks") or []:
+        if not isinstance(task, dict):
+            continue
+        artifact_id = str(task.get("artifact_id") or "")
+        if artifact_id:
+            task["local_url"] = (
+                "/api/product-flow/content-package/localized-image-review/artifact"
+                f"?offer_id={urllib.parse.quote(offer_id)}"
+                f"&artifact_id={urllib.parse.quote(artifact_id)}"
+            )
+        task["source_local_url"] = (
+            "/api/proxy-image?url="
+            f"{urllib.parse.quote(str(task.get('source_url') or ''), safe='')}"
+        )
+    return {
+        "schema_version": "localized-image-review-summary/v1",
+        "offer_id": offer_id,
+        "initialized": bool(project),
+        "review": project,
+        "generation_job": localized_image_review_generation_job(offer_id),
+        "product_center_mutated": False,
+        "platform_writes": 0,
+    }
+
+
+def _approved_snapshot_for_localized_review(offer_id: str, release_store=None) -> dict[str, Any]:
+    if release_store is None:
+        from shared_platform.release_store import ReleaseStore
+
+        release_store = ReleaseStore(ROOT / "data" / "orbit_platform.db")
+    plan = release_store.active_plan_for_product(offer_id)
+    if (
+        not isinstance(plan, dict)
+        or plan.get("status") != "APPROVED"
+        or str(plan.get("product_id") or "") != offer_id
+    ):
+        raise ValueError("an active approved ReleasePlan is required")
+    plan_id = str(plan.get("plan_id") or "").strip()
+    snapshot = release_store.approved_publication_snapshot(
+        offer_id=offer_id, plan_id=plan_id
+    )
+    if not isinstance(snapshot, dict):
+        raise ValueError("the approved ReleasePlan has no durable v4 snapshot")
+    return snapshot
+
+
+def initialize_localized_image_review(
+    offer_id_or_url: str,
+    *,
+    selected_positions: tuple[int, ...] = (1, 5, 6, 7),
+    release_store=None,
+) -> dict[str, Any]:
+    """Freeze selected image positions into a local-only paid-generation preflight."""
+
+    offer_id = resolve_offer_key(offer_id_or_url)
+    snapshot = _approved_snapshot_for_localized_review(offer_id, release_store)
+    _localized_image_review_store().initialize(
+        snapshot, selected_positions=selected_positions
+    )
+    return localized_image_review_summary(offer_id)
+
+
+def generate_localized_image_review(
+    offer_id_or_url: str,
+    *,
+    expected_revision: object,
+    source_bytes_by_url: dict[str, bytes],
+    confirm_paid_generation: bool = False,
+    ocr_engine=None,
+    model_call=None,
+    image_generator=None,
+) -> dict[str, Any]:
+    """Generate every pending locale image; never publish or alter a ReleasePlan."""
+
+    from modules.sourcing.localized_image_auto_translation import translate_image_regions
+    from modules.sourcing.localized_image_ocr import detect_english_text_regions
+    from modules.sourcing.localized_image_toapis_generation import (
+        generate_localized_reference_image,
+    )
+
+    if confirm_paid_generation is not True:
+        raise ValueError("explicit paid localized image generation confirmation is required")
+    offer_id = resolve_offer_key(offer_id_or_url)
+    store = _localized_image_review_store()
+    project = store.load(offer_id)
+    if not project:
+        raise ValueError("localized image review is missing")
+    try:
+        expected = int(expected_revision)
+    except (TypeError, ValueError) as error:
+        raise ValueError("localized review revision is invalid") from error
+    if expected != int(project.get("revision") or 0):
+        raise ValueError("localized review revision has changed")
+    pending = [
+        row for row in project.get("tasks") or []
+        if row.get("status") in {"PENDING_GENERATION", "RETRY_REQUESTED"}
+    ]
+    if not pending:
+        return localized_image_review_summary(offer_id)
+    source_urls = list(dict.fromkeys(str(row["source_url"]) for row in pending))
+    if set(source_bytes_by_url) != set(source_urls):
+        raise ValueError("selected source image bytes are incomplete")
+    generator = image_generator or generate_localized_reference_image
+
+    # Freeze OCR/model output before the first paid image request.  Translation
+    # models are not byte-deterministic; recomputing them after a transport
+    # interruption used to create a different client_business_id and defeated
+    # ToAPIs' business-ID reconciliation.
+    translation_plan_path = (
+        LOCALIZED_IMAGE_REVIEWS_DIR / offer_id / "translation-plan.json"
+    )
+    plan_identity = {
+        "schema_version": "localized-image-translation-plan/v1",
+        "offer_id": offer_id,
+        "approved_snapshot_digest": project.get("approved_snapshot_digest"),
+        "tasks": [
+            {
+                "task_id": str(row.get("task_id") or ""),
+                "source_url": str(row.get("source_url") or ""),
+                "source_url_digest": str(row.get("source_url_digest") or ""),
+                "locale": str(row.get("locale") or ""),
+            }
+            for row in project.get("tasks") or []
+        ],
+    }
+    plan_identity_digest = hashlib.sha256(
+        json.dumps(
+            plan_identity,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    translation_plan = _load_json(translation_plan_path) or {}
+    if translation_plan:
+        frozen_plan_tasks = translation_plan.get("tasks")
+        frozen_plan_digest = hashlib.sha256(
+            json.dumps(
+                frozen_plan_tasks,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        if (
+            translation_plan.get("schema_version")
+            != "localized-image-translation-plan/v1"
+            or translation_plan.get("identity_digest") != plan_identity_digest
+            or not isinstance(frozen_plan_tasks, list)
+            or translation_plan.get("translations_digest") != frozen_plan_digest
+        ):
+            raise ValueError("localized image translation plan identity drifted")
+    else:
+        frozen_tasks: list[dict[str, Any]] = []
+        for source_url in source_urls:
+            source_bytes = source_bytes_by_url[source_url]
+            regions = detect_english_text_regions(source_bytes, engine=ocr_engine)
+            if not regions:
+                raise ValueError("selected localized image has no detected English text")
+            translated = (
+                translate_image_regions(regions)
+                if model_call is None
+                else translate_image_regions(regions, model_call=model_call)
+            )
+            translations_by_locale = translated.get("translations") or {}
+            for task in (row for row in pending if row["source_url"] == source_url):
+                locale = str(task["locale"])
+                translations = translations_by_locale.get(locale)
+                if not isinstance(translations, list) or not translations:
+                    raise ValueError("localized translation output is incomplete")
+                frozen_tasks.append(
+                    {
+                        "task_id": str(task["task_id"]),
+                        "source_url": source_url,
+                        "source_digest": hashlib.sha256(source_bytes).hexdigest(),
+                        "locale": locale,
+                        "translations": [dict(row) for row in translations],
+                    }
+                )
+        if {row["task_id"] for row in frozen_tasks} != {
+            str(row["task_id"]) for row in pending
+        }:
+            raise ValueError("localized translation plan coverage is incomplete")
+        translation_plan = {
+            **plan_identity,
+            "identity_digest": plan_identity_digest,
+            "translations_digest": hashlib.sha256(
+                json.dumps(
+                    frozen_tasks,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+            "created_at": _now(),
+            "tasks": frozen_tasks,
+        }
+        _write_json_atomic(translation_plan_path, translation_plan)
+
+    frozen_by_task = {
+        str(row.get("task_id") or ""): row
+        for row in translation_plan.get("tasks") or []
+        if isinstance(row, Mapping)
+    }
+    if not {str(row["task_id"]) for row in pending}.issubset(frozen_by_task):
+        raise ValueError("localized translation plan coverage is incomplete")
+    items: list[dict[str, Any]] = []
+    for task in pending:
+        task_id = str(task["task_id"])
+        frozen = frozen_by_task[task_id]
+        source_url = str(task["source_url"])
+        source_bytes = source_bytes_by_url[source_url]
+        if (
+            frozen.get("source_url") != source_url
+            or frozen.get("locale") != str(task["locale"])
+            or frozen.get("source_digest")
+            != hashlib.sha256(source_bytes).hexdigest()
+        ):
+            raise ValueError("localized translation plan source drifted")
+        translations = frozen.get("translations")
+        if not isinstance(translations, list) or not translations:
+            raise ValueError("localized translation plan is incomplete")
+        generated = generator(
+            source_url=source_url,
+            source_bytes=source_bytes,
+            locale=str(task["locale"]),
+            translations=translations,
+            checkpoint_dir=(
+                LOCALIZED_IMAGE_REVIEWS_DIR / offer_id / "toapis-generation"
+            ),
+        )
+        items.append(
+            {
+                "task_id": task_id,
+                "translations": translations,
+                "image_bytes": generated.get("image_bytes"),
+                "receipt": generated.get("receipt"),
+            }
+        )
+    store.save_generation_bundle(
+        offer_id, expected_revision=expected, items=items
+    )
+    return localized_image_review_summary(offer_id)
+
+
+def decide_localized_image_review(
+    offer_id_or_url: str,
+    *,
+    expected_revision: object,
+    task_id: str,
+    decision: str,
+) -> dict[str, Any]:
+    offer_id = resolve_offer_key(offer_id_or_url)
+    _localized_image_review_store().decide(
+        offer_id,
+        expected_revision=expected_revision,
+        task_id=task_id,
+        decision=decision,
+    )
+    return localized_image_review_summary(offer_id)
+
+
+def approve_localized_image_review(
+    offer_id_or_url: str,
+    *,
+    expected_revision: object,
+    approved_by: str,
+) -> dict[str, Any]:
+    offer_id = resolve_offer_key(offer_id_or_url)
+    _localized_image_review_store().approve(
+        offer_id,
+        expected_revision=expected_revision,
+        approved_by=approved_by,
+    )
+    return localized_image_review_summary(offer_id)
+
+
+def localized_image_review_artifact(offer_id_or_url: str, artifact_id: str) -> Path:
+    offer_id = resolve_offer_key(offer_id_or_url)
+    return _localized_image_review_store().artifact_path(offer_id, artifact_id)
+
+
 def localized_image_project_summary(offer_id_or_url: str) -> dict[str, Any]:
     """Read the independent locale-image project without touching Product Center."""
 
@@ -978,12 +1301,17 @@ def localized_image_project_summary(offer_id_or_url: str) -> dict[str, Any]:
                     f"?offer_id={urllib.parse.quote(offer_id)}"
                     f"&artifact_id={urllib.parse.quote(artifact_id)}"
                 )
+    paid_generation_calls = int(
+        ((project.get("automatic_translation") or {}).get("image_generation_calls") or 0)
+    )
     return {
         "schema_version": "localized-image-project-summary/v1",
         "offer_id": offer_id,
         "initialized": bool(project),
         "project": project,
-        "external_writes": 0,
+        "external_writes": paid_generation_calls,
+        "paid_generation_calls": paid_generation_calls,
+        "platform_writes": 0,
         "product_center_mutated": False,
     }
 
@@ -1087,15 +1415,17 @@ def auto_translate_localized_images(
     expected_revision: object,
     source_bytes_by_url: dict[str, bytes],
     model_call=None,
+    image_generator=None,
+    confirm_paid_generation: bool = False,
 ) -> dict[str, Any]:
-    """Automatically translate and render all locale packs without platform writes."""
+    """Translate text and generate localized reference images without platform writes."""
 
     from modules.sourcing.localized_image_auto_translation import (
         translate_image_regions,
     )
-    from modules.sourcing.localized_image_render import (
+    from modules.sourcing.localized_image_toapis_generation import (
         RENDERER,
-        render_translation_preview,
+        generate_localized_reference_image,
     )
 
     offer_id = resolve_offer_key(offer_id_or_url)
@@ -1115,6 +1445,9 @@ def auto_translate_localized_images(
         and automatic.get("renderer") == RENDERER
     ):
         return _localized_project_result(offer_id)
+    if confirm_paid_generation is not True:
+        raise ValueError("explicit paid localized image generation confirmation is required")
+    generator = image_generator or generate_localized_reference_image
     source_urls = list((project.get("base_package") or {}).get("ordered_image_urls") or [])
     inventory = (project.get("text_inventory") or {}).get("images") or {}
     if set(inventory) != set(source_urls):
@@ -1169,12 +1502,15 @@ def auto_translate_localized_images(
             translated = translate_image_regions(regions)
         else:
             translated = translate_image_regions(regions, model_call=model_call)
-        previews = {
-            locale: render_translation_preview(
-                source_bytes_by_url[source_url],
-                regions=regions,
-                translations=translations,
+        generated = {
+            locale: generator(
+                source_url=source_url,
+                source_bytes=source_bytes_by_url[source_url],
                 locale=locale,
+                translations=translations,
+                checkpoint_dir=(
+                    LOCALIZED_IMAGE_PACKS_DIR / offer_id / "toapis-generation"
+                ),
             )
             for locale, translations in translated["translations"].items()
             if regions
@@ -1183,7 +1519,14 @@ def auto_translate_localized_images(
             {
                 "source_url": source_url,
                 "translations": translated["translations"],
-                "previews": previews,
+                "previews": {
+                    locale: result.get("image_bytes")
+                    for locale, result in generated.items()
+                },
+                "generation_receipts": {
+                    locale: result.get("receipt")
+                    for locale, result in generated.items()
+                },
                 "receipt": translated["receipt"],
             }
         )

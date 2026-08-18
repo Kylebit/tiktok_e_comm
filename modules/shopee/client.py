@@ -60,7 +60,13 @@ def shop_post(path: str, shop_id: int, access_token: str, body: dict) -> dict:
         method="POST",
         headers={"Content-Type": "application/json"},
     )
-    with urlopen_retry(req, timeout=90, context=SSL_CTX) as resp:
+    with urlopen_retry(
+        req,
+        timeout=90,
+        context=SSL_CTX,
+        attempts=1,
+        allow_curl_fallback=False,
+    ) as resp:
         return _parse_json(resp.read().decode("utf-8"), path)
 
 
@@ -97,7 +103,13 @@ def upload_image(file_path: Path, *, scene: str = "normal") -> dict:
         method="POST",
         headers={"Content-Type": f"multipart/form-data; boundary={_BOUNDARY}"},
     )
-    with urlopen_retry(req, timeout=120, context=SSL_CTX) as resp:
+    with urlopen_retry(
+        req,
+        timeout=120,
+        context=SSL_CTX,
+        attempts=1,
+        allow_curl_fallback=False,
+    ) as resp:
         data = _parse_json(resp.read().decode("utf-8"), path)
     if data.get("error"):
         raise RuntimeError(data.get("message") or data.get("error") or data)

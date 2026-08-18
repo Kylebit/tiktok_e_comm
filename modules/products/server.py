@@ -13209,6 +13209,8 @@ class Handler(BaseHTTPRequestHandler):
             "content-package/image-localization/artifact",
             "content-package/localized-images",
             "content-package/localized-images/artifact",
+            "content-package/localized-image-review",
+            "content-package/localized-image-review/artifact",
         }
         allowed_post = {
             "review",
@@ -13229,6 +13231,10 @@ class Handler(BaseHTTPRequestHandler):
             "content-package/localized-images/auto-translate",
             "content-package/localized-images/translation-draft",
             "content-package/localized-images/preview",
+            "content-package/localized-image-review/initialize",
+            "content-package/localized-image-review/generate",
+            "content-package/localized-image-review/decision",
+            "content-package/localized-image-review/approve",
         }
         allowed = allowed_get if method == "GET" else allowed_post
         if action not in allowed:
@@ -13270,7 +13276,10 @@ class Handler(BaseHTTPRequestHandler):
         )
         opener = urllib.request.build_opener(_NoRemoteImageRedirects())
         try:
-            timeout = 600 if action == "content-package/localized-images/auto-translate" else 120
+            timeout = 600 if action in {
+                "content-package/localized-images/auto-translate",
+                "content-package/localized-image-review/generate",
+            } else 120
             with opener.open(request, timeout=timeout) as response:
                 data = response.read(64 * 1024 * 1024)
                 content_type = response.headers.get("Content-Type") or "application/octet-stream"
@@ -13435,6 +13444,8 @@ class Handler(BaseHTTPRequestHandler):
             "/ai-images.html",
         ):
             return self._file(WEB_DIR / "ai_image_studio.html")
+        if path in ("/localized-image-review", "/localized-image-review.html"):
+            return self._file(WEB_DIR / "localized_image_review.html")
         if path in ("/new-product-legacy", "/new-product-legacy.html"):
             return self._module_moved("Orbit Treasury", "http://127.0.0.1:8766/")
         if path in ("/workbench", "/workbench.html"):

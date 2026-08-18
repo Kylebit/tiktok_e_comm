@@ -2255,6 +2255,112 @@ class ReleaseStore:
         )
         return self.create_plan(payload, supersedes_plan_id=predecessor["plan_id"])
 
+    def create_localized_image_successor(
+        self,
+        predecessor_plan_id: str,
+        *,
+        supplement: Mapping[str, Any],
+        uploaded_assets: Mapping[str, Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        """Persist a successor whose only business change is target image routing."""
+        predecessor = self.get_plan(_text(predecessor_plan_id))
+        if predecessor is None:
+            raise ReleaseStoreError("predecessor release plan was not found")
+        if predecessor["status"] != PLAN_APPROVED:
+            raise ReleaseAuthorizationError(
+                "localized image successor requires an approved predecessor"
+            )
+        snapshot = self.approved_publication_snapshot(
+            offer_id=predecessor["product_id"], plan_id=predecessor["plan_id"]
+        )
+        if snapshot is None:
+            raise ReleaseAuthorizationError(
+                "localized image successor requires a durable frozen predecessor snapshot"
+            )
+        from shared_platform.localized_image_successor import (
+            build_localized_image_successor_payload,
+        )
+
+        payload = build_localized_image_successor_payload(
+            predecessor["payload"],
+            predecessor_snapshot=snapshot,
+            supplement=supplement,
+            uploaded_assets=uploaded_assets,
+        )
+        from domains.product_operations import build_approved_publication_snapshot
+
+        preview = self.preview_plan(payload)
+        validation_time = "2000-01-01T00:00:00+00:00"
+        build_approved_publication_snapshot(
+            {
+                **preview,
+                "status": PLAN_APPROVED,
+                "approved_at": validation_time,
+                "approval": {
+                    "status": PLAN_APPROVED,
+                    "approved_by": "Kyle",
+                    "approved_at": validation_time,
+                    "user_approved": True,
+                    "plan_id": preview["plan_id"],
+                    "payload_digest": preview["payload_digest"],
+                },
+            }
+        )
+        return self.create_plan(payload, supersedes_plan_id=predecessor["plan_id"])
+
+    def create_category_correction_successor(
+        self,
+        predecessor_plan_id: str,
+        *,
+        expected_previous_category: Mapping[str, str],
+        corrected_category: Mapping[str, str],
+        corrected_category_digest: str,
+    ) -> dict[str, Any]:
+        """Persist a successor whose only business change corrects a stale category."""
+        predecessor = self.get_plan(_text(predecessor_plan_id))
+        if predecessor is None:
+            raise ReleaseStoreError("predecessor release plan was not found")
+        if predecessor["status"] != PLAN_APPROVED:
+            raise ReleaseAuthorizationError(
+                "category correction successor requires an approved predecessor"
+            )
+        if self.approved_publication_snapshot(
+            offer_id=predecessor["product_id"], plan_id=predecessor["plan_id"]
+        ) is None:
+            raise ReleaseAuthorizationError(
+                "category correction successor requires a durable frozen predecessor snapshot"
+            )
+        from shared_platform.category_correction_successor import (
+            build_category_correction_successor_payload,
+        )
+
+        payload = build_category_correction_successor_payload(
+            predecessor["payload"],
+            expected_previous_category=expected_previous_category,
+            corrected_category=corrected_category,
+            corrected_category_digest=corrected_category_digest,
+        )
+        from domains.product_operations import build_approved_publication_snapshot
+
+        preview = self.preview_plan(payload)
+        validation_time = "2000-01-01T00:00:00+00:00"
+        build_approved_publication_snapshot(
+            {
+                **preview,
+                "status": PLAN_APPROVED,
+                "approved_at": validation_time,
+                "approval": {
+                    "status": PLAN_APPROVED,
+                    "approved_by": "Kyle",
+                    "approved_at": validation_time,
+                    "user_approved": True,
+                    "plan_id": preview["plan_id"],
+                    "payload_digest": preview["payload_digest"],
+                },
+            }
+        )
+        return self.create_plan(payload, supersedes_plan_id=predecessor["plan_id"])
+
     def get_plan(self, plan_id: str) -> dict[str, Any] | None:
         if not self.path.is_file():
             return None

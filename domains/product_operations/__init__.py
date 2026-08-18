@@ -9,6 +9,7 @@ from .approved_publication_snapshot import (
     approved_publication_snapshot_from_payload,
     build_approved_publication_snapshot,
     publication_category_decision_digest,
+    publication_images_for_target,
     validate_approved_publication_snapshot,
 )
 from .approved_publication_snapshot_inputs import (
@@ -93,5 +94,6 @@ __all__ = [
     "build_approved_publication_snapshot",
     "build_approved_publication_snapshot_inputs",
     "publication_category_decision_digest",
+    "publication_images_for_target",
     "validate_approved_publication_snapshot",
 ]

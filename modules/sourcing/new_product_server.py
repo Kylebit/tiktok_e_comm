@@ -4,6 +4,7 @@ import hashlib
 import json
 import mimetypes
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -17,6 +18,8 @@ WEB_DIR = ROOT / "web"
 STATIC_DIR = WEB_DIR / "static"
 DEFAULT_PORT = 8766
 IMAGE_CACHE_DIR = ROOT / "data" / "new_product_image_cache"
+_LOCALIZED_IMAGE_REVIEW_THREADS: dict[str, threading.Thread] = {}
+_LOCALIZED_IMAGE_REVIEW_THREADS_LOCK = threading.Lock()
 
 
 def require_explicit_confirmation(payload: dict, key: str, action: str) -> None:
@@ -125,6 +128,171 @@ def _placeholder_svg(message: str = "image unavailable") -> bytes:
         f'<text x="50%" y="50%" text-anchor="middle" fill="#64748b" font-size="14">{safe}</text>'
         "</svg>"
     ).encode("utf-8")
+
+
+def _localized_image_review_generation_worker(
+    np_mod,
+    *,
+    offer_id: str,
+    expected_revision: int,
+    job_id: str,
+) -> None:
+    np_mod.save_localized_image_review_generation_job(
+        offer_id,
+        {
+            "job_id": job_id,
+            "status": "RUNNING",
+            "expected_revision": expected_revision,
+            "started_at_epoch": time.time(),
+        },
+    )
+    try:
+        summary = np_mod.localized_image_review_summary(offer_id)
+        project = summary.get("review") or {}
+        pending_urls = list(
+            dict.fromkeys(
+                str(row.get("source_url") or "")
+                for row in (project.get("tasks") or [])
+                if row.get("status") in {"PENDING_GENERATION", "RETRY_REQUESTED"}
+            )
+        )
+        source_bytes_by_url = {
+            url: _download_remote_image(url)[0]
+            for url in pending_urls
+            if url
+        }
+        result = np_mod.generate_localized_image_review(
+            offer_id,
+            expected_revision=expected_revision,
+            source_bytes_by_url=source_bytes_by_url,
+            confirm_paid_generation=True,
+        )
+        review = result.get("review") or {}
+        np_mod.save_localized_image_review_generation_job(
+            offer_id,
+            {
+                "job_id": job_id,
+                "status": "COMPLETED",
+                "expected_revision": expected_revision,
+                "completed_task_count": len(review.get("tasks") or []),
+                "finished_at_epoch": time.time(),
+            },
+        )
+    except Exception as exc:
+        np_mod.save_localized_image_review_generation_job(
+            offer_id,
+            {
+                "job_id": job_id,
+                "status": "FAILED",
+                "expected_revision": expected_revision,
+                "error_kind": type(exc).__name__,
+                "error": "localized image generation failed; retry resumes durable checkpoints",
+                "finished_at_epoch": time.time(),
+            },
+        )
+    finally:
+        with _LOCALIZED_IMAGE_REVIEW_THREADS_LOCK:
+            current = _LOCALIZED_IMAGE_REVIEW_THREADS.get(offer_id)
+            if current is threading.current_thread():
+                _LOCALIZED_IMAGE_REVIEW_THREADS.pop(offer_id, None)
+
+
+def _start_localized_image_review_generation_job(
+    np_mod,
+    *,
+    raw: str,
+    expected_revision: object,
+) -> dict:
+    summary = np_mod.localized_image_review_summary(raw)
+    offer_id = str(summary.get("offer_id") or "").strip()
+    project = summary.get("review") or {}
+    try:
+        expected = int(expected_revision)
+    except (TypeError, ValueError) as error:
+        raise ValueError("localized review revision is invalid") from error
+    if expected != int(project.get("revision") or 0):
+        raise ValueError("localized review revision has changed")
+    pending = [
+        row
+        for row in (project.get("tasks") or [])
+        if row.get("status") in {"PENDING_GENERATION", "RETRY_REQUESTED"}
+    ]
+    if not pending:
+        np_mod.save_localized_image_review_generation_job(
+            offer_id,
+            {
+                "status": "COMPLETED",
+                "expected_revision": expected,
+                "completed_task_count": len(project.get("tasks") or []),
+                "finished_at_epoch": time.time(),
+            },
+        )
+        return np_mod.localized_image_review_summary(offer_id)
+
+    job_identity = {
+        "offer_id": offer_id,
+        "expected_revision": expected,
+        "task_ids": [str(row.get("task_id") or "") for row in pending],
+    }
+    job_id = hashlib.sha256(
+        json.dumps(
+            job_identity,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    with _LOCALIZED_IMAGE_REVIEW_THREADS_LOCK:
+        current = _LOCALIZED_IMAGE_REVIEW_THREADS.get(offer_id)
+        if current is not None and current.is_alive():
+            return np_mod.localized_image_review_summary(offer_id)
+        np_mod.save_localized_image_review_generation_job(
+            offer_id,
+            {
+                "job_id": job_id,
+                "status": "QUEUED",
+                "expected_revision": expected,
+                "pending_task_count": len(pending),
+                "queued_at_epoch": time.time(),
+            },
+        )
+        worker = threading.Thread(
+            target=_localized_image_review_generation_worker,
+            kwargs={
+                "np_mod": np_mod,
+                "offer_id": offer_id,
+                "expected_revision": expected,
+                "job_id": job_id,
+            },
+            name=f"localized-review-{offer_id}",
+            daemon=True,
+        )
+        _LOCALIZED_IMAGE_REVIEW_THREADS[offer_id] = worker
+        worker.start()
+    return np_mod.localized_image_review_summary(offer_id)
+
+
+def _localized_image_review_summary_with_job(np_mod, raw: str) -> dict:
+    summary = np_mod.localized_image_review_summary(raw)
+    job = summary.get("generation_job") or {}
+    if job.get("status") not in {"QUEUED", "RUNNING"}:
+        return summary
+    offer_id = str(summary.get("offer_id") or "").strip()
+    with _LOCALIZED_IMAGE_REVIEW_THREADS_LOCK:
+        worker = _LOCALIZED_IMAGE_REVIEW_THREADS.get(offer_id)
+        alive = worker is not None and worker.is_alive()
+    if alive:
+        return summary
+    np_mod.save_localized_image_review_generation_job(
+        offer_id,
+        {
+            **job,
+            "status": "INTERRUPTED",
+            "error": "generation worker stopped; confirmed retry resumes durable checkpoints",
+            "finished_at_epoch": time.time(),
+        },
+    )
+    return np_mod.localized_image_review_summary(offer_id)
 
 
 class NewProductHandler(BaseHTTPRequestHandler):
@@ -276,6 +444,25 @@ class NewProductHandler(BaseHTTPRequestHandler):
                 )
             except Exception as exc:
                 return self._json(400, {"ok": False, "error": str(exc)})
+        if path == "/api/new-product/content-package/localized-image-review":
+            q = parse_qs(parsed.query)
+            raw = (q.get("offer_id") or [""])[0]
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            try:
+                from modules.sourcing import new_product_workbench as np_mod
+
+                return self._json(
+                    200,
+                    {
+                        "ok": True,
+                        "localized_image_review": _localized_image_review_summary_with_job(
+                            np_mod, raw
+                        ),
+                    },
+                )
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
         if path in ("/api/new-product/content-report", "/api/new-product/content-image"):
             q = parse_qs(parsed.query)
             raw = (q.get("offer_id") or [""])[0]
@@ -337,6 +524,20 @@ class NewProductHandler(BaseHTTPRequestHandler):
 
                 return self._file(
                     np_mod.localized_image_preview_artifact(raw, artifact_id)
+                )
+            except Exception as exc:
+                return self._json(404, {"ok": False, "error": str(exc)})
+        if path == "/api/new-product/content-package/localized-image-review/artifact":
+            q = parse_qs(parsed.query)
+            raw = (q.get("offer_id") or [""])[0]
+            artifact_id = (q.get("artifact_id") or [""])[0]
+            if not raw or not artifact_id:
+                return self._json(400, {"ok": False, "error": "missing offer_id or artifact_id"})
+            try:
+                from modules.sourcing import new_product_workbench as np_mod
+
+                return self._file(
+                    np_mod.localized_image_review_artifact(raw, artifact_id)
                 )
             except Exception as exc:
                 return self._json(404, {"ok": False, "error": str(exc)})
@@ -416,6 +617,86 @@ class NewProductHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 return self._json(400, {"ok": False, "error": str(exc)})
 
+        if path == "/api/new-product/content-package/localized-image-review/initialize":
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            positions = data.get("selected_positions", [1, 5, 6, 7])
+            if not isinstance(positions, list):
+                return self._json(400, {"ok": False, "error": "selected_positions must be a list"})
+            try:
+                return self._json(
+                    200,
+                    {
+                        "ok": True,
+                        "localized_image_review": np_mod.initialize_localized_image_review(
+                            raw,
+                            selected_positions=tuple(positions),
+                        ),
+                    },
+                )
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+
+        if path == "/api/new-product/content-package/localized-image-review/generate":
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            try:
+                require_explicit_confirmation(
+                    data,
+                    "confirm_paid_generation",
+                    "paid ToAPIs localized image generation",
+                )
+                return self._json(
+                    202,
+                    {
+                        "ok": True,
+                        "localized_image_review": _start_localized_image_review_generation_job(
+                            np_mod,
+                            raw=raw,
+                            expected_revision=data.get("expected_revision"),
+                        ),
+                    },
+                )
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+
+        if path == "/api/new-product/content-package/localized-image-review/decision":
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            try:
+                return self._json(
+                    200,
+                    {
+                        "ok": True,
+                        "localized_image_review": np_mod.decide_localized_image_review(
+                            raw,
+                            expected_revision=data.get("expected_revision"),
+                            task_id=str(data.get("task_id") or ""),
+                            decision=str(data.get("decision") or ""),
+                        ),
+                    },
+                )
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+
+        if path == "/api/new-product/content-package/localized-image-review/approve":
+            if not raw:
+                return self._json(400, {"ok": False, "error": "missing offer_id"})
+            try:
+                return self._json(
+                    200,
+                    {
+                        "ok": True,
+                        "localized_image_review": np_mod.approve_localized_image_review(
+                            raw,
+                            expected_revision=data.get("expected_revision"),
+                            approved_by=str(data.get("approved_by") or "Kyle"),
+                        ),
+                    },
+                )
+            except Exception as exc:
+                return self._json(400, {"ok": False, "error": str(exc)})
+
         if path == "/api/new-product/content-package/localized-images/scan-text":
             if not raw:
                 return self._json(400, {"ok": False, "error": "missing offer_id"})
@@ -453,7 +734,7 @@ class NewProductHandler(BaseHTTPRequestHandler):
                     raise ValueError("localized image revision is invalid") from error
                 if expected != int(project.get("revision") or 0):
                     raise ValueError("localized image revision has changed")
-                from modules.sourcing.localized_image_render import RENDERER
+                from modules.sourcing.localized_image_toapis_generation import RENDERER
 
                 automatic = project.get("automatic_translation") or {}
                 if (
@@ -471,6 +752,11 @@ class NewProductHandler(BaseHTTPRequestHandler):
                             ),
                         },
                     )
+                require_explicit_confirmation(
+                    data,
+                    "confirm_paid_generation",
+                    "paid ToAPIs localized image generation",
+                )
                 source_urls = list(
                     (project.get("base_package") or {}).get("ordered_image_urls") or []
                 )
@@ -498,6 +784,7 @@ class NewProductHandler(BaseHTTPRequestHandler):
                             raw,
                             expected_revision=project.get("revision"),
                             source_bytes_by_url=source_bytes_by_url,
+                            confirm_paid_generation=True,
                         ),
                     },
                 )

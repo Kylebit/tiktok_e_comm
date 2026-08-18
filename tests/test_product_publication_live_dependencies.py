@@ -204,6 +204,87 @@ def test_tiktok_category_resolver_uses_approved_festive_decoration_for_placemats
     ]
 
 
+def test_tiktok_category_resolver_uses_approved_decorative_sticker_for_exact_self_adhesive_wallpaper():
+    calls = []
+
+    def post(path, body):
+        calls.append((path, deepcopy(body)))
+        if path == CATEGORY_TREE_PATH:
+            return {
+                "result": "success",
+                "data": {
+                    "cateTree": {
+                        "600338": {
+                            "cid": 600338,
+                            "disabled": False,
+                            "name": "Decorative Stickers",
+                            "children": {},
+                        }
+                    }
+                },
+            }
+        if path == CATEGORY_METADATA_PATH:
+            return {
+                "result": "success",
+                "data": {"categoryMetadata": {"categoryProductAttrList": []}},
+            }
+        raise AssertionError(path)
+
+    product = _tiktok_product("背景墙 > 墙纸、壁纸")
+    product.update(
+        title="Self-Adhesive PVC Wallpaper Roll, Elephant Botanical Pattern",
+        description=(
+            "This is a roll wallpaper made from PVC with a self-adhesive backing. "
+            "It features an elephant botanical pattern for smooth walls and cabinets."
+        ),
+    )
+    receipt = OfficialMiaoshouTikTokCategoryResolver(post=post).resolve(
+        target={
+            "target_label": "tiktok:LH_PH",
+            "platform": "tiktok",
+            "site": "LH_PH",
+            "store": "LH_PH",
+        },
+        product=product,
+        skus=[{"model_sku": "0972"}, {"model_sku": "0973"}],
+    )
+
+    assert receipt["category"]["id"] == "600338"
+    assert receipt["resolution"] == "USER_APPROVED_FALLBACK"
+    assert calls == [
+        (CATEGORY_TREE_PATH, {"site": "PH"}),
+        (
+            CATEGORY_METADATA_PATH,
+            {"site": "PH", "cid": 600338, "shopIds": [7676267]},
+        ),
+    ]
+
+
+def test_tiktok_category_resolver_rejects_wallpaper_without_self_adhesive_fact_before_api():
+    calls = []
+    product = _tiktok_product("背景墙 > 墙纸、壁纸")
+    product.update(
+        title="PVC Wallpaper Roll",
+        description="Wallpaper for walls and cabinets.",
+    )
+
+    with pytest.raises(LivePublicationDependencyError, match="self-adhesive"):
+        OfficialMiaoshouTikTokCategoryResolver(
+            post=lambda *args: calls.append(args)
+        ).resolve(
+            target={
+                "target_label": "tiktok:LH_PH",
+                "platform": "tiktok",
+                "site": "LH_PH",
+                "store": "LH_PH",
+            },
+            product=product,
+            skus=[{"model_sku": "0972"}],
+        )
+
+    assert calls == []
+
+
 def test_tiktok_unavailable_storefront_readback_is_truthful_processing_input():
     fact = TikTokUnavailableStorefrontReadback().readback(
         command={"target_label": "tiktok:GB"},

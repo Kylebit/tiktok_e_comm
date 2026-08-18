@@ -20,6 +20,7 @@ from typing import Callable, Protocol
 
 from domains.product_operations.approved_publication_snapshot import (
     ApprovedPublicationSnapshotError,
+    publication_images_for_target,
     validate_approved_publication_snapshot,
 )
 from modules.miaoshou.client import MiaoshouBusinessRejectedError, post_open
@@ -429,6 +430,9 @@ def _draft_payload(
     category: Mapping[str, object],
 ) -> dict[str, object]:
     label = target["target_label"]
+    target_images = publication_images_for_target(frozen, label)
+    base_images = list(frozen["product"]["images"])
+    routed_by_base = dict(zip(base_images, target_images, strict=True))
     skus = [
         {
             "variant_key": row["variant_key"],
@@ -438,7 +442,10 @@ def _draft_payload(
             "price": row["prices"][label]["amount"],
             "currency": row["prices"][label]["currency"],
             "parcel": deepcopy(row["parcel"]),
-            "images": deepcopy(row["variant_images"]),
+            "images": [
+                routed_by_base.get(url, url)
+                for url in row["variant_images"]
+            ],
         }
         for row in frozen["skus"]
     ]
@@ -452,7 +459,7 @@ def _draft_payload(
         "target_label": label,
         "title": frozen["product"]["title"],
         "description": frozen["product"]["description"],
-        "images": deepcopy(frozen["product"]["images"]),
+        "images": deepcopy(target_images),
         "category": deepcopy(dict(category)),
         "parent_parcel": parent,
         "skus": skus,

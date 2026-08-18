@@ -25,7 +25,7 @@ def _snapshot(*targets: str) -> dict:
                 "target_label": target,
                 "platform": "shopee",
                 "site": target.split(":", 1)[1],
-                "store": "primary",
+                "store": target.split(":", 1)[1],
             }
             for target in targets
         ],
@@ -87,6 +87,10 @@ class FakeRuntime:
         self.localize_calls: list[str] = []
         self.copy_update_calls: list[tuple[str, str]] = []
         self.localized_copy: dict[str, dict[str, str]] = {}
+        self.image_upload_calls: list[tuple[str, tuple[str, ...]]] = []
+        self.image_update_calls: list[tuple[str, str, tuple[str, ...]]] = []
+        self.regional_image_ids: dict[str, list[str]] = {}
+        self.stored_image_bindings: dict[str, dict[str, object]] = {}
 
     def context(self, region: str) -> RegionContext:
         self.context_calls.append(region)
@@ -160,7 +164,12 @@ class FakeRuntime:
                 localized.get("description")
                 or "Approved regional description"
             ),
-            "image": {"image_url_list": ["https://example.invalid/image"]},
+            "image": {
+                "image_url_list": ["https://example.invalid/image"],
+                "image_id_list": self.regional_image_ids.get(
+                    context.region, ["english-image-id"]
+                ),
+            },
             "logistic_info": [
                 {
                     "logistic_id": 2001,
@@ -242,8 +251,51 @@ class FakeRuntime:
         }
         return {"external_write_count": 1}
 
+    def existing_regional_image_binding(self, _context, _global_item_id):
+        return self.stored_image_bindings.get(_context.region)
+
+    def upload_regional_images(self, context, image_urls):
+        clean = tuple(image_urls)
+        self.image_upload_calls.append((context.region, clean))
+        image_ids = [
+            f"{context.region.lower()}-localized-{index}"
+            for index, _url in enumerate(clean, start=1)
+        ]
+        return {
+            "image_ids": image_ids,
+            "external_write_count": len(image_ids),
+        }
+
+    def update_regional_images(self, context, item_id, *, image_ids):
+        clean = tuple(image_ids)
+        self.image_update_calls.append((context.region, str(item_id), clean))
+        self.regional_image_ids[context.region] = list(clean)
+        return {"external_write_count": 1}
+
     def record_verified_item(self, **facts):
         self.records.append(dict(facts))
+        if facts.get("image_route_digest") and facts.get("image_ids"):
+            self.stored_image_bindings[str(facts["region"])] = {
+                "image_route_digest": facts["image_route_digest"],
+                "image_ids": list(facts["image_ids"]),
+            }
+
+
+def _localized_snapshot(target: str, *images: str) -> dict:
+    snapshot = _snapshot(target)
+    snapshot["product"]["image_routing"] = {
+        "schema_version": "localized-publication-images/v1",
+        "approval_digest": "sha256:" + "1" * 64,
+        "supplement_digest": "sha256:" + "2" * 64,
+        "source_snapshot_digest": "sha256:" + "3" * 64,
+        "routes": {
+            target: {
+                "locale": "ms-MY",
+                "ordered_images": list(images),
+            }
+        },
+    }
+    return snapshot
 
 
 def test_global_only_never_dispatches_or_prefills_regions() -> None:
@@ -425,7 +477,86 @@ def test_verified_existing_region_is_read_back_without_duplicate_create() -> Non
 
     assert runtime.create_calls == []
     assert dispatch["targets"][0]["existing_item_id"] == "8101"
-    assert result["targets"][0]["outcome"] == "PUBLISHED"
+    assert result["targets"][0]["outcome"] == "PUBLISHED", result["targets"][0]
+
+
+def test_localized_regional_images_are_written_once_and_read_back_in_order() -> None:
+    runtime = FakeRuntime()
+    runtime.existing_items["MY"] = "8102"
+    runtime.listed_regions.add("MY")
+    localized = "https://localized.example/ms-image.jpg"
+    snapshot = _localized_snapshot("shopee:MY", localized)
+
+    dispatch = dispatch_selected_regions(
+        snapshot,
+        global_item_id="60000001",
+        runtime=runtime,
+    )
+    result = readback_dispatched_regions(
+        snapshot,
+        dispatch,
+        global_item_id="60000001",
+        runtime=runtime,
+    )
+
+    assert result["targets"][0]["outcome"] == "PUBLISHED", result["targets"][0]
+    assert runtime.image_upload_calls == [("MY", (localized,))]
+    assert runtime.image_update_calls == [
+        ("MY", "8102", ("my-localized-1",))
+    ]
+    assert result["targets"][0]["checks"]["localized_images_exact"] is True
+    assert result["targets"][0]["external_write_count"] == 2
+
+    runtime.image_upload_calls.clear()
+    runtime.image_update_calls.clear()
+    continuation = readback_dispatched_regions(
+        snapshot,
+        dispatch,
+        global_item_id="60000001",
+        runtime=runtime,
+    )
+    assert continuation["targets"][0]["outcome"] == "PUBLISHED"
+    assert continuation["targets"][0]["external_write_count"] == 0
+    assert runtime.image_upload_calls == []
+    assert runtime.image_update_calls == []
+
+
+def test_official_runtime_updates_only_the_exact_regional_image_ids(monkeypatch) -> None:
+    from modules.shopee import client
+
+    calls = []
+
+    def shop_post(path, shop_id, token, body):
+        calls.append((path, shop_id, token, deepcopy(body)))
+        return {"error": "", "response": {}}
+
+    monkeypatch.setattr(client, "shop_post", shop_post)
+    context = RegionContext(
+        region="TH",
+        shop_id=103,
+        merchant_id=500,
+        shop_token="secret-shop-token",
+        merchant_token="secret-merchant-token",
+    )
+
+    receipt = OfficialShopeeRegionRuntime().update_regional_images(
+        context,
+        "8103",
+        image_ids=("localized-1", "localized-2"),
+    )
+
+    assert receipt == {"external_write_count": 1}
+    assert calls == [
+        (
+            "/api/v2/product/update_item",
+            103,
+            "secret-shop-token",
+            {
+                "item_id": 8103,
+                "image": {"image_id_list": ["localized-1", "localized-2"]},
+            },
+        )
+    ]
 
 
 def test_v4_region_without_per_sku_global_cny_lineage_fails_before_dispatch() -> None:
@@ -743,6 +874,60 @@ def test_official_discovery_reuses_exact_unlisted_item_without_querying_banned(
         context, "45215618349", ("0963", "0964", "0965")
     ) == "55865849316"
     assert calls == ["NORMAL", "UNLIST"]
+
+
+def test_official_discovery_accepts_omitted_item_for_confirmed_empty_page(
+    monkeypatch,
+) -> None:
+    runtime = OfficialShopeeRegionRuntime()
+    context = RegionContext("VN", 104, 500, "shop", "merchant")
+    calls: list[str] = []
+
+    def shop_get(_path, _shop_id, _token, params):
+        calls.append(params["item_status"])
+        return {
+            "error": "",
+            "response": {
+                "total_count": 0,
+                "has_next_page": False,
+                "next": None,
+            },
+        }
+
+    monkeypatch.setattr("modules.shopee.client.shop_get", shop_get)
+
+    assert runtime.discover_existing_regional_item(
+        context, "57416061680", ("0970", "0971")
+    ) is None
+    assert calls == ["NORMAL", "UNLIST"]
+
+
+def test_official_discovery_rejects_omitted_item_for_nonempty_or_paginated_page(
+    monkeypatch,
+) -> None:
+    runtime = OfficialShopeeRegionRuntime()
+    context = RegionContext("VN", 104, 500, "shop", "merchant")
+
+    for response in (
+        {"total_count": 1, "has_next_page": False, "next": None},
+        {"total_count": 0, "has_next_page": True, "next": "cursor"},
+    ):
+        monkeypatch.setattr(
+            "modules.shopee.client.shop_get",
+            lambda _path, _shop_id, _token, _params, response=response: {
+                "error": "",
+                "response": response,
+            },
+        )
+
+        try:
+            runtime.discover_existing_regional_item(
+                context, "57416061680", ("0970", "0971")
+            )
+        except RuntimeError as error:
+            assert "malformed" in str(error)
+        else:
+            raise AssertionError("ambiguous omitted item pages must fail closed")
 
 
 def test_official_discovery_rejects_normal_and_unlisted_identity_ambiguity(

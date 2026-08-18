@@ -18,6 +18,7 @@ from typing import Any, Protocol
 
 from domains.product_operations.approved_publication_snapshot import (
     ApprovedPublicationSnapshotError,
+    publication_images_for_target,
     validate_approved_publication_snapshot,
 )
 from domains.channel_operations.tiktok_publisher import (
@@ -348,6 +349,9 @@ def _target_command(
     category_evidence_digest: str,
 ) -> dict[str, object]:
     label = target["target_label"]
+    target_images = publication_images_for_target(frozen, label)
+    base_images = list(frozen["product"]["images"])
+    routed_by_base = dict(zip(base_images, target_images, strict=True))
     skus: list[dict[str, object]] = []
     model_prices: dict[str, str] = {}
     variant_models: dict[str, str] = {}
@@ -370,7 +374,10 @@ def _target_command(
             "price": price["amount"],
             "currency": price["currency"],
             "parcel": deepcopy(frozen_sku["parcel"]),
-            "variant_images": deepcopy(frozen_sku["variant_images"]),
+            "variant_images": [
+                routed_by_base.get(url, url)
+                for url in frozen_sku["variant_images"]
+            ],
         }
         skus.append(sku)
         model_prices[sku["model_sku"]] = sku["price"]
@@ -384,7 +391,7 @@ def _target_command(
     product = {
         "title": frozen["product"]["title"],
         "description": frozen["product"]["description"],
-        "images": deepcopy(frozen["product"]["images"]),
+        "images": deepcopy(target_images),
         "main_category": deepcopy(frozen["product"]["main_category"]),
         "target_category": deepcopy(category),
     }
@@ -399,7 +406,7 @@ def _target_command(
         "expected_package_cm": parent_parcel["package_cm"],
         "expected_title": frozen["product"]["title"],
         "expected_description": frozen["product"]["description"],
-        "expected_images": deepcopy(frozen["product"]["images"]),
+        "expected_images": deepcopy(target_images),
         "expected_sku_parcels": sku_parcels,
         "expected_currency": currency,
         "expected_category_id": category["id"],

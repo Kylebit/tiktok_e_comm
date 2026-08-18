@@ -657,6 +657,7 @@ class ShopeeGlobalV4Resolver:
             or any(label not in REGIONAL_TARGETS for label in labels)
         ):
             raise ShopeeGlobalV4Error("Shopee regional target scope conflicts")
+        validate_approved_publication_snapshot(snapshot)
         command = project_shopee_global_v4_command(snapshot)
         model_skus = [row["model_sku"] for row in command["models"]]
         all_images = list(command["product"]["images"])

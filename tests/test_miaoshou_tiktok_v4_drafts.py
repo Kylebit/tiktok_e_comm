@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
 import inspect
+import json
 
 import pytest
 
@@ -221,6 +223,59 @@ def test_v4_snapshot_alone_supplies_every_exact_draft_fact() -> None:
         "snapshot_digest"
     ]
     assert "approved_plan_payload" not in receipt
+
+
+def test_v4_draft_uses_exact_target_localized_images() -> None:
+    snapshot = _snapshot()
+    base_images = list(snapshot["product"]["images"])
+    localized_images = [
+        f"https://localized.example/ph-{index}.png"
+        for index, _url in enumerate(base_images, start=1)
+    ]
+    snapshot["product"]["image_routing"] = {
+        "schema_version": "localized-publication-images/v1",
+        "approval_digest": "sha256:" + "a" * 64,
+        "supplement_digest": "sha256:" + "b" * 64,
+        "source_snapshot_digest": "sha256:" + "c" * 64,
+        "routes": {
+            target["target_label"]: {
+                "locale": "en-master",
+                "ordered_images": (
+                    localized_images
+                    if target["target_label"] == "tiktok:LH_PH"
+                    else base_images
+                ),
+            }
+            for target in snapshot["publication_targets"]
+        },
+    }
+    unsigned = deepcopy(snapshot)
+    unsigned.pop("snapshot_digest")
+    snapshot["snapshot_digest"] = "sha256:" + hashlib.sha256(
+        json.dumps(
+            unsigned,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    transport = Transport()
+
+    receipt = prepare_tiktok_v4_drafts(
+        snapshot,
+        category_resolver=CategoryResolver(),
+        transport=transport,
+    )
+
+    assert receipt["status"] == "PREPARED"
+    ph_draft = transport.saves[0]["draft"]
+    assert ph_draft["images"] == localized_images
+    routed_by_base = dict(zip(base_images, localized_images, strict=True))
+    assert [row["images"] for row in ph_draft["skus"]] == [
+        [routed_by_base.get(url, url) for url in row["variant_images"]]
+        for row in snapshot["skus"]
+    ]
 
 
 def test_one_target_failure_never_blocks_later_tiktok_targets() -> None:

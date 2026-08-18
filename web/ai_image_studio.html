@@ -98,62 +98,6 @@
       <p id="noSourceVideo" class="source-video-empty" hidden>当前来源未发现视频，无需审核。</p>
     </section>
 
-    <section id="imageLocalization" aria-labelledby="imageLocalizationTitle">
-      <div class="section-heading">
-        <div><p class="kicker">01B · CLEAN MASTER & OCR</p><h2 id="imageLocalizationTitle">干净母图与图片文字区域</h2></div>
-        <p>原图保持不变。先标记水印、供应商信息、需翻译文字和必须保护的产品文字，再生成可追溯的本地干净母图。</p>
-      </div>
-      <article class="localization-intro">
-        <div>
-          <strong>第一批能力</strong>
-          <p>支持人工区域编辑、保护区、局部去除预览和不可变母图。付费 OCR 与多语言渲染暂未启用。</p>
-        </div>
-        <div class="localization-actions">
-          <span id="ocrProviderStatus" class="badge neutral">OCR 未启用</span>
-          <button id="initializeLocalizationButton" class="button secondary" type="button">建立图片处理清单</button>
-        </div>
-      </article>
-      <p id="imageLocalizationStatus" class="localization-status" role="status" aria-live="polite" hidden></p>
-      <div id="imageLocalizationGrid" class="localization-grid"></div>
-      <article class="localized-pack-panel" aria-labelledby="localizedImagePackTitle">
-        <header>
-          <div>
-            <p class="kicker">INDEPENDENT LOCALE PACKS</p>
-            <h3 id="localizedImagePackTitle">国家语言图片包（独立）</h3>
-            <p>只从已批准 ReleasePlan 的最终英文图片导入母版，系统自动识别英文、翻译五种语言并生成本地预览。正常情况无需逐条填写；此处不会修改商品发布中心或写入平台。</p>
-          </div>
-          <div class="localized-pack-actions">
-            <label id="localizedImageLocaleLabel" hidden>编辑语言
-              <select id="localizedImageLocaleSelect">
-                <option value="ms-MY">马来语 · MY</option>
-                <option value="th-TH" selected>泰语 · TH</option>
-                <option value="vi-VN">越南语 · VN</option>
-                <option value="ru-RU">俄语 · RU</option>
-                <option value="es-MX">西班牙语 · MX</option>
-              </select>
-            </label>
-            <button id="scanLocalizedImageTextButton" class="button secondary" type="button" hidden>仅重新扫描 OCR（故障排查）</button>
-            <button id="autoTranslateLocalizedImagesButton" class="button dark" type="button" hidden>自动生成五种语言图片预览</button>
-            <button id="initializeLocalizedImagePacksButton" class="button secondary" type="button">导入已批准图片母版</button>
-          </div>
-        </header>
-        <p id="localizedImagePackStatus" class="localization-status" role="status" aria-live="polite" hidden></p>
-        <div id="localizedImagePackGrid" class="localized-pack-grid"></div>
-        <div id="localizedImageRouteGrid" class="localized-route-grid"></div>
-        <div id="localizedTranslationGrid" class="localized-translation-grid"></div>
-      </article>
-      <datalist id="regionClassificationOptions">
-        <option value="watermark">水印</option>
-        <option value="supplier_metadata">供应商信息</option>
-        <option value="translatable">需要翻译</option>
-        <option value="product_fact">商品事实</option>
-        <option value="protected_natural_text">产品原生文字（保护）</option>
-        <option value="dimension">尺寸文字</option>
-        <option value="rebuild_required">复杂详情图（需重建）</option>
-        <option value="ignore">忽略</option>
-      </datalist>
-    </section>
-
     <section id="storyboard" aria-labelledby="storyboardTitle">
       <div class="section-heading">
         <div><p class="kicker">02 · EXPERIENCE RECIPE</p><h2 id="storyboardTitle">经验配方与内容范围</h2></div>

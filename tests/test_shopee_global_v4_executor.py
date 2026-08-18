@@ -11,7 +11,7 @@ from modules.shopee.global_v4_executor import (
 )
 from shared_platform.product_publication_runner import PublicationPlatformRequest
 from shared_platform.product_publication_executors import build_shopee_region_executor
-from test_approved_publication_snapshot import _approved_plan
+from test_approved_publication_snapshot import _approved_plan, _rebind
 from unittest.mock import patch
 
 
@@ -311,6 +311,41 @@ def test_existing_exact_normal_mapping_is_read_before_any_write():
     resolver = ShopeeGlobalV4Resolver(runtime=runtime)
 
     assert resolver(request) == "8001"
+    assert runtime.calls == ["lookup", "read_item", "read_models"]
+    assert resolver.write_count(request) == 0
+
+
+def test_localized_regional_images_do_not_change_the_english_global_master():
+    plan = _approved_plan()
+    base = list(plan["payload"]["product_facts"]["image_urls"])
+    routes = {
+        label: {"locale": "en-master", "ordered_images": list(base)}
+        for label in plan["payload"]["targets"]
+    }
+    routes["shopee:PH"] = {
+        "locale": "en-master",
+        "ordered_images": ["https://img.example/localized-1.jpg", base[1]],
+    }
+    plan["payload"]["localized_image_routing"] = {
+        "schema_version": "localized-publication-images/v1",
+        "approval_digest": "sha256:" + "1" * 64,
+        "supplement_digest": "sha256:" + "2" * 64,
+        "source_snapshot_digest": "sha256:" + "3" * 64,
+        "routes": routes,
+    }
+    _rebind(plan)
+    request = PublicationPlatformRequest(
+        run_id="run-shopee-localized",
+        report_id="publication-report:run-shopee-localized",
+        platform="SHOPEE",
+        target_labels=("shopee:PH",),
+        snapshot=build_approved_publication_snapshot(plan).payload(),
+    )
+    runtime = _Runtime(mapped={"0958": "8001", "0959": "8001"})
+    resolver = ShopeeGlobalV4Resolver(runtime=runtime)
+
+    assert resolver(request) == "8001"
+    assert runtime.command["product"]["images"] == base
     assert runtime.calls == ["lookup", "read_item", "read_models"]
     assert resolver.write_count(request) == 0
 

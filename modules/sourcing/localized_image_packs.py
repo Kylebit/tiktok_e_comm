@@ -507,7 +507,7 @@ class LocalizedImagePackStore:
         expected_revision: object,
         items: Sequence[Mapping[str, Any]],
     ) -> dict[str, Any]:
-        """Atomically bind all automatic translations and local previews.
+        """Atomically bind automatic translations and ToAPIs generated previews.
 
         Model output is gathered and rendered before this method is called. The
         project is committed once only after every approved source image and
@@ -546,6 +546,7 @@ class LocalizedImagePackStore:
             prepared: list[dict[str, Any]] = []
             inventory_identity: list[dict[str, Any]] = []
             model_calls = 0
+            image_generation_calls = 0
             for source_url in source_urls:
                 inventory = inventory_images[source_url]
                 if not isinstance(inventory, Mapping) or inventory.get("status") != "SCANNED":
@@ -575,11 +576,13 @@ class LocalizedImagePackStore:
                 item = incoming[source_url]
                 raw_translations = item.get("translations")
                 raw_previews = item.get("previews")
+                raw_generation_receipts = item.get("generation_receipts")
                 receipt = item.get("receipt")
                 if (
                     not isinstance(raw_translations, Mapping)
                     or set(raw_translations) != set(localized_locales)
                     or not isinstance(raw_previews, Mapping)
+                    or not isinstance(raw_generation_receipts, Mapping)
                     or not isinstance(receipt, Mapping)
                     or receipt.get("provider") != "toapis-chat-completions/v1"
                     or receipt.get("model") != "gpt-5.4-mini-official"
@@ -599,6 +602,8 @@ class LocalizedImagePackStore:
                     or receipt.get("status")
                     != ("AUTO_TRANSLATED" if regions else "NO_TEXT_REUSE_BASE")
                     or set(raw_previews) != (set(localized_locales) if regions else set())
+                    or set(raw_generation_receipts)
+                    != (set(localized_locales) if regions else set())
                 ):
                     raise LocalizedImagePackError(
                         "automatic translation receipt is invalid"
@@ -606,6 +611,7 @@ class LocalizedImagePackStore:
                 model_calls += item_calls
                 locale_rows: dict[str, list[dict[str, str]]] = {}
                 preview_bytes: dict[str, bytes] = {}
+                generation_receipts: dict[str, dict[str, Any]] = {}
                 for locale in localized_locales:
                     rows = raw_translations.get(locale)
                     if not isinstance(rows, list) or len(rows) != len(region_ids):
@@ -657,12 +663,58 @@ class LocalizedImagePackStore:
                                 "automatic translation preview is invalid"
                             )
                         preview_bytes[locale] = artifact
+                        generation_receipt = raw_generation_receipts.get(locale)
+                        if not isinstance(generation_receipt, Mapping):
+                            raise LocalizedImagePackError(
+                                "automatic image generation receipt is invalid"
+                            )
+                        try:
+                            generation_count = int(
+                                generation_receipt.get("external_generation_count")
+                            )
+                        except (TypeError, ValueError) as error:
+                            raise LocalizedImagePackError(
+                                "automatic image generation receipt is invalid"
+                            ) from error
+                        artifact_digest = hashlib.sha256(artifact).hexdigest()
+                        if (
+                            generation_receipt.get("status") != "COMPLETED"
+                            or generation_receipt.get("provider") != "toapis-images/v1"
+                            or generation_receipt.get("model") != "gpt-image-2-official"
+                            or not str(generation_receipt.get("task_id") or "").strip()
+                            or not str(
+                                generation_receipt.get("client_business_id") or ""
+                            ).strip()
+                            or generation_receipt.get("request_attempted") is not True
+                            or generation_receipt.get("outcome_unknown") is not False
+                            or generation_count != 1
+                            or generation_receipt.get("output_digest")
+                            not in {None, f"sha256:{artifact_digest}"}
+                        ):
+                            raise LocalizedImagePackError(
+                                "automatic image generation receipt is invalid"
+                            )
+                        generation_receipts[locale] = {
+                            "status": "COMPLETED",
+                            "provider": "toapis-images/v1",
+                            "model": "gpt-image-2-official",
+                            "task_id": str(generation_receipt["task_id"]),
+                            "client_business_id": str(
+                                generation_receipt["client_business_id"]
+                            ),
+                            "request_attempted": True,
+                            "outcome_unknown": False,
+                            "external_generation_count": 1,
+                            "output_digest": f"sha256:{artifact_digest}",
+                        }
+                        image_generation_calls += 1
                 prepared.append(
                     {
                         "source_url": source_url,
                         "regions_present": bool(regions),
                         "translations": locale_rows,
                         "previews": preview_bytes,
+                        "generation_receipts": generation_receipts,
                         "receipt": {
                             "status": receipt.get("status"),
                             "provider": receipt.get("provider"),
@@ -709,7 +761,10 @@ class LocalizedImagePackStore:
                     image["preview"] = {
                         "status": "AUTO_PREVIEW_READY",
                         **artifact,
-                        "renderer": "pillow-local-preview/v2",
+                        "renderer": "toapis-reference-image/v1",
+                        "generation_receipt": dict(
+                            item["generation_receipts"][locale]
+                        ),
                         "translation_digest": _canonical_digest(translations),
                         "created_at": _now(),
                     }
@@ -723,7 +778,10 @@ class LocalizedImagePackStore:
                 "provider": "toapis-chat-completions/v1",
                 "model": "gpt-5.4-mini-official",
                 "model_calls": model_calls,
-                "renderer": "pillow-local-preview/v2",
+                "renderer": "toapis-reference-image/v1",
+                "image_provider": "toapis-images/v1",
+                "image_model": "gpt-image-2-official",
+                "image_generation_calls": image_generation_calls,
                 "inventory_digest": _canonical_digest(inventory_identity),
                 "completed_at": _now(),
             }

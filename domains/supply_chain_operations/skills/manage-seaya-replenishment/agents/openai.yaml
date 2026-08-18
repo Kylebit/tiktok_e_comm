@@ -1,0 +1,4 @@
+interface:
+  display_name: "Seaya Inventory and Replenishment"
+  short_description: "Order-led SKU replenishment and settlement savings"
+  default_prompt: "Use $manage-seaya-replenishment to calculate order-led SKU replenishment from Seaya supply and settlement-only savings."

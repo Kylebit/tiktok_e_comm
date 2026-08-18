@@ -1,0 +1,17 @@
+{
+  "sha256": {
+    "dashboard/README.md": "40f11828e2ac94c4fe0a013d7544d71301c292fc050babc3e925437c3ce526e5",
+    "dashboard/app.js": "8573a07a6ea1eacd7605e62b87b6243d296aa22fbb6556328c8e3953ac5aa7a4",
+    "dashboard/data.js": "08aa2f95d1336dac66d0ae15fcaa27d4c9226cd13bee5174652cf285a02b8937",
+    "dashboard/inbound-batches.html": "37f185f7490d9729fcf6441e4eba37d63acb770213017497dc54b64bd3a0fe3e",
+    "dashboard/inbound-batches.js": "6a9d4c6cbc5107de0fdff1d0792c3c75adf46058077e23c2083d284727d9f520",
+    "dashboard/inbound-plan.js": "7aef55312e85566bfb44088317b78c645fba073b4d3e3db0fc44fa9f6b430747",
+    "dashboard/inbound-timeline.js": "4d77efff87d63bb56515afc394a20ae39254fddb7704b50ef7a49371ae879a43",
+    "dashboard/index.html": "8f0e77380668e4c437b7f9a3cf8ac11e6823df74bdd182076f1e172beb486374",
+    "dashboard/styles.css": "559717888e756843a65217154f8126fa1740f9efdb749914268a33e1d15e0b97",
+    "dashboard/transport-history.js": "4c178a0173dad9430e57e6a8cfdebde6d7c0bc79e81e989c399cdf644f18d869",
+    "transport_history.py": "8c243954a7165341f542fa13b18468c9ddf219f934042696118fb15002b3d407",
+    "skills/manage-seaya-replenishment/SKILL.md": "56675cbc32113377f606e040298a4b3111a861a48d0ebad774dd0a0455990c7b",
+    "skills/manage-seaya-replenishment/references/decision-contract.md": "b8c5dfe90e9f06b7d6585856e3e38c0290bfc94c786d9f4ea8e241491d199a41"
+  }
+}

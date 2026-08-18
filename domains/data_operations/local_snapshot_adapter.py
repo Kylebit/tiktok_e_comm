@@ -117,7 +117,9 @@ def adapt_profit_snapshot_text(
         rows, raw, rejected = [], 0, 0
         issues = [_issue("unsupported_snapshot", "snapshot", source_name, "source_name")]
     checksum = _checksum({"source_name": source_name, "text": text})
-    return LocalSnapshotAdaptation(tuple(rows), tuple(issues), f"local-snapshot:{checksum}", checksum, (), raw, len(rows), rejected)
+    snapshot_id = f"local-snapshot:{checksum}"
+    rows = [{**row, "source_snapshot_id": snapshot_id} for row in rows]
+    return LocalSnapshotAdaptation(tuple(rows), tuple(issues), snapshot_id, checksum, (), raw, len(rows), rejected)
 
 
 def _tiktok_rows(text: str, source: str, updated: str, costs: Mapping[str, object], sku_map: Mapping[str, str], period: tuple[date, date] | None):
@@ -147,7 +149,32 @@ def _tiktok_rows(text: str, source: str, updated: str, costs: Mapping[str, objec
         unit_cost = _decimal(costs.get(sku))
         if unit_cost is None: issues.append(_issue("missing_cost", "tiktok_income", f"{source}:{index}", "SKU ID"))
         cost = unit_cost * quantity if unit_cost is not None else None
-        rows.append(_row("tiktok", region, order, sku, source_sku, currency, amount, cost, occurred, updated, source, quantity=quantity, unit_cost=unit_cost, source_seller_sku=source_seller_sku))
+        buyer_paid = _decimal(item.get("Subtotal after seller discounts"))
+        fee_columns = (
+            ("total_fees", "Total Fees"),
+            ("transaction_fee", "Transaction fee"),
+            ("platform_commission", "TikTok Shop commission fee"),
+            ("actual_shipping_fee", "Actual shipping fee"),
+            ("customer_shipping_fee", "Customer shipping fee"),
+            ("affiliate_commission", "Affiliate Commission"),
+            ("affiliate_ads_commission", "Affiliate Shop Ads commission"),
+            ("customer_refund", "Customer refund"),
+            ("platform_discounts", "Platform discounts"),
+            ("adjustment", "Ajustment amount"),
+        )
+        fee_items = [
+            {"code": code, "label": label, "amount": value, "currency": currency.upper(), "included_in_net_settlement": True}
+            for code, label in fee_columns
+            if (value := _decimal(item.get(label))) is not None and value != 0
+        ]
+        rows.append(_row(
+            "tiktok", region, order, sku, source_sku, currency, amount, cost,
+            occurred, updated, source, quantity=quantity, unit_cost=unit_cost,
+            source_seller_sku=source_seller_sku, buyer_paid=buyer_paid,
+            product_name=_text(item.get("Product name")),
+            variant_name=_text(item.get("SKU name")), fee_items=fee_items,
+            statement_id=_text(item.get("Statement ID")),
+        ))
     return rows, issues, raw, rejected
 
 
@@ -188,13 +215,35 @@ def _shopee_rows(text: str, source: str, updated: str, period: tuple[date, date]
             cost = total_cost
             if quantity is not None and unit_cost is None and total_cost is not None:
                 unit_cost = total_cost / quantity
-        if cost is None: issues.append(_issue("missing_cost", "shopee_snapshot", f"{source}:{index}", "product_cost"))
-        rows.append(_row("shopee", region, order, sku, source_sku, currency, amount, cost, occurred, updated, source, quantity=quantity, unit_cost=unit_cost))
+        if cost is None or cost <= 0: issues.append(_issue("missing_cost", "shopee_snapshot", f"{source}:{index}", "product_cost"))
+        buyer_paid = _decimal(item.get("subtotal")) or _decimal(value("Sale Price (Paid)"))
+        rows.append(_row(
+            "shopee", region, order, sku, source_sku, currency, amount, cost,
+            occurred, updated, source, quantity=quantity, unit_cost=unit_cost,
+            buyer_paid=buyer_paid, product_name=value("Product Name"),
+            image_url=_text(item.get("image_url")), fee_items=[],
+        ))
     return rows, issues, raw, rejected
 
 
-def _row(channel, region, order, sku, source_sku, currency, amount, cost, occurred, updated, source, *, quantity=None, unit_cost=None, source_seller_sku=None):
-    return {"channel": channel, "region": region, "order_id": order, "sku_id": sku, "source_sku_id": source_sku, "source_seller_sku": source_seller_sku, "currency": currency.upper(), "settlement_amount": amount, "cost_cny": cost, "quantity": quantity, "unit_cost_cny": unit_cost, "occurred_at": occurred, "source_updated_at": updated, "calculation_kind": "realized", "source_file": source}
+def _row(channel, region, order, sku, source_sku, currency, amount, cost, occurred, updated, source, *, quantity=None, unit_cost=None, source_seller_sku=None, buyer_paid=None, product_name="", variant_name="", image_url="", fee_items=None, statement_id=""):
+    line_prefix = f"{statement_id}:" if statement_id else ""
+    return {
+        "channel": channel, "platform": channel, "region": region,
+        "order_id": order, "statement_id": statement_id,
+        "order_line_id": f"{line_prefix}{order}:{source_sku or sku}",
+        "sku_id": sku, "canonical_sku": sku, "seller_sku": source_seller_sku or sku,
+        "platform_sku": source_sku, "source_sku_id": source_sku,
+        "source_seller_sku": source_seller_sku, "currency": currency.upper(),
+        "settlement_amount": amount, "net_settlement_amount": amount,
+        "buyer_paid_product_amount": buyer_paid, "cost_cny": cost,
+        "quantity": quantity, "unit_cost_cny": unit_cost,
+        "product_name": product_name, "variant_name": variant_name,
+        "image_url": image_url, "fee_items": list(fee_items or []),
+        "occurred_at": occurred, "settled_at": occurred,
+        "settlement_status": "settled", "source_updated_at": updated,
+        "calculation_kind": "realized", "source_file": source,
+    }
 def _required(order, sku, currency, occurred, amount, issues, source, index):
     missing = [("order_id", order), ("sku_id", sku), ("currency", currency), ("occurred_at", occurred), ("settlement_amount", amount)]
     for field, value in missing:

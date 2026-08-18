@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>东南亚四国逐 SKU 备货决策台</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">SC</span><div><strong>供应链运营</strong><small>SKU REPLENISHMENT LEDGER</small></div></div>
+    <div class="snapshot"><span class="pulse"></span>只读快照 <strong id="snapshotDate">—</strong></div>
+  </header>
+
+  <nav class="country-tabs" aria-label="国家站点">
+    <button class="country-tab summary-tab" data-region="SUMMARY">四国汇总 <small>&gt;10</small></button>
+    <button class="country-tab active" data-region="MY">马来西亚 <small>MY</small></button>
+    <button class="country-tab" data-region="TH">泰国 <small>TH</small></button>
+    <button class="country-tab" data-region="VN">越南 <small>VN</small></button>
+    <button class="country-tab" data-region="PH">菲律宾 <small>PH</small></button>
+    <a class="country-tab page-link" href="./inbound-batches.html">批次时间确认 <small>ETA</small></a>
+  </nav>
+
+  <main>
+    <section class="hero">
+      <div>
+        <span class="eyebrow" id="countryEyebrow">—</span>
+        <h1><span id="countryName">—</span>每一个 SKU，<br><span>都算清楚再备货。</span></h1>
+        <p id="heroDescription"></p>
+        <div class="source-chips" id="sourceChips"></div>
+      </div>
+      <aside class="decision-card">
+        <div class="decision-head"><span class="status">本批建议</span><span id="coverageLabel">—</span></div>
+        <div class="big-number"><span id="batchQty">—</span><small>件</small></div>
+        <p id="batchSentence">正在汇总逐 SKU 决策…</p>
+        <div class="decision-grid">
+          <div><small>建议 SKU</small><strong id="batchSkuCount">—</strong></div>
+          <div><small>实物体积</small><strong id="batchVolume">—</strong></div>
+          <div><small>装运折算体积</small><strong id="billableVolume">—</strong></div>
+          <div><small>预计占款</small><strong id="workingCapital">—</strong></div>
+          <div><small>已知净优势</small><strong id="knownBenefit">—</strong></div>
+          <div><small>头程预算</small><strong id="headFreight">—</strong></div>
+        </div>
+      </aside>
+    </section>
+
+    <section class="kpi-strip">
+      <article><small id="warehouseLabel">海外仓</small><strong id="inventoryUnits">—</strong><span>当前可用库存</span></article>
+      <article><small>雅仓聚合在途</small><strong id="inboundUnits">—</strong><span>仅批次 SKU 数量对平后按日期计入</span></article>
+      <article><small>需求观察窗</small><strong id="demandWindow">—</strong><span>TikTok + Shopee 分渠道合并</span></article>
+      <article><small>当前结论</small><strong id="decisionHeadline">—</strong><span>建议量按需求与库存判定</span></article>
+    </section>
+
+    <section class="section ledger" id="sku-plan">
+      <div class="section-heading">
+        <div><span class="eyebrow">SKU-BY-SKU LEDGER</span><h2>逐款展示需求、库存、公式与收益</h2></div>
+        <p>正式建议件数只使用 TikTok 与 Shopee 的有效订单事实；结算口径销量仅为旧版参考，不构成正式补货数量。雅仓现货从今天开始消耗，在途按各自批次的预计可售日才加入投影库存。本次新货预计可售日按 3 天备货 + 4 天到国内仓 + 当前国家海外运输周期计算。预计日期按批次手工修正，节省金额只使用结算事实，各国绝不混算。</p>
+      </div>
+      <div class="toolbar">
+        <label>搜索 SKU / 商品<input id="searchInput" type="search" placeholder="例如 0007、墙贴"></label>
+        <label>决策<select id="statusFilter"><option value="all">全部</option><option value="RECENT30">近30天有动销</option><option value="MISSING_DATA">资料待补</option><option value="REPLENISH">建议补货</option><option value="FIRST_STOCK">建议首批</option><option value="HOLD">暂不补货</option><option value="NO_DEMAND">销量不足</option></select></label>
+        <span id="visibleCount"></span>
+      </div>
+
+      <div class="ledger-group">
+        <div class="group-heading"><div><span>01</span><h3 id="ledgerTitle">全部 SKU 备货建议</h3></div><p id="ledgerDescription">“建议补货”表示海外仓已有该 SKU；“建议首批”表示海外仓当前没有该 SKU。两类建议按同一规则排序并在同一张表中展示。</p></div>
+        <div class="table-wrap"><table><thead><tr><th>主图 / SKU</th><th>双平台需求事实</th><th>雅仓供应事实</th><th>到仓计算</th><th>建议</th><th>收益明细</th><th>判断</th></tr></thead><tbody id="skuRows"></tbody></table></div>
+        <div class="empty-state" id="skuEmpty" hidden>当前筛选条件下没有记录。</div>
+      </div>
+    </section>
+
+    <section class="section formula-section">
+      <div>
+        <span class="eyebrow">FORMULA & GUARDRAILS</span>
+        <h2>每一件建议数从哪里来</h2>
+        <div class="formula" id="formulaText">—</div>
+        <p class="formula-note">v = TikTok 趋势日均 + Shopee 趋势日均。具备逐日事实时，单渠道采用最近7天60% + 第8–15天30% + 第16–30天10%；短期爆量且海外仓尚无时，首批只覆盖15天。缺逐日分段时明确降级，不伪造趋势。</p>
+      </div>
+      <div class="rules">
+        <article><b>库存</b><p>雅仓可用库存立即参与消耗；在途按“批次 + SKU 数量 + 预计可售日”逐条加入。实际已入库时间优先；尚未入库的批次明确标记，并按用户批准的“建单 + 4 天”估算到国内仓。本次新备货固定拆为 3 天备货 + 4 天到国内仓，不再增加签收上架缓冲。</p></article>
+        <article><b>头程</b><p id="freightRule">—</p></article>
+        <article><b>收益</b><p id="economicsRule">—</p></article>
+      </div>
+    </section>
+
+    <section class="section evidence">
+      <div class="section-heading"><div><span class="eyebrow">AUDIT TRAIL</span><h2>证据边界与风险</h2></div></div>
+      <div class="evidence-grid" id="evidenceGrid"></div>
+    </section>
+  </main>
+
+  <dialog id="manualInputDialog" class="manual-dialog">
+    <form id="manualInputForm" class="manual-form" novalidate>
+      <div class="manual-dialog-head">
+        <div><span class="eyebrow">LOCAL MANUAL INPUT</span><h2 id="manualDialogTitle">手动补齐商品物流资料</h2></div>
+        <button id="cancelManualInput" class="dialog-close" type="button" aria-label="关闭">×</button>
+      </div>
+      <p class="manual-intro">资料只保存在当前浏览器，不会写入雅仓、平台或数据库。保存后页面会立即重新计算该 SKU。</p>
+      <input name="region" type="hidden">
+      <input name="sku" type="hidden">
+      <fieldset>
+        <legend>包装尺寸（厘米）</legend>
+        <label>长<input name="lengthCm" type="number" min="0.01" step="0.01" inputmode="decimal" required></label>
+        <label>宽<input name="widthCm" type="number" min="0.01" step="0.01" inputmode="decimal" required></label>
+        <label>高<input name="heightCm" type="number" min="0.01" step="0.01" inputmode="decimal" required></label>
+      </fieldset>
+      <div class="manual-grid">
+        <label>包装重量（克）<input name="weightG" type="number" min="0.01" step="0.01" inputmode="decimal" required></label>
+        <label>采购成本（人民币/件）<input name="costCny" type="number" min="0.01" step="0.01" inputmode="decimal" required></label>
+      </div>
+      <label>来源备注（可选）<input name="sourceNote" type="text" maxlength="120" placeholder="例如：供应商报价 2026-07-30"></label>
+      <p id="manualInputError" class="manual-error" role="alert"></p>
+      <div class="manual-actions">
+        <button id="clearManualInput" class="secondary danger" type="button" hidden>清除已补资料</button>
+        <span></span>
+        <button id="cancelManualInputBottom" class="secondary" type="button">取消</button>
+        <button class="primary" type="submit">保存并重新计算</button>
+      </div>
+    </form>
+  </dialog>
+
+  <footer><span>Supply Chain Operations · Read-only decision artifact</span><span>这是决策建议，不是采购或发货指令；正式发货前复核采购可得量与当期头程报价。</span></footer>
+  <script src="./data.js?v=20260810-dual-demand"></script>
+  <script src="./transport-history.js?v=20260810-dual-demand"></script>
+  <script src="./inbound-plan.js?v=20260810-dual-demand"></script>
+  <script src="./inbound-timeline.js?v=20260810-dual-demand"></script>
+  <script src="./app.js?v=20260810-dual-demand"></script>
+</body>
+</html>
